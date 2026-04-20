@@ -279,8 +279,10 @@
 
   async function loadSettings() {
     var settings = await api('/api/admin/security/settings');
-    document.getElementById('secCentralizedToggle').checked = !!settings.centralized_security_enabled;
-    document.getElementById('secOrgToggle').checked = !!settings.org_structure_enabled;
+    var centralizedToggle = document.getElementById('secCentralizedToggle');
+    var orgToggle = document.getElementById('secOrgToggle');
+    if (centralizedToggle) centralizedToggle.checked = !!settings.centralized_security_enabled;
+    if (orgToggle) orgToggle.checked = !!settings.org_structure_enabled;
     _s('secCentralizedHint', 'textContent', settings.centralized_security_enabled ? text('\u5df2\u542f\u7528', 'Enabled') : text('\u5df2\u7981\u7528', 'Disabled'));
     _s('secOrgHint', 'textContent', settings.org_structure_enabled ? text('\u5df2\u542f\u7528', 'Enabled') : text('\u5df2\u7981\u7528', 'Disabled'));
     var dgHint = settings.default_group_id || text('\u672a\u8bbe\u7f6e', 'Not set');
@@ -411,8 +413,10 @@
     if (sec.groupTree) global.renderSecGroupTree(sec.groupTree, document.getElementById('secGroupTree'), 0);
     _s('secPolicyTitle', 'textContent', text('\u7b56\u7565: ', 'Policy: ') + name);
     _s('secPolicySubtitle', 'textContent', text('\u7ec4 ID: ', 'Group ID: ') + id);
-    document.getElementById('secPolicyActions').classList.remove('hidden');
-    document.getElementById('secGroupMembers').classList.remove('hidden');
+    var policyActions = document.getElementById('secPolicyActions');
+    var groupMembers = document.getElementById('secGroupMembers');
+    if (policyActions) policyActions.classList.remove('hidden');
+    if (groupMembers) groupMembers.classList.remove('hidden');
     global.loadSecGroupPolicy(id);
     global.loadSecGroupMembers();
   };
@@ -541,7 +545,8 @@
       _s('secCentralizedHint', 'textContent', enabled ? text('\u5df2\u542f\u7528', 'Enabled') : text('\u5df2\u7981\u7528', 'Disabled'));
     } catch (err) {
       showToast(text('\u66f4\u65b0\u5931\u8d25: ', 'Update failed: ') + err.message, 'error');
-      document.getElementById('secCentralizedToggle').checked = !enabled;
+      var toggle = document.getElementById('secCentralizedToggle');
+      if (toggle) toggle.checked = !enabled;
     }
   };
 
@@ -554,12 +559,14 @@
       _s('secOrgHint', 'textContent', enabled ? text('\u5df2\u542f\u7528', 'Enabled') : text('\u5df2\u7981\u7528', 'Disabled'));
     } catch (err) {
       showToast(text('\u66f4\u65b0\u5931\u8d25: ', 'Update failed: ') + err.message, 'error');
-      document.getElementById('secOrgToggle').checked = !enabled;
+      var toggle = document.getElementById('secOrgToggle');
+      if (toggle) toggle.checked = !enabled;
     }
   };
 
   global.closeDefaultGroupModal = function closeDefaultGroupModal() {
-    document.getElementById('defaultGroupModalOverlay').classList.remove('show');
+    var overlay = document.getElementById('defaultGroupModalOverlay');
+    if (overlay) overlay.classList.remove('show');
   };
 
   global.showSetDefaultGroup = async function showSetDefaultGroup() {
@@ -570,8 +577,10 @@
       sec.defaultGroupTree = root ? [root] : [];
       sec.defaultGroupPickedId = null;
       global._secDefaultGroupPickedId = null;
-      global.renderDefaultGroupPicker(sec.defaultGroupTree, document.getElementById('defaultGroupTreePicker'), 0);
-      document.getElementById('defaultGroupModalOverlay').classList.add('show');
+      var picker = document.getElementById('defaultGroupTreePicker');
+      var overlay = document.getElementById('defaultGroupModalOverlay');
+      global.renderDefaultGroupPicker(sec.defaultGroupTree, picker, 0);
+      if (overlay) overlay.classList.add('show');
     } catch (err) {
       showToast(text('\u52a0\u8f7d\u7ec4\u7ec7\u6811\u5931\u8d25: ', 'Load group tree failed: ') + err.message, 'error');
     }
@@ -625,7 +634,8 @@
     sec.selectedAssignEmail = '';
     sec.assignGroupId = null;
     sec.contextGroupName = null;
-    document.getElementById('assignUsersModalOverlay').classList.remove('show');
+    var overlay = document.getElementById('assignUsersModalOverlay');
+    if (overlay) overlay.classList.remove('show');
   };
 
   global.selectAssignUser = function selectAssignUser(email) {
@@ -670,11 +680,15 @@
       _s('assignUsersModalTitle', 'textContent', text('\u79fb\u5165\u7528\u6237\u5230\u90e8\u95e8: ', 'Move users to department: ') + groupName);
       _s('assignUsersSearch', 'value', '');
       _s('assignUsersCount', 'textContent', text('\u6b63\u5728\u52a0\u8f7d...', 'Loading...'));
-      document.getElementById('assignUsersTree').innerHTML = hint(text('\u6b63\u5728\u52a0\u8f7d\u7528\u6237\u5217\u8868...', 'Loading users...'));
-      document.getElementById('assignUsersModalOverlay').classList.add('show');
-      document.getElementById('assignUsersSearch').focus();
+      var assignTree = document.getElementById('assignUsersTree');
+      var assignOverlay = document.getElementById('assignUsersModalOverlay');
+      var assignSearch = document.getElementById('assignUsersSearch');
+      if (assignTree) assignTree.innerHTML = hint(text('\u6b63\u5728\u52a0\u8f7d\u7528\u6237\u5217\u8868...', 'Loading users...'));
+      if (assignOverlay) assignOverlay.classList.add('show');
+      if (assignSearch && typeof assignSearch.focus === 'function') assignSearch.focus();
       loadAssignableUsers().catch(function(err) {
-        document.getElementById('assignUsersTree').innerHTML = errorHint(err.message);
+        var tree = document.getElementById('assignUsersTree');
+        if (tree) tree.innerHTML = errorHint(err.message);
         showToast(text('\u52a0\u8f7d\u7528\u6237\u5931\u8d25: ', 'Load users failed: ') + err.message, 'error');
       });
       return;
@@ -697,7 +711,8 @@
   };
 
   global.filterAssignUsers = function filterAssignUsers() {
-    state().selectedAssignEmail = String(document.getElementById('assignUsersSearch').value || '').trim();
+    var input = document.getElementById('assignUsersSearch');
+    state().selectedAssignEmail = String(input && input.value || '').trim();
     renderAssignUsers();
   };
 
@@ -724,7 +739,8 @@
 
   global.confirmAssignUsers = async function confirmAssignUsers() {
     var sec = state();
-    var email = String(document.getElementById('assignUsersSearch').value || '').trim() || sec.selectedAssignEmail;
+    var input = document.getElementById('assignUsersSearch');
+    var email = String(input && input.value || '').trim() || sec.selectedAssignEmail;
     if (!email || !sec.assignGroupId) {
       showToast(text('\u8bf7\u9009\u62e9\u6216\u8f93\u5165\u90ae\u7bb1', 'Select or enter an email'), 'info');
       return;

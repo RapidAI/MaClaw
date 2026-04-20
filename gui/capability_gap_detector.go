@@ -147,6 +147,17 @@ func (d *CapabilityGapDetector) Resolve(
 				}
 				return "", "", fmt.Errorf("GitHub Skill 包含高风险操作，已拒绝自动安装")
 			}
+			// User confirmed — audit with PolicyUserOverride.
+			if d.auditLog != nil {
+				_ = d.auditLog.Log(AuditEntry{
+					Timestamp:    time.Now(),
+					Action:       AuditActionHubSkillInstall,
+					ToolName:     "github_skill_install",
+					RiskLevel:    RiskCritical,
+					PolicyAction: PolicyUserOverride,
+					Result:       fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical", imported.Name, ghCandidates[0].RepoURL),
+				})
+			}
 		}
 
 		// Override source to indicate auto-installation by CapabilityGapDetector.
@@ -158,12 +169,17 @@ func (d *CapabilityGapDetector) Resolve(
 
 		// Audit log for GitHub install.
 		if d.auditLog != nil {
+			// Use PolicyUserOverride when the user confirmed a critical-risk install.
+			ghPolicyAction := PolicyAllow
+			if ghAssessment.Level == RiskCritical {
+				ghPolicyAction = PolicyUserOverride
+			}
 			_ = d.auditLog.Log(AuditEntry{
 				Timestamp:    time.Now(),
 				Action:       AuditActionHubSkillInstall,
 				ToolName:     "github_skill_install",
 				RiskLevel:    ghAssessment.Level,
-				PolicyAction: PolicyAllow,
+				PolicyAction: ghPolicyAction,
 				Result:       fmt.Sprintf("installed github skill %s from %s, risk=%s", imported.Name, ghCandidates[0].RepoURL, ghAssessment.Level),
 			})
 		}
@@ -209,7 +225,17 @@ func (d *CapabilityGapDetector) Resolve(
 			}
 			return "", "", fmt.Errorf("Skill 包含高风险操作，已拒绝自动安装")
 		}
-		// User confirmed — continue with installation despite critical risk.
+		// User confirmed — audit with PolicyUserOverride and continue with installation.
+		if d.auditLog != nil {
+			_ = d.auditLog.Log(AuditEntry{
+				Timestamp:    time.Now(),
+				Action:       AuditActionHubSkillInstall,
+				ToolName:     "hub_skill_install",
+				RiskLevel:    RiskCritical,
+				PolicyAction: PolicyUserOverride,
+				Result:       fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical, trust_level=%s", chosen.Name, chosen.HubURL, skill.TrustLevel),
+			})
+		}
 	}
 
 	// Step 6: Register to local SkillExecutor.
@@ -230,12 +256,17 @@ func (d *CapabilityGapDetector) Resolve(
 		if execErr != nil {
 			auditResult = execErr.Error()
 		}
+		// Use PolicyUserOverride when the user confirmed a critical-risk install.
+		policyAction := PolicyAllow
+		if maxRisk == RiskCritical {
+			policyAction = PolicyUserOverride
+		}
 		_ = d.auditLog.Log(AuditEntry{
 			Timestamp:    time.Now(),
 			Action:       AuditActionHubSkillInstall,
 			ToolName:     "hub_skill_install",
 			RiskLevel:    maxRisk,
-			PolicyAction: PolicyAllow,
+			PolicyAction: policyAction,
 			Result:       fmt.Sprintf("installed and executed skill %s from %s, trust_level=%s, risk=%s: %s", skill.Name, chosen.HubURL, chosen.TrustLevel, maxRisk, auditResult),
 		})
 	}

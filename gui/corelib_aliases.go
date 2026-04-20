@@ -92,10 +92,11 @@ const (
 	RiskHigh     = security.RiskHigh
 	RiskCritical = security.RiskCritical
 
-	PolicyAllow = security.PolicyAllow
-	PolicyDeny  = security.PolicyDeny
-	PolicyAsk   = security.PolicyAsk
-	PolicyAudit = security.PolicyAudit
+	PolicyAllow        = security.PolicyAllow
+	PolicyDeny         = security.PolicyDeny
+	PolicyAsk          = security.PolicyAsk
+	PolicyAudit        = security.PolicyAudit
+	PolicyUserOverride = security.PolicyUserOverride
 
 	AuditActionHubSkillInstall = security.AuditActionHubSkillInstall
 	AuditActionHubSkillUpdate  = security.AuditActionHubSkillUpdate

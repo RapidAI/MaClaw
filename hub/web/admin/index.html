@@ -918,7 +918,19 @@
               <div><label id="llmProvidersCurrentLabel">Default provider</label><select id="llmProvidersCurrent" onchange="setCurrentLLMProvider(this.value)"><option value="">-</option></select></div>
             </div>
           </div>
-          <div class="item">
+
+        </div>
+        <div class="item" style="margin-top:18px">
+          <div class="item-title" id="llmProviderListTitle">Configured Providers</div>
+          <div class="item-meta" id="llmProviderListDesc">Token usage accumulates from calls sent through the unified OpenAI v1 endpoint.</div>
+          <div id="llmProviderList" style="margin-top:12px"><div class="hint">No providers configured yet.</div></div>
+        </div>
+      </section>
+
+      <div id="llmProviderModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeLLMProviderDialog()">
+        <div class="session-modal" style="width:min(760px,calc(100% - 48px))">
+          <button class="close-btn" id="llmProviderModalCloseBtn" onclick="closeLLMProviderDialog()" aria-label="Close">&times;</button>
+          <div class="item" id="llmProviderEditorCard" style="border:none;box-shadow:none;padding:0;background:transparent">
             <div class="item-title" id="llmProviderEditorTitle">Provider Editor</div>
             <div class="item-meta" id="llmProviderEditorDesc">Create or update provider credentials and model mapping.</div>
             <div class="grid2" style="margin-top:12px">
@@ -933,16 +945,11 @@
               <div><label id="llmProviderMaxConcurrencyLabel">Allowed Concurrency</label><input id="llmProviderMaxConcurrency" type="number" min="0" step="1" value="0"></div>
             </div>
             <div class="hint" id="llmProviderAgentTypeHint" style="margin-top:12px">Examples: openclaw, claude-code/2.0.0, cline</div>
-            <div class="actions" style="margin-top:12px"><button class="btn-secondary" onclick="addLLMProvider()" id="llmProviderAddBtn">Add Provider</button><button class="btn-danger" onclick="removeSelectedLLMProvider()" id="llmProviderRemoveBtn">Remove</button><button class="btn-primary" onclick="saveLLMProviders()" id="llmProviderSaveBtn">Save All</button><button class="btn-ghost" onclick="testSelectedLLMProvider()" id="llmProviderTestBtn">Test Connection</button></div>
+            <div class="actions" style="margin-top:12px"><button class="btn-ghost" onclick="closeLLMProviderDialog()" id="llmProviderCancelBtn">Cancel</button><button class="btn-primary" onclick="saveLLMProviders()" id="llmProviderSaveBtn">Save</button><button class="btn-ghost" onclick="testSelectedLLMProvider()" id="llmProviderTestBtn">Test Connection</button></div>
             <div id="llmProviderTestResult" class="hint hidden" style="margin-top:12px"></div>
           </div>
         </div>
-        <div class="item" style="margin-top:18px">
-          <div class="item-title" id="llmProviderListTitle">Configured Providers</div>
-          <div class="item-meta" id="llmProviderListDesc">Token usage accumulates from calls sent through the unified OpenAI v1 endpoint.</div>
-          <div id="llmProviderList" style="margin-top:12px"><div class="hint">No providers configured yet.</div></div>
-        </div>
-      </section>
+      </div>
 
       <!-- Tab: Model Services -->
       <section id="tab-modelservices" class="panel card">

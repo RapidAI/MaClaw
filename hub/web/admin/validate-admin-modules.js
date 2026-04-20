@@ -36,6 +36,13 @@ const removedLegacyFiles = [
   'hub-admin-check.js',
   '_extra.js'
 ];
+const expectedExports = {
+  'machines-tab.js': ['renderMachineList', 'loadMachines'],
+  'security-tab.js': ['loadSecurityTab', 'selectSecGroup', 'confirmAssignUsers'],
+  'llm-provider-tab.js': ['loadLlmProviders', 'openLlmProviderTab', 'saveLLMProviders'],
+  'llm-service-tabs.js': ['loadLlmServiceGroups', 'openLlmServiceGroupTab', 'saveLLMServiceAdmin'],
+  'usage-stats-tab.js': ['loadUsageStats']
+};
 
 function fail(message) {
   console.error('VALIDATION FAILED:', message);
@@ -110,6 +117,19 @@ function assertHealthHook() {
   }
 }
 
+function assertModuleExports(name) {
+  const markers = expectedExports[name];
+  if (!markers || !markers.length) {
+    return;
+  }
+  const content = read(name);
+  markers.forEach(function(marker) {
+    if (!content.includes(marker)) {
+      fail(name + ' is missing expected export or marker: ' + marker);
+    }
+  });
+}
+
 function assertLegacyMirrorRemoved() {
   const legacyDir = path.join(root, 'js');
   if (fs.existsSync(legacyDir)) {
@@ -117,9 +137,10 @@ function assertLegacyMirrorRemoved() {
   }
 }
 
-expectedScripts.concat(['MODULES.md']).forEach(assertExists);
+expectedScripts.concat(['MODULES.md', 'check-admin.ps1']).forEach(assertExists);
 expectedScripts.forEach(assertJavaScriptSyntax);
-expectedScripts.concat(['MODULES.md', 'validate-admin-modules.js']).forEach(assertAscii);
+expectedScripts.forEach(assertModuleExports);
+expectedScripts.concat(['MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1']).forEach(assertAscii);
 removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();

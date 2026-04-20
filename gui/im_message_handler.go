@@ -871,6 +871,80 @@ func isConfirmationCancel(text string) bool {
 	return false
 }
 
+// classifyConfirmationIntent uses a lightweight LLM call to classify the
+// user's response to an execution confirmation panel. Called when the user's
+// message doesn't match the keyword-based isConfirmationApproval or
+// isConfirmationCancel checks, to handle semantic confirmations like "开工".
+//
+// Returns "confirm", "cancel", "modify", or "" (empty on LLM failure,
+// treated as modify by the caller).
+func (h *IMMessageHandler) classifyConfirmationIntent(userID, text string, pending *pendingConfirmation) string {
+	if pending == nil {
+		return ""
+	}
+
+	// Build context from the pending confirmation.
+	ctx := fmt.Sprintf("任务摘要：%s\n", truncateRunes(pending.Summary, 300))
+	if len(pending.PlannedActions) > 0 {
+		ctx += "计划动作：\n"
+		for i, action := range pending.PlannedActions {
+			if i >= 5 {
+				break
+			}
+			ctx += fmt.Sprintf("  %d. %s\n", i+1, truncateRunes(action, 100))
+		}
+	}
+	ctx += "系统提示用户：请确认方案或提出修改意见。"
+
+	// Add the last assistant message for conversational context.
+	if lastAssistant := h.getLastAssistantSnippet(userID, 300); lastAssistant != "" {
+		ctx += fmt.Sprintf("\n助手最后一条消息：%s", lastAssistant)
+	}
+
+	userMessage := fmt.Sprintf("[上下文]\n%s\n\n[用户回复]\n%s", ctx, text)
+
+	result, err := h.LLMClassify(context.Background(), LLMClassifyRequest{
+		SystemPrompt: `You are a user intent classifier for a task execution confirmation dialog.
+
+The user was shown a task plan and asked to confirm, cancel, or revise it. You will receive:
+- The task summary and planned actions
+- The assistant's last message (if available): this is what the user is directly responding to
+- The user's response
+
+IMPORTANT: Pay close attention to the assistant's last message. If the assistant asked the user to say a specific word/phrase to proceed, and the user replies with that word/phrase, it is a confirmation.
+
+Classify the user's response into exactly one category. Reply with ONLY the category word:
+- "confirm" — user approves the plan and wants to start execution. This includes any form of agreement, readiness signal, or go-ahead in the context of the pending task.
+- "cancel" — user wants to abandon the task entirely.
+- "modify" — user provides specific changes, corrections, or additional requirements for the plan.
+
+When in doubt between "confirm" and "modify", prefer "confirm" if the response is short and doesn't contain specific change requests.`,
+		UserMessage: userMessage,
+		TimeoutSec:  8,
+		Tag:         "confirmation-intent",
+	})
+
+	if err != nil {
+		log.Printf("[confirmation-intent] LLM classify failed for user %s: %v", userID, err)
+		return "" // caller treats as modify (safe fallback)
+	}
+
+	intent := strings.ToLower(strings.TrimSpace(result.Text))
+	log.Printf("[confirmation-intent] user=%s text=%q → intent=%q (latency=%.1fs)",
+		userID, truncateForLogGUI(text, 30), intent, result.Latency.Seconds())
+
+	if strings.Contains(intent, "confirm") {
+		return "confirm"
+	}
+	if strings.Contains(intent, "cancel") {
+		return "cancel"
+	}
+	if strings.Contains(intent, "modify") {
+		return "modify"
+	}
+	return "" // unrecognized → caller treats as modify
+}
+
 func isShortChitChatMessage(text string) bool {
 	return normalizeShortChitChatToken(text) != ""
 }
@@ -1913,6 +1987,18 @@ type IMMessageHandler struct {
 	// document and emitted to the doc preview panel.
 	workflowPendingConfirmOther sync.Map
 
+	// pendingCriticalConfirm stores response channels for critical-risk
+	// skill installation confirmations. Keyed by a unique confirmation ID
+	// (string), value is chan criticalRiskConfirmResponse. Cleaned up after
+	// use or timeout.
+	pendingCriticalConfirm sync.Map
+
+	// pendingCriticalConfirmIM maps "platform:userID" to the active
+	// critical-risk confirmation ID. When an IM user responds with
+	// "确认安装" or "拒绝安装", handleIMMessageWithLoop checks this map
+	// to route the answer to ResolveCriticalConfirm.
+	pendingCriticalConfirmIM sync.Map
+
 	// pendingAskUser tracks ask_user questions that are waiting for user
 	// responses. When the agent loop returns early due to ask_user, the
 	// question is stored here so the next user message can be identified
@@ -2212,9 +2298,27 @@ func (h *IMMessageHandler) SetToolDefGenerator(gen *ToolDefinitionGenerator) {
 	h.toolsCacheTime = time.Time{}
 }
 
-// SetCapabilityGapDetector configures the capability gap detector.
+// SetCapabilityGapDetector configures the capability gap detector and wires
+// the confirmCallback so that CapabilityGapDetector.Resolve uses the shared
+// confirmCriticalRiskSkill mechanism for critical-risk user confirmation.
 func (h *IMMessageHandler) SetCapabilityGapDetector(detector *CapabilityGapDetector) {
 	h.capabilityGapDetector = detector
+	if detector != nil {
+		detector.SetConfirmCallback(func(skillName, riskDetails string) bool {
+			// Determine the platform from the active loop context.
+			platform := ""
+			if h.currentLoopCtx != nil {
+				platform = h.currentLoopCtx.Platform
+			}
+			// Extract factors from riskDetails for the shared confirmation function.
+			// The riskDetails string is pre-formatted by the detector; pass it as a
+			// single-element factors slice so buildCriticalRiskPrompt includes it.
+			factors := []string{riskDetails}
+			return h.confirmCriticalRiskSkill(
+				context.Background(), skillName, "capability_gap_auto", factors, platform, h.lastUserID,
+			)
+		})
+	}
 }
 
 // SetToolRouter configures the tool router for context-aware tool filtering.
@@ -2762,18 +2866,46 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 		sendStatus("🔒 正在进行安全审查...")
 		assessment := h.app.riskAssessor.AssessSkill(skill, skill.TrustLevel)
 		if assessment.Level == RiskCritical {
+			// Determine the platform for the confirmation channel.
+			platform := ""
+			if h.currentLoopCtx != nil {
+				platform = h.currentLoopCtx.Platform
+			}
+
+			confirmed := h.confirmCriticalRiskSkill(
+				ctx, displayName, source, assessment.Factors, platform, h.lastUserID,
+			)
+
+			if !confirmed {
+				// User rejected (or timeout / fail-closed).
+				h.app.ensureAuditLog()
+				if h.app.auditLog != nil {
+					_ = h.app.auditLog.Log(AuditEntry{
+						Timestamp:    time.Now(),
+						Action:       AuditActionHubSkillReject,
+						ToolName:     source + "_skill_install",
+						RiskLevel:    RiskCritical,
+						PolicyAction: PolicyDeny,
+						Result:       fmt.Sprintf("user rejected critical skill %s: critical risk", displayName),
+					})
+				}
+				return fmt.Sprintf("⚠️ Skill「%s」包含高风险操作，已拒绝自动安装。风险因素: %s",
+					displayName, strings.Join(assessment.Factors, ", "))
+			}
+
+			// User confirmed — audit with PolicyUserOverride and continue to registration.
 			h.app.ensureAuditLog()
 			if h.app.auditLog != nil {
 				_ = h.app.auditLog.Log(AuditEntry{
 					Timestamp:    time.Now(),
-					Action:       AuditActionHubSkillReject,
+					Action:       AuditActionHubSkillInstall,
 					ToolName:     source + "_skill_install",
 					RiskLevel:    RiskCritical,
-					PolicyAction: PolicyDeny,
-					Result:       fmt.Sprintf("rejected skill %s: critical risk", displayName),
+					PolicyAction: PolicyUserOverride,
+					Result: fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical, factors=[%s]",
+						displayName, source, strings.Join(assessment.Factors, ", ")),
 				})
 			}
-			return fmt.Sprintf("⚠️ Skill「%s」包含高风险操作，已拒绝自动安装", displayName)
 		}
 	}
 
@@ -3437,6 +3569,26 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if _, loaded := h.pendingAskUser.Load(msg.UserID); loaded {
 		hasPendingAskUser = true
 	}
+
+	// Intercept IM responses to critical-risk skill installation confirmations.
+	// When a pending confirmation exists for this platform+user, match the user's
+	// reply to resolve it and return immediately.
+	if msg.Platform != "" && msg.Platform != "desktop" {
+		imConfirmKey := msg.Platform + ":" + msg.UserID
+		if v, ok := h.pendingCriticalConfirmIM.LoadAndDelete(imConfirmKey); ok {
+			confirmID, _ := v.(string)
+			if confirmID != "" {
+				lower := strings.TrimSpace(strings.ToLower(trimmed))
+				confirmed := lower == "确认安装" || lower == "确认" || lower == "1"
+				h.ResolveCriticalConfirm(confirmID, confirmed)
+				if confirmed {
+					return &IMAgentResponse{Text: "✅ 已确认安装该 Critical 风险 Skill。"}
+				}
+				return &IMAgentResponse{Text: "❌ 已拒绝安装该 Critical 风险 Skill。"}
+			}
+		}
+	}
+
 	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) && !hasPendingAskUser {
 		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang)}
 	}
@@ -3804,9 +3956,42 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				}
 			}
 		case !msg.IsBackground:
-			updated := applyConfirmationRevision(pending, trimmed)
-			h.confirmationStore.set(updated)
-			return buildConfirmationResponse(updated)
+			// Neither explicit confirm nor cancel. Use a lightweight LLM call
+			// to classify the user's intent with the confirmation context.
+			// This handles cases like "开工" which is semantically a confirmation
+			// but not in the keyword list.
+			if llmIntent := h.classifyConfirmationIntent(msg.UserID, trimmed, pending); llmIntent == "confirm" {
+				h.confirmationStore.clear(msg.UserID)
+				msg.Text = confirmationApprovedText(pending)
+				trimmed = strings.TrimSpace(msg.Text)
+				confirmedResume = true
+				if h.app != nil && h.app.workflowEngine != nil {
+					if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
+						h.pendingAskUser.Delete(msg.UserID)
+						return wfResp
+					}
+					if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
+						workflowAgentLoop = true
+					}
+				}
+			} else if llmIntent == "cancel" {
+				if pending.OriginalText != "" {
+					entries := h.memory.load(msg.UserID)
+					cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
+					entries = append(entries,
+						conversationEntry{Role: "user", Content: pending.OriginalText},
+						conversationEntry{Role: "assistant", Content: cancelNote},
+					)
+					h.memory.save(msg.UserID, entries)
+				}
+				h.confirmationStore.clear(msg.UserID)
+				return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
+			} else {
+				// "modify" or LLM failed — treat as revision.
+				updated := applyConfirmationRevision(pending, trimmed)
+				h.confirmationStore.set(updated)
+				return buildConfirmationResponse(updated)
+			}
 		}
 	}
 	if shouldRequireExecutionConfirmation(msg, pending) {

@@ -41,10 +41,11 @@ type RiskAssessment struct {
 type PolicyAction string
 
 const (
-	PolicyAllow PolicyAction = "allow"
-	PolicyDeny  PolicyAction = "deny"
-	PolicyAsk   PolicyAction = "ask"
-	PolicyAudit PolicyAction = "audit"
+	PolicyAllow        PolicyAction = "allow"
+	PolicyDeny         PolicyAction = "deny"
+	PolicyAsk          PolicyAction = "ask"
+	PolicyAudit        PolicyAction = "audit"
+	PolicyUserOverride PolicyAction = "user_override"
 )
 
 // PolicyRule defines a single policy rule.

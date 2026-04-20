@@ -479,6 +479,8 @@ export function FetchNews():Promise<Array<any>>;
 
 export function CancelAIAssistantSession():Promise<string>;
 
+export function ResolveCriticalConfirm(arg1:string,arg2:boolean):Promise<void>;
+
 export function CancelAIAssistantTask(arg1:string):Promise<void>;
 
 export function SelectAIAssistantFile():Promise<string>;

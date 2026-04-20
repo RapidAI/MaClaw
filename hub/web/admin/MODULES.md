@@ -48,6 +48,7 @@ When adding or changing admin behavior:
 5. Keep script load order in index.html aligned with module dependencies.
 6. Run syntax and ASCII checks after edits.
 7. Run `node hub/web/admin/validate-admin-modules.js` after structural changes.
+8. Run `powershell -ExecutionPolicy Bypass -File hub/web/admin/check-admin.ps1` before handing off larger admin changes.
 
 ## Removed legacy files
 

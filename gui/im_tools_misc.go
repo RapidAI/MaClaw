@@ -362,19 +362,55 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	if h.app.riskAssessor != nil {
 		assessment := h.app.riskAssessor.AssessSkill(entry, entry.TrustLevel)
 		if assessment.Level == RiskCritical {
+			// Determine the platform for the confirmation channel.
+			platform := ""
+			if h.currentLoopCtx != nil {
+				platform = h.currentLoopCtx.Platform
+			}
+
+			// Use the loop context so cancellation propagates when the user
+			// cancels the agent session, instead of blocking for up to 120s.
+			confirmCtx := context.Background()
+			if h.currentLoopCtx != nil {
+				var cancel context.CancelFunc
+				confirmCtx, cancel = h.currentLoopCtx.Context()
+				defer cancel()
+			}
+
+			confirmed := h.confirmCriticalRiskSkill(
+				confirmCtx, entry.Name, hubURL, assessment.Factors, platform, h.lastUserID,
+			)
+
+			if !confirmed {
+				// User rejected (or timeout / fail-closed).
+				h.app.ensureAuditLog()
+				if h.app.auditLog != nil {
+					_ = h.app.auditLog.Log(AuditEntry{
+						Timestamp:    time.Now(),
+						Action:       AuditActionHubSkillReject,
+						ToolName:     "hub_skill_install",
+						RiskLevel:    RiskCritical,
+						PolicyAction: PolicyDeny,
+						Result:       fmt.Sprintf("user rejected critical skill %s: critical risk", entry.Name),
+					})
+				}
+				return fmt.Sprintf("⚠️ Skill %q 包含高风险操作，已拒绝自动安装。风险因素: %s",
+					entry.Name, strings.Join(assessment.Factors, ", "))
+			}
+
+			// User confirmed — audit with PolicyUserOverride and continue to registration.
 			h.app.ensureAuditLog()
 			if h.app.auditLog != nil {
 				_ = h.app.auditLog.Log(AuditEntry{
 					Timestamp:    time.Now(),
-					Action:       AuditActionHubSkillReject,
+					Action:       AuditActionHubSkillInstall,
 					ToolName:     "hub_skill_install",
 					RiskLevel:    RiskCritical,
-					PolicyAction: PolicyDeny,
-					Result:       fmt.Sprintf("rejected skill %s from %s: critical risk", skillID, hubURL),
+					PolicyAction: PolicyUserOverride,
+					Result: fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical, factors=[%s]",
+						entry.Name, hubURL, strings.Join(assessment.Factors, ", ")),
 				})
 			}
-			return fmt.Sprintf("⚠️ Skill %q 包含高风险操作，已拒绝自动安装。风险因素: %s",
-				entry.Name, strings.Join(assessment.Factors, ", "))
 		}
 	}
 

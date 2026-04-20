@@ -1071,6 +1071,10 @@ export function CancelAIAssistantSession() {
   return window['go']['main']['App']['CancelAIAssistantSession']();
 }
 
+export function ResolveCriticalConfirm(arg1, arg2) {
+  return window['go']['main']['App']['ResolveCriticalConfirm'](arg1, arg2);
+}
+
 export function CancelAIAssistantTask(arg1) {
   return window['go']['main']['App']['CancelAIAssistantTask'](arg1);
 }

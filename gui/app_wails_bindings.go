@@ -1249,6 +1249,22 @@ func (a *App) CancelAIAssistantSession() (string, error) {
 	return hubClient.ensureIMHandler().CancelCurrentSession()
 }
 
+// ResolveCriticalConfirm is called by the desktop frontend when the user
+// responds to a critical-risk skill installation confirmation prompt.
+func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) {
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		log.Printf("[ResolveCriticalConfirm] hubClient is nil, ignoring confirmID=%s", confirmID)
+		return
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		log.Printf("[ResolveCriticalConfirm] handler is nil, ignoring confirmID=%s", confirmID)
+		return
+	}
+	handler.ResolveCriticalConfirm(confirmID, confirmed)
+}
+
 // ---------------------------------------------------------------------------
 // Background Loop Wails bindings
 // ---------------------------------------------------------------------------

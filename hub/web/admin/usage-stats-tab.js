@@ -139,10 +139,14 @@ function applyUsageStatsI18n() {
 }
 function syncUsageStatsFiltersFromState() {
   ensureUsageStatsDefaults();
-  _s('usageStatsScope', 'value', usageStatsState.scope);
-  _s('usageStatsPeriod', 'value', usageStatsState.period);
-  _s('usageStatsDate', 'value', usageStatsState.date);
-  _s('usageStatsMonth', 'value', usageStatsState.month);
+  const scopeEl = document.getElementById('usageStatsScope');
+  const periodEl = document.getElementById('usageStatsPeriod');
+  const dateEl = document.getElementById('usageStatsDate');
+  const monthEl = document.getElementById('usageStatsMonth');
+  if (scopeEl) scopeEl.value = usageStatsState.scope;
+  if (periodEl) periodEl.value = usageStatsState.period;
+  if (dateEl) dateEl.value = usageStatsState.date;
+  if (monthEl) monthEl.value = usageStatsState.month;
   const dateWrap = document.getElementById('usageStatsDateWrap');
   const monthWrap = document.getElementById('usageStatsMonthWrap');
   if (dateWrap) dateWrap.style.display = usageStatsState.period === 'daily' ? 'block' : 'none';
@@ -228,17 +232,24 @@ function renderUsageStats() {
   _s('usageStatsGeneratedAt', 'textContent', ust('generatedAt', { time: ts }));
 }
 function onUsageStatsFilterChange() {
-  usageStatsState.scope = document.getElementById('usageStatsScope').value || 'user';
-  usageStatsState.period = document.getElementById('usageStatsPeriod').value || 'daily';
-  usageStatsState.date = document.getElementById('usageStatsDate').value || usageStatsState.date;
-  usageStatsState.month = document.getElementById('usageStatsMonth').value || usageStatsState.month;
-  usageStatsState.entity = document.getElementById('usageStatsEntity').value || '';
+  const scopeEl = document.getElementById('usageStatsScope');
+  const periodEl = document.getElementById('usageStatsPeriod');
+  const dateEl = document.getElementById('usageStatsDate');
+  const monthEl = document.getElementById('usageStatsMonth');
+  const entityEl = document.getElementById('usageStatsEntity');
+  usageStatsState.scope = scopeEl && scopeEl.value || 'user';
+  usageStatsState.period = periodEl && periodEl.value || 'daily';
+  usageStatsState.date = dateEl && dateEl.value || usageStatsState.date;
+  usageStatsState.month = monthEl && monthEl.value || usageStatsState.month;
+  usageStatsState.entity = entityEl && entityEl.value || '';
   loadUsageStats();
 }
 async function loadUsageStats() {
   ensureUsageStatsDefaults();
   ensureUsageStatsUI();
   syncUsageStatsFiltersFromState();
+  const root = document.getElementById('usageStatsRoot');
+  if (!root) return;
   try {
     const params = new URLSearchParams();
     params.set('scope', usageStatsState.scope);

@@ -91,6 +91,7 @@ const LLM_SERVICE_I18N = {
     matchedGroupBindings: 'Matched Group Bindings',
     activeGrants: 'Active Grants',
     groupIdNameRequired: 'Service group id and name are required.',
+    duplicateGroupId: 'Service group id already exists: {id}',
     builtInDefaultReadOnly: 'The built-in Default group is read-only.',
     builtInDefaultCannotRemove: 'The built-in Default group cannot be removed.',
     addNewGroup: 'Add New Group',
@@ -189,6 +190,7 @@ const LLM_SERVICE_I18N = {
     matchedGroupBindings: '\u5339\u914d\u5230\u7684\u7ec4\u7ed1\u5b9a',
     activeGrants: '\u751f\u6548\u6388\u6743',
     groupIdNameRequired: '\u670d\u52a1\u7ec4 ID \u548c\u540d\u79f0\u4e3a\u5fc5\u586b\u9879\u3002',
+    duplicateGroupId: '\u670d\u52a1\u7ec4 ID \u5df2\u5b58\u5728: {id}',
     builtInDefaultReadOnly: '\u5185\u7f6e Default \u7ec4\u4e3a\u53ea\u8bfb\u3002',
     builtInDefaultCannotRemove: '\u5185\u7f6e Default \u7ec4\u4e0d\u80fd\u5220\u9664\u3002',
     addNewGroup: '\u65b0\u5efa\u670d\u52a1\u7ec4',
@@ -420,13 +422,29 @@ function renderLLMServiceAdmin() {
   }
 }
 function selectLLMServiceGroup(id) { llmServiceSelectedGroupID = id; renderLLMServiceAdmin(); }
+function readLLMServiceGroupDraft() {
+  const idEl = document.getElementById('llmServiceGroupID');
+  const nameEl = document.getElementById('llmServiceGroupName');
+  const descEl = document.getElementById('llmServiceGroupDesc');
+  const modelsEl = document.getElementById('llmServiceGroupModels');
+  return {
+    id: ((idEl && idEl.value) || '').trim(),
+    name: ((nameEl && nameEl.value) || '').trim(),
+    description: ((descEl && descEl.value) || '').trim(),
+    models: parseModelDefs((modelsEl && modelsEl.value) || '')
+  };
+}
 function upsertLLMServiceGroup() {
   if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
-  const next = { id: (document.getElementById('llmServiceGroupID').value || '').trim(), name: (document.getElementById('llmServiceGroupName').value || '').trim(), description: (document.getElementById('llmServiceGroupDesc').value || '').trim(), models: parseModelDefs(document.getElementById('llmServiceGroupModels').value || '') };
+  const next = readLLMServiceGroupDraft();
   if (!next.id || !next.name) { showToast(lsx('groupIdNameRequired'), 'error'); return false; }
   if (isBuiltinLLMServiceGroup(next.id) || isBuiltinLLMServiceGroup(llmServiceSelectedGroupID)) { showToast(lsx('builtInDefaultReadOnly'), 'info'); return false; }
-  const idx = (llmServiceAdminCache.model_service_groups || []).findIndex(function(g) { return g.id === next.id; });
-  if (idx >= 0) llmServiceAdminCache.model_service_groups[idx] = next; else llmServiceAdminCache.model_service_groups.push(next);
+  const groups = llmServiceAdminCache.model_service_groups || [];
+  const selectedIdx = groups.findIndex(function(g) { return g.id === llmServiceSelectedGroupID; });
+  const duplicateIdx = groups.findIndex(function(g, idx) { return g.id === next.id && idx !== selectedIdx; });
+  if (duplicateIdx >= 0) { showToast(lsx('duplicateGroupId', { id: next.id }), 'error'); return false; }
+  if (selectedIdx >= 0) groups[selectedIdx] = next; else groups.push(next);
+  llmServiceAdminCache.model_service_groups = groups;
   llmServiceSelectedGroupID = next.id;
   renderLLMServiceAdmin();
   return true;
@@ -442,33 +460,41 @@ function removeSelectedLLMServiceGroup() {
 }
 function addLLMServiceGroupBinding() {
   if (!llmServiceAdminCache) return;
-  const groupID = (document.getElementById('llmServiceBindingGroupID').value || '').trim();
-  const serviceGroupIDs = parseCSV(document.getElementById('llmServiceBindingServiceGroups').value || '');
+  const groupEl = document.getElementById('llmServiceBindingGroupID');
+  const serviceEl = document.getElementById('llmServiceBindingServiceGroups');
+  const groupID = ((groupEl && groupEl.value) || '').trim();
+  const serviceGroupIDs = parseCSV((serviceEl && serviceEl.value) || '');
   if (!groupID || !serviceGroupIDs.length) return;
   llmServiceAdminCache.group_bindings = llmServiceAdminCache.group_bindings || [];
-  llmServiceAdminCache.group_bindings.push({ group_id: groupID, service_group_ids: serviceGroupIDs });
-  document.getElementById('llmServiceBindingGroupID').value = '';
-  document.getElementById('llmServiceBindingServiceGroups').value = '';
+  const existingIdx = llmServiceAdminCache.group_bindings.findIndex(function(item) { return item.group_id === groupID; });
+  const nextBinding = { group_id: groupID, service_group_ids: serviceGroupIDs };
+  if (existingIdx >= 0) llmServiceAdminCache.group_bindings[existingIdx] = nextBinding; else llmServiceAdminCache.group_bindings.push(nextBinding);
+  if (groupEl) groupEl.value = '';
+  if (serviceEl) serviceEl.value = '';
   renderLLMServiceAdmin();
 }
 function removeLLMServiceGroupBinding(idx) { if (!llmServiceAdminCache) return; llmServiceAdminCache.group_bindings.splice(idx, 1); renderLLMServiceAdmin(); }
 function addLLMServiceUserBinding() {
   if (!llmServiceAdminCache) return;
-  const email = (document.getElementById('llmServiceUserEmail').value || '').trim();
-  const serviceGroupIDs = parseCSV(document.getElementById('llmServiceUserServiceGroups').value || '');
+  const emailEl = document.getElementById('llmServiceUserEmail');
+  const serviceEl = document.getElementById('llmServiceUserServiceGroups');
+  const email = ((emailEl && emailEl.value) || '').trim();
+  const serviceGroupIDs = parseCSV((serviceEl && serviceEl.value) || '');
   if (!email || !serviceGroupIDs.length) return;
   llmServiceAdminCache.user_bindings = llmServiceAdminCache.user_bindings || [];
-  llmServiceAdminCache.user_bindings.push({ email: email, service_group_ids: serviceGroupIDs });
-  document.getElementById('llmServiceUserEmail').value = '';
-  document.getElementById('llmServiceUserServiceGroups').value = '';
+  const normalizedEmail = email.toLowerCase();
+  const existingIdx = llmServiceAdminCache.user_bindings.findIndex(function(item) { return String(item.email || '').trim().toLowerCase() === normalizedEmail; });
+  const nextBinding = { email: email, service_group_ids: serviceGroupIDs };
+  if (existingIdx >= 0) llmServiceAdminCache.user_bindings[existingIdx] = nextBinding; else llmServiceAdminCache.user_bindings.push(nextBinding);
+  if (emailEl) emailEl.value = '';
+  if (serviceEl) serviceEl.value = '';
   renderLLMServiceAdmin();
 }
 function removeLLMServiceUserBinding(idx) { if (!llmServiceAdminCache) return; llmServiceAdminCache.user_bindings.splice(idx, 1); renderLLMServiceAdmin(); }
 async function saveLLMServiceAdmin() {
   if (!llmServiceAdminCache) return;
-  const draftId = (document.getElementById('llmServiceGroupID') && document.getElementById('llmServiceGroupID').value || '').trim();
-  const draftName = (document.getElementById('llmServiceGroupName') && document.getElementById('llmServiceGroupName').value || '').trim();
-  if (draftId || draftName) {
+  const draft = readLLMServiceGroupDraft();
+  if (draft.id || draft.name) {
     if (!upsertLLMServiceGroup()) return;
     if (!llmServiceAdminCache) return;
   }

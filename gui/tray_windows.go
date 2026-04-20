@@ -46,6 +46,10 @@ func setupTray(app *App, appOptions *options.App) {
 					if app.ctx == nil {
 						return
 					}
+					// Hide floating button before showing main window (mutual exclusivity — Requirement 7).
+					if fa := app.ensureFloatingAssistant(); fa != nil {
+						fa.HideFloatingButton()
+					}
 					runtime.WindowShow(app.ctx)
 					runtime.WindowSetAlwaysOnTop(app.ctx, true)
 					runtime.WindowSetAlwaysOnTop(app.ctx, false)
@@ -100,9 +104,14 @@ func setupTray(app *App, appOptions *options.App) {
 						return
 					}
 					if isVisible {
-						runtime.WindowHide(app.ctx)
+						// Use app.WindowHide() so the floating button is shown (same as the title-bar hide button).
+						app.WindowHide()
 						isVisible = false
 					} else {
+						// Hide floating button before showing main window (mutual exclusivity — Requirement 7).
+						if fa := app.ensureFloatingAssistant(); fa != nil {
+							fa.HideFloatingButton()
+						}
 						runtime.WindowShow(app.ctx)
 						runtime.WindowSetAlwaysOnTop(app.ctx, true)
 						runtime.WindowSetAlwaysOnTop(app.ctx, false)

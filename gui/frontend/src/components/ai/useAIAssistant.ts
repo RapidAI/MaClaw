@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
@@ -1875,6 +1875,18 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     }, []);
 
     const executeAction = useCallback(async (command: string) => {
+        // Handle critical-risk skill installation confirmation responses.
+        const criticalConfirmMatch = command.match(/^__resolve_critical_confirm__\s+(\S+)\s+(confirm|reject)$/);
+        if (criticalConfirmMatch) {
+            const confirmID = criticalConfirmMatch[1] || '';
+            const confirmed = criticalConfirmMatch[2] === 'confirm';
+            try {
+                await ResolveCriticalConfirm(confirmID, confirmed);
+            } catch (err: any) {
+                setMessages(prev => [...prev, createErrorMessage(err?.message || String(err))]);
+            }
+            return;
+        }
         const traceMatch = command.match(/^__view_trace__\s+(\S+)$/);
         if (traceMatch) {
             const runID = traceMatch[1]?.trim() || '';
@@ -1921,6 +1933,32 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const offProgress = subscribeEvent(PROGRESS_EVENT, handler);
         return () => {
             offProgress();
+        };
+    }, []);
+
+    // Listen for critical-risk skill installation confirmation events from the backend.
+    useEffect(() => {
+        const handler = (payload: unknown) => {
+            if (!payload || typeof payload !== 'object') return;
+            const data = payload as Record<string, unknown>;
+            const confirmID = typeof data.confirm_id === 'string' ? data.confirm_id : '';
+            const summary = typeof data.summary === 'string' ? data.summary : '';
+            if (!confirmID) return;
+            const msg: ChatMessage = {
+                id: nextId(),
+                role: 'assistant',
+                content: summary,
+                actions: [
+                    { label: '✅ 确认安装', command: `__resolve_critical_confirm__ ${confirmID} confirm`, style: 'default' as const },
+                    { label: '❌ 拒绝安装', command: `__resolve_critical_confirm__ ${confirmID} reject`, style: 'danger' as const },
+                ],
+                timestamp: Date.now(),
+            };
+            setMessages(prev => [...prev, msg]);
+        };
+        const offCriticalConfirm = subscribeEvent('critical-risk-confirm', handler);
+        return () => {
+            offCriticalConfirm();
         };
     }, []);
 

@@ -105,9 +105,10 @@ func (h *IMMessageHandler) handlePendingConfirm(engine *workflow.WorkflowEngine,
 	ctx := context.Background()
 
 	// Build compact context: phase name + first ~200 chars of the document +
-	// the system's last prompt to the user. This gives the LLM enough context
-	// to distinguish "好的" (confirming the requirements doc) from "好的"
-	// (random agreement), without sending the full 5000+ char document.
+	// the system's last prompt to the user + the last assistant message.
+	// The last assistant message is critical — it often contains instructions
+	// like "确定了就告诉我'开工'" which the LLM needs to understand that
+	// "开工" is a direct response to that prompt, not an unrelated message.
 	phaseContext := ""
 	ws := engine.GetActiveWorkflow(userID)
 	if ws != nil {
@@ -126,7 +127,15 @@ func (h *IMMessageHandler) handlePendingConfirm(engine *workflow.WorkflowEngine,
 				phaseContext += fmt.Sprintf("文档摘要：%s\n", snippet)
 			}
 
-			phaseContext += "系统提示用户：请查看文档并确认，或提出修改意见。"
+			phaseContext += "系统提示用户：请查看文档并确认，或提出修改意见。\n"
+
+			// Inject the last assistant message from conversation history.
+			// This provides the immediate conversational context — e.g. if
+			// the assistant said "确定了就告诉我'开工'", the classifier can
+			// understand that "开工" is a direct response to that prompt.
+			if lastAssistant := h.getLastAssistantSnippet(userID, 300); lastAssistant != "" {
+				phaseContext += fmt.Sprintf("助手最后一条消息：%s\n", lastAssistant)
+			}
 		}
 	}
 
@@ -138,12 +147,19 @@ func (h *IMMessageHandler) handlePendingConfirm(engine *workflow.WorkflowEngine,
 	classifyResult, err := h.LLMClassify(ctx, LLMClassifyRequest{
 		SystemPrompt: `You are a user intent classifier for a document review workflow.
 
-The user was shown a document and asked to confirm or request changes. You will receive the workflow context (phase name, document snippet, system prompt) and the user's response.
+The user was shown a document/plan and asked to confirm or request changes. You will receive:
+- The workflow context: phase name, document snippet, the system prompt shown to the user
+- The assistant's last message (if available): this is what the user is directly responding to
+- The user's response
+
+IMPORTANT: Pay close attention to the assistant's last message. If the assistant asked the user to say a specific word/phrase to proceed (e.g. "确定了就告诉我'开工'"), and the user replies with exactly that word/phrase, it is a confirmation — not an unrelated message.
 
 Classify the user's response into exactly one category. Reply with ONLY the category word, nothing else:
-- "confirm" — user approves the document and wants to proceed to the next phase
-- "modify" — user wants to change or update the document
-- "other" — user is asking something unrelated to the document review`,
+- "confirm" — user approves and wants to proceed. This includes any form of agreement, acceptance, or readiness signal in the context of the ongoing review. A short or vague reply after being shown a document almost always means approval.
+- "modify" — user provides specific feedback, corrections, additions, or requests changes to the document content.
+- "other" — user is asking something clearly unrelated to the document or workflow (e.g. weather query, off-topic question).
+
+When in doubt between "confirm" and "other", prefer "confirm" — the conversational context is a document review, so the user's response is most likely directed at the document.`,
 		UserMessage: userMessage,
 		TimeoutSec:  10,
 		Tag:         "workflow-confirm",
@@ -477,4 +493,34 @@ func (h *IMMessageHandler) applyWorkflowToolFilter(userID string, tools []map[st
 		return filterToolsForDocOnly(tools)
 	}
 	return tools
+}
+
+// getLastAssistantSnippet returns the tail of the last assistant message from
+// conversation history, truncated to maxRunes from the END. We take the tail
+// because assistant messages are often long documents followed by a short
+// confirmation prompt at the end (e.g. "确定了就告诉我'开工'"). The tail
+// captures this prompt, which is the most relevant context for classifying
+// the user's response.
+func (h *IMMessageHandler) getLastAssistantSnippet(userID string, maxRunes int) string {
+	if h.memory == nil {
+		return ""
+	}
+	entries := h.memory.load(userID)
+	// Walk backwards to find the last assistant message.
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Role != "assistant" {
+			continue
+		}
+		content, ok := entries[i].Content.(string)
+		if !ok || content == "" {
+			continue
+		}
+		runes := []rune(content)
+		if len(runes) > maxRunes {
+			// Take the tail — the confirmation prompt is at the end.
+			return "..." + string(runes[len(runes)-maxRunes:])
+		}
+		return content
+	}
+	return ""
 }
