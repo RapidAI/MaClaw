@@ -7,6 +7,7 @@ package main
 #cgo LDFLAGS: -framework Cocoa -framework CoreGraphics -framework QuartzCore
 
 #import <Cocoa/Cocoa.h>
+#import <QuartzCore/QuartzCore.h>
 
 // ── Floating window state ───────────────────────────────────────────────────
 

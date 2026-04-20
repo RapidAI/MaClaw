@@ -4,6 +4,7 @@ package main
 
 /*
 #cgo pkg-config: gtk+-3.0 gdk-3.0 cairo
+#cgo LDFLAGS: -lm
 
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>
@@ -158,13 +159,25 @@ static void moveFloatingWindowGTK(int x, int y) {
 }
 
 static int linuxScreenWidth(void) {
-	GdkScreen *s = gdk_screen_get_default();
-	return s ? gdk_screen_get_width(s) : 1920;
+	GdkDisplay *d = gdk_display_get_default();
+	if (!d) return 1920;
+	GdkMonitor *m = gdk_display_get_primary_monitor(d);
+	if (!m) m = gdk_display_get_monitor(d, 0);
+	if (!m) return 1920;
+	GdkRectangle geom;
+	gdk_monitor_get_geometry(m, &geom);
+	return geom.width > 0 ? geom.width : 1920;
 }
 
 static int linuxScreenHeight(void) {
-	GdkScreen *s = gdk_screen_get_default();
-	return s ? gdk_screen_get_height(s) : 1080;
+	GdkDisplay *d = gdk_display_get_default();
+	if (!d) return 1080;
+	GdkMonitor *m = gdk_display_get_primary_monitor(d);
+	if (!m) m = gdk_display_get_monitor(d, 0);
+	if (!m) return 1080;
+	GdkRectangle geom;
+	gdk_monitor_get_geometry(m, &geom);
+	return geom.height > 0 ? geom.height : 1080;
 }
 */
 import "C"
