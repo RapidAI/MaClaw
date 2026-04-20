@@ -79,6 +79,12 @@ type LoopContext struct {
 	Platform   string       // originating IM platform ("desktop", "weixin_local", etc.)
 	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
 	StartedAt  time.Time    // when this loop was spawned
+
+	// SkipNeedsConfirmGate is set when handlePendingConfirm classifies the
+	// user's message as "other" (unrelated to the active workflow). When true,
+	// the agent loop skips the NeedsConfirm gate to prevent unrelated LLM
+	// output (e.g. weather info) from being captured as a phase document.
+	SkipNeedsConfirmGate bool
 }
 
 // NewLoopContext creates a LoopContext for a chat loop.

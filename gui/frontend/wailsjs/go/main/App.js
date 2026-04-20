@@ -1079,6 +1079,10 @@ export function SelectAIAssistantFile() {
   return window['go']['main']['App']['SelectAIAssistantFile']();
 }
 
+export function SelectAIAssistantFiles() {
+  return window['go']['main']['App']['SelectAIAssistantFiles']();
+}
+
 export function StartAIAssistantBackgroundTask(arg1) {
   return window['go']['main']['App']['StartAIAssistantBackgroundTask'](arg1);
 }

@@ -4,6 +4,8 @@ set -eu
 : "${REMOTE_TMP_DIR:=/tmp/aicoder_deploy}"
 : "${REMOTE_HUB_DIR:=/data/soft/hub}"
 : "${REMOTE_HUBCENTER_DIR:=/data/soft/hubcenter}"
+: "${REMOTE_IWC_DIR:=/data/soft/iworkercenter}"
+: "${REMOTE_IWCLOUD_DIR:=/data/soft/iworkercloud}"
 : "${CGO_ENABLED:=0}"
 : "${GOPROXY:=https://goproxy.cn,direct}"
 
@@ -24,10 +26,32 @@ cd "$SRC_ROOT"
 echo "[remote] Downloading dependencies..."
 GOPROXY="$GOPROXY" go mod download
 
-echo "[remote] Building hub (TigerClaw)..."
-GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags oem_qianxin -o "$BUILD_ROOT/tigerclaw-hub" ./hub/cmd/hub
-echo "[remote] Building hubcenter (TigerClaw)..."
-GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags oem_qianxin -o "$BUILD_ROOT/tigerclaw-hubcenter" ./hubcenter/cmd/hubcenter
+# Optional: Build RapidSpeech static library for cgo_embedding support.
+# If CMake/compiler is available and build succeeds, CGO_ENABLED is set to 1
+# and the cgo_embedding tag is added. Otherwise the Go build proceeds without it.
+RS_BUILD_SCRIPT="$SRC_ROOT/build/build_rapidspeech.sh"
+RS_LIB="$SRC_ROOT/RapidSpeech.cpp/build/librapidspeech_static.a"
+EXTRA_TAGS=""
+if [ -f "$RS_BUILD_SCRIPT" ]; then
+  echo "[remote] Building RapidSpeech static library (optional)..."
+  chmod +x "$RS_BUILD_SCRIPT"
+  if "$RS_BUILD_SCRIPT" && [ -f "$RS_LIB" ]; then
+    echo "[remote] RapidSpeech built. Enabling cgo_embedding."
+    CGO_ENABLED=1
+    EXTRA_TAGS="cgo_embedding"
+  else
+    echo "[remote] RapidSpeech build skipped or failed. Continuing without cgo_embedding."
+  fi
+fi
+
+echo "[remote] Building hub..."
+GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$EXTRA_TAGS" -o "$BUILD_ROOT/maclaw-hub" ./hub/cmd/hub
+echo "[remote] Building hubcenter..."
+GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$EXTRA_TAGS" -o "$BUILD_ROOT/maclaw-hubcenter" ./hubcenter/cmd/hubcenter
+echo "[remote] Building iworkercenter..."
+GOPROXY="$GOPROXY" CGO_ENABLED=0 go build -o "$BUILD_ROOT/iworkercenter" ./iWorkerCenter/cmd/iworkercenter
+echo "[remote] Building iworkercloud..."
+GOPROXY="$GOPROXY" CGO_ENABLED=0 go build -o "$BUILD_ROOT/iworkercloud" ./iWorkerCloud
 
 deploy_one() {
   source_dir="$1"
@@ -42,9 +66,6 @@ deploy_one() {
   if [ -f "$source_dir/start.sh" ]; then
     cp -f "$source_dir/start.sh" "$target_dir/start.sh"
     sed -i 's/\r$//' "$target_dir/start.sh"
-    # Rebrand: replace maclaw-hubcenter before maclaw-hub to avoid partial match
-    sed -i 's/maclaw-hubcenter/tigerclaw-hubcenter/g' "$target_dir/start.sh"
-    sed -i 's/maclaw-hub/tigerclaw-hub/g' "$target_dir/start.sh"
     chmod +x "$target_dir/start.sh"
   fi
 
@@ -62,10 +83,52 @@ deploy_one() {
   fi
 }
 
-echo "[remote] Deploying hub files (TigerClaw)..."
-deploy_one "$SRC_ROOT/hub" "$REMOTE_HUB_DIR" "$BUILD_ROOT/tigerclaw-hub" "tigerclaw-hub"
-echo "[remote] Deploying hubcenter files (TigerClaw)..."
-deploy_one "$SRC_ROOT/hubcenter" "$REMOTE_HUBCENTER_DIR" "$BUILD_ROOT/tigerclaw-hubcenter" "tigerclaw-hubcenter"
+echo "[remote] Deploying hub files..."
+deploy_one "$SRC_ROOT/hub" "$REMOTE_HUB_DIR" "$BUILD_ROOT/maclaw-hub" "maclaw-hub"
+echo "[remote] Deploying hubcenter files..."
+deploy_one "$SRC_ROOT/hubcenter" "$REMOTE_HUBCENTER_DIR" "$BUILD_ROOT/maclaw-hubcenter" "maclaw-hubcenter"
+
+echo "[remote] Deploying iworkercenter files..."
+mkdir -p "$REMOTE_IWC_DIR" "$REMOTE_IWC_DIR/data"
+cp -f "$BUILD_ROOT/iworkercenter" "$REMOTE_IWC_DIR/iworkercenter"
+chmod +x "$REMOTE_IWC_DIR/iworkercenter"
+if [ -d "$SRC_ROOT/iWorkerCenter/cmd/iworkercenter/web" ]; then
+  rm -rf "$REMOTE_IWC_DIR/web"
+  cp -R "$SRC_ROOT/iWorkerCenter/cmd/iworkercenter/web" "$REMOTE_IWC_DIR/web"
+fi
+# Write iworkercenter start script if missing
+if [ ! -f "$REMOTE_IWC_DIR/start.sh" ]; then
+  cat > "$REMOTE_IWC_DIR/start.sh" << 'IWCEOF'
+#!/bin/sh
+cd "$(dirname "$0")"
+pkill -f "iworkercenter" 2>/dev/null || true
+sleep 1
+nohup ./iworkercenter -addr :9377 > data/iworkercenter.log 2>&1 &
+echo "iWorkerCenter started on :9377 (PID: $!)"
+IWCEOF
+  chmod +x "$REMOTE_IWC_DIR/start.sh"
+fi
+
+echo "[remote] Deploying iworkercloud files..."
+mkdir -p "$REMOTE_IWCLOUD_DIR" "$REMOTE_IWCLOUD_DIR/data"
+cp -f "$BUILD_ROOT/iworkercloud" "$REMOTE_IWCLOUD_DIR/iworkercloud"
+chmod +x "$REMOTE_IWCLOUD_DIR/iworkercloud"
+if [ -d "$SRC_ROOT/iWorkerCloud/web" ]; then
+  rm -rf "$REMOTE_IWCLOUD_DIR/web"
+  cp -R "$SRC_ROOT/iWorkerCloud/web" "$REMOTE_IWCLOUD_DIR/web"
+fi
+# Write iworkercloud start script if missing
+if [ ! -f "$REMOTE_IWCLOUD_DIR/start.sh" ]; then
+  cat > "$REMOTE_IWCLOUD_DIR/start.sh" << 'IWCLOUDEOF'
+#!/bin/sh
+cd "$(dirname "$0")"
+pkill -f "iworkercloud" 2>/dev/null || true
+sleep 1
+nohup ./iworkercloud > data/iworkercloud.log 2>&1 &
+echo "iWorkerCloud started on :9366 (PID: $!)"
+IWCLOUDEOF
+  chmod +x "$REMOTE_IWCLOUD_DIR/start.sh"
+fi
 
 # Deploy openclaw-bridge (Node.js project)
 BRIDGE_SRC="$SRC_ROOT/openclaw-bridge"
@@ -95,17 +158,27 @@ else
   echo "[remote] openclaw-bridge source not found, skipping"
 fi
 
-echo "[remote] Restarting hub (TigerClaw)..."
+echo "[remote] Restarting hub..."
 if [ -x "$REMOTE_HUB_DIR/start.sh" ]; then
   cd "$REMOTE_HUB_DIR"
   ./start.sh
 fi
-echo "[remote] Restarting hubcenter (TigerClaw)..."
+echo "[remote] Restarting hubcenter..."
 if [ -x "$REMOTE_HUBCENTER_DIR/start.sh" ]; then
   cd "$REMOTE_HUBCENTER_DIR"
+  ./start.sh
+fi
+echo "[remote] Restarting iworkercenter..."
+if [ -x "$REMOTE_IWC_DIR/start.sh" ]; then
+  cd "$REMOTE_IWC_DIR"
+  ./start.sh
+fi
+echo "[remote] Restarting iworkercloud..."
+if [ -x "$REMOTE_IWCLOUD_DIR/start.sh" ]; then
+  cd "$REMOTE_IWCLOUD_DIR"
   ./start.sh
 fi
 
 rm -rf "$SRC_ROOT" "$BUILD_ROOT"
 rm -f "$ARCHIVE_PATH" "$REMOTE_TMP_DIR/remote_deploy.sh"
-echo "Remote build and deploy finished (TigerClaw)."
+echo "Remote build and deploy finished."

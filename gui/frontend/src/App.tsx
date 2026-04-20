@@ -4014,7 +4014,7 @@ ${instruction}`;
                             visualBusy: aiAssistant.visualBusy,
                             ready: aiAssistant.ready,
                             initStatus: aiAssistant.initStatus,
-                            selectedFilePath: aiAssistant.selectedFilePath,
+                            selectedFilePaths: aiAssistant.selectedFilePaths,
                             submittedPrompts: aiAssistant.submittedPrompts,
                             draftInputValue: aiAssistant.draftInputValue,
                             trialReflectEnabled: aiAssistant.trialReflectEnabled,
@@ -4025,6 +4025,7 @@ ${instruction}`;
                         actions={{
                             browseFile: aiAssistant.browseFile,
                             clearSelectedFile: aiAssistant.clearSelectedFile,
+                            removeSelectedFile: aiAssistant.removeSelectedFile,
                             sendMessage: aiAssistant.sendMessage,
                             clearHistory: aiAssistant.clearHistory,
                             recordSubmittedPrompt: aiAssistant.recordSubmittedPrompt,

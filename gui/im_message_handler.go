@@ -83,6 +83,7 @@ type IMAgentResponse struct {
 	ResponseSource                      string                        `json:"response_source,omitempty"`
 	Deferred                            bool                          `json:"deferred,omitempty"`
 	ConfirmedResume                     bool                          `json:"confirmed_resume,omitempty"`
+	HardExit                            bool                          `json:"-"` // set when agent loop exits due to consecutive empty responses; suppresses doc capture
 	JobID                               string                        `json:"job_id,omitempty"`
 	RunID                               string                        `json:"run_id,omitempty"`
 	RequestID                           string                        `json:"request_id,omitempty"`
@@ -1904,6 +1905,14 @@ type IMMessageHandler struct {
 	// that happen to coexist with a stale active workflow.
 	workflowAgentLoopMarker sync.Map
 
+	// workflowPendingConfirmOther is set by handlePendingConfirm when the
+	// LLM classifies the user's message as "other" (unrelated to the active
+	// workflow's pending confirmation). Consumed (LoadAndDelete) by the
+	// agent loop to skip the NeedsConfirm gate — otherwise the unrelated
+	// LLM output (e.g. weather query result) would be captured as a phase
+	// document and emitted to the doc preview panel.
+	workflowPendingConfirmOther sync.Map
+
 	// pendingAskUser tracks ask_user questions that are waiting for user
 	// responses. When the agent loop returns early due to ask_user, the
 	// question is stored here so the next user message can be identified
@@ -3542,20 +3551,50 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// a normal (non-workflow) message and doc capture must be skipped — even
 	// if a stale workflow happens to be active in memory.
 	workflowAgentLoop := false
+	skipWorkflowForAttachment := false
 	if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground {
-		if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
-			// Consume any pending ask_user state so it doesn't leak into
-			// the next message when the workflow engine handles this one
-			// (e.g., user clicks "确认" which matches confirmWords).
-			h.pendingAskUser.Delete(msg.UserID)
-			return wfResp
+		// Skip workflow interception when the user sends image attachments
+		// with a short text prompt (likely an image recognition request, not
+		// a workflow phase input). Without this, the workflow engine would
+		// hijack the message and inject a PhasePrompt (e.g. "generate tech
+		// design document"), causing the LLM to ignore the image entirely.
+		hasImageAttachment := false
+		for _, att := range msg.Attachments {
+			if att.Type == "image" || att.Type == "file" {
+				hasImageAttachment = true
+				break
+			}
 		}
-		// handleWorkflowInterception returned nil — either the message is not
-		// a workflow message, or the workflow engine set RunAgentLoop=true.
-		// Check the marker set by handleActiveWorkflow.
-		if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
-			workflowAgentLoop = true
+		skipWorkflowForAttachment = hasImageAttachment && len([]rune(trimmed)) < 50
+
+		if !skipWorkflowForAttachment {
+			if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
+				// Consume any pending ask_user state so it doesn't leak into
+				// the next message when the workflow engine handles this one
+				// (e.g., user clicks "确认" which matches confirmWords).
+				h.pendingAskUser.Delete(msg.UserID)
+				return wfResp
+			}
+			// handleWorkflowInterception returned nil — either the message is not
+			// a workflow message, or the workflow engine set RunAgentLoop=true.
+			// Check the marker set by handleActiveWorkflow.
+			if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
+				workflowAgentLoop = true
+			}
 		}
+	}
+
+	// Check if handlePendingConfirm classified this message as "other"
+	// (unrelated to the active workflow). If so, the agent loop should
+	// skip the NeedsConfirm gate to prevent unrelated LLM output (e.g.
+	// weather info) from being captured as a workflow phase document.
+	_, skipNeedsConfirmGate := h.workflowPendingConfirmOther.LoadAndDelete(msg.UserID)
+
+	// Also skip workflow gates when the attachment bypass was triggered —
+	// the message is unrelated to the workflow (image recognition, etc.)
+	// and should not be subject to doc_only tool filtering.
+	if skipWorkflowForAttachment {
+		skipNeedsConfirmGate = true
 	}
 
 	if decision.StartNewTask {
@@ -3867,6 +3906,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if h.bgManager != nil && loopCtx.StatusC == nil {
 		loopCtx.StatusC = h.bgManager.statusC
 	}
+	// Propagate the "pending confirm other" flag to the loop context so
+	// runAgentLoop can skip the NeedsConfirm gate for unrelated messages.
+	loopCtx.SkipNeedsConfirmGate = skipNeedsConfirmGate
 
 	// Serialize chat loops: cancel any lingering previous loop and wait for
 	// it to release the mutex before starting a new one.
@@ -3893,7 +3935,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// a workflow phase, so even shorter text is a valid deliverable. The old
 	// 200-char threshold could miss cases where the LLM used tools (write_file)
 	// to produce the document and only output a short confirmation message.
-	if workflowAgentLoop && h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && len(resp.Text) > 50 {
+	if workflowAgentLoop && h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && !resp.HardExit && len(resp.Text) > 50 {
 		if phaseID := h.app.workflowEngine.SavePhaseOutput(msg.UserID, resp.Text); phaseID != "" {
 			if cb := h.app.workflowEngine.GetCallbacks(); cb != nil {
 				_ = cb.EmitDocUpdate(msg.UserID, phaseID, resp.Text)
@@ -4526,7 +4568,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 	}
 	// Workflow tool filtering: restrict tools during doc_only phases.
-	if h.app != nil && h.app.workflowEngine != nil {
+	// Skip when the workflow-confirm classifier returned "other" (user's
+	// message is unrelated to the active workflow), so that tools like ssh
+	// are not stripped by the doc_only whitelist.
+	if h.app != nil && h.app.workflowEngine != nil && !ctx.SkipNeedsConfirmGate {
 		tools = h.applyWorkflowToolFilter(userID, tools)
 	}
 	toolsTokenBudget := estimateToolsTokens(tools)
@@ -5345,11 +5390,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				if gateConfig.bugFix {
 					semanticBypass = true
 				}
+				// When handlePendingConfirm classified the message as "other"
+				// (unrelated to the workflow), skip the NeedsConfirm gate so
+				// the unrelated output (e.g. weather info) is not captured as
+				// a phase document.
+				if ctx.SkipNeedsConfirmGate {
+					semanticBypass = true
+				}
 				if !semanticBypass {
 					needsConfirmFromEngine = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
 				} else {
-					log.Printf("[workflow-gate] NeedsConfirm no-tool engine bypassed: semantic intent=%v active=%v bugFix=%v",
-						gateConfig.intent, gateConfig.active, gateConfig.bugFix)
+					log.Printf("[workflow-gate] NeedsConfirm no-tool engine bypassed: semantic intent=%v active=%v bugFix=%v skipConfirmOther=%v",
+						gateConfig.intent, gateConfig.active, gateConfig.bugFix, ctx.SkipNeedsConfirmGate)
 				}
 			}
 			// Steering-based coding workflow: when the coding tool gate is
@@ -5524,7 +5576,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if fallbackText == "" {
 						fallbackText = "抱歉，模型多次返回空响应，无法继续处理。请尝试简化请求或重新发送。"
 					}
-					finalResp := &IMAgentResponse{Text: fallbackText}
+					finalResp := &IMAgentResponse{Text: fallbackText, HardExit: true}
 					attachLLMTelemetry(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
 					return finalResp
@@ -6269,6 +6321,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				needsConfirmToolBranch = false
 				log.Printf("[agent-loop] NeedsConfirm tool branch: first execution (hasOutput=false), skipping engine gate (iter=%d)", iteration)
 			}
+		}
+		// When handlePendingConfirm classified the message as "other"
+		// (unrelated to the workflow), skip the NeedsConfirm gate so
+		// the unrelated tool output is not captured as a phase document.
+		if needsConfirmToolBranch && ctx.SkipNeedsConfirmGate {
+			needsConfirmToolBranch = false
+			log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: pending confirm classified as 'other' (iter=%d user=%s)", iteration, userID)
 		}
 		if needsConfirmToolBranch {
 			trimmedAfterTools := strings.TrimSpace(stripThinkingTags(msgContent))

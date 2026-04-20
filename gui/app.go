@@ -5528,6 +5528,18 @@ func (a *App) SelectAIAssistantFile() string {
 	return a.selectFile("Select File for AI Assistant", nil)
 }
 
+// SelectAIAssistantFiles opens a native multi-file selection dialog and returns the selected file paths.
+// Returns empty slice if user cancels or an error occurs.
+func (a *App) SelectAIAssistantFiles() []string {
+	selections, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select Files for AI Assistant",
+	})
+	if err != nil {
+		return []string{} // Return empty slice instead of nil for consistency
+	}
+	return selections
+}
+
 // getInstalledSkillDirs returns a list of installed skill directory names for both user and project locations
 func (a *App) getInstalledSkillDirs(toolName string, location string, projectPath string) []string {
 	var installedDirs []string

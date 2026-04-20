@@ -184,6 +184,9 @@ Classify the user's response into exactly one category. Reply with ONLY the cate
 	default:
 		// "other" or unrecognized — let the message fall through to normal
 		// agent loop handling (e.g. weather query during active workflow).
+		// Mark this so the agent loop skips the NeedsConfirm gate and does
+		// not capture the unrelated LLM output as a phase document.
+		h.workflowPendingConfirmOther.Store(userID, true)
 		return nil
 	}
 }

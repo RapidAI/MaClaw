@@ -27,6 +27,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListRemoteSessions: vi.fn(async () => []),
     FetchNews: vi.fn(async () => []),
     SelectAIAssistantFile: vi.fn(async () => ''),
+    SelectAIAssistantFiles: vi.fn(async () => []),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -38,8 +39,8 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, buildOutgoingMessage, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFile, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions } from '../../../../wailsjs/go/main/App';
+import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
+import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFile, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook() {
     return renderHook(() => useAIAssistant());
@@ -106,6 +107,8 @@ function resetAppMocks() {
     (FetchNews as any).mockImplementation(async () => []);
     (SelectAIAssistantFile as any).mockReset();
     (SelectAIAssistantFile as any).mockImplementation(async () => '');
+    (SelectAIAssistantFiles as any).mockReset();
+    (SelectAIAssistantFiles as any).mockImplementation(async () => []);
 }
 
 function assistantMessages(messages: Array<{ role: string; content: string; fields?: unknown; actions?: unknown; confirmation?: { status?: string } }>) {
@@ -260,32 +263,34 @@ describe('useAIAssistant property tests', () => {
         );
     });
 
-    it('browseFile normalizes repeated selections and sendMessage uses the latest selected path', async () => {
-        (SelectAIAssistantFile as any)
-            .mockResolvedValueOnce('  /tmp/example.png  ')
-            .mockResolvedValueOnce('/tmp/example.png');
+    it('browseFile adds files and selectedFilePaths state is updated', async () => {
+        (SelectAIAssistantFiles as any)
+            .mockResolvedValueOnce(['  /tmp/example.png  '])
+            .mockResolvedValueOnce(['/tmp/another.txt']);
 
         const { result } = renderAssistantHook();
 
         await act(async () => {
             await result.current.browseFile();
         });
-        expect(result.current.selectedFilePath).toBe('/tmp/example.png');
+        expect(result.current.selectedFilePaths).toEqual(['/tmp/example.png']);
 
         await act(async () => {
             await result.current.browseFile();
         });
-        expect(result.current.selectedFilePath).toBe('/tmp/example.png');
+        expect(result.current.selectedFilePaths).toEqual(['/tmp/example.png', '/tmp/another.txt']);
 
+        // sendMessage receives pre-formatted text from the panel's handleSend;
+        // it no longer injects file paths itself to avoid double-injection.
         await act(async () => {
-            await result.current.sendMessage('inspect this');
+            const preFormatted = buildOutgoingMessageMulti('inspect this', ['/tmp/example.png', '/tmp/another.txt']);
+            await result.current.sendMessage(preFormatted);
         });
 
         expect(SendAIAssistantMessage).toHaveBeenLastCalledWith({
-            text: buildOutgoingMessage('inspect this', '/tmp/example.png'),
+            text: buildOutgoingMessageMulti('inspect this', ['/tmp/example.png', '/tmp/another.txt']),
             request_id: expect.any(String),
         });
-        expect(result.current.selectedFilePath).toBe('');
     });
 
     it('init progress ready stops follow-up polling', async () => {

@@ -20,7 +20,7 @@ interface AIAssistantPanelStateProps {
     visualBusy?: boolean;
     ready: boolean;
     initStatus?: AIAssistantInitStatus;
-    selectedFilePath?: string;
+    selectedFilePaths?: string[];
     submittedPrompts?: string[];
     draftInputValue?: string;
     trialReflectEnabled?: boolean;
@@ -32,6 +32,7 @@ interface AIAssistantPanelStateProps {
 interface AIAssistantPanelActionProps {
     browseFile?: () => Promise<void>;
     clearSelectedFile?: () => void;
+    removeSelectedFile?: (index: number) => void;
     sendMessage: (text: string) => Promise<void>;
     sendMessageInBackground?: (text: string) => Promise<void>;
     clearHistory: () => Promise<void>;
@@ -267,6 +268,92 @@ const darkTheme: Theme = {
     closeBtnColor: "#cbd5e1",
     sendBtnColor: "#c4b5fd",
     sendBtnBorder: "#6366f1",
+};
+
+/* ── FileCard Component ── */
+
+interface FileCardProps {
+    filePath: string;
+    index: number;
+    theme: Theme;
+    lang: string;
+    onRemove?: (index: number) => void;
+}
+
+const FileCard = ({ filePath, index, theme, lang, onRemove }: FileCardProps) => {
+    const fileName = filePath.split(/[/\\]/).pop() || filePath;
+
+    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+            e.preventDefault();
+            onRemove?.(index);
+        }
+    }, [index, onRemove]);
+
+    return (
+        <div
+            tabIndex={0}
+            role="listitem"
+            aria-label={localizeText(lang, `File: ${fileName}`, `文件：${fileName}`)}
+            title={filePath}
+            onKeyDown={handleKeyDown}
+            style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "4px",
+                maxWidth: "180px",
+                padding: "3px 6px 3px 8px",
+                borderRadius: "12px",
+                background: theme.codeBlockBg,
+                border: `1px solid ${theme.codeBlockBorder}`,
+                color: theme.text,
+                fontSize: "12px",
+                cursor: "default",
+                outline: "none",
+                flexShrink: 0,
+            }}
+        >
+            <span style={{ color: theme.pathColor, fontSize: "11px", flexShrink: 0 }} aria-hidden="true">📎</span>
+            <span style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontWeight: 500,
+                flex: 1,
+                minWidth: 0,
+            }}>
+                {fileName}
+            </span>
+            <button
+                type="button"
+                onClick={(e) => {
+                    e.stopPropagation();
+                    onRemove?.(index);
+                }}
+                aria-label={localizeText(lang, "Remove file", "移除文件")}
+                style={{
+                    border: "none",
+                    borderRadius: "50%",
+                    background: "transparent",
+                    color: theme.textMuted,
+                    cursor: "pointer",
+                    padding: "0",
+                    fontSize: "13px",
+                    lineHeight: 1,
+                    width: "16px",
+                    height: "16px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                }}
+                onMouseEnter={e => (e.currentTarget.style.color = theme.errorText)}
+                onMouseLeave={e => (e.currentTarget.style.color = theme.textMuted)}
+            >
+                ×
+            </button>
+        </div>
+    );
 };
 
 /* ── Style constants ── */
@@ -1001,7 +1088,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         visualBusy,
         ready,
         initStatus,
-        selectedFilePath = "",
+        selectedFilePaths = [],
         submittedPrompts = [],
         draftInputValue = "",
         trialReflectEnabled = false,
@@ -1012,6 +1099,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const {
         browseFile,
         clearSelectedFile,
+        removeSelectedFile,
         sendMessage,
         clearHistory,
         recordSubmittedPrompt,
@@ -1119,8 +1207,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         setLocalDraftInputValue(nextValue);
         setDraftInputValue?.(nextValue);
     }, [setDraftInputValue]);
-    const canSend = ready && (!!inputValue.trim() || pendingAttachments.length > 0 || !!selectedFilePath.trim());
-    const selectedFileName = selectedFilePath ? selectedFilePath.split(/[/\\]/).pop() || selectedFilePath : "";
+    const canSend = ready && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
     const { pinnedNews, otherMessages } = useMemo(() => {
         const pinned: ChatMessage[] = [];
         const other: ChatMessage[] = [];
@@ -1248,14 +1335,14 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         const text = inputValue.trim();
         if (submitLocked) {
             // Queue mode: create BufferEntry
-            if (!text && pendingAttachments.length === 0 && !selectedFilePath.trim()) return;
+            if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) return;
             const attachments: AttachmentInfo[] = [...pendingAttachments];
-            if (selectedFilePath.trim()) {
-                const fileName = selectedFilePath.split(/[/\\]/).pop() || selectedFilePath;
+            for (const fp of selectedFilePaths) {
+                const fileName = fp.split(/[/\\]/).pop() || fp;
                 const ext = '.' + (fileName.split('.').pop() || '').toLowerCase();
                 attachments.push({
-                    filePath: selectedFilePath,
-                    isImage: isImageFilePath(selectedFilePath),
+                    filePath: fp,
+                    isImage: isImageFilePath(fp),
                     fileName,
                     extension: ext,
                 });
@@ -1275,12 +1362,9 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
             return;
         }
         // Normal mode
-        if (!text && !selectedFilePath.trim() && pendingAttachments.length === 0) return;
-        // Collect all file paths: selectedFilePath + pasted image attachments
-        const allFilePaths: string[] = [];
-        if (selectedFilePath.trim()) {
-            allFilePaths.push(selectedFilePath.trim());
-        }
+        if (!text && selectedFilePaths.length === 0 && pendingAttachments.length === 0) return;
+        // Collect all file paths: selectedFilePaths + pasted image attachments
+        const allFilePaths: string[] = [...selectedFilePaths];
         for (const att of pendingAttachments) {
             if (att.filePath.trim()) {
                 allFilePaths.push(att.filePath.trim());
@@ -1301,7 +1385,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
             ? buildOutgoingMessageMulti(text, allFilePaths)
             : text;
         await sendMessage(outgoing);
-    }, [inputValue, selectedFilePath, submitLocked, pendingAttachments, addEntry, updateInputValue, clearSelectedFile, recordSubmittedPrompt, sendMessage]);
+    }, [inputValue, selectedFilePaths, submitLocked, pendingAttachments, addEntry, updateInputValue, clearSelectedFile, recordSubmittedPrompt, sendMessage]);
 
     const applyInputValue = useCallback((nextValue: string) => {
         updateInputValue(nextValue);
@@ -2190,42 +2274,50 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 flexShrink: 0,
                 ...(inline ? {} : { margin: "0 10px 10px 10px", borderRadius: "8px", border: `1.5px solid ${t.inputBarBorder}` }),
             }}>
-                {selectedFilePath && (
-                    <div style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "8px",
-                        minWidth: 0,
-                        padding: "6px 8px",
-                        borderRadius: "6px",
-                        background: t.codeBlockBg,
-                        border: `1px solid ${t.codeBlockBorder}`,
-                        color: t.text,
-                        fontSize: "12px",
-                    }}>
-                        <span style={{ color: t.pathColor, flexShrink: 0 }}>📎</span>
-                        <div style={{ minWidth: 0, flex: 1 }} title={selectedFilePath}>
-                            <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600 }}>
-                                {selectedFileName}
-                            </div>
-                            <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: t.textMuted, fontSize: "11px" }}>
-                                {selectedFilePath}
-                            </div>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={clearSelectedFile}
-                            disabled={false}
-                            style={{
-                                ...baseActionBtnStyle,
-                                color: t.errorText,
-                                border: `1px solid ${t.errorBorder}`,
-                                background: "transparent",
-                            }}
-                            title={localizeText(lang, "Clear selected file", "清除已选文件")}
-                        >
-                            ×
-                        </button>
+                {selectedFilePaths.length > 0 && (
+                    <div
+                        role="list"
+                        aria-label={localizeText(lang, "Selected files", "已选文件")}
+                        style={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: "4px",
+                            padding: "6px 8px 4px",
+                            alignItems: "center",
+                        }}
+                    >
+                        {selectedFilePaths.map((fp, idx) => (
+                            <FileCard
+                                key={fp}
+                                filePath={fp}
+                                index={idx}
+                                theme={t}
+                                lang={lang}
+                                onRemove={removeSelectedFile}
+                            />
+                        ))}
+                        {selectedFilePaths.length > 1 && (
+                            <button
+                                type="button"
+                                onClick={clearSelectedFile}
+                                style={{
+                                    border: "none",
+                                    background: "transparent",
+                                    color: t.textMuted,
+                                    cursor: "pointer",
+                                    fontSize: "11px",
+                                    padding: "2px 4px",
+                                    borderRadius: "4px",
+                                    lineHeight: 1,
+                                    flexShrink: 0,
+                                }}
+                                title={localizeText(lang, "Clear all files", "清除所有文件")}
+                                onMouseEnter={e => (e.currentTarget.style.color = t.errorText)}
+                                onMouseLeave={e => (e.currentTarget.style.color = t.textMuted)}
+                            >
+                                {localizeText(lang, "clear all", "全部清除")}
+                            </button>
+                        )}
                     </div>
                 )}
                 <div style={{

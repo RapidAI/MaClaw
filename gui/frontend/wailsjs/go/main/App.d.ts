@@ -483,6 +483,8 @@ export function CancelAIAssistantTask(arg1:string):Promise<void>;
 
 export function SelectAIAssistantFile():Promise<string>;
 
+export function SelectAIAssistantFiles():Promise<Array<string>>;
+
 export function StartAIAssistantBackgroundTask(arg1:any):Promise<any>;
 
 export function GetTrialReflectEnabled():Promise<boolean>;

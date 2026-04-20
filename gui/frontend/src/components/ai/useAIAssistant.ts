@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFile, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
@@ -330,10 +330,6 @@ export function buildOutgoingMessageMulti(text: string, filePaths: string[]): st
 
 function normalizeSelectedFilePath(filePath: string): string {
     return filePath.trim();
-}
-
-function sameSelectedFilePath(left: string, right: string): boolean {
-    return normalizeSelectedFilePath(left) === normalizeSelectedFilePath(right);
 }
 
 function loadPersistedMessages(): ChatMessage[] {
@@ -1358,7 +1354,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const [submittedPrompts, setSubmittedPrompts] = useState<string[]>(loadPersistedPrompts);
     const [draftInputValue, setDraftInputValue] = useState("");
     const [progressMessages, setProgressMessages] = useState<ChatMessage[]>([]);
-    const [selectedFilePath, setSelectedFilePath] = useState("");
+    const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
     const [trialReflectEnabled, setTrialReflectEnabled] = useState(false);
     const [preferences, setPreferences] = useState<AIAssistantPreferences>({ showTraceEntry: false });
     const [initStatus, setInitStatus] = useState<AIAssistantInitStatus>("connecting");
@@ -1368,7 +1364,6 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const activeRoundRef = useRef<ActiveRound>(IDLE_ROUND);
     const pendingTaskRef = useRef<AIAssistantPendingTask | null>(null);
     const initStatusRef = useRef<AIAssistantInitStatus>("connecting");
-    const selectedFilePathRef = useRef("");
     const latestNewsPayloadRef = useRef<string>("[]");
     const progressTailRef = useRef<string | null>(null);
     const scrollOnNextNewsRef = useRef(true);
@@ -1492,14 +1487,23 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
     }, [setInitStatusState]);
 
-    const setSelectedFile = useCallback((nextPath: string) => {
-        const normalizedNext = normalizeSelectedFilePath(nextPath);
-        if (sameSelectedFilePath(selectedFilePathRef.current, normalizedNext)) {
-            return selectedFilePathRef.current;
-        }
-        selectedFilePathRef.current = normalizedNext;
-        setSelectedFilePath(current => sameSelectedFilePath(current, normalizedNext) ? current : normalizedNext);
-        return normalizedNext;
+    const setSelectedFiles = useCallback((nextPaths: string[]) => {
+        const normalized = nextPaths.map(normalizeSelectedFilePath).filter(Boolean);
+        setSelectedFilePaths(normalized);
+        return normalized;
+    }, []);
+
+    const addSelectedFiles = useCallback((newPaths: string[]) => {
+        const normalized = newPaths.map(normalizeSelectedFilePath).filter(Boolean);
+        if (normalized.length === 0) return;
+        setSelectedFilePaths(prev => {
+            const existing = new Set(prev);
+            return [...prev, ...normalized.filter(p => !existing.has(p))];
+        });
+    }, []);
+
+    const removeSelectedFile = useCallback((index: number) => {
+        setSelectedFilePaths(prev => prev.filter((_, i) => i !== index));
     }, []);
 
     const setRoundState = useCallback((next: ActiveRound) => {
@@ -1716,8 +1720,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     }, [ensureRoundPlaceholder, transitionRound]);
 
     const sendMessage = useCallback(async (text: string, options?: SendMessageOptions) => {
-        const outgoingText = buildOutgoingMessage(text, selectedFilePathRef.current);
-        if (outgoingText.trim() === "" || activeRoundRef.current.phase !== 'idle') return;
+        // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
+        // embedding file paths into `text` via buildOutgoingMessageMulti before calling here.
+        const outgoingText = text.trim();
+        if (outgoingText === "" || activeRoundRef.current.phase !== 'idle') return;
 
         const generation = activeRoundRef.current.generation + 1;
         const assistantMessageId = nextId();
@@ -1770,7 +1776,6 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                     requestId: responseRequestId,
                 });
             }
-            setSelectedFile("");
             setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
             if (response.deferred) {
                 setPendingTaskState(await resolvePendingAITask(effectiveRequestId, response) ?? { requestId: effectiveRequestId, jobID: response.job_id || undefined, runID: response.run_id || undefined });
@@ -1783,11 +1788,12 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } finally {
             finalizeRound(generation);
         }
-    }, [finalizeRound, preferences, setRoundState, setSelectedFile]);
+    }, [finalizeRound, preferences, setRoundState]);
 
     const sendMessageInBackground = useCallback(async (text: string) => {
-        const outgoingText = buildOutgoingMessage(text, selectedFilePathRef.current);
-        if (outgoingText.trim() === "" || activeRoundRef.current.phase !== 'idle') return;
+        // Callers are responsible for embedding file paths into `text` before calling here.
+        const outgoingText = text.trim();
+        if (outgoingText === "" || activeRoundRef.current.phase !== 'idle') return;
 
         const generation = activeRoundRef.current.generation + 1;
         setRoundState({
@@ -1811,7 +1817,6 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 jobID: resolveBackgroundJobID(response) || undefined,
                 runID: resolveBackgroundRunID(response) || undefined,
             };
-            setSelectedFile("");
             setMessages(prev => appendBackgroundLaunchMessages(prev, outgoingText, launchResult));
             await refreshSessionsOnlyRef.current?.();
         } catch (err: any) {
@@ -1819,21 +1824,29 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } finally {
             finalizeRound(generation);
         }
-    }, [finalizeRound, setRoundState, setSelectedFile]);
+    }, [finalizeRound, setRoundState]);
 
     const browseFile = useCallback(async () => {
-        const selected = (await SelectAIAssistantFile()) || "";
-        setSelectedFile(selected);
-    }, [setSelectedFile]);
+        try {
+            const selected = await SelectAIAssistantFiles();
+            if (!selected || selected.length === 0) return; // User cancelled or no files selected
+            const validPaths = selected.filter(p => p && p.trim());
+            if (validPaths.length > 0) {
+                addSelectedFiles(validPaths);
+            }
+        } catch (err) {
+            console.error('Failed to select files:', err);
+        }
+    }, [addSelectedFiles]);
 
     const clearSelectedFile = useCallback(() => {
-        setSelectedFile("");
-    }, [setSelectedFile]);
+        setSelectedFiles([]);
+    }, [setSelectedFiles]);
 
     const clearHistory = useCallback(async () => {
         resetActiveRound();
         setPendingTaskState(null);
-        setSelectedFile("");
+        setSelectedFiles([]);
         if (persistTimerRef.current) {
             clearTimeout(persistTimerRef.current);
             persistTimerRef.current = null;
@@ -1855,7 +1868,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } finally {
             persistOnUnmountRef.current = true;
         }
-    }, [doFetchNews, resetActiveRound, setSelectedFile]);
+    }, [doFetchNews, resetActiveRound, setSelectedFiles]);
 
     const recordSubmittedPrompt = useCallback((prompt: string) => {
         setSubmittedPrompts(prev => appendSubmittedPrompt(prev, prompt));
@@ -1947,7 +1960,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, [resetActiveRound, setPendingTaskState]);
 
-    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePath, trialReflectEnabled, browseFile, clearSelectedFile, sendMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
+    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)
