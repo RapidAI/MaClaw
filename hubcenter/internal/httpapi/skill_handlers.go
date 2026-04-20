@@ -170,6 +170,32 @@ func (h *SkillHandlers) AdminSetVisibility(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// AdminSetTrustLevel allows admins to set the trust level of a skill.
+func (h *SkillHandlers) AdminSetTrustLevel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID         string `json:"id"`
+		TrustLevel string `json:"trust_level"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		skillError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.ID == "" {
+		skillError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	validLevels := map[string]bool{"builtin": true, "trusted": true, "community": true, "agent-created": true}
+	if !validLevels[req.TrustLevel] {
+		skillError(w, http.StatusBadRequest, "trust_level must be one of: builtin, trusted, community, agent-created")
+		return
+	}
+	if err := h.store.SetTrustLevel(req.ID, req.TrustLevel); err != nil {
+		skillError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *SkillHandlers) AdminDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -225,7 +251,11 @@ func (h *SkillHandlers) AdminImportFromURL(w http.ResponseWriter, r *http.Reques
 		}
 		sk.Price = 0
 		sk.Visible = true
-		sk.TrustLevel = "community"
+		// Admin-imported skills default to "trusted" (official store content).
+		// User-submitted skills via PublishSkill remain "community".
+		if sk.TrustLevel == "" || sk.TrustLevel == "community" {
+			sk.TrustLevel = "trusted"
+		}
 		if err := h.store.Publish(sk); err != nil {
 			result.Errors = append(result.Errors, "publish "+sk.Name+": "+err.Error())
 			continue

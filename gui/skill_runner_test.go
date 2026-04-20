@@ -341,3 +341,48 @@ func TestUnresolvedSkillPlaceholderPattern_MatchesSingleBrace(t *testing.T) {
 		t.Fatalf("substituteSkillVariables() unresolved single-brace:\n  got  = %q\n  want = %q", got, "echo ")
 	}
 }
+
+// TestDetectImplicitRequiredArgs_SingleBrace verifies that {input} single-brace
+// placeholders are detected as missing required args.
+func TestDetectImplicitRequiredArgs_SingleBrace(t *testing.T) {
+	steps := []NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{"command": "python ocr.py {input}"}},
+	}
+	// No vars provided — {input} should be detected as missing.
+	missing := detectImplicitRequiredArgs(steps, nil)
+	if len(missing) != 1 || missing[0] != "input" {
+		t.Fatalf("detectImplicitRequiredArgs() = %v, want [input]", missing)
+	}
+}
+
+// TestDetectImplicitRequiredArgs_SingleBraceProvided verifies that {input}
+// is NOT reported as missing when the var is provided.
+func TestDetectImplicitRequiredArgs_SingleBraceProvided(t *testing.T) {
+	steps := []NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{"command": "python ocr.py {input}"}},
+	}
+	vars := map[string]string{"input": "/path/to/image.png"}
+	missing := detectImplicitRequiredArgs(steps, vars)
+	if len(missing) != 0 {
+		t.Fatalf("detectImplicitRequiredArgs() = %v, want []", missing)
+	}
+}
+
+// TestDetectImplicitRequiredArgs_MixedBraceStyles verifies detection works
+// with mixed {{key}}, ${key}, and {key} in the same command.
+func TestDetectImplicitRequiredArgs_MixedBraceStyles(t *testing.T) {
+	steps := []NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{
+			"command": "python convert.py {{input}} --format {format} --out ${output}",
+		}},
+	}
+	vars := map[string]string{"input": "in.png"} // format and output missing
+	missing := detectImplicitRequiredArgs(steps, vars)
+	if len(missing) != 2 {
+		t.Fatalf("detectImplicitRequiredArgs() = %v, want [format, output]", missing)
+	}
+	// Should be sorted
+	if missing[0] != "format" || missing[1] != "output" {
+		t.Fatalf("detectImplicitRequiredArgs() = %v, want [format, output]", missing)
+	}
+}

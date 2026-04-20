@@ -25,12 +25,14 @@
 
   global.renderMachineList = function renderMachineList(items) {
     global.machineItemsCache = Array.isArray(items) ? items : [];
-    document.getElementById('machineCountHero').textContent = String(global.machineItemsCache.length);
+    const countHero = document.getElementById('machineCountHero');
     const root = document.getElementById('machines');
     const pager = document.getElementById('machinesPager');
     const pagerMeta = document.getElementById('machinesPagerMeta');
     const prevButton = document.getElementById('machinesPrevButton');
     const nextButton = document.getElementById('machinesNextButton');
+    if (countHero) countHero.textContent = String(global.machineItemsCache.length);
+    if (!root || !pager || !pagerMeta || !prevButton || !nextButton) return;
     const header = renderHeader();
     if (!global.machineItemsCache.length) {
       pager.classList.add('hidden');
@@ -83,13 +85,15 @@
   };
 
   global.closeSessionModal = function closeSessionModal() {
-    document.getElementById('sessionModalOverlay').classList.remove('show');
+    const overlay = document.getElementById('sessionModalOverlay');
+    if (overlay) overlay.classList.remove('show');
   };
 
   global.viewMachineSessions = async function viewMachineSessions(machineId, userId, machineName) {
     const overlay = document.getElementById('sessionModalOverlay');
     const title = document.getElementById('sessionModalTitle');
     const content = document.getElementById('sessionModalContent');
+    if (!overlay || !title || !content) return;
     title.textContent = ml('viewSessionsTitle') + ' - ' + machineName;
     content.innerHTML = textHint(tr('checking'));
     overlay.classList.add('show');

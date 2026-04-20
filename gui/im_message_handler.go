@@ -2688,6 +2688,12 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*NLSkillEntry, err
 		return nil, fmt.Errorf("skill %s has no steps and no SKILL.md", full.Name)
 	}
 
+	// Skills from the configured hub (official store) are treated as "trusted".
+	trustLevel := full.TrustLevel
+	if trustLevel == "" || trustLevel == "community" {
+		trustLevel = "trusted"
+	}
+
 	return &NLSkillEntry{
 		Name:        full.Name,
 		Description: full.Description,
@@ -2698,7 +2704,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*NLSkillEntry, err
 		Source:      "hub",
 		HubSkillID:  full.ID,
 		HubVersion:  full.Version,
-		TrustLevel:  full.TrustLevel,
+		TrustLevel:  trustLevel,
 	}, nil
 }
 

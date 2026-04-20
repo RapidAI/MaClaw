@@ -65,6 +65,31 @@ func TestSubstituteSkillVariables_SingleBraceDoesNotBreakDoubleBrace(t *testing.
 	}
 }
 
+// TestDetectImplicitRequiredArgsTUI_SingleBrace verifies that {input}
+// single-brace placeholders are detected as missing required args.
+func TestDetectImplicitRequiredArgsTUI_SingleBrace(t *testing.T) {
+	steps := []corelib.NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{"command": "python ocr.py {input}"}},
+	}
+	missing := detectImplicitRequiredArgsTUI(steps, nil)
+	if len(missing) != 1 || missing[0] != "input" {
+		t.Fatalf("detectImplicitRequiredArgsTUI() = %v, want [input]", missing)
+	}
+}
+
+// TestDetectImplicitRequiredArgsTUI_SingleBraceProvided verifies that {input}
+// is NOT reported as missing when the var is provided.
+func TestDetectImplicitRequiredArgsTUI_SingleBraceProvided(t *testing.T) {
+	steps := []corelib.NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{"command": "python ocr.py {input}"}},
+	}
+	vars := map[string]string{"input": "/path/to/image.png"}
+	missing := detectImplicitRequiredArgsTUI(steps, vars)
+	if len(missing) != 0 {
+		t.Fatalf("detectImplicitRequiredArgsTUI() = %v, want []", missing)
+	}
+}
+
 func TestNormalizeRunSkillVars_ArgsOverrideLegacy(t *testing.T) {
 	got := normalizeRunSkillVars(map[string]interface{}{
 		"args":   map[string]interface{}{"input": "new-in", "output": "new-out"},

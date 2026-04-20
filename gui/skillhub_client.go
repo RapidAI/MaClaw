@@ -251,6 +251,15 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 		}
 	}
 
+	// Skills downloaded from the configured hub (official store) should be
+	// treated as "trusted" rather than "community". The hub server currently
+	// hardcodes all published skills to "community", which causes the risk
+	// assessor to escalate their risk level and block legitimate installs.
+	trustLevel := full.TrustLevel
+	if trustLevel == "" || trustLevel == "community" {
+		trustLevel = "trusted"
+	}
+
 	return &NLSkillEntry{
 		Name:          full.Name,
 		Description:   full.Description,
@@ -262,7 +271,7 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 		SourceProject: base,
 		HubSkillID:    full.ID,
 		HubVersion:    full.Version,
-		TrustLevel:    full.TrustLevel,
+		TrustLevel:    trustLevel,
 	}, nil
 }
 

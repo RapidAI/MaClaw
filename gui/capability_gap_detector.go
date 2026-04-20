@@ -187,10 +187,10 @@ func (d *CapabilityGapDetector) Resolve(
 
 	// Step 5: Risk assessment on the entire skill.
 	sendStatus("正在进行安全审查...")
-	assessment := d.riskAssessor.AssessSkill(skill, chosen.TrustLevel)
+	assessment := d.riskAssessor.AssessSkill(skill, skill.TrustLevel)
 	maxRisk := assessment.Level
 	if maxRisk == RiskCritical {
-		riskDetails := fmt.Sprintf("Skill「%s」来自 %s (trust_level=%s) 包含 critical 级别风险操作", chosen.Name, chosen.HubURL, chosen.TrustLevel)
+		riskDetails := fmt.Sprintf("Skill「%s」来自 %s (trust_level=%s) 包含 critical 级别风险操作", chosen.Name, chosen.HubURL, skill.TrustLevel)
 		confirmed := false
 		if d.confirmCallback != nil {
 			sendStatus(fmt.Sprintf("⚠️ 安全警告: %s\n等待用户确认...", riskDetails))
@@ -204,7 +204,7 @@ func (d *CapabilityGapDetector) Resolve(
 					ToolName:     "hub_skill_install",
 					RiskLevel:    RiskCritical,
 					PolicyAction: PolicyDeny,
-					Result:       fmt.Sprintf("rejected skill %s from %s: critical risk, trust_level=%s", chosen.Name, chosen.HubURL, chosen.TrustLevel),
+					Result:       fmt.Sprintf("rejected skill %s from %s: critical risk, trust_level=%s", chosen.Name, chosen.HubURL, skill.TrustLevel),
 				})
 			}
 			return "", "", fmt.Errorf("Skill 包含高风险操作，已拒绝自动安装")

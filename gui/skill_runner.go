@@ -727,9 +727,10 @@ func detectImplicitRequiredArgs(steps []NLSkillStep, vars map[string]string) []s
 			continue
 		}
 		for _, m := range unresolvedSkillPlaceholderPattern.FindAllString(cmd, -1) {
-			// Extract key from {{key}} or ${key}
+			// Extract key from {{key}}, ${key}, or {key}
 			key := strings.TrimPrefix(m, "{{")
 			key = strings.TrimPrefix(key, "${")
+			key = strings.TrimPrefix(key, "{")
 			key = strings.TrimSuffix(key, "}}")
 			key = strings.TrimSuffix(key, "}")
 			key = strings.TrimSpace(key)

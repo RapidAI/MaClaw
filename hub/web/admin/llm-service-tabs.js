@@ -282,11 +282,14 @@ function applyLLMServiceI18n() {
   _s('llmServiceGroupModels', 'placeholder', lsx('modelsPlaceholder'));
 }
 async function loadLLMServiceAdmin() {
+  ensureLLMServiceAdminUI();
+  ensureLLMServiceSystemUI();
   try {
     const data = await api('/api/admin/llm/services');
     llmServiceAdminCache = data || { model_service_groups: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
     if (llmServiceSelectedGroupID && !(llmServiceAdminCache.model_service_groups || []).some(function(g) { return g.id === llmServiceSelectedGroupID; })) llmServiceSelectedGroupID = '';
     renderLLMServiceAdmin();
+    renderLLMServiceSystemSettings();
   } catch (err) {
     const msg = lsx('loadFailed', { error: err.message });
     setOutput(msg);
@@ -295,6 +298,9 @@ async function loadLLMServiceAdmin() {
 }
 function renderLLMServiceAdmin() {
   if (!llmServiceAdminCache) return;
+  ensureLLMServiceAdminUI();
+  const ui = aui();
+  if (!ui || typeof ui.renderList !== 'function' || typeof ui.simpleCard !== 'function' || typeof ui.hint !== 'function' || typeof ui.actionButton !== 'function' || typeof ui.badge !== 'function' || typeof ui.meta !== 'function') return;
   applyLLMServiceI18n();
   const groups = llmServiceAdminCache.model_service_groups || [];
   _s('llmServiceExposeApiBase', 'textContent', llmServiceAdminCache.expose_api_base_url || lsx('emptyValue'));
@@ -338,7 +344,6 @@ function renderLLMServiceAdmin() {
     if (addBtn) addBtn.textContent = lsx('addGroup');
     if (removeBtn) { removeBtn.disabled = true; removeBtn.textContent = lsx('removeGroup'); }
   }
-  const ui = aui();
   const groupsRoot = document.getElementById('llmServiceGroupsList');
   if (groupsRoot) groupsRoot.innerHTML = ui.renderList(groups, function(g) {
     const active = g.id === llmServiceSelectedGroupID;
@@ -480,7 +485,8 @@ async function saveLLMServiceAdmin() {
   }
 }
 async function diagnoseLLMServiceUser() {
-  const email = (document.getElementById('llmServiceDiagnoseEmail').value || '').trim();
+  const emailEl = document.getElementById('llmServiceDiagnoseEmail');
+  const email = (emailEl && emailEl.value || '').trim();
   if (!email) {
     showToast(lsx('diagnoseEmpty'), 'info');
     return;
@@ -498,7 +504,12 @@ async function diagnoseLLMServiceUser() {
 }
 async function issueLLMServiceCard() {
   try {
-    const data = await api('/api/admin/llm/service-cards', { method: 'POST', body: JSON.stringify({ label: (document.getElementById('llmServiceCardLabel').value || '').trim(), service_group_ids: parseCSV(document.getElementById('llmServiceCardGroups').value || ''), duration_days: Number(document.getElementById('llmServiceCardDays').value || 30), credits: Number(document.getElementById('llmServiceCardCredits').value || 0) }) });
+    const labelEl = document.getElementById('llmServiceCardLabel');
+    const groupsEl = document.getElementById('llmServiceCardGroups');
+    const daysEl = document.getElementById('llmServiceCardDays');
+    const creditsEl = document.getElementById('llmServiceCardCredits');
+    if (!labelEl || !groupsEl || !daysEl || !creditsEl) return;
+    const data = await api('/api/admin/llm/service-cards', { method: 'POST', body: JSON.stringify({ label: (labelEl.value || '').trim(), service_group_ids: parseCSV(groupsEl.value || ''), duration_days: Number(daysEl.value || 30), credits: Number(creditsEl.value || 0) }) });
     const msg = lsx('issueDone', { code: data.card && data.card.code || '' });
     setOutput(msg);
     showToast(msg, 'success');

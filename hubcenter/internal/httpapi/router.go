@@ -174,6 +174,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	// SkillHub admin management
 	mux.HandleFunc("GET /api/admin/skillhub/list", RequireAdmin(adminService, skillHandlers.AdminListSkills))
 	mux.HandleFunc("POST /api/admin/skillhub/visibility", RequireAdmin(adminService, skillHandlers.AdminSetVisibility))
+	mux.HandleFunc("POST /api/admin/skillhub/trust-level", RequireAdmin(adminService, skillHandlers.AdminSetTrustLevel))
 	mux.HandleFunc("DELETE /api/admin/skillhub/{id}", RequireAdmin(adminService, skillHandlers.AdminDeleteSkill))
 	mux.HandleFunc("POST /api/admin/skillhub/import-url", RequireAdmin(adminService, skillHandlers.AdminImportFromURL))
 	// Gossip — anonymous gossip board

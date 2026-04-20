@@ -1705,8 +1705,8 @@ func normalizeRunSkillVars(args map[string]interface{}) map[string]string {
 	return vars
 }
 
-// implicitArgReTUI matches {{key}} and ${key} placeholders in skill step commands.
-var implicitArgReTUI = regexp.MustCompile(`\{\{(\w+)\}\}|\$\{(\w+)\}`)
+// implicitArgReTUI matches {{key}}, ${key}, and {key} placeholders in skill step commands.
+var implicitArgReTUI = regexp.MustCompile(`\{\{(\w+)\}\}|\$\{(\w+)\}|\{([a-zA-Z_]\w*)\}`)
 
 // detectImplicitRequiredArgsTUI scans skill step commands for {{key}} / ${key}
 // placeholders that aren't provided in vars. This catches skills that use
@@ -1734,6 +1734,9 @@ func detectImplicitRequiredArgsTUI(steps []corelib.NLSkillStep, vars map[string]
 				varName := m[1]
 				if varName == "" {
 					varName = m[2]
+				}
+				if varName == "" {
+					varName = m[3] // {key} single-brace capture group
 				}
 				if varName == "" || seen[varName] {
 					continue

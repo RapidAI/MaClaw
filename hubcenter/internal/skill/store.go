@@ -226,6 +226,28 @@ func (s *SkillStore) SetVisibility(id string, visible bool) error {
 	return nil
 }
 
+// SetTrustLevel updates the trust level of a skill.
+// Valid values: "builtin", "trusted", "community", "agent-created".
+func (s *SkillStore) SetTrustLevel(id string, trustLevel string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sk, ok := s.skills[id]
+	if !ok {
+		return fmt.Errorf("skill not found: %s", id)
+	}
+	sk.TrustLevel = trustLevel
+	data, err := json.MarshalIndent(sk, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal skill: %w", err)
+	}
+	path := filepath.Join(s.dir, id+".json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write skill file: %w", err)
+	}
+	s.rebuildIndexFromSkills()
+	return nil
+}
+
 func (s *SkillStore) DeleteSkill(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
