@@ -34,6 +34,7 @@ func NewRouter(
 	invitationSvc *invitation.Service,
 	emailInviteRepo store.EmailInviteRepository,
 	system store.SystemSettingsRepository,
+	adminAudit store.AdminAuditRepository,
 	feishuNotifier *feishu.Notifier,
 	feishuPlugin *feishu.FeishuPlugin,
 	openclawIMPlugin *im.WebhookIMPlugin,
@@ -158,8 +159,11 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/admin/llm/providers", RequireAdmin(admins, UpdateLLMProvidersHandler(system)))
 	mux.HandleFunc("POST /api/admin/llm/providers/test", RequireAdmin(admins, TestLLMProviderHandler(system)))
 	mux.HandleFunc("GET /api/admin/llm/services", RequireAdmin(admins, GetLLMServicesAdminHandler(system)))
-	mux.HandleFunc("PUT /api/admin/llm/services", RequireAdmin(admins, UpdateLLMServicesAdminHandler(system)))
-	mux.HandleFunc("POST /api/admin/llm/service-cards", RequireAdmin(admins, CreateLLMServiceCardHandler(system)))
+	mux.HandleFunc("PUT /api/admin/llm/services", RequireAdmin(admins, UpdateLLMServicesAdminHandler(system, securitySvc)))
+	mux.HandleFunc("POST /api/admin/llm/service-cards", RequireAdmin(admins, CreateLLMServiceCardHandler(system, adminAudit)))
+	mux.HandleFunc("GET /api/admin/llm/service-cards/export", RequireAdmin(admins, ExportLLMServiceCardsHandler(system)))
+	mux.HandleFunc("DELETE /api/admin/llm/service-cards/{id}", RequireAdmin(admins, DeleteLLMServiceCardHandler(system, adminAudit)))
+	mux.HandleFunc("POST /api/admin/llm/service-cards/delete-batch", RequireAdmin(admins, DeleteLLMServiceCardsBatchHandler(system, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/usage-report", RequireAdmin(admins, GetLLMUsageReportHandler(system, securitySvc)))
 	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))

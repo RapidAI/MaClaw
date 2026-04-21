@@ -212,7 +212,7 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "点击", Label: LabelBrowser, Strength: Weak},
 	{Keyword: "观察", Label: LabelBrowser, Strength: Weak},
 	{Keyword: "打开", Label: LabelBrowser, Strength: Weak},
-	{Keyword: "截图", Label: LabelBrowser, Strength: Weak},
+	// "截图" moved to LabelNonCoding Strong — screenshot is a generic desktop operation, not browser-specific.
 	{Keyword: "输入", Label: LabelBrowser, Strength: Weak},
 	{Keyword: "填写", Label: LabelBrowser, Strength: Weak},
 
@@ -372,6 +372,8 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "评测报告", Label: LabelNonCoding, Strength: Strong},
 	{Keyword: "文档处理", Label: LabelNonCoding, Strength: Strong},
 	{Keyword: "arxiv", Label: LabelNonCoding, Strength: Strong},
+	{Keyword: "截屏", Label: LabelNonCoding, Strength: Strong},
+	{Keyword: "截图", Label: LabelNonCoding, Strength: Strong},
 
 	// =========================================================================
 	// LabelAmbiguous (Weak) — from im_intent_classifier.go ambiguousKeywords

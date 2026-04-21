@@ -154,10 +154,10 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 
 	// 创建 submission 记录
 	sub := &skillmarket.SkillSubmission{
-		ID:     subID,
-		Email:  email,
-		UserID: user.ID,
-		Status: "pending",
+		ID:      subID,
+		Email:   email,
+		UserID:  user.ID,
+		Status:  "pending",
 		ZipPath: zipPath,
 	}
 	now := time.Now()
@@ -714,6 +714,24 @@ func (h *SkillMarketHandlers) AdminRejectSkill(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }
 
+// GetTrialConfig handles GET /api/v1/admin/config/trial.
+func (h *SkillMarketHandlers) GetTrialConfig(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	parseConfigInt := func(key string, defaultValue int) int {
+		val := h.store.GetConfigWithDefault(ctx, key, strconv.Itoa(defaultValue))
+		n, err := strconv.Atoi(val)
+		if err != nil || n < 0 {
+			return defaultValue
+		}
+		return n
+	}
+	writeJSON(w, http.StatusOK, map[string]int{
+		"trial_duration_days":    parseConfigInt("trial_duration_days", 7),
+		"auto_publish_threshold": parseConfigInt("auto_publish_threshold", 5),
+		"max_uploads_per_hour":   parseConfigInt("max_skill_uploads_per_hour", 0),
+	})
+}
+
 // UpdateTrialConfig handles PUT /api/v1/admin/config/trial.
 func (h *SkillMarketHandlers) UpdateTrialConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -727,18 +745,30 @@ func (h *SkillMarketHandlers) UpdateTrialConfig(w http.ResponseWriter, r *http.R
 	}
 	ctx := r.Context()
 	if req.TrialDuration != nil {
+		if *req.TrialDuration <= 0 {
+			smError(w, http.StatusBadRequest, "trial_duration_days must be greater than 0")
+			return
+		}
 		if err := h.store.SetConfig(ctx, "trial_duration_days", strconv.Itoa(*req.TrialDuration)); err != nil {
 			smError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 	if req.AutoPublishThreshold != nil {
+		if *req.AutoPublishThreshold <= 0 {
+			smError(w, http.StatusBadRequest, "auto_publish_threshold must be greater than 0")
+			return
+		}
 		if err := h.store.SetConfig(ctx, "auto_publish_threshold", strconv.Itoa(*req.AutoPublishThreshold)); err != nil {
 			smError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 	if req.MaxUploadsPerHour != nil {
+		if *req.MaxUploadsPerHour < 0 {
+			smError(w, http.StatusBadRequest, "max_uploads_per_hour must be greater than or equal to 0")
+			return
+		}
 		if err := h.store.SetConfig(ctx, "max_skill_uploads_per_hour", strconv.Itoa(*req.MaxUploadsPerHour)); err != nil {
 			smError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -890,8 +920,18 @@ func (h *SkillMarketHandlers) AdminRefund(w http.ResponseWriter, r *http.Request
 
 // AdminListPurchases handles GET /api/v1/admin/purchases.
 func (h *SkillMarketHandlers) AdminListPurchases(w http.ResponseWriter, r *http.Request) {
-	buyerEmail := r.URL.Query().Get("buyer_email")
-	skillID := r.URL.Query().Get("skill_id")
+	buyerEmail := strings.TrimSpace(r.URL.Query().Get("buyer_email"))
+	skillID := strings.TrimSpace(r.URL.Query().Get("skill_id"))
+	filter := strings.TrimSpace(r.URL.Query().Get("filter"))
+	if filter != "" {
+		if buyerEmail == "" && skillID == "" {
+			if strings.Contains(filter, "@") {
+				buyerEmail = filter
+			} else {
+				skillID = filter
+			}
+		}
+	}
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	records, total, err := h.refundSvc.ListPurchases(r.Context(), buyerEmail, skillID, offset, limit)

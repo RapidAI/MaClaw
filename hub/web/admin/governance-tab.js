@@ -27,19 +27,44 @@
     return 'info';
   }
 
+  var GOV_I18N = {
+    serviceAccess: { zh: '\u5df2\u6709\u670d\u52a1\u6743\u9650', en: 'Service Access' },
+    serviceGroupsPrefix: { zh: '\u670d\u52a1\u7ec4: ', en: 'Service Groups: ' },
+    modelsPrefix: { zh: '\u53ef\u7528\u6a21\u578b: ', en: 'Models: ' },
+    nearestExpiryPrefix: { zh: '\u6700\u8fd1\u5230\u671f: ', en: 'Nearest Expiry: ' },
+    smartRouteLabel: { zh: '\u667a\u80fd\u63a7\u5236', en: 'Smart Route' },
+    boundUsersSearchPlaceholder: { zh: '\u641c\u7d22\u90ae\u7bb1 / SN...', en: 'Search email / SN...' },
+    noMatches: { zh: '\u65e0\u5339\u914d\u7ed3\u679c', en: 'No matches' },
+    loadContentAuditConfigFailed: { zh: '\u52a0\u8f7d\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ', en: 'Load content audit config failed: ' },
+    contentAuditConfigSaved: { zh: '\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5df2\u4fdd\u5b58', en: 'Content audit config saved' },
+    saveContentAuditConfigFailed: { zh: '\u4fdd\u5b58\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ', en: 'Save content audit config failed: ' },
+    smartRouteAllEnabled: { zh: '\u5df2\u5f00\u542f\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route enabled for all users' },
+    smartRouteAllDisabled: { zh: '\u5df2\u5173\u95ed\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route disabled for all users' }
+  };
+
+  function gt(key) {
+    var entry = GOV_I18N[key];
+    return entry ? (currentLang === 'zh' ? entry.zh : entry.en) : key;
+  }
+
   function serviceAccessLabel() {
-    return currentLang === 'zh' ? '\u5df2\u6709\u670d\u52a1\u6743\u9650' : 'Service Access';
+    return gt('serviceAccess');
   }
 
   function serviceAccessTooltip(item) {
     const status = item && item.service_status;
-    if (!status || !status.active) return '';
+    if (!status) return '';
     const lines = [];
+    if (!status.active) {
+      const reasons = (status.inactive_reasons || []).filter(Boolean);
+      if (reasons.length) return reasons.join('&#10;');
+      return '';
+    }
     const groupNames = (status.service_group_names || []).filter(Boolean);
     const models = (status.available_models || []).filter(Boolean);
-    if (groupNames.length) lines.push((currentLang === 'zh' ? '\u670d\u52a1\u7ec4: ' : 'Service Groups: ') + groupNames.join(', '));
-    if (models.length) lines.push((currentLang === 'zh' ? '\u53ef\u7528\u6a21\u578b: ' : 'Models: ') + models.join(', '));
-    if (status.nearest_expires_at) lines.push((currentLang === 'zh' ? '\u6700\u8fd1\u5230\u671f: ' : 'Nearest Expiry: ') + status.nearest_expires_at);
+    if (groupNames.length) lines.push(gt('serviceGroupsPrefix') + groupNames.join(', '));
+    if (models.length) lines.push(gt('modelsPrefix') + models.join(', '));
+    if (status.nearest_expires_at) lines.push(gt('nearestExpiryPrefix') + status.nearest_expires_at);
     if (Number(status.credits_available || 0) > 0) lines.push('Credits: ' + String(status.credits_available));
     return lines.join('&#10;');
   }
@@ -98,20 +123,20 @@
     const start = (global._boundUsersPage - 1) * pageSize;
     const pageItems = filtered.slice(start, start + pageSize);
     const lang = typeof currentLang !== 'undefined' ? currentLang : 'en';
-    const searchHtml = '<div style="margin-bottom:10px"><input id="boundUsersSearchInput" placeholder="' + (lang === 'zh' ? '\u641c\u7d22\u90ae\u7bb1 / SN...' : 'Search email / SN...') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="max-width:320px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)"></div>';
+    const searchHtml = '<div style="margin-bottom:10px"><input id="boundUsersSearchInput" placeholder="' + gt('boundUsersSearchPlaceholder') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="max-width:320px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)"></div>';
     const cards = pageItems.map(function(item) {
       var smartRoute = item.smart_route;
       var toggleId = 'sr_' + item.id;
       var userIdExpr = JSON.stringify(String(item.id || ''));
       var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="font-size:10px;padding:4px 8px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '';
-      return '<div class="user-card" style="flex-direction:column;gap:6px;cursor:default"><div style="min-width:0"><div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">' + escapeHtml(item.email) + '</div><div class="item-meta mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">' + escapeHtml(item.sn || tr('na')) + '</div></div><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="badge info" style="font-size:10px;padding:4px 8px">' + escapeHtml(item.enrollment_status || item.status || tr('active')) + '</span>' + serviceBadge + '<label class="toggle-label" title="' + (lang === 'zh' ? '\u667a\u80fd\u63a7\u5236' : 'Smart Route') + '"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' onchange="toggleSmartRoute(' + userIdExpr + ', this.checked)"><span>AI</span></label></div></div>';
+      return '<div class="user-card" style="flex-direction:column;gap:6px;cursor:default"><div style="min-width:0"><div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">' + escapeHtml(item.email) + '</div><div class="item-meta mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">' + escapeHtml(item.sn || tr('na')) + '</div></div><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="badge info" style="font-size:10px;padding:4px 8px">' + escapeHtml(item.enrollment_status || item.status || tr('active')) + '</span>' + serviceBadge + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' onchange="toggleSmartRoute(' + userIdExpr + ', this.checked)"><span>AI</span></label></div></div>';
     }).join('');
     var pagerHtml = '';
     var showCount = filtered.length > 0 ? (start + 1) + '-' + (start + pageItems.length) + ' / ' + filtered.length : '0 / 0';
     if (totalPages > 1 || query) {
       pagerHtml = '<div class="pager" style="margin-top:10px;display:flex;align-items:center;justify-content:center;gap:8px"><button class="btn-secondary" style="height:28px;font-size:12px;padding:0 10px" onclick="window._boundUsersPage=Math.max(1,window._boundUsersPage-1);_renderBoundUsersPage()" ' + (global._boundUsersPage <= 1 ? 'disabled' : '') + '>\u2039</button><span style="font-size:13px">' + showCount + '</span><button class="btn-secondary" style="height:28px;font-size:12px;padding:0 10px" onclick="window._boundUsersPage=Math.min(' + totalPages + ',window._boundUsersPage+1);_renderBoundUsersPage()" ' + (global._boundUsersPage >= totalPages ? 'disabled' : '') + '>\u203a</button></div>';
     }
-    root.innerHTML = searchHtml + '<div class="user-grid-wrap" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px">' + (pageItems.length ? cards : '<div class="hint" style="grid-column:1/-1">' + (lang === 'zh' ? '\u65e0\u5339\u914d\u7ed3\u679c' : 'No matches') + '</div>') + '</div>' + pagerHtml;
+    root.innerHTML = searchHtml + '<div class="user-grid-wrap" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px">' + (pageItems.length ? cards : '<div class="hint" style="grid-column:1/-1">' + gt('noMatches') + '</div>') + '</div>' + pagerHtml;
     var searchInput = document.getElementById('boundUsersSearchInput');
     if (searchInput && query) {
       searchInput.focus();
@@ -240,7 +265,7 @@
       document.getElementById('caTimeoutPolicy').value = data.timeout_policy || 'block';
       document.getElementById('caKeywords').value = (data.keywords || []).join('\n');
     } catch (err) {
-      showToast((currentLang === 'zh' ? '\u52a0\u8f7d\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ' : 'Load content audit config failed: ') + err.message, 'error');
+      showToast(gt('loadContentAuditConfigFailed') + err.message, 'error');
     }
   };
 
@@ -254,9 +279,9 @@
         keywords: keywords
       };
       await api('/api/admin/content_audit/config', { method: 'PUT', body: JSON.stringify(payload) });
-      showToast(currentLang === 'zh' ? '\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5df2\u4fdd\u5b58' : 'Content audit config saved', 'success');
+      showToast(gt('contentAuditConfigSaved'), 'success');
     } catch (err) {
-      showToast((currentLang === 'zh' ? '\u4fdd\u5b58\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ' : 'Save content audit config failed: ') + err.message, 'error');
+      showToast(gt('saveContentAuditConfigFailed') + err.message, 'error');
     }
   };
 
@@ -290,7 +315,7 @@
   global.toggleSmartRouteAll = async function toggleSmartRouteAll(enabled) {
     try {
       await api('/api/admin/smart_route_all', { method: 'PUT', body: JSON.stringify({ enabled: enabled }) });
-      showToast(enabled ? '\u5df2\u5f00\u542f\u5168\u5458\u667a\u80fd\u8def\u7531' : '\u5df2\u5173\u95ed\u5168\u5458\u667a\u80fd\u8def\u7531', 'success');
+      showToast(enabled ? gt('smartRouteAllEnabled') : gt('smartRouteAllDisabled'), 'success');
     } catch (err) {
       showToast(err.message, 'error');
       var toggle = document.getElementById('smartRouteAllToggle');

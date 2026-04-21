@@ -239,6 +239,7 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 		PhasePrompt:  phasePrompt,
 		ToolFilter:   phase.ToolPolicy,
 		RunAgentLoop: true,
+		DefaultInput: true,
 	}, nil
 }
 

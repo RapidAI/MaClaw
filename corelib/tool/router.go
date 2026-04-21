@@ -92,6 +92,12 @@ var documentDeliveryKeywords = []string{
 	"pdf", "报告", "综述", "附件", "发送文件", "文件发我", "发给我", "导出",
 }
 
+// screenshotExcludeKeywords prevents the document delivery conditional rule
+// from activating craft_tool when the message is a screenshot request.
+// Without this exclusion, "发给我" in "帮我截屏桌面发给我图片" would
+// activate craft_tool and compete with the built-in screenshot tool.
+var screenshotExcludeKeywords = []string{"截屏", "截图", "screenshot"}
+
 var codingWorkflowDocKeywords = []string{
 	"需求文档", "设计文档", "任务文档", "任务拆分", "任务计划", "技术设计",
 	"需求分析", "架构设计", "模块设计", "接口设计",
@@ -107,7 +113,7 @@ var browserIntentKeywords = []string{
 	"browser_", // tool name prefix in follow-up messages
 }
 var browserPageKeywords = []string{"页面", "网页", "网站", "url", "page", "site"}
-var browserActionKeywords = []string{"访问", "导航", "点击", "观察", "打开", "截图", "输入", "填写"}
+var browserActionKeywords = []string{"访问", "导航", "点击", "观察", "打开", "输入", "填写"}
 
 // allBrowserToolNames is the complete list of browser automation tools used
 // by both the strong and weak conditional keep rules. Extracted as a variable
@@ -151,8 +157,21 @@ var conditionalKeepRules = []conditionalKeepRule{
 		},
 	},
 	{
-		keepTools: []string{"send_file", "open", "craft_tool"},
+		keepTools: []string{"send_file", "open"},
 		matches: func(msg string) bool {
+			return containsAnyKeyword(msg, documentDeliveryKeywords)
+		},
+	},
+	{
+		keepTools: []string{"craft_tool"},
+		matches: func(msg string) bool {
+			// Do not activate craft_tool for screenshot requests even when
+			// document delivery keywords like "发给我" are present.
+			// send_file and open are split into a separate rule above so they
+			// remain available for "截屏发给我" (screenshot + send).
+			if containsAnyKeyword(msg, screenshotExcludeKeywords) {
+				return false
+			}
 			return containsAnyKeyword(msg, documentDeliveryKeywords)
 		},
 	},

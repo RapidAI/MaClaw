@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -18,7 +19,10 @@ const (
 	DefaultModelServiceGroupID   = "default"
 	DefaultModelServiceGroupName = "Default (No Model Access)"
 	DefaultTokensPerCredit       = 10000
+	CardCodeLength               = 20
 )
+
+const cardCodeAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 type SystemSettingsRepository interface {
 	Set(ctx context.Context, key, valueJSON string) error
@@ -118,6 +122,7 @@ type ServiceStatus struct {
 	AvailableModels   []string          `json:"available_models,omitempty"`
 	AuthorizedModels  []AuthorizedModel `json:"authorized_models,omitempty"`
 	ActiveGrants      []ActiveGrant     `json:"active_grants,omitempty"`
+	InactiveReasons   []string          `json:"inactive_reasons,omitempty"`
 	NearestExpiresAt  string            `json:"nearest_expires_at,omitempty"`
 	DefaultModel      string            `json:"default_model,omitempty"`
 	HubLLMBaseURL     string            `json:"hub_llm_base_url,omitempty"`
@@ -288,6 +293,19 @@ func (r *Registry) FindCardByCode(code string) (*RechargeCard, int) {
 	return nil, -1
 }
 
+func (r *Registry) FindCardByID(id string) (*RechargeCard, int) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, -1
+	}
+	for i := range r.Cards {
+		if strings.EqualFold(strings.TrimSpace(r.Cards[i].ID), id) {
+			return &r.Cards[i], i
+		}
+	}
+	return nil, -1
+}
+
 func normalizeStringSlice(items []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(items))
@@ -311,21 +329,38 @@ func normalizeEmail(email string) string {
 }
 
 func HashCode(code string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(code)))
+	sum := sha256.Sum256([]byte(NormalizeCardCode(code)))
 	return hex.EncodeToString(sum[:])
 }
 
+func NormalizeCardCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
+}
+
+func ValidateCardCode(code string) error {
+	code = NormalizeCardCode(code)
+	if len(code) != CardCodeLength {
+		return fmt.Errorf("redeem code must be %d letters or digits", CardCodeLength)
+	}
+	for _, ch := range code {
+		if (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') {
+			continue
+		}
+		return fmt.Errorf("redeem code must contain only letters or digits")
+	}
+	return nil
+}
+
 func GenerateCardCode() (string, error) {
-	buf := make([]byte, 12)
+	buf := make([]byte, CardCodeLength)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	parts := []string{
-		strings.ToUpper(hex.EncodeToString(buf[0:4])),
-		strings.ToUpper(hex.EncodeToString(buf[4:8])),
-		strings.ToUpper(hex.EncodeToString(buf[8:12])),
+	out := make([]byte, CardCodeLength)
+	for i, b := range buf {
+		out[i] = cardCodeAlphabet[int(b)%len(cardCodeAlphabet)]
 	}
-	return strings.Join(parts, "-"), nil
+	return string(out), nil
 }
 
 func NewID(prefix string) string {

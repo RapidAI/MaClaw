@@ -2,9 +2,42 @@ package llmservice
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestGenerateCardCodeFormat(t *testing.T) {
+	seen := map[string]struct{}{}
+	for i := 0; i < 200; i++ {
+		code, err := GenerateCardCode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateCardCode(code); err != nil {
+			t.Fatalf("ValidateCardCode(%q) error = %v", code, err)
+		}
+		if len(code) != CardCodeLength {
+			t.Fatalf("len(%q) = %d, want %d", code, len(code), CardCodeLength)
+		}
+		if code != strings.ToUpper(code) {
+			t.Fatalf("expected uppercase code, got %q", code)
+		}
+		if _, exists := seen[code]; exists {
+			t.Fatalf("duplicate generated code: %q", code)
+		}
+		seen[code] = struct{}{}
+	}
+}
+
+func TestValidateCardCodeRejectsInvalidFormat(t *testing.T) {
+	invalid := []string{"", "ABC", "abc123", "1234567890123456789-", "1234567890123456789_", "123456789012345678901"}
+	for _, code := range invalid {
+		if err := ValidateCardCode(code); err == nil {
+			t.Fatalf("expected invalid code %q to fail validation", code)
+		}
+	}
+}
 
 type testSystemSettings struct {
 	data map[string]string
@@ -246,5 +279,17 @@ func TestBuildAuthorizedModelsTracksProviderScopedGroupsAndMultiplier(t *testing
 	}
 	if got := ServiceGroupIDsForProvider(&model, "provider-a"); len(got) != 2 || got[0] != "group-a" || got[1] != "group-c" {
 		t.Fatalf("ServiceGroupIDsForProvider(provider-a) = %#v", got)
+	}
+}
+
+func TestRedeemCardRejectsInvalidCodeFormat(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	reg := &Registry{}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RedeemCard(ctx, system, nil, "user@example.com", "bad-code", "http://hub.test/api/llm/v1"); err == nil {
+		t.Fatal("expected invalid code format to be rejected")
 	}
 }

@@ -134,3 +134,44 @@ func filterAuthorizedModelsByProviderRegistry(status *llmservice.ServiceStatus, 
 	}
 	return &filteredStatus, filtered
 }
+
+func explainFilteredServiceStatusIssues(status *llmservice.ServiceStatus, filtered []llmservice.AuthorizedModel, providerReg *im.LLMProviderRegistry) []string {
+	if status == nil {
+		return nil
+	}
+	reasons := make([]string, 0, 3)
+	if len(status.ServiceGroupIDs) == 0 {
+		reasons = append(reasons, "no service-group entitlement is active for this user")
+	}
+	if len(status.AuthorizedModels) > 0 && len(filtered) == 0 {
+		reasons = append(reasons, "authorized service groups exist, but none route to a live LLM provider")
+	}
+	if len(status.ActiveGrants) > 0 && len(filtered) == 0 {
+		reasons = append(reasons, "active grants exist, but they currently expose no live model routes")
+	}
+	if providerReg == nil || len(providerReg.Providers) == 0 {
+		reasons = append(reasons, "no LLM providers are currently configured")
+	}
+	return dedupeServiceStatusReasons(reasons)
+}
+
+func dedupeServiceStatusReasons(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		clean := strings.TrimSpace(item)
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}

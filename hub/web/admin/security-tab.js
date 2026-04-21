@@ -36,6 +36,110 @@
     return isZh() ? zh : en;
   }
 
+  function secTr(key, zh, en) {
+    if (typeof global.tr === 'function') {
+      var translated = global.tr(key);
+      if (translated && translated !== key) return translated;
+    }
+    return text(zh, en);
+  }
+
+  var SECURITY_I18N = {
+    subgroupLabel: { zh: '\u5b50\u7ec4:', en: 'Sub-groups:' },
+    membersLabel: { zh: '\u6210\u5458', en: 'Members' },
+    userIndex: { zh: '\u7b2c {index} \u4e2a\u7528\u6237', en: 'User #{index}' },
+    remove: { zh: '\u79fb\u9664', en: 'Remove' },
+    pagerSummary: { zh: '\u7b2c {page} / {totalPages} \u9875\uff0c\u663e\u793a {start}-{end} / {total}', en: 'Page {page} / {totalPages}, showing {start}-{end} / {total}' },
+    previous: { zh: '\u4e0a\u4e00\u9875', en: 'Previous' },
+    next: { zh: '\u4e0b\u4e00\u9875', en: 'Next' },
+    noMembers: { zh: '\u65e0\u6210\u5458', en: 'No members' },
+    noGroups: { zh: '\u65e0\u7ec4\u7ec7\u6570\u636e', en: 'No groups' },
+    loading: { zh: '\u6b63\u5728\u52a0\u8f7d...', en: 'Loading...' },
+    enabled: { zh: '\u5df2\u542f\u7528', en: 'Enabled' },
+    disabled: { zh: '\u5df2\u7981\u7528', en: 'Disabled' },
+    notSet: { zh: '\u672a\u8bbe\u7f6e', en: 'Not set' },
+    noUsersMatchSearch: { zh: '\u65e0\u5339\u914d\u7528\u6237', en: 'No users match the search' },
+    noUsersAvailable: { zh: '\u6682\u65e0\u53ef\u5206\u914d\u7528\u6237', en: 'No users available' },
+    status: { zh: '\u72b6\u6001', en: 'Status' },
+    unknown: { zh: '\u672a\u77e5', en: 'Unknown' },
+    move: { zh: '\u79fb\u5165', en: 'Move' },
+    showingUsers: { zh: '\u663e\u793a {visible} / {total} \u4e2a\u7528\u6237', en: 'Showing {visible} / {total} users' },
+    loadingMembers: { zh: '\u6b63\u5728\u52a0\u8f7d\u6210\u5458...', en: 'Loading members...' },
+    removed: { zh: '\u5df2\u79fb\u9664', en: 'Removed' },
+    centralizedEnabled: { zh: '\u96c6\u4e2d\u7b56\u7565\u5df2\u542f\u7528', en: 'Centralized policy enabled' },
+    centralizedDisabled: { zh: '\u96c6\u4e2d\u7b56\u7565\u5df2\u7981\u7528', en: 'Centralized policy disabled' },
+    orgEnabled: { zh: '\u7ec4\u7ec7\u67b6\u6784\u5df2\u542f\u7528', en: 'Org structure enabled' },
+    orgDisabled: { zh: '\u7ec4\u7ec7\u67b6\u6784\u5df2\u7981\u7528', en: 'Org structure disabled' },
+    defaultGroupSet: { zh: '\u9ed8\u8ba4\u7ec4\u5df2\u8bbe\u7f6e', en: 'Default group set' },
+    assignTitleWithGroup: { zh: '\u79fb\u5165\u7528\u6237\u5230\u90e8\u95e8: {name}', en: 'Move users to department: {name}' },
+    loadingUsers: { zh: '\u6b63\u5728\u52a0\u8f7d\u7528\u6237\u5217\u8868...', en: 'Loading users...' },
+    moveUsersHere: { zh: '\u79fb\u5165\u7528\u6237', en: 'Move Users Here' },
+    moveUsers: { zh: '\u79fb\u5165\u7528\u6237', en: 'Move Users' },
+    moveUsersDesc: { zh: '\u53ef\u4ee5\u641c\u7d22\u5e76\u5c06\u7528\u6237\u79fb\u5165\u5f53\u524d\u90e8\u95e8\u3002', en: 'Search and move a user into the selected department.' },
+    searchEmailOrSn: { zh: '\u641c\u7d22\u90ae\u7bb1\u6216 SN', en: 'Search email or SN' },
+    departmentActions: { zh: '\u90e8\u95e8\u64cd\u4f5c\u83dc\u5355', en: 'Department actions' },
+    userMoved: { zh: '\u7528\u6237\u5df2\u79fb\u5165', en: 'User moved' },
+    reload: { zh: '\u5237\u65b0', en: 'Reload' },
+    centralizedPolicy: { zh: '\u96c6\u4e2d\u7b56\u7565', en: 'Centralized Policy' },
+    orgStructure: { zh: '\u7ec4\u7ec7\u67b6\u6784', en: 'Org Structure' },
+    defaultGroup: { zh: '\u9ed8\u8ba4\u7ec4', en: 'Default Group' },
+    set: { zh: '\u8bbe\u7f6e', en: 'Set' },
+    groupTree: { zh: '\u7ec4\u7ec7\u6811', en: 'Group Tree' },
+    createSubDepartment: { zh: '\u521b\u5efa\u5b50\u90e8\u95e8', en: 'Create Sub-department' },
+    renameDepartment: { zh: '\u91cd\u547d\u540d\u90e8\u95e8', en: 'Rename Department' },
+    deleteDepartment: { zh: '\u5220\u9664\u90e8\u95e8', en: 'Delete Department' },
+    save: { zh: '\u4fdd\u5b58', en: 'Save' },
+    cancel: { zh: '\u53d6\u6d88', en: 'Cancel' },
+    confirm: { zh: '\u786e\u8ba4', en: 'Confirm' },
+    chooseDefaultGroupDesc: { zh: '\u4e3a\u65b0\u7528\u6237\u9009\u62e9\u9ed8\u8ba4\u6240\u5c5e\u7ec4\u3002', en: 'Choose the default group for new users.' },
+    defaultGroupPrefix: { zh: '\u9ed8\u8ba4\u7ec4: ', en: 'Default group: ' },
+    loadSecuritySettingsFailed: { zh: '\u52a0\u8f7d\u5b89\u5168\u8bbe\u7f6e\u5931\u8d25: ', en: 'Load security settings failed: ' },
+    loadGroupTreeFailed: { zh: '\u52a0\u8f7d\u7ec4\u7ec7\u6811\u5931\u8d25: ', en: 'Load group tree failed: ' },
+    loadChildGroupsFailed: { zh: '\u52a0\u8f7d\u5b50\u90e8\u95e8\u5931\u8d25: ', en: 'Load child groups failed: ' },
+    policyPrefix: { zh: '\u7b56\u7565: ', en: 'Policy: ' },
+    groupIdPrefix: { zh: '\u7ec4 ID: ', en: 'Group ID: ' },
+    fileOutbound: { zh: '\u6587\u4ef6\u5916\u53d1', en: 'File Outbound' },
+    imageOutbound: { zh: '\u56fe\u7247\u5916\u53d1', en: 'Image Outbound' },
+    gossip: { zh: 'Gossip \u529f\u80fd', en: 'Gossip' },
+    yoloMode: { zh: 'YOLO \u6a21\u5f0f', en: 'YOLO Mode' },
+    smartRoute: { zh: '\u667a\u80fd\u8def\u7531', en: 'Smart Route' },
+    guardrailMode: { zh: '\u62a4\u680f\u6a21\u5f0f', en: 'Guardrail Mode' },
+    sandboxMode: { zh: '\u6c99\u7bb1\u6a21\u5f0f', en: 'Sandbox Mode' },
+    networkLevel: { zh: '\u7f51\u7edc\u7ea7\u522b', en: 'Network Level' },
+    custom: { zh: '\u81ea\u5b9a\u4e49', en: 'Custom' },
+    inheritedFrom: { zh: '\u7ee7\u627f\u81ea ', en: 'Inherited from ' },
+    selectGroupFirst: { zh: '\u8bf7\u5148\u9009\u62e9\u4e00\u4e2a\u7ec4', en: 'Select a group first' },
+    policySaved: { zh: '\u7b56\u7565\u5df2\u4fdd\u5b58', en: 'Policy saved' },
+    savePolicyFailed: { zh: '\u4fdd\u5b58\u7b56\u7565\u5931\u8d25: ', en: 'Save policy failed: ' },
+    removeFailed: { zh: '\u79fb\u9664\u5931\u8d25: ', en: 'Remove failed: ' },
+    updateFailed: { zh: '\u66f4\u65b0\u5931\u8d25: ', en: 'Update failed: ' },
+    pleaseSelectGroup: { zh: '\u8bf7\u9009\u62e9\u4e00\u4e2a\u7ec4', en: 'Please select a group' },
+    setDefaultGroupFailed: { zh: '\u8bbe\u7f6e\u9ed8\u8ba4\u7ec4\u5931\u8d25: ', en: 'Set default group failed: ' },
+    promptNewSubGroup: { zh: '\u8f93\u5165\u65b0\u5b50\u7ec4\u540d\u79f0:', en: 'Enter new sub-group name:' },
+    subgroupCreated: { zh: '\u5b50\u7ec4\u5df2\u521b\u5efa', en: 'Sub-group created' },
+    createFailed: { zh: '\u521b\u5efa\u5931\u8d25: ', en: 'Create failed: ' },
+    promptNewName: { zh: '\u8f93\u5165\u65b0\u540d\u79f0:', en: 'Enter new name:' },
+    renamed: { zh: '\u5df2\u91cd\u547d\u540d', en: 'Renamed' },
+    renameFailed: { zh: '\u91cd\u547d\u540d\u5931\u8d25: ', en: 'Rename failed: ' },
+    loadUsersFailed: { zh: '\u52a0\u8f7d\u7528\u6237\u5931\u8d25: ', en: 'Load users failed: ' },
+    groupDeleted: { zh: '\u7ec4\u5df2\u5220\u9664', en: 'Group deleted' },
+    deleteFailed: { zh: '\u5220\u9664\u5931\u8d25: ', en: 'Delete failed: ' },
+    selectOrEnterEmail: { zh: '\u8bf7\u9009\u62e9\u6216\u8f93\u5165\u90ae\u7bb1', en: 'Select or enter an email' },
+    assignFailed: { zh: '\u5206\u914d\u5931\u8d25: ', en: 'Assign failed: ' },
+    members: { zh: '\u6210\u5458', en: 'Members' },
+    confirmRemoveUser: { zh: '\u786e\u5b9a\u79fb\u9664 {email} \u5417\uff1f', en: 'Remove {email}?' },
+    confirmDeleteGroup: { zh: '\u786e\u5b9a\u5220\u9664\u7ec4 "{name}" \u5417\uff1f', en: 'Delete group "{name}"?' }
+  };
+
+  function st(key, vars) {
+    var entry = SECURITY_I18N[key];
+    var value = entry ? (isZh() ? entry.zh : entry.en) : key;
+    if (!vars) return value;
+    return value.replace(/\{(\w+)\}/g, function(match, name) {
+      return Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match;
+    });
+  }
+
   function policyOptionLabel(policyKey, option) {
     var labels = {
       guardrail_mode: { none: text('\u65e0', 'None'), standard: text('\u6807\u51c6', 'Standard'), strict: text('\u4e25\u683c', 'Strict') },
@@ -100,60 +204,60 @@
     var pageMembers = members.slice(start, start + pageSize);
     var html = '';
     if (children.length) {
-      html += '<div style="margin-bottom:8px;font-size:12px;color:var(--muted)">' + text('\u5b50\u7ec4:', 'Sub-groups:') + '</div>';
+      html += '<div style="margin-bottom:8px;font-size:12px;color:var(--muted)">' + st('subgroupLabel') + '</div>';
       children.forEach(function(child) {
         html += '<div class="item" style="min-height:auto;padding:8px 12px;margin-bottom:4px"><span style="font-weight:600">\ud83d\udcc1 ' + escapeHtml(child.name) + '</span><span style="color:var(--muted);font-size:11px;margin-left:8px">(' + String(Number(child.member_count || 0)) + ')</span></div>';
       });
     }
     if (totalMembers) {
-      html += '<div style="margin:12px 0 10px;font-size:12px;color:var(--muted)">' + (isZh() ? ('\u6210\u5458 (' + totalMembers + '):') : ('Members (' + totalMembers + '):')) + '</div>';
+      html += '<div style="margin:12px 0 10px;font-size:12px;color:var(--muted)">' + (st('membersLabel') + ' (' + totalMembers + '):') + '</div>';
       html += '<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px" id="secMembersGrid">';
       pageMembers.forEach(function(email, idx) {
         var absoluteIndex = start + idx + 1;
         html += '<div class="item" style="min-height:auto;padding:12px 12px 10px;gap:8px">';
         html += '<div style="font-weight:600;word-break:break-all;line-height:1.45">' + escapeHtml(email) + '</div>';
-        html += '<div class="item-meta">' + (isZh() ? ('\u7b2c ' + absoluteIndex + ' \u4e2a\u7528\u6237') : ('User #' + absoluteIndex)) + '</div>';
-        html += '<div class="actions" style="margin-top:auto"><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger);width:100%" onclick="removeSecGroupMember(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')">' + text('\u79fb\u9664', 'Remove') + '</button></div>';
+        html += '<div class="item-meta">' + st('userIndex', { index: absoluteIndex }) + '</div>';
+        html += '<div class="actions" style="margin-top:auto"><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger);width:100%" onclick="removeSecGroupMember(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')">' + st('remove') + '</button></div>';
         html += '</div>';
       });
       html += '</div>';
       if (totalPages > 1) {
         var startIdx = start + 1;
         var endIdx = Math.min(start + pageMembers.length, totalMembers);
-        html += '<div class="pager" style="margin-top:14px"><div class="pager-meta">' + (isZh() ? ('\u7b2c ' + sec.membersPage + ' / ' + totalPages + ' \u9875\uff0c\u663e\u793a ' + startIdx + '-' + endIdx + ' / ' + totalMembers) : ('Page ' + sec.membersPage + ' / ' + totalPages + ', showing ' + startIdx + '-' + endIdx + ' / ' + totalMembers)) + '</div><div class="pager-actions"><button class="btn-ghost" style="height:32px" onclick="changeSecMembersPage(-1)"' + (sec.membersPage <= 1 ? ' disabled' : '') + '>' + text('\u4e0a\u4e00\u9875', 'Previous') + '</button><button class="btn-ghost" style="height:32px" onclick="changeSecMembersPage(1)"' + (sec.membersPage >= totalPages ? ' disabled' : '') + '>' + text('\u4e0b\u4e00\u9875', 'Next') + '</button></div></div>';
+        html += '<div class="pager" style="margin-top:14px"><div class="pager-meta">' + st('pagerSummary', { page: sec.membersPage, totalPages: totalPages, start: startIdx, end: endIdx, total: totalMembers }) + '</div><div class="pager-actions"><button class="btn-ghost" style="height:32px" onclick="changeSecMembersPage(-1)"' + (sec.membersPage <= 1 ? ' disabled' : '') + '>' + st('previous') + '</button><button class="btn-ghost" style="height:32px" onclick="changeSecMembersPage(1)"' + (sec.membersPage >= totalPages ? ' disabled' : '') + '>' + st('next') + '</button></div></div>';
       }
     }
-    return html || hint(text('\u65e0\u6210\u5458', 'No members'));
+    return html || hint(st('noMembers'));
   }
 
   function applySecurityI18n() {
-    _s('navSecurity', 'textContent', text('\u5b89\u5168\u7ba1\u7406', 'Security Management'));
-    _s('navSecurityDesc', 'textContent', text('\u7528\u6237\u7ec4\u3001\u7b56\u7565\u4e0e\u7ec4\u7ec7\u67b6\u6784', 'Groups, policies, and organization structure')); 
-    _s('secTitle', 'textContent', text('\u5b89\u5168\u7ba1\u7406', 'Security Management')); 
-    _s('secDesc', 'textContent', text('\u7ba1\u7406\u7528\u6237\u7ec4\u3001\u7b56\u7565\u548c\u7ec4\u7ec7\u67b6\u6784\u3002', 'Manage groups, policies, and the organization structure.'));
-    _s('secReloadBtn', 'textContent', text('\u5237\u65b0', 'Reload'));
-    _s('secCentralizedTitle', 'textContent', text('\u96c6\u4e2d\u7b56\u7565', 'Centralized Policy'));
-    _s('secOrgTitle', 'textContent', text('\u7ec4\u7ec7\u67b6\u6784', 'Org Structure'));
-    _s('secDefaultGroupTitle', 'textContent', text('\u9ed8\u8ba4\u7ec4', 'Default Group'));
-    _s('secDefaultGroupSetBtn', 'textContent', text('\u8bbe\u7f6e', 'Set'));
-    _s('secGroupTreeTitle', 'textContent', text('\u7ec4\u7ec7\u6811', 'Group Tree'));
-    _s('secCtxCreate', 'textContent', text('\u521b\u5efa\u5b50\u90e8\u95e8', 'Create Sub-department'));
-    _s('secCtxRename', 'textContent', text('\u91cd\u547d\u540d\u90e8\u95e8', 'Rename Department'));
-    _s('secCtxAssign', 'textContent', text('\u79fb\u5165\u7528\u6237', 'Move Users Here'));
-    _s('secCtxDelete', 'textContent', text('\u5220\u9664\u90e8\u95e8', 'Delete Department'));
-    _s('secPolicySaveBtn', 'textContent', text('\u4fdd\u5b58', 'Save'));
-    _s('secMembersTitle', 'textContent', text('\u6210\u5458', 'Members'));
-    _s('secMembersReloadBtn', 'textContent', text('\u5237\u65b0', 'Reload'));
-    _s('defaultGroupModalTitle', 'textContent', text('\u9ed8\u8ba4\u7ec4', 'Default Group'));
-    _s('defaultGroupModalDesc', 'textContent', text('\u4e3a\u65b0\u7528\u6237\u9009\u62e9\u9ed8\u8ba4\u6240\u5c5e\u7ec4\u3002', 'Choose the default group for new users.'));
-    _s('defaultGroupCancelBtn', 'textContent', text('\u53d6\u6d88', 'Cancel'));
-    _s('defaultGroupConfirmBtn', 'textContent', text('\u786e\u8ba4', 'Confirm'));
-    _s('assignUsersModalTitle', 'textContent', text('\u79fb\u5165\u7528\u6237', 'Move Users'));
-    _s('assignUsersModalDesc', 'textContent', text('\u53ef\u4ee5\u641c\u7d22\u5e76\u5c06\u7528\u6237\u79fb\u5165\u5f53\u524d\u90e8\u95e8\u3002', 'Search and move a user into the selected department.'));
-    _s('assignUsersCancelBtn', 'textContent', text('\u53d6\u6d88', 'Cancel'));
-    _s('assignUsersConfirmBtn', 'textContent', text('\u786e\u8ba4', 'Confirm'));
-    _s('assignUsersSearch', 'placeholder', text('\u641c\u7d22\u90ae\u7bb1\u6216 SN', 'Search email or SN'));
-    _s('secContextMenu', 'title', text('\u90e8\u95e8\u64cd\u4f5c\u83dc\u5355', 'Department actions'));
+    _s('navSecurity', 'textContent', secTr('navSecurity', '\u5b89\u5168\u7ba1\u7406', 'Security Management'));
+    _s('navSecurityDesc', 'textContent', secTr('navSecurityDesc', '\u7528\u6237\u7ec4\u3001\u7b56\u7565\u4e0e\u7ec4\u7ec7\u67b6\u6784', 'Groups, policies, and organization structure'));
+    _s('secTitle', 'textContent', secTr('securityTabTitle', '\u5b89\u5168\u7ba1\u7406', 'Security Management'));
+    _s('secDesc', 'textContent', secTr('securityTabSubtitle', '\u7ba1\u7406\u7528\u6237\u7ec4\u3001\u7b56\u7565\u548c\u7ec4\u7ec7\u67b6\u6784\u3002', 'Manage groups, policies, and the organization structure.'));
+    _s('secReloadBtn', 'textContent', st('reload'));
+    _s('secCentralizedTitle', 'textContent', st('centralizedPolicy'));
+    _s('secOrgTitle', 'textContent', st('orgStructure'));
+    _s('secDefaultGroupTitle', 'textContent', st('defaultGroup'));
+    _s('secDefaultGroupSetBtn', 'textContent', st('set'));
+    _s('secGroupTreeTitle', 'textContent', st('groupTree'));
+    _s('secCtxCreate', 'textContent', st('createSubDepartment'));
+    _s('secCtxRename', 'textContent', st('renameDepartment'));
+    _s('secCtxAssign', 'textContent', st('moveUsersHere'));
+    _s('secCtxDelete', 'textContent', st('deleteDepartment'));
+    _s('secPolicySaveBtn', 'textContent', st('save'));
+    _s('secMembersTitle', 'textContent', st('members'));
+    _s('secMembersReloadBtn', 'textContent', st('reload'));
+    _s('defaultGroupModalTitle', 'textContent', st('defaultGroup'));
+    _s('defaultGroupModalDesc', 'textContent', st('chooseDefaultGroupDesc'));
+    _s('defaultGroupCancelBtn', 'textContent', st('cancel'));
+    _s('defaultGroupConfirmBtn', 'textContent', st('confirm'));
+    _s('assignUsersModalTitle', 'textContent', st('moveUsers'));
+    _s('assignUsersModalDesc', 'textContent', st('moveUsersDesc'));
+    _s('assignUsersCancelBtn', 'textContent', st('cancel'));
+    _s('assignUsersConfirmBtn', 'textContent', st('confirm'));
+    _s('assignUsersSearch', 'placeholder', st('searchEmailOrSn'));
+    _s('secContextMenu', 'title', st('departmentActions'));
   }
 
   function normalizeNode(raw) {
@@ -209,7 +313,7 @@
     if (!container) return;
     if (depth === 0) container.innerHTML = '';
     if (!nodes || !nodes.length) {
-      if (depth === 0) container.innerHTML = hint(text('\u65e0\u7ec4\u7ec7\u6570\u636e', 'No groups'));
+      if (depth === 0) container.innerHTML = hint(st('noGroups'));
       return;
     }
     nodes.forEach(function(node) {
@@ -279,7 +383,7 @@
           loading.style.padding = '2px 8px 6px ' + ((depth + 1) * 18 + 8) + 'px';
           loading.style.color = 'var(--muted)';
           loading.style.fontSize = '12px';
-          loading.textContent = text('\u6b63\u5728\u52a0\u8f7d...', 'Loading...');
+          loading.textContent = st('loading');
           container.appendChild(loading);
         }
       }
@@ -292,10 +396,10 @@
     var orgToggle = document.getElementById('secOrgToggle');
     if (centralizedToggle) centralizedToggle.checked = !!settings.centralized_security_enabled;
     if (orgToggle) orgToggle.checked = !!settings.org_structure_enabled;
-    _s('secCentralizedHint', 'textContent', settings.centralized_security_enabled ? text('\u5df2\u542f\u7528', 'Enabled') : text('\u5df2\u7981\u7528', 'Disabled'));
-    _s('secOrgHint', 'textContent', settings.org_structure_enabled ? text('\u5df2\u542f\u7528', 'Enabled') : text('\u5df2\u7981\u7528', 'Disabled'));
-    var dgHint = settings.default_group_id || text('\u672a\u8bbe\u7f6e', 'Not set');
-    _s('secDefaultGroupHint', 'textContent', text('\u9ed8\u8ba4\u7ec4: ', 'Default group: ') + dgHint);
+    _s('secCentralizedHint', 'textContent', settings.centralized_security_enabled ? st('enabled') : st('disabled'));
+    _s('secOrgHint', 'textContent', settings.org_structure_enabled ? st('enabled') : st('disabled'));
+    var dgHint = settings.default_group_id || st('notSet');
+    _s('secDefaultGroupHint', 'textContent', st('defaultGroupPrefix') + dgHint);
   }
 
   async function loadGroups() {
@@ -331,15 +435,15 @@
       return email.indexOf(query) >= 0 || sn.indexOf(query) >= 0;
     });
     if (!rows.length) {
-      root.innerHTML = hint(query ? text('\u65e0\u5339\u914d\u7528\u6237', 'No users match the search') : text('\u6682\u65e0\u53ef\u5206\u914d\u7528\u6237', 'No users available'));
+      root.innerHTML = hint(query ? st('noUsersMatchSearch') : st('noUsersAvailable'));
     } else {
       root.innerHTML = rows.map(function(user) {
         var email = user.email || '';
         var selected = sec.selectedAssignEmail === email;
-        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-weight:600">' + escapeHtml(email) + '</div><div class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(text('\u72b6\u6001', 'Status')) + ': ' + escapeHtml(user.status || text('\u672a\u77e5', 'Unknown')) + '</div></div><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px">' + escapeHtml(text('\u79fb\u5165', 'Move')) + '</button></div></div>';
+        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-weight:600">' + escapeHtml(email) + '</div><div class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(st('status')) + ': ' + escapeHtml(user.status || st('unknown')) + '</div></div><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px">' + escapeHtml(st('move')) + '</button></div></div>';
       }).join('');
     }
-    _s('assignUsersCount', 'textContent', (isZh() ? ('\u663e\u793a ' + rows.length + ' / ' + sec.assignUsers.length + ' \u4e2a\u7528\u6237') : ('Showing ' + rows.length + ' / ' + sec.assignUsers.length + ' users')));
+    _s('assignUsersCount', 'textContent', st('showingUsers', { visible: rows.length, total: sec.assignUsers.length }));
   }
 
   async function loadAssignableUsers() {
@@ -354,12 +458,12 @@
     try {
       await loadSettings();
     } catch (err) {
-      showToast(text('\u52a0\u8f7d\u5b89\u5168\u8bbe\u7f6e\u5931\u8d25: ', 'Load security settings failed: ') + err.message, 'error');
+      showToast(st('loadSecuritySettingsFailed') + err.message, 'error');
     }
     try {
       await loadGroups();
     } catch (err) {
-      showToast(text('\u52a0\u8f7d\u7ec4\u7ec7\u6811\u5931\u8d25: ', 'Load group tree failed: ') + err.message, 'error');
+      showToast(st('loadGroupTreeFailed') + err.message, 'error');
     }
   };
 
@@ -393,7 +497,7 @@
       try {
         await global.loadSecGroupChildren(groupID);
       } catch (err) {
-        showToast(text('\u52a0\u8f7d\u5b50\u90e8\u95e8\u5931\u8d25: ', 'Load child groups failed: ') + err.message, 'error');
+        showToast(st('loadChildGroupsFailed') + err.message, 'error');
       }
     } else {
       global.renderSecGroupTree(sec.groupTree, document.getElementById('secGroupTree'), 0);
@@ -420,8 +524,8 @@
     global._secSelectedGroupId = id;
     global._secSelectedGroupName = name;
     if (sec.groupTree) global.renderSecGroupTree(sec.groupTree, document.getElementById('secGroupTree'), 0);
-    _s('secPolicyTitle', 'textContent', text('\u7b56\u7565: ', 'Policy: ') + name);
-    _s('secPolicySubtitle', 'textContent', text('\u7ec4 ID: ', 'Group ID: ') + id);
+    _s('secPolicyTitle', 'textContent', st('policyPrefix') + name);
+    _s('secPolicySubtitle', 'textContent', st('groupIdPrefix') + id);
     var policyActions = document.getElementById('secPolicyActions');
     var groupMembers = document.getElementById('secGroupMembers');
     if (policyActions) policyActions.classList.remove('hidden');
@@ -439,14 +543,14 @@
       global._secPolicyCache = view;
       var items = view.items || {};
       var policyKeys = [
-        { key: 'file_outbound_enabled', label: text('\u6587\u4ef6\u5916\u53d1', 'File Outbound'), type: 'bool' },
-        { key: 'image_outbound_enabled', label: text('\u56fe\u7247\u5916\u53d1', 'Image Outbound'), type: 'bool' },
-        { key: 'gossip_enabled', label: text('Gossip \u529f\u80fd', 'Gossip'), type: 'bool' },
-        { key: 'yolo_mode_allowed', label: text('YOLO \u6a21\u5f0f', 'YOLO Mode'), type: 'bool' },
-        { key: 'smart_route_enabled', label: text('\u667a\u80fd\u8def\u7531', 'Smart Route'), type: 'bool' },
-        { key: 'guardrail_mode', label: text('\u62a4\u680f\u6a21\u5f0f', 'Guardrail Mode'), type: 'select', options: ['none', 'standard', 'strict'] },
-        { key: 'sandbox_mode', label: text('\u6c99\u7bb1\u6a21\u5f0f', 'Sandbox Mode'), type: 'select', options: ['none', 'basic', 'strict'] },
-        { key: 'network_level', label: text('\u7f51\u7edc\u7ea7\u522b', 'Network Level'), type: 'select', options: ['none', 'limited', 'full'] }
+        { key: 'file_outbound_enabled', label: st('fileOutbound'), type: 'bool' },
+        { key: 'image_outbound_enabled', label: st('imageOutbound'), type: 'bool' },
+        { key: 'gossip_enabled', label: st('gossip'), type: 'bool' },
+        { key: 'yolo_mode_allowed', label: st('yoloMode'), type: 'bool' },
+        { key: 'smart_route_enabled', label: st('smartRoute'), type: 'bool' },
+        { key: 'guardrail_mode', label: st('guardrailMode'), type: 'select', options: ['none', 'standard', 'strict'] },
+        { key: 'sandbox_mode', label: st('sandboxMode'), type: 'select', options: ['none', 'basic', 'strict'] },
+        { key: 'network_level', label: st('networkLevel'), type: 'select', options: ['none', 'limited', 'full'] }
       ];
       var html = '';
       policyKeys.forEach(function(pk) {
@@ -455,8 +559,8 @@
         var source = item.source || 'inherited';
         var sourceName = item.source_name || '';
         var sourceTag = source === 'self'
-          ? '<span style="color:var(--accent);font-size:11px;margin-left:6px">' + text('\u81ea\u5b9a\u4e49', 'Custom') + '</span>'
-          : '<span style="color:var(--muted);font-size:11px;margin-left:6px">' + text('\u7ee7\u627f\u81ea ', 'Inherited from ') + escapeHtml(sourceName) + '</span>';
+          ? '<span style="color:var(--accent);font-size:11px;margin-left:6px">' + st('custom') + '</span>'
+          : '<span style="color:var(--muted);font-size:11px;margin-left:6px">' + st('inheritedFrom') + escapeHtml(sourceName) + '</span>';
         html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)">';
         html += '<div>' + escapeHtml(pk.label) + sourceTag + '</div>';
         if (pk.type === 'bool') {
@@ -479,7 +583,7 @@
   global.saveSecPolicy = async function saveSecPolicy() {
     var sec = state();
     if (!sec.selectedGroupId) {
-      showToast(text('\u8bf7\u5148\u9009\u62e9\u4e00\u4e2a\u7ec4', 'Select a group first'), 'info');
+      showToast(st('selectGroupFirst'), 'info');
       return;
     }
     var policy = {};
@@ -489,10 +593,10 @@
     });
     try {
       await api('/api/admin/security/groups/' + encodeURIComponent(sec.selectedGroupId) + '/policy', { method: 'PUT', body: JSON.stringify({ policy: policy }) });
-      showToast(text('\u7b56\u7565\u5df2\u4fdd\u5b58', 'Policy saved'), 'success');
+      showToast(st('policySaved'), 'success');
       global.loadSecGroupPolicy(sec.selectedGroupId);
     } catch (err) {
-      showToast(text('\u4fdd\u5b58\u7b56\u7565\u5931\u8d25: ', 'Save policy failed: ') + err.message, 'error');
+      showToast(st('savePolicyFailed') + err.message, 'error');
     }
   };
 
@@ -501,7 +605,7 @@
     if (!sec.selectedGroupId) return;
     var container = document.getElementById('secMembersList');
     if (!container) return;
-    container.innerHTML = hint(text('\u6b63\u5728\u52a0\u8f7d\u6210\u5458...', 'Loading members...'));
+    container.innerHTML = hint(st('loadingMembers'));
     try {
       var data = await api('/api/admin/security/groups/' + encodeURIComponent(sec.selectedGroupId) + '/members');
       replaceGroupChildren(sec.groupTree, sec.selectedGroupId, data.children || []);
@@ -534,14 +638,14 @@
   global.removeSecGroupMember = async function removeSecGroupMember(email) {
     var sec = state();
     if (!sec.selectedGroupId) return;
-    if (!confirm(isZh() ? ('\u786e\u5b9a\u79fb\u9664 ' + email + ' \u5417\uff1f') : ('Remove ' + email + '?'))) return;
+    if (!confirm(st('confirmRemoveUser', { email: email }))) return;
     try {
       await api('/api/admin/security/groups/' + encodeURIComponent(sec.selectedGroupId) + '/members/' + encodeURIComponent(email), { method: 'DELETE' });
-      showToast(text('\u5df2\u79fb\u9664', 'Removed'), 'success');
+      showToast(st('removed'), 'success');
       global.loadSecGroupMembers();
       global.loadSecurityTab();
     } catch (err) {
-      showToast(text('\u79fb\u9664\u5931\u8d25: ', 'Remove failed: ') + err.message, 'error');
+      showToast(st('removeFailed') + err.message, 'error');
     }
   };
 
@@ -550,10 +654,10 @@
       var settings = await api('/api/admin/security/settings');
       settings.centralized_security_enabled = enabled;
       await api('/api/admin/security/settings', { method: 'PUT', body: JSON.stringify(settings) });
-      showToast(enabled ? text('\u96c6\u4e2d\u7b56\u7565\u5df2\u542f\u7528', 'Centralized policy enabled') : text('\u96c6\u4e2d\u7b56\u7565\u5df2\u7981\u7528', 'Centralized policy disabled'), 'success');
-      _s('secCentralizedHint', 'textContent', enabled ? text('\u5df2\u542f\u7528', 'Enabled') : text('\u5df2\u7981\u7528', 'Disabled'));
+      showToast(enabled ? st('centralizedEnabled') : st('centralizedDisabled'), 'success');
+      _s('secCentralizedHint', 'textContent', enabled ? st('enabled') : st('disabled'));
     } catch (err) {
-      showToast(text('\u66f4\u65b0\u5931\u8d25: ', 'Update failed: ') + err.message, 'error');
+      showToast(st('updateFailed') + err.message, 'error');
       var toggle = document.getElementById('secCentralizedToggle');
       if (toggle) toggle.checked = !enabled;
     }
@@ -564,10 +668,10 @@
       var settings = await api('/api/admin/security/settings');
       settings.org_structure_enabled = enabled;
       await api('/api/admin/security/settings', { method: 'PUT', body: JSON.stringify(settings) });
-      showToast(enabled ? text('\u7ec4\u7ec7\u67b6\u6784\u5df2\u542f\u7528', 'Org structure enabled') : text('\u7ec4\u7ec7\u67b6\u6784\u5df2\u7981\u7528', 'Org structure disabled'), 'success');
-      _s('secOrgHint', 'textContent', enabled ? text('\u5df2\u542f\u7528', 'Enabled') : text('\u5df2\u7981\u7528', 'Disabled'));
+      showToast(enabled ? st('orgEnabled') : st('orgDisabled'), 'success');
+      _s('secOrgHint', 'textContent', enabled ? st('enabled') : st('disabled'));
     } catch (err) {
-      showToast(text('\u66f4\u65b0\u5931\u8d25: ', 'Update failed: ') + err.message, 'error');
+      showToast(st('updateFailed') + err.message, 'error');
       var toggle = document.getElementById('secOrgToggle');
       if (toggle) toggle.checked = !enabled;
     }
@@ -591,7 +695,7 @@
       global.renderDefaultGroupPicker(sec.defaultGroupTree, picker, 0);
       if (overlay) overlay.classList.add('show');
     } catch (err) {
-      showToast(text('\u52a0\u8f7d\u7ec4\u7ec7\u6811\u5931\u8d25: ', 'Load group tree failed: ') + err.message, 'error');
+      showToast(st('loadGroupTreeFailed') + err.message, 'error');
     }
   };
 
@@ -625,16 +729,16 @@
   global.confirmDefaultGroup = async function confirmDefaultGroup() {
     var sec = state();
     if (!sec.defaultGroupPickedId) {
-      showToast(text('\u8bf7\u9009\u62e9\u4e00\u4e2a\u7ec4', 'Please select a group'), 'info');
+      showToast(st('pleaseSelectGroup'), 'info');
       return;
     }
     try {
       await api('/api/admin/security/settings/default-group', { method: 'PUT', body: JSON.stringify({ group_id: sec.defaultGroupPickedId }) });
-      showToast(text('\u9ed8\u8ba4\u7ec4\u5df2\u8bbe\u7f6e', 'Default group set'), 'success');
+      showToast(st('defaultGroupSet'), 'success');
       global.closeDefaultGroupModal();
       global.loadSecurityTab();
     } catch (err) {
-      showToast(text('\u8bbe\u7f6e\u9ed8\u8ba4\u7ec4\u5931\u8d25: ', 'Set default group failed: ') + err.message, 'error');
+      showToast(st('setDefaultGroupFailed') + err.message, 'error');
     }
   };
 
@@ -662,23 +766,23 @@
     var groupName = sec.contextGroupName;
     if (!groupID) return;
     if (action === 'create') {
-      var name = prompt(text('\u8f93\u5165\u65b0\u5b50\u7ec4\u540d\u79f0:', 'Enter new sub-group name:'));
+      var name = prompt(st('promptNewSubGroup'));
       if (!name) return;
       api('/api/admin/security/groups', { method: 'POST', body: JSON.stringify({ name: name, parent_id: groupID }) })
-        .then(function() { showToast(text('\u5b50\u7ec4\u5df2\u521b\u5efa', 'Sub-group created'), 'success'); global.loadSecurityTab(); })
-        .catch(function(err) { showToast(text('\u521b\u5efa\u5931\u8d25: ', 'Create failed: ') + err.message, 'error'); });
+        .then(function() { showToast(st('subgroupCreated'), 'success'); global.loadSecurityTab(); })
+        .catch(function(err) { showToast(st('createFailed') + err.message, 'error'); });
       return;
     }
     if (action === 'rename') {
-      var newName = prompt(text('\u8f93\u5165\u65b0\u540d\u79f0:', 'Enter new name:'), groupName);
+      var newName = prompt(st('promptNewName'), groupName);
       if (!newName) return;
       api('/api/admin/security/groups/' + encodeURIComponent(groupID), { method: 'PUT', body: JSON.stringify({ name: newName }) })
         .then(function() {
-          showToast(text('\u5df2\u91cd\u547d\u540d', 'Renamed'), 'success');
+          showToast(st('renamed'), 'success');
           if (state().selectedGroupId === groupID) state().selectedGroupName = newName;
           global.loadSecurityTab();
         })
-        .catch(function(err) { showToast(text('\u91cd\u547d\u540d\u5931\u8d25: ', 'Rename failed: ') + err.message, 'error'); });
+        .catch(function(err) { showToast(st('renameFailed') + err.message, 'error'); });
       return;
     }
     if (action === 'assign') {
@@ -686,27 +790,27 @@
       sec.contextGroupName = groupName;
       sec.selectedAssignEmail = '';
       global._secAssignGroupId = groupID;
-      _s('assignUsersModalTitle', 'textContent', text('\u79fb\u5165\u7528\u6237\u5230\u90e8\u95e8: ', 'Move users to department: ') + groupName);
+      _s('assignUsersModalTitle', 'textContent', st('assignTitleWithGroup', { name: groupName }));
       _s('assignUsersSearch', 'value', '');
-      _s('assignUsersCount', 'textContent', text('\u6b63\u5728\u52a0\u8f7d...', 'Loading...'));
+      _s('assignUsersCount', 'textContent', st('loading'));
       var assignTree = document.getElementById('assignUsersTree');
       var assignOverlay = document.getElementById('assignUsersModalOverlay');
       var assignSearch = document.getElementById('assignUsersSearch');
-      if (assignTree) assignTree.innerHTML = hint(text('\u6b63\u5728\u52a0\u8f7d\u7528\u6237\u5217\u8868...', 'Loading users...'));
+      if (assignTree) assignTree.innerHTML = hint(st('loadingUsers'));
       if (assignOverlay) assignOverlay.classList.add('show');
       if (assignSearch && typeof assignSearch.focus === 'function') assignSearch.focus();
       loadAssignableUsers().catch(function(err) {
         var tree = document.getElementById('assignUsersTree');
         if (tree) tree.innerHTML = errorHint(err.message);
-        showToast(text('\u52a0\u8f7d\u7528\u6237\u5931\u8d25: ', 'Load users failed: ') + err.message, 'error');
+        showToast(st('loadUsersFailed') + err.message, 'error');
       });
       return;
     }
     if (action === 'delete') {
-      if (!confirm(isZh() ? ('\u786e\u5b9a\u5220\u9664\u7ec4 "' + groupName + '" \u5417\uff1f') : ('Delete group "' + groupName + '"?'))) return;
+      if (!confirm(st('confirmDeleteGroup', { name: groupName }))) return;
       api('/api/admin/security/groups/' + encodeURIComponent(groupID), { method: 'DELETE' })
         .then(function() {
-          showToast(text('\u7ec4\u5df2\u5220\u9664', 'Group deleted'), 'success');
+          showToast(st('groupDeleted'), 'success');
           if (state().selectedGroupId === groupID) {
             state().selectedGroupId = null;
             state().selectedGroupName = null;
@@ -715,7 +819,7 @@
           }
           global.loadSecurityTab();
         })
-        .catch(function(err) { showToast(text('\u5220\u9664\u5931\u8d25: ', 'Delete failed: ') + err.message, 'error'); });
+        .catch(function(err) { showToast(st('deleteFailed') + err.message, 'error'); });
     }
   };
 
@@ -725,13 +829,21 @@
     renderAssignUsers();
   };
 
+  if (global.AdminTabRegistry && typeof global.AdminTabRegistry.registerTab === 'function') {
+    global.AdminTabRegistry.registerTab({
+      id: 'security',
+      title: function() { return secTr('securityTabTitle', '\u5b89\u5168\u7ba1\u7406', 'Security Management'); },
+      subtitle: function() { return secTr('securityTabSubtitle', '\u7ba1\u7406\u7528\u6237\u7ec4\u3001\u7b56\u7565\u548c\u7ec4\u7ec7\u67b6\u6784\u3002', 'Manage groups, policies, and the organization structure.'); }
+    });
+  }
+
   applySecurityI18n();
   if (global.AdminTabRegistry && typeof global.AdminTabRegistry.onLanguageChange === 'function') {
     global.AdminTabRegistry.onLanguageChange(function() {
       var sec = state();
       applySecurityI18n();
       if (sec.assignGroupId && sec.contextGroupName) {
-        _s('assignUsersModalTitle', 'textContent', text('\u79fb\u5165\u7528\u6237\u5230\u90e8\u95e8: ', 'Move users to department: ') + sec.contextGroupName);
+        _s('assignUsersModalTitle', 'textContent', st('assignTitleWithGroup', { name: sec.contextGroupName }));
       }
       renderAssignUsers();
       var membersPanel = document.getElementById('secGroupMembers');
@@ -751,17 +863,17 @@
     var input = document.getElementById('assignUsersSearch');
     var email = String(input && input.value || '').trim() || sec.selectedAssignEmail;
     if (!email || !sec.assignGroupId) {
-      showToast(text('\u8bf7\u9009\u62e9\u6216\u8f93\u5165\u90ae\u7bb1', 'Select or enter an email'), 'info');
+      showToast(st('selectOrEnterEmail'), 'info');
       return;
     }
     try {
       await api('/api/admin/security/groups/' + encodeURIComponent(sec.assignGroupId) + '/members', { method: 'POST', body: JSON.stringify({ email: email }) });
-      showToast(text('\u7528\u6237\u5df2\u79fb\u5165', 'User moved'), 'success');
+      showToast(st('userMoved'), 'success');
       global.closeAssignUsersModal();
       global.loadSecurityTab();
       if (sec.selectedGroupId) global.loadSecGroupMembers();
     } catch (err) {
-      showToast(text('\u5206\u914d\u5931\u8d25: ', 'Assign failed: ') + err.message, 'error');
+      showToast(st('assignFailed') + err.message, 'error');
     }
   };
 })(window);

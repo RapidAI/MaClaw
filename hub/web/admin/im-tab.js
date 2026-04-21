@@ -35,9 +35,9 @@
     _s('wecomConfigTitle', 'textContent', wcm('title'));
     _s('wecomConfigDesc', 'textContent', wcm('desc'));
     _s('wecomReloadBtn', 'textContent', tr('reload'));
-    _s('wecomEnabledLabel', 'textContent', currentLang === 'zh' ? '\u542f\u7528' : 'Enable');
-    _s('wecomBotIdLabel', 'textContent', 'Bot ID');
-    _s('wecomSecretLabel', 'textContent', wcm('appSecret'));
+    _s('wecomEnabledLabel', 'textContent', wcm('enabled'));
+    _s('wecomBotIdLabel', 'textContent', wcm('botId'));
+    _s('wecomSecretLabel', 'textContent', wcm('secret'));
     _s('wecomSaveBtn', 'textContent', wcm('save'));
     _s('wecomGuideTitle', 'textContent', wcm('guideTitle'));
     _s('wecomGuideContent', 'innerHTML', wcm('guideContent'));
@@ -193,7 +193,7 @@
     const channels = imState().bridgeChannelsCache;
     const lang = global.currentLang;
     if (!channels.length) {
-      root.innerHTML = '<div class="hint">No channels available.</div>';
+      root.innerHTML = '<div class="hint">' + ocim('noChannelsAvailable') + '</div>';
       return;
     }
     root.innerHTML = channels.map(function(ch) {

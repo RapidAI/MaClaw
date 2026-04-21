@@ -18,15 +18,15 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
-	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
-	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
+	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
+	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
@@ -450,6 +450,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		invitationService,
 		st.EmailInvites,
 		st.System,
+		st.AdminAudit,
 		feishuNotifier,
 		feishuPlugin,
 		openclawIMPlugin,

@@ -212,7 +212,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	// SkillMarket API
 	if smHandlers != nil {
 		// Auth rate limiters
-		authLoginRL := newGossipRateLimiter(10, 5*time.Minute)   // 10 login attempts per 5 min per IP
+		authLoginRL := newGossipRateLimiter(10, 5*time.Minute)    // 10 login attempts per 5 min per IP
 		authRegisterRL := newGossipRateLimiter(5, 10*time.Minute) // 5 registrations per 10 min per IP
 		authLookupRL := newGossipRateLimiter(5, 10*time.Minute)   // 5 lookup emails per 10 min per IP
 		// Auth endpoints (no session required)
@@ -247,6 +247,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		// Admin review & config
 		mux.HandleFunc("POST /api/v1/admin/skillmarket/{id}/approve", RequireAdmin(adminService, smHandlers.AdminApproveSkill))
 		mux.HandleFunc("POST /api/v1/admin/skillmarket/{id}/reject", RequireAdmin(adminService, smHandlers.AdminRejectSkill))
+		mux.HandleFunc("GET /api/v1/admin/config/trial", RequireAdmin(adminService, smHandlers.GetTrialConfig))
 		mux.HandleFunc("PUT /api/v1/admin/config/trial", RequireAdmin(adminService, smHandlers.UpdateTrialConfig))
 		// API Key management
 		mux.HandleFunc("POST /api/v1/skillmarket/{id}/apikeys/upload", smHandlers.UploadAPIKeys)

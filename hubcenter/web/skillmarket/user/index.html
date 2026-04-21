@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN" id="html-root">
 <head>
   <meta charset="utf-8">
@@ -238,7 +238,7 @@
         </div>
         <div id="credits-msg"></div>
         <h3 style="margin-top:16px" data-i18n="credits.history">交易记录</h3>
-        <table><thead><tr><th data-i18n="tx.time">时间</th><th data-i18n="tx.type">类型</th><th data-i18n="tx.amount">金额</th><th data-i18n="tx.balance">余额</th><th data-i18n="tx.desc">说明</th></tr></thead><tbody id="tx-list"></tbody></table>
+        <table><thead><tr><th data-i18n="tx.time">时间</th><th data-i18n="tx.type">类型</th><th data-i18n="tx.amount">金额</th><th data-i18n="tx.balance">余额</th><th data-i18n="tx.desc">说明</th></tr></thead><tbody id="tx-list"></tbody></table><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" onclick="changeTxPage(-1)">&larr;</button><button class="btn btn-outline" id="tx-next-btn" onclick="changeTxPage(1)">&rarr;</button></div></div>
       </div>
     </div>
 
@@ -295,8 +295,8 @@ const LANG = (navigator.language || 'zh').startsWith('zh') ? 'zh' : 'en';
 document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
 
 const I18N = {
-  'subtitle':           { zh: '账户管理 · Skill 管理 · 管理后台', en: 'Account · Skills · Admin' },
-  'nav.browse':         { zh: '← 返回 Skill 浏览', en: '← Back to Skill Browse' },
+  'subtitle':           { zh: '账户管理 · Skill 管理', en: 'Account ? Skills' },
+  'nav.browse':         { zh: '← 返回 Skill 浏览', en: '? Back to Skill Browse' },
   'auth.login.title':   { zh: '登录', en: 'Login' },
   'auth.register.title':{ zh: '注册新账户', en: 'Create Account' },
   'auth.lookup.title':  { zh: '邮件验证登录', en: 'Email Verification Login' },
@@ -322,8 +322,6 @@ const I18N = {
   'auth.logout':        { zh: '退出', en: 'Logout' },
   'tab.account':        { zh: '账户', en: 'Account' },
   'tab.myskills':       { zh: '我的 Skill', en: 'My Skills' },
-  'tab.review':         { zh: '审核管理', en: 'Review' },
-  'tab.config':         { zh: '系统配置', en: 'Settings' },
   'account.title':      { zh: '账户信息', en: 'Account Info' },
   'account.credits':    { zh: 'Credits 余额', en: 'Credits' },
   'account.settled':    { zh: '已结算收益', en: 'Settled' },
@@ -345,6 +343,8 @@ const I18N = {
   'tx.amount':          { zh: '金额', en: 'Amount' },
   'tx.balance':         { zh: '余额', en: 'Balance' },
   'tx.desc':            { zh: '说明', en: 'Description' },
+  'tx.empty':           { zh: '暂无交易记录', en: 'No transactions yet.' },
+  'tx.page':            { zh: '第 {current} / {total} 页', en: 'Page {current} / {total}' },
   'myskills.title':     { zh: '我的 Skill', en: 'My Skills' },
   'myskills.empty':     { zh: '暂无 Skill', en: 'No skills yet.' },
   'sk.name':            { zh: '名称', en: 'Name' },
@@ -353,6 +353,7 @@ const I18N = {
   'sk.rating':          { zh: '评分', en: 'Rating' },
   'sk.downloads':       { zh: '下载', en: 'Downloads' },
   'sk.actions':         { zh: '操作', en: 'Actions' },
+  'sk.withdraw':        { zh: '下架', en: 'Withdraw' },
   'apikey.title':       { zh: 'API Key 管理', en: 'API Key Management' },
   'apikey.query':       { zh: '查询', en: 'Lookup' },
   'apikey.bulk':        { zh: '批量上传', en: 'Bulk Upload' },
@@ -361,36 +362,10 @@ const I18N = {
   'apikey.stock':       { zh: '库存', en: 'Stock' },
   'apikey.available':   { zh: '可用', en: 'Available' },
   'apikey.assigned':    { zh: '已分配', en: 'Assigned' },
-  'review.title':       { zh: '待审核 Skill', en: 'Pending Review' },
-  'review.refresh':     { zh: '刷新', en: 'Refresh' },
-  'review.author':      { zh: '上传者', en: 'Author' },
-  'review.ratingCount': { zh: '评价人数', en: 'Ratings' },
-  'review.approve':     { zh: '批准', en: 'Approve' },
-  'review.reject':      { zh: '拒绝', en: 'Reject' },
-  'review.empty':       { zh: '暂无待审核 Skill', en: 'No skills pending review.' },
-  'purchase.title':     { zh: '购买记录', en: 'Purchase Records' },
-  'purchase.filter':    { zh: '按 buyer email 或 skill_id 筛选', en: 'Filter by buyer email or skill_id' },
-  'purchase.query':     { zh: '查询', en: 'Search' },
-  'purchase.buyer':     { zh: '买家', en: 'Buyer' },
-  'purchase.skill':     { zh: 'Skill', en: 'Skill' },
-  'purchase.amount':    { zh: '金额', en: 'Amount' },
-  'purchase.type':      { zh: '类型', en: 'Type' },
-  'purchase.status':    { zh: '状态', en: 'Status' },
-  'purchase.refund':    { zh: '退款', en: 'Refund' },
-  'purchase.refunded':  { zh: '已退款', en: 'Refunded' },
-  'config.trial.title': { zh: 'SkillMarket 参数设置', en: 'Trial Configuration' },
-  'config.trial.days':  { zh: '试用天数', en: 'Trial Days' },
-  'config.threshold':   { zh: '自动上架阈值', en: 'Auto-publish Threshold' },
-  'config.maxuploads':  { zh: '每小时上传限制', en: 'Max Uploads/Hour' },
-  'config.maxuploads.hint': { zh: '0 = 使用等级默认值', en: '0 = use tier default' },
-  'config.save':        { zh: '保存', en: 'Save' },
   'msg.topup.ok':       { zh: '充值成功', en: 'Top-up successful.' },
   'msg.withdraw.ok':    { zh: '提现成功', en: 'Withdrawal successful.' },
   'msg.apikey.ok':      { zh: '上传成功', en: 'Upload successful.' },
-  'msg.config.ok':      { zh: '配置已保存', en: 'Configuration saved.' },
   'msg.withdrawn.ok':   { zh: '已下架', en: 'Skill withdrawn.' },
-  'msg.refund.ok':      { zh: '退款成功', en: 'Refund successful.' },
-  'msg.refund.reason':  { zh: '退款原因：', en: 'Refund reason:' },
   'msg.withdraw.confirm':{ zh: '确认下架？', en: 'Confirm withdrawal?' },
   'err.network':        { zh: '网络错误，请检查连接', en: 'Network error. Please check your connection.' },
   'err.captcha':        { zh: '验证码错误', en: 'Incorrect captcha.' },
@@ -402,7 +377,6 @@ const I18N = {
   'msg.verified':       { zh: '身份已验证，已自动登录。', en: 'Identity verified. You are now logged in.' },
   'msg.session.expired':{ zh: '登录已过期，请重新登录。', en: 'Session expired. Please log in again.' },
 };
-
 const ERROR_MESSAGES = {
   'account not found':        { zh: '账户不存在', en: 'Account not found.' },
   'insufficient credits':     { zh: '余额不足', en: 'Insufficient credits.' },
@@ -668,19 +642,47 @@ async function loadTier(email) {
   } catch(e) {}
 }
 
-async function loadTransactions() {
+let txPage = 1;
+const txPageSize = 20;
+let txTotalPages = 1;
+function renderTxPager() {
+  const pager = document.getElementById('tx-pager');
+  const info = document.getElementById('tx-page-info');
+  const prev = document.getElementById('tx-prev-btn');
+  const next = document.getElementById('tx-next-btn');
+  if (pager) pager.style.display = txTotalPages > 1 ? 'flex' : 'none';
+  if (info) info.textContent = t('tx.page').replace('{current}', txPage).replace('{total}', txTotalPages);
+  if (prev) prev.disabled = txPage <= 1;
+  if (next) next.disabled = txPage >= txTotalPages;
+}
+async function loadTransactions(page) {
   if (!currentUserID) return;
+  if (page) txPage = page;
   try {
-    const r = await fetch(API + '/api/v1/credits/transactions?user_id=' + encodeURIComponent(currentUserID), { headers: authHeaders() });
+    const r = await fetch(API + '/api/v1/credits/transactions?user_id=' + encodeURIComponent(currentUserID) + '&offset=' + ((txPage - 1) * txPageSize) + '&limit=' + txPageSize, { headers: authHeaders() });
     if (!r.ok) return;
-    const list = await r.json();
+    const payload = await r.json();
+    const list = Array.isArray(payload) ? payload : (payload.transactions || []);
+    const total = typeof payload?.total === 'number' ? payload.total : list.length;
+    txTotalPages = Math.max(1, Math.ceil(total / txPageSize));
+    if (!list.length && total > 0 && txPage > txTotalPages) {
+      txPage = txTotalPages;
+      return loadTransactions(txPage);
+    }
     const tbody = document.getElementById('tx-list');
     tbody.innerHTML = '';
-    (list || []).forEach(tx => {
-      tbody.innerHTML += `<tr><td>${esc(tx.created_at||'')}</td><td>${esc(tx.type)}</td><td>${esc(String(tx.amount))}</td><td>${esc(String(tx.balance))}</td><td>${esc(tx.description||'')}</td></tr>`;
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">' + esc(t('tx.empty')) + '</td></tr>';
+      renderTxPager();
+      return;
+    }
+    list.forEach(tx => {
+      tbody.innerHTML += '<tr><td>' + esc(tx.created_at||'') + '</td><td>' + esc(tx.type) + '</td><td>' + esc(String(tx.amount)) + '</td><td>' + esc(String(tx.balance)) + '</td><td>' + esc(tx.description||'') + '</td></tr>';
     });
+    renderTxPager();
   } catch(e) {}
 }
+function changeTxPage(delta) { const next = txPage + delta; if (next < 1 || next > txTotalPages) return; loadTransactions(next); }
 
 async function topUp() {
   const amount = parseInt(document.getElementById('credits-amount').value);
@@ -738,67 +740,12 @@ async function loadMySkills() {
         <td>${esc(statusLabel)}</td>
         <td>${rating}</td>
         <td>${dl}</td>
-        <td><button class="btn btn-danger" onclick="withdrawSkill('${esc(s.id)}')">${LANG==='zh'?'下架':'Withdraw'}</button></td>
+        <td><button class="btn btn-danger" onclick="withdrawSkill('${esc(s.id)}')">${t('sk.withdraw')}</button></td>
       </tr>`;
     });
   } catch(e) {}
 }
 
-// ── Review ──
-async function loadPendingReview() {
-  try {
-    const r = await fetch(API + '/api/v1/skillmarket/search?q=&top_n=50', { headers: authHeaders() });
-    if (!r.ok) return;
-    const data = await r.json();
-    const list = data.results || data || [];
-    const tbody = document.getElementById('review-list');
-    tbody.innerHTML = '';
-    const pending = (list || []).filter(s => s.status === 'pending_review' || s.status === 'trial');
-    if (pending.length === 0) { document.getElementById('review-empty').style.display = ''; return; }
-    document.getElementById('review-empty').style.display = 'none';
-    pending.forEach(s => {
-      tbody.innerHTML += `<tr><td>${esc(s.name)}</td><td>${esc(s.author||'-')}</td><td>${(s.avg_rating||0).toFixed(1)}</td><td>${s.rating_count||0}</td><td><button class="btn btn-success" onclick="approveSkill('${esc(s.id)}')">${t('review.approve')}</button> <button class="btn btn-danger" onclick="rejectSkill('${esc(s.id)}')">${t('review.reject')}</button></td></tr>`;
-    });
-  } catch(e) {}
-}
-
-async function approveSkill(id) {
-  try { const r = await fetch(API+'/api/v1/admin/skillmarket/'+id+'/approve',{method:'POST',headers:authHeaders()}); if(!r.ok) throw await readErrorBody(r); loadPendingReview(); } catch(e){showToast(parseApiError(e),'error');}
-}
-async function rejectSkill(id) {
-  try { const r = await fetch(API+'/api/v1/admin/skillmarket/'+id+'/reject',{method:'POST',headers:authHeaders()}); if(!r.ok) throw await readErrorBody(r); loadPendingReview(); } catch(e){showToast(parseApiError(e),'error');}
-}
-
-// ── Purchases ──
-async function loadPurchases() {
-  const filter = document.getElementById('purchase-filter').value.trim();
-  try {
-    let url = API + '/api/v1/admin/purchases';
-    if (filter) url += '?filter=' + encodeURIComponent(filter);
-    const r = await fetch(url, { headers: authHeaders() });
-    if (!r.ok) return;
-    const list = await r.json();
-    const tbody = document.getElementById('purchase-list');
-    tbody.innerHTML = '';
-    (list || []).forEach(p => {
-      const refundBtn = p.status === 'active' ? `<button class="btn btn-danger" onclick="refundPurchase('${esc(p.id)}')">${t('purchase.refund')}</button>` : `<span>${t('purchase.refunded')}</span>`;
-      tbody.innerHTML += `<tr><td>${esc(p.buyer_email)}</td><td>${esc(p.skill_id)}</td><td>${esc(String(p.amount_paid))}</td><td>${esc(p.purchase_type)}</td><td>${esc(p.status)}</td><td>${refundBtn}</td></tr>`;
-    });
-  } catch(e) {}
-}
-
-async function refundPurchase(purchaseID) {
-  const reason = prompt(t('msg.refund.reason'));
-  if (!reason) return;
-  try {
-    const r = await fetch(API+'/api/v1/admin/refund',{method:'POST',headers:authHeaders(),body:JSON.stringify({purchase_record_id:purchaseID,reason})});
-    if(!r.ok) throw await readErrorBody(r);
-    showToast(t('msg.refund.ok'), 'success');
-    loadPurchases();
-  } catch(e){showToast(parseApiError(e),'error');}
-}
-
-// ── API Key ──
 async function loadAPIKeyStatus() {
   const skillID = document.getElementById('apikey-skill-id').value.trim();
   if (!skillID) return;
@@ -831,18 +778,6 @@ async function withdrawSkill(id) {
   } catch(e){showToast(parseApiError(e),'error');}
 }
 
-async function saveTrialConfig() {
-  const days = parseInt(document.getElementById('cfg-trial-days').value);
-  const threshold = parseInt(document.getElementById('cfg-threshold').value);
-  const maxUploads = parseInt(document.getElementById('cfg-max-uploads').value) || 0;
-  try {
-    const r = await fetch(API+'/api/v1/admin/config/trial',{method:'PUT',headers:authHeaders(),body:JSON.stringify({trial_duration_days:days,auto_publish_threshold:threshold,max_uploads_per_hour:maxUploads})});
-    if(!r.ok) throw await readErrorBody(r);
-    showMsg('config-msg',t('msg.config.ok'),false);
-  } catch(e){showMsg('config-msg',parseApiError(e),true);}
-}
-
-// ── Helpers ──
 function showMsg(id, msg, isErr) {
   const el = document.getElementById(id);
   el.className = 'msg ' + (isErr ? 'msg-err' : 'msg-ok');
@@ -871,6 +806,7 @@ function applyI18n() {
     const key = el.getAttribute('data-i18n-placeholder');
     if (I18N[key]) el.placeholder = I18N[key][LANG];
   });
+  renderTxPager();
 }
 
 // ── Init ──

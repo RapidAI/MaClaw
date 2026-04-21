@@ -160,12 +160,15 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 
 func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, email, code, hubBaseURL string) (*ServiceStatus, error) {
 	email = normalizeEmail(email)
-	code = strings.TrimSpace(code)
+	code = NormalizeCardCode(code)
 	if email == "" {
 		return nil, fmt.Errorf("email is required")
 	}
 	if code == "" {
 		return nil, fmt.Errorf("redeem code is required")
+	}
+	if err := ValidateCardCode(code); err != nil {
+		return nil, err
 	}
 	reg, err := LoadRegistry(ctx, system)
 	if err != nil {

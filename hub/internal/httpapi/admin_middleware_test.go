@@ -47,7 +47,43 @@ func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService)
 	deviceSvc := device.NewService(st.Machines, device.NewRuntime())
 	sessionSvc := session.NewService(session.NewCache(), st.Sessions)
 	gateway := &ws.Gateway{Identity: identity, Devices: deviceSvc, Sessions: sessionSvc}
-	router := NewRouter(admins, identity, centerSvc, nil, gateway, deviceSvc, sessionSvc, nil, st.EmailInvites, st.System, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "", nil, "", "/app", "")
+	router := NewRouter(
+		admins,
+		identity,
+		centerSvc,
+		nil,
+		gateway,
+		deviceSvc,
+		sessionSvc,
+		nil,
+		st.EmailInvites,
+		st.System,
+		st.AdminAudit,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		config.Default(),
+		"",
+		nil,
+		"",
+		"/app",
+		"",
+	)
 	return router, admins
 }
 
