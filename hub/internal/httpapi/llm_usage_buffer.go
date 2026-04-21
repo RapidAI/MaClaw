@@ -72,6 +72,10 @@ func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, pro
 		curr.InputTokens += usage.InputTokens
 		curr.OutputTokens += usage.OutputTokens
 		curr.TotalTokens += usage.TotalTokens
+		curr.CachedInputTokens += usage.CachedInputTokens
+		curr.CacheWriteTokens += usage.CacheWriteTokens
+		curr.Requests += usage.Requests
+		curr.CachedRequests += usage.CachedRequests
 		buf.providerUsage[providerID] = curr
 	}
 	serviceGroupIDs = normalizeUsageStringSlice(serviceGroupIDs)
@@ -132,6 +136,10 @@ func (a *llmUsageAccumulator) requeue(system store.SystemSettingsRepository, buf
 		curr.InputTokens += usage.InputTokens
 		curr.OutputTokens += usage.OutputTokens
 		curr.TotalTokens += usage.TotalTokens
+		curr.CachedInputTokens += usage.CachedInputTokens
+		curr.CacheWriteTokens += usage.CacheWriteTokens
+		curr.Requests += usage.Requests
+		curr.CachedRequests += usage.CachedRequests
 		current.providerUsage[providerID] = curr
 	}
 	for key, charge := range buf.creditCharges {
@@ -176,6 +184,10 @@ func flushProviderUsage(ctx context.Context, system store.SystemSettingsReposito
 		stat.InputTokens += usage.InputTokens
 		stat.OutputTokens += usage.OutputTokens
 		stat.TotalTokens += usage.TotalTokens
+		stat.CachedInputTokens += usage.CachedInputTokens
+		stat.CacheWriteTokens += usage.CacheWriteTokens
+		stat.Requests += usage.Requests
+		stat.CachedRequests += usage.CachedRequests
 	}
 	if err := im.SaveLLMProviderRegistry(ctx, system, reg); err != nil {
 		return err

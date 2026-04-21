@@ -118,11 +118,13 @@ func TestRouter_Reranker_PartialResults(t *testing.T) {
 func TestRouter_BodyAware_LogField(t *testing.T) {
 	// writeRouteLog writes to ~/.maclaw/logs/tool_route.log.
 	// We verify the function accepts bodyAware and doesn't panic.
+	SetLogDetailEnabled(true)
+	defer SetLogDetailEnabled(false)
 	writeRouteLog(
 		"test message",
 		10, 5, 5,
-		true,  // hybridActive
-		true,  // bodyAware
+		true, // hybridActive
+		true, // bodyAware
 		[]string{"tool_a", "tool_b"},
 		[]float64{0.9, 0.8},
 		[]string{"tool_a"},
@@ -140,8 +142,8 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		[]string{"tool_c"},
 		[]float64{0.7},
 		[]string{"tool_c"},
-		[]string{"tool_c"}, // with reranker result
-		0.5,                // skillMatchScore
+		[]string{"tool_c"},     // with reranker result
+		0.5,                    // skillMatchScore
 		[]string{"deploy-app"}, // matchedSkills
 	)
 

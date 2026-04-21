@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"time"
 
@@ -38,13 +39,13 @@ func GetHubLLMConfigHandler(system store.SystemSettingsRepository) http.HandlerF
 		hasKey := cfg.APIKey != ""
 		cfg.APIKey = "" // never expose the real key
 		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled":                  cfg.Enabled,
-			"api_url":                  cfg.APIURL,
-			"api_key":                  "",
-			"model":                    cfg.Model,
-			"protocol":                 cfg.Protocol,
+			"enabled":                   cfg.Enabled,
+			"api_url":                   cfg.APIURL,
+			"api_key":                   "",
+			"model":                     cfg.Model,
+			"protocol":                  cfg.Protocol,
 			"smart_route_single_device": cfg.SmartRouteSingleDevice,
-			"has_api_key":              hasKey,
+			"has_api_key":               hasKey,
 		})
 	}
 }
@@ -60,7 +61,7 @@ func UpdateHubLLMConfigHandler(system store.SystemSettingsRepository) http.Handl
 			return
 		}
 
-		// Empty key means the user didn't change it — preserve the stored one.
+		// Empty key means the user didn't change it 锟?preserve the stored one.
 		if cfg.APIKey == "" {
 			old := loadHubLLMConfig(r, system)
 			if old != nil {
@@ -75,13 +76,13 @@ func UpdateHubLLMConfigHandler(system store.SystemSettingsRepository) http.Handl
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled":                  cfg.Enabled,
-			"api_url":                  cfg.APIURL,
-			"api_key":                  "",
-			"model":                    cfg.Model,
-			"protocol":                 cfg.Protocol,
+			"enabled":                   cfg.Enabled,
+			"api_url":                   cfg.APIURL,
+			"api_key":                   "",
+			"model":                     cfg.Model,
+			"protocol":                  cfg.Protocol,
 			"smart_route_single_device": cfg.SmartRouteSingleDevice,
-			"has_api_key":              cfg.APIKey != "",
+			"has_api_key":               cfg.APIKey != "",
 		})
 	}
 }
@@ -94,7 +95,7 @@ func TestHubLLMHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 		if cfg == nil || cfg.APIURL == "" || cfg.APIKey == "" {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"success": false,
-				"error":   "Hub LLM 未配置或缺少 API URL / Key",
+				"error":   "Hub LLM 鏈厤缃垨缂哄皯 API URL / Key",
 			})
 			return
 		}
@@ -125,16 +126,60 @@ func TestHubLLMHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	}
 }
 
+type hubLLMCacheStatus struct {
+	InputTokens       int64   `json:"input_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens"`
+	Requests          int64   `json:"requests"`
+	CachedRequests    int64   `json:"cached_requests"`
+	CacheRate         float64 `json:"cache_rate"`
+	CacheReuseRate    float64 `json:"cache_reuse_rate"`
+}
+
 // HubLLMStatusHandler returns the current LLM health status.
 // Requires a StatusProvider to be wired (the Coordinator).
-func HubLLMStatusHandler(statusFn func() string) http.HandlerFunc {
+func HubLLMStatusHandler(statusFn func() string, system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status := "not_configured"
 		if statusFn != nil {
 			status = statusFn()
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": status})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":       status,
+			"prompt_cache": hubLLMPromptCacheStatus(r, system),
+		})
 	}
+}
+
+func hubLLMPromptCacheStatus(r *http.Request, system store.SystemSettingsRepository) hubLLMCacheStatus {
+	out := hubLLMCacheStatus{}
+	if system == nil {
+		return out
+	}
+	reg, err := im.LoadLLMProviderRegistry(r.Context(), system)
+	if err != nil || reg == nil {
+		return out
+	}
+	for _, stat := range reg.TokenUsage {
+		if stat == nil {
+			continue
+		}
+		out.InputTokens += stat.InputTokens
+		out.CachedInputTokens += stat.CachedInputTokens
+		out.CacheWriteTokens += stat.CacheWriteTokens
+		out.Requests += stat.Requests
+		out.CachedRequests += stat.CachedRequests
+	}
+	out.CacheRate = hubLLMRate(out.CachedRequests, out.Requests)
+	out.CacheReuseRate = hubLLMRate(out.CachedInputTokens, out.InputTokens)
+	return out
+}
+
+func hubLLMRate(hit int64, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return math.Round((float64(hit)/float64(total))*1000) / 10
 }
 
 // loadHubLLMConfig reads the current Hub LLM config from system_settings.

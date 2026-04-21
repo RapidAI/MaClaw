@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,20 +195,33 @@ func GetLLMServicesAdminHandler(system store.SystemSettingsRepository) http.Hand
 
 func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req llmservice.Registry
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		for i := range req.Cards {
-			req.Cards[i].CodeHash = ""
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(body, &raw)
+		_, cardsProvided := raw["cards"]
+
+		var req llmservice.Registry
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
 		}
 		oldReg, err := llmservice.LoadRegistry(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
 			return
 		}
-		preserveCardHashes(&req, oldReg)
+		if !cardsProvided && oldReg != nil {
+			req.Cards = append([]llmservice.RechargeCard(nil), oldReg.Cards...)
+		} else {
+			for i := range req.Cards {
+				req.Cards[i].CodeHash = ""
+			}
+			preserveCardHashes(&req, oldReg)
+		}
 		req.Normalize()
 		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
 		if err != nil {
@@ -274,6 +288,10 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 		if days <= 0 {
 			days = 30
 		}
+		credits := req.Credits
+		if credits < 0 {
+			credits = 0
+		}
 		existingHashes := make(map[string]struct{}, len(reg.Cards)+count)
 		for _, card := range reg.Cards {
 			if hash := strings.TrimSpace(card.CodeHash); hash != "" {
@@ -303,7 +321,7 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 				Label:           strings.TrimSpace(req.Label),
 				ServiceGroupIDs: serviceGroupIDs,
 				DurationDays:    days,
-				Credits:         req.Credits,
+				Credits:         credits,
 				CreatedAt:       time.Now().UTC(),
 			})
 			issuedCodes = append(issuedCodes, code)
@@ -317,7 +335,7 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 			"label":             strings.TrimSpace(req.Label),
 			"service_group_ids": append([]string(nil), serviceGroupIDs...),
 			"duration_days":     days,
-			"credits":           req.Credits,
+			"credits":           credits,
 			"count":             len(cards),
 			"created_ids":       collectRechargeCardIDs(cards),
 		})
@@ -340,6 +358,100 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 	}
 }
 
+func ListLLMServiceCardsHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reg, err := llmservice.LoadRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
+			return
+		}
+		statusFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+		if statusFilter == "" {
+			statusFilter = "all"
+		}
+		search := strings.TrimSpace(r.URL.Query().Get("search"))
+		page := parsePositiveInt(r.URL.Query().Get("page"), 1)
+		pageSize := parsePositiveInt(r.URL.Query().Get("page_size"), 20)
+		if pageSize > 200 {
+			pageSize = 200
+		}
+		cards := filterLLMServiceCards(reg.Cards, statusFilter, search)
+		if cards == nil {
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_STATUS_INVALID", "status must be one of: all, unused, redeemed")
+			return
+		}
+		total := len(cards)
+		start := (page - 1) * pageSize
+		if start > total {
+			start = total
+		}
+		end := start + pageSize
+		if end > total {
+			end = total
+		}
+		items := make([]map[string]any, 0, end-start)
+		for _, card := range cards[start:end] {
+			items = append(items, map[string]any{
+				"id":                card.ID,
+				"label":             card.Label,
+				"service_group_ids": card.ServiceGroupIDs,
+				"duration_days":     card.DurationDays,
+				"credits":           card.Credits,
+				"created_at":        card.CreatedAt,
+				"redeemed_by_email": card.RedeemedByEmail,
+				"redeemed_at":       card.RedeemedAt,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items":     items,
+			"total":     total,
+			"page":      page,
+			"page_size": pageSize,
+		})
+	}
+}
+
+func ExportSelectedLLMServiceCardsHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			IDs    []string `json:"ids"`
+			Format string   `json:"format"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		ids := normalizeStringSlice(req.IDs)
+		if len(ids) == 0 {
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_IDS_REQUIRED", "ids is required")
+			return
+		}
+		format := strings.ToLower(strings.TrimSpace(req.Format))
+		if format == "" {
+			format = "txt"
+		}
+		reg, err := llmservice.LoadRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
+			return
+		}
+		lookup := map[string]llmservice.RechargeCard{}
+		for _, card := range reg.Cards {
+			id := strings.TrimSpace(card.ID)
+			if id != "" {
+				lookup[strings.ToLower(id)] = card
+			}
+		}
+		cards := make([]llmservice.RechargeCard, 0, len(ids))
+		for _, id := range ids {
+			if card, ok := lookup[strings.ToLower(strings.TrimSpace(id))]; ok {
+				cards = append(cards, card)
+			}
+		}
+		writeLLMServiceCardsExport(w, cards, format, "llm_service_cards_selected")
+	}
+}
+
 func ExportLLMServiceCardsHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reg, err := llmservice.LoadRegistry(r.Context(), system)
@@ -356,95 +468,12 @@ func ExportLLMServiceCardsHandler(system store.SystemSettingsRepository) http.Ha
 			format = "txt"
 		}
 		search := strings.TrimSpace(r.URL.Query().Get("search"))
-		cards := make([]llmservice.RechargeCard, 0, len(reg.Cards))
-		for _, card := range reg.Cards {
-			isRedeemed := card.RedeemedAt != nil
-			switch statusFilter {
-			case "unused":
-				if isRedeemed {
-					continue
-				}
-			case "redeemed":
-				if !isRedeemed {
-					continue
-				}
-			case "all":
-			default:
-				writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_STATUS_INVALID", "status must be one of: all, unused, redeemed")
-				return
-			}
-			if !llmServiceCardMatchesSearch(card, search) {
-				continue
-			}
-			cards = append(cards, card)
+		cards := filterLLMServiceCards(reg.Cards, statusFilter, search)
+		if cards == nil {
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_STATUS_INVALID", "status must be one of: all, unused, redeemed")
+			return
 		}
-		nowName := time.Now().Format("20060102_150405")
-		switch format {
-		case "txt":
-			var sb strings.Builder
-			for _, card := range cards {
-				sb.WriteString(strings.TrimSpace(card.ID))
-				sb.WriteByte(',')
-				if card.RedeemedAt != nil {
-					sb.WriteString("redeemed")
-				} else {
-					sb.WriteString("unused")
-				}
-				sb.WriteByte(',')
-				sb.WriteString(strings.TrimSpace(card.Label))
-				sb.WriteByte(',')
-				sb.WriteString(strings.Join(card.ServiceGroupIDs, "/"))
-				sb.WriteByte(',')
-				sb.WriteString(fmt.Sprintf("%.3f", card.Credits))
-				sb.WriteByte(',')
-				sb.WriteString(fmt.Sprintf("%d", card.DurationDays))
-				sb.WriteByte(',')
-				sb.WriteString(card.CreatedAt.Format(time.RFC3339))
-				sb.WriteByte(',')
-				sb.WriteString(strings.TrimSpace(card.RedeemedByEmail))
-				sb.WriteByte('\n')
-			}
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=llm_service_cards_%s_%s.txt", statusFilter, nowName))
-			w.Header().Set("X-Export-Count", fmt.Sprintf("%d", len(cards)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(sb.String()))
-		case "csv":
-			var buf bytes.Buffer
-			writer := csv.NewWriter(&buf)
-			_ = writer.Write([]string{"id", "status", "label", "service_group_ids", "credits", "duration_days", "created_at", "redeemed_by_email", "redeemed_at"})
-			for _, card := range cards {
-				status := "unused"
-				redeemedAt := ""
-				if card.RedeemedAt != nil {
-					status = "redeemed"
-					redeemedAt = card.RedeemedAt.Format(time.RFC3339)
-				}
-				_ = writer.Write([]string{
-					strings.TrimSpace(card.ID),
-					status,
-					strings.TrimSpace(card.Label),
-					strings.Join(card.ServiceGroupIDs, ","),
-					fmt.Sprintf("%.3f", card.Credits),
-					fmt.Sprintf("%d", card.DurationDays),
-					card.CreatedAt.Format(time.RFC3339),
-					strings.TrimSpace(card.RedeemedByEmail),
-					redeemedAt,
-				})
-			}
-			writer.Flush()
-			if err := writer.Error(); err != nil {
-				writeError(w, http.StatusInternalServerError, "LLM_SERVICE_CARD_EXPORT_FAILED", err.Error())
-				return
-			}
-			w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=llm_service_cards_%s_%s.csv", statusFilter, nowName))
-			w.Header().Set("X-Export-Count", fmt.Sprintf("%d", len(cards)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(buf.Bytes())
-		default:
-			writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_FORMAT_INVALID", "format must be one of: txt, csv")
-		}
+		writeLLMServiceCardsExport(w, cards, format, "llm_service_cards_"+statusFilter)
 	}
 }
 
@@ -766,18 +795,22 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []s
 }
 
 func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry, providerLinkIssues []string) llmServiceAdminResponse {
-	cards := make([]map[string]any, 0, len(reg.Cards))
-	for _, card := range reg.Cards {
-		cards = append(cards, map[string]any{
-			"id":                card.ID,
-			"label":             card.Label,
-			"service_group_ids": card.ServiceGroupIDs,
-			"duration_days":     card.DurationDays,
-			"credits":           card.Credits,
-			"created_at":        card.CreatedAt,
-			"redeemed_by_email": card.RedeemedByEmail,
-			"redeemed_at":       card.RedeemedAt,
-		})
+	includeCards := !strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_cards")), "false")
+	cards := make([]map[string]any, 0)
+	if includeCards {
+		cards = make([]map[string]any, 0, len(reg.Cards))
+		for _, card := range reg.Cards {
+			cards = append(cards, map[string]any{
+				"id":                card.ID,
+				"label":             card.Label,
+				"service_group_ids": card.ServiceGroupIDs,
+				"duration_days":     card.DurationDays,
+				"credits":           card.Credits,
+				"created_at":        card.CreatedAt,
+				"redeemed_by_email": card.RedeemedByEmail,
+				"redeemed_at":       card.RedeemedAt,
+			})
+		}
 	}
 	availableModels := make([]string, 0)
 	seenModels := map[string]struct{}{}
@@ -1005,7 +1038,7 @@ func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry,
 	var lastErr error
 	var lastBody []byte
 	var lastStatus int
-	for _, providerID := range model.ProviderIDs {
+	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
 			lastErr = fmt.Errorf("provider %q not configured", providerID)
@@ -1031,6 +1064,108 @@ func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry,
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
 	return nil, 0, "", nil, lastErr
+}
+
+func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.RechargeCard, format, filenamePrefix string) {
+	nowName := time.Now().Format("20060102_150405")
+	switch format {
+	case "txt":
+		var sb strings.Builder
+		for _, card := range cards {
+			sb.WriteString(strings.TrimSpace(card.ID))
+			sb.WriteByte(',')
+			if card.RedeemedAt != nil {
+				sb.WriteString("redeemed")
+			} else {
+				sb.WriteString("unused")
+			}
+			sb.WriteByte(',')
+			sb.WriteString(strings.TrimSpace(card.Label))
+			sb.WriteByte(',')
+			sb.WriteString(strings.Join(card.ServiceGroupIDs, "/"))
+			sb.WriteByte(',')
+			sb.WriteString(fmt.Sprintf("%.3f", card.Credits))
+			sb.WriteByte(',')
+			sb.WriteString(fmt.Sprintf("%d", card.DurationDays))
+			sb.WriteByte(',')
+			sb.WriteString(card.CreatedAt.Format(time.RFC3339))
+			sb.WriteByte(',')
+			sb.WriteString(strings.TrimSpace(card.RedeemedByEmail))
+			sb.WriteByte('\n')
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s_%s.txt", filenamePrefix, nowName))
+		w.Header().Set("X-Export-Count", fmt.Sprintf("%d", len(cards)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sb.String()))
+	case "csv":
+		var buf bytes.Buffer
+		writer := csv.NewWriter(&buf)
+		_ = writer.Write([]string{"id", "status", "label", "service_group_ids", "credits", "duration_days", "created_at", "redeemed_by_email", "redeemed_at"})
+		for _, card := range cards {
+			status := "unused"
+			redeemedAt := ""
+			if card.RedeemedAt != nil {
+				status = "redeemed"
+				redeemedAt = card.RedeemedAt.Format(time.RFC3339)
+			}
+			_ = writer.Write([]string{
+				strings.TrimSpace(card.ID),
+				status,
+				strings.TrimSpace(card.Label),
+				strings.Join(card.ServiceGroupIDs, ","),
+				fmt.Sprintf("%.3f", card.Credits),
+				fmt.Sprintf("%d", card.DurationDays),
+				card.CreatedAt.Format(time.RFC3339),
+				strings.TrimSpace(card.RedeemedByEmail),
+				redeemedAt,
+			})
+		}
+		writer.Flush()
+		if err := writer.Error(); err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_CARD_EXPORT_FAILED", err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s_%s.csv", filenamePrefix, nowName))
+		w.Header().Set("X-Export-Count", fmt.Sprintf("%d", len(cards)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf.Bytes())
+	default:
+		writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_FORMAT_INVALID", "format must be one of: txt, csv")
+	}
+}
+
+func filterLLMServiceCards(cards []llmservice.RechargeCard, statusFilter, search string) []llmservice.RechargeCard {
+	statusFilter = strings.ToLower(strings.TrimSpace(statusFilter))
+	if statusFilter == "" {
+		statusFilter = "all"
+	}
+	if statusFilter != "all" && statusFilter != "unused" && statusFilter != "redeemed" {
+		return nil
+	}
+	filtered := make([]llmservice.RechargeCard, 0, len(cards))
+	for _, card := range cards {
+		isRedeemed := card.RedeemedAt != nil
+		switch statusFilter {
+		case "unused":
+			if isRedeemed {
+				continue
+			}
+		case "redeemed":
+			if !isRedeemed {
+				continue
+			}
+		case "all":
+		default:
+			return nil
+		}
+		if !llmServiceCardMatchesSearch(card, search) {
+			continue
+		}
+		filtered = append(filtered, card)
+	}
+	return filtered
 }
 
 func llmServiceCardMatchesSearch(card llmservice.RechargeCard, search string) bool {
@@ -1078,6 +1213,14 @@ func writeLLMServiceCardAdminAudit(ctx context.Context, audit store.AdminAuditRe
 		PayloadJSON: string(payloadJSON),
 		CreatedAt:   time.Now().UTC(),
 	})
+}
+
+func parsePositiveInt(raw string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func normalizeStringSlice(items []string) []string {
@@ -1160,11 +1303,59 @@ func parseUsageStats(respBody []byte) corelib.TokenUsageStat {
 	if usage == nil {
 		return corelib.TokenUsageStat{}
 	}
-	return corelib.TokenUsageStat{
-		InputTokens:  int64(numberToInt(usage["prompt_tokens"])),
-		OutputTokens: int64(numberToInt(usage["completion_tokens"])),
-		TotalTokens:  int64(numberToInt(usage["total_tokens"])),
+	stat := corelib.TokenUsageStat{
+		InputTokens:       int64(numberToInt(firstNonNil(usage["prompt_tokens"], usage["input_tokens"]))),
+		OutputTokens:      int64(numberToInt(firstNonNil(usage["completion_tokens"], usage["output_tokens"]))),
+		TotalTokens:       int64(numberToInt(usage["total_tokens"])),
+		CachedInputTokens: int64(numberToInt(cachedUsageValue(usage))),
+		CacheWriteTokens:  int64(numberToInt(cacheWriteUsageValue(usage))),
+		Requests:          1,
 	}
+	if stat.TotalTokens <= 0 {
+		stat.TotalTokens = stat.InputTokens + stat.OutputTokens
+	}
+	if stat.CachedInputTokens > 0 || stat.CacheWriteTokens > 0 {
+		stat.CachedRequests = 1
+	}
+	return stat
+}
+
+func cachedUsageValue(usage map[string]any) any {
+	return firstNonNil(
+		lookupMapValue(usage, "prompt_tokens_details", "cached_tokens"),
+		lookupMapValue(usage, "input_tokens_details", "cached_tokens"),
+		usage["cache_read_input_tokens"],
+		usage["cached_input_tokens"],
+	)
+}
+
+func cacheWriteUsageValue(usage map[string]any) any {
+	return firstNonNil(
+		usage["cache_creation_input_tokens"],
+		usage["cache_write_input_tokens"],
+		lookupMapValue(usage, "prompt_tokens_details", "cache_write_tokens"),
+		lookupMapValue(usage, "input_tokens_details", "cache_write_tokens"),
+	)
+}
+
+func lookupMapValue(root map[string]any, key string, nested string) any {
+	if root == nil {
+		return nil
+	}
+	child, _ := root[key].(map[string]any)
+	if child == nil {
+		return nil
+	}
+	return child[nested]
+}
+
+func firstNonNil(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 func numberToInt(v any) int {

@@ -5271,8 +5271,9 @@ ${instruction}`;
                                                     value={weixinQRCode}
                                                     size={220}
                                                     level="M"
-                                                    bgColor="var(--theme-surface)"
-                                                    style={{ borderRadius: '8px', border: '1px solid var(--theme-border)', padding: '8px', background: 'var(--theme-surface)' }}
+                                                    bgColor="#ffffff"
+                                                    fgColor="#000000"
+                                                    style={{ borderRadius: '8px', border: '1px solid var(--theme-border)', padding: '8px', background: '#ffffff' }}
                                                 />
                                                 <p style={{ fontSize: '0.72rem', color: 'var(--theme-primary)', marginTop: '8px' }}>
                                                     {lang === 'zh-Hans' || lang === 'zh-Hant' ? '请用微信扫描上方二维码' : 'Scan the QR code with WeChat'}

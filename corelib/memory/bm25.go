@@ -47,7 +47,12 @@ func entryToDoc(e Entry) bm25.Doc {
 		text += " " + e.CompactForm
 	}
 	if len(e.Tags) > 0 {
-		text += " " + strings.Join(e.Tags, " ")
+		tagStr := strings.Join(e.Tags, " ")
+		// Repeat tags to boost their BM25 term frequency weight.
+		// Tags are curated labels with high signal-to-noise ratio; giving them
+		// higher TF helps distinguish entries that share similar content but
+		// differ in tags (e.g. "api-server" vs "gpu-server").
+		text += " " + tagStr + " " + tagStr
 	}
 	return bm25.Doc{ID: e.ID, Text: text}
 }

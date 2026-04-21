@@ -128,7 +128,6 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 
 		`CREATE INDEX IF NOT EXISTS idx_invitation_codes_code ON invitation_codes(code);`,
-
 		`CREATE INDEX IF NOT EXISTS idx_invitation_codes_status ON invitation_codes(status);`,
 
 		`CREATE TABLE IF NOT EXISTS gossip_posts (
@@ -193,6 +192,25 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+
+		`CREATE TABLE IF NOT EXISTS llm_prompt_cache (
+			cache_key TEXT PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			model TEXT NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'metadata',
+			input_hash TEXT NOT NULL,
+			payload BLOB,
+			payload_bytes INTEGER NOT NULL DEFAULT 0,
+			cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+			hit_count INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			accessed_at TEXT NOT NULL,
+			expires_at TEXT
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_prompt_cache_expires_at ON llm_prompt_cache(expires_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_prompt_cache_accessed_at ON llm_prompt_cache(accessed_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_prompt_cache_provider_model ON llm_prompt_cache(provider_id, model);`,
 
 		`CREATE TABLE IF NOT EXISTS understanding_sessions (
 			id TEXT PRIMARY KEY,

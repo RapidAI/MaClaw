@@ -82,9 +82,11 @@ func NewStore(path string) (*Store, error) {
 }
 
 func generateID() string {
-	var buf [2]byte
-	_, _ = rand.Read(buf[:])
-	return fmt.Sprintf("%d-%04x", time.Now().UnixNano(), int(buf[0])<<8|int(buf[1]))
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%d-%x", time.Now().UnixNano(), buf)
 }
 
 // computeContentHash returns the SHA-256 hex digest of content.
@@ -284,13 +286,13 @@ func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
 	// === Phase 2: Multi-Query BM25 ===
 	bm25Scores := s.multiQueryBM25(userMessage, expanded.Entities)
 
-	// Compute vector scores if available (use original message — embeddings understand semantics).
+	// Compute vector scores if available (use original message; embeddings understand semantics).
 	vecScores := s.vecIndex.score(s.queryEmbeddingCached(userMessage))
 
 	// Hold RLock for the scoring/assembly phase, then release before TouchAccess.
 	result := s.recallForProjectLocked(userMessage, bm25Scores, vecScores, expanded.QueryTokens, projectPath)
 
-	// Touch access counts outside the lock to avoid RLock→Lock deadlock.
+	// Touch access counts outside the lock to avoid RLock/Lock deadlock.
 	if len(result) > 0 {
 		ids := make([]string, len(result))
 		for i, e := range result {
@@ -303,7 +305,7 @@ func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
 }
 
 // recallForProjectLocked performs the scoring and assembly phase of RecallForProject.
-// Caller must NOT hold any lock — this method acquires RLock internally.
+// Caller must NOT hold any lock; this method acquires RLock internally.
 func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float64, vecScores map[string]float64, queryTokens []string, projectPath string) []Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -335,7 +337,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 		// are explicitly bound to a DIFFERENT project. An entry is considered
 		// bound to a project if it has a tag that looks like a directory path
 		// (starts with / or X:\). Entries without any path-like tags are
-		// treated as globally visible — they may be project_knowledge but
+		// treated as globally visible; they may be project_knowledge but
 		// not tied to a specific project (e.g. server credentials).
 		if e.Scope == ScopeProject && projectLower != "" {
 			boundToOtherProject := false
@@ -348,7 +350,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 					if tl != projectLower && !strings.HasPrefix(projectLower, tl) {
 						boundToOtherProject = true
 					} else {
-						// Matches current project — not bound to other
+						// Matches current project; not bound to other
 						boundToOtherProject = false
 						break
 					}
@@ -415,7 +417,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	tokenBudget := maxTokens
 	userFactBudgetCap := int(float64(maxTokens) * 0.6) // user_fact gets at most 60%
 
-	// Self-identity memories are always recalled first — highest priority.
+	// Self-identity memories are always recalled first; highest priority.
 	for _, e := range selfIdentity {
 		tokens := len(e.Content) / 4
 		tokenBudget -= tokens
@@ -503,14 +505,14 @@ func (s *Store) UserFactSummary(maxRunes int) string {
 
 // DisplayContent returns CompactForm if available, otherwise Content.
 // Use this when rendering memory entries for LLM context injection.
-// Stale entries are prefixed with [可能过时] to alert the LLM.
+// Stale entries are prefixed with [possibly stale] to alert the LLM.
 func DisplayContent(e Entry) string {
 	text := e.CompactForm
 	if text == "" {
 		text = e.Content
 	}
 	if e.Stale {
-		text = "[可能过时] " + text
+		text = "[\u53ef\u80fd\u8fc7\u65f6] " + text
 	}
 	return text
 }
@@ -542,13 +544,13 @@ func (s *Store) categorySummary(cat Category, maxRunes int) string {
 	summary := strings.Join(parts, " | ")
 	runes := []rune(summary)
 	if len(runes) > maxRunes {
-		summary = string(runes[:maxRunes]) + "…"
+		summary = string(runes[:maxRunes]) + "..."
 	}
 	return summary
 }
 
 // ---------------------------------------------------------------------------
-// RRF (Reciprocal Rank Fusion) — inspired by GBrain's hybrid search
+// RRF (Reciprocal Rank Fusion) - inspired by GBrain's hybrid search
 //
 // Instead of linearly combining BM25 and vector scores (which requires
 // careful weight tuning and is sensitive to score scale differences),
@@ -712,8 +714,8 @@ func tagCrossScore(entry Entry, queryTokens []string) float64 {
 				score += 2.0
 				break // one match per tag
 			}
-			// Containment: only if both sides are ≥3 runes to avoid
-			// spurious matches like tag "测" matching token "测试环境配置".
+			// Containment: only if both sides are at least 3 runes to avoid
+			// spurious matches from very short tags or tokens.
 			if len([]rune(token)) >= 3 && len([]rune(tagLower)) >= 3 {
 				if strings.Contains(tagLower, token) || strings.Contains(token, tagLower) {
 					score += 1.0
@@ -730,7 +732,7 @@ func tagCrossScore(entry Entry, queryTokens []string) float64 {
 
 // Memory Stream scoring (inspired by Stanford "Generative Agents")
 //
-//   Score = w1·Recency + w2·Importance + w3·Relevance
+//   Score = w1*Recency + w2*Importance + w3*Relevance
 //
 // Recency:    exponential decay based on hours since last update.
 // Importance: category weight + log(1 + accessCount).
@@ -823,7 +825,7 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 		seedScores[candidates[i].entry.ID] = candidates[i].score
 	}
 
-	// 1-hop BFS expansion. expand() returns neighbor → decayed edge weight.
+	// 1-hop BFS expansion. expand() returns neighbor -> decayed edge weight.
 	expanded := s.graph.expand(seedIDs, 1)
 	if len(expanded) == 0 {
 		return candidates
@@ -853,7 +855,7 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 			continue
 		}
 
-		// Derive score: best seed score × expanded weight (which is edge_strength × 0.5).
+		// Derive score: best seed score * expanded weight (edge_strength * 0.5).
 		bestSeed := 0.0
 		for _, sid := range seedIDs {
 			if sc, ok := seedScores[sid]; ok && sc > bestSeed {
@@ -1038,7 +1040,7 @@ func (s *Store) SearchKeyword(query string, category Category, limit int) []Entr
 // DetectStale scans entries and marks those that may be outdated.
 // An entry is considered stale if a newer entry in the same category with
 // overlapping tags exists. Returns the number of entries newly marked stale.
-// Caller should hold NO lock — this method acquires its own.
+// Caller should hold NO lock; this method acquires its own.
 func (s *Store) DetectStale() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1120,7 +1122,7 @@ func hasOverlappingTags(a, b []string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Dream Cycle — background self-healing (inspired by GBrain's dream cycle)
+// Dream Cycle - background self-healing (inspired by GBrain's dream cycle)
 //
 // Runs during the Compressor's periodic loop. Performs:
 // 1. Stale detection
@@ -1136,13 +1138,13 @@ func (s *Store) DreamCycle() *DreamCycleResult {
 	// Phase 1: Stale detection.
 	result.StaleDetected = s.DetectStale()
 
-	// Phase 2: Auto-link discovery — find high-BM25 pairs that aren't linked.
+	// Phase 2: Auto-link discovery; find high-BM25 pairs that aren't linked.
 	result.LinksDiscovered = s.discoverMissingLinks()
 
 	// Phase 3: Content hash backfill.
 	result.HashesBackfilled = s.backfillContentHashes()
 
-	// Phase 4: Tag backfill — enrich old entries that have poor tags.
+	// Phase 4: Tag backfill; enrich old entries that have poor tags.
 	result.TagsBackfilled = s.backfillTags()
 
 	if result.StaleDetected > 0 || result.LinksDiscovered > 0 || result.HashesBackfilled > 0 || result.TagsBackfilled > 0 {
@@ -1162,7 +1164,7 @@ func (s *Store) discoverMissingLinks() int {
 		s.mu.RUnlock()
 		return 0
 	}
-	// Sample up to 50 entries to avoid O(n²) on large stores.
+	// Sample up to 50 entries to avoid O(n^2) on large stores.
 	// Copy the sample to avoid holding references to mutable entries.
 	src := s.entries
 	if len(src) > 50 {
@@ -1171,8 +1173,8 @@ func (s *Store) discoverMissingLinks() int {
 	sample := make([]Entry, len(src))
 	copy(sample, src)
 
-	// Build a tag→entryIDs index for tag-overlap link discovery.
-	tagIndex := make(map[string][]string) // tag (lowered) → entry IDs
+	// Build a tag-to-entryIDs index for tag-overlap link discovery.
+	tagIndex := make(map[string][]string) // tag (lowered) -> entry IDs
 	for _, e := range s.entries {
 		if !e.IsActive() {
 			continue
@@ -1214,9 +1216,9 @@ func (s *Store) discoverMissingLinks() int {
 			created++
 		}
 
-		// Tag-overlap link discovery: entries sharing ≥2 meaningful tags
+		// Tag-overlap link discovery: entries sharing at least 2 meaningful tags
 		// should be linked even if their content text is dissimilar.
-		tagOverlapCounts := make(map[string]int) // other entry ID → shared tag count
+		tagOverlapCounts := make(map[string]int) // other entry ID -> shared tag count
 		for _, tag := range e.Tags {
 			tl := strings.ToLower(tag)
 			for _, otherID := range tagIndex[tl] {
@@ -1327,7 +1329,7 @@ func (s *Store) backfillTags() int {
 		todo = todo[:30]
 	}
 
-	// Extract tags (no lock needed — ExpandQuery is pure computation).
+	// Extract tags (no lock needed; ExpandQuery is pure computation).
 	type enrichment struct {
 		id      string
 		newTags []string
@@ -1587,7 +1589,7 @@ func (s *Store) autoLink(entry Entry) {
 			fused = bm25 + tagBonus
 		}
 
-		// Threshold: require cosine > threshold OR ≥2 shared tags.
+		// Threshold: require cosine > threshold OR at least 2 shared tags.
 		if vecScores != nil {
 			if cosine < autoLinkThreshold && tagOverlap < 2 {
 				continue
@@ -1881,7 +1883,7 @@ func (s *Store) evictLRU() {
 		return
 	}
 
-	// Separate protected (self_identity) and pinned entries — they are never evicted.
+	// Separate protected (self_identity) and pinned entries; they are never evicted.
 	var protectedEntries []Entry
 	var evictable []Entry
 	for _, e := range s.entries {
@@ -1894,7 +1896,7 @@ func (s *Store) evictLRU() {
 
 	target := s.maxItems - len(protectedEntries)
 	if target < 0 {
-		// Protected entries alone exceed maxItems — nothing else can be kept.
+		// Protected entries alone exceed maxItems; nothing else can be kept.
 		log.Printf("[memory_store] WARNING: %d protected entries exceed maxItems (%d)", len(protectedEntries), s.maxItems)
 		target = 0
 	}

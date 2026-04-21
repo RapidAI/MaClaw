@@ -1,4 +1,4 @@
-package store
+﻿package store
 
 import (
 	"context"
@@ -58,7 +58,7 @@ type InvitationCode struct {
 	Status       string // "unused" | "used"
 	UsedByEmail  string
 	UsedAt       *time.Time
-	ValidityDays int // 0 = 长期有效，>0 = 有效天数
+	ValidityDays int // 0 = no expiry; >0 = validity days
 	Exported     bool
 	VIP          bool
 	CreatedAt    time.Time
@@ -306,6 +306,39 @@ type WorkflowStateRow struct {
 	UpdatedAt        time.Time
 }
 
+type LLMPromptCacheEntry struct {
+	CacheKey           string
+	ProviderID         string
+	Model              string
+	Kind               string
+	InputHash          string
+	Payload            []byte
+	PayloadBytes       int64
+	CachedInputTokens  int64
+	CacheWriteTokens   int64
+	HitCount           int64
+	CreatedAt          time.Time
+	AccessedAt         time.Time
+	ExpiresAt          *time.Time
+}
+
+type LLMPromptCacheStats struct {
+	Entries        int64
+	TotalBytes     int64
+	ExpiredEntries int64
+	ExpiredBytes   int64
+	TotalHits      int64
+}
+
+type LLMPromptCacheRepository interface {
+	Get(ctx context.Context, cacheKey string) (*LLMPromptCacheEntry, error)
+	Put(ctx context.Context, entry *LLMPromptCacheEntry) error
+	Delete(ctx context.Context, cacheKey string) error
+	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
+	TrimToBytes(ctx context.Context, maxBytes int64) (int64, error)
+	Stats(ctx context.Context, now time.Time) (*LLMPromptCacheStats, error)
+}
+
 type Store struct {
 	Admins          AdminUserRepository
 	System          SystemSettingsRepository
@@ -321,4 +354,7 @@ type Store struct {
 	Sessions        SessionRepository
 	Voiceprints     VoiceprintRepository
 	WorkflowRepo    WorkflowRepository
+	LLMPromptCache LLMPromptCacheRepository
 }
+
+

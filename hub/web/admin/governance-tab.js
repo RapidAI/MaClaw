@@ -32,6 +32,7 @@
     serviceGroupsPrefix: { zh: '\u670d\u52a1\u7ec4: ', en: 'Service Groups: ' },
     modelsPrefix: { zh: '\u53ef\u7528\u6a21\u578b: ', en: 'Models: ' },
     nearestExpiryPrefix: { zh: '\u6700\u8fd1\u5230\u671f: ', en: 'Nearest Expiry: ' },
+    creditsPrefix: { zh: '\u79ef\u5206: ', en: 'Credits: ' },
     smartRouteLabel: { zh: '\u667a\u80fd\u63a7\u5236', en: 'Smart Route' },
     boundUsersSearchPlaceholder: { zh: '\u641c\u7d22\u90ae\u7bb1 / SN...', en: 'Search email / SN...' },
     noMatches: { zh: '\u65e0\u5339\u914d\u7ed3\u679c', en: 'No matches' },
@@ -65,7 +66,7 @@
     if (groupNames.length) lines.push(gt('serviceGroupsPrefix') + groupNames.join(', '));
     if (models.length) lines.push(gt('modelsPrefix') + models.join(', '));
     if (status.nearest_expires_at) lines.push(gt('nearestExpiryPrefix') + status.nearest_expires_at);
-    if (Number(status.credits_available || 0) > 0) lines.push('Credits: ' + String(status.credits_available));
+    if (Number(status.credits_available || 0) > 0) lines.push(gt('creditsPrefix') + String(status.credits_available));
     return lines.join('&#10;');
   }
 
@@ -129,7 +130,7 @@
       var toggleId = 'sr_' + item.id;
       var userIdExpr = JSON.stringify(String(item.id || ''));
       var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="font-size:10px;padding:4px 8px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '';
-      return '<div class="user-card" style="flex-direction:column;gap:6px;cursor:default"><div style="min-width:0"><div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">' + escapeHtml(item.email) + '</div><div class="item-meta mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">' + escapeHtml(item.sn || tr('na')) + '</div></div><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="badge info" style="font-size:10px;padding:4px 8px">' + escapeHtml(item.enrollment_status || item.status || tr('active')) + '</span>' + serviceBadge + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' onchange="toggleSmartRoute(' + userIdExpr + ', this.checked)"><span>AI</span></label></div></div>';
+      return '<div class="user-card" style="flex-direction:column;gap:6px;cursor:default"><div style="min-width:0"><div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">' + escapeHtml(item.email) + '</div><div class="item-meta mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">' + escapeHtml(item.sn || tr('na')) + '</div></div><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="badge info" style="font-size:10px;padding:4px 8px">' + escapeHtml(formatStatus(item.enrollment_status || item.status || 'active')) + '</span>' + serviceBadge + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' onchange="toggleSmartRoute(' + userIdExpr + ', this.checked)"><span>AI</span></label></div></div>';
     }).join('');
     var pagerHtml = '';
     var showCount = filtered.length > 0 ? (start + 1) + '-' + (start + pageItems.length) + ' / ' + filtered.length : '0 / 0';
@@ -198,6 +199,7 @@
   };
 
   global.renderInvites = function renderInvites(items) {
+    global._invitesAll = items || [];
     const helper = ui();
     document.getElementById('inviteCountHero').textContent = String(items.length);
     const root = document.getElementById('invites');
@@ -332,6 +334,13 @@
         global.loadBoundUsers();
         global.loadInvites();
       }
+    });
+  }
+
+  if (global.AdminTabRegistry && typeof global.AdminTabRegistry.onLanguageChange === 'function') {
+    global.AdminTabRegistry.onLanguageChange(function() {
+      if (global._boundUsersAll && typeof global._renderBoundUsersPage === 'function') global._renderBoundUsersPage();
+      if (global._invitesAll && typeof global.renderInvites === 'function') global.renderInvites(global._invitesAll);
     });
   }
 

@@ -106,6 +106,41 @@ func TestCreateLLMServiceCardHandlerGeneratesBatchCodes(t *testing.T) {
 	}
 }
 
+func TestCreateLLMServiceCardHandlerClampsNegativeCredits(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"service_group_ids":["coding-basic"],"duration_days":30,"credits":-10,"count":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	CreateLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Cards []struct {
+			Credits float64 `json:"credits"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Cards) != 1 || resp.Cards[0].Credits != 0 {
+		t.Fatalf("expected response credits to be clamped to 0, got %#v", resp.Cards)
+	}
+	saved, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Cards) != 1 || saved.Cards[0].Credits != 0 {
+		t.Fatalf("expected saved credits to be clamped to 0, got %#v", saved.Cards)
+	}
+}
 func TestCreateLLMServiceCardHandlerRejectsOversizedBatch(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
 	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
@@ -124,6 +159,61 @@ func TestCreateLLMServiceCardHandlerRejectsOversizedBatch(t *testing.T) {
 	}
 }
 
+func TestListLLMServiceCardsHandlerPaginatesAndFilters(t *testing.T) {
+	now := time.Now().UTC()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Cards: []llmservice.RechargeCard{
+			{ID: "card-1", Label: "Alpha", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+			{ID: "card-2", Label: "Beta", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+			{ID: "card-3", Label: "Gamma", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now, RedeemedByEmail: "user@example.com", RedeemedAt: &now},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/service-cards?status=unused&search=a&page=1&page_size=1", nil)
+	rec := httptest.NewRecorder()
+	ListLLMServiceCardsHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Total    int `json:"total"`
+		Page     int `json:"page"`
+		PageSize int `json:"page_size"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 2 {
+		t.Fatalf("expected total 2, got %d", resp.Total)
+	}
+	if resp.Page != 1 || resp.PageSize != 1 {
+		t.Fatalf("unexpected page payload: %#v", resp)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "card-1" {
+		t.Fatalf("unexpected items: %#v", resp.Items)
+	}
+}
+
+func TestListLLMServiceCardsHandlerRejectsInvalidStatus(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/service-cards?status=archived", nil)
+	rec := httptest.NewRecorder()
+	ListLLMServiceCardsHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
 func TestExportLLMServiceCardsHandlerFiltersStatusAndFormat(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()
@@ -179,6 +269,76 @@ func TestExportLLMServiceCardsHandlerAppliesSearchFilter(t *testing.T) {
 	}
 }
 
+func TestExportSelectedLLMServiceCardsHandlerReturnsRequestedCards(t *testing.T) {
+	now := time.Now().UTC()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Cards: []llmservice.RechargeCard{
+			{ID: "card-alpha", Label: "Alpha", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+			{ID: "card-beta", Label: "Beta", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now, RedeemedByEmail: "user@example.com", RedeemedAt: &now},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"ids":["card-beta"],"format":"csv"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards/export-selected", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	ExportSelectedLLMServiceCardsHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	payload, _ := io.ReadAll(rec.Body)
+	text := string(payload)
+	if !strings.Contains(text, "card-beta") || strings.Contains(text, "card-alpha") {
+		t.Fatalf("unexpected export body: %s", text)
+	}
+}
+
+func TestUpdateLLMServicesAdminHandlerPreservesCardsWhenOmitted(t *testing.T) {
+	now := time.Now().UTC()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		GroupBindings:      []llmservice.GroupBinding{{GroupID: "ops", ServiceGroupIDs: []string{"coding-basic"}}},
+		Cards: []llmservice.RechargeCard{
+			{ID: "card-1", CodeHash: "hash-1", Label: "Alpha", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+			{ID: "card-2", CodeHash: "hash-2", Label: "Beta", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 45, Credits: 200, CreatedAt: now},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model_service_groups":[{"id":"coding-basic","name":"Coding Basic Updated"}],"group_bindings":[{"group_id":"ops","service_group_ids":["coding-basic"]}],"user_bindings":[],"grants":[],"default_new_user_service_groups":["coding-basic"],"default_new_user_duration_days":30,"tokens_per_credit":10000}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	UpdateLLMServicesAdminHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	saved, err := llmservice.LoadRegistry(context.Background(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Cards) != 2 {
+		t.Fatalf("expected 2 cards to remain, got %d", len(saved.Cards))
+	}
+	if saved.Cards[0].CodeHash != "hash-1" || saved.Cards[1].CodeHash != "hash-2" {
+		t.Fatalf("expected existing card hashes to be preserved, got %#v", saved.Cards)
+	}
+	updated := false
+	for _, group := range saved.ModelServiceGroups {
+		if group.ID == "coding-basic" && group.Name == "Coding Basic Updated" {
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		t.Fatalf("expected coding-basic group to update, got %#v", saved.ModelServiceGroups)
+	}
+}
 func TestDeleteLLMServiceCardHandlerDeletesUnusedOnly(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()

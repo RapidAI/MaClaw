@@ -62,23 +62,28 @@ type emailInviteRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+type llmPromptCacheRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
-		Admins:       &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		System:       &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		AdminAudit:   &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Users:        &userRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Enrollments:  &enrollmentRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		EmailBlocks:  &emailBlockRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Admins:          &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		System:          &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		AdminAudit:      &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Users:           &userRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Enrollments:     &enrollmentRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		EmailBlocks:     &emailBlockRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		InvitationCodes: &invitationCodeRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Machines:        &machineRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		ViewerTokens: &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		LoginTokens:  &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Sessions:     &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Voiceprints:  &voiceprintRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		EmailInvites: &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		WorkflowRepo: &workflowRepo{db: p.Write, readDB: p.Read},
+		ViewerTokens:    &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		LoginTokens:     &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Sessions:        &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Voiceprints:     &voiceprintRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		EmailInvites:    &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		WorkflowRepo:    &workflowRepo{db: p.Write, readDB: p.Read},
+		LLMPromptCache:  &llmPromptCacheRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
 }
 

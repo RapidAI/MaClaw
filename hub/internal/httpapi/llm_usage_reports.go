@@ -37,11 +37,14 @@ type llmUsageReportEntry struct {
 }
 
 type llmUsageCounters struct {
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	TotalTokens  int64   `json:"total_tokens"`
-	Requests     int64   `json:"requests"`
-	Credits      float64 `json:"credits,omitempty"`
+	InputTokens       int64   `json:"input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	TotalTokens       int64   `json:"total_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens,omitempty"`
+	Requests          int64   `json:"requests"`
+	CachedRequests    int64   `json:"cached_requests,omitempty"`
+	Credits           float64 `json:"credits,omitempty"`
 }
 
 type llmUsageReportEntityOption struct {
@@ -50,14 +53,17 @@ type llmUsageReportEntityOption struct {
 }
 
 type llmUsageReportRow struct {
-	ID           string             `json:"id"`
-	Name         string             `json:"name"`
-	InputTokens  int64              `json:"input_tokens"`
-	OutputTokens int64              `json:"output_tokens"`
-	TotalTokens  int64              `json:"total_tokens"`
-	Requests     int64              `json:"requests"`
-	Credits      float64            `json:"credits"`
-	Hours        []llmUsageCounters `json:"hours,omitempty"`
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	InputTokens       int64              `json:"input_tokens"`
+	OutputTokens      int64              `json:"output_tokens"`
+	TotalTokens       int64              `json:"total_tokens"`
+	CachedInputTokens int64              `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int64              `json:"cache_write_tokens,omitempty"`
+	Requests          int64              `json:"requests"`
+	CachedRequests    int64              `json:"cached_requests,omitempty"`
+	Credits           float64            `json:"credits"`
+	Hours             []llmUsageCounters `json:"hours,omitempty"`
 }
 
 type llmUsageReportResponse struct {
@@ -128,10 +134,17 @@ func addUsageCounters(dst *llmUsageCounters, usage corelib.TokenUsageStat, credi
 	if dst == nil {
 		return
 	}
+	requests := usage.Requests
+	if requests <= 0 {
+		requests = 1
+	}
 	dst.InputTokens += usage.InputTokens
 	dst.OutputTokens += usage.OutputTokens
 	dst.TotalTokens += usage.TotalTokens
-	dst.Requests++
+	dst.CachedInputTokens += usage.CachedInputTokens
+	dst.CacheWriteTokens += usage.CacheWriteTokens
+	dst.Requests += requests
+	dst.CachedRequests += usage.CachedRequests
 	dst.Credits += credits
 }
 
@@ -139,7 +152,10 @@ func addUsageCountersFromTotals(dst *llmUsageCounters, src llmUsageCounters) {
 	dst.InputTokens += src.InputTokens
 	dst.OutputTokens += src.OutputTokens
 	dst.TotalTokens += src.TotalTokens
+	dst.CachedInputTokens += src.CachedInputTokens
+	dst.CacheWriteTokens += src.CacheWriteTokens
 	dst.Requests += src.Requests
+	dst.CachedRequests += src.CachedRequests
 	dst.Credits += src.Credits
 }
 
@@ -380,14 +396,17 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 			}
 		}
 		resp.Rows = append(resp.Rows, llmUsageReportRow{
-			ID:           id,
-			Name:         name,
-			InputTokens:  totals.InputTokens,
-			OutputTokens: totals.OutputTokens,
-			TotalTokens:  totals.TotalTokens,
-			Requests:     totals.Requests,
-			Credits:      totals.Credits,
-			Hours:        cloneUsageCountersSlice(hours),
+			ID:                id,
+			Name:              name,
+			InputTokens:       totals.InputTokens,
+			OutputTokens:      totals.OutputTokens,
+			TotalTokens:       totals.TotalTokens,
+			CachedInputTokens: totals.CachedInputTokens,
+			CacheWriteTokens:  totals.CacheWriteTokens,
+			Requests:          totals.Requests,
+			CachedRequests:    totals.CachedRequests,
+			Credits:           totals.Credits,
+			Hours:             cloneUsageCountersSlice(hours),
 		})
 		entityOptions[id] = name
 	}

@@ -640,36 +640,40 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 		userID = "desktop-user"
 	}
 
-	// Check if we have a frozen snapshot for this user.
-	// If isFirstTurn is true, always regenerate — this indicates a new session
-	// (e.g., after /new, topic switch, or application restart per Req 5.7).
+	// --- Static part: user_fact summary + memory guide (frozen per session) ---
+	// Only regenerate on first turn or when snapshot is missing.
+	staticCached := false
 	if !isFirstTurn {
 		if initialized, ok := h.snapshotInitialized.Load(userID); ok && initialized.(bool) {
 			if snapshot, ok := h.frozenMemorySnapshots.Load(userID); ok {
 				b.WriteString(snapshot.(string))
-				log.Printf("[frozen_snapshot] reusing cached memory snapshot for user %q", userID)
-				return
+				staticCached = true
+				log.Printf("[frozen_snapshot] reusing cached static memory snapshot for user %q", userID)
 			}
 		}
 	}
+	if !staticCached {
+		var staticBuf strings.Builder
+		h.generateStaticMemorySection(&staticBuf, isFirstTurn)
+		snapshot := staticBuf.String()
+		h.frozenMemorySnapshots.Store(userID, snapshot)
+		h.snapshotInitialized.Store(userID, true)
+		log.Printf("[frozen_snapshot] generated and cached static memory snapshot for user %q (%d bytes)", userID, len(snapshot))
+		b.WriteString(snapshot)
+	}
 
-	// No cached snapshot — generate the memory section and cache it.
-	var memBuf strings.Builder
-	h.generateMemorySection(&memBuf, isFirstTurn, userMessage...)
-
-	snapshot := memBuf.String()
-	h.frozenMemorySnapshots.Store(userID, snapshot)
-	h.snapshotInitialized.Store(userID, true)
-	log.Printf("[frozen_snapshot] generated and cached memory snapshot for user %q (%d bytes)", userID, len(snapshot))
-
-	b.WriteString(snapshot)
+	// --- Dynamic part: proactive recall (executed per message, NOT frozen) ---
+	msg := ""
+	if len(userMessage) > 0 {
+		msg = userMessage[0]
+	}
+	h.appendProactiveRecall(b, msg)
 }
 
-// generateMemorySection builds the full memory section content including
-// user facts, proactive recall, entity supplementary recall, and memory guide.
-// This is the core logic extracted from the original appendMemorySection,
-// used both for initial snapshot generation and for RefreshMemorySnapshot.
-func (h *IMMessageHandler) generateMemorySection(b *strings.Builder, isFirstTurn bool, userMessage ...string) {
+// generateStaticMemorySection builds the frozen part of the memory section:
+// user_fact summary + memory recall hint + memory guide (first turn only).
+// This content is stable across messages within a session and can be cached.
+func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFirstTurn bool) {
 	if h.memoryStore == nil {
 		return
 	}
@@ -681,111 +685,113 @@ func (h *IMMessageHandler) generateMemorySection(b *strings.Builder, isFirstTurn
 		b.WriteString(fmt.Sprintf("用户信息: %s\n", summary))
 	}
 
-	// Proactive recall: if userMessage is provided, automatically recall
-	// relevant memories and inject them into the system prompt.
-	msg := ""
-	if len(userMessage) > 0 {
-		msg = userMessage[0]
-	}
-	if msg != "" {
-		projectPath := ""
-		if h.contextResolver != nil {
-			projectPath, _ = h.contextResolver.ResolveProject()
-		}
-		recalled := h.memoryStore.RecallDynamic(msg, "", projectPath)
-		log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, recalled=%d entries (RecallDynamic)", len(msg), projectPath, len(recalled))
-
-		// Supplementary recall: ExpandQuery extracts key entities (e.g. "4090服务器",
-		// "GPU") from the user message. When the full message is long and noisy,
-		// BM25 may dilute the score for these entities. Run a focused recall on
-		// top entities and merge results to improve hit rate.
-		// Only trigger when primary recall returned few results to avoid latency.
-		expanded := corememory.ExpandQuery(msg)
-		if len(expanded.Entities) > 0 && len(recalled) < 8 {
-			seen := make(map[string]bool, len(recalled))
-			for _, e := range recalled {
-				seen[e.ID] = true
-			}
-			// Limit to top 3 entities to bound latency.
-			entities := expanded.Entities
-			if len(entities) > 3 {
-				entities = entities[:3]
-			}
-			for _, entity := range entities {
-				extra := h.memoryStore.RecallDynamic(entity, "", projectPath)
-				for _, e := range extra {
-					if !seen[e.ID] {
-						seen[e.ID] = true
-						recalled = append(recalled, e)
-					}
-				}
-			}
-			log.Printf("[proactive_recall] after entity supplement: %d entries (entities=%v)", len(recalled), entities)
-		}
-
-		// Filter out user_fact, self_identity, and session_checkpoint
-		// (checkpoints are progress snapshots, not useful for answering user queries).
-		var relevant []corememory.Entry
-		for _, e := range recalled {
-			canonical := corememory.MapToCanonical(e.Category)
-			if canonical == corememory.CategoryUserFact || canonical == corememory.CategorySelfIdentity {
-				continue
-			}
-			if e.Category == corememory.CategorySessionCheckpoint || e.Category == corememory.CategoryConversationSummary {
-				continue
-			}
-			relevant = append(relevant, e)
-		}
-		log.Printf("[proactive_recall] relevant=%d after filter", len(relevant))
-
-		// Cap at 12 entries to control prompt size.
-		const maxProactiveRecall = 12
-		if len(relevant) > maxProactiveRecall {
-			relevant = relevant[:maxProactiveRecall]
-		}
-
-		if len(relevant) > 0 {
-			b.WriteString("\n相关记忆（自动召回）:\n")
-			for _, e := range relevant {
-				text := e.CompactForm
-				if text == "" {
-					text = e.Content
-				}
-				runes := []rune(text)
-				if len(runes) > 200 {
-					text = string(runes[:200]) + "…"
-				}
-				b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
-			}
-			log.Printf("[proactive_recall] injected %d entries into system prompt", len(relevant))
-			b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。即使你在之前的对话中说过「没找到」或「记忆库为空」，现在已经找到了，请直接使用以上信息，不要重复之前的错误判断。）\n")
-
-			// Memory-driven tool pinning: scan recalled memory content for
-			// conditional tool keywords (e.g. "服务器", "SSH") and pin matching
-			// tools to the session. This handles the case where the app was
-			// restarted and the user says "开工吧" to resume a server task —
-			// the user message has no SSH keywords, but the recalled memory does.
-			if h.toolRouter != nil {
-				var memoryText strings.Builder
-				for _, e := range relevant {
-					memoryText.WriteString(e.Content)
-					memoryText.WriteString(" ")
-				}
-				matched := tool.MatchConditionalTools(memoryText.String())
-				for name := range matched {
-					if tool.ShouldPinConditionalTool(name) {
-						h.toolRouter.ActivateSessionTool(name)
-						log.Printf("[MemoryPin] pinned conditional tool %q from recalled memory content", name)
-					}
-				}
-			}
-		}
-	}
-
 	b.WriteString("如需更多记忆，可通过 " + corememory.PromptActionRecallColon + ", query: \"关键词\") 召回。\n")
 
 	if isFirstTurn {
 		b.WriteString("\n" + corememory.BuildIMMemoryGuidePrompt() + "\n")
+	}
+}
+
+// appendProactiveRecall performs per-message proactive recall and appends
+// results to the system prompt. Unlike the static section, this is NOT frozen
+// — each user message triggers a fresh recall so the LLM always sees memories
+// relevant to the current query.
+func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string) {
+	if h.memoryStore == nil || msg == "" {
+		return
+	}
+
+	projectPath := ""
+	if h.contextResolver != nil {
+		projectPath, _ = h.contextResolver.ResolveProject()
+	}
+	recalled := h.memoryStore.RecallDynamic(msg, "", projectPath)
+	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, recalled=%d entries (RecallDynamic)", len(msg), projectPath, len(recalled))
+
+	// Supplementary recall: ExpandQuery extracts key entities (e.g. "4090服务器",
+	// "GPU", "api服务器") from the user message. When the full message is long
+	// and noisy, BM25 may dilute the score for these entities. Run a focused
+	// recall on top entities and merge results to improve hit rate.
+	// Only trigger when primary recall returned few results to avoid latency.
+	expanded := corememory.ExpandQuery(msg)
+	if len(expanded.Entities) > 0 && len(recalled) < 8 {
+		seen := make(map[string]bool, len(recalled))
+		for _, e := range recalled {
+			seen[e.ID] = true
+		}
+		// Limit to top 3 entities to bound latency.
+		entities := expanded.Entities
+		if len(entities) > 3 {
+			entities = entities[:3]
+		}
+		for _, entity := range entities {
+			extra := h.memoryStore.RecallDynamic(entity, "", projectPath)
+			for _, e := range extra {
+				if !seen[e.ID] {
+					seen[e.ID] = true
+					recalled = append(recalled, e)
+				}
+			}
+		}
+		log.Printf("[proactive_recall] after entity supplement: %d entries (entities=%v)", len(recalled), entities)
+	}
+
+	// Filter out user_fact, self_identity, and session_checkpoint
+	// (checkpoints are progress snapshots, not useful for answering user queries).
+	var relevant []corememory.Entry
+	for _, e := range recalled {
+		canonical := corememory.MapToCanonical(e.Category)
+		if canonical == corememory.CategoryUserFact || canonical == corememory.CategorySelfIdentity {
+			continue
+		}
+		if e.Category == corememory.CategorySessionCheckpoint || e.Category == corememory.CategoryConversationSummary {
+			continue
+		}
+		relevant = append(relevant, e)
+	}
+	log.Printf("[proactive_recall] relevant=%d after filter", len(relevant))
+
+	// Cap at 12 entries to control prompt size.
+	const maxProactiveRecall = 12
+	if len(relevant) > maxProactiveRecall {
+		relevant = relevant[:maxProactiveRecall]
+	}
+
+	if len(relevant) > 0 {
+		b.WriteString("\n相关记忆（自动召回）:\n")
+		for _, e := range relevant {
+			text := e.CompactForm
+			if text == "" {
+				text = e.Content
+			}
+			runes := []rune(text)
+			if len(runes) > 200 {
+				text = string(runes[:200]) + "…"
+			}
+			b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
+		}
+		log.Printf("[proactive_recall] injected %d entries into system prompt", len(relevant))
+		b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。即使你在之前的对话中说过「没找到」或「记忆库为空」，现在已经找到了，请直接使用以上信息，不要重复之前的错误判断。）\n")
+
+		// Memory-driven tool pinning: scan recalled memory content for
+		// conditional tool keywords (e.g. "服务器", "SSH") and pin matching
+		// tools to the session. This handles the case where the app was
+		// restarted and the user says "开工吧" to resume a server task —
+		// the user message has no SSH keywords, but the recalled memory does.
+		if h.toolRouter != nil {
+			var memoryText strings.Builder
+			for _, e := range relevant {
+				memoryText.WriteString(e.Content)
+				memoryText.WriteString(" ")
+			}
+			matched := tool.MatchConditionalTools(memoryText.String())
+			for name := range matched {
+				if tool.ShouldPinConditionalTool(name) {
+					h.toolRouter.ActivateSessionTool(name)
+					log.Printf("[MemoryPin] pinned conditional tool %q from recalled memory content", name)
+				}
+			}
+		}
 	}
 }
 

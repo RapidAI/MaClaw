@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>龙虾盛宴 SkillMarket</title>
+  <title>Lobster Feast SkillMarket</title>
   <style>
     :root{--bg:#f8fafc;--card:#fff;--text:#1a202c;--muted:#64748b;--primary:#2563eb;--primary-light:#eff6ff;--border:#e2e8f0;--danger:#dc2626;--success:#16a34a;--warn:#f59e0b;--radius:10px;--shadow:0 1px 3px rgba(0,0,0,.08)}
     *{box-sizing:border-box;margin:0;padding:0}
@@ -60,218 +60,214 @@
 <div id="toastStack" class="toast-stack"></div>
 <div class="container">
   <header>
-    <h1>🦞 龙虾盛宴 SkillMarket</h1>
-    <p data-i18n="subtitle">账户管理 · Skill 管理 · 管理后台</p>
-    <p style="margin-top:6px"><a href="/skillmarket" style="font-size:13px;color:var(--primary);text-decoration:none" data-i18n="nav.browse">← 返回 Skill 浏览</a></p>
+    <h1>Lobster Feast SkillMarket</h1>
+    <p data-i18n="subtitle">Account / Skills</p>
+    <p style="margin-top:6px"><a href="/skillmarket" style="font-size:13px;color:var(--primary);text-decoration:none" data-i18n="nav.browse"><- Back to Skill Browse</a></p>
   </header>
 
-  <!-- ═══ Auth Section (shown when not logged in) ═══ -->
+  <!-- Auth Section (shown when not logged in) -->
   <div id="auth-section" class="card">
     <div id="auth-mode-login">
-      <h3 data-i18n="auth.login.title">登录</h3>
+      <h3 data-i18n="auth.login.title">Login</h3>
       <div class="form-row">
         <label>Email</label>
         <input id="login-email" type="email" placeholder="your@email.com">
       </div>
       <div class="form-row">
-        <label data-i18n="auth.password">密码</label>
-        <input id="login-password" type="password" placeholder="••••••">
+        <label data-i18n="auth.password">Password</label>
+        <input id="login-password" type="password" placeholder="Password">
       </div>
       <div class="form-row">
-        <label data-i18n="auth.captcha">验证码</label>
+        <label data-i18n="auth.captcha">Captcha</label>
         <div class="captcha-box">
           <span class="captcha-display" id="login-captcha-q"></span>
           <span>= </span>
           <input id="login-captcha-a" type="text" style="width:60px" placeholder="?">
-          <span class="captcha-refresh" onclick="refreshCaptcha('login')" title="refresh">🔄</span>
+          <span class="captcha-refresh" onclick="refreshCaptcha('login')" title="refresh">Refresh</span>
         </div>
       </div>
       <div class="form-row">
         <label></label>
-        <button class="btn btn-primary" onclick="doLogin()" data-i18n="auth.login.btn">登录</button>
-        <span class="auth-toggle" onclick="showAuthMode('register')" data-i18n="auth.switch.register">没有账户？注册</span>
-        <span class="auth-toggle" onclick="showAuthMode('lookup')" data-i18n="auth.switch.lookup">邮件验证登录</span>
-        <span class="auth-toggle" onclick="showAuthMode('forgot')" data-i18n="auth.switch.forgot">忘记密码？</span>
+        <button class="btn btn-primary" onclick="doLogin()" data-i18n="auth.login.btn">Login</button>
+        <span class="auth-toggle" onclick="showAuthMode('register')" data-i18n="auth.switch.register">No account? Register</span>
+        <span class="auth-toggle" onclick="showAuthMode('lookup')" data-i18n="auth.switch.lookup">Email verification login</span>
+        <span class="auth-toggle" onclick="showAuthMode('forgot')" data-i18n="auth.switch.forgot">Forgot password?</span>
       </div>
       <div id="login-msg"></div>
     </div>
 
     <div id="auth-mode-register" style="display:none">
-      <h3 data-i18n="auth.register.title">注册新账户</h3>
+      <h3 data-i18n="auth.register.title">Create Account</h3>
       <div class="form-row">
         <label>Email</label>
         <input id="reg-email" type="email" placeholder="your@email.com">
       </div>
       <div class="form-row">
-        <label data-i18n="auth.password">密码</label>
-        <input id="reg-password" type="password" placeholder="至少6位">
+        <label data-i18n="auth.password">Password</label>
+        <input id="reg-password" type="password" placeholder="At least 6 characters">
       </div>
       <div class="form-row">
-        <label data-i18n="auth.confirm.password">确认密码</label>
-        <input id="reg-password2" type="password" placeholder="再次输入密码">
+        <label data-i18n="auth.confirm.password">Confirm Password</label>
+        <input id="reg-password2" type="password" placeholder="Enter password again">
       </div>
       <div class="form-row">
-        <label data-i18n="auth.captcha">验证码</label>
+        <label data-i18n="auth.captcha">Captcha</label>
         <div class="captcha-box">
           <span class="captcha-display" id="reg-captcha-q"></span>
           <span>= </span>
           <input id="reg-captcha-a" type="text" style="width:60px" placeholder="?">
-          <span class="captcha-refresh" onclick="refreshCaptcha('reg')" title="refresh">🔄</span>
+          <span class="captcha-refresh" onclick="refreshCaptcha('reg')" title="refresh">Refresh</span>
         </div>
       </div>
       <div class="form-row">
         <label></label>
-        <button class="btn btn-success" onclick="doRegister()" data-i18n="auth.register.btn">注册</button>
-        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">已有账户？登录</span>
+        <button class="btn btn-success" onclick="doRegister()" data-i18n="auth.register.btn">Register</button>
+        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span>
       </div>
       <div id="reg-msg"></div>
     </div>
 
     <div id="auth-mode-lookup" style="display:none">
-      <h3 data-i18n="auth.lookup.title">邮件验证登录</h3>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px" data-i18n="auth.lookup.desc">输入已注册的邮箱，我们将发送验证链接到您的邮箱，点击即可登录。</p>
+      <h3 data-i18n="auth.lookup.title">Email Verification Login</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px" data-i18n="auth.lookup.desc">Enter your registered email. We will send a verification link to log you in.</p>
       <div class="form-row">
         <label>Email</label>
         <input id="lookup-email" type="email" placeholder="your@email.com" style="flex:1">
       </div>
       <div class="form-row">
-        <label data-i18n="auth.captcha">验证码</label>
+        <label data-i18n="auth.captcha">Captcha</label>
         <div class="captcha-box">
           <span class="captcha-display" id="lookup-captcha-q"></span>
           <span>= </span>
           <input id="lookup-captcha-a" type="text" style="width:60px" placeholder="?">
-          <span class="captcha-refresh" onclick="refreshCaptcha('lookup')" title="refresh">🔄</span>
+          <span class="captcha-refresh" onclick="refreshCaptcha('lookup')" title="refresh">Refresh</span>
         </div>
       </div>
       <div class="form-row">
         <label></label>
-        <button class="btn btn-primary" onclick="doLookup()" data-i18n="auth.lookup.btn">发送验证邮件</button>
-        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">已有账户？登录</span>
+        <button class="btn btn-primary" onclick="doLookup()" data-i18n="auth.lookup.btn">Send Verification Email</button>
+        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span>
       </div>
       <div id="lookup-msg"></div>
     </div>
 
     <div id="auth-mode-forgot" style="display:none">
-      <h3 data-i18n="auth.forgot.title">忘记密码</h3>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px" data-i18n="auth.forgot.desc">输入已注册的邮箱，我们将发送密码重设链接。</p>
+      <h3 data-i18n="auth.forgot.title">Forgot Password</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px" data-i18n="auth.forgot.desc">Enter your registered email. We will send a password reset link.</p>
       <div class="form-row">
         <label>Email</label>
         <input id="forgot-email" type="email" placeholder="your@email.com" style="flex:1">
       </div>
       <div class="form-row">
-        <label data-i18n="auth.captcha">验证码</label>
+        <label data-i18n="auth.captcha">Captcha</label>
         <div class="captcha-box">
           <span class="captcha-display" id="forgot-captcha-q"></span>
           <span>= </span>
           <input id="forgot-captcha-a" type="text" style="width:60px" placeholder="?">
-          <span class="captcha-refresh" onclick="refreshCaptcha('forgot')" title="refresh">🔄</span>
+          <span class="captcha-refresh" onclick="refreshCaptcha('forgot')" title="refresh">Refresh</span>
         </div>
       </div>
       <div class="form-row">
         <label></label>
-        <button class="btn btn-primary" onclick="doForgotPassword()" data-i18n="auth.forgot.btn">发送重设邮件</button>
-        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">已有账户？登录</span>
+        <button class="btn btn-primary" onclick="doForgotPassword()" data-i18n="auth.forgot.btn">Send Reset Email</button>
+        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span>
       </div>
       <div id="forgot-msg"></div>
     </div>
 
     <div id="auth-mode-reset" style="display:none">
-      <h3 data-i18n="auth.reset.title">重设密码</h3>
+      <h3 data-i18n="auth.reset.title">Reset Password</h3>
       <div class="form-row">
-        <label data-i18n="auth.password">新密码</label>
-        <input id="reset-password" type="password" placeholder="至少6位">
+        <label data-i18n="auth.password">Password</label>
+        <input id="reset-password" type="password" placeholder="At least 6 characters">
       </div>
       <div class="form-row">
-        <label data-i18n="auth.confirm.password">确认密码</label>
-        <input id="reset-password2" type="password" placeholder="再次输入密码">
+        <label data-i18n="auth.confirm.password">Confirm Password</label>
+        <input id="reset-password2" type="password" placeholder="Enter password again">
       </div>
       <div class="form-row">
         <label></label>
-        <button class="btn btn-primary" onclick="doResetPassword()" data-i18n="auth.reset.btn">重设密码</button>
+        <button class="btn btn-primary" onclick="doResetPassword()" data-i18n="auth.reset.btn">Reset Password</button>
       </div>
       <div id="reset-msg"></div>
     </div>
   </div>
 
-  <!-- ═══ Logged-in bar ═══ -->
+  <!-- Logged-in bar -->
   <div id="logged-in-bar" class="logged-in-bar" style="display:none">
-    <span data-i18n="auth.loggedAs">已登录：</span>
+    <span data-i18n="auth.loggedAs">Logged in as:</span>
     <span class="email" id="current-email"></span>
-    <button class="btn btn-outline" onclick="doLogout()" data-i18n="auth.logout">退出</button>
+    <button class="btn btn-outline" onclick="doLogout()" data-i18n="auth.logout">Logout</button>
   </div>
 
-  <!-- ═══ Main content (hidden until logged in) ═══ -->
+  <!-- Main content (hidden until logged in) -->
   <div id="main-content" style="display:none">
     <div class="tabs">
-      <button class="tab active" data-panel="account" data-i18n="tab.account">账户</button>
-      <button class="tab" data-panel="myskills" data-i18n="tab.myskills">我的 Skill</button>
+      <button class="tab active" data-panel="account" data-i18n="tab.account">Account</button>
+      <button class="tab" data-panel="myskills" data-i18n="tab.myskills">My Skills</button>
     </div>
 
-    <!-- ═══ 账户面板 ═══ -->
     <div id="panel-account" class="panel active">
       <div id="account-info" class="card">
-        <h3 data-i18n="account.title">账户信息</h3>
+        <h3 data-i18n="account.title">Account Info</h3>
         <div class="stat-row">
-          <div class="stat"><div class="val" id="s-credits">0</div><div class="lbl" data-i18n="account.credits">Credits 余额</div></div>
-          <div class="stat"><div class="val" id="s-settled">0</div><div class="lbl" data-i18n="account.settled">已结算收益</div></div>
-          <div class="stat"><div class="val" id="s-pending">0</div><div class="lbl" data-i18n="account.pending">待结算收益</div></div>
-          <div class="stat"><div class="val" id="s-voucher">0</div><div class="lbl" data-i18n="account.voucher">体验券</div></div>
-          <div class="stat"><div class="val" id="s-status">-</div><div class="lbl" data-i18n="account.status">状态</div></div>
+          <div class="stat"><div class="val" id="s-credits">0</div><div class="lbl" data-i18n="account.credits">Credits</div></div>
+          <div class="stat"><div class="val" id="s-settled">0</div><div class="lbl" data-i18n="account.settled">Settled</div></div>
+          <div class="stat"><div class="val" id="s-pending">0</div><div class="lbl" data-i18n="account.pending">Pending</div></div>
+          <div class="stat"><div class="val" id="s-voucher">0</div><div class="lbl" data-i18n="account.voucher">Vouchers</div></div>
+          <div class="stat"><div class="val" id="s-status">-</div><div class="lbl" data-i18n="account.status">Status</div></div>
         </div>
       </div>
       <div id="tier-info" class="card" style="display:none">
-        <h3 data-i18n="tier.title">信誉等级</h3>
+        <h3 data-i18n="tier.title">Reputation Tier</h3>
         <div class="stat-row">
-          <div class="stat"><div class="val" id="s-tier">-</div><div class="lbl" data-i18n="tier.level">等级</div></div>
-          <div class="stat"><div class="val" id="s-published">0</div><div class="lbl" data-i18n="tier.published">已发布</div></div>
-          <div class="stat"><div class="val" id="s-avgrating">-</div><div class="lbl" data-i18n="tier.avgrating">平均评分</div></div>
-          <div class="stat"><div class="val" id="s-downloads">0</div><div class="lbl" data-i18n="tier.downloads">总下载</div></div>
+          <div class="stat"><div class="val" id="s-tier">-</div><div class="lbl" data-i18n="tier.level">Tier</div></div>
+          <div class="stat"><div class="val" id="s-published">0</div><div class="lbl" data-i18n="tier.published">Published</div></div>
+          <div class="stat"><div class="val" id="s-avgrating">-</div><div class="lbl" data-i18n="tier.avgrating">Avg Rating</div></div>
+          <div class="stat"><div class="val" id="s-downloads">0</div><div class="lbl" data-i18n="tier.downloads">Downloads</div></div>
         </div>
       </div>
       <div id="credits-section" class="card">
-        <h3 data-i18n="credits.title">充值 / 提现</h3>
+        <h3 data-i18n="credits.title">Top Up / Withdraw</h3>
         <div class="form-row">
-          <label data-i18n="credits.amount">金额</label>
+          <label data-i18n="credits.amount">Amount</label>
           <input id="credits-amount" type="number" min="1" value="100" style="width:120px">
-          <button class="btn btn-primary" onclick="topUp()" data-i18n="credits.topup">充值</button>
-          <button class="btn btn-danger" onclick="withdraw()" data-i18n="credits.withdraw">提现</button>
+          <button class="btn btn-primary" onclick="topUp()" data-i18n="credits.topup">Top Up</button>
+          <button class="btn btn-danger" onclick="withdraw()" data-i18n="credits.withdraw">Withdraw</button>
         </div>
         <div id="credits-msg"></div>
-        <h3 style="margin-top:16px" data-i18n="credits.history">交易记录</h3>
-        <table><thead><tr><th data-i18n="tx.time">时间</th><th data-i18n="tx.type">类型</th><th data-i18n="tx.amount">金额</th><th data-i18n="tx.balance">余额</th><th data-i18n="tx.desc">说明</th></tr></thead><tbody id="tx-list"></tbody></table><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" onclick="changeTxPage(-1)">&larr;</button><button class="btn btn-outline" id="tx-next-btn" onclick="changeTxPage(1)">&rarr;</button></div></div>
+        <h3 style="margin-top:16px" data-i18n="credits.history">Transactions</h3>
+        <table><thead><tr><th data-i18n="tx.time">Time</th><th data-i18n="tx.type">Type</th><th data-i18n="tx.amount">Amount</th><th data-i18n="tx.balance">Balance</th><th data-i18n="tx.desc">Description</th></tr></thead><tbody id="tx-list"></tbody></table><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" onclick="changeTxPage(-1)">&larr;</button><button class="btn btn-outline" id="tx-next-btn" onclick="changeTxPage(1)">&rarr;</button></div></div>
       </div>
     </div>
 
-    <!-- ═══ 我的 Skill 面板 ═══ -->
     <div id="panel-myskills" class="panel">
       <div class="card">
-        <h3 data-i18n="myskills.title">我的 Skill</h3>
-        <p class="empty" id="myskills-empty" data-i18n="myskills.empty">暂无 Skill</p>
+        <h3 data-i18n="myskills.title">My Skills</h3>
+        <p class="empty" id="myskills-empty" data-i18n="myskills.empty">No skills yet.</p>
         <table id="myskills-table" style="display:none">
-          <thead><tr><th data-i18n="sk.name">名称</th><th data-i18n="sk.version">版本</th><th data-i18n="sk.status">状态</th><th data-i18n="sk.rating">评分</th><th data-i18n="sk.downloads">下载</th><th data-i18n="sk.actions">操作</th></tr></thead>
+          <thead><tr><th data-i18n="sk.name">Name</th><th data-i18n="sk.version">Version</th><th data-i18n="sk.status">Status</th><th data-i18n="sk.rating">Rating</th><th data-i18n="sk.downloads">Downloads</th><th data-i18n="sk.actions">Actions</th></tr></thead>
           <tbody id="myskills-list"></tbody>
         </table>
       </div>
       <div id="apikey-section" class="card">
-        <h3 data-i18n="apikey.title">API Key 管理</h3>
+        <h3 data-i18n="apikey.title">API Key Management</h3>
         <div class="form-row">
           <label>Skill ID</label>
           <input id="apikey-skill-id" style="flex:1">
-          <button class="btn btn-primary" onclick="loadAPIKeyStatus()" data-i18n="apikey.query">查询</button>
+          <button class="btn btn-primary" onclick="loadAPIKeyStatus()" data-i18n="apikey.query">Lookup</button>
         </div>
         <div id="apikey-status"></div>
         <div class="form-row" style="margin-top:10px">
-          <label data-i18n="apikey.bulk">批量上传</label>
-          <textarea id="apikey-bulk" rows="4" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:12px" data-i18n-placeholder="apikey.placeholder" placeholder="每行一个 API Key"></textarea>
-          <button class="btn btn-success" onclick="uploadAPIKeys()" data-i18n="apikey.upload">上传</button>
+          <label data-i18n="apikey.bulk">Bulk Upload</label>
+          <textarea id="apikey-bulk" rows="4" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:12px" data-i18n-placeholder="apikey.placeholder" placeholder="One API key per line"></textarea>
+          <button class="btn btn-success" onclick="uploadAPIKeys()" data-i18n="apikey.upload">Upload</button>
         </div>
         <div id="apikey-msg"></div>
       </div>
     </div>
 
   </div><!-- /main-content -->
-</div>
-
 <script>
 const API = '';
 let sessionToken = localStorage.getItem('sm_session') || '';
@@ -290,105 +286,104 @@ function showToast(message, type) {
   el.addEventListener('click', function() { el.classList.remove('show'); setTimeout(function() { el.remove(); }, 200); });
 }
 
-// ── i18n ──
+// i18n
 const LANG = (navigator.language || 'zh').startsWith('zh') ? 'zh' : 'en';
 document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
 
 const I18N = {
-  'subtitle':           { zh: '账户管理 · Skill 管理', en: 'Account ? Skills' },
-  'nav.browse':         { zh: '← 返回 Skill 浏览', en: '? Back to Skill Browse' },
-  'auth.login.title':   { zh: '登录', en: 'Login' },
-  'auth.register.title':{ zh: '注册新账户', en: 'Create Account' },
-  'auth.lookup.title':  { zh: '邮件验证登录', en: 'Email Verification Login' },
-  'auth.lookup.desc':   { zh: '输入已注册的邮箱，我们将发送验证链接到您的邮箱，点击即可登录。', en: 'Enter your registered email. We will send a verification link to log you in.' },
-  'auth.password':      { zh: '密码', en: 'Password' },
-  'auth.confirm.password':{ zh: '确认密码', en: 'Confirm' },
-  'auth.captcha':       { zh: '验证码', en: 'Captcha' },
-  'auth.login.btn':     { zh: '登录', en: 'Login' },
-  'auth.register.btn':  { zh: '注册', en: 'Register' },
-  'auth.lookup.btn':    { zh: '发送验证邮件', en: 'Send Verification Email' },
-  'auth.switch.register':{ zh: '没有账户？注册', en: 'No account? Register' },
-  'auth.switch.login':  { zh: '已有账户？登录', en: 'Have an account? Login' },
-  'auth.switch.lookup': { zh: '邮件验证登录', en: 'Email verification login' },
-  'auth.switch.forgot': { zh: '忘记密码？', en: 'Forgot password?' },
-  'auth.forgot.title':  { zh: '忘记密码', en: 'Forgot Password' },
-  'auth.forgot.desc':   { zh: '输入已注册的邮箱，我们将发送密码重设链接。', en: 'Enter your registered email. We will send a password reset link.' },
-  'auth.forgot.btn':    { zh: '发送重设邮件', en: 'Send Reset Email' },
-  'auth.reset.title':   { zh: '重设密码', en: 'Reset Password' },
-  'auth.reset.btn':     { zh: '重设密码', en: 'Reset Password' },
-  'msg.forgot.ok':      { zh: '重设邮件已发送，请查收邮箱。', en: 'Reset email sent. Please check your inbox.' },
-  'msg.reset.ok':       { zh: '密码已重设，已自动登录。', en: 'Password reset. You are now logged in.' },
-  'auth.loggedAs':      { zh: '已登录：', en: 'Logged in as:' },
-  'auth.logout':        { zh: '退出', en: 'Logout' },
-  'tab.account':        { zh: '账户', en: 'Account' },
-  'tab.myskills':       { zh: '我的 Skill', en: 'My Skills' },
-  'account.title':      { zh: '账户信息', en: 'Account Info' },
-  'account.credits':    { zh: 'Credits 余额', en: 'Credits' },
-  'account.settled':    { zh: '已结算收益', en: 'Settled' },
-  'account.pending':    { zh: '待结算收益', en: 'Pending' },
-  'account.voucher':    { zh: '体验券', en: 'Vouchers' },
-  'account.status':     { zh: '状态', en: 'Status' },
-  'tier.title':         { zh: '信誉等级', en: 'Reputation Tier' },
-  'tier.level':         { zh: '等级', en: 'Tier' },
-  'tier.published':     { zh: '已发布', en: 'Published' },
-  'tier.avgrating':     { zh: '平均评分', en: 'Avg Rating' },
-  'tier.downloads':     { zh: '总下载', en: 'Downloads' },
-  'credits.title':      { zh: '充值 / 提现', en: 'Top Up / Withdraw' },
-  'credits.amount':     { zh: '金额', en: 'Amount' },
-  'credits.topup':      { zh: '充值', en: 'Top Up' },
-  'credits.withdraw':   { zh: '提现', en: 'Withdraw' },
-  'credits.history':    { zh: '交易记录', en: 'Transactions' },
-  'tx.time':            { zh: '时间', en: 'Time' },
-  'tx.type':            { zh: '类型', en: 'Type' },
-  'tx.amount':          { zh: '金额', en: 'Amount' },
-  'tx.balance':         { zh: '余额', en: 'Balance' },
-  'tx.desc':            { zh: '说明', en: 'Description' },
-  'tx.empty':           { zh: '暂无交易记录', en: 'No transactions yet.' },
-  'tx.page':            { zh: '第 {current} / {total} 页', en: 'Page {current} / {total}' },
-  'myskills.title':     { zh: '我的 Skill', en: 'My Skills' },
-  'myskills.empty':     { zh: '暂无 Skill', en: 'No skills yet.' },
-  'sk.name':            { zh: '名称', en: 'Name' },
-  'sk.version':         { zh: '版本', en: 'Version' },
-  'sk.status':          { zh: '状态', en: 'Status' },
-  'sk.rating':          { zh: '评分', en: 'Rating' },
-  'sk.downloads':       { zh: '下载', en: 'Downloads' },
-  'sk.actions':         { zh: '操作', en: 'Actions' },
-  'sk.withdraw':        { zh: '下架', en: 'Withdraw' },
-  'apikey.title':       { zh: 'API Key 管理', en: 'API Key Management' },
-  'apikey.query':       { zh: '查询', en: 'Lookup' },
-  'apikey.bulk':        { zh: '批量上传', en: 'Bulk Upload' },
-  'apikey.placeholder': { zh: '每行一个 API Key', en: 'One API key per line' },
-  'apikey.upload':      { zh: '上传', en: 'Upload' },
-  'apikey.stock':       { zh: '库存', en: 'Stock' },
-  'apikey.available':   { zh: '可用', en: 'Available' },
-  'apikey.assigned':    { zh: '已分配', en: 'Assigned' },
-  'msg.topup.ok':       { zh: '充值成功', en: 'Top-up successful.' },
-  'msg.withdraw.ok':    { zh: '提现成功', en: 'Withdrawal successful.' },
-  'msg.apikey.ok':      { zh: '上传成功', en: 'Upload successful.' },
-  'msg.withdrawn.ok':   { zh: '已下架', en: 'Skill withdrawn.' },
-  'msg.withdraw.confirm':{ zh: '确认下架？', en: 'Confirm withdrawal?' },
-  'err.network':        { zh: '网络错误，请检查连接', en: 'Network error. Please check your connection.' },
-  'err.captcha':        { zh: '验证码错误', en: 'Incorrect captcha.' },
-  'err.password.match': { zh: '两次密码不一致', en: 'Passwords do not match.' },
-  'err.password.short': { zh: '密码至少6位', en: 'Password must be at least 6 characters.' },
-  'msg.reg.ok':         { zh: '注册成功，激活邮件已发送到您的邮箱，请查收并点击激活链接。', en: 'Registration successful. Activation email sent. Please check your inbox.' },
-  'msg.lookup.ok':      { zh: '验证邮件已发送，请查收邮箱并点击链接登录。', en: 'Verification email sent. Please check your inbox and click the link.' },
-  'msg.activated':      { zh: '账户已激活，已自动登录。', en: 'Account activated. You are now logged in.' },
-  'msg.verified':       { zh: '身份已验证，已自动登录。', en: 'Identity verified. You are now logged in.' },
-  'msg.session.expired':{ zh: '登录已过期，请重新登录。', en: 'Session expired. Please log in again.' },
+  'subtitle':           { zh: '\u8d26\u6237\u7ba1\u7406 / Skill \u7ba1\u7406', en: 'Account / Skills' },
+  'nav.browse':         { zh: '<- \u8fd4\u56de Skill \u6d4f\u89c8', en: '<- Back to Skill Browse' },
+  'auth.login.title':   { zh: '\u767b\u5f55', en: 'Login' },
+  'auth.register.title':{ zh: '\u6ce8\u518c\u65b0\u8d26\u6237', en: 'Create Account' },
+  'auth.lookup.title':  { zh: '\u90ae\u4ef6\u9a8c\u8bc1\u767b\u5f55', en: 'Email Verification Login' },
+  'auth.lookup.desc':   { zh: '\u8f93\u5165\u5df2\u6ce8\u518c\u7684\u90ae\u7bb1\uff0c\u6211\u4eec\u5c06\u53d1\u9001\u9a8c\u8bc1\u94fe\u63a5\u5230\u60a8\u7684\u90ae\u7bb1\uff0c\u70b9\u51fb\u5373\u53ef\u767b\u5f55\u3002', en: 'Enter your registered email. We will send a verification link to log you in.' },
+  'auth.password':      { zh: '\u5bc6\u7801', en: 'Password' },
+  'auth.confirm.password':{ zh: '\u786e\u8ba4\u5bc6\u7801', en: 'Confirm' },
+  'auth.captcha':       { zh: '\u9a8c\u8bc1\u7801', en: 'Captcha' },
+  'auth.login.btn':     { zh: '\u767b\u5f55', en: 'Login' },
+  'auth.register.btn':  { zh: '\u6ce8\u518c', en: 'Register' },
+  'auth.lookup.btn':    { zh: '\u53d1\u9001\u9a8c\u8bc1\u90ae\u4ef6', en: 'Send Verification Email' },
+  'auth.switch.register':{ zh: '\u6ca1\u6709\u8d26\u6237\uff1f\u6ce8\u518c', en: 'No account? Register' },
+  'auth.switch.login':  { zh: '\u5df2\u6709\u8d26\u6237\uff1f\u767b\u5f55', en: 'Have an account? Login' },
+  'auth.switch.lookup': { zh: '\u90ae\u4ef6\u9a8c\u8bc1\u767b\u5f55', en: 'Email verification login' },
+  'auth.switch.forgot': { zh: '\u5fd8\u8bb0\u5bc6\u7801\uff1f', en: 'Forgot password?' },
+  'auth.forgot.title':  { zh: '\u5fd8\u8bb0\u5bc6\u7801', en: 'Forgot Password' },
+  'auth.forgot.desc':   { zh: '\u8f93\u5165\u5df2\u6ce8\u518c\u7684\u90ae\u7bb1\uff0c\u6211\u4eec\u5c06\u53d1\u9001\u5bc6\u7801\u91cd\u8bbe\u94fe\u63a5\u3002', en: 'Enter your registered email. We will send a password reset link.' },
+  'auth.forgot.btn':    { zh: '\u53d1\u9001\u91cd\u8bbe\u90ae\u4ef6', en: 'Send Reset Email' },
+  'auth.reset.title':   { zh: '\u91cd\u8bbe\u5bc6\u7801', en: 'Reset Password' },
+  'auth.reset.btn':     { zh: '\u91cd\u8bbe\u5bc6\u7801', en: 'Reset Password' },
+  'msg.forgot.ok':      { zh: '\u91cd\u8bbe\u90ae\u4ef6\u5df2\u53d1\u9001\uff0c\u8bf7\u67e5\u6536\u90ae\u7bb1\u3002', en: 'Reset email sent. Please check your inbox.' },
+  'msg.reset.ok':       { zh: '\u5bc6\u7801\u5df2\u91cd\u8bbe\uff0c\u5df2\u81ea\u52a8\u767b\u5f55\u3002', en: 'Password reset. You are now logged in.' },
+  'auth.loggedAs':      { zh: '\u5df2\u767b\u5f55\uff1a', en: 'Logged in as:' },
+  'auth.logout':        { zh: '\u9000\u51fa', en: 'Logout' },
+  'tab.account':        { zh: '\u8d26\u6237', en: 'Account' },
+  'tab.myskills':       { zh: '\u6211\u7684 Skill', en: 'My Skills' },
+  'account.title':      { zh: '\u8d26\u6237\u4fe1\u606f', en: 'Account Info' },
+  'account.credits':    { zh: 'Credits \u4f59\u989d', en: 'Credits' },
+  'account.settled':    { zh: '\u5df2\u7ed3\u7b97\u6536\u76ca', en: 'Settled' },
+  'account.pending':    { zh: '\u5f85\u7ed3\u7b97\u6536\u76ca', en: 'Pending' },
+  'account.voucher':    { zh: '\u4f53\u9a8c\u5238', en: 'Vouchers' },
+  'account.status':     { zh: '\u72b6\u6001', en: 'Status' },
+  'tier.title':         { zh: '\u4fe1\u8a89\u7b49\u7ea7', en: 'Reputation Tier' },
+  'tier.level':         { zh: '\u7b49\u7ea7', en: 'Tier' },
+  'tier.published':     { zh: '\u5df2\u53d1\u5e03', en: 'Published' },
+  'tier.avgrating':     { zh: '\u5e73\u5747\u8bc4\u5206', en: 'Avg Rating' },
+  'tier.downloads':     { zh: '\u603b\u4e0b\u8f7d', en: 'Downloads' },
+  'credits.title':      { zh: '\u5145\u503c / \u63d0\u73b0', en: 'Top Up / Withdraw' },
+  'credits.amount':     { zh: '\u91d1\u989d', en: 'Amount' },
+  'credits.topup':      { zh: '\u5145\u503c', en: 'Top Up' },
+  'credits.withdraw':   { zh: '\u63d0\u73b0', en: 'Withdraw' },
+  'credits.history':    { zh: '\u4ea4\u6613\u8bb0\u5f55', en: 'Transactions' },
+  'tx.time':            { zh: '\u65f6\u95f4', en: 'Time' },
+  'tx.type':            { zh: '\u7c7b\u578b', en: 'Type' },
+  'tx.amount':          { zh: '\u91d1\u989d', en: 'Amount' },
+  'tx.balance':         { zh: '\u4f59\u989d', en: 'Balance' },
+  'tx.desc':            { zh: '\u8bf4\u660e', en: 'Description' },
+  'tx.empty':           { zh: '\u6682\u65e0\u4ea4\u6613\u8bb0\u5f55', en: 'No transactions yet.' },
+  'tx.page':            { zh: '\u7b2c {current} / {total} \u9875', en: 'Page {current} / {total}' },
+  'myskills.title':     { zh: '\u6211\u7684 Skill', en: 'My Skills' },
+  'myskills.empty':     { zh: '\u6682\u65e0 Skill', en: 'No skills yet.' },
+  'sk.name':            { zh: '\u540d\u79f0', en: 'Name' },
+  'sk.version':         { zh: '\u7248\u672c', en: 'Version' },
+  'sk.status':          { zh: '\u72b6\u6001', en: 'Status' },
+  'sk.rating':          { zh: '\u8bc4\u5206', en: 'Rating' },
+  'sk.downloads':       { zh: '\u4e0b\u8f7d', en: 'Downloads' },
+  'sk.actions':         { zh: '\u64cd\u4f5c', en: 'Actions' },
+  'sk.withdraw':        { zh: '\u4e0b\u67b6', en: 'Withdraw' },
+  'apikey.title':       { zh: 'API Key \u7ba1\u7406', en: 'API Key Management' },
+  'apikey.query':       { zh: '\u67e5\u8be2', en: 'Lookup' },
+  'apikey.bulk':        { zh: '\u6279\u91cf\u4e0a\u4f20', en: 'Bulk Upload' },
+  'apikey.placeholder': { zh: '\u6bcf\u884c\u4e00\u4e2a API Key', en: 'One API key per line' },
+  'apikey.upload':      { zh: '\u4e0a\u4f20', en: 'Upload' },
+  'apikey.stock':       { zh: '\u5e93\u5b58', en: 'Stock' },
+  'apikey.available':   { zh: '\u53ef\u7528', en: 'Available' },
+  'apikey.assigned':    { zh: '\u5df2\u5206\u914d', en: 'Assigned' },
+  'msg.topup.ok':       { zh: '\u5145\u503c\u6210\u529f', en: 'Top-up successful.' },
+  'msg.withdraw.ok':    { zh: '\u63d0\u73b0\u6210\u529f', en: 'Withdrawal successful.' },
+  'msg.apikey.ok':      { zh: '\u4e0a\u4f20\u6210\u529f', en: 'Upload successful.' },
+  'msg.withdrawn.ok':   { zh: '\u5df2\u4e0b\u67b6', en: 'Skill withdrawn.' },
+  'msg.withdraw.confirm':{ zh: '\u786e\u8ba4\u4e0b\u67b6\uff1f', en: 'Confirm withdrawal?' },
+  'err.network':        { zh: '\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8fde\u63a5', en: 'Network error. Please check your connection.' },
+  'err.captcha':        { zh: '\u9a8c\u8bc1\u7801\u9519\u8bef', en: 'Incorrect captcha.' },
+  'err.password.match': { zh: '\u4e24\u6b21\u5bc6\u7801\u4e0d\u4e00\u81f4', en: 'Passwords do not match.' },
+  'err.password.short': { zh: '\u5bc6\u7801\u81f3\u5c116\u4f4d', en: 'Password must be at least 6 characters.' },
+  'msg.reg.ok':         { zh: '\u6ce8\u518c\u6210\u529f\uff0c\u6fc0\u6d3b\u90ae\u4ef6\u5df2\u53d1\u9001\u5230\u60a8\u7684\u90ae\u7bb1\uff0c\u8bf7\u67e5\u6536\u5e76\u70b9\u51fb\u6fc0\u6d3b\u94fe\u63a5\u3002', en: 'Registration successful. Activation email sent. Please check your inbox.' },
+  'msg.lookup.ok':      { zh: '\u9a8c\u8bc1\u90ae\u4ef6\u5df2\u53d1\u9001\uff0c\u8bf7\u67e5\u6536\u90ae\u7bb1\u5e76\u70b9\u51fb\u94fe\u63a5\u767b\u5f55\u3002', en: 'Verification email sent. Please check your inbox and click the link.' },
+  'msg.activated':      { zh: '\u8d26\u6237\u5df2\u6fc0\u6d3b\uff0c\u5df2\u81ea\u52a8\u767b\u5f55\u3002', en: 'Account activated. You are now logged in.' },
+  'msg.verified':       { zh: '\u8eab\u4efd\u5df2\u9a8c\u8bc1\uff0c\u5df2\u81ea\u52a8\u767b\u5f55\u3002', en: 'Identity verified. You are now logged in.' },
+  'msg.session.expired':{ zh: '\u767b\u5f55\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u3002', en: 'Session expired. Please log in again.' },
 };
 const ERROR_MESSAGES = {
-  'account not found':        { zh: '账户不存在', en: 'Account not found.' },
-  'insufficient credits':     { zh: '余额不足', en: 'Insufficient credits.' },
-  'invalid credentials':      { zh: '邮箱或密码错误', en: 'Invalid email or password.' },
-  'account not activated':    { zh: '账户未激活，请先查收激活邮件', en: 'Account not activated. Please check your activation email.' },
-  'account already exists':   { zh: '该邮箱已注册', en: 'This email is already registered.' },
-  'token expired or invalid': { zh: '链接已过期或无效', en: 'Link expired or invalid.' },
-  'password is required':     { zh: '密码至少6位', en: 'Password must be at least 6 characters.' },
-  'email is required':        { zh: '请输入邮箱', en: 'Email is required.' },
-  'rate limited':             { zh: '操作过于频繁，请稍后再试', en: 'Too many requests. Please try again later.' },
+  'account not found':        { zh: '\u8d26\u6237\u4e0d\u5b58\u5728', en: 'Account not found.' },
+  'insufficient credits':     { zh: '\u4f59\u989d\u4e0d\u8db3', en: 'Insufficient credits.' },
+  'invalid credentials':      { zh: '\u90ae\u7bb1\u6216\u5bc6\u7801\u9519\u8bef', en: 'Invalid email or password.' },
+  'account not activated':    { zh: '\u8d26\u6237\u672a\u6fc0\u6d3b\uff0c\u8bf7\u5148\u67e5\u6536\u6fc0\u6d3b\u90ae\u4ef6', en: 'Account not activated. Please check your activation email.' },
+  'account already exists':   { zh: '\u8be5\u90ae\u7bb1\u5df2\u6ce8\u518c', en: 'This email is already registered.' },
+  'token expired or invalid': { zh: '\u94fe\u63a5\u5df2\u8fc7\u671f\u6216\u65e0\u6548', en: 'Link expired or invalid.' },
+  'password is required':     { zh: '\u5bc6\u7801\u81f3\u5c116\u4f4d', en: 'Password must be at least 6 characters.' },
+  'email is required':        { zh: '\u8bf7\u8f93\u5165\u90ae\u7bb1', en: 'Email is required.' },
+  'rate limited':             { zh: '\u64cd\u4f5c\u8fc7\u4e8e\u9891\u7e41\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5', en: 'Too many requests. Please try again later.' },
 };
-
 function t(key) { return (I18N[key] && I18N[key][LANG]) || key; }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
@@ -415,7 +410,7 @@ function authHeaders() {
   return h;
 }
 
-// ── Captcha ──
+// Captcha helpers
 const captchas = {};
 function refreshCaptcha(prefix) {
   const a = Math.floor(Math.random() * 20) + 1;
@@ -428,7 +423,7 @@ function checkCaptcha(prefix) {
   return parseInt(document.getElementById(prefix + '-captcha-a').value) === captchas[prefix];
 }
 
-// ── Auth mode switching ──
+// Auth mode switching
 function showAuthMode(mode) {
   ['login','register','lookup','forgot','reset'].forEach(m => {
     document.getElementById('auth-mode-' + m).style.display = m === mode ? '' : 'none';
@@ -439,7 +434,7 @@ function showAuthMode(mode) {
   else if (mode === 'login') refreshCaptcha('login');
 }
 
-// ── Auth actions ──
+// Auth actions
 async function doLogin() {
   if (!checkCaptcha('login')) { showMsg('login-msg', t('err.captcha'), true); refreshCaptcha('login'); return; }
   const email = document.getElementById('login-email').value.trim();
@@ -550,7 +545,7 @@ function updateUIState() {
   }
 }
 
-// ── Check URL params for activation/verification tokens ──
+// Check URL params for activation and verification tokens
 async function checkURLTokens() {
   const params = new URLSearchParams(window.location.search);
   const activateToken = params.get('activate');
@@ -586,7 +581,7 @@ async function checkURLTokens() {
   }
 }
 
-// ── Restore session ──
+// Restore session
 async function restoreSession() {
   if (!sessionToken) return false;
   try {
@@ -605,7 +600,7 @@ async function restoreSession() {
   }
 }
 
-// ── Account data loading ──
+// Account data loading
 async function loadAccountData() {
   if (!currentEmail) return;
   try {
@@ -712,7 +707,7 @@ async function withdraw() {
   } catch(e) { showMsg('credits-msg', parseApiError(e), true); }
 }
 
-// ── My Skills ──
+// My Skills
 async function loadMySkills() {
   if (!currentEmail) return;
   try {
@@ -775,6 +770,8 @@ async function withdrawSkill(id) {
     const r = await fetch(API+'/api/v1/skillmarket/'+id+'/withdraw',{method:'POST',headers:authHeaders(),body:JSON.stringify({email:currentEmail})});
     if(!r.ok) throw await readErrorBody(r);
     showToast(t('msg.withdrawn.ok'), 'success');
+    loadMySkills();
+    loadAccountData();
   } catch(e){showToast(parseApiError(e),'error');}
 }
 
@@ -785,7 +782,7 @@ function showMsg(id, msg, isErr) {
   setTimeout(() => { el.textContent = ''; el.className = ''; }, 6000);
 }
 
-// ── Tab switching ──
+// Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
@@ -796,7 +793,7 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-// ── i18n ──
+// Apply i18n strings
 function applyI18n() {
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.getAttribute('data-i18n');
@@ -809,7 +806,7 @@ function applyI18n() {
   renderTxPager();
 }
 
-// ── Init ──
+// Init
 async function init() {
   applyI18n();
   refreshCaptcha('login');

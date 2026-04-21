@@ -1272,8 +1272,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     )}
                                     {wxQrUrl && wxStatus !== "expired" && wxStatus !== "error" && (
                                         <div style={{ textAlign: "center" }}>
-                                            <QRCodeSVG value={wxQrUrl} size={200} style={{
+                                            <QRCodeSVG value={wxQrUrl} size={200}
+                                                bgColor="#ffffff"
+                                                fgColor="#000000"
+                                                style={{
                                                 borderRadius: 8, border: `1px solid ${colors.border}`,
+                                                padding: 8, background: "#ffffff",
                                             }} />
                                             <div style={{ marginTop: 8 }}>
                                                 <button onClick={startWxQR} disabled={wxLoading} style={{

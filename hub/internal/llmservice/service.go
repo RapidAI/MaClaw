@@ -327,33 +327,53 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 					Priority:                  model.Priority,
 					ResolutionTier:            model.ResolutionTier,
 					CreditMultiplier:          normalizeCreditMultiplier(model.CreditMultiplier),
+					ProviderCapabilityTags:    map[string][]string{},
+					ProviderPriorities:        map[string]int{},
+					ProviderResolutionTiers:   map[string]int{},
 					ProviderServiceGroups:     map[string][]string{},
 					ProviderCreditMultipliers: map[string]float64{},
 				})
 				idx = len(models) - 1
 				modelIndex[strings.ToLower(model.Name)] = idx
 			}
-			models[idx].ProviderIDs = mergeStrings(models[idx].ProviderIDs, model.ProviderIDs)
-			models[idx].ServiceGroupIDs = mergeStrings(models[idx].ServiceGroupIDs, []string{serviceGroupID})
-			models[idx].CapabilityTags = mergeStrings(models[idx].CapabilityTags, model.CapabilityTags)
-			if model.Priority > models[idx].Priority {
-				models[idx].Priority = model.Priority
-			}
-			if models[idx].ResolutionTier == 0 || (model.ResolutionTier > 0 && model.ResolutionTier < models[idx].ResolutionTier) {
-				models[idx].ResolutionTier = model.ResolutionTier
-			}
-			if candidate := normalizeCreditMultiplier(model.CreditMultiplier); models[idx].CreditMultiplier == 0 || candidate < models[idx].CreditMultiplier {
-				models[idx].CreditMultiplier = candidate
-			}
 			for _, providerID := range model.ProviderIDs {
+				cfg, ok := model.providerConfigByID(providerID)
+				if !ok {
+					cfg = ModelServiceProviderConfig{
+						ProviderID:       providerID,
+						CapabilityTags:   append([]string(nil), model.CapabilityTags...),
+						Priority:         model.Priority,
+						ResolutionTier:   model.ResolutionTier,
+						CreditMultiplier: model.CreditMultiplier,
+					}
+				}
+				models[idx].ProviderIDs = mergeStrings(models[idx].ProviderIDs, []string{providerID})
+				models[idx].ServiceGroupIDs = mergeStrings(models[idx].ServiceGroupIDs, []string{serviceGroupID})
+				models[idx].CapabilityTags = mergeStrings(models[idx].CapabilityTags, cfg.CapabilityTags)
+				if cfg.Priority > models[idx].Priority {
+					models[idx].Priority = cfg.Priority
+				}
+				if models[idx].ResolutionTier == 0 || (cfg.ResolutionTier > 0 && cfg.ResolutionTier < models[idx].ResolutionTier) {
+					models[idx].ResolutionTier = cfg.ResolutionTier
+				}
 				key := normalizedProviderKey(providerID)
 				if key == "" {
 					continue
 				}
+				models[idx].ProviderCapabilityTags[key] = mergeStrings(models[idx].ProviderCapabilityTags[key], cfg.CapabilityTags)
+				if cfg.Priority > models[idx].ProviderPriorities[key] {
+					models[idx].ProviderPriorities[key] = cfg.Priority
+				}
+				if existing := models[idx].ProviderResolutionTiers[key]; existing == 0 || (cfg.ResolutionTier > 0 && cfg.ResolutionTier < existing) {
+					models[idx].ProviderResolutionTiers[key] = cfg.ResolutionTier
+				}
 				models[idx].ProviderServiceGroups[key] = mergeStrings(models[idx].ProviderServiceGroups[key], []string{serviceGroupID})
-				candidate := normalizeCreditMultiplier(model.CreditMultiplier)
+				candidate := normalizeCreditMultiplier(cfg.CreditMultiplier)
 				if existing, ok := models[idx].ProviderCreditMultipliers[key]; !ok || candidate < existing {
 					models[idx].ProviderCreditMultipliers[key] = candidate
+				}
+				if models[idx].CreditMultiplier == 0 || candidate < models[idx].CreditMultiplier {
+					models[idx].CreditMultiplier = candidate
 				}
 			}
 		}
@@ -374,6 +394,36 @@ func normalizedProviderKey(providerID string) string {
 	return strings.ToLower(strings.TrimSpace(providerID))
 }
 
+func CapabilityTagsForProvider(model *AuthorizedModel, providerID string) []string {
+	if model == nil {
+		return nil
+	}
+	if tags := model.ProviderCapabilityTags[normalizedProviderKey(providerID)]; len(tags) > 0 {
+		return append([]string(nil), tags...)
+	}
+	return append([]string(nil), model.CapabilityTags...)
+}
+
+func PriorityForProvider(model *AuthorizedModel, providerID string) int {
+	if model == nil {
+		return 0
+	}
+	if value, ok := model.ProviderPriorities[normalizedProviderKey(providerID)]; ok {
+		return value
+	}
+	return model.Priority
+}
+
+func ResolutionTierForProvider(model *AuthorizedModel, providerID string) int {
+	if model == nil {
+		return 0
+	}
+	if value, ok := model.ProviderResolutionTiers[normalizedProviderKey(providerID)]; ok && value > 0 {
+		return value
+	}
+	return model.ResolutionTier
+}
+
 func ServiceGroupIDsForProvider(model *AuthorizedModel, providerID string) []string {
 	if model == nil {
 		return nil
@@ -392,6 +442,68 @@ func CreditMultiplierForProvider(model *AuthorizedModel, providerID string) floa
 		return normalizeCreditMultiplier(value)
 	}
 	return normalizeCreditMultiplier(model.CreditMultiplier)
+}
+
+func OrderProvidersForRequest(body map[string]any, model *AuthorizedModel) []string {
+	if model == nil || len(model.ProviderIDs) == 0 {
+		return nil
+	}
+	type scoredProvider struct {
+		providerID       string
+		originalIndex    int
+		score            int
+		resolutionTier   int
+		priority         int
+		creditMultiplier float64
+	}
+	capabilityNeeds := detectCapabilityNeeds(body)
+	scored := make([]scoredProvider, 0, len(model.ProviderIDs))
+	for idx, providerID := range model.ProviderIDs {
+		score := 0
+		tags := map[string]struct{}{}
+		for _, tag := range CapabilityTagsForProvider(model, providerID) {
+			tag = strings.ToLower(strings.TrimSpace(tag))
+			if tag == "" {
+				continue
+			}
+			tags[tag] = struct{}{}
+		}
+		for need, weight := range capabilityNeeds {
+			if _, ok := tags[need]; ok {
+				score += weight * 100
+			}
+		}
+		priority := PriorityForProvider(model, providerID)
+		score += priority
+		scored = append(scored, scoredProvider{
+			providerID:       providerID,
+			originalIndex:    idx,
+			score:            score,
+			resolutionTier:   normalizedResolutionTier(ResolutionTierForProvider(model, providerID)),
+			priority:         priority,
+			creditMultiplier: normalizeCreditMultiplier(CreditMultiplierForProvider(model, providerID)),
+		})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		if scored[i].resolutionTier != scored[j].resolutionTier {
+			return scored[i].resolutionTier < scored[j].resolutionTier
+		}
+		if scored[i].creditMultiplier != scored[j].creditMultiplier {
+			return scored[i].creditMultiplier < scored[j].creditMultiplier
+		}
+		if scored[i].priority != scored[j].priority {
+			return scored[i].priority > scored[j].priority
+		}
+		return scored[i].originalIndex < scored[j].originalIndex
+	})
+	ordered := make([]string, 0, len(scored))
+	for _, item := range scored {
+		ordered = append(ordered, item.providerID)
+	}
+	return ordered
 }
 
 func normalizeCreditMultiplier(v float64) float64 {

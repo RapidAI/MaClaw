@@ -443,9 +443,13 @@ func (c MaclawLLMConfig) EffectiveContextTokens() int {
 
 // TokenUsageStat 记录某个 LLM 服务商的累计 token 用量。
 type TokenUsageStat struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
-	TotalTokens  int64 `json:"total_tokens"`
+	InputTokens       int64 `json:"input_tokens"`
+	OutputTokens      int64 `json:"output_tokens"`
+	TotalTokens       int64 `json:"total_tokens"`
+	CachedInputTokens int64 `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int64 `json:"cache_write_tokens,omitempty"`
+	Requests          int64 `json:"requests,omitempty"`
+	CachedRequests    int64 `json:"cached_requests,omitempty"`
 }
 
 // SkillHubEntry 描述一个 SkillHUB 注册端点。

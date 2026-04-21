@@ -28,8 +28,18 @@
     return global.__securityAdminState;
   }
 
+  function getCurrentLang() {
+    if (typeof currentLang !== 'undefined' && (currentLang === 'zh' || currentLang === 'en')) return currentLang;
+    if (global.currentLang === 'zh' || global.currentLang === 'en') return global.currentLang;
+    try {
+      var saved = global.localStorage && global.localStorage.getItem('maclaw_admin_lang');
+      if (saved === 'zh' || saved === 'en') return saved;
+    } catch (_) {}
+    return (global.document && global.document.documentElement && global.document.documentElement.lang === 'zh-CN') ? 'zh' : 'en';
+  }
+
   function isZh() {
-    return global.currentLang === 'zh';
+    return getCurrentLang() === 'zh';
   }
 
   function text(zh, en) {
@@ -62,6 +72,12 @@
     noUsersAvailable: { zh: '\u6682\u65e0\u53ef\u5206\u914d\u7528\u6237', en: 'No users available' },
     status: { zh: '\u72b6\u6001', en: 'Status' },
     unknown: { zh: '\u672a\u77e5', en: 'Unknown' },
+    statusActive: { zh: '\u5df2\u542f\u7528', en: 'Active' },
+    statusInactive: { zh: '\u672a\u542f\u7528', en: 'Inactive' },
+    statusPending: { zh: '\u5f85\u5904\u7406', en: 'Pending' },
+    statusBlocked: { zh: '\u5df2\u5c4f\u853d', en: 'Blocked' },
+    statusDisabled: { zh: '\u5df2\u7981\u7528', en: 'Disabled' },
+    statusApproved: { zh: '\u5df2\u6279\u51c6', en: 'Approved' },
     move: { zh: '\u79fb\u5165', en: 'Move' },
     showingUsers: { zh: '\u663e\u793a {visible} / {total} \u4e2a\u7528\u6237', en: 'Showing {visible} / {total} users' },
     loadingMembers: { zh: '\u6b63\u5728\u52a0\u8f7d\u6210\u5458...', en: 'Loading members...' },
@@ -178,6 +194,20 @@
       items.push(String(email || '').trim());
     });
     return items;
+  }
+
+  function localizeUserStatus(status) {
+    var value = String(status || '').trim().toLowerCase();
+    if (!value) return st('unknown');
+    var map = {
+      active: 'statusActive',
+      inactive: 'statusInactive',
+      pending: 'statusPending',
+      blocked: 'statusBlocked',
+      disabled: 'statusDisabled',
+      approved: 'statusApproved'
+    };
+    return map[value] ? st(map[value]) : String(status || '');
   }
 
   function dedupeUsersByEmail(users) {
@@ -440,7 +470,7 @@
       root.innerHTML = rows.map(function(user) {
         var email = user.email || '';
         var selected = sec.selectedAssignEmail === email;
-        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-weight:600">' + escapeHtml(email) + '</div><div class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(st('status')) + ': ' + escapeHtml(user.status || st('unknown')) + '</div></div><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px">' + escapeHtml(st('move')) + '</button></div></div>';
+        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-weight:600">' + escapeHtml(email) + '</div><div class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(st('status')) + ': ' + escapeHtml(localizeUserStatus(user.status)) + '</div></div><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px">' + escapeHtml(st('move')) + '</button></div></div>';
       }).join('');
     }
     _s('assignUsersCount', 'textContent', st('showingUsers', { visible: rows.length, total: sec.assignUsers.length }));

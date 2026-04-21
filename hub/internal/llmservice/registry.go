@@ -48,9 +48,18 @@ type ModelServiceGroup struct {
 }
 
 type ModelServiceModel struct {
-	Name             string   `json:"name"`
-	Description      string   `json:"description,omitempty"`
-	ProviderIDs      []string `json:"provider_ids,omitempty"`
+	Name             string                       `json:"name"`
+	Description      string                       `json:"description,omitempty"`
+	ProviderIDs      []string                     `json:"provider_ids,omitempty"`
+	ProviderConfigs  []ModelServiceProviderConfig `json:"provider_configs,omitempty"`
+	CapabilityTags   []string                     `json:"capability_tags,omitempty"`
+	Priority         int                          `json:"priority,omitempty"`
+	ResolutionTier   int                          `json:"resolution_tier,omitempty"`
+	CreditMultiplier float64                      `json:"credit_multiplier,omitempty"`
+}
+
+type ModelServiceProviderConfig struct {
+	ProviderID       string   `json:"provider_id"`
 	CapabilityTags   []string `json:"capability_tags,omitempty"`
 	Priority         int      `json:"priority,omitempty"`
 	ResolutionTier   int      `json:"resolution_tier,omitempty"`
@@ -100,6 +109,9 @@ type AuthorizedModel struct {
 	Priority                  int                 `json:"priority,omitempty"`
 	ResolutionTier            int                 `json:"resolution_tier,omitempty"`
 	CreditMultiplier          float64             `json:"credit_multiplier,omitempty"`
+	ProviderCapabilityTags    map[string][]string `json:"provider_capability_tags,omitempty"`
+	ProviderPriorities        map[string]int      `json:"provider_priorities,omitempty"`
+	ProviderResolutionTiers   map[string]int      `json:"provider_resolution_tiers,omitempty"`
 	ProviderServiceGroups     map[string][]string `json:"provider_service_groups,omitempty"`
 	ProviderCreditMultipliers map[string]float64  `json:"provider_credit_multipliers,omitempty"`
 }
@@ -172,14 +184,7 @@ func (r *Registry) Normalize() {
 			m := &g.Models[j]
 			m.Name = strings.TrimSpace(m.Name)
 			m.Description = strings.TrimSpace(m.Description)
-			m.ProviderIDs = normalizeStringSlice(m.ProviderIDs)
-			m.CapabilityTags = normalizeStringSlice(m.CapabilityTags)
-			if m.ResolutionTier < 0 {
-				m.ResolutionTier = 0
-			}
-			if m.CreditMultiplier <= 0 {
-				m.CreditMultiplier = 1
-			}
+			m.normalizeProviderConfigs()
 		}
 	}
 	for i := range r.GroupBindings {
@@ -241,6 +246,109 @@ func (r *Registry) ensureDefaultNewUserSettings() {
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit
 	}
+}
+func (m *ModelServiceModel) normalizeProviderConfigs() {
+	if m == nil {
+		return
+	}
+	legacyTags := normalizeStringSlice(m.CapabilityTags)
+	legacyPriority := m.Priority
+	legacyResolution := m.ResolutionTier
+	if legacyResolution < 0 {
+		legacyResolution = 0
+	}
+	legacyMultiplier := normalizeCreditMultiplier(m.CreditMultiplier)
+
+	orderedProviderIDs := normalizeStringSlice(m.ProviderIDs)
+	configByID := map[string]ModelServiceProviderConfig{}
+	for _, cfg := range m.ProviderConfigs {
+		cfg.ProviderID = strings.TrimSpace(cfg.ProviderID)
+		if cfg.ProviderID == "" {
+			continue
+		}
+		cfg.CapabilityTags = normalizeStringSlice(cfg.CapabilityTags)
+		if cfg.ResolutionTier < 0 {
+			cfg.ResolutionTier = 0
+		}
+		if cfg.CreditMultiplier <= 0 {
+			cfg.CreditMultiplier = legacyMultiplier
+		}
+		configByID[strings.ToLower(cfg.ProviderID)] = cfg
+		if !containsNormalizedString(orderedProviderIDs, cfg.ProviderID) {
+			orderedProviderIDs = append(orderedProviderIDs, cfg.ProviderID)
+		}
+	}
+
+	normalizedConfigs := make([]ModelServiceProviderConfig, 0, len(orderedProviderIDs))
+	for _, providerID := range orderedProviderIDs {
+		key := strings.ToLower(strings.TrimSpace(providerID))
+		cfg, ok := configByID[key]
+		if !ok {
+			cfg = ModelServiceProviderConfig{ProviderID: providerID}
+		}
+		cfg.ProviderID = providerID
+		if len(cfg.CapabilityTags) == 0 {
+			cfg.CapabilityTags = append([]string(nil), legacyTags...)
+		}
+		if cfg.Priority == 0 {
+			cfg.Priority = legacyPriority
+		}
+		if cfg.ResolutionTier == 0 {
+			cfg.ResolutionTier = legacyResolution
+		}
+		if cfg.CreditMultiplier <= 0 {
+			cfg.CreditMultiplier = legacyMultiplier
+		}
+		normalizedConfigs = append(normalizedConfigs, cfg)
+	}
+
+	m.ProviderIDs = orderedProviderIDs
+	m.ProviderConfigs = normalizedConfigs
+	m.CapabilityTags = nil
+	m.Priority = 0
+	m.ResolutionTier = 0
+	m.CreditMultiplier = 1
+	for _, cfg := range normalizedConfigs {
+		m.CapabilityTags = mergeStrings(m.CapabilityTags, cfg.CapabilityTags)
+		if cfg.Priority > m.Priority {
+			m.Priority = cfg.Priority
+		}
+		if m.ResolutionTier == 0 || (cfg.ResolutionTier > 0 && cfg.ResolutionTier < m.ResolutionTier) {
+			m.ResolutionTier = cfg.ResolutionTier
+		}
+		if candidate := normalizeCreditMultiplier(cfg.CreditMultiplier); m.CreditMultiplier == 0 || candidate < m.CreditMultiplier {
+			m.CreditMultiplier = candidate
+		}
+	}
+	if m.CreditMultiplier <= 0 {
+		m.CreditMultiplier = 1
+	}
+}
+
+func (m ModelServiceModel) providerConfigByID(providerID string) (ModelServiceProviderConfig, bool) {
+	key := strings.ToLower(strings.TrimSpace(providerID))
+	if key == "" {
+		return ModelServiceProviderConfig{}, false
+	}
+	for _, cfg := range m.ProviderConfigs {
+		if strings.ToLower(strings.TrimSpace(cfg.ProviderID)) == key {
+			return cfg, true
+		}
+	}
+	return ModelServiceProviderConfig{}, false
+}
+
+func containsNormalizedString(items []string, target string) bool {
+	needle := strings.ToLower(strings.TrimSpace(target))
+	if needle == "" {
+		return false
+	}
+	for _, item := range items {
+		if strings.ToLower(strings.TrimSpace(item)) == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Registry) ensureBuiltinModelServiceGroups() {

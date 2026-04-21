@@ -191,7 +191,7 @@
     const root = document.getElementById('bridgeChannelsList');
     if (!root) return;
     const channels = imState().bridgeChannelsCache;
-    const lang = global.currentLang;
+    const lang = (typeof currentLang !== 'undefined' && (currentLang === 'zh' || currentLang === 'en')) ? currentLang : ((global.currentLang === 'zh' || global.currentLang === 'en') ? global.currentLang : 'en');
     if (!channels.length) {
       root.innerHTML = '<div class="hint">' + ocim('noChannelsAvailable') + '</div>';
       return;

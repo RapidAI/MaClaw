@@ -191,3 +191,54 @@ func assertContainsAny(t *testing.T, actual []string, anyOf []string) {
 	}
 	t.Errorf("expected any of %v in %v", anyOf, actual)
 }
+
+// --- Tests for English+Chinese compound entity extraction ---
+
+func TestExpandQuery_EnglishChineseCompound_APIServer(t *testing.T) {
+	result := ExpandQuery("查看api服务器资源状")
+	// "api服务器" should be extracted as a compound entity
+	assertContainsAny(t, result.Entities, []string{"api服务器"})
+	// "api" should also be extracted individually
+	found := false
+	for _, e := range result.Entities {
+		if strings.EqualFold(e, "api") || strings.EqualFold(e, "API") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'api' or 'API' in entities %v", result.Entities)
+	}
+}
+
+func TestExpandQuery_EnglishChineseCompound_GPUServer(t *testing.T) {
+	result := ExpandQuery("gpu服务器状态怎么样")
+	assertContainsAny(t, result.Entities, []string{"gpu服务器", "GPU服务器"})
+}
+
+func TestExpandQuery_EnglishChineseCompound_SSHConnection(t *testing.T) {
+	result := ExpandQuery("ssh连接断了")
+	// "ssh连接" (2-char) or "ssh连接断" (3-char) should be extracted
+	assertContainsAny(t, result.Entities, []string{"ssh连接", "ssh连接断"})
+}
+
+func TestExpandQuery_EnglishChineseCompound_WebPage(t *testing.T) {
+	result := ExpandQuery("web页面打不开")
+	// "web页面" (2-char) or "web页面打" (3-char) should be extracted
+	assertContainsAny(t, result.Entities, []string{"web页面", "web页面打"})
+}
+
+func TestExpandQuery_TokenizeForTagMatch_MixedCompound(t *testing.T) {
+	result := ExpandQuery("查看api服务器资源")
+	// QueryTokens should include the compound "api服务器" for tag cross-matching
+	found := false
+	for _, tok := range result.QueryTokens {
+		if tok == "api服务器" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'api服务器' in QueryTokens %v", result.QueryTokens)
+	}
+}

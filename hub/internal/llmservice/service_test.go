@@ -232,25 +232,43 @@ func TestBuildAuthorizedModelsTracksProviderScopedGroupsAndMultiplier(t *testing
 			ID:   "group-a",
 			Name: "Group A",
 			Models: []ModelServiceModel{{
-				Name:             "auto",
-				ProviderIDs:      []string{"provider-a"},
-				CreditMultiplier: 2,
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+				ProviderConfigs: []ModelServiceProviderConfig{{
+					ProviderID:       "provider-a",
+					CapabilityTags:   []string{"reasoning"},
+					Priority:         40,
+					ResolutionTier:   2,
+					CreditMultiplier: 2,
+				}},
 			}},
 		}, {
 			ID:   "group-b",
 			Name: "Group B",
 			Models: []ModelServiceModel{{
-				Name:             "auto",
-				ProviderIDs:      []string{"provider-b"},
-				CreditMultiplier: 1,
+				Name:        "auto",
+				ProviderIDs: []string{"provider-b"},
+				ProviderConfigs: []ModelServiceProviderConfig{{
+					ProviderID:       "provider-b",
+					CapabilityTags:   []string{"document"},
+					Priority:         80,
+					ResolutionTier:   1,
+					CreditMultiplier: 1,
+				}},
 			}},
 		}, {
 			ID:   "group-c",
 			Name: "Group C",
 			Models: []ModelServiceModel{{
-				Name:             "auto",
-				ProviderIDs:      []string{"provider-a"},
-				CreditMultiplier: 1.5,
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+				ProviderConfigs: []ModelServiceProviderConfig{{
+					ProviderID:       "provider-a",
+					CapabilityTags:   []string{"tools"},
+					Priority:         60,
+					ResolutionTier:   3,
+					CreditMultiplier: 1.5,
+				}},
 			}},
 		}},
 	}
@@ -271,6 +289,15 @@ func TestBuildAuthorizedModelsTracksProviderScopedGroupsAndMultiplier(t *testing
 	if got := model.ProviderCreditMultipliers["provider-b"]; got != 1 {
 		t.Fatalf("provider-b multiplier = %v, want 1", got)
 	}
+	if !containsString(model.CapabilityTags, "reasoning") || !containsString(model.CapabilityTags, "document") || !containsString(model.CapabilityTags, "tools") {
+		t.Fatalf("capability tags = %#v", model.CapabilityTags)
+	}
+	if model.Priority != 80 {
+		t.Fatalf("priority = %d, want 80", model.Priority)
+	}
+	if model.ResolutionTier != 1 {
+		t.Fatalf("resolution tier = %d, want 1", model.ResolutionTier)
+	}
 	if got := CreditMultiplierForProvider(&model, "provider-a"); got != 1.5 {
 		t.Fatalf("CreditMultiplierForProvider(provider-a) = %v, want 1.5", got)
 	}
@@ -280,6 +307,42 @@ func TestBuildAuthorizedModelsTracksProviderScopedGroupsAndMultiplier(t *testing
 	if got := ServiceGroupIDsForProvider(&model, "provider-a"); len(got) != 2 || got[0] != "group-a" || got[1] != "group-c" {
 		t.Fatalf("ServiceGroupIDsForProvider(provider-a) = %#v", got)
 	}
+}
+
+func TestRegistryNormalizeMigratesLegacyModelFieldsToProviderConfigs(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:   "group-a",
+			Name: "Group A",
+			Models: []ModelServiceModel{{
+				Name:             "auto",
+				ProviderIDs:      []string{"provider-a", "provider-b"},
+				CapabilityTags:   []string{"reasoning", "tools"},
+				Priority:         50,
+				ResolutionTier:   2,
+				CreditMultiplier: 1.2,
+			}},
+		}},
+	}
+	reg.Normalize()
+	model := reg.ModelServiceGroups[1].Models[0]
+	if len(model.ProviderConfigs) != 2 {
+		t.Fatalf("provider configs = %#v", model.ProviderConfigs)
+	}
+	for _, cfg := range model.ProviderConfigs {
+		if len(cfg.CapabilityTags) != 2 || cfg.Priority != 50 || cfg.ResolutionTier != 2 || cfg.CreditMultiplier != 1.2 {
+			t.Fatalf("unexpected migrated config: %#v", cfg)
+		}
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRedeemCardRejectsInvalidCodeFormat(t *testing.T) {

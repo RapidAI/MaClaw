@@ -22,8 +22,11 @@ const USAGE_STATS_I18N = {
     summaryTokens: 'Total Tokens',
     summaryInput: 'Input Tokens',
     summaryOutput: 'Output Tokens',
+    summaryCacheRate: 'Prompt Cache Rate',
+    summaryCacheRead: 'Cache Read Tokens',
+    summaryCacheWrite: 'Cache Write Tokens',
     summaryRequests: 'Requests',
-    summaryCredits: 'Credits',
+    summaryCredits: '\u79ef\u5206',
     trendTitle: '24-Hour Trend',
     trendEmpty: 'No daily trend is available for the selected view.',
     rowsTitle: 'Usage Ranking',
@@ -32,8 +35,10 @@ const USAGE_STATS_I18N = {
     colTotal: 'Total',
     colInput: 'Input',
     colOutput: 'Output',
+    colCacheRead: 'Cache Read',
+    colCacheRate: 'Cache Rate',
     colRequests: 'Requests',
-    colCredits: 'Credits',
+    colCredits: '\u79ef\u5206',
     loadFailed: 'Load usage stats failed: {error}',
     generatedAt: 'Generated at {time}'
   },
@@ -56,6 +61,9 @@ const USAGE_STATS_I18N = {
     summaryTokens: '\u603b token',
     summaryInput: '\u8f93\u5165 token',
     summaryOutput: '\u8f93\u51fa token',
+    summaryCacheRate: 'Prompt \u7f13\u5b58\u7387',
+    summaryCacheRead: 'Cache Read Tokens',
+    summaryCacheWrite: 'Cache Write Tokens',
     summaryRequests: '\u8bf7\u6c42\u6570',
     summaryCredits: 'Credits',
     trendTitle: '24 \u5c0f\u65f6\u8d8b\u52bf',
@@ -66,6 +74,8 @@ const USAGE_STATS_I18N = {
     colTotal: '\u603b\u8ba1',
     colInput: '\u8f93\u5165',
     colOutput: '\u8f93\u51fa',
+    colCacheRead: 'Cache Read',
+    colCacheRate: '\u7f13\u5b58\u7387',
     colRequests: '\u8bf7\u6c42\u6570',
     colCredits: 'Credits',
     loadFailed: '\u52a0\u8f7d\u4f7f\u7528\u7edf\u8ba1\u5931\u8d25: {error}',
@@ -204,9 +214,9 @@ function renderUsageRows() {
     root.innerHTML = '<div class="hint">' + ust('rowsEmpty') + '</div>';
     return;
   }
-  const header = '<div class="row header" style="grid-template-columns:1.5fr .9fr .9fr .9fr .8fr .8fr"><div>' + ust('colName') + '</div><div>' + ust('colTotal') + '</div><div>' + ust('colInput') + '</div><div>' + ust('colOutput') + '</div><div>' + ust('colRequests') + '</div><div>' + ust('colCredits') + '</div></div>';
+  const header = '<div class="row header" style="grid-template-columns:1.5fr .9fr .9fr .9fr .9fr .8fr .8fr .8fr"><div>' + ust('colName') + '</div><div>' + ust('colTotal') + '</div><div>' + ust('colInput') + '</div><div>' + ust('colOutput') + '</div><div>' + ust('colCacheRead') + '</div><div>' + ust('colCacheRate') + '</div><div>' + ust('colRequests') + '</div><div>' + ust('colCredits') + '</div></div>';
   const body = rows.slice(0, 20).map(function(row) {
-    return '<div class="row" style="grid-template-columns:1.5fr .9fr .9fr .9fr .8fr .8fr"><div class="mono" style="font-size:12px">' + escapeHtml(row.name || row.id || '-') + '</div><div>' + fmtInt(row.total_tokens) + '</div><div>' + fmtInt(row.input_tokens) + '</div><div>' + fmtInt(row.output_tokens) + '</div><div>' + fmtInt(row.requests) + '</div><div>' + fmtCredits(row.credits) + '</div></div>';
+    return '<div class="row" style="grid-template-columns:1.5fr .9fr .9fr .9fr .9fr .8fr .8fr .8fr"><div class="mono" style="font-size:12px">' + escapeHtml(row.name || row.id || '-') + '</div><div>' + fmtInt(row.total_tokens) + '</div><div>' + fmtInt(row.input_tokens) + '</div><div>' + fmtInt(row.output_tokens) + '</div><div style="color:#10aeca">' + fmtInt(row.cached_input_tokens) + '</div><div style="color:var(--ok);font-weight:800">' + fmtPercent(row.cached_requests, row.requests) + '</div><div>' + fmtInt(row.cached_requests) + ' / ' + fmtInt(row.requests) + '</div><div>' + fmtCredits(row.credits) + '</div></div>';
   }).join('');
   root.innerHTML = header + body;
 }
@@ -218,7 +228,10 @@ function renderUsageSummary() {
     usageMetricCard(ust('summaryTokens'), fmtInt(s.total_tokens)),
     usageMetricCard(ust('summaryInput'), fmtInt(s.input_tokens)),
     usageMetricCard(ust('summaryOutput'), fmtInt(s.output_tokens)),
-    usageMetricCard(ust('summaryRequests'), fmtInt(s.requests)),
+    usageMetricCard(ust('summaryCacheRate'), fmtPercent(s.cached_requests, s.requests)),
+    usageMetricCard(ust('summaryCacheRead'), fmtInt(s.cached_input_tokens)),
+    usageMetricCard(ust('summaryCacheWrite'), fmtInt(s.cache_write_tokens)),
+    usageMetricCard(ust('summaryRequests'), fmtInt(s.cached_requests) + ' / ' + fmtInt(s.requests)),
     usageMetricCard(ust('summaryCredits'), fmtCredits(s.credits))
   ].join('');
 }

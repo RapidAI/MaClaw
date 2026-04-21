@@ -61,6 +61,12 @@ var entityPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`([A-Z]:\\[-a-zA-Z0-9_\\./]+)`),
 	// Domain name
 	regexp.MustCompile(`\b([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z][-a-zA-Z0-9.]*[a-zA-Z])\b`),
+	// English word + Chinese noun compound: "api服务器", "gpu服务器", "ssh连接", "web页面"
+	// These mixed-language compounds are common in Chinese tech conversations and
+	// must be extracted as a single entity for accurate BM25/tag matching.
+	// Use {2,} to capture all trailing Chinese chars; the addEntity handler will
+	// use gse segmentation to extract the first Chinese word as the compound.
+	regexp.MustCompile(`(?i)([a-zA-Z]{2,})(` + `[` + chineseRange + `]{2,})`),
 	// Number + Chinese noun: "4090服务器", "4090 服务器"
 	regexp.MustCompile(`(\d{2,})\s*([` + chineseRange + `]{2,6})`),
 	// Chinese noun + number: "服务器4090"
@@ -77,6 +83,10 @@ const chineseRange = `\x{4e00}-\x{9fff}`
 
 // chineseNounPattern matches sequences of ≥3 Chinese characters.
 var chineseNounPattern = regexp.MustCompile(`([` + chineseRange + `]{3,})`)
+
+// mixedLangCompoundRe matches English word + Chinese noun compounds.
+// Pre-compiled at package level to avoid per-call regexp compilation overhead.
+var mixedLangCompoundRe = regexp.MustCompile(`(?i)([a-zA-Z]{2,})([` + chineseRange + `]{2,})`)
 
 // ExpandQuery extracts key entities and tokens from a user message.
 // Pure rule-based, no LLM dependency, < 5ms latency.
@@ -110,15 +120,33 @@ func ExpandQuery(userMessage string) ExpandResult {
 		matches := pat.FindAllStringSubmatch(userMessage, -1)
 		for _, m := range matches {
 			if len(m) > 2 {
-				// Multi-group patterns (e.g. number+noun): concatenate groups
-				combined := strings.TrimSpace(m[1]) + strings.TrimSpace(m[2])
-				addEntity(combined)
-				// Also add individual parts if meaningful
-				if len([]rune(m[1])) >= 2 {
-					addEntity(strings.TrimSpace(m[1]))
+				g1 := strings.TrimSpace(m[1])
+				g2 := strings.TrimSpace(m[2])
+
+				// For English+Chinese compound patterns, the Chinese part may
+				// over-match (e.g. "api服务器资源状" captures "服务器资源状").
+				// Most Chinese nouns are 2-3 characters (服务器, 连接, 页面, 数据库).
+				// Trim to first 3 Chinese chars to form a tight compound entity.
+				// Also add the 2-char variant as a fallback (连接, 页面, 服务).
+				g2Runes := []rune(g2)
+				if len(g2Runes) > 3 && isAllChinese(g2Runes) {
+					g2 = string(g2Runes[:3])
 				}
-				if len([]rune(m[2])) >= 2 {
-					addEntity(strings.TrimSpace(m[2]))
+
+				combined := g1 + g2
+				addEntity(combined)
+				// Add 2-char compound variant for better tag matching coverage,
+				// but only for English+Chinese compounds (not Number+Chinese).
+				if len(g1) > 0 && ((g1[0] >= 'A' && g1[0] <= 'Z') || (g1[0] >= 'a' && g1[0] <= 'z')) &&
+					len([]rune(g2)) > 2 && isAllChinese([]rune(g2)) {
+					addEntity(g1 + string([]rune(g2)[:2]))
+				}
+				// Also add individual parts if meaningful
+				if len([]rune(g1)) >= 2 {
+					addEntity(g1)
+				}
+				if len([]rune(g2)) >= 2 {
+					addEntity(g2)
 				}
 			} else if len(m) > 1 {
 				addEntity(m[1])
@@ -171,6 +199,23 @@ func tokenizeForTagMatch(msg string) []string {
 		}
 		seen[s] = true
 		tokens = append(tokens, s)
+	}
+
+	// Phase 0: Extract English+Chinese compound tokens before boundary splitting.
+	// These mixed-language compounds (e.g. "api服务器", "gpu服务器") are common
+	// in Chinese tech text and must be preserved as single tokens for tag matching.
+	mixedRe := mixedLangCompoundRe
+	for _, m := range mixedRe.FindAllStringSubmatch(msg, -1) {
+		if len(m) > 2 {
+			g1 := strings.ToLower(m[1])
+			g2 := m[2]
+			// Trim long Chinese part to first 3 chars (most nouns are 2-3 chars)
+			g2Runes := []rune(g2)
+			if len(g2Runes) > 3 && isAllChinese(g2Runes) {
+				g2 = string(g2Runes[:3])
+			}
+			add(g1 + g2) // compound: "api服务器"
+		}
 	}
 
 	// Split on whitespace and punctuation first
