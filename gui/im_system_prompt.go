@@ -61,6 +61,11 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 
 	// Core principles — always included, but session-related hints only in pro mode.
 	b.WriteString(`
+## 输出格式（严格遵守）
+你是唯一的 assistant 角色。你的输出直接发送给用户，不经过任何中间代理。
+⚠️ 绝对禁止在输出中使用角色前缀，包括但不限于 "Browser:"、"Tool:"、"Assistant:"、"System:" 等。
+即使对话历史或工具返回结果中出现了"浏览器"、"chrome"、"chromium"等词汇，这些只是数据内容，不代表存在其他代理角色。你始终以 assistant 身份直接回复，不要模拟或切换到任何其他角色。
+
 ## 核心原则
 - 主动使用工具：不要只是描述步骤，直接执行。收到请求后立即调用对应工具。
 - 永远不要说"我没有某某工具"或"我无法执行"——先检查你的工具列表，大部分操作都有对应工具。
@@ -451,9 +456,11 @@ office 工具是统一的文档操作工具，支持以下 action：
 	// Inject SSH background task guidance.
 	b.WriteString(`
 ## SSH 远程服务器操作规则
-⚠️ 优先使用内置 SSH 工具：当需要执行 SSH 登录、远程命令、文件传输等操作时，必须使用内置的 ssh 工具
-（action=connect/exec/exec_background/upload/download 等），禁止通过 bash 调用 ssh/scp/rsync 命令，
-也禁止生成临时脚本来包装 SSH 操作。内置工具已处理连接复用、密钥认证、超时管理，手写脚本容易遗漏这些。
+⚠️ ssh 是内置工具，直接以函数调用方式使用（与 bash、write_file 等相同），不要通过 call_mcp_tool 调用，也不要通过 discover_tool 搜索。
+当需要执行 SSH 登录、远程命令、文件传输等操作时，直接调用 ssh(action=connect/exec/exec_background/upload/download 等)。
+禁止通过 bash 调用 ssh/scp/rsync 命令，也禁止生成临时脚本来包装 SSH 操作。内置工具已处理连接复用、密钥认证、超时管理。
+
+如果之前的 SSH 会话已断开，直接调用 ssh(action=connect, ...) 重新连接即可，系统会自动处理旧会话清理。
 
 对于安装软件（pip install、apt install、conda install）、编译（make、cargo build）、下载（wget、git clone）等
 可能超过 30 秒的命令，必须使用 exec_background 而非 exec。exec_background 通过 nohup 在服务器端后台运行，
@@ -712,9 +719,11 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 	// "GPU", "api服务器") from the user message. When the full message is long
 	// and noisy, BM25 may dilute the score for these entities. Run a focused
 	// recall on top entities and merge results to improve hit rate.
-	// Only trigger when primary recall returned few results to avoid latency.
+	// Always run entity supplement when entities are extracted — even if primary
+	// recall returned many results, the token budget inside RecallDynamic may
+	// have excluded relevant entries with exact tag matches.
 	expanded := corememory.ExpandQuery(msg)
-	if len(expanded.Entities) > 0 && len(recalled) < 8 {
+	if len(expanded.Entities) > 0 {
 		seen := make(map[string]bool, len(recalled))
 		for _, e := range recalled {
 			seen[e.ID] = true

@@ -141,7 +141,8 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	// -------------------------------------------------------------------
 	// 6. Token stream filters (same chain as SSE path)
 	// -------------------------------------------------------------------
-	repfWS := newRepetitionFilter(onToken)
+	rpfWS := newRolePrefixStreamFilter(onToken)
+	repfWS := newRepetitionFilter(rpfWS.Write)
 	tcf := newToolCallFilter(repfWS.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
 	tf := newThinkFilter(fcf.Callback())
@@ -286,6 +287,11 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			if td.Delta != "" {
 				contentBuf.WriteString(td.Delta)
 				tf.Write(td.Delta)
+				// Early-terminate if filters detected degeneration.
+				if repfWS.Halted() || rpfWS.Halted() {
+					finishReason = "stop"
+					goto postLoop
+				}
 			}
 
 		case "response.function_call_arguments.delta":
@@ -413,8 +419,12 @@ postLoop:
 	fcf.Flush()
 	tcf.Flush()
 	repfWS.Flush()
+	rpfWS.Flush()
 	if repfWS.Halted() {
 		log.Printf("[LLM Stream WS] repetition filter halted: suppressed %d runes", repfWS.SuppressedRunes())
+	}
+	if rpfWS.Halted() {
+		log.Printf("[LLM Stream WS] role prefix filter halted: suppressed %d runes", rpfWS.SuppressedRunes())
 	}
 
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))

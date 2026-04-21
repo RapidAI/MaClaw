@@ -393,7 +393,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	var others []recallScored
 	for i, c := range candidates {
 		fusedRelevance := rrfScores[i]
-		sc := memoryStreamScore(c.entry, fusedRelevance, "", now)
+		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, "", now)
 		others = append(others, recallScored{entry: c.entry, score: sc})
 	}
 
@@ -735,15 +735,22 @@ func tagCrossScore(entry Entry, queryTokens []string) float64 {
 //   Score = w1*Recency + w2*Importance + w3*Relevance
 //
 // Recency:    exponential decay based on hours since last update.
-// Importance: category weight + log(1 + accessCount).
-// Relevance:  BM25 score against query + project affinity boost.
+// Importance: category weight + log(1 + min(accessCount, 20)).
+// Relevance:  RRF-fused BM25+Vec+Tag score + project affinity boost.
+//
+// Weight tuning rationale (2026-04-21):
+//   Relevance (1.5) > Recency (1.0) > Importance (0.8)
+//   Relevance is the primary signal — a query-specific BM25 match should
+//   outweigh a frequently-accessed but irrelevant entry. Importance is
+//   capped and down-weighted to prevent high-accessCount entries from
+//   dominating (e.g. GPU server at 104 accesses vs API server at 1).
 // ---------------------------------------------------------------------------
 
 const (
 	msDecay       = 0.005 // recency decay rate per hour
 	msWRecency    = 1.0
-	msWImportance = 1.0
-	msWRelevance  = 1.0
+	msWImportance = 0.8
+	msWRelevance  = 1.5
 )
 
 // graphExpandSeeds is the number of top-scored entries used as seeds for
@@ -779,7 +786,7 @@ func CategoryImportanceWeight(c Category) float64 {
 }
 
 // memoryStreamScore computes the three-dimensional score for a memory entry.
-func memoryStreamScore(e Entry, bm25Score float64, projectLower string, now time.Time) float64 {
+func memoryStreamScore(e Entry, rrfScore float64, rawBM25 float64, projectLower string, now time.Time) float64 {
 	// --- Recency ---
 	hours := now.Sub(e.UpdatedAt).Hours()
 	if hours < 0 {
@@ -788,10 +795,21 @@ func memoryStreamScore(e Entry, bm25Score float64, projectLower string, now time
 	recency := math.Exp(-msDecay * hours)
 
 	// --- Importance ---
-	importance := CategoryImportanceWeight(e.Category) + math.Log1p(float64(e.AccessCount))
+	// Cap the accessCount contribution to prevent high-frequency entries from
+	// dominating over more relevant but less-accessed entries.
+	cappedAccess := float64(e.AccessCount)
+	if cappedAccess > 20 {
+		cappedAccess = 20
+	}
+	importance := CategoryImportanceWeight(e.Category) + math.Log1p(cappedAccess)
 
-	// --- Relevance (BM25 + project affinity) ---
-	relevance := bm25Score
+	// --- Relevance ---
+	// RRF scores are rank-based (~0.01-0.15) and flatten score differences.
+	// Raw BM25 scores preserve magnitude differences (e.g. 2.07 vs 0.39 for
+	// "api服务器" matching API vs GPU server). Combine both signals:
+	// - RRF provides robust multi-signal fusion (BM25 + Vec + Tag)
+	// - Raw BM25 preserves the actual term-match strength
+	relevance := rrfScore*50.0 + rawBM25
 	if projectLower != "" {
 		for _, tag := range e.Tags {
 			if strings.ToLower(tag) == projectLower {
@@ -890,7 +908,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 	defer s.mu.RUnlock()
 
 	const maxEntries = 15
-	const maxTokens = 1500
+	const maxTokens = 2500
 
 	projectLower := strings.ToLower(projectPath)
 	now := time.Now()
@@ -933,7 +951,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 
 	var candidates []recallScored
 	for i, c := range raw {
-		sc := memoryStreamScore(c.entry, rrfScores[i], "", now)
+		sc := memoryStreamScore(c.entry, rrfScores[i], c.bm25, "", now)
 		candidates = append(candidates, recallScored{entry: c.entry, score: sc})
 	}
 

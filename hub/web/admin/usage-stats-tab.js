@@ -100,6 +100,17 @@ function fmtInt(value) {
   const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
   return Number(value || 0).toLocaleString(locale);
 }
+function fmtPercent(part, total) {
+  const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
+  const numerator = Number(part || 0);
+  const denominator = Number(total || 0);
+  if (!denominator || !Number.isFinite(numerator) || !Number.isFinite(denominator)) return '0%';
+  return (numerator / denominator).toLocaleString(locale, {
+    style: 'percent',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1
+  });
+}
 function fmtCredits(value) {
   const n = Number(value || 0);
   return Math.abs(n - Math.round(n)) < 0.000001 ? String(Math.round(n)) : n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');

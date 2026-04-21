@@ -38,6 +38,11 @@ func (m *mockRepo) Delete(_ context.Context, cacheKey string) error {
 	return nil
 }
 
+func (m *mockRepo) Purge(_ context.Context) (int64, error) {
+	count := int64(len(m.items))
+	m.items = map[string]*store.LLMPromptCacheEntry{}
+	return count, nil
+}
 func (m *mockRepo) DeleteExpired(_ context.Context, now time.Time) (int64, error) {
 	deleted := int64(0)
 	for key, entry := range m.items {
@@ -73,6 +78,30 @@ func (m *mockRepo) TrimToBytes(_ context.Context, maxBytes int64) (int64, error)
 	return trimmed, nil
 }
 
+func (m *mockRepo) ListRecent(_ context.Context, limit int) ([]*store.LLMPromptCacheEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	items := make([]*store.LLMPromptCacheEntry, 0, len(m.items))
+	for _, entry := range m.items {
+		copyEntry := *entry
+		copyEntry.Payload = append([]byte(nil), entry.Payload...)
+		items = append(items, &copyEntry)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].AccessedAt.Equal(items[j].AccessedAt) {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].CacheKey > items[j].CacheKey
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		}
+		return items[i].AccessedAt.After(items[j].AccessedAt)
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
 func (m *mockRepo) Stats(_ context.Context, now time.Time) (*store.LLMPromptCacheStats, error) {
 	stats := &store.LLMPromptCacheStats{}
 	for _, entry := range m.items {
@@ -148,5 +177,29 @@ func TestCacheStatusIncludesDiskAndExpiredCounts(t *testing.T) {
 	}
 	if status.DiskExpired != 2 || status.DiskExpiredBytes != 30 {
 		t.Fatalf("unexpected expired status: %#v", status)
+	}
+}
+
+func TestCacheDeleteClearsMemoryAndRepo(t *testing.T) {
+	repo := &mockRepo{items: map[string]*store.LLMPromptCacheEntry{}}
+	cache := New(repo, Config{MemoryMaxEntries: 4, MemoryMaxBytes: 64})
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, key := range []string{"a", "b"} {
+		if err := cache.Put(ctx, &store.LLMPromptCacheEntry{CacheKey: key, Payload: []byte("abc"), PayloadBytes: 3, AccessedAt: now, CreatedAt: now}); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	for _, key := range []string{"a", "b"} {
+		if err := cache.Delete(ctx, key); err != nil {
+			t.Fatalf("delete %s: %v", key, err)
+		}
+	}
+	status, err := cache.Status(ctx, now)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.MemoryEntries != 0 || status.MemoryBytes != 0 || status.DiskEntries != 0 || status.DiskBytes != 0 {
+		t.Fatalf("unexpected status after delete: %#v", status)
 	}
 }

@@ -201,6 +201,44 @@ func TestListLLMServiceCardsHandlerPaginatesAndFilters(t *testing.T) {
 	}
 }
 
+func TestListLLMServiceCardsHandlerClampsPageToLastPage(t *testing.T) {
+	now := time.Now().UTC()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Cards: []llmservice.RechargeCard{
+			{ID: "card-1", Label: "Alpha", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+			{ID: "card-2", Label: "Beta", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+			{ID: "card-3", Label: "Gamma", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/service-cards?status=all&page=9&page_size=2", nil)
+	rec := httptest.NewRecorder()
+	ListLLMServiceCardsHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Total    int `json:"total"`
+		Page     int `json:"page"`
+		PageSize int `json:"page_size"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Page != 2 {
+		t.Fatalf("expected page to clamp to 2, got %d", resp.Page)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "card-3" {
+		t.Fatalf("expected last page item, got %#v", resp.Items)
+	}
+}
 func TestListLLMServiceCardsHandlerRejectsInvalidStatus(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
 	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{}); err != nil {
@@ -296,6 +334,22 @@ func TestExportSelectedLLMServiceCardsHandlerReturnsRequestedCards(t *testing.T)
 	}
 }
 
+func TestExportSelectedLLMServiceCardsHandlerRejectsMissingMatches(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"ids":["missing-card"],"format":"csv"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards/export-selected", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	ExportSelectedLLMServiceCardsHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
 func TestUpdateLLMServicesAdminHandlerPreservesCardsWhenOmitted(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()

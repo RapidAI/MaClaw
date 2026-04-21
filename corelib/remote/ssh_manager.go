@@ -224,13 +224,14 @@ func (m *SSHSessionManager) WriteInputChecked(sessionID, text string) (reconnect
 func (m *SSHSessionManager) reconnectSession(s *SSHManagedSession) error {
 	s.mu.Lock()
 	spec := s.Spec
+	oldHandle := s.Handle
 	s.mu.Unlock()
 
 	spec.HostConfig.Defaults()
 
 	// 关闭旧 handle
-	if s.Handle != nil {
-		_ = s.Handle.Close()
+	if oldHandle != nil {
+		_ = oldHandle.Close()
 	}
 
 	// 通过连接池重连
@@ -566,27 +567,45 @@ func (m *SSHSessionManager) runExitLoop(s *SSHManagedSession, hostCfg SSHHostCon
 	if s.Handle == nil {
 		return
 	}
-	exitCh := s.Handle.Exit()
+	// 在 goroutine 启动时捕获当前 handle 引用。
+	// 关键：reconnectSession 会替换 s.Handle 为新的 PTY 会话，
+	// 如果这里不捕获，后面的 Close() 会关闭新会话而非旧会话，
+	// pool.Release 也会错误地释放新连接的引用计数。
+	handle := s.Handle
+	exitCh := handle.Exit()
 	if exitCh == nil {
 		return
 	}
 	exit := <-exitCh
 
+	// 检查 handle 是否仍然是当前活跃的 handle。
+	// 如果 reconnectSession 已经替换了 s.Handle，说明这是旧会话的退出信号，
+	// 不应该修改 session 状态（新会话可能正在运行）。
 	s.mu.Lock()
-	s.Status = SessionExited
-	s.Summary.Status = string(SessionExited)
-	s.Summary.UpdatedAt = time.Now().Unix()
-	if exit.Code != nil {
-		s.ExitCode = exit.Code
-	}
-	if exit.Err != nil {
-		s.Status = SessionError
-		s.Summary.Status = string(SessionError)
+	isStale := s.Handle != handle
+	if !isStale {
+		s.Status = SessionExited
+		s.Summary.Status = string(SessionExited)
+		s.Summary.UpdatedAt = time.Now().Unix()
+		if exit.Code != nil {
+			s.ExitCode = exit.Code
+		}
+		if exit.Err != nil {
+			s.Status = SessionError
+			s.Summary.Status = string(SessionError)
+		}
 	}
 	s.mu.Unlock()
 
-	_ = s.Handle.Close()
-	m.pool.Release(hostCfg)
+	// 关闭捕获的旧 handle（不是 s.Handle，避免关闭新会话）。
+	_ = handle.Close()
+
+	// 仅当 handle 未被替换时释放连接池引用。
+	// reconnectSession 使用 pool.Reconnect 获取新连接（refCount=1），
+	// 如果这里也 Release，新连接的 refCount 会归零被关闭。
+	if !isStale {
+		m.pool.Release(hostCfg)
+	}
 
 	m.mu.RLock()
 	cb := m.onUpdate

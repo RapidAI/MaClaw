@@ -129,7 +129,8 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	// -----------------------------------------------------------------------
 	// Token stream filters (same chain as OpenAI path)
 	// -----------------------------------------------------------------------
-	repfResp := newRepetitionFilter(onToken)
+	rpfResp := newRolePrefixStreamFilter(onToken)
+	repfResp := newRepetitionFilter(rpfResp.Write)
 	tcf := newToolCallFilter(repfResp.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
 	tf := newThinkFilter(fcf.Callback())
@@ -231,6 +232,11 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			if td.Delta != "" {
 				contentBuf.WriteString(td.Delta)
 				tf.Write(td.Delta)
+				// Early-terminate if filters detected degeneration.
+				if repfResp.Halted() || rpfResp.Halted() {
+					finishReason = "stop"
+					goto postLoop
+				}
 			}
 
 		case "response.function_call_arguments.delta":
@@ -348,8 +354,12 @@ postLoop:
 	fcf.Flush()
 	tcf.Flush()
 	repfResp.Flush()
+	rpfResp.Flush()
 	if repfResp.Halted() {
 		log.Printf("[LLM Stream Responses] repetition filter halted: suppressed %d runes", repfResp.SuppressedRunes())
+	}
+	if rpfResp.Halted() {
+		log.Printf("[LLM Stream Responses] role prefix filter halted: suppressed %d runes", rpfResp.SuppressedRunes())
 	}
 
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))

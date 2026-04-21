@@ -101,3 +101,26 @@ func TestLLMPromptCacheRepositoryDeleteExpiredAndTrim(t *testing.T) {
 		t.Fatalf("unexpected stats after trim: %#v", stats)
 	}
 }
+
+func TestLLMPromptCacheRepositoryDelete(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, key := range []string{"one", "two"} {
+		if err := st.LLMPromptCache.Put(ctx, &store.LLMPromptCacheEntry{CacheKey: key, ProviderID: "p", Model: "m", Kind: "metadata", InputHash: key, Payload: []byte("1234"), CreatedAt: now, AccessedAt: now}); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	for _, key := range []string{"one", "two"} {
+		if err := st.LLMPromptCache.Delete(ctx, key); err != nil {
+			t.Fatalf("delete %s: %v", key, err)
+		}
+	}
+	stats, err := st.LLMPromptCache.Stats(ctx, now)
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.Entries != 0 || stats.TotalBytes != 0 {
+		t.Fatalf("unexpected stats after delete: %#v", stats)
+	}
+}

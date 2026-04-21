@@ -12,6 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
@@ -42,6 +43,7 @@ func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService)
 
 	st := sqlite.NewStore(provider)
 	admins := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
+	promptCache := llmcache.New(st.LLMPromptCache, llmcache.Config{})
 	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
 	centerSvc := center.NewService(config.Default(), st.System)
 	deviceSvc := device.NewService(st.Machines, device.NewRuntime())
@@ -58,6 +60,7 @@ func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService)
 		nil,
 		st.EmailInvites,
 		st.System,
+		promptCache,
 		st.AdminAudit,
 		nil,
 		nil,
@@ -189,6 +192,31 @@ func TestAdminDebugHandlersAcceptToken(t *testing.T) {
 	token := issueHubAdminToken(t, router)
 
 	resp := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/admin/debug/machines", nil, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestAdminPromptCacheClearHandlerAcceptsToken(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+	token := issueHubAdminToken(t, router)
+	resp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/hub_llm_prompt_cache_clear", nil, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+func TestAdminPromptCacheEntriesHandlerAcceptsToken(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+	token := issueHubAdminToken(t, router)
+	resp := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/admin/hub_llm_prompt_cache_entries?limit=5", nil, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+func TestAdminPromptCacheEntryDeleteHandlerAcceptsToken(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+	token := issueHubAdminToken(t, router)
+	resp := doHubAdminJSONRequest(t, router, http.MethodDelete, "/api/admin/hub_llm_prompt_cache_entry?cache_key=test", nil, token)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
 	}

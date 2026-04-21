@@ -42,14 +42,33 @@ type memoryEntry struct {
 	size  int64
 }
 
-func New(repo store.LLMPromptCacheRepository, cfg Config) *Cache {
+func normalizeConfig(cfg Config) Config {
 	if cfg.MemoryMaxEntries <= 0 {
 		cfg.MemoryMaxEntries = 128
 	}
 	if cfg.MemoryMaxBytes <= 0 {
 		cfg.MemoryMaxBytes = 8 << 20
 	}
+	return cfg
+}
+
+func New(repo store.LLMPromptCacheRepository, cfg Config) *Cache {
+	cfg = normalizeConfig(cfg)
 	return &Cache{repo: repo, cfg: cfg, ll: list.New(), items: map[string]*list.Element{}}
+}
+
+func (c *Cache) UpdateConfig(cfg Config) {
+	cfg = normalizeConfig(cfg)
+	c.mu.Lock()
+	c.cfg = cfg
+	for len(c.items) > c.cfg.MemoryMaxEntries || c.bytes > c.cfg.MemoryMaxBytes {
+		back := c.ll.Back()
+		if back == nil {
+			break
+		}
+		c.removeElement(back)
+	}
+	c.mu.Unlock()
 }
 
 func (c *Cache) Get(ctx context.Context, cacheKey string) (*store.LLMPromptCacheEntry, error) {
@@ -96,6 +115,22 @@ func (c *Cache) Delete(ctx context.Context, cacheKey string) error {
 	return c.repo.Delete(ctx, cacheKey)
 }
 
+func (c *Cache) Purge(ctx context.Context) (int64, error) {
+	c.mu.Lock()
+	memoryCount := int64(len(c.items))
+	c.ll = list.New()
+	c.items = map[string]*list.Element{}
+	c.bytes = 0
+	c.mu.Unlock()
+	if c.repo == nil {
+		return memoryCount, nil
+	}
+	diskCount, err := c.repo.Purge(ctx)
+	if err != nil {
+		return memoryCount, err
+	}
+	return memoryCount + diskCount, nil
+}
 func (c *Cache) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
 	c.deleteExpiredMemory(now)
 	if c.repo == nil {
@@ -111,6 +146,9 @@ func (c *Cache) TrimDiskToBytes(ctx context.Context, maxBytes int64) (int64, err
 	return c.repo.TrimToBytes(ctx, maxBytes)
 }
 
+func (c *Cache) Repository() store.LLMPromptCacheRepository {
+	return c.repo
+}
 func (c *Cache) Status(ctx context.Context, now time.Time) (*Status, error) {
 	st := &Status{}
 	c.mu.Lock()

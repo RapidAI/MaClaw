@@ -345,6 +345,110 @@ func containsString(items []string, target string) bool {
 	return false
 }
 
+func TestRedeemCardCreatesGrantsAndRejectsReuse(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	code := "0123456789ABCDEFGHIJ"
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "coding-basic", Name: "Coding Basic", Models: []ModelServiceModel{{Name: "gpt-5", ProviderIDs: []string{"provider-a"}}}},
+			{ID: "coding-pro", Name: "Coding Pro", Models: []ModelServiceModel{{Name: "gpt-5", ProviderIDs: []string{"provider-b"}}}},
+		},
+		Cards: []RechargeCard{{
+			ID:              "card-1",
+			CodeHash:        HashCode(code),
+			ServiceGroupIDs: []string{"coding-basic", "coding-pro"},
+			DurationDays:    7,
+			Credits:         90,
+			CreatedAt:       time.Now().UTC(),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := RedeemCard(ctx, system, nil, "User@Example.COM", strings.ToLower(code), "http://hub.test/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status == nil || !status.Active {
+		t.Fatalf("expected active status, got %#v", status)
+	}
+	if status.CreditsAvailable != 90 {
+		t.Fatalf("expected credits available 90, got %v", status.CreditsAvailable)
+	}
+
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 2 {
+		t.Fatalf("expected 2 grants, got %d", len(saved.Grants))
+	}
+	for _, grant := range saved.Grants {
+		if grant.Email != "user@example.com" {
+			t.Fatalf("expected normalized email, got %q", grant.Email)
+		}
+		if grant.CreditsTotal != 45 {
+			t.Fatalf("expected split credits 45, got %v", grant.CreditsTotal)
+		}
+		if grant.ExpiresAt.Sub(grant.StartsAt) != 7*24*time.Hour {
+			t.Fatalf("expected 7-day grant, got %s", grant.ExpiresAt.Sub(grant.StartsAt))
+		}
+	}
+	card, _ := saved.FindCardByID("card-1")
+	if card == nil || card.RedeemedAt == nil || card.RedeemedByEmail != "user@example.com" {
+		t.Fatalf("expected redeemed card, got %#v", card)
+	}
+	if _, err := RedeemCard(ctx, system, nil, "other@example.com", code, "http://hub.test/api/llm/v1"); err == nil {
+		t.Fatal("expected reused card to be rejected")
+	}
+}
+
+func TestRedeemCardStacksExistingGrantForSameServiceGroup(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	now := time.Now().UTC()
+	code := "ABCDEFGHIJ0123456789"
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", Models: []ModelServiceModel{{Name: "gpt-5", ProviderIDs: []string{"provider-a"}}}}},
+		Cards: []RechargeCard{{
+			ID:              "card-1",
+			CodeHash:        HashCode(code),
+			ServiceGroupIDs: []string{"coding-basic"},
+			DurationDays:    3,
+			CreatedAt:       now,
+		}},
+		Grants: []Grant{{
+			ID:             "grant-existing",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreatedAt:      now.Add(-time.Hour),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RedeemCard(ctx, system, nil, "user@example.com", code, "http://hub.test/api/llm/v1"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 2 {
+		t.Fatalf("expected 2 grants, got %d", len(saved.Grants))
+	}
+	newGrant := saved.Grants[1]
+	if !newGrant.StartsAt.Equal(saved.Grants[0].ExpiresAt) {
+		t.Fatalf("expected new grant to start after existing grant expires, got start=%s existing_expiry=%s", newGrant.StartsAt, saved.Grants[0].ExpiresAt)
+	}
+	if newGrant.ExpiresAt.Sub(newGrant.StartsAt) != 3*24*time.Hour {
+		t.Fatalf("expected 3-day stacked grant, got %s", newGrant.ExpiresAt.Sub(newGrant.StartsAt))
+	}
+}
 func TestRedeemCardRejectsInvalidCodeFormat(t *testing.T) {
 	ctx := context.Background()
 	system := newTestSystemSettings()

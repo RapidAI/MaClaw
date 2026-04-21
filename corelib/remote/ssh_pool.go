@@ -43,10 +43,22 @@ func (p *SSHPool) Acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	}
 	p.mu.Unlock()
 
-	// 在锁外检查连接是否存活
+	// 在锁外检查连接是否存活（带超时保护）。
+	// 半开 TCP 连接场景下 SendRequest 可能阻塞 30-120 秒，
+	// 必须用 goroutine + select 限制等待时间。
 	if candidate != nil {
-		_, _, err := candidate.SendRequest("keepalive@openssh.com", true, nil)
-		if err == nil {
+		aliveCh := make(chan bool, 1)
+		go func() {
+			_, _, err := candidate.SendRequest("keepalive@openssh.com", true, nil)
+			aliveCh <- (err == nil)
+		}()
+		alive := false
+		select {
+		case alive = <-aliveCh:
+		case <-time.After(5 * time.Second):
+			// 超时视为连接已断
+		}
+		if alive {
 			p.mu.Lock()
 			if e, ok := p.conns[hostID]; ok && e.client == candidate {
 				e.refCount++
@@ -158,6 +170,7 @@ func (p *SSHPool) Stats() map[string]int {
 }
 
 // IsAlive 检查指定主机的连接是否存活。
+// 带 5 秒超时保护，避免半开 TCP 连接导致 SendRequest 长时间阻塞。
 func (p *SSHPool) IsAlive(cfg SSHHostConfig) bool {
 	cfg.Defaults()
 	hostID := cfg.SSHHostID()
@@ -169,8 +182,17 @@ func (p *SSHPool) IsAlive(cfg SSHHostConfig) bool {
 	if !found || entry.client == nil {
 		return false
 	}
-	_, _, err := entry.client.SendRequest("keepalive@openssh.com", true, nil)
-	return err == nil
+	ch := make(chan bool, 1)
+	go func() {
+		_, _, err := entry.client.SendRequest("keepalive@openssh.com", true, nil)
+		ch <- (err == nil)
+	}()
+	select {
+	case alive := <-ch:
+		return alive
+	case <-time.After(5 * time.Second):
+		return false
+	}
 }
 
 // Reconnect 强制断开旧连接并重新建立到指定主机的连接。
@@ -224,7 +246,19 @@ func (p *SSHPool) keepalive(hostID string, client *ssh.Client, interval time.Dur
 	defer ticker.Stop()
 	failCount := 0
 	for range ticker.C {
-		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+		// 带超时保护：半开 TCP 连接场景下 SendRequest 可能阻塞 30-120 秒，
+		// 用 goroutine + select 限制为 5 秒，加速断连检测。
+		ch := make(chan error, 1)
+		go func() {
+			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+			ch <- err
+		}()
+		var err error
+		select {
+		case err = <-ch:
+		case <-time.After(5 * time.Second):
+			err = fmt.Errorf("keepalive timeout")
+		}
 		if err != nil {
 			failCount++
 			// 容忍 2 次瞬时失败，连续 3 次才判定断连（约 45s）

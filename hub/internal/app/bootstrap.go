@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
@@ -51,6 +52,8 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	}
 
 	st := sqlite.NewStore(provider)
+	promptCacheCfg := httpapi.LoadHubLLMPromptCacheConfig(context.Background(), st.System)
+	promptCache := llmcache.New(st.LLMPromptCache, llmcache.Config{MemoryMaxEntries: promptCacheCfg.MemoryMaxEntries, MemoryMaxBytes: promptCacheCfg.MemoryMaxBytes})
 	adminService := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
 	mailer := mail.New(*cfg, st.System)
 	invitationService := invitation.NewService(st.InvitationCodes, st.System)
@@ -91,11 +94,11 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	// Agent Passthrough IM modules
 	// -----------------------------------------------------------------------
 
-	// 1. MessageRouter — routes IM messages to MaClaw Agent via WebSocket
+	// 1. MessageRouter 鈥?routes IM messages to MaClaw Agent via WebSocket
 	deviceFinder := &im.DeviceServiceFinder{Svc: deviceService}
 	messageRouter := im.NewMessageRouter(deviceFinder)
 
-	// 2. IM_Adapter — create with a temporary nil identity resolver; we wire
+	// 2. IM_Adapter 鈥?create with a temporary nil identity resolver; we wire
 	//    the real one (PluginIdentityResolver) after plugin registration.
 	imAdapter := im.NewAdapter(messageRouter, nil)
 
@@ -103,7 +106,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	pluginIdentity := im.NewPluginIdentityResolver(imAdapter)
 	imAdapter.SetIdentityResolver(pluginIdentity)
 
-	// Hub LLM Coordinator — sits between Adapter and MessageRouter.
+	// Hub LLM Coordinator 鈥?sits between Adapter and MessageRouter.
 	// Provides seamless smart mode when Hub LLM is configured.
 	llmConfigProvider := func() *im.HubLLMConfig {
 		raw, err := st.System.Get(context.Background(), "hub_llm_config")
@@ -122,7 +125,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	coordinator := im.NewCoordinator(messageRouter, deviceFinder, llmConfigProvider)
 	imAdapter.SetCoordinator(coordinator)
 
-	// ── Workflow Engine ─────────────────────────────────────
+	// 鈹€鈹€ Workflow Engine 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 	// Create WorkflowRegistry (auto-registers builtin templates).
 	workflowRegistry := im.NewWorkflowRegistry()
 
@@ -160,10 +163,16 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 			if st.WorkflowRepo != nil {
 				_ = st.WorkflowRepo.CleanupExpired(context.Background(), 7*24*time.Hour)
 			}
+			if promptCache != nil {
+				cacheCfg := httpapi.LoadHubLLMPromptCacheConfig(context.Background(), st.System)
+				promptCache.UpdateConfig(llmcache.Config{MemoryMaxEntries: cacheCfg.MemoryMaxEntries, MemoryMaxBytes: cacheCfg.MemoryMaxBytes})
+				_, _ = promptCache.DeleteExpired(context.Background(), time.Now().UTC())
+				_, _ = promptCache.TrimDiskToBytes(context.Background(), cacheCfg.DiskMaxBytes)
+			}
 		}
 	}()
 
-	// Initialize background task dispatcher — enables non-blocking IM:
+	// Initialize background task dispatcher 鈥?enables non-blocking IM:
 	// simple queries (direct_answer) are answered immediately, while
 	// device-bound tasks are queued and results pushed asynchronously.
 	imAdapter.InitTaskDispatcher(5)
@@ -180,7 +189,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	discussionConductor := im.NewDiscussionConductor(llmConfigProvider, coordinator.Breaker(), messageRouter)
 	messageRouter.SetConductor(discussionConductor)
 
-	// Device notifier — sends online/offline notifications to active IM users.
+	// Device notifier 鈥?sends online/offline notifications to active IM users.
 	deviceNotifier := im.NewDeviceNotifier(imAdapter, coordinator)
 	imAdapter.SetDeviceNotifier(deviceNotifier)
 
@@ -221,7 +230,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	feishuNotifier.SetPlugin(feishuPlugin)
 	feishuPlugin.SetAdapter(imAdapter)
 
-	// 7. OpenClaw IM Webhook Plugin — enables external IM adapters to
+	// 7. OpenClaw IM Webhook Plugin 鈥?enables external IM adapters to
 	//     communicate with Hub via the OpenClaw IM protocol.
 	openclawIMPlugin := im.NewWebhookIMPlugin("openclaw", func() im.WebhookConfig {
 		raw, err := st.System.Get(context.Background(), "openclaw_im_config")
@@ -242,8 +251,8 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		log.Printf("[bootstrap] failed to register openclaw IM plugin: %v", err)
 	}
 
-	// 8a. Remote Gateway Plugins — client-side IM gateways (QQ Bot, Telegram)
-	//     forwarded through the existing Hub↔Client WebSocket.
+	// 8a. Remote Gateway Plugins 鈥?client-side IM gateways (QQ Bot, Telegram)
+	//     forwarded through the existing Hub鈫擟lient WebSocket.
 	qqRemotePlugin := im.NewRemoteGatewayPlugin("qqbot_remote", deviceService, st.Users, st.System)
 	if err := imAdapter.RegisterPlugin(qqRemotePlugin); err != nil {
 		log.Printf("[bootstrap] failed to register qqbot_remote plugin: %v", err)
@@ -265,7 +274,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	gateway.RegisterIMGatewayPlugin(weixinPlugin)
 	gateway.RegisterIMGatewayPlugin(lansengerPlugin)
 
-	// 8b. QQBot Plugin — connects to QQ Bot via WebSocket gateway (Hub-native)
+	// 8b. QQBot Plugin 鈥?connects to QQ Bot via WebSocket gateway (Hub-native)
 	qqbotPlugin := qqbot.New(func() qqbot.Config {
 		raw, err := st.System.Get(context.Background(), "qqbot_config")
 		if err != nil || raw == "" {
@@ -291,7 +300,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		log.Printf("[bootstrap] failed to start qqbot plugin: %v", err)
 	}
 
-	// 8c. WeCom Plugin — connects to WeCom Bot via WebSocket gateway (Hub-native)
+	// 8c. WeCom Plugin 鈥?connects to WeCom Bot via WebSocket gateway (Hub-native)
 	wecomPlugin := wecom.New(func() wecom.Config {
 		raw, err := st.System.Get(context.Background(), "wecom_config")
 		if err != nil || raw == "" {
@@ -313,7 +322,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		log.Printf("[bootstrap] failed to start wecom plugin: %v", err)
 	}
 
-	// 8d. DingTalk Plugin — connects to DingTalk Bot via Stream Mode (Hub-native)
+	// 8d. DingTalk Plugin 鈥?connects to DingTalk Bot via Stream Mode (Hub-native)
 	dingtalkPlugin := dingtalk.New(func() dingtalk.Config {
 		raw, err := st.System.Get(context.Background(), "dingtalk_config")
 		if err != nil || raw == "" {
@@ -332,7 +341,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		log.Printf("[bootstrap] failed to start dingtalk plugin: %v", err)
 	}
 
-	// 9. Cross-IM NotifyBroadcaster — sends verification codes to all
+	// 9. Cross-IM NotifyBroadcaster 鈥?sends verification codes to all
 	//    reachable channels (email + any already-bound IM platforms).
 	broadcaster := im.NewNotifyBroadcaster(imAdapter, mailer)
 	broadcaster.SetActiveUserProvider(deviceNotifier)
@@ -341,23 +350,15 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	wecomPlugin.SetBroadcaster(broadcaster)
 	dingtalkPlugin.SetBroadcaster(broadcaster)
 
-	// 10. Proactive message sender — allows MaClaw clients to push
+	// 10. Proactive message sender 鈥?allows MaClaw clients to push
 	//     non-request-based messages (e.g. scheduled task results) to users.
 	proactiveSender := im.NewProactiveSender(broadcaster, &userEmailLookup{users: st.Users})
 	gateway.SetIMProactiveSender(proactiveSender)
 
-	// When a user's second device comes online, push a multi-device usage
-	// guide to their IM so they know how to switch between machines.
+	// When a user's second device comes online, push a quick multi-device guide.
 	deviceService.OnMultiDeviceOnline = func(userID string, machineNames []string) {
-		names := strings.Join(machineNames, "、")
-		guide := fmt.Sprintf("🖥️ 您有 %d 台设备同时在线：%s\n\n"+
-			"使用方式：\n"+
-			"• /call <昵称> — 切换到指定设备\n"+
-			"• /call all — 进入群聊模式（所有设备同时回复）\n"+
-			"• /machines — 查看在线设备列表\n"+
-			"• /discuss <话题> — 让多台设备 AI 讨论\n\n"+
-			"当前默认与第一台上线的设备交流，发送 /call <昵称> 切换。",
-			len(machineNames), names)
+		names := strings.Join(machineNames, ", ")
+		guide := fmt.Sprintf("You now have %d devices online: %s\n\nUse /call <name> to switch devices, /call all for group mode, /machines to view online devices, and /discuss <topic> for multi-device AI discussion.", len(machineNames), names)
 		if err := proactiveSender.SendProactiveMessage(context.Background(), userID, guide); err != nil {
 			log.Printf("[bootstrap] multi-device guide send failed for user=%s: %v", userID, err)
 		}
@@ -367,11 +368,11 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	// confirmation links are also sent to bound IM channels.
 	identityService.SetLoginNotifier(broadcaster)
 
-	// Register session event listener — routes through IM Adapter when available,
+	// Register session event listener 鈥?routes through IM Adapter when available,
 	// falls back to legacy notifier path.
 	sessionService.RegisterListener(feishuNotifier.HandleEvent)
 
-	// ── Chat Module ─────────────────────────────────────────
+	// 鈹€鈹€ Chat Module 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 	chatStore, err := chat.NewStore(provider.Write)
 	if err != nil {
 		return nil, fmt.Errorf("chat store: %w", err)
@@ -400,7 +401,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 
 	voiceprintSvc := voiceprint.NewService(st.Voiceprints, st.System)
 
-	// ── Security Management ─────────────────────────────────
+	// 鈹€鈹€ Security Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 	securityStore := security.NewSecurityStore(provider.Write)
 	if err := securityStore.InitSchema(context.Background()); err != nil {
 		return nil, fmt.Errorf("security schema: %w", err)
@@ -450,6 +451,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		invitationService,
 		st.EmailInvites,
 		st.System,
+		promptCache,
 		st.AdminAudit,
 		feishuNotifier,
 		feishuPlugin,
@@ -476,7 +478,6 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		cfg.PWA.RoutePrefix,
 		cfg.Bridge.Dir,
 	)
-
 	return &App{
 		Config:          cfg,
 		ConfigPath:      configPath,

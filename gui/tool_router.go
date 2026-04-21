@@ -97,6 +97,13 @@ func (r *ToolRouter) ActivateSessionTool(name string) {
 	r.inner.ActivateSessionTool(name)
 }
 
+// IsSessionPinned returns true if the tool was session-pinned (via
+// ActivateSessionTool). Used by routeTools to avoid removing ssh from
+// the tool list when it was previously used in this session.
+func (r *ToolRouter) IsSessionPinned(name string) bool {
+	return r.inner.IsSessionPinned(name)
+}
+
 // ResetSession delegates to corelib/tool.Router.ResetSession.
 func (r *ToolRouter) ResetSession() {
 	r.inner.ResetSession()

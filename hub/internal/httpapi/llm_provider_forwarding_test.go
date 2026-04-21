@@ -1,14 +1,20 @@
 package httpapi
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 func TestForwardAuthorizedModelRequestOrdersProvidersByProviderScopedParams(t *testing.T) {
@@ -138,5 +144,285 @@ func TestParseUsageStatsIncludesPromptCache(t *testing.T) {
 	}
 	if usage.CachedRequests != 1 {
 		t.Fatalf("CachedRequests = %d, want 1", usage.CachedRequests)
+	}
+}
+
+func TestForwardAuthorizedModelRequestUsesLocalCacheWhenAvailable(t *testing.T) {
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "upstream",
+			"model": "auto",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "upstream"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	reg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{"provider-a"}}
+	body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "repeat this"}}}
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1 << 20})
+	usage := corelib.TokenUsageStat{InputTokens: 12, OutputTokens: 5, TotalTokens: 17}
+	resp := []byte(`{"id":"cached","model":"auto","choices":[{"index":0,"message":{"role":"assistant","content":"cached"},"finish_reason":"stop"}]}`)
+	if err := putCachedAuthorizedModelResponse(context.Background(), cache, model, body, "auto", resp, http.StatusOK, "provider-a", []string{"group-a"}, usage, defaultHubLLMPromptCacheConfig()); err != nil {
+		t.Fatalf("put cache response: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
+	respBody, statusCode, providerID, serviceGroupIDs, cachedUsage, cacheHit, err := forwardAuthorizedModelRequestWithCache(req, reg, model, body, "auto", cache, defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("forwardAuthorizedModelRequestWithCache() error = %v", err)
+	}
+	if !cacheHit {
+		t.Fatalf("expected local cache hit")
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("upstream should not be called on local cache hit, hits = %d", upstreamHits.Load())
+	}
+	if statusCode != http.StatusOK || providerID != "provider-a" {
+		t.Fatalf("unexpected cache result: status=%d provider=%q", statusCode, providerID)
+	}
+	if len(serviceGroupIDs) != 1 || serviceGroupIDs[0] != "group-a" {
+		t.Fatalf("serviceGroupIDs = %#v", serviceGroupIDs)
+	}
+	if cachedUsage.TotalTokens != usage.TotalTokens {
+		t.Fatalf("cachedUsage = %#v", cachedUsage)
+	}
+	if string(respBody) != string(resp) {
+		t.Fatalf("respBody = %s", string(respBody))
+	}
+	status, err := cache.Status(context.Background(), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("cache status: %v", err)
+	}
+	if status.MemoryHits != 1 {
+		t.Fatalf("memory hits = %d, want 1", status.MemoryHits)
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerUsesLocalCacheWithoutEnqueueingUsage(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "cached-handler@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		TokensPerCredit: 10000,
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:   "coding-basic",
+			Name: "Coding Basic",
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-1",
+			Email:          "cached-handler@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreatedAt:      now,
+			CreditsTotal:   10,
+			CreditsUsed:    2,
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1 << 20})
+	body := map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "repeat this"}}}
+	resp := []byte(`{"id":"cached","model":"auto","choices":[{"index":0,"message":{"role":"assistant","content":"cached"},"finish_reason":"stop"}]}`)
+	usage := corelib.TokenUsageStat{InputTokens: 20, OutputTokens: 10, TotalTokens: 30, Requests: 1}
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{"provider-a"}, ProviderServiceGroups: map[string][]string{"provider-a": {"coding-basic"}}}
+	if err := putCachedAuthorizedModelResponse(ctx, cache, model, body, "auto", resp, http.StatusOK, "provider-a", []string{"coding-basic"}, usage, defaultHubLLMPromptCacheConfig()); err != nil {
+		t.Fatalf("put cache response: %v", err)
+	}
+
+	globalLLMUsageAccumulator.mu.Lock()
+	savedPending := globalLLMUsageAccumulator.pending
+	globalLLMUsageAccumulator.pending = map[store.SystemSettingsRepository]*pendingSystemUsage{}
+	globalLLMUsageAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMUsageAccumulator.mu.Lock()
+		globalLLMUsageAccumulator.pending = savedPending
+		globalLLMUsageAccumulator.mu.Unlock()
+	}()
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	LLMV1ChatCompletionsHandler(identity, system, nil, cache).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("X-MaClaw-Local-Cache") != "hit" {
+		t.Fatalf("expected local cache hit header, got %q", rr.Header().Get("X-MaClaw-Local-Cache"))
+	}
+	if rr.Header().Get("X-MaClaw-Upstream-Provider") != "provider-a" {
+		t.Fatalf("unexpected upstream provider header: %q", rr.Header().Get("X-MaClaw-Upstream-Provider"))
+	}
+	if rr.Header().Get("X-MaClaw-Authorized-Model") != "auto" {
+		t.Fatalf("unexpected authorized model header: %q", rr.Header().Get("X-MaClaw-Authorized-Model"))
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("upstream should not be called on local cache hit, hits = %d", upstreamHits.Load())
+	}
+
+	globalLLMUsageAccumulator.flush(ctx)
+
+	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load provider registry: %v", err)
+	}
+	if stat := providerReg.TokenUsage["provider-a"]; stat != nil && (stat.TotalTokens != 0 || stat.Requests != 0) {
+		t.Fatalf("expected no provider usage to be recorded, got %#v", stat)
+	}
+
+	serviceReg, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load service registry: %v", err)
+	}
+	if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 2 {
+		t.Fatalf("expected credits to remain unchanged, got %#v", serviceReg.Grants)
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerMissEnqueuesUsageAndCredits(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "cache-miss@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		TokensPerCredit: 10000,
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:   "coding-basic",
+			Name: "Coding Basic",
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+				ProviderConfigs: []llmservice.ModelServiceProviderConfig{{
+					ProviderID:       "provider-a",
+					CreditMultiplier: 2,
+				}},
+			}},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-1",
+			Email:          "cache-miss@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreatedAt:      now,
+			CreditsTotal:   10,
+			CreditsUsed:    1,
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "upstream",
+			"model": "auto",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "fresh"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 12000, "completion_tokens": 8000, "total_tokens": 20000},
+		})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1 << 20})
+	globalLLMUsageAccumulator.mu.Lock()
+	savedPending := globalLLMUsageAccumulator.pending
+	globalLLMUsageAccumulator.pending = map[store.SystemSettingsRepository]*pendingSystemUsage{}
+	globalLLMUsageAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMUsageAccumulator.mu.Lock()
+		globalLLMUsageAccumulator.pending = savedPending
+		globalLLMUsageAccumulator.mu.Unlock()
+	}()
+
+	body := map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "miss path"}}}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	LLMV1ChatCompletionsHandler(identity, system, nil, cache).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("X-MaClaw-Local-Cache") != "" {
+		t.Fatalf("did not expect local cache hit header, got %q", rr.Header().Get("X-MaClaw-Local-Cache"))
+	}
+	if rr.Header().Get("X-MaClaw-Upstream-Provider") != "provider-a" {
+		t.Fatalf("unexpected upstream provider header: %q", rr.Header().Get("X-MaClaw-Upstream-Provider"))
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("expected upstream to be called once, hits = %d", upstreamHits.Load())
+	}
+
+	globalLLMUsageAccumulator.flush(ctx)
+
+	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load provider registry: %v", err)
+	}
+	stat := providerReg.TokenUsage["provider-a"]
+	if stat == nil {
+		t.Fatal("expected provider usage to be recorded")
+	}
+	if stat.InputTokens != 12000 || stat.OutputTokens != 8000 || stat.TotalTokens != 20000 || stat.Requests != 1 {
+		t.Fatalf("unexpected provider usage: %#v", stat)
+	}
+
+	serviceReg, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load service registry: %v", err)
+	}
+	if len(serviceReg.Grants) != 1 {
+		t.Fatalf("expected single grant, got %#v", serviceReg.Grants)
+	}
+	if serviceReg.Grants[0].CreditsUsed != 5 {
+		t.Fatalf("expected credits used to increase to 5, got %#v", serviceReg.Grants[0])
 	}
 }

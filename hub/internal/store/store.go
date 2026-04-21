@@ -1,4 +1,4 @@
-﻿package store
+package store
 
 import (
 	"context"
@@ -307,19 +307,19 @@ type WorkflowStateRow struct {
 }
 
 type LLMPromptCacheEntry struct {
-	CacheKey           string
-	ProviderID         string
-	Model              string
-	Kind               string
-	InputHash          string
-	Payload            []byte
-	PayloadBytes       int64
-	CachedInputTokens  int64
-	CacheWriteTokens   int64
-	HitCount           int64
-	CreatedAt          time.Time
-	AccessedAt         time.Time
-	ExpiresAt          *time.Time
+	CacheKey          string
+	ProviderID        string
+	Model             string
+	Kind              string
+	InputHash         string
+	Payload           []byte
+	PayloadBytes      int64
+	CachedInputTokens int64
+	CacheWriteTokens  int64
+	HitCount          int64
+	CreatedAt         time.Time
+	AccessedAt        time.Time
+	ExpiresAt         *time.Time
 }
 
 type LLMPromptCacheStats struct {
@@ -334,8 +334,10 @@ type LLMPromptCacheRepository interface {
 	Get(ctx context.Context, cacheKey string) (*LLMPromptCacheEntry, error)
 	Put(ctx context.Context, entry *LLMPromptCacheEntry) error
 	Delete(ctx context.Context, cacheKey string) error
+	Purge(ctx context.Context) (int64, error)
 	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
 	TrimToBytes(ctx context.Context, maxBytes int64) (int64, error)
+	ListRecent(ctx context.Context, limit int) ([]*LLMPromptCacheEntry, error)
 	Stats(ctx context.Context, now time.Time) (*LLMPromptCacheStats, error)
 }
 
@@ -354,7 +356,5 @@ type Store struct {
 	Sessions        SessionRepository
 	Voiceprints     VoiceprintRepository
 	WorkflowRepo    WorkflowRepository
-	LLMPromptCache LLMPromptCacheRepository
+	LLMPromptCache  LLMPromptCacheRepository
 }
-
-

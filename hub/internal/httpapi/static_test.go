@@ -36,6 +36,12 @@ func TestRegisterPWAStaticRoutesServesIndexAndAssets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "app.js"), []byte("console.log('ok');"), 0644); err != nil {
 		t.Fatalf("write asset: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "icons"), 0755); err != nil {
+		t.Fatalf("mkdir icons: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "icons", "favicon-32x32.png"), []byte("png-bytes"), 0644); err != nil {
+		t.Fatalf("write favicon: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	registerPWAStaticRoutes(mux, dir, "/app")
@@ -68,6 +74,19 @@ func TestRegisterPWAStaticRoutesServesIndexAndAssets(t *testing.T) {
 	}
 	if body := spaRec.Body.String(); body != "index-page" {
 		t.Fatalf("spa fallback body = %q", body)
+	}
+
+	faviconReq := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	faviconRec := httptest.NewRecorder()
+	mux.ServeHTTP(faviconRec, faviconReq)
+	if faviconRec.Code != http.StatusOK {
+		t.Fatalf("favicon status = %d", faviconRec.Code)
+	}
+	if body := faviconRec.Body.String(); body != "png-bytes" {
+		t.Fatalf("favicon body = %q", body)
+	}
+	if got := faviconRec.Header().Get("Content-Type"); !strings.Contains(got, "image/png") {
+		t.Fatalf("favicon content-type = %q", got)
 	}
 }
 

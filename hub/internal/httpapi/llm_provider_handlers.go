@@ -381,6 +381,13 @@ func ListLLMServiceCardsHandler(system store.SystemSettingsRepository) http.Hand
 			return
 		}
 		total := len(cards)
+		totalPages := 1
+		if total > 0 {
+			totalPages = (total + pageSize - 1) / pageSize
+		}
+		if page > totalPages {
+			page = totalPages
+		}
 		start := (page - 1) * pageSize
 		if start > total {
 			start = total
@@ -447,6 +454,10 @@ func ExportSelectedLLMServiceCardsHandler(system store.SystemSettingsRepository)
 			if card, ok := lookup[strings.ToLower(strings.TrimSpace(id))]; ok {
 				cards = append(cards, card)
 			}
+		}
+		if len(cards) == 0 {
+			writeError(w, http.StatusNotFound, "LLM_SERVICE_CARD_NOT_FOUND", "no matching service cards found")
+			return
 		}
 		writeLLMServiceCardsExport(w, cards, format, "llm_service_cards_selected")
 	}
@@ -665,7 +676,7 @@ func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSetti
 	}
 }
 
-func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
+func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, err := authenticateViewerRequest(r, identity)
 		if err != nil {
@@ -697,13 +708,14 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
-		respBody, statusCode, usedProviderID, chargedServiceGroupIDs, err := forwardAuthorizedModelRequest(r, providerReg, authorizedModel, body, requestedModel)
+		cacheCfg := LoadHubLLMPromptCacheConfig(r.Context(), system)
+		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cacheCfg)
+		respBody, statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, providerReg, authorizedModel, body, requestedModel, firstPromptCacheSource(promptCacheSources), cacheCfg)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
 			return
 		}
-		if statusCode < 400 && usedProviderID != "" {
-			usageStat := parseUsageStats(respBody)
+		if statusCode < 400 && usedProviderID != "" && !localCacheHit {
 			credits := llmservice.EstimateCredits(usageStat.TotalTokens, llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID), status.TokensPerCredit)
 			userGroupIDs := []string(nil)
 			if securitySvc != nil {
@@ -728,9 +740,73 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		if usedProviderID != "" {
 			w.Header().Set("X-MaClaw-Upstream-Provider", usedProviderID)
 		}
+		if localCacheHit {
+			w.Header().Set("X-MaClaw-Local-Cache", "hit")
+		}
 		w.WriteHeader(statusCode)
 		_, _ = w.Write(respBody)
 	}
+}
+
+func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string) ([]byte, int, string, []string, error) {
+	respBody, statusCode, providerID, serviceGroupIDs, _, _, err := forwardAuthorizedModelRequestWithCache(r, reg, model, body, externalModel, nil, defaultHubLLMPromptCacheConfig())
+	return respBody, statusCode, providerID, serviceGroupIDs, err
+}
+
+func forwardAuthorizedModelRequestWithCache(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string, promptCacheSource any, cacheCfg HubLLMPromptCacheConfig) ([]byte, int, string, []string, corelib.TokenUsageStat, bool, error) {
+	if model == nil {
+		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, fmt.Errorf("authorized model is required")
+	}
+	if reg == nil {
+		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, fmt.Errorf("provider registry is required")
+	}
+	promptCache := firstPromptCacheSource([]any{promptCacheSource})
+	if respBody, statusCode, providerID, serviceGroupIDs, usageStat, ok, err := getCachedAuthorizedModelResponse(r.Context(), promptCache, model, body, externalModel, cacheCfg); err != nil {
+		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, err
+	} else if ok {
+		return respBody, statusCode, providerID, serviceGroupIDs, usageStat, true, nil
+	}
+	var lastErr error
+	var lastBody []byte
+	var lastStatus int
+	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
+		provider := reg.FindProvider(providerID)
+		if provider == nil {
+			lastErr = fmt.Errorf("provider %q not configured", providerID)
+			continue
+		}
+		respBody, statusCode, err := forwardLLMRequest(r, provider, body, externalModel)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if statusCode >= 500 {
+			lastBody = respBody
+			lastStatus = statusCode
+			lastErr = fmt.Errorf("provider %q returned http %d", provider.ID, statusCode)
+			continue
+		}
+		usageStat := parseUsageStats(respBody)
+		serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, provider.ID)
+		_ = putCachedAuthorizedModelResponse(r.Context(), promptCache, model, body, externalModel, respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, cacheCfg)
+		return respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, false, nil
+	}
+	if lastBody != nil && lastStatus > 0 {
+		return lastBody, lastStatus, "", nil, corelib.TokenUsageStat{}, false, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
+	}
+	return nil, 0, "", nil, corelib.TokenUsageStat{}, false, lastErr
+}
+
+func firstPromptCacheSource(sources []any) llmPromptCacheStore {
+	for _, source := range sources {
+		if cache, ok := source.(llmPromptCacheStore); ok && cache != nil {
+			return cache
+		}
+	}
+	return nil
 }
 
 func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []string) llmProviderRegistryResponse {
@@ -1027,45 +1103,6 @@ func explainModelSelection(body map[string]any, models []llmservice.AuthorizedMo
 		SelectionReason:  "manual model selection",
 	}
 }
-
-func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string) ([]byte, int, string, []string, error) {
-	if model == nil {
-		return nil, 0, "", nil, fmt.Errorf("authorized model is required")
-	}
-	if reg == nil {
-		return nil, 0, "", nil, fmt.Errorf("provider registry is required")
-	}
-	var lastErr error
-	var lastBody []byte
-	var lastStatus int
-	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
-		provider := reg.FindProvider(providerID)
-		if provider == nil {
-			lastErr = fmt.Errorf("provider %q not configured", providerID)
-			continue
-		}
-		respBody, statusCode, err := forwardLLMRequest(r, provider, body, externalModel)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if statusCode >= 500 {
-			lastBody = respBody
-			lastStatus = statusCode
-			lastErr = fmt.Errorf("provider %q returned http %d", provider.ID, statusCode)
-			continue
-		}
-		return respBody, statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), nil
-	}
-	if lastBody != nil && lastStatus > 0 {
-		return lastBody, lastStatus, "", nil, nil
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
-	}
-	return nil, 0, "", nil, lastErr
-}
-
 func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.RechargeCard, format, filenamePrefix string) {
 	nowName := time.Now().Format("20060102_150405")
 	switch format {

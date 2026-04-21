@@ -544,6 +544,11 @@ func TestRouteTools_WithRouterKeepsSSHForSSHIntent(t *testing.T) {
 	}
 
 	runCase("登录 4090 服务器，host home.rapidai.tech 端口 33", true)
+	// Reset session between independent test cases so the ssh pin from
+	// the first case doesn't carry over. In production, session-pinned
+	// tools persist across messages (which is the desired behavior for
+	// follow-up SSH operations), but these are independent test scenarios.
+	router.ResetSession()
 	runCase("我要查询数据库", false)
 }
 

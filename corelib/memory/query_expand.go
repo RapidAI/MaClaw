@@ -204,8 +204,7 @@ func tokenizeForTagMatch(msg string) []string {
 	// Phase 0: Extract English+Chinese compound tokens before boundary splitting.
 	// These mixed-language compounds (e.g. "api服务器", "gpu服务器") are common
 	// in Chinese tech text and must be preserved as single tokens for tag matching.
-	mixedRe := mixedLangCompoundRe
-	for _, m := range mixedRe.FindAllStringSubmatch(msg, -1) {
+	for _, m := range mixedLangCompoundRe.FindAllStringSubmatch(msg, -1) {
 		if len(m) > 2 {
 			g1 := strings.ToLower(m[1])
 			g2 := m[2]

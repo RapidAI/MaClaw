@@ -111,6 +111,35 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 
 	resolvedID, isLocal, err := h.app.resolveMCPServerRef(serverRef)
 	if err != nil {
+		// Fallback: LLM 可能把内置工具（如 ssh）误当作 MCP 工具调用。
+		// 检查 server_id 或 tool_name 是否匹配已注册的内置工具，
+		// 如果匹配则直接转发到内置工具执行，避免 LLM 陷入反复重试循环。
+		builtinName := toolName
+		if builtinName == "" {
+			builtinName = serverRef
+		}
+		if h.registry != nil {
+			if tool, ok := h.registry.Get(builtinName); ok {
+				// 将 MCP 格式的 arguments 作为内置工具的 args 传入
+				if tool.Handler != nil {
+					return tool.Handler(toolArgs)
+				}
+				if tool.HandlerProg != nil {
+					return tool.HandlerProg(toolArgs, nil)
+				}
+			}
+			// 也尝试用 server_id 作为工具名
+			if builtinName != serverRef {
+				if tool, ok := h.registry.Get(serverRef); ok {
+					if tool.Handler != nil {
+						return tool.Handler(toolArgs)
+					}
+					if tool.HandlerProg != nil {
+						return tool.HandlerProg(toolArgs, nil)
+					}
+				}
+			}
+		}
 		return fmt.Sprintf("MCP 调用失败: %s。可先用 list_mcp_tools 查看 Name (ID)", err.Error())
 	}
 

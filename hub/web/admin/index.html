@@ -16,7 +16,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MaClaw Hub Admin Console</title>
+  <title></title>
   <style>
     :root{--bg:#f7f4f2;--bg-2:#fffdfc;--panel:rgba(255,255,255,.92);--panel-strong:#ffffff;--soft:#f9f2f2;--soft-2:#f4eceb;--text:#1f2230;--muted:#7f8396;--line:rgba(34,38,52,.08);--line-strong:rgba(236,96,120,.24);--primary:#ef6a7c;--primary-strong:#e8566a;--primary-soft:rgba(239,106,124,.12);--accent:#57c59a;--ok:#23a26d;--warn:#c28b2c;--danger:#d65d57;--shadow:0 24px 60px rgba(31,34,48,.08);--shadow-soft:0 14px 30px rgba(31,34,48,.05)}
     *{box-sizing:border-box}
@@ -67,7 +67,7 @@
   <!-- Session modal -->
   <div id="sessionModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeSessionModal()">
     <div class="session-modal">
-      <button class="close-btn" id="sessionModalCloseBtn" onclick="closeSessionModal()" aria-label="Close">&times;</button>
+      <button class="close-btn" id="sessionModalCloseBtn" onclick="closeSessionModal()">&times;</button>
       <h3 id="sessionModalTitle"></h3>
       <div id="sessionModalContent"></div>
     </div>
@@ -76,7 +76,7 @@
   <!-- Default group modal -->
   <div id="defaultGroupModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeDefaultGroupModal()">
     <div class="session-modal" style="width:min(420px,calc(100% - 48px))">
-      <button class="close-btn" id="defaultGroupModalCloseBtn" onclick="closeDefaultGroupModal()" aria-label="Close">&times;</button>
+      <button class="close-btn" id="defaultGroupModalCloseBtn" onclick="closeDefaultGroupModal()">&times;</button>
       <h3 id="defaultGroupModalTitle" data-i18n="securityDefaultGroup"></h3>
       <div id="defaultGroupModalDesc" style="color:var(--muted);font-size:13px;margin-bottom:14px"></div>
       <div id="defaultGroupTreePicker" style="font-size:13px;line-height:1.8;max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:8px"></div>
@@ -90,7 +90,7 @@
   <!-- Assign users modal -->
   <div id="assignUsersModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeAssignUsersModal()">
     <div class="session-modal" style="width:min(520px,calc(100% - 48px))">
-      <button class="close-btn" id="assignUsersModalCloseBtn" onclick="closeAssignUsersModal()" aria-label="Close">&times;</button>
+      <button class="close-btn" id="assignUsersModalCloseBtn" onclick="closeAssignUsersModal()">&times;</button>
       <h3 id="assignUsersModalTitle"></h3>
       <div id="assignUsersModalDesc" style="color:var(--muted);font-size:13px;margin-bottom:10px"></div>
       <div style="margin-bottom:10px"><input id="assignUsersSearch" placeholder="..." oninput="filterAssignUsers()" style="width:100%;max-width:100%"></div>
@@ -108,7 +108,7 @@
   <!-- Setup gate -->
   <div id="setupGate" class="hidden" style="position:fixed;top:16px;right:16px;z-index:9998;width:min(480px,calc(100% - 32px))">
     <div class="card" style="padding:20px;position:relative">
-      <button type="button" id="setupGateCloseBtn" onclick="dismissSetupGate()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;height:auto;padding:0;line-height:1" aria-label="Close">&times;</button>
+      <button type="button" id="setupGateCloseBtn" onclick="dismissSetupGate()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;height:auto;padding:0;line-height:1">&times;</button>
       <div class="mini" data-gate="title"></div>
       <h2 id="setupGateHeading" style="margin:10px 0 6px;font-size:18px"></h2>
       <p class="subtle" id="setupGateDesc" style="font-size:13px"></p>
@@ -649,6 +649,47 @@
                   <button class="btn-primary" onclick="testHubLlm()" id="hubLlmTestBtn"></button>
                   <span id="hubLlmStatusBadge" class="badge info" style="font-size:12px"></span>
                 </div>
+                <div class="item" style="margin-top:14px">
+                  <div class="item-title" id="hubLlmCacheConfigTitle"></div>
+                  <div class="item-meta" id="hubLlmCacheConfigDesc"></div>
+                  <div class="grid3" style="margin-top:12px">
+                    <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheEnabled"> <span id="hubLlmPromptCacheEnabledLabel"></span></label></div>
+                    <div><label for="hubLlmPromptCacheTTL" id="hubLlmPromptCacheTTLLabel"></label><input id="hubLlmPromptCacheTTL" type="number" min="1" step="1"></div>
+                    <div><label for="hubLlmPromptCacheMemoryEntries" id="hubLlmPromptCacheMemoryEntriesLabel"></label><input id="hubLlmPromptCacheMemoryEntries" type="number" min="1" step="1"></div>
+                  </div>
+                  <div class="grid2" style="margin-top:12px">
+                    <div><label for="hubLlmPromptCacheMemoryMB" id="hubLlmPromptCacheMemoryMBLabel"></label><input id="hubLlmPromptCacheMemoryMB" type="number" min="1" step="1"></div>
+                    <div><label for="hubLlmPromptCacheDiskMB" id="hubLlmPromptCacheDiskMBLabel"></label><input id="hubLlmPromptCacheDiskMB" type="number" min="1" step="1"></div>
+                  </div>
+                  <div class="actions" style="margin-top:14px">
+                    <button class="btn-secondary" onclick="saveHubLlmPromptCacheConfig()" id="hubLlmPromptCacheSaveBtn"></button>
+                    <button class="btn-danger" onclick="clearHubLlmPromptCache()" id="hubLlmPromptCacheClearBtn"></button>
+                  </div>
+                  <div class="hint" style="margin-top:14px">
+                    <div id="hubLlmCacheSummary" style="font-size:13px;line-height:1.8"></div>
+                  </div>
+                </div>
+                <div class="item" style="margin-top:14px">
+                  <div class="item-title" id="hubLlmCacheHitBreakdownTitle"></div>
+                  <div id="hubLlmCacheHitBreakdown" style="margin-top:12px"></div>
+                </div>
+                <div class="item" style="margin-top:14px">
+                  <div class="item-title" id="hubLlmCacheEntriesTitle"></div>
+                  <div class="item-meta" id="hubLlmCacheEntriesDesc"></div>
+                  <div class="grid3" style="margin-top:12px">
+                    <div><label for="hubLlmCacheEntriesProvider" id="hubLlmCacheEntriesProviderLabel"></label><select id="hubLlmCacheEntriesProvider" onchange="document.getElementById('hubLlmCacheEntriesModel').value='';refreshHubLlmPromptCacheEntries()"></select></div>
+                    <div><label for="hubLlmCacheEntriesModel" id="hubLlmCacheEntriesModelLabel"></label><select id="hubLlmCacheEntriesModel" onchange="refreshHubLlmPromptCacheEntries()"></select></div>
+                    <div style="display:flex;align-items:flex-end"><button class="btn-ghost" style="width:100%" onclick="refreshHubLlmPromptCacheEntries()" id="hubLlmCacheEntriesRefreshBtn"></button></div>
+                  </div>
+                  <div id="hubLlmCacheEntries" style="margin-top:12px"></div>
+                  <div id="hubLlmCacheEntriesPager" class="pager hidden">
+                    <div id="hubLlmCacheEntriesPagerMeta" class="pager-meta"></div>
+                    <div class="pager-actions">
+                      <button id="hubLlmCacheEntriesPrevBtn" class="btn-ghost" type="button" onclick="changeHubLlmCacheEntriesPage(-1)"></button>
+                      <button id="hubLlmCacheEntriesNextBtn" class="btn-ghost" type="button" onclick="changeHubLlmCacheEntriesPage(1)"></button>
+                    </div>
+                  </div>
+                </div>
                 <div id="hubLlmTestResult" class="hint hidden" style="margin-top:14px"></div>
                 <div class="hint" style="margin-top:14px">
                   <div style="font-weight:700;margin-bottom:8px" id="hubLlmGuideTitle"></div>
@@ -899,7 +940,7 @@
 
       <div id="llmProviderModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeLLMProviderDialog()">
         <div class="session-modal" style="width:min(760px,calc(100% - 48px))">
-          <button class="close-btn" id="llmProviderModalCloseBtn" onclick="closeLLMProviderDialog()" aria-label="Close">&times;</button>
+          <button class="close-btn" id="llmProviderModalCloseBtn" onclick="closeLLMProviderDialog()">&times;</button>
           <div class="item" id="llmProviderEditorCard" style="border:none;box-shadow:none;padding:0;background:transparent">
             <div class="item-title" id="llmProviderEditorTitle"></div>
             <div class="item-meta" id="llmProviderEditorDesc"></div>

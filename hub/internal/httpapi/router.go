@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
@@ -34,6 +35,7 @@ func NewRouter(
 	invitationSvc *invitation.Service,
 	emailInviteRepo store.EmailInviteRepository,
 	system store.SystemSettingsRepository,
+	llmPromptCache *llmcache.Cache,
 	adminAudit store.AdminAuditRepository,
 	feishuNotifier *feishu.Notifier,
 	feishuPlugin *feishu.FeishuPlugin,
@@ -152,8 +154,13 @@ func NewRouter(
 	// Hub LLM configuration
 	mux.HandleFunc("GET /api/admin/hub_llm_config", RequireAdmin(admins, GetHubLLMConfigHandler(system)))
 	mux.HandleFunc("PUT /api/admin/hub_llm_config", RequireAdmin(admins, UpdateHubLLMConfigHandler(system)))
+	mux.HandleFunc("GET /api/admin/hub_llm_prompt_cache_config", RequireAdmin(admins, GetHubLLMPromptCacheConfigHandler(system, llmPromptCache)))
+	mux.HandleFunc("PUT /api/admin/hub_llm_prompt_cache_config", RequireAdmin(admins, UpdateHubLLMPromptCacheConfigHandler(system, llmPromptCache)))
+	mux.HandleFunc("POST /api/admin/hub_llm_prompt_cache_clear", RequireAdmin(admins, ClearHubLLMPromptCacheHandler(llmPromptCache)))
+	mux.HandleFunc("GET /api/admin/hub_llm_prompt_cache_entries", RequireAdmin(admins, GetHubLLMPromptCacheEntriesHandler(llmPromptCache)))
+	mux.HandleFunc("DELETE /api/admin/hub_llm_prompt_cache_entry", RequireAdmin(admins, DeleteHubLLMPromptCacheEntryHandler(llmPromptCache)))
 	mux.HandleFunc("POST /api/admin/hub_llm_test", RequireAdmin(admins, TestHubLLMHandler(system)))
-	mux.HandleFunc("GET /api/admin/hub_llm_status", RequireAdmin(admins, HubLLMStatusHandler(hubLLMStatusFn, system)))
+	mux.HandleFunc("GET /api/admin/hub_llm_status", RequireAdmin(admins, HubLLMStatusHandler(hubLLMStatusFn, system, llmPromptCache)))
 	mux.HandleFunc("GET /api/admin/llm/services/diagnose", RequireAdmin(admins, GetLLMServiceEntitlementDiagnosticHandler(system, securitySvc)))
 	mux.HandleFunc("GET /api/admin/llm/providers", RequireAdmin(admins, GetLLMProvidersHandler(system)))
 	mux.HandleFunc("PUT /api/admin/llm/providers", RequireAdmin(admins, UpdateLLMProvidersHandler(system)))
@@ -170,7 +177,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
-	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc))
+	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache))
 	// Content audit configuration
 	mux.HandleFunc("GET /api/admin/content_audit/config", RequireAdmin(admins, GetContentAuditConfigHandler(system)))
 	mux.HandleFunc("PUT /api/admin/content_audit/config", RequireAdmin(admins, UpdateContentAuditConfigHandler(system)))
@@ -227,13 +234,13 @@ func NewRouter(
 	mux.HandleFunc("POST /api/qqbot/webhook", QQBotWebhookHandler(qqbotPlugin))
 	mux.HandleFunc("GET /api/qqbot/tempfile/{token}", qqbotPlugin.ServeTempFile)
 
-	// WeCom (企业微信) Bot
+	// WeCom Bot
 	mux.HandleFunc("GET /api/admin/settings/wecom", RequireAdmin(admins, GetWeComConfigHandler(system)))
 	mux.HandleFunc("POST /api/admin/settings/wecom", RequireAdmin(admins, UpdateWeComConfigHandler(system, wecomPlugin)))
 	mux.HandleFunc("GET /api/admin/wecom/bindings", RequireAdmin(admins, GetWeComBindingsHandler(wecomPlugin)))
 	mux.HandleFunc("DELETE /api/admin/wecom/bindings", RequireAdmin(admins, DeleteWeComBindingHandler(wecomPlugin)))
 
-	// DingTalk (钉钉) Bot
+	// DingTalk Bot
 	mux.HandleFunc("GET /api/admin/settings/dingtalk", RequireAdmin(admins, GetDingTalkConfigHandler(system)))
 	mux.HandleFunc("POST /api/admin/settings/dingtalk", RequireAdmin(admins, UpdateDingTalkConfigHandler(system, dingtalkPlugin)))
 	mux.HandleFunc("GET /api/admin/dingtalk/bindings", RequireAdmin(admins, GetDingTalkBindingsHandler(dingtalkPlugin)))
@@ -243,7 +250,7 @@ func NewRouter(
 	if feishuPlugin != nil {
 		mux.HandleFunc("GET /api/feishu/tempfile/{token}", feishuPlugin.ServeTempFile)
 	}
-	// Public binding page API (no auth required) 鈥?allow cross-origin for iframe embedding
+	// Public binding page API (no auth required); allow cross-origin for iframe embedding
 	bindCORS := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -284,22 +291,22 @@ func NewRouter(
 	// Webhook session endpoint (Bearer token auth handled internally)
 	mux.HandleFunc("POST /api/webhook/session", WebhookCreateSessionHandler(deviceSvc, sessionSvc))
 
-	// AgentNet identity key online backup/restore (no auth 鈥?protected by user password)
+	// AgentNet identity key online backup/restore (no auth; protected by user password)
 	mux.HandleFunc("POST /api/AgentNet/key/backup", AgentNetKeyBackupHandler())
 	mux.HandleFunc("POST /api/AgentNet/key/restore", AgentNetKeyRestoreHandler())
 
-	// AgentNet task bulletin board 鈥?Hub-relayed P2P task discovery
+	// AgentNet task bulletin board; Hub-relayed P2P task discovery
 	mux.HandleFunc("POST /api/AgentNet/tasks/publish", AgentNetTaskPublishHandler())
 	mux.HandleFunc("GET /api/AgentNet/tasks/browse", AgentNetTaskBrowseHandler())
 
-	// 鈹€鈹€ User-facing voiceprint self-enrollment 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+	// User-facing voiceprint self-enrollment
 	if voiceprintSvc != nil {
 		mux.HandleFunc("POST /api/chat/voiceprint/enroll", UserVoiceprintEnrollHandler(identity, voiceprintSvc))
 		mux.HandleFunc("GET /api/chat/voiceprint/list", UserVoiceprintListHandler(identity, voiceprintSvc))
 		mux.HandleFunc("DELETE /api/chat/voiceprint", UserVoiceprintDeleteHandler(identity, voiceprintSvc))
 	}
 
-	// 鈹€鈹€ Chat Module 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+	// Chat Module
 	if chatChannelSvc != nil {
 		mux.HandleFunc("POST /api/chat/channels", ChatCreateChannelHandler(identity, chatChannelSvc))
 		mux.HandleFunc("GET /api/chat/channels", ChatListChannelsHandler(identity, chatChannelSvc))
@@ -318,7 +325,7 @@ func NewRouter(
 		mux.HandleFunc("/api/chat/ws", ChatWSHandler(identity, chatNotifier))
 	}
 
-	// Model file download (embedding models etc.) 鈥?public, no auth
+	// Model file download (embedding models etc.); public, no auth
 	mux.HandleFunc("GET /api/v1/models/{filename}", ModelDownloadHandler("./data"))
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)

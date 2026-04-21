@@ -557,7 +557,8 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		return parseNonStreamOpenAIResponse(resp)
 	}
 
-	repf := newRepetitionFilter(onToken)
+	rpf := newRolePrefixStreamFilter(onToken)
+	repf := newRepetitionFilter(rpf.Write)
 	tcf := newToolCallFilter(repf.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
 	tf := newThinkFilter(fcf.Callback())
@@ -639,6 +640,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 				finishReason = "stop"
 				break
 			}
+			// Early-terminate if a role prefix hallucination was detected.
+			if rpf.Halted() {
+				log.Printf("[LLM Stream] role prefix filter halted output (suppressed %d runes)", rpf.SuppressedRunes())
+				finishReason = "stop"
+				break
+			}
 		}
 		for _, tc := range delta.ToolCalls {
 			acc, ok := toolAccums[tc.Index]
@@ -683,8 +690,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	fcf.Flush()
 	tcf.Flush()
 	repf.Flush()
+	rpf.Flush()
 	if repf.Halted() {
 		log.Printf("[LLM Stream] repetition filter halted: suppressed %d runes", repf.SuppressedRunes())
+	}
+	if rpf.Halted() {
+		log.Printf("[LLM Stream] role prefix filter halted: suppressed %d runes", rpf.SuppressedRunes())
 	}
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))
 	reasoning := reasoningBuf.String()
@@ -820,7 +831,8 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	var stopReason string
 	var usage *llmUsage
 
-	repfAnth := newRepetitionFilter(onToken)
+	rpfAnth := newRolePrefixStreamFilter(onToken)
+	repfAnth := newRepetitionFilter(rpfAnth.Write)
 	fcf := newFuncCallFilter(repfAnth.Write)
 	tf := newThinkFilter(func(s string) { fcf.Write(s) })
 
@@ -918,6 +930,12 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 					stopReason = "end_turn"
 					goto anthDone
 				}
+				// Early-terminate if a role prefix hallucination was detected.
+				if rpfAnth.Halted() {
+					log.Printf("[LLM Stream Anthropic] role prefix filter halted output (suppressed %d runes)", rpfAnth.SuppressedRunes())
+					stopReason = "end_turn"
+					goto anthDone
+				}
 			}
 			if evt.Delta.Type == "input_json_delta" && evt.Delta.PartialJSON != "" {
 				acc.toolArgs.WriteString(evt.Delta.PartialJSON)
@@ -974,8 +992,12 @@ anthDone:
 	tf.Flush()
 	fcf.Flush()
 	repfAnth.Flush()
+	rpfAnth.Flush()
 	if repfAnth.Halted() {
 		log.Printf("[LLM Stream Anthropic] repetition filter halted: suppressed %d runes", repfAnth.SuppressedRunes())
+	}
+	if rpfAnth.Halted() {
+		log.Printf("[LLM Stream Anthropic] role prefix filter halted: suppressed %d runes", rpfAnth.SuppressedRunes())
 	}
 
 	// Assemble llmResponse

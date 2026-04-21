@@ -2514,6 +2514,14 @@ func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]
 	if classifyTaskIntent(userMessage).Intent == intentSSH {
 		return routed
 	}
+	// When the user message is not SSH-related, remove ssh from the tool
+	// list to reduce noise — UNLESS ssh was session-pinned (meaning the
+	// user previously used ssh in this session and it should stay available
+	// for follow-up messages like "查看 bb-browser 详情").
+	sshPinned := router.IsSessionPinned("ssh")
+	if sshPinned {
+		return routed
+	}
 	filtered := make([]map[string]interface{}, 0, len(routed))
 	hasSSH := false
 	for _, tool := range routed {
@@ -5405,6 +5413,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if msgContent == "" && msgReasoning != "" {
 			msgContent = msgReasoning
 		}
+
+		// Strip hallucinated role prefix (e.g. "Browser: ...") that some LLMs
+		// produce when browser tool definitions are in context or when the
+		// output text mentions browser-related terms (like "Chrome 浏览器进程").
+		msgContent = stripRolePrefixHallucination(msgContent)
 
 		assistantMsg := map[string]interface{}{
 			"role":    "assistant",

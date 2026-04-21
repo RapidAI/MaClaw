@@ -1263,6 +1263,7 @@ function renderLLMServiceAdmin() {
   var startIndex = (llmServiceCardPage - 1) * llmServiceCardPageSize;
   var pageItems = filteredCards;
   const cardsRoot = document.getElementById('llmServiceCardsList');
+  const selectedCardSet = llmServiceSelectedCardSet();
   if (cardsRoot) cardsRoot.innerHTML = ui.renderList(pageItems, function(c) {
     const cardHealth = llmServiceAnalyzeCard(c, llmServiceAdminCache);
     const healthTone = cardHealth.health === 'ready' ? 'ok' : (cardHealth.health === 'partial' ? 'info' : 'warn');

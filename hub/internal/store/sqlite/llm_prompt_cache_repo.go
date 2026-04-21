@@ -116,6 +116,13 @@ func (r *llmPromptCacheRepo) Delete(ctx context.Context, cacheKey string) error 
 	return execWrite(ctx, r.batch, r.db, `DELETE FROM llm_prompt_cache WHERE cache_key = ?`, cacheKey)
 }
 
+func (r *llmPromptCacheRepo) Purge(ctx context.Context) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM llm_prompt_cache`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
 func (r *llmPromptCacheRepo) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM llm_prompt_cache WHERE expires_at IS NOT NULL AND expires_at <= ?`, now.UTC().Format(time.RFC3339))
 	if err != nil {
@@ -172,6 +179,54 @@ func (r *llmPromptCacheRepo) TrimToBytes(ctx context.Context, maxBytes int64) (i
 	return trimmed, nil
 }
 
+func (r *llmPromptCacheRepo) ListRecent(ctx context.Context, limit int) ([]*store.LLMPromptCacheEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := r.readDB.QueryContext(ctx, `SELECT cache_key, provider_id, model, kind, input_hash, payload, payload_bytes, cached_input_tokens, cache_write_tokens, hit_count, created_at, accessed_at, expires_at FROM llm_prompt_cache ORDER BY accessed_at DESC, created_at DESC, cache_key DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*store.LLMPromptCacheEntry, 0, limit)
+	for rows.Next() {
+		var (
+			entry                          store.LLMPromptCacheEntry
+			payload                        []byte
+			createdAt, accessedAt, expires sql.NullString
+		)
+		if err := rows.Scan(
+			&entry.CacheKey,
+			&entry.ProviderID,
+			&entry.Model,
+			&entry.Kind,
+			&entry.InputHash,
+			&payload,
+			&entry.PayloadBytes,
+			&entry.CachedInputTokens,
+			&entry.CacheWriteTokens,
+			&entry.HitCount,
+			&createdAt,
+			&accessedAt,
+			&expires,
+		); err != nil {
+			return nil, err
+		}
+		entry.Payload = append([]byte(nil), payload...)
+		if createdAt.Valid {
+			entry.CreatedAt = mustParseTime(createdAt.String)
+		}
+		if accessedAt.Valid {
+			entry.AccessedAt = mustParseTime(accessedAt.String)
+		}
+		if expires.Valid {
+			t := mustParseTime(expires.String)
+			entry.ExpiresAt = &t
+		}
+		items = append(items, &entry)
+	}
+	return items, rows.Err()
+}
 func (r *llmPromptCacheRepo) Stats(ctx context.Context, now time.Time) (*store.LLMPromptCacheStats, error) {
 	row := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0), COALESCE(SUM(CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN payload_bytes ELSE 0 END), 0), COALESCE(SUM(hit_count), 0) FROM llm_prompt_cache`, now.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
 	stats := &store.LLMPromptCacheStats{}

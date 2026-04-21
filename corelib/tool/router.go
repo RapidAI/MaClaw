@@ -548,6 +548,13 @@ func (r *Router) ActivateSessionTool(name string) {
 	r.sessionTools[name] = true
 }
 
+// IsSessionPinned returns true if the named tool has been session-pinned
+// via ActivateSessionTool. This is used by callers (e.g. routeTools) to
+// avoid removing a tool that was previously used in this session.
+func (r *Router) IsSessionPinned(name string) bool {
+	return r.sessionTools[name]
+}
+
 // ResetSession clears session-activated tools.
 func (r *Router) ResetSession() {
 	r.sessionTools = nil
@@ -684,14 +691,34 @@ func ShouldPinConditionalTool(name string) bool {
 // MatchConditionalTools returns the set of conditional tool names that match
 // the given text. This is used to pin tools based on recalled memory content
 // (e.g. when memory mentions "服务器" or "SSH", the ssh tool should be pinned).
-// Note: tools requiring semantic confirmation are included here because memory
-// content is already a strong signal (the tool was previously used in context).
+//
+// Browser tools (listed in noEagerPinTools) are excluded from memory-driven
+// pinning because their keyword matching is prone to false positives. Memory
+// text like "Chrome 浏览器进程占 CPU 39.6%" (from SSH server resource output)
+// matches the strong browser keyword "浏览器", but this is NOT a signal that
+// the user wants browser automation — it's just a process name in server output.
+// Pinning 25+ browser tools from such a false match pollutes the LLM context
+// and causes hallucinated "Browser:" role prefixes in output.
+//
+// Browser tools are only pinned after actual successful use via
+// ActivateSessionTool in the tool execution path (im_message_handler.go).
 func MatchConditionalTools(text string) map[string]bool {
 	keep, _, needsConfirm := matchConditionalKeepRules(text)
-	// For memory-driven pinning, promote needsConfirm tools too — if the
-	// memory mentions browser/SSH context, the tool was previously relevant.
+	// Promote needsConfirm tools that are NOT in noEagerPinTools.
 	for name := range needsConfirm {
-		keep[name] = true
+		if !noEagerPinTools[name] {
+			keep[name] = true
+		}
+	}
+	// Remove noEagerPinTools entries from keep — these tools (browser_*)
+	// are prone to false-positive keyword matches in memory content and
+	// should only be pinned after actual successful use.
+	// Iterate over the (usually small) keep set rather than the larger
+	// noEagerPinTools map for efficiency.
+	for name := range keep {
+		if noEagerPinTools[name] {
+			delete(keep, name)
+		}
 	}
 	return keep
 }
@@ -859,21 +886,24 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		// Semantic intent enhancement: when keyword matching misses but the
 		// IntentClassifier detects a specific intent, activate the corresponding
 		// conditional tools. This catches cases like "帮我搞个能自动抢票的东西"
-		// where no SSH/browser keywords appear but embedding detects the intent.
+		// where no SSH keywords appear but embedding detects the intent.
+		//
+		// NOTE: IntentBrowser is intentionally excluded here. Browser tools
+		// have their own two-layer activation mechanism (strong keywords +
+		// weak keywords with semantic confirm) in conditionalKeepRules above.
+		// Adding a third activation path via embedding similarity causes
+		// false positives — e.g. "查看服务器资源" can get a borderline
+		// IntentBrowser score from embedding, injecting 25+ browser tool
+		// definitions into the LLM context and causing "Browser:" prefix
+		// hallucinations in output.
 		if cachedICResult != nil {
 			if cachedICResult.Intent != IntentQuery && cachedICResult.Intent != IntentShortCommand &&
-				cachedICResult.Intent != IntentUnknown && cachedICResult.Confidence >= 0.50 {
+				cachedICResult.Intent != IntentUnknown && cachedICResult.Intent != IntentBrowser &&
+				cachedICResult.Confidence >= 0.50 {
 				var intentTools []string
 				switch cachedICResult.Intent {
 				case IntentSSH:
 					intentTools = []string{"ssh"}
-				case IntentBrowser:
-					// Activate all browser-related conditional tools.
-					for name := range allConditionalKeepTools {
-						if strings.HasPrefix(name, "browser_") || name == "gui_record_start" || name == "gui_record_stop" {
-							intentTools = append(intentTools, name)
-						}
-					}
 				}
 				for _, name := range intentTools {
 					if !condKeep[name] {

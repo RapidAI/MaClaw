@@ -143,6 +143,9 @@ func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix stri
 	}
 	routePrefix = strings.TrimRight(routePrefix, "/")
 	indexPath := filepath.Join(staticDir, "index.html")
+	if routePrefix == "/app" {
+		registerRootFaviconRoute(mux, staticDir)
+	}
 
 	mux.HandleFunc("GET "+routePrefix, func(w http.ResponseWriter, r *http.Request) {
 		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
@@ -210,6 +213,27 @@ var staticAssetExtensions = map[string]bool{
 	".woff": true, ".woff2": true, ".ttf": true, ".eot": true, ".otf": true,
 	".json": true, ".xml": true, ".txt": true, ".webmanifest": true,
 	".wasm": true, ".mp4": true, ".webm": true, ".mp3": true, ".ogg": true, ".pdf": true,
+}
+
+func registerRootFaviconRoute(mux *http.ServeMux, staticDir string) {
+	faviconPath := filepath.Join(staticDir, "icons", "favicon-32x32.png")
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		if info, err := os.Stat(faviconPath); err == nil && !info.IsDir() {
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+			w.Header().Set("Content-Type", "image/png")
+			http.ServeFile(w, r, faviconPath)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("HEAD /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		if info, err := os.Stat(faviconPath); err == nil && !info.IsDir() {
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+			w.Header().Set("Content-Type", "image/png")
+			return
+		}
+		http.NotFound(w, r)
+	})
 }
 
 func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir string, indexPath string, routePrefix string) {

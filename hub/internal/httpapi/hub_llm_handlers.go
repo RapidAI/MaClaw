@@ -37,7 +37,7 @@ func GetHubLLMConfigHandler(system store.SystemSettingsRepository) http.HandlerF
 			return
 		}
 		hasKey := cfg.APIKey != ""
-		cfg.APIKey = "" // never expose the real key
+		cfg.APIKey = ""
 		writeJSON(w, http.StatusOK, map[string]any{
 			"enabled":                   cfg.Enabled,
 			"api_url":                   cfg.APIURL,
@@ -61,7 +61,7 @@ func UpdateHubLLMConfigHandler(system store.SystemSettingsRepository) http.Handl
 			return
 		}
 
-		// Empty key means the user didn't change it 锟?preserve the stored one.
+		// Empty key means the user did not change it; preserve the stored one.
 		if cfg.APIKey == "" {
 			old := loadHubLLMConfig(r, system)
 			if old != nil {
@@ -95,7 +95,7 @@ func TestHubLLMHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 		if cfg == nil || cfg.APIURL == "" || cfg.APIKey == "" {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"success": false,
-				"error":   "Hub LLM 鏈厤缃垨缂哄皯 API URL / Key",
+				"error":   "Hub LLM config requires API URL / Key",
 			})
 			return
 		}
@@ -126,33 +126,49 @@ func TestHubLLMHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	}
 }
 
-type hubLLMCacheStatus struct {
-	InputTokens       int64   `json:"input_tokens"`
-	CachedInputTokens int64   `json:"cached_input_tokens"`
-	CacheWriteTokens  int64   `json:"cache_write_tokens"`
-	Requests          int64   `json:"requests"`
-	CachedRequests    int64   `json:"cached_requests"`
-	CacheRate         float64 `json:"cache_rate"`
-	CacheReuseRate    float64 `json:"cache_reuse_rate"`
+type hubLLMCacheStorageStatus struct {
+	MemoryEntries    int   `json:"memory_entries"`
+	MemoryBytes      int64 `json:"memory_bytes"`
+	MemoryMaxEntries int   `json:"memory_max_entries"`
+	MemoryMaxBytes   int64 `json:"memory_max_bytes"`
+	MemoryHits       int64 `json:"memory_hits"`
+	DiskEntries      int64 `json:"disk_entries"`
+	DiskBytes        int64 `json:"disk_bytes"`
+	DiskExpired      int64 `json:"disk_expired_entries"`
+	DiskExpiredBytes int64 `json:"disk_expired_bytes"`
+	DiskHits         int64 `json:"disk_hits"`
 }
 
-// HubLLMStatusHandler returns the current LLM health status.
-// Requires a StatusProvider to be wired (the Coordinator).
-func HubLLMStatusHandler(statusFn func() string, system store.SystemSettingsRepository) http.HandlerFunc {
+type hubLLMCacheStatus struct {
+	InputTokens       int64                    `json:"input_tokens"`
+	CachedInputTokens int64                    `json:"cached_input_tokens"`
+	CacheWriteTokens  int64                    `json:"cache_write_tokens"`
+	Requests          int64                    `json:"requests"`
+	CachedRequests    int64                    `json:"cached_requests"`
+	CacheRate         float64                  `json:"cache_rate"`
+	CacheReuseRate    float64                  `json:"cache_reuse_rate"`
+	Config            HubLLMPromptCacheConfig  `json:"config"`
+	LocalStorage      hubLLMCacheStorageStatus `json:"local_storage"`
+}
+
+func HubLLMStatusHandler(statusFn func() string, system store.SystemSettingsRepository, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status := "not_configured"
 		if statusFn != nil {
 			status = statusFn()
 		}
+		promptCacheSource := firstPromptCacheStatusSource(promptCacheSources)
+		cfg := LoadHubLLMPromptCacheConfig(r.Context(), system)
+		applyHubLLMPromptCacheRuntimeConfig(promptCacheSource, cfg)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":       status,
-			"prompt_cache": hubLLMPromptCacheStatus(r, system),
+			"prompt_cache": hubLLMPromptCacheStatus(r, system, promptCacheSource, cfg),
 		})
 	}
 }
 
-func hubLLMPromptCacheStatus(r *http.Request, system store.SystemSettingsRepository) hubLLMCacheStatus {
-	out := hubLLMCacheStatus{}
+func hubLLMPromptCacheStatus(r *http.Request, system store.SystemSettingsRepository, promptCacheSource any, cfg HubLLMPromptCacheConfig) hubLLMCacheStatus {
+	out := hubLLMCacheStatus{Config: cfg}
 	if system == nil {
 		return out
 	}
@@ -172,6 +188,20 @@ func hubLLMPromptCacheStatus(r *http.Request, system store.SystemSettingsReposit
 	}
 	out.CacheRate = hubLLMRate(out.CachedRequests, out.Requests)
 	out.CacheReuseRate = hubLLMRate(out.CachedInputTokens, out.InputTokens)
+	if stats, err := promptCacheStatusFromSource(r.Context(), promptCacheSource); err == nil && stats != nil {
+		out.LocalStorage = hubLLMCacheStorageStatus{
+			MemoryEntries:    stats.MemoryEntries,
+			MemoryBytes:      stats.MemoryBytes,
+			MemoryMaxEntries: stats.MemoryMaxEntries,
+			MemoryMaxBytes:   stats.MemoryMaxBytes,
+			MemoryHits:       stats.MemoryHits,
+			DiskEntries:      stats.DiskEntries,
+			DiskBytes:        stats.DiskBytes,
+			DiskExpired:      stats.DiskExpired,
+			DiskExpiredBytes: stats.DiskExpiredBytes,
+			DiskHits:         stats.DiskHits,
+		}
+	}
 	return out
 }
 
@@ -182,7 +212,6 @@ func hubLLMRate(hit int64, total int64) float64 {
 	return math.Round((float64(hit)/float64(total))*1000) / 10
 }
 
-// loadHubLLMConfig reads the current Hub LLM config from system_settings.
 func loadHubLLMConfig(r *http.Request, system store.SystemSettingsRepository) *im.HubLLMConfig {
 	raw, err := system.Get(r.Context(), hubLLMConfigKey)
 	if err != nil || raw == "" {
