@@ -146,7 +146,8 @@ func DownsizeScreenshotBase64(base64Data string, sizeLimit int) (string, error) 
 	if err != nil {
 		return base64Data, fmt.Errorf("png decode for downsize: %w", err)
 	}
-	decoded = nil // free raw bytes — img holds the pixel data now
+	decodedLen := len(decoded) // save length before freeing
+	decoded = nil              // free raw bytes — img holds the pixel data now
 
 	bounds := img.Bounds()
 	origW := bounds.Dx()
@@ -155,7 +156,7 @@ func DownsizeScreenshotBase64(base64Data string, sizeLimit int) (string, error) 
 		return base64Data, nil
 	}
 
-	ratio := float64(sizeLimit) / float64(len(decoded)) * 0.85
+	ratio := float64(sizeLimit) / float64(decodedLen) * 0.85
 	scale := math.Sqrt(ratio)
 	if scale >= 1.0 {
 		scale = 0.7

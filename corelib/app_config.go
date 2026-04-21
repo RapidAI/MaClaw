@@ -164,10 +164,14 @@ type AppConfig struct {
 	// skill repair, session search summarization). When configured, used
 	// in preference to the main LLM to reduce cost and latency.
 	AuxiliaryLLM AuxiliaryLLMConfig `json:"auxiliary_llm,omitempty"`
-	// NudgeDisabled 闂?when true, the post-use skill nudge system is
+	// NudgeDisabled — when true, the post-use skill nudge system is
 	// completely disabled. No nudge messages will be injected into the
 	// conversation after complex tasks, skill failures, or user corrections.
 	NudgeDisabled bool `json:"nudge_disabled,omitempty"`
+	// WorkingDirectory is the user-configured default working directory for
+	// agent tasks (bash, craft_tool, confirmation panel, etc.). When empty,
+	// falls back to ~/.maclaw/workspace via corelib.WorkspaceDir().
+	WorkingDirectory string `json:"working_directory,omitempty"`
 }
 
 func (c AppConfig) MarshalJSON() ([]byte, error) {

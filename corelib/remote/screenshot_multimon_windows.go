@@ -131,6 +131,13 @@ func buildMultiMonVirtualDesktopPreamble() string {
 		`using System.Runtime.InteropServices; using System.Text;` + "\n" +
 		`public class ScreenUtil {` + "\n" +
 		`  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();` + "\n" +
+		`  [DllImport("user32.dll", EntryPoint="SetProcessDpiAwarenessContext")] static extern bool SetDpiCtx(IntPtr value);` + "\n" +
+		`  [DllImport("shcore.dll")] static extern int SetProcessDpiAwareness(int value);` + "\n" +
+		`  public static void EnablePerMonitorDPI() {` + "\n" +
+		`    try { if (SetDpiCtx(new IntPtr(-4))) return; } catch {}` + "\n" +
+		`    try { if (SetProcessDpiAwareness(2) == 0) return; } catch {}` + "\n" +
+		`    SetProcessDPIAware();` + "\n" +
+		`  }` + "\n" +
 		`  [DllImport("user32.dll")] public static extern IntPtr GetDesktopWindow();` + "\n" +
 		`  [DllImport("user32.dll")] public static extern IntPtr GetWindowDC(IntPtr hWnd);` + "\n" +
 		`  [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);` + "\n" +
@@ -161,7 +168,7 @@ func buildMultiMonVirtualDesktopPreamble() string {
 		`  public const int SM_CYVIRTUALSCREEN = 79;` + "\n" +
 		`}` + "\n" +
 		`'@;` +
-		`[ScreenUtil]::SetProcessDPIAware() | Out-Null; ` +
+		`[ScreenUtil]::EnablePerMonitorDPI(); ` +
 		// Helper: Test-BlankBitmap
 		`function Test-BlankBitmap($bmp) { ` +
 		`$step = [Math]::Max(1, [Math]::Floor([Math]::Sqrt($bmp.Width * $bmp.Height / 2000))); ` +
@@ -181,6 +188,10 @@ func buildMultiMonVirtualDesktopPreamble() string {
 		`$vy = [ScreenUtil]::GetSystemMetrics([ScreenUtil]::SM_YVIRTUALSCREEN); ` +
 		`$vw = [ScreenUtil]::GetSystemMetrics([ScreenUtil]::SM_CXVIRTUALSCREEN); ` +
 		`$vh = [ScreenUtil]::GetSystemMetrics([ScreenUtil]::SM_CYVIRTUALSCREEN); ` +
+		`if ($vw -le 0 -or $vh -le 0) { ` +
+		`$vx = 0; $vy = 0; ` +
+		`$vw = [ScreenUtil]::GetSystemMetrics(0); ` +
+		`$vh = [ScreenUtil]::GetSystemMetrics(1) }; ` +
 		`if ($vw -le 0 -or $vh -le 0) { ` +
 		`$vx = 0; $vy = 0; ` +
 		`$vw = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width; ` +

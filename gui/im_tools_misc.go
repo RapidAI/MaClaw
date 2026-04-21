@@ -1321,14 +1321,14 @@ func resolveCraftToolTimeout(args map[string]interface{}, task string) int {
 // to ~/.maclaw/workspace. When p is empty, returns ~/.maclaw/workspace.
 func resolvePath(p string) string {
 	if p == "" {
-		return corelib.WorkspaceDir()
+		return corelib.EffectiveWorkspaceDir()
 	}
 	if strings.HasPrefix(p, "~") {
 		home, _ := os.UserHomeDir()
 		p = filepath.Join(home, p[1:])
 	}
 	if !filepath.IsAbs(p) {
-		p = filepath.Join(corelib.WorkspaceDir(), p)
+		p = filepath.Join(corelib.EffectiveWorkspaceDir(), p)
 	}
 	return filepath.Clean(p)
 }

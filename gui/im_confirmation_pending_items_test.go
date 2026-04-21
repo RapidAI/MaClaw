@@ -339,3 +339,168 @@ func TestConfirmationFlow_SSHTaskWithMissingCredentials(t *testing.T) {
 		t.Errorf("approved text should contain the enhanced instruction\nResult: %s", result)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tests for DriftDetector result-change mechanism — the core distinction
+// between dead loops (same input + same output) and legitimate polling
+// (same input + changing output).
+// ---------------------------------------------------------------------------
+
+func TestDriftDetector_PollingWithChangingResults_NoDrift(t *testing.T) {
+	// Simulates the exact scenario from the bug: LLM polls a background task
+	// with check_task. Args are identical (same task_id), but results change
+	// as the task progresses: running 18s → running 23s → completed.
+	// This is NOT drift — external state is progressing.
+	d := NewDriftDetector(8, 0.8)
+	hash := "same_args_hash"
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "状态: running\n已运行: 18s"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "状态: running\n已运行: 23s"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "状态: completed\nEXIT: 0"})
+
+	result := d.DetectDrift()
+	if result.Drifted {
+		t.Fatal("drift should NOT be detected when results are changing (polling)")
+	}
+}
+
+func TestDriftDetector_SameResultsTriggersNormalDrift(t *testing.T) {
+	// SSH exec same failing command 3 times with identical results.
+	// This IS drift — dead loop, nothing is changing.
+	d := NewDriftDetector(8, 0.8)
+	hash := "same_args_hash"
+	sameResult := "connection refused"
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: sameResult})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: sameResult})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: sameResult})
+
+	result := d.DetectDrift()
+	if !result.Drifted {
+		t.Fatal("drift SHOULD be detected when results are identical (dead loop)")
+	}
+}
+
+func TestDriftDetector_EmptyResultsConservativelyTriggersDrift(t *testing.T) {
+	// When all ResultHints are empty, we have no data to compare.
+	// Conservative: treat as potential drift (don't suppress detection).
+	d := NewDriftDetector(8, 0.8)
+	hash := "same_args_hash"
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: ""})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: ""})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: ""})
+
+	result := d.DetectDrift()
+	if !result.Drifted {
+		t.Fatal("drift SHOULD be detected when all results are empty (conservative)")
+	}
+}
+
+func TestDriftDetector_SessionOutputPolling_NoDrift(t *testing.T) {
+	// get_session_output polling a coding session. Same args (session_id),
+	// but output changes as the session produces new content.
+	d := NewDriftDetector(8, 0.8)
+	hash := "session_123_hash"
+	d.Record(ToolCallRecord{ToolName: "get_session_output", ArgsHash: hash, ResultHint: "(无新输出)"})
+	d.Record(ToolCallRecord{ToolName: "get_session_output", ArgsHash: hash, ResultHint: "compiling main.go..."})
+	d.Record(ToolCallRecord{ToolName: "get_session_output", ArgsHash: hash, ResultHint: "tests passed"})
+
+	result := d.DetectDrift()
+	if result.Drifted {
+		t.Fatal("drift should NOT be detected when session output is changing")
+	}
+}
+
+func TestDriftDetector_SessionOutputStuck_Drifts(t *testing.T) {
+	// get_session_output polling but session is stuck — same output every time.
+	// This IS drift.
+	d := NewDriftDetector(8, 0.8)
+	hash := "session_123_hash"
+	stuck := "(无新输出)"
+	d.Record(ToolCallRecord{ToolName: "get_session_output", ArgsHash: hash, ResultHint: stuck})
+	d.Record(ToolCallRecord{ToolName: "get_session_output", ArgsHash: hash, ResultHint: stuck})
+	d.Record(ToolCallRecord{ToolName: "get_session_output", ArgsHash: hash, ResultHint: stuck})
+
+	result := d.DetectDrift()
+	if !result.Drifted {
+		t.Fatal("drift SHOULD be detected when session output is stuck")
+	}
+}
+
+func TestDriftDetector_AnyToolPollingWithChangingResults_NoDrift(t *testing.T) {
+	// Generic: any tool called with same args but different results.
+	// Future-proof — works for docker, MCP tools, etc.
+	d := NewDriftDetector(8, 0.8)
+	hash := "same_hash"
+	d.Record(ToolCallRecord{ToolName: "some_mcp_tool", ArgsHash: hash, ResultHint: "status: pending"})
+	d.Record(ToolCallRecord{ToolName: "some_mcp_tool", ArgsHash: hash, ResultHint: "status: processing"})
+	d.Record(ToolCallRecord{ToolName: "some_mcp_tool", ArgsHash: hash, ResultHint: "status: done"})
+
+	result := d.DetectDrift()
+	if result.Drifted {
+		t.Fatal("drift should NOT be detected for any tool when results are changing")
+	}
+}
+
+func TestDriftDetector_PreviewDrift_RespectsResultChanges(t *testing.T) {
+	// PreviewDrift should also respect the result-change mechanism.
+	d := NewDriftDetector(8, 0.8)
+	hash := "same_hash"
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "running 10s"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "running 20s"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "completed"})
+
+	preview := d.PreviewDrift()
+	if preview.Drifted {
+		t.Fatal("PreviewDrift should NOT report drift when results are changing")
+	}
+}
+
+func TestDriftDetector_MixedResults_LastTwoSame_NoDrift(t *testing.T) {
+	// Results: A → B → B. There was a change (A→B), so not a dead loop.
+	// The task might have reached a stable state (e.g. "completed" twice).
+	d := NewDriftDetector(8, 0.8)
+	hash := "same_hash"
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "running"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "completed"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "completed"})
+
+	result := d.DetectDrift()
+	if result.Drifted {
+		t.Fatal("drift should NOT be detected when there was at least one result change")
+	}
+}
+
+func TestDriftDetector_TruncatedHintSame_ButFullResultDiffers_NoDrift(t *testing.T) {
+	// Edge case: ResultHint is identical (the changing part falls beyond the
+	// 200-rune truncation boundary), but ResultHash differs because the full
+	// tool result is different. This happens when a long command echo fills
+	// the first 200 runes and the status/timestamp is beyond that.
+	//
+	// Without ResultHash, this would be a false positive (drift detected
+	// despite results actually changing).
+	d := NewDriftDetector(8, 0.8)
+	hash := "same_args_hash"
+	sameHint := "🔄 任务 bg_123\n命令: go install golang.org/dl/go1.24.2@latest 2>&1 || echo trying direct download && wget -q https://go.dev/dl/go1.24.2.linux-amd64.tar.gz -O /tmp/go1.24.2.tar.gz…"
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: sameHint, ResultHash: "hash_running_18s"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: sameHint, ResultHash: "hash_running_23s"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: sameHint, ResultHash: "hash_completed"})
+
+	result := d.DetectDrift()
+	if result.Drifted {
+		t.Fatal("drift should NOT be detected when ResultHash differs (full results are changing)")
+	}
+}
+
+func TestDriftDetector_ResultHashFallsBackToHint(t *testing.T) {
+	// When ResultHash is not set (backward compat), falls back to ResultHint.
+	d := NewDriftDetector(8, 0.8)
+	hash := "same_hash"
+	// Only set ResultHint, not ResultHash — should still detect changes.
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "running"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "completed"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: "completed"})
+
+	result := d.DetectDrift()
+	if result.Drifted {
+		t.Fatal("drift should NOT be detected — ResultHint fallback should detect the change")
+	}
+}

@@ -53,9 +53,7 @@ func (h *TUIAgentHandler) toolGeneratePDF(args map[string]interface{}) string {
 		title = "document"
 	}
 
-	home, _ := os.UserHomeDir()
-	outDir := filepath.Join(home, ".maclaw", "workspace")
-	_ = os.MkdirAll(outDir, 0o755)
+	outDir := corelib.EffectiveWorkspaceDir()
 
 	safeName := tool.SanitizeFilename(title)
 	if len(safeName) > 60 {

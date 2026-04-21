@@ -23,6 +23,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/RapidAI/CodeClaw/tui/commands"
@@ -65,6 +66,9 @@ type TUIApp struct {
 
 	// Workflow engine (corelib/workflow)
 	workflowEngine *workflow.WorkflowEngine
+
+	// Steering store (declarative rule injection)
+	steeringStore *steering.Store
 
 	// Tool usage tracker (outcome learning)
 	usageTracker *tool.UsageTracker
@@ -387,6 +391,9 @@ func (a *TUIApp) initKernel() tea.Msg {
 
 	// --- 新增：WorkflowEngine ---
 	a.initTUIWorkflowEngine()
+
+	// --- 新增：Steering Store ---
+	a.initTUISteeringStore()
 
 	return kernelStartedMsg{}
 }
@@ -717,6 +724,7 @@ func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 			WithAuditLog(a.auditLog),
 			WithWorkflowEngine(a.workflowEngine),
 			WithUsageTracker(a.usageTracker),
+			WithSteeringStore(a.steeringStore),
 		)
 
 		// 设置流式回调：工具调用时推送中间状态到 UI

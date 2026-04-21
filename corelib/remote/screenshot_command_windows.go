@@ -20,6 +20,13 @@ func buildWindowsScreenshotCommand() string {
 		`using System.Runtime.InteropServices; using System.Text;` + "\n" +
 		`public class ScreenUtil {` + "\n" +
 		`  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();` + "\n" +
+		`  [DllImport("user32.dll", EntryPoint="SetProcessDpiAwarenessContext")] static extern bool SetDpiCtx(IntPtr value);` + "\n" +
+		`  [DllImport("shcore.dll")] static extern int SetProcessDpiAwareness(int value);` + "\n" +
+		`  public static void EnablePerMonitorDPI() {` + "\n" +
+		`    try { if (SetDpiCtx(new IntPtr(-4))) return; } catch {}` + "\n" +
+		`    try { if (SetProcessDpiAwareness(2) == 0) return; } catch {}` + "\n" +
+		`    SetProcessDPIAware();` + "\n" +
+		`  }` + "\n" +
 		`  [DllImport("user32.dll")] public static extern IntPtr GetDesktopWindow();` + "\n" +
 		`  [DllImport("user32.dll")] public static extern IntPtr GetWindowDC(IntPtr hWnd);` + "\n" +
 		`  [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);` + "\n" +
@@ -40,12 +47,13 @@ func buildWindowsScreenshotCommand() string {
 		`  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);` + "\n" +
 		`  [DllImport("dwmapi.dll")] public static extern int DwmIsCompositionEnabled(out bool enabled);` + "\n" +
 		`  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int nIndex);` + "\n" +
+		`  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int nIndex);` + "\n" +
 		`  public const int GWL_EXSTYLE = -20;` + "\n" +
 		`  public const int WS_EX_TOOLWINDOW = 0x00000080;` + "\n" +
 		`  public const int WS_EX_NOACTIVATE = 0x08000000;` + "\n" +
 		`}` + "\n" +
 		`'@;` +
-		`[ScreenUtil]::SetProcessDPIAware() | Out-Null; ` +
+		`[ScreenUtil]::EnablePerMonitorDPI(); ` +
 		`function Test-BlankBitmap($bmp) { ` +
 		`$step = [Math]::Max(1, [Math]::Floor([Math]::Sqrt($bmp.Width * $bmp.Height / 2000))); ` +
 		`for ($y = 0; $y -lt $bmp.Height; $y += $step) { ` +
@@ -58,7 +66,18 @@ func buildWindowsScreenshotCommand() string {
 		`$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); ` +
 		`$b64 = [Convert]::ToBase64String($ms.ToArray()); ` +
 		`$ms.Dispose(); return $b64 }; ` +
-		`$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
+		// Use GetSystemMetrics for screen size instead of Screen.PrimaryScreen.Bounds.
+		// Screen.Bounds is cached when System.Windows.Forms loads (before DPI awareness
+		// is set), so it returns logical pixels. GetSystemMetrics is called after
+		// EnablePerMonitorDPI() and returns physical pixels, matching what GDI
+		// CopyFromScreen/BitBlt actually capture. This mismatch is the root cause
+		// of the white-border artefact on DPI-scaled displays.
+		`$smW = [ScreenUtil]::GetSystemMetrics(0); ` + // SM_CXSCREEN
+		`$smH = [ScreenUtil]::GetSystemMetrics(1); ` + // SM_CYSCREEN
+		`if ($smW -gt 0 -and $smH -gt 0) { ` +
+		`$bounds = New-Object System.Drawing.Rectangle(0, 0, $smW, $smH) ` +
+		`} else { ` +
+		`$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds }; ` +
 		`$isLocked = $false; ` +
 		`try { ` +
 		`Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; ` +
@@ -276,12 +295,19 @@ func buildWindowsWindowScreenshotCommand(windowTitle string) string {
 			`  [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int count);`+"\n"+
 			`  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);`+"\n"+
 			`  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();`+"\n"+
+			`  [DllImport("user32.dll", EntryPoint="SetProcessDpiAwarenessContext")] static extern bool SetDpiCtx(IntPtr value);`+"\n"+
+			`  [DllImport("shcore.dll")] static extern int SetProcessDpiAwareness(int value);`+"\n"+
+			`  public static void EnablePerMonitorDPI() {`+"\n"+
+			`    try { if (SetDpiCtx(new IntPtr(-4))) return; } catch {}`+"\n"+
+			`    try { if (SetProcessDpiAwareness(2) == 0) return; } catch {}`+"\n"+
+			`    SetProcessDPIAware();`+"\n"+
+			`  }`+"\n"+
 			`  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);`+"\n"+
 			`  [DllImport("user32.dll")] public static extern IntPtr GetWindowDC(IntPtr hWnd);`+"\n"+
 			`  [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);`+"\n"+
 			`}`+"\n"+
 			`'@;`+
-			`[WinAPI]::SetProcessDPIAware() | Out-Null; `+
+			`[WinAPI]::EnablePerMonitorDPI(); `+
 			`function Test-BlankBitmap($bmp) { `+
 			`$step = [Math]::Max(1, [Math]::Floor([Math]::Sqrt($bmp.Width * $bmp.Height / 2000))); `+
 			`for ($y = 0; $y -lt $bmp.Height; $y += $step) { `+

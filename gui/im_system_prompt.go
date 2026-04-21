@@ -540,11 +540,15 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 	}
 	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
 
-	// Inject lightweight memory section: user_fact summary + proactive recall + tool hint.
+	// Inject steering rules (user-editable files from ~/.maclaw/steering/).
+	// Placed after core identity/principles, before memory section.
 	msg := ""
 	if len(userMessage) > 0 {
 		msg = userMessage[0]
 	}
+	h.appendSteeringSection(&b, msg)
+
+	// Inject lightweight memory section: user_fact summary + proactive recall + tool hint.
 	h.appendMemorySection(&b, includeMemoryGuide, msg)
 
 	// Inject matched knowledge skills after memory section, before tool definitions.

@@ -31,6 +31,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/session"
+	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/user"
@@ -138,6 +139,7 @@ type App struct {
 	aiAssistantFirstChatLogged atomic.Bool
 	docGenerator               *swarm.SwarmDocGenerator // cached PDF doc generator
 	workflowEngine             *workflow.WorkflowEngine // maclaw agent workflow engine (corelib/workflow)
+	steeringStore              *steering.Store          // declarative rule injection (corelib/steering)
 	codeEventEmitter           *CodeEventEmitter        // emits code file events to frontend for code preview panel
 	floatingAssistant          *FloatingAssistantManager
 
@@ -1109,6 +1111,8 @@ func (a *App) startup(ctx context.Context) {
 	bm25.PrewarmDict()
 	// Initialize CodeBuddy config in project directory
 	if config, err := a.LoadConfig(); err == nil {
+		// Apply user-configured working directory (or keep default).
+		corelib.SetWorkspaceDir(config.WorkingDirectory)
 		// a.syncToCodeBuddySettings(config, ")
 		if config.Language != "" {
 			a.SetLanguage(config.Language)
@@ -1174,6 +1178,8 @@ func (a *App) startup(ctx context.Context) {
 		}
 		// Initialize workflow engine (SQLite store + registry + cleanup goroutine).
 		go a.initWorkflowEngine()
+		// Initialize steering store (declarative rule injection from ~/.maclaw/steering/).
+		go a.initSteeringStore()
 		return
 	}
 	a.setPowerOptimizationEnabled(false)
@@ -1994,6 +2000,19 @@ func (a *App) SetFullscreen(fullscreen bool) {
 func (a *App) SelectProjectDir() string {
 	selection, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select Project Directory",
+	})
+	if err != nil {
+		return ""
+	}
+	return selection
+}
+
+// SelectWorkingDir opens a native directory picker for the user to choose
+// a default working directory. Returns the selected path or empty string
+// if cancelled.
+func (a *App) SelectWorkingDir() string {
+	selection, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select Working Directory",
 	})
 	if err != nil {
 		return ""
@@ -4454,6 +4473,8 @@ func (a *App) SaveConfig(config AppConfig) error {
 	stepStart = time.Now()
 	a.refreshPowerOptimizationStateFromConfig(config)
 	log.Printf("[config] SaveConfig:refresh_power_optimization=%s", time.Since(stepStart))
+	// Apply user-configured working directory change immediately.
+	corelib.SetWorkspaceDir(config.WorkingDirectory)
 	if policyModeChanged {
 		stepStart = time.Now()
 		a.policyEngine.SetMode(config.SecurityPolicyMode)

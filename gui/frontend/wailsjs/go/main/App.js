@@ -254,6 +254,10 @@ export function SelectProjectDir() {
   return window['go']['main']['App']['SelectProjectDir']();
 }
 
+export function SelectWorkingDir() {
+  return window['go']['main']['App']['SelectWorkingDir']();
+}
+
 export function SetWorkflowWorkingDir(arg1) {
   return window['go']['main']['App']['SetWorkflowWorkingDir'](arg1);
 }

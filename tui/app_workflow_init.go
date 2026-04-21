@@ -3,10 +3,12 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
@@ -65,4 +67,34 @@ func (c *tuiWorkflowLLMCaller) DoSimpleLLMRequest(messages []interface{}, timeou
 		return "", err
 	}
 	return resp.Content, nil
+}
+
+// initTUISteeringStore initializes the steering file store for TUI.
+// User-level: ~/.maclaw/steering/
+// Project-level: <cwd>/.maclaw/steering/ (if exists)
+func (a *TUIApp) initTUISteeringStore() {
+	dataDir := commands.ResolveDataDir()
+	userDir := filepath.Join(dataDir, "steering")
+
+	// Ensure default steering files exist.
+	if err := steering.EnsureDefaults(userDir); err != nil {
+		log.Printf("[steering] TUI EnsureDefaults: %v", err)
+	}
+
+	// Project-level: check current working directory.
+	projectDir := ""
+	if wd, err := os.Getwd(); err == nil {
+		candidate := filepath.Join(wd, ".maclaw", "steering")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			projectDir = candidate
+		}
+	}
+
+	a.steeringStore = steering.NewStore(userDir, projectDir)
+	if err := a.steeringStore.Load(); err != nil {
+		log.Printf("[steering] TUI initial load: %v", err)
+	}
+
+	log.Printf("[steering] TUI initialized (user=%s, project=%s, files=%d)",
+		userDir, projectDir, a.steeringStore.FileCount())
 }

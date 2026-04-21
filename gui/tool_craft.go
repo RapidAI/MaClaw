@@ -958,8 +958,8 @@ func executeScript(scriptPath, language, workingDir string, timeout int, runtime
 	if strings.TrimSpace(workingDir) != "" {
 		cmd.Dir = workingDir
 	} else {
-		// Default to ~/.maclaw/workspace to avoid polluting home dir.
-		cmd.Dir = corelib.WorkspaceDir()
+		// Default to user-configured dir or ~/.maclaw/workspace.
+		cmd.Dir = corelib.EffectiveWorkspaceDir()
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

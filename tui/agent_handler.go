@@ -28,6 +28,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/session"
+	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -63,6 +64,7 @@ type TUIAgentHandler struct {
 	maxIterations    int
 	codingToolHealth *codingToolHealthCache   // 编程工具健康状态缓存
 	workflowEngine   *workflow.WorkflowEngine // maclaw agent workflow engine
+	steeringStore    *steering.Store          // declarative rule injection
 	taskStore        *task.Store              // lightweight task tracker
 	usageTracker     *tool.UsageTracker       // tool outcome learning tracker
 
@@ -161,6 +163,9 @@ func WithAuditLog(al *security.AuditLog) AgentHandlerOption {
 }
 func WithWorkflowEngine(we *workflow.WorkflowEngine) AgentHandlerOption {
 	return func(h *TUIAgentHandler) { h.workflowEngine = we }
+}
+func WithSteeringStore(ss *steering.Store) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.steeringStore = ss }
 }
 func WithUsageTracker(ut *tool.UsageTracker) AgentHandlerOption {
 	return func(h *TUIAgentHandler) { h.usageTracker = ut }
@@ -430,7 +435,7 @@ func buildTUIIdentityPrompt(memoryStore *memory.Store, roleTitle string, withToo
 func (h *TUIAgentHandler) buildSystemPromptWithFirstTurn(userText string, isFirstTurn bool) string {
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
-	workspaceDir := corelib.WorkspaceDir()
+	workspaceDir := corelib.EffectiveWorkspaceDir()
 	roleTitle := tuiRoleTitle()
 	identity := buildTUIIdentityPrompt(h.memoryStore, roleTitle, true)
 
@@ -525,6 +530,26 @@ exec_background 通过 nohup 在服务器端后台运行，SSH 断连不影响�
 	// 注入主动记忆指令 — 引导 Agent 在首轮会话中主动保存非显而易见的技术发现
 	if h.memoryStore != nil && isFirstTurn {
 		prompt += "\n\n" + memory.BuildTUIProactiveMemoryPrompt()
+	}
+
+	// --- Steering 规则注入 ---
+	// Inject user-editable steering rules from ~/.maclaw/steering/.
+	if h.steeringStore != nil {
+		cfg, _ := commands.LoadLLMConfig()
+		ctx := steering.ResolveContext{
+			UserMessage:            userText,
+			EffectiveContextTokens: cfg.EffectiveContextTokens(),
+		}
+		if resolved := h.steeringStore.Resolve(ctx); len(resolved) > 0 {
+			prompt += "\n\n## 用户规则（Steering）\n"
+			for _, sf := range resolved {
+				prompt += fmt.Sprintf("\n### %s\n%s", strings.TrimSuffix(sf.Name, ".md"), sf.Content)
+				if !strings.HasSuffix(sf.Content, "\n") {
+					prompt += "\n"
+				}
+			}
+			log.Printf("[steering] TUI: injected %d files", len(resolved))
+		}
 	}
 
 	// --- 主动记忆召回 (Proactive Recall) ---
@@ -1110,10 +1135,10 @@ func (h *TUIAgentHandler) toolBash(args map[string]interface{}) string {
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
-	// Default working directory to ~/.maclaw/workspace to avoid polluting home dir.
+	// Default working directory to user-configured dir or ~/.maclaw/workspace.
 	workDir := stringArg(args, "working_dir")
 	if workDir == "" {
-		cmd.Dir = corelib.WorkspaceDir()
+		cmd.Dir = corelib.EffectiveWorkspaceDir()
 	} else {
 		cmd.Dir = resolvePath(workDir)
 	}

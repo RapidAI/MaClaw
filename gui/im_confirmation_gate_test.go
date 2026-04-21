@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution(t *testing.T) {
@@ -41,8 +43,8 @@ func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution
 	if resp.Confirmation.TaskType != "coding" {
 		t.Fatalf("expected coding confirmation, got %+v", resp.Confirmation)
 	}
-	if len(resp.Confirmation.TargetPaths) != 1 || resp.Confirmation.TargetPaths[0] != "D:/work/project" {
-		t.Fatalf("unexpected target paths: %#v", resp.Confirmation.TargetPaths)
+	if len(resp.Confirmation.TargetPaths) != 1 || resp.Confirmation.TargetPaths[0] != corelib.EffectiveWorkspaceDir() {
+		t.Fatalf("unexpected target paths: %#v (expected %s)", resp.Confirmation.TargetPaths, corelib.EffectiveWorkspaceDir())
 	}
 	if got := h.confirmationStore.get("u1"); got == nil {
 		t.Fatal("expected pending confirmation to be stored")

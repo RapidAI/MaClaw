@@ -206,6 +206,7 @@ export namespace main {
 	    vector_search_enabled: boolean;
 	    default_tool: string;
 	    default_tool_provider: string;
+	    working_directory: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -328,6 +329,7 @@ export namespace main {
 	        this.vector_search_enabled = source["vector_search_enabled"];
 	        this.default_tool = source["default_tool"];
 	        this.default_tool_provider = source["default_tool_provider"];
+	        this.working_directory = source["working_directory"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

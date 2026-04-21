@@ -15,7 +15,10 @@ import (
 var (
 	user32                     = syscall.NewLazyDLL("user32.dll")
 	gdi32                      = syscall.NewLazyDLL("gdi32.dll")
+	shcore                     = syscall.NewLazyDLL("shcore.dll")
 	procSetProcessDPIAware     = user32.NewProc("SetProcessDPIAware")
+	procSetDpiAwarenessCtx     = user32.NewProc("SetProcessDpiAwarenessContext")
+	procSetDpiAwareness        = shcore.NewProc("SetProcessDpiAwareness")
 	procGetDesktopWindow       = user32.NewProc("GetDesktopWindow")
 	procGetWindowDC            = user32.NewProc("GetWindowDC")
 	procReleaseDC              = user32.NewProc("ReleaseDC")
@@ -52,7 +55,31 @@ type bitmapInfoHeader struct {
 }
 
 func init() {
+	// Try per-monitor DPI awareness V2 (Win10 1703+), then per-monitor
+	// awareness (Win8.1+), then fall back to system DPI awareness (Vista+).
+	// This ensures GetSystemMetrics, GetWindowRect, CopyFromScreen etc.
+	// return physical pixel coordinates, eliminating the white-border
+	// artefact caused by logical-vs-physical coordinate mismatch under
+	// DPI scaling > 100%.
+	const dpiAwarenessContextPerMonitorV2 = ^uintptr(3) // (DPI_AWARENESS_CONTEXT)-4
+	if ret, _, _ := procSetDpiAwarenessCtx.Call(dpiAwarenessContextPerMonitorV2); ret != 0 {
+		return
+	}
+	// shcore.dll may not exist on Windows 7; recover from the panic that
+	// LazyDLL.Call raises when the DLL cannot be loaded.
+	if trySetDpiAwareness() {
+		return
+	}
 	procSetProcessDPIAware.Call()
+}
+
+// trySetDpiAwareness attempts SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE).
+// Returns true on success. Recovers from panics caused by missing shcore.dll.
+func trySetDpiAwareness() (ok bool) {
+	defer func() { recover() }()
+	const processPerMonitorDpiAware = 2
+	ret, _, _ := procSetDpiAwareness.Call(uintptr(processPerMonitorDpiAware))
+	return ret == 0
 }
 
 // NativeScreenshot captures the entire screen using Windows GDI APIs directly

@@ -167,9 +167,8 @@ func resolveProjectDir(cfg corelib.AppConfig) string {
 	if len(cfg.Projects) > 0 {
 		return cfg.Projects[0].Path
 	}
-	return corelib.WorkspaceDir()
+	return corelib.EffectiveWorkspaceDir()
 }
-
 // buildToolArgs 构建工具启动参数。
 func buildToolArgs(tool, projectDir string, yoloMode, adminMode bool) []string {
 	// Hub security policy: force-disable YOLO if not allowed (Req 7.8)

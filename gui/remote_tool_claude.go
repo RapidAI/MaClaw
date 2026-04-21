@@ -129,7 +129,16 @@ func buildScreenshotSystemPrompt() string {
 		return `You have the ability to capture screenshots of the desktop or specific application windows. This is useful for debugging GUI applications, verifying visual output, or showing the user what's on screen.
 
 To capture a FULL SCREEN screenshot, run this PowerShell command via Bash:
-powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size); $g.Dispose(); $ms = New-Object System.IO.MemoryStream; $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $path = Join-Path $env:TEMP ('screenshot_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.png'); [System.IO.File]::WriteAllBytes($path, $ms.ToArray()); $ms.Dispose(); Write-Output $path"
+powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; Add-Type @'
+using System; using System.Runtime.InteropServices;
+public class DpiHelper {
+  [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();
+  [DllImport(\"user32.dll\", EntryPoint=\"SetProcessDpiAwarenessContext\")] static extern bool SetDpiCtx(IntPtr v);
+  [DllImport(\"shcore.dll\")] static extern int SetProcessDpiAwareness(int v);
+  public static void Enable() { try { if (SetDpiCtx(new IntPtr(-4))) return; } catch {} try { if (SetProcessDpiAwareness(2)==0) return; } catch {} SetProcessDPIAware(); }
+  [DllImport(\"user32.dll\")] public static extern int GetSystemMetrics(int n);
+}
+'@; [DpiHelper]::Enable(); $w=[DpiHelper]::GetSystemMetrics(0); $h=[DpiHelper]::GetSystemMetrics(1); if($w -le 0 -or $h -le 0){$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $w=$b.Width; $h=$b.Height}; $bmp = New-Object System.Drawing.Bitmap($w, $h); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen(0, 0, 0, 0, (New-Object System.Drawing.Size($w,$h))); $g.Dispose(); $ms = New-Object System.IO.MemoryStream; $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $path = Join-Path $env:TEMP ('screenshot_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.png'); [System.IO.File]::WriteAllBytes($path, $ms.ToArray()); $ms.Dispose(); Write-Output $path"
 
 To capture a SPECIFIC WINDOW by title (partial match), run:
 powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Drawing; Add-Type @'
@@ -141,8 +150,12 @@ public class WinAPI {
   [DllImport(\"user32.dll\")] public static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lParam);
   [DllImport(\"user32.dll\", CharSet=CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int count);
   [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();
+  [DllImport(\"user32.dll\", EntryPoint=\"SetProcessDpiAwarenessContext\")] static extern bool SetDpiCtx(IntPtr v);
+  [DllImport(\"shcore.dll\")] static extern int SetProcessDpiAwareness(int v);
+  public static void EnableDPI() { try { if (SetDpiCtx(new IntPtr(-4))) return; } catch {} try { if (SetProcessDpiAwareness(2)==0) return; } catch {} SetProcessDPIAware(); }
 }
-'@; $target = 'WINDOW_TITLE_HERE'; $found = $null; [WinAPI]::EnumWindows({ param($h,$l); if ([WinAPI]::IsWindowVisible($h)) { $sb = New-Object Text.StringBuilder 256; [WinAPI]::GetWindowText($h, $sb, 256) | Out-Null; if ($sb.ToString() -like ('*' + $target + '*')) { $script:found = $h } } return $true }, [IntPtr]::Zero) | Out-Null; if (-not $found) { Write-Error 'Window not found'; exit 1 }; $r = New-Object WinAPI+RECT; [WinAPI]::GetWindowRect($found, [ref]$r) | Out-Null; $w = $r.Right - $r.Left; $h2 = $r.Bottom - $r.Top; $bmp = New-Object Drawing.Bitmap($w, $h2); $g = [Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($r.Left, $r.Top, 0, 0, (New-Object Drawing.Size($w,$h2))); $g.Dispose(); $ms = New-Object IO.MemoryStream; $bmp.Save($ms, [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $path = Join-Path $env:TEMP ('screenshot_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.png'); [IO.File]::WriteAllBytes($path, $ms.ToArray()); $ms.Dispose(); Write-Output $path"
+'@; [WinAPI]::EnableDPI(); $target = 'WINDOW_TITLE_HERE'; $found = $null; [WinAPI]::EnumWindows({ param($h,$l); if ([WinAPI]::IsWindowVisible($h)) { $sb = New-Object Text.StringBuilder 256; [WinAPI]::GetWindowText($h, $sb, 256) | Out-Null; if ($sb.ToString() -like ('*' + $target + '*')) { $script:found = $h } } return $true }, [IntPtr]::Zero) | Out-Null; if (-not $found) { Write-Error 'Window not found'; exit 1 }; $r = New-Object WinAPI+RECT; [WinAPI]::GetWindowRect($found, [ref]$r) | Out-Null; $w = $r.Right - $r.Left; $h2 = $r.Bottom - $r.Top; $bmp = New-Object Drawing.Bitmap($w, $h2); $g = [Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($r.Left, $r.Top, 0, 0, (New-Object Drawing.Size($w,$h2))); $g.Dispose(); $ms = New-Object IO.MemoryStream; $bmp.Save($ms, [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $path = Join-Path $env:TEMP ('screenshot_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.png'); [IO.File]::WriteAllBytes($path, $ms.ToArray()); $ms.Dispose(); Write-Output $path"
 Replace WINDOW_TITLE_HERE with the actual window title substring.
 
 The command outputs the path to the saved PNG file. You can then read the file to show it to the user.

@@ -37,6 +37,9 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 		args = map[string]interface{}{}
 	}
 
+	// Track file paths for steering fileMatch resolution.
+	h.trackSteeringFileFromArgs(name, args)
+
 	// --- SecurityFirewall check (Phase 2 upgrade) ---
 	if h.firewall != nil {
 		ctx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}

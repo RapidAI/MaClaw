@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/nudge"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -1110,10 +1111,14 @@ func confirmationRevisionHints(intent taskIntent) []string {
 
 func buildPendingConfirmation(app *App, userID, text string, result taskIntentResult, understanding *taskUnderstandingResult) *pendingConfirmation {
 	now := time.Now()
-	projectPath := ""
-	if app != nil {
-		projectPath = strings.TrimSpace(app.GetCurrentProjectPath())
-	}
+	// The confirmation panel's "默认工作目录" must reflect the agent's actual
+	// default working directory — i.e. where bash, craft_tool, and other
+	// general-purpose tools execute by default. This is the user-configured
+	// working directory (AppConfig.WorkingDirectory) if set, otherwise
+	// ~/.maclaw/workspace. Using EffectiveWorkspaceDir() aligns the
+	// confirmation panel with the bash tool description and the actual
+	// execution environment.
+	projectPath := corelib.EffectiveWorkspaceDir()
 	targetPaths := make([]string, 0, 1)
 	if projectPath != "" {
 		targetPaths = append(targetPaths, projectPath)
@@ -2117,6 +2122,12 @@ type IMMessageHandler struct {
 	// or improvement after complex tasks, skill failures, or user corrections.
 	// Lazily initialized on first use via ensureNudgeTracker().
 	nudgeTracker *nudge.NudgeTracker
+
+	// steeringContextFiles accumulates file paths from tool calls
+	// (read_file, write_file, edit_file, etc.) during the current
+	// conversation. Used by fileMatch steering resolution.
+	// Keyed by "userID\x00filePath" (string), value is bool.
+	steeringContextFiles sync.Map
 }
 
 // NewIMMessageHandler creates a new handler.
@@ -3624,11 +3635,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// is misconfigured.
 	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
 		h.memory.clear(msg.UserID)
-		h.pendingAskUser.Delete(msg.UserID)
-		h.pendingCapabilityGap.Delete(msg.UserID)
-		h.sessionDriftReplanCount.Delete(msg.UserID)
-		h.sessionDriftTool.Delete(msg.UserID)
-		h.RefreshMemorySnapshot(msg.UserID)
+		h.clearPerUserSessionState(msg.UserID)
 		if h.confirmationStore != nil {
 			h.confirmationStore.clear(msg.UserID)
 		}
@@ -3836,11 +3843,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 	if decision.StartNewTask {
 		h.memory.clearConversationAndDismissSlot(msg.UserID)
-		h.pendingAskUser.Delete(msg.UserID)
-		h.pendingCapabilityGap.Delete(msg.UserID)
-		h.sessionDriftReplanCount.Delete(msg.UserID)
-		h.sessionDriftTool.Delete(msg.UserID)
-		h.RefreshMemorySnapshot(msg.UserID)
+		h.clearPerUserSessionState(msg.UserID)
 		EntriesBeforeClear = nil
 		unfinishedSlot = nil
 		freshTask = true
@@ -3851,11 +3854,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	} else {
 		if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, EntriesBeforeClear) {
 			h.memory.clearConversationAndDismissSlot(msg.UserID)
-			h.pendingAskUser.Delete(msg.UserID)
-			h.pendingCapabilityGap.Delete(msg.UserID)
-			h.sessionDriftReplanCount.Delete(msg.UserID)
-			h.sessionDriftTool.Delete(msg.UserID)
-			h.RefreshMemorySnapshot(msg.UserID)
+			h.clearPerUserSessionState(msg.UserID)
 			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
 			EntriesBeforeClear = nil
 			unfinishedSlot = nil
@@ -3918,11 +3917,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				}
 			}
 			h.memory.clear(msg.UserID)
-			h.pendingAskUser.Delete(msg.UserID)
-			h.pendingCapabilityGap.Delete(msg.UserID)
-			h.sessionDriftReplanCount.Delete(msg.UserID)
-			h.sessionDriftTool.Delete(msg.UserID)
-			h.RefreshMemorySnapshot(msg.UserID)
+			h.clearPerUserSessionState(msg.UserID)
 			log.Printf("[TopicDetector] auto-cleared context for user %s", msg.UserID)
 		}
 	}
@@ -4245,11 +4240,7 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 		}
 	}
 	h.memory.clear(userID)
-	h.pendingAskUser.Delete(userID)
-	h.pendingCapabilityGap.Delete(userID)
-	h.sessionDriftReplanCount.Delete(userID)
-	h.sessionDriftTool.Delete(userID)
-	h.RefreshMemorySnapshot(userID)
+	h.clearPerUserSessionState(userID)
 	// Flush evidence batch and reset session on exit.
 	h.flushEvidenceOnSessionEnd(userID)
 	// Reset workflow working directory and suggest_maximize dedup flag.
@@ -6294,11 +6285,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// --- Harness: DriftDetector — record tool_call and check for drift ---
 			if loopDriftDetector != nil {
 				argsHash := fmt.Sprintf("%x", sha256.Sum256([]byte(tc.Function.Arguments)))
+				resultHash := fmt.Sprintf("%x", sha256.Sum256([]byte(truncated)))
 				loopDriftDetector.Record(ToolCallRecord{
 					ToolName:   tc.Function.Name,
 					ArgsHash:   argsHash,
 					Timestamp:  time.Now(),
 					ResultHint: truncateRunesForDrift(truncated, 200),
+					ResultHash: resultHash,
 				})
 				driftResult := loopDriftDetector.DetectDrift()
 				if driftResult.Drifted {

@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -569,6 +569,10 @@ const translations: any = {
         "uiModeLite": "Lite",
         "uiModeProDesc": "Full coding toolchain for developers",
         "uiModeLiteDesc": "AI assistant & skill extensions, coding tools hidden",
+        "workingDirLabel": "Working Directory",
+        "workingDirHint": "Default directory for agent tasks. Leave empty for ~/.maclaw/workspace",
+        "workingDirBrowse": "Browse",
+        "workingDirReset": "Reset",
         "freeload": "Free",
         "bigSpender": "Big Spender",
         "skills": "Skills",
@@ -1058,6 +1062,10 @@ const translations: any = {
         "uiModeLite": "简洁模式",
         "uiModeProDesc": "包含完整编程工具链，适合开发者",
         "uiModeLiteDesc": "专注 AI 助手与技能扩展，隐藏编程工具",
+        "workingDirLabel": "工作目录",
+        "workingDirHint": "Agent 任务的默认工作目录，留空则使用 ~/.maclaw/workspace",
+        "workingDirBrowse": "浏览",
+        "workingDirReset": "重置",
         "freeload": "白嫖中",
         "bigSpender": "大力氪金",
         "skills": "技能",
@@ -1545,6 +1553,10 @@ const translations: any = {
         "uiModeLite": "簡潔模式",
         "uiModeProDesc": "包含完整程式工具鏈，適合開發者",
         "uiModeLiteDesc": "專注 AI 助手與技能擴展，隱藏程式工具",
+        "workingDirLabel": "工作目錄",
+        "workingDirHint": "Agent 任務的預設工作目錄，留空則使用 ~/.maclaw/workspace",
+        "workingDirBrowse": "瀏覽",
+        "workingDirReset": "重置",
         "freeload": "白嫖中",
         "bigSpender": "大力氪金",
         "skills": "技能",
@@ -4580,6 +4592,58 @@ ${instruction}`;
                                 </label>
                                 <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
                                     {isLiteMode ? t("uiModeLiteDesc") : t("uiModeProDesc")}
+                                </span>
+                            </div>
+
+                            {/* Working Directory setting */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                                <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("workingDirLabel")}</label>
+                                <input
+                                    type="text"
+                                    className="form-input"
+                                    style={{ flex: 1, fontSize: '0.78rem', padding: '3px 8px', height: '28px' }}
+                                    value={config?.working_directory || ''}
+                                    placeholder="~/.maclaw/workspace"
+                                    onChange={(e) => {
+                                        if (!config) return;
+                                        const c = new main.AppConfig({ ...config, working_directory: e.target.value });
+                                        setConfig(c);
+                                    }}
+                                    onBlur={() => {
+                                        if (config) SaveConfig(config);
+                                    }}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && config) SaveConfig(config);
+                                    }}
+                                />
+                                <button
+                                    className="btn btn-sm"
+                                    style={{ fontSize: '0.75rem', padding: '3px 10px', height: '28px', whiteSpace: 'nowrap' }}
+                                    onClick={() => {
+                                        SelectWorkingDir().then(dir => {
+                                            if (dir && config) {
+                                                const c = new main.AppConfig({ ...config, working_directory: dir });
+                                                setConfig(c);
+                                                SaveConfig(c);
+                                            }
+                                        });
+                                    }}
+                                >{t("workingDirBrowse")}</button>
+                                {config?.working_directory && (
+                                    <button
+                                        className="btn btn-sm"
+                                        style={{ fontSize: '0.75rem', padding: '3px 10px', height: '28px', whiteSpace: 'nowrap', opacity: 0.7 }}
+                                        onClick={() => {
+                                            if (config) {
+                                                const c = new main.AppConfig({ ...config, working_directory: '' });
+                                                setConfig(c);
+                                                SaveConfig(c);
+                                            }
+                                        }}
+                                    >{t("workingDirReset")}</button>
+                                )}
+                                <span style={{ fontSize: '0.68rem', color: 'var(--theme-text-muted)', whiteSpace: 'nowrap' }}>
+                                    {t("workingDirHint")}
                                 </span>
                             </div>
 
