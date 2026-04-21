@@ -205,6 +205,8 @@ type SkillYAMLFile struct {
 	FallbackForToolsets    []string `yaml:"fallback_for_toolsets,omitempty"`
 	// Credential file mounting
 	RequiredCredentialFiles []string `yaml:"required_credential_files,omitempty"`
+	// Dependency auto-install: pip/npm packages to install before execution
+	Requires *SkillYAMLRequires `yaml:"requires,omitempty"`
 	Extra            map[string]any       `yaml:"-"`
 }
 
@@ -214,6 +216,13 @@ type SkillYAMLOperation struct {
 	Description string   `yaml:"description"`
 	Params      []string `yaml:"params,omitempty"`
 	Labels      []string `yaml:"labels,omitempty"`
+}
+
+// SkillYAMLRequires declares runtime dependencies that should be auto-installed
+// before skill execution. Supports pip (Python) and npm (Node.js) packages.
+type SkillYAMLRequires struct {
+	Python []string `yaml:"python,omitempty"` // pip packages, e.g. ["markitdown>=0.1.0", "python-pptx"]
+	Node   []string `yaml:"node,omitempty"`   // npm packages, e.g. ["puppeteer"]
 }
 
 // SkillYAMLStepPoll configures repeated execution of a step until a condition is met.
@@ -257,6 +266,7 @@ func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
 		"requires_tools": true, "fallback_for_tools": true,
 		"requires_toolsets": true, "fallback_for_toolsets": true,
 		"required_credential_files": true,
+		"requires": true,
 	}
 	extra := make(map[string]any)
 	for k, v := range raw {
@@ -437,6 +447,12 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				if len(sf.RequiredCredentialFiles) > 0 {
 					parsed.RequiredCredentialFiles = sf.RequiredCredentialFiles
 				}
+				if reqs := requiresPythonFromYAML(sf.Requires); len(reqs) > 0 {
+					parsed.RequiresPython = reqs
+				}
+				if reqs := requiresNodeFromYAML(sf.Requires); len(reqs) > 0 {
+					parsed.RequiresNode = reqs
+				}
 				if mdPath, mdErr := skillMarkdownPath(skillDir); mdErr == nil {
 					return parsed, mdPath, nil
 				}
@@ -487,6 +503,8 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			RequiresToolsets:       sf.RequiresToolsets,
 			FallbackForToolsets:    sf.FallbackForToolsets,
 			RequiredCredentialFiles: sf.RequiredCredentialFiles,
+			RequiresPython:         requiresPythonFromYAML(sf.Requires),
+			RequiresNode:           requiresNodeFromYAML(sf.Requires),
 		}, yamlPath, nil
 	}
 
@@ -749,6 +767,22 @@ func fileModTime(path string) string {
 		return time.Now().Format(time.RFC3339)
 	}
 	return fi.ModTime().Format(time.RFC3339)
+}
+
+// requiresPythonFromYAML extracts Python package requirements from the YAML requires field.
+func requiresPythonFromYAML(req *SkillYAMLRequires) []string {
+	if req == nil {
+		return nil
+	}
+	return req.Python
+}
+
+// requiresNodeFromYAML extracts Node.js package requirements from the YAML requires field.
+func requiresNodeFromYAML(req *SkillYAMLRequires) []string {
+	if req == nil {
+		return nil
+	}
+	return req.Node
 }
 
 // FindSimilarSkill searches all active skills for one similar to the given

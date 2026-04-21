@@ -1324,19 +1324,47 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		return fmt.Sprintf("技能 %s 状态为 %q，无法运行", skill.Name, skill.Status)
 	}
 	if len(skill.Steps) == 0 {
-		// Bug #5: Better error for skills with no executable steps
-		desc := strings.TrimSpace(skill.Description)
-		if desc != "" && len(desc) > 150 {
-			desc = desc[:150] + "..."
+		// Documentation-only skill fallback: if the skill has a SKILL.md with
+		// documentation content but no executable steps, synthesize a single
+		// craft_tool step that uses the documentation as instructions.
+		docContent := loadSkillDocContentTUI(skill.SkillDir)
+		if docContent != "" {
+			log.Printf("[skill-runner-tui] skill %q has no steps but has documentation (%d chars), creating craft_tool fallback", skillName, len(docContent))
+			// Truncate very long documentation to avoid overwhelming the LLM.
+			if len(docContent) > 8000 {
+				docContent = docContent[:8000] + "\n\n... (truncated)"
+			}
+			// Build task description from user context + documentation.
+			var userContext string
+			if p := vars["user_prompt"]; p != "" {
+				userContext = p
+			} else if p := vars["input"]; p != "" {
+				userContext = p
+			}
+			task := docContent
+			if userContext != "" {
+				task = fmt.Sprintf("用户请求: %s\n\n按照以下文档指引执行:\n%s", userContext, docContent)
+			}
+			skill.Steps = []corelib.NLSkillStep{{
+				Action:  "craft_tool",
+				Params:  map[string]interface{}{"task": task},
+				OnError: "stop",
+			}}
+		} else {
+			// Bug #5: Better error for skills with no executable steps
+			desc := strings.TrimSpace(skill.Description)
+			if desc != "" && len(desc) > 150 {
+				desc = desc[:150] + "..."
+			}
+			msg := fmt.Sprintf("技能 %s 没有定义可执行步骤", skillName)
+			if len(skill.RequiredArgs) > 0 {
+				msg += fmt.Sprintf("。该技能需要参数: %s", strings.Join(skill.RequiredArgs, ", "))
+			}
+			if desc != "" {
+				msg += fmt.Sprintf("\n说明: %s", desc)
+			}
+			return msg
 		}
-		msg := fmt.Sprintf("技能 %s 没有定义可执行步骤", skillName)
-		if len(skill.RequiredArgs) > 0 {
-			msg += fmt.Sprintf("。该技能需要参数: %s", strings.Join(skill.RequiredArgs, ", "))
-		}
-		if desc != "" {
-			msg += fmt.Sprintf("\n说明: %s", desc)
-		}
-		return msg
 	}
 
 	// P1: Platform compatibility check (mirrors GUI StartRun)
@@ -1427,6 +1455,13 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		depErr := checkCommandDependencyTUI(command)
 		if depErr != "" {
 			return fmt.Sprintf("技能 %s 步骤 %d 依赖检查失败: %s", skill.Name, i+1, depErr)
+		}
+	}
+
+	// ── Dependency auto-install: install pip/npm packages before execution ──
+	if len(skill.RequiresPython) > 0 || len(skill.RequiresNode) > 0 {
+		if installErr := autoInstallSkillDependenciesTUI(skill); installErr != nil {
+			log.Printf("[tui-skill-runner] dependency install warning: %v", installErr)
 		}
 	}
 
@@ -1808,7 +1843,7 @@ func runCraftToolStepTUI(step corelib.NLSkillStep, skillDir string, vars map[str
 	script, _ := step.Params["script"].(string)
 	if script != "" {
 		// Execute pre-generated script with timeout
-		timeout := 60.0
+		timeout := 90.0
 		if t, ok := step.Params["timeout"].(float64); ok && t > 0 {
 			timeout = t
 		}
@@ -1822,10 +1857,8 @@ func runCraftToolStepTUI(step corelib.NLSkillStep, skillDir string, vars map[str
 		switch strings.ToLower(lang) {
 		case "python", "python3":
 			ext = ".py"
-			runner = "python"
-			if runtime.GOOS != "windows" {
-				runner = "python3"
-			}
+			// On Windows, resolve Python absolute path to work in any shell
+			runner = resolvePythonRunnerTUI()
 		case "node", "javascript", "js":
 			ext = ".mjs"
 			runner = "node"
@@ -2221,6 +2254,116 @@ func mapPython3ToWindowsTUI(command string) string {
 		return strings.Join(lines, "\n")
 	}
 	return command
+}
+
+// resolvePythonRunnerTUI returns the best Python executable path for use in
+// any shell environment. On Windows, uses `cmd /c where python` to find the
+// absolute path, which works even in Git Bash where Python may not be on PATH.
+// Result is cached via sync.OnceValue to avoid spawning subprocesses on every call.
+var resolvePythonRunnerTUI = sync.OnceValue(func() string {
+	if runtime.GOOS != "windows" {
+		if p, err := exec.LookPath("python3"); err == nil {
+			return p
+		}
+		if p, err := exec.LookPath("python"); err == nil {
+			return p
+		}
+		return "python3"
+	}
+	// On Windows, try LookPath first
+	for _, name := range []string{"python3", "python"} {
+		if p, err := exec.LookPath(name); err == nil {
+			if filepath.IsAbs(p) && !strings.Contains(strings.ToLower(p), "windowsapps") {
+				return p
+			}
+		}
+	}
+	// Fallback: use cmd /c where to find Python absolute path
+	for _, name := range []string{"python3", "python"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cmd := exec.CommandContext(ctx, "cmd", "/c", "where", name)
+		out, err := cmd.Output()
+		cancel()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			p := strings.TrimSpace(line)
+			if p == "" || strings.Contains(strings.ToLower(p), "windowsapps") {
+				continue
+			}
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
+	return "python" // last resort
+})
+
+// loadSkillDocContentTUI reads the SKILL.md documentation content from a skill
+// directory. Returns the content string if found, empty string otherwise.
+// Used as a fallback for documentation-only skills that have no executable steps.
+func loadSkillDocContentTUI(skillDir string) string {
+	if skillDir == "" {
+		return ""
+	}
+	for _, name := range []string{"SKILL.md", "skill.md", "README.md"} {
+		p := filepath.Join(skillDir, name)
+		data, err := os.ReadFile(p)
+		if err == nil {
+			content := strings.TrimSpace(string(data))
+			if content != "" {
+				return content
+			}
+		}
+	}
+	return ""
+}
+
+// autoInstallSkillDependenciesTUI installs pip/npm packages declared in the
+// skill's requires field. Non-fatal: logs warnings on failure.
+func autoInstallSkillDependenciesTUI(skill *corelib.NLSkillEntry) error {
+	var errs []string
+
+	if len(skill.RequiresPython) > 0 {
+		pythonCmd := resolvePythonRunnerTUI()
+		args := append([]string{"-m", "pip", "install", "--quiet"}, skill.RequiresPython...)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		cmd := exec.CommandContext(ctx, pythonCmd, args...)
+		cmd.Env = os.Environ()
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("pip install failed: %v\n%s", err, strings.TrimSpace(string(out))))
+		} else {
+			log.Printf("[tui-skill-runner] pip install success: %v", skill.RequiresPython)
+		}
+	}
+
+	if len(skill.RequiresNode) > 0 {
+		// Install packages locally to the skill directory to avoid requiring
+		// elevated permissions that npm install -g needs on some systems.
+		args := []string{"install", "--silent"}
+		args = append(args, skill.RequiresNode...)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		cmd := exec.CommandContext(ctx, "npm", args...)
+		if skill.SkillDir != "" {
+			cmd.Dir = skill.SkillDir
+		}
+		cmd.Env = os.Environ()
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("npm install failed: %v\n%s", err, strings.TrimSpace(string(out))))
+		} else {
+			log.Printf("[tui-skill-runner] npm install success: %v", skill.RequiresNode)
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // needsBashShellTUI detects whether a command requires a Unix shell (bash/sh)

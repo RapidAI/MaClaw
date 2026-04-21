@@ -140,7 +140,7 @@ const dialogBaseStyle: React.CSSProperties = {
 const cancelBtnStyle: React.CSSProperties = {
     padding: "5px 14px", fontSize: "0.76rem",
     border: `1px solid ${colors.border}`, borderRadius: radius.md,
-    background: colors.surface, cursor: "pointer",
+    background: colors.surface, color: colors.text, cursor: "pointer",
 };
 const dangerBtnStyle: React.CSSProperties = {
     padding: "5px 14px", fontSize: "0.76rem", border: "none",

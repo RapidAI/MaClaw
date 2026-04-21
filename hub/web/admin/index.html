@@ -18,86 +18,46 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MaClaw Hub Admin Console</title>
   <style>
-    :root{--bg:#dfeafb;--panel:#fff;--soft:#ecf3ff;--soft-2:#e4edfb;--text:#18314f;--muted:#5f7692;--line:rgba(37,84,140,.18);--line-strong:rgba(37,84,140,.3);--primary:#2c6fca;--ok:#1f8f6a;--warn:#b98219;--danger:#bf5648;--shadow:0 18px 42px rgba(37,84,140,.16)}
-    *{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#eef5ff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-    .hidden{display:none!important}.shell{padding:24px}.card{background:rgba(255,255,255,.97);border:1px solid rgba(16,31,56,.08);border-radius:22px;box-shadow:var(--shadow)}
-    .login{min-height:100vh;display:flex;align-items:center;justify-content:center}.login-card{width:min(1080px,100%);display:grid;grid-template-columns:1.1fr .9fr;overflow:hidden}
-    .hero{padding:36px;background:linear-gradient(165deg,#cfe0f8 0%,#88addc 58%,#4c79b8 100%);color:#123456}.hero h1{margin:16px 0 10px;font-size:34px}.hero p,.hero li{color:rgba(18,52,86,.78);line-height:1.7}
-    .mini{display:inline-flex;align-items:center;padding:6px 12px;border-radius:999px;background:rgba(47,128,237,.12);color:var(--primary);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
-    .form{padding:32px;display:flex;flex-direction:column;gap:16px;justify-content:center}.form h2{margin:0;font-size:28px}.subtle{color:var(--muted);line-height:1.6}
-    .stage-toggle,.actions,.topbar,.lang-switch{display:flex;gap:10px;flex-wrap:wrap}.stage-toggle button{flex:1;min-width:160px}
-    .actions{align-items:center;justify-content:flex-start}.actions button{min-width:126px}
-    .stage-card{padding:20px;border:1px solid var(--line);border-radius:18px;background:var(--soft);display:grid;gap:14px}
-    label{display:block;margin-bottom:8px;color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.03em}
-    input,select{width:100%;height:44px;padding:0 14px;border-radius:12px;border:1px solid var(--line);font:inherit;background:#fff;color:var(--text);transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}
-    input[type="checkbox"]{width:16px;height:16px;padding:0;border-radius:4px;flex-shrink:0;cursor:pointer}
-    input:hover,select:hover{border-color:var(--line-strong)} input:focus,select:focus{outline:none;border-color:rgba(47,128,237,.45);box-shadow:0 0 0 4px rgba(47,128,237,.12);background:#fbfdff}
-    button{height:42px;border:0;border-radius:12px;padding:0 15px;font:inherit;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:transform .14s ease,box-shadow .14s ease,background .14s ease}
-    button:hover{transform:translateY(-1px)}.btn-primary{background:linear-gradient(135deg,#2c6fca,#558fd7);color:#fff;box-shadow:0 10px 24px rgba(44,111,202,.26)}.btn-secondary{background:#dfeafb;color:#234f87}.btn-danger{background:#fff1ee;color:var(--danger)}.btn-ghost{background:#f8fbff;color:var(--text);border:1px solid var(--line)}
-    .console{min-height:150px;max-height:280px;overflow:auto;white-space:pre-wrap;border-radius:16px;border:1px solid #88a9d1;background:#e8f0fb;color:#20476f;padding:14px;font-family:Consolas,monospace;font-size:12px;line-height:1.7}
-    .app{min-height:100vh;display:grid;grid-template-columns:276px 1fr}.side{background:linear-gradient(180deg,#c8dcf7 0%,#8db1db 55%,#668fc4 100%);color:#123456;padding:24px 20px;display:flex;flex-direction:column;gap:18px;border-right:1px solid rgba(37,84,140,.18)}
-    .brand h1{margin:12px 0 6px;font-size:28px}.brand p{margin:0;color:rgba(18,52,86,.72);font-size:14px;line-height:1.6}
-    .nav{display:grid;gap:10px}
-    .nav button{position:relative;text-align:left;background:rgba(255,255,255,.26);color:rgba(18,52,86,.88);border:1px solid rgba(255,255,255,.3);padding:15px 16px 15px 18px;border-radius:16px;height:auto;min-height:78px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:8px;backdrop-filter:blur(8px);box-shadow:inset 0 1px 0 rgba(255,255,255,.24);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease,background .16s ease}
-    .nav button::before{content:"";position:absolute;left:10px;top:14px;bottom:14px;width:4px;border-radius:999px;background:linear-gradient(180deg,rgba(47,128,237,0),rgba(47,128,237,.9),rgba(47,128,237,0));opacity:0;transform:scaleY(.7);transition:opacity .16s ease,transform .16s ease}
-    .nav button:hover{background:rgba(255,255,255,.46);border-color:rgba(47,128,237,.18);box-shadow:0 12px 26px rgba(47,128,237,.12),inset 0 1px 0 rgba(255,255,255,.28)}
-    .nav button:hover::before{opacity:.6;transform:scaleY(1)}
-    .nav button.active{background:linear-gradient(180deg,rgba(255,255,255,.92) 0%,rgba(240,247,255,.92) 100%);color:#16385d;border-color:rgba(47,128,237,.24);box-shadow:0 16px 30px rgba(47,128,237,.14),inset 0 1px 0 rgba(255,255,255,.4)}
-    .nav button.active::before{opacity:1;transform:scaleY(1)}
-    .nav button span{display:block;width:100%;padding-left:12px;font-size:17px;font-weight:800;line-height:1.15;letter-spacing:.01em}
-    .nav small{display:block;width:100%;margin-top:0;padding-left:12px;color:rgba(18,52,86,.62);font-size:12px;line-height:1.45}
-    .side-note{padding:15px 16px;border-radius:16px;background:rgba(255,255,255,.54);border:1px solid rgba(47,128,237,.14);color:rgba(18,52,86,.78);font-size:13px;line-height:1.65}.mono{font-family:Consolas,monospace;font-size:12px;word-break:break-all}
-    .main{padding:24px 24px 28px}.top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.topbar{align-items:center;justify-content:flex-end}
-    .lang-switch{padding:4px;border-radius:999px;background:#fff;border:1px solid var(--line)}.lang-switch button{padding:8px 12px;border-radius:999px;background:transparent;color:var(--muted)}.lang-switch button.active{background:var(--primary);color:#fff}
-    .admin-chip{padding:10px 14px;border-radius:14px;background:#fff;border:1px solid var(--line);min-width:150px}.admin-chip strong{display:block;font-size:14px}.admin-chip span{display:block;color:var(--muted);font-size:12px}
-    .badge{display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;font-size:12px;font-weight:700;text-transform:uppercase}.ok{background:rgba(31,143,106,.12);color:var(--ok)}.warn{background:rgba(192,138,24,.14);color:var(--warn)}.danger{background:rgba(199,90,74,.12);color:var(--danger)}.info{background:rgba(47,128,237,.12);color:var(--primary)}
-    .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}
-    .metric,.item{padding:18px;border-radius:18px;background:linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%);border:1px solid var(--line);display:flex;flex-direction:column;gap:12px;box-shadow:0 10px 24px rgba(47,128,237,.05)}
-    .metric label{font-size:11px;text-transform:uppercase;letter-spacing:.08em}.metric strong{display:block;font-size:28px;line-height:1;margin:6px 0 0}.metric span,.item-meta,.desc,.hint{color:var(--muted);font-size:13px;line-height:1.6}
-    .panel{display:none;padding:22px}.panel.active{display:block}
-    .head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid rgba(16,31,56,.06)}.head h3{margin:0;font-size:22px}
+    :root{--bg:#f7f4f2;--bg-2:#fffdfc;--panel:rgba(255,255,255,.92);--panel-strong:#ffffff;--soft:#f9f2f2;--soft-2:#f4eceb;--text:#1f2230;--muted:#7f8396;--line:rgba(34,38,52,.08);--line-strong:rgba(236,96,120,.24);--primary:#ef6a7c;--primary-strong:#e8566a;--primary-soft:rgba(239,106,124,.12);--accent:#57c59a;--ok:#23a26d;--warn:#c28b2c;--danger:#d65d57;--shadow:0 24px 60px rgba(31,34,48,.08);--shadow-soft:0 14px 30px rgba(31,34,48,.05)}
+    *{box-sizing:border-box}
+    html{background:linear-gradient(180deg,#fffcfb 0%,#f7f1f0 100%)}
+    body{margin:0;background:radial-gradient(circle at top left,rgba(255,214,222,.36),transparent 28%),radial-gradient(circle at top right,rgba(242,244,255,.8),transparent 34%),linear-gradient(180deg,var(--bg-2) 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    a{color:inherit}.hidden{display:none!important}.shell{padding:30px}.card{background:var(--panel);border:1px solid rgba(255,255,255,.7);border-radius:28px;box-shadow:var(--shadow);backdrop-filter:blur(14px)}
+    .login{min-height:100vh;display:flex;align-items:center;justify-content:center}.login-card{width:min(1140px,100%);display:grid;grid-template-columns:1.06fr .94fr;overflow:hidden}
+    .hero{position:relative;padding:42px;background:linear-gradient(160deg,#fff6f5 0%,#ffe4e7 38%,#f4bcc8 100%);color:var(--text)}.hero::after{content:"";position:absolute;right:-60px;top:40px;width:220px;height:220px;border-radius:999px;background:radial-gradient(circle,rgba(255,255,255,.65),rgba(255,255,255,0));pointer-events:none}.hero h1{margin:18px 0 10px;font-size:38px;letter-spacing:-.03em}.hero p,.hero li{color:rgba(31,34,48,.68);line-height:1.8}.hero ul{padding-left:18px;margin:18px 0 0}
+    .mini{display:inline-flex;align-items:center;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,.74);color:var(--primary-strong);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.14em;border:1px solid rgba(255,255,255,.75);box-shadow:0 10px 26px rgba(239,106,124,.12)}
+    .form{padding:36px 34px;display:flex;flex-direction:column;gap:18px;justify-content:center;background:linear-gradient(180deg,rgba(255,255,255,.8) 0%,rgba(255,255,255,.96) 100%)}.form h2{margin:0;font-size:30px;letter-spacing:-.02em}.subtle{color:var(--muted);line-height:1.7}
+    .stage-toggle,.actions,.topbar,.lang-switch{display:flex;gap:10px;flex-wrap:wrap}.stage-toggle button{flex:1;min-width:160px}.actions{align-items:center;justify-content:flex-start}.actions button{min-width:124px}
+    .stage-card{padding:22px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,#fff 0%,#fff8f7 100%);display:grid;gap:14px;box-shadow:var(--shadow-soft)}
+    label{display:block;margin-bottom:8px;color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase}
+    textarea,input,select{width:100%;height:46px;padding:0 14px;border-radius:14px;border:1px solid rgba(31,34,48,.1);font:inherit;background:rgba(255,255,255,.92);color:var(--text);transition:border-color .18s ease,box-shadow .18s ease,background .18s ease,transform .18s ease}
+    textarea{height:auto;min-height:120px;padding:12px 14px}input[type="checkbox"]{width:16px;height:16px;padding:0;border-radius:4px;flex-shrink:0;cursor:pointer;accent-color:var(--primary)}input:hover,select:hover,textarea:hover{border-color:rgba(239,106,124,.24)}input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(239,106,124,.48);box-shadow:0 0 0 4px rgba(239,106,124,.12);background:#fff}
+    button{height:42px;border:0;border-radius:14px;padding:0 16px;font:inherit;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:transform .14s ease,box-shadow .14s ease,background .14s ease,border-color .14s ease}button:hover{transform:translateY(-1px)}
+    .btn-primary{background:linear-gradient(135deg,var(--primary),var(--primary-strong));color:#fff;box-shadow:0 14px 28px rgba(239,106,124,.24)}.btn-secondary{background:rgba(255,255,255,.88);color:var(--text);border:1px solid rgba(31,34,48,.08);box-shadow:var(--shadow-soft)}.btn-danger{background:rgba(214,93,87,.1);color:var(--danger);border:1px solid rgba(214,93,87,.14)}.btn-ghost{background:rgba(255,255,255,.76);color:var(--text);border:1px solid rgba(31,34,48,.08)}
+    .console{min-height:170px;max-height:320px;overflow:auto;white-space:pre-wrap;border-radius:20px;border:1px solid rgba(31,34,48,.08);background:linear-gradient(180deg,#fff 0%,#fff7f6 100%);color:#5f667b;padding:16px 18px;font-family:Consolas,monospace;font-size:12px;line-height:1.75;box-shadow:inset 0 1px 0 rgba(255,255,255,.8)}
+    .app{min-height:100vh;display:grid;grid-template-columns:288px minmax(0,1fr)}.side{position:relative;background:rgba(255,255,255,.78);color:var(--text);padding:18px 18px 20px;display:flex;flex-direction:column;gap:18px;border-right:1px solid rgba(31,34,48,.06);backdrop-filter:blur(18px);box-shadow:18px 0 42px rgba(31,34,48,.04)}.side::before{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.64) 0%,rgba(252,244,244,.84) 100%);pointer-events:none}.side>*{position:relative;z-index:1}
+    .window-chrome{display:flex;align-items:center;gap:8px;padding:2px 6px 0}.window-dot{width:12px;height:12px;border-radius:999px;box-shadow:inset 0 1px 0 rgba(255,255,255,.55)}.window-dot.red{background:#ff6a63}.window-dot.amber{background:#ffbf47}.window-dot.green{background:#39c85a}
+    .brand{padding:8px 10px 14px;border-bottom:1px solid rgba(31,34,48,.06)}.brand-shell{display:flex;align-items:flex-start;gap:14px}.brand-mark{width:48px;height:48px;border-radius:16px;background:linear-gradient(135deg,#ff8a98,#e8566a);color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:900;letter-spacing:.08em;box-shadow:0 16px 28px rgba(239,106,124,.24)}.brand-copy{min-width:0;flex:1}.brand-copy .mini{margin-bottom:10px}.brand h1{margin:0 0 6px;font-size:29px;letter-spacing:-.03em}.brand p{margin:0;color:rgba(31,34,48,.56);font-size:14px;line-height:1.7}
+    .nav{display:grid;gap:8px}.nav button{position:relative;text-align:left;background:transparent;color:rgba(31,34,48,.84);border:1px solid transparent;padding:14px 14px 14px 16px;border-radius:18px;height:auto;min-height:68px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:6px;box-shadow:none}.nav button::before{content:"";position:absolute;left:10px;top:12px;bottom:12px;width:4px;border-radius:999px;background:linear-gradient(180deg,rgba(239,106,124,0),rgba(239,106,124,.95),rgba(239,106,124,0));opacity:0;transition:opacity .16s ease,transform .16s ease;transform:scaleY(.72)}.nav button:hover{background:rgba(255,255,255,.72);border-color:rgba(31,34,48,.05)}.nav button.active{background:linear-gradient(180deg,rgba(255,236,239,.94) 0%,rgba(255,243,244,.98) 100%);color:#201b25;border-color:rgba(239,106,124,.16);box-shadow:0 16px 34px rgba(239,106,124,.14)}.nav button.active::before,.nav button:hover::before{opacity:1;transform:scaleY(1)}.nav button span{display:block;width:100%;padding-left:12px;font-size:16px;font-weight:800;line-height:1.15;letter-spacing:.01em}.nav small{display:block;width:100%;padding-left:12px;color:rgba(31,34,48,.5);font-size:12px;line-height:1.45}
+    .side-note{padding:16px;border-radius:18px;background:linear-gradient(180deg,rgba(255,255,255,.8) 0%,rgba(255,244,244,.95) 100%);border:1px solid rgba(31,34,48,.06);color:rgba(31,34,48,.68);font-size:13px;line-height:1.65}.mono{font-family:Consolas,monospace;font-size:12px;word-break:break-all}
+    .main{position:relative;padding:30px 34px 36px}.main::before{content:"";position:absolute;top:0;right:0;width:360px;height:240px;background:radial-gradient(circle,rgba(255,212,220,.26),rgba(255,212,220,0));pointer-events:none}.main>*{position:relative;z-index:1}.top{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin:0 auto 22px;max-width:1320px}.page-copy{display:grid;gap:8px}.page-kicker{display:inline-flex;align-items:center;width:max-content;padding:7px 12px;border-radius:999px;background:rgba(255,255,255,.82);border:1px solid rgba(31,34,48,.07);font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--primary-strong);box-shadow:var(--shadow-soft)}.top h2{margin:0;font-size:34px;letter-spacing:-.04em}.topbar{align-items:center;justify-content:flex-end}
+    .lang-switch{padding:4px;border-radius:999px;background:rgba(255,255,255,.78);border:1px solid rgba(31,34,48,.08);box-shadow:var(--shadow-soft)}.lang-switch button{padding:8px 12px;border-radius:999px;background:transparent;color:var(--muted)}.lang-switch button.active{background:linear-gradient(135deg,var(--primary),var(--primary-strong));color:#fff}
+    .admin-chip{padding:11px 14px;border-radius:16px;background:rgba(255,255,255,.84);border:1px solid rgba(31,34,48,.08);min-width:160px;box-shadow:var(--shadow-soft)}.admin-chip strong{display:block;font-size:14px}.admin-chip span{display:block;color:var(--muted);font-size:12px}
+    .badge{display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em}.ok{background:rgba(35,162,109,.11);color:var(--ok)}.warn{background:rgba(194,139,44,.12);color:var(--warn)}.danger{background:rgba(214,93,87,.12);color:var(--danger)}.info{background:var(--primary-soft);color:var(--primary-strong)}
+    .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:0 auto 22px;max-width:1320px}.metric,.item{position:relative;padding:20px 20px 18px;border-radius:24px;background:linear-gradient(180deg,rgba(255,255,255,.92) 0%,rgba(255,250,249,.98) 100%);border:1px solid rgba(31,34,48,.06);display:flex;flex-direction:column;gap:12px;box-shadow:var(--shadow-soft);overflow:hidden}.metric::after,.item::after{content:"";position:absolute;inset:auto 0 0 0;height:1px;background:linear-gradient(90deg,rgba(239,106,124,0),rgba(239,106,124,.3),rgba(239,106,124,0))}.metric label{font-size:11px;letter-spacing:.12em}.metric strong{display:block;font-size:30px;line-height:1;margin:8px 0 0;letter-spacing:-.03em}.metric span,.item-meta,.desc,.hint{color:var(--muted);font-size:13px;line-height:1.7}
+    .panel{display:none;padding:26px;max-width:1320px;margin:0 auto}.panel.active{display:block}.head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid rgba(31,34,48,.06)}.head h3{margin:0;font-size:24px;letter-spacing:-.03em}
     .grid2,.grid3,.table{display:grid;gap:14px;align-items:start}.grid2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid3{grid-template-columns:repeat(3,minmax(0,1fr))}
-    .hint{padding:14px 16px;border-radius:16px;background:var(--soft-2);border:1px dashed rgba(15,23,42,.14)}
-    .item + .item{margin-top:12px}.item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:2px}.item-title{font-weight:800;font-size:15px;line-height:1.35}
-    .item-title,.metric label{position:relative}
-    .item-title::before{content:"";display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:999px;background:linear-gradient(135deg,#7ab2ff,#2f80ed);vertical-align:middle;box-shadow:0 0 0 4px rgba(47,128,237,.08)}
-    .row{display:grid;grid-template-columns:1.2fr 1fr 1fr .9fr .8fr .9fr 1.2fr;gap:12px;padding:14px 16px;border-radius:16px;background:rgba(255,255,255,.9);border:1px solid var(--line);align-items:center;box-shadow:0 8px 18px rgba(47,128,237,.04)}.row.header{background:#eff6ff;color:var(--muted);font-size:12px;font-weight:700;text-transform:uppercase;box-shadow:none}
+    .hint{padding:16px 18px;border-radius:20px;background:linear-gradient(180deg,#fff7f6 0%,#fdf0ef 100%);border:1px dashed rgba(239,106,124,.22)}.item+.item{margin-top:12px}.item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:2px}.item-title{font-weight:800;font-size:16px;line-height:1.35}.item-title,.metric label{position:relative}.item-title::before{content:"";display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:999px;background:linear-gradient(135deg,#ff8fa0,#ef6a7c);vertical-align:middle;box-shadow:0 0 0 4px rgba(239,106,124,.08)}
+    .row{display:grid;grid-template-columns:1.2fr 1fr 1fr .9fr .8fr .9fr 1.2fr;gap:12px;padding:14px 16px;border-radius:18px;background:rgba(255,255,255,.85);border:1px solid rgba(31,34,48,.06);align-items:center}.row.header{background:#fff5f5;color:var(--muted);font-size:12px;font-weight:700;text-transform:uppercase;box-shadow:none}
     .pager{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px;padding:0 4px}.pager-meta{color:var(--muted);font-size:13px}.pager-actions{display:flex;gap:10px;flex-wrap:wrap}
-    #tab-center .item,#tab-governance .item,#tab-system .item{box-shadow:0 1px 0 rgba(16,31,56,.02)}
-    #tab-governance .grid3 > .item,#tab-center .grid2 > .item,#tab-system .grid2 > .item{min-height:100%}
-    #tab-governance .item .grid3,#tab-governance .item .grid2,#tab-center .item .grid3,#tab-system .item .grid3{margin-top:0}
-    #tab-governance #boundUsers .item,#tab-governance #blockedEmails .item{padding:14px 15px;border-radius:16px;background:var(--soft);border:1px solid rgba(16,31,56,.08)}
-    .user-grid{display:grid;gap:10px}
-    .feishu-bind-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-    .feishu-bind-card{border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:6px;background:linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%);box-shadow:0 4px 12px rgba(47,128,237,.04)}
-    .feishu-bind-card .fbc-email{font-size:13px;font-weight:700;word-break:break-all;line-height:1.35}
-    .feishu-bind-card .fbc-oid{font-size:11px;color:var(--muted);word-break:break-all;font-family:Consolas,monospace}
-    @media (max-width:1180px){.feishu-bind-grid{grid-template-columns:repeat(2,1fr)}}
-    @media (max-width:760px){.feishu-bind-grid{grid-template-columns:1fr}}
-    .user-card{padding:12px 14px;border-radius:14px;background:var(--soft);border:1px solid rgba(16,31,56,.08);display:flex;gap:4px}
-    .user-card-head{display:flex;justify-content:space-between;align-items:center;gap:6px}
-    .user-card-actions{display:flex;align-items:center;gap:6px;margin-top:2px}
-    .toggle-label{display:flex;align-items:center;gap:3px;cursor:pointer;font-size:13px}
-    #tab-governance .actions,#tab-center .actions,#tab-system .actions{padding-top:2px}
-    .btn-danger{border:1px solid rgba(199,90,74,.18)}
-    .btn-danger:hover{box-shadow:0 10px 20px rgba(199,90,74,.12)}
-    #tab-system .item:first-child{border-color:rgba(47,128,237,.18)}
-    #tab-system .item:last-child{border-color:rgba(47,128,237,.18)}
-    .toast-stack{position:fixed;top:18px;right:18px;z-index:9999;display:grid;gap:10px;max-width:min(360px,calc(100vw - 36px))}.toast{padding:14px 16px;border-radius:16px;background:#2c5f96;color:#fff;box-shadow:0 16px 36px rgba(47,128,237,.22);border:1px solid rgba(255,255,255,.12);opacity:0;transform:translateY(-8px);transition:opacity .18s ease,transform .18s ease}.toast.show{opacity:1;transform:translateY(0)}.toast.success{background:#23785b}.toast.error{background:#b55246}.toast.info{background:#3a78c7}
-    .im-layout{display:grid;grid-template-rows:auto 1fr;gap:0;min-height:400px;margin-top:14px;border:1px solid var(--line);border-radius:18px;overflow:hidden;background:var(--panel)}
-    .im-sidebar{background:linear-gradient(90deg,#f4f8ff 0%,#e8f0fb 100%);border-bottom:1px solid var(--line);padding:0 12px;display:flex;gap:4px;overflow-x:auto}
-    .im-sidebar button{text-align:center;background:transparent;color:var(--text);border:none;padding:14px 22px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;transition:background .14s ease,border-color .14s ease}
-    .im-sidebar button:hover{background:rgba(47,128,237,.06);transform:none;box-shadow:none}
-    .im-sidebar button.active{background:rgba(255,255,255,.9);border-bottom-color:var(--primary);color:var(--primary)}
-    .im-sidebar button small{display:block;margin-top:4px;font-size:11px;font-weight:400;color:var(--muted)}
-    .im-content{padding:20px;overflow-y:auto}
-    .im-pane{display:none}.im-pane.active{display:block}
-    @media (max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.login-card,.app{grid-template-columns:1fr}.im-sidebar button{padding:10px 14px}#boundUsers .user-grid-wrap{grid-template-columns:repeat(2,minmax(0,1fr))!important}} @media (max-width:760px){.shell,.main{padding:18px}.metrics,.grid2,.grid3{grid-template-columns:1fr}.top,.pager{flex-direction:column;align-items:flex-start}.row{grid-template-columns:1fr}#boundUsers .user-grid-wrap{grid-template-columns:1fr!important}}
-    .session-modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.35);z-index:9990;align-items:center;justify-content:center}.session-modal-overlay.show{display:flex}
-    .session-modal{width:min(720px,calc(100% - 48px));max-height:80vh;overflow:auto;background:#fff;border-radius:22px;box-shadow:0 24px 60px rgba(37,84,140,.22);padding:24px;position:relative}
-    .session-modal h3{margin:0 0 16px;font-size:20px}.session-modal .close-btn{position:absolute;top:14px;right:16px;background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;height:auto;padding:0;line-height:1}
-    .session-item{padding:14px 16px;border-radius:14px;background:var(--soft);border:1px solid rgba(16,31,56,.08);margin-bottom:10px}
-    .session-item .session-field{display:flex;gap:8px;align-items:baseline;margin-bottom:4px}.session-item .session-label{color:var(--muted);font-size:12px;font-weight:700;min-width:90px;flex-shrink:0}.session-item .session-value{font-size:13px;word-break:break-all}
+    #tab-center .item,#tab-governance .item,#tab-system .item{box-shadow:var(--shadow-soft)}#tab-governance .grid3>.item,#tab-center .grid2>.item,#tab-system .grid2>.item{min-height:100%}#tab-governance .item .grid3,#tab-governance .item .grid2,#tab-center .item .grid3,#tab-system .item .grid3{margin-top:0}#tab-governance #boundUsers .item,#tab-governance #blockedEmails .item{padding:14px 15px;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#fff7f6 100%);border:1px solid rgba(31,34,48,.06)}
+    .user-grid{display:grid;gap:10px}.feishu-bind-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.feishu-bind-card{border:1px solid rgba(31,34,48,.06);border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:6px;background:linear-gradient(180deg,#fff 0%,#fff8f7 100%);box-shadow:var(--shadow-soft)}.feishu-bind-card .fbc-email{font-size:13px;font-weight:700;word-break:break-all;line-height:1.35}.feishu-bind-card .fbc-oid{font-size:11px;color:var(--muted);word-break:break-all;font-family:Consolas,monospace}
+    .user-card{padding:14px 15px;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#fff8f7 100%);border:1px solid rgba(31,34,48,.06);display:flex;gap:6px;box-shadow:var(--shadow-soft)}.user-card-head{display:flex;justify-content:space-between;align-items:center;gap:6px}.user-card-actions{display:flex;align-items:center;gap:6px;margin-top:2px}.toggle-label{display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px;color:var(--muted)}
+    #tab-governance .actions,#tab-center .actions,#tab-system .actions{padding-top:2px}.btn-danger:hover{box-shadow:0 10px 20px rgba(214,93,87,.12)}#tab-system .item:first-child,#tab-system .item:last-child{border-color:rgba(239,106,124,.12)}
+    .toast-stack{position:fixed;top:18px;right:18px;z-index:9999;display:grid;gap:10px;max-width:min(360px,calc(100vw - 36px))}.toast{padding:14px 16px;border-radius:18px;background:#2b3142;color:#fff;box-shadow:0 16px 36px rgba(31,34,48,.18);border:1px solid rgba(255,255,255,.12);opacity:0;transform:translateY(-8px);transition:opacity .18s ease,transform .18s ease}.toast.show{opacity:1;transform:translateY(0)}.toast.success{background:#23785b}.toast.error{background:#b55246}.toast.info{background:#3a78c7}
+    .im-layout{display:grid;grid-template-rows:auto 1fr;gap:0;min-height:420px;margin-top:14px;border:1px solid rgba(31,34,48,.06);border-radius:24px;overflow:hidden;background:rgba(255,255,255,.9);box-shadow:var(--shadow-soft)}.im-sidebar{background:linear-gradient(90deg,#fff8f7 0%,#fff 100%);border-bottom:1px solid rgba(31,34,48,.06);padding:0 12px;display:flex;gap:4px;overflow-x:auto}.im-sidebar button{text-align:center;background:transparent;color:var(--text);border:none;padding:14px 22px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap}.im-sidebar button:hover{background:rgba(239,106,124,.06);transform:none;box-shadow:none}.im-sidebar button.active{background:rgba(255,255,255,.95);border-bottom-color:var(--primary);color:var(--primary-strong)}.im-sidebar button small{display:block;margin-top:4px;font-size:11px;font-weight:400;color:var(--muted)}.im-content{padding:22px;overflow-y:auto}.im-pane{display:none}.im-pane.active{display:block}
+    .session-modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(27,30,40,.22);backdrop-filter:blur(8px);z-index:9990;align-items:center;justify-content:center}.session-modal-overlay.show{display:flex}.session-modal{width:min(760px,calc(100% - 48px));max-height:82vh;overflow:auto;background:rgba(255,255,255,.96);border-radius:28px;box-shadow:0 24px 60px rgba(31,34,48,.18);padding:24px;position:relative;border:1px solid rgba(255,255,255,.78)}.session-modal h3{margin:0 0 16px;font-size:21px}.session-modal .close-btn{position:absolute;top:14px;right:16px;background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;height:auto;padding:0;line-height:1}.session-item{padding:14px 16px;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#fff8f7 100%);border:1px solid rgba(31,34,48,.06);margin-bottom:10px}.session-item .session-field{display:flex;gap:8px;align-items:baseline;margin-bottom:4px}.session-item .session-label{color:var(--muted);font-size:12px;font-weight:700;min-width:90px;flex-shrink:0}.session-item .session-value{font-size:13px;word-break:break-all}
+    @media (max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.login-card,.app{grid-template-columns:1fr}.im-sidebar button{padding:10px 14px}#boundUsers .user-grid-wrap{grid-template-columns:repeat(2,minmax(0,1fr))!important}}@media (max-width:760px){.shell,.main{padding:18px}.metrics,.grid2,.grid3{grid-template-columns:1fr}.top,.pager{flex-direction:column;align-items:flex-start}.row{grid-template-columns:1fr}#boundUsers .user-grid-wrap{grid-template-columns:1fr!important}}
   </style>
 </head>
 <body>
@@ -192,11 +152,11 @@
           <p class="subtle" data-i18n="setupDesc">On first use, only a username and password are required.</p>
           <div>
             <label for="setupUsername" data-i18n="adminUsername">Admin username</label>
-            <input id="setupUsername" placeholder="admin">
+            <input id="setupUsername" placeholder="">
           </div>
           <div>
             <label for="setupEmail" data-i18n="adminEmail">Admin email</label>
-            <input id="setupEmail" type="email" placeholder="admin@example.com">
+            <input id="setupEmail" type="email" placeholder="">
           </div>
           <div>
             <label for="setupPassword" data-i18n="adminPassword">Admin password</label>
@@ -209,7 +169,7 @@
           <p class="subtle" data-i18n="signinDesc">Regular sign-in only needs username and password.</p>
           <div>
             <label for="loginUsername" data-i18n="adminUsername">Admin username</label>
-            <input id="loginUsername" placeholder="admin">
+            <input id="loginUsername" placeholder="">
           </div>
           <div>
             <label for="loginPassword" data-i18n="adminPassword">Admin password</label>
@@ -225,10 +185,20 @@
   <!-- App view -->
   <div id="appView" class="app hidden">
     <aside class="side">
+      <div class="window-chrome">
+        <span class="window-dot red"></span>
+        <span class="window-dot amber"></span>
+        <span class="window-dot green"></span>
+      </div>
       <div class="brand">
-        <div class="mini" style="background:rgba(255,255,255,.1);color:#fff">MaClaw Hub</div>
-        <h1 data-i18n="brandTitle"></h1>
-        <p data-i18n="brandDesc"></p>
+        <div class="brand-shell">
+          <div class="brand-mark">MH</div>
+          <div class="brand-copy">
+            <div class="mini">MaClaw Hub</div>
+            <h1 data-i18n="brandTitle"></h1>
+            <p data-i18n="brandDesc"></p>
+          </div>
+        </div>
       </div>
       <nav class="nav">
         <button data-tab="overview" class="active" onclick="openTab('overview')"><span data-i18n="navOverview"></span><small data-i18n="navOverviewDesc"></small></button>
@@ -240,17 +210,17 @@
         <button data-tab="invitationcodes" onclick="openTab('invitationcodes')"><span id="navInvitationCodes"></span><small id="navInvitationCodesDesc"></small></button>
         <button data-tab="pwarequests" onclick="openTab('pwarequests')"><span id="navPwaRequests"></span><small id="navPwaRequestsDesc"></small></button>
         <button data-tab="console" onclick="openTab('console')"><span data-i18n="navConsole"></span><small data-i18n="navConsoleDesc"></small></button>
-        <button data-tab="security" onclick="openTab('security')"><span id="navSecurity" data-i18n="navSecurity">Security</span><small id="navSecurityDesc" data-i18n="navSecurityDesc">Security Management</small></button>
-        <button data-tab="llmproviders" onclick="openTab('llmproviders')"><span id="navLLMProviders" data-i18n="llmProvidersTabTitle">LLM Providers</span><small id="navLLMProvidersDesc" data-i18n="llmProvidersTabSubtitle">Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.</small></button>
-        <button data-tab="usagestats" onclick="openTab('usagestats')"><span id="navUsageStats" data-i18n="usageStatsTabTitle">Usage Stats</span><small id="navUsageStatsDesc" data-i18n="usageStatsNavDesc">Daily and monthly LLM usage analytics</small></button>
-        <button data-tab="modelservices" onclick="openTab('modelservices')"><span id="navModelServices" data-i18n="modelServicesTabTitle">Model Services</span><small id="navModelServicesDesc" data-i18n="modelServicesTabSubtitle">Model service groups, bindings, and active grants.</small></button>
-        <button data-tab="servicecards" onclick="openTab('servicecards')"><span id="navServiceCards" data-i18n="serviceCardsTabTitle">Service Cards</span><small id="navServiceCardsDesc" data-i18n="serviceCardsTabSubtitle">Issue cards and review redemption status.</small></button>
+        <button data-tab="security" onclick="openTab('security')"><span id="navSecurity" data-i18n="navSecurity">Security Management</span><small id="navSecurityDesc" data-i18n="navSecurityDesc">Groups, policies, and organization structure</small></button>
+        <button data-tab="llmproviders" onclick="openTab('llmproviders')"><span id="navLLMProviders" data-i18n="llmProvidersTabTitle"></span><small id="navLLMProvidersDesc" data-i18n="llmProvidersTabSubtitle"></small></button>
+        <button data-tab="usagestats" onclick="openTab('usagestats')"><span id="navUsageStats" data-i18n="usageStatsTabTitle"></span><small id="navUsageStatsDesc" data-i18n="usageStatsNavDesc"></small></button>
+        <button data-tab="modelservices" onclick="openTab('modelservices')"><span id="navModelServices" data-i18n="modelServicesTabTitle"></span><small id="navModelServicesDesc" data-i18n="modelServicesTabSubtitle"></small></button>
+        <button data-tab="servicecards" onclick="openTab('servicecards')"><span id="navServiceCards" data-i18n="serviceCardsTabTitle"></span><small id="navServiceCardsDesc" data-i18n="serviceCardsTabSubtitle"></small></button>
       </nav>
       <div class="side-note"><span data-i18n="defaultCenter"></span><br><span class="mono">http://hubs.mypapers.top:9388</span><br><br><span data-i18n="deployHint"></span></div>
     </aside>
     <main class="main">
       <div class="top">
-        <div><h2 id="pageTitle"></h2><div class="subtle" id="pageSubtitle"></div></div>
+        <div class="page-copy"><div class="page-kicker">Workspace</div><h2 id="pageTitle"></h2><div class="subtle" id="pageSubtitle"></div></div>
         <div class="topbar">
           <div class="lang-switch">
             <button type="button" data-lang="en" onclick="setLanguage('en')">EN</button>
@@ -284,9 +254,9 @@
           <div class="item">
             <div id="centerConfigForm">
               <label for="centerBaseURL" data-i18n="centerUrl"></label>
-              <input id="centerBaseURL" placeholder="http://hubs.mypapers.top:9388">
+              <input id="centerBaseURL" placeholder="">
               <label for="centerPublicBaseURL" style="margin-top:12px" data-i18n="publicHubUrl"></label>
-              <input id="centerPublicBaseURL" placeholder="https://hub.example.com">
+              <input id="centerPublicBaseURL" placeholder="">
               <label for="centerVisibility" style="margin-top:12px" data-i18n="visibilityMode"></label>
               <select id="centerVisibility">
                 <option value="private" data-i18n="visibilityPrivate"></option>
@@ -330,12 +300,12 @@
         <div class="grid2">
           <div class="item">
             <label for="bindEmail" data-i18n="manualBindEmail"></label>
-            <input id="bindEmail" placeholder="user@example.com">
+            <input id="bindEmail" placeholder="">
             <div class="actions"><button class="btn-secondary" onclick="manualBind()" data-i18n="generateBinding"></button></div>
           </div>
           <div class="item">
             <label for="blockedEmail" data-i18n="blockedEmail"></label>
-            <input id="blockedEmail" placeholder="blocked@example.com">
+            <input id="blockedEmail" placeholder="">
             <label for="blockedReason" style="margin-top:12px" data-i18n="reason"></label>
             <input id="blockedReason">
             <div class="actions"><button class="btn-danger" onclick="addBlockedEmail()" data-i18n="addBlock"></button></div>
@@ -344,7 +314,7 @@
         <div class="grid2" style="margin-top:18px">
           <div class="item">
             <label for="inviteEmail" data-i18n="inviteEmail"></label>
-            <input id="inviteEmail" placeholder="user@example.com">
+            <input id="inviteEmail" placeholder="">
             <label for="inviteRole" style="margin-top:12px" data-i18n="role"></label>
             <select id="inviteRole">
               <option value="viewer" data-i18n="roleViewer"></option>
@@ -378,7 +348,7 @@
             <div><div class="item-title" data-i18n="invitesTitle"></div><div class="item-meta" data-i18n="invitesDesc"></div></div>
             <button class="btn-ghost" onclick="loadInvites()" data-i18n="reload"></button>
           </div>
-          <div id="invites"><div class="hint" data-i18n="loading">Loading...</div></div>
+          <div id="invites"><div class="hint" data-i18n="loading"></div></div>
         </div>
       </section>
 
@@ -393,18 +363,18 @@
           </div>
           <div class="grid3">
             <div><label for="mailProvider" data-i18n="mailProvider"></label><select id="mailProvider" onchange="applyMailPreset()"><option value="custom" data-i18n="mailPresetCustom"></option><option value="qq" data-i18n="mailPresetQQ"></option><option value="163" data-i18n="mailPreset163"></option><option value="126" data-i18n="mailPreset126"></option><option value="gmail" data-i18n="mailPresetGmail"></option><option value="outlook" data-i18n="mailPresetOutlook"></option></select></div>
-            <div><label for="mailHost" data-i18n="mailHost"></label><input id="mailHost" placeholder="smtp.example.com"></div>
+            <div><label for="mailHost" data-i18n="mailHost"></label><input id="mailHost" placeholder=""></div>
             <div><label for="mailPort" data-i18n="mailPort"></label><input id="mailPort" type="number" min="1" max="65535" placeholder="587"></div>
           </div>
           <div class="grid3" style="margin-top:12px">
             <div><label for="mailEncryption" data-i18n="mailEncryption"></label><select id="mailEncryption"><option value="auto" data-i18n="mailEncryptionAuto"></option><option value="ssl" data-i18n="mailEncryptionSSL"></option><option value="starttls" data-i18n="mailEncryptionStartTLS"></option><option value="plain" data-i18n="mailEncryptionPlain"></option></select></div>
-            <div><label for="mailUsername" data-i18n="mailUsername"></label><input id="mailUsername" placeholder="account@example.com"></div>
+            <div><label for="mailUsername" data-i18n="mailUsername"></label><input id="mailUsername" placeholder=""></div>
             <div><label for="mailPassword" data-i18n="mailPassword"></label><input id="mailPassword" type="password"></div>
           </div>
           <div class="grid3" style="margin-top:12px">
-            <div><label for="mailFromName" data-i18n="mailFromName"></label><input id="mailFromName" placeholder="MaClaw Hub"></div>
-            <div><label for="mailFromEmail" data-i18n="mailFromEmail"></label><input id="mailFromEmail" placeholder="account@example.com"></div>
-            <div><label for="testMailEmail" data-i18n="mailTestRecipient"></label><input id="testMailEmail" placeholder="ops@example.com"></div>
+            <div><label for="mailFromName" data-i18n="mailFromName"></label><input id="mailFromName" placeholder=""></div>
+            <div><label for="mailFromEmail" data-i18n="mailFromEmail"></label><input id="mailFromEmail" placeholder=""></div>
+            <div><label for="testMailEmail" data-i18n="mailTestRecipient"></label><input id="testMailEmail" placeholder=""></div>
           </div>
           <div class="actions" style="margin-top:14px">
             <button class="btn-secondary" onclick="saveMailConfig()" data-i18n="saveMailConfig"></button>
@@ -416,7 +386,7 @@
           <div class="item-title" id="profileCardTitle"></div>
           <div class="item-meta" id="profileCardDesc" style="margin-bottom:12px"></div>
           <div class="grid2">
-            <div><label for="adminEmailInput" id="adminEmailLabel"></label><input id="adminEmailInput" type="email" placeholder="admin@example.com"></div>
+            <div><label for="adminEmailInput" id="adminEmailLabel"></label><input id="adminEmailInput" type="email" placeholder=""></div>
             <div><label id="adminUsernameLabel"></label><input id="adminUsernameInput" disabled></div>
           </div>
           <div class="actions" style="margin-top:14px"><button class="btn-primary" onclick="updateAdminProfile()" id="saveProfileButton"></button></div>
@@ -435,25 +405,25 @@
         <!-- TLS config -->
         <div class="item" style="margin-top:18px">
           <div class="head" style="margin-bottom:12px">
-            <div><div class="item-title" id="tlsTitle">TLS / HTTPS</div><div class="item-meta" id="tlsDesc">Configure HTTPS and WebSocket encryption</div></div>
-            <button class="btn-ghost" onclick="loadTlsConfig()" id="tlsReloadBtn">Reload</button>
+            <div><div class="item-title" id="tlsTitle"></div><div class="item-meta" id="tlsDesc"></div></div>
+            <button class="btn-ghost" onclick="loadTlsConfig()" id="tlsReloadBtn"></button>
           </div>
           <div class="grid2">
-            <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="tlsEnabled"> <span id="tlsEnabledLabel">Enable TLS</span></label></div>
-            <div><span id="tlsCertBadge" class="badge info" style="font-size:12px">Unknown</span></div>
+            <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="tlsEnabled"> <span id="tlsEnabledLabel"></span></label></div>
+            <div><span id="tlsCertBadge" class="badge info" style="font-size:12px"></span></div>
           </div>
           <div class="grid2" style="margin-top:12px">
-            <div><label id="tlsCertFileLabel">Certificate File</label><div class="mono" id="tlsCertFile">-</div></div>
-            <div><label id="tlsKeyFileLabel">Key File</label><div class="mono" id="tlsKeyFile">-</div></div>
+            <div><label id="tlsCertFileLabel"></label><div class="mono" id="tlsCertFile">-</div></div>
+            <div><label id="tlsKeyFileLabel"></label><div class="mono" id="tlsKeyFile">-</div></div>
           </div>
           <div id="tlsCertInfo" style="margin-top:12px"></div>
-          <div class="actions" style="margin-top:14px"><button class="btn-primary" onclick="saveTlsConfig()" id="tlsSaveBtn">Save TLS</button></div>
+          <div class="actions" style="margin-top:14px"><button class="btn-primary" onclick="saveTlsConfig()" id="tlsSaveBtn"></button></div>
           <div class="hint" style="margin-top:14px">
-            <div style="font-weight:700;margin-bottom:8px" id="tlsGuideTitle">TLS Guide</div>
-            <div style="font-size:13px;line-height:1.8" id="tlsGuideContent">Hub listens on port 9399 for HTTPS/WSS when TLS is enabled.<br>Recommended: ECDSA P-256 certificate.<br>Use https:// and wss:// after enabling.<br>Alternatively, use nginx as a reverse proxy.</div>
+            <div style="font-weight:700;margin-bottom:8px" id="tlsGuideTitle"></div>
+            <div style="font-size:13px;line-height:1.8" id="tlsGuideContent"></div>
           </div>
           <div class="hint" style="margin-top:10px">
-            <div style="font-weight:700;margin-bottom:8px" id="tlsNginxTitle">Nginx Example</div>
+            <div style="font-weight:700;margin-bottom:8px" id="tlsNginxTitle"></div>
             <div style="font-size:12px;line-height:1.8;font-family:Consolas,monospace">server {<br>&nbsp;&nbsp;listen 443 ssl;<br>&nbsp;&nbsp;ssl_certificate /path/to/cert.pem;<br>&nbsp;&nbsp;ssl_certificate_key /path/to/key.pem;<br>&nbsp;&nbsp;location / {<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_pass http://127.0.0.1:9399;<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_http_version 1.1;<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_set_header Upgrade $http_upgrade;<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_set_header Connection "upgrade";<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_read_timeout 3600s;<br>&nbsp;&nbsp;}<br>}</div>
           </div>
         </div>
@@ -467,10 +437,10 @@
             <button class="active" data-imsub="feishu" onclick="openImSub('feishu')"><span id="imSubFeishuNav"></span><small id="imSubFeishuNavDesc"></small></button>
             <button data-imsub="openclaw" onclick="openImSub('openclaw')"><span id="imSubOpenclawNav"></span><small id="imSubOpenclawNavDesc"></small></button>
             <button data-imsub="qqbot" onclick="openImSub('qqbot')"><span id="imSubQQBotNav"></span><small id="imSubQQBotNavDesc"></small></button>
-            <button data-imsub="wecom" onclick="openImSub('wecom')"><span id="imSubWeComNav"></span><small id="imSubWeComNavDesc">WeCom Bot</small></button>
-            <button data-imsub="dingtalk" onclick="openImSub('dingtalk')"><span id="imSubDingTalkNav"></span><small id="imSubDingTalkNavDesc">DingTalk Bot</small></button>
+            <button data-imsub="wecom" onclick="openImSub('wecom')"><span id="imSubWeComNav"></span><small id="imSubWeComNavDesc"></small></button>
+            <button data-imsub="dingtalk" onclick="openImSub('dingtalk')"><span id="imSubDingTalkNav"></span><small id="imSubDingTalkNavDesc"></small></button>
             <button data-imsub="hubllm" onclick="openImSub('hubllm')"><span id="imSubHubLlmNav">Hub LLM</span><small id="imSubHubLlmNavDesc"></small></button>
-            <button data-imsub="contentaudit" onclick="openImSub('contentaudit')"><span id="imSubContentAuditNav">Content Audit</span><small id="imSubContentAuditNavDesc">Content Audit</small></button>
+            <button data-imsub="contentaudit" onclick="openImSub('contentaudit')"><span id="imSubContentAuditNav"></span><small id="imSubContentAuditNavDesc"></small></button>
           </div>
           <div class="im-content">
             <!-- Feishu pane -->
@@ -600,8 +570,8 @@
             <div id="im-pane-wecom" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:12px">
-                  <div><div class="item-title" id="wecomConfigTitle">WeCom Bot</div><div class="item-meta" id="wecomConfigDesc">Configure WeCom bot integration</div></div>
-                  <button class="btn-ghost" onclick="loadWeComConfig()" id="wecomReloadBtn">Reload</button>
+                  <div><div class="item-title" id="wecomConfigTitle"></div><div class="item-meta" id="wecomConfigDesc"></div></div>
+                  <button class="btn-ghost" onclick="loadWeComConfig()" id="wecomReloadBtn"></button>
                 </div>
                 <div class="grid2">
                   <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="wecomEnabled"> <span id="wecomEnabledLabel">Enable</span></label></div>
@@ -611,17 +581,17 @@
                   <div><label for="wecomBotId" id="wecomBotIdLabel">Bot ID</label><input id="wecomBotId" placeholder=""></div>
                   <div><label for="wecomSecret" id="wecomSecretLabel">Secret</label><input id="wecomSecret" type="password" placeholder=""></div>
                 </div>
-                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveWeComConfig()" id="wecomSaveBtn">Save</button></div>
+                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveWeComConfig()" id="wecomSaveBtn"></button></div>
                 <div class="hint" style="margin-top:14px">
-                  <div style="font-weight:700;margin-bottom:8px" id="wecomGuideTitle">WeCom Setup Guide</div>
-                  <div style="font-size:13px;line-height:1.8" id="wecomGuideContent">Create a WeCom bot application.<br>Fill in Bot ID and Secret.<br>Hub connects via WebSocket.<br>Supports Markdown messages.<br><br><b>Note:</b><br>After Hub restarts, the bot reconnects within 6 seconds automatically.</div>
+                  <div style="font-weight:700;margin-bottom:8px" id="wecomGuideTitle"></div>
+                  <div style="font-size:13px;line-height:1.8" id="wecomGuideContent"></div>
                 </div>
                 <div style="margin-top:14px">
                   <div class="head" style="margin-bottom:12px">
-                    <div><div class="item-title" id="wecomBindingsTitle">Bindings</div><div class="item-meta" id="wecomBindingsDesc">WeCom user bindings</div></div>
-                    <button class="btn-ghost" onclick="loadWeComBindings()" id="wecomBindingsReloadBtn">Reload</button>
+                    <div><div class="item-title" id="wecomBindingsTitle"></div><div class="item-meta" id="wecomBindingsDesc"></div></div>
+                    <button class="btn-ghost" onclick="loadWeComBindings()" id="wecomBindingsReloadBtn"></button>
                   </div>
-                  <div id="wecomBindingsList"><div class="hint" data-i18n="loading">Loading...</div></div>
+                  <div id="wecomBindingsList"><div class="hint" data-i18n="loading"></div></div>
                 </div>
               </div>
             </div>
@@ -630,8 +600,8 @@
             <div id="im-pane-dingtalk" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:12px">
-                  <div><div class="item-title" id="dingtalkConfigTitle">DingTalk Bot</div><div class="item-meta" id="dingtalkConfigDesc">Configure DingTalk bot integration</div></div>
-                  <button class="btn-ghost" onclick="loadDingTalkConfig()" id="dingtalkReloadBtn">Reload</button>
+                  <div><div class="item-title" id="dingtalkConfigTitle"></div><div class="item-meta" id="dingtalkConfigDesc"></div></div>
+                  <button class="btn-ghost" onclick="loadDingTalkConfig()" id="dingtalkReloadBtn"></button>
                 </div>
                 <div class="grid2">
                   <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="dingtalkEnabled"> <span id="dingtalkEnabledLabel">Enable</span></label></div>
@@ -641,17 +611,17 @@
                   <div><label for="dingtalkClientId" id="dingtalkClientIdLabel">Client ID (AppKey)</label><input id="dingtalkClientId" placeholder=""></div>
                   <div><label for="dingtalkClientSecret" id="dingtalkClientSecretLabel">Client Secret (AppSecret)</label><input id="dingtalkClientSecret" type="password" placeholder=""></div>
                 </div>
-                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveDingTalkConfig()" id="dingtalkSaveBtn">Save</button></div>
+                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveDingTalkConfig()" id="dingtalkSaveBtn"></button></div>
                 <div class="hint" style="margin-top:14px">
-                  <div style="font-weight:700;margin-bottom:8px" id="dingtalkGuideTitle">DingTalk Setup Guide</div>
-                  <div style="font-size:13px;line-height:1.8" id="dingtalkGuideContent">Visit <a href="https://open-dev.dingtalk.com" target="_blank">DingTalk Open Platform</a>.<br>Fill in AppKey (Client ID) and AppSecret (Client Secret).<br>Webhook: <code>{hub_url}/api/dingtalk/webhook</code><br>Enable Stream mode.<br><br><b>Note:</b><br>After Hub restarts, the bot reconnects within 6 seconds automatically.</div>
+                  <div style="font-weight:700;margin-bottom:8px" id="dingtalkGuideTitle"></div>
+                  <div style="font-size:13px;line-height:1.8" id="dingtalkGuideContent"></div>
                 </div>
                 <div style="margin-top:14px">
                   <div class="head" style="margin-bottom:12px">
-                    <div><div class="item-title" id="dingtalkBindingsTitle">Bindings</div><div class="item-meta" id="dingtalkBindingsDesc">DingTalk user bindings</div></div>
-                    <button class="btn-ghost" onclick="loadDingTalkBindings()" id="dingtalkBindingsReloadBtn">Reload</button>
+                    <div><div class="item-title" id="dingtalkBindingsTitle"></div><div class="item-meta" id="dingtalkBindingsDesc"></div></div>
+                    <button class="btn-ghost" onclick="loadDingTalkBindings()" id="dingtalkBindingsReloadBtn"></button>
                   </div>
-                  <div id="dingtalkBindingsList"><div class="hint" data-i18n="loading">Loading...</div></div>
+                  <div id="dingtalkBindingsList"><div class="hint" data-i18n="loading"></div></div>
                 </div>
               </div>
             </div>
@@ -667,22 +637,22 @@
                   <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmSmartRouteSingle"> <span id="hubLlmSmartRouteSingleLabel">Smart route single-device LLM</span></label></div>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="hubLlmApiUrl" id="hubLlmApiUrlLabel">API Base URL</label><input id="hubLlmApiUrl" placeholder="https://api.deepseek.com/v1"></div>
-                  <div><label for="hubLlmApiKey" id="hubLlmApiKeyLabel">API Key</label><input id="hubLlmApiKey" type="password" placeholder="sk-..."></div>
+                  <div><label for="hubLlmApiUrl" id="hubLlmApiUrlLabel"></label><input id="hubLlmApiUrl" placeholder=""></div>
+                  <div><label for="hubLlmApiKey" id="hubLlmApiKeyLabel"></label><input id="hubLlmApiKey" type="password" placeholder=""></div>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="hubLlmModel" id="hubLlmModelLabel">Model</label><input id="hubLlmModel" placeholder="deepseek-chat"></div>
-                  <div><label for="hubLlmProtocol" id="hubLlmProtocolLabel">Protocol</label><select id="hubLlmProtocol"><option value="openai" id="hubLlmProtocolOpenAI">OpenAI</option><option value="anthropic" id="hubLlmProtocolAnthropic">Anthropic</option></select></div>
+                  <div><label for="hubLlmModel" id="hubLlmModelLabel"></label><input id="hubLlmModel" placeholder=""></div>
+                  <div><label for="hubLlmProtocol" id="hubLlmProtocolLabel"></label><select id="hubLlmProtocol"><option value="openai" id="hubLlmProtocolOpenAI"></option><option value="anthropic" id="hubLlmProtocolAnthropic"></option></select></div>
                 </div>
                 <div class="actions" style="margin-top:14px">
-                  <button class="btn-secondary" onclick="saveHubLlmConfig()" id="hubLlmSaveBtn">Save</button>
-                  <button class="btn-primary" onclick="testHubLlm()" id="hubLlmTestBtn">Test</button>
-                  <span id="hubLlmStatusBadge" class="badge info" style="font-size:12px">Unknown</span>
+                  <button class="btn-secondary" onclick="saveHubLlmConfig()" id="hubLlmSaveBtn"></button>
+                  <button class="btn-primary" onclick="testHubLlm()" id="hubLlmTestBtn"></button>
+                  <span id="hubLlmStatusBadge" class="badge info" style="font-size:12px"></span>
                 </div>
                 <div id="hubLlmTestResult" class="hint hidden" style="margin-top:14px"></div>
                 <div class="hint" style="margin-top:14px">
-                  <div style="font-weight:700;margin-bottom:8px" id="hubLlmGuideTitle">Hub LLM Guide</div>
-                  <div style="font-size:13px;line-height:1.8" id="hubLlmGuideContent">Supports DeepSeek V3, OpenAI compatible APIs.<br>User-Agent: OpenClaw/1.0<br>Used for intent classification and smart routing.<br>Fallback to keyword matching when disabled.<br>Smart route single-device LLM routes to local LLM when only one device is online.</div>
+                  <div style="font-weight:700;margin-bottom:8px" id="hubLlmGuideTitle"></div>
+                  <div style="font-size:13px;line-height:1.8" id="hubLlmGuideContent"></div>
                 </div>
               </div>
             </div>
@@ -691,25 +661,25 @@
             <div id="im-pane-contentaudit" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:12px">
-                  <div><div class="item-title" id="contentAuditTitle">Content Audit</div><div class="item-meta" id="contentAuditDesc">Configure IM content audit</div></div>
-                  <button class="btn-ghost" onclick="loadContentAuditConfig()" id="contentAuditReloadBtn">Reload</button>
+                  <div><div class="item-title" id="contentAuditTitle"></div><div class="item-meta" id="contentAuditDesc"></div></div>
+                  <button class="btn-ghost" onclick="loadContentAuditConfig()" id="contentAuditReloadBtn"></button>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="caProgPath" id="caProgPathLabel">Program Path</label><input id="caProgPath" placeholder="./audit_program"></div>
-                  <div><label for="caTimeoutSec" id="caTimeoutSecLabel">Timeout (seconds)</label><input id="caTimeoutSec" type="number" min="1" max="300" placeholder="30"></div>
+                  <div><label for="caProgPath" id="caProgPathLabel"></label><input id="caProgPath" placeholder=""></div>
+                  <div><label for="caTimeoutSec" id="caTimeoutSecLabel"></label><input id="caTimeoutSec" type="number" min="1" max="300" placeholder="30"></div>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="caTimeoutPolicy" id="caTimeoutPolicyLabel">Timeout Policy</label><select id="caTimeoutPolicy"><option value="block" id="caTimeoutPolicyBlock">block</option><option value="pass" id="caTimeoutPolicyPass">pass</option></select></div>
+                  <div><label for="caTimeoutPolicy" id="caTimeoutPolicyLabel"></label><select id="caTimeoutPolicy"><option value="block" id="caTimeoutPolicyBlock"></option><option value="pass" id="caTimeoutPolicyPass"></option></select></div>
                   <div></div>
                 </div>
                 <div style="margin-top:12px">
-                  <label for="caKeywords" id="caKeywordsLabel">Keywords</label>
-                  <textarea id="caKeywords" rows="8" style="width:100%;font-family:Consolas,monospace;font-size:13px;padding:10px;border:1px solid var(--line);border-radius:10px;resize:vertical" placeholder="one keyword per line"></textarea>
+                  <label for="caKeywords" id="caKeywordsLabel"></label>
+                  <textarea id="caKeywords" rows="8" style="width:100%;font-family:Consolas,monospace;font-size:13px;padding:10px;border:1px solid var(--line);border-radius:10px;resize:vertical" placeholder=""></textarea>
                 </div>
-                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveContentAuditConfig()" id="contentAuditSaveBtn">Save</button></div>
+                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveContentAuditConfig()" id="contentAuditSaveBtn"></button></div>
                 <div class="hint" style="margin-top:14px">
-                  <div style="font-weight:700;margin-bottom:8px" id="contentAuditGuideTitle">Content Audit Guide</div>
-                  <div style="font-size:13px;line-height:1.8" id="contentAuditGuideContent">External audit program integration.<br>See hub/cmd/audit_program/ for reference.<br>Keyword-based filtering.<br>Stdin JSON input, stdout JSON output.</div>
+                  <div style="font-weight:700;margin-bottom:8px" id="contentAuditGuideTitle"></div>
+                  <div style="font-size:13px;line-height:1.8" id="contentAuditGuideContent"></div>
                 </div>
               </div>
             </div>
@@ -731,7 +701,7 @@
         </div>
         <div class="actions" style="margin-bottom:14px;gap:10px;align-items:center">
           <label for="machineEmailSearch" id="machineEmailSearchLabel" style="margin:0;font-size:13px;font-weight:600;color:var(--muted);white-space:nowrap"></label>
-          <input id="machineEmailSearch" placeholder="user@example.com" style="max-width:320px">
+          <input id="machineEmailSearch" placeholder="" style="max-width:320px">
           <button class="btn-secondary" onclick="searchMachinesByEmail()" id="machineEmailSearchButton"></button>
           <button class="btn-danger" onclick="deleteAllMachinesByEmail()" id="machineEmailDeleteAllButton"></button>
           <button class="btn-danger" onclick="forceDeleteAllMachinesByEmail()" id="machineEmailForceDeleteButton"></button>
@@ -820,7 +790,7 @@
         <div class="item" style="margin-bottom:18px">
           <div class="item-title" id="pwaManualTitle"></div>
           <div class="item-meta" id="pwaManualDesc" style="margin-bottom:12px"></div>
-          <div><label for="pwaManualEmail" id="pwaManualLabel"></label><input id="pwaManualEmail" placeholder="user@example.com" style="max-width:360px"></div>
+          <div><label for="pwaManualEmail" id="pwaManualLabel"></label><input id="pwaManualEmail" placeholder="" style="max-width:360px"></div>
           <div class="actions" style="margin-top:12px"><button class="btn-primary" id="pwaManualBtn" onclick="manualApprovePwaEmail()"></button></div>
         </div>
         <div class="item" style="margin-bottom:18px">
@@ -828,14 +798,14 @@
             <div><div class="item-title" id="pendingLoginsTitle"></div><div class="item-meta" id="pendingLoginsDesc"></div></div>
             <button class="btn-ghost" id="pendingLoginsReloadBtn" onclick="loadPendingLogins()"></button>
           </div>
-          <div id="pendingLoginsList"><div class="hint" data-i18n="loading">Loading...</div></div>
+          <div id="pendingLoginsList"><div class="hint" data-i18n="loading"></div></div>
         </div>
         <div class="item">
           <div class="head" style="margin-bottom:12px">
             <div><div class="item-title" id="pwaListTitle"></div><div class="item-meta" id="pwaListDesc"></div></div>
             <button class="btn-ghost" id="pwaReloadBtn" onclick="loadPwaEnrollments()"></button>
           </div>
-          <div id="pwaEnrollmentList"><div class="hint" data-i18n="loading">Loading...</div></div>
+          <div id="pwaEnrollmentList"><div class="hint" data-i18n="loading"></div></div>
         </div>
       </section>
 
@@ -871,10 +841,10 @@
             <div class="item-title" style="margin-bottom:12px" id="secGroupTreeTitle" data-i18n="securityGroupTree">Group Tree</div>
             <div id="secGroupTree" style="font-size:13px;line-height:1.8"></div>
             <div id="secContextMenu" class="hidden" style="position:fixed;z-index:9999;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);padding:6px 0;min-width:160px">
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('create')" id="secCtxCreate" data-i18n="securityCreateSubDepartment">Create</div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('rename')" id="secCtxRename" data-i18n="securityRenameDepartment">Rename</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('create')" id="secCtxCreate" data-i18n="securityCreateSubDepartment">Create Sub-department</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('rename')" id="secCtxRename" data-i18n="securityRenameDepartment">Rename Department</div>
               <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('assign')" id="secCtxAssign" data-i18n="securityMoveUsers">Move Users Here</div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--danger)" onmousedown="secCtxAction('delete')" id="secCtxDelete" data-i18n="securityDeleteDepartment">Delete</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--danger)" onmousedown="secCtxAction('delete')" id="secCtxDelete" data-i18n="securityDeleteDepartment">Delete Department</div>
             </div>
           </div>
           <div class="item" style="min-height:400px">
@@ -898,19 +868,19 @@
 
       <!-- Tab: LLM Providers -->
       <section id="tab-llmproviders" class="panel card">
-        <div class="head"><div><h3 id="llmProvidersTabTitle" data-i18n="llmProvidersTabTitle">LLM Providers</h3><div class="desc" id="llmProvidersTabSubtitle" data-i18n="llmProvidersTabSubtitle">Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.</div></div><div class="actions"><button class="btn-primary" onclick="addLLMProvider()" id="llmProviderCreateBtn">New Provider</button><button class="btn-ghost" onclick="loadLLMProviders()" id="llmProvidersReloadBtn" data-i18n="reload">Reload</button></div></div>
+        <div class="head"><div><h3 id="llmProvidersTabTitle" data-i18n="llmProvidersTabTitle"></h3><div class="desc" id="llmProvidersTabSubtitle" data-i18n="llmProvidersTabSubtitle"></div></div><div class="actions"><button class="btn-primary" onclick="addLLMProvider()" id="llmProviderCreateBtn"></button><button class="btn-ghost" onclick="loadLLMProviders()" id="llmProvidersReloadBtn" data-i18n="reload"></button></div></div>
         <div class="grid2">
           <div class="item">
-            <div class="item-head"><div><div class="item-title" id="llmProvidersExposeTitle">Unified OpenAI v1 Endpoint</div><div class="item-meta" id="llmProvidersExposeDesc">Select provider by `model`, `X-LLM-Provider`, or `?provider=`.</div></div><span class="badge info" id="llmProviderSelectionBadge">No provider selected</span></div>
+            <div class="item-head"><div><div class="item-title" id="llmProvidersExposeTitle"></div><div class="item-meta" id="llmProvidersExposeDesc"></div></div><span class="badge info" id="llmProviderSelectionBadge"></span></div>
             <div class="grid2" style="margin-top:12px">
-              <div><label id="llmProvidersAPIBaseURLLabel">API Base URL</label><div id="llmProvidersAPIBaseURL" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
-              <div><label id="llmProvidersExposeURLLabel">Chat Completions URL</label><div id="llmProvidersExposeURL" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
-              <div><label id="llmProvidersModelsURLLabel">Models URL</label><div id="llmProvidersModelsURL" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
-              <div><label id="llmProvidersAvailableModelsLabel">Available Models</label><div id="llmProvidersAvailableModels" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
+              <div><label id="llmProvidersAPIBaseURLLabel"></label><div id="llmProvidersAPIBaseURL" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
+              <div><label id="llmProvidersExposeURLLabel"></label><div id="llmProvidersExposeURL" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
+              <div><label id="llmProvidersModelsURLLabel"></label><div id="llmProvidersModelsURL" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
+              <div><label id="llmProvidersAvailableModelsLabel"></label><div id="llmProvidersAvailableModels" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
             </div>
             <div class="grid2" style="margin-top:12px">
-              <div><label id="llmProvidersAuthLabel">Authentication</label><div id="llmProvidersAuthHint" class="hint">Use Authorization: Bearer &lt;viewer access token&gt; from hub email sign-in.</div></div>
-              <div><label id="llmProvidersHintsLabel">Hints</label><div id="llmProvidersHints" class="hint">-</div></div>
+              <div><label id="llmProvidersAuthLabel"></label><div id="llmProvidersAuthHint" class="hint"></div></div>
+              <div><label id="llmProvidersHintsLabel"></label><div id="llmProvidersHints" class="hint"></div></div>
             </div>
             <div class="grid3" style="margin-top:12px">
               <div><label><input type="checkbox" id="llmProvidersEnabled"> <span id="llmProvidersEnabledLabel">Enable unified LLM service</span></label></div>
@@ -921,8 +891,8 @@
 
         </div>
         <div class="item" style="margin-top:18px">
-          <div class="item-title" id="llmProviderListTitle">Configured Providers</div>
-          <div class="item-meta" id="llmProviderListDesc">Token usage accumulates from calls sent through the unified OpenAI v1 endpoint.</div>
+          <div class="item-title" id="llmProviderListTitle"></div>
+          <div class="item-meta" id="llmProviderListDesc"></div>
           <div id="llmProviderList" style="margin-top:12px"><div class="hint">No providers configured yet.</div></div>
         </div>
       </section>
@@ -934,18 +904,18 @@
             <div class="item-title" id="llmProviderEditorTitle">Provider Editor</div>
             <div class="item-meta" id="llmProviderEditorDesc">Create or update provider credentials and model mapping.</div>
             <div class="grid2" style="margin-top:12px">
-              <div><label id="llmProviderIdLabel">Provider ID</label><input id="llmProviderId" placeholder="provider-id"></div>
-              <div><label id="llmProviderNameLabel">Display Name</label><input id="llmProviderName" placeholder="Provider Name"></div>
-              <div style="grid-column:1 / -1"><label id="llmProviderApiUrlLabel">API Base URL</label><input id="llmProviderApiUrl" placeholder="https://api.example.com/v1"></div>
-              <div><label id="llmProviderApiKeyLabel">API Key</label><input id="llmProviderApiKey" type="password" placeholder="Enter API key"></div>
-              <div><label id="llmProviderModelLabel">Upstream Model</label><input id="llmProviderModel" placeholder="gpt-4.1"></div>
-              <div><label id="llmProviderProtocolLabel">Protocol</label><select id="llmProviderProtocol"><option value="openai">openai</option><option value="anthropic">anthropic</option></select></div>
+              <div><label id="llmProviderIdLabel"></label><input id="llmProviderId" placeholder=""></div>
+              <div><label id="llmProviderNameLabel"></label><input id="llmProviderName" placeholder=""></div>
+              <div style="grid-column:1 / -1"><label id="llmProviderApiUrlLabel"></label><input id="llmProviderApiUrl" placeholder=""></div>
+              <div><label id="llmProviderApiKeyLabel"></label><input id="llmProviderApiKey" type="password" placeholder=""></div>
+              <div><label id="llmProviderModelLabel"></label><input id="llmProviderModel" placeholder=""></div>
+              <div><label id="llmProviderProtocolLabel"></label><select id="llmProviderProtocol"><option value="openai">openai</option><option value="anthropic">anthropic</option></select></div>
               <div><label id="llmProviderWireApiLabel">Wire API</label><select id="llmProviderWireApi"><option id="llmProviderWireApiChat" value="chat">Chat Completions</option><option id="llmProviderWireApiResponses" value="responses">Responses API</option><option id="llmProviderWireApiResponsesWS" value="responses-ws">Responses WS</option></select></div>
-              <div><label id="llmProviderAgentTypeLabel">User-Agent / Agent Type</label><input id="llmProviderAgentType" placeholder="openclaw"></div>
-              <div><label id="llmProviderMaxConcurrencyLabel">Allowed Concurrency</label><input id="llmProviderMaxConcurrency" type="number" min="0" step="1" value="0"></div>
+              <div><label id="llmProviderAgentTypeLabel"></label><input id="llmProviderAgentType" placeholder=""></div>
+              <div><label id="llmProviderMaxConcurrencyLabel"></label><input id="llmProviderMaxConcurrency" type="number" min="0" step="1" value="0"></div>
             </div>
             <div class="hint" id="llmProviderAgentTypeHint" style="margin-top:12px">Examples: openclaw, claude-code/2.0.0, cline</div>
-            <div class="actions" style="margin-top:12px"><button class="btn-ghost" onclick="closeLLMProviderDialog()" id="llmProviderCancelBtn">Cancel</button><button class="btn-primary" onclick="saveLLMProviders()" id="llmProviderSaveBtn">Save</button><button class="btn-ghost" onclick="testSelectedLLMProvider()" id="llmProviderTestBtn">Test Connection</button></div>
+            <div class="actions" style="margin-top:12px"><button class="btn-ghost" onclick="closeLLMProviderDialog()" id="llmProviderCancelBtn"></button><button class="btn-primary" onclick="saveLLMProviders()" id="llmProviderSaveBtn"></button><button class="btn-ghost" onclick="testSelectedLLMProvider()" id="llmProviderTestBtn"></button></div>
             <div id="llmProviderTestResult" class="hint hidden" style="margin-top:12px"></div>
           </div>
         </div>
@@ -953,17 +923,17 @@
 
       <!-- Tab: Model Services -->
       <section id="tab-modelservices" class="panel card">
-        <div class="head"><div><h3 id="modelServicesTabTitle" data-i18n="modelServicesTabTitle">Model Services</h3><div class="desc" id="modelServicesTabSubtitle" data-i18n="modelServicesTabSubtitle">Model service groups, bindings, and active grants.</div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="modelServicesReloadBtn" data-i18n="reload">Reload</button></div>
+        <div class="head"><div><h3 id="modelServicesTabTitle" data-i18n="modelServicesTabTitle"></h3><div class="desc" id="modelServicesTabSubtitle" data-i18n="modelServicesTabSubtitle"></div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="modelServicesReloadBtn" data-i18n="reload"></button></div>
       </section>
 
-      <!-- Tab: Service Cards -->
+      <!-- Tab: Service Exchange Cards -->
       <section id="tab-servicecards" class="panel card">
-        <div class="head"><div><h3 id="serviceCardsTabTitle" data-i18n="serviceCardsTabTitle">Service Cards</h3><div class="desc" id="serviceCardsTabSubtitle" data-i18n="serviceCardsTabSubtitle">Issue cards and review redemption status.</div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="serviceCardsReloadBtn" data-i18n="reload">Reload</button></div>
+        <div class="head"><div><h3 id="serviceCardsTabTitle" data-i18n="serviceCardsTabTitle"></h3><div class="desc" id="serviceCardsTabSubtitle" data-i18n="serviceCardsTabSubtitle"></div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="serviceCardsReloadBtn" data-i18n="reload"></button></div>
       </section>
 
       <!-- Tab: Usage Stats -->
       <section id="tab-usagestats" class="panel card">
-        <div class="head"><div><h3 id="usageStatsTabTitle" data-i18n="usageStatsTabTitle">Usage Stats</h3><div class="desc" id="usageStatsTabSubtitle" data-i18n="usageStatsTabSubtitle">View token usage by user or security group, with daily 24-hour trends.</div></div><button class="btn-ghost" onclick="loadUsageStats()" id="usageStatsReloadBtn" data-i18n="reload">Reload</button></div>
+        <div class="head"><div><h3 id="usageStatsTabTitle" data-i18n="usageStatsTabTitle"></h3><div class="desc" id="usageStatsTabSubtitle" data-i18n="usageStatsTabSubtitle"></div></div><button class="btn-ghost" onclick="loadUsageStats()" id="usageStatsReloadBtn" data-i18n="reload"></button></div>
       </section>
 
       <!-- Tab: Console -->

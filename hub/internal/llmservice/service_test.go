@@ -192,3 +192,59 @@ func TestSelectBestModelForRequestWithDebug(t *testing.T) {
 		t.Fatal("expected selection reason")
 	}
 }
+
+func TestBuildAuthorizedModelsTracksProviderScopedGroupsAndMultiplier(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:   "group-a",
+			Name: "Group A",
+			Models: []ModelServiceModel{{
+				Name:             "auto",
+				ProviderIDs:      []string{"provider-a"},
+				CreditMultiplier: 2,
+			}},
+		}, {
+			ID:   "group-b",
+			Name: "Group B",
+			Models: []ModelServiceModel{{
+				Name:             "auto",
+				ProviderIDs:      []string{"provider-b"},
+				CreditMultiplier: 1,
+			}},
+		}, {
+			ID:   "group-c",
+			Name: "Group C",
+			Models: []ModelServiceModel{{
+				Name:             "auto",
+				ProviderIDs:      []string{"provider-a"},
+				CreditMultiplier: 1.5,
+			}},
+		}},
+	}
+	models, _ := buildAuthorizedModels(reg, []string{"group-a", "group-b", "group-c"})
+	if len(models) != 1 {
+		t.Fatalf("expected 1 merged model, got %d", len(models))
+	}
+	model := models[0]
+	if got := model.ProviderServiceGroups["provider-a"]; len(got) != 2 || got[0] != "group-a" || got[1] != "group-c" {
+		t.Fatalf("provider-a groups = %#v", got)
+	}
+	if got := model.ProviderServiceGroups["provider-b"]; len(got) != 1 || got[0] != "group-b" {
+		t.Fatalf("provider-b groups = %#v", got)
+	}
+	if got := model.ProviderCreditMultipliers["provider-a"]; got != 1.5 {
+		t.Fatalf("provider-a multiplier = %v, want 1.5", got)
+	}
+	if got := model.ProviderCreditMultipliers["provider-b"]; got != 1 {
+		t.Fatalf("provider-b multiplier = %v, want 1", got)
+	}
+	if got := CreditMultiplierForProvider(&model, "provider-a"); got != 1.5 {
+		t.Fatalf("CreditMultiplierForProvider(provider-a) = %v, want 1.5", got)
+	}
+	if got := CreditMultiplierForProvider(&model, "provider-b"); got != 1 {
+		t.Fatalf("CreditMultiplierForProvider(provider-b) = %v, want 1", got)
+	}
+	if got := ServiceGroupIDsForProvider(&model, "provider-a"); len(got) != 2 || got[0] != "group-a" || got[1] != "group-c" {
+		t.Fatalf("ServiceGroupIDsForProvider(provider-a) = %#v", got)
+	}
+}

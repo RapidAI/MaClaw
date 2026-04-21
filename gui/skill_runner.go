@@ -227,19 +227,49 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	}
 
 	if len(target.Steps) == 0 {
-		// Bug #5: Better error for skills with no executable steps
-		msg := fmt.Sprintf("skill %q has no executable steps", skillName)
-		if len(target.RequiredArgs) > 0 {
-			msg += fmt.Sprintf(". This skill requires parameters: %s", strings.Join(target.RequiredArgs, ", "))
-		}
-		desc := strings.TrimSpace(target.Description)
-		if desc != "" {
-			if len(desc) > 150 {
-				desc = desc[:150] + "..."
+		// Documentation-only skill fallback: if the skill has a SKILL.md with
+		// documentation content but no executable steps, synthesize a single
+		// craft_tool step that uses the documentation as instructions for the
+		// LLM to generate and execute a script. This enables pure-documentation
+		// skills (like tts-to-mp3) to be executed automatically.
+		docContent := loadSkillDocContent(target.SkillDir)
+		if docContent != "" {
+			log.Printf("[skill-runner] skill %q has no steps but has documentation (%d chars), creating craft_tool fallback", skillName, len(docContent))
+			// Truncate very long documentation to avoid overwhelming the LLM.
+			if len(docContent) > 8000 {
+				docContent = docContent[:8000] + "\n\n... (truncated)"
 			}
-			msg += fmt.Sprintf("\nDescription: %s", desc)
+			// Build task description from user context + documentation.
+			var userContext string
+			if userPrompt, ok := runArgs["user_prompt"]; ok && fmt.Sprintf("%v", userPrompt) != "" {
+				userContext = fmt.Sprintf("%v", userPrompt)
+			} else if input, ok := runArgs["input"]; ok && fmt.Sprintf("%v", input) != "" {
+				userContext = fmt.Sprintf("%v", input)
+			}
+			task := docContent
+			if userContext != "" {
+				task = fmt.Sprintf("用户请求: %s\n\n按照以下文档指引执行:\n%s", userContext, docContent)
+			}
+			target.Steps = []corelib.NLSkillStep{{
+				Action:  "craft_tool",
+				Params:  map[string]interface{}{"task": task},
+				OnError: "stop",
+			}}
+		} else {
+			// Bug #5: Better error for skills with no executable steps
+			msg := fmt.Sprintf("skill %q has no executable steps", skillName)
+			if len(target.RequiredArgs) > 0 {
+				msg += fmt.Sprintf(". This skill requires parameters: %s", strings.Join(target.RequiredArgs, ", "))
+			}
+			desc := strings.TrimSpace(target.Description)
+			if desc != "" {
+				if len(desc) > 150 {
+					desc = desc[:150] + "..."
+				}
+				msg += fmt.Sprintf("\nDescription: %s", desc)
+			}
+			return "", fmt.Errorf("%s", msg)
 		}
-		return "", fmt.Errorf("%s", msg)
 	}
 
 	templateVars := normalizeSkillRunVars(runArgs)
@@ -1148,6 +1178,15 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 			run.extraEnv["OPENAI_BASE_URL"] = fmt.Sprintf("http://127.0.0.1:%d/v1", port)
 			run.extraEnv["OPENAI_MODEL"] = proxyCfg.Model
 			log.Printf("[skill-runner] openai proxy started on port %d for skill %q", port, skill.Name)
+		}
+	}
+
+	// ── Dependency auto-install: install pip/npm packages before execution ──
+	if len(skill.RequiresPython) > 0 || len(skill.RequiresNode) > 0 {
+		if installErr := autoInstallSkillDependencies(skill); installErr != nil {
+			log.Printf("[skill-runner] dependency install warning: %v", installErr)
+			// Non-fatal: log warning but continue execution.
+			// The skill may still work if the packages are already installed.
 		}
 	}
 
@@ -2381,6 +2420,82 @@ func checkPlatformCompat(skill *NLSkillEntry) error {
 		}
 	}
 
+	return nil
+}
+
+// loadSkillDocContent reads the SKILL.md documentation content from a skill
+// directory. Returns the content string if found, empty string otherwise.
+// Used as a fallback for documentation-only skills that have no executable steps.
+func loadSkillDocContent(skillDir string) string {
+	if skillDir == "" {
+		return ""
+	}
+	for _, name := range []string{"SKILL.md", "skill.md", "README.md"} {
+		p := filepath.Join(skillDir, name)
+		data, err := os.ReadFile(p)
+		if err == nil {
+			content := strings.TrimSpace(string(data))
+			if content != "" {
+				return content
+			}
+		}
+	}
+	return ""
+}
+
+// autoInstallSkillDependencies installs pip/npm packages declared in the skill's
+// requires field. Runs `pip install` and `npm install -g` as needed.
+// Returns an error if installation fails, but callers should treat this as
+// non-fatal (the packages may already be installed).
+func autoInstallSkillDependencies(skill *NLSkillEntry) error {
+	var errs []string
+
+	if len(skill.RequiresPython) > 0 {
+		// Use the resolved absolute Python path to work in any shell environment.
+		pythonCmd := findRealPythonViaCMD()
+		if pythonCmd == "" {
+			pythonCmd = "python"
+			if runtime.GOOS != "windows" {
+				pythonCmd = "python3"
+			}
+		}
+		// Use pip install with --quiet to reduce noise
+		args := append([]string{"-m", "pip", "install", "--quiet"}, skill.RequiresPython...)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		cmd := exec.CommandContext(ctx, pythonCmd, args...)
+		cmd.Env = os.Environ()
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("pip install failed: %v\n%s", err, strings.TrimSpace(string(out))))
+		} else {
+			log.Printf("[skill-runner] pip install success: %v", skill.RequiresPython)
+		}
+	}
+
+	if len(skill.RequiresNode) > 0 {
+		// Install packages locally to the skill directory to avoid requiring
+		// elevated permissions that npm install -g needs on some systems.
+		args := []string{"install", "--silent"}
+		args = append(args, skill.RequiresNode...)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		cmd := exec.CommandContext(ctx, "npm", args...)
+		if skill.SkillDir != "" {
+			cmd.Dir = skill.SkillDir
+		}
+		cmd.Env = os.Environ()
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("npm install failed: %v\n%s", err, strings.TrimSpace(string(out))))
+		} else {
+			log.Printf("[skill-runner] npm install success: %v", skill.RequiresNode)
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
 	return nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -147,6 +148,10 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 		// Clear the GateIntentClassifier so it falls back to keyword-only
 		// classification when vector search is disabled.
 		a.gateIntentClassifier = nil
+		// Clear the UnifiedIntentClassifier so consumers fall back to
+		// their existing keyword-based logic.
+		a.unifiedClassifier = nil
+		setUnifiedClassifierForIM(nil)
 	}
 	return nil
 }
@@ -490,6 +495,28 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	a.gateIntentClassifier = gic
 	log.Println("[embedding] GateIntentClassifier created and warming up anchors")
 
+	// Create and wire UnifiedIntentClassifier (shared three-layer pipeline).
+	uic := intent.New(intent.Config{
+		Embedder:   emb,
+		LLMTimeout: 8 * time.Second,
+	})
+	uic.SetLLMFunc(a.buildUICLLMFunc())
+	a.unifiedClassifier = uic
+
+	// Inject UIC into consumers.
+	if a.toolRouter != nil {
+		a.toolRouter.SetUnifiedClassifier(uic)
+	}
+	if gic != nil {
+		gic.SetUnifiedClassifier(uic)
+	}
+	if a.capabilityGapDetector != nil {
+		a.capabilityGapDetector.SetUnifiedClassifier(uic)
+	}
+	// Set package-level UIC for classifyTaskIntent delegation.
+	setUnifiedClassifierForIM(uic)
+	log.Println("[embedding] UnifiedIntentClassifier created and wired to consumers")
+
 	// Wire embedder into tool builder.
 	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
 		if handler := a.remoteSessions.hubClient.imHandler; handler != nil && handler.toolBuilder != nil {
@@ -525,6 +552,28 @@ func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
 		}
 		client := &http.Client{Timeout: 5 * time.Second}
 		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 5*time.Second)
+		if err != nil {
+			return "", err
+		}
+		return resp.Content, nil
+	}
+}
+
+// buildUICLLMFunc creates an intent.LLMClassifyFunc callback that uses the
+// app's current LLM config to make a classification request with system + user
+// messages. Used by the UnifiedIntentClassifier's Layer 3.
+func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
+	return func(systemPrompt, userText string) (string, error) {
+		cfg := a.GetMaclawLLMConfig()
+		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+			return "", fmt.Errorf("LLM not configured")
+		}
+		messages := []interface{}{
+			map[string]string{"role": "system", "content": systemPrompt},
+			map[string]string{"role": "user", "content": userText},
+		}
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 8*time.Second)
 		if err != nil {
 			return "", err
 		}

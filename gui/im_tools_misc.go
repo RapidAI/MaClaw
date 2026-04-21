@@ -1231,7 +1231,7 @@ const (
 	bashDefaultTimeout      = 30
 	bashMaxTimeout          = 120
 	bashPDFTimeout          = bashMaxTimeout
-	craftToolDefaultTimeout = 60
+	craftToolDefaultTimeout = 90
 	craftToolMaxTimeout     = 300
 	craftToolPDFTimeout     = 180
 	readFileMaxLines        = 200

@@ -200,7 +200,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             <div style={cardStyle}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
                     <div>
-                        <h3 style={sectionTitleStyle}>{t("Service Redeem", "服务兑换")}</h3>
+                        <h3 style={sectionTitleStyle}>{t("Service Exchange", "服务兑换")}</h3>
                         <div style={{ ...valueStyle, color: colors.textSecondary, marginTop: 4 }}>
                             {t(
                                 "Redeem a service card to activate MaClaw model service permissions on this account.",

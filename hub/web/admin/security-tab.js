@@ -36,6 +36,15 @@
     return isZh() ? zh : en;
   }
 
+  function policyOptionLabel(policyKey, option) {
+    var labels = {
+      guardrail_mode: { none: text('\u65e0', 'None'), standard: text('\u6807\u51c6', 'Standard'), strict: text('\u4e25\u683c', 'Strict') },
+      sandbox_mode: { none: text('\u65e0', 'None'), basic: text('\u57fa\u7840', 'Basic'), strict: text('\u4e25\u683c', 'Strict') },
+      network_level: { none: text('\u65e0', 'None'), limited: text('\u53d7\u9650', 'Limited'), full: text('\u5b8c\u5168\u5f00\u653e', 'Full') }
+    };
+    return labels[policyKey] && labels[policyKey][option] ? labels[policyKey][option] : option;
+  }
+
   function ui() {
     return global.AdminUI || null;
   }
@@ -118,10 +127,10 @@
   }
 
   function applySecurityI18n() {
-    _s('navSecurity', 'textContent', text('\u5b89\u5168\u7ba1\u7406', 'Security'));
-    _s('navSecurityDesc', 'textContent', text('\u7528\u6237\u7ec4\u3001\u7b56\u7565\u4e0e\u7ec4\u7ec7\u67b6\u6784', 'Security Management'));
-    _s('secTitle', 'textContent', text('\u5b89\u5168\u7ba1\u7406', 'Security'));
-    _s('secDesc', 'textContent', text('\u7ba1\u7406\u7528\u6237\u7ec4\u3001\u7b56\u7565\u548c\u7ec4\u7ec7\u67b6\u6784\u3002', 'Manage groups, policies, and organization structure.'));
+    _s('navSecurity', 'textContent', text('\u5b89\u5168\u7ba1\u7406', 'Security Management'));
+    _s('navSecurityDesc', 'textContent', text('\u7528\u6237\u7ec4\u3001\u7b56\u7565\u4e0e\u7ec4\u7ec7\u67b6\u6784', 'Groups, policies, and organization structure')); 
+    _s('secTitle', 'textContent', text('\u5b89\u5168\u7ba1\u7406', 'Security Management')); 
+    _s('secDesc', 'textContent', text('\u7ba1\u7406\u7528\u6237\u7ec4\u3001\u7b56\u7565\u548c\u7ec4\u7ec7\u67b6\u6784\u3002', 'Manage groups, policies, and the organization structure.'));
     _s('secReloadBtn', 'textContent', text('\u5237\u65b0', 'Reload'));
     _s('secCentralizedTitle', 'textContent', text('\u96c6\u4e2d\u7b56\u7565', 'Centralized Policy'));
     _s('secOrgTitle', 'textContent', text('\u7ec4\u7ec7\u67b6\u6784', 'Org Structure'));
@@ -446,8 +455,8 @@
         var source = item.source || 'inherited';
         var sourceName = item.source_name || '';
         var sourceTag = source === 'self'
-          ? '<span style="color:var(--accent);font-size:11px;margin-left:6px">' + text('\u81ea\u5b9a\u4e49', 'self') + '</span>'
-          : '<span style="color:var(--muted);font-size:11px;margin-left:6px">' + text('\u7ee7\u627f\u81ea ', 'from ') + escapeHtml(sourceName) + '</span>';
+          ? '<span style="color:var(--accent);font-size:11px;margin-left:6px">' + text('\u81ea\u5b9a\u4e49', 'Custom') + '</span>'
+          : '<span style="color:var(--muted);font-size:11px;margin-left:6px">' + text('\u7ee7\u627f\u81ea ', 'Inherited from ') + escapeHtml(sourceName) + '</span>';
         html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)">';
         html += '<div>' + escapeHtml(pk.label) + sourceTag + '</div>';
         if (pk.type === 'bool') {
@@ -455,7 +464,7 @@
         } else {
           html += '<select data-policy-key="' + pk.key + '" data-policy-type="select" style="font-size:13px;padding:2px 8px;border-radius:6px;border:1px solid var(--line)">';
           pk.options.forEach(function(option) {
-            html += '<option value="' + option + '"' + (value === option ? ' selected' : '') + '>' + option + '</option>';
+            html += '<option value="' + option + '"' + (value === option ? ' selected' : '') + '>' + escapeHtml(policyOptionLabel(pk.key, option)) + '</option>';
           });
           html += '</select>';
         }
@@ -722,7 +731,7 @@
       var sec = state();
       applySecurityI18n();
       if (sec.assignGroupId && sec.contextGroupName) {
-        _s('assignUsersModalTitle', 'textContent', text('\u79fb\u5165\u7528\u6237\u5230: ', 'Move users to: ') + sec.contextGroupName);
+        _s('assignUsersModalTitle', 'textContent', text('\u79fb\u5165\u7528\u6237\u5230\u90e8\u95e8: ', 'Move users to department: ') + sec.contextGroupName);
       }
       renderAssignUsers();
       var membersPanel = document.getElementById('secGroupMembers');

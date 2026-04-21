@@ -27,6 +27,23 @@
     return 'info';
   }
 
+  function serviceAccessLabel() {
+    return currentLang === 'zh' ? '\u5df2\u6709\u670d\u52a1\u6743\u9650' : 'Service Access';
+  }
+
+  function serviceAccessTooltip(item) {
+    const status = item && item.service_status;
+    if (!status || !status.active) return '';
+    const lines = [];
+    const groupNames = (status.service_group_names || []).filter(Boolean);
+    const models = (status.available_models || []).filter(Boolean);
+    if (groupNames.length) lines.push((currentLang === 'zh' ? '\u670d\u52a1\u7ec4: ' : 'Service Groups: ') + groupNames.join(', '));
+    if (models.length) lines.push((currentLang === 'zh' ? '\u53ef\u7528\u6a21\u578b: ' : 'Models: ') + models.join(', '));
+    if (status.nearest_expires_at) lines.push((currentLang === 'zh' ? '\u6700\u8fd1\u5230\u671f: ' : 'Nearest Expiry: ') + status.nearest_expires_at);
+    if (Number(status.credits_available || 0) > 0) lines.push('Credits: ' + String(status.credits_available));
+    return lines.join('&#10;');
+  }
+
   global.renderBlockedEmails = function renderBlockedEmails(items) {
     const helper = ui();
     document.getElementById('blockedCountHero').textContent = String(items.length);
@@ -86,7 +103,8 @@
       var smartRoute = item.smart_route;
       var toggleId = 'sr_' + item.id;
       var userIdExpr = JSON.stringify(String(item.id || ''));
-      return '<div class="user-card" style="flex-direction:column;gap:6px;cursor:default"><div style="min-width:0"><div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">' + escapeHtml(item.email) + '</div><div class="item-meta mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">' + escapeHtml(item.sn || tr('na')) + '</div></div><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="badge info" style="font-size:10px;padding:4px 8px">' + escapeHtml(item.enrollment_status || item.status || tr('active')) + '</span><label class="toggle-label" title="' + (lang === 'zh' ? '\u667a\u80fd\u63a7\u5236' : 'Smart Route') + '"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' onchange="toggleSmartRoute(' + userIdExpr + ', this.checked)"><span>\ud83e\udd16</span></label></div></div>';
+      var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="font-size:10px;padding:4px 8px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '';
+      return '<div class="user-card" style="flex-direction:column;gap:6px;cursor:default"><div style="min-width:0"><div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">' + escapeHtml(item.email) + '</div><div class="item-meta mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">' + escapeHtml(item.sn || tr('na')) + '</div></div><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="badge info" style="font-size:10px;padding:4px 8px">' + escapeHtml(item.enrollment_status || item.status || tr('active')) + '</span>' + serviceBadge + '<label class="toggle-label" title="' + (lang === 'zh' ? '\u667a\u80fd\u63a7\u5236' : 'Smart Route') + '"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' onchange="toggleSmartRoute(' + userIdExpr + ', this.checked)"><span>AI</span></label></div></div>';
     }).join('');
     var pagerHtml = '';
     var showCount = filtered.length > 0 ? (start + 1) + '-' + (start + pageItems.length) + ' / ' + filtered.length : '0 / 0';

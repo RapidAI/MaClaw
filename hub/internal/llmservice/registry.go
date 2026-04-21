@@ -89,13 +89,15 @@ type Grant struct {
 }
 
 type AuthorizedModel struct {
-	Name             string   `json:"name"`
-	ProviderIDs      []string `json:"provider_ids,omitempty"`
-	ServiceGroupIDs  []string `json:"service_group_ids,omitempty"`
-	CapabilityTags   []string `json:"capability_tags,omitempty"`
-	Priority         int      `json:"priority,omitempty"`
-	ResolutionTier   int      `json:"resolution_tier,omitempty"`
-	CreditMultiplier float64  `json:"credit_multiplier,omitempty"`
+	Name                      string              `json:"name"`
+	ProviderIDs               []string            `json:"provider_ids,omitempty"`
+	ServiceGroupIDs           []string            `json:"service_group_ids,omitempty"`
+	CapabilityTags            []string            `json:"capability_tags,omitempty"`
+	Priority                  int                 `json:"priority,omitempty"`
+	ResolutionTier            int                 `json:"resolution_tier,omitempty"`
+	CreditMultiplier          float64             `json:"credit_multiplier,omitempty"`
+	ProviderServiceGroups     map[string][]string `json:"provider_service_groups,omitempty"`
+	ProviderCreditMultipliers map[string]float64  `json:"provider_credit_multipliers,omitempty"`
 }
 
 type ActiveGrant struct {

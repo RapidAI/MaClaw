@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 const (
@@ -332,6 +333,7 @@ type Router struct {
 	reranker      Reranker // nil when reranking is disabled
 	sessionTools  map[string]bool
 	intentClassifier *IntentClassifier // hybrid intent classifier (Layer 1+2+3)
+	unifiedClassifier *intent.UnifiedIntentClassifier // UIC — replaces conditionalKeepRules when non-nil
 }
 
 func NewRouter(generator *DefinitionGenerator) *Router {
@@ -510,6 +512,13 @@ func (r *Router) SetIntentClassifier(ic *IntentClassifier) {
 // IntentClassifier returns the configured IntentClassifier, or nil.
 func (r *Router) IntentClassifier() *IntentClassifier {
 	return r.intentClassifier
+}
+
+// SetUnifiedClassifier sets the Unified Intent Classifier used for
+// intent-driven conditional tool selection. When non-nil, Route() uses
+// UIC results instead of evaluating conditionalKeepRules keyword matches.
+func (r *Router) SetUnifiedClassifier(uic *intent.UnifiedIntentClassifier) {
+	r.unifiedClassifier = uic
 }
 
 // ActivateSessionTool adds a tool to the current session's always-include set.
@@ -718,78 +727,140 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		return allTools
 	}
 
-	condKeep, condFilterOut, condNeedsConfirm := matchConditionalKeepRules(userMessage)
-
-	// Semantic intent confirmation: when a conditional rule matched keywords
-	// but requires semantic confirmation (needsSemanticConfirm=true), use the
-	// IntentClassifier to verify the user's actual intent before activating
-	// those tools. This prevents false positives like "浏览器直接打开即玩"
-	// (describing a game's runtime) from activating 25+ browser tools.
-	//
-	// When the IntentClassifier is unavailable, fall back to keyword match
-	// (promote all needsConfirm tools to keep) to maintain existing behavior.
-	//
-	// The classification result is cached and reused by the semantic intent
-	// enhancement below to avoid double classification.
+	var condKeep map[string]bool
+	var condFilterOut map[string]bool
+	var condNeedsConfirm map[string]string
 	var cachedICResult *IntentResult
-	if r.intentClassifier != nil {
-		result := r.intentClassifier.Classify(userMessage)
-		cachedICResult = &result
-	}
 
-	if len(condNeedsConfirm) > 0 {
-		if cachedICResult != nil {
-			// Group needsConfirm tools by their required intent.
-			for name, requiredIntent := range condNeedsConfirm {
-				if cachedICResult.Intent == requiredIntent && cachedICResult.Confidence >= 0.50 {
-					// Semantic confirmation passed — promote to keep.
-					condKeep[name] = true
-					delete(condFilterOut, name)
-				}
-				// Otherwise: tool stays in filterOut (keyword was a false positive).
-			}
-			if logDetailEnabled.Load() {
-				promoted := 0
-				for name := range condNeedsConfirm {
-					if condKeep[name] {
-						promoted++
-					}
-				}
-				log.Printf("[Router] semantic confirm: intent=%s conf=%.2f, %d/%d tools promoted",
-					cachedICResult.Intent, cachedICResult.Confidence, promoted, len(condNeedsConfirm))
-			}
-		} else {
-			// No IntentClassifier available — fall back to keyword match.
-			for name := range condNeedsConfirm {
-				condKeep[name] = true
-				delete(condFilterOut, name)
+	if r.unifiedClassifier != nil {
+		// UIC path: use UnifiedIntentClassifier to determine which conditional
+		// tools to keep, replacing the keyword-based matchConditionalKeepRules.
+		condKeep = make(map[string]bool)
+		condFilterOut = make(map[string]bool)
+		condNeedsConfirm = make(map[string]string)
+
+		uicResult := r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
+
+		// Use ToolNames from the UIC result to populate condKeep.
+		for _, toolName := range uicResult.ToolNames {
+			condKeep[toolName] = true
+		}
+
+		// Preserve needsSemanticConfirm mechanism for browser weak signals:
+		// Layer 1 weak browser combo produces confidence < 0.90. When UIC
+		// returns Primary=LabelBrowser with Confidence < 0.90, treat browser
+		// tools as needing semantic confirmation (same as the weak keyword rule).
+		if uicResult.Primary == intent.LabelBrowser && uicResult.Confidence < 0.90 {
+			// Move browser tools from condKeep to condNeedsConfirm.
+			for _, toolName := range uicResult.ToolNames {
+				delete(condKeep, toolName)
+				condNeedsConfirm[toolName] = IntentBrowser
 			}
 		}
-	}
 
-	// Semantic intent enhancement: when keyword matching misses but the
-	// IntentClassifier detects a specific intent, activate the corresponding
-	// conditional tools. This catches cases like "帮我搞个能自动抢票的东西"
-	// where no SSH/browser keywords appear but embedding detects the intent.
-	if cachedICResult != nil {
-		if cachedICResult.Intent != IntentQuery && cachedICResult.Intent != IntentShortCommand &&
-			cachedICResult.Intent != IntentUnknown && cachedICResult.Confidence >= 0.50 {
-			var intentTools []string
-			switch cachedICResult.Intent {
-			case IntentSSH:
-				intentTools = []string{"ssh"}
-			case IntentBrowser:
-				// Activate all browser-related conditional tools.
-				for name := range allConditionalKeepTools {
-					if strings.HasPrefix(name, "browser_") || name == "gui_record_start" || name == "gui_record_stop" {
-						intentTools = append(intentTools, name)
+		// Filter out conditional tools NOT matched by UIC.
+		for name := range allConditionalKeepTools {
+			if !condKeep[name] {
+				condFilterOut[name] = true
+			}
+		}
+
+		// Use existing IntentClassifier for semantic confirmation of needsConfirm tools.
+		if r.intentClassifier != nil {
+			result := r.intentClassifier.Classify(userMessage)
+			cachedICResult = &result
+		}
+
+		if len(condNeedsConfirm) > 0 {
+			if cachedICResult != nil {
+				for name, requiredIntent := range condNeedsConfirm {
+					if cachedICResult.Intent == requiredIntent && cachedICResult.Confidence >= 0.50 {
+						condKeep[name] = true
+						delete(condFilterOut, name)
 					}
 				}
-			}
-			for _, name := range intentTools {
-				if !condKeep[name] {
+			} else {
+				// No IntentClassifier available — fall back to keyword match.
+				for name := range condNeedsConfirm {
 					condKeep[name] = true
 					delete(condFilterOut, name)
+				}
+			}
+		}
+	} else {
+		// Fallback path: UIC not available, use existing conditionalKeepRules.
+		condKeep, condFilterOut, condNeedsConfirm = matchConditionalKeepRules(userMessage)
+
+		// Semantic intent confirmation: when a conditional rule matched keywords
+		// but requires semantic confirmation (needsSemanticConfirm=true), use the
+		// IntentClassifier to verify the user's actual intent before activating
+		// those tools. This prevents false positives like "浏览器直接打开即玩"
+		// (describing a game's runtime) from activating 25+ browser tools.
+		//
+		// When the IntentClassifier is unavailable, fall back to keyword match
+		// (promote all needsConfirm tools to keep) to maintain existing behavior.
+		//
+		// The classification result is cached and reused by the semantic intent
+		// enhancement below to avoid double classification.
+		if r.intentClassifier != nil {
+			result := r.intentClassifier.Classify(userMessage)
+			cachedICResult = &result
+		}
+
+		if len(condNeedsConfirm) > 0 {
+			if cachedICResult != nil {
+				// Group needsConfirm tools by their required intent.
+				for name, requiredIntent := range condNeedsConfirm {
+					if cachedICResult.Intent == requiredIntent && cachedICResult.Confidence >= 0.50 {
+						// Semantic confirmation passed — promote to keep.
+						condKeep[name] = true
+						delete(condFilterOut, name)
+					}
+					// Otherwise: tool stays in filterOut (keyword was a false positive).
+				}
+				if logDetailEnabled.Load() {
+					promoted := 0
+					for name := range condNeedsConfirm {
+						if condKeep[name] {
+							promoted++
+						}
+					}
+					log.Printf("[Router] semantic confirm: intent=%s conf=%.2f, %d/%d tools promoted",
+						cachedICResult.Intent, cachedICResult.Confidence, promoted, len(condNeedsConfirm))
+				}
+			} else {
+				// No IntentClassifier available — fall back to keyword match.
+				for name := range condNeedsConfirm {
+					condKeep[name] = true
+					delete(condFilterOut, name)
+				}
+			}
+		}
+
+		// Semantic intent enhancement: when keyword matching misses but the
+		// IntentClassifier detects a specific intent, activate the corresponding
+		// conditional tools. This catches cases like "帮我搞个能自动抢票的东西"
+		// where no SSH/browser keywords appear but embedding detects the intent.
+		if cachedICResult != nil {
+			if cachedICResult.Intent != IntentQuery && cachedICResult.Intent != IntentShortCommand &&
+				cachedICResult.Intent != IntentUnknown && cachedICResult.Confidence >= 0.50 {
+				var intentTools []string
+				switch cachedICResult.Intent {
+				case IntentSSH:
+					intentTools = []string{"ssh"}
+				case IntentBrowser:
+					// Activate all browser-related conditional tools.
+					for name := range allConditionalKeepTools {
+						if strings.HasPrefix(name, "browser_") || name == "gui_record_start" || name == "gui_record_stop" {
+							intentTools = append(intentTools, name)
+						}
+					}
+				}
+				for _, name := range intentTools {
+					if !condKeep[name] {
+						condKeep[name] = true
+						delete(condFilterOut, name)
+					}
 				}
 			}
 		}

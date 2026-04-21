@@ -3621,8 +3621,8 @@ ${instruction}`;
         },
         {
             id: 'serviceRedeem' as const,
-            label: lang === 'zh-Hans' ? '服务兑换' : lang === 'zh-Hant' ? '服務兌換' : 'Service Redeem',
-            desc: lang === 'zh-Hans' ? '兑换充值卡并查看 Hub 模型服务授权' : lang === 'zh-Hant' ? '兌換儲值卡並查看 Hub 模型服務授權' : 'Redeem service cards and view Hub model service grants',
+            label: lang === 'zh-Hans' ? '服务兑换' : lang === 'zh-Hant' ? '服務兌換' : 'Service Exchange',
+            desc: lang === 'zh-Hans' ? '兑换服务兑换卡并查看 Hub 模型服务授权' : lang === 'zh-Hant' ? '兌換服務兌換卡並查看 Hub 模型服務授權' : 'Redeem service exchange cards and view Hub model service grants',
         },
         {
             id: 'search' as const,
@@ -7959,5 +7959,6 @@ ${instruction}`;
 }
 
 export default App;
+
 
 

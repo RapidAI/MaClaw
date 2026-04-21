@@ -7,6 +7,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -32,12 +34,14 @@ type CenterConfigRequest struct {
 }
 
 type BoundUserView struct {
-	ID               string `json:"id"`
-	Email            string `json:"email"`
-	SN               string `json:"sn"`
-	Status           string `json:"status"`
-	EnrollmentStatus string `json:"enrollment_status"`
-	SmartRoute       bool   `json:"smart_route"`
+	ID               string                    `json:"id"`
+	Email            string                    `json:"email"`
+	SN               string                    `json:"sn"`
+	Status           string                    `json:"status"`
+	EnrollmentStatus string                    `json:"enrollment_status"`
+	SmartRoute       bool                      `json:"smart_route"`
+	HasServiceAccess bool                      `json:"has_service_access,omitempty"`
+	ServiceStatus    *llmservice.ServiceStatus `json:"service_status,omitempty"`
 }
 
 func ManualBindHandler(identity *auth.IdentityService) http.HandlerFunc {
@@ -169,7 +173,7 @@ func LookupUserHandler(identity *auth.IdentityService) http.HandlerFunc {
 	}
 }
 
-func ListUsersHandler(identity *auth.IdentityService) http.HandlerFunc {
+func ListUsersHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		items, err := identity.ListUsers(r.Context())
 		if err != nil {
@@ -190,6 +194,10 @@ func ListUsersHandler(identity *auth.IdentityService) http.HandlerFunc {
 				continue
 			}
 			seenEmails[emailKey] = struct{}{}
+			var serviceStatus *llmservice.ServiceStatus
+			if system != nil {
+				serviceStatus, _ = llmservice.ResolveServiceStatus(r.Context(), system, securitySvc, user.Email, externalLLMBaseURL(r))
+			}
 			out = append(out, BoundUserView{
 				ID:               user.ID,
 				Email:            user.Email,
@@ -197,6 +205,8 @@ func ListUsersHandler(identity *auth.IdentityService) http.HandlerFunc {
 				Status:           user.Status,
 				EnrollmentStatus: user.EnrollmentStatus,
 				SmartRoute:       user.SmartRoute,
+				HasServiceAccess: serviceStatus != nil && serviceStatus.Active,
+				ServiceStatus:    serviceStatus,
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"users": out})

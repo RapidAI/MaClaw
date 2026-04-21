@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -362,13 +363,80 @@ func shouldAutoRegisterCraftRequest(request craftToolRequest) bool {
 }
 
 func detectAvailableScriptRuntimes() craftRuntimeAvailability {
-	return craftRuntimeAvailability{
+	runtimes := craftRuntimeAvailability{
 		Python:     firstAvailableLookPath("python3", "python"),
 		Node:       firstAvailableLookPath("node"),
 		Bash:       firstAvailableLookPath("bash"),
 		PowerShell: firstAvailableLookPath("powershell", "pwsh"),
 	}
+	// On Windows, exec.LookPath may find python in cmd.exe PATH but not in
+	// Git Bash (sh.exe) PATH. If LookPath found python, verify it's a real
+	// executable (not the Microsoft Store stub) and resolve its absolute path
+	// so it works in any shell environment.
+	if runtime.GOOS == "windows" && runtimes.Python != "" {
+		runtimes.Python = resolveWindowsPythonPath(runtimes.Python)
+	}
+	return runtimes
 }
+
+// resolveWindowsPythonPath ensures the Python path is an absolute path that
+// works in any shell (cmd.exe, sh.exe, PowerShell). On Windows, exec.LookPath
+// may return a relative name like "python" that only resolves in cmd.exe's PATH
+// but not in Git Bash. This function uses `cmd /c where python` to find the
+// real absolute path, filtering out Microsoft Store stubs.
+func resolveWindowsPythonPath(lookPathResult string) string {
+	// If already absolute, just filter out Store stubs.
+	if filepath.IsAbs(lookPathResult) {
+		if strings.Contains(strings.ToLower(lookPathResult), "windowsapps") {
+			// Store stub — try to find real python via cmd /c where
+			return findRealPythonViaCMD()
+		}
+		return lookPathResult
+	}
+	// Relative name (e.g. "python") — resolve to absolute via cmd /c where.
+	absPath := findRealPythonViaCMD()
+	if absPath != "" {
+		return absPath
+	}
+	return lookPathResult // fallback to whatever LookPath found
+}
+
+// findRealPythonViaCMD uses `cmd /c where python` to discover the absolute
+// path of the Python executable. This works even when the current shell is
+// Git Bash (sh.exe) whose PATH doesn't include the Python install directory.
+// Filters out Microsoft Store stubs (WindowsApps).
+// Result is cached via sync.OnceValue to avoid spawning subprocesses on every call.
+var findRealPythonViaCMD = sync.OnceValue(func() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	// Try python3 first, then python
+	for _, name := range []string{"python3", "python"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cmd := exec.CommandContext(ctx, "cmd", "/c", "where", name)
+		out, err := cmd.Output()
+		cancel()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			p := strings.TrimSpace(line)
+			if p == "" {
+				continue
+			}
+			// Skip Microsoft Store stub
+			if strings.Contains(strings.ToLower(p), "windowsapps") {
+				continue
+			}
+			// Verify it's a real executable
+			if _, err := os.Stat(p); err == nil {
+				log.Printf("[craft_tool] resolved Python path via cmd /c where: %s", p)
+				return p
+			}
+		}
+	}
+	return ""
+})
 
 func firstAvailableLookPath(names ...string) string {
 	for _, name := range names {
@@ -928,6 +996,8 @@ func buildCraftExecCommand(ctx context.Context, scriptPath, language string, run
 		if runtimes.Python == "" {
 			return nil, fmt.Errorf("python runtime not found")
 		}
+		// Use the absolute path from runtimes (resolved via cmd /c where on
+		// Windows) to ensure Python is found regardless of which shell is active.
 		return exec.CommandContext(ctx, runtimes.Python, scriptPath), nil
 	case "node":
 		if runtimes.Node == "" {
@@ -980,7 +1050,15 @@ func detectScriptLanguageWithRuntime(task string, runtimes craftRuntimeAvailabil
 			return "bash"
 		}
 	}
+	// Default language selection: on Windows, prefer Node.js over Python
+	// because Node.js is discoverable in all shell environments (cmd.exe,
+	// sh.exe, PowerShell), while Python may only be in cmd.exe's PATH.
+	// This avoids "exit status 9009" errors when craft_tool scripts run
+	// in Git Bash where Python is not on PATH.
 	if runtime.GOOS == "windows" {
+		if runtimes.Node != "" && !prefersShell {
+			return "node"
+		}
 		if runtimes.Python != "" && !prefersShell {
 			return "python"
 		}

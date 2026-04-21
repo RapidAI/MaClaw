@@ -171,6 +171,10 @@ type NLSkillEntry struct {
 	// Credential file mounting
 	RequiredCredentialFiles []string `json:"required_credential_files,omitempty"`
 
+	// Dependency auto-install
+	RequiresPython []string `json:"requires_python,omitempty"` // pip packages to auto-install
+	RequiresNode   []string `json:"requires_node,omitempty"`   // npm packages to auto-install
+
 	// Plugin namespace
 	Publisher string `json:"publisher,omitempty"` // e.g. "lovstudio"
 

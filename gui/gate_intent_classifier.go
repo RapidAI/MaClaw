@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -129,14 +130,15 @@ type gateAnchor struct {
 //	Layer 2: embedding cosine similarity against gate-specific anchors
 //	Layer 3: LLM refinement for ambiguous cases
 type GateIntentClassifier struct {
-	embedder    embedding.Embedder
-	anchors     []gateAnchor
-	queryCache  *tool.QueryEmbeddingCache
-	ctxProvider ConversationContextProvider
-	llmConfig   func() MaclawLLMConfig // lazy access to LLM config
-	httpClient  *http.Client
-	ready       bool
-	mu          sync.RWMutex
+	embedder           embedding.Embedder
+	anchors            []gateAnchor
+	queryCache         *tool.QueryEmbeddingCache
+	ctxProvider        ConversationContextProvider
+	llmConfig          func() MaclawLLMConfig // lazy access to LLM config
+	httpClient         *http.Client
+	unifiedClassifier  *intent.UnifiedIntentClassifier
+	ready              bool
+	mu                 sync.RWMutex
 }
 
 // NewGateIntentClassifier creates a new gate intent classifier. If emb is nil
@@ -188,6 +190,15 @@ func (g *GateIntentClassifier) Ready() bool {
 	return g.ready
 }
 
+// SetUnifiedClassifier sets the UIC instance. When non-nil, Classify()
+// delegates to the UIC and maps the result to GateIntentResult via
+// ToGateIntent(), bypassing the local three-layer pipeline.
+func (g *GateIntentClassifier) SetUnifiedClassifier(uic *intent.UnifiedIntentClassifier) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.unifiedClassifier = uic
+}
+
 // Classify determines the gate intent for a user message. userID is used for
 // conversation context lookup (continuation detection).
 //
@@ -195,6 +206,31 @@ func (g *GateIntentClassifier) Ready() bool {
 // result (≥ 0.90), the result is returned immediately. Otherwise, the result
 // falls through to Layer 2/3 (implemented in later tasks).
 func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentResult {
+	// --- UIC delegation: when the Unified Intent Classifier is available,
+	// delegate to it and map the result to GateIntentResult. ---
+	g.mu.RLock()
+	uic := g.unifiedClassifier
+	g.mu.RUnlock()
+	if uic != nil {
+		uicResult := uic.Classify(intent.MessageContext{
+			Text:   text,
+			UserID: userID,
+		})
+		gateIntent, confidence, gap, layer, reason := uicResult.ToGateIntent()
+		result := GateIntentResult{
+			Intent:     GateIntent(gateIntent),
+			Confidence: confidence,
+			Gap:        gap,
+			Layer:      layer,
+			Reason:     reason,
+		}
+		log.Printf("[GateIntentClassifier] classify(%q): UIC delegation intent=%s conf=%.2f layer=%d",
+			text, result.Intent, result.Confidence, result.Layer)
+		return result
+	}
+
+	// --- Fallback: local three-layer pipeline when UIC is nil ---
+
 	// --- Short-message continuation detection (before keyword classification) ---
 	// Detect short messages (≤10 runes covers both ≤4 Chinese chars and ≤10
 	// English chars since Chinese characters are 1 rune each) and check if

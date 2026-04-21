@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -74,6 +75,11 @@ func (r *ToolRouter) SetReranker(rr tool.Reranker) {
 // SetIntentClassifier delegates to corelib/tool.Router.SetIntentClassifier.
 func (r *ToolRouter) SetIntentClassifier(ic *tool.IntentClassifier) {
 	r.inner.SetIntentClassifier(ic)
+}
+
+// SetUnifiedClassifier delegates to corelib/tool.Router.SetUnifiedClassifier.
+func (r *ToolRouter) SetUnifiedClassifier(uic *intent.UnifiedIntentClassifier) {
+	r.inner.SetUnifiedClassifier(uic)
 }
 
 // IntentClassifier returns the configured IntentClassifier from the inner router.

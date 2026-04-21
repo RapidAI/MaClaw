@@ -31,6 +31,7 @@ type llmProviderRegistryResponse struct {
 	AuthMode               string   `json:"auth_mode"`
 	AuthHint               string   `json:"auth_hint"`
 	Hints                  []string `json:"hints,omitempty"`
+	Warnings               []string `json:"warnings,omitempty"`
 }
 
 type llmServiceAdminResponse struct {
@@ -46,6 +47,7 @@ type llmServiceAdminResponse struct {
 	ExposeBaseURL               string                         `json:"expose_base_url,omitempty"`
 	ExposeModelsURL             string                         `json:"expose_models_url,omitempty"`
 	AvailableModels             []string                       `json:"available_models,omitempty"`
+	ProviderLinkIssues          []string                       `json:"provider_link_issues,omitempty"`
 }
 
 type createLLMServiceCardRequest struct {
@@ -66,7 +68,12 @@ func GetLLMProvidersHandler(system store.SystemSettingsRepository) http.HandlerF
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, registryResponse(r, reg))
+		serviceReg, err := llmservice.LoadRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, registryResponse(r, reg, collectLLMServiceProviderReferenceIssues(serviceReg, reg)))
 	}
 }
 
@@ -110,12 +117,21 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 		if req.TokenUsage == nil && oldReg != nil {
 			req.TokenUsage = oldReg.TokenUsage
 		}
+		serviceReg, err := llmservice.LoadRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
+			return
+		}
+		if issues := collectLLMServiceProviderReferenceIssues(serviceReg, &req); len(issues) > 0 {
+			writeError(w, http.StatusBadRequest, "LLM_PROVIDER_IN_USE", strings.Join(issues, "; "))
+			return
+		}
 		if err := im.SaveLLMProviderRegistry(r.Context(), system, &req); err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_SAVE_FAILED", err.Error())
 			return
 		}
 		_ = syncLegacyHubLLMConfig(r.Context(), system, &req)
-		writeJSON(w, http.StatusOK, registryResponse(r, &req))
+		writeJSON(w, http.StatusOK, registryResponse(r, &req, collectLLMServiceProviderReferenceIssues(serviceReg, &req)))
 	}
 }
 
@@ -164,7 +180,12 @@ func GetLLMServicesAdminHandler(system store.SystemSettingsRepository) http.Hand
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, toLLMServiceAdminResponse(r, reg))
+		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, toLLMServiceAdminResponse(r, reg, collectLLMServiceProviderReferenceIssues(reg, providerReg)))
 	}
 }
 
@@ -184,11 +205,20 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository) http.H
 			return
 		}
 		preserveCardHashes(&req, oldReg)
+		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
+			return
+		}
+		if issues := collectLLMServiceProviderReferenceIssues(&req, providerReg); len(issues) > 0 {
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_PROVIDER_NOT_FOUND", strings.Join(issues, "; "))
+			return
+		}
 		if err := llmservice.SaveRegistry(r.Context(), system, &req); err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_SAVE_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, toLLMServiceAdminResponse(r, &req))
+		writeJSON(w, http.StatusOK, toLLMServiceAdminResponse(r, &req, nil))
 	}
 }
 
@@ -312,7 +342,7 @@ func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSetti
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		status, models, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
+		status, models, _, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -356,7 +386,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 			return
 		}
-		status, models, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
+		status, models, providerReg, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -367,26 +397,21 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
-		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
-			return
-		}
-		respBody, statusCode, usedProviderID, err := forwardAuthorizedModelRequest(r, providerReg, authorizedModel, body, requestedModel)
+		respBody, statusCode, usedProviderID, chargedServiceGroupIDs, err := forwardAuthorizedModelRequest(r, providerReg, authorizedModel, body, requestedModel)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
 			return
 		}
 		if statusCode < 400 && usedProviderID != "" {
 			usageStat := parseUsageStats(respBody)
-			credits := llmservice.EstimateCredits(usageStat.TotalTokens, authorizedModel.CreditMultiplier, status.TokensPerCredit)
+			credits := llmservice.EstimateCredits(usageStat.TotalTokens, llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID), status.TokensPerCredit)
 			userGroupIDs := []string(nil)
 			if securitySvc != nil {
 				if resolved, resolveErr := securitySvc.ResolveUserGroupChain(r.Context(), principal.Email); resolveErr == nil {
 					userGroupIDs = resolved
 				}
 			}
-			enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, authorizedModel.ServiceGroupIDs, userGroupIDs, credits)
+			enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if authorizedModel != nil {
@@ -408,7 +433,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 	}
 }
 
-func registryResponse(r *http.Request, reg *im.LLMProviderRegistry) llmProviderRegistryResponse {
+func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []string) llmProviderRegistryResponse {
 	providers := make([]any, 0, len(reg.Providers))
 	availableModels := make([]string, 0, len(reg.Providers))
 	seenModels := map[string]struct{}{}
@@ -441,6 +466,18 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry) llmProviderR
 	}
 	sort.Strings(availableModels)
 	base := externalLLMBaseURL(r)
+	mergedHints := []string{
+		"Use model=<provider id> to select a configured provider on the unified endpoint.",
+		"If model is omitted, the current default provider is used.",
+		"Public LLM endpoints require a viewer Bearer token from hub email sign-in; do not distribute upstream provider API keys.",
+	}
+	for _, warning := range warnings {
+		warning = strings.TrimSpace(warning)
+		if warning == "" {
+			continue
+		}
+		mergedHints = append(mergedHints, "Warning: "+warning)
+	}
 	return llmProviderRegistryResponse{
 		Enabled:                reg.Enabled,
 		CurrentProviderID:      reg.CurrentProviderID,
@@ -452,15 +489,12 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry) llmProviderR
 		AvailableModels:        availableModels,
 		AuthMode:               "viewer_bearer_token",
 		AuthHint:               "Use Authorization: Bearer <viewer access token>. Reuse the access_token returned by /api/auth/email-confirm or /api/auth/email-poll after email sign-in.",
-		Hints: []string{
-			"Use model=<provider id> to select a configured provider on the unified endpoint.",
-			"If model is omitted, the current default provider is used.",
-			"Public LLM endpoints require a viewer Bearer token from hub email sign-in; do not distribute upstream provider API keys.",
-		},
+		Hints:                  mergedHints,
+		Warnings:               append([]string(nil), warnings...),
 	}
 }
 
-func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry) llmServiceAdminResponse {
+func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry, providerLinkIssues []string) llmServiceAdminResponse {
 	cards := make([]map[string]any, 0, len(reg.Cards))
 	for _, card := range reg.Cards {
 		cards = append(cards, map[string]any{
@@ -505,6 +539,7 @@ func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry) llmSer
 		ExposeBaseURL:               strings.TrimRight(baseURL, "/") + "/chat/completions",
 		ExposeModelsURL:             strings.TrimRight(baseURL, "/") + "/models",
 		AvailableModels:             availableModels,
+		ProviderLinkIssues:          append([]string(nil), providerLinkIssues...),
 	}
 }
 
@@ -529,16 +564,21 @@ func preserveCardHashes(next *llmservice.Registry, old *llmservice.Registry) {
 	}
 }
 
-func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, email string) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, error) {
+func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, email string) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *im.LLMProviderRegistry, error) {
 	reg, err := llmservice.LoadRegistry(ctx, system)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	status, models, err := llmservice.ResolveStatusFromRegistry(ctx, reg, securitySvc, email, externalLLMBaseURL(r))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return status, models, nil
+	status, models = filterAuthorizedModelsByProviderRegistry(status, models, providerReg)
+	return status, models, providerReg, nil
 }
 
 func resolveAuthorizedModel(body map[string]any, models []llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, string, error) {
@@ -580,12 +620,12 @@ func explainModelSelection(body map[string]any, models []llmservice.AuthorizedMo
 	}
 }
 
-func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string) ([]byte, int, string, error) {
+func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string) ([]byte, int, string, []string, error) {
 	if model == nil {
-		return nil, 0, "", fmt.Errorf("authorized model is required")
+		return nil, 0, "", nil, fmt.Errorf("authorized model is required")
 	}
 	if reg == nil {
-		return nil, 0, "", fmt.Errorf("provider registry is required")
+		return nil, 0, "", nil, fmt.Errorf("provider registry is required")
 	}
 	var lastErr error
 	var lastBody []byte
@@ -607,15 +647,15 @@ func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry,
 			lastErr = fmt.Errorf("provider %q returned http %d", provider.ID, statusCode)
 			continue
 		}
-		return respBody, statusCode, provider.ID, nil
+		return respBody, statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), nil
 	}
 	if lastBody != nil && lastStatus > 0 {
-		return lastBody, lastStatus, "", nil
+		return lastBody, lastStatus, "", nil, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
-	return nil, 0, "", lastErr
+	return nil, 0, "", nil, lastErr
 }
 
 func normalizeStringSlice(items []string) []string {

@@ -991,10 +991,34 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     // When streamed content is significantly longer than finalText (>= 2×),
     // the response text is just the last iteration's fragment from a
     // multi-round agent loop. Preserve the complete accumulated output.
+    //
+    // However, if the streamed content contains finalText but has significant
+    // trailing content AFTER it, the trailing part is likely hallucination
+    // from a subsequent LLM iteration that the backend correctly discarded
+    // (resp.Text only contains the last iteration's msgContent). In that case,
+    // prefer finalText to avoid showing duplicate/hallucinated content.
     const finalTextLen = finalText.trim().length;
     if (streamedContent && finalText && finalTextLen > 0
         && streamedContent.length >= finalTextLen * 2
         && (!responseSource || responseSource === 'agent_loop')) {
+        // Check if finalText appears within streamedContent but NOT at the end.
+        // Use lastIndexOf because finalText is the last iteration's output —
+        // its last occurrence in the accumulated stream is the authoritative one.
+        // If there's significant trailing content after that occurrence, it came
+        // from a subsequent iteration that the backend discarded (hallucination
+        // or duplicate). In that case, prefer the clean finalText.
+        const trimmedFinal = finalText.trim();
+        if (trimmedFinal.length > 0) {
+            const containsIdx = streamedContent.lastIndexOf(trimmedFinal);
+            if (containsIdx >= 0) {
+                const afterFinal = streamedContent.substring(containsIdx + trimmedFinal.length).trim();
+                if (afterFinal.length > 50) {
+                    // Significant trailing content after finalText — likely hallucination
+                    // from a subsequent iteration. Use finalText.
+                    return finalText;
+                }
+            }
+        }
         return streamedContent;
     }
 

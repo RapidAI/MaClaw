@@ -1539,9 +1539,23 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 inputRef.current?.focus();
             });
         } finally {
+            // Flush the buffer queue BEFORE clearing cancelPending.
+            // cancelSession already reset activeRoundRef synchronously, so
+            // sendMessage's idle-phase guard passes. Flushing here avoids
+            // relying on the submitLocked transition effect, which may miss
+            // the edge when React batches cancelPending=false together with
+            // the round-state changes from cancelSession.
+            // mergeAndFire uses setQueue(prev => …) so it's safe if the
+            // queue is already empty (returns null).
+            const pending = mergeAndFire();
+            if (pending) {
+                const outgoing = buildOutgoingMessageMulti(pending.mergedText, pending.allFilePaths);
+                recordSubmittedPrompt?.(pending.mergedText);
+                sendMessage(outgoing).catch(() => {});
+            }
             setCancelPending(false);
         }
-    }, [cancelPending, cancelSession, inputValue, resizeInput, updateInputValue]);
+    }, [cancelPending, cancelSession, inputValue, resizeInput, updateInputValue, mergeAndFire, sendMessage, recordSubmittedPrompt]);
 
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => {

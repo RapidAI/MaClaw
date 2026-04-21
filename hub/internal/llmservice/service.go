@@ -319,11 +319,13 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 			idx, ok := modelIndex[strings.ToLower(model.Name)]
 			if !ok {
 				models = append(models, AuthorizedModel{
-					Name:             model.Name,
-					CapabilityTags:   append([]string(nil), model.CapabilityTags...),
-					Priority:         model.Priority,
-					ResolutionTier:   model.ResolutionTier,
-					CreditMultiplier: normalizeCreditMultiplier(model.CreditMultiplier),
+					Name:                      model.Name,
+					CapabilityTags:            append([]string(nil), model.CapabilityTags...),
+					Priority:                  model.Priority,
+					ResolutionTier:            model.ResolutionTier,
+					CreditMultiplier:          normalizeCreditMultiplier(model.CreditMultiplier),
+					ProviderServiceGroups:     map[string][]string{},
+					ProviderCreditMultipliers: map[string]float64{},
 				})
 				idx = len(models) - 1
 				modelIndex[strings.ToLower(model.Name)] = idx
@@ -337,8 +339,19 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 			if models[idx].ResolutionTier == 0 || (model.ResolutionTier > 0 && model.ResolutionTier < models[idx].ResolutionTier) {
 				models[idx].ResolutionTier = model.ResolutionTier
 			}
-			if model.CreditMultiplier > models[idx].CreditMultiplier {
-				models[idx].CreditMultiplier = normalizeCreditMultiplier(model.CreditMultiplier)
+			if candidate := normalizeCreditMultiplier(model.CreditMultiplier); models[idx].CreditMultiplier == 0 || candidate < models[idx].CreditMultiplier {
+				models[idx].CreditMultiplier = candidate
+			}
+			for _, providerID := range model.ProviderIDs {
+				key := normalizedProviderKey(providerID)
+				if key == "" {
+					continue
+				}
+				models[idx].ProviderServiceGroups[key] = mergeStrings(models[idx].ProviderServiceGroups[key], []string{serviceGroupID})
+				candidate := normalizeCreditMultiplier(model.CreditMultiplier)
+				if existing, ok := models[idx].ProviderCreditMultipliers[key]; !ok || candidate < existing {
+					models[idx].ProviderCreditMultipliers[key] = candidate
+				}
 			}
 		}
 	}
@@ -352,6 +365,30 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 		}
 	}
 	return models, defaultModel
+}
+
+func normalizedProviderKey(providerID string) string {
+	return strings.ToLower(strings.TrimSpace(providerID))
+}
+
+func ServiceGroupIDsForProvider(model *AuthorizedModel, providerID string) []string {
+	if model == nil {
+		return nil
+	}
+	if ids := model.ProviderServiceGroups[normalizedProviderKey(providerID)]; len(ids) > 0 {
+		return append([]string(nil), ids...)
+	}
+	return append([]string(nil), model.ServiceGroupIDs...)
+}
+
+func CreditMultiplierForProvider(model *AuthorizedModel, providerID string) float64 {
+	if model == nil {
+		return 1
+	}
+	if value, ok := model.ProviderCreditMultipliers[normalizedProviderKey(providerID)]; ok && value > 0 {
+		return normalizeCreditMultiplier(value)
+	}
+	return normalizeCreditMultiplier(model.CreditMultiplier)
 }
 
 func normalizeCreditMultiplier(v float64) float64 {

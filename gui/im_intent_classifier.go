@@ -9,8 +9,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
+
+// unifiedClassifier is the package-level UIC instance. When non-nil,
+// classifyTaskIntent delegates to it instead of using keyword rules.
+// Set via setUnifiedClassifierForIM during app initialization.
+var unifiedClassifier *intent.UnifiedIntentClassifier
+
+// setUnifiedClassifierForIM sets the package-level UIC used by classifyTaskIntent.
+func setUnifiedClassifierForIM(uic *intent.UnifiedIntentClassifier) {
+	unifiedClassifier = uic
+}
 
 type taskIntent string
 
@@ -55,6 +66,21 @@ type llmIntentClassification struct {
 }
 
 func classifyTaskIntent(text string) taskIntentResult {
+	// Delegate to UIC when available.
+	if uic := unifiedClassifier; uic != nil {
+		result := uic.Classify(intent.MessageContext{Text: text})
+		intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
+		return taskIntentResult{
+			Intent:     taskIntent(intentStr),
+			Matched:    matched,
+			Evidence:   evidence,
+			Reason:     reason,
+			Confidence: confidence,
+			Source:     "uic",
+		}
+	}
+
+	// Fallback: keyword-based classification when UIC is nil.
 	msg := strings.ToLower(strings.TrimSpace(text))
 	if msg == "" {
 		return taskIntentResult{Intent: intentUnknown}

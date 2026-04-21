@@ -96,7 +96,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/debug/session", RequireAdmin(admins, DebugGetSessionHandler(sessionSvc)))
 	mux.HandleFunc("GET /api/admin/sessions/all", RequireAdmin(admins, AdminListAllSessionsHandler(sessionSvc)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", RequireAdmin(admins, ManualBindHandler(identity)))
-	mux.HandleFunc("GET /api/admin/users", RequireAdmin(admins, ListUsersHandler(identity)))
+	mux.HandleFunc("GET /api/admin/users", RequireAdmin(admins, ListUsersHandler(identity, system, securitySvc)))
 	mux.HandleFunc("GET /api/admin/users/lookup", RequireAdmin(admins, LookupUserHandler(identity)))
 	mux.HandleFunc("GET /api/admin/blocklist", RequireAdmin(admins, ListBlockedEmailsHandler(identity)))
 	mux.HandleFunc("POST /api/admin/blocklist", RequireAdmin(admins, AddBlockedEmailHandler(identity)))

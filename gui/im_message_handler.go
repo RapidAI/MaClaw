@@ -3540,6 +3540,13 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
 	trimmed := strings.TrimSpace(msg.Text)
 
+	// Invalidate UIC cache after each message processing cycle completes,
+	// ensuring all consumers within the same cycle share the same result
+	// but the next message gets a fresh classification.
+	if h.app != nil && h.app.unifiedClassifier != nil {
+		defer h.app.unifiedClassifier.InvalidateCache()
+	}
+
 	// Slash commands are processed before the LLM config check — they don't
 	// need LLM and must always work so users can manage state even when LLM
 	// is misconfigured.

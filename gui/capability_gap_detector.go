@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -25,6 +26,9 @@ type CapabilityGapDetector struct {
 	llmConfig       MaclawLLMConfig
 	client          *http.Client
 	confirmCallback func(skillName string, riskDetails string) bool
+	// unifiedClassifier is used to check whether the original user message
+	// was classified as non-coding/ambiguous before applying gap detection.
+	unifiedClassifier *intent.UnifiedIntentClassifier
 }
 
 // NewCapabilityGapDetector creates a new CapabilityGapDetector.
@@ -55,6 +59,11 @@ func (d *CapabilityGapDetector) SetConfirmCallback(cb func(skillName string, ris
 	d.confirmCallback = cb
 }
 
+// SetUnifiedClassifier sets the UIC instance for intent-aware gap detection.
+func (d *CapabilityGapDetector) SetUnifiedClassifier(uic *intent.UnifiedIntentClassifier) {
+	d.unifiedClassifier = uic
+}
+
 // gapKeywords are heuristic keywords indicating a capability gap when LLM is
 // not configured.
 var gapKeywords = []string{
@@ -77,6 +86,13 @@ func (d *CapabilityGapDetector) Detect(llmResponse string) bool {
 	if d.isLLMConfigured() {
 		return d.llmDetectGap(llmResponse)
 	}
+	// When UIC is available, skip gapKeywords fallback — rely solely on
+	// LLM-based detection (which is unavailable here). The UIC already
+	// classified the user message; gapKeywords are redundant.
+	if d.unifiedClassifier != nil {
+		return false
+	}
+	// Last resort: gapKeywords fallback when no LLM and no UIC.
 	lower := strings.ToLower(llmResponse)
 	for _, kw := range gapKeywords {
 		if strings.Contains(lower, strings.ToLower(kw)) {

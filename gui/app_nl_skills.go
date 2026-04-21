@@ -341,14 +341,13 @@ func (e *SkillExecutor) Delete(name string) error {
 	for i, s := range skills {
 		if s.Name == name {
 			found = true
-			// Remove from config (only config-backed entries live here;
-			// file-only skills won't be in the slice, but the flag still
-			// gets set so we proceed to disk cleanup below).
-			if s.Source != "file" {
-				skills = append(skills[:i], skills[i+1:]...)
-				if err := e.saveSkills(skills); err != nil {
-					return err
-				}
+			// Always remove from config regardless of source.
+			// Previously file-based skills were skipped here, leaving
+			// orphaned stats-only stubs in config.json when the on-disk
+			// directory was already deleted — the "ghost skill" bug.
+			skills = append(skills[:i], skills[i+1:]...)
+			if err := e.saveSkills(skills); err != nil {
+				return err
 			}
 			break
 		}

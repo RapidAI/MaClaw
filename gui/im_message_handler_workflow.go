@@ -156,8 +156,14 @@ IMPORTANT: Pay close attention to the assistant's last message. If the assistant
 
 Classify the user's response into exactly one category. Reply with ONLY the category word, nothing else:
 - "confirm" — user approves and wants to proceed. This includes any form of agreement, acceptance, or readiness signal in the context of the ongoing review. A short or vague reply after being shown a document almost always means approval.
-- "modify" — user provides specific feedback, corrections, additions, or requests changes to the document content.
-- "other" — user is asking something clearly unrelated to the document or workflow (e.g. weather query, off-topic question).
+- "modify" — user provides specific feedback, corrections, additions, or requests changes to the DOCUMENT CONTENT itself (e.g. "加一个登录功能", "把技术栈改成React", "需求里漏了XX").
+- "other" — user is asking something clearly unrelated to the document or workflow. This includes:
+  - Server/infrastructure operations: "更新omniroute", "登录服务器", "重启服务", "npm install", "部署"
+  - Information queries: weather, search, off-topic questions
+  - File operations: "打开XX文件", "截图"
+  - Any request that involves EXECUTING an action on a system/server/tool, rather than editing the document
+
+CRITICAL: "更新" (update) can mean either "update the document" or "update software on a server". If the object of "更新" is a software package, service, server component, or tool name (not a section/content of the document), classify as "other".
 
 When in doubt between "confirm" and "other", prefer "confirm" — the conversational context is a document review, so the user's response is most likely directed at the document.`,
 		UserMessage: userMessage,
@@ -182,20 +188,28 @@ When in doubt between "confirm" and "other", prefer "confirm" — the conversati
 		return h.advanceAndRespond(engine, userID)
 
 	case strings.Contains(intent, "modify"):
-		// User wants to modify — run the agent loop with a modify prompt.
-		if ws == nil {
-			return nil // fall through to normal agent loop
-		}
-		tmpl := engine.GetRegistry().Match(ws.Type)
-		if tmpl == nil || ws.PhaseIndex >= len(tmpl.Phases) {
-			return nil
-		}
-		phase := &tmpl.Phases[ws.PhaseIndex]
-		phasePrompt := workflow.BuildPhaseSystemPrompt(ws, phase, engine.GetRegistry())
-		modifyPrompt := fmt.Sprintf("%s\n\n## 用户修改请求\n\n用户要求修改当前阶段产出物：%s\n请根据修改意见更新产出物。", phasePrompt, text)
-		h.stashedPhasePrompt.Store(userID, modifyPrompt)
-		h.workflowAgentLoopMarker.Store(userID, true)
-		return nil // fall through to agent loop with modify prompt
+		// User wants to modify the phase document — fall through to the
+		// normal agent loop (NOT the workflow-specific agent loop).
+		//
+		// Previously this branch set workflowAgentLoopMarker=true and
+		// injected a phasePrompt, which caused the agent loop to run in
+		// workflow mode with doc_only tool filtering. This was wrong:
+		// when the LLM misclassifies an operation request (e.g. "更新
+		// 上面的omniroute") as "modify", the workflow agent loop strips
+		// ssh/bash tools and the LLM can't execute the actual request.
+		//
+		// By falling through to the normal agent loop (same as "other"),
+		// the LLM gets the full tool list and conversation history. It
+		// can determine on its own whether the user wants to edit the
+		// document or perform a server operation. The workflow phase
+		// context is already in the conversation history, so the LLM
+		// has enough information to update the document if that's truly
+		// what the user wants.
+		//
+		// Mark as "other" so the agent loop skips NeedsConfirm gate and
+		// doc_only tool filtering — same treatment as unrelated messages.
+		h.workflowPendingConfirmOther.Store(userID, true)
+		return nil // fall through to normal agent loop
 
 	default:
 		// "other" or unrecognized — let the message fall through to normal

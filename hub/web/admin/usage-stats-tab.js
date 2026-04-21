@@ -87,7 +87,8 @@ function ensureUsageStatsDefaults() {
   if (!usageStatsState.month) usageStatsState.month = now.toISOString().slice(0, 7);
 }
 function fmtInt(value) {
-  return Number(value || 0).toLocaleString('en-US');
+  const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
+  return Number(value || 0).toLocaleString(locale);
 }
 function fmtCredits(value) {
   const n = Number(value || 0);
@@ -228,8 +229,15 @@ function renderUsageStats() {
   renderUsageSummary();
   renderUsageTrend();
   renderUsageRows();
-  const ts = usageStatsCache && usageStatsCache.generated_at ? new Date(usageStatsCache.generated_at).toLocaleString() : '-';
-  _s('usageStatsGeneratedAt', 'textContent', ust('generatedAt', { time: ts }));
+  const generatedAt = document.getElementById('usageStatsGeneratedAt');
+  if (!generatedAt) return;
+  if (usageStatsCache && usageStatsCache.generated_at) {
+    const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
+    const ts = new Date(usageStatsCache.generated_at).toLocaleString(locale);
+    generatedAt.textContent = ust('generatedAt', { time: ts });
+  } else {
+    generatedAt.textContent = '';
+  }
 }
 function onUsageStatsFilterChange() {
   const scopeEl = document.getElementById('usageStatsScope');

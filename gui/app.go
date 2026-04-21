@@ -27,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/session"
@@ -80,6 +81,7 @@ type App struct {
 	toolDefGenerator      *ToolDefinitionGenerator
 	toolRouter            *ToolRouter
 	gateIntentClassifier  *GateIntentClassifier // semantic gate classifier (wired in Task 12.1)
+	unifiedClassifier     *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
 	usageTracker          *tool.UsageTracker
 	experienceExtractor   *ExperienceExtractor
 	orchestrator          *Orchestrator
