@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -599,6 +600,106 @@ func stripRolePrefixHallucination(s string) string {
 	}
 
 	return s
+}
+
+// ---------------------------------------------------------------------------
+// Tool availability hallucination detection
+// ---------------------------------------------------------------------------
+
+// toolClaimPatterns extracts tool-name-like identifiers that the LLM claims
+// are unavailable. Patterns use a generic [a-z][a-z0-9_]+ capture instead of
+// hardcoded tool names — the actual verification is done against the real
+// tool list passed to detectToolAvailabilityHallucination.
+var toolClaimPatterns = []*regexp.Regexp{
+	// Chinese: 没有/不具备/无法使用 + identifier + 工具/命令/可用
+	// Requires a tool-related suffix to avoid false positives like "没有找到 bash 脚本".
+	regexp.MustCompile(`(?:没有|不具备|无法使用|不可用|没有找到|缺少)\s{0,5}([a-z][a-z0-9_]{1,30})\s{0,3}(?:工具|命令|可用)`),
+	// Chinese: identifier + 工具 + 不可用/不存在/没有
+	regexp.MustCompile(`([a-z][a-z0-9_]{1,30})\s{0,3}(?:工具|命令)\s{0,2}(?:不可用|不存在|没有|缺失|不在)`),
+	// Chinese: 没有 X 和 Y 工具 (two identifiers joined by 和/以及/、)
+	regexp.MustCompile(`没有\s{0,3}([a-z][a-z0-9_]{1,30})\s{0,3}(?:和|以及|、)\s{0,3}([a-z][a-z0-9_]{1,30})\s{0,3}(?:工具|命令)?(?:可用)?`),
+	// English: don't have / do not have / unavailable + the? + identifier + tool?
+	regexp.MustCompile(`(?i)(?:don'?t have|do not have|not have|unavailable|no access to)\s{1,10}(?:the\s+)?([a-z][a-z0-9_]{1,30})\s{0,3}(?:tool)?`),
+}
+
+// detectToolAvailabilityHallucination checks if the LLM output claims a tool
+// is unavailable, then verifies against the actual tool list sent to the LLM.
+// Only returns a correction when the claimed tool IS in the actual list —
+// meaning the LLM is lying about its capabilities.
+//
+// This is mechanism-level: no hardcoded tool name set. Any tool the LLM
+// falsely claims is missing will be caught, whether it's bash, ssh, or a
+// future tool not yet invented.
+//
+// actualTools is the tool definitions sent to the LLM in this iteration.
+func detectToolAvailabilityHallucination(text string, actualTools []map[string]interface{}) string {
+	if text == "" || len(actualTools) == 0 {
+		return ""
+	}
+
+	// Build set of tool names actually sent to the LLM.
+	available := make(map[string]bool, len(actualTools))
+	for _, t := range actualTools {
+		if name := extractToolName(t); name != "" {
+			available[name] = true
+		}
+	}
+	if len(available) == 0 {
+		return ""
+	}
+
+	// Strip fenced code blocks to avoid false positives.
+	stripped := stripCodeBlocks(text)
+	if stripped == "" {
+		return ""
+	}
+
+	// Extract identifiers the LLM claims are unavailable,
+	// then verify each against the actual tool list.
+	claimed := make(map[string]bool)
+	for _, re := range toolClaimPatterns {
+		for _, m := range re.FindAllStringSubmatch(stripped, 5) {
+			for i := 1; i < len(m); i++ {
+				name := m[i]
+				if name != "" && available[name] {
+					claimed[name] = true
+				}
+			}
+		}
+	}
+	if len(claimed) == 0 {
+		return ""
+	}
+
+	var tools []string
+	for name := range claimed {
+		tools = append(tools, name)
+	}
+	sort.Strings(tools)
+
+	return fmt.Sprintf("[系统纠正] 你声称没有 %s 工具，但这些工具在你当前的工具列表中。"+
+		"请直接使用它们完成任务。", strings.Join(tools, "、"))
+}
+
+// stripCodeBlocks removes ``` fenced code blocks from text, returning only
+// the prose portions for hallucination scanning.
+func stripCodeBlocks(s string) string {
+	var b strings.Builder
+	rest := s
+	for {
+		idx := strings.Index(rest, "```")
+		if idx < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:idx])
+		closeIdx := strings.Index(rest[idx+3:], "```")
+		if closeIdx < 0 {
+			break
+		}
+		rest = rest[idx+3+closeIdx+3:]
+	}
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------

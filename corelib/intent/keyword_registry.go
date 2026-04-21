@@ -21,12 +21,19 @@ type KeywordRegistry struct {
 // NewKeywordRegistry creates the registry from the consolidated keyword list.
 // It builds indexes with conflict resolution priority: ssh > browser(strong) > coding > non_coding > ambiguous.
 func NewKeywordRegistry() *KeywordRegistry {
+	return newKeywordRegistryFromEntries(defaultKeywords)
+}
+
+// newKeywordRegistryFromEntries builds a KeywordRegistry from an arbitrary
+// keyword entry list. Shared by NewKeywordRegistry (uses defaultKeywords)
+// and NewKeywordRegistryFromDefinitions (uses definition-derived keywords).
+func newKeywordRegistryFromEntries(keywords []KeywordEntry) *KeywordRegistry {
 	r := &KeywordRegistry{
-		entries:      make([]KeywordEntry, 0, len(defaultKeywords)),
+		entries:      make([]KeywordEntry, 0, len(keywords)),
 		byLabel:      make(map[IntentLabel][]KeywordEntry),
 		strongIndex:  make(map[string]IntentLabel),
 		weakByLabel:  make(map[IntentLabel][]string),
-		lowerEntries: make([]string, 0, len(defaultKeywords)),
+		lowerEntries: make([]string, 0, len(keywords)),
 	}
 
 	// Priority order for conflict resolution (higher index = lower priority).
@@ -53,7 +60,7 @@ func NewKeywordRegistry() *KeywordRegistry {
 	}
 	seen := make(map[entryKey]bool)
 
-	for _, e := range defaultKeywords {
+	for _, e := range keywords {
 		key := entryKey{strings.ToLower(e.Keyword), e.Label, e.Strength}
 		if seen[key] {
 			continue
@@ -248,18 +255,18 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "生成需求", Label: LabelCoding, Strength: Strong},
 	{Keyword: "生成设计", Label: LabelCoding, Strength: Strong},
 	{Keyword: "生成任务", Label: LabelCoding, Strength: Strong},
-	{Keyword: "开发游戏", Label: LabelCoding, Strength: Strong},
-	{Keyword: "开发应用", Label: LabelCoding, Strength: Strong},
-	{Keyword: "开发工具", Label: LabelCoding, Strength: Strong},
-	{Keyword: "开发系统", Label: LabelCoding, Strength: Strong},
-	{Keyword: "开发程序", Label: LabelCoding, Strength: Strong},
-	{Keyword: "开发项目", Label: LabelCoding, Strength: Strong},
-	{Keyword: "写代码", Label: LabelCoding, Strength: Strong},
+	{Keyword: "开发游戏", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "开发应用", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "开发工具", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "开发系统", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "开发程序", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "开发项目", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "写代码", Label: LabelCoding, Strength: Strong, Creation: true},
 	{Keyword: "改代码", Label: LabelCoding, Strength: Strong},
-	{Keyword: "编程", Label: LabelCoding, Strength: Strong},
-	{Keyword: "实现功能", Label: LabelCoding, Strength: Strong},
-	{Keyword: "新增功能", Label: LabelCoding, Strength: Strong},
-	{Keyword: "添加功能", Label: LabelCoding, Strength: Strong},
+	{Keyword: "编程", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "实现功能", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "新增功能", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "添加功能", Label: LabelCoding, Strength: Strong, Creation: true},
 	{Keyword: "修 bug", Label: LabelCoding, Strength: Strong},
 	{Keyword: "修bug", Label: LabelCoding, Strength: Strong},
 	{Keyword: "修复bug", Label: LabelCoding, Strength: Strong},
@@ -269,18 +276,18 @@ var defaultKeywords = []KeywordEntry{
 	// LabelCoding (Strong) — from im_tools_session.go codingKeywords (deduplicated)
 	// =========================================================================
 	{Keyword: "修改代码", Label: LabelCoding, Strength: Strong},
-	{Keyword: "开发", Label: LabelCoding, Strength: Strong},
+	{Keyword: "开发", Label: LabelCoding, Strength: Strong, Creation: true},
 	{Keyword: "重构", Label: LabelCoding, Strength: Strong},
 	{Keyword: "refactor", Label: LabelCoding, Strength: Strong},
-	{Keyword: "实现", Label: LabelCoding, Strength: Strong},
-	{Keyword: "写脚本", Label: LabelCoding, Strength: Strong},
-	{Keyword: "写一个脚本", Label: LabelCoding, Strength: Strong},
-	{Keyword: "写个脚本", Label: LabelCoding, Strength: Strong},
-	{Keyword: "写函数", Label: LabelCoding, Strength: Strong},
-	{Keyword: "写方法", Label: LabelCoding, Strength: Strong},
-	{Keyword: "写接口", Label: LabelCoding, Strength: Strong},
-	{Keyword: "写api", Label: LabelCoding, Strength: Strong},
-	{Keyword: "写 api", Label: LabelCoding, Strength: Strong},
+	{Keyword: "实现", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "写脚本", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "写一个脚本", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "写个脚本", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "写函数", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "写方法", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "写接口", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "写api", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "写 api", Label: LabelCoding, Strength: Strong, Creation: true},
 	{Keyword: "编译", Label: LabelCoding, Strength: Strong},
 	{Keyword: "构建", Label: LabelCoding, Strength: Strong},
 	{Keyword: "build", Label: LabelCoding, Strength: Strong},
@@ -290,14 +297,14 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "git commit", Label: LabelCoding, Strength: Strong},
 	{Keyword: "git push", Label: LabelCoding, Strength: Strong},
 	{Keyword: "create_session", Label: LabelCoding, Strength: Strong},
-	{Keyword: "游戏", Label: LabelCoding, Strength: Strong},
-	{Keyword: "game", Label: LabelCoding, Strength: Strong},
-	{Keyword: "开发一个", Label: LabelCoding, Strength: Strong},
-	{Keyword: "开发个", Label: LabelCoding, Strength: Strong},
-	{Keyword: "实现一个", Label: LabelCoding, Strength: Strong},
-	{Keyword: "实现个", Label: LabelCoding, Strength: Strong},
-	{Keyword: "创建一个", Label: LabelCoding, Strength: Strong},
-	{Keyword: "创建个", Label: LabelCoding, Strength: Strong},
+	{Keyword: "游戏", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "game", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "开发一个", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "开发个", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "实现一个", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "实现个", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "创建一个", Label: LabelCoding, Strength: Strong, Creation: true},
+	{Keyword: "创建个", Label: LabelCoding, Strength: Strong, Creation: true},
 	{Keyword: "前端", Label: LabelCoding, Strength: Strong},
 	{Keyword: "后端", Label: LabelCoding, Strength: Strong},
 	{Keyword: "frontend", Label: LabelCoding, Strength: Strong},

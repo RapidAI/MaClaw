@@ -1,7 +1,5 @@
 package intent
 
-import "strings"
-
 // ToTaskIntent maps a ClassificationResult to the legacy taskIntentResult
 // fields used by gui/im_intent_classifier.go.
 // Returns (intent string, matched string, evidence []string, reason string, confidence float64).
@@ -96,19 +94,31 @@ func (r *ClassificationResult) IsNonCodingLike() bool {
 	return false
 }
 
-// hasCreationSignals checks whether the classification result contains
-// creation-oriented signals. It checks if the Reason contains "creation"
-// or if Primary is coding and no bug_fix/maintenance in secondary labels.
+// hasCreationSignals checks whether the classification result indicates a
+// creation-oriented coding task.
+//
+// Decision logic:
+//  1. If CreationOriented is explicitly true (set by L1 keywords or fusion) → true.
+//  2. If secondary contains bug_fix or maintenance → definitely not creation → false.
+//  3. If the result came from Layer 1 (which has authoritative keyword data and
+//     explicitly sets CreationOriented), trust its false value → false.
+//  4. For Layer 2/fusion results where CreationOriented wasn't set, the absence
+//     of counter-signals (bug_fix/maintenance) implies creation → true.
 func hasCreationSignals(r *ClassificationResult) bool {
-	if strings.Contains(strings.ToLower(r.Reason), "creation") {
+	if r.CreationOriented {
 		return true
 	}
-	// If primary is coding and no bug_fix or maintenance in secondary,
-	// treat as creation (new project).
 	for _, s := range r.Secondary {
 		if s == LabelBugFix || s == LabelMaintenance {
 			return false
 		}
 	}
+	// Layer 1 explicitly computed CreationOriented from keyword tags.
+	// If it's false, trust it — the user's keywords were not creation-oriented.
+	if r.Layer == 1 {
+		return false
+	}
+	// Layer 2/3/fusion: no keyword-level creation data available.
+	// Default to creation when no counter-signals exist.
 	return true
 }

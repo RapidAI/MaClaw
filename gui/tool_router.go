@@ -92,6 +92,12 @@ func (r *ToolRouter) SetSkillProvider(provider tool.SkillProvider) {
 	r.inner.SetSkillProvider(provider)
 }
 
+// RefreshSkillIndex delegates to corelib/tool.Router.RefreshSkillIndex.
+// Call after installing or removing skills to update the BM25 index.
+func (r *ToolRouter) RefreshSkillIndex() {
+	r.inner.RefreshSkillIndex()
+}
+
 // ActivateSessionTool delegates to corelib/tool.Router.ActivateSessionTool.
 func (r *ToolRouter) ActivateSessionTool(name string) {
 	r.inner.ActivateSessionTool(name)

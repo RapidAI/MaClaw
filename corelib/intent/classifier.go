@@ -3,6 +3,7 @@ package intent
 import (
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -17,11 +18,17 @@ type Config struct {
 }
 
 // UnifiedIntentClassifier is the single entry point for all user-intent
-// classification. It implements a three-layer pipeline:
+// classification. It implements a dual-channel fusion pipeline inspired by
+// intent-fusion (https://github.com/Liyuan1992/intent-fusion):
 //
-//	Layer 1: keyword rules (fast path, <1ms)
-//	Layer 2: embedding cosine similarity (~5ms)
-//	Layer 3: LLM refinement (up to LLMTimeout)
+//	Layer 1: keyword rules (fast path, <1ms) — confident hits return immediately
+//	Layer 2: embedding cosine similarity (~5ms) — parallel with Layer 3
+//	Layer 3: LLM intent tree reasoning (~2-8s) — parallel with Layer 2
+//	Fusion:  α·emb + (1-α)·tree → three-state verdict (CLEAR/AMBIGUOUS/LOW)
+//
+// When both L2 and L3 are available, they run in parallel and their results
+// are fused using a weighted formula. When only one channel is available,
+// the system degrades gracefully (α forced to 0 or 1).
 type UnifiedIntentClassifier struct {
 	registry   *KeywordRegistry
 	affinity   *ToolAffinityRegistry
@@ -30,8 +37,15 @@ type UnifiedIntentClassifier struct {
 	llmFunc    LLMClassifyFunc
 	llmTimeout time.Duration
 
+	// Intent Tree text for Layer 3 tree reasoning (pre-built from definitions).
+	treeText  string
+	// Flat LLM prompt for Layer 3 single-channel fallback (pre-built from definitions).
+	llmPrompt string
+	fusionCfg FusionConfig
+
 	// Per-message cache: cleared after each message processing cycle.
-	cache sync.Map // map[string]*ClassificationResult
+	cache      sync.Map // map[string]*ClassificationResult
+	fusionCache sync.Map // map[string]FusionResult — stores fusion details for diagnostics
 
 	ready bool         // set to true when anchor warmup completes
 	mu    sync.RWMutex // protects ready and llmFunc
@@ -45,13 +59,23 @@ func New(cfg Config) *UnifiedIntentClassifier {
 		timeout = 8 * time.Second
 	}
 
+	// Build intent tree text from unified definitions for Layer 3 tree reasoning.
+	defs := DefaultDefinitions()
+	treeText := BuildIntentTreeText(defs)
+
+	// Use FullDefinitions (with keywords populated) for definitions-based constructors.
+	fullDefs := FullDefinitions()
+
 	u := &UnifiedIntentClassifier{
-		registry:   NewKeywordRegistry(),
-		affinity:   NewToolAffinityRegistry(),
+		registry:   NewKeywordRegistryFromDefinitions(fullDefs),
+		affinity:   NewToolAffinityRegistryFromDefinitions(fullDefs),
 		embedder:   cfg.Embedder,
-		anchors:    defaultAnchors(),
+		anchors:    BuildAnchorsFromDefinitions(defs),
 		llmFunc:    cfg.LLMFunc,
 		llmTimeout: timeout,
+		treeText:   treeText,
+		llmPrompt:  buildLLMSystemPrompt(defs),
+		fusionCfg:  DefaultFusionConfig(),
 	}
 
 	// Determine available layers and log.
@@ -86,6 +110,14 @@ func New(cfg Config) *UnifiedIntentClassifier {
 // Classify returns the ClassificationResult for the given message.
 // Results are cached per message text; subsequent calls with the same
 // text return the cached result without recomputation.
+//
+// Execution model:
+//  1. Layer 1 (keywords): fast path, <1ms. If confident → return immediately.
+//  2. If both L2 (embedding) and L3 (LLM) are available → run in parallel,
+//     fuse results using α·emb + (1-α)·tree, apply three-state verdict.
+//  3. If only L2 available → α forced to 1.0 (embedding only).
+//  4. If only L3 available → α forced to 0.0 (tree only).
+//  5. If neither available → return L1 result.
 func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationResult {
 	// Check cache first.
 	if cached, ok := u.cache.Load(msg.Text); ok {
@@ -101,7 +133,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 
 	var bestResult ClassificationResult
 
-	// Layer 1: keyword classification.
+	// Layer 1: keyword classification (fast path).
 	l1Result, l1Confident := classifyByKeywords(u.registry, u.affinity, msg)
 	bestResult = l1Result
 
@@ -114,49 +146,52 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	log.Printf("[UnifiedIntentClassifier] Layer 1 escalating: %s (conf=%.2f, reason=%s)",
 		truncateText(msg.Text, 30), l1Result.Confidence, l1Result.Reason)
 
-	// Layer 2: embedding cosine similarity.
-	if !isNoop && isReady {
-		l2Result, l2Confident := classifyByEmbedding(u.embedder, u.anchors, msg.Text)
-		if l2Confident {
-			bestResult = l2Result
-			bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
-			u.cacheAndLog(msg.Text, &bestResult)
-			return bestResult
-		}
-		// Keep the better result between L1 and L2.
-		if l2Result.Confidence > bestResult.Confidence {
-			bestResult = l2Result
-		}
-		// Log Layer 2 escalation.
-		log.Printf("[UnifiedIntentClassifier] Layer 2 escalating: %s (conf=%.2f, reason=%s)",
-			truncateText(msg.Text, 30), l2Result.Confidence, l2Result.Reason)
-	} else if !isNoop && !isReady {
+	canEmb := !isNoop && isReady
+	canTree := hasLLM
+
+	if !isNoop && !isReady {
 		log.Printf("[UnifiedIntentClassifier] Layer 2 skipped: anchors not ready")
 	}
 
-	// Layer 3: LLM refinement.
-	if hasLLM {
+	// Dual-channel parallel fusion when both channels are available.
+	if canEmb && canTree {
+		fusionResult := u.classifyWithFusion(msg.Text)
+		u.fusionCache.Store(msg.Text, fusionResult) // store for diagnostics
+		bestResult = u.fusionToClassification(fusionResult, l1Result)
+		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
+		u.cacheAndLog(msg.Text, &bestResult)
+		return bestResult
+	}
+
+	// Single-channel fallback: embedding only.
+	if canEmb {
+		l2Result, l2Confident := classifyByEmbedding(u.embedder, u.anchors, msg.Text)
+		if l2Confident || l2Result.Confidence > bestResult.Confidence {
+			bestResult = l2Result
+		}
+		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
+		u.cacheAndLog(msg.Text, &bestResult)
+		return bestResult
+	}
+
+	// Single-channel fallback: LLM only (legacy flat prompt).
+	if canTree {
 		u.mu.RLock()
 		llmFn := u.llmFunc
 		u.mu.RUnlock()
 
-		l3Result, err := classifyByLLM(llmFn, msg)
+		l3Result, err := classifyByLLM(llmFn, u.llmPrompt, msg)
 		if err == nil {
-			// Log Layer 3 override if it differs from lower layer.
-			if l3Result.Primary != bestResult.Primary {
-				log.Printf("[UnifiedIntentClassifier] Layer 3 override: %s → %s (conf=%.2f)",
-					bestResult.Primary, l3Result.Primary, l3Result.Confidence)
-			}
 			bestResult = l3Result
-			bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
-			u.cacheAndLog(msg.Text, &bestResult)
-			return bestResult
+		} else {
+			log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v, using Layer 1 result", err)
 		}
-		// LLM failed — fall back to best available lower-layer result.
-		log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v, using lower-layer result", err)
+		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
+		u.cacheAndLog(msg.Text, &bestResult)
+		return bestResult
 	}
 
-	// Fall back to best available lower-layer result.
+	// Neither channel available — return L1 result.
 	bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
 	u.cacheAndLog(msg.Text, &bestResult)
 	return bestResult
@@ -167,6 +202,10 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 func (u *UnifiedIntentClassifier) InvalidateCache() {
 	u.cache.Range(func(key, _ any) bool {
 		u.cache.Delete(key)
+		return true
+	})
+	u.fusionCache.Range(func(key, _ any) bool {
+		u.fusionCache.Delete(key)
 		return true
 	})
 }
@@ -238,4 +277,237 @@ func truncateText(text string, maxRunes int) string {
 		return text
 	}
 	return fmt.Sprintf("%s...", string(runes[:maxRunes]))
+}
+
+// ---------------------------------------------------------------------------
+// Dual-channel parallel fusion
+// ---------------------------------------------------------------------------
+
+// embeddingTopK returns the top-k embedding cosine similarity scores as
+// labelScore pairs for the fusion pipeline. This is the raw signal from
+// the embedding channel, without any confidence thresholding.
+func (u *UnifiedIntentClassifier) embeddingTopK(text string, topK int) []labelScore {
+	queryVec, err := u.embedder.Embed(text)
+	if err != nil || queryVec == nil {
+		return nil
+	}
+
+	type scored struct {
+		label IntentLabel
+		score float64
+	}
+	var scores []scored
+
+	for _, anchor := range u.anchors {
+		if len(anchor.Vecs) == 0 {
+			continue
+		}
+		maxSim := 0.0
+		for _, vec := range anchor.Vecs {
+			sim := cosineSimilarity(queryVec, vec)
+			if sim > maxSim {
+				maxSim = sim
+			}
+		}
+		scores = append(scores, scored{anchor.Label, maxSim})
+	}
+
+	// Sort descending by score.
+	sort.Slice(scores, func(i, j int) bool {
+		return scores[i].score > scores[j].score
+	})
+
+	// Take top-k.
+	if topK > 0 && len(scores) > topK {
+		scores = scores[:topK]
+	}
+
+	result := make([]labelScore, len(scores))
+	for i, s := range scores {
+		result[i] = LabelScore(s.label, s.score)
+	}
+	return result
+}
+
+// classifyWithFusion runs L2 (embedding) and L3 (tree reasoning) in parallel,
+// then fuses their results using the weighted formula from intent-fusion.
+//
+// This is the core dual-channel fusion pipeline:
+//
+//	L2 embedding (5ms)  ──┐
+//	                      ├── MergeAndScore → Decide → FusionResult
+//	L3 tree LLM (2-8s) ──┘
+func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
+	t0 := time.Now()
+
+	// Snapshot fusion config under lock (SetFusionConfig may be called concurrently).
+	u.mu.RLock()
+	fusionCfg := u.fusionCfg
+	llmFn := u.llmFunc
+	u.mu.RUnlock()
+
+	type embResult struct {
+		scores []labelScore
+		ms     float64
+	}
+	type treeResult struct {
+		candidates []TreeCandidate
+		ms         float64
+		err        error
+	}
+
+	embCh := make(chan embResult, 1)
+	treeCh := make(chan treeResult, 1)
+
+	// L2: embedding channel (runs in goroutine).
+	go func() {
+		t := time.Now()
+		scores := u.embeddingTopK(text, 5)
+		embCh <- embResult{scores: scores, ms: float64(time.Since(t).Milliseconds())}
+	}()
+
+	// L3: tree reasoning channel (runs in goroutine).
+	go func() {
+		t := time.Now()
+		candidates, err := ClassifyByTree(llmFn, u.treeText, text)
+		treeCh <- treeResult{candidates: candidates, ms: float64(time.Since(t).Milliseconds()), err: err}
+	}()
+
+	// Wait for both channels.
+	emb := <-embCh
+	tree := <-treeCh
+
+	embOK := len(emb.scores) > 0
+	treeOK := tree.err == nil && len(tree.candidates) > 0
+
+	if !embOK && !treeOK {
+		log.Printf("[UnifiedIntentClassifier] fusion: both channels failed")
+		return FusionResult{
+			Verdict:        VerdictLow,
+			TotalMs:        float64(time.Since(t0).Milliseconds()),
+			Degraded:       true,
+			ActiveChannels: []string{},
+		}
+	}
+
+	// Determine effective alpha based on channel availability.
+	alpha := fusionCfg.Alpha
+	var activeChannels []string
+	degraded := false
+
+	if embOK && treeOK {
+		activeChannels = []string{"embedding", "tree"}
+	} else if embOK {
+		alpha = 1.0
+		activeChannels = []string{"embedding"}
+		degraded = true
+		log.Printf("[UnifiedIntentClassifier] fusion degraded: tree channel failed: %v", tree.err)
+	} else {
+		alpha = 0.0
+		activeChannels = []string{"tree"}
+		degraded = true
+		log.Printf("[UnifiedIntentClassifier] fusion degraded: embedding channel returned no scores")
+	}
+
+	// Convert tree candidates to labelScore pairs.
+	var treeScores []labelScore
+	for _, c := range tree.candidates {
+		treeScores = append(treeScores, LabelScore(c.Label, c.Score))
+	}
+
+	// Merge and score.
+	candidates := MergeAndScore(emb.scores, treeScores, alpha)
+	result := Decide(candidates, fusionCfg)
+	result.EmbMs = emb.ms
+	result.TreeMs = tree.ms
+	result.TotalMs = float64(time.Since(t0).Milliseconds())
+	result.Degraded = degraded
+	result.ActiveChannels = activeChannels
+
+	if len(candidates) > 0 {
+		runnerName := "-"
+		runnerScore := 0.0
+		if result.RunnerUp != nil {
+			runnerName = string(result.RunnerUp.Label)
+			runnerScore = result.RunnerUp.FinalScore
+		}
+		log.Printf("[UnifiedIntentClassifier] fusion: verdict=%s top=%s(%.3f) runner=%s(%.3f) "+
+			"channels=%v emb=%.0fms tree=%.0fms total=%.0fms",
+			result.Verdict, result.Top.Label, result.Top.FinalScore,
+			runnerName, runnerScore,
+			activeChannels, emb.ms, tree.ms, result.TotalMs)
+	}
+
+	return result
+}
+
+// fusionToClassification converts a FusionResult to a ClassificationResult,
+// maintaining backward compatibility with all existing consumers.
+func (u *UnifiedIntentClassifier) fusionToClassification(fr FusionResult, l1Fallback ClassificationResult) ClassificationResult {
+	// Both channels failed — use L1 fallback.
+	if fr.Verdict == VerdictLow && len(fr.ActiveChannels) == 0 {
+		return l1Fallback
+	}
+
+	result := ClassificationResult{
+		Primary:    fr.Top.Label,
+		Confidence: fr.Top.FinalScore,
+		Layer:      23, // indicates fusion of L2+L3
+	}
+
+	// Inherit CreationOriented from L1 when fusion confirms coding intent.
+	// L1's creation detection is based on structured KeywordEntry.Creation tags,
+	// which is more reliable than parsing LLM reason strings.
+	if result.Primary == LabelCoding {
+		result.CreationOriented = l1Fallback.CreationOriented
+	}
+
+	switch fr.Verdict {
+	case VerdictClear:
+		result.Reason = fmt.Sprintf("fusion-clear: %s (%.3f)", fr.Top.Label, fr.Top.FinalScore)
+	case VerdictAmbiguous:
+		if fr.RunnerUp != nil {
+			result.Reason = fmt.Sprintf("fusion-ambiguous: %s (%.3f) vs %s (%.3f)",
+				fr.Top.Label, fr.Top.FinalScore,
+				fr.RunnerUp.Label, fr.RunnerUp.FinalScore)
+			result.Secondary = []IntentLabel{fr.RunnerUp.Label}
+		} else {
+			result.Reason = fmt.Sprintf("fusion-ambiguous: %s (%.3f)", fr.Top.Label, fr.Top.FinalScore)
+		}
+	case VerdictLow:
+		// Low confidence — check if L1 had a better signal.
+		if l1Fallback.Confidence > fr.Top.FinalScore && l1Fallback.Primary != LabelUnknown {
+			return l1Fallback
+		}
+		result.Primary = LabelAmbiguous
+		result.Reason = fmt.Sprintf("fusion-low: top=%s (%.3f) below threshold", fr.Top.Label, fr.Top.FinalScore)
+	}
+
+	return result
+}
+
+// SetFusionConfig updates the fusion parameters (alpha, delta, lowThreshold).
+// Useful for runtime calibration or A/B testing. Thread-safe.
+func (u *UnifiedIntentClassifier) SetFusionConfig(cfg FusionConfig) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.fusionCfg = cfg
+}
+
+// GetFusionConfig returns the current fusion parameters. Thread-safe.
+func (u *UnifiedIntentClassifier) GetFusionConfig() FusionConfig {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return u.fusionCfg
+}
+
+// LastFusionResult returns the FusionResult for the given text if it was
+// classified via the fusion path. Returns nil if the text was classified
+// via L1 fast path or is not in cache. Used for diagnostics.
+func (u *UnifiedIntentClassifier) LastFusionResult(text string) *FusionResult {
+	if cached, ok := u.fusionCache.Load(text); ok {
+		fr := cached.(FusionResult)
+		return &fr
+	}
+	return nil
 }

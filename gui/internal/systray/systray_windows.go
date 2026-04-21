@@ -7,7 +7,6 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -15,7 +14,6 @@ import (
 	"sort"
 	"sync"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"github.com/tevino/abool"
@@ -362,15 +360,19 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 				t.onDClick(t)
 			}
 		}
-	case t.wmTaskbarCreated: // on explorer.exe restarts
+	case t.wmTaskbarCreated: // on explorer.exe (re)starts
+		// TaskbarCreated is the Windows-provided mechanism for tray icon
+		// recovery.  Explorer broadcasts this message when it (re)starts and
+		// is ready to accept Shell_NotifyIcon calls.  All previously
+		// registered icons are lost and must be re-added.
+		//
+		// The nid struct already contains the latest icon, tooltip, and
+		// flags set by SetIcon/SetTooltip (even if their modify() calls
+		// failed because the icon wasn't added yet).  A single add() here
+		// registers everything in one shot.
 		t.muNID.Lock()
 		if err := t.nid.add(); err != nil {
-			// Explorer just restarted — Shell may need a moment.
-			// Retry once after a short delay.
-			time.Sleep(1 * time.Second)
-			if err2 := t.nid.add(); err2 != nil {
-				log.Printf("systray: re-add icon after TaskbarCreated failed: %s\n", err2)
-			}
+			log.Printf("systray: Shell_NotifyIcon(NIM_ADD) on TaskbarCreated failed: %s\n", err)
 		}
 		t.muNID.Unlock()
 	default:
@@ -515,23 +517,18 @@ func (t *winTray) initInstance() error {
 	}
 	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
 
-	// Shell_NotifyIcon can fail with a timeout when the Windows Shell
-	// (explorer.exe) is slow to respond — common during boot or heavy
-	// system load.  Retry with exponential backoff before giving up.
-	const maxAddAttempts = 4
-	var addErr error
-	for attempt := 0; attempt < maxAddAttempts; attempt++ {
-		if addErr = t.nid.add(); addErr == nil {
-			return nil
-		}
-		if attempt < maxAddAttempts-1 {
-			delay := time.Duration(1<<uint(attempt)) * time.Second // 1s, 2s, 4s
-			log.Printf("systray: Shell_NotifyIcon attempt %d/%d failed: %s, retrying in %v...\n",
-				attempt+1, maxAddAttempts, addErr, delay)
-			time.Sleep(delay)
-		}
+	// Best-effort initial add.  If the Shell (explorer.exe) is not yet
+	// ready (common during boot / auto-start), this will fail — that's OK.
+	// The window and wndProc are already registered, so we will receive the
+	// TaskbarCreated broadcast once explorer is ready, and re-add there.
+	// We do NOT retry here: retrying with sleep blocks the init goroutine
+	// and is fundamentally a workaround.  TaskbarCreated is the Windows-
+	// provided mechanism for exactly this situation.
+	if err := t.nid.add(); err != nil {
+		log.Printf("systray: initial Shell_NotifyIcon(NIM_ADD) failed: %s (will recover via TaskbarCreated)\n", err)
 	}
-	return fmt.Errorf("Shell_NotifyIcon failed after %d attempts: %w", maxAddAttempts, addErr)
+
+	return nil
 }
 
 func (t *winTray) createMenu() error {

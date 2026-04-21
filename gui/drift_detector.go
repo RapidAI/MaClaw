@@ -13,9 +13,10 @@ const (
 
 // ToolCallRecord 记录单次 tool_call 的关键信息。
 type ToolCallRecord struct {
-	ToolName  string
-	ArgsHash  string // 参数的规范化哈希
-	Timestamp time.Time
+	ToolName   string
+	ArgsHash   string // 参数的规范化哈希
+	Timestamp  time.Time
+	ResultHint string // 工具返回结果的摘要（截断到 200 字符），用于漂移恢复时提供上下文
 }
 
 // DriftResult 描述漂移检测结果。
@@ -100,6 +101,12 @@ func (d *DriftDetector) DetectDrift() DriftResult {
 		d.replanCount++
 		needHuman := d.replanCount >= 2
 
+		// Extract the last tool result hint for actionable context.
+		// When the tool returned guidance (e.g. "请提供密码", "文件不存在"),
+		// including it in the recover prompt helps the LLM change strategy
+		// instead of blindly retrying.
+		lastResultHint := lastRec.ResultHint
+
 		var prompt string
 		if needHuman {
 			// 第二次及以后的漂移：给出更强的指令，要求放弃当前路径
@@ -107,19 +114,24 @@ func (d *DriftDetector) DetectDrift() DriftResult {
 				"[⚠️ 漂移检测 — 严重]\n连续 %d 次调用 %s 且参数相同，已是第 %d 次漂移。\n"+
 					"该工具在当前场景下无法完成任务。\n"+
 					"禁止再次调用 %s。\n"+
-					"请直接向用户说明当前遇到的具体问题和限制，不要再尝试。\n"+
-					"[/漂移检测]",
+					"请直接向用户说明当前遇到的具体问题和限制，不要再尝试。\n",
 				consecutiveCount, lastRec.ToolName, d.replanCount, lastRec.ToolName,
 			)
+			if lastResultHint != "" {
+				prompt += fmt.Sprintf("最后一次工具返回: %s\n", lastResultHint)
+			}
+			prompt += "[/漂移检测]"
 		} else {
 			prompt = fmt.Sprintf(
 				"[⚠️ 漂移检测]\n检测到循环模式: 连续 %d 次调用 %s 且参数相似。\n"+
 					"请暂停当前操作，重新审视原始目标，制定新的执行计划。\n"+
-					"不要重复之前失败的方法，尝试不同的解决路径。\n"+
-					"如果没有其他可行路径，直接告诉用户当前的限制。\n"+
-					"[/漂移检测]",
+					"不要重复之前失败的方法，尝试不同的解决路径。\n",
 				consecutiveCount, lastRec.ToolName,
 			)
+			if lastResultHint != "" {
+				prompt += fmt.Sprintf("最后一次工具返回: %s\n请根据以上工具反馈调整策略，而不是用相同参数重试。\n", lastResultHint)
+			}
+			prompt += "如果没有其他可行路径，直接告诉用户当前的限制。\n[/漂移检测]"
 		}
 
 		return DriftResult{

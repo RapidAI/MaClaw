@@ -15,23 +15,14 @@ type llmResponsePayload struct {
 	Secondary  []string `json:"secondary"`
 }
 
-// classifyByLLM performs Layer 3 LLM-based classification by sending the user
-// message to the configured LLM with a unified system prompt covering all 12
-// intent labels and disambiguation rules.
-//
-// Returns (result, error). If llmFunc returns an error (timeout, network, etc.),
-// the error is propagated so the caller can fall back to a lower layer result.
-// If the LLM returns confidence < 0.60, the result is treated as ambiguous.
-func classifyByLLM(llmFunc LLMClassifyFunc, msg MessageContext) (ClassificationResult, error) {
+// classifyByLLM performs Layer 3 LLM-based classification using the
+// pre-built system prompt. Used in the single-channel LLM-only fallback path.
+func classifyByLLM(llmFunc LLMClassifyFunc, prompt string, msg MessageContext) (ClassificationResult, error) {
 	if llmFunc == nil {
 		return ClassificationResult{}, fmt.Errorf("LLM classify function is nil")
 	}
 
-	systemPrompt := buildLLMSystemPrompt()
-
-	// Call the LLM. Timeout enforcement is done by the caller via context;
-	// if llmFunc returns an error we propagate it.
-	rawResponse, err := llmFunc(systemPrompt, msg.Text)
+	rawResponse, err := llmFunc(prompt, msg.Text)
 	if err != nil {
 		return ClassificationResult{}, fmt.Errorf("LLM call failed: %w", err)
 	}
@@ -116,34 +107,38 @@ func parseLLMResponse(raw string) (llmResponsePayload, error) {
 }
 
 
-// buildLLMSystemPrompt returns the unified system prompt for Layer 3 LLM
-// classification. It covers all 12 intent labels with descriptions and
-// includes disambiguation rules for known confusing cases.
-func buildLLMSystemPrompt() string {
-	return `You are an intent classifier. Given a user message, classify it into exactly one primary intent label and optionally one or more secondary labels.
+// buildLLMSystemPrompt constructs the system prompt for Layer 3 LLM
+// classification from the given definitions. The intent labels section is
+// auto-generated from TreeText, ensuring it stays in sync with the
+// Intent Tree prompt used by the fusion pipeline.
+//
+// Called once during New() — the result is stored on the classifier instance.
+func buildLLMSystemPrompt(defs []IntentDefinition) string {
+
+	var b strings.Builder
+	b.WriteString(`You are an intent classifier. Given a user message, classify it into exactly one primary intent label and optionally one or more secondary labels.
 
 ## Intent Labels
 
-1. "coding" — User wants to create, develop, or write new code/software/application/game/tool/script
-2. "ssh" — User wants to connect to a remote server, execute remote commands, or manage remote systems via SSH
-3. "non_coding" — User wants non-coding tasks: translation, summarization, writing, research, information lookup, general Q&A
-4. "browser" — User wants browser automation: navigate web pages, click elements, fill forms, take screenshots, record/replay browser actions
-5. "search" — User wants to search the web for information, documentation, or solutions
-6. "document_delivery" — User wants to open, send, or deliver files/documents
-7. "bug_fix" — User wants to fix bugs, debug issues, troubleshoot errors, resolve crashes
-8. "continuation" — User is giving a short action phrase to continue or start a previously discussed task (e.g., "继续", "开工", "go ahead")
-9. "maintenance" — User wants to refactor, optimize, clean up, upgrade, or improve existing code without adding new features
-10. "office" — User wants to create or manipulate office documents: PPT/slides, Excel/spreadsheets, Word documents
-11. "ambiguous" — The message is unclear and could belong to multiple categories with no dominant signal
-12. "unknown" — The message does not fit any known category
+`)
 
-## Disambiguation Rules
+	// Auto-generate from definitions — same data as Intent Tree but in numbered list format.
+	for i, def := range defs {
+		fmt.Fprintf(&b, "%d. \"%s\" — %s\n", i+1, def.Label, def.TreeText)
+	}
 
-- "更新" (update): If the object is software/package/service/server, classify as "maintenance" or "ssh". If the object is a document/file content, classify as "non_coding" or "document_delivery".
-- "页面" + "打开": If the context is about browser automation (navigating URLs, clicking web elements), classify as "browser". If the context is about game development or app UI description (e.g., "页面上有飞机和子弹"), classify as "coding".
-- Short messages (≤5 characters) like "继续", "开工", "好的": Classify as "continuation" unless there is strong evidence of another intent.
-- "修复" + creation keywords (开发/游戏/应用): If creation keywords dominate, classify as "coding" not "bug_fix".
-- "搜索" in context of web search vs code search: Web information lookup → "search"; searching within codebase → "coding" or "maintenance".
+	b.WriteString(`
+## Disambiguation Principles
+
+When a message is ambiguous (could belong to multiple categories depending on context), follow these principles:
+
+1. **Action + Object analysis**: Focus on what the user wants to DO (action verb) and what they want to do it TO (object). The object determines the domain more than the action.
+2. **Context-dependent messages**: If the same message could mean different things in different contexts (e.g., "关掉chrome" could be a desktop operation or a server operation), classify based on the strongest signal in the message itself. If no strong signal exists, use "ambiguous" with appropriate secondary labels — do NOT hardcode a single answer.
+3. **Creation vs operation**: "制作/设计/生成 X" (creating new X) is different from "打开/查看/转换 X" (operating on existing X). Creation maps to the domain of X; operation maps to the action type (file operation → non_coding or document_delivery).
+4. **Keyword context**: A keyword like "页面" means different things in different contexts — game UI description → coding; browser automation → browser; file viewing → non_coding. Use surrounding words to disambiguate.
+5. **Short messages**: Messages ≤5 characters like "继续", "开工", "好的" → "continuation" unless there is strong evidence of another intent.
+6. **Mixed signals**: When creation keywords (开发/游戏) co-occur with fix keywords (修复/bug), creation dominates → "coding" not "bug_fix".
+7. **When truly uncertain**: Set confidence lower (0.50-0.65) and populate "secondary" with alternative labels. Do NOT force a high-confidence answer when the message is genuinely ambiguous without conversation context.
 
 ## Output Format
 
@@ -154,5 +149,7 @@ Rules:
 - "confidence" must be between 0.0 and 1.0
 - "secondary" is an array of zero or more labels that also partially apply
 - "reason" should be a brief (1-2 sentence) explanation of why this intent was chosen
-- Do NOT include the primary intent in the secondary array`
+- Do NOT include the primary intent in the secondary array`)
+
+	return b.String()
 }

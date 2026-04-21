@@ -81,11 +81,12 @@ func TestToTaskIntent_AmbiguousLabels(t *testing.T) {
 
 func TestToGateIntent_CodingWithCreation(t *testing.T) {
 	r := &ClassificationResult{
-		Primary:    LabelCoding,
-		Confidence: 0.92,
-		Secondary:  []IntentLabel{},
-		Layer:      1,
-		Reason:     "creation keyword match",
+		Primary:          LabelCoding,
+		Confidence:       0.92,
+		Secondary:        []IntentLabel{},
+		Layer:            1,
+		Reason:           "keyword match: coding (strong=2, weak=0)",
+		CreationOriented: true,
 	}
 	intent, conf, gap, layer, reason := r.ToGateIntent()
 	if intent != "new_project" {
@@ -100,8 +101,8 @@ func TestToGateIntent_CodingWithCreation(t *testing.T) {
 	if layer != 1 {
 		t.Errorf("got layer=%d, want 1", layer)
 	}
-	if reason != "creation keyword match" {
-		t.Errorf("got reason=%q, want %q", reason, "creation keyword match")
+	if reason != "keyword match: coding (strong=2, weak=0)" {
+		t.Errorf("got reason=%q, want %q", reason, "keyword match: coding (strong=2, weak=0)")
 	}
 }
 
@@ -225,26 +226,41 @@ func TestIsNonCodingLike(t *testing.T) {
 	}
 }
 
-func TestHasCreationSignals_ReasonContainsCreation(t *testing.T) {
+func TestHasCreationSignals_CreationOrientedTrue(t *testing.T) {
 	r := &ClassificationResult{
-		Primary: LabelCoding,
-		Reason:  "creation keyword detected",
+		Primary:          LabelCoding,
+		Layer:            1,
+		CreationOriented: true,
 	}
 	intent, _, _, _, _ := r.ToGateIntent()
 	if intent != "new_project" {
-		t.Errorf("got intent=%q, want %q (reason contains 'creation')", intent, "new_project")
+		t.Errorf("got intent=%q, want %q (CreationOriented=true)", intent, "new_project")
 	}
 }
 
-func TestHasCreationSignals_NoSecondaryBugFixOrMaintenance(t *testing.T) {
+func TestHasCreationSignals_Layer1NotCreation(t *testing.T) {
+	// Layer 1 explicitly set CreationOriented=false (e.g., "改代码")
+	r := &ClassificationResult{
+		Primary:          LabelCoding,
+		Layer:            1,
+		CreationOriented: false,
+	}
+	intent, _, _, _, _ := r.ToGateIntent()
+	if intent != "maintenance" {
+		t.Errorf("got intent=%q, want %q (Layer 1, CreationOriented=false)", intent, "maintenance")
+	}
+}
+
+func TestHasCreationSignals_Layer2DefaultsToCreation(t *testing.T) {
+	// Layer 2 doesn't set CreationOriented — no counter-signals → default to creation
 	r := &ClassificationResult{
 		Primary:   LabelCoding,
 		Secondary: []IntentLabel{LabelSearch},
-		Reason:    "coding keywords",
+		Layer:     2,
 	}
 	intent, _, _, _, _ := r.ToGateIntent()
 	if intent != "new_project" {
-		t.Errorf("got intent=%q, want %q (no bug_fix/maintenance in secondary)", intent, "new_project")
+		t.Errorf("got intent=%q, want %q (Layer 2, no counter-signals)", intent, "new_project")
 	}
 }
 

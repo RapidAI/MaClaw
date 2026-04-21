@@ -562,13 +562,13 @@ func TestRunAgentLoop_OrientSkillPreferenceInjectsRunSkillGuidance(t *testing.T)
 	for _, msg := range requests[0].Messages {
 		role, _ := msg["role"].(string)
 		content, _ := msg["content"].(string)
-		if role == "system" && strings.Contains(content, "run_skill") && strings.Contains(content, "hf_daily_papers_report") {
+		if role == "system" && strings.Contains(content, "manage_skill") && strings.Contains(content, "hf_daily_papers_report") {
 			foundSkillGuidance = true
 			break
 		}
 	}
 	if !foundSkillGuidance {
-		t.Fatalf("first request messages = %#v, want injected run_skill guidance", requests[0].Messages)
+		t.Fatalf("first request messages = %#v, want injected manage_skill guidance", requests[0].Messages)
 	}
 }
 

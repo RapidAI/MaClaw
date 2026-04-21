@@ -33,14 +33,19 @@ func TestRolePrefixStreamFilter_BrowserInMiddle(t *testing.T) {
 }
 
 func TestRolePrefixStreamFilter_BrowserAtStart(t *testing.T) {
-	// Browser: at the very start should NOT be halted by the stream filter
-	// (Case 1 is handled by stripRolePrefixHallucination on the final text).
+	// Browser: at the very start should strip the prefix and emit the
+	// content after it (Case 1). The filter does NOT halt — it continues
+	// processing subsequent lines normally.
 	var out strings.Builder
 	f := newRolePrefixStreamFilter(func(s string) { out.WriteString(s) })
 	f.Write("Browser: 伯伯，API 服务器资源状况如下：\n## 系统信息\n")
 	f.Flush()
 	if f.Halted() {
-		t.Error("should not halt on Browser: at start (handled by post-hoc stripping)")
+		t.Error("should not halt on Browser: at start (Case 1 strips prefix)")
+	}
+	want := "伯伯，API 服务器资源状况如下：\n## 系统信息\n"
+	if out.String() != want {
+		t.Errorf("got %q, want %q", out.String(), want)
 	}
 }
 

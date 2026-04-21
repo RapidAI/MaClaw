@@ -183,6 +183,11 @@ type agentLoopPhase struct {
 	// the skill), we classify the outcome as "workaround".
 	FailedSkillName  string // set when a run_skill/manage_skill(action=run) call fails
 	FailedSkillError string // the error message from the failed skill execution
+
+	// ToolHallucinationCorrected is set to true after injecting a correction
+	// for a tool availability hallucination (e.g. "我没有 bash 工具").
+	// Only one correction per loop to avoid infinite cycles.
+	ToolHallucinationCorrected bool
 }
 
 func shouldPreferSkillForTask(text string) bool {
@@ -342,7 +347,7 @@ func buildSkillProgressGuidance(skillName, runID string) string {
 		return fmt.Sprintf("若已拿到 run_id，请优先调用 get_skill_run(run_id=\"%s\") 继续观察状态；仅在明确失败后再切换到其他真实工具。", runID)
 	}
 	if skillName != "" {
-		return fmt.Sprintf("若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；否则先调用 run_skill(name=\"%s\") 开始执行。", skillName)
+		return fmt.Sprintf("若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；否则先调用 manage_skill(action=\"run\", name=\"%s\") 开始执行。", skillName)
 	}
 	return "若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态。"
 }
@@ -390,6 +395,21 @@ func buildDriftRecoverPrompt(drift DriftResult) string {
 	return "[Recover 阶段]\n检测到执行路径出现漂移或循环，当前进入 Recover 阶段。请先暂停重复操作，回到原始目标，基于已知结果改用不同路径继续完成任务。\n" + detail + toolWarning + "\n[/Recover 阶段]"
 }
 
+// truncateRunesForDrift truncates a string to maxRunes for use as a drift
+// detector result hint. Prefers cutting at a newline boundary.
+func truncateRunesForDrift(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	truncated := string(runes[:maxRunes])
+	// Try to cut at last newline for readability, but keep at least half.
+	if idx := strings.LastIndex(truncated, "\n"); idx > len(truncated)/2 {
+		truncated = truncated[:idx]
+	}
+	return truncated + "…"
+}
+
 func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
@@ -397,7 +417,7 @@ func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID str
 		return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上。" + buildSkillProgressGuidance(skillName, runID) + " 若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
 	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，优先直接调用 run_skill(name=\"%s\") 完成交付；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 明确失败，再切换到其他真实工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]", skillName)
+		return fmt.Sprintf("[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，优先直接调用 manage_skill(action=\"run\", name=\"%s\") 完成交付；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 明确失败，再切换到其他真实工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]", skillName)
 	}
 	return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，请立即调用真实工具完成交付；若目标是文档，优先选择当前可用的文档/文件交付工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
 }
@@ -457,7 +477,7 @@ func buildNoToolActionPrompt(preferSkill bool, skillName, runID string) string {
 		return "[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。" + buildSkillProgressGuidance(skillName, runID) + "\n[/执行要求]"
 	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。优先立即调用 run_skill(name=\"%s\") 开始执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具。\n[/执行要求]", skillName)
+		return fmt.Sprintf("[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。优先立即调用 manage_skill(action=\"run\", name=\"%s\") 开始执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具。\n[/执行要求]", skillName)
 	}
 	return "[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成、编辑或发送相关工具。\n[/执行要求]"
 }
@@ -469,7 +489,7 @@ func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName,
 		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。%s\n[/Recover 阶段]", consecutive, buildSkillProgressGuidance(skillName, runID))
 	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。优先立即调用 run_skill(name=\"%s\") 启动实际执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具完成任务。\n[/Recover 阶段]", consecutive, skillName)
+		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。优先立即调用 manage_skill(action=\"run\", name=\"%s\") 启动实际执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具完成任务。\n[/Recover 阶段]", consecutive, skillName)
 	}
 	return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成或发送相关工具。\n[/Recover 阶段]", consecutive)
 }
@@ -1227,7 +1247,66 @@ func confirmationApprovedText(item *pendingConfirmation) string {
 	if base == "" {
 		return ""
 	}
+
+	// Extract "⚠️ 待确认" items from the confirmation summary/constraints.
+	// When the LLM task understanding marked items as pending confirmation
+	// (e.g. SSH credentials, deployment path), the user clicking "确认并开始"
+	// confirms the PLAN but does NOT provide the missing information.
+	// We must tell the agent to ask the user for these items before executing.
+	pendingItems := extractPendingConfirmItems(item)
+	if len(pendingItems) > 0 {
+		var pendingSection strings.Builder
+		pendingSection.WriteString("\n\n[执行上下文]\n用户已确认执行方案。但以下信息尚未提供，请在执行前先获取：\n")
+		for _, pi := range pendingItems {
+			pendingSection.WriteString("- " + pi + "\n")
+		}
+		pendingSection.WriteString("请先尝试通过 memory(action=recall) 从记忆中召回以上信息。如果记忆中没有，再向用户询问。获得全部信息后再开始执行。")
+		return strings.TrimSpace(base + pendingSection.String())
+	}
+
 	return strings.TrimSpace(base + "\n\n[执行上下文]\n用户已确认当前方案，请直接开始执行，不要再次请求确认。\n如果暂时还没有最终交付，请先说明正在执行的动作或下一步。")
+}
+
+// extractPendingConfirmItems scans the confirmation's Summary and Constraints
+// for "⚠️ 待确认" markers. These indicate information the LLM flagged as
+// missing during task understanding. The user confirmed the plan but did NOT
+// provide these values — the agent must ask for them before executing.
+func extractPendingConfirmItems(item *pendingConfirmation) []string {
+	if item == nil {
+		return nil
+	}
+	var items []string
+	seen := make(map[string]bool)
+
+	// Scan all text sources for pending confirmation markers.
+	// Only scan Summary and EnhancedSummary (user-facing display text).
+	// EnhancedInstruction is the execution directive — scanning it would
+	// cause false positives if it mentions "待确认" in a different context.
+	sources := []string{item.Summary, item.EnhancedSummary}
+	for _, c := range item.RiskFlags {
+		sources = append(sources, c)
+	}
+
+	for _, src := range sources {
+		for _, line := range strings.Split(src, "\n") {
+			line = strings.TrimSpace(line)
+			// Match "⚠️ 待确认：xxx" or "待确认：xxx" at meaningful positions.
+			// Require "待确认" to be preceded by start-of-line, bullet, or ⚠️
+			// to avoid matching "确认待确认项" or similar false positives.
+			for _, sep := range []string{"⚠️ 待确认：", "⚠️ 待确认:", "待确认：", "待确认:"} {
+				if pos := strings.Index(line, sep); pos >= 0 {
+					extracted := strings.TrimSpace(line[pos+len(sep):])
+					// Strip trailing parenthetical notes like "（建议...）"
+					if extracted != "" && !seen[extracted] {
+						seen[extracted] = true
+						items = append(items, extracted)
+					}
+					break // only extract once per line
+				}
+			}
+		}
+	}
+	return items
 }
 
 func looksLikeNoToolStallReply(text string) bool {
@@ -2502,6 +2581,10 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 
 // routeTools applies the ToolRouter to filter tools based on user message.
 // If no router is configured, returns allTools unchanged.
+//
+// Tool selection (including conditional activation of ssh, browser, etc.)
+// is fully handled by Route() via conditionalKeepRules + sessionTools.
+// This function does not apply any additional per-tool filtering.
 func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
 	h.toolsMu.RLock()
 	router := h.toolRouter
@@ -2510,31 +2593,7 @@ func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]
 	if router == nil {
 		return allTools
 	}
-	routed := router.Route(userMessage, allTools)
-	if classifyTaskIntent(userMessage).Intent == intentSSH {
-		return routed
-	}
-	// When the user message is not SSH-related, remove ssh from the tool
-	// list to reduce noise — UNLESS ssh was session-pinned (meaning the
-	// user previously used ssh in this session and it should stay available
-	// for follow-up messages like "查看 bb-browser 详情").
-	sshPinned := router.IsSessionPinned("ssh")
-	if sshPinned {
-		return routed
-	}
-	filtered := make([]map[string]interface{}, 0, len(routed))
-	hasSSH := false
-	for _, tool := range routed {
-		if extractToolName(tool) == "ssh" {
-			hasSSH = true
-			continue
-		}
-		filtered = append(filtered, tool)
-	}
-	if hasSSH && len(filtered) > 0 {
-		return filtered
-	}
-	return routed
+	return router.Route(userMessage, allTools)
 }
 
 // syncSkillHubTools registers the search_and_install_skill tool when a
@@ -2920,6 +2979,11 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 	sendStatus(fmt.Sprintf("📝 正在注册 Skill: %s ...", skill.Name))
 	if err := h.app.skillExecutor.Register(*skill); err != nil {
 		return fmt.Sprintf("注册 Skill「%s」失败: %v", displayName, err)
+	}
+
+	// Refresh skill BM25 index so the router picks up the new skill.
+	if h.app.toolRouter != nil {
+		h.app.toolRouter.RefreshSkillIndex()
 	}
 
 	// Audit log.
@@ -5240,7 +5304,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				convergePrompt = "[Skill 优先要求]\n当前任务属于 Skill 优先路径，但本地未命中合适 Skill。本轮必须先调用 search_and_install_skill（或其他 skill 搜索/安装工具）查找可复用 Skill；在确认远程 Skill 路径无解之前，不要直接使用 craft_tool 或 bash。\n[/Skill 优先要求]"
 			} else if phase.PreferredSkillName != "" {
 				guidance := buildSkillProgressGuidance(phase.PreferredSkillName, phase.PreferredSkillRunID)
-				convergePrompt = fmt.Sprintf("[Skill 优先要求]\n检测到本地已有可复用 Skill「%s」。本轮优先调用 run_skill(name=\"%s\") 完成任务，不要先使用 craft_tool 或 bash 自建脚本。%s 若该 Skill 失败，再基于失败原因切换到其他工具路径。", phase.PreferredSkillName, phase.PreferredSkillName, guidance)
+				convergePrompt = fmt.Sprintf("[Skill 优先要求]\n检测到本地已有可复用 Skill「%s」。本轮优先调用 manage_skill(action=\"run\", name=\"%s\") 完成任务，不要先使用 craft_tool 或 bash 自建脚本。%s 若该 Skill 失败，再基于失败原因切换到其他工具路径。", phase.PreferredSkillName, phase.PreferredSkillName, guidance)
 				if phase.PreferredSkillReason != "" {
 					convergePrompt += fmt.Sprintf("\n匹配依据: %s", truncateTraceText(phase.PreferredSkillReason, 160))
 				}
@@ -5582,6 +5646,25 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if len(choice.Message.ToolCalls) == 0 {
 			phase.Stage = agentStageConverge
 			phase.ConsecutiveNoTool++
+
+			// --- Tool availability hallucination correction ---
+			// When the LLM falsely claims a tool is unavailable but the tool
+			// IS in the current tools list sent to the LLM, inject a correction.
+			// This is a mechanism-level check: we compare the LLM's claim
+			// against the actual tool list, not a hardcoded set.
+			// One-shot per loop to avoid infinite correction cycles.
+			if !phase.ToolHallucinationCorrected {
+				if correction := detectToolAvailabilityHallucination(msgContent, tools); correction != "" {
+					phase.ToolHallucinationCorrected = true
+					phase.ConsecutiveNoTool = 0
+					log.Printf("[agent-loop] tool availability hallucination detected, injecting correction (iter=%d)", iteration)
+					conversation = append(conversation, map[string]interface{}{
+						"role":    "user",
+						"content": correction,
+					})
+					continue
+				}
+			}
 
 			// --- Workflow NeedsConfirm hard gate ---
 			// When the current workflow phase requires user confirmation
@@ -6212,9 +6295,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if loopDriftDetector != nil {
 				argsHash := fmt.Sprintf("%x", sha256.Sum256([]byte(tc.Function.Arguments)))
 				loopDriftDetector.Record(ToolCallRecord{
-					ToolName:  tc.Function.Name,
-					ArgsHash:  argsHash,
-					Timestamp: time.Now(),
+					ToolName:   tc.Function.Name,
+					ArgsHash:   argsHash,
+					Timestamp:  time.Now(),
+					ResultHint: truncateRunesForDrift(truncated, 200),
 				})
 				driftResult := loopDriftDetector.DetectDrift()
 				if driftResult.Drifted {

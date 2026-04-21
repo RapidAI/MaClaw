@@ -265,6 +265,14 @@ func (a *App) initCoreInfra() {
 	if a.toolRouter == nil {
 		a.toolRouter = NewToolRouter(a.toolDefGenerator)
 	}
+	// Wire skill-aware routing: when skillExecutor is available, connect it
+	// to the toolRouter so that Route() can match user messages against
+	// installed skills and enrich the manage_skill tool description with
+	// "可用 Skill: xh-md-to-pdf" hints. Without this wiring, skillMatchScore
+	// always returns 0 and the LLM never gets skill-specific routing hints.
+	if a.toolRouter != nil && a.skillExecutor != nil {
+		a.toolRouter.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
+	}
 	if a.usageTracker == nil {
 		trackerPath := tool.DefaultUsageTrackerPath()
 		if trackerPath != "" {
@@ -910,6 +918,10 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
+		// Wire skill-aware routing to the tool builder.
+		if a.skillExecutor != nil {
+			handler.toolBuilder.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
+		}
 		// Reuse the already-loaded embedder if vector search is active.
 		// Do not load a second Gemma model here 闂?that duplicates mmap-backed
 		// state and causes a large idle memory jump right after Hub connect.

@@ -119,18 +119,12 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 			builtinName = serverRef
 		}
 		if h.registry != nil {
-			if tool, ok := h.registry.Get(builtinName); ok {
-				// 将 MCP 格式的 arguments 作为内置工具的 args 传入
-				if tool.Handler != nil {
-					return tool.Handler(toolArgs)
+			for _, candidate := range []string{builtinName, serverRef} {
+				if candidate == "" {
+					continue
 				}
-				if tool.HandlerProg != nil {
-					return tool.HandlerProg(toolArgs, nil)
-				}
-			}
-			// 也尝试用 server_id 作为工具名
-			if builtinName != serverRef {
-				if tool, ok := h.registry.Get(serverRef); ok {
+				if tool, ok := h.registry.Get(candidate); ok {
+					log.Printf("[call_mcp_tool] builtin fallback: LLM called call_mcp_tool(server_id=%q, tool_name=%q) but %q is a builtin tool — forwarding directly", serverRef, toolName, candidate)
 					if tool.Handler != nil {
 						return tool.Handler(toolArgs)
 					}
@@ -450,6 +444,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	// Auto-install dependencies for file-backed skills.
 	go h.app.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
 
+	// Refresh skill BM25 index so the router picks up the new skill
+	// for skill-aware routing (enrichRunSkillDescription).
+	if h.app.toolRouter != nil {
+		h.app.toolRouter.RefreshSkillIndex()
+	}
+
 	// Audit log
 	h.app.ensureAuditLog()
 	if h.app.auditLog != nil {
@@ -493,7 +493,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			}
 		}
 	} else {
-		b.WriteString(fmt.Sprintf("\n可以使用 run_skill 工具执行，名称为: %s", entry.Name))
+		b.WriteString(fmt.Sprintf("\n可以使用 manage_skill(action=\"run\", name=\"%s\") 执行", entry.Name))
 	}
 
 	return b.String()

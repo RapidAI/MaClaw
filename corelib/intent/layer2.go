@@ -19,6 +19,10 @@ type intentAnchor struct {
 // defaultAnchors returns anchor text sets for all 10 non-ambiguous/unknown
 // intent labels. Each label has 6-14 representative sentences used as
 // reference points for embedding cosine similarity scoring.
+//
+// Deprecated: Production code now uses BuildAnchorsFromDefinitions(DefaultDefinitions())
+// via classifier.go. This function is retained for backward compatibility with
+// tests in corelib/tool/intent_classifier.go that have their own copy.
 func defaultAnchors() []intentAnchor {
 	return []intentAnchor{
 		{

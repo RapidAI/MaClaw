@@ -886,30 +886,42 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		// Semantic intent enhancement: when keyword matching misses but the
 		// IntentClassifier detects a specific intent, activate the corresponding
 		// conditional tools. This catches cases like "帮我搞个能自动抢票的东西"
-		// where no SSH keywords appear but embedding detects the intent.
+		// where no SSH/browser keywords appear but embedding detects the intent.
 		//
-		// NOTE: IntentBrowser is intentionally excluded here. Browser tools
-		// have their own two-layer activation mechanism (strong keywords +
-		// weak keywords with semantic confirm) in conditionalKeepRules above.
-		// Adding a third activation path via embedding similarity causes
-		// false positives — e.g. "查看服务器资源" can get a borderline
-		// IntentBrowser score from embedding, injecting 25+ browser tool
-		// definitions into the LLM context and causing "Browser:" prefix
-		// hallucinations in output.
+		// For tool sets in noEagerPinTools (e.g. 25+ browser tools), a higher
+		// confidence threshold is required to prevent false positives from
+		// injecting many tool definitions into the LLM context. This is a
+		// mechanism-level control: any future high-cost tool set only needs
+		// to be added to noEagerPinTools to automatically get the higher bar.
 		if cachedICResult != nil {
 			if cachedICResult.Intent != IntentQuery && cachedICResult.Intent != IntentShortCommand &&
-				cachedICResult.Intent != IntentUnknown && cachedICResult.Intent != IntentBrowser &&
+				cachedICResult.Intent != IntentUnknown &&
 				cachedICResult.Confidence >= 0.50 {
 				var intentTools []string
 				switch cachedICResult.Intent {
 				case IntentSSH:
 					intentTools = []string{"ssh"}
-				}
-				for _, name := range intentTools {
-					if !condKeep[name] {
-						condKeep[name] = true
-						delete(condFilterOut, name)
+				case IntentBrowser:
+					for name := range allConditionalKeepTools {
+						if strings.HasPrefix(name, "browser_") || name == "gui_record_start" || name == "gui_record_stop" {
+							intentTools = append(intentTools, name)
+						}
 					}
+				}
+				// For tools in noEagerPinTools (high-cost sets like browser_*),
+				// require higher confidence to avoid false-positive activation.
+				// The threshold 0.78 matches embeddingHighThreshold — only
+				// high-confidence intent detection should inject 25+ tools.
+				const highCostConfidenceThreshold = 0.78
+				for _, name := range intentTools {
+					if condKeep[name] {
+						continue
+					}
+					if noEagerPinTools[name] && cachedICResult.Confidence < highCostConfidenceThreshold {
+						continue // skip: low-confidence activation of high-cost tool
+					}
+					condKeep[name] = true
+					delete(condFilterOut, name)
 				}
 			}
 		}

@@ -69,6 +69,7 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 ## 核心原则
 - 主动使用工具：不要只是描述步骤，直接执行。收到请求后立即调用对应工具。
 - 永远不要说"我没有某某工具"或"我无法执行"——先检查你的工具列表，大部分操作都有对应工具。
+- 执行 Skill 的正确方式：使用 manage_skill(action="run", name="skill名称")。旧的 run_skill 工具已合并到 manage_skill 中。
 - 多步推理：复杂任务可以连续调用多个工具，逐步完成。
 - 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
 - ⚠️ 先查记忆再问用户：当用户提到服务器、环境、配置等信息时，先检查下方「用户记忆」和「相关记忆（自动召回）」section 中是否已有相关信息，有则直接使用，不要向用户索要已经记住的信息。
@@ -456,10 +457,8 @@ office 工具是统一的文档操作工具，支持以下 action：
 	// Inject SSH background task guidance.
 	b.WriteString(`
 ## SSH 远程服务器操作规则
-⚠️ ssh 是内置工具，直接以函数调用方式使用（与 bash、write_file 等相同），不要通过 call_mcp_tool 调用，也不要通过 discover_tool 搜索。
 当需要执行 SSH 登录、远程命令、文件传输等操作时，直接调用 ssh(action=connect/exec/exec_background/upload/download 等)。
 禁止通过 bash 调用 ssh/scp/rsync 命令，也禁止生成临时脚本来包装 SSH 操作。内置工具已处理连接复用、密钥认证、超时管理。
-
 如果之前的 SSH 会话已断开，直接调用 ssh(action=connect, ...) 重新连接即可，系统会自动处理旧会话清理。
 
 对于安装软件（pip install、apt install、conda install）、编译（make、cargo build）、下载（wget、git clone）等
@@ -471,6 +470,7 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 		skills := h.app.skillExecutor.List()
 		if len(skills) > 0 {
 			b.WriteString("\n## 已注册 Skill\n")
+			b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
 			for _, s := range skills {
 				if s.Status == "active" {
 					b.WriteString(fmt.Sprintf("- %s: %s", s.Name, s.Description))
@@ -489,7 +489,7 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 		b.WriteString(`
 ## Skill 优先策略（重要）
 当你需要完成一个现有内置工具无法直接处理的任务时，按以下优先级尝试：
-1. **本地已安装 Skill**：先检查上面「已注册 Skill」列表，看是否有匹配的 Skill 可以直接 run_skill 执行
+1. **本地已安装 Skill**：先检查上面「已注册 Skill」列表，看是否有匹配的 Skill 可以直接用 manage_skill(action="run", name="skill名称") 执行
 2. **搜索并安装 Skill**：本地没有时，调用 search_and_install_skill 工具从 SkillMarket 搜索安装（搜索顺序：SkillMarket → ClawHub 镜像 → GitHub）
 3. **craft_tool 自建**：只有在搜索也找不到合适 Skill 时，才用 craft_tool 自己生成脚本
 

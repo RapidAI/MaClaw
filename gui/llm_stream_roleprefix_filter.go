@@ -7,17 +7,22 @@ import (
 )
 
 // rolePrefixStreamFilter detects hallucinated role-prefix lines (e.g.
-// "Browser: ..." or "Tool: ...") during LLM streaming and suppresses
-// all subsequent output once detected. This complements the post-hoc
-// stripRolePrefixHallucination (which cleans the final response text)
-// by preventing the hallucination from ever reaching the frontend via
-// streaming tokens.
+// "Browser: ..." or "Tool: ...") during LLM streaming and handles them
+// inline. This complements the post-hoc stripRolePrefixHallucination
+// (which cleans the final response text) by preventing the hallucination
+// from ever reaching the frontend via streaming tokens.
 //
 // The filter accumulates tokens in a line buffer. When a newline is
 // encountered, the completed line is checked against the role prefix
-// pattern. If a match is found:
-//   - The matched line and all subsequent tokens are suppressed.
-//   - The halted flag is set so the caller can early-terminate the stream.
+// pattern. Two cases:
+//
+//  1. Prefix at the start of output (seenContent=false): strip the
+//     "Browser: " prefix token and emit only the content after it.
+//     This handles both single-iteration Case 1 and multi-iteration
+//     scenarios where a new LLM request starts with a role prefix.
+//  2. Prefix after content has been emitted (seenContent=true): halt
+//     and suppress this line and all subsequent tokens. The content
+//     after a mid-text role prefix is almost always a duplicate.
 //
 // Code blocks (``` fenced) are tracked to avoid false positives on
 // lines like "Browser: connected" inside code samples.
@@ -37,13 +42,8 @@ type rolePrefixStreamFilter struct {
 	inCodeBlock bool
 
 	// seenContent tracks whether any non-whitespace content has been
-	// emitted before the current line. Role prefix at the very start
-	// of the output is handled differently (Case 1 in
-	// stripRolePrefixHallucination): the prefix is stripped but the
-	// content after it is kept. In streaming, we can't easily do this
-	// token-by-token, so we only halt on mid-text prefixes (Case 2).
-	// Case 1 (prefix at start) is handled by the post-hoc
-	// stripRolePrefixHallucination on the final response.
+	// emitted before the current line. Used to distinguish Case 1
+	// (prefix at start → strip prefix) from Case 2 (mid-text → halt).
 	seenContent bool
 }
 
@@ -84,13 +84,29 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 			f.inCodeBlock = !f.inCodeBlock
 		}
 
-		// Check for role prefix (only outside code blocks and after
-		// some content has been emitted — mid-text hallucination).
-		if !f.inCodeBlock && f.seenContent && rolePrefixLineRe.MatchString(line) {
-			// Halt: suppress this line and everything after it.
-			f.halted = true
-			f.suppressedRunes += utf8.RuneCountInString(line) + utf8.RuneCountInString(delta)
-			return
+		// Check for role prefix outside code blocks.
+		if !f.inCodeBlock && rolePrefixLineRe.MatchString(line) {
+			if f.seenContent {
+				// Case 2: mid-text hallucination — halt and suppress
+				// this line and everything after it.
+				f.halted = true
+				f.suppressedRunes += utf8.RuneCountInString(line) + utf8.RuneCountInString(delta)
+				return
+			}
+			// Case 1: role prefix at the very start of output — strip
+			// the prefix token but keep the content after it. This
+			// handles the scenario where a new agent loop iteration
+			// starts with "Browser: ..." — the prefix is removed
+			// inline so it never reaches the frontend.
+			loc := rolePrefixLineRe.FindStringIndex(line)
+			if loc != nil {
+				stripped := line[loc[1]:]
+				if strings.TrimSpace(stripped) != "" {
+					f.downstream(stripped)
+					f.seenContent = true
+				}
+			}
+			continue
 		}
 
 		// Emit the line.
@@ -108,9 +124,22 @@ func (f *rolePrefixStreamFilter) Flush() {
 	remaining := f.lineBuf.String()
 	if remaining != "" {
 		// Check the final incomplete line for role prefix.
-		if !f.inCodeBlock && f.seenContent && rolePrefixLineRe.MatchString(remaining) {
-			f.halted = true
-			f.suppressedRunes += utf8.RuneCountInString(remaining)
+		if !f.inCodeBlock && rolePrefixLineRe.MatchString(remaining) {
+			if f.seenContent {
+				// Case 2: mid-text — halt and suppress.
+				f.halted = true
+				f.suppressedRunes += utf8.RuneCountInString(remaining)
+				f.lineBuf.Reset()
+				return
+			}
+			// Case 1: prefix at start — strip prefix, keep content.
+			loc := rolePrefixLineRe.FindStringIndex(remaining)
+			if loc != nil {
+				stripped := remaining[loc[1]:]
+				if strings.TrimSpace(stripped) != "" {
+					f.downstream(stripped)
+				}
+			}
 			f.lineBuf.Reset()
 			return
 		}

@@ -47,6 +47,7 @@ func classifyByKeywords(registry *KeywordRegistry, affinity *ToolAffinityRegistr
 
 	// Group matches by label, counting strong and weak hits.
 	scores := make(map[IntentLabel]*keywordLabelScore)
+	hasCreationKeyword := false
 	for _, m := range matches {
 		ls, ok := scores[m.Entry.Label]
 		if !ok {
@@ -58,6 +59,9 @@ func classifyByKeywords(registry *KeywordRegistry, affinity *ToolAffinityRegistr
 		} else {
 			ls.weak++
 		}
+		if m.Entry.Creation {
+			hasCreationKeyword = true
+		}
 	}
 
 	// Apply mixed-intent dominance rules (Requirement 5.3).
@@ -67,12 +71,12 @@ func classifyByKeywords(registry *KeywordRegistry, affinity *ToolAffinityRegistr
 	if bs, hasBrowser := scores[LabelBrowser]; hasBrowser {
 		if bs.strong > 0 {
 			// Strong browser keywords → high confidence.
-			result := buildResult(LabelBrowser, 0.92, scores, affinity, "strong browser keyword match")
+			result := buildResult(LabelBrowser, 0.92, scores, affinity, "strong browser keyword match", false)
 			return result, true
 		}
 		// Weak browser keywords only → low confidence, needs Layer 2 confirmation.
 		if bs.weak >= 2 {
-			result := buildResult(LabelBrowser, 0.55, scores, affinity, "weak browser keyword combination (page + action words)")
+			result := buildResult(LabelBrowser, 0.55, scores, affinity, "weak browser keyword combination (page + action words)", false)
 			return result, false
 		}
 		// Single weak browser keyword → remove from contention.
@@ -107,7 +111,7 @@ func classifyByKeywords(registry *KeywordRegistry, affinity *ToolAffinityRegistr
 	reason := fmt.Sprintf("keyword match: %s (strong=%d, weak=%d)",
 		winner, scores[winner].strong, scores[winner].weak)
 
-	result := buildResult(winner, confidence, scores, affinity, reason)
+	result := buildResult(winner, confidence, scores, affinity, reason, hasCreationKeyword)
 	return result, confidence >= 0.90
 }
 
@@ -233,7 +237,7 @@ func isContinuationByContext(msg MessageContext) bool {
 }
 
 // buildResult constructs a ClassificationResult with secondary labels and tool names.
-func buildResult(primary IntentLabel, confidence float64, scores map[IntentLabel]*keywordLabelScore, affinity *ToolAffinityRegistry, reason string) ClassificationResult {
+func buildResult(primary IntentLabel, confidence float64, scores map[IntentLabel]*keywordLabelScore, affinity *ToolAffinityRegistry, reason string, creationOriented bool) ClassificationResult {
 	var secondary []IntentLabel
 	for label := range scores {
 		if label != primary {
@@ -244,11 +248,12 @@ func buildResult(primary IntentLabel, confidence float64, scores map[IntentLabel
 	toolNames := affinity.Resolve(primary, secondary)
 
 	return ClassificationResult{
-		Primary:    primary,
-		Confidence: confidence,
-		Secondary:  secondary,
-		ToolNames:  toolNames,
-		Layer:      1,
-		Reason:     reason,
+		Primary:          primary,
+		Confidence:       confidence,
+		Secondary:        secondary,
+		ToolNames:        toolNames,
+		Layer:            1,
+		Reason:           reason,
+		CreationOriented: creationOriented && primary == LabelCoding,
 	}
 }

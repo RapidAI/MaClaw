@@ -66,16 +66,18 @@ type KeywordEntry struct {
 	Keyword  string
 	Label    IntentLabel
 	Strength KeywordStrength
+	Creation bool // true for creation-oriented coding keywords (开发/创建/实现 etc.)
 }
 
 // ClassificationResult is the structured output of the UIC.
 type ClassificationResult struct {
-	Primary    IntentLabel   // exactly one primary intent
-	Confidence float64       // [0, 1]
-	Secondary  []IntentLabel // zero or more secondary intents
-	ToolNames  []string      // tool names to activate (from Tool Affinity)
-	Layer      int           // 1, 2, or 3
-	Reason     string        // human-readable explanation
+	Primary          IntentLabel   // exactly one primary intent
+	Confidence       float64       // [0, 1]
+	Secondary        []IntentLabel // zero or more secondary intents
+	ToolNames        []string      // tool names to activate (from Tool Affinity)
+	Layer            int           // 1, 2, or 3 (23 = fusion of L2+L3)
+	Reason           string        // human-readable explanation
+	CreationOriented bool          // true when the coding intent is creation-oriented (new project/feature)
 }
 
 // MessageContext is the input to the classifier.
