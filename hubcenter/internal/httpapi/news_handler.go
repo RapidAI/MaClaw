@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -13,10 +14,11 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
-// ── Public API ──────────────────────────────────────────────────────────
+type newsSyncRecorder interface {
+	AppendNewsArticle(ctx context.Context, item *store.NewsArticle)
+	DeleteNewsArticle(ctx context.Context, id string)
+}
 
-// NewsLatestHandler returns the latest N news articles (default 2).
-// GET /api/news?limit=2
 func NewsLatestHandler(repo store.NewsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORSNews(w)
@@ -45,20 +47,11 @@ func NewsLatestHandler(repo store.NewsRepository) http.HandlerFunc {
 		}
 		out := make([]item, 0, len(articles))
 		for _, a := range articles {
-			out = append(out, item{
-				ID:        a.ID,
-				Title:     a.Title,
-				Content:   a.Content,
-				Category:  a.Category,
-				Pinned:    a.Pinned,
-				CreatedAt: a.CreatedAt.Format(time.RFC3339),
-			})
+			out = append(out, item{ID: a.ID, Title: a.Title, Content: a.Content, Category: a.Category, Pinned: a.Pinned, CreatedAt: a.CreatedAt.Format(time.RFC3339)})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"articles": out})
 	}
 }
-
-// ── Admin API ───────────────────────────────────────────────────────────
 
 func AdminListNewsHandler(repo store.NewsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -85,22 +78,18 @@ func AdminListNewsHandler(repo store.NewsRepository) http.HandlerFunc {
 		}
 		out := make([]adminItem, 0, len(articles))
 		for _, a := range articles {
-			out = append(out, adminItem{
-				ID:        a.ID,
-				Title:     a.Title,
-				Content:   a.Content,
-				Category:  a.Category,
-				Pinned:    a.Pinned,
-				CreatedAt: a.CreatedAt.Format(time.RFC3339),
-				UpdatedAt: a.UpdatedAt.Format(time.RFC3339),
-			})
+			out = append(out, adminItem{ID: a.ID, Title: a.Title, Content: a.Content, Category: a.Category, Pinned: a.Pinned, CreatedAt: a.CreatedAt.Format(time.RFC3339), UpdatedAt: a.UpdatedAt.Format(time.RFC3339)})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"articles": out, "total": total})
 	}
 }
 
-func AdminCreateNewsHandler(repo store.NewsRepository) http.HandlerFunc {
+func AdminCreateNewsHandler(repo store.NewsRepository, syncers ...newsSyncRecorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var sync newsSyncRecorder
+		if len(syncers) > 0 {
+			sync = syncers[0]
+		}
 		var req struct {
 			Title    string `json:"title"`
 			Content  string `json:"content"`
@@ -125,7 +114,6 @@ func AdminCreateNewsHandler(repo store.NewsRepository) http.HandlerFunc {
 			cat = "notice"
 		}
 		now := time.Now().UTC()
-		// Enforce max 2 pinned articles
 		if req.Pinned {
 			pinnedCount, err := repo.CountPinned(r.Context())
 			if err != nil {
@@ -137,25 +125,24 @@ func AdminCreateNewsHandler(repo store.NewsRepository) http.HandlerFunc {
 				return
 			}
 		}
-		article := &store.NewsArticle{
-			ID:        generateNewsID(),
-			Title:     title,
-			Content:   req.Content,
-			Category:  cat,
-			Pinned:    req.Pinned,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
+		article := &store.NewsArticle{ID: generateNewsID(), Title: title, Content: req.Content, Category: cat, Pinned: req.Pinned, CreatedAt: now, UpdatedAt: now}
 		if err := repo.Create(r.Context(), article); err != nil {
 			writeError(w, http.StatusInternalServerError, "NEWS_CREATE_FAILED", err.Error())
 			return
+		}
+		if sync != nil {
+			sync.AppendNewsArticle(r.Context(), article)
 		}
 		writeJSON(w, http.StatusOK, article)
 	}
 }
 
-func AdminUpdateNewsHandler(repo store.NewsRepository) http.HandlerFunc {
+func AdminUpdateNewsHandler(repo store.NewsRepository, syncers ...newsSyncRecorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var sync newsSyncRecorder
+		if len(syncers) > 0 {
+			sync = syncers[0]
+		}
 		id := r.URL.Query().Get("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "id is required")
@@ -193,7 +180,6 @@ func AdminUpdateNewsHandler(repo store.NewsRepository) http.HandlerFunc {
 		if req.Pinned != nil {
 			existing.Pinned = *req.Pinned
 		}
-		// Enforce max 2 pinned articles (only when newly pinning)
 		if existing.Pinned && !wasPinned {
 			pinnedCount, err := repo.CountPinned(r.Context())
 			if err != nil {
@@ -210,12 +196,19 @@ func AdminUpdateNewsHandler(repo store.NewsRepository) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "NEWS_UPDATE_FAILED", err.Error())
 			return
 		}
+		if sync != nil {
+			sync.AppendNewsArticle(r.Context(), existing)
+		}
 		writeJSON(w, http.StatusOK, existing)
 	}
 }
 
-func AdminDeleteNewsHandler(repo store.NewsRepository) http.HandlerFunc {
+func AdminDeleteNewsHandler(repo store.NewsRepository, syncers ...newsSyncRecorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var sync newsSyncRecorder
+		if len(syncers) > 0 {
+			sync = syncers[0]
+		}
 		id := r.URL.Query().Get("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "id is required")
@@ -224,6 +217,9 @@ func AdminDeleteNewsHandler(repo store.NewsRepository) http.HandlerFunc {
 		if err := repo.Delete(r.Context(), id); err != nil {
 			writeError(w, http.StatusInternalServerError, "NEWS_DELETE_FAILED", err.Error())
 			return
+		}
+		if sync != nil {
+			sync.DeleteNewsArticle(r.Context(), id)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}

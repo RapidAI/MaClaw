@@ -191,6 +191,11 @@ type agentLoopPhase struct {
 	ToolHallucinationCorrected bool
 }
 
+// skillHintWordBoundaryRe matches a skill preference hint as a whole word,
+// preventing false positives from substrings in domain names, file paths, or
+// compound words (e.g. "paper" matching "mypapers.top").
+var skillHintWordBoundaryRe = regexp.MustCompile(`(?i)\bpaper\b|\breport\b`)
+
 func shouldPreferSkillForTask(text string) bool {
 	result := classifyTaskIntent(text)
 	if result.Intent == intentCoding || result.Intent == intentSSH {
@@ -200,14 +205,21 @@ func shouldPreferSkillForTask(text string) bool {
 	if lower == "" {
 		return false
 	}
-	hints := []string{
+	// Substring hints — safe for multi-char Chinese phrases and distinctive
+	// English terms that rarely appear as substrings of other words.
+	substringHints := []string{
 		"pdf", "报告", "文档", "综述", "markdown", "导出", "转换",
-		"生成文件", "发送文件", "daily papers", "paper", "report",
+		"生成文件", "发送文件", "daily papers",
 	}
-	for _, hint := range hints {
+	for _, hint := range substringHints {
 		if strings.Contains(lower, hint) {
 			return true
 		}
+	}
+	// Word-boundary hints — common English words that frequently appear as
+	// substrings in domain names / URLs (e.g. "mypapers.top", "report.csv").
+	if skillHintWordBoundaryRe.MatchString(lower) {
+		return true
 	}
 	return false
 }
@@ -239,9 +251,18 @@ func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, str
 		}
 		desc := strings.ToLower(strings.TrimSpace(skill.Description))
 		if desc != "" {
-			for _, token := range []string{"pdf", "报告", "文档", "综述", "markdown", "daily papers", "report"} {
+			for _, token := range []string{"pdf", "报告", "文档", "综述", "markdown", "daily papers"} {
 				if strings.Contains(lower, token) && strings.Contains(desc, token) {
 					score += 2
+				}
+			}
+			// Word-boundary tokens: require whole-word match in user text
+			// to avoid false positives from domain names / URLs.
+			if skillHintWordBoundaryRe.MatchString(lower) {
+				for _, token := range []string{"paper", "report"} {
+					if strings.Contains(desc, token) {
+						score += 2
+					}
 				}
 			}
 		}
@@ -4175,6 +4196,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// runAgentLoop can skip the NeedsConfirm gate for unrelated messages.
 	loopCtx.SkipNeedsConfirmGate = skipNeedsConfirmGate
 
+	// Propagate the ask_user response flag so runAgentLoop skips task-level
+	// routing decisions (e.g. Skill preference) that assume a fresh task.
+	loopCtx.IsAskUserResponse = askUserContext != ""
+
 	// Serialize chat loops: cancel any lingering previous loop and wait for
 	// it to release the mutex before starting a new one.
 	if providedLoopCtx == nil {
@@ -4807,7 +4832,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		ctx.SetMaxIterations(maxIter)
 	}
 	phase := agentLoopPhase{Stage: agentStageOrient, SkillMode: skillPreferenceNone}
-	if shouldPreferSkillForTask(userText) {
+	// Skip Skill preference evaluation when the user is answering a previous
+	// ask_user question. The task context is already established — re-evaluating
+	// the answer text as a new task leads to false positives (e.g. a domain name
+	// like "mypapers.top" matching the "paper" hint and triggering Skill search).
+	if !ctx.IsAskUserResponse && shouldPreferSkillForTask(userText) {
 		phase.ForceSkillPreference = true
 		phase.SkillMode = skillPreferenceRemoteRequired
 		if skillName, skillReason := matchPreferredLocalSkill(h.app.skillExecutor, userText); skillName != "" {

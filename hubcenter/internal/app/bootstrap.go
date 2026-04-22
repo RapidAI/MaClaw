@@ -4,11 +4,13 @@ import (
 	"context"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/config"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
@@ -44,16 +46,15 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, cfg.Server.PublicBaseURL)
 	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
 
-	// Skill store: derive directory from database DSN path.
+	// Skill store directory comes from the database location.
 	skillStoreDir := filepath.Join(filepath.Dir(cfg.Database.DSN), "skills")
 	skillStore := skill.NewSkillStore(skillStoreDir)
 
-	// Gossip snapshot cache: static gzip file for zero-CPU client polling.
+	// Gossip cache is served as a static gzip snapshot for cheap polling.
 	gossipCachePath := filepath.Join(filepath.Dir(cfg.Database.DSN), "gossip_cache.json.gz")
 	gossipCache := httpapi.NewGossipCache(st.Gossip, gossipCachePath)
 	gossipCache.EnsureExists(context.Background())
 
-	// SkillMarket: data models, services, processor.
 	dataDir := filepath.Dir(cfg.Database.DSN)
 	smStore, err := skillmarket.NewStore(provider.Write, provider.Read)
 	if err != nil {
@@ -77,34 +78,27 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 启动时全量重建 FTS 搜索索引
 	if err := searchSvc.RebuildIndex(context.Background()); err != nil {
 		log.Printf("[hubcenter] rebuild search index: %v", err)
 	}
-	// 将 searchSvc 注入 processor，发布时增量更新索引
 	processor.SetSearchService(searchSvc)
 	leaderboardSvc := skillmarket.NewLeaderboardService(skillStore)
 
-	// API Key pool: 使用 RSA 私钥的原始字节作为加密密钥种子
 	apiKeySvc, err := skillmarket.NewAPIKeyPoolService(smStore, rsaPrivKey.D.Bytes())
 	if err != nil {
 		return nil, err
 	}
 
-	// 通知服务
 	notifSvc, err := skillmarket.NewNotificationService(smStore, mailer)
 	if err != nil {
 		return nil, err
 	}
 
-	// 退款服务
 	refundSvc := skillmarket.NewRefundService(smStore, creditsSvc, mailer)
 
-	// 频率限制
 	tierSvc := skillmarket.NewTierService(smStore)
 	rateLimiter := skillmarket.NewRateLimiter(smStore, tierSvc)
 
-	// Auth service
 	authSvc := skillmarket.NewAuthService(smStore, mailer, cfg.Server.PublicBaseURL)
 	authSvc.SetPublicBaseURLProvider(hubService)
 
@@ -127,10 +121,8 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		DataDir:        dataDir,
 	})
 
-	// 启动异步处理器后台 goroutine
 	go processor.Run(context.Background())
 
-	// 启动通知服务后台 goroutine（与试用期到期扫描复用）
 	go func() {
 		ctx := context.Background()
 		ticker := time.NewTicker(5 * time.Minute)
@@ -139,13 +131,32 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 			<-ticker.C
 			_ = notifSvc.ProcessPendingNotifications(ctx)
 			trialMgr.ProcessExpiredTrials(ctx)
-			// Cleanup expired auth tokens and sessions
 			_ = smStore.DeleteExpiredAuthTokens(ctx)
 			_ = smStore.DeleteExpiredSessions(ctx)
 		}
 	}()
 
-	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.Gossip, gossipCache, smHandlers, st.System, st.News)
+	var haSvc *ha.Service
+	if cfg.HA.Enabled {
+		peers := make([]ha.StaticPeer, 0, len(cfg.HA.Peers))
+		for _, peer := range cfg.HA.Peers {
+			if !peer.Enabled || strings.TrimSpace(peer.NodeID) == "" || strings.TrimSpace(peer.BaseURL) == "" {
+				continue
+			}
+			peers = append(peers, ha.StaticPeer{
+				NodeID:   peer.NodeID,
+				NodeName: peer.Name,
+				BaseURL:  peer.BaseURL,
+			})
+		}
+		haSvc = ha.NewService(cfg.HA.NodeID, cfg.HA.NodeName, cfg.HA.AdvertiseURL, cfg.HA.ClusterSecret, peers)
+		haSvc.AttachStore(st)
+		hubService.SetSyncRecorder(haSvc)
+		go ha.NewProber(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second).Run(context.Background())
+		go ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run(context.Background())
+	}
+
+	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.Gossip, gossipCache, smHandlers, st.System, st.News, haSvc)
 
 	return &App{
 		Config:       cfg,

@@ -557,7 +557,17 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		return parseNonStreamOpenAIResponse(resp)
 	}
 
-	rpf := newRolePrefixStreamFilter(onToken)
+	// filteredBuf accumulates the content that actually reaches onToken
+	// (after all stream filters). msg.Content reads from filteredBuf so
+	// the backend response is identical to what the frontend received via
+	// streaming — eliminating the data-flow fork between contentBuf (raw)
+	// and the filter chain output that caused Browser: prefix leaks.
+	var filteredBuf strings.Builder
+	filteredOnToken := func(delta string) {
+		filteredBuf.WriteString(delta)
+		onToken(delta)
+	}
+	rpf := newRolePrefixStreamFilter(filteredOnToken)
 	repf := newRepetitionFilter(rpf.Write)
 	tcf := newToolCallFilter(repf.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
@@ -698,6 +708,16 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		log.Printf("[LLM Stream] role prefix filter halted: suppressed %d runes", rpf.SuppressedRunes())
 	}
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))
+	// Use the filtered content (identical to what onToken received) as the
+	// primary source for msg.Content. This ensures the backend response and
+	// the frontend's streamed content are from the same data path.
+	// Fall back to contentBuf only when filteredBuf is empty (e.g. all content
+	// was inside <think> tags or was entirely tool calls).
+	// Apply stripXMLToolCalls to filteredBuf too — the stream filter chain
+	// does not handle XML-formatted tool calls from free proxy models.
+	if filtered := filteredBuf.String(); filtered != "" {
+		content = stripXMLToolCalls(filtered)
+	}
 	reasoning := reasoningBuf.String()
 	if content == "" && reasoning != "" {
 		content = stripXMLToolCalls(stripFunctionCalls(stripThinkTags(reasoning)))
@@ -831,7 +851,12 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	var stopReason string
 	var usage *llmUsage
 
-	rpfAnth := newRolePrefixStreamFilter(onToken)
+	var filteredBufAnth strings.Builder
+	filteredOnTokenAnth := func(delta string) {
+		filteredBufAnth.WriteString(delta)
+		onToken(delta)
+	}
+	rpfAnth := newRolePrefixStreamFilter(filteredOnTokenAnth)
 	repfAnth := newRepetitionFilter(rpfAnth.Write)
 	fcf := newFuncCallFilter(repfAnth.Write)
 	tf := newThinkFilter(func(s string) { fcf.Write(s) })
@@ -1033,6 +1058,9 @@ anthDone:
 		}
 	}
 	msg.Content = stripFunctionCalls(stripThinkTags(strings.Join(textParts, "\n")))
+	if filtered := filteredBufAnth.String(); filtered != "" {
+		msg.Content = stripXMLToolCalls(filtered)
+	}
 
 	finishReason := "stop"
 	if stopReason == "tool_use" {

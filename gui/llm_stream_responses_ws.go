@@ -141,7 +141,12 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	// -------------------------------------------------------------------
 	// 6. Token stream filters (same chain as SSE path)
 	// -------------------------------------------------------------------
-	rpfWS := newRolePrefixStreamFilter(onToken)
+	var filteredBufWS strings.Builder
+	filteredOnTokenWS := func(delta string) {
+		filteredBufWS.WriteString(delta)
+		onToken(delta)
+	}
+	rpfWS := newRolePrefixStreamFilter(filteredOnTokenWS)
 	repfWS := newRepetitionFilter(rpfWS.Write)
 	tcf := newToolCallFilter(repfWS.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
@@ -428,6 +433,9 @@ postLoop:
 	}
 
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))
+	if filtered := filteredBufWS.String(); filtered != "" {
+		content = stripXMLToolCalls(filtered)
+	}
 	msg := llmMessage{
 		Role:    "assistant",
 		Content: content,

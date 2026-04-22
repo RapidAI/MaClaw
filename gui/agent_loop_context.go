@@ -85,6 +85,14 @@ type LoopContext struct {
 	// the agent loop skips the NeedsConfirm gate to prevent unrelated LLM
 	// output (e.g. weather info) from being captured as a phase document.
 	SkipNeedsConfirmGate bool
+
+	// IsAskUserResponse is true when the current message is a response to a
+	// previous ask_user tool question. In this case the user's text is a
+	// continuation of an existing task, not a new independent request. The
+	// agent loop should skip task-level routing decisions that assume a fresh
+	// task (e.g. Skill preference evaluation), because the task context is
+	// already established from the previous turn.
+	IsAskUserResponse bool
 }
 
 // NewLoopContext creates a LoopContext for a chat loop.

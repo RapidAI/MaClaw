@@ -9,6 +9,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
@@ -130,7 +131,11 @@ func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 	}
 }
 
-func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service, skillStore *skill.SkillStore, gossipRepo store.GossipRepository, gossipCache *GossipCache, smHandlers *SkillMarketHandlers, systemSettings store.SystemSettingsRepository, newsRepo store.NewsRepository) http.Handler {
+func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service, skillStore *skill.SkillStore, gossipRepo store.GossipRepository, gossipCache *GossipCache, smHandlers *SkillMarketHandlers, systemSettings store.SystemSettingsRepository, newsRepo store.NewsRepository, haSvcs ...*ha.Service) http.Handler {
+	var haSvc *ha.Service
+	if len(haSvcs) > 0 {
+		haSvc = haSvcs[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler("MaClaw-hubcenter"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(adminService))
@@ -159,6 +164,11 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService))
 	mux.HandleFunc("GET /hub-registration/confirm", ConfirmHubRegistrationHandler(hubService))
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
+	mux.HandleFunc("GET /api/client/quality", ClientQualityHandler(haSvc))
+	mux.HandleFunc("GET /api/client/endpoints", ClientEndpointsHandler(haSvc))
+	if haSvc != nil {
+		mux.HandleFunc("GET /api/internal/ha/ops", HAOpsPullHandler(haSvc))
+	}
 	// Skill Catalog API
 	var searchRemover skillSearchRemover
 	if smHandlers != nil {
@@ -177,7 +187,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/skillhub/trust-level", RequireAdmin(adminService, skillHandlers.AdminSetTrustLevel))
 	mux.HandleFunc("DELETE /api/admin/skillhub/{id}", RequireAdmin(adminService, skillHandlers.AdminDeleteSkill))
 	mux.HandleFunc("POST /api/admin/skillhub/import-url", RequireAdmin(adminService, skillHandlers.AdminImportFromURL))
-	// Gossip — anonymous gossip board
+	// Gossip - anonymous gossip board
 	gossipWriteRL := newGossipRateLimiter(10, 10*time.Minute) // 10 writes per 10 min per key
 	mux.HandleFunc("POST /api/gossip/publish", gossipRateLimitMiddleware(gossipWriteRL, GossipPublishHandler(gossipRepo, gossipCache, systemSettings)))
 	mux.HandleFunc("GET /api/gossip/browse", GossipBrowseHandler(gossipRepo))
@@ -201,14 +211,14 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	registerStaticRoutes(mux, "./web/skillhub", "/skillhub")
 	registerStaticRoutes(mux, "./web/skillmarket", "/skillmarket")
 	registerStaticRoutes(mux, "./web/gossip", "/gossip")
-	// News — public API for latest announcements
+	// News - public API for latest announcements
 	mux.HandleFunc("GET /api/news", NewsLatestHandler(newsRepo))
 	mux.HandleFunc("OPTIONS /api/news", NewsLatestHandler(newsRepo))
-	// News — admin management
+	// News - admin management
 	mux.HandleFunc("GET /api/admin/news", RequireAdmin(adminService, AdminListNewsHandler(newsRepo)))
-	mux.HandleFunc("POST /api/admin/news", RequireAdmin(adminService, AdminCreateNewsHandler(newsRepo)))
-	mux.HandleFunc("PUT /api/admin/news", RequireAdmin(adminService, AdminUpdateNewsHandler(newsRepo)))
-	mux.HandleFunc("DELETE /api/admin/news", RequireAdmin(adminService, AdminDeleteNewsHandler(newsRepo)))
+	mux.HandleFunc("POST /api/admin/news", RequireAdmin(adminService, AdminCreateNewsHandler(newsRepo, haSvc)))
+	mux.HandleFunc("PUT /api/admin/news", RequireAdmin(adminService, AdminUpdateNewsHandler(newsRepo, haSvc)))
+	mux.HandleFunc("DELETE /api/admin/news", RequireAdmin(adminService, AdminDeleteNewsHandler(newsRepo, haSvc)))
 	// SkillMarket API
 	if smHandlers != nil {
 		// Auth rate limiters

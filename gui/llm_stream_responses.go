@@ -129,7 +129,12 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	// -----------------------------------------------------------------------
 	// Token stream filters (same chain as OpenAI path)
 	// -----------------------------------------------------------------------
-	rpfResp := newRolePrefixStreamFilter(onToken)
+	var filteredBufResp strings.Builder
+	filteredOnTokenResp := func(delta string) {
+		filteredBufResp.WriteString(delta)
+		onToken(delta)
+	}
+	rpfResp := newRolePrefixStreamFilter(filteredOnTokenResp)
 	repfResp := newRepetitionFilter(rpfResp.Write)
 	tcf := newToolCallFilter(repfResp.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
@@ -363,6 +368,9 @@ postLoop:
 	}
 
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))
+	if filtered := filteredBufResp.String(); filtered != "" {
+		content = stripXMLToolCalls(filtered)
+	}
 	msg := llmMessage{
 		Role:    "assistant",
 		Content: content,

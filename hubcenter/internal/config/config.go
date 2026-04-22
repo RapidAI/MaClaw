@@ -7,6 +7,8 @@ type Config struct {
 		PublicBaseURL string `yaml:"public_base_url"`
 	} `yaml:"server"`
 
+	HA HAConfig `yaml:"ha"`
+
 	Database struct {
 		Driver            string `yaml:"driver"`
 		DSN               string `yaml:"dsn"`
@@ -39,11 +41,33 @@ type Config struct {
 	} `yaml:"logging"`
 }
 
+type HAPeerConfig struct {
+	NodeID  string `yaml:"node_id"`
+	Name    string `yaml:"name"`
+	BaseURL string `yaml:"base_url"`
+	Enabled bool   `yaml:"enabled"`
+}
+
+type HAConfig struct {
+	Enabled                         bool           `yaml:"enabled"`
+	NodeID                          string         `yaml:"node_id"`
+	NodeName                        string         `yaml:"node_name"`
+	AdvertiseURL                    string         `yaml:"advertise_url"`
+	ClusterSecret                   string         `yaml:"cluster_secret"`
+	SyncIntervalSeconds             int            `yaml:"sync_interval_seconds"`
+	PullBatchSize                   int            `yaml:"pull_batch_size"`
+	HeartbeatSyncMinIntervalSeconds int            `yaml:"heartbeat_sync_min_interval_seconds"`
+	Peers                           []HAPeerConfig `yaml:"peers"`
+}
+
 func Default() *Config {
 	cfg := &Config{}
 	cfg.Server.ListenHost = "0.0.0.0"
 	cfg.Server.ListenPort = 9388
 	cfg.Server.PublicBaseURL = "http://127.0.0.1:9388"
+	cfg.HA.SyncIntervalSeconds = 3
+	cfg.HA.PullBatchSize = 200
+	cfg.HA.HeartbeatSyncMinIntervalSeconds = 10
 	cfg.Database.Driver = "sqlite"
 	cfg.Database.DSN = "./data/MaClaw-hubcenter.db"
 	cfg.Database.WAL = true

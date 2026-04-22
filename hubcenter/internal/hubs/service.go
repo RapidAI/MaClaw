@@ -34,6 +34,17 @@ type confirmationTokenState struct {
 	Tokens []confirmationTokenRecord `json:"tokens"`
 }
 
+type syncRecorder interface {
+	AppendBlockedEmail(ctx context.Context, item *store.BlockedEmail)
+	DeleteBlockedEmail(ctx context.Context, email string)
+	AppendBlockedIP(ctx context.Context, item *store.BlockedIP)
+	DeleteBlockedIP(ctx context.Context, ip string)
+	AppendHubInstance(ctx context.Context, item *store.HubInstance)
+	DeleteHubInstance(ctx context.Context, hubID string)
+	AppendHubUserLink(ctx context.Context, item *store.HubUserLink)
+	DeleteHubUserLink(ctx context.Context, hubID string)
+}
+
 type BlockedEmailRepository interface {
 	GetByEmail(ctx context.Context, email string) (*store.BlockedEmail, error)
 	Create(ctx context.Context, item *store.BlockedEmail) error
@@ -76,6 +87,7 @@ type Service struct {
 	settings      store.SystemSettingsRepository
 	mailer        mail.Mailer
 	publicBaseURL string
+	sync          syncRecorder
 }
 
 func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, blockedEmails BlockedEmailRepository, blockedIPs BlockedIPRepository, settings store.SystemSettingsRepository, mailer mail.Mailer, publicBaseURL string) *Service {
@@ -88,6 +100,10 @@ func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, blo
 		mailer:        mailer,
 		publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
 	}
+}
+
+func (s *Service) SetSyncRecorder(recorder syncRecorder) {
+	s.sync = recorder
 }
 
 func (s *Service) RegisterHub(ctx context.Context, req RegisterHubRequest) (*RegisterHubResult, error) {
@@ -128,7 +144,6 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			}
 
 			alreadyConfirmed := existing.Status == "online"
-
 			existing.OwnerEmail = ownerEmail
 			existing.Name = strings.TrimSpace(req.Name)
 			existing.Description = strings.TrimSpace(req.Description)
@@ -141,7 +156,6 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			existing.HubSecretHash = hashToken(rawSecret)
 			existing.LastSeenAt = &now
 			existing.UpdatedAt = now
-
 			if !alreadyConfirmed {
 				existing.Status = "pending_confirmation"
 			}
@@ -149,28 +163,18 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			if err := s.hubs.UpdateRegistration(ctx, existing); err != nil {
 				return nil, err
 			}
+			s.recordHubInstance(ctx, existing)
 			if err := s.syncOwnerLink(ctx, existing.ID, existing.OwnerEmail, now); err != nil {
 				return nil, err
 			}
 
 			if alreadyConfirmed {
-				return &RegisterHubResult{
-					HubID:               existing.ID,
-					HubSecret:           rawSecret,
-					PendingConfirmation: false,
-					Message:             "Hub re-registered successfully, already confirmed",
-				}, nil
+				return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: false, Message: "Hub re-registered successfully, already confirmed"}, nil
 			}
-
 			if err := s.sendConfirmation(ctx, existing.ID, existing.OwnerEmail, existing.Name); err != nil {
 				return nil, err
 			}
-			return &RegisterHubResult{
-				HubID:               existing.ID,
-				HubSecret:           rawSecret,
-				PendingConfirmation: true,
-				Message:             "Hub registration confirmation sent",
-			}, nil
+			return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: true, Message: "Hub registration confirmation sent"}, nil
 		}
 	}
 
@@ -198,6 +202,7 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if err := s.hubs.Create(ctx, hub); err != nil {
 		return nil, err
 	}
+	s.recordHubInstance(ctx, hub)
 	if err := s.syncOwnerLink(ctx, hub.ID, hub.OwnerEmail, now); err != nil {
 		return nil, err
 	}
@@ -205,12 +210,7 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 		return nil, err
 	}
 
-	return &RegisterHubResult{
-		HubID:               hub.ID,
-		HubSecret:           rawSecret,
-		PendingConfirmation: true,
-		Message:             "Hub registration confirmation sent",
-	}, nil
+	return &RegisterHubResult{HubID: hub.ID, HubSecret: rawSecret, PendingConfirmation: true, Message: "Hub registration confirmation sent"}, nil
 }
 
 func (s *Service) HeartbeatHub(ctx context.Context, hubID string) error {
@@ -277,13 +277,11 @@ func (s *Service) ConfirmRegistration(ctx context.Context, token string) error {
 
 	nowUnix := time.Now().Unix()
 	matched := false
-	activeTokens := make([]confirmationTokenRecord, 0, len(payload.Tokens))
 	secretHash := hashToken(secret)
 	for _, candidate := range payload.Tokens {
 		if candidate.TokenHash == "" || candidate.ExpiresAt <= nowUnix {
 			continue
 		}
-		activeTokens = append(activeTokens, candidate)
 		if candidate.TokenHash == secretHash {
 			matched = true
 		}
@@ -320,6 +318,7 @@ func (s *Service) confirmHubRegistration(ctx context.Context, hub *store.HubInst
 	if err := s.hubs.UpdateRegistration(ctx, hub); err != nil {
 		return err
 	}
+	s.recordHubInstance(ctx, hub)
 	if s.settings != nil {
 		if err := s.settings.Set(ctx, hubConfirmationPrefix+hubID, mustJSON(confirmationTokenState{Tokens: []confirmationTokenRecord{}})); err != nil {
 			return err
@@ -336,15 +335,24 @@ func (s *Service) UpdateVisibility(ctx context.Context, hubID, visibility string
 	if strings.TrimSpace(hubID) == "" {
 		return errors.New("hub id is required")
 	}
-	return s.hubs.UpdateVisibility(ctx, strings.TrimSpace(hubID), normalizeVisibility(visibility), time.Now())
+	if err := s.hubs.UpdateVisibility(ctx, strings.TrimSpace(hubID), normalizeVisibility(visibility), time.Now()); err != nil {
+		return err
+	}
+	return s.recordHubByID(ctx, hubID)
 }
 
 func (s *Service) DisableHub(ctx context.Context, hubID, reason string) error {
-	return s.hubs.SetDisabled(ctx, hubID, true, strings.TrimSpace(reason), time.Now())
+	if err := s.hubs.SetDisabled(ctx, hubID, true, strings.TrimSpace(reason), time.Now()); err != nil {
+		return err
+	}
+	return s.recordHubByID(ctx, hubID)
 }
 
 func (s *Service) EnableHub(ctx context.Context, hubID string) error {
-	return s.hubs.SetDisabled(ctx, hubID, false, "", time.Now())
+	if err := s.hubs.SetDisabled(ctx, hubID, false, "", time.Now()); err != nil {
+		return err
+	}
+	return s.recordHubByID(ctx, hubID)
 }
 
 func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
@@ -353,7 +361,14 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 			return err
 		}
 	}
-	return s.hubs.DeleteByID(ctx, hubID)
+	if err := s.hubs.DeleteByID(ctx, hubID); err != nil {
+		return err
+	}
+	if s.sync != nil {
+		s.sync.DeleteHubUserLink(ctx, hubID)
+		s.sync.DeleteHubInstance(ctx, hubID)
+	}
+	return nil
 }
 
 func (s *Service) AddBlockedEmail(ctx context.Context, email, reason string) error {
@@ -361,13 +376,14 @@ func (s *Service) AddBlockedEmail(ctx context.Context, email, reason string) err
 		return nil
 	}
 	now := time.Now()
-	return s.blockedEmails.Create(ctx, &store.BlockedEmail{
-		ID:        newID("be"),
-		Email:     normalizeEmail(email),
-		Reason:    strings.TrimSpace(reason),
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
+	item := &store.BlockedEmail{ID: newID("be"), Email: normalizeEmail(email), Reason: strings.TrimSpace(reason), CreatedAt: now, UpdatedAt: now}
+	if err := s.blockedEmails.Create(ctx, item); err != nil {
+		return err
+	}
+	if s.sync != nil {
+		s.sync.AppendBlockedEmail(ctx, item)
+	}
+	return nil
 }
 
 func (s *Service) ListBlockedEmails(ctx context.Context) ([]*store.BlockedEmail, error) {
@@ -381,7 +397,14 @@ func (s *Service) RemoveBlockedEmail(ctx context.Context, email string) error {
 	if s.blockedEmails == nil {
 		return nil
 	}
-	return s.blockedEmails.DeleteByEmail(ctx, normalizeEmail(email))
+	normalized := normalizeEmail(email)
+	if err := s.blockedEmails.DeleteByEmail(ctx, normalized); err != nil {
+		return err
+	}
+	if s.sync != nil {
+		s.sync.DeleteBlockedEmail(ctx, normalized)
+	}
+	return nil
 }
 
 func (s *Service) AddBlockedIP(ctx context.Context, ip, reason string) error {
@@ -389,13 +412,14 @@ func (s *Service) AddBlockedIP(ctx context.Context, ip, reason string) error {
 		return nil
 	}
 	now := time.Now()
-	return s.blockedIPs.Create(ctx, &store.BlockedIP{
-		ID:        newID("bi"),
-		IP:        strings.TrimSpace(ip),
-		Reason:    strings.TrimSpace(reason),
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
+	item := &store.BlockedIP{ID: newID("bi"), IP: strings.TrimSpace(ip), Reason: strings.TrimSpace(reason), CreatedAt: now, UpdatedAt: now}
+	if err := s.blockedIPs.Create(ctx, item); err != nil {
+		return err
+	}
+	if s.sync != nil {
+		s.sync.AppendBlockedIP(ctx, item)
+	}
+	return nil
 }
 
 func (s *Service) ListBlockedIPs(ctx context.Context) ([]*store.BlockedIP, error) {
@@ -409,7 +433,14 @@ func (s *Service) RemoveBlockedIP(ctx context.Context, ip string) error {
 	if s.blockedIPs == nil {
 		return nil
 	}
-	return s.blockedIPs.DeleteByIP(ctx, strings.TrimSpace(ip))
+	normalized := strings.TrimSpace(ip)
+	if err := s.blockedIPs.DeleteByIP(ctx, normalized); err != nil {
+		return err
+	}
+	if s.sync != nil {
+		s.sync.DeleteBlockedIP(ctx, normalized)
+	}
+	return nil
 }
 
 func (s *Service) sendConfirmation(ctx context.Context, hubID, ownerEmail, hubName string) error {
@@ -426,12 +457,7 @@ func (s *Service) prepareConfirmation(ctx context.Context, hubID string) (string
 		return "", err
 	}
 	expiresAt := time.Now().Add(24 * time.Hour).Unix()
-	state := confirmationTokenState{
-		Tokens: []confirmationTokenRecord{{
-			TokenHash: hashToken(tokenSecret),
-			ExpiresAt: expiresAt,
-		}},
-	}
+	state := confirmationTokenState{Tokens: []confirmationTokenRecord{{TokenHash: hashToken(tokenSecret), ExpiresAt: expiresAt}}}
 
 	if s.settings != nil {
 		raw, err := s.settings.Get(ctx, hubConfirmationPrefix+hubID)
@@ -516,21 +542,36 @@ func (s *Service) syncOwnerLink(ctx context.Context, hubID, ownerEmail string, n
 	if err := s.links.DeleteByHubID(ctx, hubID); err != nil {
 		return err
 	}
-	return s.links.Create(ctx, &store.HubUserLink{
-		ID:        newID("hul"),
-		HubID:     hubID,
-		Email:     ownerEmail,
-		IsDefault: true,
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
+	link := &store.HubUserLink{ID: newID("hul"), HubID: hubID, Email: ownerEmail, IsDefault: true, CreatedAt: now, UpdatedAt: now}
+	if err := s.links.Create(ctx, link); err != nil {
+		return err
+	}
+	if s.sync != nil {
+		s.sync.AppendHubUserLink(ctx, link)
+	}
+	return nil
+}
+
+func (s *Service) recordHubByID(ctx context.Context, hubID string) error {
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return err
+	}
+	s.recordHubInstance(ctx, hub)
+	return nil
+}
+
+func (s *Service) recordHubInstance(ctx context.Context, hub *store.HubInstance) {
+	if s.sync == nil || hub == nil {
+		return
+	}
+	s.sync.AppendHubInstance(ctx, hub)
 }
 
 func (s *Service) checkEmailAllowed(ctx context.Context, email string) error {
 	if s.blockedEmails == nil || email == "" {
 		return nil
 	}
-
 	blocked, err := s.blockedEmails.GetByEmail(ctx, email)
 	if err != nil {
 		return err
@@ -545,12 +586,10 @@ func (s *Service) checkIPAllowed(ctx context.Context, ip string) error {
 	if s.blockedIPs == nil {
 		return nil
 	}
-
 	ip = strings.TrimSpace(ip)
 	if ip == "" {
 		return nil
 	}
-
 	blocked, err := s.blockedIPs.GetByIP(ctx, ip)
 	if err != nil {
 		return err

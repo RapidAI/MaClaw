@@ -93,7 +93,7 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_gossip_comments_post_id ON gossip_comments(post_id);`,
-		// ── News (announcements) ──
+		// 鈹€鈹€ News (announcements) 鈹€鈹€
 		`CREATE TABLE IF NOT EXISTS news_articles (
 			id TEXT PRIMARY KEY,
 			title TEXT NOT NULL,
@@ -120,6 +120,54 @@ func RunMigrations(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_gossip_comments_unique_rating ON gossip_comments(post_id, machine_id) WHERE rating > 0`); err != nil {
 		return fmt.Errorf("create gossip rating unique index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ha_sync_ops (
+		seq INTEGER PRIMARY KEY AUTOINCREMENT,
+		op_id TEXT NOT NULL UNIQUE,
+		source_node_id TEXT NOT NULL,
+		entity_type TEXT NOT NULL,
+		entity_id TEXT NOT NULL,
+		op_type TEXT NOT NULL,
+		entity_version INTEGER NOT NULL,
+		occurred_at TEXT NOT NULL,
+		payload_json TEXT NOT NULL,
+		payload_hash TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create ha_sync_ops: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_ha_sync_ops_seq ON ha_sync_ops(seq)`); err != nil {
+		return fmt.Errorf("create ha_sync_ops seq index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_ha_sync_ops_entity ON ha_sync_ops(entity_type, entity_id)`); err != nil {
+		return fmt.Errorf("create ha_sync_ops entity index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ha_applied_ops (
+		op_id TEXT PRIMARY KEY,
+		source_node_id TEXT NOT NULL,
+		entity_type TEXT NOT NULL,
+		entity_id TEXT NOT NULL,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create ha_applied_ops: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ha_peer_cursors (
+		peer_node_id TEXT PRIMARY KEY,
+		last_pulled_seq INTEGER NOT NULL DEFAULT 0,
+		last_pulled_at TEXT,
+		last_success_at TEXT,
+		last_error TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		return fmt.Errorf("create ha_peer_cursors: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ha_entity_versions (
+		entity_type TEXT NOT NULL,
+		entity_id TEXT NOT NULL,
+		version INTEGER NOT NULL,
+		updated_at TEXT NOT NULL,
+		updated_by_node_id TEXT NOT NULL,
+		PRIMARY KEY(entity_type, entity_id)
+	)`); err != nil {
+		return fmt.Errorf("create ha_entity_versions: %w", err)
 	}
 	if err := ensureGossipFlaggedColumn(db); err != nil {
 		return err
