@@ -121,13 +121,13 @@ func TestAIAssistantProperty4_MessageConstructionPlatformID(t *testing.T) {
 func TestAIAssistantProperty5_DesktopConversationMemoryIsolation(t *testing.T) {
 	f := func(input aiRandomEntries) bool {
 		cm := newConversationMemory()
-		defer cm.stop()
+		defer cm.Stop()
 
-		cm.save("desktop-user", input.DesktopEntries)
-		cm.save(input.IMUserID, input.IMEntries)
+		cm.Save("desktop-user", input.DesktopEntries)
+		cm.Save(input.IMUserID, input.IMEntries)
 
-		desktopLoaded := cm.load("desktop-user")
-		imLoaded := cm.load(input.IMUserID)
+		desktopLoaded := cm.Load("desktop-user")
+		imLoaded := cm.Load(input.IMUserID)
 
 		// Desktop entries count must match.
 		if len(desktopLoaded) != len(input.DesktopEntries) {
@@ -222,20 +222,20 @@ func TestAIAssistantProperty6_ErrorResponsePropagation(t *testing.T) {
 func TestAIAssistantProperty7_ClearHistoryClearsMemory(t *testing.T) {
 	f := func(input aiRandomEntries) bool {
 		cm := newConversationMemory()
-		defer cm.stop()
+		defer cm.Stop()
 
-		cm.save("desktop-user", input.DesktopEntries)
+		cm.Save("desktop-user", input.DesktopEntries)
 
 		// Verify entries were saved.
-		loaded := cm.load("desktop-user")
+		loaded := cm.Load("desktop-user")
 		if len(loaded) == 0 {
 			t.Logf("expected non-empty entries after save, got empty")
 			return false
 		}
 
 		// Clear and verify.
-		cm.clear("desktop-user")
-		afterClear := cm.load("desktop-user")
+		cm.Clear("desktop-user")
+		afterClear := cm.Load("desktop-user")
 		if len(afterClear) != 0 {
 			t.Logf("expected empty entries after clear, got %d entries", len(afterClear))
 			return false

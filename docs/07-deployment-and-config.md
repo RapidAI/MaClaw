@@ -91,6 +91,10 @@ This keeps self-hosted deployment simple.
 For the lightweight 3-node Hub Center HA layout with local SQLite on each node, see:
 
 - [docs/hubcenter-ha-3nodes.md](/D:/workprj/aicoder/docs/hubcenter-ha-3nodes.md)
+- [docs/hubcenter-ha-go-live-checklist.md](/D:/workprj/aicoder/docs/hubcenter-ha-go-live-checklist.md)
+- [deploy/check-hubcenter-ha.ps1](/D:/workprj/aicoder/deploy/check-hubcenter-ha.ps1)
+- [deploy/hubcenter-ha.inventory.example.psd1](/D:/workprj/aicoder/deploy/hubcenter-ha.inventory.example.psd1)
+- [deploy/render-hubcenter-ha-configs.ps1](/D:/workprj/aicoder/deploy/render-hubcenter-ha-configs.ps1)
 - [hubcenter/configs/config.ha-hc1.example.yaml](/D:/workprj/aicoder/hubcenter/configs/config.ha-hc1.example.yaml)
 - [hubcenter/configs/config.ha-hc2.example.yaml](/D:/workprj/aicoder/hubcenter/configs/config.ha-hc2.example.yaml)
 - [hubcenter/configs/config.ha-hc3.example.yaml](/D:/workprj/aicoder/hubcenter/configs/config.ha-hc3.example.yaml)

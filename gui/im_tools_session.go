@@ -109,8 +109,8 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 
 		// Hybrid intent classifier: use embedding + LLM for semantic classification
 		// when keyword-based classification is ambiguous.
-		if h.app != nil && h.app.toolRouter != nil {
-			if ic := h.app.toolRouter.IntentClassifier(); ic != nil {
+		if h.app != nil && h.getAppToolRouter() != nil {
+			if ic := h.getAppToolRouter().IntentClassifier(); ic != nil {
 				icResult := ic.Classify(h.lastUserText)
 				switch icResult.Intent {
 				case tool.IntentCoding:
@@ -191,7 +191,7 @@ func (h *IMMessageHandler) conversationHasCodingContext() bool {
 	if userID == "" {
 		userID = "desktop-user" // fallback for desktop mode
 	}
-	entries := h.memory.load(userID)
+	entries := h.memory.Load(userID)
 	if len(entries) == 0 {
 		return false
 	}
@@ -222,7 +222,7 @@ func (h *IMMessageHandler) getGateIntentClassifier() *GateIntentClassifier {
 	if h.app == nil {
 		return nil
 	}
-	return h.app.gateIntentClassifier
+	return h.getGateIntentClassifier()
 }
 
 // nonCodingSessionHint returns a user-facing hint message when the
@@ -275,7 +275,7 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 	}
 
 	// Resolve project_id to project path (takes priority over project_path).
-	cfg, cfgErr := h.app.LoadConfig()
+	cfg, cfgErr := h.loadConfig()
 	if cfgErr != nil {
 		return fmt.Sprintf("加载配置失败: %s", cfgErr.Error())
 	}
@@ -378,10 +378,10 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 
 	resumeSessionID, _ := args["resume_session_id"].(string)
 
-	starter := h.app.sessionStarter
+	starter := h.getSessionStarter()
 	if starter == nil {
-		h.app.ensureInteractionInfra()
-		starter = h.app.sessionStarter
+		h.ensureInteractionInfra()
+		starter = h.getSessionStarter()
 	}
 	if starter == nil {
 		return "会话启动器未初始化"
@@ -448,7 +448,7 @@ func (h *IMMessageHandler) toolListProviders(args map[string]interface{}) string
 	if toolName == "" {
 		return "缺少 tool 参数"
 	}
-	cfg, err := h.app.LoadConfig()
+	cfg, err := h.loadConfig()
 	if err != nil {
 		return fmt.Sprintf("加载配置失败: %s", err.Error())
 	}

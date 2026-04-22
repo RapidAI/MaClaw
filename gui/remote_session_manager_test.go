@@ -853,7 +853,7 @@ func TestRunExitLoopPersistsPendingResumeSlotTool(t *testing.T) {
 	}
 
 	mem := app.ensureConversationMemory()
-	slot := mem.getUnfinishedSlot("desktop-user")
+	slot := mem.GetUnfinishedSlot("desktop-user")
 	if slot == nil {
 		t.Fatal("expected pending resume slot")
 	}

@@ -94,7 +94,7 @@ func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent tas
 	// panel's "默认工作目录" which uses corelib.EffectiveWorkspaceDir().
 	projectPath := ""
 	if h.app != nil {
-		projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
+		projectPath = strings.TrimSpace(h.getCurrentProjectPath())
 	}
 
 	userMsg := fmt.Sprintf("用户请求：%s", strings.TrimSpace(text))

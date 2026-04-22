@@ -10,7 +10,7 @@ import (
 func TestTopicDetector_FirstMessage(t *testing.T) {
 	d := newTopicSwitchDetector(nil)
 	mem := newConversationMemory()
-	defer mem.stop()
+	defer mem.Stop()
 
 	// No history → should always return TopicSame.
 	if got := d.detect("你好", "user1", mem); got != TopicSame {
@@ -21,7 +21,7 @@ func TestTopicDetector_FirstMessage(t *testing.T) {
 func TestTopicDetector_SameTopic(t *testing.T) {
 	d := newTopicSwitchDetector(nil)
 	mem := newConversationMemory()
-	defer mem.stop()
+	defer mem.Stop()
 
 	// Seed with conversation about Go programming.
 	entries := []conversationEntry{
@@ -31,7 +31,7 @@ func TestTopicDetector_SameTopic(t *testing.T) {
 		{Role: "assistant", Content: "已添加路由处理"},
 		{Role: "user", Content: "Go 的 HTTP 中间件怎么写"},
 	}
-	mem.save("user1", entries)
+	mem.Save("user1", entries)
 
 	// Same topic message — BM25 should vote same.
 	if got := d.detect("Go HTTP 服务器怎么加 TLS 证书支持", "user1", mem); got != TopicSame {
@@ -47,7 +47,7 @@ func TestTopicDetector_NewTopic(t *testing.T) {
 	// Disable active conversation protection for this test.
 	d.activeConversationMinutes = 0
 	mem := newConversationMemory()
-	defer mem.stop()
+	defer mem.Stop()
 
 	// Seed with conversation about cooking.
 	entries := []conversationEntry{
@@ -57,7 +57,7 @@ func TestTopicDetector_NewTopic(t *testing.T) {
 		{Role: "assistant", Content: "建议焯水去腥"},
 		{Role: "user", Content: "酱油放多少合适"},
 	}
-	mem.save("user1", entries)
+	mem.Save("user1", entries)
 
 	// Completely different topic — BM25 votes new, embedding abstains (no embedder).
 	// With only one "new" vote and no LLM, conservative fallback → TopicSame.
@@ -80,7 +80,7 @@ func TestTopicDetector_ShortMessageSkipsDetection(t *testing.T) {
 	d.bm25NewThreshold = 5.0
 	d.bm25SameThreshold = 10.0
 	mem := newConversationMemory()
-	defer mem.stop()
+	defer mem.Stop()
 
 	// Seed with conversation about Chrome debugging.
 	entries := []conversationEntry{
@@ -90,7 +90,7 @@ func TestTopicDetector_ShortMessageSkipsDetection(t *testing.T) {
 		{Role: "assistant", Content: "端口已经在监听了"},
 		{Role: "user", Content: "连接浏览器试试"},
 	}
-	mem.save("user1", entries)
+	mem.Save("user1", entries)
 
 	// Short messages (< 4 words) should never trigger TopicNew.
 	shortMessages := []string{
@@ -117,7 +117,7 @@ func TestTopicDetector_ShortMessageSkipsDetection(t *testing.T) {
 func TestTopicDetector_TooFewTurns(t *testing.T) {
 	d := newTopicSwitchDetector(nil)
 	mem := newConversationMemory()
-	defer mem.stop()
+	defer mem.Stop()
 
 	// Only 2 user turns (below minTurnsForDetection=3).
 	entries := []conversationEntry{
@@ -125,7 +125,7 @@ func TestTopicDetector_TooFewTurns(t *testing.T) {
 		{Role: "assistant", Content: "你好！"},
 		{Role: "user", Content: "今天天气怎么样"},
 	}
-	mem.save("user1", entries)
+	mem.Save("user1", entries)
 
 	// Should return TopicSame because too few turns.
 	if got := d.detect("帮我写代码吧，我需要一个完整的项目", "user1", mem); got != TopicSame {
@@ -140,7 +140,7 @@ func TestTopicDetector_ActiveConversationProtection(t *testing.T) {
 	// because embedding abstains and BM25 alone isn't unanimous.
 	d.activeConversationMinutes = 10 // generous window
 	mem := newConversationMemory()
-	defer mem.stop()
+	defer mem.Stop()
 
 	// Seed with conversation — save() sets lastAccess to now,
 	// so the conversation is "active".
@@ -151,7 +151,7 @@ func TestTopicDetector_ActiveConversationProtection(t *testing.T) {
 		{Role: "assistant", Content: "建议焯水去腥"},
 		{Role: "user", Content: "酱油放多少合适"},
 	}
-	mem.save("user1", entries)
+	mem.Save("user1", entries)
 
 	// BM25 will vote unsure or new, embedding abstains.
 	// Active protection: not all available signals say "new" unanimously
@@ -208,7 +208,7 @@ func TestTopicDetector_TimeDecay(t *testing.T) {
 	d.bm25NewThreshold = 0.5
 	d.activeConversationMinutes = 0 // disable active protection
 	mem := newConversationMemory()
-	defer mem.stop()
+	defer mem.Stop()
 
 	entries := []conversationEntry{
 		{Role: "user", Content: "帮我写一个 Python 脚本"},
@@ -217,7 +217,7 @@ func TestTopicDetector_TimeDecay(t *testing.T) {
 		{Role: "assistant", Content: "用 pandas"},
 		{Role: "user", Content: "Python 的 pandas 库怎么用"},
 	}
-	mem.save("user1", entries)
+	mem.Save("user1", entries)
 
 	// Wait a bit so time decay kicks in.
 	time.Sleep(100 * time.Millisecond)
@@ -306,16 +306,16 @@ func TestBuildQuickSummary_Empty(t *testing.T) {
 
 func TestLastAccessTime(t *testing.T) {
 	mem := newConversationMemory()
-	defer mem.stop()
+	defer mem.Stop()
 
 	// No session → zero time.
-	if got := mem.lastAccessTime("nobody"); !got.IsZero() {
+	if got := mem.LastAccessTime("nobody"); !got.IsZero() {
 		t.Errorf("no session: got %v, want zero", got)
 	}
 
 	// After save, should have a recent time.
-	mem.save("user1", []conversationEntry{{Role: "user", Content: "hi"}})
-	got := mem.lastAccessTime("user1")
+	mem.Save("user1", []conversationEntry{{Role: "user", Content: "hi"}})
+	got := mem.LastAccessTime("user1")
 	if got.IsZero() {
 		t.Error("after save: got zero time")
 	}

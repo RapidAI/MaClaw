@@ -78,7 +78,7 @@ func newHubCenterHTTPTestServices(t *testing.T) *hubCenterHTTPTestServices {
 		admins:  adminService,
 		hubs:    hubService,
 		entry:   entryService,
-		handler: NewRouter(adminService, hubService, entryService, nil, nil, nil, nil, nil, st.System, st.News),
+		handler: NewRouter(adminService, hubService, entryService, nil, nil, nil, nil, nil, st.System, st.News, nil),
 		mailer:  mailer,
 	}
 }

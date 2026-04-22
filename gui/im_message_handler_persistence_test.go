@@ -9,16 +9,16 @@ func TestNewIMMessageHandlerLoadsPersistedDesktopConversation(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	storePath := filepath.Join(app.GetDataDir(), "ai_assistant_conversation.json")
 	seed := newPersistentConversationMemory(storePath)
-	seed.save("desktop-user", []conversationEntry{
+	seed.Save("desktop-user", []conversationEntry{
 		{Role: "user", Content: "persisted user"},
 		{Role: "assistant", Content: "persisted assistant"},
 	})
-	seed.stop()
+	seed.Stop()
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
-	defer h.memory.stop()
+	defer h.memory.Stop()
 
-	got := h.memory.load("desktop-user")
+	got := h.memory.Load("desktop-user")
 	if len(got) != 2 {
 		t.Fatalf("history length = %d, want 2", len(got))
 	}

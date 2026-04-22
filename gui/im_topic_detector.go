@@ -82,7 +82,7 @@ func newTopicSwitchDetector(llmClient func() (*http.Client, MaclawLLMConfig)) *t
 // detect checks whether newMessage is a continuation of the user's current
 // conversation or a new topic. Returns TopicNew if context should be cleared.
 func (d *topicSwitchDetector) detect(newMessage string, userID string, mem *conversationMemory) TopicDecision {
-	entries := mem.load(userID)
+	entries := mem.Load(userID)
 	if len(entries) == 0 {
 		return TopicSame // first message, nothing to clear
 	}
@@ -104,7 +104,7 @@ func (d *topicSwitchDetector) detect(newMessage string, userID string, mem *conv
 	}
 	// Use the memory's lastAccessTime as a proxy for conversation recency,
 	// since the handler calls save() after each assistant response.
-	lastAccess := mem.lastAccessTime(userID)
+	lastAccess := mem.LastAccessTime(userID)
 	if len(userTexts) < d.minTurnsForDetection {
 		return TopicSame // too few turns to judge
 	}

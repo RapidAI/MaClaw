@@ -1194,7 +1194,7 @@ func (a *App) ClearAIAssistantHistory() error {
 		return fmt.Errorf("AI assistant not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
-	handler.memory.clear("desktop-user")
+	handler.memory.Clear("desktop-user")
 	// 同步清空 gossip 检测缓冲区
 	if a.gossipAutoPublish != nil {
 		a.gossipAutoPublish.ClearBuffer()

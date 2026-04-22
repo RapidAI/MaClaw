@@ -55,6 +55,14 @@ const (
 // edit_file, read_file) needed for document generation and delivery, plus
 // communication/utility tools. Both GUI and TUI should reference this set
 // instead of maintaining separate copies.
+//
+// ssh and screenshot are included because they are operational tools for
+// interacting with external systems (servers, screen capture), not coding
+// session tools. Users frequently send server operation requests while a
+// workflow is active (e.g. "查询服务器信息" during a PPT design workflow).
+// Without ssh in this list, applyWorkflowToolFilter strips it, and the LLM
+// falls back to running raw `ssh` CLI commands via bash — which hangs because
+// the subprocess has no access to stored SSH credentials or connection management.
 var DocOnlyAllowedTools = map[string]bool{
 	"bash":         true,
 	"write_file":   true,
@@ -68,6 +76,8 @@ var DocOnlyAllowedTools = map[string]bool{
 	"web_fetch":    true,
 	"open":         true,
 	"set_nickname": true,
+	"ssh":          true,
+	"screenshot":   true,
 }
 
 // InputRequirement describes a document/file that the user must provide

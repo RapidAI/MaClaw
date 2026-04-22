@@ -1,27 +1,42 @@
-# Hub Center 三节点热备部署
+﻿# Hub Center 三节点热备部署
 
 本文档描述第一版轻量级 Hub Center 多机热备方案：保留每台机器本地单文件 SQLite，不引入外部数据库、Raft 或复杂中间件，通过 3 台 Hub Center 之间的操作日志同步和 Hub 侧多地址故障转移来保证服务连续性。
 
-## 适用目标
+上线前建议配合 [Hub Center 的 HA 配置使用手册](/D:/workprj/aicoder/docs/hubcenter的HA配置使用手册.md) 和 [Hub Center 三节点首发上线检查清单](/D:/workprj/aicoder/docs/hubcenter-ha-go-live-checklist.md) 一起使用。
 
-- 第一版固定按 3 台 Hub Center 部署，避免双节点脑裂和单点问题。
-- 每台 Hub Center 独立使用本机 SQLite 文件，不共享数据库文件。
-- Hub 客户端配置 3 个 Hub Center 地址，按质量探测结果选择可用节点。
-- Hub Center 之间做最终一致同步，短暂网络抖动时优先保证服务可继续。
+## 1. 目标
 
-## 端口与地址示例
+- 第一版固定按 3 台 `hubcenter` 部署，避免双节点脑裂和单点故障。
+- 每台 `hubcenter` 独立使用本机 SQLite 文件，不共享数据库文件。
+- `hub` 客户端内置 3 个 `hubcenter` 地址，按质量探测结果选择当前服务节点。
+- `hubcenter` 之间做最终一致同步，短时网络抖动时优先保证服务可继续。
 
-| 节点 | 内网地址 | 对外地址 | SQLite 文件 |
-| --- | --- | --- | --- |
-| `hc-1` | `http://10.0.0.11:9388` | `https://hc-1.example.com` | `./data/hubcenter-hc-1.db` |
-| `hc-2` | `http://10.0.0.12:9388` | `https://hc-2.example.com` | `./data/hubcenter-hc-2.db` |
-| `hc-3` | `http://10.0.0.13:9388` | `https://hc-3.example.com` | `./data/hubcenter-hc-3.db` |
+## 2. 你们当前推荐拓扑
 
-`advertise_url` 和 `peers[].base_url` 必须是其他节点能访问到的地址。生产环境建议使用内网地址做节点间同步，公网域名只给 Hub 和管理端访问。
+当前已确认的公网域名：
 
-## Hub Center 配置
+- `hubcenter` 节点
+- `https://hubs.mypapers.top`
+- `https://hubs.maclaw.top`
+- `https://hubs2.maclaw.top`
 
-三台机器的 `ha.cluster_secret` 必须完全一致，并且要使用足够随机的值。不要使用示例里的 `change-me`。
+- `hub` 域名
+- `https://hub.mypapers.top`
+- `https://hub.maclaw.top`
+
+推荐节点映射：
+
+| 节点 ID | 节点名称 | 对外地址 |
+| --- | --- | --- |
+| `hc-1` | `hubcenter-1` | `https://hubs.mypapers.top` |
+| `hc-2` | `hubcenter-2` | `https://hubs.maclaw.top` |
+| `hc-3` | `hubcenter-3` | `https://hubs2.maclaw.top` |
+
+你们当前没有内网，所以 `advertise_url` 和 `peers[].base_url` 都直接使用公网地址。
+
+## 3. Hub Center 配置示例
+
+三台机器的 `ha.cluster_secret` 必须完全一致，并且要使用足够随机的值。
 
 ### hc-1
 
@@ -29,13 +44,13 @@
 server:
   listen_host: 0.0.0.0
   listen_port: 9388
-  public_base_url: https://hc-1.example.com
+  public_base_url: https://hubs.mypapers.top
 
 ha:
   enabled: true
   node_id: hc-1
   node_name: hubcenter-1
-  advertise_url: http://10.0.0.11:9388
+  advertise_url: https://hubs.mypapers.top
   cluster_secret: replace-with-a-long-random-shared-secret
   sync_interval_seconds: 3
   pull_batch_size: 200
@@ -43,11 +58,11 @@ ha:
   peers:
     - node_id: hc-2
       name: hubcenter-2
-      base_url: http://10.0.0.12:9388
+      base_url: https://hubs.maclaw.top
       enabled: true
     - node_id: hc-3
       name: hubcenter-3
-      base_url: http://10.0.0.13:9388
+      base_url: https://hubs2.maclaw.top
       enabled: true
 
 database:
@@ -62,13 +77,13 @@ database:
 server:
   listen_host: 0.0.0.0
   listen_port: 9388
-  public_base_url: https://hc-2.example.com
+  public_base_url: https://hubs.maclaw.top
 
 ha:
   enabled: true
   node_id: hc-2
   node_name: hubcenter-2
-  advertise_url: http://10.0.0.12:9388
+  advertise_url: https://hubs.maclaw.top
   cluster_secret: replace-with-a-long-random-shared-secret
   sync_interval_seconds: 3
   pull_batch_size: 200
@@ -76,11 +91,11 @@ ha:
   peers:
     - node_id: hc-1
       name: hubcenter-1
-      base_url: http://10.0.0.11:9388
+      base_url: https://hubs.mypapers.top
       enabled: true
     - node_id: hc-3
       name: hubcenter-3
-      base_url: http://10.0.0.13:9388
+      base_url: https://hubs2.maclaw.top
       enabled: true
 
 database:
@@ -95,13 +110,13 @@ database:
 server:
   listen_host: 0.0.0.0
   listen_port: 9388
-  public_base_url: https://hc-3.example.com
+  public_base_url: https://hubs2.maclaw.top
 
 ha:
   enabled: true
   node_id: hc-3
   node_name: hubcenter-3
-  advertise_url: http://10.0.0.13:9388
+  advertise_url: https://hubs2.maclaw.top
   cluster_secret: replace-with-a-long-random-shared-secret
   sync_interval_seconds: 3
   pull_batch_size: 200
@@ -109,11 +124,11 @@ ha:
   peers:
     - node_id: hc-1
       name: hubcenter-1
-      base_url: http://10.0.0.11:9388
+      base_url: https://hubs.mypapers.top
       enabled: true
     - node_id: hc-2
       name: hubcenter-2
-      base_url: http://10.0.0.12:9388
+      base_url: https://hubs.maclaw.top
       enabled: true
 
 database:
@@ -122,71 +137,102 @@ database:
   wal: true
 ```
 
-## Hub 配置
+已生成好的草案文件：
 
-Hub 侧保留 `center.base_url` 兼容旧配置，同时新增 `center.base_urls`。第一版建议把 3 个 Hub Center 地址都写进去，Hub 会探测 `/api/client/quality` 后选择质量最高的节点注册和心跳。
+- [hubcenter-hc-1.yaml](/D:/workprj/aicoder/deploy/out-mypapers-maclaw/hubcenter-hc-1.yaml)
+- [hubcenter-hc-2.yaml](/D:/workprj/aicoder/deploy/out-mypapers-maclaw/hubcenter-hc-2.yaml)
+- [hubcenter-hc-3.yaml](/D:/workprj/aicoder/deploy/out-mypapers-maclaw/hubcenter-hc-3.yaml)
+
+## 4. Hub 配置
+
+Hub 侧保留 `center.base_url` 兼容旧配置，同时新增 `center.base_urls`。第一版建议把 3 个 Hub Center 地址都写进去。
 
 ```yaml
 center:
   enabled: true
-  base_url: https://hc-1.example.com
+  base_url: https://hubs.mypapers.top
   base_urls:
-    - https://hc-1.example.com
-    - https://hc-2.example.com
-    - https://hc-3.example.com
+    - https://hubs.mypapers.top
+    - https://hubs.maclaw.top
+    - https://hubs2.maclaw.top
   register_on_startup: true
   heartbeat_interval_sec: 30
 ```
 
-Hub 会记住上次成功的 Hub Center 地址。下一次注册或心跳时，如果该节点仍然可达且质量分接近最优，会优先复用；如果返回 `HUB_NOT_READY_ON_NODE` 或请求失败，会继续尝试下一个节点。
+Hub 会：
 
-## 启动顺序
+- 探测 `/api/client/quality`
+- 优先选择质量分更高的 `hubcenter`
+- 记住上次成功节点
+- 当前节点不可用或返回 `HUB_NOT_READY_ON_NODE` 时，自动尝试下一个节点
 
-1. 分别在 3 台机器准备配置文件，确认 `node_id` 唯一、`cluster_secret` 一致、`peers` 不包含自己。
-2. 先启动任意一台 Hub Center，再启动剩余两台。
-3. 登录任意 Hub Center 管理后台，打开“多机热备”页确认 3 个节点状态。
-4. 配置 Hub 的 `center.base_urls`，启动 Hub 或在管理端重新注册。
+## 5. 管理后台配置建议
 
-## 验证命令
+现在 `hubcenter` 管理后台的“多机热备”页已经支持直接编辑 HA 参数。
+
+推荐流程：
+
+1. 先用 YAML 把 3 台节点启动起来。
+2. 登录各自后台，在“多机热备”页核对本机 `node_id`、`advertise_url`、`cluster_secret` 和 peer 列表。
+3. 如需调参，可以直接在后台保存。
+4. 保存后逐台重启 `hubcenter`，让同步线程和探测线程加载新参数。
+5. 最后回到“多机热备”页确认 3 个节点都可达。
+
+## 6. 启动顺序
+
+1. 准备好 3 台 `hubcenter` 的配置文件。
+2. 先启动任意 1 台 `hubcenter`。
+3. 再启动剩余 2 台 `hubcenter`。
+4. 登录任意一台 `hubcenter` 管理后台，确认“多机热备”页能看到 3 个节点。
+5. 再启动 `hub`。
+6. 检查 `hub` 是否成功注册，并能正常发送心跳。
+
+## 7. 验证命令
 
 检查单节点质量：
 
 ```powershell
-Invoke-RestMethod https://hc-1.example.com/api/client/quality
+Invoke-RestMethod https://hubs.mypapers.top/api/client/quality
 ```
 
 检查客户端可用节点列表：
 
 ```powershell
-Invoke-RestMethod https://hc-1.example.com/api/client/endpoints
+Invoke-RestMethod https://hubs.mypapers.top/api/client/endpoints
 ```
 
 检查节点间同步鉴权，未带 secret 应返回 `401`：
 
 ```powershell
-Invoke-WebRequest https://hc-1.example.com/api/internal/ha/ops
+Invoke-WebRequest https://hubs.mypapers.top/api/internal/ha/ops
 ```
 
 带 secret 拉取同步日志：
 
 ```powershell
-Invoke-RestMethod https://hc-1.example.com/api/internal/ha/ops?after_seq=0 -Headers @{ Authorization = "Bearer replace-with-a-long-random-shared-secret" }
+Invoke-RestMethod https://hubs.mypapers.top/api/internal/ha/ops?after_seq=0 -Headers @{ Authorization = "Bearer replace-with-a-long-random-shared-secret" }
 ```
 
-管理后台接口需要管理员登录态，推荐直接打开 `/admin` 的“多机热备”页查看节点质量、延迟、同步位点和错误信息。
+或直接使用验收脚本：
 
-## 数据一致性规则
+```powershell
+.\deploy\check-hubcenter-ha.ps1 `
+  -CenterUrls https://hubs.mypapers.top,https://hubs.maclaw.top,https://hubs2.maclaw.top `
+  -ClusterSecret '你的真实cluster_secret'
+```
+
+## 8. 数据一致性规则
 
 第一版采用操作日志同步，属于最终一致：
 
-- 每个本地写入会生成一条 HA op，其他节点按游标增量拉取。
-- 同一个实体并发更新时，先比较 `entity_version`，相同再比较 `occurred_at`，仍相同则比较 `source_node_id`，保证 3 台机器最终按同一结果收敛。
+- 每个本地写入会生成一条 HA op，其它节点按游标增量拉取。
+- 同一实体并发更新时，先比较 `entity_version`，相同再比较 `occurred_at`，仍相同则比较 `source_node_id`。
 - Hub 心跳的在线时间会按 `heartbeat_sync_min_interval_seconds` 节流同步，避免高频心跳把同步日志刷爆。
 
-## 运维注意事项
+## 9. 运维注意事项
 
-- 不要让 3 台 Hub Center 共享同一个 SQLite 文件。每台机器必须有自己的本地数据库。
-- `cluster_secret` 只用于 Hub Center 节点间同步，应该只放在服务端配置里，不要暴露给 Hub 客户端。
-- 建议只允许 3 台 Hub Center 的内网 IP 访问 `/api/internal/ha/ops`，即使接口已有 Bearer secret 校验也不要直接暴露到公网。
-- 如果某台节点长时间离线，恢复后会从自己的 peer cursor 继续追同步日志。离线期间其他两台仍可对外服务。
-- 如果 3 台之间网络完全分区，系统会继续接收本地写入，网络恢复后按确定性冲突规则收敛；强一致事务不属于第一版目标。
+- 不要让 3 台 `hubcenter` 共享同一个 SQLite 文件。
+- `cluster_secret` 只用于 `hubcenter` 节点间同步，不要暴露给 `hub` 客户端。
+- 后台改完 HA 参数后，记得同步回 YAML 或运维配置文件，避免后续重启又回到旧配置。
+- 如果某台节点长期离线，恢复后会从 peer cursor 继续追同步日志，其它两台仍可继续对外服务。
+- 如果 3 台之间出现网络分区，系统会优先保持本地服务可用，网络恢复后再按确定性规则收敛。

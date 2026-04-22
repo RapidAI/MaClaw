@@ -1487,9 +1487,9 @@ func TestRunAgentLoop_PendingSkillRunNoToolFragmentStaysInRecover(t *testing.T) 
 
 func TestHandleIMMessage_ResumeSlotUsesBoundResumeContext(t *testing.T) {
 	h := &IMMessageHandler{memory: newConversationMemory()}
-	defer h.memory.stop()
+	defer h.memory.Stop()
 
-	h.memory.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
 		SlotID:       "slot-old",
 		UserID:       "desktop-user",
 		ProjectPath:  "/project",
@@ -1499,7 +1499,7 @@ func TestHandleIMMessage_ResumeSlotUsesBoundResumeContext(t *testing.T) {
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	})
-	if !h.memory.bindUnfinishedSlot("desktop-user", "slot-old") {
+	if !h.memory.BindUnfinishedSlot("desktop-user", "slot-old") {
 		t.Fatal("expected bindUnfinishedSlot to succeed")
 	}
 
@@ -1571,7 +1571,7 @@ func TestHandleIMMessage_ResumeSlotBindsContextWithoutStartingSession(t *testing
 	app.sessionStarter = NewCodingSessionStarter(app)
 
 	h := NewIMMessageHandler(app, manager)
-	h.memory.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
 		SlotID:       "slot-old",
 		UserID:       "desktop-user",
 		ProjectPath:  projectDir,
@@ -1596,7 +1596,7 @@ func TestHandleIMMessage_ResumeSlotBindsContextWithoutStartingSession(t *testing
 	if provider.lastSpec.Tool != "" {
 		t.Fatalf("provider last spec = %#v, want zero value because no session should start", provider.lastSpec)
 	}
-	bound := h.memory.activeUnfinishedSlot("desktop-user")
+	bound := h.memory.ActiveUnfinishedSlot("desktop-user")
 	if bound == nil || bound.SlotID != "slot-old" {
 		t.Fatalf("bound slot = %#v, want slot-old", bound)
 	}
@@ -1660,11 +1660,11 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
 	userID := "desktop-user"
-	h.memory.save(userID, []conversationEntry{
+	h.memory.Save(userID, []conversationEntry{
 		{Role: "user", Content: "搜索 huggingface daily papers，生成每日论文综述，生成pdf发我"},
 		{Role: "assistant", Content: "(已达到最大推理轮次，请继续发送消息以完成任务)"},
 	})
-	h.memory.upsertUnfinishedSlot(userID, &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot(userID, &unfinishedTaskSlot{
 		SlotID:       "slot-stale",
 		UserID:       userID,
 		Status:       "pending_resume",
@@ -1674,7 +1674,7 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	})
-	h.memory.bindUnfinishedSlot(userID, "slot-stale")
+	h.memory.BindUnfinishedSlot(userID, "slot-stale")
 
 	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "现在帮我把桌面上的 AI 编程评测报告放入知识库", StartNewTask: true})
 	if resp == nil {
@@ -1686,7 +1686,7 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 	if resp.Text != "知识库文件已处理完成。" {
 		t.Fatalf("resp.Text = %q, want fresh task response", resp.Text)
 	}
-	if slot := h.memory.getUnfinishedSlot(userID); slot != nil {
+	if slot := h.memory.GetUnfinishedSlot(userID); slot != nil {
 		t.Fatalf("unfinished slot = %#v, want nil after StartNewTask", slot)
 	}
 
@@ -1741,7 +1741,7 @@ func TestHandleIMMessage_DismissRecoverableSessionSuppressesResumeContext(t *tes
 	}
 	manager.sessions[session.ID] = session
 	h := NewIMMessageHandler(app, manager)
-	defer h.memory.stop()
+	defer h.memory.Stop()
 
 	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "忽略这个恢复会话", DismissRecoverableSessionID: "sess-dismiss"})
 	if resp == nil {
@@ -1848,7 +1848,7 @@ func TestBuildTraceEvidencePrompt_IncludesPersistedTrialReflectSummary(t *testin
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
-	h.memory.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
 		SlotID:      "slot-trace-recall",
 		UserID:      "desktop-user",
 		Status:      "pending_resume",
@@ -1857,7 +1857,7 @@ func TestBuildTraceEvidencePrompt_IncludesPersistedTrialReflectSummary(t *testin
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	})
-	h.memory.bindUnfinishedSlot("desktop-user", "slot-trace-recall")
+	h.memory.BindUnfinishedSlot("desktop-user", "slot-trace-recall")
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "trace recall", "desktop", "u1", "/project")
 	ctx := NewLoopContext("chat-trace-recall", 3, nil)
 	ctx.RunID = run.RunID
@@ -1952,7 +1952,7 @@ func TestBuildTraceEvidencePrompt_UsesActiveSlot(t *testing.T) {
 	app := &App{testHomeDir: tempHome}
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
-	h.memory.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
 		SlotID:      "slot-trace",
 		UserID:      "desktop-user",
 		Status:      "pending_resume",
@@ -1961,7 +1961,7 @@ func TestBuildTraceEvidencePrompt_UsesActiveSlot(t *testing.T) {
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	})
-	h.memory.bindUnfinishedSlot("desktop-user", "slot-trace")
+	h.memory.BindUnfinishedSlot("desktop-user", "slot-trace")
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "trace recall", "desktop", "u1", "/project")
 	h.traceService.AppendEvidence(run.RunID, EvidenceRecord{
 		SourceKind:     "trial_reflect_summary",

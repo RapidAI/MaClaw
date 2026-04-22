@@ -21,13 +21,17 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/nudge"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/session"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 // imHeartbeatMsg is the sentinel value sent as a progress update to keep the
@@ -39,30 +43,13 @@ const imHeartbeatMsg = "__heartbeat__"
 // ---------------------------------------------------------------------------
 
 // MessageAttachment represents a file/image/audio attachment from IM.
-type MessageAttachment struct {
-	Type     string `json:"type"`      // "image", "file", "audio", "video"
-	FileName string `json:"file_name"` // Display name
-	MimeType string `json:"mime_type"` // MIME type
-	Data     string `json:"data"`      // Base64-encoded content
-	Size     int64  `json:"size"`      // Original size in bytes
-}
+// MessageAttachment is an alias for the corelib type.
+// See corelib/agent/message.go for the canonical definition.
+type MessageAttachment = agent.MessageAttachment
 
 // IMUserMessage is the payload of an "im.user_message" from Hub.
-type IMUserMessage struct {
-	UserID                      string              `json:"user_id"`
-	Platform                    string              `json:"platform"`
-	Text                        string              `json:"text"`
-	Lang                        string              `json:"lang,omitempty"`                 // User language ("zh", "en"); empty defaults to "zh"
-	Attachments                 []MessageAttachment `json:"attachments,omitempty"`          // File/image attachments from user
-	MinIterations               int                 `json:"min_iterations,omitempty"`       // floor for agent loop iterations (used by scheduled tasks)
-	IsBackground                bool                `json:"is_background,omitempty"`        // true for scheduled tasks / auto-picked tasks (uses separate HTTP client)
-	BackgroundSlotKind          string              `json:"background_slot_kind,omitempty"` // "coding", "scheduled", "auto" — determines concurrency slot (default: "scheduled")
-	ResumeSlotID                string              `json:"resume_slot_id,omitempty"`
-	StartNewTask                bool                `json:"start_new_task,omitempty"`
-	DismissSlotID               string              `json:"dismiss_slot_id,omitempty"`
-	ResumeRecoverableSessionID  string              `json:"resume_session_id,omitempty"`
-	DismissRecoverableSessionID string              `json:"dismiss_recoverable_session_id,omitempty"`
-}
+// Core fields are defined in agent.UserMessage; GUI-specific fields are added here.
+type IMUserMessage = agent.UserMessage
 
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
@@ -1939,12 +1926,35 @@ const toolsCacheTTL = 5 * time.Second
 // IMMessageHandler processes IM messages using the local LLM Agent.
 // It accesses mcpRegistry and skillExecutor via h.app at call time
 // (not captured at construction) to handle late initialization.
+//
+// Direct fields (workflowEngine, unifiedClassifier, etc.) are extracted
+// from App to enable standalone construction for TUI. GUI wires them
+// from App at construction time; TUI wires them from its own components.
+// See docs/agent-unification-design.md for the full plan.
 type IMMessageHandler struct {
 	app        *App
 	manager    *RemoteSessionManager
 	memory     *conversationMemory
 	client     *http.Client // chat-priority HTTP client (optimised transport)
 	taskClient *http.Client // background-task HTTP client (separate pool)
+
+	// --- Extracted App dependencies (agent-unification Phase 1) ---
+	// These fields are wired from App at construction time (GUI) or from
+	// standalone components (TUI). Code should use h.getWorkflowEngine()
+	// and h.getUnifiedClassifier() instead of h.app.XXX. The h.app field
+	// is retained for not-yet-extracted deps.
+	//
+	// For GUI: these may be nil at construction (late-init goroutines) and
+	// the accessor methods fall through to h.app.XXX as a bridge.
+	// For TUI: h.app is nil, these fields are the sole source.
+
+	workflowEngine    *workflow.WorkflowEngine
+	unifiedClassifier *intent.UnifiedIntentClassifier
+	steeringStore     *steering.Store
+
+	// standaloneConfig holds the config from NewIMMessageHandlerStandalone.
+	// nil when constructed via NewIMMessageHandler (GUI mode).
+	standaloneConfig *StandaloneConfig
 
 	// Unified tool registry and dynamic builder (Phase 1 upgrade).
 	registry    *ToolRegistry
@@ -2199,6 +2209,9 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		client:            chatClient,
 		taskClient:        taskClient,
 		agentActivity:     NewAgentActivityStore(),
+		workflowEngine:    app.workflowEngine,
+		unifiedClassifier: app.unifiedClassifier,
+		steeringStore:     app.steeringStore,
 	}
 	// Initialize ToolRegistry and register builtin tools.
 	h.registry = NewToolRegistry()
@@ -2211,7 +2224,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 
 	// Initialize automatic topic switch detector.
 	h.topicDetector = newTopicSwitchDetector(func() (*http.Client, MaclawLLMConfig) {
-		return h.client, h.app.GetMaclawLLMConfig()
+		return h.client, h.getMaclawLLMConfig()
 	})
 
 	// Initialize task execution orchestrator for per-task coding workflow.
@@ -2238,7 +2251,7 @@ func (h *IMMessageHandler) isNudgeDisabled() bool {
 	if h.app == nil {
 		return false
 	}
-	cfg, err := h.app.LoadConfig()
+	cfg, err := h.loadConfig()
 	if err != nil {
 		return false
 	}
@@ -2489,8 +2502,8 @@ func (h *IMMessageHandler) traceContextResolver() *SessionContextResolver {
 		return h.contextResolver
 	}
 	if h.app != nil {
-		h.app.ensureContextResolver()
-		return h.app.contextResolver
+		_ = h.getContextResolver() // ensure
+		return h.getContextResolver()
 	}
 	return nil
 }
@@ -2604,7 +2617,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 	// since the user has not configured coding LLM providers. This removes
 	// the tool definitions entirely so they are never sent to the LLM,
 	// saving tokens and preventing the agent from attempting coding sessions.
-	if !h.app.isProMode() {
+	if !h.isProMode() {
 		tools = filterCodingTools(tools)
 	}
 
@@ -2956,14 +2969,14 @@ func extractSkillFiles(skillName string, files map[string]string) {
 // registerAndExecuteSkill registers a skill locally, runs security review,
 // executes it, and returns the result string.
 func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *NLSkillEntry, displayName, source string, sendStatus func(string)) string {
-	if h.app.skillExecutor == nil {
+	if h.getSkillExecutor() == nil {
 		return fmt.Sprintf("找到 Skill「%s」但 SkillExecutor 未初始化", displayName)
 	}
 
 	// Security review via RiskAssessor if available.
-	if h.app.riskAssessor != nil {
+	if h.getRiskAssessor() != nil {
 		sendStatus("🔒 正在进行安全审查...")
-		assessment := h.app.riskAssessor.AssessSkill(skill, skill.TrustLevel)
+		assessment := h.getRiskAssessor().AssessSkill(skill, skill.TrustLevel)
 		if assessment.Level == RiskCritical {
 			// Determine the platform for the confirmation channel.
 			platform := ""
@@ -2977,9 +2990,9 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 
 			if !confirmed {
 				// User rejected (or timeout / fail-closed).
-				h.app.ensureAuditLog()
-				if h.app.auditLog != nil {
-					_ = h.app.auditLog.Log(AuditEntry{
+				_ = h.getAuditLog() // ensure
+				if h.getAuditLog() != nil {
+					_ = h.getAuditLog().Log(AuditEntry{
 						Timestamp:    time.Now(),
 						Action:       AuditActionHubSkillReject,
 						ToolName:     source + "_skill_install",
@@ -2993,9 +3006,9 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 			}
 
 			// User confirmed — audit with PolicyUserOverride and continue to registration.
-			h.app.ensureAuditLog()
-			if h.app.auditLog != nil {
-				_ = h.app.auditLog.Log(AuditEntry{
+			_ = h.getAuditLog() // ensure
+			if h.getAuditLog() != nil {
+				_ = h.getAuditLog().Log(AuditEntry{
 					Timestamp:    time.Now(),
 					Action:       AuditActionHubSkillInstall,
 					ToolName:     source + "_skill_install",
@@ -3009,19 +3022,19 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 	}
 
 	sendStatus(fmt.Sprintf("📝 正在注册 Skill: %s ...", skill.Name))
-	if err := h.app.skillExecutor.Register(*skill); err != nil {
+	if err := h.getSkillExecutor().Register(*skill); err != nil {
 		return fmt.Sprintf("注册 Skill「%s」失败: %v", displayName, err)
 	}
 
 	// Refresh skill BM25 index so the router picks up the new skill.
-	if h.app.toolRouter != nil {
-		h.app.toolRouter.RefreshSkillIndex()
+	if h.getAppToolRouter() != nil {
+		h.getAppToolRouter().RefreshSkillIndex()
 	}
 
 	// Audit log.
-	h.app.ensureAuditLog()
-	if h.app.auditLog != nil {
-		_ = h.app.auditLog.Log(AuditEntry{
+	_ = h.getAuditLog() // ensure
+	if h.getAuditLog() != nil {
+		_ = h.getAuditLog().Log(AuditEntry{
 			Timestamp:    time.Now(),
 			Action:       AuditActionHubSkillInstall,
 			ToolName:     source + "_skill_install",
@@ -3032,7 +3045,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 	}
 
 	sendStatus(fmt.Sprintf("▶️ 正在执行 Skill: %s ...", skill.Name))
-	execResult, execErr := h.app.skillExecutor.Execute(skill.Name)
+	execResult, execErr := h.getSkillExecutor().Execute(skill.Name)
 	if execErr != nil {
 		log.Printf("[skill-auto] execute skill %s failed: %v", skill.Name, execErr)
 		return fmt.Sprintf("⚠️ Skill「%s」已安装，但执行失败: %v", skill.Name, execErr)
@@ -3046,7 +3059,7 @@ func (h *IMMessageHandler) syncAgentNetTools() {
 	if h.registry == nil {
 		return
 	}
-	running := h.app.agentNetClient != nil && h.app.agentNetClient.IsRunning()
+	running := h.getAgentNetClient() != nil && h.getAgentNetClient().IsRunning()
 	_, hasSearch := h.registry.Get("agentnet_search")
 
 	if running && !hasSearch {
@@ -3098,7 +3111,7 @@ func (h *IMMessageHandler) WarmupTools() {
 // endpoint so the underlying TCP+TLS connection is established and pooled
 // before the first real chat request.
 func (h *IMMessageHandler) WarmupHTTPConn() {
-	cfg := h.app.GetMaclawLLMConfig()
+	cfg := h.getMaclawLLMConfig()
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.URL), "/")
 	if baseURL == "" {
 		return
@@ -3213,7 +3226,7 @@ func extractBrowserRootCause(text string) string {
 
 func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []conversationEntry, resp *IMAgentResponse) {
 	startedAt := time.Now()
-	h.memory.save(userID, trimHistory(history))
+	h.memory.Save(userID, trimHistory(history))
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
 	}
@@ -3240,7 +3253,7 @@ func (h *IMMessageHandler) persistSessionTranscriptAsync(userID string, history 
 		if h == nil || h.app == nil {
 			return
 		}
-		store, err := session.NewStore(h.app.sessionSearchDBPath())
+		store, err := session.NewStore(h.getSessionSearchDBPath())
 		if err != nil {
 			log.Printf("[session_search] failed to open store: %v", err)
 			return
@@ -3275,7 +3288,7 @@ func (h *IMMessageHandler) persistSessionTranscriptAsync(userID string, history 
 		}
 	}
 
-	if h != nil && h.app != nil && strings.TrimSpace(h.app.testHomeDir) != "" {
+	if h != nil && h.app != nil && strings.TrimSpace(h.getTestHomeDir()) != "" {
 		persist()
 		return
 	}
@@ -3419,7 +3432,7 @@ func (h *IMMessageHandler) buildTraceEvidencePrompt(userID, userMessage string) 
 	if h.traceService == nil {
 		return ""
 	}
-	if h.memory.activeUnfinishedSlot(userID) == nil {
+	if h.memory.ActiveUnfinishedSlot(userID) == nil {
 		return ""
 	}
 	projectPath := h.traceProjectPath()
@@ -3453,7 +3466,7 @@ func (h *IMMessageHandler) buildTraceEvidencePrompt(userID, userMessage string) 
 }
 
 func (h *IMMessageHandler) buildResumeTraceContext(userID, fallbackTask string) string {
-	if activeSlot := h.memory.activeUnfinishedSlot(userID); activeSlot != nil {
+	if activeSlot := h.memory.ActiveUnfinishedSlot(userID); activeSlot != nil {
 		return buildUnfinishedSlotResumeContext(activeSlot) + h.buildTraceEvidencePrompt(userID, activeSlot.LastTask)
 	}
 	return h.buildTraceEvidencePrompt(userID, fallbackTask)
@@ -3524,7 +3537,7 @@ func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) 
 	if h.manager == nil {
 		return nil, fmt.Errorf("remote session manager not initialized")
 	}
-	loopCtx := NewLoopContext(fmt.Sprintf("ai-bg-%d", time.Now().UnixNano()), h.app.GetMaclawAgentMaxIterations(), h.taskClient)
+	loopCtx := NewLoopContext(fmt.Sprintf("ai-bg-%d", time.Now().UnixNano()), h.getMaclawAgentMaxIterations(), h.taskClient)
 	loopCtx.Platform = "desktop"
 	if h.traceService != nil {
 		job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, trimmedText, "desktop", "desktop-user", strings.TrimSpace(projectPath))
@@ -3558,7 +3571,7 @@ func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *L
 		Text:               text,
 		IsBackground:       true,
 		Lang:               "zh",
-		MinIterations:      h.app.GetMaclawAgentMaxIterations(),
+		MinIterations:      h.getMaclawAgentMaxIterations(),
 		BackgroundSlotKind: "scheduled",
 	}
 	onProgress := func(progressText string) {
@@ -3647,15 +3660,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Invalidate UIC cache after each message processing cycle completes,
 	// ensuring all consumers within the same cycle share the same result
 	// but the next message gets a fresh classification.
-	if h.app != nil && h.app.unifiedClassifier != nil {
-		defer h.app.unifiedClassifier.InvalidateCache()
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		defer uic.InvalidateCache()
 	}
 
 	// Slash commands are processed before the LLM config check — they don't
 	// need LLM and must always work so users can manage state even when LLM
 	// is misconfigured.
 	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
-		h.memory.clear(msg.UserID)
+		h.memory.Clear(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)
 		if h.confirmationStore != nil {
 			h.confirmationStore.clear(msg.UserID)
@@ -3751,15 +3764,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.confirmationStore.clearExpired(time.Now())
 	}
 
-	EntriesBeforeClear := h.memory.load(msg.UserID)
-	unfinishedSlot := h.memory.getUnfinishedSlot(msg.UserID)
+	EntriesBeforeClear := h.memory.Load(msg.UserID)
+	unfinishedSlot := h.memory.GetUnfinishedSlot(msg.UserID)
 	decision := resolveExplicitTaskSlotDecision(msg, unfinishedSlot)
 	freshTask := false
-	if h.app != nil && h.app.sessionStarter == nil {
-		h.app.ensureInteractionInfra()
+	if h.app != nil && h.getSessionStarter() == nil {
+		h.ensureInteractionInfra()
 	}
 	if decision.DismissSlotID != "" {
-		h.memory.dismissUnfinishedSlot(msg.UserID, decision.DismissSlotID)
+		h.memory.DismissUnfinishedSlot(msg.UserID, decision.DismissSlotID)
 		unfinishedSlot = nil
 		decision.ResumeSlotID = ""
 		freshTask = true
@@ -3799,7 +3812,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return &IMAgentResponse{Error: "当前没有可恢复的会话，或该会话不支持恢复。"}
 	}
 
-	if !h.app.isMaclawLLMConfigured() {
+	if !h.isMaclawLLMConfigured() {
 		return &IMAgentResponse{
 			Error: "MaClaw LLM 未配置，无法处理请求。请在 MaClaw 客户端的设置中配置 LLM。",
 		}
@@ -3817,7 +3830,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// if a stale workflow happens to be active in memory.
 	workflowAgentLoop := false
 	skipWorkflowForAttachment := false
-	if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground {
+	if h.getWorkflowEngine() != nil && !msg.IsBackground {
 		// Skip workflow interception when the user sends image attachments
 		// with a short text prompt (likely an image recognition request, not
 		// a workflow phase input). Without this, the workflow engine would
@@ -3863,18 +3876,18 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	if decision.StartNewTask {
-		h.memory.clearConversationAndDismissSlot(msg.UserID)
+		h.memory.ClearConversationAndDismissSlot(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)
 		EntriesBeforeClear = nil
 		unfinishedSlot = nil
 		freshTask = true
 	} else if decision.ResumeSlotID != "" {
-		if h.memory.bindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
-			unfinishedSlot = h.memory.activeUnfinishedSlot(msg.UserID)
+		if h.memory.BindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
+			unfinishedSlot = h.memory.ActiveUnfinishedSlot(msg.UserID)
 		}
 	} else {
 		if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, EntriesBeforeClear) {
-			h.memory.clearConversationAndDismissSlot(msg.UserID)
+			h.memory.ClearConversationAndDismissSlot(msg.UserID)
 			h.clearPerUserSessionState(msg.UserID)
 			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
 			EntriesBeforeClear = nil
@@ -3929,7 +3942,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if h.topicDetector.detect(trimmed, msg.UserID, h.memory) == TopicNew {
 			// Archive a one-line summary before clearing.
 			if h.memoryStore != nil {
-				entries := h.memory.load(msg.UserID)
+				entries := h.memory.Load(msg.UserID)
 				if summary := buildQuickSummary(entries); summary != "" {
 					_ = h.memoryStore.Save(MemoryEntry{
 						Content:  summary,
@@ -3937,7 +3950,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 					})
 				}
 			}
-			h.memory.clear(msg.UserID)
+			h.memory.Clear(msg.UserID)
 			h.clearPerUserSessionState(msg.UserID)
 			log.Printf("[TopicDetector] auto-cleared context for user %s", msg.UserID)
 		}
@@ -3946,7 +3959,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// --- Background routing: delegate to BackgroundLoopManager ---
 	if msg.IsBackground && h.bgManager != nil && providedLoopCtx == nil {
 		slotKind := parseSlotKind(msg.BackgroundSlotKind)
-		maxIter := h.app.GetMaclawAgentMaxIterations()
+		maxIter := h.getMaclawAgentMaxIterations()
 		if msg.MinIterations > maxIter {
 			maxIter = msg.MinIterations
 		}
@@ -3969,14 +3982,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 
 		var systemPrompt string
-		history := h.memory.load(msg.UserID)
+		history := h.memory.Load(msg.UserID)
 		history = h.compactHistory(history, httpClient)
 		if h.memoryStore != nil {
 			systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0)
 		} else {
 			systemPrompt = h.buildSystemPrompt()
 		}
-		if activeSlot := h.memory.activeUnfinishedSlot(msg.UserID); activeSlot != nil {
+		if activeSlot := h.memory.ActiveUnfinishedSlot(msg.UserID); activeSlot != nil {
 			systemPrompt += buildUnfinishedSlotResumeContext(activeSlot)
 			systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, activeSlot.LastTask)
 		} else {
@@ -4023,13 +4036,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			// Preserve the cancelled task's original text as context so
 			// subsequent messages don't lose the conversation thread.
 			if pending.OriginalText != "" {
-				entries := h.memory.load(msg.UserID)
+				entries := h.memory.Load(msg.UserID)
 				cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
 				entries = append(entries,
 					conversationEntry{Role: "user", Content: pending.OriginalText},
 					conversationEntry{Role: "assistant", Content: cancelNote},
 				)
-				h.memory.save(msg.UserID, entries)
+				h.memory.Save(msg.UserID, entries)
 			}
 			h.confirmationStore.clear(msg.UserID)
 			return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
@@ -4043,7 +4056,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			// message ("确认并开始"), not the original task text. Now that we've
 			// restored the original text, give the workflow engine another chance
 			// to classify and intercept it.
-			if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground {
+			if h.getWorkflowEngine() != nil && !msg.IsBackground {
 				if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
 					h.pendingAskUser.Delete(msg.UserID)
 					return wfResp
@@ -4063,7 +4076,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				msg.Text = confirmationApprovedText(pending)
 				trimmed = strings.TrimSpace(msg.Text)
 				confirmedResume = true
-				if h.app != nil && h.app.workflowEngine != nil {
+				if h.getWorkflowEngine() != nil {
 					if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
 						h.pendingAskUser.Delete(msg.UserID)
 						return wfResp
@@ -4074,13 +4087,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				}
 			} else if llmIntent == "cancel" {
 				if pending.OriginalText != "" {
-					entries := h.memory.load(msg.UserID)
+					entries := h.memory.Load(msg.UserID)
 					cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
 					entries = append(entries,
 						conversationEntry{Role: "user", Content: pending.OriginalText},
 						conversationEntry{Role: "assistant", Content: cancelNote},
 					)
-					h.memory.save(msg.UserID, entries)
+					h.memory.Save(msg.UserID, entries)
 				}
 				h.confirmationStore.clear(msg.UserID)
 				return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
@@ -4131,7 +4144,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 
-	history := h.memory.load(msg.UserID)
+	history := h.memory.Load(msg.UserID)
 	history = h.compactHistory(history, httpClient)
 	var systemPrompt string
 	if h.memoryStore != nil {
@@ -4147,10 +4160,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// queries) when a previous workflow wasn't properly cleaned up.
 	// Prefer the stashed prompt from HandleInput (includes modify context)
 	// over the generic BuildPhasePrompt.
-	if workflowAgentLoop && h.app != nil && h.app.workflowEngine != nil {
+	if workflowAgentLoop && h.getWorkflowEngine() != nil {
 		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(msg.UserID); ok {
 			systemPrompt += "\n" + stashed.(string)
-		} else if phasePrompt := h.app.workflowEngine.BuildPhasePrompt(msg.UserID); phasePrompt != "" {
+		} else if phasePrompt := h.getWorkflowEngine().BuildPhasePrompt(msg.UserID); phasePrompt != "" {
 			systemPrompt += "\n" + phasePrompt
 		}
 	} else {
@@ -4182,7 +4195,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Create a LoopContext for this chat loop.
 	loopCtx := providedLoopCtx
 	if loopCtx == nil {
-		loopCtx = NewLoopContext("chat", h.app.GetMaclawAgentMaxIterations(), httpClient)
+		loopCtx = NewLoopContext("chat", h.getMaclawAgentMaxIterations(), httpClient)
 	}
 	if loopCtx.HTTPClient == nil {
 		loopCtx.HTTPClient = httpClient
@@ -4231,9 +4244,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// a workflow phase, so even shorter text is a valid deliverable. The old
 	// 200-char threshold could miss cases where the LLM used tools (write_file)
 	// to produce the document and only output a short confirmation message.
-	if workflowAgentLoop && h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && !resp.HardExit && len(resp.Text) > 50 {
-		if phaseID := h.app.workflowEngine.SavePhaseOutput(msg.UserID, resp.Text); phaseID != "" {
-			if cb := h.app.workflowEngine.GetCallbacks(); cb != nil {
+	if workflowAgentLoop && h.getWorkflowEngine() != nil && !msg.IsBackground && !resp.HardExit && len(resp.Text) > 50 {
+		if phaseID := h.getWorkflowEngine().SavePhaseOutput(msg.UserID, resp.Text); phaseID != "" {
+			if cb := h.getWorkflowEngine().GetCallbacks(); cb != nil {
 				_ = cb.EmitDocUpdate(msg.UserID, phaseID, resp.Text)
 				log.Printf("[WorkflowEngine] post-loop doc capture: emitted doc_update for user=%s phase=%s len=%d", msg.UserID, phaseID, len(resp.Text))
 			}
@@ -4270,13 +4283,13 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 			}
 		}
 	}
-	h.memory.clear(userID)
+	h.memory.Clear(userID)
 	h.clearPerUserSessionState(userID)
 	// Flush evidence batch and reset session on exit.
 	h.flushEvidenceOnSessionEnd(userID)
 	// Reset workflow working directory and suggest_maximize dedup flag.
-	if h.app != nil && h.app.workflowEngine != nil {
-		if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+	if h.getWorkflowEngine() != nil {
+		if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
 			adapter.ResetWorkingDir()
 			adapter.ResetSuggestMaximize(userID)
 		}
@@ -4356,7 +4369,7 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 		summaryText = summaryText[:32000] + "\n...(truncated)"
 	}
 
-	cfg := h.app.GetMaclawLLMConfig()
+	cfg := h.getMaclawLLMConfig()
 	msgs := []map[string]string{
 		{"role": "user", "content": "请简洁总结以下对话历史，保留关键事实、决策和待办事项：\n\n" + summaryText},
 	}
@@ -4748,7 +4761,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	var cachedDebugTime time.Time
 	isDebug := func() bool {
 		if now := time.Now(); now.Sub(cachedDebugTime) > 2*time.Second {
-			c, err := h.app.LoadConfig()
+			c, err := h.loadConfig()
 			if err != nil {
 				cachedDebug = false
 			} else {
@@ -4814,10 +4827,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// Ensure OAuth token is fresh before reading config — the token may have
 	// expired since the last request. ensureOAuthToken refreshes and persists
 	// the new token so GetMaclawLLMConfig picks up the updated Key.
-	if err := h.app.ensureOAuthToken(); err != nil {
+	if err := h.ensureOAuthToken(); err != nil {
 		log.Printf("[LLM] OAuth token refresh failed: %v", err)
 	}
-	cfg := h.app.GetMaclawLLMConfig()
+	cfg := h.getMaclawLLMConfig()
 	if cfg.IsResponsesAPI() {
 		keyPrefix := cfg.Key
 		if len(keyPrefix) > 20 {
@@ -4826,12 +4839,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		log.Printf("[LLM] WARNING Responses API config: wire_api=%s key_prefix=%q key_len=%d url=%s", cfg.WireAPI, keyPrefix, len(cfg.Key), cfg.URL)
 	}
 	trialReflectEnabled := false
-	if appCfg, err := h.app.LoadConfig(); err == nil {
+	if appCfg, err := h.loadConfig(); err == nil {
 		trialReflectEnabled = appCfg.UIMode == "pro" && appCfg.TrialReflectEnabled
 	}
 	preLLMConfigElapsed = time.Since(configStartedAt)
 	trialState := newTrialReflectState(trialReflectEnabled)
-	maxIter := h.app.GetMaclawAgentMaxIterations()
+	maxIter := h.getMaclawAgentMaxIterations()
 	h.loopMaxOverride = 0 // reset dynamic override for this loop
 	// Sync initial maxIter into the LoopContext so ctx is the source of truth.
 	if ctx.MaxIterations() <= 0 {
@@ -4845,7 +4858,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	if !ctx.IsAskUserResponse && shouldPreferSkillForTask(userText) {
 		phase.ForceSkillPreference = true
 		phase.SkillMode = skillPreferenceRemoteRequired
-		if skillName, skillReason := matchPreferredLocalSkill(h.app.skillExecutor, userText); skillName != "" {
+		if skillName, skillReason := matchPreferredLocalSkill(h.getSkillExecutor(), userText); skillName != "" {
 			phase.SkillMode = skillPreferenceLocalOnly
 			phase.PreferredSkillName = skillName
 			phase.PreferredSkillReason = skillReason
@@ -4867,7 +4880,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// Skip when the workflow-confirm classifier returned "other" (user's
 	// message is unrelated to the active workflow), so that tools like ssh
 	// are not stripped by the doc_only whitelist.
-	if h.app != nil && h.app.workflowEngine != nil && !ctx.SkipNeedsConfirmGate {
+	if h.getWorkflowEngine() != nil && !ctx.SkipNeedsConfirmGate {
 		tools = h.applyWorkflowToolFilter(userID, tools)
 	}
 	toolsTokenBudget := estimateToolsTokens(tools)
@@ -4951,7 +4964,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// Strip base64 image data and annotate file/attachment sections from
 		// previous user messages so the LLM does not confuse earlier
 		// uploads with the current one. See bugfix #image-history-leak.
-		conversation = append(conversation, stripHistoryAttachments(entry.toMessage()))
+		conversation = append(conversation, stripHistoryAttachments(entry.ToMessage()))
 	}
 
 	// Build user message — multimodal if attachments contain images.
@@ -4981,7 +4994,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	if recorder != nil {
-		recorder.StartSession(ctx.ID, h.app.GetMaclawLLMProviders().Current, cfg.Model, cfg.Protocol, userID, platform, tools)
+		recorder.StartSession(ctx.ID, h.getMaclawLLMProviders().Current, cfg.Model, cfg.Protocol, userID, platform, tools)
 		recorder.Record("system", systemPrompt, nil, "", "")
 		recorder.Record("user", userContent, nil, "", "")
 	}
@@ -5012,7 +5025,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// --- Coding Tool Gate: pre-compute gate decision before iteration loop ---
 	var gic *GateIntentClassifier
 	if h.app != nil {
-		gic = h.app.gateIntentClassifier
+		gic = h.getGateIntentClassifier()
 	}
 	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, gic, h.lastUserID)
 
@@ -5067,8 +5080,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		shouldActivate := gateConfig.active || h.conversationHasCodingContext()
 		if shouldActivate {
 			hasEngineWorkflow := false
-			if h.app != nil && h.app.workflowEngine != nil {
-				hasEngineWorkflow = h.app.workflowEngine.HasActiveWorkflow(userID)
+			if h.getWorkflowEngine() != nil {
+				hasEngineWorkflow = h.getWorkflowEngine().HasActiveWorkflow(userID)
 			}
 			if !hasEngineWorkflow {
 				steeringDetector = detector
@@ -5078,13 +5091,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// When activation is only from conversation history context,
 				// defer the banner to the first actual coding tool interception
 				// (handled in the iteration loop below).
-				if gateConfig.active && platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
-					if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+				if gateConfig.active && platform == "desktop" && h.getWorkflowEngine() != nil {
+					if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
 						// Auto-set working directory to the current project path.
 						// The frontend will show a banner allowing the user to
 						// confirm or change it before documents are generated.
 						if adapter.GetWorkingDir() == "" {
-							projectPath := strings.TrimSpace(h.app.GetCurrentProjectPath())
+							projectPath := strings.TrimSpace(h.getCurrentProjectPath())
 							if projectPath != "" {
 								adapter.SetWorkingDir(userID, projectPath)
 							}
@@ -5458,9 +5471,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if resp != nil {
 			usageStartedAt := time.Now()
 			input, output := deriveLLMTokenUsage(resp, conversation)
-			providerName := h.app.GetMaclawLLMProviders().Current
+			providerName := h.getMaclawLLMProviders().Current
 			log.Printf("[LLM] usage main_round provider=%q input=%d output=%d usage_nil=%t choices=%d", providerName, input, output, resp.Usage == nil, len(resp.Choices))
-			h.app.AccumulateLLMTokenUsage(providerName, input, output)
+			h.accumulateLLMTokenUsage(providerName, input, output)
 			lastLLMInputTokens = input
 			lastLLMOutputTokens = output
 			if !streamDoneAt.IsZero() {
@@ -5473,10 +5486,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// instead of an LLM error.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
-				// Don't save the cancelled task's conversation history —
-				// otherwise the next message will inherit the stale context
-				// and the LLM will continue executing the cancelled task.
-				h.memory.clear(userID)
+				h.memory.Clear(userID)
 				cancelMsg := "⏹️ 任务已取消。"
 				if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
 					cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
@@ -5623,12 +5633,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						strippedContent := stripThinkingTags(msgContent)
 						finalResp := &IMAgentResponse{Text: strippedContent}
 						// Desktop: intercept text output for the doc preview panel.
-						if platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
+						if platform == "desktop" && h.getWorkflowEngine() != nil {
 							trimmedStripped := strings.TrimSpace(strippedContent)
 							emitted := false
 							if steeringDetector != nil {
 								steeringDetector.interceptTextOutput(trimmedStripped, func(phaseID, content string) {
-									if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+									if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
 										_ = adapter.EmitDocUpdate(userID, phaseID, content)
 										log.Printf("[SteeringWorkflow] emitted doc_update from gate force-return for user=%s phase=%s len=%d", userID, phaseID, len(content))
 										emitted = true
@@ -5637,8 +5647,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							}
 							// Fallback: WorkflowEngine active but steering detector not activated.
 							if !emitted && len(trimmedStripped) >= 50 {
-								if ws := h.app.workflowEngine.GetActiveWorkflow(userID); ws != nil {
-									if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+								if ws := h.getWorkflowEngine().GetActiveWorkflow(userID); ws != nil {
+									if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
 										_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedStripped)
 										log.Printf("[WorkflowEngine] emitted doc_update from gate force-return for user=%s phase=%s len=%d", userID, ws.CurrentPhase, len(trimmedStripped))
 									}
@@ -5701,7 +5711,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// from misclassifying the confirmation prompt as a "promise to
 			// deliver" and forcing another round that re-outputs the content.
 			needsConfirmFromEngine := false
-			if h.app != nil && h.app.workflowEngine != nil {
+			if h.getWorkflowEngine() != nil {
 				// When the semantic classifier says the user's message is
 				// maintenance/bug_fix (not a workflow phase request), skip
 				// the engine's NeedsConfirm gate. This prevents maintenance
@@ -5721,7 +5731,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					semanticBypass = true
 				}
 				if !semanticBypass {
-					needsConfirmFromEngine = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+					needsConfirmFromEngine = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
 				} else {
 					log.Printf("[workflow-gate] NeedsConfirm no-tool engine bypassed: semantic intent=%v active=%v bugFix=%v skipConfirmOther=%v",
 						gateConfig.intent, gateConfig.active, gateConfig.bugFix, ctx.SkipNeedsConfirmGate)
@@ -5742,10 +5752,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// workflow (pure steering-driven flow).
 			needsConfirmFromSteering := false
 			if gateConfig.active && iteration > 0 {
-				if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
+				if h.getWorkflowEngine() != nil && h.getWorkflowEngine().GetActiveWorkflow(userID) != nil {
 					// Engine owns the workflow — delegate to phase-aware check.
 					// IsPhaseNeedsConfirm returns false for implementation/execution phases.
-					needsConfirmFromSteering = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+					needsConfirmFromSteering = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
 					if !needsConfirmFromSteering && platform == "desktop" {
 						log.Printf("[agent-loop] NeedsConfirm steering bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
 					}
@@ -5755,8 +5765,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 			}
 			engineGateActive := needsConfirmFromEngine
-			if engineGateActive && h.app != nil && h.app.workflowEngine != nil {
-				if !h.app.workflowEngine.HasPhaseOutput(userID) {
+			if engineGateActive && h.getWorkflowEngine() != nil {
+				if !h.getWorkflowEngine().HasPhaseOutput(userID) {
 					engineGateActive = false
 					log.Printf("[agent-loop] NeedsConfirm gate: first execution (hasOutput=false), allowing loop to continue (iter=%d)", iteration)
 				}
@@ -5803,8 +5813,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						postStreamLastReturnPrepAt = time.Now()
 					}
 					// Desktop: intercept text output for the doc preview panel.
-					if platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
-						if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+					if platform == "desktop" && h.getWorkflowEngine() != nil {
+						if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
 							emitted := false
 							// Path 1: steering detector (coding workflow without engine)
 							if steeringDetector != nil {
@@ -5821,7 +5831,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							// this is a NeedsConfirm phase, so even shorter text is a valid deliverable.
 							// Also emit suggest_maximize in case it wasn't emitted yet (e.g. dedup cleared).
 							if !emitted && engineGateActive && len(trimmedForGate) >= 50 {
-								if ws := h.app.workflowEngine.GetActiveWorkflow(userID); ws != nil {
+								if ws := h.getWorkflowEngine().GetActiveWorkflow(userID); ws != nil {
 									_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedForGate)
 									adapter.EmitSuggestMaximize(userID, string(ws.Type))
 									log.Printf("[WorkflowEngine] emitted doc_update for user=%s phase=%s type=%s len=%d", userID, ws.CurrentPhase, ws.Type, len(trimmedForGate))
@@ -5831,7 +5841,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							}
 						}
 					} else if platform == "desktop" {
-						log.Printf("[agent-loop] NeedsConfirm gate: skipped doc preview emission (workflowEngine=%v)", h.app != nil && h.app.workflowEngine != nil)
+						log.Printf("[agent-loop] NeedsConfirm gate: skipped doc preview emission (workflowEngine=%v)", h.getWorkflowEngine() != nil)
 					}
 					attachLLMTelemetry(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
@@ -5984,8 +5994,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if success {
 						log.Printf("[skill-auto-async] skill %q installed successfully, result pending for next turn", best.Name)
 						// Notify frontend so user sees a toast notification.
-						if h.app != nil && h.app.ctx != nil {
-							h.app.emitEvent("skill-auto-installed", map[string]string{
+						if h.app != nil {
+							h.emitAppEvent("skill-auto-installed", map[string]string{
 								"name":   best.Name,
 								"result": installResult,
 							})
@@ -6009,8 +6019,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// and the LLM has now produced a final response (resolved the
 			// task through alternative tool calls), classify the original
 			// skill failure as a "workaround" outcome.
-			if phase.FailedSkillName != "" && h.app != nil && h.app.skillRunner != nil {
-				h.app.skillRunner.RecordWorkaround(phase.FailedSkillName, phase.FailedSkillError)
+			if phase.FailedSkillName != "" && h.app != nil && h.getSkillRunner() != nil {
+				h.getSkillRunner().RecordWorkaround(phase.FailedSkillName, phase.FailedSkillError)
 				log.Printf("[skill-workaround] skill %q failure classified as workaround — LLM resolved task via alternative tools", phase.FailedSkillName)
 			}
 
@@ -6036,8 +6046,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// attempts coding work.
 		if steeringDetector != nil && !steeringDetector.suggestMaximizeEmitted && gateConfig.active {
 			steeringDetector.suggestMaximizeEmitted = true
-			if h.app != nil && h.app.workflowEngine != nil {
-				if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+			if h.getWorkflowEngine() != nil {
+				if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
 					adapter.EmitSuggestMaximize(userID, "coding")
 					log.Printf("[SteeringWorkflow] emitted suggest_maximize for user=%s (gate active, first tool call)", userID)
 				}
@@ -6063,7 +6073,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// executing tools after the user clicked cancel.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
-				h.memory.clear(userID)
+				h.memory.Clear(userID)
 				cancelMsg := "⏹️ 任务已取消。"
 				if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
 					cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
@@ -6277,8 +6287,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// the frontend doc preview panel works for steering-driven workflows.
 			if steeringDetector != nil {
 				steeringDetector.interceptToolCall(tc.Function.Name, tc.Function.Arguments, func(phaseID, content string) {
-					if h.app != nil && h.app.workflowEngine != nil {
-						if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+					if h.getWorkflowEngine() != nil {
+						if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
 							_ = adapter.EmitDocUpdate(userID, phaseID, content)
 							log.Printf("[SteeringWorkflow] emitted doc_update for user=%s phase=%s len=%d", userID, phaseID, len(content))
 						}
@@ -6595,9 +6605,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// exit during the implementation phase where NeedsConfirm=false.
 		needsConfirmToolBranch := false
 		if gateConfig.active && iteration > 0 {
-			if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
+			if h.getWorkflowEngine() != nil && h.getWorkflowEngine().GetActiveWorkflow(userID) != nil {
 				// Engine owns the workflow — delegate to phase-aware check.
-				needsConfirmToolBranch = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+				needsConfirmToolBranch = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
 				if !needsConfirmToolBranch {
 					log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
 				}
@@ -6617,7 +6627,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// phase document), skip the engine gate. This prevents "改进优化下这个
 		// 技能？" from being force-returned as a phase document when a
 		// presentation_design workflow happens to be active.
-		if !needsConfirmToolBranch && iteration > 0 && h.app != nil && h.app.workflowEngine != nil {
+		if !needsConfirmToolBranch && iteration > 0 && h.getWorkflowEngine() != nil {
 			semanticBypass := false
 			switch gateConfig.intent {
 			case intentCoding:
@@ -6631,7 +6641,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				semanticBypass = true
 			}
 			if !semanticBypass {
-				needsConfirmToolBranch = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+				needsConfirmToolBranch = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
 			} else {
 				log.Printf("[workflow-gate] NeedsConfirm tool-branch fallback bypassed: semantic intent=%v active=%v bugFix=%v reason=%q",
 					gateConfig.intent, gateConfig.active, gateConfig.bugFix, gateConfig.reason)
@@ -6641,9 +6651,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// additionally check HasPhaseOutput. On first execution (hasOutput=false), skip
 		// the engine gate so the agent loop continues generating the full phase document.
 		// The steering-driven path (gateConfig.active without engine workflow) is unchanged.
-		if needsConfirmToolBranch && h.app != nil && h.app.workflowEngine != nil &&
-			h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
-			if !h.app.workflowEngine.HasPhaseOutput(userID) {
+		if needsConfirmToolBranch && h.getWorkflowEngine() != nil &&
+			h.getWorkflowEngine().GetActiveWorkflow(userID) != nil {
+			if !h.getWorkflowEngine().HasPhaseOutput(userID) {
 				needsConfirmToolBranch = false
 				log.Printf("[agent-loop] NeedsConfirm tool branch: first execution (hasOutput=false), skipping engine gate (iter=%d)", iteration)
 			}
@@ -6678,8 +6688,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				phase.Stage = agentStageFinalize
 				finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
 				// Desktop: intercept text output for the doc preview panel.
-				if platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
-					if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+				if platform == "desktop" && h.getWorkflowEngine() != nil {
+					if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
 						emitted := false
 						if steeringDetector != nil {
 							steeringDetector.interceptTextOutput(trimmedAfterTools, func(phaseID, content string) {
@@ -6689,7 +6699,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							})
 						}
 						if !emitted && len(trimmedAfterTools) >= 50 {
-							if ws := h.app.workflowEngine.GetActiveWorkflow(userID); ws != nil {
+							if ws := h.getWorkflowEngine().GetActiveWorkflow(userID); ws != nil {
 								_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedAfterTools)
 								adapter.EmitSuggestMaximize(userID, string(ws.Type))
 								log.Printf("[WorkflowEngine] emitted doc_update from tool-branch for user=%s phase=%s type=%s len=%d", userID, ws.CurrentPhase, ws.Type, len(trimmedAfterTools))
@@ -6712,7 +6722,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// When the loop exits due to cancellation, return a clean message
 	// and skip the bonus round / max-iterations logic.
 	if ctx.IsCancelled() {
-		h.memory.clear(userID)
+		h.memory.Clear(userID)
 		cancelMsg := "⏹️ 任务已取消。"
 		if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
 			cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
@@ -6747,9 +6757,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if bonusResp != nil {
 			usageStartedAt := time.Now()
 			input, output := deriveLLMTokenUsage(bonusResp, conversation)
-			providerName := h.app.GetMaclawLLMProviders().Current
+			providerName := h.getMaclawLLMProviders().Current
 			log.Printf("[LLM] usage bonus_round provider=%q input=%d output=%d usage_nil=%t choices=%d", providerName, input, output, bonusResp.Usage == nil, len(bonusResp.Choices))
-			h.app.AccumulateLLMTokenUsage(providerName, input, output)
+			h.accumulateLLMTokenUsage(providerName, input, output)
 			lastLLMInputTokens = input
 			lastLLMOutputTokens = output
 			if !streamDoneAt.IsZero() {
@@ -6848,7 +6858,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	progressSummary := extractProgressSummary(history)
 	if originalTask != "" {
 		slotID := fmt.Sprintf("maxround-%d", time.Now().UnixMilli())
-		h.memory.upsertUnfinishedSlot(userID, &unfinishedTaskSlot{
+		h.memory.UpsertUnfinishedSlot(userID, &unfinishedTaskSlot{
 			SlotID:       slotID,
 			UserID:       userID,
 			Status:       "max_rounds_reached",
@@ -6857,7 +6867,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			ResumePrompt: "用户发送「继续」以恢复此任务。请基于对话历史中已完成的工作，继续完成剩余部分。不要重复已完成的步骤。\n",
 			Source:       "max_rounds",
 		})
-		h.memory.bindUnfinishedSlot(userID, slotID)
+		h.memory.BindUnfinishedSlot(userID, slotID)
 		log.Printf("[MaxRounds] created unfinished slot %s for user %s, task=%q", slotID, userID, truncateRunes(originalTask, 80))
 	}
 

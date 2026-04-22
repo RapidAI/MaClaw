@@ -27,7 +27,7 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 	isProMode := false
 	currentNickname := ""
 	trialReflectEnabled := false
-	if cfg, err := h.app.LoadConfig(); err == nil {
+	if cfg, err := h.loadConfig(); err == nil {
 		if cfg.MaclawRoleName != "" {
 			roleName = cfg.MaclawRoleName
 		}
@@ -379,7 +379,7 @@ office 工具是统一的文档操作工具，支持以下 action：
 		// Inject current coding tool provider info so the LLM knows which
 		// provider to use when calling create_session without an explicit
 		// provider parameter.
-		if provCfg, provErr := h.app.LoadConfig(); provErr == nil {
+		if provCfg, provErr := h.loadConfig(); provErr == nil {
 			type toolProviderInfo struct {
 				tool     string
 				provider string
@@ -426,8 +426,8 @@ office 工具是统一的文档操作工具，支持以下 action：
 		}
 	}
 
-	if h.app.mcpRegistry != nil {
-		servers := h.app.mcpRegistry.ListServers()
+	if h.getMCPRegistry() != nil {
+		servers := h.getMCPRegistry().ListServers()
 		if len(servers) > 0 {
 			b.WriteString("\n## 已注册 MCP Server\n")
 			for _, s := range servers {
@@ -466,8 +466,8 @@ office 工具是统一的文档操作工具，支持以下 action：
 SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁轮询（间隔 15-30 秒）。
 `)
 
-	if h.app.skillExecutor != nil {
-		skills := h.app.skillExecutor.List()
+	if h.getSkillExecutor() != nil {
+		skills := h.getSkillExecutor().List()
 		if len(skills) > 0 {
 			b.WriteString("\n## 已注册 Skill\n")
 			b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
@@ -632,7 +632,7 @@ func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFir
 // on its own self-identity.
 func (h *IMMessageHandler) buildNicknameInstruction() string {
 	currentNickname := ""
-	if cfg, err := h.app.LoadConfig(); err == nil {
+	if cfg, err := h.loadConfig(); err == nil {
 		currentNickname = strings.TrimSpace(cfg.RemoteNickname)
 	}
 	if currentNickname != "" {
@@ -640,7 +640,7 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 		// background instead of asking the LLM to call set_nickname (saves
 		// one full LLM round-trip on first message).
 		go func() {
-			if hc := h.app.hubClient(); hc != nil {
+			if hc := h.getHubClient(); hc != nil {
 				_ = hc.SendNicknameUpdate(currentNickname)
 			}
 		}()
@@ -872,11 +872,11 @@ type matchedKnowledgeSkill struct {
 // sentence break) with a "[truncated]" notice appended. Once the budget
 // is fully exhausted, remaining skills are skipped.
 func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userMessage string) {
-	if h.app == nil || h.app.skillExecutor == nil || userMessage == "" {
+	if h.app == nil || h.getSkillExecutor() == nil || userMessage == "" {
 		return
 	}
 
-	skills := h.app.skillExecutor.List()
+	skills := h.getSkillExecutor().List()
 	if len(skills) == 0 {
 		return
 	}
@@ -911,7 +911,7 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 
 	// Determine token budget from config or use default.
 	tokenBudget := defaultKnowledgeSkillTokenBudget
-	if cfg, err := h.app.LoadConfig(); err == nil && cfg.KnowledgeSkillTokenBudget > 0 {
+	if cfg, err := h.loadConfig(); err == nil && cfg.KnowledgeSkillTokenBudget > 0 {
 		tokenBudget = cfg.KnowledgeSkillTokenBudget
 	}
 
@@ -952,12 +952,12 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 // The banner lists sibling skills from the same publisher to provide context.
 // (Requirement 5.5)
 func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
-	if h.app == nil || h.app.skillRunner == nil || h.app.skillExecutor == nil {
+	if h.app == nil || h.getSkillRunner() == nil || h.getSkillExecutor() == nil {
 		return
 	}
 
 	// Find the most recent active skill run that has a publisher.
-	runs := h.app.skillRunner.ListRuns()
+	runs := h.getSkillRunner().ListRuns()
 	var activePublisher string
 	var activeSkillName string
 	for _, run := range runs {
@@ -965,15 +965,15 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 			continue
 		}
 		// Look up the skill to check its publisher.
-		h.app.skillExecutor.mu.RLock()
-		for _, s := range h.app.skillExecutor.loadSkills() {
+		h.getSkillExecutor().mu.RLock()
+		for _, s := range h.getSkillExecutor().loadSkills() {
 			if s.MatchesName(run.Skill) && s.Publisher != "" {
 				activePublisher = s.Publisher
 				activeSkillName = s.Name
 				break
 			}
 		}
-		h.app.skillExecutor.mu.RUnlock()
+		h.getSkillExecutor().mu.RUnlock()
 		if activePublisher != "" {
 			break
 		}
@@ -984,14 +984,14 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 	}
 
 	// Find sibling skills from the same publisher.
-	h.app.skillExecutor.mu.RLock()
+	h.getSkillExecutor().mu.RLock()
 	var siblings []string
-	for _, s := range h.app.skillExecutor.loadSkills() {
+	for _, s := range h.getSkillExecutor().loadSkills() {
 		if s.Publisher == activePublisher && s.Name != activeSkillName && s.Status == "active" {
 			siblings = append(siblings, s.Name)
 		}
 	}
-	h.app.skillExecutor.mu.RUnlock()
+	h.getSkillExecutor().mu.RUnlock()
 
 	// Build the banner.
 	b.WriteString(fmt.Sprintf("\n## Bundle Context\nThis skill is part of the '%s' bundle.", activePublisher))

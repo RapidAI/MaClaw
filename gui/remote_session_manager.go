@@ -2439,7 +2439,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 			if m.app.sessionCheckpointer != nil {
 				resumePrompt = m.app.sessionCheckpointer.BuildResumePrompt(s.ProjectPath)
 			}
-			mem.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+			mem.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
 				SlotID:           slotID,
 				UserID:           "desktop-user",
 				ProjectPath:      s.ProjectPath,

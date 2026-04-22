@@ -42,7 +42,7 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []in
 			data, _ := json.Marshal(map[string]interface{}{
 				"model": cfg.Model, "messages": messages, "tools": tools,
 			})
-			return nil, dumpLLMContext(500, err.Error(), data, h.app.GetTempDir())
+			return nil, dumpLLMContext(500, err.Error(), data, h.getTempDir())
 		}
 		return nil, err
 	}

@@ -6,8 +6,22 @@ import (
 	"log"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
+
+// getWorkflowEngine returns the workflow engine if available, or nil.
+// Checks the direct field first (set at construction or by TUI), then
+// falls back to h.app for GUI late-init compatibility.
+func (h *IMMessageHandler) getWorkflowEngine() *workflow.WorkflowEngine {
+	if h.workflowEngine != nil {
+		return h.workflowEngine
+	}
+	if h.app == nil {
+		return nil
+	}
+	return h.app.workflowEngine
+}
 
 // handleWorkflowInterception checks if the message should be handled by the
 // workflow engine (corelib/workflow). Returns an IMAgentResponse if the message
@@ -16,7 +30,7 @@ import (
 // Called from handleIMMessageWithLoop after slash commands and LLM config check,
 // before the main agent loop logic.
 func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAgentResponse {
-	engine := h.app.workflowEngine
+	engine := h.getWorkflowEngine()
 	if engine == nil {
 		return nil
 	}
@@ -358,6 +372,44 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		return nil
 	}
 
+	// ── UIC pre-check: fast-reject non-workflow intents ──────────────
+	//
+	// The UnifiedIntentClassifier (UIC) runs a three-layer pipeline
+	// (L1 keywords <1ms, L2 embedding ~5ms, L3 LLM tree ~2-8s) that
+	// is MUCH faster than IntentUnderstandingManager's dedicated LLM
+	// call (10-30s). When UIC confidently classifies the message as a
+	// non-workflow intent (document_delivery, non_coding, search, etc.),
+	// we skip the IUM call entirely.
+	//
+	// This implements Phase 3 of the intent-fusion upgrade design:
+	// "工作流意图融合" — letting the two classification pipelines share
+	// signals instead of running independently.
+	//
+	// The workflow-candidate set is derived from IntentDefinition.MayTriggerWorkflow
+	// (data-driven, not a hardcoded list). The threshold is sourced from
+	// FusionConfig.WorkflowRejectThreshold (tunable via calibration).
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		uicResult := uic.Classify(intent.MessageContext{
+			Text:   text,
+			UserID: userID,
+		})
+		threshold := uic.GetWorkflowRejectThreshold()
+		if uicResult.Confidence >= threshold && !uic.IsWorkflowCandidate(uicResult.Primary) {
+			log.Printf("[WorkflowInterception] UIC pre-check rejected workflow for user %s: "+
+				"intent=%s conf=%.2f layer=%d threshold=%.2f — fast-rejecting before IUM LLM call, text=%q",
+				userID, uicResult.Primary, uicResult.Confidence, uicResult.Layer, threshold,
+				truncateRunes(text, 80))
+			return nil
+		}
+		// UIC says it might be a workflow task, or confidence is too low
+		// to reject. Fall through to IUM for the definitive classification.
+		if uicResult.Confidence >= 0.50 {
+			log.Printf("[WorkflowInterception] UIC pre-check: intent=%s conf=%.2f layer=%d — "+
+				"not a clear non-workflow signal, proceeding to IUM",
+				uicResult.Primary, uicResult.Confidence, uicResult.Layer)
+		}
+	}
+
 	result, err := understanding.Start(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] understanding Start error for user %s: %v", userID, err)
@@ -391,6 +443,19 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 	// or tryKeywordWorkflowFallback).
 
 	return &IMAgentResponse{Text: result.Reply}
+}
+
+// getUnifiedClassifier returns the UIC instance if available, or nil.
+// Checks the direct field first (set at construction or by TUI), then
+// falls back to h.app for GUI late-init compatibility.
+func (h *IMMessageHandler) getUnifiedClassifier() *intent.UnifiedIntentClassifier {
+	if h.unifiedClassifier != nil {
+		return h.unifiedClassifier
+	}
+	if h.app == nil {
+		return nil
+	}
+	return h.app.unifiedClassifier
 }
 
 // tryKeywordWorkflowFallback attempts to start a workflow using keyword-based
@@ -453,10 +518,10 @@ func (h *IMMessageHandler) tryKeywordWorkflowFallback(engine *workflow.WorkflowE
 // cancelWorkflowForUser cancels any active workflow and understanding session
 // for the given user. Called from /new, /reset, /clear, and /cancel handlers.
 func (h *IMMessageHandler) cancelWorkflowForUser(userID string) {
-	if h.app == nil || h.app.workflowEngine == nil {
+	engine := h.getWorkflowEngine()
+	if engine == nil {
 		return
 	}
-	engine := h.app.workflowEngine
 	// Cancel active workflow (ignore error if none active).
 	_ = engine.CancelWorkflow(userID)
 	// Cancel active understanding session.
@@ -498,7 +563,7 @@ func filterToolsForDocOnly(tools []map[string]interface{}) []map[string]interfac
 // applyWorkflowToolFilter restricts the tool list based on the current
 // workflow phase's ToolFilterPolicy.
 func (h *IMMessageHandler) applyWorkflowToolFilter(userID string, tools []map[string]interface{}) []map[string]interface{} {
-	engine := h.app.workflowEngine
+	engine := h.getWorkflowEngine()
 	if engine == nil {
 		return tools
 	}
@@ -519,7 +584,7 @@ func (h *IMMessageHandler) getLastAssistantSnippet(userID string, maxRunes int) 
 	if h.memory == nil {
 		return ""
 	}
-	entries := h.memory.load(userID)
+	entries := h.memory.Load(userID)
 	// Walk backwards to find the last assistant message.
 	for i := len(entries) - 1; i >= 0; i-- {
 		if entries[i].Role != "assistant" {

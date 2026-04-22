@@ -21,6 +21,7 @@ func DefaultDefinitions() []IntentDefinition {
 		{
 			Label:  LabelCoding,
 			Domain: "编码开发 (Coding)",
+			MayTriggerWorkflow: true, // coding workflow (needs → design → tasks → implement → review)
 			TreeText: "用户要从零创建软件/应用/游戏/工具/脚本，需要完整开发流程。" +
 				"关键信号：开发、创建、实现、写代码、编程、游戏、前端、后端。",
 			EmbedTexts: []string{
@@ -207,6 +208,7 @@ func DefaultDefinitions() []IntentDefinition {
 		{
 			Label:  LabelOffice,
 			Domain: "内容处理 (Content)",
+			MayTriggerWorkflow: true, // presentation_design workflow
 			TreeText: "用户要创建新的 PPT/Excel/Word 等办公文档。" +
 				"关键信号：制作PPT、生成Excel、创建Word、做一份报表。",
 			EmbedTexts: []string{

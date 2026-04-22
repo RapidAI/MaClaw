@@ -73,6 +73,11 @@ type TUIApp struct {
 	// Tool usage tracker (outcome learning)
 	usageTracker *tool.UsageTracker
 
+	// Unified agent handler (corelib/agent.Handler). When available (gui/
+	// factory registered), replaces TUIAgentHandler for the agent loop.
+	// See docs/agent-unification-design.md.
+	unifiedHandler agent.Handler
+
 	// Bubble Tea program reference for sending async messages
 	program *tea.Program
 

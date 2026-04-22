@@ -46,6 +46,7 @@ type Service struct {
 	heartbeatSyncMinInterval time.Duration
 
 	mu     sync.RWMutex
+	opMu   sync.Mutex
 	peers  map[string]*PeerRuntimeState
 	client *http.Client
 }
@@ -387,6 +388,10 @@ func (s *Service) appendOp(ctx context.Context, entityType, entityID, opType str
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
+	// Serialize local version allocation and oplog append so concurrent writers on
+	// the same node cannot emit duplicate entity versions for the same record.
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	version, err := s.nextEntityVersion(ctx, entityType, entityID, updatedAt)
 	if err != nil {
 		return err

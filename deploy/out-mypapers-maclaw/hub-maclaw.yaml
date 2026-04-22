@@ -1,0 +1,51 @@
+﻿server:
+  listen_host: 0.0.0.0
+  listen_port: 9399
+  public_base_url: https://hub.maclaw.top
+
+database:
+  driver: sqlite
+  dsn: './data/maclaw-hub-maclaw.db'
+  wal: true
+  busy_timeout_ms: 5000
+  max_read_open_conns: 8
+  max_read_idle_conns: 4
+  max_write_open_conns: 1
+  max_write_idle_conns: 1
+
+identity:
+  enrollment_mode: open
+  allow_self_enroll: true
+
+pwa:
+  static_dir: ./web/dist
+  route_prefix: /app
+
+center:
+  enabled: true
+  base_url: https://hubs.maclaw.top
+  base_urls:
+    - https://hubs.mypapers.top
+    - https://hubs.maclaw.top
+    - https://hubs2.maclaw.top
+  register_on_startup: true
+  heartbeat_interval_sec: 30
+
+hub:
+  name: MaClaw Hub
+  description: Self-hosted MaClaw remote hub
+  visibility: private
+
+mail:
+  enabled: false
+  provider: smtp
+  smtp_host: smtp.example.com
+  smtp_port: 587
+  smtp_username: no-reply@example.com
+  smtp_password: change-me
+  from_name: MaClaw Hub
+  from_email: no-reply@example.com
+
+logging:
+  level: info
+  dir: ./data/logs

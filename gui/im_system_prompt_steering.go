@@ -21,11 +21,11 @@ func steeringFileKey(userID, path string) string {
 // This ensures steering rules have high priority in the LLM's attention
 // but don't override core identity.
 func (h *IMMessageHandler) appendSteeringSection(b *strings.Builder, userMessage string) {
-	if h.app == nil || h.app.steeringStore == nil {
+	if h.getSteeringStore() == nil {
 		return
 	}
 
-	cfg := h.app.GetMaclawLLMConfig()
+	cfg := h.getMaclawLLMConfig()
 	userID := h.lastUserID
 
 	ctx := steering.ResolveContext{
@@ -35,7 +35,7 @@ func (h *IMMessageHandler) appendSteeringSection(b *strings.Builder, userMessage
 		EffectiveContextTokens: cfg.EffectiveContextTokens(),
 	}
 
-	resolved := h.app.steeringStore.Resolve(ctx)
+	resolved := h.getSteeringStore().Resolve(ctx)
 	if len(resolved) == 0 {
 		return
 	}

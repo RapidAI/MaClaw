@@ -68,12 +68,12 @@ func TestSystemPrompt_ClearHistory_RestoresFirstTurnProactiveInstruction(t *test
 	h.memory = newConversationMemory()
 	userID := "desktop-user"
 
-	h.memory.save(userID, []conversationEntry{{Role: "user", Content: "hello"}})
-	promptBeforeClear := h.buildSystemPromptWithMemory("follow up", len(h.memory.load(userID)) == 0)
+	h.memory.Save(userID, []conversationEntry{{Role: "user", Content: "hello"}})
+	promptBeforeClear := h.buildSystemPromptWithMemory("follow up", len(h.memory.Load(userID)) == 0)
 	assertContainsNone(t, promptBeforeClear, []string{"主动调用 " + corememory.PromptActionSaveColon})
 
-	h.memory.clear(userID)
-	promptAfterClear := h.buildSystemPromptWithMemory("new topic", len(h.memory.load(userID)) == 0)
+	h.memory.Clear(userID)
+	promptAfterClear := h.buildSystemPromptWithMemory("new topic", len(h.memory.Load(userID)) == 0)
 	assertContainsAll(t, promptAfterClear, []string{
 		corememory.PromptSectionUserMemory,
 		corememory.BuildIMMemoryGuidePrompt(),

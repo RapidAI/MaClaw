@@ -18,7 +18,7 @@ func (h *IMMessageHandler) getSessionStore() *session.Store {
 	}
 	// Check if the app already has a session store field; if not, create one.
 	h.app.sessionStoreMu.Do(func() {
-		dbPath := h.app.sessionSearchDBPath()
+		dbPath := h.getSessionSearchDBPath()
 		store, err := session.NewStore(dbPath)
 		if err != nil {
 			// Log but don't crash — search is a best-effort feature.

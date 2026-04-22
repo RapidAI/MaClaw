@@ -23,12 +23,12 @@ import (
 // It loads the current conversation history, compresses it using the
 // corelib/context.Compressor, and saves the compressed history back.
 func (h *IMMessageHandler) handleCompressCommand(userID string) *IMAgentResponse {
-	history := h.memory.load(userID)
+	history := h.memory.Load(userID)
 	if len(history) == 0 {
 		return &IMAgentResponse{Text: "当前没有对话历史可压缩。"}
 	}
 
-	cfg := h.app.GetMaclawLLMConfig()
+	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
 
 	// Convert conversation entries to context.Message format.
@@ -53,7 +53,7 @@ func (h *IMMessageHandler) handleCompressCommand(userID string) *IMAgentResponse
 
 	// Convert compressed messages back to conversation entries.
 	compressed := contextMessagesToConversation(result.Messages)
-	h.memory.save(userID, compressed)
+	h.memory.Save(userID, compressed)
 
 	return &IMAgentResponse{
 		Text: fmt.Sprintf("✅ 对话历史已压缩。%s", result.MarkerText),

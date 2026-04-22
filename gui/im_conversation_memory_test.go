@@ -12,18 +12,18 @@ import (
 func TestPersistentConversationMemorySaveLoadRoundTrip(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "conversation.json")
 	cm := newPersistentConversationMemory(storePath)
-	defer cm.stop()
+	defer cm.Stop()
 
 	history := []conversationEntry{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "world", ReasoningContent: "thinking"},
 	}
-	cm.save("desktop-user", history)
-	cm.stop()
+	cm.Save("desktop-user", history)
+	cm.Stop()
 
 	reloaded := newPersistentConversationMemory(storePath)
-	defer reloaded.stop()
-	got := reloaded.load("desktop-user")
+	defer reloaded.Stop()
+	got := reloaded.Load("desktop-user")
 	if len(got) != len(history) {
 		t.Fatalf("history length = %d, want %d", len(got), len(history))
 	}
@@ -43,15 +43,15 @@ func TestPersistentConversationMemorySaveLoadRoundTrip(t *testing.T) {
 func TestPersistentConversationMemoryClearRemovesPersistedSession(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "conversation.json")
 	cm := newPersistentConversationMemory(storePath)
-	defer cm.stop()
+	defer cm.Stop()
 
-	cm.save("desktop-user", []conversationEntry{{Role: "user", Content: "persist me"}})
-	cm.clear("desktop-user")
-	cm.stop()
+	cm.Save("desktop-user", []conversationEntry{{Role: "user", Content: "persist me"}})
+	cm.Clear("desktop-user")
+	cm.Stop()
 
 	reloaded := newPersistentConversationMemory(storePath)
-	defer reloaded.stop()
-	if got := reloaded.load("desktop-user"); len(got) != 0 {
+	defer reloaded.Stop()
+	if got := reloaded.Load("desktop-user"); len(got) != 0 {
 		t.Fatalf("history length after clear = %d, want 0", len(got))
 	}
 }
@@ -59,16 +59,16 @@ func TestPersistentConversationMemoryClearRemovesPersistedSession(t *testing.T) 
 func TestPersistentConversationMemoryRapidSavePersistsLatestState(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "conversation.json")
 	cm := newPersistentConversationMemory(storePath)
-	defer cm.stop()
+	defer cm.Stop()
 
 	for i := 0; i < 5; i++ {
-		cm.save("desktop-user", []conversationEntry{{Role: "user", Content: fmt.Sprintf("msg-%d", i)}})
+		cm.Save("desktop-user", []conversationEntry{{Role: "user", Content: fmt.Sprintf("msg-%d", i)}})
 	}
-	cm.stop()
+	cm.Stop()
 
 	reloaded := newPersistentConversationMemory(storePath)
-	defer reloaded.stop()
-	got := reloaded.load("desktop-user")
+	defer reloaded.Stop()
+	got := reloaded.Load("desktop-user")
 	if len(got) != 1 {
 		t.Fatalf("history length = %d, want 1", len(got))
 	}
@@ -80,15 +80,15 @@ func TestPersistentConversationMemoryRapidSavePersistsLatestState(t *testing.T) 
 func TestPersistentConversationMemoryImmediateStopFlushesLatestState(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "conversation.json")
 	cm := newPersistentConversationMemory(storePath)
-	defer cm.stop()
+	defer cm.Stop()
 
 	history := []conversationEntry{{Role: "user", Content: "flush me"}}
-	cm.save("desktop-user", history)
-	cm.stop()
+	cm.Save("desktop-user", history)
+	cm.Stop()
 
 	reloaded := newPersistentConversationMemory(storePath)
-	defer reloaded.stop()
-	got := reloaded.load("desktop-user")
+	defer reloaded.Stop()
+	got := reloaded.Load("desktop-user")
 	if len(got) != 1 || got[0].Content != "flush me" {
 		t.Fatalf("unexpected reloaded history: %+v", got)
 	}
@@ -97,15 +97,15 @@ func TestPersistentConversationMemoryImmediateStopFlushesLatestState(t *testing.
 func TestPersistentConversationMemoryImmediateClearThenStopPersistsDeletion(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "conversation.json")
 	cm := newPersistentConversationMemory(storePath)
-	defer cm.stop()
+	defer cm.Stop()
 
-	cm.save("desktop-user", []conversationEntry{{Role: "user", Content: "delete me"}})
-	cm.clear("desktop-user")
-	cm.stop()
+	cm.Save("desktop-user", []conversationEntry{{Role: "user", Content: "delete me"}})
+	cm.Clear("desktop-user")
+	cm.Stop()
 
 	reloaded := newPersistentConversationMemory(storePath)
-	defer reloaded.stop()
-	if got := reloaded.load("desktop-user"); len(got) != 0 {
+	defer reloaded.Stop()
+	if got := reloaded.Load("desktop-user"); len(got) != 0 {
 		t.Fatalf("history length after immediate clear+stop = %d, want 0", len(got))
 	}
 }
@@ -113,10 +113,10 @@ func TestPersistentConversationMemoryImmediateClearThenStopPersistsDeletion(t *t
 func TestPersistentConversationMemoryPersistsUnfinishedSlotAndBinding(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "conversation.json")
 	cm := newPersistentConversationMemory(storePath)
-	defer cm.stop()
+	defer cm.Stop()
 
-	cm.save("desktop-user", []conversationEntry{{Role: "user", Content: "hello"}})
-	cm.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	cm.Save("desktop-user", []conversationEntry{{Role: "user", Content: "hello"}})
+	cm.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
 		SlotID:       "slot-1",
 		UserID:       "desktop-user",
 		ProjectPath:  "/project",
@@ -127,14 +127,14 @@ func TestPersistentConversationMemoryPersistsUnfinishedSlotAndBinding(t *testing
 		UpdatedAt:    time.Now(),
 		ResumePrompt: "resume this task",
 	})
-	if !cm.bindUnfinishedSlot("desktop-user", "slot-1") {
+	if !cm.BindUnfinishedSlot("desktop-user", "slot-1") {
 		t.Fatal("expected bindUnfinishedSlot to succeed")
 	}
-	cm.stop()
+	cm.Stop()
 
 	reloaded := newPersistentConversationMemory(storePath)
-	defer reloaded.stop()
-	slot := reloaded.getUnfinishedSlot("desktop-user")
+	defer reloaded.Stop()
+	slot := reloaded.GetUnfinishedSlot("desktop-user")
 	if slot == nil {
 		t.Fatal("expected unfinished slot after reload")
 	}
@@ -144,7 +144,7 @@ func TestPersistentConversationMemoryPersistsUnfinishedSlotAndBinding(t *testing
 	if slot.Tool != "claude" {
 		t.Fatalf("slot.Tool = %q, want claude", slot.Tool)
 	}
-	active := reloaded.activeUnfinishedSlot("desktop-user")
+	active := reloaded.ActiveUnfinishedSlot("desktop-user")
 	if active == nil || active.SlotID != "slot-1" {
 		t.Fatalf("active slot = %#v, want slot-1", active)
 	}
@@ -153,10 +153,10 @@ func TestPersistentConversationMemoryPersistsUnfinishedSlotAndBinding(t *testing
 func TestPersistentConversationMemoryClearConversationButKeepSlot(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "conversation.json")
 	cm := newPersistentConversationMemory(storePath)
-	defer cm.stop()
+	defer cm.Stop()
 
-	cm.save("desktop-user", []conversationEntry{{Role: "user", Content: "old history"}})
-	cm.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	cm.Save("desktop-user", []conversationEntry{{Role: "user", Content: "old history"}})
+	cm.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
 		SlotID:    "slot-2",
 		UserID:    "desktop-user",
 		Status:    "pending_resume",
@@ -164,17 +164,17 @@ func TestPersistentConversationMemoryClearConversationButKeepSlot(t *testing.T) 
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	})
-	cm.bindUnfinishedSlot("desktop-user", "slot-2")
-	cm.clearConversationButKeepSlot("desktop-user")
+	cm.BindUnfinishedSlot("desktop-user", "slot-2")
+	cm.ClearConversationButKeepSlot("desktop-user")
 
-	if got := cm.load("desktop-user"); len(got) != 0 {
+	if got := cm.Load("desktop-user"); len(got) != 0 {
 		t.Fatalf("history length = %d, want 0", len(got))
 	}
-	slot := cm.getUnfinishedSlot("desktop-user")
+	slot := cm.GetUnfinishedSlot("desktop-user")
 	if slot == nil || slot.SlotID != "slot-2" {
 		t.Fatalf("slot = %#v, want slot-2", slot)
 	}
-	if active := cm.activeUnfinishedSlot("desktop-user"); active != nil {
+	if active := cm.ActiveUnfinishedSlot("desktop-user"); active != nil {
 		t.Fatalf("active slot should be cleared after clearConversationButKeepSlot, got %#v", active)
 	}
 }
@@ -182,10 +182,10 @@ func TestPersistentConversationMemoryClearConversationButKeepSlot(t *testing.T) 
 func TestPersistentConversationMemoryClearConversationAndDismissSlot(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "conversation.json")
 	cm := newPersistentConversationMemory(storePath)
-	defer cm.stop()
+	defer cm.Stop()
 
-	cm.save("desktop-user", []conversationEntry{{Role: "user", Content: "old history"}})
-	cm.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	cm.Save("desktop-user", []conversationEntry{{Role: "user", Content: "old history"}})
+	cm.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
 		SlotID:    "slot-3",
 		UserID:    "desktop-user",
 		Status:    "pending_resume",
@@ -193,16 +193,16 @@ func TestPersistentConversationMemoryClearConversationAndDismissSlot(t *testing.
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	})
-	cm.bindUnfinishedSlot("desktop-user", "slot-3")
-	cm.clearConversationAndDismissSlot("desktop-user")
+	cm.BindUnfinishedSlot("desktop-user", "slot-3")
+	cm.ClearConversationAndDismissSlot("desktop-user")
 
-	if got := cm.load("desktop-user"); len(got) != 0 {
+	if got := cm.Load("desktop-user"); len(got) != 0 {
 		t.Fatalf("history length = %d, want 0", len(got))
 	}
-	if slot := cm.getUnfinishedSlot("desktop-user"); slot != nil {
+	if slot := cm.GetUnfinishedSlot("desktop-user"); slot != nil {
 		t.Fatalf("slot = %#v, want nil", slot)
 	}
-	if active := cm.activeUnfinishedSlot("desktop-user"); active != nil {
+	if active := cm.ActiveUnfinishedSlot("desktop-user"); active != nil {
 		t.Fatalf("active slot = %#v, want nil", active)
 	}
 }
@@ -215,14 +215,14 @@ func TestPersistentConversationMemoryReloadDropsLegacySessionFields(t *testing.T
 	}
 
 	cm := newPersistentConversationMemory(storePath)
-	slot := cm.getUnfinishedSlot("desktop-user")
+	slot := cm.GetUnfinishedSlot("desktop-user")
 	if slot == nil {
 		t.Fatal("expected unfinished slot from legacy payload")
 	}
 	if slot.SlotID != "slot-legacy" {
 		t.Fatalf("slot.SlotID = %q, want slot-legacy", slot.SlotID)
 	}
-	cm.stop()
+	cm.Stop()
 
 	reloadedBytes, err := os.ReadFile(storePath)
 	if err != nil {

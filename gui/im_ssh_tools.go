@@ -654,7 +654,7 @@ func (h *IMMessageHandler) resolveSSHHostByLabel(label string) *corelib.SSHHostE
 }
 
 func (h *IMMessageHandler) loadSSHHosts() []corelib.SSHHostEntry {
-	cfg, err := h.app.LoadConfig()
+	cfg, err := h.loadConfig()
 	if err != nil {
 		return nil
 	}

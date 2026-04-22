@@ -740,7 +740,7 @@ func (a *App) ensureConversationArchiver() {
 			if mem == nil {
 				return nil
 			}
-			return mem.activeUnfinishedSlot(userID)
+			return mem.ActiveUnfinishedSlot(userID)
 		})
 	}
 }
@@ -771,7 +771,7 @@ func (a *App) ensureStartupFeedback() {
 		if mem == nil {
 			return nil
 		}
-		slot := mem.activeUnfinishedSlot("desktop-user")
+		slot := mem.ActiveUnfinishedSlot("desktop-user")
 		if slot == nil {
 			return nil
 		}
@@ -942,7 +942,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 
 		a.ensureConversationArchiver()
 		if a.conversationArchiver != nil {
-			handler.memory.archiver = a.conversationArchiver
+			handler.memory.Archiver = a.conversationArchiver
 		}
 	}
 	if a.ioRelay != nil {
@@ -1246,7 +1246,7 @@ func (a *App) shutdown(ctx context.Context) {
 		a.localMCPManager.StopAll()
 	}
 	if a.aiConversationMemory != nil {
-		a.aiConversationMemory.stop()
+		a.aiConversationMemory.Stop()
 	}
 	if a.aiConfirmationStore != nil {
 		a.aiConfirmationStore.stop()

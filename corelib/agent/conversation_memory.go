@@ -1,7 +1,11 @@
-package main
+package agent
 
 // Conversation memory: sharded in-memory session store with disk persistence
 // and automatic TTL-based eviction.
+//
+// Migrated from gui/im_conversation_memory.go as part of the agent-unification
+// plan (Phase 1, Step 2). This is the single source of truth — gui/ will
+// import and alias these types.
 
 import (
 	"encoding/json"
@@ -15,15 +19,17 @@ import (
 )
 
 const (
-	maxConversationTurns      = 40
-	maxMemoryTokenEstimate    = 60_000        // lowered: tools+system prompt consume ~15-20K
-	memoryTTL                 = 2 * time.Hour // 对话记忆过期时间
-	memoryCleanupInterval     = 10 * time.Minute
-	memoryPersistDebounce     = 150 * time.Millisecond
-	memoryPersistSignalBuffer = 1
+	MaxConversationTurns      = 40
+	MaxMemoryTokenEstimate    = 60_000
+	MemoryTTL                 = 2 * time.Hour
+	MemoryCleanupInterval     = 10 * time.Minute
+	MemoryPersistDebounce     = 150 * time.Millisecond
+	MemoryPersistSignalBuffer = 1
+	MemoryShardCount          = 16
 )
 
-type conversationEntry struct {
+// ConversationEntry represents a single message in a conversation.
+type ConversationEntry struct {
 	Role             string      `json:"role"`
 	Content          interface{} `json:"content"`
 	ReasoningContent string      `json:"reasoning_content,omitempty"`
@@ -31,7 +37,23 @@ type conversationEntry struct {
 	ToolCallID       string      `json:"tool_call_id,omitempty"`
 }
 
-type unfinishedTaskSlot struct {
+// ToMessage converts a ConversationEntry to a map suitable for the LLM API.
+func (e ConversationEntry) ToMessage() interface{} {
+	m := map[string]interface{}{"role": e.Role, "content": e.Content}
+	if e.ReasoningContent != "" {
+		m["reasoning_content"] = e.ReasoningContent
+	}
+	if e.ToolCalls != nil {
+		m["tool_calls"] = e.ToolCalls
+	}
+	if e.ToolCallID != "" {
+		m["tool_call_id"] = e.ToolCallID
+	}
+	return m
+}
+
+// UnfinishedTaskSlot tracks an incomplete task that can be resumed later.
+type UnfinishedTaskSlot struct {
 	SlotID           string    `json:"slot_id"`
 	UserID           string    `json:"user_id"`
 	ProjectPath      string    `json:"project_path,omitempty"`
@@ -47,7 +69,8 @@ type unfinishedTaskSlot struct {
 	BoundAt          time.Time `json:"bound_at,omitempty"`
 }
 
-func cloneUnfinishedTaskSlot(slot *unfinishedTaskSlot) *unfinishedTaskSlot {
+// CloneUnfinishedTaskSlot returns a deep copy of the slot.
+func CloneUnfinishedTaskSlot(slot *UnfinishedTaskSlot) *UnfinishedTaskSlot {
 	if slot == nil {
 		return nil
 	}
@@ -55,53 +78,43 @@ func cloneUnfinishedTaskSlot(slot *unfinishedTaskSlot) *unfinishedTaskSlot {
 	return &clone
 }
 
-// toMessage converts a conversationEntry to a map suitable for the LLM API.
-func (e conversationEntry) toMessage() interface{} {
-	m := map[string]interface{}{"role": e.Role, "content": e.Content}
-	if e.ReasoningContent != "" {
-		m["reasoning_content"] = e.ReasoningContent
-	}
-	if e.ToolCalls != nil {
-		m["tool_calls"] = e.ToolCalls
-	}
-	if e.ToolCallID != "" {
-		m["tool_call_id"] = e.ToolCallID
-	}
-	return m
+// ConversationArchiver is an optional interface for archiving expired
+// conversations to long-term memory. When nil, expired conversations
+// are simply discarded.
+type ConversationArchiver interface {
+	Archive(userID string, entries []ConversationEntry) error
 }
 
+// --- Internal types ---
+
 type conversationSession struct {
-	entries        []conversationEntry
+	entries        []ConversationEntry
 	lastAccess     time.Time
-	unfinishedSlot *unfinishedTaskSlot
+	unfinishedSlot *UnfinishedTaskSlot
 	activeSlotID   string
 }
 
-type persistedConversationSession struct {
-	Entries        []conversationEntry `json:"entries"`
+type persistedSession struct {
+	Entries        []ConversationEntry `json:"entries"`
 	LastAccess     time.Time           `json:"last_access"`
-	UnfinishedSlot *unfinishedTaskSlot `json:"unfinished_slot,omitempty"`
+	UnfinishedSlot *UnfinishedTaskSlot `json:"unfinished_slot,omitempty"`
 	ActiveSlotID   string              `json:"active_slot_id,omitempty"`
 }
 
-type conversationMemorySnapshot struct {
-	Sessions map[string]persistedConversationSession `json:"sessions"`
+type memorySnapshot struct {
+	Sessions map[string]persistedSession `json:"sessions"`
 }
 
-// memoryShardCount is the number of shards for conversation memory.
-// Must be a power of 2 for fast modulo via bitwise AND.
-const memoryShardCount = 16
-
-// memoryShard holds a subset of conversation sessions, protected by its
-// own lock to reduce contention when multiple users chat concurrently.
 type memoryShard struct {
 	mu       sync.RWMutex
 	sessions map[string]*conversationSession
 }
 
-type conversationMemory struct {
-	shards         [memoryShardCount]*memoryShard
-	archiver       *ConversationArchiver
+// ConversationMemory is a sharded in-memory conversation store with
+// optional disk persistence and TTL-based eviction.
+type ConversationMemory struct {
+	shards         [MemoryShardCount]*memoryShard
+	Archiver       ConversationArchiver
 	persistMu      sync.Mutex
 	storePath      string
 	evictionStopCh chan struct{}
@@ -114,11 +127,12 @@ type conversationMemory struct {
 	persistWG      sync.WaitGroup
 }
 
-func newConversationMemory() *conversationMemory {
-	cm := &conversationMemory{
+// NewConversationMemory creates an in-memory conversation store.
+func NewConversationMemory() *ConversationMemory {
+	cm := &ConversationMemory{
 		evictionStopCh: make(chan struct{}),
 		persistStopCh:  make(chan struct{}),
-		persistCh:      make(chan struct{}, memoryPersistSignalBuffer),
+		persistCh:      make(chan struct{}, MemoryPersistSignalBuffer),
 	}
 	for i := range cm.shards {
 		cm.shards[i] = &memoryShard{
@@ -132,45 +146,44 @@ func newConversationMemory() *conversationMemory {
 	return cm
 }
 
-func newPersistentConversationMemory(storePath string) *conversationMemory {
-	cm := newConversationMemory()
+// NewPersistentConversationMemory creates a conversation store that
+// persists to disk at the given path.
+func NewPersistentConversationMemory(storePath string) *ConversationMemory {
+	cm := NewConversationMemory()
 	cm.storePath = storePath
 	_ = cm.loadFromDisk()
 	return cm
 }
 
-// shard returns the shard for a given userID using FNV-1a hash.
-func (cm *conversationMemory) shard(userID string) *memoryShard {
-	h := uint32(2166136261) // FNV offset basis
+func (cm *ConversationMemory) shard(userID string) *memoryShard {
+	h := uint32(2166136261)
 	for i := 0; i < len(userID); i++ {
 		h ^= uint32(userID[i])
-		h *= 16777619 // FNV prime
+		h *= 16777619
 	}
-	return cm.shards[h&(memoryShardCount-1)]
+	return cm.shards[h&(MemoryShardCount-1)]
 }
 
-// evictionLoop 定期清理过期的对话记忆，防止内存无限增长
-func (cm *conversationMemory) evictionLoop() {
+func (cm *ConversationMemory) evictionLoop() {
 	defer cm.evictionWG.Done()
-	ticker := time.NewTicker(memoryCleanupInterval)
+	ticker := time.NewTicker(MemoryCleanupInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			cm.evictExpired()
+			cm.EvictExpired()
 		case <-cm.evictionStopCh:
 			return
 		}
 	}
 }
 
-func (cm *conversationMemory) evictExpired() {
+// EvictExpired removes conversations that haven't been accessed within MemoryTTL.
+func (cm *ConversationMemory) EvictExpired() {
 	now := time.Now()
-	// Collect expired sessions outside the lock to avoid holding it during
-	// archival (which may perform network I/O).
 	type expiredEntry struct {
 		userID  string
-		entries []conversationEntry
+		entries []ConversationEntry
 	}
 	var toArchive []expiredEntry
 	changed := false
@@ -178,8 +191,8 @@ func (cm *conversationMemory) evictExpired() {
 	for _, sh := range cm.shards {
 		sh.mu.Lock()
 		for uid, s := range sh.sessions {
-			if now.Sub(s.lastAccess) > memoryTTL {
-				if cm.archiver != nil {
+			if now.Sub(s.lastAccess) > MemoryTTL {
+				if cm.Archiver != nil {
 					toArchive = append(toArchive, expiredEntry{uid, s.entries})
 				}
 				delete(sh.sessions, uid)
@@ -193,24 +206,22 @@ func (cm *conversationMemory) evictExpired() {
 		cm.markDirtyAndScheduleFlush()
 	}
 
-	// Archive outside any lock so slow I/O doesn't block other users.
 	for _, e := range toArchive {
-		if err := cm.archiver.Archive(e.userID, e.entries); err != nil {
+		if err := cm.Archiver.Archive(e.userID, e.entries); err != nil {
 			fmt.Fprintf(os.Stderr, "conversation_archiver: failed to archive user %s: %v\n", e.userID, err)
 		}
 	}
 }
 
-func (cm *conversationMemory) persistLoop() {
+func (cm *ConversationMemory) persistLoop() {
 	defer cm.persistWG.Done()
 	var timer *time.Timer
 	var timerCh <-chan time.Time
-
 	for {
 		select {
 		case <-cm.persistCh:
 			if timer == nil {
-				timer = time.NewTimer(memoryPersistDebounce)
+				timer = time.NewTimer(MemoryPersistDebounce)
 			} else {
 				if !timer.Stop() {
 					select {
@@ -218,7 +229,7 @@ func (cm *conversationMemory) persistLoop() {
 					default:
 					}
 				}
-				timer.Reset(memoryPersistDebounce)
+				timer.Reset(MemoryPersistDebounce)
 			}
 			timerCh = timer.C
 		case <-timerCh:
@@ -243,7 +254,7 @@ func (cm *conversationMemory) persistLoop() {
 	}
 }
 
-func (cm *conversationMemory) markDirtyAndScheduleFlush() {
+func (cm *ConversationMemory) markDirtyAndScheduleFlush() {
 	if cm.storePath == "" {
 		return
 	}
@@ -256,7 +267,7 @@ func (cm *conversationMemory) markDirtyAndScheduleFlush() {
 	}
 }
 
-func (cm *conversationMemory) flushDirty() error {
+func (cm *ConversationMemory) flushDirty() error {
 	if cm.storePath == "" {
 		return nil
 	}
@@ -267,7 +278,6 @@ func (cm *conversationMemory) flushDirty() error {
 	}
 	cm.dirty = false
 	cm.persistStateMu.Unlock()
-
 	if err := cm.saveToDisk(); err != nil {
 		cm.persistStateMu.Lock()
 		cm.dirty = true
@@ -277,7 +287,8 @@ func (cm *conversationMemory) flushDirty() error {
 	return nil
 }
 
-func (cm *conversationMemory) stop() {
+// Stop gracefully shuts down eviction and persistence goroutines.
+func (cm *ConversationMemory) Stop() {
 	cm.stopOnce.Do(func() {
 		close(cm.evictionStopCh)
 		cm.evictionWG.Wait()
@@ -286,7 +297,8 @@ func (cm *conversationMemory) stop() {
 	})
 }
 
-func (cm *conversationMemory) load(userID string) []conversationEntry {
+// Load returns a copy of the conversation entries for a user.
+func (cm *ConversationMemory) Load(userID string) []ConversationEntry {
 	sh := cm.shard(userID)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
@@ -294,12 +306,51 @@ func (cm *conversationMemory) load(userID string) []conversationEntry {
 	if s == nil {
 		return nil
 	}
-	out := make([]conversationEntry, len(s.entries))
+	out := make([]ConversationEntry, len(s.entries))
 	copy(out, s.entries)
 	return out
 }
 
-func (cm *conversationMemory) getUnfinishedSlot(userID string) *unfinishedTaskSlot {
+// Save stores conversation entries for a user.
+func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
+	copied := make([]ConversationEntry, len(entries))
+	copy(copied, entries)
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	s := sh.sessions[userID]
+	if s == nil {
+		s = &conversationSession{}
+		sh.sessions[userID] = s
+	}
+	s.entries = copied
+	s.lastAccess = time.Now()
+	sh.mu.Unlock()
+	cm.markDirtyAndScheduleFlush()
+}
+
+// Clear removes all conversation data for a user.
+func (cm *ConversationMemory) Clear(userID string) {
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	delete(sh.sessions, userID)
+	sh.mu.Unlock()
+	cm.markDirtyAndScheduleFlush()
+}
+
+// LastAccessTime returns the last access time for a user's session.
+func (cm *ConversationMemory) LastAccessTime(userID string) time.Time {
+	sh := cm.shard(userID)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	if s, ok := sh.sessions[userID]; ok {
+		return s.lastAccess
+	}
+	return time.Time{}
+}
+
+// --- Unfinished task slot methods ---
+
+func (cm *ConversationMemory) GetUnfinishedSlot(userID string) *UnfinishedTaskSlot {
 	sh := cm.shard(userID)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
@@ -307,10 +358,10 @@ func (cm *conversationMemory) getUnfinishedSlot(userID string) *unfinishedTaskSl
 	if s == nil {
 		return nil
 	}
-	return cloneUnfinishedTaskSlot(s.unfinishedSlot)
+	return CloneUnfinishedTaskSlot(s.unfinishedSlot)
 }
 
-func (cm *conversationMemory) activeUnfinishedSlot(userID string) *unfinishedTaskSlot {
+func (cm *ConversationMemory) ActiveUnfinishedSlot(userID string) *UnfinishedTaskSlot {
 	sh := cm.shard(userID)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
@@ -321,15 +372,17 @@ func (cm *conversationMemory) activeUnfinishedSlot(userID string) *unfinishedTas
 	if s.unfinishedSlot.SlotID != s.activeSlotID {
 		return nil
 	}
-	return cloneUnfinishedTaskSlot(s.unfinishedSlot)
+	return CloneUnfinishedTaskSlot(s.unfinishedSlot)
 }
 
-func (cm *conversationMemory) upsertUnfinishedSlot(userID string, slot *unfinishedTaskSlot) {
+func (cm *ConversationMemory) UpsertUnfinishedSlot(userID string, slot *UnfinishedTaskSlot) {
 	if slot == nil {
 		return
 	}
-	clone := cloneUnfinishedTaskSlot(slot)
-	clone.UserID = firstNonEmptyTraceText(strings.TrimSpace(clone.UserID), userID)
+	clone := CloneUnfinishedTaskSlot(slot)
+	if strings.TrimSpace(clone.UserID) == "" {
+		clone.UserID = userID
+	}
 	if clone.CreatedAt.IsZero() {
 		clone.CreatedAt = time.Now()
 	}
@@ -342,9 +395,6 @@ func (cm *conversationMemory) upsertUnfinishedSlot(userID string, slot *unfinish
 		sh.sessions[userID] = s
 	}
 	s.unfinishedSlot = clone
-	if strings.TrimSpace(s.activeSlotID) == "" {
-		s.activeSlotID = ""
-	}
 	if s.lastAccess.IsZero() {
 		s.lastAccess = time.Now()
 	}
@@ -352,7 +402,7 @@ func (cm *conversationMemory) upsertUnfinishedSlot(userID string, slot *unfinish
 	cm.markDirtyAndScheduleFlush()
 }
 
-func (cm *conversationMemory) bindUnfinishedSlot(userID, slotID string) bool {
+func (cm *ConversationMemory) BindUnfinishedSlot(userID, slotID string) bool {
 	slotID = strings.TrimSpace(slotID)
 	if slotID == "" {
 		return false
@@ -373,7 +423,7 @@ func (cm *conversationMemory) bindUnfinishedSlot(userID, slotID string) bool {
 	return true
 }
 
-func (cm *conversationMemory) clearActiveSlot(userID string) {
+func (cm *ConversationMemory) ClearActiveSlot(userID string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -384,7 +434,7 @@ func (cm *conversationMemory) clearActiveSlot(userID string) {
 	cm.markDirtyAndScheduleFlush()
 }
 
-func (cm *conversationMemory) dismissUnfinishedSlot(userID, slotID string) {
+func (cm *ConversationMemory) DismissUnfinishedSlot(userID, slotID string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -398,7 +448,7 @@ func (cm *conversationMemory) dismissUnfinishedSlot(userID, slotID string) {
 	cm.markDirtyAndScheduleFlush()
 }
 
-func (cm *conversationMemory) completeUnfinishedSlot(userID, slotID string) {
+func (cm *ConversationMemory) CompleteUnfinishedSlot(userID, slotID string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -413,7 +463,7 @@ func (cm *conversationMemory) completeUnfinishedSlot(userID, slotID string) {
 	cm.markDirtyAndScheduleFlush()
 }
 
-func (cm *conversationMemory) clearConversationButKeepSlot(userID string) {
+func (cm *ConversationMemory) ClearConversationButKeepSlot(userID string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -427,7 +477,7 @@ func (cm *conversationMemory) clearConversationButKeepSlot(userID string) {
 	cm.markDirtyAndScheduleFlush()
 }
 
-func (cm *conversationMemory) clearConversationAndDismissSlot(userID string) {
+func (cm *ConversationMemory) ClearConversationAndDismissSlot(userID string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -442,50 +492,28 @@ func (cm *conversationMemory) clearConversationAndDismissSlot(userID string) {
 	cm.markDirtyAndScheduleFlush()
 }
 
-func (cm *conversationMemory) save(userID string, entries []conversationEntry) {
-	copied := make([]conversationEntry, len(entries))
-	copy(copied, entries)
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	s := sh.sessions[userID]
-	if s == nil {
-		s = &conversationSession{}
-		sh.sessions[userID] = s
-	}
-	s.entries = copied
-	s.lastAccess = time.Now()
-	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
-}
+// --- Disk persistence ---
 
-func (cm *conversationMemory) clear(userID string) {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	delete(sh.sessions, userID)
-	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
-}
-
-func (cm *conversationMemory) saveToDisk() error {
+func (cm *ConversationMemory) saveToDisk() error {
 	if cm.storePath == "" {
 		return nil
 	}
 	cm.persistMu.Lock()
 	defer cm.persistMu.Unlock()
 
-	snapshot := conversationMemorySnapshot{Sessions: make(map[string]persistedConversationSession)}
+	snapshot := memorySnapshot{Sessions: make(map[string]persistedSession)}
 	for _, sh := range cm.shards {
 		sh.mu.RLock()
 		for userID, session := range sh.sessions {
 			if session == nil {
 				continue
 			}
-			entries := make([]conversationEntry, len(session.entries))
+			entries := make([]ConversationEntry, len(session.entries))
 			copy(entries, session.entries)
-			snapshot.Sessions[userID] = persistedConversationSession{
+			snapshot.Sessions[userID] = persistedSession{
 				Entries:        entries,
 				LastAccess:     session.lastAccess,
-				UnfinishedSlot: cloneUnfinishedTaskSlot(session.unfinishedSlot),
+				UnfinishedSlot: CloneUnfinishedTaskSlot(session.unfinishedSlot),
 				ActiveSlotID:   session.activeSlotID,
 			}
 		}
@@ -506,7 +534,7 @@ func (cm *conversationMemory) saveToDisk() error {
 	return os.Rename(tmpPath, cm.storePath)
 }
 
-func (cm *conversationMemory) loadFromDisk() error {
+func (cm *ConversationMemory) loadFromDisk() error {
 	if cm.storePath == "" {
 		return nil
 	}
@@ -517,20 +545,21 @@ func (cm *conversationMemory) loadFromDisk() error {
 		}
 		return err
 	}
+	// Detect legacy fields (session_id, tool) that should be dropped on rewrite.
 	legacyNeedsRewrite := strings.Contains(string(data), "\"session_id\"") || strings.Contains(string(data), "\"tool\"")
-	var snapshot conversationMemorySnapshot
+	var snapshot memorySnapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return err
 	}
 	for userID, session := range snapshot.Sessions {
-		entries := make([]conversationEntry, len(session.Entries))
+		entries := make([]ConversationEntry, len(session.Entries))
 		copy(entries, session.Entries)
 		sh := cm.shard(userID)
 		sh.mu.Lock()
 		sh.sessions[userID] = &conversationSession{
 			entries:        entries,
 			lastAccess:     session.LastAccess,
-			unfinishedSlot: cloneUnfinishedTaskSlot(session.UnfinishedSlot),
+			unfinishedSlot: CloneUnfinishedTaskSlot(session.UnfinishedSlot),
 			activeSlotID:   session.ActiveSlotID,
 		}
 		sh.mu.Unlock()
@@ -541,16 +570,4 @@ func (cm *conversationMemory) loadFromDisk() error {
 		cm.persistStateMu.Unlock()
 	}
 	return nil
-}
-
-// lastAccessTime returns the last access time for a user's conversation session.
-// Returns zero time if no session exists.
-func (cm *conversationMemory) lastAccessTime(userID string) time.Time {
-	sh := cm.shard(userID)
-	sh.mu.RLock()
-	defer sh.mu.RUnlock()
-	if s, ok := sh.sessions[userID]; ok {
-		return s.lastAccess
-	}
-	return time.Time{}
 }

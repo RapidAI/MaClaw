@@ -33,10 +33,10 @@ func (h *IMMessageHandler) toolListMCPTools(args map[string]interface{}) string 
 	var entries []mcputil.ToolEntry
 
 	// Local (stdio) MCP servers.
-	if h.app.localMCPManager == nil {
-		h.app.ensureLocalMCPManager()
+	if h.getLocalMCPManager() == nil {
+		_ = h.getLocalMCPManager() // ensure
 	}
-	if mgr := h.app.localMCPManager; mgr != nil {
+	if mgr := h.getLocalMCPManager(); mgr != nil {
 		for _, ts := range mgr.GetAllTools() {
 			for _, t := range ts.Tools {
 				entries = append(entries, mcputil.ToolEntry{
@@ -53,7 +53,7 @@ func (h *IMMessageHandler) toolListMCPTools(args map[string]interface{}) string 
 	}
 
 	// Remote (HTTP) MCP servers.
-	if registry := h.app.mcpRegistry; registry != nil {
+	if registry := h.getMCPRegistry(); registry != nil {
 		for _, s := range registry.ListServers() {
 			tools := registry.GetServerTools(s.ID)
 			for _, t := range tools {
@@ -105,11 +105,11 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		toolArgs = map[string]interface{}{}
 	}
 
-	if h.app.localMCPManager == nil {
-		h.app.ensureLocalMCPManager()
+	if h.getLocalMCPManager() == nil {
+		_ = h.getLocalMCPManager() // ensure
 	}
 
-	resolvedID, isLocal, err := h.app.resolveMCPServerRef(serverRef)
+	resolvedID, isLocal, err := h.resolveMCPServerRef(serverRef)
 	if err != nil {
 		// Fallback: LLM 可能把内置工具（如 ssh）误当作 MCP 工具调用。
 		// 检查 server_id 或 tool_name 是否匹配已注册的内置工具，
@@ -142,7 +142,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	// degradation per Req 3.7).
 	var inputSchema map[string]interface{}
 	if isLocal {
-		if mgr := h.app.localMCPManager; mgr != nil {
+		if mgr := h.getLocalMCPManager(); mgr != nil {
 			for _, ts := range mgr.GetAllTools() {
 				if ts.ServerID == resolvedID {
 					for _, t := range ts.Tools {
@@ -156,7 +156,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 			}
 		}
 	} else {
-		if registry := h.app.mcpRegistry; registry != nil {
+		if registry := h.getMCPRegistry(); registry != nil {
 			for _, t := range registry.GetServerTools(resolvedID) {
 				if t.Name == toolName {
 					inputSchema = t.InputSchema
@@ -179,7 +179,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	}
 
 	if isLocal {
-		mgr := h.app.localMCPManager
+		mgr := h.getLocalMCPManager()
 		if mgr == nil {
 			return "本地 MCP Manager 未初始化"
 		}
@@ -196,7 +196,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		return mcputil.FormatForLLM(resp, nil)
 	}
 
-	registry := h.app.mcpRegistry
+	registry := h.getMCPRegistry()
 	if registry == nil {
 		return "MCP Registry 未初始化"
 	}
@@ -214,7 +214,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 }
 
 func (h *IMMessageHandler) toolListSkills() string {
-	exec := h.app.skillExecutor
+	exec := h.getSkillExecutor()
 	if exec == nil {
 		return "Skill Executor 未初始化"
 	}
@@ -304,8 +304,8 @@ func (h *IMMessageHandler) toolListSkills() string {
 	}
 
 	// If local skills are empty or few, also show Hub recommendations
-	if len(skills) < 3 && h.app.skillHubClient != nil {
-		recs := h.app.skillHubClient.GetRecommendations()
+	if len(skills) < 3 && h.getSkillHubClient() != nil {
+		recs := h.getSkillHubClient().GetRecommendations()
 		if len(recs) > 0 {
 			b.WriteString("\n=== SkillHub 推荐 Skill（可用 install_skill_hub 安装）===\n")
 			for _, r := range recs {
@@ -326,14 +326,14 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 		return "缺少 query 参数"
 	}
 
-	if h.app.skillHubClient == nil {
-		h.app.ensureSkillHubClient()
+	if h.getSkillHubClient() == nil {
+		h.ensureSkillHubClient()
 	}
-	if h.app.skillHubClient == nil {
+	if h.getSkillHubClient() == nil {
 		return "SkillHub 客户端未初始化，请检查配置中的 skill_hub_urls"
 	}
 
-	results, err := h.app.skillHubClient.Search(context.Background(), query)
+	results, err := h.getSkillHubClient().Search(context.Background(), query)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %s", err.Error())
 	}
@@ -365,25 +365,25 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		return "缺少 hub_url 参数"
 	}
 
-	if h.app.skillHubClient == nil {
-		h.app.ensureSkillHubClient()
+	if h.getSkillHubClient() == nil {
+		h.ensureSkillHubClient()
 	}
-	if h.app.skillHubClient == nil {
+	if h.getSkillHubClient() == nil {
 		return "SkillHub 客户端未初始化"
 	}
-	if h.app.skillExecutor == nil {
+	if h.getSkillExecutor() == nil {
 		return "Skill Executor 未初始化"
 	}
 
 	// Download from Hub
-	entry, err := h.app.skillHubClient.Install(context.Background(), skillID, hubURL)
+	entry, err := h.getSkillHubClient().Install(context.Background(), skillID, hubURL)
 	if err != nil {
 		return fmt.Sprintf("安装失败: %s", err.Error())
 	}
 
 	// Security review if risk assessor is available
-	if h.app.riskAssessor != nil {
-		assessment := h.app.riskAssessor.AssessSkill(entry, entry.TrustLevel)
+	if h.getRiskAssessor() != nil {
+		assessment := h.getRiskAssessor().AssessSkill(entry, entry.TrustLevel)
 		if assessment.Level == RiskCritical {
 			// Determine the platform for the confirmation channel.
 			platform := ""
@@ -406,9 +406,9 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 
 			if !confirmed {
 				// User rejected (or timeout / fail-closed).
-				h.app.ensureAuditLog()
-				if h.app.auditLog != nil {
-					_ = h.app.auditLog.Log(AuditEntry{
+				_ = h.getAuditLog() // ensure
+				if h.getAuditLog() != nil {
+					_ = h.getAuditLog().Log(AuditEntry{
 						Timestamp:    time.Now(),
 						Action:       AuditActionHubSkillReject,
 						ToolName:     "hub_skill_install",
@@ -422,9 +422,9 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			}
 
 			// User confirmed — audit with PolicyUserOverride and continue to registration.
-			h.app.ensureAuditLog()
-			if h.app.auditLog != nil {
-				_ = h.app.auditLog.Log(AuditEntry{
+			_ = h.getAuditLog() // ensure
+			if h.getAuditLog() != nil {
+				_ = h.getAuditLog().Log(AuditEntry{
 					Timestamp:    time.Now(),
 					Action:       AuditActionHubSkillInstall,
 					ToolName:     "hub_skill_install",
@@ -438,22 +438,22 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	}
 
 	// Register locally
-	if err := h.app.skillExecutor.Register(*entry); err != nil {
+	if err := h.getSkillExecutor().Register(*entry); err != nil {
 		return fmt.Sprintf("注册失败: %s", err.Error())
 	}
 	// Auto-install dependencies for file-backed skills.
-	go h.app.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
+	go h.appInstallSkillDepsIfMissing(entry.SkillDir, entry.Name)
 
 	// Refresh skill BM25 index so the router picks up the new skill
 	// for skill-aware routing (enrichRunSkillDescription).
-	if h.app.toolRouter != nil {
-		h.app.toolRouter.RefreshSkillIndex()
+	if h.getAppToolRouter() != nil {
+		h.getAppToolRouter().RefreshSkillIndex()
 	}
 
 	// Audit log
-	h.app.ensureAuditLog()
-	if h.app.auditLog != nil {
-		_ = h.app.auditLog.Log(AuditEntry{
+	_ = h.getAuditLog() // ensure
+	if h.getAuditLog() != nil {
+		_ = h.getAuditLog().Log(AuditEntry{
 			Timestamp:    time.Now(),
 			Action:       AuditActionHubSkillInstall,
 			ToolName:     "hub_skill_install",
@@ -485,7 +485,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			b.WriteString(fmt.Sprintf("执行启动失败: %s", err.Error()))
 		} else {
 			waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
-			status, statusErr := waitForSkillRunnerSnapshot(h.app.skillRunner, runID, waitDuration)
+			status, statusErr := waitForSkillRunnerSnapshot(h.getSkillRunner(), runID, waitDuration)
 			if statusErr != nil {
 				b.WriteString(fmt.Sprintf("已启动（run_id=%s），但读取状态失败: %s", runID, statusErr.Error()))
 			} else {
@@ -763,8 +763,8 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 }
 
 func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress ProgressCallback) string {
-	h.app.ensureSkillRunner()
-	runner := h.app.skillRunner
+	h.ensureSkillRunner()
+	runner := h.getSkillRunner()
 	if runner == nil {
 		return "Skill Runner 未初始化"
 	}
@@ -795,8 +795,8 @@ func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress 
 }
 
 func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
-	h.app.ensureSkillRunner()
-	runner := h.app.skillRunner
+	h.ensureSkillRunner()
+	runner := h.getSkillRunner()
 	if runner == nil {
 		return "Skill Runner 未初始化"
 	}
@@ -906,7 +906,7 @@ func (h *IMMessageHandler) toolPatchSkill(args map[string]interface{}) string {
 	replaceStr, _ := replace.(string) // empty string is valid (deletion)
 	reason := stringVal(args, "reason")
 
-	exec := h.app.skillExecutor
+	exec := h.getSkillExecutor()
 	if exec == nil {
 		return "Skill Executor 未初始化"
 	}
@@ -988,7 +988,7 @@ func (h *IMMessageHandler) toolSkillPatchHistory(args map[string]interface{}) st
 		return "缺少 skill_name 参数"
 	}
 
-	exec := h.app.skillExecutor
+	exec := h.getSkillExecutor()
 	if exec == nil {
 		return "Skill Executor 未初始化"
 	}
@@ -1109,7 +1109,7 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
 	if name == "" {
 		return "缺少 name 参数（要上传的 Skill 名称）"
 	}
-	submissionID, err := h.app.UploadNLSkillToMarket(name)
+	submissionID, err := h.appUploadNLSkillToMarket(name)
 	if err != nil {
 		return fmt.Sprintf("上传失败: %s", err.Error())
 	}
@@ -1127,8 +1127,8 @@ func (h *IMMessageHandler) toolValidateSkill(args map[string]interface{}) string
 
 	// Resolve skill directory from name using the skill executor (same pattern as packageSkillForMarket).
 	skillDir := ""
-	if h.app.skillExecutor != nil {
-		for _, s := range h.app.skillExecutor.loadSkills() {
+	if h.getSkillExecutor() != nil {
+		for _, s := range h.getSkillExecutor().loadSkills() {
 			if s.Name == name {
 				skillDir = s.SkillDir
 				break
@@ -1229,7 +1229,7 @@ func (h *IMMessageHandler) toolParallelExecute(args map[string]interface{}) stri
 }
 
 func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string {
-	selector := h.app.toolSelector
+	selector := h.getToolSelector()
 	if selector == nil {
 		return "ToolSelector 未初始化"
 	}
@@ -1777,13 +1777,13 @@ func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 		return "❌ nickname 不能为空"
 	}
 	// Persist to local config.
-	cfg, err := h.app.LoadConfig()
+	cfg, err := h.loadConfig()
 	if err == nil {
 		cfg.RemoteNickname = nickname
-		_ = h.app.SaveConfig(cfg)
+		_ = h.saveConfig(cfg)
 	}
 	// Send to Hub via WebSocket.
-	if hc := h.app.hubClient(); hc != nil {
+	if hc := h.getHubClient(); hc != nil {
 		if err := hc.SendNicknameUpdate(nickname); err != nil {
 			log.Printf("[set_nickname] SendNicknameUpdate error: %v", err)
 			return fmt.Sprintf("⚠️ 昵称已保存到本地（%s），但上报 Hub 失败：%v", nickname, err)
@@ -1800,7 +1800,7 @@ func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) st
 	providerName := stringVal(args, "provider")
 	if providerName == "" {
 		// No provider specified — list available providers and current selection.
-		info := h.app.GetMaclawLLMProviders()
+		info := h.getMaclawLLMProviders()
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf("当前 LLM 服务商: %s\n可用服务商:\n", info.Current))
 		for _, p := range info.Providers {
@@ -1816,7 +1816,7 @@ func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) st
 		return b.String()
 	}
 
-	info := h.app.GetMaclawLLMProviders()
+	info := h.getMaclawLLMProviders()
 
 	// Collect only configured providers for matching.
 	var configured []MaclawLLMProvider
@@ -1859,7 +1859,7 @@ func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) st
 		return fmt.Sprintf("当前已经是 %s，无需切换", match.Name)
 	}
 
-	if err := h.app.SaveMaclawLLMProviders(info.Providers, match.Name); err != nil {
+	if err := h.saveMaclawLLMProviders(info.Providers, match.Name); err != nil {
 		return fmt.Sprintf("切换失败: %s", err.Error())
 	}
 	return fmt.Sprintf("✅ 已将 LLM 服务商切换为 %s (model=%s)", match.Name, match.Model)
@@ -1922,13 +1922,13 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 	}
 
 	// Notify frontend to refresh the scheduled tasks panel.
-	h.app.emitEvent("scheduled-tasks-changed")
+	h.emitAppEvent("scheduled-tasks-changed")
 
 	// 非一次性任务同步到系统日历
 	if created := h.scheduledTaskManager.Get(id); created != nil && isRecurringTask(created) {
 		go func() {
 			if err := SyncTaskToSystemCalendar(created); err != nil {
-				h.app.log(fmt.Sprintf("[scheduled-task] calendar sync failed: %v", err))
+				h.appLog(fmt.Sprintf("[scheduled-task] calendar sync failed: %v", err))
 			}
 		}()
 	}
@@ -2003,7 +2003,7 @@ func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) 
 	if err != nil {
 		return fmt.Sprintf("删除失败: %s", err.Error())
 	}
-	h.app.emitEvent("scheduled-tasks-changed")
+	h.emitAppEvent("scheduled-tasks-changed")
 	return "✅ 定时任务已删除"
 }
 
@@ -2019,7 +2019,7 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 	if err != nil {
 		return fmt.Sprintf("更新失败: %s", err.Error())
 	}
-	h.app.emitEvent("scheduled-tasks-changed")
+	h.emitAppEvent("scheduled-tasks-changed")
 	// Show updated task info.
 	if t := h.scheduledTaskManager.Get(id); t != nil {
 		next := "-"
@@ -2034,14 +2034,14 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 // ---------- AgentNet Knowledge Tools ----------
 
 func (h *IMMessageHandler) toolAgentNetSearch(args map[string]interface{}) string {
-	if h.app.agentNetClient == nil || !h.app.agentNetClient.IsRunning() {
+	if h.getAgentNetClient() == nil || !h.getAgentNetClient().IsRunning() {
 		return "智网未连接，请先在设置中启用 AgentNet"
 	}
 	query := stringVal(args, "query")
 	if query == "" {
 		return "缺少 query 参数"
 	}
-	entries, err := h.app.agentNetClient.SearchKnowledge(query)
+	entries, err := h.getAgentNetClient().SearchKnowledge(query)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %s", err.Error())
 	}
@@ -2075,7 +2075,7 @@ func (h *IMMessageHandler) toolAgentNetSearch(args map[string]interface{}) strin
 }
 
 func (h *IMMessageHandler) toolAgentNetPublish(args map[string]interface{}) string {
-	if h.app.agentNetClient == nil || !h.app.agentNetClient.IsRunning() {
+	if h.getAgentNetClient() == nil || !h.getAgentNetClient().IsRunning() {
 		return "智网未连接，请先在设置中启用 AgentNet"
 	}
 	title := stringVal(args, "title")
@@ -2086,7 +2086,7 @@ func (h *IMMessageHandler) toolAgentNetPublish(args map[string]interface{}) stri
 	if body == "" {
 		return "缺少 body 参数"
 	}
-	entry, err := h.app.agentNetClient.PublishKnowledge(title, body)
+	entry, err := h.getAgentNetClient().PublishKnowledge(title, body)
 	if err != nil {
 		return fmt.Sprintf("发布失败: %s", err.Error())
 	}
@@ -2097,8 +2097,8 @@ func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string
 	if h.app == nil {
 		return "审计日志未初始化"
 	}
-	h.app.ensureAuditLog()
-	if h.app.auditLog == nil {
+	_ = h.getAuditLog() // ensure
+	if h.getAuditLog() == nil {
 		return "审计日志未初始化"
 	}
 
@@ -2120,7 +2120,7 @@ func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string
 		filter.RiskLevels = []RiskLevel{RiskLevel(rl)}
 	}
 
-	entries, err := h.app.auditLog.Query(filter)
+	entries, err := h.getAuditLog().Query(filter)
 	if err != nil {
 		return fmt.Sprintf("查询失败: %s", err.Error())
 	}

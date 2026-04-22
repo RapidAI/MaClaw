@@ -147,7 +147,7 @@ func (h *IMMessageHandler) classifyTaskIntentForExecution(text string, attachmen
 	if h == nil || h.app == nil || httpClient == nil {
 		return fallback
 	}
-	cfg := h.app.GetMaclawLLMConfig()
+	cfg := h.getMaclawLLMConfig()
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return fallback
 	}
@@ -260,7 +260,7 @@ func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg MaclawLLMConfig
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return llmIntentClassification{}, dumpLLMContext(resp.StatusCode, "intent classify request failed", body, h.app.GetTempDir())
+		return llmIntentClassification{}, dumpLLMContext(resp.StatusCode, "intent classify request failed", body, h.getTempDir())
 	}
 	parsedResp, err := llm.ParseNonStreamOpenAIResponse(resp)
 	if err != nil {

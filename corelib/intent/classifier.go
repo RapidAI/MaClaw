@@ -47,6 +47,12 @@ type UnifiedIntentClassifier struct {
 	cache      sync.Map // map[string]*ClassificationResult
 	fusionCache sync.Map // map[string]FusionResult — stores fusion details for diagnostics
 
+	// workflowCandidates is the set of IntentLabels that may trigger a
+	// multi-phase workflow, derived from IntentDefinition.MayTriggerWorkflow.
+	// Pre-computed at construction time. Labels NOT in this set are
+	// definitively non-workflow and can be fast-rejected by consumers.
+	workflowCandidates map[IntentLabel]bool
+
 	ready bool         // set to true when anchor warmup completes
 	mu    sync.RWMutex // protects ready and llmFunc
 }
@@ -67,15 +73,16 @@ func New(cfg Config) *UnifiedIntentClassifier {
 	fullDefs := FullDefinitions()
 
 	u := &UnifiedIntentClassifier{
-		registry:   NewKeywordRegistryFromDefinitions(fullDefs),
-		affinity:   NewToolAffinityRegistryFromDefinitions(fullDefs),
-		embedder:   cfg.Embedder,
-		anchors:    BuildAnchorsFromDefinitions(defs),
-		llmFunc:    cfg.LLMFunc,
-		llmTimeout: timeout,
-		treeText:   treeText,
-		llmPrompt:  buildLLMSystemPrompt(defs),
-		fusionCfg:  DefaultFusionConfig(),
+		registry:           NewKeywordRegistryFromDefinitions(fullDefs),
+		affinity:           NewToolAffinityRegistryFromDefinitions(fullDefs),
+		embedder:           cfg.Embedder,
+		anchors:            BuildAnchorsFromDefinitions(defs),
+		llmFunc:            cfg.LLMFunc,
+		llmTimeout:         timeout,
+		treeText:           treeText,
+		llmPrompt:          buildLLMSystemPrompt(defs),
+		fusionCfg:          DefaultFusionConfig(),
+		workflowCandidates: WorkflowCandidateLabels(defs),
 	}
 
 	// Determine available layers and log.
@@ -510,4 +517,27 @@ func (u *UnifiedIntentClassifier) LastFusionResult(text string) *FusionResult {
 		return &fr
 	}
 	return nil
+}
+
+// IsWorkflowCandidate returns true if the given label could potentially
+// trigger a multi-phase workflow. Derived from IntentDefinition.MayTriggerWorkflow
+// at construction time. Labels NOT in this set are definitively non-workflow.
+//
+// Used by the workflow interception chain to fast-reject non-workflow intents
+// before calling IntentUnderstandingManager (which makes an expensive LLM call).
+func (u *UnifiedIntentClassifier) IsWorkflowCandidate(label IntentLabel) bool {
+	return u.workflowCandidates[label]
+}
+
+// GetWorkflowRejectThreshold returns the minimum UIC confidence required to
+// fast-reject a non-workflow intent before calling IntentUnderstandingManager.
+// Sourced from FusionConfig, tunable via SetFusionConfig or offline calibration.
+func (u *UnifiedIntentClassifier) GetWorkflowRejectThreshold() float64 {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	t := u.fusionCfg.WorkflowRejectThreshold
+	if t <= 0 {
+		return DefaultWorkflowRejectThreshold
+	}
+	return t
 }

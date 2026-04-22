@@ -140,7 +140,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"timeout":            map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
 			}, []string{"task"}),
 		// --- 本机直接操作工具 ---
-		toolDef("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。",
+		toolDef("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。禁止通过 bash 执行 ssh/scp/rsync 命令——请使用内置 ssh 工具。",
 			map[string]interface{}{
 				"command":     map[string]string{"type": "string", "description": "要执行的 shell 命令"},
 				"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},

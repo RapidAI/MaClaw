@@ -41,6 +41,12 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	}
 
 	st := sqlite.NewStore(provider)
+	haConfigSvc := ha.NewConfigService(cfg.HA, st.System)
+	effectiveHA, err := haConfigSvc.CurrentConfig(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	cfg.HA = effectiveHA
 	adminService := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
 	mailer := mail.New(*cfg, st.System)
 	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, cfg.Server.PublicBaseURL)
@@ -157,7 +163,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		go ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run(context.Background())
 	}
 
-	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.Gossip, gossipCache, smHandlers, st.System, st.News, haSvc)
+	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.Gossip, gossipCache, smHandlers, st.System, st.News, haConfigSvc, haSvc)
 
 	return &App{
 		Config:       cfg,

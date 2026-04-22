@@ -124,7 +124,7 @@ func (m *qqBotGatewayManager) Stop() {
 	m.localHandler = nil
 	m.mu.Unlock()
 	if lh != nil {
-		lh.memory.stop()
+		lh.memory.Stop()
 	}
 	if gw != nil {
 		_ = gw.Stop()
@@ -172,7 +172,7 @@ func (m *qqBotGatewayManager) resetLocalHandler() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.localHandler != nil {
-		m.localHandler.memory.stop()
+		m.localHandler.memory.Stop()
 		m.localHandler = nil
 	}
 }
@@ -244,7 +244,7 @@ func (m *qqBotGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	}
 	a.ensureConversationArchiver()
 	if a.conversationArchiver != nil {
-		h.memory.archiver = a.conversationArchiver
+		h.memory.Archiver = a.conversationArchiver
 	}
 
 	m.localHandler = h
