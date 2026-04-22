@@ -589,6 +589,28 @@ func desktopWorkflowDocOverride() string {
 `
 }
 
+// imWorkflowDocDeliveryRule returns the IM-channel-specific document delivery
+// rule that forces all workflow phase outputs to be delivered as PDF.
+// This is the symmetric counterpart of desktopWorkflowDocOverride — desktop
+// overrides PDF→Markdown, IM enforces Markdown→PDF.
+//
+// Injected at the same two system prompt injection points as the desktop
+// override, ensuring all 19 workflow templates get the rule without needing
+// per-template PhasePrompt changes.
+func imWorkflowDocDeliveryRule() string {
+	return `
+
+### 📄 IM 通道文档交付规则（所有工作流通用）
+你当前运行在 IM 通道中（飞书/微信/QQ/Telegram）。所有工作流（编码、PPT 设计、产品设计、商业计划等）的每个阶段产出文档，必须遵守以下规则：
+
+1. **必须**使用 generate_pdf 工具将本阶段产出物生成 PDF 后发送给用户
+2. **严禁**在 IM 聊天窗口中直接输出大段文档文本——IM 中长文本阅读体验极差，用户无法有效审阅
+3. 发送 PDF 后必须附带提示："📄 已生成 [阶段名称] 的 PDF 版本，请查看并确认，或提出修改意见。"
+4. 短回复（确认提示、澄清问题、进度说明等）可以直接文本输出，不需要 PDF
+5. 其他规则不变：仍需等待用户确认后才能进入下一阶段
+`
+}
+
 // buildSystemPromptWithMemory builds the system prompt with the lightweight
 // memory section (user_fact summary + proactive recall + dynamic recall hint).
 // The isFirstTurn flag controls whether the full memory management guide is included.

@@ -23,11 +23,11 @@ pwa:
 
 center:
   enabled: true
-  base_url: http://hubs.mypapers.top:9388
+  base_url: https://hc-1.example.com
   base_urls:
-    - http://hc-1.example.com:9388
-    - http://hc-2.example.com:9388
-    - http://hc-3.example.com:9388
+    - https://hc-1.example.com
+    - https://hc-2.example.com
+    - https://hc-3.example.com
   register_on_startup: true
   heartbeat_interval_sec: 30
 
@@ -49,5 +49,3 @@ mail:
 logging:
   level: info
   dir: ./data/logs
-
-

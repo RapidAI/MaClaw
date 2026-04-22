@@ -564,14 +564,25 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
         setRegBusy(true);
         setRegResult(null);
         setInvError("");
+        const trimmedRedeemCode = redeemCode.trim();
         onSaveField({ remote_email: regEmail.trim() });
         try {
             const result = await ActivateRemote(regEmail.trim(), invCode.trim(), "");
             if (result?.vip_flag) setVipFlag(true);
+            let redeemWarning = "";
+            if (trimmedRedeemCode) {
+                try {
+                    const serviceStatus = await RedeemHubLLMService(trimmedRedeemCode) as HubLLMServiceStatus;
+                    applyHubServiceStatus(serviceStatus);
+                    setRedeemCode("");
+                } catch (redeemError) {
+                    redeemWarning = `\n${t("服务兑换码兑换失败，请稍后在服务状态中重试：", "Service redeem code failed. You can retry later in service status: ", "服務兌換碼兌換失敗，請稍後在服務狀態中重試：")}${String(redeemError)}`;
+                }
+            }
             setHubConnecting(true);
             setRegResult({
                 ok: true,
-                msg: t("注册成功，正在后台连接 Hub，可直接继续下一步", "Registration successful. Connecting to Hub in the background — you can continue."),
+                msg: `${t("注册成功，正在后台连接 Hub，可直接继续下一步", "Registration successful. Connecting to Hub in the background - you can continue.", "註冊成功，正在後台連線 Hub，可直接繼續下一步")}${redeemWarning}`,
             });
             setRegDone(true);
             onRegistered();
@@ -958,13 +969,13 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                             )}
                             <div style={{ marginBottom: 10 }}>
                                 <label style={labelStyle}>
-                                    {t("?????", "Recharge Card")} {" "}
-                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("??", "optional")})</span>
+                                    {t("服务兑换码", "Service redeem code", "服務兌換碼")} {" "}
+                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional", "可選")})</span>
                                 </label>
                                 <input style={inputStyle}
                                     value={redeemCode}
                                     onChange={e => setRedeemCode(e.target.value.trim().toUpperCase())}
-                                    placeholder={t("????????????????", "Enter a recharge card to redeem model service access immediately")}
+                                    placeholder={t("请输入服务兑换码（可选）", "Enter service redeem code (optional)", "請輸入服務兌換碼（可選）")}
                                     spellCheck={false} />
                             </div>
                             <button onClick={handleRegisterClick} disabled={regBusy || regDone} style={{

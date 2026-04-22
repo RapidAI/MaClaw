@@ -32,10 +32,11 @@ type Config struct {
 	} `yaml:"pwa"`
 
 	Center struct {
-		Enabled              bool   `yaml:"enabled"`
-		BaseURL              string `yaml:"base_url"`
-		RegisterOnStartup    bool   `yaml:"register_on_startup"`
-		HeartbeatIntervalSec int    `yaml:"heartbeat_interval_sec"`
+		Enabled              bool     `yaml:"enabled"`
+		BaseURL              string   `yaml:"base_url"`
+		BaseURLs             []string `yaml:"base_urls"`
+		RegisterOnStartup    bool     `yaml:"register_on_startup"`
+		HeartbeatIntervalSec int      `yaml:"heartbeat_interval_sec"`
 	} `yaml:"center"`
 
 	Hub struct {

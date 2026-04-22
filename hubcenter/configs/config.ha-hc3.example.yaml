@@ -1,0 +1,47 @@
+server:
+  listen_host: 0.0.0.0
+  listen_port: 9388
+  public_base_url: https://hc-3.example.com
+
+ha:
+  enabled: true
+  node_id: hc-3
+  node_name: hubcenter-3
+  advertise_url: http://10.0.0.13:9388
+  cluster_secret: replace-with-a-long-random-shared-secret
+  sync_interval_seconds: 3
+  pull_batch_size: 200
+  heartbeat_sync_min_interval_seconds: 10
+  peers:
+    - node_id: hc-1
+      name: hubcenter-1
+      base_url: http://10.0.0.11:9388
+      enabled: true
+    - node_id: hc-2
+      name: hubcenter-2
+      base_url: http://10.0.0.12:9388
+      enabled: true
+
+database:
+  driver: sqlite
+  dsn: ./data/hubcenter-hc-3.db
+  wal: true
+  busy_timeout_ms: 5000
+  max_read_open_conns: 8
+  max_read_idle_conns: 4
+  max_write_open_conns: 1
+  max_write_idle_conns: 1
+
+mail:
+  enabled: false
+  provider: smtp
+  smtp_host: smtp.example.com
+  smtp_port: 587
+  smtp_username: no-reply@example.com
+  smtp_password: change-me
+  from_name: MaClaw Hub Center
+  from_email: no-reply@example.com
+
+logging:
+  level: info
+  dir: ./data/logs

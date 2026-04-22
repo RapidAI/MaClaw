@@ -151,6 +151,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		}
 		haSvc = ha.NewService(cfg.HA.NodeID, cfg.HA.NodeName, cfg.HA.AdvertiseURL, cfg.HA.ClusterSecret, peers)
 		haSvc.AttachStore(st)
+		haSvc.SetHeartbeatSyncMinInterval(time.Duration(cfg.HA.HeartbeatSyncMinIntervalSeconds) * time.Second)
 		hubService.SetSyncRecorder(haSvc)
 		go ha.NewProber(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second).Run(context.Background())
 		go ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run(context.Background())

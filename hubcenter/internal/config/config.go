@@ -1,5 +1,10 @@
 package config
 
+import (
+	"fmt"
+	"strings"
+)
+
 type Config struct {
 	Server struct {
 		ListenHost    string `yaml:"listen_host"`
@@ -84,4 +89,55 @@ func Default() *Config {
 	cfg.Logging.Level = "info"
 	cfg.Logging.Dir = "./data/logs"
 	return cfg
+}
+
+func (c *Config) Validate() error {
+	if c == nil {
+		return fmt.Errorf("config is required")
+	}
+	if !c.HA.Enabled {
+		return nil
+	}
+	nodeID := strings.TrimSpace(c.HA.NodeID)
+	if nodeID == "" {
+		return fmt.Errorf("ha.node_id is required when ha.enabled=true")
+	}
+	if strings.TrimSpace(c.HA.AdvertiseURL) == "" {
+		return fmt.Errorf("ha.advertise_url is required when ha.enabled=true")
+	}
+	if strings.TrimSpace(c.HA.ClusterSecret) == "" {
+		return fmt.Errorf("ha.cluster_secret is required when ha.enabled=true")
+	}
+	seenPeerIDs := map[string]struct{}{}
+	seenPeerURLs := map[string]struct{}{}
+	enabledPeers := 0
+	for i, peer := range c.HA.Peers {
+		if !peer.Enabled {
+			continue
+		}
+		enabledPeers++
+		peerID := strings.TrimSpace(peer.NodeID)
+		peerURL := strings.TrimSpace(peer.BaseURL)
+		if peerID == "" {
+			return fmt.Errorf("ha.peers[%d].node_id is required for enabled peer", i)
+		}
+		if peerID == nodeID {
+			return fmt.Errorf("ha.peers[%d].node_id must not equal ha.node_id (%s)", i, nodeID)
+		}
+		if peerURL == "" {
+			return fmt.Errorf("ha.peers[%d].base_url is required for enabled peer %s", i, peerID)
+		}
+		if _, ok := seenPeerIDs[peerID]; ok {
+			return fmt.Errorf("duplicate ha peer node_id: %s", peerID)
+		}
+		if _, ok := seenPeerURLs[peerURL]; ok {
+			return fmt.Errorf("duplicate ha peer base_url: %s", peerURL)
+		}
+		seenPeerIDs[peerID] = struct{}{}
+		seenPeerURLs[peerURL] = struct{}{}
+	}
+	if enabledPeers == 0 {
+		return fmt.Errorf("at least one enabled ha.peers entry is required when ha.enabled=true")
+	}
+	return nil
 }

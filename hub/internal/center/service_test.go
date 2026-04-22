@@ -330,10 +330,10 @@ func TestRegisterFailsWhenHubWasDisabledByCenter(t *testing.T) {
 
 	settings := newFakeSettingsRepo()
 	_ = settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
-		Disabled:   true,
-		HubID:      "hub_disabled",
-		HubSecret:  "secret_disabled",
-		LastError:  "hub has been disabled by Hub Center",
+		Disabled:  true,
+		HubID:     "hub_disabled",
+		HubSecret: "secret_disabled",
+		LastError: "hub has been disabled by Hub Center",
 	}))
 	_ = settings.Set(context.Background(), systemKeyAdminEmail, mustJSON(map[string]string{"value": "admin@example.com"}))
 
@@ -442,5 +442,111 @@ func TestStatusAndRegisterUseStoredVisibility(t *testing.T) {
 	}
 	if gotVisibility != "shared" {
 		t.Fatalf("expected shared visibility in registration payload, got %q", gotVisibility)
+	}
+}
+func TestRegisterFallsBackToSecondaryCenterNode(t *testing.T) {
+	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"temporary failure"}`, http.StatusInternalServerError)
+	}))
+	defer badServer.Close()
+
+	goodCalls := 0
+	goodServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/client/quality" && r.URL.Path != "/api/hubs/register" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if r.URL.Path == "/api/client/quality" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"quality_score":95,"routable":true,"service_status":"healthy"}`))
+			return
+		}
+		goodCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hub_id":"hub_multi","hub_secret":"secret_multi"}`))
+	}))
+	defer goodServer.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = badServer.URL
+	cfg.Center.BaseURLs = []string{badServer.URL, goodServer.URL}
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyAdminEmail, mustJSON(map[string]string{"value": "admin@example.com"}))
+
+	svc := NewService(cfg, settings)
+	status, err := svc.Register(context.Background(), "admin@example.com")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if goodCalls != 1 {
+		t.Fatalf("expected secondary center to handle registration, calls=%d", goodCalls)
+	}
+	if status.ActiveBaseURL != goodServer.URL {
+		t.Fatalf("ActiveBaseURL = %q, want %q", status.ActiveBaseURL, goodServer.URL)
+	}
+}
+
+func TestSendHeartbeatFallsBackWhenNodeNotReady(t *testing.T) {
+	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/client/quality" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"quality_score":98,"routable":true,"service_status":"healthy"}`))
+			return
+		}
+		http.Error(w, `{"code":"HUB_NOT_READY_ON_NODE","message":"Hub metadata is not available on this node yet."}`, http.StatusConflict)
+	}))
+	defer firstServer.Close()
+
+	secondCalls := 0
+	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/client/quality" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"quality_score":90,"routable":true,"service_status":"healthy"}`))
+			return
+		}
+		secondCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"status":"online"}`))
+	}))
+	defer secondServer.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = firstServer.URL
+	cfg.Center.BaseURLs = []string{firstServer.URL, secondServer.URL}
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true,
+		HubID:      "hub_ha",
+		HubSecret:  "secret_ha",
+	})); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := svc.sendHeartbeat(context.Background()); err != nil {
+		t.Fatalf("sendHeartbeat() error = %v", err)
+	}
+	if secondCalls != 1 {
+		t.Fatalf("expected fallback heartbeat on secondary node, calls=%d", secondCalls)
+	}
+
+	raw, err := settings.Get(context.Background(), systemKeyCenterRegistration)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	var record registrationRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if record.LastBaseURL != secondServer.URL {
+		t.Fatalf("LastBaseURL = %q, want %q", record.LastBaseURL, secondServer.URL)
+	}
+	if record.LastError != "" {
+		t.Fatalf("LastError = %q, want empty", record.LastError)
 	}
 }

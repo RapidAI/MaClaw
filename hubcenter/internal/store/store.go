@@ -111,6 +111,10 @@ type HAEntityVersion struct {
 	UpdatedByNodeID string    `json:"updated_by_node_id"`
 }
 
+type HAHeartbeatSyncState struct {
+	HubID            string     `json:"hub_id"`
+	LastSyncedSeenAt *time.Time `json:"last_synced_seen_at,omitempty"`
+}
 type AdminUserRepository interface {
 	Create(ctx context.Context, admin *AdminUser) error
 	GetByUsername(ctx context.Context, username string) (*AdminUser, error)
@@ -182,6 +186,10 @@ type HAEntityVersionRepository interface {
 	Upsert(ctx context.Context, item *HAEntityVersion) error
 }
 
+type HAHeartbeatSyncStateRepository interface {
+	Get(ctx context.Context, hubID string) (*HAHeartbeatSyncState, error)
+	Upsert(ctx context.Context, item *HAHeartbeatSyncState) error
+}
 type GossipPost struct {
 	ID        string
 	MachineID string
@@ -255,6 +263,7 @@ type Store struct {
 	HASyncOps        HASyncOpRepository
 	HAPeerCursors    HAPeerCursorRepository
 	HAEntityVersions HAEntityVersionRepository
+	HAHeartbeatSync  HAHeartbeatSyncStateRepository
 	Gossip           GossipRepository
 	News             NewsRepository
 }

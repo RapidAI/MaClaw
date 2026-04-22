@@ -144,3 +144,33 @@ func (r *haEntityVersionRepo) Upsert(ctx context.Context, item *store.HAEntityVe
 			updated_by_node_id = excluded.updated_by_node_id
 	`, item.EntityType, item.EntityID, item.Version, item.UpdatedAt.Format(time.RFC3339), item.UpdatedByNodeID)
 }
+
+func (r *haHeartbeatSyncStateRepo) Get(ctx context.Context, hubID string) (*store.HAHeartbeatSyncState, error) {
+	row := r.readDB.QueryRowContext(ctx, `
+		SELECT hub_id, last_synced_seen_at
+		FROM ha_heartbeat_sync_state
+		WHERE hub_id = ?
+	`, hubID)
+	var item store.HAHeartbeatSyncState
+	var lastSynced sql.NullString
+	if err := row.Scan(&item.HubID, &lastSynced); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if lastSynced.Valid {
+		t := mustParseTime(lastSynced.String)
+		item.LastSyncedSeenAt = &t
+	}
+	return &item, nil
+}
+
+func (r *haHeartbeatSyncStateRepo) Upsert(ctx context.Context, item *store.HAHeartbeatSyncState) error {
+	return execWrite(ctx, r.batch, r.db, `
+		INSERT INTO ha_heartbeat_sync_state (hub_id, last_synced_seen_at)
+		VALUES (?, ?)
+		ON CONFLICT(hub_id) DO UPDATE SET
+			last_synced_seen_at = excluded.last_synced_seen_at
+	`, item.HubID, timePtrString(item.LastSyncedSeenAt))
+}

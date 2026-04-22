@@ -6,10 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,14 +23,14 @@ import (
 )
 
 const (
-	systemKeyCenterBaseURL      = "center_base_url"
-	systemKeyCenterRegistration = "center_registration"
-	systemKeyAdminEmail         = "admin_email"
-	systemKeyInstallationID     = "hub_installation_id"
-	systemKeyHubVisibility      = "hub_visibility"
-	systemKeyHubEnrollmentMode          = "hub_enrollment_mode"
-	systemKeyPublicBaseURL              = "server_public_base_url"
-	systemKeyInvitationCodeRequired     = "invitation_code_required"
+	systemKeyCenterBaseURL          = "center_base_url"
+	systemKeyCenterRegistration     = "center_registration"
+	systemKeyAdminEmail             = "admin_email"
+	systemKeyInstallationID         = "hub_installation_id"
+	systemKeyHubVisibility          = "hub_visibility"
+	systemKeyHubEnrollmentMode      = "hub_enrollment_mode"
+	systemKeyPublicBaseURL          = "server_public_base_url"
+	systemKeyInvitationCodeRequired = "invitation_code_required"
 )
 
 type SystemSettingsRepository interface {
@@ -36,23 +39,25 @@ type SystemSettingsRepository interface {
 }
 
 type RegistrationState struct {
-	Enabled             bool   `json:"enabled"`
-	BaseURL             string `json:"base_url"`
-	PublicBaseURL       string `json:"public_base_url"`
-	Visibility          string `json:"visibility"`
-	EnrollmentMode      string `json:"enrollment_mode"`
-	AdvertisedBaseURL   string `json:"advertised_base_url,omitempty"`
-	Host                string `json:"host,omitempty"`
-	Port                int    `json:"port,omitempty"`
-	RegisterOnStartup   bool   `json:"register_on_startup"`
-	AdminEmailPresent   bool   `json:"admin_email_present"`
-	Registered          bool   `json:"registered"`
-	PendingConfirmation bool   `json:"pending_confirmation"`
-	Disabled            bool   `json:"disabled"`
-	HubID               string `json:"hub_id,omitempty"`
-	DisabledReason      string `json:"disabled_reason,omitempty"`
-	LastError           string `json:"last_error,omitempty"`
-	LastRegisteredAt    int64  `json:"last_registered_at,omitempty"`
+	Enabled             bool     `json:"enabled"`
+	BaseURL             string   `json:"base_url"`
+	BaseURLs            []string `json:"base_urls"`
+	PublicBaseURL       string   `json:"public_base_url"`
+	Visibility          string   `json:"visibility"`
+	EnrollmentMode      string   `json:"enrollment_mode"`
+	AdvertisedBaseURL   string   `json:"advertised_base_url,omitempty"`
+	Host                string   `json:"host,omitempty"`
+	Port                int      `json:"port,omitempty"`
+	RegisterOnStartup   bool     `json:"register_on_startup"`
+	AdminEmailPresent   bool     `json:"admin_email_present"`
+	Registered          bool     `json:"registered"`
+	PendingConfirmation bool     `json:"pending_confirmation"`
+	Disabled            bool     `json:"disabled"`
+	HubID               string   `json:"hub_id,omitempty"`
+	DisabledReason      string   `json:"disabled_reason,omitempty"`
+	LastError           string   `json:"last_error,omitempty"`
+	ActiveBaseURL       string   `json:"active_base_url,omitempty"`
+	LastRegisteredAt    int64    `json:"last_registered_at,omitempty"`
 }
 
 type registrationRecord struct {
@@ -63,7 +68,19 @@ type registrationRecord struct {
 	HubSecret           string `json:"hub_secret,omitempty"`
 	DisabledReason      string `json:"disabled_reason,omitempty"`
 	LastError           string `json:"last_error,omitempty"`
+	LastBaseURL         string `json:"last_base_url,omitempty"`
 	LastRegisteredAt    int64  `json:"last_registered_at,omitempty"`
+}
+
+type centerQualityProbe struct {
+	Routable      bool   `json:"routable"`
+	QualityScore  int    `json:"quality_score"`
+	ServiceStatus string `json:"service_status"`
+}
+
+type centerErrorPayload struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 type registerHubRequest struct {
@@ -107,7 +124,7 @@ func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service 
 }
 
 func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
-	baseURL, err := s.baseURL(ctx)
+	baseURLs, err := s.centerBaseURLs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -137,9 +154,17 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 		return nil, err
 	}
 
+	baseURL := ""
+	if record.LastBaseURL != "" {
+		baseURL = record.LastBaseURL
+	} else if len(baseURLs) > 0 {
+		baseURL = baseURLs[0]
+	}
+
 	return &RegistrationState{
 		Enabled:             s.cfg.Center.Enabled,
 		BaseURL:             baseURL,
+		BaseURLs:            baseURLs,
 		PublicBaseURL:       publicBaseURL,
 		Visibility:          visibility,
 		EnrollmentMode:      enrollmentMode,
@@ -154,10 +179,10 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 		HubID:               record.HubID,
 		DisabledReason:      record.DisabledReason,
 		LastError:           record.LastError,
+		ActiveBaseURL:       record.LastBaseURL,
 		LastRegisteredAt:    record.LastRegisteredAt,
 	}, nil
 }
-
 func (s *Service) SetBaseURL(ctx context.Context, baseURL string) (*RegistrationState, error) {
 	baseURL = normalizeBaseURL(baseURL)
 	if baseURL == "" {
@@ -230,9 +255,12 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 		return nil, fmt.Errorf("hub has been disabled by Hub Center")
 	}
 
-	baseURL, err := s.baseURL(ctx)
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
 	if err != nil {
 		return nil, err
+	}
+	if len(baseURLs) == 0 {
+		return nil, fmt.Errorf("hub center base url is required")
 	}
 	advertisedBaseURL, advertisedHost, advertisedPort, err := s.advertisedEndpoint()
 	if err != nil {
@@ -285,54 +313,82 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/hubs/register", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/hubs/register", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := s.client.Do(httpReq)
-	if err != nil {
-		_ = s.updateRegistrationError(ctx, err.Error())
-		return nil, err
-	}
-	defer resp.Body.Close()
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		err = fmt.Errorf("hub center register failed with status %d", resp.StatusCode)
-		_ = s.updateRegistrationError(ctx, err.Error())
-		return nil, err
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			var apiErr centerErrorPayload
+			_ = json.Unmarshal(body, &apiErr)
+			message := strings.TrimSpace(apiErr.Message)
+			if message == "" {
+				message = fmt.Sprintf("hub center register failed with status %d", resp.StatusCode)
+			}
+			if resp.StatusCode == http.StatusLocked {
+				record.Disabled = true
+				record.Registered = false
+				record.PendingConfirmation = false
+				record.DisabledReason = message
+				record.LastError = message
+				record.LastBaseURL = baseURL
+				_ = s.saveRegistration(ctx, record)
+				return nil, errors.New(message)
+			}
+			lastErr = errors.New(message)
+			continue
+		}
+
+		var registerResp registerHubResponse
+		if err := json.Unmarshal(body, &registerResp); err != nil {
+			lastErr = err
+			continue
+		}
+		if registerResp.HubID == "" || registerResp.HubSecret == "" {
+			lastErr = fmt.Errorf("hub center register returned incomplete credentials")
+			continue
+		}
+
+		record = registrationRecord{
+			Registered:          !registerResp.PendingConfirmation,
+			PendingConfirmation: registerResp.PendingConfirmation,
+			Disabled:            false,
+			HubID:               registerResp.HubID,
+			HubSecret:           registerResp.HubSecret,
+			DisabledReason:      "",
+			LastError:           registerResp.Message,
+			LastBaseURL:         baseURL,
+			LastRegisteredAt:    time.Now().Unix(),
+		}
+		if err := s.saveRegistration(ctx, record); err != nil {
+			return nil, err
+		}
+		s.startHeartbeatLoop()
+		return s.Status(ctx)
 	}
 
-	var registerResp registerHubResponse
-	if err := json.NewDecoder(resp.Body).Decode(&registerResp); err != nil {
-		_ = s.updateRegistrationError(ctx, err.Error())
-		return nil, err
+	if lastErr != nil {
+		_ = s.updateRegistrationError(ctx, lastErr.Error())
+		return nil, lastErr
 	}
-	if registerResp.HubID == "" || registerResp.HubSecret == "" {
-		err = fmt.Errorf("hub center register returned incomplete credentials")
-		_ = s.updateRegistrationError(ctx, err.Error())
-		return nil, err
-	}
-
-	record = registrationRecord{
-		Registered:          !registerResp.PendingConfirmation,
-		PendingConfirmation: registerResp.PendingConfirmation,
-		Disabled:            false,
-		HubID:               registerResp.HubID,
-		HubSecret:           registerResp.HubSecret,
-		DisabledReason:      "",
-		LastError:           registerResp.Message,
-		LastRegisteredAt:    time.Now().Unix(),
-	}
-	if err := s.saveRegistration(ctx, record); err != nil {
-		return nil, err
-	}
-	s.startHeartbeatLoop()
-
-	return s.Status(ctx)
+	return nil, fmt.Errorf("hub center register failed")
 }
-
 func (s *Service) StartBackgroundSync() {
 	if !s.cfg.Center.Enabled {
 		return
@@ -356,26 +412,118 @@ func (s *Service) StartBackgroundSync() {
 }
 
 func (s *Service) baseURL(ctx context.Context) (string, error) {
-	raw, err := s.settings.Get(ctx, systemKeyCenterBaseURL)
+	baseURLs, err := s.centerBaseURLs(ctx)
 	if err != nil {
 		return "", err
 	}
-	if raw == "" {
-		return normalizeBaseURL(s.cfg.Center.BaseURL), nil
+	if len(baseURLs) == 0 {
+		return "", nil
 	}
-
-	var payload struct {
-		Value string `json:"value"`
+	record, err := s.loadRegistration(ctx)
+	if err == nil && strings.TrimSpace(record.LastBaseURL) != "" {
+		return normalizeBaseURL(record.LastBaseURL), nil
 	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", err
-	}
-	if payload.Value == "" {
-		return normalizeBaseURL(s.cfg.Center.BaseURL), nil
-	}
-	return normalizeBaseURL(payload.Value), nil
+	return baseURLs[0], nil
 }
 
+func (s *Service) centerBaseURLs(ctx context.Context) ([]string, error) {
+	raw, err := s.settings.Get(ctx, systemKeyCenterBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]string, 0, len(s.cfg.Center.BaseURLs)+1)
+	if raw != "" {
+		var payload struct {
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return nil, err
+		}
+		if payload.Value != "" {
+			values = append(values, payload.Value)
+		}
+	}
+	values = append(values, s.cfg.Center.BaseURLs...)
+	values = append(values, s.cfg.Center.BaseURL)
+	return normalizeBaseURLs(values), nil
+}
+
+func (s *Service) orderedCenterBaseURLs(ctx context.Context, preferred string) ([]string, error) {
+	baseURLs, err := s.centerBaseURLs(ctx)
+	if err != nil || len(baseURLs) <= 1 {
+		return baseURLs, err
+	}
+	preferred = normalizeBaseURL(preferred)
+	type candidate struct {
+		BaseURL   string
+		Reachable bool
+		Routable  bool
+		Score     int
+		Preferred bool
+	}
+	items := make([]candidate, 0, len(baseURLs))
+	for _, baseURL := range baseURLs {
+		probe := s.probeCenterQuality(ctx, baseURL)
+		items = append(items, candidate{BaseURL: baseURL, Reachable: probe.Reachable, Routable: probe.Routable, Score: probe.QualityScore, Preferred: baseURL == preferred})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Reachable != items[j].Reachable {
+			return items[i].Reachable
+		}
+		if items[i].Routable != items[j].Routable {
+			return items[i].Routable
+		}
+		leftScore := items[i].Score
+		rightScore := items[j].Score
+		if items[i].Preferred {
+			leftScore += 5
+		}
+		if items[j].Preferred {
+			rightScore += 5
+		}
+		if leftScore != rightScore {
+			return leftScore > rightScore
+		}
+		return items[i].BaseURL < items[j].BaseURL
+	})
+	ordered := make([]string, 0, len(items))
+	for _, item := range items {
+		ordered = append(ordered, item.BaseURL)
+	}
+	return ordered, nil
+}
+
+func (s *Service) probeCenterQuality(ctx context.Context, baseURL string) struct {
+	Reachable, Routable bool
+	QualityScore        int
+} {
+	result := struct {
+		Reachable, Routable bool
+		QualityScore        int
+	}{}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/api/client/quality", nil)
+	if err != nil {
+		return result
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return result
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return result
+	}
+	var payload centerQualityProbe
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return result
+	}
+	result.Reachable = true
+	result.Routable = payload.Routable
+	result.QualityScore = payload.QualityScore
+	return result
+}
 func (s *Service) publicBaseURL(ctx context.Context) (string, error) {
 	raw, err := s.settings.Get(ctx, systemKeyPublicBaseURL)
 	if err != nil {
@@ -568,11 +716,6 @@ func (s *Service) startHeartbeatLoop() {
 }
 
 func (s *Service) sendHeartbeat(ctx context.Context) error {
-	baseURL, err := s.baseURL(ctx)
-	if err != nil {
-		return err
-	}
-
 	record, err := s.loadRegistration(ctx)
 	if err != nil {
 		return err
@@ -580,9 +723,15 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
 		return nil
 	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return err
+	}
+	if len(baseURLs) == 0 {
+		return fmt.Errorf("hub center base url is required")
+	}
 
 	invCodeRequired, _ := s.invitationCodeRequired(ctx)
-
 	payload, err := json.Marshal(map[string]any{
 		"hub_secret":               record.HubSecret,
 		"invitation_code_required": invCodeRequired,
@@ -591,60 +740,102 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 		return err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/hubs/"+record.HubID+"/heartbeat", bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	attempts := 0
+	unregisteredCount := 0
+	notReadyCount := 0
+	for _, baseURL := range baseURLs {
+		attempts++
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/hubs/"+record.HubID+"/heartbeat", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := s.client.Do(httpReq)
-	if err != nil {
-		return s.updateRegistrationError(context.Background(), err.Error())
-	}
-	defer resp.Body.Close()
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusNotFound {
-			record.Registered = false
+		if resp.StatusCode == http.StatusOK {
+			record.Registered = true
 			record.PendingConfirmation = false
 			record.Disabled = false
-			record.HubID = ""
-			record.HubSecret = ""
 			record.DisabledReason = ""
-			record.LastError = "hub registration was removed by Hub Center"
-			record.LastRegisteredAt = 0
+			record.LastError = ""
+			record.LastBaseURL = baseURL
+			record.LastRegisteredAt = time.Now().Unix()
 			return s.saveRegistration(context.Background(), record)
 		}
-		if resp.StatusCode == http.StatusConflict {
+
+		var apiErr centerErrorPayload
+		_ = json.Unmarshal(body, &apiErr)
+		message := strings.TrimSpace(apiErr.Message)
+		if message == "" {
+			message = fmt.Sprintf("hub center heartbeat failed with status %d", resp.StatusCode)
+		}
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusNotFound:
+			if strings.EqualFold(strings.TrimSpace(apiErr.Code), "HUB_UNREGISTERED") || apiErr.Code == "" {
+				unregisteredCount++
+				lastErr = errors.New(message)
+				continue
+			}
+		case http.StatusConflict:
+			if strings.EqualFold(strings.TrimSpace(apiErr.Code), "HUB_NOT_READY_ON_NODE") {
+				notReadyCount++
+				lastErr = errors.New(message)
+				continue
+			}
 			record.Registered = false
 			record.PendingConfirmation = true
 			record.Disabled = false
 			record.DisabledReason = ""
-			record.LastError = "hub registration is waiting for email confirmation"
+			record.LastError = message
+			record.LastBaseURL = baseURL
 			record.LastRegisteredAt = time.Now().Unix()
 			return s.saveRegistration(context.Background(), record)
-		}
-		if resp.StatusCode == http.StatusLocked {
+		case http.StatusLocked:
 			record.Registered = false
 			record.PendingConfirmation = false
 			record.Disabled = true
-			record.DisabledReason = "disabled by Hub Center"
-			record.LastError = "hub has been disabled by Hub Center"
+			record.DisabledReason = message
+			record.LastError = message
+			record.LastBaseURL = baseURL
 			record.LastRegisteredAt = time.Now().Unix()
 			return s.saveRegistration(context.Background(), record)
 		}
-		return s.updateRegistrationError(context.Background(), fmt.Sprintf("hub center heartbeat failed with status %d", resp.StatusCode))
+		lastErr = errors.New(message)
 	}
 
-	record.Registered = true
-	record.PendingConfirmation = false
-	record.Disabled = false
-	record.DisabledReason = ""
-	record.LastError = ""
-	record.LastRegisteredAt = time.Now().Unix()
-	return s.saveRegistration(context.Background(), record)
+	if attempts > 0 && unregisteredCount == attempts {
+		record.Registered = false
+		record.PendingConfirmation = false
+		record.Disabled = false
+		record.HubID = ""
+		record.HubSecret = ""
+		record.DisabledReason = ""
+		record.LastError = "hub registration was removed by Hub Center"
+		record.LastBaseURL = ""
+		record.LastRegisteredAt = 0
+		return s.saveRegistration(context.Background(), record)
+	}
+	if notReadyCount > 0 {
+		return s.updateRegistrationError(context.Background(), "hub metadata is not available on this hubcenter node yet")
+	}
+	if lastErr != nil {
+		return s.updateRegistrationError(context.Background(), lastErr.Error())
+	}
+	return nil
 }
-
 func normalizeEmail(email string) string {
 	return strings.TrimSpace(strings.ToLower(email))
 }
@@ -660,6 +851,22 @@ func normalizeBaseURL(baseURL string) string {
 	return strings.TrimRight(baseURL, "/")
 }
 
+func normalizeBaseURLs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeBaseURL(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
 func normalizeVisibility(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "shared":

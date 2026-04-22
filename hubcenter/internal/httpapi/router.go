@@ -57,7 +57,11 @@ func RegisterHubHandler(service *hubs.Service) http.HandlerFunc {
 	}
 }
 
-func HubHeartbeatHandler(service *hubs.Service) http.HandlerFunc {
+func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.HandlerFunc {
+	var haSvc *ha.Service
+	if len(haSvcs) > 0 {
+		haSvc = haSvcs[0]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		hubID := r.PathValue("id")
 		if hubID == "" {
@@ -72,7 +76,15 @@ func HubHeartbeatHandler(service *hubs.Service) http.HandlerFunc {
 		}
 
 		if err := service.HeartbeatHubWithSecret(r.Context(), hubID, req.HubSecret, req.InvitationCodeRequired); err != nil {
+			if errors.Is(err, hubs.ErrHubNotReadyOnNode) {
+				writeClientAwareError(w, http.StatusConflict, "HUB_NOT_READY_ON_NODE", "Hub metadata is not available on this node yet.", true, true)
+				return
+			}
 			if errors.Is(err, hubs.ErrHubUnauthorized) {
+				if haSvc != nil {
+					writeClientAwareError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered on this node.", true, true)
+					return
+				}
 				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
 				return
 			}
@@ -145,6 +157,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/profile", RequireAdmin(adminService, AdminUpdateProfileHandler(adminService)))
 	mux.HandleFunc("GET /api/admin/server/config", RequireAdmin(adminService, GetAdminServerConfigHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/server/config", RequireAdmin(adminService, UpdateAdminServerConfigHandler(hubService)))
+	mux.HandleFunc("GET /api/admin/ha/status", RequireAdmin(adminService, AdminHAStatusHandler(haSvc)))
 	mux.HandleFunc("GET /api/admin/mail/config", RequireAdmin(adminService, GetMailConfigHandler(mailer)))
 	mux.HandleFunc("POST /api/admin/mail/config", RequireAdmin(adminService, UpdateMailConfigHandler(mailer)))
 	mux.HandleFunc("GET /api/admin/hubs", RequireAdmin(adminService, ListHubsHandler(hubService)))
@@ -161,7 +174,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("DELETE /api/admin/blocked-ips/{ip}", RequireAdmin(adminService, RemoveBlockedIPHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/mail/test", RequireAdmin(adminService, AdminSendTestMailHandler(mailer)))
 	mux.HandleFunc("POST /api/hubs/register", RegisterHubHandler(hubService))
-	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService))
+	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService, haSvc))
 	mux.HandleFunc("GET /hub-registration/confirm", ConfirmHubRegistrationHandler(hubService))
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
 	mux.HandleFunc("GET /api/client/quality", ClientQualityHandler(haSvc))

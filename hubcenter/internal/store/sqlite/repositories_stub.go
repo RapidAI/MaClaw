@@ -54,6 +54,11 @@ type haEntityVersionRepo struct {
 	batch      *writeBatcher
 }
 
+type haHeartbeatSyncStateRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+
 type gossipRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
@@ -76,6 +81,7 @@ func NewStore(p *Provider) *store.Store {
 		HASyncOps:        &haSyncOpRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		HAPeerCursors:    &haPeerCursorRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		HAEntityVersions: &haEntityVersionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HAHeartbeatSync:  &haHeartbeatSyncStateRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Gossip:           &gossipRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		News:             &newsRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
@@ -758,7 +764,7 @@ func timePtrString(v *time.Time) any {
 	return v.Format(time.RFC3339)
 }
 
-// 閳光偓閳光偓 Gossip Repository 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
+// 闁冲厜鍋撻柍鍏夊亾 Gossip Repository 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
 
 func (r *gossipRepo) CreatePost(ctx context.Context, post *store.GossipPost) error {
 	return execWrite(ctx, r.batch, r.db,
@@ -967,7 +973,7 @@ func (r *gossipRepo) RateComment(ctx context.Context, comment *store.GossipComme
 		return store.ErrAlreadyRated
 	}
 
-	// Insert the rating comment 閳?unique index acts as final safety net
+	// Insert the rating comment 闁?unique index acts as final safety net
 	if _, err := conn.ExecContext(ctx,
 		`INSERT INTO gossip_comments (id, post_id, machine_id, user_email, nickname, content, rating, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

@@ -3985,6 +3985,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		// Desktop AI assistant panel: override PDF instructions with Markdown preview.
 		if msg.Platform == "desktop" {
 			systemPrompt += desktopWorkflowDocOverride()
+		} else if msg.Platform != "" {
+			// IM channels: enforce PDF delivery for all workflow phase documents.
+			systemPrompt += imWorkflowDocDeliveryRule()
 		}
 
 		result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, nil, nil, nil, msg.MinIterations, msg.Platform)
@@ -4171,6 +4174,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Desktop AI assistant panel: override PDF instructions with Markdown preview.
 	if msg.Platform == "desktop" {
 		systemPrompt += desktopWorkflowDocOverride()
+	} else if msg.Platform != "" {
+		// IM channels: enforce PDF delivery for all workflow phase documents.
+		systemPrompt += imWorkflowDocDeliveryRule()
 	}
 
 	// Create a LoopContext for this chat loop.

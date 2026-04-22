@@ -93,7 +93,7 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_gossip_comments_post_id ON gossip_comments(post_id);`,
-		// 鈹€鈹€ News (announcements) 鈹€鈹€
+		// 閳光偓閳光偓 News (announcements) 閳光偓閳光偓
 		`CREATE TABLE IF NOT EXISTS news_articles (
 			id TEXT PRIMARY KEY,
 			title TEXT NOT NULL,
@@ -168,6 +168,12 @@ func RunMigrations(db *sql.DB) error {
 		PRIMARY KEY(entity_type, entity_id)
 	)`); err != nil {
 		return fmt.Errorf("create ha_entity_versions: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ha_heartbeat_sync_state (
+		hub_id TEXT PRIMARY KEY,
+		last_synced_seen_at TEXT
+	)`); err != nil {
+		return fmt.Errorf("create ha_heartbeat_sync_state: %w", err)
 	}
 	if err := ensureGossipFlaggedColumn(db); err != nil {
 		return err

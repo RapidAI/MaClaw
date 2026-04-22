@@ -21,6 +21,8 @@ Use a custom config file:
 go run .\cmd\hubcenter --config .\configs\config.yaml
 ```
 
+For a 3-node Hub Center HA deployment with local SQLite on each node, see `../docs/hubcenter-ha-3nodes.md`.
+
 ## Package
 
 ```powershell

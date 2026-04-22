@@ -16,6 +16,7 @@ import (
 )
 
 var ErrHubUnauthorized = errors.New("hub unauthorized")
+var ErrHubNotReadyOnNode = errors.New("hub not ready on node")
 var ErrHubPendingConfirmation = errors.New("hub pending confirmation")
 var ErrHubDisabled = errors.New("hub disabled")
 var ErrEmailBlocked = errors.New("email blocked")
@@ -35,6 +36,7 @@ type confirmationTokenState struct {
 }
 
 type syncRecorder interface {
+	SyncHubHeartbeat(ctx context.Context, hubID string)
 	AppendBlockedEmail(ctx context.Context, item *store.BlockedEmail)
 	DeleteBlockedEmail(ctx context.Context, email string)
 	AppendBlockedIP(ctx context.Context, item *store.BlockedIP)
@@ -223,6 +225,9 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 		return err
 	}
 	if hub == nil {
+		if s.sync != nil {
+			return ErrHubNotReadyOnNode
+		}
 		return ErrHubUnauthorized
 	}
 	if rawSecret != "" && hub.HubSecretHash != hashToken(rawSecret) {
@@ -241,6 +246,9 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 	}
 	if hub.IsDisabled || hub.Status == "disabled" {
 		return ErrHubDisabled
+	}
+	if s.sync != nil {
+		s.sync.SyncHubHeartbeat(ctx, hubID)
 	}
 	return nil
 }

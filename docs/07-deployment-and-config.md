@@ -85,3 +85,13 @@ This keeps self-hosted deployment simple.
 - server settings
 - database settings
 - mail settings
+
+## 9. Three-Node HA Examples
+
+For the lightweight 3-node Hub Center HA layout with local SQLite on each node, see:
+
+- [docs/hubcenter-ha-3nodes.md](/D:/workprj/aicoder/docs/hubcenter-ha-3nodes.md)
+- [hubcenter/configs/config.ha-hc1.example.yaml](/D:/workprj/aicoder/hubcenter/configs/config.ha-hc1.example.yaml)
+- [hubcenter/configs/config.ha-hc2.example.yaml](/D:/workprj/aicoder/hubcenter/configs/config.ha-hc2.example.yaml)
+- [hubcenter/configs/config.ha-hc3.example.yaml](/D:/workprj/aicoder/hubcenter/configs/config.ha-hc3.example.yaml)
+- [hub/configs/config.ha-3centers.example.yaml](/D:/workprj/aicoder/hub/configs/config.ha-3centers.example.yaml)

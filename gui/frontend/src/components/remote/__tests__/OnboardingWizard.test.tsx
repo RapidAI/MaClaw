@@ -111,6 +111,31 @@ describe('OnboardingWizard registration', () => {
         cleanup();
     });
 
+    it('renders optional service redeem code text in Chinese registration step', () => {
+        render(<OnboardingWizard {...baseProps} lang="zh-Hans" />);
+
+        expect(screen.getByText('服务兑换码')).toBeTruthy();
+        expect(screen.getByPlaceholderText('请输入服务兑换码（可选）')).toBeTruthy();
+    });
+
+    it('redeems optional service code after registration when provided', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        RedeemHubLLMServiceMock.mockResolvedValue({ active: true, skip_llm_config: true });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: ' card123 ' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(RedeemHubLLMServiceMock).toHaveBeenCalledWith('CARD123');
+        });
+        expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+        expect((screen.getByPlaceholderText('Enter service redeem code (optional)') as HTMLInputElement).value).toBe('');
+    });
+
     it('marks registration done after activation succeeds', async () => {
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
         GetRemoteActivationStatusMock.mockResolvedValue({ activated: true });
@@ -128,6 +153,7 @@ describe('OnboardingWizard registration', () => {
         expect(screen.getByText('Hub connecting')).toBeTruthy();
         expect(baseProps.onSaveField).toHaveBeenCalledWith({ remote_email: 'user@example.com' });
         expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
+        expect(RedeemHubLLMServiceMock).not.toHaveBeenCalled();
         expect(GetRemoteActivationStatusMock).not.toHaveBeenCalled();
     });
 

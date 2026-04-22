@@ -34,14 +34,16 @@ type Service struct {
 	advertiseURL  string
 	clusterSecret string
 
-	ops           store.HASyncOpRepository
-	cursors       store.HAPeerCursorRepository
-	versions      store.HAEntityVersionRepository
-	blockedEmails store.BlockedEmailRepository
-	blockedIPs    store.BlockedIPRepository
-	news          store.NewsRepository
-	hubs          store.HubRepository
-	links         store.HubUserLinkRepository
+	ops                      store.HASyncOpRepository
+	cursors                  store.HAPeerCursorRepository
+	versions                 store.HAEntityVersionRepository
+	blockedEmails            store.BlockedEmailRepository
+	blockedIPs               store.BlockedIPRepository
+	news                     store.NewsRepository
+	hubs                     store.HubRepository
+	links                    store.HubUserLinkRepository
+	heartbeatSync            store.HAHeartbeatSyncStateRepository
+	heartbeatSyncMinInterval time.Duration
 
 	mu     sync.RWMutex
 	peers  map[string]*PeerRuntimeState
@@ -65,12 +67,13 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 	}
 
 	return &Service{
-		nodeID:        strings.TrimSpace(nodeID),
-		nodeName:      strings.TrimSpace(nodeName),
-		advertiseURL:  strings.TrimRight(strings.TrimSpace(advertiseURL), "/"),
-		clusterSecret: strings.TrimSpace(clusterSecret),
-		peers:         peerMap,
-		client:        &http.Client{Timeout: 2 * time.Second},
+		nodeID:                   strings.TrimSpace(nodeID),
+		nodeName:                 strings.TrimSpace(nodeName),
+		advertiseURL:             strings.TrimRight(strings.TrimSpace(advertiseURL), "/"),
+		clusterSecret:            strings.TrimSpace(clusterSecret),
+		peers:                    peerMap,
+		client:                   &http.Client{Timeout: 2 * time.Second},
+		heartbeatSyncMinInterval: 10 * time.Second,
 	}
 }
 
@@ -86,6 +89,7 @@ func (s *Service) AttachStore(st *store.Store) {
 	s.news = st.News
 	s.hubs = st.Hubs
 	s.links = st.HubUserLinks
+	s.heartbeatSync = st.HAHeartbeatSync
 }
 
 func (s *Service) NodeID() string {
@@ -93,6 +97,16 @@ func (s *Service) NodeID() string {
 		return ""
 	}
 	return s.nodeID
+}
+
+func (s *Service) SetHeartbeatSyncMinInterval(d time.Duration) {
+	if s == nil {
+		return
+	}
+	if d <= 0 {
+		d = 10 * time.Second
+	}
+	s.heartbeatSyncMinInterval = d
 }
 
 func (s *Service) ClusterSecret() string {
@@ -159,6 +173,26 @@ func (s *Service) updatePeerFromQuality(nodeID string, rttMs int64, q *ClientQua
 	peer.LastError = ""
 }
 
+func (s *Service) AppendHubHeartbeat(ctx context.Context, hubID string) {
+	if s == nil || s.hubs == nil || s.heartbeatSync == nil || strings.TrimSpace(hubID) == "" {
+		return
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil || hub == nil || hub.LastSeenAt == nil {
+		return
+	}
+	state, err := s.heartbeatSync.Get(ctx, hubID)
+	if err != nil {
+		return
+	}
+	if state != nil && state.LastSyncedSeenAt != nil {
+		if !hub.LastSeenAt.After(state.LastSyncedSeenAt.Add(s.heartbeatSyncMinInterval)) {
+			return
+		}
+	}
+	s.AppendHubInstance(ctx, hub)
+	_ = s.heartbeatSync.Upsert(ctx, &store.HAHeartbeatSyncState{HubID: hubID, LastSyncedSeenAt: hub.LastSeenAt})
+}
 func (s *Service) updatePeerSync(nodeID string, backlog int64) {
 	if s == nil {
 		return
@@ -237,6 +271,88 @@ func (s *Service) ListClientEndpoints(ctx context.Context) (*EndpointsView, erro
 		nodes = append(nodes, EndpointView{NodeID: peer.NodeID, NodeName: peer.NodeName, BaseURL: peer.BaseURL, ServiceStatus: peer.ServiceStatus, QualityScore: peer.QualityScore, Routable: peer.Reachable && peer.QualityScore >= 50})
 	}
 	return &EndpointsView{OK: true, Nodes: nodes, TTLSeconds: 60, ServerTime: time.Now().UTC()}, nil
+}
+
+func (s *Service) GetAdminStatus(ctx context.Context) (*AdminStatusView, error) {
+	if s == nil {
+		return &AdminStatusView{Enabled: false, GeneratedAt: time.Now().UTC()}, nil
+	}
+
+	quality, err := s.GetClientQuality(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	maxSeq := int64(0)
+	if s.ops != nil {
+		maxSeq, err = s.ops.GetMaxSeq(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	peers := s.listPeerStates()
+	view := &AdminStatusView{
+		Enabled:       true,
+		NodeID:        s.nodeID,
+		NodeName:      s.nodeName,
+		AdvertiseURL:  s.advertiseURL,
+		ServiceStatus: quality.ServiceStatus,
+		QualityScore:  quality.QualityScore,
+		Routable:      quality.Routable,
+		Peers:         make([]AdminPeerView, 0, len(peers)),
+		GeneratedAt:   time.Now().UTC(),
+	}
+	view.Cluster = AdminClusterView{
+		ReachableNodes: quality.Cluster.ReachableNodes,
+		TotalNodes:     quality.Cluster.TotalNodes,
+		QuorumSize:     (quality.Cluster.TotalNodes / 2) + 1,
+		Status:         quality.Cluster.Status,
+	}
+	view.Sync = AdminSyncView{
+		Enabled:                         len(peers) > 0,
+		MaxOpSeq:                        maxSeq,
+		HeartbeatSyncMinIntervalSeconds: int64(s.heartbeatSyncMinInterval.Seconds()),
+		LastSuccessAt:                   quality.Sync.LastSuccessAt,
+	}
+
+	for _, peer := range peers {
+		item := AdminPeerView{
+			NodeID:        peer.NodeID,
+			NodeName:      peer.NodeName,
+			BaseURL:       peer.BaseURL,
+			Reachable:     peer.Reachable,
+			RTTMs:         peer.RTTMs,
+			QualityScore:  peer.QualityScore,
+			ServiceStatus: peer.ServiceStatus,
+			ClusterStatus: peer.ClusterStatus,
+			LagSeconds:    peer.LagSeconds,
+			Backlog:       peer.Backlog,
+			LastCheckedAt: peer.LastCheckedAt,
+			LastSuccessAt: peer.LastSuccessAt,
+			LastError:     peer.LastError,
+		}
+		if s.cursors != nil {
+			cursor, err := s.cursors.Get(ctx, peer.NodeID)
+			if err != nil {
+				return nil, err
+			}
+			if cursor != nil {
+				item.CursorLastPulledSeq = cursor.LastPulledSeq
+				item.CursorLastPulledAt = cursor.LastPulledAt
+				item.CursorLastSuccessAt = cursor.LastSuccessAt
+				if item.LastSuccessAt == nil {
+					item.LastSuccessAt = cursor.LastSuccessAt
+				}
+				if strings.TrimSpace(item.LastError) == "" {
+					item.LastError = cursor.LastError
+				}
+			}
+		}
+		view.Peers = append(view.Peers, item)
+	}
+
+	return view, nil
 }
 
 func (s *Service) ListOpsAfterSeq(ctx context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error) {
@@ -321,7 +437,7 @@ func (s *Service) ApplyRemoteOp(ctx context.Context, op *store.HASyncOp) error {
 	if err != nil {
 		return err
 	}
-	if current != nil && op.EntityVersion <= current.Version {
+	if current != nil && !shouldApplyRemoteVersion(current, op) {
 		return s.markApplied(ctx, op)
 	}
 	if err := s.applyEntityOp(ctx, op); err != nil {
@@ -331,6 +447,22 @@ func (s *Service) ApplyRemoteOp(ctx context.Context, op *store.HASyncOp) error {
 		return err
 	}
 	return s.markApplied(ctx, op)
+}
+
+func shouldApplyRemoteVersion(current *store.HAEntityVersion, op *store.HASyncOp) bool {
+	if op == nil {
+		return false
+	}
+	if current == nil {
+		return true
+	}
+	if op.EntityVersion != current.Version {
+		return op.EntityVersion > current.Version
+	}
+	if !op.OccurredAt.Equal(current.UpdatedAt) {
+		return op.OccurredAt.After(current.UpdatedAt)
+	}
+	return strings.TrimSpace(op.SourceNodeID) > strings.TrimSpace(current.UpdatedByNodeID)
 }
 
 func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
@@ -594,6 +726,26 @@ func (s *Service) DeleteHubUserLink(ctx context.Context, hubID string) {
 	}
 }
 
+func (s *Service) SyncHubHeartbeat(ctx context.Context, hubID string) {
+	if s == nil || s.hubs == nil || s.heartbeatSync == nil || strings.TrimSpace(hubID) == "" {
+		return
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil || hub == nil || hub.LastSeenAt == nil {
+		return
+	}
+	state, err := s.heartbeatSync.Get(ctx, hubID)
+	if err != nil {
+		return
+	}
+	if state != nil && state.LastSyncedSeenAt != nil {
+		if !hub.LastSeenAt.After(state.LastSyncedSeenAt.Add(s.heartbeatSyncMinInterval)) {
+			return
+		}
+	}
+	s.AppendHubInstance(ctx, hub)
+	_ = s.heartbeatSync.Upsert(ctx, &store.HAHeartbeatSyncState{HubID: hubID, LastSyncedSeenAt: hub.LastSeenAt})
+}
 func computeQuality(totalNodes int, reachablePeers int, maxLagSeconds int64, maxBacklog int64, recentSyncError bool) (int, string, bool) {
 	score := 100
 	expectedPeers := totalNodes - 1

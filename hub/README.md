@@ -21,6 +21,8 @@ Use a custom config file:
 go run .\cmd\hub --config .\configs\config.yaml
 ```
 
+Hub can be configured with multiple Hub Center addresses via `center.base_urls`; see `../docs/hubcenter-ha-3nodes.md` for the 3-node HA example.
+
 ## Package
 
 ```powershell

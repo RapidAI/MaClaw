@@ -47,6 +47,15 @@
     .session-modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(27,30,40,.22);backdrop-filter:blur(8px);z-index:9990;align-items:center;justify-content:center}.session-modal-overlay.show{display:flex}.session-modal{width:min(760px,calc(100% - 48px));max-height:82vh;overflow:auto;background:rgba(255,255,255,.96);border-radius:28px;box-shadow:0 24px 60px rgba(31,34,48,.18);padding:24px;position:relative;border:1px solid rgba(255,255,255,.78)}.session-modal h3{margin:0 0 16px;font-size:21px}.session-modal .close-btn{position:absolute;top:14px;right:16px;background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;height:auto;padding:0;line-height:1}.session-item{padding:14px 16px;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#fff8f7 100%);border:1px solid rgba(31,34,48,.06);margin-bottom:10px}.session-item .session-field{display:flex;gap:8px;align-items:baseline;margin-bottom:4px}.session-item .session-label{color:var(--muted);font-size:12px;font-weight:700;min-width:90px;flex-shrink:0}.session-item .session-value{font-size:13px;word-break:break-all}
     @media (max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.login-card,.app{grid-template-columns:1fr}.side{position:relative;border-right:0;border-bottom:1px solid rgba(31,34,48,.06)}.nav{grid-template-columns:repeat(2,minmax(0,1fr))}.nav button{min-height:64px}.top{align-items:stretch}.topbar{justify-content:flex-start}.im-sidebar button{padding:10px 14px}#boundUsers .user-grid-wrap{grid-template-columns:repeat(2,minmax(0,1fr))!important}#skillhubList.list{grid-template-columns:repeat(2,minmax(0,1fr))}#newsList.list{grid-template-columns:repeat(2,minmax(0,1fr))}#gossipList.list{grid-template-columns:1fr}#smReviewList.list,#smPurchaseList.list{grid-template-columns:1fr}.sm-config-grid{grid-template-columns:1fr}}@media (max-width:760px){.shell,.main{padding:18px}.side{padding:16px}.brand-shell{align-items:center}.brand-mark{width:42px;height:42px;border-radius:14px}.brand h1{font-size:24px}.nav{grid-template-columns:1fr}.nav button{min-height:62px}.page-title-wrap{grid-template-columns:46px minmax(0,1fr);gap:12px}.page-tab-icon{width:46px;height:46px;border-radius:16px}.page-tab-icon svg{width:22px;height:22px}.top h2{font-size:28px}.topbar,.head,.head>.actions,#gossipPager,#skillhubPager,#newsPager,#smPurchasePager{width:100%}.head{flex-direction:column;align-items:stretch}.head>.actions{justify-content:flex-start}.filter-group{width:100%;justify-content:space-between}.filter-group button{flex:1}.metrics,.grid2,.grid3,#skillhubList.list,#newsList.list,#gossipList.list,#smReviewList.list,#smPurchaseList.list,.sm-config-grid,.sm-stat-grid{grid-template-columns:1fr}.top,.pager,.sm-section-head,.sm-toolbar,.sm-card-top{flex-direction:column;align-items:flex-start}.pager,#gossipPager,#skillhubPager,#newsPager,#smPurchasePager{gap:10px;align-items:stretch!important}.pager-actions,#gossipPager,#skillhubPager,#newsPager,#smPurchasePager{flex-wrap:wrap}.pager-actions button,#gossipPager button,#skillhubPager button,#newsPager button,#smPurchasePager button{flex:1}.sm-toolbar input{width:100%}.sm-toolbar .btn-primary{width:100%}.row{grid-template-columns:1fr}#boundUsers .user-grid-wrap{grid-template-columns:1fr!important}}
   </style>
+  <style>
+    #tab-ha{--head-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 8.5h14'/%3E%3Cpath d='M5 15.5h14'/%3E%3Ccircle cx='5' cy='8.5' r='2'/%3E%3Ccircle cx='19' cy='8.5' r='2'/%3E%3Ccircle cx='12' cy='15.5' r='2'/%3E%3Cpath d='M7 8.5h10'/%3E%3Cpath d='M7 15.5h3'/%3E%3Cpath d='M14 15.5h3'/%3E%3C/svg%3E")}
+    .ha-summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    .ha-peer-list{display:grid;gap:12px}
+    .ha-peer-card{padding:16px;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#fff8f7 100%);border:1px solid rgba(31,34,48,.06);box-shadow:var(--shadow-soft)}
+    .ha-peer-meta{display:flex;flex-wrap:wrap;gap:8px 12px;color:var(--muted);font-size:12px}
+    .ha-peer-error{color:var(--danger);font-size:12px;line-height:1.6;word-break:break-word}
+    @media (max-width:760px){.ha-summary-grid{grid-template-columns:1fr}}
+  </style>
 </head>
 <body>
   <div id="toastStack" class="toast-stack"></div>
@@ -86,14 +95,14 @@
     <aside class="side">
       <div class="window-chrome"><span class="window-dot red"></span><span class="window-dot amber"></span><span class="window-dot green"></span></div>
       <div class="brand"><div class="brand-shell"><div class="brand-mark">HC</div><div class="brand-copy"><div class="mini">MaClaw Hub Center</div><h1 data-i18n="brandTitle"></h1><p data-i18n="brandDesc"></p></div></div></div>
-      <nav class="nav"><button data-tab="overview" class="active" onclick="openTab('overview')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 13.5 12 6l8 7.5"></path><path d="M6.5 11.5V19h11v-7.5"></path><path d="M10 19v-4.5h4V19"></path></svg></span><span data-i18n="navOverview"></span><small data-i18n="navOverviewDesc"></small></button><button data-tab="hubs" onclick="openTab('hubs')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v5"></path><path d="M7 10.5h10"></path><path d="M7 18h10"></path><circle cx="12" cy="3.5" r="1.5"></circle><circle cx="7" cy="10.5" r="2"></circle><circle cx="17" cy="10.5" r="2"></circle><circle cx="7" cy="18" r="2"></circle><circle cx="17" cy="18" r="2"></circle><path d="M7 12.5v3.5"></path><path d="M17 12.5v3.5"></path></svg></span><span data-i18n="navHubs"></span><small data-i18n="navHubsDesc"></small></button><button data-tab="policies" onclick="openTab('policies')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3.5 5.5 6v5.8c0 4.1 2.6 7.8 6.5 8.9 3.9-1.1 6.5-4.8 6.5-8.9V6L12 3.5Z"></path><path d="m9.5 12 1.7 1.7 3.3-3.7"></path></svg></span><span data-i18n="navPolicies"></span><small data-i18n="navPoliciesDesc"></small></button><button data-tab="system" onclick="openTab('system')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h8"></path><path d="M16 7h4"></path><path d="M4 17h4"></path><path d="M12 17h8"></path><circle cx="14" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg></span><span data-i18n="navSystem"></span><small data-i18n="navSystemDesc"></small></button><button data-tab="console" onclick="openTab('console')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6.5h16v11H4z"></path><path d="m8 10 2 2-2 2"></path><path d="M12.5 15H16"></path></svg></span><span data-i18n="navConsole"></span><small data-i18n="navConsoleDesc"></small></button><button data-tab="gossip" onclick="openTab('gossip')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 7.5h12A2.5 2.5 0 0 1 20.5 10v4A2.5 2.5 0 0 1 18 16.5H11l-4.5 3v-3H6A2.5 2.5 0 0 1 3.5 14v-4A2.5 2.5 0 0 1 6 7.5Z"></path><path d="M8 11h.01"></path><path d="M12 11h.01"></path><path d="M16 11h.01"></path></svg></span><span data-i18n="navGossip"></span><small data-i18n="navGossipDesc"></small></button><button data-tab="skillhub" onclick="openTab('skillhub')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3.8 6.8 3.7V16L12 20.2 5.2 16V7.5L12 3.8Z"></path><path d="M12 11.9 5.2 7.5"></path><path d="M12 11.9V20.2"></path><path d="m18.8 7.5-6.8 4.4"></path></svg></span><span data-i18n="navSkillhub"></span><small data-i18n="navSkillhubDesc"></small></button><button data-tab="skillmarket" onclick="openTab('skillmarket')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 8.5h14l-1 10H6z"></path><path d="M9 8.5a3 3 0 0 1 6 0"></path><path d="M9.5 12.5h5"></path><path d="M12 10v5"></path></svg></span><span data-i18n="navSkillmarket"></span><small data-i18n="navSkillmarketDesc"></small></button><button data-tab="news" onclick="openTab('news')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 18.5V8.5l10-3v10Z"></path><path d="M15 8.5h2.5a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5H15"></path><path d="M8 18.5v1a2 2 0 0 0 2 2h1"></path></svg></span><span data-i18n="navNews"></span><small data-i18n="navNewsDesc"></small></button><button data-tab="compute" onclick="openTab('compute')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2.5 6.5 13H12l-1 8.5L17.5 11H12l1-8.5Z"></path></svg></span><span id="navCompute" data-i18n="computeTabTitle"></span><small id="navComputeDesc" data-i18n="computeTabSubtitle"></small></button></nav>
+      <nav class="nav"><button data-tab="overview" class="active" onclick="openTab('overview')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 13.5 12 6l8 7.5"></path><path d="M6.5 11.5V19h11v-7.5"></path><path d="M10 19v-4.5h4V19"></path></svg></span><span data-i18n="navOverview"></span><small data-i18n="navOverviewDesc"></small></button><button data-tab="hubs" onclick="openTab('hubs')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v5"></path><path d="M7 10.5h10"></path><path d="M7 18h10"></path><circle cx="12" cy="3.5" r="1.5"></circle><circle cx="7" cy="10.5" r="2"></circle><circle cx="17" cy="10.5" r="2"></circle><circle cx="7" cy="18" r="2"></circle><circle cx="17" cy="18" r="2"></circle><path d="M7 12.5v3.5"></path><path d="M17 12.5v3.5"></path></svg></span><span data-i18n="navHubs"></span><small data-i18n="navHubsDesc"></small></button><button data-tab="ha" onclick="openTab('ha')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 8.5h14"></path><path d="M5 15.5h14"></path><circle cx="5" cy="8.5" r="2"></circle><circle cx="19" cy="8.5" r="2"></circle><circle cx="12" cy="15.5" r="2"></circle><path d="M7 15.5h3"></path><path d="M14 15.5h3"></path></svg></span><span data-i18n="navHA"></span><small data-i18n="navHADesc"></small></button><button data-tab="policies" onclick="openTab('policies')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3.5 5.5 6v5.8c0 4.1 2.6 7.8 6.5 8.9 3.9-1.1 6.5-4.8 6.5-8.9V6L12 3.5Z"></path><path d="m9.5 12 1.7 1.7 3.3-3.7"></path></svg></span><span data-i18n="navPolicies"></span><small data-i18n="navPoliciesDesc"></small></button><button data-tab="system" onclick="openTab('system')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h8"></path><path d="M16 7h4"></path><path d="M4 17h4"></path><path d="M12 17h8"></path><circle cx="14" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg></span><span data-i18n="navSystem"></span><small data-i18n="navSystemDesc"></small></button><button data-tab="console" onclick="openTab('console')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6.5h16v11H4z"></path><path d="m8 10 2 2-2 2"></path><path d="M12.5 15H16"></path></svg></span><span data-i18n="navConsole"></span><small data-i18n="navConsoleDesc"></small></button><button data-tab="gossip" onclick="openTab('gossip')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 7.5h12A2.5 2.5 0 0 1 20.5 10v4A2.5 2.5 0 0 1 18 16.5H11l-4.5 3v-3H6A2.5 2.5 0 0 1 3.5 14v-4A2.5 2.5 0 0 1 6 7.5Z"></path><path d="M8 11h.01"></path><path d="M12 11h.01"></path><path d="M16 11h.01"></path></svg></span><span data-i18n="navGossip"></span><small data-i18n="navGossipDesc"></small></button><button data-tab="skillhub" onclick="openTab('skillhub')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3.8 6.8 3.7V16L12 20.2 5.2 16V7.5L12 3.8Z"></path><path d="M12 11.9 5.2 7.5"></path><path d="M12 11.9V20.2"></path><path d="m18.8 7.5-6.8 4.4"></path></svg></span><span data-i18n="navSkillhub"></span><small data-i18n="navSkillhubDesc"></small></button><button data-tab="skillmarket" onclick="openTab('skillmarket')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 8.5h14l-1 10H6z"></path><path d="M9 8.5a3 3 0 0 1 6 0"></path><path d="M9.5 12.5h5"></path><path d="M12 10v5"></path></svg></span><span data-i18n="navSkillmarket"></span><small data-i18n="navSkillmarketDesc"></small></button><button data-tab="news" onclick="openTab('news')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 18.5V8.5l10-3v10Z"></path><path d="M15 8.5h2.5a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5H15"></path><path d="M8 18.5v1a2 2 0 0 0 2 2h1"></path></svg></span><span data-i18n="navNews"></span><small data-i18n="navNewsDesc"></small></button><button data-tab="compute" onclick="openTab('compute')"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2.5 6.5 13H12l-1 8.5L17.5 11H12l1-8.5Z"></path></svg></span><span id="navCompute" data-i18n="computeTabTitle"></span><small id="navComputeDesc" data-i18n="computeTabSubtitle"></small></button></nav>
       <div class="side-note"><span data-i18n="defaultEntry"></span><br><span class="mono">https://hubs.mypapers.top</span></div>
     </aside>
     <main class="main">
       <div class="top"><div class="page-copy"><div class="page-kicker" data-i18n="pageKicker"></div><div class="page-title-wrap"><span class="page-tab-icon" id="pageTabIcon" aria-hidden="true"></span><div class="page-heading"><h2 id="pageTitle"></h2><div class="subtle" id="pageSubtitle"></div></div></div></div><div class="topbar"><div class="lang-switch"><button type="button" data-lang="en" onclick="setLanguage('en')">EN</button><button type="button" data-lang="zh" onclick="setLanguage('zh')">&#20013;&#25991;</button></div><div class="admin-chip"><strong id="adminDisplayName"></strong><span id="adminDisplayMeta"></span></div><span id="authBadge" class="badge ok"></span><button class="btn-ghost" onclick="logoutAdmin()" data-i18n="logout"></button></div></div>
       <div class="metrics"><div class="metric"><label data-i18n="metricHubs"></label><strong id="hubCountHero">0</strong><span data-i18n="metricHubsHint"></span></div><div class="metric"><label data-i18n="metricBlockedEmails"></label><strong id="blockedEmailCountHero">0</strong><span data-i18n="metricBlockedEmailsHint"></span></div><div class="metric"><label data-i18n="metricBlockedIps"></label><strong id="blockedIPCountHero">0</strong><span data-i18n="metricBlockedIpsHint"></span></div></div>
       <section id="tab-overview" class="panel card active"><div class="head"><div><h3 data-i18n="overviewTitle"></h3><div class="desc" data-i18n="overviewDesc"></div></div><button class="btn-ghost" onclick="refreshAll()" data-i18n="refreshAll"></button></div><div class="grid2"><div class="hint" data-i18n="overviewHint"></div><div class="item"><div class="item-title" data-i18n="discoveryTitle"></div><div class="item-meta" data-i18n="discoveryDesc"></div><div class="mono url-line">https://hubs.mypapers.top</div></div></div></section>
-      <section id="tab-hubs" class="panel card"><div class="head"><div><h3 data-i18n="hubsTitle"></h3><div class="desc" data-i18n="hubsDesc"></div></div><button class="btn-ghost" onclick="listHubs()" data-i18n="refreshHubs"></button></div><div id="hubs" class="list"><div class="hint" data-i18n="emptyHubs"></div></div></section>
+      <section id="tab-hubs" class="panel card"><div class="head"><div><h3 data-i18n="hubsTitle"></h3><div class="desc" data-i18n="hubsDesc"></div></div><button class="btn-ghost" onclick="listHubs()" data-i18n="refreshHubs"></button></div><div id="hubs" class="list"><div class="hint" data-i18n="emptyHubs"></div></div></section><section id="tab-ha" class="panel card"><div class="head"><div><h3 data-i18n="haTitle"></h3><div class="desc" data-i18n="haDesc"></div></div><button class="btn-ghost" id="haRefreshBtn" onclick="loadHAStatus()" data-i18n="haRefresh"></button></div><div class="ha-summary-grid"><div class="item"><div class="item-title" data-i18n="haSelfTitle"></div><div id="haSummaryList"><div class="hint" data-i18n="haLoading"></div></div></div><div class="item"><div class="item-title" data-i18n="haPeersTitle"></div><div class="item-meta" data-i18n="haPeersDesc"></div><div id="haPeerList" class="ha-peer-list"><div class="hint" data-i18n="haLoading"></div></div></div></div></section>
       <section id="tab-policies" class="panel card"><div class="head"><div><h3 data-i18n="policiesTitle"></h3><div class="desc" data-i18n="policiesDesc"></div></div></div><div class="grid2"><div class="item"><label for="blockedEmail" data-i18n="blockedEmail"></label><input id="blockedEmail" placeholder=""><label for="blockedEmailReason" class="stack-gap-sm" data-i18n="reason"></label><input id="blockedEmailReason"><div class="actions"><button class="btn-danger" onclick="addBlockedEmail()" data-i18n="addEmailBlock"></button></div></div><div class="item"><label for="blockedIP" data-i18n="blockedIp"></label><input id="blockedIP" placeholder=""><label for="blockedIPReason" class="stack-gap-sm" data-i18n="reason"></label><input id="blockedIPReason"><div class="actions"><button class="btn-danger" onclick="addBlockedIP()" data-i18n="addIpBlock"></button></div></div></div><div class="grid2 section-gap-lg"><div class="item"><div class="head meta-spaced"><div><div class="item-title" data-i18n="blockedEmailsTitle"></div><div class="item-meta" data-i18n="blockedEmailsDesc"></div></div><button class="btn-ghost" onclick="listBlockedEmails()" data-i18n="reload"></button></div><div id="blockedEmails" class="list"><div class="hint" data-i18n="emptyBlockedEmails"></div></div></div><div class="item"><div class="head meta-spaced"><div><div class="item-title" data-i18n="blockedIpsTitle"></div><div class="item-meta" data-i18n="blockedIpsDesc"></div></div><button class="btn-ghost" onclick="listBlockedIPs()" data-i18n="reload"></button></div><div id="blockedIPs" class="list"><div class="hint" data-i18n="emptyBlockedIps"></div></div></div></div></section>
       <section id="tab-system" class="panel card"><div class="head"><div><h3 data-i18n="systemTitle"></h3><div class="desc" data-i18n="systemDesc"></div></div></div><div class="item"><div class="item-title" id="serverCardTitle"></div><div class="item-meta meta-spaced" id="serverCardDesc"></div><div><label for="serverPublicBaseURL" id="serverPublicBaseURLLabel"></label><input id="serverPublicBaseURL" placeholder=""></div><div class="actions section-gap"><button class="btn-primary" onclick="saveServerConfig()" id="saveServerConfigButton"></button></div></div><div class="item section-gap-lg"><div class="head meta-spaced"><div><div class="item-title" id="mailCardTitle"></div><div class="item-meta" id="mailCardDesc"></div></div><button class="btn-ghost" onclick="loadMailConfig()" data-i18n="reload"></button></div><div class="grid2"><div><label for="mailProvider" id="mailProviderLabel"></label><select id="mailProvider" onchange="applyMailPreset()"><option value="custom" id="mailPresetCustom"></option><option value="qq" id="mailPresetQQ"></option><option value="163" id="mailPreset163"></option><option value="126" id="mailPreset126"></option><option value="gmail" id="mailPresetGmail"></option><option value="outlook" id="mailPresetOutlook"></option></select></div><div><label for="mailHost" id="mailHostLabel"></label><input id="mailHost" placeholder=""></div></div><div class="grid2 stack-gap-sm"><div><label for="mailPort" id="mailPortLabel"></label><input id="mailPort" type="number" min="1" max="65535" placeholder="587"></div><div><label for="mailEncryption" id="mailEncryptionLabel"></label><select id="mailEncryption"><option value="auto" id="mailEncryptionAuto"></option><option value="ssl" id="mailEncryptionSSL"></option><option value="starttls" id="mailEncryptionStartTLS"></option><option value="plain" id="mailEncryptionPlain"></option></select></div></div><div class="grid2 stack-gap-sm"><div><label for="mailUsername" id="mailUsernameLabel"></label><input id="mailUsername" placeholder=""></div><div><label for="mailPassword" id="mailPasswordLabel"></label><input id="mailPassword" type="password"></div></div><div class="grid2 stack-gap-sm"><div><label for="mailFromName" id="mailFromNameLabel"></label><input id="mailFromName" placeholder=""></div><div><label for="mailFromEmail" id="mailFromEmailLabel"></label><input id="mailFromEmail" placeholder=""></div></div><div class="stack-gap-sm"><label for="testMailEmail" id="mailTestRecipientLabel"></label><input id="testMailEmail" placeholder=""></div><div class="actions section-gap"><button class="btn-secondary" onclick="saveMailConfig()" id="saveMailConfigButton"></button><button class="btn-primary" onclick="sendTestMail()" id="sendTestMailButton"></button></div></div><div class="item section-gap-lg"><div class="item-title" id="profileCardTitle"></div><div class="item-meta meta-spaced" id="profileCardDesc"></div><div class="grid2"><div><label for="adminEmailInput" id="adminEmailLabel"></label><input id="adminEmailInput" type="email" placeholder=""></div><div><label for="adminUsernameInput" id="adminUsernameLabel"></label><input id="adminUsernameInput" disabled></div></div><div class="actions section-gap"><button class="btn-primary" onclick="updateAdminProfile()" id="saveProfileButton"></button></div></div><div class="item section-gap-lg"><div class="item-title" id="passwordCardTitle"></div><div class="item-meta meta-spaced" id="passwordCardDesc"></div><div class="grid2"><div><label for="currentPasswordInput" id="currentPasswordLabel"></label><input id="currentPasswordInput" type="password"></div><div><label for="newPasswordInput" id="newPasswordLabel"></label><input id="newPasswordInput" type="password"></div></div><div class="stack-gap-sm"><label for="confirmPasswordInput" id="confirmPasswordLabel"></label><input id="confirmPasswordInput" type="password"></div><div class="actions section-gap"><button class="btn-primary" onclick="changeAdminPassword()" id="changePasswordButton"></button></div></div><div class="item section-gap-lg"><div class="item-title" id="moderationCardTitle"></div><div class="item-meta meta-spaced" id="moderationCardDesc"></div><div class="inline-check meta-spaced"><label for="moderationEnabled" id="moderationEnabledLabel" class="inline-label"></label><input type="checkbox" id="moderationEnabled" class="auto-check"></div><div class="grid2"><div><label for="moderationUrl" id="moderationUrlLabel"></label><input id="moderationUrl" placeholder=""></div><div><label for="moderationModel" id="moderationModelLabel"></label><input id="moderationModel" placeholder=""></div></div><div class="stack-gap-sm"><label for="moderationApiKey" id="moderationApiKeyLabel"></label><input id="moderationApiKey" type="password" placeholder=""></div><div class="form-row-tight stack-gap-sm"><div class="field-fill"><label for="moderationTestContent" id="moderationTestLabel"></label><input id="moderationTestContent" placeholder=""></div><div id="moderationTestResult" class="data-row-meta"></div></div><div class="actions section-gap"><button class="btn-secondary" onclick="saveModerationConfig()" id="saveModerationButton"></button><button class="btn-ghost" onclick="testModeration()" id="testModerationButton"></button></div></div></section>
       <section id="tab-compute" class="panel card">
@@ -815,5 +824,134 @@ applyI18n = function() { _baseApplyI18nCompute(); applyComputeI18n(); };
 applyComputeI18n();
 if (token()) restoreTab();
   </script>
+  <script>
+    Object.assign(I18N_EN, {
+      navHA: 'HA Cluster',
+      navHADesc: 'Three-node hot standby and sync status',
+      haTitle: 'HA Cluster',
+      haDesc: 'Observe three-node reachability, sync backlog, and peer health for lightweight multi-node hot standby.',
+      haRefresh: 'Refresh Cluster',
+      haTabTitle: 'HA Cluster',
+      haTabSubtitle: 'Three-node hot standby status, lag, and peer reachability.',
+      haSelfTitle: 'Current Node',
+      haPeersTitle: 'Peer Nodes',
+      haPeersDesc: 'Each peer shows service quality, sync cursor progress, and the latest observed error.',
+      haLoading: 'Loading cluster status...',
+      haLoadFailed: 'Load HA cluster status failed: {error}',
+      haDisabled: 'HA is not enabled on this node.',
+      haEnabled: 'Enabled',
+      haNode: 'Node',
+      haCluster: 'Cluster',
+      haReachable: 'Reachable',
+      haQuality: 'Quality',
+      haSync: 'Sync',
+      haMaxSeq: 'Max op seq',
+      haHeartbeatWindow: 'Heartbeat sync window',
+      haBacklog: 'Backlog',
+      haLag: 'Lag',
+      haLastSuccess: 'Last success',
+      haLastChecked: 'Last checked',
+      haCursor: 'Cursor',
+      haError: 'Last error',
+      haNoPeers: 'No peer nodes configured.',
+      haStandalone: 'Standalone',
+      haSeconds: '{value}s',
+      haCursorSeq: 'seq {value}'
+    });
+    Object.assign(I18N_ZH, {
+      navHA: '多机热备',
+      navHADesc: '查看三节点热备与同步状态',
+      haTitle: '多机热备',
+      haDesc: '查看三节点可达性、同步积压和节点健康度，支撑轻量多机热备。',
+      haRefresh: '刷新集群',
+      haTabTitle: '多机热备',
+      haTabSubtitle: '查看三节点热备状态、同步延迟和节点连通性。',
+      haSelfTitle: '当前节点',
+      haPeersTitle: '对端节点',
+      haPeersDesc: '每个节点展示服务质量、同步游标进度和最近错误。',
+      haLoading: '正在加载集群状态...',
+      haLoadFailed: '加载多机热备状态失败：{error}',
+      haDisabled: '当前节点未启用 HA。',
+      haEnabled: '已启用',
+      haNode: '节点',
+      haCluster: '集群',
+      haReachable: '可达节点',
+      haQuality: '质量分',
+      haSync: '同步',
+      haMaxSeq: '最大操作序号',
+      haHeartbeatWindow: '心跳同步窗口',
+      haBacklog: '积压',
+      haLag: '延迟',
+      haLastSuccess: '最近成功',
+      haLastChecked: '最近探测',
+      haCursor: '同步游标',
+      haError: '最近错误',
+      haNoPeers: '未配置对端节点。',
+      haStandalone: '单机模式',
+      haSeconds: '{value} 秒',
+      haCursorSeq: '序号 {value}'
+    });
+    tabMeta.ha = ['haTabTitle','haTabSubtitle'];
+    TAB_ICONS.ha = '<svg viewBox="0 0 24 24"><path d="M5 8.5h14"></path><path d="M5 15.5h14"></path><circle cx="5" cy="8.5" r="2"></circle><circle cx="19" cy="8.5" r="2"></circle><circle cx="12" cy="15.5" r="2"></circle><path d="M7 15.5h3"></path><path d="M14 15.5h3"></path></svg>';
+    function haFmtTime(v){ if(!v) return tr('na'); const d = new Date(v); return Number.isNaN(d.getTime()) ? tr('na') : d.toLocaleString(); }
+    function haFmtSeconds(v){ return tr('haSeconds', {value: String(v ?? 0)}); }
+    function renderHAStatus(data){
+      const summary = document.getElementById('haSummaryList');
+      const peers = document.getElementById('haPeerList');
+      if(!summary || !peers) return;
+      if(!data || data.enabled === false){
+        summary.innerHTML = '<div class="hint">' + tr('haDisabled') + '</div>';
+        peers.innerHTML = '<div class="hint">' + tr('haStandalone') + '</div>';
+        return;
+      }
+      const reachableText = (data.cluster?.reachable_nodes ?? 0) + '/' + (data.cluster?.total_nodes ?? 0);
+      summary.innerHTML = [
+        '<div class="data-row"><div class="data-row-main"><strong>' + tr('haNode') + '</strong><div class="data-row-meta mono">' + escapeHtml((data.node_name || data.node_id || '-') + ' | ' + (data.advertise_url || '-')) + '</div></div><span class="badge info">' + escapeHtml(data.service_status || '-') + '</span></div>',
+        '<div class="data-row"><div class="data-row-main"><strong>' + tr('haCluster') + '</strong><div class="data-row-meta">' + escapeHtml(data.cluster?.status || '-') + '</div></div><div class="data-row-value"><div>' + tr('haReachable') + ': ' + reachableText + '</div><small>quorum ' + (data.cluster?.quorum_size ?? 0) + '</small></div></div>',
+        '<div class="data-row"><div class="data-row-main"><strong>' + tr('haQuality') + '</strong><div class="data-row-meta">' + tr('haSync') + '</div></div><div class="data-row-value"><div>' + escapeHtml(String(data.quality_score ?? 0)) + '</div><small>' + tr('haMaxSeq') + ': ' + escapeHtml(String(data.sync?.max_op_seq ?? 0)) + '</small></div></div>',
+        '<div class="data-row"><div class="data-row-main"><strong>' + tr('haHeartbeatWindow') + '</strong><div class="data-row-meta">' + tr('haLastSuccess') + ': ' + escapeHtml(haFmtTime(data.sync?.last_success_at)) + '</div></div><div class="data-row-value"><div>' + escapeHtml(haFmtSeconds(data.sync?.heartbeat_sync_min_interval_seconds ?? 0)) + '</div><small>' + tr('haEnabled') + ': ' + (data.sync?.enabled ? 'yes' : 'no') + '</small></div></div>'
+      ].join('');
+      const peerList = Array.isArray(data.peers) ? data.peers : [];
+      if(!peerList.length){
+        peers.innerHTML = '<div class="hint">' + tr('haNoPeers') + '</div>';
+        return;
+      }
+      peers.innerHTML = peerList.map(function(peer){
+        const statusClass = peer.reachable ? (peer.quality_score >= 80 ? 'ok' : 'warn') : 'danger';
+        const errorLine = peer.last_error ? '<div class="ha-peer-error">' + tr('haError') + ': ' + escapeHtml(peer.last_error) + '</div>' : '';
+        return '<div class="ha-peer-card">'
+          + '<div class="item-head"><div><div class="item-title">' + escapeHtml(peer.node_name || peer.node_id || '-') + '</div><div class="item-meta mono">' + escapeHtml(peer.base_url || '-') + '</div></div><span class="badge ' + statusClass + '">' + escapeHtml(peer.service_status || '-') + '</span></div>'
+          + '<div class="ha-peer-meta"><span>' + tr('haQuality') + ': ' + escapeHtml(String(peer.quality_score ?? 0)) + '</span><span>RTT: ' + escapeHtml(String(peer.rtt_ms ?? 0)) + ' ms</span><span>' + tr('haLag') + ': ' + escapeHtml(haFmtSeconds(peer.lag_seconds ?? 0)) + '</span><span>' + tr('haBacklog') + ': ' + escapeHtml(String(peer.backlog ?? 0)) + '</span></div>'
+          + '<div class="ha-peer-meta"><span>' + tr('haCursor') + ': ' + tr('haCursorSeq', {value: String(peer.cursor_last_pulled_seq ?? 0)}) + '</span><span>' + tr('haLastSuccess') + ': ' + escapeHtml(haFmtTime(peer.cursor_last_success_at || peer.last_success_at)) + '</span><span>' + tr('haLastChecked') + ': ' + escapeHtml(haFmtTime(peer.last_checked_at)) + '</span></div>'
+          + errorLine
+          + '</div>';
+      }).join('');
+    }
+    async function loadHAStatus(){
+      const summary = document.getElementById('haSummaryList');
+      const peers = document.getElementById('haPeerList');
+      if(summary) summary.innerHTML = '<div class="hint">' + tr('haLoading') + '</div>';
+      if(peers) peers.innerHTML = '<div class="hint">' + tr('haLoading') + '</div>';
+      try {
+        const data = await api('/api/admin/ha/status');
+        renderHAStatus(data || {});
+      } catch (err) {
+        const msg = tr('haLoadFailed', {error: err.message});
+        if(summary) summary.innerHTML = '<div class="hint">' + escapeHtml(msg) + '</div>';
+        if(peers) peers.innerHTML = '<div class="hint">' + escapeHtml(msg) + '</div>';
+        setOutput(msg);
+      }
+    }
+    const _baseOpenTabHA = openTab;
+    openTab = function(name){ _baseOpenTabHA(name); if(name === 'ha'){ loadHAStatus(); } };
+    const _baseRefreshAllHA = refreshAll;
+    refreshAll = async function(){ await Promise.all([_baseRefreshAllHA(), loadHAStatus()]); };
+    applyI18n();
+    if (token() && document.getElementById('tab-ha') && document.getElementById('tab-ha').classList.contains('active')) loadHAStatus();
+  </script>
 </body>
 </html>
+
+
+
+
