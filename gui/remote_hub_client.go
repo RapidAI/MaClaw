@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -134,7 +136,7 @@ func (c *RemoteHubClient) loadConfig() error {
 	return c.applyConfig(cfg)
 }
 
-func (c *RemoteHubClient) applyConfig(cfg AppConfig) error {
+func (c *RemoteHubClient) applyConfig(cfg corelib.AppConfig) error {
 	c.hubURL = strings.TrimRight(cfg.RemoteHubURL, "/")
 	c.machineID = cfg.RemoteMachineID
 	c.machineToken = cfg.RemoteMachineToken
@@ -994,11 +996,28 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 			c.setLastError("im handler not initialized")
 			return
 		}
+
+		// Interrupt check: if the agent loop is already running (chatLoopMu held)
+		// and this message is a cancel/merge/status signal, handle it immediately
+		// without waiting for the lock.
+		if handler.interruptHandler != nil && payload.Text != "" && handler.currentLoopCtx != nil {
+			result := handler.interruptHandler.TryInterrupt(payload.UserID, payload.Text)
+			if result.Handled {
+				if result.Reply != "" {
+					resp := &IMAgentResponse{Text: result.Reply}
+					if err := c.sendIMAgentResponse(requestID, resp); err != nil {
+						c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
+					}
+				}
+				return // All handled actions return — message was a control signal, not a new task.
+			}
+		}
+
 		resp := handler.HandleIMMessageWithProgress(payload, onProgress)
 		// Downsize large screenshots before sending over WebSocket to Hub.
 		// Multi-monitor captures can be several MB; Hub WebSocket may timeout.
 		if resp != nil && len(resp.ImageKey) > 500_000 {
-			if ds, err := downsizeScreenshotBase64(resp.ImageKey, 400_000); err == nil {
+			if ds, err := remote.DownsizeScreenshotBase64(resp.ImageKey, 400_000); err == nil {
 				resp.ImageKey = ds
 			}
 		}

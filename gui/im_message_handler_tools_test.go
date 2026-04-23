@@ -1,6 +1,9 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // ---------------------------------------------------------------------------
@@ -52,7 +56,7 @@ func TestIMToolWriteFile_RejectsMissingContentField(t *testing.T) {
 
 func TestTrialReflectObserveIteration_BuildsReflectionNote(t *testing.T) {
 	state := newTrialReflectState(true)
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`
@@ -82,7 +86,7 @@ func TestTrialReflectObserveIteration_BuildsReflectionNote(t *testing.T) {
 
 func TestTrialReflectObserveIteration_ClearsFailureAfterSuccess(t *testing.T) {
 	state := newTrialReflectState(true)
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`
@@ -109,7 +113,7 @@ func TestTrialReflectObserveIteration_ClearsFailureAfterSuccess(t *testing.T) {
 
 func TestTrialReflectObserveIteration_ListSkillsEmptyRegistryIsSucceeded(t *testing.T) {
 	state := newTrialReflectState(true)
-	toolCalls := []llmToolCall{{
+	toolCalls := []llm.ToolCall{{
 		Function: struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
@@ -172,7 +176,7 @@ func TestClassifyToolOutcome_RunSkillAndStatusSnapshots(t *testing.T) {
 }
 
 func TestDidSkillToolFail_IgnoresListSkillsBusinessEmptyState(t *testing.T) {
-	toolCalls := []llmToolCall{{
+	toolCalls := []llm.ToolCall{{
 		Function: struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
@@ -736,7 +740,7 @@ func TestToolListTemplates(t *testing.T) {
 	}
 
 	// Add a template and list again.
-	_ = mgr.Create(SessionTemplate{Name: "dev", Tool: "claude", ProjectPath: "/tmp/dev", YoloMode: true})
+	_ = mgr.Create(remote.SessionTemplate{Name: "dev", Tool: "claude", ProjectPath: "/tmp/dev", YoloMode: true})
 	result = handler.toolListTemplates()
 	if !contains(result, "dev") || !contains(result, "claude") || !contains(result, "[Yolo]") {
 		t.Errorf("expected template details in list, got: %s", result)
@@ -882,7 +886,7 @@ func TestExecuteTool_ScreenshotBlockedForUserSuppliedImagePath(t *testing.T) {
 }
 
 func TestShouldAutoClearIncompleteTaskContext_RequiresExplicitResume(t *testing.T) {
-	entries := []conversationEntry{
+	entries := []agent.ConversationEntry{
 		{Role: "user", Content: "搜索 huggingface daily papers，生成每日论文综述，生成pdf发我"},
 		{Role: "assistant", Content: "(已达到最大推理轮次，请继续发送消息以完成任务)"},
 	}
@@ -1328,9 +1332,9 @@ func TestToolListProviders_WithValidProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			{ModelName: "Original", ModelId: "orig-id", ApiKey: "", IsBuiltin: true},
 			{ModelName: "DeepSeek", ModelId: "deepseek-chat", ApiKey: "sk-test-key"},
 			{ModelName: "EmptyKey", ModelId: "empty-id", ApiKey: ""},
@@ -1377,9 +1381,9 @@ func TestToolListProviders_ModelIdTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "LongID",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			{ModelName: "LongID", ModelId: "this-is-a-very-long-model-id-that-exceeds-twenty-chars", ApiKey: "key123"},
 		},
 	}
@@ -1408,7 +1412,7 @@ func TestToolListProviders_ModelIdTruncation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestToolCreateSession_NoProviderUsesDefault verifies that when no provider
-// is specified, the ProviderResolver uses the default provider from ToolConfig.
+// is specified, the ProviderResolver uses the default provider from corelib.ToolConfig.
 func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -1420,9 +1424,9 @@ func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	// Set up claude with a valid default provider (Original is always valid).
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			{ModelName: "Original", ModelId: "orig-id", ApiKey: "", IsBuiltin: true},
 			{ModelName: "DeepSeek", ModelId: "ds-id", ApiKey: "sk-test"},
 		},
@@ -1464,9 +1468,9 @@ func TestToolCreateSession_DefaultUnavailableFallbackHint(t *testing.T) {
 	// Set default to a provider with no API key (not "Original").
 	// LoadConfig ensures "Original" is always present and valid.
 	// So fallback chain: BadDefault (invalid) → Original (valid, fallback target).
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "BadDefault",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			{ModelName: "BadDefault", ModelId: "bad-id", ApiKey: ""},
 			{ModelName: "Original", ModelId: "orig-id", ApiKey: "", IsBuiltin: true},
 			{ModelName: "DeepSeek", ModelId: "ds-id", ApiKey: "sk-test"},
@@ -1518,9 +1522,9 @@ func TestToolCreateSession_UserSpecifiedProviderUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			{ModelName: "Original", ModelId: "orig-id", ApiKey: "", IsBuiltin: true},
 			{ModelName: "DeepSeek", ModelId: "ds-id", ApiKey: "sk-test"},
 		},
@@ -1586,13 +1590,13 @@ func TestToolCreateSession_ProjectIDResolvesSuccessfully(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.Projects = []ProjectConfig{
+	cfg.Projects = []corelib.ProjectConfig{
 		{Id: "proj-1", Name: "MyProject", Path: "/tmp/my-project"},
 		{Id: "proj-2", Name: "OtherProject", Path: "/tmp/other-project"},
 	}
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			{ModelName: "Original", ModelId: "orig-id", ApiKey: "", IsBuiltin: true},
 		},
 	}
@@ -1625,7 +1629,7 @@ func TestToolCreateSession_ProjectIDNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.Projects = []ProjectConfig{
+	cfg.Projects = []corelib.ProjectConfig{
 		{Id: "proj-1", Name: "MyProject", Path: "/tmp/my-project"},
 		{Id: "proj-2", Name: "OtherProject", Path: "/tmp/other-project"},
 	}
@@ -1659,12 +1663,12 @@ func TestToolCreateSession_ProjectIDPriorityOverProjectPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.Projects = []ProjectConfig{
+	cfg.Projects = []corelib.ProjectConfig{
 		{Id: "proj-1", Name: "MyProject", Path: "/tmp/my-project"},
 	}
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			{ModelName: "Original", ModelId: "orig-id", ApiKey: "", IsBuiltin: true},
 		},
 	}
@@ -1708,7 +1712,7 @@ func TestToolProjectManage_List(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.Projects = []ProjectConfig{
+	cfg.Projects = []corelib.ProjectConfig{
 		{Id: "proj-1", Name: "MyProject", Path: "/path/to/project"},
 		{Id: "proj-2", Name: "OtherProject", Path: "/path/to/other"},
 	}

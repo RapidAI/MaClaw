@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,10 +44,6 @@ type RemotePTYProbeResult struct {
 	Ready     bool   `json:"ready"`
 	Message   string `json:"message"`
 }
-
-type RemoteClaudeLaunchProbeResult = RemoteToolLaunchProbeResult
-
-type RemoteClaudeReadiness = RemoteToolReadiness
 
 func toolEnvHasCredential(env map[string]string) bool {
 	for key, value := range env {
@@ -177,11 +174,11 @@ func (a *App) CheckRemoteToolReadiness(toolName, projectDir string, useProxy boo
 	return readiness
 }
 
-func (a *App) CheckRemoteClaudeReadiness(projectDir string, useProxy bool) RemoteClaudeReadiness {
+func (a *App) CheckRemoteClaudeReadiness(projectDir string, useProxy bool) RemoteToolReadiness {
 	return a.CheckRemoteToolReadiness("claude", projectDir, useProxy)
 }
 
-func (a *App) findSelectedModel(cfg AppConfig, toolName string) *ModelConfig {
+func (a *App) findSelectedModel(cfg corelib.AppConfig, toolName string) *corelib.ModelConfig {
 	toolCfg, err := remoteToolConfig(cfg, toolName)
 	if err != nil {
 		return nil
@@ -269,6 +266,6 @@ func (a *App) CheckRemoteToolLaunchProbe(toolName, projectDir string, useProxy b
 	return result
 }
 
-func (a *App) CheckRemoteClaudeLaunchProbe(projectDir string, useProxy bool) RemoteClaudeLaunchProbeResult {
+func (a *App) CheckRemoteClaudeLaunchProbe(projectDir string, useProxy bool) RemoteToolLaunchProbeResult {
 	return a.CheckRemoteToolLaunchProbe("claude", projectDir, useProxy)
 }

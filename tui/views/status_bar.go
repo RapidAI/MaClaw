@@ -11,6 +11,7 @@ import (
 // StatusBarModel 底部状态栏。
 type StatusBarModel struct {
 	hubStatus string // connected, disconnected, connecting
+	modelInfo string // current LLM model name (shown in TUI mode)
 	message   string // 最近的日志/事件消息
 	lang      string
 }
@@ -34,6 +35,11 @@ func (m *StatusBarModel) SetHubStatus(status string) {
 	m.hubStatus = status
 }
 
+// SetModelInfo sets the current LLM model display string.
+func (m *StatusBarModel) SetModelInfo(info string) {
+	m.modelInfo = info
+}
+
 // SetMessage 更新状态消息。
 func (m *StatusBarModel) SetMessage(msg string) {
 	m.message = msg
@@ -54,23 +60,29 @@ func (m StatusBarModel) View(width int) string {
 		Background(lipgloss.Color("236")).
 		Width(width)
 
-	hubIcon := "○"
-	hubColor := lipgloss.Color("196") // red
-	hubLabel := i18n.T(i18n.MsgTUIStatusDisconnectedHub, m.lang)
-	switch m.hubStatus {
-	case "connected":
-		hubIcon = "●"
-		hubColor = lipgloss.Color("82") // green
-		hubLabel = i18n.T(i18n.MsgTUIStatusConnectedHub, m.lang)
-	case "connecting":
-		hubIcon = "◌"
-		hubColor = lipgloss.Color("226") // yellow
-		hubLabel = i18n.T(i18n.MsgTUIStatusConnectingHub, m.lang)
+	// Left section: model info or Hub status.
+	var leftSection string
+	if m.modelInfo != "" {
+		modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
+		leftSection = "🧠 " + modelStyle.Render(m.modelInfo)
+	} else {
+		hubIcon := "○"
+		hubColor := lipgloss.Color("196") // red
+		hubLabel := i18n.T(i18n.MsgTUIStatusDisconnectedHub, m.lang)
+		switch m.hubStatus {
+		case "connected":
+			hubIcon = "●"
+			hubColor = lipgloss.Color("82") // green
+			hubLabel = i18n.T(i18n.MsgTUIStatusConnectedHub, m.lang)
+		case "connecting":
+			hubIcon = "◌"
+			hubColor = lipgloss.Color("226") // yellow
+			hubLabel = i18n.T(i18n.MsgTUIStatusConnectingHub, m.lang)
+		}
+		hubStyle := lipgloss.NewStyle().Foreground(hubColor)
+		leftSection = hubStyle.Render(hubIcon) + " " + hubLabel
 	}
 
-	hubStyle := lipgloss.NewStyle().Foreground(hubColor)
-	hub := hubStyle.Render(hubIcon) + " " + hubLabel
-
-	bar := fmt.Sprintf(" %s │ %s │ %s", hub, m.message, i18n.T(i18n.MsgTUIStatusBarHelp, m.lang))
+	bar := fmt.Sprintf(" %s │ %s │ %s", leftSection, m.message, i18n.T(i18n.MsgTUIStatusBarHelp, m.lang))
 	return style.Render(bar)
 }

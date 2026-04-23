@@ -39,9 +39,8 @@ type Coordinator struct {
 	convContext *conversationContextStore
 	spaceState  *spaceStateStore
 
-	// Workflow engine (optional; nil = no workflow support)
-	workflowEngine *WorkflowEngine
-	quickFilter    *QuickFilter
+	// Workflow engine removed — all workflow logic is handled by the device-side
+	// agent (corelib/workflow). Hub is a pure message proxy.
 
 	mu             sync.Mutex
 	routeHistory   map[string][]routeHistoryEntry // userID → recent 3
@@ -53,7 +52,6 @@ func NewCoordinator(
 	router *MessageRouter,
 	devices DeviceFinder,
 	configProvider func() *HubLLMConfig,
-	workflowEngine ...*WorkflowEngine,
 ) *Coordinator {
 	breaker := DefaultCircuitBreaker()
 	c := &Coordinator{
@@ -68,10 +66,6 @@ func NewCoordinator(
 		spaceState:       newSpaceStateStore(),
 		routeHistory:     make(map[string][]routeHistoryEntry),
 		welcomedUsers:    make(map[string]bool),
-	}
-	if len(workflowEngine) > 0 && workflowEngine[0] != nil {
-		c.workflowEngine = workflowEngine[0]
-		c.quickFilter = NewQuickFilter(workflowEngine[0])
 	}
 	return c
 }
@@ -122,19 +116,6 @@ func (c *Coordinator) ConvContextStats() (int, int) {
 // SetSmartRouteChecker wires the smart route permission checker.
 func (c *Coordinator) SetSmartRouteChecker(checker SmartRouteChecker) {
 	c.smartRouteCheck = checker
-}
-
-// SetWorkflowEngine wires the workflow engine into the coordinator after construction.
-func (c *Coordinator) SetWorkflowEngine(we *WorkflowEngine) {
-	c.workflowEngine = we
-	if we != nil {
-		c.quickFilter = NewQuickFilter(we)
-	}
-}
-
-// WorkflowEngine returns the workflow engine (may be nil).
-func (c *Coordinator) WorkflowEngine() *WorkflowEngine {
-	return c.workflowEngine
 }
 
 // IsUserSmartRouteEnabled checks if a specific user has smart route permission.
@@ -220,12 +201,6 @@ func (c *Coordinator) Coordinate(
 		return c.handlePrivateMessage(ctx, userID, platformName, platformUID, text, state, machines)
 	case SpaceMeeting:
 		return c.handleMeetingMessage(ctx, userID, platformName, platformUID, text, state)
-	case SpaceWorkflow:
-		if c.workflowEngine != nil {
-			return c.workflowEngine.HandleWorkflowInput(ctx, userID, text)
-		}
-		// Workflow engine not wired — fall through to lobby.
-		fallthrough
 	default: // lobby
 		return c.handleLobbyMessage(ctx, userID, platformName, platformUID, text, machines)
 	}
@@ -265,7 +240,9 @@ func (c *Coordinator) classifyAndRoute(
 
 	switch result.Type {
 	case IntentDirectAnswer:
-		return c.hubDirectAnswer(ctx, userID, platformName, platformUID, text, machines)
+		// Previously Hub answered directly via LLM. Now all messages go to
+		// the device agent which has full tool access and memory.
+		return c.router.RouteToAgent(ctx, userID, platformName, platformUID, text)
 
 	case IntentRouteSingle:
 		// Notify user about the routing decision.
@@ -585,86 +562,9 @@ func (c *Coordinator) handleLobbyMessage(
 		c.maybeWelcome(ctx, userID, platformName, platformUID)
 	}
 
-	// --- QuickFilter guard (only when workflow engine is wired) ---
-	if c.quickFilter != nil && c.workflowEngine != nil && llmEnabled {
-		filterResult := c.quickFilter.Filter(userID, text)
-		switch filterResult {
-		case FilterActiveWorkflow:
-			resp, err := c.workflowEngine.HandleWorkflowInput(ctx, userID, text)
-			if err != nil {
-				log.Printf("[Coordinator] workflow input error: %v", err)
-				break // fall through to normal routing
-			}
-			return resp, nil
-
-		case FilterActiveUnderstanding:
-			resp, err := c.workflowEngine.understandingMgr.HandleInput(ctx, userID, text)
-			if err != nil {
-				log.Printf("[Coordinator] understanding input error: %v", err)
-				break // fall through to normal routing
-			}
-			// Check if understanding is ready → start workflow
-			if resp != nil && resp.FallbackText == "__understanding_ready__" {
-				session := c.workflowEngine.understandingMgr.GetActiveSession(userID)
-				if session == nil {
-					// Session was consumed; check confirmed sessions in memory
-					// The session state was set to confirmed, try to find it
-				}
-				if session != nil {
-					wfResp, wfErr := c.workflowEngine.StartWorkflow(ctx, userID, session)
-					if wfErr != nil {
-						log.Printf("[Coordinator] start workflow error: %v", wfErr)
-						return resp, nil
-					}
-					return wfResp, nil
-				}
-			}
-			return resp, nil
-
-		case FilterSmallTalk:
-			// Small talk → use Hub LLM to answer directly (no device routing needed)
-			return c.hubDirectAnswer(ctx, userID, platformName, platformUID, text, machines)
-
-		case FilterSimpleDirective:
-			// Simple directive (translate, format, summarize, etc.) → route to device(s)
-			// Skip LLM classification; use rule engine for direct routing.
-			selected, _ := c.router.GetSelectedMachine(userID)
-			decision := c.ruleEngine.Evaluate(text, machines, selected, llmEnabled, cfg != nil && cfg.SmartRouteSingleDevice)
-			switch decision.Action {
-			case ActionRouteToTarget:
-				return c.routeToTargetWithContext(ctx, userID, platformName, platformUID, text, decision.TargetID, machines, "")
-			case ActionBroadcast:
-				return c.router.routeBroadcast(ctx, userID, platformName, platformUID, text, machines)
-			default:
-				// Fall through to normal routing if rule engine can't decide
-			}
-
-		case FilterNeedsUnderstanding:
-			if c.workflowEngine.understandingMgr != nil {
-				resp, err := c.workflowEngine.understandingMgr.StartSession(ctx, userID, text)
-				if err != nil {
-					log.Printf("[Coordinator] start understanding error: %v, falling back to normal routing", err)
-					break // fall through to normal routing
-				}
-				// Check if understanding immediately returned ready
-				if resp != nil && resp.FallbackText == "__understanding_ready__" {
-					session := c.workflowEngine.understandingMgr.GetActiveSession(userID)
-					if session != nil {
-						wfResp, wfErr := c.workflowEngine.StartWorkflow(ctx, userID, session)
-						if wfErr != nil {
-							log.Printf("[Coordinator] start workflow error: %v", wfErr)
-							return resp, nil
-						}
-						return wfResp, nil
-					}
-				}
-				return resp, nil
-			}
-
-		case FilterCommand:
-			// Unreachable — commands are handled in core.go before reaching Coordinator
-		}
-	}
+	// Workflow interception is handled by the device-side agent (corelib/workflow).
+	// Hub no longer maintains its own QuickFilter or WorkflowEngine.
+	// All messages are routed to the device via normal routing below.
 
 	// Parse @ mentions for directed send in lobby.
 	names, body := ParseMentions(text)

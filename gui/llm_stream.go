@@ -18,9 +18,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
-// TokenCallback is called with each text delta from the LLM streaming response.
-type TokenCallback = llm.TokenCallback
-
 type tokenStreamFilter struct {
 	writeFn func(string)
 	flushFn func()
@@ -44,11 +41,11 @@ const (
 // tool calls are removed and a hint is appended to msg.Content so the LLM
 // learns to produce shorter arguments on the next iteration.
 // Returns the (possibly modified) finishReason.
-func filterTruncatedToolCalls(msg *llmMessage, finishReason string) string {
+func filterTruncatedToolCalls(msg *llm.Message, finishReason string) string {
 	if finishReason != "length" || len(msg.ToolCalls) == 0 {
 		return finishReason
 	}
-	var validCalls []llmToolCall
+	var validCalls []llm.ToolCall
 	var truncatedNames []string
 	for _, tc := range msg.ToolCalls {
 		args := strings.TrimSpace(tc.Function.Arguments)
@@ -168,7 +165,7 @@ func consumeTagClose(s, closeTag string) (remainder string, found bool) {
 	return s[idx+len(closeTag):], true
 }
 
-func (f tokenStreamFilter) Callback() TokenCallback {
+func (f tokenStreamFilter) Callback() llm.TokenCallback {
 	return f.Write
 }
 
@@ -185,14 +182,14 @@ func (f tokenStreamFilter) Flush() {
 }
 
 type flushableThinkFilter struct {
-	downstream TokenCallback
+	downstream llm.TokenCallback
 	inside     bool
 	trimNext   bool
 	pending    strings.Builder
 	emitted    bool
 }
 
-func newFlushableThinkFilter(downstream TokenCallback) *flushableThinkFilter {
+func newFlushableThinkFilter(downstream llm.TokenCallback) *flushableThinkFilter {
 	return &flushableThinkFilter{downstream: downstream}
 }
 
@@ -281,14 +278,14 @@ func (f *flushableThinkFilter) drain(force bool) {
 }
 
 type flushableTagFilter struct {
-	downstream TokenCallback
+	downstream llm.TokenCallback
 	openTag    string
 	closeTag   string
 	inside     bool
 	pending    strings.Builder
 }
 
-func newFlushableTagFilter(downstream TokenCallback, open, close string) *flushableTagFilter {
+func newFlushableTagFilter(downstream llm.TokenCallback, open, close string) *flushableTagFilter {
 	return &flushableTagFilter{downstream: downstream, openTag: open, closeTag: close}
 }
 
@@ -378,17 +375,17 @@ func stripXMLToolCalls(s string) string {
 // Filter factory functions using corelib/llm
 // ---------------------------------------------------------------------------
 
-func newThinkFilter(downstream TokenCallback) tokenStreamFilter {
+func newThinkFilter(downstream llm.TokenCallback) tokenStreamFilter {
 	f := newFlushableThinkFilter(downstream)
 	return tokenStreamFilter{writeFn: f.Write, flushFn: f.Flush}
 }
 
-func newFuncCallFilter(downstream TokenCallback) tokenStreamFilter {
+func newFuncCallFilter(downstream llm.TokenCallback) tokenStreamFilter {
 	f := newFlushableTagFilter(downstream, guiFuncCallOpen, guiFuncCallClose)
 	return tokenStreamFilter{writeFn: f.Write, flushFn: f.Flush}
 }
 
-func newToolCallFilter(downstream TokenCallback) tokenStreamFilter {
+func newToolCallFilter(downstream llm.TokenCallback) tokenStreamFilter {
 	f := newFlushableTagFilter(downstream, guiToolCallOpen, guiToolCallClose)
 	return tokenStreamFilter{writeFn: f.Write, flushFn: f.Flush}
 }
@@ -403,7 +400,7 @@ type llmStreamMetrics struct {
 	MaxTokenGapNanos      int64
 }
 
-func withFirstTokenMetrics(onToken TokenCallback, metrics *llmStreamMetrics) TokenCallback {
+func withFirstTokenMetrics(onToken llm.TokenCallback, metrics *llmStreamMetrics) llm.TokenCallback {
 	if onToken == nil {
 		onToken = func(string) {}
 	}
@@ -430,13 +427,13 @@ func withFirstTokenMetrics(onToken TokenCallback, metrics *llmStreamMetrics) Tok
 // in-flight HTTP requests are aborted promptly when the user cancels.
 func (h *IMMessageHandler) doLLMRequestStream(
 	reqCtx context.Context,
-	cfg MaclawLLMConfig,
+	cfg corelib.MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
 	httpClient *http.Client,
-	onToken TokenCallback,
+	onToken llm.TokenCallback,
 	metrics *llmStreamMetrics,
-) (*llmResponse, error) {
+) (*llm.Response, error) {
 	// Always use the streaming path even when onToken is nil (e.g. WeChat IM
 	// standalone mode). The non-streaming DoOpenAIRequest path uses io.ReadAll
 	// which blocks until the entire SSE stream finishes — causing multi-minute
@@ -487,13 +484,13 @@ type openAIStreamChunk struct {
 
 func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	reqCtx context.Context,
-	cfg MaclawLLMConfig,
+	cfg corelib.MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
 	httpClient *http.Client,
-	onToken TokenCallback,
+	onToken llm.TokenCallback,
 	metrics *llmStreamMetrics,
-) (*llmResponse, error) {
+) (*llm.Response, error) {
 	requestBuildStartedAt := time.Now()
 	req, _, endpoint, err := llm.NewOpenAIChatRequest(reqCtx, cfg, messages, llm.OpenAIChatRequestOptions{
 		Stream: true,
@@ -722,7 +719,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	if content == "" && reasoning != "" {
 		content = stripXMLToolCalls(stripFunctionCalls(stripThinkTags(reasoning)))
 	}
-	msg := llmMessage{
+	msg := llm.Message{
 		Role:             "assistant",
 		Content:          content,
 		ReasoningContent: reasoning,
@@ -732,7 +729,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		for idx := range toolAccums { if idx > maxIdx { maxIdx = idx } }
 		for i := 0; i <= maxIdx; i++ {
 			if acc, ok := toolAccums[i]; ok {
-				msg.ToolCalls = append(msg.ToolCalls, llmToolCall{
+				msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
 					ID:   acc.id, Type: acc.typ,
 					Function: struct { Name string `json:"name"`; Arguments string `json:"arguments"` }{
 						Name: acc.name.String(), Arguments: acc.args.String(),
@@ -744,7 +741,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	if len(msg.ToolCalls) == 0 {
 		if xmlCalls := freeproxy.ParseXMLToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
 			for _, xc := range xmlCalls {
-				msg.ToolCalls = append(msg.ToolCalls, llmToolCall{
+				msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
 					ID: xc.ID, Type: xc.Type,
 					Function: struct { Name string `json:"name"`; Arguments string `json:"arguments"` }{
 						Name: xc.Function.Name, Arguments: xc.Function.Arguments,
@@ -760,13 +757,13 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	// Detect and filter truncated tool calls caused by output token limit.
 	finishReason = filterTruncatedToolCalls(&msg, finishReason)
 
-	return &llmResponse{
-		Choices: []llmChoice{{Message: msg, FinishReason: finishReason}},
+	return &llm.Response{
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason}},
 		Usage:   usage,
 	}, nil
 }
 
-func parseNonStreamOpenAIResponse(resp *http.Response) (*llmResponse, error) {
+func parseNonStreamOpenAIResponse(resp *http.Response) (*llm.Response, error) {
 	return llm.ParseNonStreamOpenAIResponse(resp)
 }
 
@@ -776,13 +773,13 @@ func parseNonStreamOpenAIResponse(resp *http.Response) (*llmResponse, error) {
 
 func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	reqCtx context.Context,
-	cfg MaclawLLMConfig,
+	cfg corelib.MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
 	httpClient *http.Client,
-	onToken TokenCallback,
+	onToken llm.TokenCallback,
 	metrics *llmStreamMetrics,
-) (*llmResponse, error) {
+) (*llm.Response, error) {
 	requestBuildStartedAt := time.Now()
 	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
 
@@ -849,7 +846,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	}
 	blocks := make(map[int]*blockAccum)
 	var stopReason string
-	var usage *llmUsage
+	var usage *llm.Usage
 
 	var filteredBufAnth strings.Builder
 	filteredOnTokenAnth := func(delta string) {
@@ -993,7 +990,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 			}
 			// Anthropic sends input_tokens in message_start.message.usage
 			if evt.Message.Usage != nil {
-				usage = &llmUsage{
+				usage = &llm.Usage{
 					InputTokens:  evt.Message.Usage.InputTokens,
 					PromptTokens: evt.Message.Usage.InputTokens,
 				}
@@ -1025,8 +1022,8 @@ anthDone:
 		log.Printf("[LLM Stream Anthropic] role prefix filter halted: suppressed %d runes", rpfAnth.SuppressedRunes())
 	}
 
-	// Assemble llmResponse
-	msg := llmMessage{Role: "assistant"}
+	// Assemble llm.Response
+	msg := llm.Message{Role: "assistant"}
 	var textParts []string
 	// Iterate blocks in index order
 	maxIdx := 0
@@ -1044,7 +1041,7 @@ anthDone:
 		case "text":
 			textParts = append(textParts, acc.text.String())
 		case "tool_use":
-			msg.ToolCalls = append(msg.ToolCalls, llmToolCall{
+			msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
 				ID:   acc.toolID,
 				Type: "function",
 				Function: struct {
@@ -1069,14 +1066,14 @@ anthDone:
 		finishReason = "length"
 	}
 
-	return &llmResponse{
-		Choices: []llmChoice{{Message: msg, FinishReason: finishReason}},
+	return &llm.Response{
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason}},
 		Usage:   usage,
 	}, nil
 }
 
 // parseNonStreamAnthropicResponse handles the fallback case where the provider
 // returned a normal JSON response instead of SSE for Anthropic protocol.
-func parseNonStreamAnthropicResponse(resp *http.Response, requestBody []byte) (*llmResponse, error) {
+func parseNonStreamAnthropicResponse(resp *http.Response, requestBody []byte) (*llm.Response, error) {
 	return llm.ParseNonStreamAnthropicResponse(resp)
 }

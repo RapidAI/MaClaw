@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"fmt"
 	"strings"
 	"time"
@@ -26,12 +28,12 @@ type SessionCheckpoint struct {
 // session exits, and retrieves the latest checkpoint when a new session
 // starts on the same project.
 type SessionCheckpointer struct {
-	memoryStore   *MemoryStore
+	memoryStore   *memory.Store
 	contextBridge *ContextBridge
 }
 
 // NewSessionCheckpointer creates a SessionCheckpointer.
-func NewSessionCheckpointer(ms *MemoryStore, cb *ContextBridge) *SessionCheckpointer {
+func NewSessionCheckpointer(ms *memory.Store, cb *ContextBridge) *SessionCheckpointer {
 	if ms == nil {
 		return nil
 	}
@@ -128,9 +130,9 @@ func (c *SessionCheckpointer) SaveCheckpoint(session *RemoteSession) error {
 		}
 	}
 
-	entry := MemoryEntry{
+	entry := memory.Entry{
 		Content:  sb.String(),
-		Category: MemCategorySessionCheckpoint,
+		Category: memory.CategorySessionCheckpoint,
 		Tags: []string{
 			"session_checkpoint",
 			cp.ProjectPath,
@@ -150,7 +152,7 @@ func (c *SessionCheckpointer) RecallCheckpoint(projectPath string) string {
 		return ""
 	}
 
-	entries := c.memoryStore.Search(MemCategorySessionCheckpoint, projectPath, 3)
+	entries := c.memoryStore.Search(memory.CategorySessionCheckpoint, projectPath, 3)
 	if len(entries) == 0 {
 		return ""
 	}
@@ -201,7 +203,7 @@ func buildCheckpointResumePrompt(checkpoint string) string {
 	return result
 }
 
-func (c *SessionCheckpointer) BuildResumePromptForSlot(slot *unfinishedTaskSlot) string {
+func (c *SessionCheckpointer) BuildResumePromptForSlot(slot *agent.UnfinishedTaskSlot) string {
 	if slot == nil {
 		return ""
 	}

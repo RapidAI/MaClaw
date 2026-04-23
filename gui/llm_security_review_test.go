@@ -6,12 +6,15 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestReview_LLMNotConfigured_ReturnsSafe(t *testing.T) {
-	r := NewLLMSecurityReview(MaclawLLMConfig{})
+	r := NewLLMSecurityReview(corelib.MaclawLLMConfig{})
 	ctx := RiskContext{ToolName: "Bash", Arguments: map[string]interface{}{"command": "rm -rf /"}}
-	assessment := RiskAssessment{Level: RiskCritical, Reason: "dangerous keyword"}
+	assessment := security.RiskAssessment{Level: security.RiskCritical, Reason: "dangerous keyword"}
 
 	verdict, explanation, err := r.Review(ctx, assessment)
 	if err != nil {
@@ -26,9 +29,9 @@ func TestReview_LLMNotConfigured_ReturnsSafe(t *testing.T) {
 }
 
 func TestReview_LLMNotConfigured_EmptyModel(t *testing.T) {
-	r := NewLLMSecurityReview(MaclawLLMConfig{URL: "http://localhost:1234/v1", Key: "sk-test"})
+	r := NewLLMSecurityReview(corelib.MaclawLLMConfig{URL: "http://localhost:1234/v1", Key: "sk-test"})
 	ctx := RiskContext{ToolName: "Write"}
-	assessment := RiskAssessment{Level: RiskMedium}
+	assessment := security.RiskAssessment{Level: security.RiskMedium}
 
 	verdict, _, err := r.Review(ctx, assessment)
 	if err != nil {
@@ -65,14 +68,14 @@ func TestReview_LLMReturnsVerdict(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			r := NewLLMSecurityReview(MaclawLLMConfig{
+			r := NewLLMSecurityReview(corelib.MaclawLLMConfig{
 				URL:   srv.URL,
 				Key:   "test-key",
 				Model: "test-model",
 			})
 
 			ctx := RiskContext{ToolName: "Bash", SessionID: "s1"}
-			assessment := RiskAssessment{Level: RiskHigh, Reason: "test"}
+			assessment := security.RiskAssessment{Level: security.RiskHigh, Reason: "test"}
 
 			verdict, explanation, err := r.Review(ctx, assessment)
 			if err != nil {
@@ -96,24 +99,24 @@ func TestReview_LLMTimeout_FallsBackToRules(t *testing.T) {
 	defer srv.Close()
 
 	review := &LLMSecurityReview{
-		llmConfig: MaclawLLMConfig{URL: srv.URL, Key: "k", Model: "m"},
+		llmConfig: corelib.MaclawLLMConfig{URL: srv.URL, Key: "k", Model: "m"},
 		client:    &http.Client{Timeout: 100 * time.Millisecond}, // short timeout for test speed
 	}
 
 	tests := []struct {
-		level    RiskLevel
+		level    security.RiskLevel
 		expected LLMSecurityVerdict
 	}{
-		{RiskCritical, VerdictDangerous},
-		{RiskHigh, VerdictRisky},
-		{RiskMedium, VerdictRisky},
-		{RiskLow, VerdictSafe},
+		{security.RiskCritical, VerdictDangerous},
+		{security.RiskHigh, VerdictRisky},
+		{security.RiskMedium, VerdictRisky},
+		{security.RiskLow, VerdictSafe},
 	}
 
 	for _, tt := range tests {
 		t.Run(string(tt.level), func(t *testing.T) {
 			ctx := RiskContext{ToolName: "Bash"}
-			assessment := RiskAssessment{Level: tt.level}
+			assessment := security.RiskAssessment{Level: tt.level}
 
 			verdict, explanation, err := review.Review(ctx, assessment)
 			if err != nil {
@@ -135,9 +138,9 @@ func TestReview_LLMHTTPError_FallsBackToRules(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := NewLLMSecurityReview(MaclawLLMConfig{URL: srv.URL, Key: "k", Model: "m"})
+	r := NewLLMSecurityReview(corelib.MaclawLLMConfig{URL: srv.URL, Key: "k", Model: "m"})
 	ctx := RiskContext{ToolName: "Write"}
-	assessment := RiskAssessment{Level: RiskHigh}
+	assessment := security.RiskAssessment{Level: security.RiskHigh}
 
 	verdict, _, err := r.Review(ctx, assessment)
 	if err != nil {
@@ -174,13 +177,13 @@ func TestParseLLMResponse_PlainText(t *testing.T) {
 
 func TestRuleBasedFallback(t *testing.T) {
 	tests := []struct {
-		level    RiskLevel
+		level    security.RiskLevel
 		expected LLMSecurityVerdict
 	}{
-		{RiskCritical, VerdictDangerous},
-		{RiskHigh, VerdictRisky},
-		{RiskMedium, VerdictRisky},
-		{RiskLow, VerdictSafe},
+		{security.RiskCritical, VerdictDangerous},
+		{security.RiskHigh, VerdictRisky},
+		{security.RiskMedium, VerdictRisky},
+		{security.RiskLow, VerdictSafe},
 	}
 	for _, tt := range tests {
 		verdict, reason := ruleBasedFallback(tt.level)
@@ -202,7 +205,7 @@ func TestBuildSecurityPrompt(t *testing.T) {
 		PermissionMode: PermissionModeDefault,
 		CallCount:      3,
 	}
-	assessment := RiskAssessment{Level: RiskMedium, Reason: "write tool"}
+	assessment := security.RiskAssessment{Level: security.RiskMedium, Reason: "write tool"}
 
 	prompt := buildSecurityPrompt(ctx, assessment)
 	if prompt == "" {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"path/filepath"
 	"testing"
 )
@@ -8,8 +9,8 @@ import (
 func TestNewIMMessageHandlerLoadsPersistedDesktopConversation(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	storePath := filepath.Join(app.GetDataDir(), "ai_assistant_conversation.json")
-	seed := newPersistentConversationMemory(storePath)
-	seed.Save("desktop-user", []conversationEntry{
+	seed := agent.NewPersistentConversationMemory(storePath)
+	seed.Save("desktop-user", []agent.ConversationEntry{
 		{Role: "user", Content: "persisted user"},
 		{Role: "assistant", Content: "persisted assistant"},
 	})

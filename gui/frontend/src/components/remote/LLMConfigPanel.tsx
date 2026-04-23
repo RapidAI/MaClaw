@@ -9,16 +9,6 @@ import {
     StartOpenAIOAuth,
     CancelOpenAIOAuth,
     ImportCodexAuth,
-    StartFreeProxy,
-    StopFreeProxy,
-    IsFreeProxyRunning,
-    DetectBrowser,
-    DangbeiLogin,
-    DangbeiFinishLogin,
-    DangbeiEnsureAuth,
-    GetFreeProxyModels,
-    GetFreeProxyModel,
-    SetFreeProxyModel,
     FetchCodeGenModels,
     SaveCodeGenModelChoice,
     GetHubLLMServiceStatus,
@@ -127,15 +117,6 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [dlgDirty, setDlgDirty] = useState(false);
     const [dlgTested, setDlgTested] = useState(false); // true after successful test; allows save-only on subsequent saves
     const [oauthBusy, setOauthBusy] = useState(false);
-    const [proxyRunning, setProxyRunning] = useState(false);
-    const [proxyBusy, setProxyBusy] = useState(false);
-    const [browserInfo, setBrowserInfo] = useState<{ found: string; name?: string; path?: string } | null>(null);
-    const [dangbeiLoggedIn, setDangbeiLoggedIn] = useState(false);
-    const [loginBusy, setLoginBusy] = useState(false);
-    const [browserLaunched, setBrowserLaunched] = useState(false);
-    const [authChecking, setAuthChecking] = useState(false);
-    const [freeModels, setFreeModels] = useState<{id: string; name: string}[]>([]);
-    const [freeSelectedModel, setFreeSelectedModel] = useState("");
     const [codegenModels, setCodegenModels] = useState<{id: string; name: string}[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -251,8 +232,6 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgTestResult(null);
         setDlgDirty(false);
         setDlgTested(false);
-        setBrowserInfo(null);
-        setBrowserLaunched(false);
         setDlgOpen(true);
     }, [providers, currentName]);
 
@@ -270,16 +249,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         return () => window.removeEventListener("keydown", onKey);
     }, [dlgOpen, closeDialog]);
 
-    // Poll free proxy status when dialog shows a "none" auth provider
+    // Determine auth type of selected provider for conditional effects
     const dlgAuthType = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.auth_type : undefined;
-    useEffect(() => {
-        if (!dlgOpen || dlgAuthType !== "none") return;
-        let cancelled = false;
-        const poll = () => { IsFreeProxyRunning().then(r => { if (!cancelled) setProxyRunning(r); }).catch(() => {}); };
-        poll();
-        const id = setInterval(poll, 3000);
-        return () => { cancelled = true; clearInterval(id); };
-    }, [dlgOpen, dlgAuthType]);
 
     // Fetch CodeGen models when dialog opens with an SSO provider (CodeGen)
     useEffect(() => {
@@ -299,36 +270,6 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             if (!cancelled) setCodegenModelsFetching(false);
         });
         return () => { cancelled = true; };
-    }, [dlgOpen, dlgAuthType]);
-
-    // Detect browser and check dangbei login when dialog opens with free provider.
-    // If cookie is valid, auto-start proxy so user doesn't need to do anything.
-    useEffect(() => {
-        if (!dlgOpen || dlgAuthType !== "none") return;
-        DetectBrowser().then((info: any) => setBrowserInfo(info || { found: "false" })).catch(() => setBrowserInfo({ found: "false" }));
-        // Load available models and current selection
-        GetFreeProxyModels().then((models: any) => setFreeModels(models || [])).catch(() => {});
-        GetFreeProxyModel().then((m: string) => setFreeSelectedModel(m || "deepseek_r1")).catch(() => {});
-        // Validate persisted cookie — if valid, skip browser login flow
-        setAuthChecking(true);
-        DangbeiEnsureAuth().then(async (result: string) => {
-            const loggedIn = result === "authenticated";
-            setDangbeiLoggedIn(loggedIn);
-            setAuthChecking(false);
-            // Auto-start proxy if logged in and not already running
-            if (loggedIn) {
-                try {
-                    const running = await IsFreeProxyRunning();
-                    if (!running) {
-                        await StartFreeProxy();
-                        setProxyRunning(true);
-                    }
-                } catch { /* proxy start failure is non-fatal here */ }
-            }
-        }).catch(() => {
-            setDangbeiLoggedIn(false);
-            setAuthChecking(false);
-        });
     }, [dlgOpen, dlgAuthType]);
 
     const dlgIsNone = dlgSelectedIdx === null;
@@ -409,24 +350,6 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
                 onStatusChange?.(!!sp.key, !!sp.key);
-                setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
-                setTimeout(() => setDlgOpen(false), 800);
-            } catch (e) {
-                setDlgTestResult({ ok: false, msg: String(e) });
-            }
-            setDlgSaving(false);
-            return;
-        }
-
-        // Free proxy (auth_type "none"): save directly, no test needed
-        if (sp.auth_type === "none") {
-            try {
-                const saveName = sp.name;
-                await SaveMaclawLLMProviders(dlgProviders, saveName);
-                setDlgDirty(false);
-                setProviders(dlgProviders.map(p => ({ ...p })));
-                setCurrentName(saveName);
-                onStatusChange?.(proxyRunning, true);
                 setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
                 setTimeout(() => setDlgOpen(false), 800);
             } catch (e) {
@@ -635,7 +558,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                 {dlgProviders.map((p, i) => {
                                     const active = dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = { "免费": "白嫖党", "OpenAI": "富家小子", "智谱龙虾": "聪明伶俐", "智谱编程": "写码飞快", "MiniMax": "憨厚老实", "讯飞星辰": "星辰大海" };
+                                    const badge: Record<string, string> = { "OpenAI": "富家小子", "智谱龙虾": "聪明伶俐", "智谱编程": "写码飞快", "MiniMax": "憨厚老实", "讯飞星辰": "星辰大海" };
                                     const tag = badge[p.name];
                                     return (
                                         <button key={i} onClick={() => dlgSelectProvider(i)} style={{
@@ -923,242 +846,6 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                             )}
                                             </>
                                         )}
-                                    </div>
-                                ) : dlgProvider.auth_type === "none" ? (
-                                    <div>
-                                        {/* 当贝 AI login status */}
-                                        <label style={labelStyle}>{t("Dangbei AI Login", "当贝 AI 登录")}</label>
-                                        {authChecking ? (
-                                            <div style={{
-                                                padding: "8px 12px", borderRadius: 4, marginBottom: 10,
-                                                background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)",
-                                            }}>
-                                                <span style={{ fontSize: "0.76rem", color: "var(--theme-primary)" }}>
-                                                    ⏳ {t("Validating login status...", "正在验证登录状态...")}
-                                                </span>
-                                            </div>
-                                        ) : dangbeiLoggedIn ? (
-                                            <div style={{
-                                                display: "flex", alignItems: "center", gap: 8,
-                                                padding: "8px 12px", borderRadius: 4, marginBottom: 10,
-                                                background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
-                                            }}>
-                                                <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
-                                                    ✅ {t("Logged in to Dangbei AI", "已登录当贝 AI")}
-                                                </span>
-                                                <button
-                                                    disabled={loginBusy}
-                                                    onClick={async () => {
-                                                        setLoginBusy(true);
-                                                        setDlgTestResult(null);
-                                                        try {
-                                                            await DangbeiLogin();
-                                                            setBrowserLaunched(true);
-                                                            setDlgTestResult({ ok: true, msg: t("Browser opened. Log in then click 'Finish Login'", "浏览器已打开，请登录后点击「完成登录」") });
-                                                        } catch (e) {
-                                                            setDlgTestResult({ ok: false, msg: String(e) });
-                                                        }
-                                                        setLoginBusy(false);
-                                                    }}
-                                                    style={{
-                                                        fontSize: "0.72rem", padding: "4px 12px", cursor: loginBusy ? "default" : "pointer",
-                                                        background: "transparent", color: "var(--theme-primary)",
-                                                        border: `1px solid ${colors.primary}`, borderRadius: 4,
-                                                        opacity: loginBusy ? 0.5 : 1,
-                                                    }}
-                                                >
-                                                    {loginBusy ? "..." : t("Re-login", "重新登录")}
-                                                </button>
-                                            </div>
-                                        ) : (
-                                            <div style={{ marginBottom: 10 }}>
-                                                {/* Browser detection */}
-                                                {browserInfo === null ? (
-                                                    <p style={{ fontSize: "0.72rem", color: colors.textMuted }}>{t("Detecting browser...", "检测浏览器...")}</p>
-                                                ) : browserInfo.found === "true" ? (
-                                                    <div style={{
-                                                        display: "flex", alignItems: "center", gap: 8,
-                                                        padding: "8px 12px", borderRadius: 4, marginBottom: 8,
-                                                        background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
-                                                    }}>
-                                                        <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
-                                                            ✅ {t(`已找到 ${browserInfo.name === "edge" ? "Edge" : "Chrome"}`, `${browserInfo.name === "edge" ? "Edge" : "Chrome"} found`)}
-                                                        </span>
-                                                    </div>
-                                                ) : (
-                                                    <div style={{
-                                                        display: "flex", alignItems: "center", gap: 8,
-                                                        padding: "8px 12px", borderRadius: 4, marginBottom: 8,
-                                                        background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
-                                                    }}>
-                                                        <span style={{ fontSize: "0.76rem", color: colors.danger, flex: 1 }}>
-                                                            ❌ {t("Chrome/Edge not found", "未找到 Chrome 或 Edge")}
-                                                        </span>
-                                                        <button onClick={() => window.open("https://www.google.com/chrome/", "_blank")} style={{
-                                                            fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
-                                                            background: colors.primary, color: colors.onPrimary, border: "none", borderRadius: 4,
-                                                        }}>
-                                                            {t("Download Chrome", "下载 Chrome")}
-                                                        </button>
-                                                    </div>
-                                                )}
-                                                {/* Login button */}
-                                                <button
-                                                    disabled={loginBusy || browserInfo?.found !== "true"}
-                                                    onClick={async () => {
-                                                        setLoginBusy(true);
-                                                        setDlgTestResult(null);
-                                                        try {
-                                                            await DangbeiLogin();
-                                                            setBrowserLaunched(true);
-                                                            setDlgTestResult({ ok: true, msg: t("Browser opened. Log in to Dangbei AI, then click 'Finish Login' below", "浏览器已打开，请在浏览器中登录当贝 AI，完成后点击下方「完成登录」按钮") });
-                                                        } catch (e) {
-                                                            setDlgTestResult({ ok: false, msg: String(e) });
-                                                        }
-                                                        setLoginBusy(false);
-                                                    }}
-                                                    style={{
-                                                        width: "100%", padding: "10px 0", fontSize: "0.8rem",
-                                                        cursor: loginBusy ? "default" : "pointer",
-                                                        background: colors.primary, color: colors.onPrimary,
-                                                        border: "none", borderRadius: 4,
-                                                        opacity: (loginBusy || browserInfo?.found !== "true") ? 0.6 : 1,
-                                                    }}
-                                                >
-                                                    {loginBusy ? `⏳ ${t("Launching browser...", "正在启动浏览器...")}` : t("Login to Dangbei AI", "登录当贝 AI")}
-                                                </button>
-                                            </div>
-                                        )}
-
-                                        {/* Finish login button — shown after browser is launched */}
-                                        {browserLaunched && (
-                                            <div style={{ marginBottom: 10 }}>
-                                                <button
-                                                    disabled={loginBusy}
-                                                    onClick={async () => {
-                                                        setLoginBusy(true);
-                                                        setDlgTestResult(null);
-                                                        try {
-                                                            await DangbeiFinishLogin();
-                                                            setDangbeiLoggedIn(true);
-                                                            setBrowserLaunched(false);
-                                                            // Auto-start proxy after successful login
-                                                            try {
-                                                                const running = await IsFreeProxyRunning();
-                                                                if (!running) {
-                                                                    await StartFreeProxy();
-                                                                    setProxyRunning(true);
-                                                                }
-                                                            } catch { /* non-fatal */ }
-                                                            setDlgTestResult({ ok: true, msg: t("Login successful, proxy auto-started", "登录成功，代理已自动启动") });
-                                                        } catch (e) {
-                                                            setDlgTestResult({ ok: false, msg: String(e) });
-                                                        }
-                                                        setLoginBusy(false);
-                                                    }}
-                                                    style={{
-                                                        width: "100%", padding: "10px 0", fontSize: "0.8rem",
-                                                        cursor: loginBusy ? "default" : "pointer",
-                                                        background: colors.success, color: colors.onPrimary,
-                                                        border: "none", borderRadius: 4,
-                                                        opacity: loginBusy ? 0.6 : 1,
-                                                    }}
-                                                >
-                                                    {loginBusy ? `⏳ ${t("Closing browser & extracting login info...", "正在关闭浏览器并提取登录信息...")}` : t("✅ I've logged in, finish login", "✅ 我已在浏览器中登录，完成登录")}
-                                                </button>
-                                                {dlgTestResult && (
-                                                    <div style={{
-                                                        marginTop: 8, padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem",
-                                                        lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
-                                                        background: dlgTestResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-                                                        border: `1px solid ${dlgTestResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                                        color: dlgTestResult.ok ? colors.success : colors.danger,
-                                                    }}>
-                                                        {dlgTestResult.ok ? "✅ " : "❌ "}{dlgTestResult.msg}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        )}
-
-                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "0 0 12px 0", lineHeight: 1.5 }}>
-                                            💡 {t(
-                                                "已登录的 cookie 会自动保存，下次打开无需重复登录。如 cookie 失效会自动提示重新登录。",
-                                                "Login cookies are saved automatically. If expired, you'll be prompted to re-login."
-                                            )}
-                                        </p>
-
-                                        {/* Model selection */}
-                                        <label style={labelStyle}>{t("Model Selection", "模型选择")}</label>
-                                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12 }}>
-                                            {freeModels.map(m => {
-                                                const active = freeSelectedModel === m.id;
-                                                return (
-                                                    <button key={m.id} onClick={() => {
-                                                        setFreeSelectedModel(m.id);
-                                                        SetFreeProxyModel(m.id).catch(() => {});
-                                                    }} style={{
-                                                        fontSize: "0.72rem", padding: "4px 10px", cursor: "pointer",
-                                                        background: active ? colors.primary : colors.surface,
-                                                        color: active ? colors.onPrimary : colors.text,
-                                                        border: `1px solid ${active ? colors.primary : colors.border}`,
-                                                        borderRadius: 4, transition: "all 0.15s",
-                                                    }}>
-                                                        {m.name}
-                                                    </button>
-                                                );
-                                            })}
-                                        </div>
-
-                                        {/* Proxy status */}
-                                        <label style={labelStyle}>{t("Proxy Status", "代理状态")}</label>
-                                        <div style={{
-                                            display: "flex", alignItems: "center", gap: 10,
-                                            padding: "8px 12px", borderRadius: 4,
-                                            background: proxyRunning ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
-                                            border: `1px solid ${proxyRunning ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
-                                        }}>
-                                            <span style={{
-                                                width: 8, height: 8, borderRadius: "50%",
-                                                background: proxyRunning ? colors.success : colors.danger,
-                                                display: "inline-block", flexShrink: 0,
-                                            }} />
-                                            <span style={{ fontSize: "0.76rem", color: proxyRunning ? colors.success : colors.danger, flex: 1 }}>
-                                                {proxyRunning
-                                                    ? t("Proxy running (localhost:18099)", "代理服务运行中 (localhost:18099)")
-                                                    : t("Proxy not running", "代理服务未运行")}
-                                            </span>
-                                            <button
-                                                disabled={proxyBusy}
-                                                onClick={async () => {
-                                                    setProxyBusy(true);
-                                                    setDlgTestResult(null);
-                                                    try {
-                                                        if (proxyRunning) { await StopFreeProxy(); setProxyRunning(false); }
-                                                        else { await StartFreeProxy(); setProxyRunning(true); }
-                                                    } catch (e) {
-                                                        setDlgTestResult({ ok: false, msg: String(e) });
-                                                        // Refresh actual status
-                                                        IsFreeProxyRunning().then(r => setProxyRunning(r)).catch(() => {});
-                                                    }
-                                                    setProxyBusy(false);
-                                                }}
-                                                style={{
-                                                    fontSize: "0.72rem", padding: "4px 12px", cursor: proxyBusy ? "default" : "pointer",
-                                                    background: proxyRunning ? "transparent" : colors.primary,
-                                                    color: proxyRunning ? colors.danger : colors.onPrimary,
-                                                    border: `1px solid ${proxyRunning ? colors.danger : colors.primary}`,
-                                                    borderRadius: 4, opacity: proxyBusy ? 0.5 : 1,
-                                                }}
-                                            >
-                                                {proxyBusy ? "..." : proxyRunning ? t("Stop", "停止") : t("Start", "启动")}
-                                            </button>
-                                        </div>
-                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "6px 0 0 0", lineHeight: 1.4 }}>
-                                            提示 {t(
-                                                "Use multiple LLMs for free via Dangbei AI, no API key needed.",
-                                                "通过当贝 AI 免费使用多种大模型，无需 API Key。"
-                                            )}
-                                        </p>
                                     </div>
                                 ) : (
                                     <div>

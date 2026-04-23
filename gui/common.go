@@ -32,5 +32,3 @@ func trayTranslations() map[string]map[string]string {
 		},
 	}
 }
-
-// RequiredNodeVersion — see corelib_aliases.go

@@ -35,10 +35,6 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	toolMap := make(map[string]RegisteredTool, len(allTools))
 
 	for _, t := range allTools {
-		// Skip core tools that are already always included.
-		if tool.CoreToolNames[t.Name] {
-			continue
-		}
 		text := t.Name + " " + t.Description
 		for _, tag := range t.Tags {
 			text += " " + tag
@@ -91,23 +87,30 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	}
 
 	// Activate matched tools in the session so they appear in subsequent turns.
+	// Core tools are already available — no need to activate them.
 	if h.toolRouter != nil {
 		for _, r := range ranked {
-			h.toolRouter.ActivateSessionTool(r.name)
+			if !tool.CoreToolNames[r.name] {
+				h.toolRouter.ActivateSessionTool(r.name)
+			}
 		}
 	}
 
 	// Format result.
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Found %d matching tools (now activated for this session):\n", len(ranked)))
+	b.WriteString(fmt.Sprintf("Found %d matching tools:\n", len(ranked)))
 	for i, r := range ranked {
 		t := toolMap[r.name]
 		desc := t.Description
 		if runes := []rune(desc); len(runes) > 120 {
 			desc = string(runes[:120]) + "..."
 		}
-		b.WriteString(fmt.Sprintf("%d. **%s** — %s\n", i+1, r.name, desc))
+		if tool.CoreToolNames[r.name] {
+			b.WriteString(fmt.Sprintf("%d. **%s** (core, already available) — %s\n", i+1, r.name, desc))
+		} else {
+			b.WriteString(fmt.Sprintf("%d. **%s** (activated) — %s\n", i+1, r.name, desc))
+		}
 	}
-	b.WriteString("\nThese tools are now available. Call them directly in your next action.")
+	b.WriteString("\nThese tools are available. Call them directly in your next action.")
 	return b.String()
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -39,17 +40,17 @@ func (aiRandomText) Generate(r *rand.Rand, size int) reflect.Value {
 
 // aiRandomEntries is a quick.Generator wrapper for random conversation entries.
 type aiRandomEntries struct {
-	DesktopEntries []conversationEntry
+	DesktopEntries []agent.ConversationEntry
 	IMUserID       string
-	IMEntries      []conversationEntry
+	IMEntries      []agent.ConversationEntry
 }
 
 func (aiRandomEntries) Generate(r *rand.Rand, size int) reflect.Value {
 	roles := []string{"user", "assistant", "tool"}
-	makeEntries := func(count int) []conversationEntry {
-		entries := make([]conversationEntry, count)
+	makeEntries := func(count int) []agent.ConversationEntry {
+		entries := make([]agent.ConversationEntry, count)
 		for i := range entries {
-			entries[i] = conversationEntry{
+			entries[i] = agent.ConversationEntry{
 				Role:    roles[r.Intn(len(roles))],
 				Content: aiRandomString(r, r.Intn(50)+1),
 			}
@@ -120,7 +121,7 @@ func TestAIAssistantProperty4_MessageConstructionPlatformID(t *testing.T) {
 // ---------------------------------------------------------------------------
 func TestAIAssistantProperty5_DesktopConversationMemoryIsolation(t *testing.T) {
 	f := func(input aiRandomEntries) bool {
-		cm := newConversationMemory()
+		cm := agent.NewConversationMemory()
 		defer cm.Stop()
 
 		cm.Save("desktop-user", input.DesktopEntries)
@@ -221,7 +222,7 @@ func TestAIAssistantProperty6_ErrorResponsePropagation(t *testing.T) {
 // ---------------------------------------------------------------------------
 func TestAIAssistantProperty7_ClearHistoryClearsMemory(t *testing.T) {
 	f := func(input aiRandomEntries) bool {
-		cm := newConversationMemory()
+		cm := agent.NewConversationMemory()
 		defer cm.Stop()
 
 		cm.Save("desktop-user", input.DesktopEntries)

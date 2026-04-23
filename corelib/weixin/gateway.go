@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
 const (
@@ -374,6 +375,12 @@ type Gateway struct {
 	// handlerWg tracks in-flight handler goroutines so Stop() can wait
 	// for them to finish before returning.
 	handlerWg sync.WaitGroup
+
+	// interruptHandler is called when a new message arrives while the
+	// per-user lock is held (agent loop running). If it returns handled=true,
+	// the message is processed immediately (cancel/merge/status) without
+	// waiting for the lock. If handled=false, the message is queued normally.
+	interruptHandler progress.InterruptHandler
 }
 
 // NewGateway creates a new WeChat gateway.
@@ -391,6 +398,12 @@ func NewGateway(config Config, handler MessageHandler) *Gateway {
 // SetStatusCallback sets a callback for connection status changes.
 func (g *Gateway) SetStatusCallback(cb StatusCallback) {
 	g.onStatus = cb
+}
+
+// SetInterruptHandler sets the handler for interrupt signals from incoming
+// messages during active agent loops.
+func (g *Gateway) SetInterruptHandler(ih progress.InterruptHandler) {
+	g.interruptHandler = ih
 }
 
 // Start launches the long-polling loop in the background.
@@ -679,6 +692,36 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 		locked := ul.TryLock()
 		if !locked {
 			wl.Log("gw.dispatch", "---", fromUserID, "QUEUED lock busy, waiting for previous msg")
+
+			// Try interrupt handler first — it can cancel/merge/query the
+			// running agent loop without waiting for the lock.
+			if g.interruptHandler != nil && incoming.Text != "" {
+				result := g.interruptHandler.TryInterrupt(fromUserID, incoming.Text)
+				if result.Handled {
+					wl.Log("gw.dispatch", "---", fromUserID, "INTERRUPT action=%s reply=%q", result.Action, result.Reply)
+					if result.Reply != "" {
+						ctxToken := incoming.ContextToken
+						if ctxToken == "" {
+							ctxToken = g.ctxTokens.Get(fromUserID)
+						}
+						if ctxToken != "" {
+							_ = g.SendText(context.Background(), OutgoingText{
+								ToUserID:     fromUserID,
+								Text:         result.Reply,
+								ContextToken: ctxToken,
+							})
+						}
+					}
+					// All handled actions return immediately — the message's
+					// purpose was to control the running loop, not to start
+					// a new task. For Replace: the cancel reply was already sent;
+					// processing the cancel message as a new task would confuse
+					// the LLM ("算了不做了" is not a task request).
+					// For Merge/StatusQuery: already handled inline.
+					return
+				}
+			}
+
 			// Lock is busy — notify user (rate-limited: only if no recent notification).
 			if incoming.Text != "" {
 				log.Printf("[weixin/gw] message queued for user=%s (lock busy), text=%s",

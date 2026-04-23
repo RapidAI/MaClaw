@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -270,7 +271,7 @@ func (s *SkillSearcher) enrichInstalledState(results []MixedSkillSearchResult) {
 	}
 }
 
-func mixedResultMatchesSkill(result MixedSkillSearchResult, skill NLSkillEntry) bool {
+func mixedResultMatchesSkill(result MixedSkillSearchResult, skill corelib.NLSkillEntry) bool {
 	switch result.Source {
 	case "skillmarket":
 		return skill.Source == "hub" && skill.HubSkillID == result.ID

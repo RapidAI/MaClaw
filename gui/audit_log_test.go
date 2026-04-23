@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 func TestAuditLog_LogAndQuery(t *testing.T) {
@@ -16,15 +18,15 @@ func TestAuditLog_LogAndQuery(t *testing.T) {
 	defer al.Close()
 
 	now := time.Now()
-	entries := []AuditEntry{
+	entries := []security.AuditEntry{
 		{
 			Timestamp:    now.Add(-2 * time.Hour),
 			UserID:       "user1",
 			SessionID:    "sess1",
 			ToolName:     "Bash",
 			Arguments:    map[string]interface{}{"command": "ls -la"},
-			RiskLevel:    RiskLow,
-			PolicyAction: PolicyAllow,
+			RiskLevel:    security.RiskLow,
+			PolicyAction: security.PolicyAllow,
 			Result:       "success",
 		},
 		{
@@ -33,8 +35,8 @@ func TestAuditLog_LogAndQuery(t *testing.T) {
 			SessionID:    "sess1",
 			ToolName:     "Write",
 			Arguments:    map[string]interface{}{"path": "/tmp/test.txt"},
-			RiskLevel:    RiskMedium,
-			PolicyAction: PolicyAudit,
+			RiskLevel:    security.RiskMedium,
+			PolicyAction: security.PolicyAudit,
 			Result:       "success",
 		},
 		{
@@ -43,8 +45,8 @@ func TestAuditLog_LogAndQuery(t *testing.T) {
 			SessionID:    "sess2",
 			ToolName:     "Bash",
 			Arguments:    map[string]interface{}{"command": "rm -rf /"},
-			RiskLevel:    RiskCritical,
-			PolicyAction: PolicyDeny,
+			RiskLevel:    security.RiskCritical,
+			PolicyAction: security.PolicyDeny,
 			Result:       "denied",
 		},
 	}
@@ -56,7 +58,7 @@ func TestAuditLog_LogAndQuery(t *testing.T) {
 	}
 
 	// Query all entries.
-	all, err := al.Query(AuditFilter{})
+	all, err := al.Query(security.AuditFilter{})
 	if err != nil {
 		t.Fatalf("Query all: %v", err)
 	}
@@ -65,7 +67,7 @@ func TestAuditLog_LogAndQuery(t *testing.T) {
 	}
 
 	// Query by tool name.
-	bashOnly, err := al.Query(AuditFilter{ToolName: "Bash"})
+	bashOnly, err := al.Query(security.AuditFilter{ToolName: "Bash"})
 	if err != nil {
 		t.Fatalf("Query Bash: %v", err)
 	}
@@ -74,7 +76,7 @@ func TestAuditLog_LogAndQuery(t *testing.T) {
 	}
 
 	// Query by risk level.
-	critOnly, err := al.Query(AuditFilter{RiskLevels: []RiskLevel{RiskCritical}})
+	critOnly, err := al.Query(security.AuditFilter{RiskLevels: []security.RiskLevel{security.RiskCritical}})
 	if err != nil {
 		t.Fatalf("Query critical: %v", err)
 	}
@@ -85,7 +87,7 @@ func TestAuditLog_LogAndQuery(t *testing.T) {
 	// Query by time range.
 	start := now.Add(-90 * time.Minute)
 	end := now.Add(-30 * time.Minute)
-	ranged, err := al.Query(AuditFilter{StartTime: &start, EndTime: &end})
+	ranged, err := al.Query(security.AuditFilter{StartTime: &start, EndTime: &end})
 	if err != nil {
 		t.Fatalf("Query range: %v", err)
 	}
@@ -110,8 +112,8 @@ func TestAuditLog_DateSplitting(t *testing.T) {
 	day1 := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, time.UTC)
 	day2 := day1.AddDate(0, 0, -1)
 
-	al.Log(AuditEntry{Timestamp: day1, ToolName: "Bash", RiskLevel: RiskLow, PolicyAction: PolicyAllow})
-	al.Log(AuditEntry{Timestamp: day2, ToolName: "Write", RiskLevel: RiskMedium, PolicyAction: PolicyAudit})
+	al.Log(security.AuditEntry{Timestamp: day1, ToolName: "Bash", RiskLevel: security.RiskLow, PolicyAction: security.PolicyAllow})
+	al.Log(security.AuditEntry{Timestamp: day2, ToolName: "Write", RiskLevel: security.RiskMedium, PolicyAction: security.PolicyAudit})
 
 	// Verify two separate files were created.
 	files, err := al.logFiles()
@@ -168,7 +170,7 @@ func TestAuditLog_SizeRotation(t *testing.T) {
 	f.Close()
 
 	// Now log an entry — it should go to a rotated file.
-	al.Log(AuditEntry{Timestamp: ts, ToolName: "Bash", RiskLevel: RiskLow, PolicyAction: PolicyAllow})
+	al.Log(security.AuditEntry{Timestamp: ts, ToolName: "Bash", RiskLevel: security.RiskLow, PolicyAction: security.PolicyAllow})
 
 	files, err := al.logFiles()
 	if err != nil {
@@ -223,10 +225,10 @@ func TestAuditLog_DefaultTimestamp(t *testing.T) {
 
 	// Log an entry without setting Timestamp — it should default to now.
 	before := time.Now()
-	al.Log(AuditEntry{ToolName: "Bash", RiskLevel: RiskLow, PolicyAction: PolicyAllow})
+	al.Log(security.AuditEntry{ToolName: "Bash", RiskLevel: security.RiskLow, PolicyAction: security.PolicyAllow})
 	after := time.Now()
 
-	results, err := al.Query(AuditFilter{})
+	results, err := al.Query(security.AuditFilter{})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -248,28 +250,28 @@ func TestAuditLog_ActionFieldAndFilter(t *testing.T) {
 	defer al.Close()
 
 	now := time.Now()
-	entries := []AuditEntry{
+	entries := []security.AuditEntry{
 		{
 			Timestamp:    now.Add(-2 * time.Minute),
-			Action:       AuditActionHubSkillInstall,
+			Action:       security.AuditActionHubSkillInstall,
 			ToolName:     "hub_skill_install",
-			RiskLevel:    RiskLow,
-			PolicyAction: PolicyAllow,
+			RiskLevel:    security.RiskLow,
+			PolicyAction: security.PolicyAllow,
 			Result:       "installed and executed skill deploy-helper from https://hub.example.com, trust_level=official, risk=low: success",
 		},
 		{
 			Timestamp:    now.Add(-1 * time.Minute),
-			Action:       AuditActionHubSkillReject,
+			Action:       security.AuditActionHubSkillReject,
 			ToolName:     "hub_skill_install",
-			RiskLevel:    RiskCritical,
-			PolicyAction: PolicyDeny,
+			RiskLevel:    security.RiskCritical,
+			PolicyAction: security.PolicyDeny,
 			Result:       "rejected skill dangerous-tool from https://hub.example.com: critical risk, trust_level=unknown",
 		},
 		{
 			Timestamp: now,
 			ToolName:  "Bash",
-			RiskLevel: RiskLow,
-			PolicyAction: PolicyAllow,
+			RiskLevel: security.RiskLow,
+			PolicyAction: security.PolicyAllow,
 			Result:    "success",
 		},
 	}
@@ -281,19 +283,19 @@ func TestAuditLog_ActionFieldAndFilter(t *testing.T) {
 	}
 
 	// Query by Action — should return only install entries.
-	installOnly, err := al.Query(AuditFilter{Action: AuditActionHubSkillInstall})
+	installOnly, err := al.Query(security.AuditFilter{Action: security.AuditActionHubSkillInstall})
 	if err != nil {
 		t.Fatalf("Query install: %v", err)
 	}
 	if len(installOnly) != 1 {
 		t.Errorf("expected 1 install entry, got %d", len(installOnly))
 	}
-	if len(installOnly) > 0 && installOnly[0].Action != AuditActionHubSkillInstall {
-		t.Errorf("expected action %s, got %s", AuditActionHubSkillInstall, installOnly[0].Action)
+	if len(installOnly) > 0 && installOnly[0].Action != security.AuditActionHubSkillInstall {
+		t.Errorf("expected action %s, got %s", security.AuditActionHubSkillInstall, installOnly[0].Action)
 	}
 
 	// Query by Action — should return only reject entries.
-	rejectOnly, err := al.Query(AuditFilter{Action: AuditActionHubSkillReject})
+	rejectOnly, err := al.Query(security.AuditFilter{Action: security.AuditActionHubSkillReject})
 	if err != nil {
 		t.Fatalf("Query reject: %v", err)
 	}
@@ -302,7 +304,7 @@ func TestAuditLog_ActionFieldAndFilter(t *testing.T) {
 	}
 
 	// Query without Action filter — should return all 3.
-	all, err := al.Query(AuditFilter{})
+	all, err := al.Query(security.AuditFilter{})
 	if err != nil {
 		t.Fatalf("Query all: %v", err)
 	}
@@ -313,24 +315,24 @@ func TestAuditLog_ActionFieldAndFilter(t *testing.T) {
 	// Verify the Action field round-trips through JSON serialization.
 	if len(installOnly) > 0 {
 		entry := installOnly[0]
-		if entry.Action != AuditActionHubSkillInstall {
-			t.Errorf("expected action %q, got %q", AuditActionHubSkillInstall, entry.Action)
+		if entry.Action != security.AuditActionHubSkillInstall {
+			t.Errorf("expected action %q, got %q", security.AuditActionHubSkillInstall, entry.Action)
 		}
-		if entry.RiskLevel != RiskLow {
-			t.Errorf("expected risk level %q, got %q", RiskLow, entry.RiskLevel)
+		if entry.RiskLevel != security.RiskLow {
+			t.Errorf("expected risk level %q, got %q", security.RiskLow, entry.RiskLevel)
 		}
 	}
 }
 
 func TestAuditAction_Constants(t *testing.T) {
-	// Verify the AuditAction constants have the expected string values.
-	if AuditActionHubSkillInstall != "hub_skill_install" {
-		t.Errorf("expected %q, got %q", "hub_skill_install", AuditActionHubSkillInstall)
+	// Verify the security.AuditAction constants have the expected string values.
+	if security.AuditActionHubSkillInstall != "hub_skill_install" {
+		t.Errorf("expected %q, got %q", "hub_skill_install", security.AuditActionHubSkillInstall)
 	}
-	if AuditActionHubSkillUpdate != "hub_skill_update" {
-		t.Errorf("expected %q, got %q", "hub_skill_update", AuditActionHubSkillUpdate)
+	if security.AuditActionHubSkillUpdate != "hub_skill_update" {
+		t.Errorf("expected %q, got %q", "hub_skill_update", security.AuditActionHubSkillUpdate)
 	}
-	if AuditActionHubSkillReject != "hub_skill_reject" {
-		t.Errorf("expected %q, got %q", "hub_skill_reject", AuditActionHubSkillReject)
+	if security.AuditActionHubSkillReject != "hub_skill_reject" {
+		t.Errorf("expected %q, got %q", "hub_skill_reject", security.AuditActionHubSkillReject)
 	}
 }

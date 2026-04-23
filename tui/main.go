@@ -19,20 +19,12 @@ import (
 var version = "dev"
 
 func init() {
-	// Wire up security policy bridge functions so the commands package
-	// can check Hub security policy without importing package main.
-	commands.GossipGuardFn = func() error {
-		if !tuiSecurityPolicy.IsGossipAllowed() {
-			return fmt.Errorf("Gossip 功能已被管理员禁止")
-		}
-		return nil
-	}
-	commands.SecurityReadOnlyFn = func() bool {
-		return tuiSecurityPolicy.IsReadOnly()
-	}
-	commands.ConfigSecurityReadOnlyFn = func() bool {
-		return tuiSecurityPolicy.IsReadOnly()
-	}
+	// Security policy bridge functions for the commands package.
+	// In standalone TUI mode, these default to permissive.
+	// When running as `maclaw tui` (GUI binary), the App sets stricter policies.
+	commands.GossipGuardFn = func() error { return nil }
+	commands.SecurityReadOnlyFn = func() bool { return false }
+	commands.ConfigSecurityReadOnlyFn = func() bool { return false }
 }
 
 func main() {
@@ -346,30 +338,6 @@ func resolveHubCredentials() (hubURL, token string) {
 // runLaunchCommand 处理 launch 子命令：启动编程工具。
 // 用法: <brand>-tui launch <tool> [--project <dir>] [--yolo] [--admin]
 func runLaunchCommand(args []string) {
-	launchFlags := flag.NewFlagSet("launch", flag.ExitOnError)
-	projectDir := launchFlags.String("project", "", "项目目录路径")
-	yolo := launchFlags.Bool("yolo", false, "启用 YOLO 模式（跳过权限确认）")
-	admin := launchFlags.Bool("admin", false, "启用管理员模式")
-	launchFlags.Parse(args)
-
-	remaining := launchFlags.Args()
-	if len(remaining) == 0 {
-		cliName := strings.ToLower(brand.Current().DisplayName) + "-tui"
-		fmt.Fprintf(os.Stderr, "用法: %s launch <tool> [--project <dir>] [--yolo] [--admin]\n", cliName)
-		toolList := "claude, codex, gemini, opencode, iflow, kilo, cursor"
-		for _, t := range brand.Current().ExtraTools {
-			toolList += ", " + t.Name
-		}
-		fmt.Fprintf(os.Stderr, "支持的工具: %s\n", toolList)
-		os.Exit(commands.ExitUsage)
-	}
-
-	toolName := remaining[0]
-	launcher := NewTUIToolLauncher(true) // headless mode for CLI
-
-	ctx := context.Background()
-	if err := launcher.LaunchToolByName(ctx, toolName, *projectDir, *yolo, *admin); err != nil {
-		fmt.Fprintf(os.Stderr, "启动工具失败: %v\n", err)
-		os.Exit(commands.ExitError)
-	}
+	fmt.Fprintln(os.Stderr, "launch command has been moved to the main binary. Use: maclaw launch <tool>")
+	os.Exit(commands.ExitUsage)
 }

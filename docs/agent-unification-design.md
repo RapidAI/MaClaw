@@ -1,5 +1,30 @@
 # Agent 统一架构设计
 
+## 0. 实施进度
+
+| 步骤 | 状态 | 说明 |
+|------|------|------|
+| 设计文档 | ✅ 完成 | 本文档 |
+| `h.app` 依赖提取 | ✅ 完成 | ~160 处 → ~29 处（GUI 特有），新增 `gui/im_app_accessors.go` |
+| `NewIMMessageHandlerStandalone` | ✅ 完成 | 不依赖 `*App` 的构造函数，3 个测试通过 |
+| `ConversationMemory` 迁移 | ✅ 完成 | `gui/im_conversation_memory.go` → `corelib/agent/conversation_memory.go` |
+| `IMUserMessage` / `MessageAttachment` 统一 | ✅ 完成 | GUI 类型改为 `corelib/agent` 别名 |
+| `corelib/agent` 接口层 | ✅ 完成 | `Handler` 接口 + `Config` + `HandlerFactory` 注册机制 |
+| 共享 agent loop | ✅ 完成 | `corelib/agent/loop.go`：`RunLoop` + `LoopCallbacks` + `LoopHooks`，含空响应 hard exit + 漂移检测，8 个测试 |
+| TUI 统一 loop 适配 | ✅ 完成 | `tui/agent_loop_unified.go`：TUI 通过 `LoopCallbacks` 使用共享 loop |
+| TUI 旧 loop 删除 | ✅ 完成 | `tui/agent_handler.go`：`RunAgentLoop` 删除 188 行，改为委托 `RunUnifiedLoop` |
+| TUI 编入 GUI 二进制 | ✅ 完成 | `gui/tui_mode.go`：`maclaw tui` 直接使用 `IMMessageHandler`，能力与桌面/IM 完全一致 |
+| TUI 独立二进制废弃 | ✅ 重建 | `maclaw-tui` 重建为独立二进制，通过 `corelib/agent` 共享组件，仅 UI 层使用 Bubble Tea |
+| GUI bridge | ✅ 完成 | `gui/agent_handler_bridge.go` 将 `IMMessageHandler` 注册为 `agent.Handler` |
+| TUI adapter | ✅ 完成 | `tui/app.go` 通过 `agent.LoopCallbacks` 使用共享 loop + 共享工具 |
+| Package 迁移（`runAgentLoop` → `corelib/agent`） | ⏭️ 绕过 | 通过 `LoopCallbacks` 接口解决：共享 loop 在 `corelib/agent/loop.go`，TUI 通过回调提供工具/prompt |
+| TUI 切换到统一 handler | ✅ 完成 | `MACLAW_UNIFIED_LOOP=1` 环境变量启用，TUI 使用 `agent.RunLoop` |
+| Hub 退化为纯消息代理 | ✅ 完成 | `/workflow` 转发设备、`hubDirectAnswer` 移除、QuickFilter 移除、死代码清理 -2791 行 |
+
+**核心阻塞**：~~`gui/` 和 `tui/` 都是 `package main`~~ 已通过 `LoopCallbacks` 接口 + `maclaw tui` 子命令解决。TUI 独立二进制已重建：通过 `corelib/agent.RunLoop` + `corelib/agent.Tool*` + `corelib/agent.BuildSystemPrompt` 共享所有 agent 逻辑，仅 Bubble Tea UI 层是 TUI 特有代码。`maclaw tui` 子命令（GUI 内嵌 TUI）和 `maclaw-tui`（独立二进制）两条路径并存。
+
+**共享代码统计**：`corelib/agent/` 6730+ 行 + `corelib/llm/anthropic_convert.go` 114 行 = 6844+ 行平台无关代码。Hub 死代码清理 -2791 行。TUI 独立二进制 `tui/app.go` 仅 ~300 行（纯 UI 接线），所有 agent 逻辑来自 `corelib/agent/`。
+
 ## 1. 问题陈述
 
 当前系统存在三套 agent 实现，导致每个功能改进都要在多处同步修改，bug 修复经常遗漏某一侧：

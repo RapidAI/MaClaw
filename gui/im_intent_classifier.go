@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -168,7 +169,7 @@ func (h *IMMessageHandler) classifyTaskIntentForExecution(text string, attachmen
 	return llmResult
 }
 
-func (h *IMMessageHandler) classifyTaskIntentWithLLM(cfg MaclawLLMConfig, text string, attachments []MessageAttachment, httpClient *http.Client) (taskIntentResult, error) {
+func (h *IMMessageHandler) classifyTaskIntentWithLLM(cfg corelib.MaclawLLMConfig, text string, attachments []MessageAttachment, httpClient *http.Client) (taskIntentResult, error) {
 	messages := buildIntentClassifierMessages(text, attachments)
 	parsed, err := h.requestIntentClassification(cfg, messages, httpClient)
 	if err != nil {
@@ -230,14 +231,14 @@ func summarizeAttachmentNames(attachments []MessageAttachment) []string {
 	return names
 }
 
-func (h *IMMessageHandler) requestIntentClassification(cfg MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+func (h *IMMessageHandler) requestIntentClassification(cfg corelib.MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
 		return h.requestIntentClassificationAnthropic(cfg, messages, httpClient)
 	}
 	return h.requestIntentClassificationOpenAI(cfg, messages, httpClient)
 }
 
-func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg corelib.MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	responseFormat := map[string]interface{}{
@@ -269,7 +270,7 @@ func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg MaclawLLMConfig
 	return decodeIntentClassificationContent(firstLLMResponseText(parsedResp))
 }
 
-func (h *IMMessageHandler) requestIntentClassificationAnthropic(cfg MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+func (h *IMMessageHandler) requestIntentClassificationAnthropic(cfg corelib.MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
 	resp, err := h.doAnthropicLLMRequest(cfg, messages, nil, httpClient)
 	if err != nil {
 		return llmIntentClassification{}, err

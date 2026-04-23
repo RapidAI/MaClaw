@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -2439,7 +2440,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 			if m.app.sessionCheckpointer != nil {
 				resumePrompt = m.app.sessionCheckpointer.BuildResumePrompt(s.ProjectPath)
 			}
-			mem.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+			mem.UpsertUnfinishedSlot("desktop-user", &agent.UnfinishedTaskSlot{
 				SlotID:           slotID,
 				UserID:           "desktop-user",
 				ProjectPath:      s.ProjectPath,
@@ -2562,7 +2563,7 @@ func validateAndBuildImage(sessionID string, source *SDKImageSource, logPrefix s
 	if len(decoded) > ImageOutputSizeLimit {
 		// Attempt to downsize PNG images instead of dropping them.
 		if source.MediaType == "image/png" {
-			downsized, dsErr := downsizeScreenshotBase64(source.Data, ImageOutputSizeLimit)
+			downsized, dsErr := remote.DownsizeScreenshotBase64(source.Data, ImageOutputSizeLimit)
 			if dsErr == nil {
 				if app != nil {
 					app.log(fmt.Sprintf("[%s] session=%s: downsized image from %d to fit limit", logPrefix, sessionID, len(decoded)))

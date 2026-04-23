@@ -4,6 +4,7 @@ package views
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -41,15 +42,22 @@ type ChatMessage struct {
 
 // ChatModel 是 AI 助手聊天视图。
 type ChatModel struct {
-	messages  []ChatMessage
-	input     textinput.Model
-	waiting   bool // 等待 LLM 响应
-	agentMode bool // Agent 模式（带工具调用）
-	scroll    int
-	height    int
-	width     int
-	lang      string
+	messages    []ChatMessage
+	input       textinput.Model
+	waiting     bool // 等待 LLM 响应
+	agentMode   bool // Agent 模式（带工具调用）
+	scroll      int
+	height      int
+	width       int
+	lang        string
+	spinnerTick int // animation frame counter for waiting indicator
 }
+
+// spinnerFrames defines the animated spinner shown while waiting for AI response.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// chatTickMsg drives the waiting spinner animation.
+type chatTickMsg struct{}
 
 // NewChatModel 创建聊天视图。
 func NewChatModel(lang string) ChatModel {
@@ -83,6 +91,13 @@ func (m *ChatModel) AppendSystemMessage(text string) {
 	m.messages = append(m.messages, ChatMessage{Role: "system", Content: text})
 	m.waiting = false
 	m.scrollToBottom()
+}
+
+// ClearMessages resets the chat to a single system message.
+func (m *ChatModel) ClearMessages(systemMsg string) {
+	m.messages = []ChatMessage{{Role: "system", Content: systemMsg}}
+	m.scroll = 0
+	m.waiting = false
 }
 
 // SetMessages 设置聊天消息列表（用于从 memoryshot 恢复）。
@@ -125,21 +140,39 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.Error != "" {
 			m.messages = append(m.messages, ChatMessage{Role: "system", Content: i18n.Tf(i18n.MsgTUIChatError, m.lang, msg.Error)})
 		} else if msg.Text != "" {
-			// 清理流式工具调用的中间消息（🔧 开头的 system 消息），
-			// 保留最终的 assistant 回复
 			m.cleanupToolMessages()
-			m.messages = append(m.messages, ChatMessage{Role: "assistant", Content: msg.Text})
+			// Check if streaming already created an assistant message for
+			// this response (text_delta path). If so, replace its content
+			// with the final post-processed text. Otherwise append new.
+			if idx := m.lastAssistantAfterUser(); idx >= 0 {
+				m.messages[idx].Content = msg.Text
+			} else {
+				m.messages = append(m.messages, ChatMessage{Role: "assistant", Content: msg.Text})
+			}
 		}
 		m.scrollToBottom()
+		return m, nil
+	case chatTickMsg:
+		if m.waiting {
+			m.spinnerTick++
+			return m, tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return chatTickMsg{} })
+		}
 		return m, nil
 	case ChatStreamMsg:
 		switch msg.Type {
 		case "tool_call":
 			m.messages = append(m.messages, ChatMessage{Role: "system", Content: "🔧 " + msg.Tool + "..."})
 		case "tool_result":
-			// 更新最后一条工具消息，追加简短结果
-			if len(m.messages) > 0 && strings.HasPrefix(m.messages[len(m.messages)-1].Content, "🔧 "+msg.Tool) {
-				m.messages[len(m.messages)-1].Content = "🔧 " + msg.Tool + " ✓"
+			// Update the last tool message with result status and optional elapsed time.
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].Role == "system" && strings.HasPrefix(m.messages[i].Content, "🔧 "+msg.Tool) {
+					suffix := " ✓"
+					if msg.Content != "" {
+						suffix = " ✓ " + msg.Content
+					}
+					m.messages[i].Content = "🔧 " + msg.Tool + suffix
+					break
+				}
 			}
 		case "thinking":
 			// 更新思考状态
@@ -154,54 +187,83 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.scrollToBottom()
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
-			if m.input.Focused() && !m.waiting {
-				text := strings.TrimSpace(m.input.Value())
-				if text != "" {
-					m.messages = append(m.messages, ChatMessage{Role: "user", Content: text})
-					m.input.SetValue("")
-					m.waiting = true
-					m.scrollToBottom()
-					agentMode := m.agentMode
-					return m, func() tea.Msg { return ChatSendMsg{Text: text, AgentMode: agentMode} }
-				}
+		key := msg.String()
+
+		// Category 1: Navigation keys — always work regardless of input focus.
+		switch key {
+		case "up":
+			if m.scroll > 0 {
+				m.scroll--
 			}
 			return m, nil
-		case "i":
-			if !m.input.Focused() {
-				m.input.Focus()
-				return m, nil
+		case "down":
+			m.scrollDown()
+			return m, nil
+		case "pgup":
+			for i := 0; i < 10 && m.scroll > 0; i++ {
+				m.scroll--
 			}
-		case "esc":
-			if m.input.Focused() {
+			return m, nil
+		case "pgdown":
+			for i := 0; i < 10; i++ {
+				m.scrollDown()
+			}
+			return m, nil
+		}
+
+		// Category 2: Input submission — only when input is focused.
+		if m.input.Focused() {
+			switch key {
+			case "enter":
+				if !m.waiting {
+					text := strings.TrimSpace(m.input.Value())
+					if text != "" {
+						m.messages = append(m.messages, ChatMessage{Role: "user", Content: text})
+						m.input.SetValue("")
+						m.waiting = true
+						m.spinnerTick = 0
+						m.scrollToBottom()
+						agentMode := m.agentMode
+						return m, tea.Batch(
+							func() tea.Msg { return ChatSendMsg{Text: text, AgentMode: agentMode} },
+							tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return chatTickMsg{} }),
+						)
+					}
+				}
+				return m, nil
+			case "esc":
 				m.input.Blur()
 				return m, nil
 			}
-		case "up", "k":
-			if !m.input.Focused() && m.scroll > 0 {
+			// All other keys go to textinput when focused.
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+
+		// Category 3: Command keys — only when input is NOT focused.
+		switch key {
+		case "i", "enter":
+			m.input.Focus()
+			return m, nil
+		case "k":
+			if m.scroll > 0 {
 				m.scroll--
 			}
-		case "down", "j":
-			if !m.input.Focused() {
-				m.scrollDown()
-			}
+		case "j":
+			m.scrollDown()
 		case "G":
-			if !m.input.Focused() {
-				m.scrollToBottom()
-			}
+			m.scrollToBottom()
 		case "g":
-			if !m.input.Focused() {
-				m.scroll = 0
-			}
+			m.scroll = 0
 		case "c":
-			if !m.input.Focused() && !m.waiting {
+			if !m.waiting {
 				m.messages = []ChatMessage{{Role: "system", Content: i18n.T(i18n.MsgTUIChatClearedMessage, m.lang)}}
 				m.scroll = 0
 				return m, func() tea.Msg { return ChatClearMsg{} }
 			}
 		case "a":
-			if !m.input.Focused() && !m.waiting {
+			if !m.waiting {
 				m.agentMode = !m.agentMode
 				mode := i18n.T(i18n.MsgTUIChatModeSimple, m.lang)
 				if m.agentMode {
@@ -211,6 +273,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.scrollToBottom()
 			}
 		}
+		return m, nil
 	}
 
 	if m.input.Focused() {
@@ -272,6 +335,18 @@ func (m ChatModel) renderLines() []string {
 				style = toolStyle
 			}
 		}
+
+		// Assistant messages: render Markdown with syntax highlighting.
+		if msg.Role == "assistant" {
+			lines = append(lines, assistStyle.Render(prefix))
+			mdLines := RenderMarkdown(msg.Content, maxWidth-2)
+			for _, ml := range mdLines {
+				lines = append(lines, "  "+ml)
+			}
+			continue
+		}
+
+		// User / system messages: plain text with prefix.
 		prefixWidth := lipgloss.Width(prefix)
 		contentWidth := maxWidth - prefixWidth
 		if contentWidth < 10 {
@@ -279,7 +354,6 @@ func (m ChatModel) renderLines() []string {
 		}
 		pad := strings.Repeat(" ", prefixWidth)
 
-		// 先按原始换行拆分，再对每段做自动换行
 		contentLines := strings.Split(msg.Content, "\n")
 		firstLine := true
 		for _, cl := range contentLines {
@@ -295,7 +369,8 @@ func (m ChatModel) renderLines() []string {
 		}
 	}
 	if m.waiting {
-		lines = append(lines, sysStyle.Render(i18n.T(i18n.MsgTUIChatWaiting, m.lang)))
+		frame := spinnerFrames[m.spinnerTick%len(spinnerFrames)]
+		lines = append(lines, sysStyle.Render("  "+frame+" "+i18n.T(i18n.MsgTUIChatSpinnerLabel, m.lang)))
 	}
 	return lines
 }
@@ -339,6 +414,22 @@ func (m *ChatModel) cleanupToolMessages() {
 			break
 		}
 	}
+}
+
+// lastAssistantAfterUser returns the index of the last assistant message
+// that appears after the last user message, or -1 if none exists.
+// Used to detect whether streaming already created an assistant message
+// for the current response.
+func (m *ChatModel) lastAssistantAfterUser() int {
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].Role == "assistant" {
+			return i
+		}
+		if m.messages[i].Role == "user" {
+			return -1
+		}
+	}
+	return -1
 }
 
 // View 渲染聊天界面。
@@ -411,8 +502,8 @@ func (m ChatModel) renderWelcomeView(b *strings.Builder, viewHeight int) {
 		"  ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝",
 	}
 
-	// logo (6 lines) + blank + hint (1 line) = 8 lines
-	contentLines := len(logoLines) + 2
+	// logo (6 lines) + blank + hint (2 lines) = 9 lines
+	contentLines := len(logoLines) + 3
 	topPad := (viewHeight - contentLines) / 2
 	if topPad < 0 {
 		topPad = 0
@@ -426,6 +517,7 @@ func (m ChatModel) renderWelcomeView(b *strings.Builder, viewHeight int) {
 	}
 	b.WriteString("\n")
 	b.WriteString(hintStyle.Render("  " + i18n.T(i18n.MsgTUIChatSystemReady, m.lang)) + "\n")
+	b.WriteString(hintStyle.Render("  输入消息开始对话，或输入 /help 查看命令") + "\n")
 
 	// 填充剩余空间
 	used := topPad + contentLines

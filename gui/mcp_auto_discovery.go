@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -62,18 +63,18 @@ func NewMCPAutoDiscovery(app *App, registry *ToolRegistry, mcpRegistry *MCPRegis
 // ScanProject reads {projectPath}/.mcp.json and registers discovered servers.
 func (d *MCPAutoDiscovery) ScanProject(projectPath string) error {
 	declPath := filepath.Join(projectPath, mcpDeclFile)
-	return d.scanFile(declPath, MCPSourceProject)
+	return d.scanFile(declPath, corelib.MCPSourceProject)
 }
 
 // ScanGlobal reads ~/.maclaw/mcp-servers.json and registers global servers.
 func (d *MCPAutoDiscovery) ScanGlobal() error {
 	homeDir := d.app.GetUserHomeDir()
 	globalPath := filepath.Join(homeDir, ".maclaw", globalMCPFile)
-	return d.scanFile(globalPath, MCPSourceManual)
+	return d.scanFile(globalPath, corelib.MCPSourceManual)
 }
 
 // scanFile parses a declaration file and registers each server.
-func (d *MCPAutoDiscovery) scanFile(path string, source MCPServerSource) error {
+func (d *MCPAutoDiscovery) scanFile(path string, source corelib.MCPServerSource) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -98,8 +99,8 @@ func (d *MCPAutoDiscovery) scanFile(path string, source MCPServerSource) error {
 
 // registerServer registers a declared MCP server into MCPRegistry and
 // syncs its tools into the ToolRegistry.
-func (d *MCPAutoDiscovery) registerServer(srv MCPDeclServer, source MCPServerSource) {
-	entry := MCPServerEntry{
+func (d *MCPAutoDiscovery) registerServer(srv MCPDeclServer, source corelib.MCPServerSource) {
+	entry := corelib.MCPServerEntry{
 		ID:          srv.ID,
 		Name:        srv.Name,
 		EndpointURL: srv.EndpointURL,

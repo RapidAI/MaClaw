@@ -73,3 +73,41 @@ func TestConfigServiceRejectsInvalidEnabledConfig(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestConfigServiceSaveNormalizesURLsAndPeers(t *testing.T) {
+	svc, provider := newHAConfigServiceTestStore(t)
+	defer provider.Close()
+
+	got, err := svc.SaveConfig(context.Background(), config.HAConfig{
+		Enabled:                         true,
+		NodeID:                          " hc-1 ",
+		NodeName:                        " HubCenter 1 ",
+		AdvertiseURL:                    "https://hubs.mypapers.top/ ",
+		ClusterSecret:                   " shared-secret ",
+		SyncIntervalSeconds:             0,
+		PullBatchSize:                   0,
+		HeartbeatSyncMinIntervalSeconds: 0,
+		Peers: []config.HAPeerConfig{
+			{Enabled: false, NodeID: "", Name: "", BaseURL: ""},
+			{Enabled: true, NodeID: " hc-2 ", Name: " HubCenter 2 ", BaseURL: "https://hubs.maclaw.top/ "},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if got.NodeID != "hc-1" || got.NodeName != "HubCenter 1" {
+		t.Fatalf("unexpected node identity: %+v", got)
+	}
+	if got.AdvertiseURL != "https://hubs.mypapers.top" {
+		t.Fatalf("AdvertiseURL = %q", got.AdvertiseURL)
+	}
+	if got.ClusterSecret != "shared-secret" {
+		t.Fatalf("ClusterSecret = %q", got.ClusterSecret)
+	}
+	if got.SyncIntervalSeconds != 3 || got.PullBatchSize != 200 || got.HeartbeatSyncMinIntervalSeconds != 10 {
+		t.Fatalf("unexpected defaults after normalize: %+v", got)
+	}
+	if len(got.Peers) != 1 || got.Peers[0].NodeID != "hc-2" || got.Peers[0].BaseURL != "https://hubs.maclaw.top" {
+		t.Fatalf("unexpected peers after normalize: %+v", got.Peers)
+	}
+}

@@ -489,7 +489,7 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 		b.WriteString(`
 ## Skill 优先策略（重要）
 当你需要完成一个现有内置工具无法直接处理的任务时，按以下优先级尝试：
-1. **本地已安装 Skill**：先检查上面「已注册 Skill」列表，看是否有匹配的 Skill 可以直接用 manage_skill(action="run", name="skill名称") 执行
+1. **本地已安装 Skill**：先检查上面「已注册 Skill」列表，看是否有匹配的 Skill 可以直接用 manage_skill(action="run", name="skill名称") 执行。如果下方有该 Skill 的使用文档，先阅读文档了解工作流程和前置条件再调用 run
 2. **搜索并安装 Skill**：本地没有时，调用 search_and_install_skill 工具从 SkillMarket 搜索安装（搜索顺序：SkillMarket → ClawHub 镜像 → GitHub）
 3. **craft_tool 自建**：只有在搜索也找不到合适 Skill 时，才用 craft_tool 自己生成脚本
 
@@ -857,20 +857,25 @@ type matchedKnowledgeSkill struct {
 	Score   int // number of triggers that matched
 }
 
-// appendKnowledgeSkillSection injects matched knowledge skills into the system
-// prompt as a dedicated "## Procedural Knowledge (Skills)" section. Each skill
-// is wrapped with "### Skill: {name}" heading and "---" separator.
+// appendKnowledgeSkillSection injects matched skill documentation into the
+// system prompt. This is the single mechanism that bridges the gap between
+// a skill's semantic layer (SKILL.md) and the LLM's decision-making context.
 //
+// Two categories of skills are injected:
+//
+//  1. Knowledge skills (type: "knowledge"): inline Content from skill.yaml.
+//     These are pure documentation skills with no executable steps.
+//
+//  2. Executable skills with SKILL.md: documentation loaded from the skill
+//     directory. These skills have steps that the Runner executes, but the
+//     SKILL.md describes the full workflow including prerequisites that the
+//     LLM must handle (e.g. "generate drawio XML before running run.js").
+//     Without this injection, the LLM only sees a one-line description in
+//     the skill listing and has no way to know the skill's prerequisites.
+//
+// Both categories use the same trigger-matching and token-budget mechanism.
 // The section is placed after the memory section and before tool definitions.
-// When no knowledge skills match the current user message, the section is
-// omitted entirely (Requirement 8.4).
-//
-// Token budget enforcement (Requirements 1.7, 1.8, 8.5):
-// A combined token budget limits the total content injected. Tokens are
-// estimated as len(content)/4. If a skill's content would exceed the
-// remaining budget, it is truncated at a smart boundary (paragraph or
-// sentence break) with a "[truncated]" notice appended. Once the budget
-// is fully exhausted, remaining skills are skipped.
+// When no skills match the current user message, the section is omitted.
 func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userMessage string) {
 	if h.app == nil || h.getSkillExecutor() == nil || userMessage == "" {
 		return
@@ -885,19 +890,43 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 
 	var matched []matchedKnowledgeSkill
 	for _, s := range skills {
-		if s.Type != "knowledge" || s.Content == "" || s.Status != "active" {
+		if s.Status != "active" {
 			continue
 		}
-		if len(s.Triggers) == 0 {
+
+		// Determine the content to inject.
+		var content string
+		switch {
+		case s.Type == "knowledge" && s.Content != "":
+			// Category 1: knowledge skill with inline content.
+			content = s.Content
+		case s.Type != "knowledge" && s.SkillDir != "":
+			// Category 2: executable skill with SKILL.md.
+			// Load documentation directly from the skill directory.
+			// Only loaded when triggers match (lazy), so no wasted IO.
+			content = loadSkillDocContent(s.SkillDir)
+		}
+		if content == "" {
 			continue
 		}
-		score := countTriggerMatches(s.Triggers, msgLower)
+
+		// Match triggers against user message.
+		triggers := s.Triggers
+		if len(triggers) == 0 {
+			continue
+		}
+		score := countTriggerMatches(triggers, msgLower)
+		// Also match by skill name (covers "用 drawio-skill 画..." pattern).
+		if score == 0 && strings.Contains(msgLower, strings.ToLower(s.Name)) {
+			score = 1
+		}
 		if score == 0 {
 			continue
 		}
+
 		matched = append(matched, matchedKnowledgeSkill{
 			Name:    s.Name,
-			Content: s.Content,
+			Content: content,
 			Score:   score,
 		})
 	}
@@ -917,11 +946,11 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 
 	totalTokensUsed := 0
 
-	b.WriteString("\n## Procedural Knowledge (Skills)\n")
+	b.WriteString("\n## Skill 使用文档\n")
 	for _, m := range matched {
 		// If the total budget is exhausted, skip remaining skills.
 		if totalTokensUsed >= tokenBudget {
-			log.Printf("[knowledge_skill] token budget exhausted (%d/%d), skipping skill %q", totalTokensUsed, tokenBudget, m.Name)
+			log.Printf("[skill_doc_inject] token budget exhausted (%d/%d), skipping skill %q", totalTokensUsed, tokenBudget, m.Name)
 			break
 		}
 
@@ -933,7 +962,7 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 			// Truncate content to fit within remaining budget.
 			content = truncateToTokenBudget(content, remaining)
 			contentTokens = estimateTokens(content)
-			log.Printf("[knowledge_skill] truncated skill %q to fit budget (remaining=%d tokens)", m.Name, remaining)
+			log.Printf("[skill_doc_inject] truncated skill %q to fit budget (remaining=%d tokens)", m.Name, remaining)
 		}
 
 		totalTokensUsed += contentTokens

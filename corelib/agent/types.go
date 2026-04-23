@@ -55,10 +55,10 @@ const (
 // chat loop to inform it about state changes.
 type StatusEvent struct {
 	Type      StatusEventType
-	LoopID    string // which background loop
-	SessionID string // related coding session (if any)
-	Message   string // human-readable description
-	Remaining int    // remaining iterations (for ApproachingLimit)
+	LoopID    string            // which background loop
+	SessionID string            // related coding session (if any)
+	Message   string            // human-readable description
+	Remaining int               // remaining iterations (for ApproachingLimit)
 	Extra     map[string]string // optional key-value metadata (e.g. screenshot)
 }
 

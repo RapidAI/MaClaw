@@ -8,6 +8,8 @@ import (
 	"testing"
 	"testing/quick"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/config"
 )
 
 // ---------------------------------------------------------------------------
@@ -91,7 +93,7 @@ func TestBgLoopProperty6_ChatLoopContextCreation(t *testing.T) {
 // active LoopContext.
 func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 	f := func(cfg bgloopTestConfig) bool {
-		if cfg.LoopOverride < 1 || cfg.LoopOverride > maxAgentIterationsCap {
+		if cfg.LoopOverride < 1 || cfg.LoopOverride > config.MaxAgentIterationsCap {
 			return true // skip invalid overrides
 		}
 
@@ -125,11 +127,11 @@ func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 
 		// Verify both loopMaxOverride and ctx are in sync.
 		expected := cfg.LoopOverride
-		if expected < minAgentIterations {
-			expected = minAgentIterations
+		if expected < config.MinAgentIterations {
+			expected = config.MinAgentIterations
 		}
-		if expected > maxAgentIterationsCap {
-			expected = maxAgentIterationsCap
+		if expected > config.MaxAgentIterationsCap {
+			expected = config.MaxAgentIterationsCap
 		}
 		if h.loopMaxOverride != expected {
 			t.Logf("loopMaxOverride=%d, expected=%d", h.loopMaxOverride, expected)

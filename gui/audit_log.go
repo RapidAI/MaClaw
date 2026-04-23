@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"bufio"
 	"encoding/json"
 	"fmt"
@@ -11,8 +12,6 @@ import (
 	"sync"
 	"time"
 )
-
-// AuditAction, AuditEntry, AuditFilter — see corelib_aliases.go
 
 // AuditLog manages audit log files with date-based splitting, size-based
 // rotation, and 30-day retention.
@@ -40,7 +39,7 @@ func NewAuditLog(dir string) (*AuditLog, error) {
 
 // Log writes an audit entry as a single JSON line to the current log file.
 // It handles date-based file splitting and size-based rotation automatically.
-func (l *AuditLog) Log(entry AuditEntry) error {
+func (l *AuditLog) Log(entry security.AuditEntry) error {
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now()
 	}
@@ -74,7 +73,7 @@ func (l *AuditLog) Log(entry AuditEntry) error {
 
 // Query returns audit entries matching the given filter. It scans all
 // relevant log files based on the time range.
-func (l *AuditLog) Query(filter AuditFilter) ([]AuditEntry, error) {
+func (l *AuditLog) Query(filter security.AuditFilter) ([]security.AuditEntry, error) {
 	l.mu.Lock()
 	// Flush the current file so queries see the latest data.
 	if l.current != nil {
@@ -87,7 +86,7 @@ func (l *AuditLog) Query(filter AuditFilter) ([]AuditEntry, error) {
 		return nil, fmt.Errorf("audit log: list files: %w", err)
 	}
 
-	var results []AuditEntry
+	var results []security.AuditEntry
 	for _, f := range files {
 		// Quick date-range check based on filename.
 		if !l.fileInRange(f, filter) {
@@ -214,7 +213,7 @@ func (l *AuditLog) logFiles() ([]string, error) {
 }
 
 // fileInRange checks whether a log file's date falls within the filter's time range.
-func (l *AuditLog) fileInRange(path string, filter AuditFilter) bool {
+func (l *AuditLog) fileInRange(path string, filter security.AuditFilter) bool {
 	dateStr := extractDateFromFilename(filepath.Base(path))
 	if dateStr == "" {
 		return true // can't determine, include it
@@ -252,14 +251,14 @@ func extractDateFromFilename(name string) string {
 }
 
 // readFile reads all audit entries from a single JSONL file.
-func (l *AuditLog) readFile(path string) ([]AuditEntry, error) {
+func (l *AuditLog) readFile(path string) ([]security.AuditEntry, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	var entries []AuditEntry
+	var entries []security.AuditEntry
 	scanner := bufio.NewScanner(f)
 	// Increase buffer for potentially large JSON lines.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -268,7 +267,7 @@ func (l *AuditLog) readFile(path string) ([]AuditEntry, error) {
 		if len(line) == 0 {
 			continue
 		}
-		var entry AuditEntry
+		var entry security.AuditEntry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			continue // skip malformed lines
 		}
@@ -278,7 +277,7 @@ func (l *AuditLog) readFile(path string) ([]AuditEntry, error) {
 }
 
 // matchesFilter checks whether an entry matches the given filter criteria.
-func matchesFilter(entry AuditEntry, filter AuditFilter) bool {
+func matchesFilter(entry security.AuditEntry, filter security.AuditFilter) bool {
 	if filter.StartTime != nil && entry.Timestamp.Before(*filter.StartTime) {
 		return false
 	}

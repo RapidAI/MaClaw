@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/gorilla/websocket"
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestNormalizedRemotePlatform(t *testing.T) {
@@ -37,9 +38,9 @@ func TestNormalizedRemotePlatform(t *testing.T) {
 
 func TestResolveProjectProxyURL_ProjectSpecificPreferred(t *testing.T) {
 	app := &App{}
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		CurrentProject: "proj-1",
-		Projects: []ProjectConfig{
+		Projects: []corelib.ProjectConfig{
 			{
 				Id:            "proj-1",
 				Path:          filepath.Clean(`D:\workprj\proj`),
@@ -64,9 +65,9 @@ func TestResolveProjectProxyURL_ProjectSpecificPreferred(t *testing.T) {
 
 func TestResolveProjectProxyURL_FallsBackToDefault(t *testing.T) {
 	app := &App{}
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		CurrentProject:       "proj-1",
-		Projects:             []ProjectConfig{{Id: "proj-1", Path: filepath.Clean(`D:\workprj\proj`)}},
+		Projects:             []corelib.ProjectConfig{{Id: "proj-1", Path: filepath.Clean(`D:\workprj\proj`)}},
 		DefaultProxyHost:     "global-proxy.local",
 		DefaultProxyPort:     "8080",
 		DefaultProxyUsername: "global-user",
@@ -86,7 +87,7 @@ func TestBuildClaudeLaunchEnv_SetsAnthropicFields(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{}
-	model := &ModelConfig{
+	model := &corelib.ModelConfig{
 		ModelName: "ChatFire",
 		ModelId:   "claude-sonnet-4",
 		ModelUrl:  "https://api.example.com/anthropic",
@@ -94,7 +95,7 @@ func TestBuildClaudeLaunchEnv_SetsAnthropicFields(t *testing.T) {
 		WireApi:   "anthropic",
 	}
 
-	env, err := app.buildClaudeLaunchEnv(AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
+	env, err := app.buildClaudeLaunchEnv(corelib.AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
 	if err != nil {
 		t.Fatalf("buildClaudeLaunchEnv() error = %v", err)
 	}
@@ -122,7 +123,7 @@ func TestBuildClaudeLaunchEnv_CodegenWritesDedicatedSettings(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{}
-	model := &ModelConfig{
+	model := &corelib.ModelConfig{
 		ModelName: "codegen",
 		ModelId:   "claude-codegen-1",
 		ModelUrl:  "http://127.0.0.1:5001/anthropic",
@@ -130,7 +131,7 @@ func TestBuildClaudeLaunchEnv_CodegenWritesDedicatedSettings(t *testing.T) {
 		WireApi:   "anthropic",
 	}
 
-	env, err := app.buildClaudeLaunchEnv(AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
+	env, err := app.buildClaudeLaunchEnv(corelib.AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
 	if err != nil {
 		t.Fatalf("buildClaudeLaunchEnv() error = %v", err)
 	}
@@ -162,9 +163,9 @@ func TestBuildClaudeLaunchEnv_EnablesTeamModeAndProxy(t *testing.T) {
 
 	app := &App{}
 	projectPath := filepath.Clean(`D:\workprj\proj`)
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		CurrentProject: "proj-1",
-		Projects: []ProjectConfig{
+		Projects: []corelib.ProjectConfig{
 			{
 				Id:       "proj-1",
 				Path:     projectPath,
@@ -176,7 +177,7 @@ func TestBuildClaudeLaunchEnv_EnablesTeamModeAndProxy(t *testing.T) {
 		DefaultProxyUsername: "bob",
 		DefaultProxyPassword: "pwd",
 	}
-	model := &ModelConfig{
+	model := &corelib.ModelConfig{
 		ModelName: "ChatFire",
 		ModelId:   "claude-sonnet-4",
 		ModelUrl:  "https://api.example.com/anthropic",
@@ -204,7 +205,7 @@ func TestBuildClaudeLaunchEnv_RejectsNonAnthropicWireAPI(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{}
-	model := &ModelConfig{
+	model := &corelib.ModelConfig{
 		ModelName: "ChatFire",
 		ModelId:   "claude-sonnet-4",
 		ModelUrl:  "https://api.example.com/v1",
@@ -212,7 +213,7 @@ func TestBuildClaudeLaunchEnv_RejectsNonAnthropicWireAPI(t *testing.T) {
 		WireApi:   "responses",
 	}
 
-	_, err := app.buildClaudeLaunchEnv(AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
+	_, err := app.buildClaudeLaunchEnv(corelib.AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
 	if err == nil {
 		t.Fatal("expected error for non-anthropic wire_api, got nil")
 	}
@@ -228,18 +229,18 @@ func TestBuildClaudeLaunchSpec_UsesCurrentProjectAndTitle(t *testing.T) {
 
 	app := &App{testHomeDir: tmpHome}
 	projectPath := filepath.Clean(`D:\workprj\proj`)
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		CurrentProject: "proj-1",
-		Projects: []ProjectConfig{
+		Projects: []corelib.ProjectConfig{
 			{
 				Id:       "proj-1",
 				Path:     projectPath,
 				TeamMode: true,
 			},
 		},
-		Claude: ToolConfig{
+		Claude: corelib.ToolConfig{
 			CurrentModel: "ChatFire",
-			Models: []ModelConfig{
+			Models: []corelib.ModelConfig{
 				{
 					ModelName: "ChatFire",
 					ModelId:   "claude-sonnet-4",
@@ -282,18 +283,18 @@ func TestBuildClaudeLaunchSpec_UsesSavedCurrentProjectWhenProjectDirEmpty(t *tes
 
 	app := &App{testHomeDir: tmpHome}
 	projectPath := filepath.Clean(`D:\workprj\proj-saved`)
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		CurrentProject: "proj-1",
-		Projects: []ProjectConfig{
+		Projects: []corelib.ProjectConfig{
 			{
 				Id:       "proj-1",
 				Path:     projectPath,
 				TeamMode: true,
 			},
 		},
-		Claude: ToolConfig{
+		Claude: corelib.ToolConfig{
 			CurrentModel: "ChatFire",
-			Models: []ModelConfig{
+			Models: []corelib.ModelConfig{
 				{
 					ModelName: "ChatFire",
 					ModelId:   "claude-sonnet-4",
@@ -334,7 +335,7 @@ func TestResolveRemoteHubURL_PicksDefaultHub(t *testing.T) {
 	defer center.Close()
 
 	app := &App{}
-	got, err := app.resolveRemoteHubURL(AppConfig{RemoteHubCenterURL: center.URL}, "user@example.com")
+	got, err := app.resolveRemoteHubURL(corelib.AppConfig{RemoteHubCenterURL: center.URL}, "user@example.com")
 	if err != nil {
 		t.Fatalf("resolveRemoteHubURL() error = %v", err)
 	}
@@ -357,7 +358,7 @@ func TestResolveRemoteHubURL_FallsBackToFirstUsableHub(t *testing.T) {
 	defer center.Close()
 
 	app := &App{}
-	got, err := app.resolveRemoteHubURL(AppConfig{RemoteHubCenterURL: center.URL}, "user@example.com")
+	got, err := app.resolveRemoteHubURL(corelib.AppConfig{RemoteHubCenterURL: center.URL}, "user@example.com")
 	if err != nil {
 		t.Fatalf("resolveRemoteHubURL() error = %v", err)
 	}
@@ -394,7 +395,7 @@ func TestResolveRemoteHubURL_UsesDefaultCenterWhenUnset(t *testing.T) {
 	defaultRemoteHubCenterURL = center.URL
 
 	app := &App{}
-	got, err := app.resolveRemoteHubURL(AppConfig{}, "user@example.com")
+	got, err := app.resolveRemoteHubURL(corelib.AppConfig{}, "user@example.com")
 	if err != nil {
 		t.Fatalf("resolveRemoteHubURL() error = %v", err)
 	}
@@ -450,7 +451,7 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	defer center.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubCenterURL: center.URL,
 	}
 	if err := app.SaveConfig(cfg); err != nil {
@@ -527,7 +528,7 @@ func TestActivateRemote_ReturnsBeforeBackgroundHubConnect(t *testing.T) {
 	defer hub.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SaveConfig(AppConfig{RemoteHubURL: hub.URL}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
@@ -592,7 +593,7 @@ func TestActivateRemote_SendsNormalizedPlatform(t *testing.T) {
 	defer hub.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SaveConfig(AppConfig{RemoteHubURL: hub.URL}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
@@ -628,7 +629,7 @@ func TestActivateRemote_TimesOutSlowEnrollRequest(t *testing.T) {
 	defer hub.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SaveConfig(AppConfig{RemoteHubURL: hub.URL}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
@@ -675,7 +676,7 @@ func TestClearRemoteActivation_DisconnectsHubClient(t *testing.T) {
 	defer hub.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubURL:       hub.URL,
 		RemoteEmail:        "user@example.com",
 		RemoteSN:           "SN-2026-000345",

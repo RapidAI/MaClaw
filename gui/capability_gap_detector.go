@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -23,7 +25,7 @@ type CapabilityGapDetector struct {
 	skillExecutor   *SkillExecutor
 	riskAssessor    *RiskAssessor
 	auditLog        *AuditLog
-	llmConfig       MaclawLLMConfig
+	llmConfig       corelib.MaclawLLMConfig
 	client          *http.Client
 	confirmCallback func(skillName string, riskDetails string) bool
 	// unifiedClassifier is used to check whether the original user message
@@ -38,7 +40,7 @@ func NewCapabilityGapDetector(
 	skillExecutor *SkillExecutor,
 	riskAssessor *RiskAssessor,
 	auditLog *AuditLog,
-	llmConfig MaclawLLMConfig,
+	llmConfig corelib.MaclawLLMConfig,
 ) *CapabilityGapDetector {
 	return &CapabilityGapDetector{
 		app:           app,
@@ -142,7 +144,7 @@ func (d *CapabilityGapDetector) Resolve(
 		// Risk assessment for GitHub-imported skill (same as Hub path).
 		sendStatus("正在进行安全审查...")
 		ghAssessment := d.riskAssessor.AssessSkill(imported, "community")
-		if ghAssessment.Level == RiskCritical {
+		if ghAssessment.Level == security.RiskCritical {
 			riskDetails := fmt.Sprintf("GitHub Skill「%s」来自 %s (trust_level=community) 包含 critical 级别风险操作",
 				imported.Name, ghCandidates[0].RepoURL)
 			confirmed := false
@@ -152,12 +154,12 @@ func (d *CapabilityGapDetector) Resolve(
 			}
 			if !confirmed {
 				if d.auditLog != nil {
-					_ = d.auditLog.Log(AuditEntry{
+					_ = d.auditLog.Log(security.AuditEntry{
 						Timestamp:    time.Now(),
-						Action:       AuditActionHubSkillReject,
+						Action:       security.AuditActionHubSkillReject,
 						ToolName:     "github_skill_install",
-						RiskLevel:    RiskCritical,
-						PolicyAction: PolicyDeny,
+						RiskLevel:    security.RiskCritical,
+						PolicyAction: security.PolicyDeny,
 						Result:       fmt.Sprintf("rejected github skill %s from %s: critical risk", imported.Name, ghCandidates[0].RepoURL),
 					})
 				}
@@ -165,12 +167,12 @@ func (d *CapabilityGapDetector) Resolve(
 			}
 			// User confirmed — audit with PolicyUserOverride.
 			if d.auditLog != nil {
-				_ = d.auditLog.Log(AuditEntry{
+				_ = d.auditLog.Log(security.AuditEntry{
 					Timestamp:    time.Now(),
-					Action:       AuditActionHubSkillInstall,
+					Action:       security.AuditActionHubSkillInstall,
 					ToolName:     "github_skill_install",
-					RiskLevel:    RiskCritical,
-					PolicyAction: PolicyUserOverride,
+					RiskLevel:    security.RiskCritical,
+					PolicyAction: security.PolicyUserOverride,
 					Result:       fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical", imported.Name, ghCandidates[0].RepoURL),
 				})
 			}
@@ -186,13 +188,13 @@ func (d *CapabilityGapDetector) Resolve(
 		// Audit log for GitHub install.
 		if d.auditLog != nil {
 			// Use PolicyUserOverride when the user confirmed a critical-risk install.
-			ghPolicyAction := PolicyAllow
-			if ghAssessment.Level == RiskCritical {
-				ghPolicyAction = PolicyUserOverride
+			ghPolicyAction := security.PolicyAllow
+			if ghAssessment.Level == security.RiskCritical {
+				ghPolicyAction = security.PolicyUserOverride
 			}
-			_ = d.auditLog.Log(AuditEntry{
+			_ = d.auditLog.Log(security.AuditEntry{
 				Timestamp:    time.Now(),
-				Action:       AuditActionHubSkillInstall,
+				Action:       security.AuditActionHubSkillInstall,
 				ToolName:     "github_skill_install",
 				RiskLevel:    ghAssessment.Level,
 				PolicyAction: ghPolicyAction,
@@ -221,7 +223,7 @@ func (d *CapabilityGapDetector) Resolve(
 	sendStatus("正在进行安全审查...")
 	assessment := d.riskAssessor.AssessSkill(skill, skill.TrustLevel)
 	maxRisk := assessment.Level
-	if maxRisk == RiskCritical {
+	if maxRisk == security.RiskCritical {
 		riskDetails := fmt.Sprintf("Skill「%s」来自 %s (trust_level=%s) 包含 critical 级别风险操作", chosen.Name, chosen.HubURL, skill.TrustLevel)
 		confirmed := false
 		if d.confirmCallback != nil {
@@ -230,12 +232,12 @@ func (d *CapabilityGapDetector) Resolve(
 		}
 		if !confirmed {
 			if d.auditLog != nil {
-				_ = d.auditLog.Log(AuditEntry{
+				_ = d.auditLog.Log(security.AuditEntry{
 					Timestamp:    time.Now(),
-					Action:       AuditActionHubSkillReject,
+					Action:       security.AuditActionHubSkillReject,
 					ToolName:     "hub_skill_install",
-					RiskLevel:    RiskCritical,
-					PolicyAction: PolicyDeny,
+					RiskLevel:    security.RiskCritical,
+					PolicyAction: security.PolicyDeny,
 					Result:       fmt.Sprintf("rejected skill %s from %s: critical risk, trust_level=%s", chosen.Name, chosen.HubURL, skill.TrustLevel),
 				})
 			}
@@ -243,12 +245,12 @@ func (d *CapabilityGapDetector) Resolve(
 		}
 		// User confirmed — audit with PolicyUserOverride and continue with installation.
 		if d.auditLog != nil {
-			_ = d.auditLog.Log(AuditEntry{
+			_ = d.auditLog.Log(security.AuditEntry{
 				Timestamp:    time.Now(),
-				Action:       AuditActionHubSkillInstall,
+				Action:       security.AuditActionHubSkillInstall,
 				ToolName:     "hub_skill_install",
-				RiskLevel:    RiskCritical,
-				PolicyAction: PolicyUserOverride,
+				RiskLevel:    security.RiskCritical,
+				PolicyAction: security.PolicyUserOverride,
 				Result:       fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical, trust_level=%s", chosen.Name, chosen.HubURL, skill.TrustLevel),
 			})
 		}
@@ -273,13 +275,13 @@ func (d *CapabilityGapDetector) Resolve(
 			auditResult = execErr.Error()
 		}
 		// Use PolicyUserOverride when the user confirmed a critical-risk install.
-		policyAction := PolicyAllow
-		if maxRisk == RiskCritical {
-			policyAction = PolicyUserOverride
+		policyAction := security.PolicyAllow
+		if maxRisk == security.RiskCritical {
+			policyAction = security.PolicyUserOverride
 		}
-		_ = d.auditLog.Log(AuditEntry{
+		_ = d.auditLog.Log(security.AuditEntry{
 			Timestamp:    time.Now(),
-			Action:       AuditActionHubSkillInstall,
+			Action:       security.AuditActionHubSkillInstall,
 			ToolName:     "hub_skill_install",
 			RiskLevel:    maxRisk,
 			PolicyAction: policyAction,
@@ -463,7 +465,7 @@ func (d *CapabilityGapDetector) llmEvaluateScore(execResult string, execErr erro
 // MaClaws can discover and use it. Called after a skill is created and tested.
 // It scans steps for dependency hints and packages local files from
 // ~/.maclaw/data/skills/<name>/ into the upload payload.
-func (d *CapabilityGapDetector) AutoPublishSkill(ctx context.Context, entry NLSkillEntry, sendStatus func(string)) error {
+func (d *CapabilityGapDetector) AutoPublishSkill(ctx context.Context, entry corelib.NLSkillEntry, sendStatus func(string)) error {
 	if d.hubClient == nil {
 		return fmt.Errorf("hub client not initialized")
 	}
@@ -540,7 +542,7 @@ var pythonStdlib = map[string]bool{
 // scanDependencies analyzes bash steps for pip/npm install commands and
 // Python import statements, returning discovered dependencies.
 // Standard library modules are filtered out from import-based detection.
-func (d *CapabilityGapDetector) scanDependencies(steps []NLSkillStep) []hubSkillDependency {
+func (d *CapabilityGapDetector) scanDependencies(steps []corelib.NLSkillStep) []hubSkillDependency {
 	var deps []hubSkillDependency
 	seen := make(map[string]bool)
 

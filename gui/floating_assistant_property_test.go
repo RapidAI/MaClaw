@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"testing/quick"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -392,10 +394,10 @@ func TestProperty8_DefaultPosition(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Additional Property Tests for AppConfig serialization
+// Additional Property Tests for corelib.AppConfig serialization
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestProperty7_AppConfigSerializationRoundTrip verifies that AppConfig
+// TestProperty7_AppConfigSerializationRoundTrip verifies that corelib.AppConfig
 // with ShowAssistantEntry serializes and deserializes correctly.
 // This is implemented in corelib/app_config_test.go as unit tests,
 // but we add a property-based version here for completeness.
@@ -403,7 +405,7 @@ func TestProperty8_DefaultPosition(t *testing.T) {
 func TestProperty7_AppConfigSerializationRoundTrip(t *testing.T) {
 	f := func(showAssistantEntry bool, language string) bool {
 		// Create config with the generated values
-		config := AppConfig{
+		config := corelib.AppConfig{
 			ShowAssistantEntry: showAssistantEntry,
 			Language:           language,
 		}
@@ -415,7 +417,7 @@ func TestProperty7_AppConfigSerializationRoundTrip(t *testing.T) {
 		}
 
 		// Deserialize back
-		var decoded AppConfig
+		var decoded corelib.AppConfig
 		if err := decoded.UnmarshalJSON(data); err != nil {
 			return false
 		}
@@ -425,7 +427,7 @@ func TestProperty7_AppConfigSerializationRoundTrip(t *testing.T) {
 	}
 
 	if err := quick.Check(f, &quick.Config{MaxCount: 100}); err != nil {
-		t.Errorf("Property 7 (AppConfig serialization round-trip) failed: %v", err)
+		t.Errorf("Property 7 (corelib.AppConfig serialization round-trip) failed: %v", err)
 	}
 }
 

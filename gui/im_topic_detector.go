@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"fmt"
 	"log"
@@ -60,11 +62,11 @@ type topicSwitchDetector struct {
 	// llmTimeout is the maximum time to wait for the LLM confirmation call.
 	llmTimeout time.Duration
 
-	llmClient func() (*http.Client, MaclawLLMConfig)
+	llmClient func() (*http.Client, corelib.MaclawLLMConfig)
 	embedder  func() embedding.Embedder
 }
 
-func newTopicSwitchDetector(llmClient func() (*http.Client, MaclawLLMConfig)) *topicSwitchDetector {
+func newTopicSwitchDetector(llmClient func() (*http.Client, corelib.MaclawLLMConfig)) *topicSwitchDetector {
 	return &topicSwitchDetector{
 		bm25SameThreshold:         1.0,
 		bm25NewThreshold:          0.3,
@@ -81,15 +83,14 @@ func newTopicSwitchDetector(llmClient func() (*http.Client, MaclawLLMConfig)) *t
 
 // detect checks whether newMessage is a continuation of the user's current
 // conversation or a new topic. Returns TopicNew if context should be cleared.
-func (d *topicSwitchDetector) detect(newMessage string, userID string, mem *conversationMemory) TopicDecision {
+func (d *topicSwitchDetector) detect(newMessage string, userID string, mem *agent.ConversationMemory) TopicDecision {
 	entries := mem.Load(userID)
 	if len(entries) == 0 {
 		return TopicSame // first message, nothing to clear
 	}
 
-	// Collect recent user and assistant messages as context.
+	// Collect user messages for turn counting.
 	var userTexts []string
-	var allTexts []string // user + assistant for richer context
 	for _, e := range entries {
 		text, ok := e.Content.(string)
 		if !ok || text == "" {
@@ -97,9 +98,6 @@ func (d *topicSwitchDetector) detect(newMessage string, userID string, mem *conv
 		}
 		if e.Role == "user" {
 			userTexts = append(userTexts, text)
-		}
-		if e.Role == "user" || e.Role == "assistant" {
-			allTexts = append(allTexts, text)
 		}
 	}
 	// Use the memory's lastAccessTime as a proxy for conversation recency,
@@ -110,9 +108,6 @@ func (d *topicSwitchDetector) detect(newMessage string, userID string, mem *conv
 	}
 
 	// Guard: skip topic detection for very short messages.
-	// Uses language-aware word counting so the threshold works consistently
-	// across Chinese ("重启下" = 3 words), English ("restart" = 1 word),
-	// and mixed text.
 	if countWords(newMessage) < d.shortMessageWords {
 		return TopicSame
 	}
@@ -125,11 +120,27 @@ func (d *topicSwitchDetector) detect(newMessage string, userID string, mem *conv
 		}
 	}
 
-	// Build context text from both user and assistant messages for richer signal.
-	if len(allTexts) > 8 {
-		allTexts = allTexts[len(allTexts)-8:]
+	// --- Build context text using turn boundaries ---
+	//
+	// Extract "turn boundary" texts — the first user message and the first
+	// assistant response of each conversational turn. These carry task-level
+	// semantics rather than execution detail. Uses the same structural
+	// invariant as trimHistory's two-tier model.
+	turnBoundaryTexts := extractTurnBoundaryTexts(entries, 8)
+
+	// Append the last 2 user/assistant texts for recency signal.
+	var recentTexts []string
+	for i := len(entries) - 1; i >= 0 && len(recentTexts) < 2; i-- {
+		text, ok := entries[i].Content.(string)
+		if !ok || text == "" {
+			continue
+		}
+		if entries[i].Role == "user" || entries[i].Role == "assistant" {
+			recentTexts = append(recentTexts, text)
+		}
 	}
-	contextText := strings.Join(allTexts, "\n")
+	contextParts := append(turnBoundaryTexts, recentTexts...)
+	contextText := strings.Join(contextParts, "\n")
 
 	// --- Signal 1: BM25 lexical scoring ---
 	bm25Vote := d.scoreBM25(contextText, newMessage, lastAccess)
@@ -390,7 +401,7 @@ func truncateRunes(s string, n int) string {
 
 // buildQuickSummary creates a one-line summary from conversation entries
 // for archival before auto-clearing.
-func buildQuickSummary(entries []conversationEntry) string {
+func buildQuickSummary(entries []agent.ConversationEntry) string {
 	var lastUserText string
 	for _, e := range entries {
 		if e.Role == "user" {
@@ -408,3 +419,4 @@ func buildQuickSummary(entries []conversationEntry) string {
 	}
 	return "对话话题: " + lastUserText
 }
+

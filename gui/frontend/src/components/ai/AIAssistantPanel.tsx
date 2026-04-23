@@ -1142,7 +1142,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const prevReadyRef = useRef(ready);
 
-    const { queue, addEntry, removeEntry, updateEntry, reorderEntry, mergeAndFire, clearQueue, restoreQueue } = useBufferQueue();
+    const { queue, addEntry, removeEntry, updateEntry, reorderEntry, extractEntry, clearQueue, restoreQueue } = useBufferQueue();
 
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
@@ -1496,21 +1496,27 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         // Non-image paste: allow default behavior
     }, []);
 
-    // ── submitLocked true→false transition: merge and fire (Task 9.1) ──
+    // ── submitLocked true→false transition: process next queued entry ──
+    // Changed from mergeAndFire (all-at-once) to extractEntry (one-at-a-time).
+    // Each entry gets its own independent agent loop. When the loop finishes
+    // (submitLocked goes false again), the next entry is automatically processed.
     useEffect(() => {
         if (prevSubmitLockedRef.current && !submitLocked && queue.length > 0) {
-            const result = mergeAndFire();
-            if (result) {
-                const outgoing = buildOutgoingMessageMulti(result.mergedText, result.allFilePaths);
-                recordSubmittedPrompt?.(result.mergedText);
+            const firstEntry = queue[0];
+            const extracted = extractEntry(firstEntry.id);
+            if (extracted) {
+                const outgoing = extracted.filePaths.length > 0
+                    ? buildOutgoingMessageMulti(extracted.text, extracted.filePaths)
+                    : extracted.text;
+                recordSubmittedPrompt?.(extracted.text);
                 sendMessage(outgoing).catch(() => {
-                    // On failure, queue is already cleared by mergeAndFire
-                    // This is acceptable for MVP
+                    // On failure, entry is already removed by extractEntry.
+                    // Remaining queue entries will be processed on next transition.
                 });
             }
         }
         prevSubmitLockedRef.current = submitLocked;
-    }, [submitLocked, queue.length, mergeAndFire, sendMessage, recordSubmittedPrompt]);
+    }, [submitLocked, queue.length, extractEntry, sendMessage, recordSubmittedPrompt]);
 
     // ── BufferQueuePanel edit handlers (Task 12.1) ──
     const handleEditEntry = useCallback((id: string) => setEditingEntryId(id), []);
@@ -1519,6 +1525,29 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         updateEntry(id, text, attachments);
         setEditingEntryId(null);
     }, [updateEntry]);
+
+    // ── Fire (send) a single queued entry, interrupting the current session ──
+    const handleFireEntry = useCallback(async (id: string) => {
+        if (!cancelSession || cancelPending) return;
+        const extracted = extractEntry(id);
+        if (!extracted) return;
+
+        const restoreSeq = ++cancelRestoreSeqRef.current;
+        setCancelPending(true);
+        try {
+            await cancelSession();
+            if (cancelRestoreSeqRef.current !== restoreSeq) return;
+
+            // Build and send the extracted entry
+            const outgoing = extracted.filePaths.length > 0
+                ? buildOutgoingMessageMulti(extracted.text, extracted.filePaths)
+                : extracted.text;
+            recordSubmittedPrompt?.(extracted.text);
+            await sendMessage(outgoing);
+        } finally {
+            setCancelPending(false);
+        }
+    }, [cancelSession, cancelPending, extractEntry, sendMessage, recordSubmittedPrompt]);
 
     const handleCancel = useCallback(async () => {
         if (!cancelSession || cancelPending) return;
@@ -1539,23 +1568,25 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 inputRef.current?.focus();
             });
         } finally {
-            // Flush the buffer queue BEFORE clearing cancelPending.
+            // Flush the first queued entry BEFORE clearing cancelPending.
             // cancelSession already reset activeRoundRef synchronously, so
-            // sendMessage's idle-phase guard passes. Flushing here avoids
-            // relying on the submitLocked transition effect, which may miss
-            // the edge when React batches cancelPending=false together with
-            // the round-state changes from cancelSession.
-            // mergeAndFire uses setQueue(prev => …) so it's safe if the
-            // queue is already empty (returns null).
-            const pending = mergeAndFire();
-            if (pending) {
-                const outgoing = buildOutgoingMessageMulti(pending.mergedText, pending.allFilePaths);
-                recordSubmittedPrompt?.(pending.mergedText);
-                sendMessage(outgoing).catch(() => {});
+            // sendMessage's idle-phase guard passes. Process one entry at a
+            // time — remaining entries will be processed via the submitLocked
+            // transition effect when this entry's agent loop finishes.
+            if (queue.length > 0) {
+                const firstEntry = queue[0];
+                const pending = extractEntry(firstEntry.id);
+                if (pending) {
+                    const outgoing = pending.filePaths.length > 0
+                        ? buildOutgoingMessageMulti(pending.text, pending.filePaths)
+                        : pending.text;
+                    recordSubmittedPrompt?.(pending.text);
+                    sendMessage(outgoing).catch(() => {});
+                }
             }
             setCancelPending(false);
         }
-    }, [cancelPending, cancelSession, inputValue, resizeInput, updateInputValue, mergeAndFire, sendMessage, recordSubmittedPrompt]);
+    }, [cancelPending, cancelSession, inputValue, resizeInput, updateInputValue, queue, extractEntry, sendMessage, recordSubmittedPrompt]);
 
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => {
@@ -2205,6 +2236,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 onSaveEdit={handleSaveEdit}
                 onDelete={removeEntry}
                 onReorder={reorderEntry}
+                onFireEntry={submitLocked ? handleFireEntry : undefined}
             />
 
             {/* ── Drag handle to resize input area ── */}

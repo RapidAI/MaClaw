@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -160,7 +162,7 @@ func TestInstallHubSkillWrapsFileBackedSkillAsCraftTool(t *testing.T) {
 	}
 
 	skills := app.skillExecutor.loadSkills()
-	var found *NLSkillEntry
+	var found *corelib.NLSkillEntry
 	for i := range skills {
 		if skills[i].Name == "xh-md-to-pdf" && skills[i].Source == "hub" {
 			found = &skills[i]
@@ -299,7 +301,7 @@ func TestInstallMixedSkillRegistersGitHubSkillMD(t *testing.T) {
 	}
 
 	skills := app.skillExecutor.loadSkills()
-	var found *NLSkillEntry
+	var found *corelib.NLSkillEntry
 	for i := range skills {
 		if skills[i].Source == "github" {
 			found = &skills[i]
@@ -375,7 +377,7 @@ func TestSkillExecutorRegisterAllowsHubSkillWhenPrimaryExtractedFilesExist(t *te
 		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
 	}
 
-	entry := NLSkillEntry{
+	entry := corelib.NLSkillEntry{
 		Name:        "demo-skill",
 		Description: "from hub",
 		Source:      "hub",
@@ -417,13 +419,13 @@ func TestSkillExecutorLoadSkillsHydratesEmptyHubSkillFromFileSkill(t *testing.T)
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.NLSkills = []NLSkillEntry{{
+	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "xh-md-to-pdf",
 		Description: "stale hub copy",
 		Source:      "hub",
 		HubSkillID:  "hub-demo",
 		Status:      "active",
-		Steps:       []NLSkillStep{},
+		Steps:       []corelib.NLSkillStep{},
 	}}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -439,7 +441,7 @@ func TestSkillExecutorLoadSkillsHydratesEmptyHubSkillFromFileSkill(t *testing.T)
 
 	executor := NewSkillExecutor(app, nil, nil)
 	skills := executor.loadSkills()
-	var found *NLSkillEntry
+	var found *corelib.NLSkillEntry
 	for i := range skills {
 		if skills[i].Name == "xh-md-to-pdf" {
 			found = &skills[i]
@@ -471,13 +473,13 @@ func TestSkillExecutorLoadSkillsPrefersPrimaryFileSkillOverHubSnapshot(t *testin
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.NLSkills = []NLSkillEntry{{
+	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "xh-md-to-pdf",
 		Description: "hub snapshot",
 		Source:      "hub",
 		HubSkillID:  "hub-demo",
 		Status:      "active",
-		Steps: []NLSkillStep{{
+		Steps: []corelib.NLSkillStep{{
 			Action: "bash",
 			Params: map[string]interface{}{"command": "echo stale"},
 		}},
@@ -500,7 +502,7 @@ func TestSkillExecutorLoadSkillsPrefersPrimaryFileSkillOverHubSnapshot(t *testin
 
 	executor := NewSkillExecutor(app, nil, nil)
 	skills := executor.loadSkills()
-	var found *NLSkillEntry
+	var found *corelib.NLSkillEntry
 	for i := range skills {
 		if skills[i].Name == "xh-md-to-pdf" {
 			found = &skills[i]
@@ -546,7 +548,7 @@ func TestImportNLSkillZipPathImportsStandardOpenClawYamlPackage(t *testing.T) {
 	}
 
 	skills := app.skillExecutor.loadSkills()
-	var found *NLSkillEntry
+	var found *corelib.NLSkillEntry
 	for i := range skills {
 		if skills[i].Name == "demo-skill" {
 			found = &skills[i]
@@ -679,7 +681,7 @@ func TestImportNLSkillZipPathImportsSkillMarkdownPackage(t *testing.T) {
 	}
 
 	skills := app.skillExecutor.loadSkills()
-	var found *NLSkillEntry
+	var found *corelib.NLSkillEntry
 	for i := range skills {
 		if skills[i].Name == "xh-md-to-pdf" {
 			found = &skills[i]

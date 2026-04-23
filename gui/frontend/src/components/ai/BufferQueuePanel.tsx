@@ -103,6 +103,8 @@ export interface BufferQueuePanelProps {
     onSaveEdit: (id: string, text: string, attachments: AttachmentInfo[]) => void;
     onDelete: (id: string) => void;
     onReorder: (fromIndex: number, toIndex: number) => void;
+    /** Fire (send) a single queued entry, interrupting the current session. */
+    onFireEntry?: (id: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +133,7 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
     onSaveEdit,
     onDelete,
     onReorder,
+    onFireEntry,
 }) => {
     const [dragState, setDragState] = useState<DragState | null>(null);
 
@@ -310,6 +313,7 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
                             dragDeltaY={deltaY}
                             onPointerDown={handlePointerDown}
                             setRowRef={setRowRef}
+                            onFireEntry={onFireEntry}
                         />
                         {showInsertionAfter && (
                             <div
@@ -348,6 +352,7 @@ interface BufferEntryRowProps {
     dragDeltaY: number;
     onPointerDown: (e: React.PointerEvent<HTMLSpanElement>, entryId: string, index: number) => void;
     setRowRef: (id: string, el: HTMLDivElement | null) => void;
+    onFireEntry?: (id: string) => void;
 }
 
 const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
@@ -364,6 +369,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
     dragDeltaY,
     onPointerDown,
     setRowRef,
+    onFireEntry,
 }) => {
     const [editText, setEditText] = useState(entry.text);
     const [editAttachments, setEditAttachments] = useState<AttachmentInfo[]>(
@@ -659,7 +665,28 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                 ))}
             </div>
 
-            {/* Right: Edit + Delete buttons */}
+            {/* Right: Fire + Edit + Delete buttons */}
+            {onFireEntry && (
+                <button
+                    data-testid={`fire-btn-${entry.id}`}
+                    onClick={() => onFireEntry(entry.id)}
+                    style={{
+                        background: "none",
+                        border: `1px solid ${t.headingColor}`,
+                        borderRadius: "3px",
+                        cursor: "pointer",
+                        color: t.headingColor,
+                        fontSize: "12px",
+                        padding: "1px 5px",
+                        flexShrink: 0,
+                        lineHeight: 1.2,
+                    }}
+                    aria-label={localizeText(lang, "Send now (interrupt current)", "立即发送（打断当前会话）", "立即發送（打斷當前會話）")}
+                    title={localizeText(lang, "Send now", "发射", "發射")}
+                >
+                    ⏎
+                </button>
+            )}
             <button
                 data-testid={`edit-btn-${entry.id}`}
                 onClick={handleStartEdit}

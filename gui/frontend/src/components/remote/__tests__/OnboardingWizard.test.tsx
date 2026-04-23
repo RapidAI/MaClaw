@@ -21,16 +21,6 @@ const SaveCodeGenModelChoiceMock = vi.fn();
 const GetWeixinStatusMock = vi.fn();
 const StartWeixinQRLoginMock = vi.fn();
 const PollWeixinQRStatusMock = vi.fn();
-const StartFreeProxyMock = vi.fn();
-const StopFreeProxyMock = vi.fn();
-const IsFreeProxyRunningMock = vi.fn();
-const DetectBrowserMock = vi.fn();
-const DangbeiLoginMock = vi.fn();
-const DangbeiFinishLoginMock = vi.fn();
-const DangbeiEnsureAuthMock = vi.fn();
-const GetFreeProxyModelsMock = vi.fn();
-const GetFreeProxyModelMock = vi.fn();
-const SetFreeProxyModelMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
@@ -52,16 +42,6 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetWeixinStatus: (...args: unknown[]) => GetWeixinStatusMock(...args),
     StartWeixinQRLogin: (...args: unknown[]) => StartWeixinQRLoginMock(...args),
     PollWeixinQRStatus: (...args: unknown[]) => PollWeixinQRStatusMock(...args),
-    StartFreeProxy: (...args: unknown[]) => StartFreeProxyMock(...args),
-    StopFreeProxy: (...args: unknown[]) => StopFreeProxyMock(...args),
-    IsFreeProxyRunning: (...args: unknown[]) => IsFreeProxyRunningMock(...args),
-    DetectBrowser: (...args: unknown[]) => DetectBrowserMock(...args),
-    DangbeiLogin: (...args: unknown[]) => DangbeiLoginMock(...args),
-    DangbeiFinishLogin: (...args: unknown[]) => DangbeiFinishLoginMock(...args),
-    DangbeiEnsureAuth: (...args: unknown[]) => DangbeiEnsureAuthMock(...args),
-    GetFreeProxyModels: (...args: unknown[]) => GetFreeProxyModelsMock(...args),
-    GetFreeProxyModel: (...args: unknown[]) => GetFreeProxyModelMock(...args),
-    SetFreeProxyModel: (...args: unknown[]) => SetFreeProxyModelMock(...args),
 }));
 
 import { OnboardingWizard } from '../OnboardingWizard';
@@ -99,11 +79,6 @@ describe('OnboardingWizard registration', () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({ active: false, skip_llm_config: false });
         RedeemHubLLMServiceMock.mockResolvedValue({ active: false, skip_llm_config: false });
         CancelCodeGenSSOPollingMock.mockResolvedValue(undefined);
-        DetectBrowserMock.mockResolvedValue({ found: 'false' });
-        GetFreeProxyModelsMock.mockResolvedValue([]);
-        GetFreeProxyModelMock.mockResolvedValue('');
-        DangbeiEnsureAuthMock.mockResolvedValue('');
-        IsFreeProxyRunningMock.mockResolvedValue(false);
     });
 
     afterEach(() => {

@@ -155,10 +155,14 @@ func statusIcon(status string, lang string) string {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n-3] + "..."
+	if n <= 1 {
+		return "…"
+	}
+	return string(runes[:n-1]) + "…"
 }
 
 // renderWelcome renders the ASCII art logo and welcome message.

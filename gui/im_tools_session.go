@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -213,16 +214,6 @@ func (h *IMMessageHandler) conversationHasCodingContext() bool {
 		}
 	}
 	return false
-}
-
-// getGateIntentClassifier returns the GateIntentClassifier from the App, if
-// available. Returns nil when the classifier has not been wired up yet.
-// The actual wiring happens in the App initialization (Task 12.1).
-func (h *IMMessageHandler) getGateIntentClassifier() *GateIntentClassifier {
-	if h.app == nil {
-		return nil
-	}
-	return h.getGateIntentClassifier()
 }
 
 // nonCodingSessionHint returns a user-facing hint message when the
@@ -1078,7 +1069,7 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 		}
 		h.lastScreenshotAt = time.Now()
 		if len(base64Data) > 1_500_000 {
-			if ds, err := downsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
+			if ds, err := remote.DownsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
 				base64Data = ds
 			}
 		}
@@ -1113,7 +1104,7 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 			h.lastScreenshotAt = time.Now()
 			// Preemptive downsize for IM delivery (multi-monitor can be huge).
 			if len(base64Data) > 1_500_000 {
-				if ds, err := downsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
+				if ds, err := remote.DownsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
 					base64Data = ds
 				}
 			}
@@ -1144,7 +1135,7 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 		h.lastScreenshotAt = time.Now()
 		// Preemptive downsize for IM delivery.
 		if len(base64Data) > 1_500_000 {
-			if ds, err := downsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
+			if ds, err := remote.DownsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
 				base64Data = ds
 			}
 		}

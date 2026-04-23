@@ -1,6 +1,10 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"bufio"
 	"context"
 	"crypto/rand"
@@ -105,7 +109,7 @@ func (a *App) RestoreSkills(zipPath string) (*RestoreReport, error) {
 }
 
 // QueryAuditLog queries the audit log with the given filter (Wails binding).
-func (a *App) QueryAuditLog(filter AuditFilter) ([]AuditEntry, error) {
+func (a *App) QueryAuditLog(filter security.AuditFilter) ([]security.AuditEntry, error) {
 	a.ensureAuditLog()
 	if a.auditLog == nil {
 		return nil, fmt.Errorf("audit log not initialized")
@@ -133,13 +137,13 @@ func (a *App) QuerySecurityEvents(days int) ([]SecurityEventItem, error) {
 		days = 7
 	}
 	start := time.Now().AddDate(0, 0, -days)
-	entries, err := a.auditLog.Query(AuditFilter{StartTime: &start})
+	entries, err := a.auditLog.Query(security.AuditFilter{StartTime: &start})
 	if err != nil {
 		return nil, err
 	}
 	var items []SecurityEventItem
 	for _, e := range entries {
-		if e.PolicyAction != PolicyDeny && !isDeniedResult(e.Result) {
+		if e.PolicyAction != security.PolicyDeny && !isDeniedResult(e.Result) {
 			continue
 		}
 		items = append(items, SecurityEventItem{
@@ -166,9 +170,9 @@ func isDeniedResult(result string) bool {
 // formatDenyReason produces a human-readable reason from an AuditEntry.
 // If Result already contains a descriptive message (e.g. "rejected skill X: critical risk"),
 // use it directly. Otherwise fall back to a generic label based on PolicyAction + RiskLevel.
-func formatDenyReason(e AuditEntry) string {
+func formatDenyReason(e security.AuditEntry) string {
 	r := e.Result
-	if r != "" && r != "deny" && r != "denied" && r != string(PolicyDeny) {
+	if r != "" && r != "deny" && r != "denied" && r != string(security.PolicyDeny) {
 		return r
 	}
 	// Generic fallback
@@ -436,12 +440,12 @@ func (a *App) RateHubSkill(skillID string, score int) error {
 // ---------------------------------------------------------------------------
 
 // ListMemories returns memory entries filtered by category and keyword (Wails binding).
-func (a *App) ListMemories(category, keyword string) []MemoryEntry {
+func (a *App) ListMemories(category, keyword string) []memory.Entry {
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return nil
 	}
-	return a.memoryStore.List(MemoryCategory(category), keyword)
+	return a.memoryStore.List(memory.Category(category), keyword)
 }
 
 // SaveMemory creates a new memory entry (Wails binding).
@@ -450,9 +454,9 @@ func (a *App) SaveMemory(content, category string, tags []string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.Save(MemoryEntry{
+	return a.memoryStore.Save(memory.Entry{
 		Content:  content,
-		Category: MemoryCategory(category),
+		Category: memory.Category(category),
 		Tags:     tags,
 	})
 }
@@ -463,7 +467,7 @@ func (a *App) UpdateMemory(id, content, category string, tags []string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.Update(id, content, MemoryCategory(category), tags)
+	return a.memoryStore.Update(id, content, memory.Category(category), tags)
 }
 
 // DeleteMemory removes the memory entry with the given ID (Wails binding).
@@ -476,7 +480,7 @@ func (a *App) DeleteMemory(id string) error {
 }
 
 // CompressMemories runs dedup + LLM compression once and returns a summary (Wails binding).
-func (a *App) CompressMemories() (*CompressResult, error) {
+func (a *App) CompressMemories() (*memory.CompressResult, error) {
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return nil, fmt.Errorf("memory store not initialized")
@@ -549,10 +553,10 @@ func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
 }
 
 // GetMemoryHealth returns an aggregated health report of the memory system (Wails binding).
-func (a *App) GetMemoryHealth() *MemoryHealthReport {
+func (a *App) GetMemoryHealth() *memory.HealthReport {
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
-		return &MemoryHealthReport{}
+		return &memory.HealthReport{}
 	}
 	return a.memoryStore.HealthReport()
 }
@@ -588,12 +592,12 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 }
 
 // ListArchiveMemories returns archived (cold storage) entries filtered by category and keyword (Wails binding).
-func (a *App) ListArchiveMemories(category, keyword string) []MemoryEntry {
+func (a *App) ListArchiveMemories(category, keyword string) []memory.Entry {
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return nil
 	}
-	return a.memoryStore.ListArchive(MemoryCategory(category), keyword)
+	return a.memoryStore.ListArchive(memory.Category(category), keyword)
 }
 
 // RestoreArchiveMemory moves an archived entry back to active memory (Wails binding).
@@ -641,7 +645,7 @@ func (a *App) ensureSessionStore() {
 }
 
 // ListSessionHistory returns the most recent session summaries (Wails binding).
-func (a *App) ListSessionHistory(limit int) []SessionHistorySummary {
+func (a *App) ListSessionHistory(limit int) []session.SessionSummary {
 	a.ensureSessionStore()
 	if a.sessionSearchStore == nil {
 		return nil
@@ -655,7 +659,7 @@ func (a *App) ListSessionHistory(limit int) []SessionHistorySummary {
 }
 
 // SearchSessionHistory performs FTS5 full-text search across session transcripts (Wails binding).
-func (a *App) SearchSessionHistory(query string, maxResults int) []SessionHistorySearchResult {
+func (a *App) SearchSessionHistory(query string, maxResults int) []session.SearchResult {
 	a.ensureSessionStore()
 	if a.sessionSearchStore == nil {
 		return nil
@@ -724,7 +728,7 @@ func (a *App) getOrCreateCompressor() *MemoryCompressor {
 // ---------------------------------------------------------------------------
 
 // ListTemplates returns all session templates (Wails binding).
-func (a *App) ListTemplates() []SessionTemplate {
+func (a *App) ListTemplates() []remote.SessionTemplate {
 	a.ensureTemplateManager()
 	if a.templateManager == nil {
 		return nil
@@ -738,7 +742,7 @@ func (a *App) CreateTemplate(name, tool, projectPath, modelConfig string, yoloMo
 	if a.templateManager == nil {
 		return fmt.Errorf("template manager not initialized")
 	}
-	return a.templateManager.Create(SessionTemplate{
+	return a.templateManager.Create(remote.SessionTemplate{
 		Name:        name,
 		Tool:        tool,
 		ProjectPath: projectPath,
@@ -783,7 +787,7 @@ func (a *App) UpdateConfigBinding(section, key, value string) (string, error) {
 // ---------------------------------------------------------------------------
 
 // ListScheduledTasks returns all scheduled tasks (Wails binding).
-func (a *App) ListScheduledTasks() []ScheduledTask {
+func (a *App) ListScheduledTasks() []scheduler.ScheduledTask {
 	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return nil
@@ -797,7 +801,7 @@ func (a *App) CreateScheduledTask(name, action string, hour, minute, dayOfWeek, 
 	if a.scheduledTaskManager == nil {
 		return "", fmt.Errorf("scheduled task manager not initialized")
 	}
-	return a.scheduledTaskManager.Add(ScheduledTask{
+	return a.scheduledTaskManager.Add(scheduler.ScheduledTask{
 		Name:            name,
 		Action:          action,
 		Hour:            hour,

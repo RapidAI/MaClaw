@@ -22,7 +22,7 @@ func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
 	cfg.UIMode = "pro"
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -62,7 +62,7 @@ func TestHandleIMMessageWithProgressAndStream_PresentationTaskSkipsCodingConfirm
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
 	cfg.UIMode = "pro"
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -104,7 +104,7 @@ func TestHandleIMMessageWithProgressAndStream_ScreenshotTaskUsesLLMAndSkipsConfi
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -115,7 +115,7 @@ func TestHandleIMMessageWithProgressAndStream_ScreenshotTaskUsesLLMAndSkipsConfi
 	}}
 	cfg.MaclawLLMCurrentProvider = "Custom1"
 	cfg.UIMode = "pro"
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -156,7 +156,7 @@ func TestHandleIMMessageWithProgressAndStream_FallbackToRulesOnLLMFailure(t *tes
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -167,7 +167,7 @@ func TestHandleIMMessageWithProgressAndStream_FallbackToRulesOnLLMFailure(t *tes
 	}}
 	cfg.MaclawLLMCurrentProvider = "Custom1"
 	cfg.UIMode = "pro"
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)

@@ -42,14 +42,14 @@ type llmSimpleResponse struct {
 // doSimpleLLMRequest sends a simple chat completion request (no tool calling)
 // to the configured LLM, supporting both OpenAI and Anthropic protocols.
 // It returns the text content of the assistant's reply.
-func doSimpleLLMRequest(ctx context.Context, cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
+func doSimpleLLMRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
 	if cfg.Protocol == "anthropic" {
 		return doSimpleAnthropicRequest(ctx, cfg, messages, client, timeout)
 	}
 	return doSimpleOpenAIRequest(ctx, cfg, messages, client, timeout)
 }
 
-func doSimpleOpenAIRequest(ctx context.Context, cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
+func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -81,7 +81,7 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg MaclawLLMConfig, messages []
 	return &llmSimpleResponse{Content: stripThinkingTags(text)}, nil
 }
 
-func doSimpleAnthropicRequest(ctx context.Context, cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
+func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
 	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
 
 	// Separate system message from user/assistant messages

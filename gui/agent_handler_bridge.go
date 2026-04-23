@@ -7,6 +7,8 @@ package main
 // See docs/agent-unification-design.md Phase 1, Section 4.1.2.
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
@@ -51,7 +53,7 @@ func (a *handlerAdapter) HandleMessage(msg agent.UserMessage) *agent.Response {
 }
 
 func (a *handlerAdapter) HandleMessageWithProgress(msg agent.UserMessage, onProgress agent.ProgressCallback) *agent.Response {
-	var guiProgress ProgressCallback
+	var guiProgress tool.ProgressCallback
 	if onProgress != nil {
 		guiProgress = func(text string) { onProgress(text) }
 	}
@@ -66,8 +68,8 @@ func (a *handlerAdapter) HandleMessageWithStream(
 	onNewRound agent.NewRoundCallback,
 	onStreamDone agent.StreamDoneCallback,
 ) *agent.Response {
-	var guiProgress ProgressCallback
-	var guiToken TokenCallback
+	var guiProgress tool.ProgressCallback
+	var guiToken llm.TokenCallback
 	var guiNewRound NewRoundCallback
 	var guiStreamDone StreamDoneCallback
 	if onProgress != nil {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestDoSimpleOpenAIRequest_ContentResponse(t *testing.T) {
@@ -17,7 +19,7 @@ func TestDoSimpleOpenAIRequest_ContentResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
 	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, []interface{}{
 		map[string]interface{}{"role": "user", "content": "hi"},
 	}, srv.Client(), 2*time.Second)
@@ -37,7 +39,7 @@ func TestDoSimpleOpenAIRequest_ReasoningFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
 	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, []interface{}{
 		map[string]interface{}{"role": "user", "content": "hi"},
 	}, srv.Client(), 2*time.Second)
@@ -64,7 +66,7 @@ func TestDoSimpleOpenAIRequest_SSEFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
 	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, []interface{}{
 		map[string]interface{}{"role": "user", "content": "hi"},
 	}, srv.Client(), 2*time.Second)
@@ -84,7 +86,7 @@ func TestDoSimpleOpenAIRequest_ParseErrorPassthrough(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
 	_, err := doSimpleOpenAIRequest(context.Background(), cfg, []interface{}{
 		map[string]interface{}{"role": "user", "content": "hi"},
 	}, srv.Client(), 2*time.Second)

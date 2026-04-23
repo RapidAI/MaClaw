@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"fmt"
 	"io"
@@ -491,7 +492,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 
 	// Create and wire GateIntentClassifier (five-category gate classification).
 	gic := NewGateIntentClassifier(emb)
-	gic.SetLLMConfig(func() MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 5 * time.Second})
+	gic.SetLLMConfig(func() corelib.MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 5 * time.Second})
 	a.gateIntentClassifier = gic
 	log.Println("[embedding] GateIntentClassifier created and warming up anchors")
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,7 +20,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// MaclawLLMProvider, MaclawLLMConfig — see corelib_aliases.go
+// MaclawLLMProvider and MaclawLLMConfig are defined in corelib.
 
 const codegenProviderName = "CodeGen"
 const legacyZhipuProviderName = "智谱"
@@ -33,7 +34,7 @@ func normalizeLLMTimeoutSec(timeoutSec int) int {
 	return corelib.DefaultLLMTimeoutSec
 }
 
-func normalizeMaclawLLMProvider(provider MaclawLLMProvider) MaclawLLMProvider {
+func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
 	provider.URL = strings.TrimRight(strings.TrimSpace(provider.URL), "/")
 	provider.Key = strings.TrimSpace(provider.Key)
 	provider.Model = strings.TrimSpace(provider.Model)
@@ -42,9 +43,8 @@ func normalizeMaclawLLMProvider(provider MaclawLLMProvider) MaclawLLMProvider {
 }
 
 // defaultMaclawLLMProviders returns the built-in provider list.
-func defaultMaclawLLMProviders() []MaclawLLMProvider {
-	return []MaclawLLMProvider{
-		{Name: "免费", URL: "http://localhost:18099/v1", Model: "free-proxy", ContextLength: 10000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "none"},
+func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
+	return []corelib.MaclawLLMProvider{
 		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
 		{Name: zhipuLobsterProviderName, URL: "https://open.bigmodel.cn/api/coding/paas/v4", Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -58,14 +58,14 @@ func defaultMaclawLLMProviders() []MaclawLLMProvider {
 
 // GetMaclawLLMProviders returns the provider list and current selection.
 func (a *App) GetMaclawLLMProviders() struct {
-	Providers []MaclawLLMProvider `json:"providers"`
+	Providers []corelib.MaclawLLMProvider `json:"providers"`
 	Current   string              `json:"current"`
 } {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		defaults := defaultMaclawLLMProviders()
 		return struct {
-			Providers []MaclawLLMProvider `json:"providers"`
+			Providers []corelib.MaclawLLMProvider `json:"providers"`
 			Current   string              `json:"current"`
 		}{Providers: defaults, Current: defaults[0].Name}
 	}
@@ -167,7 +167,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 			}
 		}
 		// Safe mid-slice insert (avoid shared-backing-array mutation).
-		updated := make([]MaclawLLMProvider, 0, len(providers)+1)
+		updated := make([]corelib.MaclawLLMProvider, 0, len(providers)+1)
 		updated = append(updated, providers[:insertAt]...)
 		updated = append(updated, d)
 		updated = append(updated, providers[insertAt:]...)
@@ -177,11 +177,25 @@ func (a *App) GetMaclawLLMProviders() struct {
 	if current == legacyZhipuProviderName {
 		current = zhipuLobsterProviderName
 	}
+	// Migrate: if current provider no longer exists in the list (e.g. "免费"
+	// was removed), fall back to the first available provider.
+	if current != "" {
+		found := false
+		for _, p := range providers {
+			if p.Name == current {
+				found = true
+				break
+			}
+		}
+		if !found {
+			current = ""
+		}
+	}
 	if current == "" {
 		current = providers[0].Name
 	}
 	return struct {
-		Providers []MaclawLLMProvider `json:"providers"`
+		Providers []corelib.MaclawLLMProvider `json:"providers"`
 		Current   string              `json:"current"`
 	}{Providers: providers, Current: current}
 }
@@ -190,7 +204,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 // in a single config read to avoid timeout/race issues from multiple parallel
 // Wails calls contending on configMu.
 func (a *App) GetMaclawLLMPanelState() struct {
-	Providers           []MaclawLLMProvider `json:"providers"`
+	Providers           []corelib.MaclawLLMProvider `json:"providers"`
 	Current             string              `json:"current"`
 	MaxIterations       int                 `json:"max_iterations"`
 	TrajectoryLogging   bool                `json:"trajectory_logging"`
@@ -200,7 +214,7 @@ func (a *App) GetMaclawLLMPanelState() struct {
 	if err != nil {
 		defaults := defaultMaclawLLMProviders()
 		return struct {
-			Providers           []MaclawLLMProvider `json:"providers"`
+			Providers           []corelib.MaclawLLMProvider `json:"providers"`
 			Current             string              `json:"current"`
 			MaxIterations       int                 `json:"max_iterations"`
 			TrajectoryLogging   bool                `json:"trajectory_logging"`
@@ -208,7 +222,7 @@ func (a *App) GetMaclawLLMPanelState() struct {
 		}{
 			Providers:           defaults,
 			Current:             defaults[0].Name,
-			MaxIterations:       maxAgentIterationsCap,
+			MaxIterations:       config.MaxAgentIterationsCap,
 			TrajectoryLogging:   false,
 			TrialReflectEnabled: false,
 		}
@@ -216,10 +230,10 @@ func (a *App) GetMaclawLLMPanelState() struct {
 	providerState := a.GetMaclawLLMProviders()
 	maxIter := cfg.MaclawAgentMaxIterations
 	if maxIter <= 0 {
-		maxIter = maxAgentIterationsCap
+		maxIter = config.MaxAgentIterationsCap
 	}
 	return struct {
-		Providers           []MaclawLLMProvider `json:"providers"`
+		Providers           []corelib.MaclawLLMProvider `json:"providers"`
 		Current             string              `json:"current"`
 		MaxIterations       int                 `json:"max_iterations"`
 		TrajectoryLogging   bool                `json:"trajectory_logging"`
@@ -234,7 +248,7 @@ func (a *App) GetMaclawLLMPanelState() struct {
 }
 
 // SaveMaclawLLMProviders persists the provider list and current selection.
-func (a *App) SaveMaclawLLMProviders(providers []MaclawLLMProvider, current string) error {
+func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, current string) error {
 	start := time.Now()
 	log.Printf("[LLM] SaveMaclawLLMProviders:start current=%s providers=%d", current, len(providers))
 	cfg, err := a.LoadConfig()
@@ -274,16 +288,6 @@ func (a *App) SaveMaclawLLMProviders(providers []MaclawLLMProvider, current stri
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", current)
 	}
-	// Auto-start or stop the free proxy based on the selected provider.
-	if current == freeProviderName {
-		if !a.IsFreeProxyRunning() {
-			go a.ensureFreeProxyIfNeeded()
-		}
-	} else {
-		if a.IsFreeProxyRunning() {
-			go a.StopFreeProxy()
-		}
-	}
 	// Immediately notify Hub of the LLM configuration change via heartbeat
 	// so the Hub-side llm_configured flag is updated without waiting for the
 	// next periodic heartbeat cycle.
@@ -308,7 +312,7 @@ func (a *App) notifyHubLLMConfigChanged() {
 }
 
 // GetMaclawLLMConfig returns the current MaClaw LLM configuration.
-func (a *App) GetMaclawLLMConfig() MaclawLLMConfig {
+func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 	// Use GetMaclawLLMProviders which applies URL sync for preset providers
 	// (e.g. port changes), instead of reading legacy fields directly.
 	data := a.GetMaclawLLMProviders()
@@ -339,7 +343,7 @@ func (a *App) GetMaclawLLMConfig() MaclawLLMConfig {
 				log.Printf("[LLM] GetMaclawLLMConfig oauth: wire_api=%s key_pfx=%s(%d) oat_pfx=%s(%d) auth=%s",
 					wireAPI, keyPfx, keyLen, oatPfx, oatLen, p.AuthType)
 			}
-			return MaclawLLMConfig{
+			return corelib.MaclawLLMConfig{
 				URL:            p.URL,
 				Key:            key,
 				Model:          p.Model,
@@ -353,7 +357,7 @@ func (a *App) GetMaclawLLMConfig() MaclawLLMConfig {
 			}
 		}
 	}
-	return MaclawLLMConfig{}
+	return corelib.MaclawLLMConfig{}
 }
 
 // isMaclawLLMConfigured returns true if the current MaClaw LLM selection
@@ -375,7 +379,7 @@ func (a *App) isProMode() bool {
 }
 
 // SaveMaclawLLMConfig persists the MaClaw LLM configuration.
-func (a *App) SaveMaclawLLMConfig(llm MaclawLLMConfig) error {
+func (a *App) SaveMaclawLLMConfig(llm corelib.MaclawLLMConfig) error {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -417,7 +421,7 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 	// Update the OpenAI provider with the obtained tokens and sync config
 	data := a.GetMaclawLLMProviders()
 	defaults := defaultMaclawLLMProviders()
-	var defaultOpenAI *MaclawLLMProvider
+	var defaultOpenAI *corelib.MaclawLLMProvider
 	for i := range defaults {
 		if defaults[i].Name == "OpenAI" && defaults[i].AuthType == "oauth" {
 			defaultOpenAI = &defaults[i]
@@ -529,7 +533,7 @@ func (a *App) ensureOAuthToken() error {
 	for i, p := range data.Providers {
 		if p.Name == data.Current && p.AuthType == "oauth" {
 			cfg := oauth.DefaultConfig()
-			updated, err := oauth.EnsureValidToken(p, cfg, func(up MaclawLLMProvider) error {
+			updated, err := oauth.EnsureValidToken(p, cfg, func(up corelib.MaclawLLMProvider) error {
 				data.Providers[i] = up
 				return a.SaveMaclawLLMProviders(data.Providers, data.Current)
 			})
@@ -546,20 +550,20 @@ func (a *App) ensureOAuthToken() error {
 // TestMaclawLLM sends a "hello" message to the configured LLM endpoint
 // using the OpenAI-compatible or Anthropic Messages API and returns the response.
 // After a successful text test, it also probes vision support synchronously.
-func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (MaclawLLMTestResult, error) {
+func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestResult, error) {
 	log.Printf("[LLM] TestMaclawLLM: agent_type=%q user_agent=%q", llm.AgentType, llm.UserAgent())
 	if err := a.ensureOAuthToken(); err != nil {
-		return MaclawLLMTestResult{}, fmt.Errorf("OAuth token refresh failed: %w", err)
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("OAuth token refresh failed: %w", err)
 	}
 
 	url := strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 	if url == "" {
-		return MaclawLLMTestResult{}, fmt.Errorf("LLM URL is not configured")
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("LLM URL is not configured")
 	}
 	key := strings.TrimSpace(llm.Key)
 	model := strings.TrimSpace(llm.Model)
 	if model == "" {
-		return MaclawLLMTestResult{}, fmt.Errorf("model name is not configured")
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("model name is not configured")
 	}
 
 	protocol := strings.TrimSpace(llm.Protocol)
@@ -573,7 +577,7 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (MaclawLLMTestResult, error) {
 		textResult, err = a.testOpenAILLM(url, key, model, llm.UserAgent())
 	}
 	if err != nil {
-		return MaclawLLMTestResult{}, err
+		return corelib.MaclawLLMTestResult{}, err
 	}
 
 	log.Printf("[LLM] TestMaclawLLM text_test_ok model=%s protocol=%s", model, protocol)
@@ -585,7 +589,7 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (MaclawLLMTestResult, error) {
 	}
 	log.Printf("[LLM] vision probe for %s: supports_vision=%v", model, vision)
 
-	return MaclawLLMTestResult{
+	return corelib.MaclawLLMTestResult{
 		Message:        textResult,
 		SupportsVision: vision,
 	}, nil
@@ -826,15 +830,13 @@ func (a *App) saveVisionProbeResult(supportsVision bool) {
 	}
 }
 
-// maxAgentIterationsCap — see corelib_aliases.go
-
 // GetMaclawAgentMaxIterations returns the configured max agent iterations.
 //   - positive value: use that as the limit
 //   - -1 or 0 (not configured): unlimited → return 0
 func (a *App) GetMaclawAgentMaxIterations() int {
 	cfg, err := a.LoadConfig()
 	if err != nil || cfg.MaclawAgentMaxIterations <= 0 {
-		return maxAgentIterationsCap // not configured → default 300
+		return config.MaxAgentIterationsCap // not configured → default 300
 	}
 	return cfg.MaclawAgentMaxIterations
 }
@@ -849,13 +851,13 @@ func (a *App) SetMaclawAgentMaxIterations(n int) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 	if n <= 0 {
-		n = maxAgentIterationsCap // default 300
+		n = config.MaxAgentIterationsCap // default 300
 	}
-	if n < minAgentIterations {
-		n = minAgentIterations
+	if n < config.MinAgentIterations {
+		n = config.MinAgentIterations
 	}
-	if n > maxAgentIterationsCap {
-		n = maxAgentIterationsCap
+	if n > config.MaxAgentIterationsCap {
+		n = config.MaxAgentIterationsCap
 	}
 	cfg.MaclawAgentMaxIterations = n // 30-300
 	return a.SaveConfig(cfg)
@@ -1030,11 +1032,11 @@ func (a *App) AccumulateLLMTokenUsage(providerName string, inputTokens, outputTo
 		return
 	}
 	if cfg.LLMTokenUsage == nil {
-		cfg.LLMTokenUsage = make(map[string]*TokenUsageStat)
+		cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
 	}
 	stat, ok := cfg.LLMTokenUsage[providerName]
 	if !ok {
-		stat = &TokenUsageStat{}
+		stat = &corelib.TokenUsageStat{}
 		cfg.LLMTokenUsage[providerName] = stat
 	}
 	stat.InputTokens += int64(inputTokens)
@@ -1051,31 +1053,31 @@ func (a *App) AccumulateLLMTokenUsage(providerName string, inputTokens, outputTo
 
 // GetLLMTokenUsage returns the token usage stats for a specific provider.
 // If provider is empty, returns stats for the current provider.
-func (a *App) GetLLMTokenUsage(provider string) *TokenUsageStat {
+func (a *App) GetLLMTokenUsage(provider string) *corelib.TokenUsageStat {
 	cfg, err := a.LoadConfig()
 	if err != nil {
-		return &TokenUsageStat{}
+		return &corelib.TokenUsageStat{}
 	}
 	if provider == "" {
 		provider = cfg.MaclawLLMCurrentProvider
 	}
 	if cfg.LLMTokenUsage == nil {
-		return &TokenUsageStat{}
+		return &corelib.TokenUsageStat{}
 	}
 	if stat, ok := cfg.LLMTokenUsage[provider]; ok {
 		return stat
 	}
-	return &TokenUsageStat{}
+	return &corelib.TokenUsageStat{}
 }
 
 // GetAllLLMTokenUsage returns token usage stats for all providers.
-func (a *App) GetAllLLMTokenUsage() map[string]*TokenUsageStat {
+func (a *App) GetAllLLMTokenUsage() map[string]*corelib.TokenUsageStat {
 	cfg, err := a.LoadConfig()
 	if err != nil {
-		return map[string]*TokenUsageStat{}
+		return map[string]*corelib.TokenUsageStat{}
 	}
 	if cfg.LLMTokenUsage == nil {
-		return map[string]*TokenUsageStat{}
+		return map[string]*corelib.TokenUsageStat{}
 	}
 	return cfg.LLMTokenUsage
 }
@@ -1091,7 +1093,7 @@ func (a *App) ResetLLMTokenUsage(provider string) error {
 		return nil
 	}
 	if provider == "" {
-		cfg.LLMTokenUsage = make(map[string]*TokenUsageStat)
+		cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
 	} else {
 		delete(cfg.LLMTokenUsage, provider)
 	}
@@ -1127,7 +1129,7 @@ func (a *App) ensureCodeGenToken() error {
 	// 2. 查找 AuthType=="sso" 的 CodeGen provider
 	data := a.GetMaclawLLMProviders()
 	providerIdx := -1
-	var provider MaclawLLMProvider
+	var provider corelib.MaclawLLMProvider
 	for i, p := range data.Providers {
 		if p.Name == codegenProviderName && p.AuthType == "sso" {
 			providerIdx = i
@@ -1175,7 +1177,7 @@ func (a *App) ensureCodeGenToken() error {
 		}
 		// 同步更新编程工具模型列表中 CodeGen 条目的 api_key
 		if cfg, loadErr := a.LoadConfig(); loadErr == nil {
-			toolConfigs := []*ToolConfig{
+			toolConfigs := []*corelib.ToolConfig{
 				&cfg.Claude, &cfg.Codex, &cfg.Opencode,
 				&cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
 			}
@@ -1283,8 +1285,8 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 // upsertCodeGenProvider 在 providers 列表中插入或更新 "CodeGen" 服务商条目。
 // 如果列表中已存在同名条目则覆盖，否则追加到列表末尾。
 // 返回新的 providers 切片（不修改原切片）。
-func upsertCodeGenProvider(providers []MaclawLLMProvider, result oauth.CodeGenSSOResult) []MaclawLLMProvider {
-	entry := MaclawLLMProvider{
+func upsertCodeGenProvider(providers []corelib.MaclawLLMProvider, result oauth.CodeGenSSOResult) []corelib.MaclawLLMProvider {
+	entry := corelib.MaclawLLMProvider{
 		Name:          codegenProviderName,
 		URL:           result.BaseURL,
 		Key:           result.AccessToken,
@@ -1297,7 +1299,7 @@ func upsertCodeGenProvider(providers []MaclawLLMProvider, result oauth.CodeGenSS
 	// 遍历查找并覆盖已有 CodeGen 条目
 	for i, p := range providers {
 		if p.Name == codegenProviderName {
-			updated := make([]MaclawLLMProvider, len(providers))
+			updated := make([]corelib.MaclawLLMProvider, len(providers))
 			copy(updated, providers)
 			updated[i] = entry
 			return updated
@@ -1334,7 +1336,7 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 	anthropicURL := codegenAnthropicBaseURL(openaiURL)
 
 	// Claude Code 使用 anthropic 协议端点
-	claudeModel := ModelConfig{
+	claudeModel := corelib.ModelConfig{
 		ModelName: codegenProviderName,
 		ModelId:   result.ModelID,
 		ModelUrl:  anthropicURL,
@@ -1344,14 +1346,14 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 	upsertModelInToolConfig(&cfg.Claude, claudeModel)
 
 	// 其他工具使用 openai 协议端点
-	openaiModel := ModelConfig{
+	openaiModel := corelib.ModelConfig{
 		ModelName: codegenProviderName,
 		ModelId:   result.ModelID,
 		ModelUrl:  openaiURL,
 		ApiKey:    result.AccessToken,
 		WireApi:   "responses",
 	}
-	openaiToolConfigs := []*ToolConfig{
+	openaiToolConfigs := []*corelib.ToolConfig{
 		&cfg.Codex,
 		&cfg.Opencode,
 		&cfg.CodeBuddy,
@@ -1369,7 +1371,7 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 
 // upsertModelInToolConfig 在 ToolConfig 的 Models 列表中插入或更新指定名称的模型。
 // 如果已存在同名条目则更新其字段；否则插入到第一个 IsCustom 条目之前。
-func upsertModelInToolConfig(tc *ToolConfig, model ModelConfig) {
+func upsertModelInToolConfig(tc *corelib.ToolConfig, model corelib.ModelConfig) {
 	for i, m := range tc.Models {
 		if m.ModelName == model.ModelName {
 			tc.Models[i].ModelId = model.ModelId
@@ -1387,7 +1389,7 @@ func upsertModelInToolConfig(tc *ToolConfig, model ModelConfig) {
 			break
 		}
 	}
-	newModels := make([]ModelConfig, 0, len(tc.Models)+1)
+	newModels := make([]corelib.ModelConfig, 0, len(tc.Models)+1)
 	newModels = append(newModels, tc.Models[:insertIdx]...)
 	newModels = append(newModels, model)
 	newModels = append(newModels, tc.Models[insertIdx:]...)
@@ -1410,7 +1412,7 @@ type CodeGenModelItem struct {
 func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 	// 从已保存的 CodeGen provider 中读取认证信息
 	data := a.GetMaclawLLMProviders()
-	var codeGenProvider *MaclawLLMProvider
+	var codeGenProvider *corelib.MaclawLLMProvider
 	for i := range data.Providers {
 		if data.Providers[i].Name == codegenProviderName {
 			codeGenProvider = &data.Providers[i]
@@ -1520,7 +1522,7 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 	// 2. 同步更新各编程工具模型列表中的 CodeGen 条目
 	if cfg, err := a.LoadConfig(); err == nil {
 		changed := false
-		var claudeEntry *ModelConfig
+		var claudeEntry *corelib.ModelConfig
 
 		if claudeTargetModel != "" {
 			if cfg.Claude.CurrentModel != codegenProviderName {
@@ -1540,7 +1542,7 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 		}
 
 		if maclawModel != "" {
-			toolConfigs := []*ToolConfig{
+			toolConfigs := []*corelib.ToolConfig{
 				&cfg.Codex, &cfg.Opencode,
 				&cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
 			}

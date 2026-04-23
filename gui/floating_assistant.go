@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"log"
 	"sync"
 	"time"
@@ -158,7 +159,7 @@ func (m *FloatingAssistantManager) persistPosition(x, y int) {
 
 // loadOrDefaultPosition returns the persisted position from config,
 // or the default top-right corner position if not set.
-func (m *FloatingAssistantManager) loadOrDefaultPosition(config AppConfig) (int, int) {
+func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfig) (int, int) {
 	if config.FloatingBtnX > 0 || config.FloatingBtnY > 0 {
 		log.Printf("[floating-assistant] loadOrDefaultPosition: restored from config (%d, %d)", config.FloatingBtnX, config.FloatingBtnY)
 		return config.FloatingBtnX, config.FloatingBtnY

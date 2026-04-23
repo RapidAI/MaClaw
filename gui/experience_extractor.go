@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,12 +15,12 @@ import (
 type ExperienceExtractor struct {
 	app           *App
 	skillExecutor *SkillExecutor
-	llmConfig     MaclawLLMConfig
+	llmConfig     corelib.MaclawLLMConfig
 	client        *http.Client
 }
 
 // NewExperienceExtractor creates a new ExperienceExtractor.
-func NewExperienceExtractor(app *App, skillExecutor *SkillExecutor, cfg MaclawLLMConfig) *ExperienceExtractor {
+func NewExperienceExtractor(app *App, skillExecutor *SkillExecutor, cfg corelib.MaclawLLMConfig) *ExperienceExtractor {
 	return &ExperienceExtractor{
 		app:           app,
 		skillExecutor: skillExecutor,
@@ -253,9 +254,9 @@ func (e *ExperienceExtractor) registerPattern(p extractedPattern, session *Remot
 		}
 	}
 
-	steps := make([]NLSkillStep, 0, len(p.Steps))
+	steps := make([]corelib.NLSkillStep, 0, len(p.Steps))
 	for _, s := range p.Steps {
-		step := NLSkillStep{
+		step := corelib.NLSkillStep{
 			Action:  s.Action,
 			Params:  s.Params,
 			OnError: s.OnError,
@@ -270,7 +271,7 @@ func (e *ExperienceExtractor) registerPattern(p extractedPattern, session *Remot
 	projectPath := session.ProjectPath
 	session.mu.RUnlock()
 
-	entry := NLSkillEntry{
+	entry := corelib.NLSkillEntry{
 		Name:          name,
 		Description:   p.Description,
 		Triggers:      p.Triggers,
@@ -301,7 +302,7 @@ func (e *ExperienceExtractor) registerPattern(p extractedPattern, session *Remot
 // isPatternBetter returns true if the new pattern is meaningfully better
 // than the existing skill. Considers step count, description detail, and
 // trigger keyword coverage.
-func (e *ExperienceExtractor) isPatternBetter(newP extractedPattern, existing *NLSkillEntry) bool {
+func (e *ExperienceExtractor) isPatternBetter(newP extractedPattern, existing *corelib.NLSkillEntry) bool {
 	score := 0
 
 	// More steps = more detailed workflow.
@@ -328,7 +329,7 @@ func (e *ExperienceExtractor) isPatternBetter(newP extractedPattern, existing *N
 }
 
 // findSkillByName looks up an existing skill by name.
-func (e *ExperienceExtractor) findSkillByName(name string) *NLSkillEntry {
+func (e *ExperienceExtractor) findSkillByName(name string) *corelib.NLSkillEntry {
 	skills := e.skillExecutor.loadSkills()
 	for _, s := range skills {
 		if s.Name == name {

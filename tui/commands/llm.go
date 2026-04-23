@@ -84,8 +84,7 @@ type presetProvider struct {
 }
 
 // presetProviders 返回 TUI 可用的预置服务商列表。
-// 排除"免费"（需要 GUI 代理）和 OAuth 类型（需要浏览器），
-// 只保留填 API Key 即可使用的服务商。
+// 排除 OAuth 类型（需要浏览器），只保留填 API Key 即可使用的服务商。
 func presetProviders() []presetProvider {
 	return []presetProvider{
 		{

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
 	"io"
 	"net/http"
@@ -410,7 +411,7 @@ func (a *App) updatePathForNode() {
 }
 
 func (a *App) installNodeJSManually(targetDir string) error {
-	nodeVersion := RequiredNodeVersion
+	nodeVersion := corelib.RequiredNodeVersion
 	arch := "x64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
@@ -601,7 +602,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	cmd.Start()
 }
 
-func (a *App) syncToSystemEnv(config AppConfig) {
+func (a *App) syncToSystemEnv(config corelib.AppConfig) {
 }
 
 func (a *App) LaunchInstallerAndExit(installerPath string) error {

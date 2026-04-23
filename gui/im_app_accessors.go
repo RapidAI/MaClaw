@@ -10,6 +10,7 @@ package main
 // so that IMMessageHandler can be constructed without a *App (for TUI).
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"os"
 
 	"github.com/RapidAI/CodeClaw/corelib/steering"
@@ -111,16 +112,22 @@ func (h *IMMessageHandler) getAppToolRouter() *ToolRouter {
 }
 
 // --- Gate Intent Classifier ---
-// NOTE: getGateIntentClassifier is defined in im_tools_session.go (pre-existing).
+
+func (h *IMMessageHandler) getGateIntentClassifier() *GateIntentClassifier {
+	if h.app == nil {
+		return nil
+	}
+	return h.app.GetGateIntentClassifier()
+}
 
 // --- LLM Config ---
 
-func (h *IMMessageHandler) getMaclawLLMConfig() MaclawLLMConfig {
+func (h *IMMessageHandler) getMaclawLLMConfig() corelib.MaclawLLMConfig {
 	if h.standaloneConfig != nil && h.standaloneConfig.LLMConfigFunc != nil {
 		return h.standaloneConfig.LLMConfigFunc()
 	}
 	if h.app == nil {
-		return MaclawLLMConfig{}
+		return corelib.MaclawLLMConfig{}
 	}
 	return h.app.GetMaclawLLMConfig()
 }
@@ -158,9 +165,9 @@ func (h *IMMessageHandler) isProMode() bool {
 
 // --- Config Persistence ---
 
-func (h *IMMessageHandler) loadConfig() (AppConfig, error) {
+func (h *IMMessageHandler) loadConfig() (corelib.AppConfig, error) {
 	if h.app == nil {
-		return AppConfig{}, nil
+		return corelib.AppConfig{}, nil
 	}
 	return h.app.LoadConfig()
 }
@@ -283,7 +290,7 @@ func (h *IMMessageHandler) getToolSelector() *ToolSelector {
 // --- LLM Providers ---
 
 type llmProvidersResult struct {
-	Providers []MaclawLLMProvider
+	Providers []corelib.MaclawLLMProvider
 	Current   string
 }
 
@@ -372,7 +379,7 @@ func (h *IMMessageHandler) appGetDocGenerator() interface{} {
 
 // --- Save Config ---
 
-func (h *IMMessageHandler) saveConfig(cfg AppConfig) error {
+func (h *IMMessageHandler) saveConfig(cfg corelib.AppConfig) error {
 	if h.app == nil {
 		return nil
 	}
@@ -381,7 +388,7 @@ func (h *IMMessageHandler) saveConfig(cfg AppConfig) error {
 
 // --- Save LLM Providers ---
 
-func (h *IMMessageHandler) saveMaclawLLMProviders(providers []MaclawLLMProvider, current string) error {
+func (h *IMMessageHandler) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, current string) error {
 	if h.app == nil {
 		return nil
 	}

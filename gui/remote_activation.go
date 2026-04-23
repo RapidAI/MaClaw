@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -110,7 +111,7 @@ func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, er
 
 // autoRegisterOnStartup re-registers a previously registered machine using saved config.
 // Called in a goroutine during startup when email and hub URL are present but machine credentials are missing.
-func (a *App) autoRegisterOnStartup(cfg AppConfig) {
+func (a *App) autoRegisterOnStartup(cfg corelib.AppConfig) {
 	email := strings.TrimSpace(cfg.RemoteEmail)
 	hubURL := strings.TrimSpace(cfg.RemoteHubURL)
 	if email == "" || hubURL == "" {
@@ -431,7 +432,7 @@ func (a *App) ListRemoteHubs(centerURL string, email string) ([]RemoteHubCenterH
 	return hubs, nil
 }
 
-func (a *App) resolveRemoteHubURL(cfg AppConfig, email string) (string, error) {
+func (a *App) resolveRemoteHubURL(cfg corelib.AppConfig, email string) (string, error) {
 	result, err := a.resolveRemoteHubCenter("", email, cfg)
 	if err != nil {
 		return "", err
@@ -461,7 +462,7 @@ func (a *App) resolveRemoteHubURL(cfg AppConfig, email string) (string, error) {
 	return "", fmt.Errorf("hub center did not return a usable hub url")
 }
 
-func (a *App) resolveRemoteHubCenter(centerURL string, email string, cfg AppConfig) (hubCenterResolveResult, error) {
+func (a *App) resolveRemoteHubCenter(centerURL string, email string, cfg corelib.AppConfig) (hubCenterResolveResult, error) {
 	centerURL = strings.TrimSpace(centerURL)
 	if centerURL == "" {
 		centerURL = strings.TrimSpace(cfg.RemoteHubCenterURL)

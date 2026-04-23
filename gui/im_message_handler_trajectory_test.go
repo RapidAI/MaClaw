@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 type trajectoryTestRequest struct {
@@ -54,7 +57,7 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsConversationAndTools(t *testing.T)
 	}
 	cfg.UIMode = "pro"
 	cfg.LLMTrajectoryLogging = true
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -78,7 +81,7 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsConversationAndTools(t *testing.T)
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "tool ok"
 		},
 	}); err != nil {
@@ -195,7 +198,7 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsEmptyFinalRecoverFlow(t *testing.T
 	}
 	cfg.UIMode = "pro"
 	cfg.LLMTrajectoryLogging = true
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -309,7 +312,7 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsPendingSkillRunRecoverReplay(t *te
 	}
 	cfg.UIMode = "pro"
 	cfg.LLMTrajectoryLogging = true
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -333,7 +336,7 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsPendingSkillRunRecoverReplay(t *te
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return `{"run_id":"run-1775734674900-1","status":"running","skill_name":"long_writer"}`
 		},
 	}); err != nil {
@@ -345,7 +348,7 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsPendingSkillRunRecoverReplay(t *te
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "Part 3 (sections 4-6) appended successfully"
 		},
 	}); err != nil {

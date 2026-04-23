@@ -1,8 +1,8 @@
-﻿# Hub Center 三节点热备部署
+# Hub Center 三节点热备部署
 
 本文档描述第一版轻量级 Hub Center 多机热备方案：保留每台机器本地单文件 SQLite，不引入外部数据库、Raft 或复杂中间件，通过 3 台 Hub Center 之间的操作日志同步和 Hub 侧多地址故障转移来保证服务连续性。
 
-上线前建议配合 [Hub Center 的 HA 配置使用手册](/D:/workprj/aicoder/docs/hubcenter的HA配置使用手册.md) 和 [Hub Center 三节点首发上线检查清单](/D:/workprj/aicoder/docs/hubcenter-ha-go-live-checklist.md) 一起使用。
+上线前建议配合 [Hub Center 的 HA 配置使用手册](/D:/workprj/aicoder/docs/hubcenter的HA配置使用手册.md)、[Hub Center HA 上线操作 SOP](/D:/workprj/aicoder/docs/hubcenter-ha-ops-sop.md) 和 [Hub Center 三节点首发上线检查清单](/D:/workprj/aicoder/docs/hubcenter-ha-go-live-checklist.md) 一起使用。
 
 ## 1. 目标
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -134,7 +135,7 @@ type GateIntentClassifier struct {
 	anchors            []gateAnchor
 	queryCache         *tool.QueryEmbeddingCache
 	ctxProvider        ConversationContextProvider
-	llmConfig          func() MaclawLLMConfig // lazy access to LLM config
+	llmConfig          func() corelib.MaclawLLMConfig // lazy access to LLM config
 	httpClient         *http.Client
 	unifiedClassifier  *intent.UnifiedIntentClassifier
 	ready              bool
@@ -177,7 +178,7 @@ func (g *GateIntentClassifier) SetContextProvider(p ConversationContextProvider)
 
 // SetLLMConfig sets the lazy LLM config accessor and HTTP client for Layer 3
 // refinement.
-func (g *GateIntentClassifier) SetLLMConfig(cfgFn func() MaclawLLMConfig, client *http.Client) {
+func (g *GateIntentClassifier) SetLLMConfig(cfgFn func() corelib.MaclawLLMConfig, client *http.Client) {
 	g.llmConfig = cfgFn
 	g.httpClient = client
 }

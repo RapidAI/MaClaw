@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSkillAutoSummary_AnalyzeComplexity_NilSession(t *testing.T) {
@@ -711,8 +712,8 @@ func TestShouldUpdateSkill_FewerSteps(t *testing.T) {
 			{Action: "write_file"},
 		},
 	}
-	existing := &NLSkillEntry{
-		Steps: []NLSkillStep{
+	existing := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{
 			{Action: "read_file"},
 			{Action: "write_file"},
 			{Action: "exec_cmd"},
@@ -731,8 +732,8 @@ func TestShouldUpdateSkill_FewerErrors(t *testing.T) {
 			{Action: "exec_cmd"},
 		},
 	}
-	existing := &NLSkillEntry{
-		Steps: []NLSkillStep{
+	existing := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{
 			{Action: "read_file"},
 			{Action: "write_file", OnError: "skip"},
 			{Action: "exec_cmd", OnError: "continue"},
@@ -752,8 +753,8 @@ func TestShouldUpdateSkill_NotBetter(t *testing.T) {
 			{Action: "deploy", OnError: "skip"},
 		},
 	}
-	existing := &NLSkillEntry{
-		Steps: []NLSkillStep{
+	existing := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{
 			{Action: "read_file"},
 			{Action: "write_file"},
 			{Action: "exec_cmd"},
@@ -771,8 +772,8 @@ func TestShouldUpdateSkill_SameStepsSameErrors(t *testing.T) {
 			{Action: "write_file"},
 		},
 	}
-	existing := &NLSkillEntry{
-		Steps: []NLSkillStep{
+	existing := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{
 			{Action: "read_file"},
 			{Action: "write_file"},
 		},

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"encoding/json"
 	"testing"
+
 )
 
 func TestMarshalTemplate(t *testing.T) {
-	tpl := SessionTemplate{
+	tpl := remote.SessionTemplate{
 		Name:        "my-template",
 		Tool:        "claude",
 		ProjectPath: "/home/user/project",
@@ -85,7 +87,7 @@ func TestUnmarshalTemplate_InvalidJSON(t *testing.T) {
 }
 
 func TestMarshalUnmarshal_RoundTrip(t *testing.T) {
-	original := SessionTemplate{
+	original := remote.SessionTemplate{
 		Name:        "roundtrip",
 		Tool:        "gemini",
 		ProjectPath: "/home/dev/app",

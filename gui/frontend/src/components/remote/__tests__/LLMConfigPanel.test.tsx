@@ -6,8 +6,6 @@ const GetMaclawLLMProvidersMock = vi.fn();
 const SaveMaclawLLMProvidersMock = vi.fn();
 const TestMaclawLLMMock = vi.fn();
 const GetMaclawAgentMaxIterationsMock = vi.fn();
-const IsFreeProxyRunningMock = vi.fn();
-const DetectBrowserMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
@@ -16,16 +14,6 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawAgentMaxIterations: (...args: unknown[]) => GetMaclawAgentMaxIterationsMock(...args),
     SetMaclawAgentMaxIterations: vi.fn(),
     StartOpenAIOAuth: vi.fn(),
-    StartFreeProxy: vi.fn(),
-    StopFreeProxy: vi.fn(),
-    IsFreeProxyRunning: (...args: unknown[]) => IsFreeProxyRunningMock(...args),
-    DetectBrowser: (...args: unknown[]) => DetectBrowserMock(...args),
-    DangbeiLogin: vi.fn(),
-    DangbeiFinishLogin: vi.fn(),
-    DangbeiEnsureAuth: vi.fn(),
-    GetFreeProxyModels: vi.fn().mockResolvedValue([]),
-    GetFreeProxyModel: vi.fn().mockResolvedValue(''),
-    SetFreeProxyModel: vi.fn(),
 }));
 
 vi.mock('../../providerLogos', () => ({ PROVIDER_LOGOS: {} }));
@@ -51,8 +39,6 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
         SaveMaclawLLMProvidersMock.mockResolvedValue(undefined);
         GetMaclawAgentMaxIterationsMock.mockResolvedValue(12);
-        IsFreeProxyRunningMock.mockResolvedValue(false);
-        DetectBrowserMock.mockResolvedValue({ found: 'false' });
     });
 
     afterEach(() => {

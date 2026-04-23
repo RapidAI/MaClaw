@@ -26,6 +26,8 @@ export interface UseBufferQueueReturn {
     updateEntry: (id: string, text: string, attachments: AttachmentInfo[]) => void;
     reorderEntry: (fromIndex: number, toIndex: number) => void;
     mergeAndFire: () => { mergedText: string; allFilePaths: string[] } | null;
+    /** Extract a single entry from the queue by id, removing it. Returns null if not found. */
+    extractEntry: (id: string) => { text: string; filePaths: string[] } | null;
     clearQueue: () => void;
     restoreQueue: () => BufferEntry[];
 }
@@ -168,6 +170,26 @@ export function useBufferQueue(): UseBufferQueueReturn {
         setQueue([]);
     }, []);
 
+    const extractEntry = useCallback((id: string): { text: string; filePaths: string[] } | null => {
+        let result: { text: string; filePaths: string[] } | null = null;
+
+        initializedRef.current = true;
+        setQueue(prev => {
+            const entry = prev.find(e => e.id === id);
+            if (!entry) {
+                result = null;
+                return prev;
+            }
+            result = {
+                text: entry.text,
+                filePaths: entry.attachments.map(a => a.filePath),
+            };
+            return prev.filter(e => e.id !== id);
+        });
+
+        return result;
+    }, []);
+
     const restoreQueue = useCallback((): BufferEntry[] => {
         try {
             const raw = localStorage.getItem(BUFFER_QUEUE_STORAGE_KEY);
@@ -202,6 +224,7 @@ export function useBufferQueue(): UseBufferQueueReturn {
         updateEntry,
         reorderEntry,
         mergeAndFire,
+        extractEntry,
         clearQueue,
         restoreQueue,
     };

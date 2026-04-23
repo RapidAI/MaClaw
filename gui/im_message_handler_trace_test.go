@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 type loopTraceRequest struct {
@@ -60,7 +66,7 @@ func TestRunAgentLoop_TrialReflect_ClearsRepeatGuardAfterSuccess(t *testing.T) {
 	}
 	cfg.UIMode = "pro"
 	cfg.TrialReflectEnabled = true
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -85,7 +91,7 @@ func TestRunAgentLoop_TrialReflect_ClearsRepeatGuardAfterSuccess(t *testing.T) {
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			bashCalls++
 			if bashCalls == 1 {
 				return "error: test failed"
@@ -232,7 +238,7 @@ func TestRunAgentLoop_TrialReflect_RestartsFailureCycleAfterSuccess(t *testing.T
 	}
 	cfg.UIMode = "pro"
 	cfg.TrialReflectEnabled = true
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -257,7 +263,7 @@ func TestRunAgentLoop_TrialReflect_RestartsFailureCycleAfterSuccess(t *testing.T
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			bashCalls++
 			switch bashCalls {
 			case 1:
@@ -394,7 +400,7 @@ func TestRunAgentLoop_EstimatesTokenUsageWhenStreamOmitsUsage(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -454,11 +460,11 @@ func TestDeriveLLMTokenUsage_FallsBackPerMissingSide(t *testing.T) {
 		map[string]interface{}{"role": "user", "content": "请帮我总结这个页面的问题并给出修复建议"},
 	}
 
-	resp := &llmResponse{
-		Choices: []llmChoice{{
-			Message: llmMessage{Content: "这是模型返回的分析结果"},
+	resp := &llm.Response{
+		Choices: []llm.Choice{{
+			Message: llm.Message{Content: "这是模型返回的分析结果"},
 		}},
-		Usage: &llmUsage{
+		Usage: &llm.Usage{
 			PromptTokens: 0,
 			OutputTokens: 23,
 		},
@@ -472,11 +478,11 @@ func TestDeriveLLMTokenUsage_FallsBackPerMissingSide(t *testing.T) {
 		t.Fatalf("output = %d, want 23", output)
 	}
 
-	resp2 := &llmResponse{
-		Choices: []llmChoice{{
-			Message: llmMessage{Content: "这是模型返回的分析结果"},
+	resp2 := &llm.Response{
+		Choices: []llm.Choice{{
+			Message: llm.Message{Content: "这是模型返回的分析结果"},
 		}},
-		Usage: &llmUsage{
+		Usage: &llm.Usage{
 			PromptTokens:     18,
 			CompletionTokens: 0,
 		},
@@ -520,7 +526,7 @@ func TestRunAgentLoop_OrientSkillPreferenceInjectsRunSkillGuidance(t *testing.T)
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -530,11 +536,11 @@ func TestRunAgentLoop_OrientSkillPreferenceInjectsRunSkillGuidance(t *testing.T)
 		ContextLength: 16000,
 	}}
 	cfg.MaclawLLMCurrentProvider = "Custom1"
-	cfg.NLSkills = []NLSkillEntry{{
+	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "hf_daily_papers_report",
 		Description: "把 HuggingFace Daily Papers 整理成报告并生成文件",
 		Triggers:    []string{"daily papers", "综述", "报告", "pdf"},
-		Steps:       []NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
 		Status:      "active",
 		CreatedAt:   time.Now().Format(time.RFC3339),
 		Source:      "manual",
@@ -622,7 +628,7 @@ func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -632,11 +638,11 @@ func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
 		ContextLength: 16000,
 	}}
 	cfg.MaclawLLMCurrentProvider = "Custom1"
-	cfg.NLSkills = []NLSkillEntry{{
+	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "hf_daily_papers_report",
 		Description: "把 HuggingFace Daily Papers 整理成报告并生成文件",
 		Triggers:    []string{"daily papers", "综述", "报告", "pdf"},
-		Steps:       []NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
 		Status:      "active",
 		CreatedAt:   time.Now().Format(time.RFC3339),
 		Source:      "manual",
@@ -654,7 +660,7 @@ func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "Skill 执行失败: skill execution stopped at step 1: command failed（run_id=run-2024）"
 		},
 	}); err != nil {
@@ -769,7 +775,7 @@ func TestRunAgentLoop_RunningSkillUsesConcreteRunIDGuidanceOnNextRound(t *testin
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -779,11 +785,11 @@ func TestRunAgentLoop_RunningSkillUsesConcreteRunIDGuidanceOnNextRound(t *testin
 		ContextLength: 16000,
 	}}
 	cfg.MaclawLLMCurrentProvider = "Custom1"
-	cfg.NLSkills = []NLSkillEntry{{
+	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "hf_daily_papers_report",
 		Description: "把 HuggingFace Daily Papers 整理成报告并生成文件",
 		Triggers:    []string{"daily papers", "综述", "报告", "pdf"},
-		Steps:       []NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
 		Status:      "active",
 		CreatedAt:   time.Now().Format(time.RFC3339),
 		Source:      "manual",
@@ -801,7 +807,7 @@ func TestRunAgentLoop_RunningSkillUsesConcreteRunIDGuidanceOnNextRound(t *testin
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "✅ Skill 已启动\n## 运行信息\n- run_id: run-555\n- skill: hf_daily_papers_report\n- status: running\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。"
 		},
 	}); err != nil {
@@ -879,7 +885,7 @@ func TestRunAgentLoop_DriftDetectionEntersRecoverPhase(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -903,7 +909,7 @@ func TestRunAgentLoop_DriftDetectionEntersRecoverPhase(t *testing.T) {
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "results for hugging face daily papers"
 		},
 	}); err != nil {
@@ -1002,7 +1008,7 @@ func TestRunAgentLoop_TrialFailureEntersRecoverPhase(t *testing.T) {
 	}
 	cfg.UIMode = "pro"
 	cfg.TrialReflectEnabled = true
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -1025,7 +1031,7 @@ func TestRunAgentLoop_TrialFailureEntersRecoverPhase(t *testing.T) {
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "error: npm test failed"
 		},
 	}); err != nil {
@@ -1108,7 +1114,7 @@ func TestRunAgentLoop_StreamDoneFiresForToolOnlyAndBonusRounds(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -1137,7 +1143,7 @@ func TestRunAgentLoop_StreamDoneFiresForToolOnlyAndBonusRounds(t *testing.T) {
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "status ok"
 		},
 	}); err != nil {
@@ -1194,7 +1200,7 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -1218,7 +1224,7 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			if onProgress != nil {
 				onProgress("internal debug-only progress")
 			}
@@ -1305,7 +1311,7 @@ func TestRunAgentLoop_NoToolStallEntersRecoverPhase(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -1419,7 +1425,7 @@ func TestRunAgentLoop_PendingSkillRunNoToolFragmentStaysInRecover(t *testing.T) 
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -1443,7 +1449,7 @@ func TestRunAgentLoop_PendingSkillRunNoToolFragmentStaysInRecover(t *testing.T) 
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "✅ Skill 已启动\n## 运行信息\n- run_id: run-1775734674900-1\n- status: running\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。"
 		},
 	}); err != nil {
@@ -1486,10 +1492,10 @@ func TestRunAgentLoop_PendingSkillRunNoToolFragmentStaysInRecover(t *testing.T) 
 }
 
 func TestHandleIMMessage_ResumeSlotUsesBoundResumeContext(t *testing.T) {
-	h := &IMMessageHandler{memory: newConversationMemory()}
+	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
 	defer h.memory.Stop()
 
-	h.memory.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot("desktop-user", &agent.UnfinishedTaskSlot{
 		SlotID:       "slot-old",
 		UserID:       "desktop-user",
 		ProjectPath:  "/project",
@@ -1543,7 +1549,7 @@ func TestHandleIMMessage_ResumeSlotBindsContextWithoutStartingSession(t *testing
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -1553,7 +1559,7 @@ func TestHandleIMMessage_ResumeSlotBindsContextWithoutStartingSession(t *testing
 		ContextLength: 16000,
 	}}
 	cfg.MaclawLLMCurrentProvider = "Custom1"
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -1571,7 +1577,7 @@ func TestHandleIMMessage_ResumeSlotBindsContextWithoutStartingSession(t *testing
 	app.sessionStarter = NewCodingSessionStarter(app)
 
 	h := NewIMMessageHandler(app, manager)
-	h.memory.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot("desktop-user", &agent.UnfinishedTaskSlot{
 		SlotID:       "slot-old",
 		UserID:       "desktop-user",
 		ProjectPath:  projectDir,
@@ -1643,7 +1649,7 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -1660,11 +1666,11 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
 	userID := "desktop-user"
-	h.memory.Save(userID, []conversationEntry{
+	h.memory.Save(userID, []agent.ConversationEntry{
 		{Role: "user", Content: "搜索 huggingface daily papers，生成每日论文综述，生成pdf发我"},
 		{Role: "assistant", Content: "(已达到最大推理轮次，请继续发送消息以完成任务)"},
 	})
-	h.memory.UpsertUnfinishedSlot(userID, &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
 		SlotID:       "slot-stale",
 		UserID:       userID,
 		Status:       "pending_resume",
@@ -1721,7 +1727,7 @@ func TestHandleIMMessage_DismissRecoverableSessionSuppressesResumeContext(t *tes
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Name: "project", Path: "D:/work/project"}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Name: "project", Path: "D:/work/project"}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -1840,7 +1846,7 @@ func TestBuildTraceEvidencePrompt_IncludesPersistedTrialReflectSummary(t *testin
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Name: "project", Path: "/project"}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Name: "project", Path: "/project"}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -1848,7 +1854,7 @@ func TestBuildTraceEvidencePrompt_IncludesPersistedTrialReflectSummary(t *testin
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
-	h.memory.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot("desktop-user", &agent.UnfinishedTaskSlot{
 		SlotID:      "slot-trace-recall",
 		UserID:      "desktop-user",
 		Status:      "pending_resume",
@@ -1895,7 +1901,7 @@ func TestBuildTraceEvidencePrompt_SkipsBenignTrialReflectSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Name: "project", Path: "/project"}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Name: "project", Path: "/project"}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -1952,7 +1958,7 @@ func TestBuildTraceEvidencePrompt_UsesActiveSlot(t *testing.T) {
 	app := &App{testHomeDir: tempHome}
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
-	h.memory.UpsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+	h.memory.UpsertUnfinishedSlot("desktop-user", &agent.UnfinishedTaskSlot{
 		SlotID:      "slot-trace",
 		UserID:      "desktop-user",
 		Status:      "pending_resume",
@@ -2205,7 +2211,7 @@ func TestRunAgentLoop_CompletedSummaryReplyDoesNotTriggerDeliverableRecover(t *t
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -2282,7 +2288,7 @@ func TestRunAgentLoop_PromiseOnlyPDFReplyTriggersAnotherRound(t *testing.T) {
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -2304,7 +2310,7 @@ func TestRunAgentLoop_PromiseOnlyPDFReplyTriggersAnotherRound(t *testing.T) {
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "[file_base64|review.pdf|application/pdf]JVBERi0xLjQKfake"
 		},
 	}); err != nil {
@@ -2393,7 +2399,7 @@ func TestRunAgentLoop_ListSkillsEmptyStateDoesNotEnterTrialFailedRecover(t *test
 	}
 	cfg.UIMode = "pro"
 	cfg.TrialReflectEnabled = true
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -2417,7 +2423,7 @@ func TestRunAgentLoop_ListSkillsEmptyStateDoesNotEnterTrialFailedRecover(t *test
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "本地没有已注册的 Skill。\n\n提示：可以使用 search_skill_hub 工具在 SkillHub 上搜索更多 Skill。\n"
 		},
 	}); err != nil {
@@ -2496,7 +2502,7 @@ func TestRunAgentLoop_EmptyAssistantReplyTriggersRecoverPhase(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -2604,7 +2610,7 @@ func TestRunAgentLoop_RepeatedPromiseOnlyRepliesEscalateToNoToolStallRecover(t *
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -2723,7 +2729,7 @@ func TestRunAgentLoop_EmptyAssistantAfterSkillFailureEscalatesToNoToolStallRecov
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -2733,11 +2739,11 @@ func TestRunAgentLoop_EmptyAssistantAfterSkillFailureEscalatesToNoToolStallRecov
 		ContextLength: 16000,
 	}}
 	cfg.MaclawLLMCurrentProvider = "Custom1"
-	cfg.NLSkills = []NLSkillEntry{{
+	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "hf_daily_papers_report",
 		Description: "把 HuggingFace Daily Papers 整理成报告并生成文件",
 		Triggers:    []string{"daily papers", "综述", "报告", "pdf"},
-		Steps:       []NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
 		Status:      "active",
 		CreatedAt:   time.Now().Format(time.RFC3339),
 		Source:      "manual",
@@ -2756,7 +2762,7 @@ func TestRunAgentLoop_EmptyAssistantAfterSkillFailureEscalatesToNoToolStallRecov
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "Skill 执行失败: skill execution stopped at step 1: command failed（run_id=run-2024）"
 		},
 	}); err != nil {
@@ -2836,7 +2842,7 @@ func TestRunAgentLoop_ReasoningFallbackDoesNotTriggerEmptyRecover(t *testing.T) 
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -2924,7 +2930,7 @@ func TestRunAgentLoop_RepeatedEmptyAssistantRepliesReenterRecover(t *testing.T) 
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -2934,14 +2940,14 @@ func TestRunAgentLoop_RepeatedEmptyAssistantRepliesReenterRecover(t *testing.T) 
 		ContextLength: 16000,
 	}}
 	cfg.MaclawLLMCurrentProvider = "Custom1"
-	cfg.MaclawAgentMaxIterations = minAgentIterations
+	cfg.MaclawAgentMaxIterations = config.MinAgentIterations
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
-	loopCtx := NewLoopContext("chat-empty-fallback", minAgentIterations, server.Client())
+	loopCtx := NewLoopContext("chat-empty-fallback", config.MinAgentIterations, server.Client())
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "empty final repeated recover", "desktop", "u1", "/project")
 	loopCtx.RunID = run.RunID
 	loopCtx.JobID = run.JobID
@@ -3023,7 +3029,7 @@ func TestRunAgentLoop_RemoteSkillSearchPromptAppearsWhenNoLocalSkillMatches(t *t
 	}
 	cfg.UIMode = "pro"
 	cfg.MaclawAgentMaxIterations = 4
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -3046,7 +3052,7 @@ func TestRunAgentLoop_RemoteSkillSearchPromptAppearsWhenNoLocalSkillMatches(t *t
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "已安装 Skill: hf_daily_papers_report"
 		},
 	}); err != nil {
@@ -3131,7 +3137,7 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 	cfg.MaclawLLMProtocol = "openai"
 	cfg.MaclawDebugToolCalls = false
 	cfg.MaclawAgentMaxIterations = 6
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -3153,7 +3159,7 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			if onProgress != nil {
 				onProgress("internal craft progress")
 			}
@@ -3168,7 +3174,7 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			if onProgress != nil {
 				onProgress("internal bash progress")
 			}
@@ -3183,7 +3189,7 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			if onProgress != nil {
 				onProgress("internal send_file progress")
 			}
@@ -3298,7 +3304,7 @@ func TestRunAgentLoop_PromiseOnlyDocumentReplyTriggersAnotherRound(t *testing.T)
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -3320,7 +3326,7 @@ func TestRunAgentLoop_PromiseOnlyDocumentReplyTriggersAnotherRound(t *testing.T)
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "[file_base64|report.pdf|application/pdf]JVBERi0xLjQKfake"
 		},
 	}); err != nil {
@@ -3376,7 +3382,7 @@ func TestRunAgentLoop_AutoExtendsLongChatBeforeHardLimit(t *testing.T) {
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
 	cfg.MaclawAgentMaxIterations = 300
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -3399,7 +3405,7 @@ func TestRunAgentLoop_AutoExtendsLongChatBeforeHardLimit(t *testing.T) {
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			q, _ := args["query"].(string)
 			return "results for " + q
 		},
@@ -3484,7 +3490,7 @@ func TestRunAgentLoop_LongChainUsesGraceRoundsToFinishFileDelivery(t *testing.T)
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
 	cfg.MaclawAgentMaxIterations = 3
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -3506,7 +3512,7 @@ func TestRunAgentLoop_LongChainUsesGraceRoundsToFinishFileDelivery(t *testing.T)
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			q, _ := args["query"].(string)
 			return "results for " + q
 		},
@@ -3519,7 +3525,7 @@ func TestRunAgentLoop_LongChainUsesGraceRoundsToFinishFileDelivery(t *testing.T)
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return "[file_base64|review.pdf|application/pdf]JVBERi0xLjQKfake"
 		},
 	}); err != nil {
@@ -3583,7 +3589,7 @@ func TestRunAgentLoop_MarkdownWorkflowUsesWriteThenEditInTrace(t *testing.T) {
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
 	cfg.MaclawAgentMaxIterations = 4
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",

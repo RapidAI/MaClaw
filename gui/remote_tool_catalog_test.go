@@ -3,42 +3,44 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestIsValidProvider(t *testing.T) {
 	tests := []struct {
 		name string
-		m    ModelConfig
+		m    corelib.ModelConfig
 		want bool
 	}{
 		{
 			name: "IsBuiltin is valid",
-			m:    ModelConfig{ModelName: "Original", IsBuiltin: true},
+			m:    corelib.ModelConfig{ModelName: "Original", IsBuiltin: true},
 			want: true,
 		},
 		{
 			name: "HasSubscription is valid",
-			m:    ModelConfig{ModelName: "SubProvider", HasSubscription: true},
+			m:    corelib.ModelConfig{ModelName: "SubProvider", HasSubscription: true},
 			want: true,
 		},
 		{
 			name: "has ApiKey is valid",
-			m:    ModelConfig{ModelName: "DeepSeek", ApiKey: "sk-abc123"},
+			m:    corelib.ModelConfig{ModelName: "DeepSeek", ApiKey: "sk-abc123"},
 			want: true,
 		},
 		{
 			name: "empty ApiKey non-builtin is invalid",
-			m:    ModelConfig{ModelName: "DeepSeek", ApiKey: ""},
+			m:    corelib.ModelConfig{ModelName: "DeepSeek", ApiKey: ""},
 			want: false,
 		},
 		{
 			name: "whitespace-only ApiKey non-builtin is invalid",
-			m:    ModelConfig{ModelName: "DeepSeek", ApiKey: "   "},
+			m:    corelib.ModelConfig{ModelName: "DeepSeek", ApiKey: "   "},
 			want: false,
 		},
 		{
 			name: "empty ModelName with no ApiKey is invalid",
-			m:    ModelConfig{ModelName: "", ApiKey: ""},
+			m:    corelib.ModelConfig{ModelName: "", ApiKey: ""},
 			want: false,
 		},
 	}
@@ -68,7 +70,7 @@ func TestRemoteToolConfigReturnsErrorWhenConfigSelectorMissing(t *testing.T) {
 		}
 	}()
 
-	_, err := remoteToolConfig(AppConfig{}, toolName)
+	_, err := remoteToolConfig(corelib.AppConfig{}, toolName)
 	if err == nil {
 		t.Fatal("expected error when ConfigSelector is missing")
 	}
@@ -78,8 +80,8 @@ func TestRemoteToolConfigReturnsErrorWhenConfigSelectorMissing(t *testing.T) {
 }
 
 func TestRemoteToolConfigReturnsBuiltinConfig(t *testing.T) {
-	cfg := AppConfig{
-		Claude: ToolConfig{CurrentModel: "DeepSeek"},
+	cfg := corelib.AppConfig{
+		Claude: corelib.ToolConfig{CurrentModel: "DeepSeek"},
 	}
 
 	got, err := remoteToolConfig(cfg, "claude")
@@ -92,9 +94,9 @@ func TestRemoteToolConfigReturnsBuiltinConfig(t *testing.T) {
 }
 
 func TestValidProviders(t *testing.T) {
-	tc := ToolConfig{
+	tc := corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			{ModelName: "Original", IsBuiltin: true},
 			{ModelName: "DeepSeek", ApiKey: "sk-abc"},
 			{ModelName: "EmptyKey", ApiKey: ""},

@@ -34,11 +34,11 @@ type SkillHealthStat struct {
 
 // SelfReviewReport is the output of a self-review cycle.
 type SelfReviewReport struct {
-	ReviewedAt       time.Time         `json:"reviewed_at"`
-	SessionCount     int               `json:"session_count"`
-	TopTools         []ToolUsageStat   `json:"top_tools"`
-	UnhealthySkills  []SkillHealthStat `json:"unhealthy_skills"`
-	Insights         []string          `json:"insights"`
+	ReviewedAt      time.Time         `json:"reviewed_at"`
+	SessionCount    int               `json:"session_count"`
+	TopTools        []ToolUsageStat   `json:"top_tools"`
+	UnhealthySkills []SkillHealthStat `json:"unhealthy_skills"`
+	Insights        []string          `json:"insights"`
 }
 
 // SessionStatsProvider abstracts access to recent session statistics.
@@ -67,15 +67,15 @@ type MemorySaver interface {
 
 // SelfReviewLoop runs periodic self-assessment cycles.
 type SelfReviewLoop struct {
-	mu             sync.Mutex
-	lastReviewAt   time.Time
-	lastReport     *SelfReviewReport
-	sessionStats   SessionStatsProvider
-	toolStats      ToolStatsProvider
-	skillHealth    SkillHealthProvider
-	memorySaver    MemorySaver
-	stopCh         chan struct{}
-	running        bool
+	mu           sync.Mutex
+	lastReviewAt time.Time
+	lastReport   *SelfReviewReport
+	sessionStats SessionStatsProvider
+	toolStats    ToolStatsProvider
+	skillHealth  SkillHealthProvider
+	memorySaver  MemorySaver
+	stopCh       chan struct{}
+	running      bool
 }
 
 // NewSelfReviewLoop creates a new self-review loop.

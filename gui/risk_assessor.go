@@ -1,14 +1,12 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/security"
 )
-
-// RiskLevel, RiskAssessment,
-// riskLevelOrder, RiskLow/Medium/High/Critical — see corelib_aliases.go
 
 // RiskContext contains contextual information for risk assessment.
 // Kept in gui/ because it uses the gui-local PermissionMode type.
@@ -56,8 +54,8 @@ var systemDirPrefixes = []string{
 }
 
 // Assess evaluates the risk level of a tool invocation based on its context.
-func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
-	level := RiskLow
+func (a *RiskAssessor) Assess(ctx RiskContext) security.RiskAssessment {
+	level := security.RiskLow
 	var factors []string
 
 	// Flatten all argument values into a single string for keyword scanning.
@@ -66,7 +64,7 @@ func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
 	// Rule 1: Check for dangerous keywords in arguments → critical.
 	for _, kw := range dangerousKeywords {
 		if containsIgnoreCase(argStr, kw) {
-			level = RiskCritical
+			level = security.RiskCritical
 			factors = append(factors, fmt.Sprintf("dangerous keyword %q found in arguments", kw))
 		}
 	}
@@ -75,21 +73,21 @@ func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
 	// not benign uses like "output format", "PDF format", etc.
 	for _, pat := range dangerousFormatPatterns {
 		if containsIgnoreCase(argStr, pat) {
-			level = RiskCritical
+			level = security.RiskCritical
 			factors = append(factors, fmt.Sprintf("dangerous format pattern %q found in arguments", pat))
 		}
 	}
 
 	// Rule 2: Write/execute tools → at least medium.
 	if isWriteOrExecuteTool(ctx.ToolName) {
-		if riskLevelOrder[level] < riskLevelOrder[RiskMedium] {
-			level = RiskMedium
+		if security.RiskLevelOrder[level] < security.RiskLevelOrder[security.RiskMedium] {
+			level = security.RiskMedium
 		}
 		factors = append(factors, fmt.Sprintf("tool %q is a write/execute tool", ctx.ToolName))
 	}
 
 	// Rule 3: Read-only queries stay low (already the default).
-	if !isWriteOrExecuteTool(ctx.ToolName) && level == RiskLow {
+	if !isWriteOrExecuteTool(ctx.ToolName) && level == security.RiskLow {
 		factors = append(factors, fmt.Sprintf("tool %q is a read-only tool", ctx.ToolName))
 	}
 
@@ -103,7 +101,7 @@ func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
 
 	// Rule 5: Read-only mode + write operation → critical.
 	if ctx.PermissionMode == PermissionModeReadOnly && isWriteOrExecuteTool(ctx.ToolName) {
-		level = RiskCritical
+		level = security.RiskCritical
 		factors = append(factors, "write operation in read-only mode")
 	}
 
@@ -114,7 +112,7 @@ func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
 	}
 
 	reason := buildReason(level, factors)
-	return RiskAssessment{
+	return security.RiskAssessment{
 		Level:   level,
 		Reason:  reason,
 		Factors: factors,
@@ -122,18 +120,18 @@ func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
 }
 
 // escalateRiskLevel raises the risk level by one step, capping at critical.
-func escalateRiskLevel(current RiskLevel) RiskLevel {
+func escalateRiskLevel(current security.RiskLevel) security.RiskLevel {
 	switch current {
-	case RiskLow:
-		return RiskMedium
-	case RiskMedium:
-		return RiskHigh
-	case RiskHigh:
-		return RiskCritical
-	case RiskCritical:
-		return RiskCritical
+	case security.RiskLow:
+		return security.RiskMedium
+	case security.RiskMedium:
+		return security.RiskHigh
+	case security.RiskHigh:
+		return security.RiskCritical
+	case security.RiskCritical:
+		return security.RiskCritical
 	default:
-		return RiskCritical
+		return security.RiskCritical
 	}
 }
 
@@ -190,7 +188,7 @@ func containsIgnoreCase(s, substr string) bool {
 }
 
 // buildReason generates a human-readable reason string from the risk level and factors.
-func buildReason(level RiskLevel, factors []string) string {
+func buildReason(level security.RiskLevel, factors []string) string {
 	if len(factors) == 0 {
 		return fmt.Sprintf("risk level: %s", level)
 	}
@@ -209,8 +207,8 @@ func buildReason(level RiskLevel, factors []string) string {
 // they perform common utility operations that are not inherently dangerous.
 // Enhanced with 12 threat pattern categories and prompt injection detection.
 // Requirements: 4.1, 4.2, 4.3, 4.7, 4.8, 4.9, 4.10
-func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskAssessment {
-	maxRisk := RiskLow
+func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel string) security.RiskAssessment {
+	maxRisk := security.RiskLow
 	var factors []string
 
 	for _, step := range skill.Steps {
@@ -218,7 +216,7 @@ func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskA
 			ToolName:  step.Action,
 			Arguments: step.Params,
 		})
-		if riskLevelOrder[stepAssessment.Level] > riskLevelOrder[maxRisk] {
+		if security.RiskLevelOrder[stepAssessment.Level] > security.RiskLevelOrder[maxRisk] {
 			maxRisk = stepAssessment.Level
 			factors = append(factors, stepAssessment.Factors...)
 		}
@@ -227,8 +225,8 @@ func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskA
 		argStr := flattenArgs(step.Params)
 		threatMatches := security.ScanThreatPatterns(argStr)
 		for _, tm := range threatMatches {
-			if riskLevelOrder[maxRisk] < riskLevelOrder[RiskHigh] {
-				maxRisk = RiskHigh
+			if security.RiskLevelOrder[maxRisk] < security.RiskLevelOrder[security.RiskHigh] {
+				maxRisk = security.RiskHigh
 			}
 			factors = append(factors, fmt.Sprintf("threat pattern [%s]: %q matched", tm.Category, tm.Pattern))
 		}
@@ -236,8 +234,8 @@ func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskA
 		// Scan for prompt injection patterns
 		injectionMatches := security.ScanPromptInjection(argStr)
 		for _, tm := range injectionMatches {
-			if riskLevelOrder[maxRisk] < riskLevelOrder[RiskCritical] {
-				maxRisk = RiskCritical
+			if security.RiskLevelOrder[maxRisk] < security.RiskLevelOrder[security.RiskCritical] {
+				maxRisk = security.RiskCritical
 			}
 			factors = append(factors, fmt.Sprintf("prompt injection detected: %q matched", tm.Pattern))
 		}
@@ -256,11 +254,11 @@ func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskA
 	// Safe-tool category downgrade: if the skill name matches a known safe
 	// utility category, cap risk at medium. This prevents false-positive
 	// blocking of skills like "any2pdf", "QR Code Generator", "pptx-generator".
-	if maxRisk == RiskCritical || maxRisk == RiskHigh {
+	if maxRisk == security.RiskCritical || maxRisk == security.RiskHigh {
 		skillLower := strings.ToLower(skill.Name)
 		for _, cat := range safeToolCategories {
 			if strings.Contains(skillLower, cat) {
-				maxRisk = RiskMedium
+				maxRisk = security.RiskMedium
 				factors = append(factors, fmt.Sprintf("safe-tool category %q matched: risk capped at medium", cat))
 				break
 			}
@@ -285,15 +283,15 @@ func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskA
 	switch normalized {
 	case security.TrustLevelBuiltin:
 		// Cap maximum risk at low regardless of pattern matches
-		if riskLevelOrder[maxRisk] > riskLevelOrder[RiskLow] {
+		if security.RiskLevelOrder[maxRisk] > security.RiskLevelOrder[security.RiskLow] {
 			factors = append(factors, fmt.Sprintf("builtin trust level: %s capped to low", maxRisk))
-			maxRisk = RiskLow
+			maxRisk = security.RiskLow
 		}
 	case security.TrustLevelTrusted:
 		// Cap maximum risk at medium
-		if riskLevelOrder[maxRisk] > riskLevelOrder[RiskMedium] {
+		if security.RiskLevelOrder[maxRisk] > security.RiskLevelOrder[security.RiskMedium] {
 			factors = append(factors, fmt.Sprintf("trusted trust level: %s capped to medium", maxRisk))
-			maxRisk = RiskMedium
+			maxRisk = security.RiskMedium
 		}
 	case security.TrustLevelCommunity:
 		// Escalate assessed risk by one step
@@ -305,7 +303,7 @@ func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskA
 	// agent-created and any other value: standard assessment (no modification)
 	}
 
-	return RiskAssessment{
+	return security.RiskAssessment{
 		Level:   maxRisk,
 		Reason:  buildReason(maxRisk, factors),
 		Factors: factors,

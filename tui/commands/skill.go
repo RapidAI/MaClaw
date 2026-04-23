@@ -162,16 +162,21 @@ func skillDelete(args []string) error {
 	}
 	name := fs.Arg(0)
 
-	// Search all scan roots for the skill directory.
-	roots := skill.SkillScanRoots()
-	for _, root := range roots {
-		skillDir := filepath.Join(root, name)
-		if _, err := os.Stat(skillDir); err == nil {
-			if err := os.RemoveAll(skillDir); err != nil {
-				return fmt.Errorf("delete skill: %w", err)
+	// Use ScanSkillDirAll — the unfiltered variant of the same scanner
+	// that populates the skill list — so any format it can parse is
+	// automatically covered and platform-incompatible skills can still
+	// be deleted.
+	for _, root := range skill.SkillScanRoots() {
+		for _, s := range skill.ScanSkillDirAll(root) {
+			if s.Name == name || s.DirName == name {
+				if s.SkillDir != "" {
+					if err := os.RemoveAll(s.SkillDir); err != nil {
+						return fmt.Errorf("delete skill: %w", err)
+					}
+					fmt.Printf("Skill '%s' deleted from %s.\n", name, s.SkillDir)
+					return nil
+				}
 			}
-			fmt.Printf("Skill '%s' deleted from %s.\n", name, root)
-			return nil
 		}
 	}
 

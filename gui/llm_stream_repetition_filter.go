@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"strings"
 	"unicode/utf8"
 )
@@ -61,7 +62,7 @@ func sentenceBoundary(r rune) bool {
 }
 
 type repetitionFilter struct {
-	downstream TokenCallback
+	downstream llm.TokenCallback
 
 	// pending accumulates tokens until a sentence boundary is found.
 	pending strings.Builder
@@ -78,7 +79,7 @@ type repetitionFilter struct {
 	suppressedRunes int
 }
 
-func newRepetitionFilter(downstream TokenCallback) *repetitionFilter {
+func newRepetitionFilter(downstream llm.TokenCallback) *repetitionFilter {
 	return &repetitionFilter{downstream: downstream}
 }
 

@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSkillRunnerExecuteStepWithContext_CallMCPToolResolvesName(t *testing.T) {
@@ -19,7 +21,7 @@ func TestSkillRunnerExecuteStepWithContext_CallMCPToolResolvesName(t *testing.T)
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("enabled-no-autostart", false, false)}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("enabled-no-autostart", false, false)}
 	cfg.LocalMCPServers[0].Name = "brave-search"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -31,7 +33,7 @@ func TestSkillRunnerExecuteStepWithContext_CallMCPToolResolvesName(t *testing.T)
 	app.localMCPManager.SyncFromConfig()
 
 	runner := NewSkillRunner(&SkillExecutor{app: app, mcpRegistry: app.mcpRegistry})
-	result, err := runner.executeStepWithContext(context.Background(), "run-test", NLSkillStep{
+	result, err := runner.executeStepWithContext(context.Background(), "run-test", corelib.NLSkillStep{
 		Action: "call_mcp_tool",
 		Params: map[string]interface{}{
 			"server_id": "brave-search",
@@ -57,7 +59,7 @@ func TestSkillRunnerStartRun_RejectsSkillWithoutExecutableSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.NLSkills = []NLSkillEntry{{
+	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "doc-only",
 		Status: "active",
 		Steps:  nil,
@@ -76,7 +78,7 @@ func TestSkillRunnerStartRun_RejectsSkillWithoutExecutableSteps(t *testing.T) {
 
 func TestSkillRunnerExecuteStepWithContext_CraftToolAcceptsLegacyInstructions(t *testing.T) {
 	runner := NewSkillRunner(&SkillExecutor{app: &App{}})
-	_, err := runner.executeStepWithContext(context.Background(), "run-test", NLSkillStep{
+	_, err := runner.executeStepWithContext(context.Background(), "run-test", corelib.NLSkillStep{
 		Action: "craft_tool",
 		Params: map[string]interface{}{
 			"instructions": "legacy task",
@@ -89,7 +91,7 @@ func TestSkillRunnerExecuteStepWithContext_CraftToolAcceptsLegacyInstructions(t 
 
 func TestSkillRunnerExecuteStepWithContext_CraftToolMissingTask(t *testing.T) {
 	runner := NewSkillRunner(&SkillExecutor{app: &App{}})
-	_, err := runner.executeStepWithContext(context.Background(), "run-test", NLSkillStep{
+	_, err := runner.executeStepWithContext(context.Background(), "run-test", corelib.NLSkillStep{
 		Action: "craft_tool",
 		Params: map[string]interface{}{},
 	}, "")
@@ -99,13 +101,13 @@ func TestSkillRunnerExecuteStepWithContext_CraftToolMissingTask(t *testing.T) {
 }
 
 func TestIsInstructionOnlySkillEntry(t *testing.T) {
-	if !isInstructionOnlySkillEntry(&NLSkillEntry{Steps: []NLSkillStep{{
+	if !isInstructionOnlySkillEntry(&corelib.NLSkillEntry{Steps: []corelib.NLSkillStep{{
 		Action: "craft_tool",
 		Params: map[string]interface{}{"instructions": "# PPTX Generator\n\nGenerate slides."},
 	}}}) {
 		t.Fatal("expected craft_tool with instructions to require artifact verification")
 	}
-	if isInstructionOnlySkillEntry(&NLSkillEntry{Steps: []NLSkillStep{{
+	if isInstructionOnlySkillEntry(&corelib.NLSkillEntry{Steps: []corelib.NLSkillStep{{
 		Action: "craft_tool",
 		Params: map[string]interface{}{"task": "generate slides"},
 	}}}) {
@@ -147,7 +149,7 @@ func TestNormalizeSkillRunVars_CoercesNonStringArgs(t *testing.T) {
 
 func TestResolveSkillStep_ReplacesNestedPlaceholders(t *testing.T) {
 	skillDir := filepath.Join("base", "skill")
-	resolved := resolveSkillStep(NLSkillStep{
+	resolved := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command":     "printf '%s %s' {{input}} ${output}",
@@ -182,7 +184,7 @@ func TestResolveSkillStep_ReplacesNestedPlaceholders(t *testing.T) {
 }
 
 func TestResolveSkillStep_CraftToolInheritsRunArgs(t *testing.T) {
-	resolved := resolveSkillStep(NLSkillStep{
+	resolved := resolveSkillStep(corelib.NLSkillStep{
 		Action: "craft_tool",
 		Params: map[string]interface{}{
 			"instructions": "Generate slides.",
@@ -200,7 +202,7 @@ func TestResolveSkillStep_CraftToolInheritsRunArgs(t *testing.T) {
 }
 
 func TestResolveSkillStep_StripsMissingOptionalPlaceholder(t *testing.T) {
-	resolved := resolveSkillStep(NLSkillStep{
+	resolved := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command": "node ./tool.mjs {{input}} {{output}}",
@@ -345,7 +347,7 @@ func TestUnresolvedSkillPlaceholderPattern_MatchesSingleBrace(t *testing.T) {
 // TestDetectImplicitRequiredArgs_SingleBrace verifies that {input} single-brace
 // placeholders are detected as missing required args.
 func TestDetectImplicitRequiredArgs_SingleBrace(t *testing.T) {
-	steps := []NLSkillStep{
+	steps := []corelib.NLSkillStep{
 		{Action: "bash", Params: map[string]interface{}{"command": "python ocr.py {input}"}},
 	}
 	// No vars provided — {input} should be detected as missing.
@@ -358,7 +360,7 @@ func TestDetectImplicitRequiredArgs_SingleBrace(t *testing.T) {
 // TestDetectImplicitRequiredArgs_SingleBraceProvided verifies that {input}
 // is NOT reported as missing when the var is provided.
 func TestDetectImplicitRequiredArgs_SingleBraceProvided(t *testing.T) {
-	steps := []NLSkillStep{
+	steps := []corelib.NLSkillStep{
 		{Action: "bash", Params: map[string]interface{}{"command": "python ocr.py {input}"}},
 	}
 	vars := map[string]string{"input": "/path/to/image.png"}
@@ -371,7 +373,7 @@ func TestDetectImplicitRequiredArgs_SingleBraceProvided(t *testing.T) {
 // TestDetectImplicitRequiredArgs_MixedBraceStyles verifies detection works
 // with mixed {{key}}, ${key}, and {key} in the same command.
 func TestDetectImplicitRequiredArgs_MixedBraceStyles(t *testing.T) {
-	steps := []NLSkillStep{
+	steps := []corelib.NLSkillStep{
 		{Action: "bash", Params: map[string]interface{}{
 			"command": "python convert.py {{input}} --format {format} --out ${output}",
 		}},

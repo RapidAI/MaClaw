@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestNewProjectScanner(t *testing.T) {
@@ -78,8 +80,8 @@ func TestScanProject_ValidConfig(t *testing.T) {
 	if entries[0].AuthSecret != "secret-token" {
 		t.Fatalf("entry 0 AuthSecret: got %q", entries[0].AuthSecret)
 	}
-	if entries[0].Source != MCPSourceProject {
-		t.Fatalf("entry 0 Source: got %q, want %q", entries[0].Source, MCPSourceProject)
+	if entries[0].Source != corelib.MCPSourceProject {
+		t.Fatalf("entry 0 Source: got %q, want %q", entries[0].Source, corelib.MCPSourceProject)
 	}
 
 	if entries[1].ID != "server-2" {

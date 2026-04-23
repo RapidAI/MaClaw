@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,12 +11,10 @@ import (
 	"sync"
 )
 
-// PolicyAction, PolicyRule — see corelib_aliases.go
-
 // PolicyEngine evaluates tool invocations against a set of ordered policy rules.
 type PolicyEngine struct {
 	mu       sync.RWMutex
-	rules    []PolicyRule
+	rules    []security.PolicyRule
 	reCache  map[string]*regexp.Regexp // compiled regex cache
 }
 
@@ -48,7 +47,7 @@ func (e *PolicyEngine) SetMode(mode string) {
 // Evaluate determines the PolicyAction for a tool invocation by walking the
 // rules in priority order and returning the action of the first matching rule.
 // If no rule matches, the default action is "ask".
-func (e *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, risk RiskLevel) PolicyAction {
+func (e *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, risk security.RiskLevel) security.PolicyAction {
 	e.mu.Lock()
 	if e.reCache == nil {
 		e.reCache = make(map[string]*regexp.Regexp)
@@ -79,7 +78,7 @@ func (e *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, ri
 	}
 
 	// No rule matched — default to asking the user.
-	return PolicyAsk
+	return security.PolicyAsk
 }
 
 // LoadRules reads a JSON file containing an array of PolicyRule and replaces
@@ -95,7 +94,7 @@ func (e *PolicyEngine) LoadRules(path string) error {
 		return err
 	}
 
-	var rules []PolicyRule
+	var rules []security.PolicyRule
 	if err := json.Unmarshal(data, &rules); err != nil {
 		return err
 	}
@@ -111,17 +110,17 @@ func (e *PolicyEngine) LoadRules(path string) error {
 }
 
 // Rules returns a copy of the current rule set (useful for inspection/testing).
-func (e *PolicyEngine) Rules() []PolicyRule {
+func (e *PolicyEngine) Rules() []security.PolicyRule {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]PolicyRule, len(e.rules))
+	out := make([]security.PolicyRule, len(e.rules))
 	copy(out, e.rules)
 	return out
 }
 
 // DefaultPolicyRules returns the built-in policy rule set (standard mode).
 // Standard: critical → deny (dangerous keywords) or ask, high → ask, medium → audit, low → allow.
-func DefaultPolicyRules() []PolicyRule {
+func DefaultPolicyRules() []security.PolicyRule {
 	return PolicyRulesForMode("standard")
 }
 
@@ -130,43 +129,43 @@ func DefaultPolicyRules() []PolicyRule {
 //	relaxed:  low/medium/high → allow, critical → ask (dangerous keywords → deny)
 //	standard: low → allow, medium → audit, high → ask, critical → ask (dangerous keywords → deny)
 //	strict:   low → allow, medium/high → ask, critical → deny (dangerous keywords → deny)
-func PolicyRulesForMode(mode string) []PolicyRule {
+func PolicyRulesForMode(mode string) []security.PolicyRule {
 	// Dangerous-keyword deny rule is shared across all modes.
-	denyDangerous := PolicyRule{
+	denyDangerous := security.PolicyRule{
 		Name:        "deny-dangerous-keywords",
 		Priority:    10,
 		ToolPattern: "*",
 		ArgsPattern: "(?i)(rm\\s+-rf|DROP\\s+TABLE|sudo)",
-		RiskLevels:  []RiskLevel{RiskCritical},
-		Action:      PolicyDeny,
+		RiskLevels:  []security.RiskLevel{security.RiskCritical},
+		Action:      security.PolicyDeny,
 	}
 
-	var rules []PolicyRule
+	var rules []security.PolicyRule
 
 	switch mode {
 	case "relaxed":
-		rules = []PolicyRule{
+		rules = []security.PolicyRule{
 			denyDangerous,
-			{Name: "ask-critical", Priority: 20, ToolPattern: "*", RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyAsk},
-			{Name: "allow-high", Priority: 30, ToolPattern: "*", RiskLevels: []RiskLevel{RiskHigh}, Action: PolicyAllow},
-			{Name: "allow-medium", Priority: 40, ToolPattern: "*", RiskLevels: []RiskLevel{RiskMedium}, Action: PolicyAllow},
-			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []RiskLevel{RiskLow}, Action: PolicyAllow},
+			{Name: "ask-critical", Priority: 20, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyAsk},
+			{Name: "allow-high", Priority: 30, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskHigh}, Action: security.PolicyAllow},
+			{Name: "allow-medium", Priority: 40, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskMedium}, Action: security.PolicyAllow},
+			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskLow}, Action: security.PolicyAllow},
 		}
 	case "strict":
-		rules = []PolicyRule{
+		rules = []security.PolicyRule{
 			denyDangerous,
-			{Name: "deny-critical", Priority: 20, ToolPattern: "*", RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyDeny},
-			{Name: "ask-high", Priority: 30, ToolPattern: "*", RiskLevels: []RiskLevel{RiskHigh}, Action: PolicyAsk},
-			{Name: "ask-medium", Priority: 40, ToolPattern: "*", RiskLevels: []RiskLevel{RiskMedium}, Action: PolicyAsk},
-			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []RiskLevel{RiskLow}, Action: PolicyAllow},
+			{Name: "deny-critical", Priority: 20, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyDeny},
+			{Name: "ask-high", Priority: 30, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskHigh}, Action: security.PolicyAsk},
+			{Name: "ask-medium", Priority: 40, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskMedium}, Action: security.PolicyAsk},
+			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskLow}, Action: security.PolicyAllow},
 		}
 	default: // "standard"
-		rules = []PolicyRule{
+		rules = []security.PolicyRule{
 			denyDangerous,
-			{Name: "ask-critical", Priority: 20, ToolPattern: "*", RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyAsk},
-			{Name: "ask-high", Priority: 30, ToolPattern: "*", RiskLevels: []RiskLevel{RiskHigh}, Action: PolicyAsk},
-			{Name: "audit-medium", Priority: 40, ToolPattern: "*", RiskLevels: []RiskLevel{RiskMedium}, Action: PolicyAudit},
-			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []RiskLevel{RiskLow}, Action: PolicyAllow},
+			{Name: "ask-critical", Priority: 20, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyAsk},
+			{Name: "ask-high", Priority: 30, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskHigh}, Action: security.PolicyAsk},
+			{Name: "audit-medium", Priority: 40, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskMedium}, Action: security.PolicyAudit},
+			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskLow}, Action: security.PolicyAllow},
 		}
 	}
 
@@ -180,7 +179,7 @@ func PolicyRulesForMode(mode string) []PolicyRule {
 
 // matchesRule checks whether a rule applies to the given tool invocation.
 // This is the standalone version used by tests and other callers.
-func matchesRule(rule PolicyRule, toolName, argStr string, risk RiskLevel) bool {
+func matchesRule(rule security.PolicyRule, toolName, argStr string, risk security.RiskLevel) bool {
 	// 1. Match tool name via glob pattern.
 	if rule.ToolPattern != "" && rule.ToolPattern != "*" {
 		matched, err := filepath.Match(rule.ToolPattern, toolName)
@@ -224,7 +223,7 @@ func matchesRule(rule PolicyRule, toolName, argStr string, risk RiskLevel) bool 
 // Concurrent reads of the same pattern may compile it twice, but the result
 // is identical and the map write is guarded by the fact that only one
 // goroutine holds the write lock at a time during cache init.
-func (e *PolicyEngine) matchesRuleLocked(rule PolicyRule, toolName, argStr string, risk RiskLevel) bool {
+func (e *PolicyEngine) matchesRuleLocked(rule security.PolicyRule, toolName, argStr string, risk security.RiskLevel) bool {
 	if rule.ToolPattern != "" && rule.ToolPattern != "*" {
 		matched, err := filepath.Match(rule.ToolPattern, toolName)
 		if err != nil || !matched {
@@ -266,7 +265,7 @@ func (e *PolicyEngine) matchesRuleLocked(rule PolicyRule, toolName, argStr strin
 }
 
 // sortRulesByPriority sorts rules in ascending priority order (lower number = higher priority).
-func sortRulesByPriority(rules []PolicyRule) {
+func sortRulesByPriority(rules []security.PolicyRule) {
 	sort.Slice(rules, func(i, j int) bool {
 		return rules[i].Priority < rules[j].Priority
 	})
@@ -274,7 +273,7 @@ func sortRulesByPriority(rules []PolicyRule) {
 
 // matchesRuleSnapshot is like matchesRule but uses a pre-captured regex cache
 // snapshot. This avoids holding the lock during evaluation.
-func (e *PolicyEngine) matchesRuleSnapshot(rule PolicyRule, toolName, argStr string, risk RiskLevel, cache map[string]*regexp.Regexp) bool {
+func (e *PolicyEngine) matchesRuleSnapshot(rule security.PolicyRule, toolName, argStr string, risk security.RiskLevel, cache map[string]*regexp.Regexp) bool {
 	if rule.ToolPattern != "" && rule.ToolPattern != "*" {
 		matched, err := filepath.Match(rule.ToolPattern, toolName)
 		if err != nil || !matched {

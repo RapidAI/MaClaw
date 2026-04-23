@@ -1,13 +1,14 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
 	"strings"
 )
 
 // ProviderResolveResult 服务商解析结果
 type ProviderResolveResult struct {
-	Provider     ModelConfig // 最终选中的服务商
+	Provider     corelib.ModelConfig // 最终选中的服务商
 	Fallback     bool        // 是否发生了降级
 	OriginalName string      // 原始目标服务商名称（降级时有值）
 	Reason       string      // 选择原因描述
@@ -22,7 +23,7 @@ type ProviderResolver struct{}
 // 1. providerOverride 非空 → 直接使用指定服务商（不降级）
 // 2. providerOverride 为空 → 使用 CurrentModel 默认服务商
 // 3. 默认服务商不可用 → 按 Models 列表顺序降级
-func (r *ProviderResolver) Resolve(toolCfg ToolConfig, providerOverride string) (ProviderResolveResult, error) {
+func (r *ProviderResolver) Resolve(toolCfg corelib.ToolConfig, providerOverride string) (ProviderResolveResult, error) {
 	if len(toolCfg.Models) == 0 {
 		return ProviderResolveResult{}, fmt.Errorf("没有可用的服务商配置")
 	}
@@ -39,7 +40,7 @@ func (r *ProviderResolver) Resolve(toolCfg ToolConfig, providerOverride string) 
 }
 
 // resolveExplicit handles the case where the user specified a provider name.
-func (r *ProviderResolver) resolveExplicit(toolCfg ToolConfig, name string) (ProviderResolveResult, error) {
+func (r *ProviderResolver) resolveExplicit(toolCfg corelib.ToolConfig, name string) (ProviderResolveResult, error) {
 	// Case-insensitive lookup
 	for _, m := range toolCfg.Models {
 		if strings.EqualFold(m.ModelName, name) {
@@ -67,7 +68,7 @@ func (r *ProviderResolver) resolveExplicit(toolCfg ToolConfig, name string) (Pro
 }
 
 // resolveAuto tries the default provider first, then falls back through the Models list.
-func (r *ProviderResolver) resolveAuto(toolCfg ToolConfig) (ProviderResolveResult, error) {
+func (r *ProviderResolver) resolveAuto(toolCfg corelib.ToolConfig) (ProviderResolveResult, error) {
 	var tried []string
 	var errors []string
 	defaultName := strings.TrimSpace(toolCfg.CurrentModel)
@@ -128,7 +129,7 @@ func (r *ProviderResolver) resolveAuto(toolCfg ToolConfig) (ProviderResolveResul
 }
 
 // allProviderNames returns all provider names from the ToolConfig.
-func allProviderNames(tc ToolConfig) []string {
+func allProviderNames(tc corelib.ToolConfig) []string {
 	names := make([]string, len(tc.Models))
 	for i, m := range tc.Models {
 		names[i] = m.ModelName
@@ -137,7 +138,7 @@ func allProviderNames(tc ToolConfig) []string {
 }
 
 // availableProviderNames returns names of valid (usable) providers.
-func availableProviderNames(tc ToolConfig) []string {
+func availableProviderNames(tc corelib.ToolConfig) []string {
 	var names []string
 	for _, m := range tc.Models {
 		if isValidProvider(m) {

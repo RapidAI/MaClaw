@@ -13,7 +13,7 @@ func TestPrintRemoteSmokeReportDoesNotPanic(t *testing.T) {
 			MachineID: "m_123",
 			Connected: true,
 		},
-		Readiness: RemoteClaudeReadiness{
+		Readiness: RemoteToolReadiness{
 			Ready:           true,
 			ToolInstalled:   true,
 			ModelConfigured: true,

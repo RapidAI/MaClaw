@@ -19,7 +19,7 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress ProgressCallback) string {
+func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress coretool.ProgressCallback) string {
 	command, _ := args["command"].(string)
 	if command == "" {
 		return "缺少 command 参数"

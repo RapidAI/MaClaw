@@ -140,8 +140,8 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	// 查找 skill — match by name regardless of status so we can provide
 	// specific error messages for disabled/needs_setup skills (Bug #3).
 	r.executor.mu.RLock()
-	var target *NLSkillEntry
-	var collisions []NLSkillEntry // track bare name collisions across publishers
+	var target *corelib.NLSkillEntry
+	var collisions []corelib.NLSkillEntry // track bare name collisions across publishers
 	isQualified := strings.Contains(skillName, ":")
 	for _, s := range r.executor.loadSkills() {
 		if s.MatchesName(skillName) {
@@ -746,7 +746,7 @@ func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
 // that are not provided in templateVars. Returns the list of missing keys.
 // This catches skills that use {{input}}/{{output}} without declaring
 // required_args in their frontmatter.
-func detectImplicitRequiredArgs(steps []NLSkillStep, vars map[string]string) []string {
+func detectImplicitRequiredArgs(steps []corelib.NLSkillStep, vars map[string]string) []string {
 	seen := make(map[string]bool)
 	for _, step := range steps {
 		if step.Action != "bash" {
@@ -796,7 +796,7 @@ func buildArgsExample(keys []string) string {
 	return strings.Join(parts, ", ")
 }
 
-func resolveSkillStep(step NLSkillStep, vars map[string]string, skillDir string) NLSkillStep {
+func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir string) corelib.NLSkillStep {
 	resolved := step
 	if params, ok := resolveSkillValue(step.Params, vars).(map[string]interface{}); ok {
 		resolved.Params = params
@@ -957,7 +957,7 @@ func truncateEnvForLog(v string) string {
 	return v[:6] + "..."
 }
 
-func isInstructionOnlySkillEntry(skill *NLSkillEntry) bool {
+func isInstructionOnlySkillEntry(skill *corelib.NLSkillEntry) bool {
 	if skill == nil || len(skill.Steps) != 1 {
 		return false
 	}
@@ -1048,7 +1048,7 @@ func (r *SkillRunner) templateVarsForRun(runID string) map[string]string {
 	return vars
 }
 
-func resolveSkillStepSessionID(step NLSkillStep, fallback string, manager *RemoteSessionManager) string {
+func resolveSkillStepSessionID(step corelib.NLSkillStep, fallback string, manager *RemoteSessionManager) string {
 	explicitSessionID, _ := step.Params["session_id"].(string)
 	explicitSessionID = strings.TrimSpace(explicitSessionID)
 	fallback = strings.TrimSpace(fallback)
@@ -1067,13 +1067,13 @@ func resolveSkillStepSessionID(step NLSkillStep, fallback string, manager *Remot
 	return explicitSessionID
 }
 
-func (r *SkillRunner) resolveStepSessionID(runID string, step NLSkillStep) string {
+func (r *SkillRunner) resolveStepSessionID(runID string, step corelib.NLSkillStep) string {
 	return resolveSkillStepSessionID(step, r.latestRunSessionID(runID), r.executor.manager)
 }
 
 // ── 异步执行核心 ────────────────────────────────────────────────────────
 
-func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NLSkillEntry) {
+func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *corelib.NLSkillEntry) {
 	execStart := time.Now()
 	// Global timeout: use skill-level setting if available, otherwise 5 minutes.
 	globalTimeout := 5 * time.Minute
@@ -1437,7 +1437,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 	r.tryAutoUpload(skill, run)
 }
 
-func (r *SkillRunner) updateUsageStats(skill *NLSkillEntry, execErr error) {
+func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr error) {
 	shouldEmit := false
 
 	r.executor.mu.Lock()
@@ -1554,7 +1554,7 @@ func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
 }
 
 // tryAutoUpload 在 skill 执行完成后尝试自动上传到 SkillMarket。
-func (r *SkillRunner) tryAutoUpload(skill *NLSkillEntry, run *skillRun) {
+func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) {
 	if r.uploadTrigger == nil || r.packageFn == nil {
 		return
 	}
@@ -1627,7 +1627,7 @@ func skillDirHash(dir string) string {
 
 // ── Step 执行（带 context） ─────────────────────────────────────────────
 
-func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, step NLSkillStep, skillDir string) (string, error) {
+func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, step corelib.NLSkillStep, skillDir string) (string, error) {
 	switch step.Action {
 	case "create_session":
 		tool, _ := step.Params["tool"].(string)
@@ -2268,7 +2268,7 @@ func convertWindowsPathsInCommand(command string) string {
 }
 
 // resolveCommandForDisplay returns the command string from a resolved step for display purposes.
-func resolveCommandForDisplay(step NLSkillStep) string {
+func resolveCommandForDisplay(step corelib.NLSkillStep) string {
 	cmd, _ := step.Params["command"].(string)
 	return cmd
 }
@@ -2322,7 +2322,7 @@ var python3NeedsMapping = sync.OnceValue(func() bool {
 // with the current .maclaw directory in skill step commands. This fixes
 // crafted skills from older versions that hardcode paths like
 // C:\Users\xxx\.cceasy\crafted_tools\... which no longer exist.
-func migrateLegacyCceasyPaths(skill *NLSkillEntry) {
+func migrateLegacyCceasyPaths(skill *corelib.NLSkillEntry) {
 	paths := cceasyMigrationPaths()
 	if paths.oldDir == "" {
 		return
@@ -2384,7 +2384,7 @@ var cceasyMigrationPaths = sync.OnceValue(func() cceasyPaths {
 
 // checkPlatformCompat 检查当前平台是否匹配 skill 的 platforms 声明。
 // platforms 为空视为 universal（兼容所有平台）。
-func checkPlatformCompat(skill *NLSkillEntry) error {
+func checkPlatformCompat(skill *corelib.NLSkillEntry) error {
 	if len(skill.Platforms) == 0 {
 		return nil // universal
 	}
@@ -2447,7 +2447,7 @@ func loadSkillDocContent(skillDir string) string {
 // requires field. Runs `pip install` and `npm install -g` as needed.
 // Returns an error if installation fails, but callers should treat this as
 // non-fatal (the packages may already be installed).
-func autoInstallSkillDependencies(skill *NLSkillEntry) error {
+func autoInstallSkillDependencies(skill *corelib.NLSkillEntry) error {
 	var errs []string
 
 	if len(skill.RequiresPython) > 0 {
@@ -2503,7 +2503,7 @@ func autoInstallSkillDependencies(skill *NLSkillEntry) error {
 
 // checkFileReferences 检查 skill 中 bash step 引用的文件/命令是否存在。
 // 对于有 skillDir 的 skill，相对路径基于 skillDir 解析。
-func checkFileReferences(skill *NLSkillEntry) error {
+func checkFileReferences(skill *corelib.NLSkillEntry) error {
 	for i, step := range skill.Steps {
 		if step.Action != "bash" {
 			continue
@@ -2574,7 +2574,7 @@ func extractFileReferences(command string) []string {
 // executeStepWithPoll wraps executeStepWithContext with optional poll loop.
 // When step.Poll is configured, the step is re-executed at intervals until
 // the output matches the termination condition or max attempts are exhausted.
-func (r *SkillRunner) executeStepWithPoll(ctx context.Context, runID string, step NLSkillStep, skillDir string) (string, error) {
+func (r *SkillRunner) executeStepWithPoll(ctx context.Context, runID string, step corelib.NLSkillStep, skillDir string) (string, error) {
 	if step.Poll == nil {
 		return r.executeStepWithContext(ctx, runID, step, skillDir)
 	}
@@ -2760,7 +2760,7 @@ func captureOutputVariables(output string, captures map[string]string) map[strin
 //
 // The step succeeds when success_pattern matches. The matched output is
 // returned so that capture rules can extract variables from it.
-func (r *SkillRunner) executePollStep(ctx context.Context, step NLSkillStep, skillDir string) (string, error) {
+func (r *SkillRunner) executePollStep(ctx context.Context, step corelib.NLSkillStep, skillDir string) (string, error) {
 	command, _ := step.Params["command"].(string)
 	if command == "" {
 		return "", fmt.Errorf("poll step: missing command parameter")

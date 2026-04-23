@@ -17,7 +17,7 @@ var swarmInitOnce sync.Once
 // ---------------------------------------------------------------------------
 
 // StartSwarmRun starts a new swarm run (exposed to frontend).
-func (a *App) StartSwarmRun(req SwarmRunRequest) (*SwarmRun, error) {
+func (a *App) StartSwarmRun(req swarm.SwarmRunRequest) (*swarm.SwarmRun, error) {
 	a.ensureSwarmOrchestrator()
 	return a.swarmOrchestrator.StartSwarmRun(req)
 }
@@ -47,7 +47,7 @@ func (a *App) CancelSwarmRun(runID string) error {
 }
 
 // ListSwarmRuns returns summaries of all swarm runs.
-func (a *App) ListSwarmRuns() []SwarmRunSummary {
+func (a *App) ListSwarmRuns() []swarm.SwarmRunSummary {
 	if a.swarmOrchestrator == nil {
 		return nil
 	}
@@ -55,7 +55,7 @@ func (a *App) ListSwarmRuns() []SwarmRunSummary {
 }
 
 // GetSwarmRun returns details of a specific swarm run.
-func (a *App) GetSwarmRun(runID string) (*SwarmRun, error) {
+func (a *App) GetSwarmRun(runID string) (*swarm.SwarmRun, error) {
 	if a.swarmOrchestrator == nil {
 		return nil, errSwarmNotInit
 	}

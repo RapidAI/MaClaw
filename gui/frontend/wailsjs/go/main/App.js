@@ -1266,59 +1266,6 @@ export function UploadNLSkillToMarket(arg1) {
   return window['go']['main']['App']['UploadNLSkillToMarket'](arg1);
 }
 
-// Free proxy bindings
-export function StartFreeProxy() {
-  return window['go']['main']['App']['StartFreeProxy']();
-}
-
-export function StopFreeProxy() {
-  return window['go']['main']['App']['StopFreeProxy']();
-}
-
-export function IsFreeProxyRunning() {
-  return window['go']['main']['App']['IsFreeProxyRunning']();
-}
-
-export function DetectChrome() {
-  return window['go']['main']['App']['DetectChrome']();
-}
-
-export function LaunchChromeDebug() {
-  return window['go']['main']['App']['LaunchChromeDebug']();
-}
-
-export function IsDangbeiLoggedIn() {
-  return window['go']['main']['App']['IsDangbeiLoggedIn']();
-}
-
-export function DetectBrowser() {
-  return window['go']['main']['App']['DetectBrowser']();
-}
-
-export function DangbeiLogin() {
-  return window['go']['main']['App']['DangbeiLogin']();
-}
-
-export function DangbeiFinishLogin() {
-  return window['go']['main']['App']['DangbeiFinishLogin']();
-}
-
-export function DangbeiEnsureAuth() {
-  return window['go']['main']['App']['DangbeiEnsureAuth']();
-}
-
-export function GetFreeProxyModels() {
-  return window['go']['main']['App']['GetFreeProxyModels']();
-}
-
-export function GetFreeProxyModel() {
-  return window['go']['main']['App']['GetFreeProxyModel']();
-}
-
-export function SetFreeProxyModel(arg1) {
-  return window['go']['main']['App']['SetFreeProxyModel'](arg1);
-}
-
 export function GetVectorSearchEnabled() {
   return window['go']['main']['App']['GetVectorSearchEnabled']();
 }

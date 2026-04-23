@@ -1,16 +1,25 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
 	traceEventLimit    = 128
 	traceEvidenceLimit = 96
 )
+
+// generateID produces a unique ID for trace jobs and runs.
+func generateID() string {
+	var buf [2]byte
+	_, _ = rand.Read(buf[:])
+	return fmt.Sprintf("%d-%04x", time.Now().UnixNano(), int(buf[0])<<8|int(buf[1]))
+}
 
 type AITraceService struct {
 	mu       sync.RWMutex

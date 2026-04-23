@@ -10,7 +10,7 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress ProgressCallback) (result string) {
+func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress coretool.ProgressCallback) (result string) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = fmt.Sprintf("工具执行异常: %v", r)

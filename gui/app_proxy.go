@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/proxyutil"
@@ -116,7 +117,7 @@ func (a *App) SaveProxyConfig(data map[string]interface{}) error {
 
 // injectProxyEnv injects HTTP_PROXY/HTTPS_PROXY/NO_PROXY into the env map
 // for coding tool subprocess launches.
-func (a *App) injectProxyEnv(env map[string]string, config AppConfig, projectDir string, useProxy bool) {
+func (a *App) injectProxyEnv(env map[string]string, config corelib.AppConfig, projectDir string, useProxy bool) {
 	if !useProxy {
 		return
 	}

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestSendAIAssistantMessage_PromiseOnlyDeliverableReplyCompletesInSameRequest(t *testing.T) {
@@ -52,7 +55,7 @@ func TestSendAIAssistantMessage_PromiseOnlyDeliverableReplyCompletesInSameReques
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -78,7 +81,7 @@ func TestSendAIAssistantMessage_PromiseOnlyDeliverableReplyCompletesInSameReques
 			Category:    ToolCategoryBuiltin,
 			Status:      RegToolAvailable,
 			Source:      "test",
-			HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 				return "[file_base64|report.pdf|application/pdf]JVBERi0xLjQKfake"
 			},
 		}); err != nil {
@@ -134,7 +137,7 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_OpenAI(t *testing.
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -186,7 +189,7 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_Anthropic(t *testi
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "anthropic"
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",

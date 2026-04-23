@@ -1035,7 +1035,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 		var outcomeScore float64
 		if r.tracker != nil {
-			outcomeScore = r.tracker.OutcomeScore(name)
+			outcomeScore = r.tracker.ContextOutcomeScore(name, queryTokens)
 		}
 		var priorityBonus float64
 		if r.registry != nil {

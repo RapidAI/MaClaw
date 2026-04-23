@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestStartRemoteSessionForProjectResumeSessionIDPassThrough(t *testing.T) {
@@ -38,11 +40,11 @@ func TestStartRemoteSessionForProjectResumeSessionIDPassThrough(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models:       []ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
 	}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -103,11 +105,11 @@ func TestStartRemoteSessionForProjectCodexResumeSessionIDPassThrough(t *testing.
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Codex = ToolConfig{
+	cfg.Codex = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models:       []ModelConfig{{ModelName: "Original", ModelId: "gpt-5.2-codex", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "gpt-5.2-codex", IsBuiltin: true}},
 	}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -168,11 +170,11 @@ func TestStartRemoteSessionForProjectCarriesInjectResumePrompt(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models:       []ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
 	}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -237,15 +239,15 @@ func TestStartRemoteSessionForProjectProviderField(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true},
 			{ModelName: "DeepSeek", ModelId: "deepseek-v3", ApiKey: "sk-abc"},
 			{ModelName: "EmptyKey", ModelId: "empty-model", ApiKey: ""},
 		},
 	}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"testing"
+
 )
 
 func TestExtractFailedSkillInfo_RunSkillFailed(t *testing.T) {
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`
@@ -28,7 +30,7 @@ func TestExtractFailedSkillInfo_RunSkillFailed(t *testing.T) {
 }
 
 func TestExtractFailedSkillInfo_ManageSkillRunFailed(t *testing.T) {
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`
@@ -51,7 +53,7 @@ func TestExtractFailedSkillInfo_ManageSkillRunFailed(t *testing.T) {
 }
 
 func TestExtractFailedSkillInfo_ManageSkillNonRunAction(t *testing.T) {
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`
@@ -71,7 +73,7 @@ func TestExtractFailedSkillInfo_ManageSkillNonRunAction(t *testing.T) {
 }
 
 func TestExtractFailedSkillInfo_SuccessfulSkill(t *testing.T) {
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`
@@ -91,7 +93,7 @@ func TestExtractFailedSkillInfo_SuccessfulSkill(t *testing.T) {
 }
 
 func TestExtractFailedSkillInfo_NoSkillTools(t *testing.T) {
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`
@@ -116,14 +118,14 @@ func TestExtractFailedSkillInfo_EmptyInputs(t *testing.T) {
 		t.Fatalf("expected empty skill name for nil inputs, got %q", name)
 	}
 
-	name, _ = extractFailedSkillInfo([]llmToolCall{}, []string{})
+	name, _ = extractFailedSkillInfo([]llm.ToolCall{}, []string{})
 	if name != "" {
 		t.Fatalf("expected empty skill name for empty inputs, got %q", name)
 	}
 }
 
 func TestExtractFailedSkillInfo_MismatchedLengths(t *testing.T) {
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`
@@ -143,7 +145,7 @@ func TestExtractFailedSkillInfo_MismatchedLengths(t *testing.T) {
 
 func TestExtractFailedSkillInfo_SkillNameParam(t *testing.T) {
 	// Test with skill_name parameter instead of name
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`
@@ -163,7 +165,7 @@ func TestExtractFailedSkillInfo_SkillNameParam(t *testing.T) {
 }
 
 func TestExtractFailedSkillInfo_TruncatesLongError(t *testing.T) {
-	toolCalls := []llmToolCall{
+	toolCalls := []llm.ToolCall{
 		{
 			Function: struct {
 				Name      string `json:"name"`

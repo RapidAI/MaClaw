@@ -63,3 +63,10 @@ func (l *TUILogger) Close() {
 		l.logFile = nil
 	}
 }
+
+// LogFile returns the underlying log file (for redirecting standard log output).
+func (l *TUILogger) LogFile() *os.File {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.logFile
+}

@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // --- Sub-task 5.1 [PBT-exploration] + 5.2 [PBT-fix] ---
@@ -58,7 +60,7 @@ func TestGenerateScript_Code1234_RetriesOnTransientError(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cfg := MaclawLLMConfig{
+			cfg := corelib.MaclawLLMConfig{
 				URL:        srv.URL,
 				Key:        "test-key",
 				Model:      "test-model",
@@ -153,7 +155,7 @@ func TestGenerateScript_NonRetryableErrors_FailImmediately(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cfg := MaclawLLMConfig{
+			cfg := corelib.MaclawLLMConfig{
 				URL:        srv.URL,
 				Key:        "test-key",
 				Model:      "test-model",
@@ -212,7 +214,7 @@ func TestGenerateScript_429_StillRetries(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := MaclawLLMConfig{
+	cfg := corelib.MaclawLLMConfig{
 		URL:        srv.URL,
 		Key:        "test-key",
 		Model:      "test-model",
@@ -290,7 +292,7 @@ func TestGenerateScript_SuccessAfterRetry(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := MaclawLLMConfig{
+	cfg := corelib.MaclawLLMConfig{
 		URL:        srv.URL,
 		Key:        "test-key",
 		Model:      "test-model",
@@ -334,7 +336,7 @@ func TestGenerateScript_Code1234WithoutWangluoCuowu_NoRetry(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := MaclawLLMConfig{
+	cfg := corelib.MaclawLLMConfig{
 		URL:        srv.URL,
 		Key:        "test-key",
 		Model:      "test-model",
@@ -458,7 +460,7 @@ func TestGenerateScript_ErrorPatterns_TableDriven(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cfg := MaclawLLMConfig{
+			cfg := corelib.MaclawLLMConfig{
 				URL:        srv.URL,
 				Key:        "test-key",
 				Model:      "test-model",

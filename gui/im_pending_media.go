@@ -11,6 +11,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"log"
 	"strings"
 	"sync"
@@ -30,7 +32,7 @@ const pendingMediaStaleTimeout = 5 * time.Minute
 type pendingMediaEntry struct {
 	attachments []MessageAttachment
 	timer       *time.Timer
-	onProgress  ProgressCallback // stored so the timeout goroutine can notify the user
+	onProgress  tool.ProgressCallback // stored so the timeout goroutine can notify the user
 	createdAt   time.Time        // for stale entry cleanup
 }
 
@@ -50,7 +52,7 @@ func newPendingMediaBuffer() *pendingMediaBuffer {
 
 // Add appends attachments for userID and (re)starts the timeout timer.
 // Returns true if the media was buffered (caller should return Deferred).
-func (b *pendingMediaBuffer) Add(userID string, attachments []MessageAttachment, onProgress ProgressCallback) bool {
+func (b *pendingMediaBuffer) Add(userID string, attachments []MessageAttachment, onProgress tool.ProgressCallback) bool {
 	if len(attachments) == 0 {
 		return false
 	}
@@ -171,7 +173,7 @@ func buildMediaPrompt(count int) string {
 // if there's enough context to guess what the user wants to do with the media.
 // Returns true if the recent conversation suggests a clear intent (e.g. the
 // user was discussing code bugs, UI review, etc.).
-func canInferIntentFromHistory(entries []conversationEntry) bool {
+func canInferIntentFromHistory(entries []agent.ConversationEntry) bool {
 	// Look at the last 3 user messages for intent signals.
 	const lookback = 3
 	checked := 0

@@ -18,16 +18,6 @@ import {
     GetWeixinStatus,
     StartWeixinQRLogin,
     PollWeixinQRStatus,
-    StartFreeProxy,
-    StopFreeProxy,
-    IsFreeProxyRunning,
-    DetectBrowser,
-    DangbeiLogin,
-    DangbeiFinishLogin,
-    DangbeiEnsureAuth,
-    GetFreeProxyModels,
-    GetFreeProxyModel,
-    SetFreeProxyModel,
     GetRemoteConnectionStatus,
     GetHubLLMServiceStatus,
     RedeemHubLLMService,
@@ -167,19 +157,6 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     const [modelSaving, setModelSaving] = useState(false);
     const [modelSaved, setModelSaved] = useState(false);
 
-    // ── Free proxy modal ──
-    const [freeModalOpen, setFreeModalOpen] = useState(false);
-    const [proxyRunning, setProxyRunning] = useState(false);
-    const [proxyBusy, setProxyBusy] = useState(false);
-    const [browserInfo, setBrowserInfo] = useState<{ found: string; name?: string } | null>(null);
-    const [dangbeiLoggedIn, setDangbeiLoggedIn] = useState(false);
-    const [loginBusy, setLoginBusy] = useState(false);
-    const [browserLaunched, setBrowserLaunched] = useState(false);
-    const [authChecking, setAuthChecking] = useState(false);
-    const [freeModels, setFreeModels] = useState<{id: string; name: string}[]>([]);
-    const [freeSelectedModel, setFreeSelectedModel] = useState("");
-    const [freeResult, setFreeResult] = useState<{ ok: boolean; msg: string } | null>(null);
-
     // ── Step 4: WeChat Binding ──
     const [wxDone, setWxDone] = useState(false);
     const [wxSkipped, setWxSkipped] = useState(false);
@@ -303,17 +280,16 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
         return () => { CancelCodeGenSSOPolling().catch(() => {}); };
     }, []);
 
-    // Escape key to close (not if confirm dialog or free modal open)
+    // Escape key to close (not if confirm dialog open)
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") {
-                if (freeModalOpen) { setFreeModalOpen(false); return; }
                 if (!showConfirm) onClose();
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose, showConfirm, freeModalOpen]);
+    }, [onClose, showConfirm]);
 
     // Auto-close when all done
     useEffect(() => {
@@ -326,71 +302,6 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     }, [regDone, modeDone, llmDone, wxCompleted, isTigerclaw, onClose, onSaveField]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
-
-    // ── Free proxy modal: init browser/auth/models when opened ──
-    useEffect(() => {
-        if (!freeModalOpen) return;
-        let cancelled = false;
-        DetectBrowser().then((info: any) => { if (!cancelled) setBrowserInfo(info || { found: "false" }); }).catch(() => { if (!cancelled) setBrowserInfo({ found: "false" }); });
-        GetFreeProxyModels().then((models: any) => { if (!cancelled) setFreeModels(models || []); }).catch(() => {});
-        GetFreeProxyModel().then((m: string) => { if (!cancelled) setFreeSelectedModel(m || "deepseek_r1"); }).catch(() => {});
-        setAuthChecking(true);
-        DangbeiEnsureAuth().then(async (result: string) => {
-            if (cancelled) return;
-            const loggedIn = result === "authenticated";
-            setDangbeiLoggedIn(loggedIn);
-            setAuthChecking(false);
-            if (loggedIn) {
-                try {
-                    const running = await IsFreeProxyRunning();
-                    if (!cancelled && !running) { await StartFreeProxy(); setProxyRunning(true); }
-                } catch { /* non-fatal */ }
-            }
-        }).catch(() => { if (!cancelled) { setDangbeiLoggedIn(false); setAuthChecking(false); } });
-        return () => { cancelled = true; };
-    }, [freeModalOpen]);
-
-    // Poll proxy status while free modal is open
-    useEffect(() => {
-        if (!freeModalOpen) return;
-        let cancelled = false;
-        const poll = () => { IsFreeProxyRunning().then(r => { if (!cancelled) setProxyRunning(r); }).catch(() => {}); };
-        poll();
-        const id = setInterval(poll, 3000);
-        return () => { cancelled = true; clearInterval(id); };
-    }, [freeModalOpen]);
-
-    const openFreeModal = useCallback(() => {
-        setFreeResult(null);
-        setBrowserLaunched(false);
-        setBrowserInfo(null);
-        setDangbeiLoggedIn(false);
-        setAuthChecking(false);
-        setFreeModalOpen(true);
-    }, []);
-
-    const closeFreeModal = useCallback(() => setFreeModalOpen(false), []);
-
-    // Save free provider selection and close modal
-    const handleFreeSave = async () => {
-        const freeIdx = providers.findIndex(p => p.auth_type === "none");
-        if (freeIdx < 0) return;
-        if (!proxyRunning) {
-            setFreeResult({ ok: false, msg: t("请先启动代理服务", "Please start the proxy first") });
-            return;
-        }
-        setLlmSaving(true);
-        try {
-            await SaveMaclawLLMProviders(providers, providers[freeIdx].name);
-            setLlmDone(true);
-            onLLMConfigured();
-            setFreeModalOpen(false);
-        } catch (e) {
-            setFreeResult({ ok: false, msg: String(e) });
-        } finally {
-            setLlmSaving(false);
-        }
-    };
 
     const updateField = useCallback((field: keyof LLMProvider, value: string) => {
         if (selectedIdx === null) return;
@@ -1066,14 +977,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                             {/* Provider buttons */}
                             <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
                                 {providers.map((p, i) => {
-                                    // Hide free provider when no vipFlag
-                                    if (p.auth_type === "none" && !vipFlag) return null;
-                                    const isFree = p.auth_type === "none";
+                                    // Skip auth_type "none" providers (free proxy removed)
+                                    if (p.auth_type === "none") return null;
                                     const active = selectedIdx === i;
                                     return (
                                         <div key={i} style={{ textAlign: "center" }}>
                                             <button onClick={() => {
-                                                if (isFree) { openFreeModal(); return; }
                                                 setSelectedIdx(active ? null : i); setLlmResult(null);
                                             }} style={{
                                                 fontSize: "0.78rem", padding: "6px 16px", cursor: "pointer",
@@ -1089,11 +998,6 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                             {p.auth_type === "oauth" && (
                                                 <div style={{ fontSize: "0.62rem", color: colors.textMuted, marginTop: 2 }}>
                                                     {t("一键登录", "One-click")}
-                                                </div>
-                                            )}
-                                            {isFree && (
-                                                <div style={{ fontSize: "0.62rem", color: colors.success, marginTop: 2 }}>
-                                                    🆓 {t("免费", "Free")}
                                                 </div>
                                             )}
                                         </div>
@@ -1399,215 +1303,6 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     )}
                 </div>
             </div>
-
-            {/* ── Free proxy config modal ── */}
-            {freeModalOpen && (
-                <div style={{
-                    position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-                    background: "rgba(0,0,0,0.35)", display: "flex",
-                    alignItems: "center", justifyContent: "center", zIndex: 10000,
-                }} onClick={closeFreeModal}>
-                    <div style={{
-                        background: colors.surface, borderRadius: 12, padding: "20px 24px",
-                        maxWidth: 460, width: "90%", maxHeight: "80vh", overflowY: "auto",
-                        boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
-                    }} onClick={e => e.stopPropagation()}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                            <span style={{ fontSize: "0.88rem", fontWeight: 700, color: colors.text }}>
-                                🆓 {t("免费服务商配置", "Free Provider Setup")}
-                            </span>
-                            <button onClick={closeFreeModal} style={{
-                                border: "none", background: "transparent", cursor: "pointer",
-                                fontSize: "1.1rem", color: colors.textMuted, padding: "0 4px",
-                            }}>✕</button>
-                        </div>
-
-                        {/* Dangbei login status */}
-                        <label style={labelStyle}>{t("当贝 AI 登录", "Dangbei AI Login")}</label>
-                        {authChecking ? (
-                            <div style={{
-                                padding: "8px 12px", borderRadius: 4, marginBottom: 10,
-                                background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)",
-                            }}>
-                                <span style={{ fontSize: "0.76rem", color: colors.primary }}>
-                                    ⏳ {t("正在验证登录状态...", "Validating login status...")}
-                                </span>
-                            </div>
-                        ) : dangbeiLoggedIn ? (
-                            <div style={{
-                                display: "flex", alignItems: "center", gap: 8,
-                                padding: "8px 12px", borderRadius: 4, marginBottom: 10,
-                                background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
-                            }}>
-                                <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
-                                    ✅ {t("已登录当贝 AI", "Logged in to Dangbei AI")}
-                                </span>
-                                <button disabled={loginBusy} onClick={async () => {
-                                    setLoginBusy(true); setFreeResult(null);
-                                    try { await DangbeiLogin(); setBrowserLaunched(true); setFreeResult({ ok: true, msg: t("浏览器已打开，请登录后点击「完成登录」", "Browser opened. Log in then click 'Finish Login'") }); }
-                                    catch (e) { setFreeResult({ ok: false, msg: String(e) }); }
-                                    setLoginBusy(false);
-                                }} style={{
-                                    fontSize: "0.72rem", padding: "4px 12px", cursor: loginBusy ? "default" : "pointer",
-                                    background: "transparent", color: colors.primary,
-                                    border: `1px solid ${colors.primary}`, borderRadius: 4, opacity: loginBusy ? 0.5 : 1,
-                                }}>
-                                    {loginBusy ? "..." : t("重新登录", "Re-login")}
-                                </button>
-                            </div>
-                        ) : (
-                            <div style={{ marginBottom: 10 }}>
-                                {browserInfo === null ? (
-                                    <p style={{ fontSize: "0.72rem", color: colors.textMuted }}>{t("检测浏览器...", "Detecting browser...")}</p>
-                                ) : browserInfo.found === "true" ? (
-                                    <div style={{
-                                        display: "flex", alignItems: "center", gap: 8,
-                                        padding: "8px 12px", borderRadius: 4, marginBottom: 8,
-                                        background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
-                                    }}>
-                                        <span style={{ fontSize: "0.76rem", color: colors.success }}>
-                                            ✅ {t(`已找到 ${browserInfo.name === "edge" ? "Edge" : "Chrome"}`, `${browserInfo.name === "edge" ? "Edge" : "Chrome"} found`)}
-                                        </span>
-                                    </div>
-                                ) : (
-                                    <div style={{
-                                        display: "flex", alignItems: "center", gap: 8,
-                                        padding: "8px 12px", borderRadius: 4, marginBottom: 8,
-                                        background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
-                                    }}>
-                                        <span style={{ fontSize: "0.76rem", color: colors.danger, flex: 1 }}>
-                                            ❌ {t("未找到 Chrome 或 Edge", "Chrome/Edge not found")}
-                                        </span>
-                                    </div>
-                                )}
-                                <button disabled={loginBusy || browserInfo?.found !== "true"} onClick={async () => {
-                                    setLoginBusy(true); setFreeResult(null);
-                                    try { await DangbeiLogin(); setBrowserLaunched(true); setFreeResult({ ok: true, msg: t("浏览器已打开，请在浏览器中登录当贝 AI，完成后点击下方「完成登录」按钮", "Browser opened. Log in to Dangbei AI, then click 'Finish Login' below") }); }
-                                    catch (e) { setFreeResult({ ok: false, msg: String(e) }); }
-                                    setLoginBusy(false);
-                                }} style={{
-                                    width: "100%", padding: "10px 0", fontSize: "0.8rem",
-                                    cursor: loginBusy ? "default" : "pointer",
-                                    background: colors.primary, color: colors.onPrimary,
-                                    border: "none", borderRadius: 4,
-                                    opacity: (loginBusy || browserInfo?.found !== "true") ? 0.6 : 1,
-                                }}>
-                                    {loginBusy ? `⏳ ${t("正在启动浏览器...", "Launching browser...")}` : t("登录当贝 AI", "Login to Dangbei AI")}
-                                </button>
-                            </div>
-                        )}
-
-                        {/* Finish login button */}
-                        {browserLaunched && (
-                            <div style={{ marginBottom: 10 }}>
-                                <button disabled={loginBusy} onClick={async () => {
-                                    setLoginBusy(true); setFreeResult(null);
-                                    try {
-                                        await DangbeiFinishLogin();
-                                        setDangbeiLoggedIn(true); setBrowserLaunched(false);
-                                        try { const running = await IsFreeProxyRunning(); if (!running) { await StartFreeProxy(); setProxyRunning(true); } } catch {}
-                                        setFreeResult({ ok: true, msg: t("登录成功，代理已自动启动", "Login successful, proxy auto-started") });
-                                    } catch (e) { setFreeResult({ ok: false, msg: String(e) }); }
-                                    setLoginBusy(false);
-                                }} style={{
-                                    width: "100%", padding: "10px 0", fontSize: "0.8rem",
-                                    cursor: loginBusy ? "default" : "pointer",
-                                    background: colors.success, color: colors.onPrimary,
-                                    border: "none", borderRadius: 4, opacity: loginBusy ? 0.6 : 1,
-                                }}>
-                                    {loginBusy ? `⏳ ${t("正在关闭浏览器并提取登录信息...", "Closing browser & extracting login info...")}` : t("✅ 我已在浏览器中登录，完成登录", "✅ I've logged in, finish login")}
-                                </button>
-                            </div>
-                        )}
-
-                        {freeResult && (
-                            <div style={{
-                                marginBottom: 10, padding: "6px 10px", borderRadius: 4, fontSize: "0.74rem",
-                                lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
-                                background: freeResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-                                border: `1px solid ${freeResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                color: freeResult.ok ? colors.success : colors.danger,
-                            }}>
-                                {freeResult.ok ? "✅ " : "❌ "}{freeResult.msg}
-                            </div>
-                        )}
-
-                        {/* Model selection */}
-                        <label style={labelStyle}>{t("模型选择", "Model Selection")}</label>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12 }}>
-                            {freeModels.map(m => {
-                                const active = freeSelectedModel === m.id;
-                                return (
-                                    <button key={m.id} onClick={() => { setFreeSelectedModel(m.id); SetFreeProxyModel(m.id).catch(() => {}); }} style={{
-                                        fontSize: "0.72rem", padding: "4px 10px", cursor: "pointer",
-                                        background: active ? colors.primary : colors.surfaceMuted,
-                                        color: active ? colors.onPrimary : colors.text,
-                                        border: `1px solid ${active ? colors.primary : colors.border}`,
-                                        borderRadius: 4, transition: "all 0.15s",
-                                    }}>
-                                        {m.name}
-                                    </button>
-                                );
-                            })}
-                        </div>
-
-                        {/* Proxy status */}
-                        <label style={labelStyle}>{t("代理状态", "Proxy Status")}</label>
-                        <div style={{
-                            display: "flex", alignItems: "center", gap: 10, marginBottom: 12,
-                            padding: "8px 12px", borderRadius: 4,
-                            background: proxyRunning ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
-                            border: `1px solid ${proxyRunning ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
-                        }}>
-                            <span style={{
-                                width: 8, height: 8, borderRadius: "50%",
-                                background: proxyRunning ? colors.success : colors.danger,
-                                display: "inline-block", flexShrink: 0,
-                            }} />
-                            <span style={{ fontSize: "0.76rem", color: proxyRunning ? colors.success : colors.danger, flex: 1 }}>
-                                {proxyRunning
-                                    ? t("代理服务运行中", "Proxy running")
-                                    : t("代理服务未运行", "Proxy not running")}
-                            </span>
-                            <button disabled={proxyBusy} onClick={async () => {
-                                setProxyBusy(true); setFreeResult(null);
-                                try {
-                                    if (proxyRunning) { await StopFreeProxy(); setProxyRunning(false); }
-                                    else { await StartFreeProxy(); setProxyRunning(true); }
-                                } catch (e) { setFreeResult({ ok: false, msg: String(e) }); IsFreeProxyRunning().then(r => setProxyRunning(r)).catch(() => {}); }
-                                setProxyBusy(false);
-                            }} style={{
-                                fontSize: "0.72rem", padding: "4px 12px", cursor: proxyBusy ? "default" : "pointer",
-                                background: proxyRunning ? "transparent" : colors.primary,
-                                color: proxyRunning ? colors.danger : colors.onPrimary,
-                                border: `1px solid ${proxyRunning ? colors.danger : colors.primary}`,
-                                borderRadius: 4, opacity: proxyBusy ? 0.5 : 1,
-                            }}>
-                                {proxyBusy ? "..." : proxyRunning ? t("停止", "Stop") : t("启动", "Start")}
-                            </button>
-                        </div>
-
-                        {/* Footer */}
-                        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                            <button onClick={closeFreeModal} style={{
-                                fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
-                                background: colors.surfaceMuted, color: colors.text,
-                                border: `1px solid ${colors.border}`, borderRadius: 4
-                            }}>
-                                {t("取消", "Cancel")}
-                            </button>
-                            <button onClick={handleFreeSave} disabled={llmSaving || !dangbeiLoggedIn || !proxyRunning} style={{
-                                fontSize: "0.76rem", padding: "6px 18px", cursor: (dangbeiLoggedIn && proxyRunning) ? "pointer" : "default",
-                                background: (dangbeiLoggedIn && proxyRunning) ? colors.primary : colors.border,
-                                color: (dangbeiLoggedIn && proxyRunning) ? colors.onPrimary : colors.text, border: "none", borderRadius: 4,
-                                opacity: llmSaving ? 0.6 : 1,
-                            }}>
-                                {llmSaving ? t("保存中...", "Saving...") : t("保存并继续", "Save & Continue")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             {/* ── Confirmation dialog ── */}
             {showConfirm && (

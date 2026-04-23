@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"fmt"
 	"log"
@@ -48,7 +49,7 @@ func (m *LocalMCPManager) SyncFromConfig() {
 	defer m.mu.Unlock()
 
 	// Build a set of desired server IDs
-	desired := make(map[string]LocalMCPServerEntry, len(entries))
+	desired := make(map[string]corelib.LocalMCPServerEntry, len(entries))
 	for _, e := range entries {
 		if !e.Disabled {
 			desired[e.ID] = e

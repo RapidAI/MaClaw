@@ -39,11 +39,7 @@ func RunSkillMarket(args []string) error {
 func resolveHubCenterURL() string {
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, _ := store.LoadConfig()
-	u := strings.TrimSpace(cfg.RemoteHubCenterURL)
-	if u == "" {
-		u = remote.DefaultRemoteHubCenterURL
-	}
-	return strings.TrimRight(u, "/")
+	return cfg.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
 }
 
 func resolveEmail() string {

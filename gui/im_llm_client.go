@@ -13,16 +13,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
-type llmResponse = llm.Response
-type llmChoice = llm.Choice
-type llmMessage = llm.Message
-type llmToolCall = llm.ToolCall
-type ChatCompletionMessageToolCall = llm.ToolCall
-
 // doLLMRequest sends a chat completion request to the configured LLM.
 // Supports both OpenAI-compatible and Anthropic Messages API protocols.
 // The httpClient parameter selects which connection pool to use (chat vs background).
-func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
+func (h *IMMessageHandler) doLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
 	if cfg.IsResponsesAPI() {
 		return h.doResponsesAPILLMRequest(cfg, messages, tools, httpClient)
 	}
@@ -32,7 +26,7 @@ func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interfac
 	return h.doOpenAILLMRequest(cfg, messages, tools, httpClient)
 }
 
-func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
+func (h *IMMessageHandler) doOpenAILLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
 	ctx := context.Background()
 	resp, err := llm.DoOpenAIRequest(ctx, cfg, messages, tools, httpClient)
 	if err != nil {
@@ -50,8 +44,8 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []in
 }
 
 // doAnthropicLLMRequest sends a request using the Anthropic Messages API protocol
-// and converts the response to the internal llmResponse format for compatibility.
-func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
+// and converts the response to the internal llm.Response format for compatibility.
+func (h *IMMessageHandler) doAnthropicLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
 	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
 
 	converted := convertToAnthropicMessages(messages)
@@ -95,100 +89,16 @@ func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages [
 // Shared Anthropic message/tool conversion helpers
 // ---------------------------------------------------------------------------
 
-// anthropicConvertedMessages holds the result of converting OpenAI-style
-// messages and tools into Anthropic API format.
-type anthropicConvertedMessages struct {
-	SystemText string
-	Messages   []interface{}
-}
-
 // convertToAnthropicMessages converts OpenAI-style conversation messages
 // into Anthropic Messages API format, separating the system prompt.
-func convertToAnthropicMessages(messages []interface{}) anthropicConvertedMessages {
-	var result anthropicConvertedMessages
-	for _, m := range messages {
-		mm, ok := m.(map[string]interface{})
-		if !ok {
-			if ms, ok2 := m.(map[string]string); ok2 {
-				mm = make(map[string]interface{}, len(ms))
-				for k, v := range ms {
-					mm[k] = v
-				}
-			} else {
-				result.Messages = append(result.Messages, m)
-				continue
-			}
-		}
-		role, _ := mm["role"].(string)
-		switch role {
-		case "system":
-			if content, _ := mm["content"].(string); content != "" {
-				result.SystemText = content
-			}
-		case "assistant":
-			var contentBlocks []interface{}
-			if text, _ := mm["content"].(string); text != "" {
-				contentBlocks = append(contentBlocks, map[string]interface{}{
-					"type": "text", "text": text,
-				})
-			}
-			if tcs, ok := mm["tool_calls"].([]llmToolCall); ok {
-				for _, tc := range tcs {
-					var inputObj interface{}
-					_ = json.Unmarshal([]byte(tc.Function.Arguments), &inputObj)
-					if inputObj == nil {
-						inputObj = map[string]interface{}{}
-					}
-					contentBlocks = append(contentBlocks, map[string]interface{}{
-						"type": "tool_use", "id": tc.ID,
-						"name": tc.Function.Name, "input": inputObj,
-					})
-				}
-			}
-			if len(contentBlocks) > 0 {
-				result.Messages = append(result.Messages, map[string]interface{}{
-					"role": "assistant", "content": contentBlocks,
-				})
-			}
-		case "tool":
-			toolCallID, _ := mm["tool_call_id"].(string)
-			content, _ := mm["content"].(string)
-			toolResultBlock := map[string]interface{}{
-				"type": "tool_result", "id": "toolrslt_" + toolCallID, "tool_use_id": toolCallID, "content": content,
-			}
-			merged := false
-			if len(result.Messages) > 0 {
-				if lastMsg, ok := result.Messages[len(result.Messages)-1].(map[string]interface{}); ok {
-					if lastRole, _ := lastMsg["role"].(string); lastRole == "user" {
-						if blocks, ok := lastMsg["content"].([]interface{}); ok && len(blocks) > 0 {
-							if firstBlock, ok := blocks[0].(map[string]interface{}); ok {
-								if firstBlock["type"] == "tool_result" {
-									lastMsg["content"] = append(blocks, toolResultBlock)
-									merged = true
-								}
-							}
-						}
-					}
-				}
-			}
-			if !merged {
-				result.Messages = append(result.Messages, map[string]interface{}{
-					"role": "user", "content": []interface{}{toolResultBlock},
-				})
-			}
-		default:
-			result.Messages = append(result.Messages, map[string]interface{}{
-				"role": role, "content": mm["content"],
-			})
-		}
-	}
-	return result
+func convertToAnthropicMessages(messages []interface{}) llm.AnthropicConvertedMessages {
+	return llm.ConvertToAnthropicMessages(messages)
 }
 
 // needsSystemMerge returns true for providers that do not support the "system"
 // role in the messages array (e.g. MiniMax). For these providers we merge the
 // system content into the first user message instead.
-func needsSystemMerge(cfg MaclawLLMConfig) bool {
+func needsSystemMerge(cfg corelib.MaclawLLMConfig) bool {
 	return corelib.NeedsSystemMerge(cfg)
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 
 // ImportAgentSkill reads an Anthropic Agent Skills directory (containing
 // SKILL.md and optional scripts/) and converts it to an NLSkillEntry.
-func ImportAgentSkill(skillDir string) (*NLSkillEntry, error) {
+func ImportAgentSkill(skillDir string) (*corelib.NLSkillEntry, error) {
 	entry, err := cskill.ImportMarkdownSkillDir(skillDir, cskill.MarkdownSkillOptions{
 		NameFallback: filepath.Base(skillDir),
 		Source:       "agent_skill",
@@ -60,7 +61,7 @@ func normalizeImportedAgentSkillCommand(cmd string) string {
 
 // ExportAgentSkill converts an NLSkillEntry to Anthropic Agent Skills format,
 // writing SKILL.md and scripts/ to outputDir.
-func ExportAgentSkill(entry NLSkillEntry, outputDir string) error {
+func ExportAgentSkill(entry corelib.NLSkillEntry, outputDir string) error {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("鍒涘缓杈撳嚭鐩綍澶辫触: %v", err)
 	}

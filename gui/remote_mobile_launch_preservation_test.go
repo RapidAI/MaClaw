@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // TestPreservation_DesktopRemoteEnabledFalse_ReturnsDisabledError verifies that
@@ -45,23 +47,23 @@ func TestPreservation_DesktopRemoteEnabledFalse_ReturnsDisabledError(t *testing.
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = false
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Default",
-		Models:       []ModelConfig{{ModelName: "Default", ModelId: "claude-sonnet", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "claude-sonnet", IsBuiltin: true}},
 	}
-	cfg.Codex = ToolConfig{
+	cfg.Codex = corelib.ToolConfig{
 		CurrentModel: "Default",
-		Models:       []ModelConfig{{ModelName: "Default", ModelId: "gpt-5.2-codex", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "gpt-5.2-codex", IsBuiltin: true}},
 	}
-	cfg.Opencode = ToolConfig{
+	cfg.Opencode = corelib.ToolConfig{
 		CurrentModel: "Default",
-		Models:       []ModelConfig{{ModelName: "Default", ModelId: "opencode-v1", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "opencode-v1", IsBuiltin: true}},
 	}
-	cfg.Gemini = ToolConfig{
+	cfg.Gemini = corelib.ToolConfig{
 		CurrentModel: "Default",
-		Models:       []ModelConfig{{ModelName: "Default", ModelId: "gemini-2.5-pro", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "gemini-2.5-pro", IsBuiltin: true}},
 	}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -169,23 +171,23 @@ func TestPreservation_RemoteEnabledTrue_NoDisabledError(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Default",
-		Models:       []ModelConfig{{ModelName: "Default", ModelId: "claude-sonnet", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "claude-sonnet", IsBuiltin: true}},
 	}
-	cfg.Codex = ToolConfig{
+	cfg.Codex = corelib.ToolConfig{
 		CurrentModel: "Default",
-		Models:       []ModelConfig{{ModelName: "Default", ModelId: "gpt-5.2-codex", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "gpt-5.2-codex", IsBuiltin: true}},
 	}
-	cfg.Opencode = ToolConfig{
+	cfg.Opencode = corelib.ToolConfig{
 		CurrentModel: "Default",
-		Models:       []ModelConfig{{ModelName: "Default", ModelId: "opencode-v1", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "opencode-v1", IsBuiltin: true}},
 	}
-	cfg.Gemini = ToolConfig{
+	cfg.Gemini = corelib.ToolConfig{
 		CurrentModel: "Default",
-		Models:       []ModelConfig{{ModelName: "Default", ModelId: "gemini-2.5-pro", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "gemini-2.5-pro", IsBuiltin: true}},
 	}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)

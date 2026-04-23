@@ -92,6 +92,7 @@ type conversationSession struct {
 	lastAccess     time.Time
 	unfinishedSlot *UnfinishedTaskSlot
 	activeSlotID   string
+	inFlightTask   string // non-empty while an agent loop is executing; cleared on normal exit
 }
 
 type persistedSession struct {
@@ -99,6 +100,7 @@ type persistedSession struct {
 	LastAccess     time.Time           `json:"last_access"`
 	UnfinishedSlot *UnfinishedTaskSlot `json:"unfinished_slot,omitempty"`
 	ActiveSlotID   string              `json:"active_slot_id,omitempty"`
+	InFlightTask   string              `json:"in_flight_task,omitempty"`
 }
 
 type memorySnapshot struct {
@@ -285,6 +287,13 @@ func (cm *ConversationMemory) flushDirty() error {
 		return err
 	}
 	return nil
+}
+
+// FlushNow synchronously persists any dirty state to disk, bypassing the
+// debounce timer. Call this before process exit to avoid data loss when the
+// process may be killed before the async persist loop runs.
+func (cm *ConversationMemory) FlushNow() error {
+	return cm.flushDirty()
 }
 
 // Stop gracefully shuts down eviction and persistence goroutines.
@@ -492,6 +501,66 @@ func (cm *ConversationMemory) ClearConversationAndDismissSlot(userID string) {
 	cm.markDirtyAndScheduleFlush()
 }
 
+// --- In-flight task marker ---
+//
+// The in-flight task marker tracks whether an agent loop is currently
+// executing. It is set at the START of the agent loop and cleared at the
+// END (normal exit, cancel, max-rounds, etc.). If the process is killed
+// while the agent loop is running (e.g., by an updater), the marker
+// remains on disk. On the next app startup, the marker's presence tells
+// the system that the previous task was interrupted abnormally, and the
+// conversation history should be treated as an incomplete task — regardless
+// of what the user's next message says.
+
+// SetInFlightTask marks that an agent loop is currently executing for this
+// user. The task string is a brief description (e.g., the user's original
+// request, truncated). This must be followed by a synchronous FlushNow()
+// to ensure the marker survives a process kill.
+func (cm *ConversationMemory) SetInFlightTask(userID, task string) {
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	s := sh.sessions[userID]
+	if s == nil {
+		s = &conversationSession{}
+		sh.sessions[userID] = s
+	}
+	s.inFlightTask = task
+	s.lastAccess = time.Now()
+	sh.mu.Unlock()
+	cm.markDirtyAndScheduleFlush()
+}
+
+// ClearInFlightTask removes the in-flight marker, indicating the agent
+// loop completed normally.
+func (cm *ConversationMemory) ClearInFlightTask(userID string) {
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	if s := sh.sessions[userID]; s != nil {
+		s.inFlightTask = ""
+	}
+	sh.mu.Unlock()
+	cm.markDirtyAndScheduleFlush()
+}
+
+// ConsumeInFlightTask atomically reads and clears the in-flight marker.
+// Returns the task description if the marker was set (meaning the previous
+// agent loop was interrupted), or empty string if no interruption occurred.
+// This is a one-shot operation — calling it twice returns empty on the
+// second call.
+func (cm *ConversationMemory) ConsumeInFlightTask(userID string) string {
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s := sh.sessions[userID]
+	if s == nil || s.inFlightTask == "" {
+		return ""
+	}
+	task := s.inFlightTask
+	s.inFlightTask = ""
+	cm.markDirtyAndScheduleFlush()
+	return task
+}
+
 // --- Disk persistence ---
 
 func (cm *ConversationMemory) saveToDisk() error {
@@ -515,6 +584,7 @@ func (cm *ConversationMemory) saveToDisk() error {
 				LastAccess:     session.lastAccess,
 				UnfinishedSlot: CloneUnfinishedTaskSlot(session.unfinishedSlot),
 				ActiveSlotID:   session.activeSlotID,
+				InFlightTask:   session.inFlightTask,
 			}
 		}
 		sh.mu.RUnlock()
@@ -561,6 +631,7 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			lastAccess:     session.LastAccess,
 			unfinishedSlot: CloneUnfinishedTaskSlot(session.UnfinishedSlot),
 			activeSlotID:   session.ActiveSlotID,
+			inFlightTask:   session.InFlightTask,
 		}
 		sh.mu.Unlock()
 	}

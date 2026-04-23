@@ -116,7 +116,7 @@ func (e *SkillExecutor) ExportLearnedSkillsZip(names []string, outputPath string
 	}
 
 	// Filter to learned/crafted skills that match the requested names.
-	var selected []NLSkillEntry
+	var selected []corelib.NLSkillEntry
 	for _, s := range allSkills {
 		if corelib.IsLearnedSource(s.Source) && wanted[s.Name] {
 			selected = append(selected, s)
@@ -261,7 +261,7 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 			continue
 		}
 
-		var skill NLSkillEntry
+		var skill corelib.NLSkillEntry
 		if err := json.Unmarshal(data, &skill); err != nil {
 			report.Failed++
 			report.Details = append(report.Details, fmt.Sprintf("%s: invalid JSON — %v", f.Name, err))
@@ -297,7 +297,7 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 
 // SerializeSkill serialises an NLSkillEntry to JSON bytes.
 // It returns an error if the required fields (name or steps) are missing.
-func SerializeSkill(skill NLSkillEntry) ([]byte, error) {
+func SerializeSkill(skill corelib.NLSkillEntry) ([]byte, error) {
 	if strings.TrimSpace(skill.Name) == "" {
 		return nil, fmt.Errorf("serialize skill: name is required")
 	}
@@ -313,16 +313,16 @@ func SerializeSkill(skill NLSkillEntry) ([]byte, error) {
 
 // DeserializeSkill parses JSON bytes into an NLSkillEntry.
 // It returns an error if the JSON is invalid or required fields (name or steps) are missing.
-func DeserializeSkill(data []byte) (NLSkillEntry, error) {
-	var skill NLSkillEntry
+func DeserializeSkill(data []byte) (corelib.NLSkillEntry, error) {
+	var skill corelib.NLSkillEntry
 	if err := json.Unmarshal(data, &skill); err != nil {
-		return NLSkillEntry{}, fmt.Errorf("deserialize skill: invalid JSON — %w", err)
+		return corelib.NLSkillEntry{}, fmt.Errorf("deserialize skill: invalid JSON — %w", err)
 	}
 	if strings.TrimSpace(skill.Name) == "" {
-		return NLSkillEntry{}, fmt.Errorf("deserialize skill: name is required")
+		return corelib.NLSkillEntry{}, fmt.Errorf("deserialize skill: name is required")
 	}
 	if len(skill.Steps) == 0 {
-		return NLSkillEntry{}, fmt.Errorf("deserialize skill: steps are required")
+		return corelib.NLSkillEntry{}, fmt.Errorf("deserialize skill: steps are required")
 	}
 	return skill, nil
 }

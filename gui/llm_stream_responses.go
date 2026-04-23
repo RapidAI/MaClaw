@@ -6,6 +6,7 @@ package main
 // (event: + data: pairs) instead of bare data: lines.
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -48,7 +49,7 @@ func classifyResponsesAPIHTTPError(statusCode int, body []byte, endpoint, model 
 
 // doResponsesAPILLMRequest sends a non-streaming request using the Responses API
 // and returns the parsed response. Follows the same pattern as doOpenAILLMRequest.
-func (h *IMMessageHandler) doResponsesAPILLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
+func (h *IMMessageHandler) doResponsesAPILLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
 	req, data, endpoint, err := llm.NewResponsesAPIRequest(context.Background(), cfg, messages, llm.ResponsesAPIRequestOptions{
 		Stream: false,
 		Tools:  tools,
@@ -77,13 +78,13 @@ func (h *IMMessageHandler) doResponsesAPILLMRequest(cfg MaclawLLMConfig, message
 
 func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	reqCtx context.Context,
-	cfg MaclawLLMConfig,
+	cfg corelib.MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
 	httpClient *http.Client,
-	onToken TokenCallback,
+	onToken llm.TokenCallback,
 	metrics *llmStreamMetrics,
-) (*llmResponse, error) {
+) (*llm.Response, error) {
 	// -----------------------------------------------------------------------
 	// Build HTTP request
 	// -----------------------------------------------------------------------
@@ -371,7 +372,7 @@ postLoop:
 	if filtered := filteredBufResp.String(); filtered != "" {
 		content = stripXMLToolCalls(filtered)
 	}
-	msg := llmMessage{
+	msg := llm.Message{
 		Role:    "assistant",
 		Content: content,
 	}
@@ -389,7 +390,7 @@ postLoop:
 			if !ok || acc.itemType != "function_call" {
 				continue
 			}
-			msg.ToolCalls = append(msg.ToolCalls, llmToolCall{
+			msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
 				ID:   acc.callID,
 				Type: "function",
 				Function: struct {
@@ -407,7 +408,7 @@ postLoop:
 	if len(msg.ToolCalls) == 0 {
 		if xmlCalls := freeproxy.ParseXMLToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
 			for _, xc := range xmlCalls {
-				msg.ToolCalls = append(msg.ToolCalls, llmToolCall{
+				msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
 					ID: xc.ID, Type: xc.Type,
 					Function: struct {
 						Name      string `json:"name"`
@@ -432,8 +433,8 @@ postLoop:
 	// Detect and filter truncated tool calls caused by output token limit.
 	finishReason = filterTruncatedToolCalls(&msg, finishReason)
 
-	return &llmResponse{
-		Choices: []llmChoice{{Message: msg, FinishReason: finishReason}},
+	return &llm.Response{
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason}},
 		Usage:   usage,
 	}, nil
 }

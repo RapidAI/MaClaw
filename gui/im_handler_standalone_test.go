@@ -2,13 +2,15 @@ package main
 
 import (
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestNewIMMessageHandlerStandalone_MinimalConfig(t *testing.T) {
 	// Minimal config — only LLM config is truly required for the agent to function.
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{
-		LLMConfigFunc: func() MaclawLLMConfig {
-			return MaclawLLMConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{
 				URL:   "http://localhost:8080/v1",
 				Model: "test-model",
 				Key:   "test-key",
@@ -36,8 +38,8 @@ func TestNewIMMessageHandlerStandalone_MinimalConfig(t *testing.T) {
 
 func TestNewIMMessageHandlerStandalone_AccessorsWork(t *testing.T) {
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{
-		LLMConfigFunc: func() MaclawLLMConfig {
-			return MaclawLLMConfig{URL: "http://test", Model: "m", Key: "k"}
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://test", Model: "m", Key: "k"}
 		},
 		MaxIterationsFunc: func() int { return 50 },
 	})
@@ -84,8 +86,8 @@ func TestNewIMMessageHandlerStandalone_AccessorsWork(t *testing.T) {
 
 func TestNewIMMessageHandlerStandalone_ShortChitChat(t *testing.T) {
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{
-		LLMConfigFunc: func() MaclawLLMConfig {
-			return MaclawLLMConfig{URL: "http://test", Model: "m", Key: "k"}
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://test", Model: "m", Key: "k"}
 		},
 	})
 	defer h.memory.Stop()

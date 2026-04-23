@@ -249,6 +249,12 @@ func (m *qqBotGatewayManager) ensureLocalHandler() *IMMessageHandler {
 
 	m.localHandler = h
 	log.Printf("[qqbot-mgr] local IMMessageHandler created")
+
+	// Wire interrupt handler to gateway for cancel/merge/status during active loops.
+	if m.gateway != nil && h.interruptHandler != nil {
+		m.gateway.SetInterruptHandler(h.interruptHandler)
+	}
+
 	return h
 }
 

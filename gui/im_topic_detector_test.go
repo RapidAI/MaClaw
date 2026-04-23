@@ -1,15 +1,18 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestTopicDetector_FirstMessage(t *testing.T) {
 	d := newTopicSwitchDetector(nil)
-	mem := newConversationMemory()
+	mem := agent.NewConversationMemory()
 	defer mem.Stop()
 
 	// No history → should always return TopicSame.
@@ -20,11 +23,11 @@ func TestTopicDetector_FirstMessage(t *testing.T) {
 
 func TestTopicDetector_SameTopic(t *testing.T) {
 	d := newTopicSwitchDetector(nil)
-	mem := newConversationMemory()
+	mem := agent.NewConversationMemory()
 	defer mem.Stop()
 
 	// Seed with conversation about Go programming.
-	entries := []conversationEntry{
+	entries := []agent.ConversationEntry{
 		{Role: "user", Content: "帮我写一个 Go 的 HTTP 服务器"},
 		{Role: "assistant", Content: "好的，我来帮你写一个 Go HTTP 服务器"},
 		{Role: "user", Content: "加一个路由处理函数"},
@@ -46,11 +49,11 @@ func TestTopicDetector_NewTopic(t *testing.T) {
 	d.bm25SameThreshold = 10.0
 	// Disable active conversation protection for this test.
 	d.activeConversationMinutes = 0
-	mem := newConversationMemory()
+	mem := agent.NewConversationMemory()
 	defer mem.Stop()
 
 	// Seed with conversation about cooking.
-	entries := []conversationEntry{
+	entries := []agent.ConversationEntry{
 		{Role: "user", Content: "红烧肉怎么做好吃"},
 		{Role: "assistant", Content: "红烧肉的做法是..."},
 		{Role: "user", Content: "五花肉要不要焯水"},
@@ -79,11 +82,11 @@ func TestTopicDetector_ShortMessageSkipsDetection(t *testing.T) {
 	// Use aggressive thresholds that would normally trigger TopicNew.
 	d.bm25NewThreshold = 5.0
 	d.bm25SameThreshold = 10.0
-	mem := newConversationMemory()
+	mem := agent.NewConversationMemory()
 	defer mem.Stop()
 
 	// Seed with conversation about Chrome debugging.
-	entries := []conversationEntry{
+	entries := []agent.ConversationEntry{
 		{Role: "user", Content: "帮我用命令行启动 Chrome 调试模式"},
 		{Role: "assistant", Content: "好的，我来帮你启动"},
 		{Role: "user", Content: "看看端口 9222 是否在监听"},
@@ -116,11 +119,11 @@ func TestTopicDetector_ShortMessageSkipsDetection(t *testing.T) {
 
 func TestTopicDetector_TooFewTurns(t *testing.T) {
 	d := newTopicSwitchDetector(nil)
-	mem := newConversationMemory()
+	mem := agent.NewConversationMemory()
 	defer mem.Stop()
 
 	// Only 2 user turns (below minTurnsForDetection=3).
-	entries := []conversationEntry{
+	entries := []agent.ConversationEntry{
 		{Role: "user", Content: "你好"},
 		{Role: "assistant", Content: "你好！"},
 		{Role: "user", Content: "今天天气怎么样"},
@@ -139,12 +142,12 @@ func TestTopicDetector_ActiveConversationProtection(t *testing.T) {
 	// unrelated topics, but active protection should still block TopicNew
 	// because embedding abstains and BM25 alone isn't unanimous.
 	d.activeConversationMinutes = 10 // generous window
-	mem := newConversationMemory()
+	mem := agent.NewConversationMemory()
 	defer mem.Stop()
 
 	// Seed with conversation — save() sets lastAccess to now,
 	// so the conversation is "active".
-	entries := []conversationEntry{
+	entries := []agent.ConversationEntry{
 		{Role: "user", Content: "红烧肉怎么做好吃"},
 		{Role: "assistant", Content: "红烧肉的做法是..."},
 		{Role: "user", Content: "五花肉要不要焯水"},
@@ -207,10 +210,10 @@ func TestTopicDetector_TimeDecay(t *testing.T) {
 	d.timeDecayMinutes = 0.001 // ~60ms, so any real delay triggers full decay
 	d.bm25NewThreshold = 0.5
 	d.activeConversationMinutes = 0 // disable active protection
-	mem := newConversationMemory()
+	mem := agent.NewConversationMemory()
 	defer mem.Stop()
 
-	entries := []conversationEntry{
+	entries := []agent.ConversationEntry{
 		{Role: "user", Content: "帮我写一个 Python 脚本"},
 		{Role: "assistant", Content: "好的"},
 		{Role: "user", Content: "Python 怎么读取 CSV 文件"},
@@ -239,8 +242,8 @@ func TestTopicDetector_ConfirmWithLLM_New(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := newTopicSwitchDetector(func() (*http.Client, MaclawLLMConfig) {
-		return srv.Client(), MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	d := newTopicSwitchDetector(func() (*http.Client, corelib.MaclawLLMConfig) {
+		return srv.Client(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
 	})
 	d.llmTimeout = 2 * time.Second
 
@@ -255,8 +258,8 @@ func TestTopicDetector_ConfirmWithLLM_SameOnHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := newTopicSwitchDetector(func() (*http.Client, MaclawLLMConfig) {
-		return srv.Client(), MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	d := newTopicSwitchDetector(func() (*http.Client, corelib.MaclawLLMConfig) {
+		return srv.Client(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
 	})
 	d.llmTimeout = 2 * time.Second
 
@@ -274,8 +277,8 @@ func TestTopicDetector_ConfirmWithLLM_SSEFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := newTopicSwitchDetector(func() (*http.Client, MaclawLLMConfig) {
-		return srv.Client(), MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	d := newTopicSwitchDetector(func() (*http.Client, corelib.MaclawLLMConfig) {
+		return srv.Client(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
 	})
 	d.llmTimeout = 2 * time.Second
 
@@ -285,7 +288,7 @@ func TestTopicDetector_ConfirmWithLLM_SSEFallback(t *testing.T) {
 }
 
 func TestBuildQuickSummary(t *testing.T) {
-	entries := []conversationEntry{
+	entries := []agent.ConversationEntry{
 		{Role: "system", Content: "你是一个助手"},
 		{Role: "user", Content: "帮我整理第7课的字幕"},
 		{Role: "assistant", Content: "好的"},
@@ -305,7 +308,7 @@ func TestBuildQuickSummary_Empty(t *testing.T) {
 }
 
 func TestLastAccessTime(t *testing.T) {
-	mem := newConversationMemory()
+	mem := agent.NewConversationMemory()
 	defer mem.Stop()
 
 	// No session → zero time.
@@ -314,7 +317,7 @@ func TestLastAccessTime(t *testing.T) {
 	}
 
 	// After save, should have a recent time.
-	mem.Save("user1", []conversationEntry{{Role: "user", Content: "hi"}})
+	mem.Save("user1", []agent.ConversationEntry{{Role: "user", Content: "hi"}})
 	got := mem.LastAccessTime("user1")
 	if got.IsZero() {
 		t.Error("after save: got zero time")

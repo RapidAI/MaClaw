@@ -33,11 +33,7 @@ func (c *SkillMarketClient) baseURL() string {
 	if err != nil {
 		return ""
 	}
-	url := strings.TrimSpace(cfg.RemoteHubCenterURL)
-	if url == "" {
-		url = defaultRemoteHubCenterURL
-	}
-	return strings.TrimRight(url, "/")
+	return cfg.SkillMarketBaseURL(defaultRemoteHubCenterURL)
 }
 
 // getSkillPurchaseMode 返回 Skill获取策略配置，默认 "auto"。

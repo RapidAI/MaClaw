@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,7 +14,7 @@ type SecurityFirewall struct {
 	analyzer *SecurityRiskAnalyzer
 	policy   *PolicyEngine
 	audit    *AuditLog
-	onAsk    func(toolName string, risk RiskAssessment) (bool, error)
+	onAsk    func(toolName string, risk security.RiskAssessment) (bool, error)
 
 	// Session-level approvals: sessionID → set of approved tool patterns.
 	sessionApprovals map[string]map[string]bool
@@ -31,7 +32,7 @@ func NewSecurityFirewall(analyzer *SecurityRiskAnalyzer, policy *PolicyEngine, a
 }
 
 // SetOnAsk sets the callback for user confirmation when policy action is "ask".
-func (f *SecurityFirewall) SetOnAsk(fn func(toolName string, risk RiskAssessment) (bool, error)) {
+func (f *SecurityFirewall) SetOnAsk(fn func(toolName string, risk security.RiskAssessment) (bool, error)) {
 	f.onAsk = fn
 }
 
@@ -52,12 +53,12 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 	}
 	if sessionID != "" && f.isSessionApproved(sessionID, toolName) {
 		// Already approved for this session — allow but audit.
-		f.recordAudit(toolName, args, risk, PolicyAudit, "session_approved", sessionID)
+		f.recordAudit(toolName, args, risk, security.PolicyAudit, "session_approved", sessionID)
 		return true, ""
 	}
 
 	// 3. Policy decision.
-	action := PolicyAllow
+	action := security.PolicyAllow
 	if f.policy != nil {
 		action = f.policy.Evaluate(toolName, args, risk.Level)
 	}
@@ -67,13 +68,13 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 
 	// 5. Execute decision.
 	switch action {
-	case PolicyAllow:
+	case security.PolicyAllow:
 		return true, ""
-	case PolicyAudit:
+	case security.PolicyAudit:
 		return true, ""
-	case PolicyDeny:
+	case security.PolicyDeny:
 		return false, fmt.Sprintf("⛔ 安全策略拒绝: %s (风险等级: %s, 原因: %s)", toolName, risk.Level, risk.Reason)
-	case PolicyAsk:
+	case security.PolicyAsk:
 		if f.onAsk != nil {
 			approved, err := f.onAsk(toolName, risk)
 			if err != nil {
@@ -89,7 +90,7 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 			return false, fmt.Sprintf("⛔ 用户拒绝执行: %s", toolName)
 		}
 		// No onAsk callback — default to allow with warning for medium, deny for high/critical.
-		if risk.Level == RiskHigh || risk.Level == RiskCritical {
+		if risk.Level == security.RiskHigh || risk.Level == security.RiskCritical {
 			return false, fmt.Sprintf("⚠️ 高风险操作需要确认但无确认通道: %s (风险: %s, 原因: %s)", toolName, risk.Level, risk.Reason)
 		}
 		return true, ""
@@ -98,14 +99,14 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 	}
 }
 
-func (f *SecurityFirewall) recordAudit(toolName string, args map[string]interface{}, risk RiskAssessment, action PolicyAction, result, sessionID string) {
+func (f *SecurityFirewall) recordAudit(toolName string, args map[string]interface{}, risk security.RiskAssessment, action security.PolicyAction, result, sessionID string) {
 	if f.audit == nil {
 		return
 	}
 	if result == "" {
 		result = string(action)
 	}
-	_ = f.audit.Log(AuditEntry{
+	_ = f.audit.Log(security.AuditEntry{
 		Timestamp:    time.Now(),
 		SessionID:    sessionID,
 		ToolName:     toolName,

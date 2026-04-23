@@ -66,9 +66,9 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 	return status, nil
 }
 
-func (a *App) syncedMaclawLLMProviders(cfg AppConfig) []MaclawLLMProvider {
+func (a *App) syncedMaclawLLMProviders(cfg corelib.AppConfig) []corelib.MaclawLLMProvider {
 	a.syncHubLLMServiceStatusIntoConfig(&cfg)
-	return append([]MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
+	return append([]corelib.MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
 }
 
 func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
@@ -118,12 +118,12 @@ func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 	return result.ServiceStatus, nil
 }
 
-func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *AppConfig) {
+func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 	if cfg == nil {
 		return
 	}
 	if cfg.MaclawLLMProviders == nil {
-		cfg.MaclawLLMProviders = []MaclawLLMProvider{}
+		cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{}
 	}
 	if strings.TrimSpace(cfg.RemoteViewerToken) == "" || strings.TrimSpace(cfg.RemoteHubURL) == "" {
 		if a.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{}) {
@@ -140,11 +140,11 @@ func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *AppConfig) {
 	}
 }
 
-func (a *App) fetchHubLLMServiceStatus(cfg AppConfig) (HubLLMServiceStatus, error) {
+func (a *App) fetchHubLLMServiceStatus(cfg corelib.AppConfig) (HubLLMServiceStatus, error) {
 	return a.fetchHubLLMServiceStatusWithTimeout(cfg, 30*time.Second)
 }
 
-func (a *App) fetchHubLLMServiceStatusWithTimeout(cfg AppConfig, timeout time.Duration) (HubLLMServiceStatus, error) {
+func (a *App) fetchHubLLMServiceStatusWithTimeout(cfg corelib.AppConfig, timeout time.Duration) (HubLLMServiceStatus, error) {
 	if strings.TrimSpace(cfg.RemoteHubURL) == "" {
 		return HubLLMServiceStatus{}, fmt.Errorf("hub URL is not configured")
 	}
@@ -179,12 +179,12 @@ func (a *App) fetchHubLLMServiceStatusWithTimeout(cfg AppConfig, timeout time.Du
 	return status, nil
 }
 
-func (a *App) applyHubLLMServiceStatusToConfig(cfg *AppConfig, status HubLLMServiceStatus) bool {
+func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status HubLLMServiceStatus) bool {
 	if cfg == nil {
 		return false
 	}
 	changed := false
-	providers := append([]MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
+	providers := append([]corelib.MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
 	providerIndex := -1
 	for i := range providers {
 		if providers[i].Name == hubServiceProviderName {
@@ -213,7 +213,7 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *AppConfig, status HubLLMServ
 			model = existingModel
 		}
 	}
-	provider := MaclawLLMProvider{
+	provider := corelib.MaclawLLMProvider{
 		Name:          hubServiceProviderName,
 		URL:           strings.TrimRight(strings.TrimSpace(status.HubLLMBaseURL), "/"),
 		Key:           strings.TrimSpace(cfg.RemoteViewerToken),
@@ -229,7 +229,7 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *AppConfig, status HubLLMServ
 			changed = true
 		}
 	} else {
-		providers = append([]MaclawLLMProvider{provider}, providers...)
+		providers = append([]corelib.MaclawLLMProvider{provider}, providers...)
 		changed = true
 	}
 	if cfg.MaclawLLMCurrentProvider == "" || cfg.MaclawLLMCurrentProvider == hubServiceProviderName || !a.isMaclawLLMConfiguredWithConfig(*cfg) {
@@ -253,7 +253,7 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *AppConfig, status HubLLMServ
 	return changed
 }
 
-func (a *App) isMaclawLLMConfiguredWithConfig(cfg AppConfig) bool {
+func (a *App) isMaclawLLMConfiguredWithConfig(cfg corelib.AppConfig) bool {
 	for _, p := range cfg.MaclawLLMProviders {
 		if p.Name != cfg.MaclawLLMCurrentProvider {
 			continue

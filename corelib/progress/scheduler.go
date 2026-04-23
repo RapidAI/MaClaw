@@ -118,12 +118,41 @@ func Schedule(input ScheduleInput) ScheduleDecision {
 
 	// --- Row 2-4: Non-negation ---
 
-	// High relevance + same domain → Merge (supplementary info).
-	if relHigh || domainMatch {
+	// When both signals agree (high relevance + same domain), strong Merge.
+	if relHigh && domainMatch {
 		return ScheduleDecision{
 			Action:     ActionMerge,
-			Confidence: confidenceFromSignals(relHigh, false, s),
-			Reason:     "high relevance or same domain → supplement",
+			Confidence: 0.85,
+			Reason:     "high relevance + same domain → supplement",
+		}
+	}
+
+	// High relevance alone (different domain or unknown domain) → Merge with lower confidence.
+	// "颜色改红色" has high relevance to "开发游戏" even if domain match is unknown.
+	if relHigh {
+		return ScheduleDecision{
+			Action:     ActionMerge,
+			Confidence: 0.70,
+			Reason:     "high relevance → likely supplement",
+		}
+	}
+
+	// Domain match alone (relevance unavailable or mid-range) → depends on length.
+	// Short same-domain message → likely supplement ("用C++").
+	// Long same-domain message → could be a new task in the same domain.
+	if domainMatch {
+		if s.IsShort || s.IsMedium {
+			return ScheduleDecision{
+				Action:     ActionMerge,
+				Confidence: 0.60,
+				Reason:     "same domain + short/medium → likely supplement",
+			}
+		}
+		// Long + same domain + no relevance data → ambiguous, enqueue to be safe.
+		return ScheduleDecision{
+			Action:     ActionEnqueue,
+			Confidence: 0.45,
+			Reason:     "same domain + long + no relevance → ambiguous",
 		}
 	}
 

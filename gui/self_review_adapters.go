@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"sync"
 	"time"
 
@@ -103,9 +104,9 @@ func (a *memorySaverAdapter) SaveInsight(content string, category string, tags [
 	if a.app.memoryStore == nil {
 		return nil // graceful degradation
 	}
-	entry := MemoryEntry{
+	entry := memory.Entry{
 		Content:  content,
-		Category: MemoryCategory(category),
+		Category: memory.Category(category),
 		Tags:     tags,
 	}
 	return a.app.memoryStore.Save(entry)

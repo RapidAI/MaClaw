@@ -1,18 +1,18 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 )
 
-// ConfigSection, ConfigKeySchema, ConfigChange, ImportReport — see corelib_aliases.go
-
 // ConfigManager provides structured read/write access to AppConfig.
 type ConfigManager struct {
 	app    *App
-	schema []ConfigSection
+	schema []config.ConfigSection
 }
 
 // NewConfigManager creates a ConfigManager and initialises its schema.
@@ -113,7 +113,7 @@ func (m *ConfigManager) GetConfig(section string, unmasked ...bool) (string, err
 	}
 }
 
-func (m *ConfigManager) configOverview(cfg AppConfig) string {
+func (m *ConfigManager) configOverview(cfg corelib.AppConfig) string {
 	var b strings.Builder
 	b.WriteString("=== 配置概览 ===\n")
 	b.WriteString(fmt.Sprintf("当前工具: %s\n", cfg.ActiveTool))
@@ -132,7 +132,7 @@ func (m *ConfigManager) configOverview(cfg AppConfig) string {
 	return b.String()
 }
 
-func (m *ConfigManager) formatToolConfig(name string, tc ToolConfig, raw bool) string {
+func (m *ConfigManager) formatToolConfig(name string, tc corelib.ToolConfig, raw bool) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("=== %s 配置 ===\n", name))
 	b.WriteString(fmt.Sprintf("当前模型: %s\n", tc.CurrentModel))
@@ -147,7 +147,7 @@ func (m *ConfigManager) formatToolConfig(name string, tc ToolConfig, raw bool) s
 	return b.String()
 }
 
-func (m *ConfigManager) formatRemoteConfig(cfg AppConfig, raw bool) string {
+func (m *ConfigManager) formatRemoteConfig(cfg corelib.AppConfig, raw bool) string {
 	var b strings.Builder
 	b.WriteString("=== 远程设置 ===\n")
 	b.WriteString(fmt.Sprintf("remote_enabled: %v\n", cfg.RemoteEnabled))
@@ -164,7 +164,7 @@ func (m *ConfigManager) formatRemoteConfig(cfg AppConfig, raw bool) string {
 	return b.String()
 }
 
-func (m *ConfigManager) formatProjectsConfig(cfg AppConfig) string {
+func (m *ConfigManager) formatProjectsConfig(cfg corelib.AppConfig) string {
 	var b strings.Builder
 	b.WriteString("=== 项目列表 ===\n")
 	b.WriteString(fmt.Sprintf("当前项目 ID: %s\n", cfg.CurrentProject))
@@ -174,7 +174,7 @@ func (m *ConfigManager) formatProjectsConfig(cfg AppConfig) string {
 	return b.String()
 }
 
-func (m *ConfigManager) formatMaclawLLMConfig(cfg AppConfig, raw bool) string {
+func (m *ConfigManager) formatMaclawLLMConfig(cfg corelib.AppConfig, raw bool) string {
 	var b strings.Builder
 	b.WriteString("=== Maclaw LLM 配置 ===\n")
 	b.WriteString(fmt.Sprintf("maclaw_llm_url: %s\n", cfg.MaclawLLMUrl))
@@ -196,12 +196,12 @@ func (m *ConfigManager) formatMaclawLLMConfig(cfg AppConfig, raw bool) string {
 	case maxIter > 0:
 		b.WriteString(fmt.Sprintf("maclaw_agent_max_iterations: %d\n", maxIter))
 	default:
-		b.WriteString(fmt.Sprintf("maclaw_agent_max_iterations: %d (default)\n", maxAgentIterationsCap))
+		b.WriteString(fmt.Sprintf("maclaw_agent_max_iterations: %d (default)\n", config.MaxAgentIterationsCap))
 	}
 	return b.String()
 }
 
-func (m *ConfigManager) formatMaclawRoleConfig(cfg AppConfig) string {
+func (m *ConfigManager) formatMaclawRoleConfig(cfg corelib.AppConfig) string {
 	var b strings.Builder
 	b.WriteString("=== MaClaw 角色配置 ===\n")
 	name := cfg.MaclawRoleName
@@ -217,7 +217,7 @@ func (m *ConfigManager) formatMaclawRoleConfig(cfg AppConfig) string {
 	return b.String()
 }
 
-func (m *ConfigManager) formatProxyConfig(cfg AppConfig, raw bool) string {
+func (m *ConfigManager) formatProxyConfig(cfg corelib.AppConfig, raw bool) string {
 	var b strings.Builder
 	b.WriteString("=== 代理设置 ===\n")
 	b.WriteString(fmt.Sprintf("default_proxy_host: %s\n", cfg.DefaultProxyHost))
@@ -231,7 +231,7 @@ func (m *ConfigManager) formatProxyConfig(cfg AppConfig, raw bool) string {
 	return b.String()
 }
 
-func (m *ConfigManager) formatGeneralConfig(cfg AppConfig) string {
+func (m *ConfigManager) formatGeneralConfig(cfg corelib.AppConfig) string {
 	var b strings.Builder
 	b.WriteString("=== 通用设置 ===\n")
 	b.WriteString(fmt.Sprintf("active_tool: %s\n", cfg.ActiveTool))
@@ -246,7 +246,7 @@ func (m *ConfigManager) formatGeneralConfig(cfg AppConfig) string {
 	return b.String()
 }
 
-func (m *ConfigManager) formatPowerConfig(cfg AppConfig) string {
+func (m *ConfigManager) formatPowerConfig(cfg corelib.AppConfig) string {
 	var b strings.Builder
 	b.WriteString("=== 电源管理 ===\n")
 	b.WriteString(fmt.Sprintf("power_optimization: %v\n", cfg.PowerOptimization))
@@ -288,7 +288,7 @@ func (m *ConfigManager) UpdateConfig(section, key, value string) (string, error)
 // If any change fails validation, none are applied.
 // ---------------------------------------------------------------------------
 
-func (m *ConfigManager) BatchUpdate(changes []ConfigChange) error {
+func (m *ConfigManager) BatchUpdate(changes []config.ConfigChange) error {
 	// Phase 1: validate all changes
 	for _, c := range changes {
 		if err := m.validateChange(c.Section, c.Key, c.Value); err != nil {
@@ -379,7 +379,7 @@ var machineSpecificKeys = map[string]bool{
 // operation.
 // ---------------------------------------------------------------------------
 
-func (m *ConfigManager) ImportConfig(jsonData string) (*ImportReport, error) {
+func (m *ConfigManager) ImportConfig(jsonData string) (*config.ImportReport, error) {
 	// Parse incoming JSON into a generic map.
 	var importMap map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonData), &importMap); err != nil {
@@ -402,7 +402,7 @@ func (m *ConfigManager) ImportConfig(jsonData string) (*ImportReport, error) {
 		return nil, fmt.Errorf("failed to unmarshal current config: %w", err)
 	}
 
-	report := &ImportReport{}
+	report := &config.ImportReport{}
 
 	// Merge import values into current config.
 	mergeImport(currentMap, importMap, report, "")
@@ -413,7 +413,7 @@ func (m *ConfigManager) ImportConfig(jsonData string) (*ImportReport, error) {
 		return nil, fmt.Errorf("failed to marshal merged config: %w", err)
 	}
 
-	var mergedCfg AppConfig
+	var mergedCfg corelib.AppConfig
 	if err := json.Unmarshal(mergedRaw, &mergedCfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal merged config: %w", err)
 	}
@@ -427,7 +427,7 @@ func (m *ConfigManager) ImportConfig(jsonData string) (*ImportReport, error) {
 
 // mergeImport recursively merges importMap values into currentMap, updating
 // the ImportReport along the way.
-func mergeImport(current, incoming map[string]interface{}, report *ImportReport, prefix string) {
+func mergeImport(current, incoming map[string]interface{}, report *config.ImportReport, prefix string) {
 	for k, inVal := range incoming {
 		fullKey := k
 		if prefix != "" {
@@ -480,7 +480,7 @@ func mergeImport(current, incoming map[string]interface{}, report *ImportReport,
 }
 
 // GetSchema returns the full configuration schema.
-func (m *ConfigManager) GetSchema() []ConfigSection {
+func (m *ConfigManager) GetSchema() []config.ConfigSection {
 	return m.schema
 }
 
@@ -533,12 +533,12 @@ func (m *ConfigManager) validateChange(section, key, value string) error {
 // applyChange sets a single key on the config struct and returns the old value.
 // ---------------------------------------------------------------------------
 
-func (m *ConfigManager) applyChange(cfg *AppConfig, section, key, value string) (string, error) {
+func (m *ConfigManager) applyChange(cfg *corelib.AppConfig, section, key, value string) (string, error) {
 	sec := strings.ToLower(strings.TrimSpace(section))
 	k := strings.ToLower(strings.TrimSpace(key))
 
 	// Helper to apply tool-level current_model changes
-	applyToolModel := func(tc *ToolConfig) (string, error) {
+	applyToolModel := func(tc *corelib.ToolConfig) (string, error) {
 		if k == "current_model" {
 			old := tc.CurrentModel
 			tc.CurrentModel = value
@@ -583,7 +583,7 @@ func (m *ConfigManager) applyChange(cfg *AppConfig, section, key, value string) 
 	return "", fmt.Errorf("unknown section %q", section)
 }
 
-func (m *ConfigManager) applyProjectsChange(cfg *AppConfig, key, value string) (string, error) {
+func (m *ConfigManager) applyProjectsChange(cfg *corelib.AppConfig, key, value string) (string, error) {
 	switch key {
 	case "current_project":
 		old := cfg.CurrentProject
@@ -593,7 +593,7 @@ func (m *ConfigManager) applyProjectsChange(cfg *AppConfig, key, value string) (
 	return "", fmt.Errorf("unsupported projects key %q", key)
 }
 
-func (m *ConfigManager) applyRemoteChange(cfg *AppConfig, key, value string) (string, error) {
+func (m *ConfigManager) applyRemoteChange(cfg *corelib.AppConfig, key, value string) (string, error) {
 	switch key {
 	case "remote_enabled":
 		old := fmt.Sprintf("%v", cfg.RemoteEnabled)
@@ -623,7 +623,7 @@ func (m *ConfigManager) applyRemoteChange(cfg *AppConfig, key, value string) (st
 	return "", fmt.Errorf("unsupported remote key %q", key)
 }
 
-func (m *ConfigManager) applyMaclawLLMChange(cfg *AppConfig, key, value string) (string, error) {
+func (m *ConfigManager) applyMaclawLLMChange(cfg *corelib.AppConfig, key, value string) (string, error) {
 	switch key {
 	case "maclaw_llm_url":
 		old := cfg.MaclawLLMUrl
@@ -657,13 +657,13 @@ func (m *ConfigManager) applyMaclawLLMChange(cfg *AppConfig, key, value string) 
 			return "", fmt.Errorf("invalid integer value for maclaw_agent_max_iterations: %q", value)
 		}
 		if n <= 0 {
-			n = maxAgentIterationsCap // default 300
+			n = config.MaxAgentIterationsCap // default 300
 		}
-		if n < minAgentIterations {
-			n = minAgentIterations
+		if n < config.MinAgentIterations {
+			n = config.MinAgentIterations
 		}
-		if n > maxAgentIterationsCap {
-			n = maxAgentIterationsCap
+		if n > config.MaxAgentIterationsCap {
+			n = config.MaxAgentIterationsCap
 		}
 		cfg.MaclawAgentMaxIterations = n // 30-300
 		return old, nil
@@ -671,7 +671,7 @@ func (m *ConfigManager) applyMaclawLLMChange(cfg *AppConfig, key, value string) 
 	return "", fmt.Errorf("unsupported maclaw_llm key %q", key)
 }
 
-func (m *ConfigManager) applyMaclawRoleChange(cfg *AppConfig, key, value string) (string, error) {
+func (m *ConfigManager) applyMaclawRoleChange(cfg *corelib.AppConfig, key, value string) (string, error) {
 	switch key {
 	case "maclaw_role_name":
 		old := cfg.MaclawRoleName
@@ -685,7 +685,7 @@ func (m *ConfigManager) applyMaclawRoleChange(cfg *AppConfig, key, value string)
 	return "", fmt.Errorf("unsupported maclaw_role key %q", key)
 }
 
-func (m *ConfigManager) applyProxyChange(cfg *AppConfig, key, value string) (string, error) {
+func (m *ConfigManager) applyProxyChange(cfg *corelib.AppConfig, key, value string) (string, error) {
 	switch key {
 	case "default_proxy_host":
 		old := cfg.DefaultProxyHost
@@ -707,7 +707,7 @@ func (m *ConfigManager) applyProxyChange(cfg *AppConfig, key, value string) (str
 	return "", fmt.Errorf("unsupported proxy key %q", key)
 }
 
-func (m *ConfigManager) applyGeneralChange(cfg *AppConfig, key, value string) (string, error) {
+func (m *ConfigManager) applyGeneralChange(cfg *corelib.AppConfig, key, value string) (string, error) {
 	switch key {
 	case "active_tool":
 		old := cfg.ActiveTool
@@ -757,7 +757,7 @@ func (m *ConfigManager) applyGeneralChange(cfg *AppConfig, key, value string) (s
 	return "", fmt.Errorf("unsupported general key %q", key)
 }
 
-func (m *ConfigManager) applyPowerChange(cfg *AppConfig, key, value string) (string, error) {
+func (m *ConfigManager) applyPowerChange(cfg *corelib.AppConfig, key, value string) (string, error) {
 	switch key {
 	case "power_optimization":
 		old := fmt.Sprintf("%v", cfg.PowerOptimization)
@@ -785,17 +785,17 @@ func (m *ConfigManager) applyPowerChange(cfg *AppConfig, key, value string) (str
 // ---------------------------------------------------------------------------
 
 func (m *ConfigManager) initSchema() {
-	toolModelSection := func(name, desc string) ConfigSection {
-		return ConfigSection{
+	toolModelSection := func(name, desc string) config.ConfigSection {
+		return config.ConfigSection{
 			Name:        name,
 			Description: desc,
-			Keys: []ConfigKeySchema{
+			Keys: []config.ConfigKeySchema{
 				{Key: "current_model", Description: "当前使用的模型名称", Type: "string"},
 			},
 		}
 	}
 
-	m.schema = []ConfigSection{
+	m.schema = []config.ConfigSection{
 		// 1. Tool model sections
 		toolModelSection("claude", "Claude 工具模型配置"),
 		toolModelSection("gemini", "Gemini 工具模型配置"),
@@ -810,7 +810,7 @@ func (m *ConfigManager) initSchema() {
 		{
 			Name:        "projects",
 			Description: "项目管理",
-			Keys: []ConfigKeySchema{
+			Keys: []config.ConfigKeySchema{
 				{Key: "current_project", Description: "当前活跃项目 ID", Type: "string"},
 			},
 		},
@@ -819,7 +819,7 @@ func (m *ConfigManager) initSchema() {
 		{
 			Name:        "remote",
 			Description: "远程连接设置",
-			Keys: []ConfigKeySchema{
+			Keys: []config.ConfigKeySchema{
 				{Key: "remote_enabled", Description: "是否启用远程模式", Type: "bool", Default: "false"},
 				{Key: "remote_hub_url", Description: "Hub 服务器地址", Type: "string"},
 				{Key: "remote_email", Description: "远程账户邮箱", Type: "string"},
@@ -832,7 +832,7 @@ func (m *ConfigManager) initSchema() {
 		{
 			Name:        "proxy",
 			Description: "代理设置",
-			Keys: []ConfigKeySchema{
+			Keys: []config.ConfigKeySchema{
 				{Key: "default_proxy_host", Description: "默认代理主机地址", Type: "string"},
 				{Key: "default_proxy_port", Description: "默认代理端口", Type: "string"},
 				{Key: "default_proxy_username", Description: "默认代理用户名", Type: "string"},
@@ -844,7 +844,7 @@ func (m *ConfigManager) initSchema() {
 		{
 			Name:        "maclaw_llm",
 			Description: "Maclaw LLM 配置",
-			Keys: []ConfigKeySchema{
+			Keys: []config.ConfigKeySchema{
 				{Key: "maclaw_llm_url", Description: "Maclaw LLM 服务地址", Type: "string"},
 				{Key: "maclaw_llm_key", Description: "Maclaw LLM API 密钥", Type: "string"},
 				{Key: "maclaw_llm_model", Description: "Maclaw LLM 模型名称", Type: "string"},
@@ -858,7 +858,7 @@ func (m *ConfigManager) initSchema() {
 		{
 			Name:        "maclaw_role",
 			Description: "MaClaw 角色配置",
-			Keys: []ConfigKeySchema{
+			Keys: []config.ConfigKeySchema{
 				{Key: "maclaw_role_name", Description: "Agent 角色名称", Type: "string", Default: "MaClaw"},
 				{Key: "maclaw_role_description", Description: "Agent 角色描述", Type: "string", Default: "一个尽心尽责无所不能的软件开发管家"},
 			},
@@ -868,7 +868,7 @@ func (m *ConfigManager) initSchema() {
 		{
 			Name:        "general",
 			Description: "通用设置",
-			Keys: []ConfigKeySchema{
+			Keys: []config.ConfigKeySchema{
 				{Key: "active_tool", Description: "当前激活的编程工具", Type: "enum", ValidValues: []string{"claude", "gemini", "codex", "opencode", "iflow", "kilo", "cursor", "codebuddy"}},
 				{Key: "language", Description: "界面语言", Type: "enum", Default: "zh", ValidValues: []string{"zh", "en"}},
 				{Key: "power_optimization", Description: "是否启用省电优化", Type: "bool", Default: "false"},
@@ -885,7 +885,7 @@ func (m *ConfigManager) initSchema() {
 		{
 			Name:        "power",
 			Description: "电源管理",
-			Keys: []ConfigKeySchema{
+			Keys: []config.ConfigKeySchema{
 				{Key: "power_optimization", Description: "是否启用防锁屏（远程任务运行时阻止系统锁屏）", Type: "bool", Default: "false"},
 				{Key: "screen_dim_timeout_min", Description: "无操作多少分钟后熄屏节能（0=禁用）", Type: "int", Default: "3"},
 			},

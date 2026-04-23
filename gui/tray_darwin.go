@@ -3,6 +3,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"os/exec"
 	"strings"
@@ -63,7 +64,7 @@ func setupTrayNative(app *App, appOptions *options.App) {
 			updateTahoeTrayMenu(t["title"], t["show"], t["quit"])
 		}
 
-		OnConfigChanged = func(cfg AppConfig) {
+		OnConfigChanged = func(cfg corelib.AppConfig) {
 			runtime.EventsEmit(app.ctx, "config-changed", cfg)
 		}
 

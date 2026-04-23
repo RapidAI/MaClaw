@@ -54,34 +54,7 @@ func DefaultUsageTrackerPath() string {
 // Record logs a tool invocation result. Safe for concurrent use.
 // queryTokens should be the BM25-tokenized user message (top tokens).
 func (t *UsageTracker) Record(toolName string, queryTokens []string, success bool) {
-	// Copy and truncate tokens to limit storage.
-	tokens := make([]string, 0, 5)
-	for i, tok := range queryTokens {
-		if i >= 5 {
-			break
-		}
-		tokens = append(tokens, tok)
-	}
-	r := UsageRecord{
-		ToolName:    toolName,
-		QueryTokens: tokens,
-		Timestamp:   time.Now(),
-		Success:     success,
-	}
-	t.mu.Lock()
-	t.records = append(t.records, r)
-	// Ring buffer: drop oldest when over capacity.
-	if len(t.records) > t.maxItems {
-		excess := len(t.records) - t.maxItems
-		t.records = t.records[excess:]
-	}
-	// Snapshot for async save to avoid data race.
-	snapshot := make([]UsageRecord, len(t.records))
-	copy(snapshot, t.records)
-	t.mu.Unlock()
-
-	// Persist asynchronously to avoid blocking the hot path.
-	go t.saveSnapshot(snapshot)
+	t.RecordOutcome(toolName, queryTokens, success, "")
 }
 
 // RecordOutcome records a tool invocation with richer outcome information.
@@ -120,13 +93,75 @@ func (t *UsageTracker) RecordOutcome(toolName string, queryTokens []string, succ
 func (t *UsageTracker) OutcomeScore(toolName string) float64 {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	score, _ := t.outcomeScoreWithCount(toolName, nil)
+	return score
+}
 
+// ContextOutcomeScore returns a [0,1] quality score for a tool in the context
+// of the current query. Unlike OutcomeScore which computes a global score,
+// this method only considers records whose QueryTokens overlap with the given
+// queryTokens (Jaccard similarity > contextOutcomeMinJaccard). This allows the
+// Router to distinguish "ssh is great for server monitoring" from "ssh is
+// mediocre for deployment" based on historical outcomes in similar contexts.
+//
+// When no context-matching records are found, falls back to the global
+// OutcomeScore for backward compatibility.
+//
+// Inspired by Memento-Skills' behavioral utility routing: the value of a tool
+// depends on the task context, not just its global success rate.
+func (t *UsageTracker) ContextOutcomeScore(toolName string, queryTokens []string) float64 {
+	if len(queryTokens) == 0 {
+		return t.OutcomeScore(toolName)
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	querySet := make(map[string]bool, len(queryTokens))
+	for _, tok := range queryTokens {
+		querySet[tok] = true
+	}
+
+	// Try context-specific score first.
+	contextScore, contextTotal := t.outcomeScoreWithCount(toolName, querySet)
+
+	// Not enough context-matching records — fall back to global score.
+	if contextTotal < contextOutcomeMinRecords {
+		score, _ := t.outcomeScoreWithCount(toolName, nil)
+		return score
+	}
+
+	return contextScore
+}
+
+// contextOutcomeMinJaccard is the minimum Jaccard similarity between the
+// current query tokens and a record's tokens for the record to be considered
+// "same context". 0.2 is deliberately low — even a single overlapping token
+// out of 5 (Jaccard=0.2) is a meaningful signal.
+const contextOutcomeMinJaccard = 0.2
+
+// contextOutcomeMinRecords is the minimum number of context-matching records
+// required before ContextOutcomeScore uses context-specific stats. Below this
+// threshold, the global OutcomeScore is used to avoid noisy estimates.
+const contextOutcomeMinRecords = 3
+
+// outcomeScoreWithCount computes the outcome score and record count from
+// records matching toolName, optionally filtered by querySet (Jaccard > threshold).
+// When querySet is nil, all records for the tool are considered (global score).
+// Returns (score, totalRecords). Caller must hold t.mu.RLock.
+func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[string]bool) (float64, int) {
 	cutoff := time.Now().AddDate(0, 0, -7)
 	var total, successes, retries, abandons int
 
 	for _, r := range t.records {
 		if r.ToolName != toolName || r.Timestamp.Before(cutoff) {
 			continue
+		}
+		if querySet != nil {
+			sim := jaccardTokens(querySet, r.QueryTokens)
+			if sim < contextOutcomeMinJaccard {
+				continue
+			}
 		}
 		total++
 		if r.Success {
@@ -141,7 +176,7 @@ func (t *UsageTracker) OutcomeScore(toolName string) float64 {
 	}
 
 	if total == 0 {
-		return 0 // no data for this tool — neutral, consistent with ExperienceScore
+		return 0, 0
 	}
 
 	successRate := float64(successes) / float64(total)
@@ -149,7 +184,7 @@ func (t *UsageTracker) OutcomeScore(toolName string) float64 {
 	abandonPenalty := float64(abandons) / float64(total) * 0.5
 
 	score := successRate - retryPenalty - abandonPenalty
-	return clampFloat(score, 0, 1)
+	return clampFloat(score, 0, 1), total
 }
 
 // ExperienceScore returns a [0,1] score for a tool given the current query tokens.
@@ -307,6 +342,110 @@ type UsagePattern struct {
 	SuccessRate float64  `json:"success_rate"`
 	Count       int      `json:"count"`
 	Description string   `json:"description"`
+}
+
+// contextToolStats scans records whose QueryTokens overlap with queryTokens
+// (Jaccard > contextOutcomeMinJaccard) and returns per-tool success/failure
+// counts. excludeTool is excluded from results (pass "" to include all).
+// Caller must NOT hold t.mu — this method acquires the lock internally.
+func (t *UsageTracker) contextToolStats(queryTokens []string, excludeTool string) map[string]*toolCtxAccum {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	querySet := make(map[string]bool, len(queryTokens))
+	for _, tok := range queryTokens {
+		querySet[tok] = true
+	}
+
+	m := make(map[string]*toolCtxAccum)
+	for _, r := range t.records {
+		if r.ToolName == excludeTool {
+			continue
+		}
+		sim := jaccardTokens(querySet, r.QueryTokens)
+		if sim < contextOutcomeMinJaccard {
+			continue
+		}
+		s, ok := m[r.ToolName]
+		if !ok {
+			s = &toolCtxAccum{}
+			m[r.ToolName] = s
+		}
+		s.total++
+		if r.Success {
+			s.successes++
+		} else {
+			s.failures++
+		}
+	}
+	return m
+}
+
+// toolCtxAccum accumulates per-tool stats during a context scan.
+type toolCtxAccum struct {
+	total     int
+	successes int
+	failures  int
+}
+
+// ContextFailureStats returns per-tool failure statistics for records whose
+// QueryTokens overlap with the given queryTokens (Jaccard > contextOutcomeMinJaccard).
+// Only tools with at least minRecords matching records are included.
+func (t *UsageTracker) ContextFailureStats(queryTokens []string, minRecords int) []ToolContextStats {
+	if len(queryTokens) == 0 {
+		return nil
+	}
+	m := t.contextToolStats(queryTokens, "")
+	var result []ToolContextStats
+	for name, s := range m {
+		if s.total < minRecords {
+			continue
+		}
+		result = append(result, ToolContextStats{
+			ToolName:    name,
+			Total:       s.total,
+			Failures:    s.failures,
+			FailureRate: float64(s.failures) / float64(s.total),
+		})
+	}
+	return result
+}
+
+// ContextSuccessAlternatives returns tools that have succeeded in contexts
+// similar to queryTokens, excluding excludeTool. Only tools with at least
+// minRecords matching records and successRate >= minSuccessRate are included.
+func (t *UsageTracker) ContextSuccessAlternatives(queryTokens []string, excludeTool string, minRecords int, minSuccessRate float64) []ToolContextStats {
+	if len(queryTokens) == 0 {
+		return nil
+	}
+	m := t.contextToolStats(queryTokens, excludeTool)
+	var result []ToolContextStats
+	for name, s := range m {
+		if s.total < minRecords {
+			continue
+		}
+		rate := float64(s.successes) / float64(s.total)
+		if rate < minSuccessRate {
+			continue
+		}
+		result = append(result, ToolContextStats{
+			ToolName:    name,
+			Total:       s.total,
+			Successes:   s.successes,
+			SuccessRate: rate,
+		})
+	}
+	return result
+}
+
+// ToolContextStats holds per-tool statistics in a specific query context.
+type ToolContextStats struct {
+	ToolName    string  `json:"tool_name"`
+	Total       int     `json:"total"`
+	Successes   int     `json:"successes,omitempty"`
+	Failures    int     `json:"failures,omitempty"`
+	SuccessRate float64 `json:"success_rate,omitempty"`
+	FailureRate float64 `json:"failure_rate,omitempty"`
 }
 
 // ExtractPatterns scans records from the last windowDays and returns

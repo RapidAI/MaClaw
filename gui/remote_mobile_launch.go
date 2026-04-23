@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -182,7 +183,7 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 	return toRemoteSessionView(session), err
 }
 
-func resolveRemoteProject(cfg AppConfig, projectID string, projectPath string) (ProjectConfig, error) {
+func resolveRemoteProject(cfg corelib.AppConfig, projectID string, projectPath string) (corelib.ProjectConfig, error) {
 	projectID = strings.TrimSpace(projectID)
 	projectPath = strings.TrimSpace(projectPath)
 
@@ -207,7 +208,7 @@ func resolveRemoteProject(cfg AppConfig, projectID string, projectPath string) (
 		// valid directory (e.g. a skill directory under ~/.maclaw/data/skills/),
 		// use it directly instead of falling back to the current project.
 		if info, err := os.Stat(cleanTarget); err == nil && info.IsDir() {
-			return ProjectConfig{
+			return corelib.ProjectConfig{
 				Path: cleanTarget,
 				Name: filepath.Base(cleanTarget),
 			}, nil
@@ -229,5 +230,5 @@ func resolveRemoteProject(cfg AppConfig, projectID string, projectPath string) (
 		return project, nil
 	}
 
-	return ProjectConfig{}, fmt.Errorf("no launchable project found")
+	return corelib.ProjectConfig{}, fmt.Errorf("no launchable project found")
 }

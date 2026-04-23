@@ -453,6 +453,15 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				if reqs := requiresNodeFromYAML(sf.Requires); len(reqs) > 0 {
 					parsed.RequiresNode = reqs
 				}
+				if sf.Mode != "" {
+					parsed.Mode = sf.Mode
+				}
+				if sf.ExecMode != "" {
+					parsed.ExecMode = sf.ExecMode
+				}
+				if sf.GlobalTimeout > 0 {
+					parsed.GlobalTimeout = sf.GlobalTimeout
+				}
 				if mdPath, mdErr := skillMarkdownPath(skillDir); mdErr == nil {
 					return parsed, mdPath, nil
 				}
@@ -612,16 +621,17 @@ func buildCraftToolFallback(skillDir, fallbackName string, data []byte) *corelib
 		return nil
 	}
 
-	// Try to extract name/description from frontmatter or headings.
-	fm, body := ParseMarkdownFrontmatter(content)
-	name := strings.TrimSpace(fm["name"])
+	// Parse YAML frontmatter — single source of truth.
+	yamlFM, body := ParseMarkdownFrontmatterYAML(content)
+
+	name := yamlString(yamlFM["name"])
 	if name == "" {
 		name = firstMarkdownHeading(body)
 	}
 	if name == "" {
 		name = fallbackName
 	}
-	desc := strings.TrimSpace(fm["description"])
+	desc := yamlString(yamlFM["description"])
 	if desc == "" {
 		desc = firstMarkdownParagraph(body)
 	}
@@ -632,12 +642,13 @@ func buildCraftToolFallback(skillDir, fallbackName string, data []byte) *corelib
 	// Replace Claude-specific paths for broader compatibility.
 	content = replaceClaudePaths(content)
 
-	// Extract extended frontmatter fields so the fallback skill still
-	// respects required_args, required_env, shell, timeout etc.
-	requiredArgs := splitCSV(strings.TrimSpace(fm["required_args"]))
-	requiredEnv := splitCSV(strings.TrimSpace(fm["requires_env"]))
-	preferredShell := strings.TrimSpace(fm["shell"])
-	timeout := parseIntFrontmatter(fm["timeout"])
+	// Extract all typed metadata from the single YAML map.
+	meta := extractSkillMetadata(yamlFM)
+
+	triggers := meta.triggers
+	if len(triggers) == 0 {
+		triggers = []string{name}
+	}
 
 	params := map[string]interface{}{
 		"instructions":      content,
@@ -652,17 +663,21 @@ func buildCraftToolFallback(skillDir, fallbackName string, data []byte) *corelib
 		Name:           name,
 		DirName:        fallbackName,
 		Description:    desc,
-		Triggers:       []string{name},
+		Triggers:       triggers,
 		Steps: []corelib.NLSkillStep{
 			{Action: "craft_tool", Params: params},
 		},
 		Status:         "active",
 		Source:         "file",
 		SkillDir:       skillDir,
-		RequiredArgs:   requiredArgs,
-		RequiredEnv:    requiredEnv,
-		PreferredShell: preferredShell,
-		GlobalTimeout:  timeout,
+		Platforms:      meta.platforms,
+		Mode:           meta.mode,
+		RequiredArgs:   meta.requiredArgs,
+		RequiredEnv:    meta.requiredEnv,
+		PreferredShell: meta.preferredShell,
+		GlobalTimeout:  meta.timeout,
+		RequiresPython: meta.requiresPython,
+		RequiresNode:   meta.requiresNode,
 	}
 }
 
@@ -706,8 +721,20 @@ func isSkillCompatibleWithPlatform(platforms []string, platform string) bool {
 
 // ScanSkillDir scans a single directory for skill.yaml / skill.md files
 // in immediate subdirectories and returns parsed NLSkillEntry list.
+// Skills incompatible with the current OS platform are excluded.
 // Permission errors and symlink issues are logged and skipped gracefully.
 func ScanSkillDir(root string) []corelib.NLSkillEntry {
+	return scanSkillDirInternal(root, true)
+}
+
+// ScanSkillDirAll is like ScanSkillDir but does not apply platform filtering.
+// Use this when the caller needs to see every skill on disk regardless of
+// compatibility — e.g. for deletion or diagnostics.
+func ScanSkillDirAll(root string) []corelib.NLSkillEntry {
+	return scanSkillDirInternal(root, false)
+}
+
+func scanSkillDirInternal(root string, filterPlatform bool) []corelib.NLSkillEntry {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -751,7 +778,7 @@ func ScanSkillDir(root string) []corelib.NLSkillEntry {
 		}
 
 		// Platform filtering: skip skills incompatible with the current OS.
-		if !isSkillCompatibleWithPlatform(parsed.Platforms, currentPlatform) {
+		if filterPlatform && !isSkillCompatibleWithPlatform(parsed.Platforms, currentPlatform) {
 			log.Printf("[skill-scanner] skip %s: incompatible platform (skill=%v, current=%s)", parsed.Name, parsed.Platforms, currentPlatform)
 			continue
 		}

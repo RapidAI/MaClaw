@@ -12,7 +12,6 @@ const (
 	SpaceLobby    SpaceStateType = "lobby"
 	SpacePrivate  SpaceStateType = "private"
 	SpaceMeeting  SpaceStateType = "meeting"
-	SpaceWorkflow SpaceStateType = "workflow"
 )
 
 // SpaceState holds the user's current space state and associated metadata.
@@ -23,8 +22,6 @@ type SpaceState struct {
 	MeetingTopic  string   // meeting topic
 	Participants  []string // meeting participant machineIDs
 	MessageCount  int      // message count in private mode (for periodic reminders)
-	WorkflowID    string   // active workflow ID (when State == SpaceWorkflow)
-	WorkflowType  string   // active workflow type (when State == SpaceWorkflow)
 }
 
 // spaceStateStore manages per-user space states (in-memory).
@@ -151,44 +148,6 @@ func (s *spaceStateStore) Reset(userID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data[userID] = &SpaceState{State: SpaceLobby}
-}
-
-// EnterWorkflow transitions from lobby to workflow mode.
-func (s *spaceStateStore) EnterWorkflow(userID, workflowID, workflowType string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st := s.data[userID]
-	if st == nil {
-		st = &SpaceState{State: SpaceLobby}
-		s.data[userID] = st
-	}
-	if st.State == SpacePrivate {
-		return fmt.Errorf("私聊模式中，无法进入工作流。发送 /call all 返回大厅后再开始。")
-	}
-	if st.State == SpaceMeeting {
-		return fmt.Errorf("会议进行中，无法进入工作流。使用 /stop 结束会议后再开始。")
-	}
-	if st.State == SpaceWorkflow {
-		return fmt.Errorf("已有活跃工作流，请先完成或取消。")
-	}
-	st.State = SpaceWorkflow
-	st.WorkflowID = workflowID
-	st.WorkflowType = workflowType
-	return nil
-}
-
-// ExitWorkflow transitions from workflow back to lobby.
-func (s *spaceStateStore) ExitWorkflow(userID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st := s.data[userID]
-	if st == nil || st.State != SpaceWorkflow {
-		return fmt.Errorf("当前不在工作流模式")
-	}
-	st.State = SpaceLobby
-	st.WorkflowID = ""
-	st.WorkflowType = ""
-	return nil
 }
 
 // IncrementMessageCount increments the private mode message counter and

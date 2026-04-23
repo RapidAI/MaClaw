@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestLivePPTXGeneratorSkillRunner(t *testing.T) {
@@ -51,7 +53,7 @@ func TestLivePPTXGeneratorSkillRunner(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.ExternalSkillDirs = []string{skillRoot}
-	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
 		Name:       "Custom1",
 		URL:        strings.TrimRight(strings.TrimSpace(apiURL), "/"),
 		Key:        strings.TrimSpace(apiKey),

@@ -323,7 +323,7 @@ func (a *App) emitRemoteStateChanged() {
 	a.emitEvent("remote-state-changed")
 }
 
-func (a *App) GetRemoteClaudeReadiness(projectDir string, useProxy bool) RemoteClaudeReadiness {
+func (a *App) GetRemoteClaudeReadiness(projectDir string, useProxy bool) RemoteToolReadiness {
 	return a.CheckRemoteClaudeReadiness(projectDir, useProxy)
 }
 
@@ -364,7 +364,7 @@ func (a *App) GetLastRemoteSmokeReport() (RemoteSmokeSnapshot, error) {
 	return snapshot, nil
 }
 
-func (a *App) GetRemoteClaudeLaunchProbe(projectDir string, useProxy bool) RemoteClaudeLaunchProbeResult {
+func (a *App) GetRemoteClaudeLaunchProbe(projectDir string, useProxy bool) RemoteToolLaunchProbeResult {
 	return a.CheckRemoteClaudeLaunchProbe(projectDir, useProxy)
 }
 

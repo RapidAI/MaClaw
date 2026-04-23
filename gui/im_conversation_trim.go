@@ -4,6 +4,7 @@ package main
 // and conversation history compaction utilities.
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,7 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
-func estimateConversationEntryTokens(entries []conversationEntry) int {
+func estimateConversationEntryTokens(entries []agent.ConversationEntry) int {
 	total := 0
 	for _, e := range entries {
 		data, _ := json.Marshal(e)
@@ -358,7 +359,7 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 
 // makeSummarizer returns a summarizer callback that uses doSimpleLLMRequest
 // to condense dropped conversation history into a short summary.
-func makeSummarizer(cfg MaclawLLMConfig, httpClient *http.Client) func(string) string {
+func makeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(string) string {
 	return func(text string) string {
 		msgs := []interface{}{
 			map[string]string{"role": "user", "content": "请简洁总结以下对话历史，保留关键事实、决策和待办事项：\n\n" + text},
@@ -371,19 +372,154 @@ func makeSummarizer(cfg MaclawLLMConfig, httpClient *http.Client) func(string) s
 	}
 }
 
-func trimHistory(entries []conversationEntry) []conversationEntry {
-	if len(entries) <= maxConversationTurns {
+func trimHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {
+	if len(entries) <= agent.MaxConversationTurns {
 		return entries
 	}
-	trimmed := entries[len(entries)-maxConversationTurns:]
-	// Ensure we don't start with orphaned "tool" messages that lack a
-	// preceding assistant message with tool_calls — the LLM API rejects
-	// such sequences with "Messages with role 'tool' must be a response
-	// to a preceding message with 'tool_calls'".
-	for len(trimmed) > 0 && trimmed[0].Role == "tool" {
-		trimmed = trimmed[1:]
+
+	// --- Two-tier trimming ---
+	//
+	// Mechanism: split entries into two tiers based on a structural
+	// invariant — "turn boundaries" (first user msg + first assistant
+	// response of each conversational turn). These carry task-level
+	// semantics; everything else is execution detail.
+
+	const maxTier1 = 10
+
+	tier1Indices := extractTurnBoundaryIndices(entries, maxTier1)
+
+	// First pass: compute recent window at full budget to check if any
+	// tier-1 entries fall outside it.
+	recentStart := len(entries) - agent.MaxConversationTurns
+	if recentStart < 0 {
+		recentStart = 0
 	}
-	return trimmed
+
+	// Count tier-1 entries outside the recent window.
+	outsideTier1 := 0
+	for _, idx := range tier1Indices {
+		if idx < recentStart {
+			outsideTier1++
+		}
+	}
+
+	// If all tier-1 entries are inside the recent window, simple FIFO.
+	if outsideTier1 == 0 {
+		trimmed := entries[recentStart:]
+		for len(trimmed) > 0 && trimmed[0].Role == "tool" {
+			trimmed = trimmed[1:]
+		}
+		return trimmed
+	}
+
+	// Second pass: shrink recent window to make room for outside tier-1.
+	recentCount := agent.MaxConversationTurns - outsideTier1
+	if recentCount < agent.MaxConversationTurns/2 {
+		recentCount = agent.MaxConversationTurns / 2
+	}
+	recentStart = len(entries) - recentCount
+	if recentStart < 0 {
+		recentStart = 0
+	}
+
+	// Build a set of outside-tier-1 indices against the FINAL recentStart
+	// to avoid duplicating entries that moved into the new recent window.
+	outsideSet := make(map[int]bool)
+	for _, idx := range tier1Indices {
+		if idx < recentStart {
+			outsideSet[idx] = true
+		}
+	}
+
+	// If recalculation moved all tier-1 inside, fall back to FIFO.
+	if len(outsideSet) == 0 {
+		trimmed := entries[recentStart:]
+		for len(trimmed) > 0 && trimmed[0].Role == "tool" {
+			trimmed = trimmed[1:]
+		}
+		return trimmed
+	}
+
+	// Build result: outside tier-1 entries + separator + recent window.
+	result := make([]agent.ConversationEntry, 0, len(outsideSet)+1+recentCount)
+	for i := 0; i < recentStart; i++ {
+		if outsideSet[i] {
+			result = append(result, entries[i])
+		}
+	}
+	result = append(result, agent.ConversationEntry{
+		Role:    "system",
+		Content: "[...中间的工具调用和执行细节已省略...]",
+	})
+	result = append(result, entries[recentStart:]...)
+
+	// Fix orphaned tool messages at the start.
+	for len(result) > 0 && result[0].Role == "tool" {
+		result = result[1:]
+	}
+	return result
+}
+
+// extractTurnBoundaryIndices returns indices of "turn boundary" entries:
+// the first user message and the first assistant response of each
+// conversational turn. This is a structural invariant that doesn't depend
+// on content, language, or keywords.
+//
+// A "turn" starts when a user message appears after a non-user role
+// (or at the beginning). The first assistant message after that user
+// message completes the turn boundary pair.
+func extractTurnBoundaryIndices(entries []agent.ConversationEntry, maxCount int) []int {
+	var indices []int
+	prevRole := ""
+	for i, e := range entries {
+		if len(indices) >= maxCount {
+			break
+		}
+		switch e.Role {
+		case "user":
+			if prevRole != "user" {
+				indices = append(indices, i)
+			}
+		case "assistant":
+			if prevRole == "user" {
+				indices = append(indices, i)
+			}
+		}
+		// Track role transitions through ALL entry types (including tool,
+		// system) so that sequences like user→tool→assistant correctly
+		// identify the assistant as a turn boundary.
+		if e.Role != "" {
+			prevRole = e.Role
+		}
+	}
+	return indices
+}
+
+// extractTurnBoundaryTexts returns the text content of turn-boundary entries.
+// Shared by TopicDetector and compactHistory.
+func extractTurnBoundaryTexts(entries []agent.ConversationEntry, maxTexts int) []string {
+	var texts []string
+	prevRole := ""
+	for _, e := range entries {
+		if len(texts) >= maxTexts {
+			break
+		}
+		text, ok := e.Content.(string)
+		switch e.Role {
+		case "user":
+			if prevRole != "user" && ok && text != "" {
+				texts = append(texts, text)
+			}
+		case "assistant":
+			if prevRole == "user" && ok && text != "" {
+				texts = append(texts, text)
+			}
+		}
+		if e.Role != "" {
+			prevRole = e.Role
+		}
+	}
+	return texts
 }
 
 // maxToolResultLen caps individual tool results to ~4KB before they enter

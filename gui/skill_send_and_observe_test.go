@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSkillRunnerExecuteStepWithContext_SendAndObserveUsesSharedHelper(t *testing.T) {
@@ -34,7 +36,7 @@ func TestSkillRunnerExecuteStepWithContext_SendAndObserveUsesSharedHelper(t *tes
 	mgr := &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{"sess-observe-1": session}}
 	runner := NewSkillRunner(&SkillExecutor{app: app, manager: mgr})
 
-	result, err := runner.executeStepWithContext(context.Background(), "run-observe", NLSkillStep{
+	result, err := runner.executeStepWithContext(context.Background(), "run-observe", corelib.NLSkillStep{
 		Action: "send_and_observe",
 		Params: map[string]interface{}{
 			"session_id": "sess-observe-1",
@@ -78,7 +80,7 @@ func TestSkillRunnerExecuteStepWithContext_SendAndObserveUsesImplicitSessionID(t
 		},
 	}}
 
-	result, err := runner.executeStepWithContext(context.Background(), "run-implicit", NLSkillStep{
+	result, err := runner.executeStepWithContext(context.Background(), "run-implicit", corelib.NLSkillStep{
 		Action: "send_and_observe",
 		Params: map[string]interface{}{
 			"text": "continue",
@@ -118,7 +120,7 @@ func TestSkillRunnerExecuteStepWithContext_SendAndObserveFallsBackFromUnknownExp
 		},
 	}}
 
-	result, err := runner.executeStepWithContext(context.Background(), "run-fallback", NLSkillStep{
+	result, err := runner.executeStepWithContext(context.Background(), "run-fallback", corelib.NLSkillStep{
 		Action: "send_and_observe",
 		Params: map[string]interface{}{
 			"session_id": "skill-runner",
@@ -143,11 +145,11 @@ func TestSkillExecutorExecute_ImplicitSessionReuse(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Projects = []ProjectConfig{{Id: "proj-implicit", Name: "Implicit", Path: tempHome}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "proj-implicit", Name: "Implicit", Path: tempHome}}
 	cfg.CurrentProject = "proj-implicit"
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models:       []ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
 	}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -165,10 +167,10 @@ func TestSkillExecutorExecute_ImplicitSessionReuse(t *testing.T) {
 	app.sessionStarter = NewCodingSessionStarter(app)
 	exec := NewSkillExecutor(app, nil, mgr)
 
-	output, err := exec.executeSkillSteps(&NLSkillEntry{
+	output, err := exec.executeSkillSteps(&corelib.NLSkillEntry{
 		Name:        "seq-skill",
 		Description: "修复 Go 项目中的 bug 并继续完成之前的任务",
-		Steps: []NLSkillStep{
+		Steps: []corelib.NLSkillStep{
 			{
 				Action: "create_session",
 				Params: map[string]interface{}{

@@ -107,7 +107,7 @@ func TestCapabilityGapDetector_Resolve_NoCandidates(t *testing.T) {
 	hubClient := NewSkillHubClient(app)
 	executor := NewSkillExecutor(app, nil, nil)
 
-	d := NewCapabilityGapDetector(app, hubClient, executor, assessor, auditLog, MaclawLLMConfig{})
+	d := NewCapabilityGapDetector(app, hubClient, executor, assessor, auditLog, corelib.MaclawLLMConfig{})
 
 	var statuses []string
 	name, result, resolveErr := d.Resolve(context.Background(), "do something", nil, func(s string) {
@@ -140,7 +140,7 @@ func TestCapabilityGapDetector_HubPath_SetsAutoHubSource(t *testing.T) {
 	// Simulate what Resolve() does in the Hub path (Step 6):
 	// After hubClient.Install() returns a skill, Resolve() sets
 	// skill.Source = "auto_hub" before calling Register().
-	skill := NLSkillEntry{
+	skill := corelib.NLSkillEntry{
 		Name:        "test-hub-skill",
 		Description: "A skill from SkillHub",
 		Source:      "hub", // This is what Install() would set
@@ -182,7 +182,7 @@ func TestCapabilityGapDetector_GitHubPath_SetsAutoGitHubSource(t *testing.T) {
 	// Simulate what Resolve() does in the GitHub fallback path:
 	// After gs.ImportFromCandidate() returns an imported skill, Resolve()
 	// sets imported.Source = "auto_github" before calling Register().
-	imported := NLSkillEntry{
+	imported := corelib.NLSkillEntry{
 		Name:        "test-github-skill",
 		Description: "A skill from GitHub",
 		Source:      "github", // This is what ImportFromCandidate() would set

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // SkillSearchResult is a unified search result for agent tool use.
@@ -65,11 +67,13 @@ func SearchSkillMarket(baseURL, query string, topN int) ([]SkillSearchResult, er
 	return out, nil
 }
 
-// SearchSkillHub queries the SkillHub search API and returns results.
+// SearchSkillHub queries the HubCenter SkillHub search API and returns results.
 func SearchSkillHub(query string) ([]SkillSearchResult, error) {
-	hubURL, err := resolveHubURL()
-	if err != nil {
-		return nil, err
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, _ := store.LoadConfig()
+	hubURL := cfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
+	if hubURL == "" {
+		return nil, fmt.Errorf("hubcenter URL not configured")
 	}
 
 	endpoint := fmt.Sprintf("%s/api/v1/skills/search?q=%s&page=1",

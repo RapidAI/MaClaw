@@ -3,17 +3,19 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// helper to build a ModelConfig quickly
-func mkModel(name, apiKey string) ModelConfig {
-	return ModelConfig{ModelName: name, ApiKey: apiKey, IsBuiltin: name == "Original"}
+// helper to build a corelib.ModelConfig quickly
+func mkModel(name, apiKey string) corelib.ModelConfig {
+	return corelib.ModelConfig{ModelName: name, ApiKey: apiKey, IsBuiltin: name == "Original"}
 }
 
 func TestProviderResolver_ExplicitValid(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("Original", ""),
 			mkModel("DeepSeek", "sk-deep"),
 		},
@@ -32,9 +34,9 @@ func TestProviderResolver_ExplicitValid(t *testing.T) {
 }
 
 func TestProviderResolver_ExplicitNotFound(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("Original", ""),
 			mkModel("DeepSeek", "sk-deep"),
 		},
@@ -54,9 +56,9 @@ func TestProviderResolver_ExplicitNotFound(t *testing.T) {
 }
 
 func TestProviderResolver_ExplicitNoApiKey(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("Original", ""),
 			mkModel("DeepSeek", ""), // no API key
 		},
@@ -72,9 +74,9 @@ func TestProviderResolver_ExplicitNoApiKey(t *testing.T) {
 }
 
 func TestProviderResolver_DefaultAvailable(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "DeepSeek",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("Original", ""),
 			mkModel("DeepSeek", "sk-deep"),
 		},
@@ -93,9 +95,9 @@ func TestProviderResolver_DefaultAvailable(t *testing.T) {
 }
 
 func TestProviderResolver_DefaultUnavailableFallback(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "BadProvider",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("BadProvider", ""), // no key, not "original"
 			mkModel("DeepSeek", "sk-deep"),
 		},
@@ -123,9 +125,9 @@ func TestProviderResolver_DefaultUnavailableFallback(t *testing.T) {
 }
 
 func TestProviderResolver_AllUnavailable(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "ProvA",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("ProvA", ""),
 			mkModel("ProvB", ""),
 		},
@@ -144,9 +146,9 @@ func TestProviderResolver_AllUnavailable(t *testing.T) {
 }
 
 func TestProviderResolver_CaseInsensitive(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "deepseek",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("DeepSeek", "sk-deep"),
 		},
 	}
@@ -172,9 +174,9 @@ func TestProviderResolver_CaseInsensitive(t *testing.T) {
 }
 
 func TestProviderResolver_EmptyModels(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "anything",
-		Models:       []ModelConfig{},
+		Models:       []corelib.ModelConfig{},
 	}
 	r := &ProviderResolver{}
 	_, err := r.Resolve(cfg, "")
@@ -187,9 +189,9 @@ func TestProviderResolver_EmptyModels(t *testing.T) {
 }
 
 func TestProviderResolver_Idempotent(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "BadDefault",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("BadDefault", ""),
 			mkModel("Original", ""),
 			mkModel("DeepSeek", "sk-deep"),
@@ -218,9 +220,9 @@ func TestProviderResolver_Idempotent(t *testing.T) {
 }
 
 func TestProviderResolver_EmptyCurrentModel(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("Original", ""),
 			mkModel("DeepSeek", "sk-deep"),
 		},
@@ -242,9 +244,9 @@ func TestProviderResolver_EmptyCurrentModel(t *testing.T) {
 }
 
 func TestProviderResolver_CurrentModelNotInList(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "StaleProvider",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("Original", ""),
 			mkModel("DeepSeek", "sk-deep"),
 		},
@@ -267,9 +269,9 @@ func TestProviderResolver_CurrentModelNotInList(t *testing.T) {
 }
 
 func TestProviderResolver_ExplicitWhitespace(t *testing.T) {
-	cfg := ToolConfig{
+	cfg := corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models: []ModelConfig{
+		Models: []corelib.ModelConfig{
 			mkModel("Original", ""),
 		},
 	}

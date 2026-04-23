@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
 	"runtime"
 	"strings"
@@ -20,7 +21,7 @@ type RemoteToolMetadata struct {
 	SupportsRemote        bool
 	ReadinessHint         string
 	SmokeHint             string
-	ConfigSelector        func(AppConfig) ToolConfig
+	ConfigSelector        func(corelib.AppConfig) corelib.ToolConfig
 	ProviderFactory       func(*App) ProviderAdapter
 }
 
@@ -52,7 +53,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SupportsRemote:  true,
 		ReadinessHint:   "Checks Anthropic-compatible auth, Claude launch command, and SDK stream-json readiness.",
 		SmokeHint:       "Runs registration, launch, real session start, and Hub visibility verification for Claude (SDK mode).",
-		ConfigSelector:  func(cfg AppConfig) ToolConfig { return cfg.Claude },
+		ConfigSelector:  func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Claude },
 		ProviderFactory: func(app *App) ProviderAdapter { return NewClaudeAdapter(app) },
 	},
 	"gemini": {
@@ -64,7 +65,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SupportsRemote:  true,
 		ReadinessHint:   "Checks Gemini CLI installation, API key, and ACP protocol readiness.",
 		SmokeHint:       "Runs registration, launch, real session start, and Hub visibility verification for Gemini (ACP mode).",
-		ConfigSelector:  func(cfg AppConfig) ToolConfig { return cfg.Gemini },
+		ConfigSelector:  func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Gemini },
 		ProviderFactory: func(app *App) ProviderAdapter { return NewGeminiAdapter(app) },
 	},
 	"codex": {
@@ -77,7 +78,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SupportsRemote:   true,
 		ReadinessHint:    "Checks OpenAI-compatible auth, Codex command resolution, and exec --json SDK readiness.",
 		SmokeHint:        "Runs registration, launch, real session start, and Hub visibility verification for Codex (SDK mode).",
-		ConfigSelector:   func(cfg AppConfig) ToolConfig { return cfg.Codex },
+		ConfigSelector:   func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Codex },
 		ProviderFactory:  func(app *App) ProviderAdapter { return NewCodexAdapter(app) },
 	},
 	"opencode": {
@@ -91,7 +92,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SupportsRemote:        true,
 		ReadinessHint:         "Checks OpenCode config sync, OpenAI-compatible endpoints, and isolated session config.",
 		SmokeHint:             "Runs registration, PTY, launch, real session start, and Hub visibility verification for OpenCode.",
-		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.Opencode },
+		ConfigSelector:        func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Opencode },
 		ProviderFactory:       func(app *App) ProviderAdapter { return NewOpencodeAdapter(app) },
 	},
 	"cursor": {
@@ -103,7 +104,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SupportsRemote:  true,
 		ReadinessHint:   "Checks Cursor Agent CLI installation, SDK stream-json readiness, and remote capability.",
 		SmokeHint:       "Runs registration, launch, real session start, and Hub visibility verification for Cursor Agent (SDK mode).",
-		ConfigSelector:  func(cfg AppConfig) ToolConfig { return cfg.Cursor },
+		ConfigSelector:  func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Cursor },
 		ProviderFactory: func(app *App) ProviderAdapter { return NewCursorAdapter(app) },
 	},
 	"codebuddy": {
@@ -117,7 +118,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SupportsRemote:        true,
 		ReadinessHint:         "Checks CodeBuddy CLI installation, SDK stream-json readiness, and remote capability.",
 		SmokeHint:             "Runs registration, launch, real session start, and Hub visibility verification for CodeBuddy (SDK mode).",
-		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.CodeBuddy },
+		ConfigSelector:        func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.CodeBuddy },
 		ProviderFactory:       func(app *App) ProviderAdapter { return NewCodeBuddyAdapter(app) },
 	},
 	"iflow": {
@@ -131,7 +132,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SupportsRemote:        true,
 		ReadinessHint:         "Checks iFlow config sync plus IFLOW and OpenAI-compatible environment wiring.",
 		SmokeHint:             "Runs registration, PTY, launch, real session start, and Hub visibility verification for iFlow.",
-		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.IFlow },
+		ConfigSelector:        func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.IFlow },
 		ProviderFactory:       func(app *App) ProviderAdapter { return NewIFlowAdapter(app) },
 	},
 	"kilo": {
@@ -145,7 +146,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SupportsRemote:        true,
 		ReadinessHint:         "Checks Kilo config sync plus KILO and OpenAI-compatible environment wiring.",
 		SmokeHint:             "Runs registration, PTY, launch, real session start, and Hub visibility verification for Kilo.",
-		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.Kilo },
+		ConfigSelector:        func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Kilo },
 		ProviderFactory:       func(app *App) ProviderAdapter { return NewKiloAdapter(app) },
 	},
 	"browser": {
@@ -158,7 +159,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SupportsRemote:        false,
 		ReadinessHint:         "Starts a local browser agent session with CDP discovery, snapshots, refs, preview, and trace.",
 		SmokeHint:             "Launches a browser session and verifies snapshot/preview generation locally.",
-		ConfigSelector:        func(cfg AppConfig) ToolConfig { return ToolConfig{} },
+		ConfigSelector:        func(cfg corelib.AppConfig) corelib.ToolConfig { return corelib.ToolConfig{} },
 		ProviderFactory:       func(app *App) ProviderAdapter { return nil },
 	},
 }
@@ -187,13 +188,13 @@ func lookupRemoteToolMetadata(toolName string) (RemoteToolMetadata, bool) {
 				UsesOpenAICompat: true,
 				SupportsProxy:    true,
 				SupportsRemote:   true,
-				ConfigSelector: func(cfg AppConfig) ToolConfig {
+				ConfigSelector: func(cfg corelib.AppConfig) corelib.ToolConfig {
 					if cfg.ExtraToolConfigs != nil {
 						if tc, ok := cfg.ExtraToolConfigs[et.ConfigKey]; ok {
 							return tc
 						}
 					}
-					return ToolConfig{}
+					return corelib.ToolConfig{}
 				},
 			}, true
 		}
@@ -223,13 +224,13 @@ func remoteToolDisplayName(toolName string) string {
 	return string(r)
 }
 
-func remoteToolConfig(cfg AppConfig, toolName string) (ToolConfig, error) {
+func remoteToolConfig(cfg corelib.AppConfig, toolName string) (corelib.ToolConfig, error) {
 	meta, err := getRemoteToolMetadata(toolName)
 	if err != nil {
-		return ToolConfig{}, err
+		return corelib.ToolConfig{}, err
 	}
 	if meta.ConfigSelector == nil {
-		return ToolConfig{}, fmt.Errorf("tool config unavailable for tool: %s", normalizeRemoteToolName(toolName))
+		return corelib.ToolConfig{}, fmt.Errorf("tool config unavailable for tool: %s", normalizeRemoteToolName(toolName))
 	}
 	return meta.ConfigSelector(cfg), nil
 }
@@ -253,7 +254,7 @@ func remoteToolSupported(toolName string) bool {
 	return meta.SupportsRemote
 }
 
-func remoteToolVisible(cfg AppConfig, toolName string) bool {
+func remoteToolVisible(cfg corelib.AppConfig, toolName string) bool {
 	switch normalizeRemoteToolName(toolName) {
 	case "claude":
 		return true
@@ -291,7 +292,7 @@ func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
 	out := make([]RemoteToolMetadataView, 0, len(order))
 	cfg, err := app.LoadConfig()
 	if err != nil {
-		cfg = AppConfig{
+		cfg = corelib.AppConfig{
 			ShowGemini:    true,
 			ShowCodex:     true,
 			ShowOpenCode:  true,
@@ -343,15 +344,15 @@ func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
 	return out
 }
 
-func isValidProvider(m ModelConfig) bool {
+func isValidProvider(m corelib.ModelConfig) bool {
 	if m.IsBuiltin || m.HasSubscription {
 		return true
 	}
 	return strings.TrimSpace(m.ApiKey) != ""
 }
 
-func validProviders(tc ToolConfig) []ModelConfig {
-	var out []ModelConfig
+func validProviders(tc corelib.ToolConfig) []corelib.ModelConfig {
+	var out []corelib.ModelConfig
 	for _, m := range tc.Models {
 		if isValidProvider(m) {
 			out = append(out, m)

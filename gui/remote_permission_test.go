@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 // TestPermissionHandler_AutoApproveMode verifies auto-approve mode still works.
@@ -53,7 +55,7 @@ func TestPermissionHandler_DefaultMode_LowRisk(t *testing.T) {
 	comp := h.HandleRequest(PermissionRequest{
 		RequestID: "r1",
 		SessionID: "s1",
-		ToolName:  "Read", // read-only tool → low risk → PolicyAllow
+		ToolName:  "Read", // read-only tool → low risk → security.PolicyAllow
 	})
 	if comp.Decision != PermissionApproved {
 		t.Fatalf("expected approved for low-risk read, got %s: %s", comp.Decision, comp.Reason)
@@ -75,7 +77,7 @@ func TestPermissionHandler_DefaultMode_MediumRisk_Audit(t *testing.T) {
 	comp := h.HandleRequest(PermissionRequest{
 		RequestID: "r1",
 		SessionID: "s1",
-		ToolName:  "Write", // write tool → medium risk → PolicyAudit
+		ToolName:  "Write", // write tool → medium risk → security.PolicyAudit
 		Input:     map[string]interface{}{"path": "/tmp/test.txt"},
 	})
 	if comp.Decision != PermissionApproved {
@@ -83,14 +85,14 @@ func TestPermissionHandler_DefaultMode_MediumRisk_Audit(t *testing.T) {
 	}
 
 	// Verify audit log was written.
-	entries, err := al.Query(AuditFilter{ToolName: "Write"})
+	entries, err := al.Query(security.AuditFilter{ToolName: "Write"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 audit entry, got %d", len(entries))
 	}
-	if entries[0].RiskLevel != RiskMedium {
+	if entries[0].RiskLevel != security.RiskMedium {
 		t.Fatalf("expected medium risk in audit, got %s", entries[0].RiskLevel)
 	}
 }
@@ -128,7 +130,7 @@ func TestPermissionHandler_DefaultMode_HighRisk_Ask(t *testing.T) {
 		comp = h.HandleRequest(PermissionRequest{
 			RequestID: "r1",
 			SessionID: "s1",
-			ToolName:  "Write", // write + system dir → high risk → PolicyAsk
+			ToolName:  "Write", // write + system dir → high risk → security.PolicyAsk
 			Input:     map[string]interface{}{"path": "/etc/config/test"},
 		})
 	}()
@@ -305,7 +307,7 @@ func TestPermissionHandler_AuditLogIntegration(t *testing.T) {
 		Input: map[string]interface{}{"path": "/tmp/x"},
 	})
 
-	entries, _ := al.Query(AuditFilter{})
+	entries, _ := al.Query(security.AuditFilter{})
 	if len(entries) != 2 {
 		// List files in dir for debugging.
 		files, _ := os.ReadDir(dir)

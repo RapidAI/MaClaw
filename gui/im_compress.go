@@ -8,6 +8,8 @@ package main
 //   - autoCompressConversation: auto-compression check before each LLM call
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,7 +71,7 @@ func (h *IMMessageHandler) handleCompressCommand(userID string) *IMAgentResponse
 // trimConversation handles the final token budget enforcement.
 func autoCompressConversation(
 	conversation []interface{},
-	cfg MaclawLLMConfig,
+	cfg corelib.MaclawLLMConfig,
 	httpClient *http.Client,
 ) []interface{} {
 	if len(conversation) <= 5 {
@@ -105,7 +107,7 @@ func autoCompressConversation(
 }
 
 // makeSummarizeCallback creates an LLM summarization callback for the compressor.
-func makeSummarizeCallback(cfg MaclawLLMConfig, httpClient *http.Client) func(string) (string, error) {
+func makeSummarizeCallback(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(string) (string, error) {
 	return func(text string) (string, error) {
 		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 			return "", fmt.Errorf("LLM not configured")
@@ -143,10 +145,10 @@ func makeSummarizeCallback(cfg MaclawLLMConfig, httpClient *http.Client) func(st
 // Conversion helpers between conversation formats
 // ---------------------------------------------------------------------------
 
-// conversationToContextMessages converts []conversationEntry to []context.Message.
+// conversationToContextMessages converts []agent.ConversationEntry to []context.Message.
 // Only text content is preserved; tool calls and multimodal content are
 // serialized to their string representation.
-func conversationToContextMessages(entries []conversationEntry) []ctxcompress.Message {
+func conversationToContextMessages(entries []agent.ConversationEntry) []ctxcompress.Message {
 	messages := make([]ctxcompress.Message, 0, len(entries))
 	for _, e := range entries {
 		content := entryContentToString(e.Content)
@@ -178,11 +180,11 @@ func interfaceSliceToContextMessages(msgs []interface{}) []ctxcompress.Message {
 	return messages
 }
 
-// contextMessagesToConversation converts []context.Message back to []conversationEntry.
-func contextMessagesToConversation(messages []ctxcompress.Message) []conversationEntry {
-	entries := make([]conversationEntry, 0, len(messages))
+// contextMessagesToConversation converts []context.Message back to []agent.ConversationEntry.
+func contextMessagesToConversation(messages []ctxcompress.Message) []agent.ConversationEntry {
+	entries := make([]agent.ConversationEntry, 0, len(messages))
 	for _, m := range messages {
-		entries = append(entries, conversationEntry{
+		entries = append(entries, agent.ConversationEntry{
 			Role:    m.Role,
 			Content: m.Content,
 		})
@@ -203,7 +205,7 @@ func contextMessagesToInterfaceSlice(messages []ctxcompress.Message) []interface
 	return result
 }
 
-// entryContentToString extracts a string representation from a conversationEntry's Content field.
+// entryContentToString extracts a string representation from a agent.ConversationEntry's Content field.
 func entryContentToString(content interface{}) string {
 	switch v := content.(type) {
 	case string:

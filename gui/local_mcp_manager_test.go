@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestLocalMCPManagerSyncFromConfigStartsEnabledServersWithoutAutoStart(t *testing.T) {
@@ -20,7 +22,7 @@ func TestLocalMCPManagerSyncFromConfigStartsEnabledServersWithoutAutoStart(t *te
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.LocalMCPServers = []LocalMCPServerEntry{
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{
 		{
 			ID:        "enabled-no-autostart",
 			Name:      "Enabled server",
@@ -80,7 +82,7 @@ func TestLocalMCPManagerResolveServerIDByName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("enabled-no-autostart", false, false)}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("enabled-no-autostart", false, false)}
 	cfg.LocalMCPServers[0].Name = "brave-search"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -111,7 +113,7 @@ func TestLocalMCPManagerResolveServerIDAmbiguousName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.LocalMCPServers = []LocalMCPServerEntry{
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{
 		newHelperLocalMCPServerEntry("server-a", false, false),
 		newHelperLocalMCPServerEntry("server-b", false, false),
 	}
@@ -143,7 +145,7 @@ func TestAutoStartLocalMCPServersStartsServersMarkedAutoStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("autostart-server", false, true)}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("autostart-server", false, true)}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -169,7 +171,7 @@ func TestAutoStartLocalMCPServersDoesNotStartWithoutAutoStartFlag(t *testing.T) 
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("manual-only-server", false, false)}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("manual-only-server", false, false)}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -198,7 +200,7 @@ func TestAutoStartLocalMCPServersDoesNotStartDisabledServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("disabled-autostart-server", true, true)}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("disabled-autostart-server", true, true)}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -216,8 +218,8 @@ func TestAutoStartLocalMCPServersDoesNotStartDisabledServer(t *testing.T) {
 	waitForLocalMCPRunning(t, app.localMCPManager, "disabled-autostart-server", false)
 }
 
-func newHelperLocalMCPServerEntry(id string, disabled bool, autoStart bool) LocalMCPServerEntry {
-	return LocalMCPServerEntry{
+func newHelperLocalMCPServerEntry(id string, disabled bool, autoStart bool) corelib.LocalMCPServerEntry {
+	return corelib.LocalMCPServerEntry{
 		ID:        id,
 		Name:      id,
 		Command:   os.Args[0],

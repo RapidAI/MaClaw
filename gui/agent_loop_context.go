@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"context"
 	"net/http"
 	"sync"
@@ -65,7 +66,7 @@ type LoopContext struct {
 	status        string // "running", "paused", "completed", "failed"
 
 	Conversation []interface{}       // this loop's conversation messages
-	History      []conversationEntry // loaded history (for chat loops)
+	History      []agent.ConversationEntry // loaded history (for chat loops)
 
 	ContinueC chan int         // receive additional rounds (Background only)
 	StatusC   chan StatusEvent // send status events to Chat Loop

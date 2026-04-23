@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // TestToolUploadSkill_EmptyName verifies that toolUploadSkill returns an error
@@ -87,8 +89,8 @@ func TestToolManageSkill_InvalidAction(t *testing.T) {
 	if !strings.Contains(got, "未知 manage_skill action") {
 		t.Fatalf("expected unknown action error, got %q", got)
 	}
-	// Verify all six action names are listed
-	for _, action := range []string{"list", "search", "install", "run", "status", "upload"} {
+	// Verify all action names are listed — derived from the single source of truth.
+	for _, action := range skill.ManageSkillActionNames() {
 		if !strings.Contains(got, action) {
 			t.Errorf("error message should contain action %q, got %q", action, got)
 		}
@@ -106,5 +108,21 @@ func TestToolManageSkill_EmptyAction(t *testing.T) {
 	got := h.toolManageSkill(map[string]interface{}{}, nil)
 	if !strings.Contains(got, "未知 manage_skill action") {
 		t.Fatalf("expected unknown action error for empty action, got %q", got)
+	}
+}
+
+// TestToolManageSkill_AllCanonicalActionsHandled verifies that the GUI dispatcher
+// has a handler for every action in the canonical ManageSkillActions list.
+// If a new action is added to the single source of truth but not to the GUI
+// switch, this test fails.
+func TestToolManageSkill_AllCanonicalActionsHandled(t *testing.T) {
+	app := &App{}
+	h := &IMMessageHandler{app: app}
+
+	for _, action := range skill.ManageSkillActionNames() {
+		got := h.toolManageSkill(map[string]interface{}{"action": action}, nil)
+		if strings.Contains(got, "未知 manage_skill action") {
+			t.Errorf("GUI dispatcher has no handler for canonical action %q", action)
+		}
 	}
 }

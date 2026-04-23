@@ -4,6 +4,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
 	"io"
 	"net/http"
@@ -428,7 +429,7 @@ func (a *App) updatePathForNode() {
 
 func (a *App) installNodeJSManually(targetDir string) error {
 	// Simple download and unpack for Linux (assuming x64 for now, or detect)
-	nodeVersion := RequiredNodeVersion
+	nodeVersion := corelib.RequiredNodeVersion
 	arch := "x64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
@@ -685,7 +686,7 @@ func getWindowsVersionHidden() string {
 }
 
 // isWindowsTerminalAvailable returns false on Linux (Windows Terminal is Windows-only)
-func (a *App) syncToSystemEnv(config AppConfig) {
+func (a *App) syncToSystemEnv(config corelib.AppConfig) {
 }
 
 func (a *App) isWindowsTerminalAvailable() bool {

@@ -1,18 +1,19 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"strings"
 )
 
-func defaultWebSearchProviders() []WebSearchProvider {
-	return []WebSearchProvider{
+func defaultWebSearchProviders() []corelib.WebSearchProvider {
+	return []corelib.WebSearchProvider{
 		{Name: "Brave", Type: "brave", BaseURL: "https://api.search.brave.com/res/v1/web/search"},
 		{Name: "Serper", Type: "serper", BaseURL: "https://google.serper.dev/search"},
 		{Name: "DuckDuckGo", Type: "duckduckgo"},
 	}
 }
 
-func normalizeWebSearchProvider(provider WebSearchProvider) WebSearchProvider {
+func normalizeWebSearchProvider(provider corelib.WebSearchProvider) corelib.WebSearchProvider {
 	provider.Name = strings.TrimSpace(provider.Name)
 	provider.Type = strings.ToLower(strings.TrimSpace(provider.Type))
 	provider.Key = strings.TrimSpace(provider.Key)
@@ -20,14 +21,14 @@ func normalizeWebSearchProvider(provider WebSearchProvider) WebSearchProvider {
 	return provider
 }
 
-func mergeDefaultWebSearchProviders(providers []WebSearchProvider) []WebSearchProvider {
+func mergeDefaultWebSearchProviders(providers []corelib.WebSearchProvider) []corelib.WebSearchProvider {
 	defaults := defaultWebSearchProviders()
-	defaultByType := make(map[string]WebSearchProvider, len(defaults))
+	defaultByType := make(map[string]corelib.WebSearchProvider, len(defaults))
 	for _, provider := range defaults {
 		defaultByType[provider.Type] = provider
 	}
 
-	merged := make([]WebSearchProvider, 0, len(defaults))
+	merged := make([]corelib.WebSearchProvider, 0, len(defaults))
 	seen := make(map[string]bool, len(defaults))
 	for _, provider := range providers {
 		provider = normalizeWebSearchProvider(provider)
@@ -53,7 +54,7 @@ func mergeDefaultWebSearchProviders(providers []WebSearchProvider) []WebSearchPr
 	return merged
 }
 
-func resolveWebSearchCurrent(providers []WebSearchProvider, current string) string {
+func resolveWebSearchCurrent(providers []corelib.WebSearchProvider, current string) string {
 	current = strings.ToLower(strings.TrimSpace(current))
 	if current != "" {
 		for _, provider := range providers {
@@ -74,26 +75,26 @@ func resolveWebSearchCurrent(providers []WebSearchProvider, current string) stri
 }
 
 func (a *App) GetWebSearchProviders() struct {
-	Providers []WebSearchProvider `json:"providers"`
+	Providers []corelib.WebSearchProvider `json:"providers"`
 	Current   string              `json:"current"`
 } {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		providers := defaultWebSearchProviders()
 		return struct {
-			Providers []WebSearchProvider `json:"providers"`
+			Providers []corelib.WebSearchProvider `json:"providers"`
 			Current   string              `json:"current"`
 		}{Providers: providers, Current: resolveWebSearchCurrent(providers, "duckduckgo")}
 	}
 	providers := mergeDefaultWebSearchProviders(cfg.WebSearchProviders)
 	current := resolveWebSearchCurrent(providers, cfg.WebSearchCurrentProvider)
 	return struct {
-		Providers []WebSearchProvider `json:"providers"`
+		Providers []corelib.WebSearchProvider `json:"providers"`
 		Current   string              `json:"current"`
 	}{Providers: providers, Current: current}
 }
 
-func (a *App) SaveWebSearchProviders(providers []WebSearchProvider, current string) error {
+func (a *App) SaveWebSearchProviders(providers []corelib.WebSearchProvider, current string) error {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return err

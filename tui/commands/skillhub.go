@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -60,18 +61,19 @@ func RunSkillHub(args []string) error {
 	}
 }
 
-// resolveHubURL 从本地配置读取 Hub URL。
+// resolveHubURL 从本地配置读取 SkillHub API 的 base URL。
+// SkillHub API 在 HubCenter 上，通过 AppConfig.SkillHubBaseURL() 获取。
 func resolveHubURL() (string, error) {
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
 	if err != nil {
 		return "", fmt.Errorf("加载配置失败: %w", err)
 	}
-	hubURL := strings.TrimSpace(cfg.RemoteHubURL)
+	hubURL := cfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
 	if hubURL == "" {
-		return "", fmt.Errorf("Hub URL 未配置，请先在 GUI 或 config set --local remote_hub_url <url> 中设置")
+		return "", fmt.Errorf("HubCenter URL 未配置")
 	}
-	return strings.TrimRight(hubURL, "/"), nil
+	return hubURL, nil
 }
 
 // resolveMaclawID 从本地配置读取 MachineID 作为 maclaw_id。

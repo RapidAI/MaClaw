@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string[]]$CenterUrls,
 
@@ -81,8 +81,13 @@ foreach ($center in $centers) {
 
         $haUnauthorized = Invoke-StatusGet -Url ($center + "/api/internal/ha/ops?after_seq=0&limit=1")
         if ($ClusterSecret -ne "") {
-            $haAuthorized = Invoke-StatusGet -Url ($center + "/api/internal/ha/ops?after_seq=0&limit=1") -Headers @{ Authorization = "Bearer $ClusterSecret" }
-            $row.ha_auth = "unauthorized:$haUnauthorized;authorized:$haAuthorized"
+            if ($haUnauthorized -ne 401) {
+                $row.ha_auth = "unexpected-unauthorized:$haUnauthorized"
+            }
+            else {
+                $haAuthorized = Invoke-StatusGet -Url ($center + "/api/internal/ha/ops?after_seq=0&limit=1") -Headers @{ Authorization = "Bearer $ClusterSecret" }
+                $row.ha_auth = "unauthorized:$haUnauthorized;authorized:$haAuthorized"
+            }
         }
         elseif ($haUnauthorized -eq 401) {
             $row.ha_auth = "unauthorized-ok"

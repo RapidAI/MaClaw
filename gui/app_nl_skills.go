@@ -24,8 +24,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// NLSkillEntry, NLSkillStep — see corelib_aliases.go
-
 // SkillDiagEntry reports the scan result for a single skill directory.
 type SkillDiagEntry struct {
 	Dir    string `json:"dir"`
@@ -40,7 +38,7 @@ type NLSkillDefinition struct {
 	DirName        string        `json:"dir_name,omitempty"`
 	Description    string        `json:"description"`
 	Triggers       []string      `json:"triggers"`
-	Steps          []NLSkillStep `json:"steps"`
+	Steps          []corelib.NLSkillStep `json:"steps"`
 	Status         string        `json:"status"`
 	CreatedAt      time.Time     `json:"created_at"`
 	Source         string        `json:"source"`
@@ -52,6 +50,8 @@ type NLSkillDefinition struct {
 	Type           string        `json:"type,omitempty"`           // "executable" (default) | "knowledge"
 	Content        string        `json:"content,omitempty"`        // Markdown content for knowledge-type skills
 	Publisher      string        `json:"publisher,omitempty"`      // Plugin namespace publisher
+	Mode           string        `json:"mode,omitempty"`           // "sequential" (default) | "interactive" | "api_workflow"
+	SkillDir       string        `json:"-"`                        // skill directory path (internal use, not serialized to frontend)
 	UsageCount     int           `json:"usage_count"`
 	SuccessCount   int           `json:"success_count"`
 	FailureCount   int           `json:"failure_count"`
@@ -84,12 +84,12 @@ func NewSkillExecutor(app *App, mcpRegistry *MCPRegistry, manager *RemoteSession
 // Config-based skills usually take precedence over file-based ones with the
 // same name, except that stale config entries without executable steps are
 // hydrated from an executable file-backed definition when available.
-func (e *SkillExecutor) loadSkills() []NLSkillEntry {
+func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	cfg, err := e.app.LoadConfig()
 	if err != nil {
 		return nil
 	}
-	skills := append([]NLSkillEntry(nil), cfg.NLSkills...)
+	skills := append([]corelib.NLSkillEntry(nil), cfg.NLSkills...)
 
 	known := make(map[string]int, len(skills))
 	for i, s := range skills {
@@ -132,7 +132,7 @@ func (e *SkillExecutor) loadSkills() []NLSkillEntry {
 //
 // The primaryDir parameter is retained for call-site compatibility but is
 // no longer used after the stale-cache fix (see skill-edit-stale-cache spec).
-func shouldHydrateSkillFromFile(configSkill, fileSkill NLSkillEntry, _ string) bool {
+func shouldHydrateSkillFromFile(configSkill, fileSkill corelib.NLSkillEntry, _ string) bool {
 	if fileSkill.Name == "" || configSkill.Name != fileSkill.Name || len(fileSkill.Steps) == 0 {
 		return false
 	}
@@ -142,7 +142,7 @@ func shouldHydrateSkillFromFile(configSkill, fileSkill NLSkillEntry, _ string) b
 // scanSkillYAMLFiles discovers skill definitions from all known skill
 // directories (e.g. ~/.maclaw/data/skills, ~/.agents/skills) plus
 // user-configured external directories via corelib.
-func (e *SkillExecutor) scanSkillYAMLFiles() []NLSkillEntry {
+func (e *SkillExecutor) scanSkillYAMLFiles() []corelib.NLSkillEntry {
 	cfg, err := e.app.LoadConfig()
 	if err != nil {
 		return skill.ScanAllSkillDirs()
@@ -150,26 +150,23 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []NLSkillEntry {
 	return skill.ScanAllSkillDirsWithExternal(cfg.ExternalSkillDirs)
 }
 
-// skillYAMLFile is a local alias for the corelib type, used by delete and diag.
-type skillYAMLFile = skill.SkillYAMLFile
-
 // saveSkills persists skill entries to config.
 // File-based skills (source == "file") are saved as stats-only stubs so that
 // usage statistics survive across restarts. The full definition (steps,
 // triggers, description, etc.) is always loaded from the YAML file at runtime
 // via loadSkills → scanSkillYAMLFiles → shouldHydrateSkillFromFile.
-func (e *SkillExecutor) saveSkills(skills []NLSkillEntry) error {
+func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	cfg, err := e.app.LoadConfig()
 	if err != nil {
 		return err
 	}
-	filtered := make([]NLSkillEntry, 0, len(skills))
+	filtered := make([]corelib.NLSkillEntry, 0, len(skills))
 	for _, s := range skills {
 		if s.Source == "file" {
 			// Only persist the stats overlay — strip definition data so
 			// config.json is not polluted with YAML-managed content.
 			if s.UsageCount > 0 || s.SuccessCount > 0 || s.FailureCount > 0 || s.WorkaroundCount > 0 {
-				filtered = append(filtered, NLSkillEntry{
+				filtered = append(filtered, corelib.NLSkillEntry{
 					Name:            s.Name,
 					Source:          "file",
 					UsageCount:      s.UsageCount,
@@ -189,7 +186,7 @@ func (e *SkillExecutor) saveSkills(skills []NLSkillEntry) error {
 }
 
 // Register adds a new Skill definition.
-func (e *SkillExecutor) Register(entry NLSkillEntry) error {
+func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -225,7 +222,7 @@ func (e *SkillExecutor) Register(entry NLSkillEntry) error {
 		entry.Triggers = []string{}
 	}
 	if entry.Steps == nil {
-		entry.Steps = []NLSkillStep{}
+		entry.Steps = []corelib.NLSkillStep{}
 	}
 	skills = append(skills, entry)
 	return e.saveSkills(skills)
@@ -235,7 +232,7 @@ func (e *SkillExecutor) Register(entry NLSkillEntry) error {
 // Usage tracking fields (UsageCount, SuccessCount, LastUsedAt, LastError)
 // are preserved from the caller if non-zero, allowing the experience
 // extractor to carry forward stats when replacing a pattern.
-func (e *SkillExecutor) Update(entry NLSkillEntry) error {
+func (e *SkillExecutor) Update(entry corelib.NLSkillEntry) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -267,7 +264,7 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 	// Phase 1: Read skill info under read lock.
 	e.mu.RLock()
 	skills := e.loadSkills()
-	var skill NLSkillEntry
+	var skill corelib.NLSkillEntry
 	found := false
 	for _, s := range skills {
 		if s.Name == name {
@@ -361,38 +358,21 @@ func (e *SkillExecutor) Delete(name string) error {
 	return nil
 }
 
-// removeSkillDirs scans all skill directories and removes any whose
-// skill.yaml name matches the given name. Errors are silently ignored
-// so that config deletion is never blocked by a disk cleanup failure.
+// removeSkillDirs removes on-disk skill directories whose resolved name
+// matches the given name. It delegates discovery to skill.ScanSkillDirAll —
+// the unfiltered variant of the same scanner that loadSkills uses — so
+// any format the scanner can parse is automatically covered, and platform-
+// incompatible skills can still be deleted.
+// Errors are silently ignored so that config deletion is never blocked
+// by a disk cleanup failure.
 func (e *SkillExecutor) removeSkillDirs(name string) {
 	cfg, _ := e.app.LoadConfig()
 	for _, root := range skill.SkillScanRootsWithExternal(cfg.ExternalSkillDirs) {
-		entries, _ := os.ReadDir(root)
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			yamlPath := filepath.Join(root, entry.Name(), "skill.yaml")
-			if _, err := os.Stat(yamlPath); err != nil {
-				yamlPath = filepath.Join(root, entry.Name(), "skill.yaml")
-				if _, err := os.Stat(yamlPath); err != nil {
-					continue
+		for _, s := range skill.ScanSkillDirAll(root) {
+			if s.Name == name || s.DirName == name {
+				if s.SkillDir != "" {
+					_ = os.RemoveAll(s.SkillDir)
 				}
-			}
-			data, err := os.ReadFile(yamlPath)
-			if err != nil {
-				continue
-			}
-			var sf skillYAMLFile
-			if err := yaml.Unmarshal(data, &sf); err != nil {
-				continue
-			}
-			parsedName := strings.TrimSpace(sf.Name)
-			if parsedName == "" {
-				parsedName = entry.Name()
-			}
-			if parsedName == name {
-				_ = os.RemoveAll(filepath.Join(root, entry.Name()))
 			}
 		}
 	}
@@ -436,7 +416,7 @@ func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
 	return fmt.Errorf("skill %q not found", name)
 }
 
-func classifySkillExecutionClass(entry NLSkillEntry) string {
+func classifySkillExecutionClass(entry corelib.NLSkillEntry) string {
 	if len(entry.Steps) == 1 && entry.Steps[0].Action == "craft_tool" {
 		switch strings.TrimSpace(entry.Source) {
 		case "github", "clawhub", "agent_skill":
@@ -460,7 +440,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 		}
 		steps := s.Steps
 		if steps == nil {
-			steps = []NLSkillStep{}
+			steps = []corelib.NLSkillStep{}
 		}
 		d := NLSkillDefinition{
 			Name:           s.Name,
@@ -478,6 +458,8 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			Type:           s.Type,
 			Content:        s.Content,
 			Publisher:      s.Publisher,
+			Mode:           s.Mode,
+			SkillDir:       s.SkillDir,
 			UsageCount:     s.UsageCount,
 			SuccessCount:   s.SuccessCount,
 			FailureCount:   s.FailureCount,
@@ -535,7 +517,7 @@ func (e *SkillExecutor) AsRegisteredTools() []tool.RegisteredTool {
 // For file-based skills with a SkillDir, it reads skill.md from that directory.
 // For hub/other skills without SkillDir, it checks the primary skills directory.
 // Errors are logged as warnings and do not prevent skill registration.
-func (e *SkillExecutor) readSkillBody(entry NLSkillEntry) string {
+func (e *SkillExecutor) readSkillBody(entry corelib.NLSkillEntry) string {
 	// Try SkillDir first (file-based skills).
 	if entry.SkillDir != "" {
 		mdPath := filepath.Join(entry.SkillDir, "skill.md")
@@ -567,7 +549,7 @@ func (e *SkillExecutor) readSkillBody(entry NLSkillEntry) string {
 	return ""
 }
 
-func (e *SkillExecutor) executeSkillSteps(skill *NLSkillEntry) (string, error) {
+func (e *SkillExecutor) executeSkillSteps(skill *corelib.NLSkillEntry) (string, error) {
 	var results []string
 	var execErr error
 	lastSessionID := ""
@@ -714,7 +696,7 @@ func parseCreatedSessionID(result string) string {
 // Usage statistics (count, success rate, last error) are updated after execution.
 func (e *SkillExecutor) Execute(name string) (string, error) {
 	e.mu.RLock()
-	var target *NLSkillEntry
+	var target *corelib.NLSkillEntry
 	for _, s := range e.loadSkills() {
 		if s.MatchesName(name) && s.Status == "active" {
 			cp := s
@@ -771,7 +753,7 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 }
 
 // executeStep runs a single skill step.
-func (e *SkillExecutor) executeStep(step NLSkillStep, skillDescription string) (string, error) {
+func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription string) (string, error) {
 	switch step.Action {
 	case "create_session":
 		tool, _ := step.Params["tool"].(string)
@@ -1210,7 +1192,7 @@ func sshSkillStrArg(args map[string]interface{}, key string) string {
 	return s
 }
 
-func skillCreateSessionGuard(skillDescription string, step NLSkillStep) string {
+func skillCreateSessionGuard(skillDescription string, step corelib.NLSkillStep) string {
 	taskText := resolveSkillTaskText(skillDescription, step)
 	result := classifyTaskIntent(taskText)
 	switch result.Intent {
@@ -1235,7 +1217,7 @@ func skillCreateSessionGuard(skillDescription string, step NLSkillStep) string {
 	}
 }
 
-func resolveSkillTaskText(skillDescription string, step NLSkillStep) string {
+func resolveSkillTaskText(skillDescription string, step corelib.NLSkillStep) string {
 	candidates := []string{
 		stringParam(step.Params, "task"),
 		stringParam(step.Params, "task_description"),
@@ -1317,7 +1299,7 @@ func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
 			result = append(result, SkillDiagEntry{Dir: dirName, Name: name, OK: true})
 			continue
 		}
-		var sf skillYAMLFile
+		var sf skill.SkillYAMLFile
 		if err := yaml.Unmarshal(data, &sf); err != nil {
 			result = append(result, SkillDiagEntry{Dir: dirName, Reason: "YAML 解析失败: " + err.Error()})
 			continue
@@ -1471,7 +1453,7 @@ func (a *App) RemoveExternalSkillDir(dir string) error {
 }
 
 // CreateNLSkill registers a new NL Skill definition (Wails binding).
-func (a *App) CreateNLSkill(def NLSkillEntry) error {
+func (a *App) CreateNLSkill(def corelib.NLSkillEntry) error {
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
@@ -1480,7 +1462,7 @@ func (a *App) CreateNLSkill(def NLSkillEntry) error {
 }
 
 // UpdateNLSkill updates an existing NL Skill definition (Wails binding).
-func (a *App) UpdateNLSkill(def NLSkillEntry) error {
+func (a *App) UpdateNLSkill(def corelib.NLSkillEntry) error {
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
@@ -1546,7 +1528,7 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 		existingNames[existing.Name] = true
 	}
 
-	entries := make([]*NLSkillEntry, 0, len(packageRoots))
+	entries := make([]*corelib.NLSkillEntry, 0, len(packageRoots))
 	for _, packageRoot := range packageRoots {
 		entry, err := loadImportedSkillEntry(packageRoot)
 		if err != nil {
@@ -1631,11 +1613,11 @@ func importedSkillDefinitionExists(dir string) bool {
 	return false
 }
 
-func loadImportedSkillEntry(skillDir string) (*NLSkillEntry, error) {
+func loadImportedSkillEntry(skillDir string) (*corelib.NLSkillEntry, error) {
 	yamlPath := filepath.Join(skillDir, "skill.yaml")
 	data, err := os.ReadFile(yamlPath)
 	if err == nil {
-		var sf skillYAMLFile
+		var sf skill.SkillYAMLFile
 		if err := yaml.Unmarshal(data, &sf); err != nil {
 			return nil, fmt.Errorf("skill.yaml 格式无效: %v", err)
 		}
@@ -1647,9 +1629,9 @@ func loadImportedSkillEntry(skillDir string) (*NLSkillEntry, error) {
 		if status == "" {
 			status = "active"
 		}
-		steps := make([]NLSkillStep, 0, len(sf.Steps))
+		steps := make([]corelib.NLSkillStep, 0, len(sf.Steps))
 		for _, s := range sf.Steps {
-			steps = append(steps, NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError})
+			steps = append(steps, corelib.NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError})
 		}
 		if len(steps) == 0 {
 			parsed, err := skill.ImportMarkdownSkillDir(skillDir, skill.MarkdownSkillOptions{
@@ -1665,7 +1647,7 @@ func loadImportedSkillEntry(skillDir string) (*NLSkillEntry, error) {
 				return parsed, nil
 			}
 		}
-		return &NLSkillEntry{
+		return &corelib.NLSkillEntry{
 			Name:        name,
 			Description: sf.Description,
 			Triggers:    sf.Triggers,
@@ -1840,7 +1822,7 @@ func (a *App) packageSkillForMarket(skillName string) (string, error) {
 // for cleaning up both the zip file and the tmpDir.
 func (a *App) packageSkillForMarketWithDir(skillName string) (string, string, error) {
 	a.skillExecutor.mu.RLock()
-	var target *NLSkillEntry
+	var target *corelib.NLSkillEntry
 	for _, s := range a.skillExecutor.loadSkills() {
 		if s.Name == skillName {
 			cp := s

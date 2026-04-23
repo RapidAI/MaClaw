@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -19,7 +20,7 @@ import (
 // It launches the command, communicates via JSON-RPC 2.0 over stdin/stdout,
 // and provides tool discovery and invocation.
 type LocalMCPClient struct {
-	entry   LocalMCPServerEntry
+	entry   corelib.LocalMCPServerEntry
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	stdout  *bufio.Reader
@@ -53,7 +54,7 @@ type jsonRPCError struct {
 }
 
 // NewLocalMCPClient creates a client for the given local MCP server entry.
-func NewLocalMCPClient(entry LocalMCPServerEntry) *LocalMCPClient {
+func NewLocalMCPClient(entry corelib.LocalMCPServerEntry) *LocalMCPClient {
 	return &LocalMCPClient{entry: entry}
 }
 

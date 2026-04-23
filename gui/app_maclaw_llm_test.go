@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"pgregory.net/rapid"
 )
@@ -86,7 +88,7 @@ func TestTestMaclawLLM_ReturnsSupportsVisionTrue(t *testing.T) {
 	defer srv.Close()
 
 	app := &App{}
-	got, err := app.TestMaclawLLM(MaclawLLMConfig{URL: srv.URL, Model: "test-model", Protocol: "openai", AgentType: "test-agent"})
+	got, err := app.TestMaclawLLM(corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model", Protocol: "openai", AgentType: "test-agent"})
 	if err != nil {
 		t.Fatalf("TestMaclawLLM returned error: %v", err)
 	}
@@ -113,7 +115,7 @@ func TestTestMaclawLLM_ReturnsSupportsVisionFalseWhenProbeFails(t *testing.T) {
 	defer srv.Close()
 
 	app := &App{}
-	got, err := app.TestMaclawLLM(MaclawLLMConfig{URL: srv.URL, Model: "test-model", Protocol: "openai", AgentType: "test-agent"})
+	got, err := app.TestMaclawLLM(corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model", Protocol: "openai", AgentType: "test-agent"})
 	if err != nil {
 		t.Fatalf("TestMaclawLLM returned error: %v", err)
 	}
@@ -126,7 +128,7 @@ func TestTestMaclawLLM_ReturnsSupportsVisionFalseWhenProbeFails(t *testing.T) {
 }
 
 func TestResolveProvidersPreservesCodeGenSSORuntimeConfig(t *testing.T) {
-	saved := []MaclawLLMProvider{
+	saved := []corelib.MaclawLLMProvider{
 		{
 			Name:          codegenProviderName,
 			URL:           "http://127.0.0.1:5001/anthropic",
@@ -149,7 +151,7 @@ func TestResolveProvidersPreservesCodeGenSSORuntimeConfig(t *testing.T) {
 		}
 	}
 
-	providers := append([]MaclawLLMProvider(nil), saved...)
+	providers := append([]corelib.MaclawLLMProvider(nil), saved...)
 	for i := range providers {
 		if providers[i].ContextLength == 0 {
 			if cl, ok := defaultCtx[providers[i].Name]; ok {
@@ -190,8 +192,8 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
-		MaclawLLMProviders: []MaclawLLMProvider{{
+	cfg := corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
 			Name:     codegenProviderName,
 			URL:      "https://codegen.qianxin-inc.cn/api/v1",
 			Key:      "token-123",
@@ -200,9 +202,9 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 			AuthType: "sso",
 		}},
 		MaclawLLMCurrentProvider: codegenProviderName,
-		Claude: ToolConfig{
+		Claude: corelib.ToolConfig{
 			CurrentModel: codegenProviderName,
-			Models: []ModelConfig{{
+			Models: []corelib.ModelConfig{{
 				ModelName: codegenProviderName,
 				ModelId:   "qax-codegen/Auto",
 				ModelUrl:  "http://127.0.0.1:5001/anthropic",
@@ -210,7 +212,7 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 				WireApi:   "anthropic",
 			}},
 		},
-		Codex: ToolConfig{Models: []ModelConfig{{
+		Codex: corelib.ToolConfig{Models: []corelib.ModelConfig{{
 			ModelName: codegenProviderName,
 			ModelId:   "qax-codegen/Auto",
 			ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
@@ -238,7 +240,7 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 		t.Fatalf("Claude CurrentModel = %q, want %q", got, codegenProviderName)
 	}
 
-	var claudeCodeGen *ModelConfig
+	var claudeCodeGen *corelib.ModelConfig
 	for i := range saved.Claude.Models {
 		if saved.Claude.Models[i].ModelName == codegenProviderName {
 			claudeCodeGen = &saved.Claude.Models[i]
@@ -255,7 +257,7 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 		t.Fatalf("Claude Code wire_api = %q, want %q", got, "anthropic")
 	}
 
-	var codexCodeGen *ModelConfig
+	var codexCodeGen *corelib.ModelConfig
 	for i := range saved.Codex.Models {
 		if saved.Codex.Models[i].ModelName == codegenProviderName {
 			codexCodeGen = &saved.Codex.Models[i]
@@ -296,21 +298,21 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
-		Claude: ToolConfig{
+	cfg := corelib.AppConfig{
+		Claude: corelib.ToolConfig{
 			CurrentModel: "GLM",
-			Models: []ModelConfig{
+			Models: []corelib.ModelConfig{
 				{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/anthropic", ApiKey: "glm-token", WireApi: "anthropic"},
 				{ModelName: codegenProviderName, ModelId: "qax-codegen/Auto", ModelUrl: "http://127.0.0.1:5001/anthropic", ApiKey: "token-123", WireApi: "anthropic"},
 			},
 		},
-		Codex: ToolConfig{Models: []ModelConfig{{
+		Codex: corelib.ToolConfig{Models: []corelib.ModelConfig{{
 			ModelName: codegenProviderName,
 			ModelId:   "qax-codegen/Auto",
 			ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
 			ApiKey:    "token-123",
 		}}},
-		MaclawLLMProviders: []MaclawLLMProvider{{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
 			Name:     codegenProviderName,
 			URL:      "https://codegen.qianxin-inc.cn/api/v1",
 			Key:      "token-123",
@@ -363,50 +365,33 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 func TestDefaultMaclawLLMProviders(t *testing.T) {
 	providers := defaultMaclawLLMProviders()
 
-	if len(providers) < 8 {
-		t.Fatalf("provider count = %d, want >= 8", len(providers))
+	if len(providers) < 7 {
+		t.Fatalf("provider count = %d, want >= 7", len(providers))
 	}
 
 	first := providers[0]
-	if first.Name != "免费" {
-		t.Errorf("first provider Name = %q, want %q", first.Name, "免费")
+	if first.Name != "OpenAI" {
+		t.Errorf("first provider Name = %q, want %q", first.Name, "OpenAI")
 	}
-	if first.URL != "http://localhost:18099/v1" {
-		t.Errorf("免费 URL = %q, want %q", first.URL, "http://localhost:18099/v1")
+	if first.URL != "https://chatgpt.com/backend-api" {
+		t.Errorf("OpenAI URL = %q, want %q", first.URL, "https://chatgpt.com/backend-api")
 	}
-	if first.Model != "free-proxy" {
-		t.Errorf("免费 Model = %q, want %q", first.Model, "free-proxy")
+	if first.Model != "gpt-5.4" {
+		t.Errorf("OpenAI Model = %q, want %q", first.Model, "gpt-5.4")
 	}
-	if first.AuthType != "none" {
-		t.Errorf("免费 AuthType = %q, want %q", first.AuthType, "none")
+	if first.AuthType != "oauth" {
+		t.Errorf("OpenAI AuthType = %q, want %q", first.AuthType, "oauth")
+	}
+	if first.ContextLength != 128000 {
+		t.Errorf("OpenAI ContextLength = %d, want %d", first.ContextLength, 128000)
 	}
 	if first.TimeoutSec != 360 {
-		t.Errorf("免费 TimeoutSec = %d, want %d", first.TimeoutSec, 360)
+		t.Errorf("OpenAI TimeoutSec = %d, want %d", first.TimeoutSec, 360)
 	}
 
-	openAI := providers[1]
-	if openAI.Name != "OpenAI" {
-		t.Errorf("providers[1].Name = %q, want %q", openAI.Name, "OpenAI")
-	}
-	if openAI.URL != "https://chatgpt.com/backend-api" {
-		t.Errorf("OpenAI URL = %q, want %q", openAI.URL, "https://chatgpt.com/backend-api")
-	}
-	if openAI.Model != "gpt-5.4" {
-		t.Errorf("OpenAI Model = %q, want %q", openAI.Model, "gpt-5.4")
-	}
-	if openAI.AuthType != "oauth" {
-		t.Errorf("OpenAI AuthType = %q, want %q", openAI.AuthType, "oauth")
-	}
-	if openAI.ContextLength != 128000 {
-		t.Errorf("OpenAI ContextLength = %d, want %d", openAI.ContextLength, 128000)
-	}
-	if openAI.TimeoutSec != 360 {
-		t.Errorf("OpenAI TimeoutSec = %d, want %d", openAI.TimeoutSec, 360)
-	}
-
-	zhipuLobster := providers[2]
+	zhipuLobster := providers[1]
 	if zhipuLobster.Name != "智谱龙虾" {
-		t.Errorf("providers[2].Name = %q, want %q", zhipuLobster.Name, "智谱龙虾")
+		t.Errorf("providers[1].Name = %q, want %q", zhipuLobster.Name, "智谱龙虾")
 	}
 	if zhipuLobster.URL != "https://open.bigmodel.cn/api/coding/paas/v4" {
 		t.Errorf("智谱龙虾 URL = %q, want %q", zhipuLobster.URL, "https://open.bigmodel.cn/api/coding/paas/v4")
@@ -415,9 +400,9 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("智谱龙虾 Model = %q, want %q", zhipuLobster.Model, "glm-5-turbo")
 	}
 
-	zhipuCoding := providers[3]
+	zhipuCoding := providers[2]
 	if zhipuCoding.Name != "智谱编程" {
-		t.Errorf("providers[3].Name = %q, want %q", zhipuCoding.Name, "智谱编程")
+		t.Errorf("providers[2].Name = %q, want %q", zhipuCoding.Name, "智谱编程")
 	}
 	if zhipuCoding.URL != "https://open.bigmodel.cn/api/anthropic" {
 		t.Errorf("智谱编程 URL = %q, want %q", zhipuCoding.URL, "https://open.bigmodel.cn/api/anthropic")
@@ -432,14 +417,14 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("智谱编程 AgentType = %q, want %q", zhipuCoding.AgentType, "claude-code/2.0.0")
 	}
 
-	expectedNames := []string{"免费", "OpenAI", "智谱龙虾", "智谱编程", "MiniMax", "Kimi", "讯飞星辰", "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "智谱龙虾", "智谱编程", "MiniMax", "Kimi", "讯飞星辰", "Custom1", "Custom2"}
 	for i, want := range expectedNames {
 		if providers[i].Name != want {
 			t.Errorf("providers[%d].Name = %q, want %q", i, providers[i].Name, want)
 		}
 	}
 
-	if got := providers[5].AgentType; got != "claude-code/2.0.0" {
+	if got := providers[4].AgentType; got != "claude-code/2.0.0" {
 		t.Errorf("Kimi AgentType = %q, want %q", got, "claude-code/2.0.0")
 	}
 
@@ -458,22 +443,22 @@ func TestGetMaclawLLMProviders_BackfillsLegacyTimeoutIntoCurrentProvider(t *test
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		MaclawLLMUrl:             "https://example.com/v1",
 		MaclawLLMKey:             "sk-test",
 		MaclawLLMModel:           "glm-5.1",
 		MaclawLLMProtocol:        "anthropic",
 		MaclawLLMContextLength:   64000,
 		MaclawLLMTimeoutSec:      480,
-		MaclawLLMCurrentProvider: "免费",
+		MaclawLLMCurrentProvider: "OpenAI",
 	}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
 	data := app.GetMaclawLLMProviders()
-	if data.Current != "免费" {
-		t.Fatalf("Current = %q, want %q", data.Current, "免费")
+	if data.Current != "OpenAI" {
+		t.Fatalf("Current = %q, want %q", data.Current, "OpenAI")
 	}
 	if len(data.Providers) == 0 {
 		t.Fatal("expected providers")
@@ -487,14 +472,40 @@ func TestGetMaclawLLMProviders_BackfillsLegacyTimeoutIntoCurrentProvider(t *test
 	}
 }
 
+// TestGetMaclawLLMProviders_MigratesRemovedCurrentProvider verifies that when
+// the persisted current provider no longer exists in the default list (e.g.
+// "免费" was removed), GetMaclawLLMProviders falls back to the first provider.
+func TestGetMaclawLLMProviders_MigratesRemovedCurrentProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: "免费", // no longer in defaults
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	// Should fall back to first default provider, not stay on "免费"
+	if data.Current == "免费" {
+		t.Fatalf("Current should not be %q (removed provider)", data.Current)
+	}
+	if data.Current != "OpenAI" {
+		t.Fatalf("Current = %q, want %q (first default)", data.Current, "OpenAI")
+	}
+}
+
 func TestGetMaclawLLMProviders_BackfillsMissingTimeoutToDefault(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
-		MaclawLLMProviders: []MaclawLLMProvider{{
+	cfg := corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
 			Name:     "Custom1",
 			URL:      "https://example.com/v1",
 			Key:      "sk-test",
@@ -523,7 +534,7 @@ func TestSaveMaclawLLMProviders_SyncsLegacyTimeout(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	providers := []MaclawLLMProvider{{
+	providers := []corelib.MaclawLLMProvider{{
 		Name:       "Custom1",
 		URL:        "https://example.com/v1",
 		Key:        "sk-test",
@@ -557,8 +568,8 @@ func TestGetMaclawLLMConfig_ReturnsTimeout(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
-		MaclawLLMProviders: []MaclawLLMProvider{{
+	cfg := corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
 			Name:       "Custom1",
 			URL:        "https://example.com/v1",
 			Key:        "sk-test",
@@ -585,8 +596,8 @@ func TestNewIMMessageHandler_UsesConfiguredTimeout(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
-		MaclawLLMProviders: []MaclawLLMProvider{{
+	cfg := corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
 			Name:       "Custom1",
 			URL:        "https://example.com/v1",
 			Key:        "sk-test",
@@ -630,13 +641,13 @@ func TestMaclawAgentMaxIterations_NormalizesBounds(t *testing.T) {
 		in   int
 		want int
 	}{
-		{name: "negative becomes default", in: -1, want: maxAgentIterationsCap},
-		{name: "zero becomes default", in: 0, want: maxAgentIterationsCap},
-		{name: "below min clamps", in: 1, want: minAgentIterations},
-		{name: "just below min clamps", in: minAgentIterations - 1, want: minAgentIterations},
-		{name: "min stays", in: minAgentIterations, want: minAgentIterations},
+		{name: "negative becomes default", in: -1, want: config.MaxAgentIterationsCap},
+		{name: "zero becomes default", in: 0, want: config.MaxAgentIterationsCap},
+		{name: "below min clamps", in: 1, want: config.MinAgentIterations},
+		{name: "just below min clamps", in: config.MinAgentIterations - 1, want: config.MinAgentIterations},
+		{name: "min stays", in: config.MinAgentIterations, want: config.MinAgentIterations},
 		{name: "middle stays", in: 200, want: 200},
-		{name: "above max clamps", in: maxAgentIterationsCap + 1, want: maxAgentIterationsCap},
+		{name: "above max clamps", in: config.MaxAgentIterationsCap + 1, want: config.MaxAgentIterationsCap},
 	}
 
 	for _, tc := range tests {
@@ -661,17 +672,17 @@ func TestMaclawAgentMaxIterations_NormalizesBounds(t *testing.T) {
 // resolveProviders extracts the provider-selection logic from
 // GetMaclawLLMProviders: if saved is non-empty, return it as-is;
 // otherwise fall back to defaultMaclawLLMProviders().
-func resolveProviders(saved []MaclawLLMProvider) []MaclawLLMProvider {
+func resolveProviders(saved []corelib.MaclawLLMProvider) []corelib.MaclawLLMProvider {
 	if len(saved) == 0 {
 		return defaultMaclawLLMProviders()
 	}
 	return saved
 }
 
-// genMaclawLLMProvider returns a rapid generator for a random MaclawLLMProvider.
-func genMaclawLLMProvider() *rapid.Generator[MaclawLLMProvider] {
-	return rapid.Custom(func(t *rapid.T) MaclawLLMProvider {
-		return MaclawLLMProvider{
+// genMaclawLLMProvider returns a rapid generator for a random corelib.MaclawLLMProvider.
+func genMaclawLLMProvider() *rapid.Generator[corelib.MaclawLLMProvider] {
+	return rapid.Custom(func(t *rapid.T) corelib.MaclawLLMProvider {
+		return corelib.MaclawLLMProvider{
 			Name:           rapid.StringMatching(`[A-Za-z0-9_]{1,20}`).Draw(t, "name"),
 			URL:            rapid.StringMatching(`https?://[a-z0-9.]{1,30}`).Draw(t, "url"),
 			Key:            rapid.String().Draw(t, "key"),
@@ -698,7 +709,7 @@ func TestProperty_SavedProvidersNotOverwritten(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate a non-empty slice of random providers (1..10).
 		n := rapid.IntRange(1, 10).Draw(t, "count")
-		saved := make([]MaclawLLMProvider, n)
+		saved := make([]corelib.MaclawLLMProvider, n)
 		for i := range saved {
 			saved[i] = genMaclawLLMProvider().Draw(t, "provider")
 		}
@@ -755,7 +766,7 @@ func TestProperty_BrandIsolation_EnsureCodeGenTokenReturnsNil(t *testing.T) {
 		// Generate a random provider list to populate the App config.
 		// Even with SSO providers present, the brand guard should short-circuit.
 		nProviders := rapid.IntRange(0, 5).Draw(rt, "nProviders")
-		providers := make([]MaclawLLMProvider, nProviders)
+		providers := make([]corelib.MaclawLLMProvider, nProviders)
 		for i := range providers {
 			providers[i] = genMaclawLLMProvider().Draw(rt, "provider")
 			// Randomly make some providers look like CodeGen SSO providers.

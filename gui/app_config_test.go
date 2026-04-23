@@ -42,7 +42,7 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read config.json error = %v", err)
 	}
-	var cfg AppConfig
+	var cfg corelib.AppConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("Unmarshal config.json error = %v", err)
 	}
@@ -143,7 +143,7 @@ func TestLoadConfigCachesInMemoryUntilSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read config.json error = %v", err)
 	}
-	var diskCfg AppConfig
+	var diskCfg corelib.AppConfig
 	if err := json.Unmarshal(data, &diskCfg); err != nil {
 		t.Fatalf("Unmarshal config.json error = %v", err)
 	}
@@ -289,7 +289,7 @@ func TestSaveConfigConcurrentWritesValidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read config.json error = %v", err)
 	}
-	var diskCfg AppConfig
+	var diskCfg corelib.AppConfig
 	if err := json.Unmarshal(data, &diskCfg); err != nil {
 		t.Fatalf("Unmarshal config.json error = %v", err)
 	}

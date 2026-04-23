@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 // TestCapabilityGapDetector_NilCallback_RejectsCriticalRisk verifies that when
@@ -126,24 +128,24 @@ func TestSetCapabilityGapDetector_CallbackReturnsFalseWithoutPlatform(t *testing
 
 // TestCapabilityGapDetector_AuditFormat_ConsistentWithOtherPaths verifies that
 // the audit log format for user-confirmed critical installs in the
-// CapabilityGapDetector uses the same PolicyUserOverride constant and similar
+// CapabilityGapDetector uses the same security.PolicyUserOverride constant and similar
 // Result format as toolInstallSkillHub and registerAndExecuteSkill.
 func TestCapabilityGapDetector_AuditFormat_ConsistentWithOtherPaths(t *testing.T) {
 	t.Parallel()
 
 	// The three paths all use the same pattern for user-confirmed critical installs:
-	// PolicyAction: PolicyUserOverride
+	// PolicyAction: security.PolicyUserOverride
 	// Result: "user confirmed critical skill {name} from {source}, risk=critical, ..."
 	//
 	// Verify the constant value is consistent.
-	if PolicyUserOverride == "" {
-		t.Fatal("PolicyUserOverride should not be empty")
+	if security.PolicyUserOverride == "" {
+		t.Fatal("security.PolicyUserOverride should not be empty")
 	}
-	if PolicyUserOverride == PolicyAllow {
-		t.Fatal("PolicyUserOverride should be distinct from PolicyAllow")
+	if security.PolicyUserOverride == security.PolicyAllow {
+		t.Fatal("security.PolicyUserOverride should be distinct from security.PolicyAllow")
 	}
-	if PolicyUserOverride == PolicyDeny {
-		t.Fatal("PolicyUserOverride should be distinct from PolicyDeny")
+	if security.PolicyUserOverride == security.PolicyDeny {
+		t.Fatal("security.PolicyUserOverride should be distinct from security.PolicyDeny")
 	}
 
 	// Verify the audit result format includes required fields.

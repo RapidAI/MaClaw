@@ -582,33 +582,6 @@ export function IsHubSecurityReadOnly():Promise<boolean>;
 export function UploadNLSkillToMarket(arg1:string):Promise<string>;
 
 
-// Free proxy bindings
-export function StartFreeProxy():Promise<string>;
-
-export function StopFreeProxy():Promise<string>;
-
-export function IsFreeProxyRunning():Promise<boolean>;
-
-export function DetectChrome():Promise<string>;
-
-export function LaunchChromeDebug():Promise<string>;
-
-export function IsDangbeiLoggedIn():Promise<boolean>;
-
-export function DetectBrowser():Promise<Record<string, string>>;
-
-export function DangbeiLogin():Promise<void>;
-
-export function DangbeiFinishLogin():Promise<string>;
-
-export function DangbeiEnsureAuth():Promise<string>;
-
-export function GetFreeProxyModels():Promise<Array<Record<string, string>>>;
-
-export function GetFreeProxyModel():Promise<string>;
-
-export function SetFreeProxyModel(arg1:string):Promise<void>;
-
 export function GetVectorSearchEnabled():Promise<boolean>;
 
 export function SetVectorSearchEnabled(arg1:boolean):Promise<void>;

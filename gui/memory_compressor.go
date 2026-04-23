@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,20 +25,18 @@ type MemoryBackupInfo struct {
 	EntryCount int    `json:"entry_count"`
 }
 
-// CompressResult — see corelib_aliases.go
-
 // MemoryCompressorStatus is returned by the status query binding.
 type MemoryCompressorStatus struct {
 	Running    bool            `json:"running"`
 	LastRun    string          `json:"last_run,omitempty"`
-	LastResult *CompressResult `json:"last_result,omitempty"`
+	LastResult *memory.CompressResult `json:"last_result,omitempty"`
 	LastError  string          `json:"last_error,omitempty"`
 }
 
 // MemoryCompressor compresses long memory entries via LLM and manages backups.
 type MemoryCompressor struct {
-	store     *MemoryStore
-	llmConfig MaclawLLMConfig
+	store     *memory.Store
+	llmConfig corelib.MaclawLLMConfig
 	client    *http.Client
 	// minContentLen is the minimum content length (in runes) to consider for compression.
 	minContentLen int
@@ -50,12 +49,12 @@ type MemoryCompressor struct {
 	running    bool
 	cancelFn   context.CancelFunc
 	lastRun    time.Time
-	lastResult *CompressResult
+	lastResult *memory.CompressResult
 	lastError  string
 }
 
 // NewMemoryCompressor creates a MemoryCompressor.
-func NewMemoryCompressor(store *MemoryStore, cfg MaclawLLMConfig, app *App) *MemoryCompressor {
+func NewMemoryCompressor(store *memory.Store, cfg corelib.MaclawLLMConfig, app *App) *MemoryCompressor {
 	return &MemoryCompressor{
 		store:         store,
 		llmConfig:     cfg,
@@ -71,7 +70,7 @@ func NewMemoryCompressor(store *MemoryStore, cfg MaclawLLMConfig, app *App) *Mem
 
 // Compress performs dedup then LLM compression on long entries.
 // A backup is created before any modification.
-func (mc *MemoryCompressor) Compress(ctx context.Context) (*CompressResult, error) {
+func (mc *MemoryCompressor) Compress(ctx context.Context) (*memory.CompressResult, error) {
 	if mc.store == nil {
 		return nil, fmt.Errorf("memory store is nil")
 	}
@@ -82,7 +81,7 @@ func (mc *MemoryCompressor) Compress(ctx context.Context) (*CompressResult, erro
 		return nil, fmt.Errorf("failed to create backup: %w", err)
 	}
 
-	result := &CompressResult{
+	result := &memory.CompressResult{
 		BackupName:   backupName,
 		TotalEntries: mc.entryCount(),
 	}
@@ -101,7 +100,7 @@ func (mc *MemoryCompressor) Compress(ctx context.Context) (*CompressResult, erro
 	// 4. LLM compression — only if configured.
 	if mc.isConfigured() {
 		mc.store.RLock()
-		var candidates []MemoryEntry
+		var candidates []memory.Entry
 		for _, e := range mc.store.Entries() {
 			if e.Pinned {
 				continue
@@ -160,7 +159,7 @@ func (mc *MemoryCompressor) backfillCompactForms(ctx context.Context) {
 	type pending struct {
 		id      string
 		content string
-		cat     MemoryCategory
+		cat     memory.Category
 	}
 	var todo []pending
 	for _, e := range mc.store.Entries() {
@@ -216,7 +215,7 @@ done:
 
 // compactOneEntry asks the LLM to produce a minimal representation of a memory
 // entry for context injection.
-func (mc *MemoryCompressor) compactOneEntry(ctx context.Context, content string, cat MemoryCategory) (string, error) {
+func (mc *MemoryCompressor) compactOneEntry(ctx context.Context, content string, cat memory.Category) (string, error) {
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -301,7 +300,7 @@ func (mc *MemoryCompressor) dedup() int {
 		return 0
 	}
 
-	kept := make([]MemoryEntry, 0, n-len(remove))
+	kept := make([]memory.Entry, 0, n-len(remove))
 	for i, e := range entries {
 		if !remove[i] {
 			kept = append(kept, e)
@@ -319,14 +318,14 @@ func (mc *MemoryCompressor) dedup() int {
 const minSubstringLen = 20
 
 // isDuplicate checks if two entries are duplicates.
-func (mc *MemoryCompressor) isDuplicate(a, b MemoryEntry) bool {
+func (mc *MemoryCompressor) isDuplicate(a, b memory.Entry) bool {
 	ca := strings.TrimSpace(strings.ToLower(a.Content))
 	cb := strings.TrimSpace(strings.ToLower(b.Content))
 	return mc.isDuplicateLower(a, b, ca, cb)
 }
 
 // isDuplicateLower is the inner dedup check using pre-computed lowercase content.
-func (mc *MemoryCompressor) isDuplicateLower(a, b MemoryEntry, ca, cb string) bool {
+func (mc *MemoryCompressor) isDuplicateLower(a, b memory.Entry, ca, cb string) bool {
 	// Exact match.
 	if ca == cb {
 		return true
@@ -398,7 +397,7 @@ func (mc *MemoryCompressor) mergeSemanticDuplicates(ctx context.Context) (int, e
 
 	// Collect categories present in the store.
 	mc.store.RLock()
-	catSet := make(map[MemoryCategory]bool)
+	catSet := make(map[memory.Category]bool)
 	for _, e := range mc.store.Entries() {
 		catSet[e.Category] = true
 	}
@@ -408,7 +407,7 @@ func (mc *MemoryCompressor) mergeSemanticDuplicates(ctx context.Context) (int, e
 		// Re-snapshot entries for this category each iteration so we see
 		// the latest state after previous batches may have mutated the store.
 		mc.store.RLock()
-		var entries []MemoryEntry
+		var entries []memory.Entry
 		for _, e := range mc.store.Entries() {
 			if e.Category == cat && !e.Pinned {
 				entries = append(entries, e)
@@ -455,7 +454,7 @@ type mergeInstruction struct {
 // groups of semantically equivalent entries. For each group the LLM returns
 // a merged (shortest) version; we keep the entry with the highest AccessCount
 // and delete the rest.
-func (mc *MemoryCompressor) mergeBatch(ctx context.Context, batch []MemoryEntry) (int, error) {
+func (mc *MemoryCompressor) mergeBatch(ctx context.Context, batch []memory.Entry) (int, error) {
 	// Check context before making the LLM call.
 	select {
 	case <-ctx.Done():
@@ -583,7 +582,7 @@ Rules:
 	removed := 0
 	if len(removeIDs) > 0 {
 		mc.store.Lock()
-		kept := make([]MemoryEntry, 0, len(mc.store.Entries()))
+		kept := make([]memory.Entry, 0, len(mc.store.Entries()))
 		for _, e := range mc.store.Entries() {
 			if removeIDs[e.ID] {
 				removed++
@@ -695,7 +694,7 @@ func (mc *MemoryCompressor) runOnce(ctx context.Context) {
 // LLM compression helpers
 // ---------------------------------------------------------------------------
 
-func (mc *MemoryCompressor) compressEntry(ctx context.Context, entry MemoryEntry) (string, error) {
+func (mc *MemoryCompressor) compressEntry(ctx context.Context, entry memory.Entry) (string, error) {
 	// Snapshot LLM config under lock to avoid data race with loop().
 	mc.mu.Lock()
 	llmCfg := mc.llmConfig
@@ -843,7 +842,7 @@ func (mc *MemoryCompressor) RestoreBackup(backupName string) error {
 	if err != nil {
 		return fmt.Errorf("read backup: %w", err)
 	}
-	var entries []MemoryEntry
+	var entries []memory.Entry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return fmt.Errorf("parse backup: %w", err)
 	}
@@ -874,7 +873,7 @@ func (mc *MemoryCompressor) countEntriesInFile(path string) int {
 	if err != nil {
 		return -1
 	}
-	var entries []MemoryEntry
+	var entries []memory.Entry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return -1
 	}

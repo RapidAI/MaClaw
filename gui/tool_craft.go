@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"bytes"
 	"context"
 	"fmt"
@@ -85,7 +86,7 @@ func craftedToolsDir() string {
 // toolCraftTool is the implementation of the "craft_tool" tool.
 // It uses the LLM to generate a script that solves the described task,
 // executes it, and optionally registers it as a reusable Skill.
-func (h *IMMessageHandler) toolCraftTool(args map[string]interface{}, onProgress ProgressCallback) string {
+func (h *IMMessageHandler) toolCraftTool(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 	output, _ := executeCraftToolCore(h.app, h.client, args, onProgress)
 	return output
 }
@@ -202,7 +203,7 @@ func parseCraftInt(raw string) (int, error) {
 	return value, nil
 }
 
-func executeCraftToolCore(app *App, client *http.Client, args map[string]interface{}, onProgress ProgressCallback) (string, error) {
+func executeCraftToolCore(app *App, client *http.Client, args map[string]interface{}, onProgress tool.ProgressCallback) (string, error) {
 	normalizedArgs, err := normalizeCraftToolArgs(args)
 	if err != nil {
 		return "", err
@@ -447,7 +448,7 @@ func firstAvailableLookPath(names ...string) string {
 	return ""
 }
 
-func generateScript(cfg MaclawLLMConfig, request craftToolRequest, runtimes craftRuntimeAvailability, previous craftAttemptResult, client *http.Client) (string, error) {
+func generateScript(cfg corelib.MaclawLLMConfig, request craftToolRequest, runtimes craftRuntimeAvailability, previous craftAttemptResult, client *http.Client) (string, error) {
 	sysPrompt := buildCraftSystemPrompt(request, runtimes, previous)
 	userPrompt := buildCraftUserPrompt(request, previous)
 	messages := []interface{}{
@@ -878,11 +879,11 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 		skillName = generateSkillName(task)
 	}
 	runCmd := buildRunCommand(scriptPath, language)
-	entry := NLSkillEntry{
+	entry := corelib.NLSkillEntry{
 		Name:        skillName,
 		Description: task,
 		Triggers:    extractTriggerKeywords(task),
-		Steps: []NLSkillStep{{
+		Steps: []corelib.NLSkillStep{{
 			Action: "bash",
 			Params: map[string]interface{}{
 				"command": runCmd,

@@ -45,7 +45,7 @@ type UserMessage struct {
 
 // MessageAttachment represents an image or file attached to a message.
 type MessageAttachment struct {
-	Type     string `json:"type"`               // "image", "file", "audio", "video"
+	Type     string `json:"type"`                // "image", "file", "audio", "video"
 	FileName string `json:"file_name,omitempty"` // original filename
 	MimeType string `json:"mime_type,omitempty"` // e.g. "image/png"
 	Data     string `json:"data,omitempty"`      // Base64-encoded content

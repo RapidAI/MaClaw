@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
 )
 
 func TestDetectScriptLanguage(t *testing.T) {

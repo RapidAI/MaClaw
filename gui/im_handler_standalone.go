@@ -7,6 +7,8 @@ package main
 // See docs/agent-unification-design.md Phase 1.
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"net"
 	"net/http"
 	"time"
@@ -48,7 +50,7 @@ type StandaloneConfig struct {
 
 	// LLMConfigFunc returns the current LLM configuration.
 	// Required — without this the agent cannot make LLM calls.
-	LLMConfigFunc func() MaclawLLMConfig
+	LLMConfigFunc func() corelib.MaclawLLMConfig
 
 	// MaxIterationsFunc returns the max agent loop iterations.
 	// Defaults to 30 if nil.
@@ -101,11 +103,11 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 	chatClient := &http.Client{Transport: chatTransport}
 
 	// Conversation memory: persistent if path provided, in-memory otherwise.
-	var mem *conversationMemory
+	var mem *agent.ConversationMemory
 	if cfg.ConversationStorePath != "" {
-		mem = newPersistentConversationMemory(cfg.ConversationStorePath)
+		mem = agent.NewPersistentConversationMemory(cfg.ConversationStorePath)
 	} else {
-		mem = newConversationMemory()
+		mem = agent.NewConversationMemory()
 	}
 
 	// Confirmation store: persistent if path provided, in-memory otherwise.
@@ -155,7 +157,7 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 	h.toolBuilder = NewDynamicToolBuilder(h.registry)
 
 	// Initialize topic switch detector.
-	h.topicDetector = newTopicSwitchDetector(func() (*http.Client, MaclawLLMConfig) {
+	h.topicDetector = newTopicSwitchDetector(func() (*http.Client, corelib.MaclawLLMConfig) {
 		return h.client, h.getMaclawLLMConfig()
 	})
 

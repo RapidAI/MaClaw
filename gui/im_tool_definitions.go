@@ -4,6 +4,9 @@ package main
 
 import (
 	"fmt"
+
+	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
@@ -85,9 +88,9 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"tool_name": map[string]string{"type": "string", "description": "工具名称"},
 				"arguments": map[string]string{"type": "object", "description": "工具参数（JSON 对象）"},
 			}, []string{"server_id", "tool_name"}),
-		toolDef("manage_skill", "Skill 管理（action: list/search/install/run/status/upload/validate/patch/history）。list 列出本地已注册 Skill（无 Skill 时展示 Hub 推荐）；search 在 SkillHub 搜索可用 Skill；install 从 Hub 安装 Skill 到本地；run 执行指定 Skill；status 查询运行状态（run 返回 run_id 后继续观察进度）；upload 上传本地 Skill 到 SkillMarket；validate 检查 Skill 的跨平台可移植性并可选自动修复；patch 对 Skill 定义文件执行精准 find-and-replace 修补（如果你使用了某个 Skill 并遇到了它未覆盖的问题，请立即用 patch 修补它）；history 查看 Skill 的修补历史记录。",
+		toolDef("manage_skill", skill.ManageSkillDescription()+" patch 时如果你使用了某个 Skill 并遇到了它未覆盖的问题，请立即用 patch 修补它。",
 			map[string]interface{}{
-				"action":       map[string]string{"type": "string", "description": "操作: list/search/install/run/status/upload/validate/patch/history"},
+				"action":       map[string]string{"type": "string", "description": "操作: " + skill.ManageSkillActionSlash()},
 				"query":        map[string]string{"type": "string", "description": "搜索关键词（search 时必填，如 'git commit'、'代码审查'、'部署'）"},
 				"skill_id":     map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
 				"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（install 时必填，从 search 结果中获取）"},
@@ -253,9 +256,9 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"json_data": map[string]string{"type": "string", "description": "配置 JSON 字符串（import 时必填）"},
 			}, []string{"action"}),
 		// --- Agent 自管理工具 ---
-		toolDef("set_max_iterations", fmt.Sprintf("调整当前任务的最大推理轮数。仅影响当前推理循环，不会修改设置页中的持久化配置。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。范围 %d-%d。", minAgentIterations, maxAgentIterationsCap),
+		toolDef("set_max_iterations", fmt.Sprintf("调整当前任务的最大推理轮数。仅影响当前推理循环，不会修改设置页中的持久化配置。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。范围 %d-%d。", config.MinAgentIterations, config.MaxAgentIterationsCap),
 			map[string]interface{}{
-				"max_iterations": map[string]string{"type": "integer", "description": fmt.Sprintf("新的最大轮数（%d-%d）", minAgentIterations, maxAgentIterationsCap)},
+				"max_iterations": map[string]string{"type": "integer", "description": fmt.Sprintf("新的最大轮数（%d-%d）", config.MinAgentIterations, config.MaxAgentIterationsCap)},
 				"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},
 			}, []string{"max_iterations"}),
 		// --- 合并工具：定时任务 (create/list/delete/update) ---

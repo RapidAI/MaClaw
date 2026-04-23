@@ -78,7 +78,6 @@ type AppConfig struct {
 	WebSearchProviders       []WebSearchProvider `json:"web_search_providers,omitempty"`
 	WebSearchCurrentProvider string              `json:"web_search_current_provider,omitempty"`
 	MaclawAgentMaxIterations int                 `json:"maclaw_agent_max_iterations,omitempty"`
-	FreeProxyModel           string              `json:"free_proxy_model,omitempty"` // selected model for 閻熸粎澧楅幑浣虹矆?free proxy
 	// MaClaw Role configuration
 	MaclawRoleName        string `json:"maclaw_role_name,omitempty"`
 	MaclawRoleDescription string `json:"maclaw_role_description,omitempty"`
@@ -317,4 +316,21 @@ func (c *AppConfig) IsLansengerLocalMode() bool {
 // SetLansengerLocal sets the LansengerLocalMode pointer field.
 func (c *AppConfig) SetLansengerLocal(v bool) {
 	c.LansengerLocalMode = &v
+}
+
+// SkillHubBaseURL returns the base URL for SkillHub APIs (/api/v1/skills/*).
+// SkillHub is hosted on the HubCenter server, NOT on the user's private Hub.
+// All Skill search, download, install, rate, and update operations use this URL.
+func (c *AppConfig) SkillHubBaseURL(defaultHubCenterURL string) string {
+	u := strings.TrimSpace(c.RemoteHubCenterURL)
+	if u == "" {
+		u = defaultHubCenterURL
+	}
+	return strings.TrimRight(u, "/")
+}
+
+// SkillMarketBaseURL returns the base URL for SkillMarket APIs (/api/v1/skillmarket/*).
+// SkillMarket is hosted on the same HubCenter server as SkillHub.
+func (c *AppConfig) SkillMarketBaseURL(defaultHubCenterURL string) string {
+	return c.SkillHubBaseURL(defaultHubCenterURL)
 }

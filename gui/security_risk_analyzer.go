@@ -1,14 +1,13 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"encoding/json"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 )
-
-// RiskPattern — see corelib_aliases.go
 
 // SecurityCallContext provides context for risk assessment in the firewall.
 type SecurityCallContext struct {
@@ -21,8 +20,8 @@ type SecurityCallContext struct {
 // It complements the existing RiskAssessor with pattern-matching rules.
 type SecurityRiskAnalyzer struct {
 	mu              sync.RWMutex
-	builtinPatterns []RiskPattern
-	customPatterns  []RiskPattern
+	builtinPatterns []security.RiskPattern
+	customPatterns  []security.RiskPattern
 	compiledTool    map[string]*regexp.Regexp
 	compiledParam   map[string]*regexp.Regexp
 }
@@ -40,7 +39,7 @@ func NewSecurityRiskAnalyzer() *SecurityRiskAnalyzer {
 	return ra
 }
 
-func (a *SecurityRiskAnalyzer) compilePattern(p RiskPattern) {
+func (a *SecurityRiskAnalyzer) compilePattern(p security.RiskPattern) {
 	if p.ToolMatch != "" {
 		if _, ok := a.compiledTool[p.ToolMatch]; !ok {
 			if re, err := regexp.Compile(p.ToolMatch); err == nil {
@@ -58,21 +57,21 @@ func (a *SecurityRiskAnalyzer) compilePattern(p RiskPattern) {
 }
 
 // Assess evaluates the risk of a tool call using pattern matching.
-func (a *SecurityRiskAnalyzer) Assess(toolName string, args map[string]interface{}, ctx *SecurityCallContext) RiskAssessment {
+func (a *SecurityRiskAnalyzer) Assess(toolName string, args map[string]interface{}, ctx *SecurityCallContext) security.RiskAssessment {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	result := RiskAssessment{Level: RiskLow}
+	result := security.RiskAssessment{Level: security.RiskLow}
 	var matchedPatterns []string
 
 	// Build a combined slice without mutating the originals.
-	allPatterns := make([]RiskPattern, 0, len(a.builtinPatterns)+len(a.customPatterns))
+	allPatterns := make([]security.RiskPattern, 0, len(a.builtinPatterns)+len(a.customPatterns))
 	allPatterns = append(allPatterns, a.builtinPatterns...)
 	allPatterns = append(allPatterns, a.customPatterns...)
 	for _, p := range allPatterns {
 		if a.matchPattern(p, toolName, args) {
 			matchedPatterns = append(matchedPatterns, p.Name)
-			if riskLevelOrder[p.Level] > riskLevelOrder[result.Level] {
+			if security.RiskLevelOrder[p.Level] > security.RiskLevelOrder[result.Level] {
 				result.Level = p.Level
 				result.Reason = p.Description
 			}
@@ -103,13 +102,13 @@ func (a *SecurityRiskAnalyzer) Assess(toolName string, args map[string]interface
 		}
 	}
 
-	if result.Level == RiskCritical || result.Level == RiskHigh {
+	if result.Level == security.RiskCritical || result.Level == security.RiskHigh {
 		result.Factors = append(result.Factors, "建议在执行前确认操作范围")
 	}
 	return result
 }
 
-func (a *SecurityRiskAnalyzer) matchPattern(p RiskPattern, toolName string, args map[string]interface{}) bool {
+func (a *SecurityRiskAnalyzer) matchPattern(p security.RiskPattern, toolName string, args map[string]interface{}) bool {
 	if p.ToolMatch != "" {
 		re := a.compiledTool[p.ToolMatch]
 		if re == nil || !re.MatchString(toolName) {
@@ -143,21 +142,21 @@ func securityUserExplicitlyRequested(msg string) bool {
 	return false
 }
 
-func reduceRiskLevel(level RiskLevel) RiskLevel {
+func reduceRiskLevel(level security.RiskLevel) security.RiskLevel {
 	switch level {
-	case RiskCritical:
-		return RiskHigh
-	case RiskHigh:
-		return RiskMedium
-	case RiskMedium:
-		return RiskLow
+	case security.RiskCritical:
+		return security.RiskHigh
+	case security.RiskHigh:
+		return security.RiskMedium
+	case security.RiskMedium:
+		return security.RiskLow
 	default:
-		return RiskLow
+		return security.RiskLow
 	}
 }
 
 // AddCustomPattern adds a user-defined risk pattern.
-func (a *SecurityRiskAnalyzer) AddCustomPattern(pattern RiskPattern) {
+func (a *SecurityRiskAnalyzer) AddCustomPattern(pattern security.RiskPattern) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.compilePattern(pattern)
@@ -170,7 +169,7 @@ func (a *SecurityRiskAnalyzer) LoadCustomPatterns(path string) error {
 	if err != nil {
 		return err
 	}
-	var patterns []RiskPattern
+	var patterns []security.RiskPattern
 	if err := json.Unmarshal(data, &patterns); err != nil {
 		return err
 	}
@@ -184,57 +183,57 @@ func (a *SecurityRiskAnalyzer) LoadCustomPatterns(path string) error {
 }
 
 // defaultSecurityRiskPatterns defines the built-in risk detection rules.
-var defaultSecurityRiskPatterns = []RiskPattern{
+var defaultSecurityRiskPatterns = []security.RiskPattern{
 	// File deletion
 	{Name: "recursive_delete", Category: "file_delete", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `rm\s+-rf|rmdir\s+/s|del\s+/[fq]`, Level: RiskCritical,
+		ParamKey: "command", ParamMatch: `rm\s+-rf|rmdir\s+/s|del\s+/[fq]`, Level: security.RiskCritical,
 		Description: "递归删除文件或目录"},
 	{Name: "shutil_rmtree", Category: "file_delete", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `shutil\.rmtree|os\.removedirs`, Level: RiskCritical,
+		ParamKey: "command", ParamMatch: `shutil\.rmtree|os\.removedirs`, Level: security.RiskCritical,
 		Description: "Python 递归删除"},
 	// Network exfiltration
 	{Name: "data_exfil_curl", Category: "network", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `curl\s+.*-X\s+POST|curl\s+.*--data|curl\s+.*-d\s`, Level: RiskHigh,
+		ParamKey: "command", ParamMatch: `curl\s+.*-X\s+POST|curl\s+.*--data|curl\s+.*-d\s`, Level: security.RiskHigh,
 		Description: "通过 curl POST 发送数据"},
 	{Name: "data_exfil_wget", Category: "network", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `wget\s+--post`, Level: RiskHigh,
+		ParamKey: "command", ParamMatch: `wget\s+--post`, Level: security.RiskHigh,
 		Description: "通过 wget POST 发送数据"},
 	{Name: "netcat", Category: "network", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `\bnc\s+-|ncat\s+`, Level: RiskHigh,
+		ParamKey: "command", ParamMatch: `\bnc\s+-|ncat\s+`, Level: security.RiskHigh,
 		Description: "使用 netcat 进行网络通信"},
 	// Permission changes
 	{Name: "chmod_777", Category: "permission", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `chmod\s+777`, Level: RiskHigh,
+		ParamKey: "command", ParamMatch: `chmod\s+777`, Level: security.RiskHigh,
 		Description: "设置文件权限为 777"},
 	{Name: "chown", Category: "permission", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `chown\s+`, Level: RiskMedium,
+		ParamKey: "command", ParamMatch: `chown\s+`, Level: security.RiskMedium,
 		Description: "修改文件所有者"},
 	// System commands
 	{Name: "shutdown", Category: "system", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `\bshutdown\b|\breboot\b`, Level: RiskCritical,
+		ParamKey: "command", ParamMatch: `\bshutdown\b|\breboot\b`, Level: security.RiskCritical,
 		Description: "关机或重启系统"},
 	{Name: "systemctl_stop", Category: "system", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `systemctl\s+stop|service\s+\w+\s+stop`, Level: RiskHigh,
+		ParamKey: "command", ParamMatch: `systemctl\s+stop|service\s+\w+\s+stop`, Level: security.RiskHigh,
 		Description: "停止系统服务"},
 	{Name: "kill_9", Category: "system", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `kill\s+-9`, Level: RiskMedium,
+		ParamKey: "command", ParamMatch: `kill\s+-9`, Level: security.RiskMedium,
 		Description: "强制终止进程"},
 	// Environment variables
 	{Name: "env_secret", Category: "system", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `(?i)export\s+\w*(KEY|SECRET|TOKEN|PASSWORD)\w*=`, Level: RiskMedium,
+		ParamKey: "command", ParamMatch: `(?i)export\s+\w*(KEY|SECRET|TOKEN|PASSWORD)\w*=`, Level: security.RiskMedium,
 		Description: "修改敏感环境变量"},
 	// Package management
 	{Name: "pip_install_global", Category: "package", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `pip\s+install\s+\w`, Level: RiskMedium,
+		ParamKey: "command", ParamMatch: `pip\s+install\s+\w`, Level: security.RiskMedium,
 		Description: "全局 pip install（非 requirements.txt）"},
 	{Name: "npm_install_global", Category: "package", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `npm\s+install\s+-g`, Level: RiskMedium,
+		ParamKey: "command", ParamMatch: `npm\s+install\s+-g`, Level: security.RiskMedium,
 		Description: "全局 npm install"},
 	// Database
 	{Name: "drop_table", Category: "database", ToolMatch: ".*",
-		ParamKey: "command", ParamMatch: `(?i)DROP\s+TABLE|DROP\s+DATABASE`, Level: RiskCritical,
+		ParamKey: "command", ParamMatch: `(?i)DROP\s+TABLE|DROP\s+DATABASE`, Level: security.RiskCritical,
 		Description: "删除数据库表"},
 	{Name: "delete_no_where", Category: "database", ToolMatch: ".*",
-		ParamKey: "command", ParamMatch: `(?i)DELETE\s+FROM\s+\w+\s*$|TRUNCATE\s+`, Level: RiskHigh,
+		ParamKey: "command", ParamMatch: `(?i)DELETE\s+FROM\s+\w+\s*$|TRUNCATE\s+`, Level: security.RiskHigh,
 		Description: "无条件删除或截断数据"},
 }

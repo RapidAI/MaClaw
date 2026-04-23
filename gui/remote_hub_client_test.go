@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {
@@ -59,7 +60,7 @@ func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubURL:       server.URL,
 		RemoteMachineID:    "machine-1",
 		RemoteMachineToken: "token-1",
@@ -174,7 +175,7 @@ func TestRemoteHubClientConnectAndSyncToolsWithMissingConfigSelector(t *testing.
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubURL:       server.URL,
 		RemoteMachineID:    "machine-tools-1",
 		RemoteMachineToken: "token-tools-1",
@@ -252,7 +253,7 @@ func TestRemoteHubClientReadLoopStoresHubError(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubURL:       server.URL,
 		RemoteMachineID:    "machine-2",
 		RemoteMachineToken: "token-2",
@@ -319,7 +320,7 @@ func TestRemoteHubClientHandlesSessionInput(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-3", RemoteMachineToken: "token-3"}
+	cfg := corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-3", RemoteMachineToken: "token-3"}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -380,7 +381,7 @@ func TestRemoteHubClientHandlesInterruptAndKill(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-4", RemoteMachineToken: "token-4"}
+	cfg := corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-4", RemoteMachineToken: "token-4"}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -474,7 +475,7 @@ func TestRemoteHubClientReconnectsAndResyncsSessions(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubURL:       server.URL,
 		RemoteMachineID:    "machine-reconnect",
 		RemoteMachineToken: "token-reconnect",

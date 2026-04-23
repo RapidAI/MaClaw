@@ -196,7 +196,7 @@ type Adapter struct {
 	deviceNotifier       *DeviceNotifier       // optional; nil = no device notifications
 	outboundInterceptor  *OutboundInterceptor  // optional; nil = no outbound interception
 	contentAuditor       *ContentAuditor       // optional; nil = no content audit
-	workflowEngine       *WorkflowEngine       // optional; nil = no /workflow command
+	// workflowEngine removed — /workflow commands are forwarded to device.
 	identity             IdentityResolver
 	limiter              *rateLimiter
 	taskDispatcher       *IMTaskDispatcher     // optional; nil = synchronous processing (legacy)
@@ -240,23 +240,6 @@ func (a *Adapter) SetOutboundInterceptor(interceptor *OutboundInterceptor) {
 // SetContentAuditor wires the content auditor for outbound content compliance checks.
 func (a *Adapter) SetContentAuditor(ca *ContentAuditor) {
 	a.contentAuditor = ca
-}
-
-// SetWorkflowEngine wires the workflow engine into the adapter for /workflow command support.
-func (a *Adapter) SetWorkflowEngine(we *WorkflowEngine) {
-	a.workflowEngine = we
-}
-
-// getWorkflowEngine returns the workflow engine, checking both the adapter's
-// direct reference and the coordinator's reference.
-func (a *Adapter) getWorkflowEngine() *WorkflowEngine {
-	if a.workflowEngine != nil {
-		return a.workflowEngine
-	}
-	if a.coordinator != nil {
-		return a.coordinator.WorkflowEngine()
-	}
-	return nil
 }
 
 // InitTaskDispatcher creates and wires the background task dispatcher.
@@ -771,116 +754,25 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		return
 	}
 
-	// 3f3. Handle /workflow command — workflow status, cancel, skip.
+	// 3f3. Handle /workflow command — forward to device for processing.
+	// The device-side IMMessageHandler manages the workflow engine (19 templates,
+	// phase management, quality gates). Hub no longer maintains its own workflow state.
 	if text == "/workflow" || strings.HasPrefix(text, "/workflow ") {
-		we := a.getWorkflowEngine()
-		if we == nil {
+		// Forward as a regular message — the device's handleIMMessageWithLoop
+		// will process it via its workflow engine.
+		a.messageRouter.StashAttachments(unifiedID, msg.Attachments)
+		resp, err := a.messageRouter.RouteToAgent(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text)
+		if err != nil {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
-				StatusCode: 200,
-				StatusIcon: "ℹ️",
-				Title:      "工作流",
-				Body:       "工作流引擎未启用。",
+				StatusCode: 500,
+				StatusIcon: "❌",
+				Title:      "路由失败",
+				Body:       fmt.Sprintf("无法将命令路由到设备: %v", err),
 			})
 			return
 		}
-		subCmd := ""
-		if len(text) > 9 {
-			subCmd = strings.TrimSpace(text[10:])
-		}
-		switch subCmd {
-		case "cancel":
-			state := we.GetActiveWorkflow(unifiedID)
-			if state == nil {
-				a.sendResponse(ctx, plugin, target, &GenericResponse{
-					StatusCode: 200,
-					StatusIcon: "ℹ️",
-					Title:      "无活跃工作流",
-					Body:       "当前没有活跃的工作流。",
-				})
-				return
-			}
-			we.CancelWorkflow(unifiedID)
-			a.sendResponse(ctx, plugin, target, &GenericResponse{
-				StatusCode: 200,
-				StatusIcon: "🚫",
-				Title:      "工作流已取消",
-				Body:       fmt.Sprintf("已取消 %s 工作流，返回大厅。", state.Type),
-			})
-			return
-		case "skip":
-			state := we.GetActiveWorkflow(unifiedID)
-			if state == nil {
-				a.sendResponse(ctx, plugin, target, &GenericResponse{
-					StatusCode: 200,
-					StatusIcon: "ℹ️",
-					Title:      "无活跃工作流",
-					Body:       "当前没有活跃的工作流。",
-				})
-				return
-			}
-			resp, err := we.HandleWorkflowInput(context.Background(), unifiedID, "跳过")
-			if err != nil {
-				a.sendResponse(ctx, plugin, target, &GenericResponse{
-					StatusCode: 500,
-					StatusIcon: "❌",
-					Title:      "跳过失败",
-					Body:       err.Error(),
-				})
-				return
-			}
-			a.sendResponse(ctx, plugin, target, resp)
-			return
-		default:
-			// /workflow (no args) — show status
-			state := we.GetActiveWorkflow(unifiedID)
-			if state == nil {
-				// Also check for active understanding session
-				if we.understandingMgr != nil {
-					session := we.understandingMgr.GetActiveSession(unifiedID)
-					if session != nil {
-						a.sendResponse(ctx, plugin, target, &GenericResponse{
-							StatusCode: 200,
-							StatusIcon: "🤔",
-							Title:      "意图理解中",
-							Body:       fmt.Sprintf("正在进行意图理解会话（%d 轮对话）。\n\n确定了就告诉我'开工'，或发送 /workflow cancel 取消。", len(session.Rounds)),
-						})
-						return
-					}
-				}
-				a.sendResponse(ctx, plugin, target, &GenericResponse{
-					StatusCode: 200,
-					StatusIcon: "ℹ️",
-					Title:      "无活跃工作流",
-					Body:       "当前没有活跃的工作流或意图理解会话。",
-				})
-				return
-			}
-			// Show workflow progress
-			tmpl := we.registry.Match(state.TemplateRef)
-			var body strings.Builder
-			fmt.Fprintf(&body, "📋 %s 工作流\n\n", state.Type)
-			if tmpl != nil {
-				for i, phase := range tmpl.Phases {
-					marker := "⬜"
-					if phase.ID == state.CurrentPhase {
-						marker = "▶️"
-					} else if _, ok := state.PhaseOutputs[phase.ID]; ok {
-						marker = "✅"
-					}
-					fmt.Fprintf(&body, "%s %d. %s\n", marker, i+1, phase.Name)
-				}
-			} else {
-				fmt.Fprintf(&body, "当前阶段: %s\n", state.CurrentPhase)
-			}
-			body.WriteString("\n命令: /workflow cancel 取消 | /workflow skip 跳过当前阶段")
-			a.sendResponse(ctx, plugin, target, &GenericResponse{
-				StatusCode: 200,
-				StatusIcon: "📋",
-				Title:      "工作流状态",
-				Body:       body.String(),
-			})
-			return
-		}
+		a.sendResponse(ctx, plugin, target, resp)
+		return
 	}
 
 	// 3g. Unknown / command — friendly error.

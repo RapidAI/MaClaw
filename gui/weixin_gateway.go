@@ -412,6 +412,14 @@ func (m *weixinGatewayManager) ensureLocalHandler() *IMMessageHandler {
 
 	m.localHandler = h
 	log.Printf("[weixin-mgr] local IMMessageHandler created")
+
+	// Wire the interrupt handler to the gateway so incoming messages during
+	// an active agent loop can trigger cancel/merge/status without waiting
+	// for the per-user lock.
+	if m.gateway != nil && h.interruptHandler != nil {
+		m.gateway.SetInterruptHandler(h.interruptHandler)
+	}
+
 	return h
 }
 

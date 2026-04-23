@@ -174,6 +174,8 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/llm/service-cards/{id}", RequireAdmin(admins, DeleteLLMServiceCardHandler(system, adminAudit)))
 	mux.HandleFunc("POST /api/admin/llm/service-cards/delete-batch", RequireAdmin(admins, DeleteLLMServiceCardsBatchHandler(system, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/usage-report", RequireAdmin(admins, GetLLMUsageReportHandler(system, securitySvc)))
+	mux.HandleFunc("GET /api/admin/model_download/status", RequireAdmin(admins, GetAdminModelDownloadStatusHandler(configPath)))
+	mux.HandleFunc("POST /api/admin/model_download/trigger", RequireAdmin(admins, TriggerAdminModelDownloadHandler(configPath)))
 	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
@@ -326,7 +328,8 @@ func NewRouter(
 	}
 
 	// Model file download (embedding models etc.); public, no auth
-	mux.HandleFunc("GET /api/v1/models/{filename}", ModelDownloadHandler("./data"))
+	mux.HandleFunc("GET /api/v1/models/{filename}", ModelDownloadHandler(configPath))
+	mux.HandleFunc("GET /api/public/model_download/status", PublicModelDownloadStatusHandler(configPath))
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")

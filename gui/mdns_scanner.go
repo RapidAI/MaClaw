@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -99,13 +100,13 @@ func (s *MDNSScanner) scan() {
 	}
 
 	for _, entry := range entries {
-		serverEntry := MCPServerEntry{
+		serverEntry := corelib.MCPServerEntry{
 			ID:          fmt.Sprintf("mdns-%s-%d", entry.Host, entry.Port),
 			Name:        entry.Name,
 			EndpointURL: entry.EndpointURL,
 			AuthType:    "none",
 		}
-		if err := s.registry.RegisterAutoDiscovered(serverEntry, MCPSourceMDNS); err != nil {
+		if err := s.registry.RegisterAutoDiscovered(serverEntry, corelib.MCPSourceMDNS); err != nil {
 			log.Printf("[MDNSScanner] failed to register %s: %v", entry.Name, err)
 		}
 	}

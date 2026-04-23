@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestToolRunSkill_MissingName(t *testing.T) {
@@ -71,7 +73,7 @@ func TestToolRunSkill_RejectsSkillWithoutExecutableSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.NLSkills = []NLSkillEntry{{Name: "doc-only", Status: "active", Steps: nil}}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "doc-only", Status: "active", Steps: nil}}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -96,17 +98,17 @@ func TestToolRunSkill_ReportsRunAndSessionMeta(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Projects = []ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
 	cfg.CurrentProject = "proj-1"
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models:       []ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
 	}
-	cfg.NLSkills = []NLSkillEntry{{
+	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "demo-skill",
 		Description: "demo",
 		Status:      "active",
-		Steps: []NLSkillStep{{
+		Steps: []corelib.NLSkillStep{{
 			Action: "create_session",
 			Params: map[string]interface{}{
 				"tool":       "claude",
@@ -218,17 +220,17 @@ func TestToolGetSkillRun_ReportsSessionFallbackFromUnknownExplicitSessionID(t *t
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Projects = []ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
 	cfg.CurrentProject = "proj-1"
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models:       []ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
 	}
-	cfg.NLSkills = []NLSkillEntry{{
+	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "demo-skill",
 		Description: "demo",
 		Status:      "active",
-		Steps: []NLSkillStep{
+		Steps: []corelib.NLSkillStep{
 			{
 				Action: "create_session",
 				Params: map[string]interface{}{

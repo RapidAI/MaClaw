@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"path/filepath"
 	"testing"
 )
@@ -40,8 +41,8 @@ func TestSessionStartupFeedbackWatchStartupInjectsOnlyForExplicitResume(t *testi
 
 	feedback := NewSessionStartupFeedback(manager)
 	feedback.SetCheckpointer(&SessionCheckpointer{})
-	feedback.SetUnfinishedSlotResolver(func(projectPath string) *unfinishedTaskSlot {
-		return &unfinishedTaskSlot{ProjectPath: projectPath, ResumePrompt: "resume previous task"}
+	feedback.SetUnfinishedSlotResolver(func(projectPath string) *agent.UnfinishedTaskSlot {
+		return &agent.UnfinishedTaskSlot{ProjectPath: projectPath, ResumePrompt: "resume previous task"}
 	})
 
 	var messages []string
@@ -75,8 +76,8 @@ func TestSessionStartupFeedbackWatchStartupSkipsFreshSessionInjection(t *testing
 
 	feedback := NewSessionStartupFeedback(manager)
 	feedback.SetCheckpointer(&SessionCheckpointer{})
-	feedback.SetUnfinishedSlotResolver(func(projectPath string) *unfinishedTaskSlot {
-		return &unfinishedTaskSlot{ProjectPath: projectPath, ResumePrompt: "resume previous task"}
+	feedback.SetUnfinishedSlotResolver(func(projectPath string) *agent.UnfinishedTaskSlot {
+		return &agent.UnfinishedTaskSlot{ProjectPath: projectPath, ResumePrompt: "resume previous task"}
 	})
 
 	var messages []string

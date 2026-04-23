@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,12 +22,12 @@ const (
 
 // LLMSecurityReview performs LLM-assisted security review on tool invocations.
 type LLMSecurityReview struct {
-	llmConfig MaclawLLMConfig
+	llmConfig corelib.MaclawLLMConfig
 	client    *http.Client // 5-second timeout
 }
 
 // NewLLMSecurityReview creates a new LLMSecurityReview with a 5-second HTTP timeout.
-func NewLLMSecurityReview(cfg MaclawLLMConfig) *LLMSecurityReview {
+func NewLLMSecurityReview(cfg corelib.MaclawLLMConfig) *LLMSecurityReview {
 	return &LLMSecurityReview{
 		llmConfig: cfg,
 		client:    &http.Client{}, // per-request timeout via context
@@ -39,7 +41,7 @@ func NewLLMSecurityReview(cfg MaclawLLMConfig) *LLMSecurityReview {
 //   - If LLM is not configured (empty URL or model), returns VerdictSafe immediately.
 //   - On timeout or LLM error, falls back to rule-based assessment derived from
 //     the risk level in the provided RiskAssessment.
-func (r *LLMSecurityReview) Review(ctx RiskContext, assessment RiskAssessment) (LLMSecurityVerdict, string, error) {
+func (r *LLMSecurityReview) Review(ctx RiskContext, assessment security.RiskAssessment) (LLMSecurityVerdict, string, error) {
 	// Skip review when LLM is not configured.
 	if !r.isConfigured() {
 		return VerdictSafe, "LLM not configured, skipping security review", nil
@@ -63,7 +65,7 @@ func (r *LLMSecurityReview) isConfigured() bool {
 
 // callLLM sends the security review prompt to the configured LLM and parses
 // the response into a verdict + explanation.
-func (r *LLMSecurityReview) callLLM(riskCtx RiskContext, assessment RiskAssessment) (LLMSecurityVerdict, string, error) {
+func (r *LLMSecurityReview) callLLM(riskCtx RiskContext, assessment security.RiskAssessment) (LLMSecurityVerdict, string, error) {
 	prompt := buildSecurityPrompt(riskCtx, assessment)
 
 	messages := []interface{}{
@@ -124,7 +126,7 @@ func normalizeVerdict(s string) LLMSecurityVerdict {
 }
 
 // buildSecurityPrompt constructs the prompt sent to the LLM for security review.
-func buildSecurityPrompt(ctx RiskContext, assessment RiskAssessment) string {
+func buildSecurityPrompt(ctx RiskContext, assessment security.RiskAssessment) string {
 	var sb strings.Builder
 	sb.WriteString("Please evaluate the safety of the following tool call:\n\n")
 	sb.WriteString(fmt.Sprintf("Tool: %s\n", ctx.ToolName))
@@ -148,13 +150,13 @@ func buildSecurityPrompt(ctx RiskContext, assessment RiskAssessment) string {
 
 // ruleBasedFallback maps a RiskLevel to an LLMSecurityVerdict when the LLM
 // is unavailable or times out.
-func ruleBasedFallback(level RiskLevel) (LLMSecurityVerdict, string) {
+func ruleBasedFallback(level security.RiskLevel) (LLMSecurityVerdict, string) {
 	switch level {
-	case RiskCritical:
+	case security.RiskCritical:
 		return VerdictDangerous, "critical risk level mapped to dangerous"
-	case RiskHigh:
+	case security.RiskHigh:
 		return VerdictRisky, "high risk level mapped to risky"
-	case RiskMedium:
+	case security.RiskMedium:
 		return VerdictRisky, "medium risk level mapped to risky"
 	default:
 		return VerdictSafe, "low risk level mapped to safe"

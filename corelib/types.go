@@ -193,6 +193,17 @@ type NLSkillEntry struct {
 	WorkaroundCount  int           `json:"workaround_count"`
 	LastUsedAt       string        `json:"last_used_at,omitempty"`
 	LastError        string        `json:"last_error,omitempty"`
+	RepairAttemptCount int         `json:"repair_attempt_count,omitempty"`
+	LastRepairAt     string        `json:"last_repair_at,omitempty"`
+	RepairHistory    []SkillRepairRecord `json:"repair_history,omitempty"`
+}
+
+// SkillRepairRecord stores a single self-repair attempt for audit trail.
+type SkillRepairRecord struct {
+	Timestamp   string `json:"timestamp"`
+	ErrorClass  string `json:"error_class,omitempty"`
+	Explanation string `json:"explanation"`
+	Success     bool   `json:"success"`
 }
 
 // MatchesName checks if the skill matches the given name by comparing against

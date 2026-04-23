@@ -3,6 +3,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"errors"
 	"fmt"
 	"io"
@@ -689,7 +690,7 @@ func (a *App) installNodeJSCLI() error {
 		nodeArch = "arm64"
 	}
 
-	nodeVersion := RequiredNodeVersion
+	nodeVersion := corelib.RequiredNodeVersion
 	fileName := fmt.Sprintf("node-v%s-%s.msi", nodeVersion, nodeArch)
 	downloadURL := fmt.Sprintf("https://nodejs.org/dist/v%s/%s", nodeVersion, fileName)
 	fmt.Printf("  Downloading from: %s\n", downloadURL)
@@ -968,7 +969,7 @@ func (a *App) installNodeJS() error {
 		nodeArch = "arm64"
 	}
 
-	nodeVersion := RequiredNodeVersion
+	nodeVersion := corelib.RequiredNodeVersion
 	fileName := fmt.Sprintf("node-v%s-%s.msi", nodeVersion, nodeArch)
 
 	officialURL := fmt.Sprintf("https://nodejs.org/dist/v%s/%s", nodeVersion, fileName)
@@ -1864,7 +1865,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	}
 }
 
-func (a *App) syncToSystemEnv(config AppConfig) {
+func (a *App) syncToSystemEnv(config corelib.AppConfig) {
 	// On Windows, we don't set environment variables in the main process
 	// to avoid cross-contamination between multiple tool instances.
 	// Environment variables are set in the batch scripts instead.

@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"gopkg.in/yaml.v3"
 )
 
 // bashBlockRe matches fenced bash code blocks in markdown.
@@ -192,6 +194,9 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		return nil, err
 	}
 	triggers := append([]string(nil), opts.Triggers...)
+	if len(triggers) == 0 {
+		triggers = append(triggers, parsed.triggers...)
+	}
 	if len(triggers) == 0 && strings.TrimSpace(parsed.name) != "" {
 		triggers = []string{parsed.name}
 	}
@@ -199,8 +204,10 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		triggers = append(triggers, "agent-skill")
 	}
 	producesArtifact := true // default: skills produce artifacts
-	if opts.ProducesArtifact != nil && !*opts.ProducesArtifact {
-		producesArtifact = false
+	if opts.ProducesArtifact != nil {
+		producesArtifact = *opts.ProducesArtifact
+	} else if parsed.producesArtifact != nil {
+		producesArtifact = *parsed.producesArtifact
 	}
 	verificationMode := "artifact_required"
 	if !producesArtifact {
@@ -226,27 +233,35 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		source = "file"
 	}
 	platforms := append([]string(nil), opts.Platforms...)
+	if len(platforms) == 0 {
+		platforms = append(platforms, parsed.platforms...)
+	}
 	requiresGUI := false
 	if opts.RequiresGUI != nil {
 		requiresGUI = *opts.RequiresGUI
+	} else if parsed.requiresGUI != nil {
+		requiresGUI = *parsed.requiresGUI
 	}
 	return &corelib.NLSkillEntry{
-		Name:          parsed.name,
-		Description:   parsed.description,
-		Triggers:      triggers,
-		Steps:         []corelib.NLSkillStep{{Action: "craft_tool", Params: params}},
-		Status:        "active",
-		CreatedAt:     time.Now().Format(time.RFC3339),
-		Source:        source,
-		SourceProject: sourceProject,
-		TrustLevel:    strings.TrimSpace(opts.TrustLevel),
-		SkillDir:      strings.TrimSpace(opts.SkillDir),
-		Platforms:     platforms,
-		RequiresGUI:   requiresGUI,
+		Name:             parsed.name,
+		Description:      parsed.description,
+		Triggers:         triggers,
+		Steps:            []corelib.NLSkillStep{{Action: "craft_tool", Params: params}},
+		Status:           "active",
+		CreatedAt:        time.Now().Format(time.RFC3339),
+		Source:           source,
+		SourceProject:    sourceProject,
+		TrustLevel:       strings.TrimSpace(opts.TrustLevel),
+		SkillDir:         strings.TrimSpace(opts.SkillDir),
+		Platforms:        platforms,
+		RequiresGUI:      requiresGUI,
+		Mode:             parsed.mode,
 		ProducesArtifact: producesArtifact,
-		RequiredArgs:   parsed.requiredArgs,
-		RequiredEnv:    parsed.requiredEnv,
-		PreferredShell: parsed.preferredShell,
+		RequiredArgs:     parsed.requiredArgs,
+		RequiredEnv:      parsed.requiredEnv,
+		PreferredShell:   parsed.preferredShell,
+		RequiresPython:   parsed.requiresPython,
+		RequiresNode:     parsed.requiresNode,
 	}, nil
 }
 
@@ -264,6 +279,9 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		return nil, err
 	}
 	triggers := append([]string(nil), opts.Triggers...)
+	if len(triggers) == 0 {
+		triggers = append(triggers, parsed.triggers...)
+	}
 	if len(triggers) == 0 && strings.TrimSpace(parsed.name) != "" {
 		triggers = []string{parsed.name}
 	}
@@ -271,9 +289,14 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		triggers = append(triggers, "agent-skill")
 	}
 	platforms := append([]string(nil), opts.Platforms...)
+	if len(platforms) == 0 {
+		platforms = append(platforms, parsed.platforms...)
+	}
 	requiresGUI := false
 	if opts.RequiresGUI != nil {
 		requiresGUI = *opts.RequiresGUI
+	} else if parsed.requiresGUI != nil {
+		requiresGUI = *parsed.requiresGUI
 	}
 	steps := make([]corelib.NLSkillStep, 0)
 	scriptsDir := filepath.Join(skillDir, "scripts")
@@ -420,6 +443,8 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	producesArtifact := true
 	if opts.ProducesArtifact != nil {
 		producesArtifact = *opts.ProducesArtifact
+	} else if parsed.producesArtifact != nil {
+		producesArtifact = *parsed.producesArtifact
 	}
 	// Apply execMode: "first" — only keep the first bash step.
 	if parsed.execMode == "first" && len(steps) > 1 {
@@ -456,24 +481,27 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	}
 
 	entry := &corelib.NLSkillEntry{
-		Name:          parsed.name,
-		Description:   parsed.description,
-		Triggers:      triggers,
-		Steps:         steps,
-		Status:        "active",
-		CreatedAt:     fileModTime(mdPath),
-		Source:        firstNonEmpty(strings.TrimSpace(opts.Source), "file"),
-		SourceProject: firstNonEmpty(strings.TrimSpace(opts.SourceProject), parsed.compatibility),
-		TrustLevel:    strings.TrimSpace(opts.TrustLevel),
-		SkillDir:      firstNonEmpty(strings.TrimSpace(opts.SkillDir), skillDir),
-		Platforms:     platforms,
-		RequiresGUI:   requiresGUI,
-		ExecMode:      parsed.execMode,
-		GlobalTimeout: parsed.timeout,
+		Name:             parsed.name,
+		Description:      parsed.description,
+		Triggers:         triggers,
+		Steps:            steps,
+		Status:           "active",
+		CreatedAt:        fileModTime(mdPath),
+		Source:           firstNonEmpty(strings.TrimSpace(opts.Source), "file"),
+		SourceProject:    firstNonEmpty(strings.TrimSpace(opts.SourceProject), parsed.compatibility),
+		TrustLevel:       strings.TrimSpace(opts.TrustLevel),
+		SkillDir:         firstNonEmpty(strings.TrimSpace(opts.SkillDir), skillDir),
+		Platforms:        platforms,
+		RequiresGUI:      requiresGUI,
+		Mode:             parsed.mode,
+		ExecMode:         parsed.execMode,
+		GlobalTimeout:    parsed.timeout,
 		ProducesArtifact: producesArtifact,
-		RequiredArgs:   parsed.requiredArgs,
-		RequiredEnv:    parsed.requiredEnv,
-		PreferredShell: parsed.preferredShell,
+		RequiredArgs:     parsed.requiredArgs,
+		RequiredEnv:      parsed.requiredEnv,
+		PreferredShell:   parsed.preferredShell,
+		RequiresPython:   parsed.requiresPython,
+		RequiresNode:     parsed.requiresNode,
 	}
 	return entry, nil
 }
@@ -611,10 +639,18 @@ type parsedSkillMarkdown struct {
 	compatibility  string
 	frontmatter    map[string]string
 	requiredArgs   []string // from frontmatter required_args
-	requiredEnv    []string // from frontmatter requires.env
+	requiredEnv    []string // from frontmatter required_env (alias: requires_env)
 	preferredShell string   // from frontmatter shell (e.g. "bash", "cmd")
 	execMode       string   // from frontmatter exec_mode: "all" (default), "first", "named"
 	timeout        int      // from frontmatter timeout (seconds), 0 = use default
+	// Extended fields from YAML frontmatter (list/bool/struct types)
+	triggers         []string // from frontmatter triggers (YAML list)
+	platforms        []string // from frontmatter platforms (YAML list)
+	requiresGUI      *bool    // from frontmatter requires_gui (YAML bool)
+	mode             string   // from frontmatter mode (e.g. "sequential", "api_workflow")
+	producesArtifact *bool    // from frontmatter produces_artifact (YAML bool)
+	requiresPython   []string // from frontmatter requires.python (YAML list)
+	requiresNode     []string // from frontmatter requires.node (YAML list)
 }
 
 func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback string) (*parsedSkillMarkdown, error) {
@@ -622,8 +658,11 @@ func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback strin
 	if skillMD == "" {
 		return nil, fmt.Errorf("empty skill.md document")
 	}
-	frontmatter, body := ParseMarkdownFrontmatter(skillMD)
-	name := strings.TrimSpace(frontmatter["name"])
+	// Parse YAML frontmatter — single source of truth for all typed fields.
+	yamlFM, body := ParseMarkdownFrontmatterYAML(skillMD)
+
+	// Name resolution: YAML frontmatter → first heading → fallback → "unnamed-skill"
+	name := yamlString(yamlFM["name"])
 	if name == "" {
 		name = firstMarkdownHeading(body)
 	}
@@ -633,7 +672,9 @@ func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback strin
 	if name == "" {
 		name = "unnamed-skill"
 	}
-	description := strings.TrimSpace(frontmatter["description"])
+
+	// Description resolution: YAML frontmatter → fallback → first paragraph
+	description := yamlString(yamlFM["description"])
 	if description == "" {
 		description = strings.TrimSpace(descriptionFallback)
 	}
@@ -641,42 +682,66 @@ func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback strin
 		description = firstMarkdownParagraph(body)
 	}
 
-	// Parse extended frontmatter fields for runner compatibility.
-	requiredArgs := splitCSV(strings.TrimSpace(frontmatter["required_args"]))
-	requiredEnv := splitCSV(strings.TrimSpace(frontmatter["requires_env"]))
-	preferredShell := strings.TrimSpace(frontmatter["shell"])
-	execMode := strings.TrimSpace(frontmatter["exec_mode"])
-	timeout := parseIntFrontmatter(frontmatter["timeout"])
+	// Extract all typed metadata from the single YAML map.
+	meta := extractSkillMetadata(yamlFM)
+
+	// Build the backward-compatible string map for callers that still need it
+	// (e.g. verification_mode, compatibility).
+	simpleFM, _ := ParseMarkdownFrontmatter(skillMD)
 
 	return &parsedSkillMarkdown{
-		markdown:       skillMD,
-		body:           body,
-		name:           name,
-		description:    description,
-		compatibility:  strings.TrimSpace(frontmatter["compatibility"]),
-		frontmatter:    frontmatter,
-		requiredArgs:   requiredArgs,
-		requiredEnv:    requiredEnv,
-		preferredShell: preferredShell,
-		execMode:       execMode,
-		timeout:        timeout,
+		markdown:         skillMD,
+		body:             body,
+		name:             name,
+		description:      description,
+		compatibility:    strings.TrimSpace(yamlString(yamlFM["compatibility"])),
+		frontmatter:      simpleFM,
+		requiredArgs:     meta.requiredArgs,
+		requiredEnv:      meta.requiredEnv,
+		preferredShell:   meta.preferredShell,
+		execMode:         meta.execMode,
+		timeout:          meta.timeout,
+		triggers:         meta.triggers,
+		platforms:        meta.platforms,
+		requiresGUI:      meta.requiresGUI,
+		mode:             meta.mode,
+		producesArtifact: meta.producesArtifact,
+		requiresPython:   meta.requiresPython,
+		requiresNode:     meta.requiresNode,
 	}, nil
 }
 
-func ParseMarkdownFrontmatter(content string) (map[string]string, string) {
-	fm := make(map[string]string)
+// frontmatterKeyAliases maps non-canonical frontmatter key names to their
+// canonical equivalents. This is applied once at parse time by
+// ParseMarkdownFrontmatterYAML so that all downstream code sees only
+// canonical keys. Add new aliases here — not in every consumer.
+var frontmatterKeyAliases = map[string]string{
+	"requires_env": "required_env", // SKILL.md historical convention → skill.yaml canonical
+}
+
+// extractFrontmatterBlock splits a Markdown document into the raw YAML
+// frontmatter block and the remaining body. Returns ("", content) if no
+// frontmatter delimiters are found.
+func extractFrontmatterBlock(content string) (fmBlock, body string) {
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	content = strings.TrimSpace(content)
 	if !strings.HasPrefix(content, "---") {
-		return fm, content
+		return "", content
 	}
 	rest := content[3:]
 	idx := strings.Index(rest, "\n---")
 	if idx < 0 {
-		return fm, content
+		return "", content
 	}
-	fmBlock := rest[:idx]
-	body := strings.TrimSpace(rest[idx+4:])
+	return rest[:idx], strings.TrimSpace(rest[idx+4:])
+}
+
+func ParseMarkdownFrontmatter(content string) (map[string]string, string) {
+	fm := make(map[string]string)
+	fmBlock, body := extractFrontmatterBlock(content)
+	if fmBlock == "" {
+		return fm, body
+	}
 	for _, line := range strings.Split(fmBlock, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -688,9 +753,163 @@ func ParseMarkdownFrontmatter(content string) (map[string]string, string) {
 		}
 		key := strings.TrimSpace(line[:colonIdx])
 		val := strings.Trim(strings.TrimSpace(line[colonIdx+1:]), `"'`)
+		if canonical, ok := frontmatterKeyAliases[key]; ok {
+			key = canonical
+		}
 		fm[key] = val
 	}
 	return fm, body
+}
+
+// ParseMarkdownFrontmatterYAML parses the YAML frontmatter block from a
+// Markdown document and returns the raw YAML map plus the remaining body.
+// Unlike ParseMarkdownFrontmatter (which returns map[string]string), this
+// preserves YAML types: lists become []interface{}, bools become bool, nested
+// maps become map[string]interface{}, etc.
+//
+// Key aliases (e.g. requires_env → required_env) are normalized at parse time
+// so downstream code only sees canonical key names.
+//
+// Falls back to ParseMarkdownFrontmatter-style line parsing if YAML
+// unmarshalling fails (backward compatibility).
+func ParseMarkdownFrontmatterYAML(content string) (map[string]interface{}, string) {
+	fmBlock, body := extractFrontmatterBlock(content)
+	if fmBlock == "" {
+		return nil, body
+	}
+
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal([]byte(fmBlock), &raw); err != nil {
+		// YAML parse failed — fall back to simple key:value parsing and
+		// wrap each value as string in the interface{} map.
+		simple, _ := ParseMarkdownFrontmatter(content)
+		result := make(map[string]interface{}, len(simple))
+		for k, v := range simple {
+			result[k] = v
+		}
+		return result, body
+	}
+	// Normalize key aliases so downstream code sees only canonical names.
+	for alias, canonical := range frontmatterKeyAliases {
+		if v, ok := raw[alias]; ok {
+			if _, exists := raw[canonical]; !exists {
+				raw[canonical] = v
+			}
+			delete(raw, alias)
+		}
+	}
+	return raw, body
+}
+
+// skillFrontmatterMetadata holds all typed metadata extracted from a YAML
+// frontmatter map. This is the single extraction point — both
+// parseSkillMarkdownDocument and buildCraftToolFallback call
+// extractSkillMetadata instead of duplicating field extraction logic.
+type skillFrontmatterMetadata struct {
+	requiredArgs     []string
+	requiredEnv      []string
+	preferredShell   string
+	execMode         string
+	timeout          int
+	triggers         []string
+	platforms        []string
+	requiresGUI      *bool
+	mode             string
+	producesArtifact *bool
+	requiresPython   []string
+	requiresNode     []string
+}
+
+// extractSkillMetadata extracts all typed skill metadata from a YAML
+// frontmatter map. Key aliases have already been normalized by
+// ParseMarkdownFrontmatterYAML, so this function only uses canonical names.
+func extractSkillMetadata(yamlFM map[string]interface{}) skillFrontmatterMetadata {
+	if yamlFM == nil {
+		return skillFrontmatterMetadata{}
+	}
+	var m skillFrontmatterMetadata
+	m.requiredArgs = yamlStringList(yamlFM["required_args"])
+	m.requiredEnv = yamlStringList(yamlFM["required_env"])
+	m.preferredShell = yamlString(yamlFM["shell"])
+	m.execMode = yamlString(yamlFM["exec_mode"])
+	m.timeout = yamlInt(yamlFM["timeout"])
+	m.triggers = yamlStringList(yamlFM["triggers"])
+	m.platforms = yamlStringList(yamlFM["platforms"])
+	m.requiresGUI = yamlBool(yamlFM["requires_gui"])
+	m.mode = yamlString(yamlFM["mode"])
+	m.producesArtifact = yamlBool(yamlFM["produces_artifact"])
+	if reqMap, ok := yamlFM["requires"].(map[string]interface{}); ok {
+		m.requiresPython = yamlStringList(reqMap["python"])
+		m.requiresNode = yamlStringList(reqMap["node"])
+	}
+	return m
+}
+
+// yamlStringList extracts a []string from a YAML value that may be:
+//   - a []interface{} (YAML list like [a, b, c])
+//   - a string (CSV like "a, b, c")
+//   - nil
+func yamlStringList(v interface{}) []string {
+	if v == nil {
+		return nil
+	}
+	switch val := v.(type) {
+	case []interface{}:
+		var result []string
+		for _, item := range val {
+			s := fmt.Sprintf("%v", item)
+			s = strings.TrimSpace(s)
+			if s != "" {
+				result = append(result, s)
+			}
+		}
+		return result
+	case string:
+		return splitCSV(val)
+	}
+	return nil
+}
+
+// yamlString extracts a string from a YAML value.
+func yamlString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", v))
+}
+
+// yamlBool extracts a *bool from a YAML value. Returns nil if not present.
+func yamlBool(v interface{}) *bool {
+	if v == nil {
+		return nil
+	}
+	switch val := v.(type) {
+	case bool:
+		return &val
+	case string:
+		b, err := strconv.ParseBool(strings.TrimSpace(val))
+		if err != nil {
+			return nil
+		}
+		return &b
+	}
+	return nil
+}
+
+// yamlInt extracts an int from a YAML value. Returns 0 if not present.
+func yamlInt(v interface{}) int {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case int:
+		return val
+	case float64:
+		return int(val)
+	case string:
+		return parseIntFrontmatter(val)
+	}
+	return 0
 }
 
 func firstMarkdownHeading(content string) string {

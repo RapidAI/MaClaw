@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -27,7 +28,7 @@ import (
 // Code blocks (``` fenced) are tracked to avoid false positives on
 // lines like "Browser: connected" inside code samples.
 type rolePrefixStreamFilter struct {
-	downstream TokenCallback
+	downstream llm.TokenCallback
 
 	// lineBuf accumulates the current line being built from tokens.
 	lineBuf strings.Builder
@@ -53,7 +54,7 @@ type rolePrefixStreamFilter struct {
 // colon (：U+FF1A) which Chinese LLMs sometimes produce.
 var rolePrefixLineRe = regexp.MustCompile(`^[ \t]*(Browser|Tool)(?::[ \t]?|：)`)
 
-func newRolePrefixStreamFilter(downstream TokenCallback) *rolePrefixStreamFilter {
+func newRolePrefixStreamFilter(downstream llm.TokenCallback) *rolePrefixStreamFilter {
 	return &rolePrefixStreamFilter{downstream: downstream}
 }
 

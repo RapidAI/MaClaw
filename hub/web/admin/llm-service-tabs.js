@@ -1,4 +1,4 @@
-﻿const LLM_SERVICE_I18N = {
+const LLM_SERVICE_I18N = {
   en: {
     adminTitle: 'Model Service Groups',
     adminDesc: 'Manage model service groups, routing, and entitlement bindings. Public API and exposed model names are shown above.',
@@ -19,6 +19,31 @@
     serviceCardsTabTitle: 'Service Exchange Cards',
     serviceCardsTabSubtitle: 'Issue service exchange cards and review redemption grants',
     reload: 'Reload',
+    runtimeTitle: 'Model Runtime',
+    runtimeDesc: 'Check local model files, download progress, and the stable public download URL.',
+    runtimeRefresh: 'Refresh Runtime',
+    runtimeTrigger: 'Start Background Download',
+    runtimeStatus: 'Runtime Status',
+    runtimeDir: 'Model Directory',
+    runtimePublicUrl: 'Public Download URL',
+    runtimeLogPath: 'Download Log',
+    runtimeExpected: 'Expected Files',
+    runtimeFlags: 'Flags',
+    runtimeFiles: 'Files',
+    runtimeLog: 'Recent Log',
+    runtimeStatusReady: 'Ready',
+    runtimeStatusDownloading: 'Downloading',
+    runtimeStatusPartial: 'Partial',
+    runtimeStatusMissing: 'Missing',
+    runtimeFlagInitialized: 'Initialized',
+    runtimeFlagDownloading: 'Downloading',
+    runtimeFlagReady: 'Ready',
+    runtimeFlagTrigger: 'Trigger Ready',
+    runtimeYes: 'Yes',
+    runtimeNo: 'No',
+    runtimeLoadFailed: 'Load model runtime failed: {error}',
+    runtimeTriggerDone: 'Background model download started.',
+    runtimeTriggerFailed: 'Start model download failed: {error}',
     emptyValue: '-',
     addGroup: 'Add / Update Group',
     saveAll: 'Save Service Config',
@@ -209,6 +234,31 @@
     serviceCardsTabTitle: '\u670d\u52a1\u5151\u6362\u5361\u7ba1\u7406',
     serviceCardsTabSubtitle: '\u53d1\u884c\u670d\u52a1\u5151\u6362\u5361\u5e76\u67e5\u770b\u5151\u6362\u6388\u6743\u72b6\u6001',
     reload: '\u91cd\u65b0\u52a0\u8f7d',
+    runtimeTitle: '\u6a21\u578b\u8fd0\u884c\u72b6\u6001',
+    runtimeDesc: '\u67e5\u770b\u672c\u5730\u6a21\u578b\u6587\u4ef6\u3001\u4e0b\u8f7d\u8fdb\u5ea6\u548c\u4fdd\u6301\u4e0d\u53d8\u7684\u5bf9\u5916\u4e0b\u8f7d URL\u3002',
+    runtimeRefresh: '\u5237\u65b0\u8fd0\u884c\u72b6\u6001',
+    runtimeTrigger: '\u540e\u53f0\u542f\u52a8\u4e0b\u8f7d',
+    runtimeStatus: '\u8fd0\u884c\u72b6\u6001',
+    runtimeDir: '\u6a21\u578b\u76ee\u5f55',
+    runtimePublicUrl: '\u5bf9\u5916\u4e0b\u8f7d URL',
+    runtimeLogPath: '\u4e0b\u8f7d\u65e5\u5fd7',
+    runtimeExpected: '\u9884\u671f\u6587\u4ef6',
+    runtimeFlags: '\u6807\u8bb0',
+    runtimeFiles: '\u5df2\u53d1\u73b0\u6587\u4ef6',
+    runtimeLog: '\u6700\u8fd1\u65e5\u5fd7',
+    runtimeStatusReady: '\u5c31\u7eea',
+    runtimeStatusDownloading: '\u4e0b\u8f7d\u4e2d',
+    runtimeStatusPartial: '\u90e8\u5206\u5b8c\u6210',
+    runtimeStatusMissing: '\u7f3a\u5931',
+    runtimeFlagInitialized: '\u5df2\u521d\u59cb\u5316',
+    runtimeFlagDownloading: '\u4e0b\u8f7d\u4e2d',
+    runtimeFlagReady: '\u5df2\u5c31\u7eea',
+    runtimeFlagTrigger: '\u53ef\u89e6\u53d1\u4e0b\u8f7d',
+    runtimeYes: '\u662f',
+    runtimeNo: '\u5426',
+    runtimeLoadFailed: '\u52a0\u8f7d\u6a21\u578b\u8fd0\u884c\u72b6\u6001\u5931\u8d25: {error}',
+    runtimeTriggerDone: '\u5df2\u5728\u540e\u53f0\u542f\u52a8\u6a21\u578b\u4e0b\u8f7d\u3002',
+    runtimeTriggerFailed: '\u542f\u52a8\u6a21\u578b\u4e0b\u8f7d\u5931\u8d25: {error}',
     emptyValue: '-',
     addGroup: '\u65b0\u5efa / \u66f4\u65b0\u670d\u52a1\u7ec4',
     saveAll: '\u4fdd\u5b58\u670d\u52a1\u914d\u7f6e',
@@ -382,6 +432,7 @@
 };
 const lsx = (key, vars = {}) => ((LLM_SERVICE_I18N[currentLang] || LLM_SERVICE_I18N.en)[key] || LLM_SERVICE_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 let llmServiceAdminCache = null;
+let llmServiceModelRuntimeCache = null;
 let llmServiceSelectedGroupID = '';
 let llmServiceDraftDirty = false;
 let llmServiceRenderedGroupID = null;
@@ -555,6 +606,7 @@ function ensureLLMServiceAdminUI() {
   host.className = 'grid2';
   host.style.marginTop = '16px';
   host.innerHTML = '' +
+    '<div class="item" style="grid-column:1 / -1" id="llmServiceModelRuntimeCard"></div>' +
     '<div class="item"><div class="item-head"><div><div class="item-title" id="llmServiceAdminTitle"></div><div class="item-meta" id="llmServiceAdminDesc"></div></div><div class="actions"><button class="btn-secondary" onclick="saveLLMServiceAdmin()" id="llmServiceSaveBtn"></button></div></div><div id="llmServiceLinkageIssues" style="margin-top:10px"></div>' +
     '<div class="grid2" style="margin-top:12px">' +
     '<div><label id="llmServiceExposeApiBaseLabel"></label><div id="llmServiceExposeApiBase" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>' +
@@ -577,6 +629,79 @@ function ensureLLMServiceAdminUI() {
   bindLLMServiceDraftInputs();
   applyLLMServiceI18n();
 }
+function llmServiceRuntimeBadge(status) {
+  var clean = String(status || '').trim().toLowerCase();
+  var cls = 'warn';
+  var labelKey = 'runtimeStatusPartial';
+  if (clean === 'ready') { cls = 'ok'; labelKey = 'runtimeStatusReady'; }
+  else if (clean === 'downloading') { cls = 'info'; labelKey = 'runtimeStatusDownloading'; }
+  else if (clean === 'missing') { cls = 'danger'; labelKey = 'runtimeStatusMissing'; }
+  return '<span class="badge ' + cls + '">' + escapeHtml(lsx(labelKey)) + '</span>';
+}
+function llmServiceRuntimeBool(value) {
+  return value ? lsx('runtimeYes') : lsx('runtimeNo');
+}
+function renderLLMServiceModelRuntime() {
+  var root = document.getElementById('llmServiceModelRuntimeCard');
+  if (!root) return;
+  var data = llmServiceModelRuntimeCache;
+  if (!data) {
+    root.innerHTML = '<div class="item-head"><div><div class="item-title">' + escapeHtml(lsx('runtimeTitle')) + '</div><div class="item-meta">' + escapeHtml(lsx('runtimeDesc')) + '</div></div><div class="actions"><button class="btn-ghost" type="button" onclick="loadLLMServiceModelRuntime()" id="llmServiceModelRuntimeRefreshBtn">' + escapeHtml(lsx('runtimeRefresh')) + '</button><button class="btn-secondary" type="button" onclick="triggerLLMServiceModelDownload()" id="llmServiceModelRuntimeTriggerBtn">' + escapeHtml(lsx('runtimeTrigger')) + '</button></div></div><div class="hint" style="margin-top:12px">' + escapeHtml(lsx('loading')) + '</div>';
+    return;
+  }
+  var expected = (data.expected_files || []).length ? (data.expected_files || []).map(escapeHtml).join('<br>') : escapeHtml(lsx('emptyValue'));
+  var files = (data.files || []).length ? (data.files || []).map(function(file) {
+    var meta = [];
+    if (file.available) meta.push((file.size_bytes || 0) + ' B');
+    if (file.modified_at) meta.push(file.modified_at);
+    return '<div style="padding:10px 12px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.7)"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap"><strong>' + escapeHtml(file.name || '-') + '</strong>' + (file.available ? '<span class="badge ok">OK</span>' : '<span class="badge danger">MISS</span>') + '</div><div class="item-meta" style="margin-top:6px">' + escapeHtml(meta.join(' | ') || lsx('emptyValue')) + '</div></div>';
+  }).join('') : '<div class="hint">' + escapeHtml(lsx('emptyValue')) + '</div>';
+  var logTail = (data.log_tail || []).length ? escapeHtml((data.log_tail || []).join('\n')) : escapeHtml(lsx('emptyValue'));
+  var triggerDisabled = data.trigger_supported ? '' : ' disabled';
+  root.innerHTML = '' +
+    '<div class="item-head"><div><div class="item-title">' + escapeHtml(lsx('runtimeTitle')) + '</div><div class="item-meta">' + escapeHtml(lsx('runtimeDesc')) + '</div></div><div class="actions"><button class="btn-ghost" type="button" onclick="loadLLMServiceModelRuntime()" id="llmServiceModelRuntimeRefreshBtn">' + escapeHtml(lsx('runtimeRefresh')) + '</button><button class="btn-secondary" type="button" onclick="triggerLLMServiceModelDownload()" id="llmServiceModelRuntimeTriggerBtn"' + triggerDisabled + '>' + escapeHtml(lsx('runtimeTrigger')) + '</button></div></div>' +
+    '<div class="grid3" style="margin-top:12px">' +
+    '<div><label>' + escapeHtml(lsx('runtimeStatus')) + '</label><div>' + llmServiceRuntimeBadge(data.status) + '</div></div>' +
+    '<div><label>' + escapeHtml(lsx('runtimeFlags')) + '</label><div class="item-meta">' + escapeHtml(lsx('runtimeFlagInitialized')) + ': ' + escapeHtml(llmServiceRuntimeBool(data.initialized)) + '<br>' + escapeHtml(lsx('runtimeFlagDownloading')) + ': ' + escapeHtml(llmServiceRuntimeBool(data.downloading)) + '<br>' + escapeHtml(lsx('runtimeFlagReady')) + ': ' + escapeHtml(llmServiceRuntimeBool(data.ready)) + '<br>' + escapeHtml(lsx('runtimeFlagTrigger')) + ': ' + escapeHtml(llmServiceRuntimeBool(data.trigger_supported)) + '</div></div>' +
+    '<div><label>' + escapeHtml(lsx('runtimeExpected')) + '</label><div class="mono">' + expected + '</div></div>' +
+    '</div>' +
+    '<div class="grid3" style="margin-top:12px">' +
+    '<div><label>' + escapeHtml(lsx('runtimeDir')) + '</label><div class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">' + escapeHtml(data.model_dir || lsx('emptyValue')) + '</div></div>' +
+    '<div><label>' + escapeHtml(lsx('runtimePublicUrl')) + '</label><div class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">' + escapeHtml(data.public_models_url || lsx('emptyValue')) + '</div></div>' +
+    '<div><label>' + escapeHtml(lsx('runtimeLogPath')) + '</label><div class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">' + escapeHtml(data.log_path || lsx('emptyValue')) + '</div></div>' +
+    '</div>' +
+    '<div class="grid2" style="margin-top:12px">' +
+    '<div><label>' + escapeHtml(lsx('runtimeFiles')) + '</label><div style="display:grid;gap:10px">' + files + '</div></div>' +
+    '<div><label>' + escapeHtml(lsx('runtimeLog')) + '</label><div class="console" style="min-height:200px;max-height:240px">' + logTail + '</div></div>' +
+    '</div>' +
+    ((data.last_download_error || '') ? ('<div class="hint" style="margin-top:12px;color:#b55246">' + escapeHtml(data.last_download_error) + '</div>') : '');
+}
+async function loadLLMServiceModelRuntime(options) {
+  ensureLLMServiceAdminUI();
+  var silent = !!(options && options.silent);
+  try {
+    llmServiceModelRuntimeCache = await api('/api/admin/model_download/status');
+    renderLLMServiceModelRuntime();
+  } catch (err) {
+    renderLLMServiceModelRuntime();
+    if (!silent) {
+      var msg = lsx('runtimeLoadFailed', { error: err.message });
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  }
+}
+async function triggerLLMServiceModelDownload() {
+  try {
+    await api('/api/admin/model_download/trigger', { method: 'POST' });
+    showToast(lsx('runtimeTriggerDone'), 'success');
+    await loadLLMServiceModelRuntime({ silent: true });
+  } catch (err) {
+    var msg = lsx('runtimeTriggerFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
 function llmServiceCardsPanelMarkup() {
   return '' +
     '<div class="item"><div class="item-title" id="llmServiceCardsTitle"></div><div class="grid2" style="margin-top:12px"><div><label id="llmServiceCardLabelLabel"></label><input id="llmServiceCardLabel"></div><div><label id="llmServiceCardGroupsLabel"></label><input id="llmServiceCardGroups" list="llmServiceGroupOptions"><div id="llmServiceCardGroupsPicker" class="hint" style="margin-top:8px"></div></div></div><div class="grid3" style="margin-top:12px"><div><label id="llmServiceCardDaysLabel"></label><input id="llmServiceCardDays" type="number" min="1" value="30"></div><div><label id="llmServiceCardCreditsLabel"></label><input id="llmServiceCardCredits" type="number" min="0" step="1" value="1000"></div><div><label id="llmServiceCardCountLabel"></label><input id="llmServiceCardCount" type="number" min="1" max="1000" value="1"></div></div><div class="actions" style="margin-top:12px"><button class="btn-primary" onclick="issueLLMServiceCard()" id="llmServiceIssueBtn"></button></div><div id="llmServiceIssuedCodes" class="hint" style="margin-top:10px"></div></div>' +
@@ -585,6 +710,8 @@ function llmServiceCardsPanelMarkup() {
 function applyLLMServiceI18n() {
   _s('llmServiceAdminTitle', 'textContent', lsx('adminTitle'));
   _s('llmServiceAdminDesc', 'textContent', lsx('adminDesc'));
+  _s('llmServiceModelRuntimeRefreshBtn', 'textContent', lsx('runtimeRefresh'));
+  _s('llmServiceModelRuntimeTriggerBtn', 'textContent', lsx('runtimeTrigger'));
   _s('llmServiceExposeApiBaseLabel', 'textContent', lsx('apiBaseUrl'));
   _s('llmServiceExposeChatUrlLabel', 'textContent', lsx('chatCompletionsUrl'));
   _s('llmServiceExposeModelsUrlLabel', 'textContent', lsx('modelsUrl'));
@@ -1124,12 +1251,17 @@ function renderLLMServiceChainOverview(cache) {
 async function loadLLMServiceAdmin() {
   ensureLLMServiceAdminUI();
   ensureLLMServiceSystemUI();
+  renderLLMServiceModelRuntime();
   try {
     await Promise.all([loadLLMServiceProviderOptions(), loadLLMServiceSecurityGroupOptions()]);
-    const data = await api('/api/admin/llm/services?include_cards=false');
+    const results = await Promise.all([
+      api('/api/admin/llm/services?include_cards=false'),
+      llmServiceLoadCardsPage(llmServiceCardPage || 1),
+      loadLLMServiceModelRuntime({ silent: true })
+    ]);
+    const data = results[0];
     llmServiceAdminCache = data || { model_service_groups: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
     if (llmServiceSelectedGroupID && !(llmServiceAdminCache.model_service_groups || []).some(function(g) { return g.id === llmServiceSelectedGroupID; })) llmServiceSelectedGroupID = '';
-    await llmServiceLoadCardsPage(llmServiceCardPage || 1);
     renderLLMServiceAdmin();
     renderLLMServiceSystemSettings();
   } catch (err) {
@@ -1624,6 +1756,8 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
   });
 }
 window.loadLlmServiceGroups = loadLLMServiceAdmin;
+window.loadLLMServiceModelRuntime = loadLLMServiceModelRuntime;
+window.triggerLLMServiceModelDownload = triggerLLMServiceModelDownload;
 window.openLlmServiceGroupTab = function() { if (typeof openTab === 'function') openTab('modelservices'); };
 registerLLMServiceTabs();
 ensureLLMServiceAdminUI();

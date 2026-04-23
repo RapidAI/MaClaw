@@ -4,6 +4,11 @@ package main
 // LLM provider switch, scheduled tasks, AgentNet, audit log, web search/fetch.
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -384,7 +389,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	// Security review if risk assessor is available
 	if h.getRiskAssessor() != nil {
 		assessment := h.getRiskAssessor().AssessSkill(entry, entry.TrustLevel)
-		if assessment.Level == RiskCritical {
+		if assessment.Level == security.RiskCritical {
 			// Determine the platform for the confirmation channel.
 			platform := ""
 			if h.currentLoopCtx != nil {
@@ -408,12 +413,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 				// User rejected (or timeout / fail-closed).
 				_ = h.getAuditLog() // ensure
 				if h.getAuditLog() != nil {
-					_ = h.getAuditLog().Log(AuditEntry{
+					_ = h.getAuditLog().Log(security.AuditEntry{
 						Timestamp:    time.Now(),
-						Action:       AuditActionHubSkillReject,
+						Action:       security.AuditActionHubSkillReject,
 						ToolName:     "hub_skill_install",
-						RiskLevel:    RiskCritical,
-						PolicyAction: PolicyDeny,
+						RiskLevel:    security.RiskCritical,
+						PolicyAction: security.PolicyDeny,
 						Result:       fmt.Sprintf("user rejected critical skill %s: critical risk", entry.Name),
 					})
 				}
@@ -424,12 +429,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			// User confirmed — audit with PolicyUserOverride and continue to registration.
 			_ = h.getAuditLog() // ensure
 			if h.getAuditLog() != nil {
-				_ = h.getAuditLog().Log(AuditEntry{
+				_ = h.getAuditLog().Log(security.AuditEntry{
 					Timestamp:    time.Now(),
-					Action:       AuditActionHubSkillInstall,
+					Action:       security.AuditActionHubSkillInstall,
 					ToolName:     "hub_skill_install",
-					RiskLevel:    RiskCritical,
-					PolicyAction: PolicyUserOverride,
+					RiskLevel:    security.RiskCritical,
+					PolicyAction: security.PolicyUserOverride,
 					Result: fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical, factors=[%s]",
 						entry.Name, hubURL, strings.Join(assessment.Factors, ", ")),
 				})
@@ -453,12 +458,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	// Audit log
 	_ = h.getAuditLog() // ensure
 	if h.getAuditLog() != nil {
-		_ = h.getAuditLog().Log(AuditEntry{
+		_ = h.getAuditLog().Log(security.AuditEntry{
 			Timestamp:    time.Now(),
-			Action:       AuditActionHubSkillInstall,
+			Action:       security.AuditActionHubSkillInstall,
 			ToolName:     "hub_skill_install",
-			RiskLevel:    RiskLow,
-			PolicyAction: PolicyAllow,
+			RiskLevel:    security.RiskLow,
+			PolicyAction: security.PolicyAllow,
 			Result:       fmt.Sprintf("installed skill %s (%s) from %s, trust: %s", entry.Name, skillID, hubURL, entry.TrustLevel),
 		})
 	}
@@ -673,7 +678,7 @@ func firstNonEmptySkillRunStatus(values ...string) string {
 	return ""
 }
 
-func emitSkillRunProgress(onProgress ProgressCallback, status *SkillRunStatus) {
+func emitSkillRunProgress(onProgress tool.ProgressCallback, status *SkillRunStatus) {
 	if onProgress == nil || status == nil {
 		return
 	}
@@ -762,7 +767,7 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 	}
 }
 
-func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress ProgressCallback) string {
+func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 	h.ensureSkillRunner()
 	runner := h.getSkillRunner()
 	if runner == nil {
@@ -853,7 +858,7 @@ func stringVal(m map[string]interface{}, key string) string {
 }
 
 // toolManageSkill dispatches the merged manage_skill tool to individual handlers.
-func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgress ProgressCallback) string {
+func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 	action := stringVal(args, "action")
 	switch action {
 	case "list":
@@ -875,7 +880,7 @@ func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgre
 	case "history":
 		return h.toolSkillPatchHistory(args)
 	default:
-		return fmt.Sprintf("未知 manage_skill action: %s（支持: list/search/install/run/status/upload/validate/patch/history）", action)
+		return cskill.ManageSkillUnknownActionError(action)
 	}
 }
 
@@ -1389,7 +1394,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		if query == "" {
 			return "缺少 query 参数"
 		}
-		category := MemoryCategory(stringVal(args, "category"))
+		category := corememory.Category(stringVal(args, "category"))
 		// Resolve current project path for affinity boosting.
 		var projectPath string
 		if h.contextResolver != nil {
@@ -1436,9 +1441,9 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			expanded := corememory.ExpandQuery(content)
 			tags = expanded.Entities
 		}
-		entry := MemoryEntry{
+		entry := corememory.Entry{
 			Content:  content,
-			Category: MemoryCategory(category),
+			Category: corememory.Category(category),
 			Tags:     tags,
 		}
 		if err := h.memoryStore.Save(entry); err != nil {
@@ -1451,7 +1456,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		return fmt.Sprintf("已保存记忆: %s", summary)
 
 	case "list":
-		category := MemoryCategory(stringVal(args, "category"))
+		category := corememory.Category(stringVal(args, "category"))
 		keyword := stringVal(args, "keyword")
 		entries := h.memoryStore.List(category, keyword)
 		if len(entries) == 0 {
@@ -1498,7 +1503,7 @@ func (h *IMMessageHandler) toolCreateTemplate(args map[string]interface{}) strin
 		return "缺少 name 或 tool 参数"
 	}
 
-	tpl := SessionTemplate{
+	tpl := remote.SessionTemplate{
 		Name:        name,
 		Tool:        tool,
 		ProjectPath: stringVal(args, "project_path"),
@@ -1612,7 +1617,7 @@ func (h *IMMessageHandler) toolBatchUpdateConfig(args map[string]interface{}) st
 		return "缺少 changes 参数"
 	}
 
-	var changes []ConfigChange
+	var changes []config.ConfigChange
 	if err := json.Unmarshal([]byte(changesStr), &changes); err != nil {
 		return fmt.Sprintf("解析 changes 参数失败: %s", err.Error())
 	}
@@ -1745,14 +1750,14 @@ func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) strin
 func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) string {
 	n, ok := args["max_iterations"].(float64)
 	if !ok || n < 1 {
-		return fmt.Sprintf("缺少或无效的 max_iterations 参数（需要 %d-%d 的整数）", minAgentIterations, maxAgentIterationsCap)
+		return fmt.Sprintf("缺少或无效的 max_iterations 参数（需要 %d-%d 的整数）", config.MinAgentIterations, config.MaxAgentIterationsCap)
 	}
 	limit := int(n)
-	if limit < minAgentIterations {
-		limit = minAgentIterations
+	if limit < config.MinAgentIterations {
+		limit = config.MinAgentIterations
 	}
-	if limit > maxAgentIterationsCap {
-		limit = maxAgentIterationsCap
+	if limit > config.MaxAgentIterationsCap {
+		limit = config.MaxAgentIterationsCap
 	}
 	reason := stringVal(args, "reason")
 	h.loopMaxOverride = limit
@@ -1819,7 +1824,7 @@ func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) st
 	info := h.getMaclawLLMProviders()
 
 	// Collect only configured providers for matching.
-	var configured []MaclawLLMProvider
+	var configured []corelib.MaclawLLMProvider
 	for _, p := range info.Providers {
 		if p.URL != "" || p.Key != "" || p.Model != "" {
 			configured = append(configured, p)
@@ -1828,7 +1833,7 @@ func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) st
 
 	// Match: exact (case-insensitive) first, then substring fallback.
 	needle := strings.ToLower(strings.TrimSpace(providerName))
-	var match *MaclawLLMProvider
+	var match *corelib.MaclawLLMProvider
 	for i := range configured {
 		if strings.ToLower(configured[i].Name) == needle {
 			match = &configured[i]
@@ -1903,7 +1908,7 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 		intervalMin = int(v)
 	}
 
-	t := ScheduledTask{
+	t := scheduler.ScheduledTask{
 		Name:            name,
 		Action:          action,
 		Hour:            hour,
@@ -1925,9 +1930,9 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 	h.emitAppEvent("scheduled-tasks-changed")
 
 	// 非一次性任务同步到系统日历
-	if created := h.scheduledTaskManager.Get(id); created != nil && isRecurringTask(created) {
+	if created := h.scheduledTaskManager.Get(id); created != nil && scheduler.IsRecurringTask(created) {
 		go func() {
-			if err := SyncTaskToSystemCalendar(created); err != nil {
+			if err := scheduler.SyncTaskToSystemCalendar(created); err != nil {
 				h.appLog(fmt.Sprintf("[scheduled-task] calendar sync failed: %v", err))
 			}
 		}()
@@ -1959,7 +1964,7 @@ func (h *IMMessageHandler) toolListScheduledTasks() string {
 		// Schedule description
 		var sched string
 		if t.IntervalMinutes > 0 {
-			sched = fmt.Sprintf("每%s（首次 %02d:%02d）", FormatInterval(t.IntervalMinutes), t.Hour, t.Minute)
+			sched = fmt.Sprintf("每%s（首次 %02d:%02d）", scheduler.FormatInterval(t.IntervalMinutes), t.Hour, t.Minute)
 		} else {
 			sched = fmt.Sprintf("每天 %02d:%02d", t.Hour, t.Minute)
 			if t.DayOfWeek >= 0 && t.DayOfWeek <= 6 {
@@ -2102,7 +2107,7 @@ func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string
 		return "审计日志未初始化"
 	}
 
-	filter := AuditFilter{}
+	filter := security.AuditFilter{}
 	if since := stringVal(args, "since"); since != "" {
 		if t, err := time.Parse(time.RFC3339, since); err == nil {
 			filter.StartTime = &t
@@ -2117,7 +2122,7 @@ func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string
 		filter.ToolName = tn
 	}
 	if rl := stringVal(args, "risk_level"); rl != "" {
-		filter.RiskLevels = []RiskLevel{RiskLevel(rl)}
+		filter.RiskLevels = []security.RiskLevel{security.RiskLevel(rl)}
 	}
 
 	entries, err := h.getAuditLog().Query(filter)
@@ -2163,7 +2168,7 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 	}
 
 	searchCfg := h.app.GetWebSearchProviders()
-	provider := WebSearchProvider{Type: searchCfg.Current}
+	provider := corelib.WebSearchProvider{Type: searchCfg.Current}
 	for _, p := range searchCfg.Providers {
 		if strings.EqualFold(strings.TrimSpace(p.Type), strings.TrimSpace(searchCfg.Current)) {
 			provider = p

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"fmt"
 	"strings"
 	"time"
@@ -11,7 +13,7 @@ import (
 type SessionStartupFeedback struct {
 	manager           *RemoteSessionManager
 	checkpointer      *SessionCheckpointer
-	unfinishedSlotFor func(projectPath string) *unfinishedTaskSlot
+	unfinishedSlotFor func(projectPath string) *agent.UnfinishedTaskSlot
 }
 
 // NewSessionStartupFeedback creates a new SessionStartupFeedback instance.
@@ -26,7 +28,7 @@ func (f *SessionStartupFeedback) SetCheckpointer(cp *SessionCheckpointer) {
 
 // SetUnfinishedSlotResolver resolves the explicitly selected unfinished slot
 // for a running session's project.
-func (f *SessionStartupFeedback) SetUnfinishedSlotResolver(fn func(projectPath string) *unfinishedTaskSlot) {
+func (f *SessionStartupFeedback) SetUnfinishedSlotResolver(fn func(projectPath string) *agent.UnfinishedTaskSlot) {
 	f.unfinishedSlotFor = fn
 }
 
@@ -35,7 +37,7 @@ func (f *SessionStartupFeedback) SetUnfinishedSlotResolver(fn func(projectPath s
 // When the session reaches "running" status, a success notification is sent
 // and any prior session checkpoint is injected as resume context.
 // After 60 seconds without reaching "running", a timeout warning is sent.
-func (f *SessionStartupFeedback) WatchStartup(sessionID string, callback ProgressCallback) {
+func (f *SessionStartupFeedback) WatchStartup(sessionID string, callback tool.ProgressCallback) {
 	go f.watchLoop(sessionID, callback)
 }
 
@@ -54,7 +56,7 @@ func (f *SessionStartupFeedback) shouldInjectResumePrompt(session *RemoteSession
 	return true
 }
 
-func (f *SessionStartupFeedback) watchLoop(sessionID string, callback ProgressCallback) {
+func (f *SessionStartupFeedback) watchLoop(sessionID string, callback tool.ProgressCallback) {
 	messages := []string{
 		"正在初始化工具",
 		"正在加载项目",

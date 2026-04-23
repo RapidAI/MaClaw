@@ -1,6 +1,11 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -25,6 +30,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/nudge"
+	"github.com/RapidAI/CodeClaw/corelib/progress"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/session"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -265,7 +271,7 @@ func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, str
 	return bestName, bestReason
 }
 
-func shouldBypassSkillPreference(toolCalls []llmToolCall) bool {
+func shouldBypassSkillPreference(toolCalls []llm.ToolCall) bool {
 	for _, tc := range toolCalls {
 		name := strings.TrimSpace(tc.Function.Name)
 		switch name {
@@ -361,7 +367,7 @@ func buildSkillProgressGuidance(skillName, runID string) string {
 	return "若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态。"
 }
 
-func extractSkillRunID(toolCalls []llmToolCall, toolResults []string) string {
+func extractSkillRunID(toolCalls []llm.ToolCall, toolResults []string) string {
 	if len(toolCalls) == 0 || len(toolCalls) != len(toolResults) {
 		return ""
 	}
@@ -435,10 +441,23 @@ func buildEmptyResultRecoverPrompt() string {
 	return "[Recover 阶段]\n检测到上一轮没有返回任何可展示结果，当前进入 Recover 阶段。不要空结束，也不要只重复解释。请立即二选一：1) 直接给出可展示结果；2) 明确说明失败原因和当前状态。若还需要继续执行，必须立即调用真实工具。\n[/Recover 阶段]"
 }
 
+// cancelledExitResponse saves accumulated history and returns a clean
+// cancellation message. This is the single exit point for all cancellation
+// paths inside runAgentLoop, structurally enforcing the invariant that the
+// loop always saves (never clears) history.
+func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.ConversationEntry, userText string) *IMAgentResponse {
+	h.saveConversationHistoryTimed(userID, history, nil)
+	cancelMsg := "⏹️ 任务已取消。"
+	if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
+		cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
+	}
+	return &IMAgentResponse{Text: cancelMsg}
+}
+
 // findLastAssistantContent scans conversation history backwards and returns
 // the content of the last non-empty assistant message. This is used as a
 // fallback when the loop must hard-exit due to consecutive empty responses.
-func findLastAssistantContent(history []conversationEntry) string {
+func findLastAssistantContent(history []agent.ConversationEntry) string {
 	for i := len(history) - 1; i >= 0; i-- {
 		entry := history[i]
 		if entry.Role == "assistant" {
@@ -503,7 +522,7 @@ func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName,
 	return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成或发送相关工具。\n[/Recover 阶段]", consecutive)
 }
 
-func didSkillToolFail(toolCalls []llmToolCall, toolResults []string) bool {
+func didSkillToolFail(toolCalls []llm.ToolCall, toolResults []string) bool {
 	if len(toolCalls) == 0 || len(toolCalls) != len(toolResults) {
 		return false
 	}
@@ -523,7 +542,7 @@ func didSkillToolFail(toolCalls []llmToolCall, toolResults []string) bool {
 // if no skill failure is found. This is used for workaround detection:
 // when a skill fails but the LLM resolves the task through alternative
 // tool calls, the outcome is classified as "workaround".
-func extractFailedSkillInfo(toolCalls []llmToolCall, toolResults []string) (skillName, lastError string) {
+func extractFailedSkillInfo(toolCalls []llm.ToolCall, toolResults []string) (skillName, lastError string) {
 	if len(toolCalls) == 0 || len(toolCalls) != len(toolResults) {
 		return "", ""
 	}
@@ -703,7 +722,7 @@ type pendingCapabilityGapResult struct {
 	Timestamp time.Time
 }
 
-func hasIncompleteTaskMarker(entries []conversationEntry) bool {
+func hasIncompleteTaskMarker(entries []agent.ConversationEntry) bool {
 	for i := len(entries) - 1; i >= 0; i-- {
 		text, ok := entries[i].Content.(string)
 		if !ok {
@@ -726,7 +745,7 @@ func hasIncompleteTaskMarker(entries []conversationEntry) bool {
 	return false
 }
 
-func shouldAutoClearIncompleteTaskContext(newMessage string, entries []conversationEntry) bool {
+func shouldAutoClearIncompleteTaskContext(newMessage string, entries []agent.ConversationEntry) bool {
 	if !hasIncompleteTaskMarker(entries) {
 		return false
 	}
@@ -736,7 +755,7 @@ func shouldAutoClearIncompleteTaskContext(newMessage string, entries []conversat
 // extractOriginalUserTask scans conversation history to find the first
 // substantive user message (the original task request). This is used to
 // populate the unfinished task slot when max rounds are reached.
-func extractOriginalUserTask(history []conversationEntry) string {
+func extractOriginalUserTask(history []agent.ConversationEntry) string {
 	for _, e := range history {
 		if e.Role != "user" {
 			continue
@@ -760,7 +779,7 @@ func extractOriginalUserTask(history []conversationEntry) string {
 
 // extractProgressSummary builds a brief summary of what the agent accomplished
 // by scanning the last few assistant messages in the conversation history.
-func extractProgressSummary(history []conversationEntry) string {
+func extractProgressSummary(history []agent.ConversationEntry) string {
 	var lastAssistantTexts []string
 	for i := len(history) - 1; i >= 0 && len(lastAssistantTexts) < 3; i-- {
 		if history[i].Role != "assistant" {
@@ -798,7 +817,7 @@ type explicitTaskSlotDecision struct {
 	DismissRecoverableSessionID string
 }
 
-func resolveExplicitTaskSlotDecision(msg IMUserMessage, slot *unfinishedTaskSlot) explicitTaskSlotDecision {
+func resolveExplicitTaskSlotDecision(msg IMUserMessage, slot *agent.UnfinishedTaskSlot) explicitTaskSlotDecision {
 	decision := explicitTaskSlotDecision{
 		ResumeSlotID:                strings.TrimSpace(msg.ResumeSlotID),
 		StartNewTask:                msg.StartNewTask,
@@ -812,7 +831,7 @@ func resolveExplicitTaskSlotDecision(msg IMUserMessage, slot *unfinishedTaskSlot
 	return decision
 }
 
-func buildUnfinishedSlotResumeContext(slot *unfinishedTaskSlot) string {
+func buildUnfinishedSlotResumeContext(slot *agent.UnfinishedTaskSlot) string {
 	if slot == nil {
 		return ""
 	}
@@ -838,7 +857,7 @@ func buildUnfinishedSlotResumeContext(slot *unfinishedTaskSlot) string {
 	return b.String()
 }
 
-func buildResumeSlotActions(slot *unfinishedTaskSlot) []IMResponseAction {
+func buildResumeSlotActions(slot *agent.UnfinishedTaskSlot) []IMResponseAction {
 	if slot == nil || strings.TrimSpace(slot.SlotID) == "" {
 		return nil
 	}
@@ -853,7 +872,7 @@ func buildResumeSlotActions(slot *unfinishedTaskSlot) []IMResponseAction {
 	}
 }
 
-func buildUnfinishedSlotHint(slot *unfinishedTaskSlot) string {
+func buildUnfinishedSlotHint(slot *agent.UnfinishedTaskSlot) string {
 	if slot == nil {
 		return ""
 	}
@@ -1849,7 +1868,7 @@ func buildRecoverableSessionPayload(session *RemoteSession) *IMResponseRecoverab
 	}
 }
 
-func buildUnfinishedTaskPayload(slot *unfinishedTaskSlot) *IMResponseUnfinishedTask {
+func buildUnfinishedTaskPayload(slot *agent.UnfinishedTaskSlot) *IMResponseUnfinishedTask {
 	if slot == nil {
 		return nil
 	}
@@ -1881,7 +1900,7 @@ func tokenUsageResponseFields(input, output int) []IMResponseField {
 	return fields
 }
 
-func deriveLLMTokenUsage(resp *llmResponse, conversation []interface{}) (int, int) {
+func deriveLLMTokenUsage(resp *llm.Response, conversation []interface{}) (int, int) {
 	if resp == nil {
 		return 0, 0
 	}
@@ -1920,9 +1939,6 @@ func mergeIMResponseFields(base []IMResponseField, extra []IMResponseField) []IM
 // When MCP_Registry changes, tools are regenerated within this window.
 const toolsCacheTTL = 5 * time.Second
 
-// ProgressCallback is called by the agent loop to send intermediate progress
-// ProgressCallback — see corelib_aliases.go
-
 // IMMessageHandler processes IM messages using the local LLM Agent.
 // It accesses mcpRegistry and skillExecutor via h.app at call time
 // (not captured at construction) to handle late initialization.
@@ -1934,7 +1950,7 @@ const toolsCacheTTL = 5 * time.Second
 type IMMessageHandler struct {
 	app        *App
 	manager    *RemoteSessionManager
-	memory     *conversationMemory
+	memory     *agent.ConversationMemory
 	client     *http.Client // chat-priority HTTP client (optimised transport)
 	taskClient *http.Client // background-task HTTP client (separate pool)
 
@@ -1976,16 +1992,16 @@ type IMMessageHandler struct {
 	capabilityGapDetector *CapabilityGapDetector
 
 	// Long-term memory store (lazily initialized via setter).
-	memoryStore *MemoryStore
+	memoryStore *memory.Store
 
 	// Pending confirmation store for pre-execution confirmation gating.
 	confirmationStore *aiConfirmationStore
 
 	// Session template manager (lazily initialized via setter).
-	templateManager *SessionTemplateManager
+	templateManager *remote.SessionTemplateManager
 
 	// Scheduled task manager (lazily initialized via setter).
-	scheduledTaskManager *ScheduledTaskManager
+	scheduledTaskManager *scheduler.Manager
 
 	traceService *AITraceService
 
@@ -2159,6 +2175,16 @@ type IMMessageHandler struct {
 	// conversation. Used by fileMatch steering resolution.
 	// Keyed by "userID\x00filePath" (string), value is bool.
 	steeringContextFiles sync.Map
+
+	// pendingInjection stores supplementary messages to inject into the
+	// running agent loop. Set by the interrupt handler when a Merge decision
+	// is made, consumed by the agent loop at the start of each iteration.
+	// Keyed by userID, value is string.
+	pendingInjection sync.Map
+
+	// interruptHandler bridges IM gateways to the running agent loop's
+	// cancel/merge/status mechanisms. Set during construction.
+	interruptHandler *imInterruptHandler
 }
 
 // NewIMMessageHandler creates a new handler.
@@ -2213,6 +2239,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		unifiedClassifier: app.unifiedClassifier,
 		steeringStore:     app.steeringStore,
 	}
+	h.interruptHandler = newIMInterruptHandler(h)
 	// Initialize ToolRegistry and register builtin tools.
 	h.registry = NewToolRegistry()
 	registerBuiltinTools(h.registry, h)
@@ -2223,7 +2250,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	h.toolBuilder = NewDynamicToolBuilder(h.registry)
 
 	// Initialize automatic topic switch detector.
-	h.topicDetector = newTopicSwitchDetector(func() (*http.Client, MaclawLLMConfig) {
+	h.topicDetector = newTopicSwitchDetector(func() (*http.Client, corelib.MaclawLLMConfig) {
 		return h.client, h.getMaclawLLMConfig()
 	})
 
@@ -2288,7 +2315,7 @@ func containsCorrectionKeywords(text string) bool {
 // hasRecentFailedToolCall checks if the conversation history has a failed
 // tool call in the recent entries (last 6 entries). A failed tool call is
 // identified by error-like content in a tool result message.
-func hasRecentFailedToolCall(history []conversationEntry) bool {
+func hasRecentFailedToolCall(history []agent.ConversationEntry) bool {
 	// Scan the last 6 entries for a tool result that looks like a failure.
 	start := len(history) - 6
 	if start < 0 {
@@ -2326,12 +2353,12 @@ func hasRecentFailedToolCall(history []conversationEntry) bool {
 //
 // Returns the (possibly extended) history.
 func (h *IMMessageHandler) injectNudgeMessages(
-	history []conversationEntry,
+	history []agent.ConversationEntry,
 	iteration int,
 	totalToolCallsInLoop int,
 	phase agentLoopPhase,
 	userText string,
-) []conversationEntry {
+) []agent.ConversationEntry {
 	if h.isNudgeDisabled() {
 		return history
 	}
@@ -2347,7 +2374,7 @@ func (h *IMMessageHandler) injectNudgeMessages(
 		if tracker.ShouldNudge(event) {
 			msg := nudge.NudgeMessage(event)
 			if msg != "" {
-				history = append(history, conversationEntry{
+				history = append(history, agent.ConversationEntry{
 					Role:    "system",
 					Content: msg,
 				})
@@ -2367,7 +2394,7 @@ func (h *IMMessageHandler) injectNudgeMessages(
 		if tracker.ShouldNudge(event) {
 			msg := nudge.NudgeMessage(event)
 			if msg != "" {
-				history = append(history, conversationEntry{
+				history = append(history, agent.ConversationEntry{
 					Role:    "system",
 					Content: msg,
 				})
@@ -2387,7 +2414,7 @@ func (h *IMMessageHandler) injectNudgeMessages(
 		if tracker.ShouldNudge(event) {
 			msg := nudge.NudgeMessage(event)
 			if msg != "" {
-				history = append(history, conversationEntry{
+				history = append(history, agent.ConversationEntry{
 					Role:    "system",
 					Content: msg,
 				})
@@ -2484,7 +2511,7 @@ func (h *IMMessageHandler) SetConfigManager(cm *ConfigManager) {
 }
 
 // SetMemoryStore configures the long-term memory store.
-func (h *IMMessageHandler) SetMemoryStore(ms *MemoryStore) {
+func (h *IMMessageHandler) SetMemoryStore(ms *memory.Store) {
 	h.memoryStore = ms
 }
 
@@ -2509,12 +2536,12 @@ func (h *IMMessageHandler) traceContextResolver() *SessionContextResolver {
 }
 
 // SetTemplateManager configures the session template manager.
-func (h *IMMessageHandler) SetTemplateManager(tm *SessionTemplateManager) {
+func (h *IMMessageHandler) SetTemplateManager(tm *remote.SessionTemplateManager) {
 	h.templateManager = tm
 }
 
 // SetScheduledTaskManager configures the scheduled task manager.
-func (h *IMMessageHandler) SetScheduledTaskManager(stm *ScheduledTaskManager) {
+func (h *IMMessageHandler) SetScheduledTaskManager(stm *scheduler.Manager) {
 	h.scheduledTaskManager = stm
 }
 
@@ -2665,7 +2692,7 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 				"query": map[string]string{"type": "string", "description": "搜索关键词，描述你需要的能力（如 '生成PDF'、'发送邮件'、'图片处理'）"},
 			},
 			Required: []string{"query"},
-			HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 				return h.toolSearchAndInstallSkill(args, onProgress)
 			},
 		})
@@ -2677,7 +2704,7 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 // toolSearchAndInstallSkill handles the search_and_install_skill tool call.
 // Search order: SkillMarket (HubCenter) → ClawHub mirror → GitHub.
 // If a match is found, it downloads and registers the skill locally.
-func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}, onProgress ProgressCallback) string {
+func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 	query, _ := args["query"].(string)
 	if query == "" {
 		return "错误: 缺少 query 参数"
@@ -2714,7 +2741,7 @@ func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}
 func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *SkillSearchResult, query string, sendStatus func(string)) string {
 	// GitHub result → import via a stable install ref when available.
 	if best.Status == "github" {
-		var imported *NLSkillEntry
+		var imported *corelib.NLSkillEntry
 		if strings.TrimSpace(best.InstallRef) != "" {
 			var candidate cskill.GitHubSkillCandidate
 			if err := json.Unmarshal([]byte(best.InstallRef), &candidate); err == nil && strings.TrimSpace(candidate.RawURL) != "" {
@@ -2769,7 +2796,7 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 // downloadClawHubSkill fetches a skill from the ClawHub mirror and converts
 // the SKILL.md content into an NLSkillEntry with a single craft_tool step
 // that uses the SKILL.md as instructions.
-func downloadClawHubSkill(ctx context.Context, slug string) (*NLSkillEntry, error) {
+func downloadClawHubSkill(ctx context.Context, slug string) (*corelib.NLSkillEntry, error) {
 	endpoint := ClawHubMirrorURL + "/api/v1/skills/" + url.PathEscape(slug)
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -2814,11 +2841,11 @@ func downloadClawHubSkill(ctx context.Context, slug string) (*NLSkillEntry, erro
 		return nil, fmt.Errorf("skill %s has no SKILL.md content", slug)
 	}
 
-	return &NLSkillEntry{
+	return &corelib.NLSkillEntry{
 		Name:        name,
 		Description: raw.Skill.Summary,
 		Triggers:    []string{raw.Skill.Slug},
-		Steps: []NLSkillStep{
+		Steps: []corelib.NLSkillStep{
 			{
 				Action: "craft_tool",
 				Params: map[string]interface{}{
@@ -2840,7 +2867,7 @@ func downloadClawHubSkill(ctx context.Context, slug string) (*NLSkillEntry, erro
 // Handles both step-based skills (steps array) and file-based skills
 // (files map with SKILL.md in base64). All bundled files are extracted
 // to ~/.maclaw/data/skills/<name>/.
-func downloadSkillJSON(ctx context.Context, endpoint string) (*NLSkillEntry, error) {
+func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEntry, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -2872,7 +2899,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*NLSkillEntry, err
 		return nil, fmt.Errorf("decode: %w", err)
 	}
 
-	var steps []NLSkillStep
+	var steps []corelib.NLSkillStep
 
 	if len(full.Steps) > 0 {
 		for _, raw := range full.Steps {
@@ -2882,7 +2909,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*NLSkillEntry, err
 				OnError string                 `json:"on_error"`
 			}
 			if err := json.Unmarshal(raw, &s); err == nil && s.Action != "" {
-				steps = append(steps, NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError})
+				steps = append(steps, corelib.NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError})
 			}
 		}
 	}
@@ -2910,7 +2937,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*NLSkillEntry, err
 		trustLevel = "trusted"
 	}
 
-	return &NLSkillEntry{
+	return &corelib.NLSkillEntry{
 		Name:        full.Name,
 		Description: full.Description,
 		Triggers:    full.Triggers,
@@ -2968,7 +2995,7 @@ func extractSkillFiles(skillName string, files map[string]string) {
 
 // registerAndExecuteSkill registers a skill locally, runs security review,
 // executes it, and returns the result string.
-func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *NLSkillEntry, displayName, source string, sendStatus func(string)) string {
+func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *corelib.NLSkillEntry, displayName, source string, sendStatus func(string)) string {
 	if h.getSkillExecutor() == nil {
 		return fmt.Sprintf("找到 Skill「%s」但 SkillExecutor 未初始化", displayName)
 	}
@@ -2977,7 +3004,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 	if h.getRiskAssessor() != nil {
 		sendStatus("🔒 正在进行安全审查...")
 		assessment := h.getRiskAssessor().AssessSkill(skill, skill.TrustLevel)
-		if assessment.Level == RiskCritical {
+		if assessment.Level == security.RiskCritical {
 			// Determine the platform for the confirmation channel.
 			platform := ""
 			if h.currentLoopCtx != nil {
@@ -2992,12 +3019,12 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 				// User rejected (or timeout / fail-closed).
 				_ = h.getAuditLog() // ensure
 				if h.getAuditLog() != nil {
-					_ = h.getAuditLog().Log(AuditEntry{
+					_ = h.getAuditLog().Log(security.AuditEntry{
 						Timestamp:    time.Now(),
-						Action:       AuditActionHubSkillReject,
+						Action:       security.AuditActionHubSkillReject,
 						ToolName:     source + "_skill_install",
-						RiskLevel:    RiskCritical,
-						PolicyAction: PolicyDeny,
+						RiskLevel:    security.RiskCritical,
+						PolicyAction: security.PolicyDeny,
 						Result:       fmt.Sprintf("user rejected critical skill %s: critical risk", displayName),
 					})
 				}
@@ -3008,12 +3035,12 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 			// User confirmed — audit with PolicyUserOverride and continue to registration.
 			_ = h.getAuditLog() // ensure
 			if h.getAuditLog() != nil {
-				_ = h.getAuditLog().Log(AuditEntry{
+				_ = h.getAuditLog().Log(security.AuditEntry{
 					Timestamp:    time.Now(),
-					Action:       AuditActionHubSkillInstall,
+					Action:       security.AuditActionHubSkillInstall,
 					ToolName:     source + "_skill_install",
-					RiskLevel:    RiskCritical,
-					PolicyAction: PolicyUserOverride,
+					RiskLevel:    security.RiskCritical,
+					PolicyAction: security.PolicyUserOverride,
 					Result: fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical, factors=[%s]",
 						displayName, source, strings.Join(assessment.Factors, ", ")),
 				})
@@ -3034,12 +3061,12 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 	// Audit log.
 	_ = h.getAuditLog() // ensure
 	if h.getAuditLog() != nil {
-		_ = h.getAuditLog().Log(AuditEntry{
+		_ = h.getAuditLog().Log(security.AuditEntry{
 			Timestamp:    time.Now(),
-			Action:       AuditActionHubSkillInstall,
+			Action:       security.AuditActionHubSkillInstall,
 			ToolName:     source + "_skill_install",
-			RiskLevel:    RiskLow,
-			PolicyAction: PolicyAllow,
+			RiskLevel:    security.RiskLow,
+			PolicyAction: security.PolicyAllow,
 			Result:       fmt.Sprintf("installed skill %s from %s", displayName, source),
 		})
 	}
@@ -3224,7 +3251,7 @@ func extractBrowserRootCause(text string) string {
 	return strings.Join(filtered, "\n")
 }
 
-func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []conversationEntry, resp *IMAgentResponse) {
+func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
 	startedAt := time.Now()
 	h.memory.Save(userID, trimHistory(history))
 	if resp != nil {
@@ -3240,13 +3267,13 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 // persists the document to the FTS5 session search store. Runs in a
 // goroutine to avoid blocking the agent loop. Errors are logged but
 // do not fail the main flow.
-func (h *IMMessageHandler) persistSessionTranscriptAsync(userID string, history []conversationEntry) {
+func (h *IMMessageHandler) persistSessionTranscriptAsync(userID string, history []agent.ConversationEntry) {
 	if len(history) == 0 {
 		return
 	}
 
 	// Copy history to avoid data races with the caller.
-	historyCopy := make([]conversationEntry, len(history))
+	historyCopy := make([]agent.ConversationEntry, len(history))
 	copy(historyCopy, history)
 
 	persist := func() {
@@ -3298,7 +3325,7 @@ func (h *IMMessageHandler) persistSessionTranscriptAsync(userID string, history 
 
 // conversationToTranscriptEntries converts GUI conversation entries to the
 // corelib session.TranscriptEntry format for serialization and FTS5 indexing.
-func conversationToTranscriptEntries(history []conversationEntry) []session.TranscriptEntry {
+func conversationToTranscriptEntries(history []agent.ConversationEntry) []session.TranscriptEntry {
 	var entries []session.TranscriptEntry
 	for _, e := range history {
 		te := session.TranscriptEntry{
@@ -3516,7 +3543,7 @@ func (h *IMMessageHandler) HandleIMMessage(msg IMUserMessage) *IMAgentResponse {
 // callback. When onProgress is non-nil, the agent loop sends intermediate status
 // updates (e.g. "正在执行 bash 命令…") so the Hub can relay them to the user
 // and reset the response timeout — preventing 504 on long-running tasks.
-func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProgress ProgressCallback) *IMAgentResponse {
+func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProgress tool.ProgressCallback) *IMAgentResponse {
 	return h.HandleIMMessageWithProgressAndStream(msg, onProgress, nil, nil, nil)
 }
 
@@ -3646,15 +3673,15 @@ func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *L
 	})
 }
 
-func (h *IMMessageHandler) HandleIMMessageWithExistingLoop(msg IMUserMessage, loopCtx *LoopContext, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
+func (h *IMMessageHandler) HandleIMMessageWithExistingLoop(msg IMUserMessage, loopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
 	return h.handleIMMessageWithLoop(msg, loopCtx, onProgress, onToken, onNewRound, onStreamDone)
 }
 
-func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessage, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
+func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessage, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
 	return h.handleIMMessageWithLoop(msg, nil, onProgress, onToken, onNewRound, onStreamDone)
 }
 
-func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
+func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
 	trimmed := strings.TrimSpace(msg.Text)
 
 	// Invalidate UIC cache after each message processing cycle completes,
@@ -3766,6 +3793,34 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 	EntriesBeforeClear := h.memory.Load(msg.UserID)
 	unfinishedSlot := h.memory.GetUnfinishedSlot(msg.UserID)
+
+	// --- Recover interrupted task from in-flight marker ---
+	// If the previous agent loop was interrupted by a process kill (e.g.,
+	// updater restart), the in-flight marker persists on disk. Consume it
+	// and promote to an UnfinishedTaskSlot so the existing resume machinery
+	// handles it — no keyword matching needed, works regardless of what the
+	// user's next message says.
+	if unfinishedSlot == nil && !msg.IsBackground {
+		if interruptedTask := h.memory.ConsumeInFlightTask(msg.UserID); interruptedTask != "" {
+			slotID := fmt.Sprintf("interrupted-%d", time.Now().UnixMilli())
+			slot := &agent.UnfinishedTaskSlot{
+				SlotID:       slotID,
+				UserID:       msg.UserID,
+				Status:       "interrupted",
+				LastTask:     interruptedTask,
+				Summary:      extractProgressSummary(EntriesBeforeClear),
+				ResumePrompt: "上一次任务执行过程中应用被中断（可能因更新重启）。对话历史已恢复。请基于对话历史中已完成的工作继续执行，不要重复已完成的步骤。\n",
+				Source:       "in_flight_recovery",
+				CreatedAt:    time.Now(),
+				UpdatedAt:    time.Now(),
+			}
+			h.memory.UpsertUnfinishedSlot(msg.UserID, slot)
+			h.memory.BindUnfinishedSlot(msg.UserID, slotID)
+			unfinishedSlot = slot
+			log.Printf("[InFlightRecovery] recovered interrupted task for user %s: %q", msg.UserID, truncateRunes(interruptedTask, 80))
+		}
+	}
+
 	decision := resolveExplicitTaskSlotDecision(msg, unfinishedSlot)
 	freshTask := false
 	if h.app != nil && h.getSessionStarter() == nil {
@@ -3944,7 +3999,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			if h.memoryStore != nil {
 				entries := h.memory.Load(msg.UserID)
 				if summary := buildQuickSummary(entries); summary != "" {
-					_ = h.memoryStore.Save(MemoryEntry{
+					_ = h.memoryStore.Save(memory.Entry{
 						Content:  summary,
 						Category: "conversation_summary",
 					})
@@ -4039,8 +4094,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				entries := h.memory.Load(msg.UserID)
 				cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
 				entries = append(entries,
-					conversationEntry{Role: "user", Content: pending.OriginalText},
-					conversationEntry{Role: "assistant", Content: cancelNote},
+					agent.ConversationEntry{Role: "user", Content: pending.OriginalText},
+					agent.ConversationEntry{Role: "assistant", Content: cancelNote},
 				)
 				h.memory.Save(msg.UserID, entries)
 			}
@@ -4090,8 +4145,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 					entries := h.memory.Load(msg.UserID)
 					cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
 					entries = append(entries,
-						conversationEntry{Role: "user", Content: pending.OriginalText},
-						conversationEntry{Role: "assistant", Content: cancelNote},
+						agent.ConversationEntry{Role: "user", Content: pending.OriginalText},
+						agent.ConversationEntry{Role: "assistant", Content: cancelNote},
 					)
 					h.memory.Save(msg.UserID, entries)
 				}
@@ -4222,6 +4277,19 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Serialize chat loops: cancel any lingering previous loop and wait for
 	// it to release the mutex before starting a new one.
 	if providedLoopCtx == nil {
+		// Interrupt check: if another loop is already running and this message
+		// is a cancel/merge/status signal, handle it without waiting for the lock.
+		// This is the unified interrupt point — works for all channels (local
+		// gateways, Hub mode, desktop). Gateway-level interrupt is an optimization
+		// that fires earlier, but this is the authoritative check.
+		if h.interruptHandler != nil && msg.Text != "" && h.currentLoopCtx != nil {
+			result := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
+			if result.Handled {
+				// All handled actions return immediately — the message's
+				// purpose was to control the running loop, not to start a new task.
+				return &IMAgentResponse{Text: result.Reply}
+			}
+		}
 		h.chatLoopMu.Lock()
 		defer h.chatLoopMu.Unlock()
 	}
@@ -4341,8 +4409,14 @@ func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 }
 
 // compactHistory summarizes old conversation turns to stay within token limits.
-func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClient *http.Client) []conversationEntry {
-	if estimateConversationEntryTokens(entries) < maxMemoryTokenEstimate {
+//
+// Mechanism: instead of serializing all entries as JSON (which produces
+// unreadable input for the summarizer LLM), we extract turn-boundary
+// texts — the user's requests and the LLM's first responses. These carry
+// the task-level semantics. Tool call details are omitted from the summary
+// input since they're execution noise.
+func (h *IMMessageHandler) compactHistory(entries []agent.ConversationEntry, httpClient *http.Client) []agent.ConversationEntry {
+	if estimateConversationEntryTokens(entries) < agent.MaxMemoryTokenEstimate {
 		return entries
 	}
 	split := len(entries) / 2
@@ -4358,11 +4432,17 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 	}
 	recent := entries[split:]
 
+	// Extract turn-boundary texts from the old half for summarization.
+	// This produces human-readable input instead of raw JSON.
+	turnTexts := extractTurnBoundaryTexts(entries[:split], 20)
 	var sb strings.Builder
-	for _, e := range entries[:split] {
-		data, _ := json.Marshal(e)
-		sb.Write(data)
-		sb.WriteByte('\n')
+	for _, text := range turnTexts {
+		runes := []rune(text)
+		if len(runes) > 500 {
+			text = string(runes[:500]) + "..."
+		}
+		sb.WriteString(text)
+		sb.WriteString("\n\n")
 	}
 	summaryText := sb.String()
 	if len(summaryText) > 32000 {
@@ -4382,7 +4462,7 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 		return recent
 	}
 
-	compacted := []conversationEntry{
+	compacted := []agent.ConversationEntry{
 		{Role: "user", Content: "[对话历史摘要]\n" + resp.Choices[0].Message.Content},
 		{Role: "assistant", Content: "好的，我已了解之前的对话上下文。"},
 	}
@@ -4567,7 +4647,7 @@ func buildTrialReflectNote(toolNames []string, observations []string, repeatedFa
 	return b.String()
 }
 
-func (s *trialReflectState) observeIteration(toolCalls []llmToolCall, toolResults []string) (string, string, []string) {
+func (s *trialReflectState) observeIteration(toolCalls []llm.ToolCall, toolResults []string) (string, string, []string) {
 	if s == nil || !s.enabled || len(toolCalls) == 0 || len(toolCalls) != len(toolResults) {
 		return "", "", nil
 	}
@@ -4606,7 +4686,7 @@ func (s *trialReflectState) observeIteration(toolCalls []llmToolCall, toolResult
 	return overall, s.lastObservation, repeatedFailures
 }
 
-func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []conversationEntry, userText string, attachments []MessageAttachment, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback, minIterations int, platform string) (result *IMAgentResponse) {
+func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []agent.ConversationEntry, userText string, attachments []MessageAttachment, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback, minIterations int, platform string) (result *IMAgentResponse) {
 	// panic recovery — 防止工具执行异常导致 goroutine 崩溃
 	defer func() {
 		if r := recover(); r != nil {
@@ -4779,38 +4859,26 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		sendProgress(text)
 	}
 
-	// Delayed acknowledgment: when debug is off and streaming is not active,
-	// schedule a brief receipt after a short grace period. If the agent loop
-	// finishes quickly (e.g. simple greetings), the receipt is suppressed —
-	// the user sees only the final card, avoiding the redundant "收到，正在处理中" message.
-	// When streaming (onToken != nil), the user already sees real-time output,
-	// so the acknowledgment is unnecessary.
-	// Use a shorter delay (1.5s) so IM users get faster feedback — the desktop
-	// AI assistant has streaming and never hits this path anyway.
-	const ackDelay = 1500 * time.Millisecond
-	ackDone := make(chan struct{})
-	if !isDebug() && onToken == nil {
-		ackTimer := time.NewTimer(ackDelay)
-		go func() {
-			select {
-			case <-ackTimer.C:
-				sendProgress("📨 收到，正在处理中，稍后发你结果…")
-			case <-ackDone:
-				ackTimer.Stop()
-			}
-		}()
+	// --- Event-driven progress tracker ---
+	// Replaces the old ack timer + "任务较复杂" patience hints with
+	// milestone-based progress that only sends messages when there's new info.
+	milestoneTracker := progress.NewAgentProgressTracker(
+		func(text string) { sendProgress(text) },
+		userText, "", nil,
+	)
+	defer milestoneTracker.Stop()
+	// Register tracker for interrupt handler access.
+	if h.interruptHandler != nil {
+		h.interruptHandler.SetTracker(userID, milestoneTracker)
+		defer h.interruptHandler.ClearTracker(userID)
 	}
-	// Ensure the delayed ack goroutine is cancelled when the loop returns.
-	defer close(ackDone)
 
-	// Heartbeat: send a silent keepalive every 60s so the Hub-side response
-	// timer (180s) is continuously reset during long LLM calls or tool
-	// executions. The Hub recognises the exact string and resets the timer
-	// without forwarding the message to the user.
-	const heartbeatInterval = 60 * time.Second
+	// Hub heartbeat: silent keepalive every 60s so the Hub-side response
+	// timer (180s) is continuously reset. Separate from user-facing progress.
+	const hubHeartbeatInterval = 60 * time.Second
 	heartbeatDone := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(heartbeatInterval)
+		ticker := time.NewTicker(hubHeartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -4971,7 +5039,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	userContent := buildUserContent(userText, attachments, cfg.Protocol, cfg.SupportsVision)
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 
-	history = append(history, conversationEntry{Role: "user", Content: userContent})
+	history = append(history, agent.ConversationEntry{Role: "user", Content: userContent})
 	preLLMConversationElapsed = time.Since(conversationStartedAt)
 
 	// --- Inject drift context from previous loop ---
@@ -5007,20 +5075,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		chatFinalizeGrace = 2
 	}
 	if effectiveMax <= 0 {
-		effectiveMax = maxAgentIterationsCap
+		effectiveMax = config.MaxAgentIterationsCap
 	}
-	if effectiveMax < minAgentIterations {
-		effectiveMax = minAgentIterations
+	if effectiveMax < config.MinAgentIterations {
+		effectiveMax = config.MinAgentIterations
 	}
 	// Apply minimum iterations floor (e.g. scheduled tasks need more rounds).
 	if minIterations > 0 && effectiveMax < minIterations {
 		effectiveMax = minIterations
-		if effectiveMax > maxAgentIterationsCap {
-			effectiveMax = maxAgentIterationsCap
+		if effectiveMax > config.MaxAgentIterationsCap {
+			effectiveMax = config.MaxAgentIterationsCap
 		}
 	}
 	log.Printf("[AgentLoop] start loop=%s kind=%d maxIter=%d effectiveMax=%d minIterations=%d configCap=%d grace=%d user=%q task=%q",
-		ctx.ID, ctx.Kind, maxIter, effectiveMax, minIterations, maxAgentIterationsCap, chatFinalizeGrace, userID, truncateRunes(userText, 80))
+		ctx.ID, ctx.Kind, maxIter, effectiveMax, minIterations, config.MaxAgentIterationsCap, chatFinalizeGrace, userID, truncateRunes(userText, 80))
 
 	// --- Coding Tool Gate: pre-compute gate decision before iteration loop ---
 	var gic *GateIntentClassifier
@@ -5029,12 +5097,24 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, gic, h.lastUserID)
 
+	// Refine milestone tracker complexity now that intent is known.
+	if gateConfig.intent != "" {
+		milestoneTracker.RefineIntent(string(gateConfig.intent))
+	}
+
 	// --- Coding Tool Gate: filter blocked tool DEFINITIONS from the tool list ---
 	// When the gate is active, remove browser/coding tool definitions from the
 	// list sent to the LLM. This prevents the LLM from seeing 25+ browser tool
 	// definitions during the three-phase coding workflow, which wastes context
 	// tokens and causes hallucinated "Browser:" role prefixes in output.
-	if gateConfig.active {
+	//
+	// Skip when SkipNeedsConfirmGate is set — this means handlePendingConfirm
+	// classified the user's message as unrelated to the active workflow ("other"
+	// or "modify"). In that case, the user needs the full tool set (bash,
+	// write_file, ssh, etc.) to execute their unrelated request. Without this
+	// check, the coding gate strips bash/write_file even for non-coding tasks
+	// like "upload this skill to market", leaving the LLM unable to write files.
+	if gateConfig.active && !ctx.SkipNeedsConfirmGate {
 		filtered := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
 			name := tool.ExtractToolName(t)
@@ -5126,6 +5206,24 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// complex tasks (≥5 tool calls).
 	totalToolCallsInLoop := 0
 
+	// --- In-flight task marker ---
+	// Mark that an agent loop is now executing. If the process is killed
+	// before the loop completes, this marker persists on disk and tells
+	// the next app session that the previous task was interrupted.
+	h.memory.SetInFlightTask(userID, truncateRunes(userText, 200))
+	if err := h.memory.FlushNow(); err != nil {
+		log.Printf("[InFlightTask] flush failed: %v", err)
+	}
+	// Ensure the marker is cleared on every exit path (normal, cancel,
+	// panic, max-rounds, drift, etc.). The defer runs after the named
+	// return in runAgentLoop, so it covers all paths.
+	defer func() {
+		h.memory.ClearInFlightTask(userID)
+		// Best-effort flush; if it fails the marker will be cleared on
+		// the next successful persist cycle.
+		_ = h.memory.FlushNow()
+	}()
+
 	for iteration := 0; ; iteration++ {
 		ctx.SetIteration(iteration)
 
@@ -5154,7 +5252,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					// Auto-extend cap is 2x the config cap (e.g. 600 when cap=300).
 					// This ensures auto-extension works even when effectiveMax
 					// already equals maxAgentIterationsCap.
-					autoExtendCap := maxAgentIterationsCap * 2
+					autoExtendCap := config.MaxAgentIterationsCap * 2
 					autoExtended := effectiveMax + 30
 					if autoExtended > autoExtendCap {
 						autoExtended = autoExtendCap
@@ -5242,15 +5340,22 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				} else {
 					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d 轮）…", iteration+1))
 				}
-			} else if onToken == nil && (iteration == 3 || (iteration > 3 && iteration%5 == 0)) {
-				// Non-debug, non-streaming mode: send a patience hint at iteration 4,
-				// then every 5 rounds so the user knows a long task is still alive.
-				// When streaming, the user already sees real-time output.
-				// Suppress during recover phase — the user already knows something
-				// went wrong, sending "正在耐心处理中" is misleading.
-				if phase.Stage != agentStageRecover {
-					sendProgress("⏳ 任务较复杂，正在耐心处理中，稍后发你结果…")
-				}
+			} else {
+				// Event-driven progress: milestone tracker handles merge
+				// window expiry and heartbeat. No more timer-based "任务较复杂".
+				milestoneTracker.Tick()
+			}
+		}
+
+		// --- Consume pending injection (Merge from interrupt handler) ---
+		if injected, ok := h.pendingInjection.LoadAndDelete(userID); ok {
+			injectedText, _ := injected.(string)
+			if injectedText != "" {
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": "[用户补充] " + injectedText,
+				})
+				log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(injectedText, 50))
 			}
 		}
 		iterationPrepStartedAt := time.Now()
@@ -5301,7 +5406,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				phase.RemoteSearchExhausted = true
 				tools = baseTools
 				// Re-apply coding gate definition filter after restoring baseTools.
-				if gateConfig.active {
+				if gateConfig.active && !ctx.SkipNeedsConfirmGate {
 					gateFiltered := make([]map[string]interface{}, 0, len(tools))
 					for _, t := range tools {
 						name := tool.ExtractToolName(t)
@@ -5482,16 +5587,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 		}
 		if err != nil {
-			// If the error is due to cancellation, return a clean message
-			// instead of an LLM error.
+			// If the error is due to cancellation, save history and return
+			// a clean message instead of an LLM error. The agent loop must
+			// never call memory.Clear — history lifecycle is managed by the
+			// caller (handleIMMessageWithLoop), not the loop itself.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
-				h.memory.Clear(userID)
-				cancelMsg := "⏹️ 任务已取消。"
-				if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
-					cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
-				}
-				return &IMAgentResponse{Text: cancelMsg}
+				return h.cancelledExitResponse(userID, history, userText)
 			}
 			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol)}
 		}
@@ -5546,7 +5648,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		historyAppendStartedAt := time.Now()
-		historyEntry := conversationEntry{Role: "assistant", Content: msgContent, ReasoningContent: msgReasoning}
+		historyEntry := agent.ConversationEntry{Role: "assistant", Content: msgContent, ReasoningContent: msgReasoning}
 		if len(choice.Message.ToolCalls) > 0 {
 			historyEntry.ToolCalls = choice.Message.ToolCalls
 		}
@@ -5564,7 +5666,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// Previously this only fired on iteration == 0, so the LLM could
 		// output the requirements doc on iteration 1 and then immediately
 		// call create_session on iteration 2+ without any enforcement.
-		if gateConfig.active && len(choice.Message.ToolCalls) > 0 {
+		if gateConfig.active && !ctx.SkipNeedsConfirmGate && len(choice.Message.ToolCalls) > 0 {
 			gateResult := applyCodingToolGate(choice.Message.ToolCalls)
 			if gateResult.applied {
 				// Log stripped and preserved tool names.
@@ -5597,7 +5699,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if m, ok := conversation[len(conversation)-1].(map[string]interface{}); ok {
 						delete(m, "tool_calls")
 					}
-					history[len(history)-1] = conversationEntry{Role: "assistant", Content: msgContent, ReasoningContent: msgReasoning}
+					history[len(history)-1] = agent.ConversationEntry{Role: "assistant", Content: msgContent, ReasoningContent: msgReasoning}
 				} else {
 					if m, ok := conversation[len(conversation)-1].(map[string]interface{}); ok {
 						m["tool_calls"] = gateResult.remaining
@@ -6070,18 +6172,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		totalToolCallsInLoop += len(choice.Message.ToolCalls)
 		for _, tc := range choice.Message.ToolCalls {
 			// Check cancellation between tool calls so we don't keep
-			// executing tools after the user clicked cancel.
+			// executing tools after the user clicked cancel. Save history
+			// so the next message retains full context.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
-				h.memory.Clear(userID)
-				cancelMsg := "⏹️ 任务已取消。"
-				if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
-					cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
-				}
-				return &IMAgentResponse{Text: cancelMsg}
+				return h.cancelledExitResponse(userID, history, userText)
 			}
 			toolLabel := userFacingToolProgressText(tc.Function.Name)
-			sendToolProgress(toolLabel)
+			// Record "starting" milestone — pusher decides whether to show it.
+			milestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
+			if isDebug() {
+				sendToolProgress(toolLabel)
+			}
 			// When debug is off, suppress intermediate progress from tool execution too.
 			toolOnProgress := onProgress
 			if !isDebug() {
@@ -6098,6 +6200,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			toolExecStartedAt := time.Now()
 			recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 			result := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+
+			// Record "completed" milestone for event-driven progress.
+			milestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
 
 			// Handle ask_user: pause the loop and present the question to the user.
 			// The question text becomes the visible response; the agent loop will
@@ -6146,7 +6251,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						"tool_call_id": tc.ID,
 						"content":      toolResults[len(toolResults)-1],
 					})
-					history = append(history, conversationEntry{
+					history = append(history, agent.ConversationEntry{
 						Role: "tool", Content: toolResults[len(toolResults)-1], ToolCallID: tc.ID,
 					})
 					h.saveConversationHistoryTimed(userID, history, nil)
@@ -6303,7 +6408,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				"tool_call_id": tc.ID,
 				"content":      truncated,
 			})
-			history = append(history, conversationEntry{
+			history = append(history, agent.ConversationEntry{
 				Role: "tool", Content: truncated, ToolCallID: tc.ID,
 			})
 
@@ -6488,7 +6593,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				thumb := pendingImageKey
 				// Cap thumbnail data to keep the JSON response lean
 				if len(thumb) > 50000 {
-					if downsized, err := downsizeScreenshotBase64(thumb, 10000); err == nil {
+					if downsized, err := remote.DownsizeScreenshotBase64(thumb, 10000); err == nil {
 						thumb = downsized
 					}
 				}
@@ -6719,15 +6824,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 	}
 
-	// When the loop exits due to cancellation, return a clean message
-	// and skip the bonus round / max-iterations logic.
+	// When the loop exits due to cancellation, save history and return a
+	// clean message. The agent loop must never call memory.Clear — history
+	// lifecycle is managed by the caller, not the loop itself.
 	if ctx.IsCancelled() {
-		h.memory.Clear(userID)
-		cancelMsg := "⏹️ 任务已取消。"
-		if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
-			cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
-		}
-		return &IMAgentResponse{Text: cancelMsg}
+		return h.cancelledExitResponse(userID, history, userText)
 	}
 
 	// When rounds are exhausted but coding sessions are still active,
@@ -6788,13 +6889,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if recorder != nil {
 				recorder.Record("assistant", bcContent, bc.Message.ToolCalls, "", bcReasoning)
 			}
-			history = append(history, conversationEntry{
+			history = append(history, agent.ConversationEntry{
 				Role: "assistant", Content: bcContent, ReasoningContent: bcReasoning, ToolCalls: bc.Message.ToolCalls,
 			})
 
 			// Execute any tool calls from the bonus round.
 			for _, tc := range bc.Message.ToolCalls {
-				sendToolProgress(userFacingToolProgressText(tc.Function.Name))
+				milestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
+				if isDebug() {
+					sendToolProgress(userFacingToolProgressText(tc.Function.Name))
+				}
 				toolOnProgress := onProgress
 				if !isDebug() {
 					toolOnProgress = nil
@@ -6810,6 +6914,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				toolExecStartedAt := time.Now()
 				recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 				toolResult := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+
+				// Record completed milestone.
+				milestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
 
 				// Handle ask_user in background loop: skip (background tasks shouldn't ask questions).
 				if IsAskUserResult(toolResult) {
@@ -6838,7 +6945,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					"tool_call_id": tc.ID,
 					"content":      truncated,
 				})
-				history = append(history, conversationEntry{
+				history = append(history, agent.ConversationEntry{
 					Role: "tool", Content: truncated, ToolCallID: tc.ID,
 				})
 			}
@@ -6858,7 +6965,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	progressSummary := extractProgressSummary(history)
 	if originalTask != "" {
 		slotID := fmt.Sprintf("maxround-%d", time.Now().UnixMilli())
-		h.memory.UpsertUnfinishedSlot(userID, &unfinishedTaskSlot{
+		h.memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
 			SlotID:       slotID,
 			UserID:       userID,
 			Status:       "max_rounds_reached",

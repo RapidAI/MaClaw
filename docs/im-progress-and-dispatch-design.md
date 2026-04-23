@@ -637,62 +637,73 @@ Decision = f(
 
 ## 8. 实现计划
 
-### Phase 1: MilestoneBuffer + 里程碑提取器
+### Phase 1: MilestoneBuffer + 里程碑提取器 ✅ 已完成
 
 **目标**：建立共享数据源，替换现有的无信息量进度消息。
 
 **文件变更**：
 - `corelib/progress/milestone.go`：`Milestone`、`MilestoneBuffer` 数据结构
 - `corelib/progress/extractor.go`：`ExtractMilestone()`、`toolSummaryRules`、`silentTools`
-- `corelib/progress/milestone_test.go`：单元测试
+- `corelib/progress/milestone_test.go`：7 个单元测试
+- `corelib/progress/extractor_test.go`：10 个单元测试
 
 **接入点**：
-- `gui/im_tool_execution.go`：`executeTool()` 完成后调用 `ExtractMilestone` 写入 buffer
-- `gui/im_message_handler.go`：agent loop 开始时 `Reset()` buffer
+- `gui/im_message_handler.go`：工具执行前后调用 `milestoneTracker.RecordToolCall()`
+- `gui/im_message_handler.go`：agent loop 开始时创建 `AgentProgressTracker`
 
-### Phase 2: 事件驱动进度推送
+### Phase 2: 事件驱动进度推送 ✅ 已完成
 
 **目标**：替换现有的定时 nudge 机制。
 
 **文件变更**：
 - `corelib/progress/pusher.go`：`ProgressPusher` 实现（三层策略 + 合并窗口 + 动态升级）
-- `hub/internal/im/router.go`：替换 `progressMinInterval` 逻辑，改为消费 `ProgressPusher` 的事件
-- `gui/im_message_handler.go`：移除"任务较复杂，正在耐心处理中"等硬编码消息
+- `corelib/progress/agent_integration.go`：`AgentProgressTracker`（一行接入 agent loop）
+- `corelib/progress/agent_integration_test.go`：6 个单元测试
+- `gui/im_message_handler.go`：替换 ack timer + "任务较复杂" 消息 + gateConfig 后 RefineIntent
 
-### Phase 3: 消息调度器核心
+### Phase 3: 消息调度器核心 ✅ 已完成
 
 **目标**：实现 `Schedule()` 函数和三信号决策矩阵。
 
 **文件变更**：
-- `corelib/progress/scheduler.go`：`MessageScheduler`、`ScheduleDecision`、决策矩阵
+- `corelib/progress/scheduler.go`：`MessageScheduler`、`ScheduleDecision`、分层决策矩阵
 - `corelib/progress/structure.go`：`DetectNegation()`、`StructureSignal`
-- `corelib/progress/scheduler_test.go`：决策矩阵覆盖测试
+- `corelib/progress/scheduler_test.go`：16 个决策矩阵覆盖测试
+- `corelib/progress/structure_test.go`：4 个否定句法测试
 
-### Phase 4: InterruptAndProcess 统一中断层
+### Phase 4: InterruptHandler 统一中断层 ✅ 已完成
 
-**目标**：实现中断 + 部分产出保留 + 恢复点。
-
-**文件变更**：
-- `corelib/progress/interrupt.go`：`InterruptRequest`、`InterruptResult`、`SuspendedTask`
-- `gui/im_message_handler.go`：`InterruptAndProcess()` 方法
-- `gui/im_message_handler.go`：per-user cancel context 管理
-
-### Phase 5: IM 通道异步化
-
-**目标**：IM 消息接收与 agent loop 解耦。
+**目标**：实现中断 + 部分产出保留。
 
 **文件变更**：
-- `hub/internal/im/async_dispatcher.go`：`AsyncDispatcher` 实现
-- `hub/internal/im/router.go`：消息接收改为异步，调用 `AsyncDispatcher.OnMessage()`
+- `corelib/progress/interrupt.go`：`InterruptHandler` 接口 + `InterruptResult` 结构化返回
+- `gui/im_interrupt_handler.go`：实现 `InterruptHandler`，L1 关键词 domain match + Schedule 决策
+- `gui/im_message_handler.go`：`pendingInjection` + `interruptHandler` 字段 + `chatLoopMu` 前统一 interrupt 检查
+- `gui/remote_hub_client.go`：Hub 模式 interrupt 检查
 
-### Phase 6: 桌面面板预输入队列改进
+### Phase 5: IM 通道 interrupt 接入 ✅ 已完成
 
-**目标**：逐条处理 + 引导发射 + 预分类。
+**目标**：所有 IM 通道支持运行中消息打断。
 
 **文件变更**：
-- `gui/frontend/src/components/ai/PreInputQueue.tsx`：队列 UI 重构（状态机 + [⏎] 按钮 + 菜单）
-- `gui/frontend/src/components/ai/usePreInputQueue.ts`：逐条处理逻辑 + 预分类缓存
-- `gui/app.go`：新增 `SchedulePreInput()` Wails binding，前端调用做预分类
+- `corelib/weixin/gateway.go`：`interruptHandler` 字段 + `SetInterruptHandler` + per-user lock 前 `TryInterrupt`
+- `corelib/telegram/gateway.go`：同上（已有）
+- `corelib/qqbot/gateway.go`：同上（已有）
+- `gui/weixin_gateway.go`：`ensureLocalHandler` 中接线
+- `gui/telegram_gateway.go`：同上（已有）
+- `gui/qqbot_gateway.go`：同上（已有）
+- `gui/im_message_handler.go`：`chatLoopMu.Lock()` 前统一 interrupt 兜底（覆盖蓝信等无 per-user lock 的通道）
+
+### Phase 6: 桌面面板预输入队列改进 ✅ 已完成
+
+**目标**：逐条处理 + 引导发射。
+
+**文件变更**：
+- `gui/frontend/src/components/ai/AIAssistantPanel.tsx`：`mergeAndFire` → `extractEntry` 逐条处理；cancel handler 同步改为逐条
+- `gui/frontend/src/components/ai/BufferQueuePanel.tsx`：`onFireEntry` + `⏎` 发射按钮（已有）
+- `gui/frontend/src/components/ai/useBufferQueue.ts`：`extractEntry` 方法（已有）
+
+**注**：`⏎` 发射按钮和 `handleFireEntry`（cancel + send）在之前的迭代中已实现。本次改动是将队列消费从 `mergeAndFire`（一次性合并）改为 `extractEntry`（逐条独立 agent loop）。
 
 ---
 

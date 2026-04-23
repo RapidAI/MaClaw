@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+)
 
 func TestGetWebSearchProviders_Defaults(t *testing.T) {
 	tmpHome := t.TempDir()
@@ -23,7 +27,7 @@ func TestSaveWebSearchProviders_NormalizesAndPersistsCurrent(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	providers := []WebSearchProvider{
+	providers := []corelib.WebSearchProvider{
 		{Name: " Brave ", Type: " BRAVE ", Key: "  brave-key  ", BaseURL: "https://api.search.brave.com/res/v1/web/search/"},
 	}
 	if err := app.SaveWebSearchProviders(providers, " BRAVE "); err != nil {
@@ -57,8 +61,8 @@ func TestGetWebSearchProviders_BackfillsMissingDefaults(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := AppConfig{
-		WebSearchProviders:       []WebSearchProvider{{Name: "Only Brave", Type: "brave", Key: "k"}},
+	cfg := corelib.AppConfig{
+		WebSearchProviders:       []corelib.WebSearchProvider{{Name: "Only Brave", Type: "brave", Key: "k"}},
 		WebSearchCurrentProvider: "brave",
 	}
 	if err := app.SaveConfig(cfg); err != nil {

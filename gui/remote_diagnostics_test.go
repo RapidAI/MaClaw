@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestCheckRemoteClaudeReadinessReadyState(t *testing.T) {
@@ -42,13 +44,13 @@ func TestCheckRemoteClaudeReadinessReadyState(t *testing.T) {
 	cfg.RemoteMachineID = "m-1"
 	cfg.RemoteMachineToken = "token-1"
 	cfg.CurrentProject = "p1"
-	cfg.Projects = []ProjectConfig{{
+	cfg.Projects = []corelib.ProjectConfig{{
 		Id:   "p1",
 		Name: "Project",
 		Path: projectDir,
 	}}
 	cfg.Claude.CurrentModel = "Original"
-	cfg.Claude.Models = []ModelConfig{{
+	cfg.Claude.Models = []corelib.ModelConfig{{
 		ModelName: "Original",
 		ModelId:   "",
 		IsBuiltin: true,
@@ -93,8 +95,8 @@ func TestCheckRemoteClaudeReadinessMissingTool(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.Claude.CurrentModel = "Original"
-	cfg.Claude.Models = []ModelConfig{{ModelName: "Original", IsBuiltin: true}}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Claude.Models = []corelib.ModelConfig{{ModelName: "Original", IsBuiltin: true}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -146,7 +148,7 @@ func TestCheckRemoteClaudeReadinessMissingModel(t *testing.T) {
 	}
 	cfg.Claude.CurrentModel = ""
 	cfg.Claude.Models = nil
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -274,8 +276,8 @@ func TestCheckRemoteClaudeLaunchProbeRunsLaunchProbe(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.Claude.CurrentModel = "Original"
-	cfg.Claude.Models = []ModelConfig{{ModelName: "Original", IsBuiltin: true}}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Claude.Models = []corelib.ModelConfig{{ModelName: "Original", IsBuiltin: true}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -344,8 +346,8 @@ func TestCheckRemoteToolReadinessSupportsCodex(t *testing.T) {
 	}
 	cfg.RemoteEnabled = true
 	cfg.Codex.CurrentModel = "Original"
-	cfg.Codex.Models = []ModelConfig{{ModelName: "Original", ModelId: "gpt-5.2-codex", IsBuiltin: true}}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Codex.Models = []corelib.ModelConfig{{ModelName: "Original", ModelId: "gpt-5.2-codex", IsBuiltin: true}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -397,8 +399,8 @@ func TestCheckRemoteToolLaunchProbeRunsForCodex(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.Codex.CurrentModel = "Original"
-	cfg.Codex.Models = []ModelConfig{{ModelName: "Original", IsBuiltin: true}}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.Codex.Models = []corelib.ModelConfig{{ModelName: "Original", IsBuiltin: true}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)

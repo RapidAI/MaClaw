@@ -143,6 +143,7 @@ const (
 	MsgTUIChatUserPrefix              = "msg.tui_chat_user_prefix"
 	MsgTUIChatAssistantPrefix         = "msg.tui_chat_assistant_prefix"
 	MsgTUIChatWaiting                 = "msg.tui_chat_waiting"
+	MsgTUIChatSpinnerLabel            = "msg.tui_chat_spinner_label"
 	MsgTUIChatHint                    = "msg.tui_chat_hint"
 	MsgTUIChatAwaitingResponse        = "msg.tui_chat_awaiting_response"
 	MsgTUIChatModeLabelSimple         = "msg.tui_chat_mode_label_simple"
@@ -378,6 +379,7 @@ var translations = map[string]map[string]string{
 		MsgTUIChatUserPrefix:  "你: ",
 		MsgTUIChatAssistantPrefix: "AI: ",
 		MsgTUIChatWaiting:     "  ⏳ 思考中...",
+		MsgTUIChatSpinnerLabel: "思考中...",
 		MsgTUIChatHint:        "i:输入  Enter:发送  Esc:退出输入  c:清除  a:切换模式  ↑↓:滚动",
 		MsgTUIChatAwaitingResponse: "等待响应中...",
 		MsgTUIChatModeLabelSimple: "问答",
@@ -602,6 +604,7 @@ var translations = map[string]map[string]string{
 		MsgTUIChatUserPrefix:  "You: ",
 		MsgTUIChatAssistantPrefix: "AI: ",
 		MsgTUIChatWaiting:     "  ⏳ Thinking...",
+		MsgTUIChatSpinnerLabel: "Thinking...",
 		MsgTUIChatHint:        "i:input  Enter:send  Esc:exit input  c:clear  a:switch mode  ↑↓:scroll",
 		MsgTUIChatAwaitingResponse: "Waiting for response...",
 		MsgTUIChatModeLabelSimple: "Chat",

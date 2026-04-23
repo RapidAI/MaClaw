@@ -1,20 +1,23 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 func TestSessionCheckpointer_SaveAndRecall(t *testing.T) {
 	tmpDir := t.TempDir()
 	memPath := filepath.Join(tmpDir, "memories.json")
-	ms, err := NewMemoryStore(memPath)
+	ms, err := memory.NewStore(memPath)
 	if err != nil {
-		t.Fatalf("NewMemoryStore: %v", err)
+		t.Fatalf("memory.NewStore: %v", err)
 	}
 	defer ms.Stop()
 
@@ -62,9 +65,9 @@ func TestSessionCheckpointer_SaveAndRecall(t *testing.T) {
 func TestSessionCheckpointer_RecallEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
 	memPath := filepath.Join(tmpDir, "memories.json")
-	ms, err := NewMemoryStore(memPath)
+	ms, err := memory.NewStore(memPath)
 	if err != nil {
-		t.Fatalf("NewMemoryStore: %v", err)
+		t.Fatalf("memory.NewStore: %v", err)
 	}
 	defer ms.Stop()
 
@@ -78,9 +81,9 @@ func TestSessionCheckpointer_RecallEmpty(t *testing.T) {
 func TestSessionCheckpointer_BuildResumePrompt(t *testing.T) {
 	tmpDir := t.TempDir()
 	memPath := filepath.Join(tmpDir, "memories.json")
-	ms, err := NewMemoryStore(memPath)
+	ms, err := memory.NewStore(memPath)
 	if err != nil {
-		t.Fatalf("NewMemoryStore: %v", err)
+		t.Fatalf("memory.NewStore: %v", err)
 	}
 	defer ms.Stop()
 
@@ -120,9 +123,9 @@ func TestSessionCheckpointer_NilMemoryStore(t *testing.T) {
 func TestSessionCheckpointer_NilSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	memPath := filepath.Join(tmpDir, "memories.json")
-	ms, err := NewMemoryStore(memPath)
+	ms, err := memory.NewStore(memPath)
 	if err != nil {
-		t.Fatalf("NewMemoryStore: %v", err)
+		t.Fatalf("memory.NewStore: %v", err)
 	}
 	defer ms.Stop()
 
@@ -135,9 +138,9 @@ func TestSessionCheckpointer_NilSession(t *testing.T) {
 func TestSessionCheckpointer_WithContextBridge(t *testing.T) {
 	tmpDir := t.TempDir()
 	memPath := filepath.Join(tmpDir, "memories.json")
-	ms, err := NewMemoryStore(memPath)
+	ms, err := memory.NewStore(memPath)
 	if err != nil {
-		t.Fatalf("NewMemoryStore: %v", err)
+		t.Fatalf("memory.NewStore: %v", err)
 	}
 	defer ms.Stop()
 
@@ -181,9 +184,9 @@ func TestSessionCheckpointer_WithContextBridge(t *testing.T) {
 func TestSessionCheckpointer_BuildResumePromptForSlot(t *testing.T) {
 	tmpDir := t.TempDir()
 	memPath := filepath.Join(tmpDir, "memories.json")
-	ms, err := NewMemoryStore(memPath)
+	ms, err := memory.NewStore(memPath)
 	if err != nil {
-		t.Fatalf("NewMemoryStore: %v", err)
+		t.Fatalf("memory.NewStore: %v", err)
 	}
 	defer ms.Stop()
 
@@ -200,7 +203,7 @@ func TestSessionCheckpointer_BuildResumePromptForSlot(t *testing.T) {
 	}
 	_ = cp.SaveCheckpoint(session)
 
-	slot := &unfinishedTaskSlot{ProjectPath: "/home/user/webapp"}
+	slot := &agent.UnfinishedTaskSlot{ProjectPath: "/home/user/webapp"}
 	prompt := cp.BuildResumePromptForSlot(slot)
 	if prompt == "" {
 		t.Fatal("BuildResumePromptForSlot returned empty string")
@@ -213,21 +216,21 @@ func TestSessionCheckpointer_BuildResumePromptForSlot(t *testing.T) {
 func TestMemoryStore_RecallForProject(t *testing.T) {
 	tmpDir := t.TempDir()
 	memPath := filepath.Join(tmpDir, "memories.json")
-	ms, err := NewMemoryStore(memPath)
+	ms, err := memory.NewStore(memPath)
 	if err != nil {
-		t.Fatalf("NewMemoryStore: %v", err)
+		t.Fatalf("memory.NewStore: %v", err)
 	}
 	defer ms.Stop()
 
 	// Save entries for different projects.
-	_ = ms.Save(MemoryEntry{
+	_ = ms.Save(memory.Entry{
 		Content:  "项目A的配置信息",
-		Category: MemCategoryProjectKnowledge,
+		Category: memory.CategoryProjectKnowledge,
 		Tags:     []string{"/home/user/projectA"},
 	})
-	_ = ms.Save(MemoryEntry{
+	_ = ms.Save(memory.Entry{
 		Content:  "项目B的配置信息",
-		Category: MemCategoryProjectKnowledge,
+		Category: memory.CategoryProjectKnowledge,
 		Tags:     []string{"/home/user/projectB"},
 	})
 

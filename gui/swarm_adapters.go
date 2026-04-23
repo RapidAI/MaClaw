@@ -5,6 +5,7 @@ package main
 // to the abstract interfaces expected by swarm.SwarmOrchestrator.
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"fmt"
 	"net/http"
@@ -115,7 +116,7 @@ func (c *guiAppContext) ListInstalledTools() []swarm.InstalledToolInfo {
 
 // guiLLMCaller adapts MaclawLLMConfig + doSimpleLLMRequest to swarm.SwarmLLMCaller.
 type guiLLMCaller struct {
-	cfg MaclawLLMConfig
+	cfg corelib.MaclawLLMConfig
 }
 
 func (c *guiLLMCaller) CallLLM(prompt string, temperature float64, timeout time.Duration) ([]byte, error) {

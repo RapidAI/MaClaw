@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSkillRunnerCreateSessionStoresSessionMeta(t *testing.T) {
@@ -17,11 +19,11 @@ func TestSkillRunnerCreateSessionStoresSessionMeta(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Projects = []ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
 	cfg.CurrentProject = "proj-1"
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models:       []ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
 	}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -42,7 +44,7 @@ func TestSkillRunnerCreateSessionStoresSessionMeta(t *testing.T) {
 	runID := "run-meta"
 	runner.runs[runID] = &skillRun{status: SkillRunStatus{RunID: runID, Skill: "demo", Status: "running"}}
 
-	output, err := runner.executeStepWithContext(context.Background(), runID, NLSkillStep{
+	output, err := runner.executeStepWithContext(context.Background(), runID, corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{
 			"tool":              "claude",
@@ -92,11 +94,11 @@ func TestCodingSessionStarterLinksTraceRuns(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Projects = []ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
 	cfg.CurrentProject = "proj-1"
-	cfg.Claude = ToolConfig{
+	cfg.Claude = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models:       []ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
 	}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -157,11 +159,11 @@ func TestCodingSessionStarterAppliesCodexResumeSessionID(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteEnabled = true
-	cfg.Codex = ToolConfig{
+	cfg.Codex = corelib.ToolConfig{
 		CurrentModel: "Original",
-		Models:       []ModelConfig{{ModelName: "Original", ModelId: "gpt-5.2-codex", IsBuiltin: true}},
+		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "gpt-5.2-codex", IsBuiltin: true}},
 	}
-	cfg.Projects = []ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
 	cfg.CurrentProject = "proj-1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)

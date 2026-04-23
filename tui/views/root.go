@@ -3,40 +3,43 @@ package views
 import (
 	"fmt"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 // Tab 索引常量。
+// Chat is first — it's the primary use case for TUI.
+// AgentNet removed — not relevant for standalone TUI.
 const (
-	TabSessions = iota
+	TabChat = iota
+	TabSessions
 	TabTools
 	TabSchedule
 	TabMemory
 	TabAudit
-	TabAgentNet
 	TabConfig
-	TabChat
 	TabCount
 )
 
 // RootModel 是 TUI 的根 Model，管理 Tab 切换和子视图。
 type RootModel struct {
-	width  int
-	height int
-	tab    int
-	lang   string
+	width     int
+	height    int
+	tab       int
+	lang      string
+	appConfig corelib.AppConfig // shared config for coding tool wizard
 
 	// 子视图
 	Sessions      SessionListModel
 	SessionDetail *SessionDetailModel // nil = 不显示详情
 	SessionCreate *SessionCreateModel // nil = 不显示创建表单
+	CodingSetup   CodingSetupModel   // coding tool launch wizard
 	Tools         ToolStatusModel
 	Schedule      ScheduleModel
 	Memory        MemoryModel
 	Audit         AuditModel
-	AgentNet      AgentNetModel
 	Config        ConfigModel
 	Chat          ChatModel
 	StatusBar     StatusBarModel
@@ -49,18 +52,18 @@ func NewRootModel(lang string) RootModel {
 	chat := NewChatModel(lang)
 	chat.FocusInput() // 启动后直接聚焦输入框
 	return RootModel{
-		tab:       TabChat,
-		lang:      lang,
-		Sessions:  NewSessionListModel(lang),
-		Tools:     NewToolStatusModel(lang),
-		Schedule:  NewScheduleModel(lang),
-		Memory:    NewMemoryModel(lang),
-		Audit:     NewAuditModel(lang),
-		AgentNet:  NewAgentNetModel(lang),
-		Config:    NewConfigModel(lang),
-		Chat:      chat,
+		tab:         TabChat,
+		lang:        lang,
+		Sessions:    NewSessionListModel(lang),
+		CodingSetup: NewCodingSetupModel(),
+		Tools:       NewToolStatusModel(lang),
+		Schedule: NewScheduleModel(lang),
+		Memory:   NewMemoryModel(lang),
+		Audit:    NewAuditModel(lang),
+		Config:   NewConfigModel(lang),
+		Chat:     chat,
 		StatusBar: NewStatusBarModel(lang),
-		Help:      NewHelpModel(lang),
+		Help:     NewHelpModel(lang),
 	}
 }
 
@@ -71,7 +74,6 @@ func (m *RootModel) SetLang(lang string) {
 	m.Schedule.SetLang(m.lang)
 	m.Memory.SetLang(m.lang)
 	m.Audit.SetLang(m.lang)
-	m.AgentNet.SetLang(m.lang)
 	m.Config.SetLang(m.lang)
 	m.Chat.SetLang(m.lang)
 	m.Help.SetLang(m.lang)
@@ -86,6 +88,11 @@ func (m *RootModel) SetLang(lang string) {
 
 func (m RootModel) Lang() string {
 	return m.lang
+}
+
+// SetAppConfig updates the shared config used by the coding tool wizard.
+func (m *RootModel) SetAppConfig(cfg corelib.AppConfig) {
+	m.appConfig = cfg
 }
 
 // Init 实现 tea.Model。
@@ -114,14 +121,8 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 		m.SessionDetail = &detail
 		return m, nil
 	case SessionCreateMsg:
-		var toolNames []string
-		for _, t := range m.Tools.tools {
-			if t.Available {
-				toolNames = append(toolNames, t.Name)
-			}
-		}
-		create := NewSessionCreateModel(toolNames, m.lang)
-		m.SessionCreate = &create
+		// Show coding tool launch wizard instead of the old form.
+		m.CodingSetup.Show(m.appConfig)
 		return m, nil
 	case SessionCreateSubmitMsg:
 		m.SessionCreate = nil
@@ -144,6 +145,11 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 			m.SessionCreate = &c
 			return m, cmd
 		}
+		if m.CodingSetup.IsActive() {
+			var cmd tea.Cmd
+			m.CodingSetup, cmd = m.CodingSetup.Update(msg)
+			return m, cmd
+		}
 		if m.SessionDetail != nil {
 			if msg.String() == "esc" {
 				m.SessionDetail = nil
@@ -161,45 +167,57 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 		if m.tab == TabAudit && m.Audit.IsFiltering() {
 			break
 		}
-		if m.tab == TabChat && m.Chat.IsInputFocused() {
+		if m.tab == TabTools && m.Tools.IsEditing() {
 			break
 		}
+		if m.tab == TabChat && m.Chat.IsInputFocused() {
+			break // let chat handle all keys when input is focused
+		}
+
 		switch msg.String() {
 		case "?":
 			m.Help.Toggle()
 			return m, nil
 		case "tab", "right":
 			m.tab = (m.tab + 1) % TabCount
+			if m.tab == TabChat {
+				m.Chat.FocusInput()
+			}
 			return m, nil
 		case "shift+tab", "left":
 			m.tab = (m.tab - 1 + TabCount) % TabCount
+			if m.tab == TabChat {
+				m.Chat.FocusInput()
+			}
 			return m, nil
 		}
 	}
 
-	var cmd tea.Cmd
-	switch m.tab {
-	case TabSessions:
-		m.Sessions, cmd = m.Sessions.Update(msg)
-	case TabTools:
-		m.Tools, cmd = m.Tools.Update(msg)
-	case TabSchedule:
-		m.Schedule, cmd = m.Schedule.Update(msg)
-	case TabMemory:
-		m.Memory, cmd = m.Memory.Update(msg)
-	case TabAudit:
-		m.Audit, cmd = m.Audit.Update(msg)
-	case TabAgentNet:
-		m.AgentNet, cmd = m.AgentNet.Update(msg)
-	case TabConfig:
-		m.Config, cmd = m.Config.Update(msg)
-	case TabChat:
-		m.Chat, cmd = m.Chat.Update(msg)
-	}
-
+	// Status bar always gets all messages.
 	var sbCmd tea.Cmd
 	m.StatusBar, sbCmd = m.StatusBar.Update(msg)
 
+	// Route async result messages to their target view regardless of active tab.
+	switch msg.(type) {
+	case ToolSkillSearchResultMsg, ToolSkillInstallResultMsg, ToolOperationResultMsg:
+		var toolCmd tea.Cmd
+		m.Tools, toolCmd = m.Tools.Update(msg)
+		if m.tab == TabTools {
+			return m, tea.Batch(toolCmd, sbCmd)
+		}
+		activeCmd := m.updateActiveTab(msg)
+		return m, tea.Batch(toolCmd, activeCmd, sbCmd)
+	case ChatResponseMsg, ChatStreamMsg, chatTickMsg:
+		var chatCmd tea.Cmd
+		m.Chat, chatCmd = m.Chat.Update(msg)
+		if m.tab == TabChat {
+			return m, tea.Batch(chatCmd, sbCmd)
+		}
+		activeCmd := m.updateActiveTab(msg)
+		return m, tea.Batch(chatCmd, activeCmd, sbCmd)
+	}
+
+	cmd := m.updateActiveTab(msg)
 	return m, tea.Batch(cmd, sbCmd)
 }
 
@@ -221,6 +239,8 @@ func (m RootModel) View() string {
 		content = m.Help.View()
 	} else if m.SessionCreate != nil {
 		content = m.SessionCreate.View()
+	} else if m.CodingSetup.IsActive() {
+		content = m.CodingSetup.View()
 	} else if m.tab == TabSessions && m.SessionDetail != nil {
 		content = m.SessionDetail.View()
 	} else {
@@ -235,8 +255,6 @@ func (m RootModel) View() string {
 			content = m.Memory.View()
 		case TabAudit:
 			content = m.Audit.View()
-		case TabAgentNet:
-			content = m.AgentNet.View()
 		case TabConfig:
 			content = m.Config.View()
 		case TabChat:
@@ -267,14 +285,13 @@ func (m RootModel) renderTabs() string {
 		Padding(0, 2)
 
 	tabNames := [TabCount]string{
+		i18n.T(i18n.MsgTUITabChat, m.lang),
 		i18n.T(i18n.MsgTUITabSessions, m.lang),
 		i18n.T(i18n.MsgTUITabTools, m.lang),
 		i18n.T(i18n.MsgTUITabSchedule, m.lang),
 		i18n.T(i18n.MsgTUITabMemory, m.lang),
 		i18n.T(i18n.MsgTUITabAudit, m.lang),
-		i18n.T(i18n.MsgTUITabAgentNet, m.lang),
 		i18n.T(i18n.MsgTUITabConfig, m.lang),
-		i18n.T(i18n.MsgTUITabChat, m.lang),
 	}
 
 	tabs := ""
@@ -291,6 +308,28 @@ func (m RootModel) renderTabs() string {
 // ActiveTab 返回当前活跃的 Tab 索引。
 func (m RootModel) ActiveTab() int {
 	return m.tab
+}
+
+// updateActiveTab dispatches a message to the currently active tab's view.
+func (m *RootModel) updateActiveTab(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	switch m.tab {
+	case TabSessions:
+		m.Sessions, cmd = m.Sessions.Update(msg)
+	case TabTools:
+		m.Tools, cmd = m.Tools.Update(msg)
+	case TabSchedule:
+		m.Schedule, cmd = m.Schedule.Update(msg)
+	case TabMemory:
+		m.Memory, cmd = m.Memory.Update(msg)
+	case TabAudit:
+		m.Audit, cmd = m.Audit.Update(msg)
+	case TabConfig:
+		m.Config, cmd = m.Config.Update(msg)
+	case TabChat:
+		m.Chat, cmd = m.Chat.Update(msg)
+	}
+	return cmd
 }
 
 // SetTab 切换到指定 Tab。

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	pathpkg "path/filepath"
 	"strings"
 	"testing"
@@ -12,9 +13,9 @@ func newTestIMHandlerWithMemoryStore(t *testing.T) *IMMessageHandler {
 	t.Helper()
 	tmpDir := t.TempDir()
 	memPath := pathpkg.Join(tmpDir, "memories.json")
-	ms, err := NewMemoryStore(memPath)
+	ms, err := corememory.NewStore(memPath)
 	if err != nil {
-		t.Fatalf("NewMemoryStore: %v", err)
+		t.Fatalf("corememory.NewStore: %v", err)
 	}
 	t.Cleanup(ms.Stop)
 
@@ -65,10 +66,10 @@ func TestSystemPrompt_NonFirstTurn_NoProactiveMemoryInstruction(t *testing.T) {
 
 func TestSystemPrompt_ClearHistory_RestoresFirstTurnProactiveInstruction(t *testing.T) {
 	h := newTestIMHandlerWithMemoryStore(t)
-	h.memory = newConversationMemory()
+	h.memory = agent.NewConversationMemory()
 	userID := "desktop-user"
 
-	h.memory.Save(userID, []conversationEntry{{Role: "user", Content: "hello"}})
+	h.memory.Save(userID, []agent.ConversationEntry{{Role: "user", Content: "hello"}})
 	promptBeforeClear := h.buildSystemPromptWithMemory("follow up", len(h.memory.Load(userID)) == 0)
 	assertContainsNone(t, promptBeforeClear, []string{"主动调用 " + corememory.PromptActionSaveColon})
 

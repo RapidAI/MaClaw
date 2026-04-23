@@ -5,6 +5,7 @@ package main
 // but uses WebSocket (wss://) instead of HTTP+SSE.
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -40,7 +41,7 @@ func responsesWSEndpoint(baseURL string) string {
 // buildResponsesWSFrame constructs the JSON frame for a response.create
 // WebSocket message, reusing the existing conversion functions.
 func buildResponsesWSFrame(
-	cfg MaclawLLMConfig,
+	cfg corelib.MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
 ) ([]byte, error) {
@@ -69,13 +70,13 @@ func buildResponsesWSFrame(
 // logic mirror the SSE path in doResponsesAPILLMRequestStream.
 func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	reqCtx context.Context,
-	cfg MaclawLLMConfig,
+	cfg corelib.MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
 	httpClient *http.Client,
-	onToken TokenCallback,
+	onToken llm.TokenCallback,
 	metrics *llmStreamMetrics,
-) (*llmResponse, error) {
+) (*llm.Response, error) {
 	// -------------------------------------------------------------------
 	// 1. Construct WebSocket URL
 	// -------------------------------------------------------------------
@@ -436,7 +437,7 @@ postLoop:
 	if filtered := filteredBufWS.String(); filtered != "" {
 		content = stripXMLToolCalls(filtered)
 	}
-	msg := llmMessage{
+	msg := llm.Message{
 		Role:    "assistant",
 		Content: content,
 	}
@@ -454,7 +455,7 @@ postLoop:
 			if !ok || acc.itemType != "function_call" {
 				continue
 			}
-			msg.ToolCalls = append(msg.ToolCalls, llmToolCall{
+			msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
 				ID:   acc.callID,
 				Type: "function",
 				Function: struct {
@@ -472,7 +473,7 @@ postLoop:
 	if len(msg.ToolCalls) == 0 {
 		if xmlCalls := freeproxy.ParseXMLToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
 			for _, xc := range xmlCalls {
-				msg.ToolCalls = append(msg.ToolCalls, llmToolCall{
+				msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
 					ID: xc.ID, Type: xc.Type,
 					Function: struct {
 						Name      string `json:"name"`
@@ -497,8 +498,8 @@ postLoop:
 	// Detect and filter truncated tool calls caused by output token limit.
 	finishReason = filterTruncatedToolCalls(&msg, finishReason)
 
-	return &llmResponse{
-		Choices: []llmChoice{{Message: msg, FinishReason: finishReason}},
+	return &llm.Response{
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason}},
 		Usage:   usage,
 	}, nil
 }

@@ -1,6 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
+)
 
 // registerBuiltinTools registers all built-in tools into the ToolRegistry.
 // Each tool's Handler delegates to the corresponding IMMessageHandler method.
@@ -158,10 +164,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolCallMCPTool(args) })
 
 	// --- Merged skill management tool (progress-aware for run action) ---
-	regP("manage_skill", "Skill 管理（action: list/search/install/run/status/upload）。list 列出本地已注册 Skill（无 Skill 时展示 Hub 推荐）；search 在 SkillHub 搜索可用 Skill；install 从 Hub 安装 Skill 到本地；run 执行指定 Skill；status 查询运行状态（run 返回 run_id 后继续观察进度）；upload 上传本地 Skill 到 SkillMarket。",
-		ToolCategoryBuiltin, []string{"skill", "list", "search", "install", "run", "status", "upload"},
+	regP("manage_skill", skill.ManageSkillDescription(),
+		ToolCategoryBuiltin, append([]string{"skill"}, skill.ManageSkillActionNames()...),
 		map[string]interface{}{
-			"action":       map[string]string{"type": "string", "description": "操作: list/search/install/run/status/upload"},
+			"action":       map[string]string{"type": "string", "description": "操作: " + skill.ManageSkillActionSlash()},
 			"query":        map[string]string{"type": "string", "description": "搜索关键词（search 时必填，如 'git commit'、'代码审查'、'部署'）"},
 			"skill_id":     map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
 			"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（install 时必填，从 search 结果中获取）"},
@@ -176,7 +182,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"wait_seconds": map[string]string{"type": "number", "description": "等待状态快照的秒数（install/run/status 时可选，默认 2，最大 30）"},
 			"run_id":       map[string]string{"type": "string", "description": "运行 ID（status 时必填，从 run 返回值中获取）"},
 		}, []string{"action"},
-		func(args map[string]interface{}, onProgress ProgressCallback) string {
+		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolManageSkill(args, onProgress)
 		})
 
@@ -188,7 +194,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("install_skill_hub", "", ToolCategoryBuiltin, nil, nil, nil,
 		func(args map[string]interface{}) string { return h.toolInstallSkillHub(args) })
 	regP("run_skill", "", ToolCategoryBuiltin, nil, nil, nil,
-		func(args map[string]interface{}, onProgress ProgressCallback) string {
+		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolRunSkill(args, onProgress)
 		})
 	reg("get_skill_run", "", ToolCategoryBuiltin, nil, nil, nil,
@@ -277,7 +283,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"skill_name":         map[string]string{"type": "string", "description": "Skill 名称（可选，自动生成）"},
 			"timeout":            map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
 		}, []string{"task"},
-		func(args map[string]interface{}, onProgress ProgressCallback) string {
+		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolCraftTool(args, onProgress)
 		})
 
@@ -289,7 +295,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
 			"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
 		}, []string{"command"},
-		func(args map[string]interface{}, onProgress ProgressCallback) string {
+		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolBash(args, onProgress)
 		})
 
@@ -402,10 +408,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolSetNickname(args) })
 
 	// --- Agent self-management ---
-	reg("set_max_iterations", fmt.Sprintf("调整最大推理轮数。设置后会持久化保存，后续对话也会生效。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。范围 %d-%d。", minAgentIterations, maxAgentIterationsCap),
+	reg("set_max_iterations", fmt.Sprintf("调整最大推理轮数。设置后会持久化保存，后续对话也会生效。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。范围 %d-%d。", config.MinAgentIterations, config.MaxAgentIterationsCap),
 		ToolCategoryBuiltin, []string{"agent", "iterations", "limit"},
 		map[string]interface{}{
-			"max_iterations": map[string]string{"type": "integer", "description": fmt.Sprintf("新的最大轮数（%d-%d）", minAgentIterations, maxAgentIterationsCap)},
+			"max_iterations": map[string]string{"type": "integer", "description": fmt.Sprintf("新的最大轮数（%d-%d）", config.MinAgentIterations, config.MaxAgentIterationsCap)},
 			"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},
 		}, []string{"max_iterations"},
 		func(args map[string]interface{}) string { return h.toolSetMaxIterations(args) })

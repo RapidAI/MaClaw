@@ -125,41 +125,16 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	coordinator := im.NewCoordinator(messageRouter, deviceFinder, llmConfigProvider)
 	imAdapter.SetCoordinator(coordinator)
 
-	// 鈹€鈹€ Workflow Engine 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-	// Create WorkflowRegistry (auto-registers builtin templates).
-	workflowRegistry := im.NewWorkflowRegistry()
+	// ── Workflow Engine (removed) ─────────────────────────────────────
+	// Workflow logic is now handled by the device-side agent (corelib/workflow).
+	// Hub no longer creates WorkflowEngine, WorkflowRegistry, or UnderstandingManager.
+	// The /workflow command is forwarded to the device via RouteToAgent.
 
-	// Create UnderstandingManager for multi-round intent clarification.
-	understandingMgr := im.NewUnderstandingManager(
-		llmConfigProvider,
-		coordinator.Breaker(),
-		messageRouter.LLMSemaphore(),
-		st.WorkflowRepo,
-	)
-
-	// Create WorkflowEngine with all dependencies.
-	workflowEngine := im.NewWorkflowEngine(
-		workflowRegistry,
-		understandingMgr,
-		st.WorkflowRepo,
-		llmConfigProvider,
-		coordinator.Breaker(),
-		messageRouter.LLMSemaphore(),
-		messageRouter,
-		coordinator.SpaceStateStore(),
-	)
-
-	// Wire WorkflowEngine into Coordinator and Adapter.
-	coordinator.SetWorkflowEngine(workflowEngine)
-	imAdapter.SetWorkflowEngine(workflowEngine)
-
-	// Start background goroutine for periodic cleanup of expired sessions
-	// and workflow states.
+	// Start background goroutine for periodic cleanup.
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			understandingMgr.CleanupExpiredSessions()
 			if st.WorkflowRepo != nil {
 				_ = st.WorkflowRepo.CleanupExpired(context.Background(), 7*24*time.Hour)
 			}

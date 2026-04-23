@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"fmt"
 	"sync"
 	"time"
@@ -223,11 +224,11 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 		// Step 3: LLM security review for high/critical risk.
 		var llmVerdict LLMSecurityVerdict
 		var llmExplanation string
-		if llm != nil && (assessment.Level == RiskHigh || assessment.Level == RiskCritical) {
+		if llm != nil && (assessment.Level == security.RiskHigh || assessment.Level == security.RiskCritical) {
 			llmVerdict, llmExplanation, _ = llm.Review(riskCtx, assessment)
 			// If LLM says dangerous, override policy to deny.
 			if llmVerdict == VerdictDangerous {
-				policyAction = PolicyDeny
+				policyAction = security.PolicyDeny
 			}
 		}
 
@@ -237,7 +238,7 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 			if llmExplanation != "" {
 				result = fmt.Sprintf("%s (llm: %s — %s)", policyAction, llmVerdict, llmExplanation)
 			}
-			_ = al.Log(AuditEntry{
+			_ = al.Log(security.AuditEntry{
 				Timestamp:    time.Now(),
 				SessionID:    req.SessionID,
 				ToolName:     req.ToolName,
@@ -250,7 +251,7 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 
 		// Step 5: Make decision based on policy action.
 		switch policyAction {
-		case PolicyAllow:
+		case security.PolicyAllow:
 			comp := PermissionCompletion{
 				RequestID: req.RequestID,
 				Decision:  PermissionApproved,
@@ -261,7 +262,7 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 			}
 			return comp
 
-		case PolicyDeny:
+		case security.PolicyDeny:
 			reason := fmt.Sprintf("denied: risk=%s, policy=deny", assessment.Level)
 			if llmVerdict == VerdictDangerous {
 				reason = fmt.Sprintf("denied: risk=%s, llm=dangerous — %s", assessment.Level, llmExplanation)
@@ -276,7 +277,7 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 			}
 			return comp
 
-		case PolicyAudit:
+		case security.PolicyAudit:
 			comp := PermissionCompletion{
 				RequestID: req.RequestID,
 				Decision:  PermissionApproved,
@@ -287,7 +288,7 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 			}
 			return comp
 
-		case PolicyAsk:
+		case security.PolicyAsk:
 			// Fall through to create a pending request below.
 		}
 

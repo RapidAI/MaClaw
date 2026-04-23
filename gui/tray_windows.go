@@ -3,6 +3,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"os"
 	stdruntime "runtime"
 	"time"
@@ -83,7 +84,7 @@ func setupTray(app *App, appOptions *options.App) {
 				UpdateTrayMenu(app.CurrentLanguage)
 			}
 
-			OnConfigChanged = func(cfg AppConfig) {
+			OnConfigChanged = func(cfg corelib.AppConfig) {
 				if app.ctx == nil {
 					return
 				}

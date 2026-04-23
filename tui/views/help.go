@@ -94,9 +94,6 @@ func (m HelpModel) View() string {
 			{"Enter", i18n.T(i18n.MsgTUIHelpDescEdit, m.lang)},
 			{"Esc", i18n.T(i18n.MsgTUIHelpDescCancelEdit, m.lang)},
 		}},
-		{i18n.T(i18n.MsgTUIHelpSectionAgentNet, m.lang), []struct{ key, desc string }{
-			{"1/2/3", i18n.T(i18n.MsgTUIHelpDescSwitchSubTab, m.lang)},
-		}},
 		{i18n.T(i18n.MsgTUIHelpSectionSessionDetail, m.lang), []struct{ key, desc string }{
 			{"Up/Down", i18n.T(i18n.MsgTUIHelpDescScroll, m.lang)},
 			{"g/G", i18n.T(i18n.MsgTUIHelpDescTopBottom, m.lang)},

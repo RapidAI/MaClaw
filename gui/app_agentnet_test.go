@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func newAgentNetConfigTestApp(t *testing.T) *App {
@@ -15,7 +17,7 @@ func newAgentNetConfigTestApp(t *testing.T) *App {
 	return &App{testHomeDir: tempHome}
 }
 
-func saveAgentNetConfigForTest(t *testing.T, app *App, mutate func(*AppConfig)) {
+func saveAgentNetConfigForTest(t *testing.T, app *App, mutate func(*corelib.AppConfig)) {
 	t.Helper()
 	cfg, err := app.LoadConfig()
 	if err != nil {
@@ -29,7 +31,7 @@ func saveAgentNetConfigForTest(t *testing.T, app *App, mutate func(*AppConfig)) 
 
 func TestAgentNetEnsureDaemonDisabledReturnsErrorWithoutInit(t *testing.T) {
 	app := newAgentNetConfigTestApp(t)
-	saveAgentNetConfigForTest(t, app, func(cfg *AppConfig) {
+	saveAgentNetConfigForTest(t, app, func(cfg *corelib.AppConfig) {
 		cfg.AgentNetEnabled = false
 	})
 
@@ -48,7 +50,7 @@ func TestAgentNetEnsureDaemonDisabledReturnsErrorWithoutInit(t *testing.T) {
 
 func TestAgentNetEnsureDaemonWithDownloadDisabledReturnsErrorWithoutInit(t *testing.T) {
 	app := newAgentNetConfigTestApp(t)
-	saveAgentNetConfigForTest(t, app, func(cfg *AppConfig) {
+	saveAgentNetConfigForTest(t, app, func(cfg *corelib.AppConfig) {
 		cfg.AgentNetEnabled = false
 	})
 
@@ -67,7 +69,7 @@ func TestAgentNetEnsureDaemonWithDownloadDisabledReturnsErrorWithoutInit(t *test
 
 func TestAgentNetAutoPickerConfigureRejectsEnableWhenAgentNetDisabled(t *testing.T) {
 	app := newAgentNetConfigTestApp(t)
-	saveAgentNetConfigForTest(t, app, func(cfg *AppConfig) {
+	saveAgentNetConfigForTest(t, app, func(cfg *corelib.AppConfig) {
 		cfg.AgentNetEnabled = false
 		cfg.AgentNetAutoPickerEnabled = false
 	})
@@ -102,7 +104,7 @@ func TestAgentNetAutoPickerConfigureRejectsEnableWhenAgentNetDisabled(t *testing
 
 func TestEnsureAutoTaskPickerDoesNotRestoreWhenAgentNetDisabled(t *testing.T) {
 	app := newAgentNetConfigTestApp(t)
-	saveAgentNetConfigForTest(t, app, func(cfg *AppConfig) {
+	saveAgentNetConfigForTest(t, app, func(cfg *corelib.AppConfig) {
 		cfg.AgentNetEnabled = false
 		cfg.AgentNetAutoPickerEnabled = true
 		cfg.AgentNetAutoPickerPollMin = 2

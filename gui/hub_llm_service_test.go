@@ -8,21 +8,21 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-func findProviderByName(providers []MaclawLLMProvider, name string) (MaclawLLMProvider, bool) {
+func findProviderByName(providers []corelib.MaclawLLMProvider, name string) (corelib.MaclawLLMProvider, bool) {
 	for _, provider := range providers {
 		if provider.Name == name {
 			return provider, true
 		}
 	}
-	return MaclawLLMProvider{}, false
+	return corelib.MaclawLLMProvider{}, false
 }
 
 func TestApplyHubLLMServiceStatusToConfig_RemovesProviderWhenUnauthorized(t *testing.T) {
 	app := &App{}
-	cfg := &AppConfig{
+	cfg := &corelib.AppConfig{
 		RemoteViewerToken:        "viewer-token",
 		MaclawLLMCurrentProvider: hubServiceProviderName,
-		MaclawLLMProviders: []MaclawLLMProvider{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
 			{
 				Name:          hubServiceProviderName,
 				URL:           "https://hub.example.com/api/llm/v1",
@@ -50,9 +50,9 @@ func TestApplyHubLLMServiceStatusToConfig_RemovesProviderWhenUnauthorized(t *tes
 
 func TestApplyHubLLMServiceStatusToConfig_AddsProviderWhenAuthorized(t *testing.T) {
 	app := &App{}
-	cfg := &AppConfig{
+	cfg := &corelib.AppConfig{
 		RemoteViewerToken: "viewer-token",
-		MaclawLLMProviders: []MaclawLLMProvider{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
 			{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"},
 		},
 	}
@@ -96,10 +96,10 @@ func TestApplyHubLLMServiceStatusToConfig_AddsProviderWhenAuthorized(t *testing.
 
 func TestApplyHubLLMServiceStatusToConfig_PreservesExplicitModelOverride(t *testing.T) {
 	app := &App{}
-	cfg := &AppConfig{
+	cfg := &corelib.AppConfig{
 		RemoteViewerToken:        "viewer-token",
 		MaclawLLMCurrentProvider: hubServiceProviderName,
-		MaclawLLMProviders: []MaclawLLMProvider{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
 			{
 				Name:          hubServiceProviderName,
 				URL:           "https://hub.example.com/api/llm/v1",
@@ -143,9 +143,9 @@ func TestApplyHubLLMServiceStatusToConfig_UsesAutoModelWhenExistingModelIsAutoOr
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &AppConfig{
+			cfg := &corelib.AppConfig{
 				RemoteViewerToken: "viewer-token",
-				MaclawLLMProviders: []MaclawLLMProvider{
+				MaclawLLMProviders: []corelib.MaclawLLMProvider{
 					{
 						Name:          hubServiceProviderName,
 						URL:           "https://hub.example.com/api/llm/v1",
@@ -192,11 +192,11 @@ func TestGetMaclawLLMPanelState_RemovesHubProviderWhenAuthorizationRevoked(t *te
 	}))
 	defer hub.Close()
 
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
 		RemoteViewerToken:        "viewer-token",
 		MaclawLLMCurrentProvider: hubServiceProviderName,
-		MaclawLLMProviders: []MaclawLLMProvider{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
 			{Name: hubServiceProviderName, URL: hub.URL + "/v1", Key: "viewer-token", Model: hubServiceAutoModel, Protocol: "openai"},
 			{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"},
 		},
@@ -234,7 +234,7 @@ func TestGetMaclawLLMPanelState_AddsHubProviderWhenAuthorized(t *testing.T) {
 	hubURL = hub.URL
 	defer hub.Close()
 
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubURL:      hub.URL,
 		RemoteViewerToken: "viewer-token",
 	}
@@ -268,11 +268,11 @@ func TestGetMaclawLLMProviders_RemovesHubProviderWhenAuthorizationRevoked(t *tes
 	}))
 	defer hub.Close()
 
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
 		RemoteViewerToken:        "viewer-token",
 		MaclawLLMCurrentProvider: hubServiceProviderName,
-		MaclawLLMProviders: []MaclawLLMProvider{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
 			{Name: hubServiceProviderName, URL: hub.URL + "/v1", Key: "viewer-token", Model: hubServiceAutoModel, Protocol: "openai"},
 			{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"},
 		},
@@ -302,7 +302,7 @@ func TestGetMaclawLLMProviders_AddsHubProviderWhenAuthorized(t *testing.T) {
 	hubURL = hub.URL
 	defer hub.Close()
 
-	cfg := AppConfig{
+	cfg := corelib.AppConfig{
 		RemoteHubURL:      hub.URL,
 		RemoteViewerToken: "viewer-token",
 	}

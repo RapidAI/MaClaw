@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSkillExecutorExecuteStep_CallMCPToolResolvesName(t *testing.T) {
@@ -17,7 +19,7 @@ func TestSkillExecutorExecuteStep_CallMCPToolResolvesName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("enabled-no-autostart", false, false)}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("enabled-no-autostart", false, false)}
 	cfg.LocalMCPServers[0].Name = "brave-search"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -29,7 +31,7 @@ func TestSkillExecutorExecuteStep_CallMCPToolResolvesName(t *testing.T) {
 	app.localMCPManager.SyncFromConfig()
 
 	executor := NewSkillExecutor(app, app.mcpRegistry, nil)
-	result, err := executor.executeStep(NLSkillStep{
+	result, err := executor.executeStep(corelib.NLSkillStep{
 		Action: "call_mcp_tool",
 		Params: map[string]interface{}{
 			"server_id": "brave-search",
@@ -56,7 +58,7 @@ func TestSkillExecutorExecuteStep_CallMCPToolRejectsAmbiguousName(t *testing.T) 
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.LocalMCPServers = []LocalMCPServerEntry{
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{
 		newHelperLocalMCPServerEntry("server-a", false, false),
 		newHelperLocalMCPServerEntry("server-b", false, false),
 	}
@@ -72,7 +74,7 @@ func TestSkillExecutorExecuteStep_CallMCPToolRejectsAmbiguousName(t *testing.T) 
 	app.localMCPManager.SyncFromConfig()
 
 	executor := NewSkillExecutor(app, app.mcpRegistry, nil)
-	_, err = executor.executeStep(NLSkillStep{
+	_, err = executor.executeStep(corelib.NLSkillStep{
 		Action: "call_mcp_tool",
 		Params: map[string]interface{}{
 			"server_id": "brave-search",
@@ -86,7 +88,7 @@ func TestSkillExecutorExecuteStep_CallMCPToolRejectsAmbiguousName(t *testing.T) 
 }
 
 func TestSkillCreateSessionGuard_BlocksSSHIntent(t *testing.T) {
-	hint := skillCreateSessionGuard("", NLSkillStep{
+	hint := skillCreateSessionGuard("", corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{
 			"tool": "claude",
@@ -99,7 +101,7 @@ func TestSkillCreateSessionGuard_BlocksSSHIntent(t *testing.T) {
 }
 
 func TestSkillCreateSessionGuard_BlocksAmbiguousIntent(t *testing.T) {
-	hint := skillCreateSessionGuard("处理一下线上问题", NLSkillStep{
+	hint := skillCreateSessionGuard("处理一下线上问题", corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{
 			"tool": "claude",
@@ -111,7 +113,7 @@ func TestSkillCreateSessionGuard_BlocksAmbiguousIntent(t *testing.T) {
 }
 
 func TestSkillCreateSessionGuard_BlocksNonCodingPresentationIntent(t *testing.T) {
-	hint := skillCreateSessionGuard("生成宣传PPT", NLSkillStep{
+	hint := skillCreateSessionGuard("生成宣传PPT", corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{
 			"tool": "claude",
@@ -123,7 +125,7 @@ func TestSkillCreateSessionGuard_BlocksNonCodingPresentationIntent(t *testing.T)
 }
 
 func TestSkillCreateSessionGuard_AllowsCodingIntent(t *testing.T) {
-	hint := skillCreateSessionGuard("修复 Go 项目的 bug 并修改代码", NLSkillStep{
+	hint := skillCreateSessionGuard("修复 Go 项目的 bug 并修改代码", corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{
 			"tool": "claude",
@@ -135,7 +137,7 @@ func TestSkillCreateSessionGuard_AllowsCodingIntent(t *testing.T) {
 }
 
 func TestResolveSkillTaskText_PrefersStepTaskFields(t *testing.T) {
-	text := resolveSkillTaskText("翻译论文", NLSkillStep{
+	text := resolveSkillTaskText("翻译论文", corelib.NLSkillStep{
 		Params: map[string]interface{}{
 			"task_description": "ssh 到服务器执行 journalctl",
 		},
@@ -153,11 +155,11 @@ func TestSkillExecutorExecute_BlocksCreateSessionForSSHSkill(t *testing.T) {
 
 	app := &App{testHomeDir: tempHome}
 	executor := NewSkillExecutor(app, nil, nil)
-	entry := NLSkillEntry{
+	entry := corelib.NLSkillEntry{
 		Name:        "ssh-skill",
 		Description: "ssh 到 10.0.0.8 看 nginx 日志",
 		Status:      "active",
-		Steps: []NLSkillStep{{
+		Steps: []corelib.NLSkillStep{{
 			Action: "create_session",
 			Params: map[string]interface{}{
 				"tool":         "claude",
@@ -180,7 +182,7 @@ func TestSkillExecutorExecute_BlocksCreateSessionForSSHSkill(t *testing.T) {
 
 func TestSkillExecutorExecuteStep_SSHListWithoutSession(t *testing.T) {
 	executor := NewSkillExecutor(&App{}, nil, nil)
-	result, err := executor.executeStep(NLSkillStep{
+	result, err := executor.executeStep(corelib.NLSkillStep{
 		Action: "ssh",
 		Params: map[string]interface{}{
 			"action": "list",
@@ -196,7 +198,7 @@ func TestSkillExecutorExecuteStep_SSHListWithoutSession(t *testing.T) {
 
 func TestSkillExecutorExecuteStep_SSHListTasksWithoutTasks(t *testing.T) {
 	executor := NewSkillExecutor(&App{}, nil, nil)
-	result, err := executor.executeStep(NLSkillStep{
+	result, err := executor.executeStep(corelib.NLSkillStep{
 		Action: "ssh",
 		Params: map[string]interface{}{
 			"action": "list_tasks",
@@ -212,7 +214,7 @@ func TestSkillExecutorExecuteStep_SSHListTasksWithoutTasks(t *testing.T) {
 
 func TestSkillExecutorExecuteStep_SSHUnknownAction(t *testing.T) {
 	executor := NewSkillExecutor(&App{}, nil, nil)
-	_, err := executor.executeStep(NLSkillStep{
+	_, err := executor.executeStep(corelib.NLSkillStep{
 		Action: "ssh",
 		Params: map[string]interface{}{
 			"action": "boom",
@@ -225,7 +227,7 @@ func TestSkillExecutorExecuteStep_SSHUnknownAction(t *testing.T) {
 
 func TestSkillExecutorExecuteStep_CraftToolAcceptsLegacyInstructions(t *testing.T) {
 	executor := NewSkillExecutor(nil, nil, nil)
-	_, err := executor.executeStep(NLSkillStep{
+	_, err := executor.executeStep(corelib.NLSkillStep{
 		Action: "craft_tool",
 		Params: map[string]interface{}{
 			"instructions": "legacy task",
@@ -241,7 +243,7 @@ func TestSkillExecutorExecuteStep_CraftToolAcceptsLegacyInstructions(t *testing.
 
 func TestSkillExecutorExecuteStep_CraftToolMissingTask(t *testing.T) {
 	executor := NewSkillExecutor(&App{}, nil, nil)
-	_, err := executor.executeStep(NLSkillStep{
+	_, err := executor.executeStep(corelib.NLSkillStep{
 		Action: "craft_tool",
 		Params: map[string]interface{}{},
 	}, "")

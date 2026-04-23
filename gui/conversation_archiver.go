@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,15 +17,15 @@ import (
 // ConversationArchiver extracts key information from expiring conversations
 // and stores them as long-term memories via MemoryStore.
 type ConversationArchiver struct {
-	memoryStore        *MemoryStore
+	memoryStore        *memory.Store
 	app                *App
 	knowledgeExtractor *memory.KnowledgeExtractor
-	slotScopeResolver  func(userID string) *unfinishedTaskSlot
+	slotScopeResolver  func(userID string) *agent.UnfinishedTaskSlot
 }
 
 // NewConversationArchiver creates a ConversationArchiver that uses the given
 // MemoryStore for persistence and the App to access LLM configuration.
-func NewConversationArchiver(memoryStore *MemoryStore, app *App) *ConversationArchiver {
+func NewConversationArchiver(memoryStore *memory.Store, app *App) *ConversationArchiver {
 	ca := &ConversationArchiver{
 		memoryStore: memoryStore,
 		app:         app,
@@ -36,7 +38,7 @@ func NewConversationArchiver(memoryStore *MemoryStore, app *App) *ConversationAr
 	return ca
 }
 
-func (a *ConversationArchiver) SetSlotScopeResolver(fn func(userID string) *unfinishedTaskSlot) {
+func (a *ConversationArchiver) SetSlotScopeResolver(fn func(userID string) *agent.UnfinishedTaskSlot) {
 	a.slotScopeResolver = fn
 }
 
@@ -45,7 +47,7 @@ func (a *ConversationArchiver) SetSlotScopeResolver(fn func(userID string) *unfi
 //   - The conversation is too short (< 4 entries) — simple Q&A not worth archiving.
 //   - The Maclaw LLM is not configured.
 //   - The LLM call fails (error is returned to the caller).
-func (a *ConversationArchiver) Archive(userID string, entries []conversationEntry) error {
+func (a *ConversationArchiver) Archive(userID string, entries []agent.ConversationEntry) error {
 	// Skip trivial conversations.
 	if len(entries) < 4 {
 		return nil
@@ -104,9 +106,9 @@ func (a *ConversationArchiver) Archive(userID string, entries []conversationEntr
 			tags = append(tags, "scope:main_conversation")
 		}
 	}
-	entry := MemoryEntry{
+	entry := memory.Entry{
 		Content:  summary,
-		Category: MemCategoryConversationSummary,
+		Category: memory.CategoryConversationSummary,
 		Tags:     tags,
 	}
 	if err := a.memoryStore.Save(entry); err != nil {
@@ -137,7 +139,7 @@ func (a *ConversationArchiver) Archive(userID string, entries []conversationEntr
 
 // callLLMForSummary sends the conversation text to the configured LLM and
 // asks it to extract user preferences, decisions, and important facts.
-func (a *ConversationArchiver) callLLMForSummary(cfg MaclawLLMConfig, conversationText string) (string, error) {
+func (a *ConversationArchiver) callLLMForSummary(cfg corelib.MaclawLLMConfig, conversationText string) (string, error) {
 	prompt := "请从以下对话中提取关键信息，包括：用户偏好、决策结论、重要事实、任务进度（做了什么、还差什么）。" +
 		"请用简洁的中文列出要点，不要包含无关信息。如果对话中没有值得记录的信息，请回复「无」。\n\n" +
 		"对话内容：\n" + conversationText
@@ -154,7 +156,7 @@ func (a *ConversationArchiver) callLLMForSummary(cfg MaclawLLMConfig, conversati
 	return result.Content, nil
 }
 
-// formatEntryContent converts a conversationEntry's Content (which may be a
+// formatEntryContent converts a agent.ConversationEntry's Content (which may be a
 // string or a complex structure) into a plain string for the LLM prompt.
 func formatEntryContent(content interface{}) string {
 	switch v := content.(type) {

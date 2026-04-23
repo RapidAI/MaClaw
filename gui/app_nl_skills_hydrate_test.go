@@ -16,8 +16,8 @@ import (
 
 // SkillMergePair groups the three inputs to shouldHydrateSkillFromFile.
 type SkillMergePair struct {
-	ConfigSkill NLSkillEntry
-	FileSkill   NLSkillEntry
+	ConfigSkill corelib.NLSkillEntry
+	FileSkill   corelib.NLSkillEntry
 	PrimaryDir  string
 }
 
@@ -32,7 +32,7 @@ func randomName(r *rand.Rand) string {
 	return names[r.Intn(len(names))]
 }
 
-// randomStep returns a minimal NLSkillStep with a random action.
+// randomStep returns a minimal corelib.NLSkillStep with a random action.
 func randomStep(r *rand.Rand) corelib.NLSkillStep {
 	actions := []string{"bash", "write_file", "craft_tool", "ask_user"}
 	return corelib.NLSkillStep{
@@ -97,12 +97,12 @@ func TestProperty_BugConditionA_HydratesAfterFix(t *testing.T) {
 		source := nonHubSources[r.Intn(len(nonHubSources))]
 
 		pair := SkillMergePair{
-			ConfigSkill: NLSkillEntry{
+			ConfigSkill: corelib.NLSkillEntry{
 				Name:   name,
 				Source: source,
 				Steps:  randomSteps(r), // non-empty
 			},
-			FileSkill: NLSkillEntry{
+			FileSkill: corelib.NLSkillEntry{
 				Name:  name,
 				Steps: randomSteps(r), // non-empty
 			},
@@ -161,12 +161,12 @@ func TestProperty_Preservation_NonBugInputsBehaveCorrectly(t *testing.T) {
 		switch strategy {
 		case 0:
 			// Name mismatch
-			pair.ConfigSkill = NLSkillEntry{
+			pair.ConfigSkill = corelib.NLSkillEntry{
 				Name:   randomName(r),
 				Source: nonHubSources[r.Intn(len(nonHubSources))],
 				Steps:  randomSteps(r),
 			}
-			pair.FileSkill = NLSkillEntry{
+			pair.FileSkill = corelib.NLSkillEntry{
 				Name:  randomName(r) + "-different",
 				Steps: randomSteps(r),
 			}
@@ -174,12 +174,12 @@ func TestProperty_Preservation_NonBugInputsBehaveCorrectly(t *testing.T) {
 		case 1:
 			// Empty file steps
 			name := randomName(r)
-			pair.ConfigSkill = NLSkillEntry{
+			pair.ConfigSkill = corelib.NLSkillEntry{
 				Name:   name,
 				Source: nonHubSources[r.Intn(len(nonHubSources))],
 				Steps:  randomSteps(r),
 			}
-			pair.FileSkill = NLSkillEntry{
+			pair.FileSkill = corelib.NLSkillEntry{
 				Name:  name,
 				Steps: nil, // empty
 			}
@@ -187,12 +187,12 @@ func TestProperty_Preservation_NonBugInputsBehaveCorrectly(t *testing.T) {
 		case 2:
 			// Empty config steps (not a bug condition — config has no steps)
 			name := randomName(r)
-			pair.ConfigSkill = NLSkillEntry{
+			pair.ConfigSkill = corelib.NLSkillEntry{
 				Name:   name,
 				Source: nonHubSources[r.Intn(len(nonHubSources))],
 				Steps:  nil, // empty
 			}
-			pair.FileSkill = NLSkillEntry{
+			pair.FileSkill = corelib.NLSkillEntry{
 				Name:  name,
 				Steps: randomSteps(r),
 			}
@@ -201,13 +201,13 @@ func TestProperty_Preservation_NonBugInputsBehaveCorrectly(t *testing.T) {
 			// Hub source with matching primaryDir (not a bug condition)
 			name := randomName(r)
 			dir := randomPrimaryDir(r)
-			pair.ConfigSkill = NLSkillEntry{
+			pair.ConfigSkill = corelib.NLSkillEntry{
 				Name:     name,
 				Source:   "hub",
 				Steps:    randomSteps(r),
 				SkillDir: dir + "/" + name,
 			}
-			pair.FileSkill = NLSkillEntry{
+			pair.FileSkill = corelib.NLSkillEntry{
 				Name:  name,
 				Steps: randomSteps(r),
 			}
@@ -215,12 +215,12 @@ func TestProperty_Preservation_NonBugInputsBehaveCorrectly(t *testing.T) {
 
 		case 4:
 			// Empty file skill name
-			pair.ConfigSkill = NLSkillEntry{
+			pair.ConfigSkill = corelib.NLSkillEntry{
 				Name:   randomName(r),
 				Source: nonHubSources[r.Intn(len(nonHubSources))],
 				Steps:  randomSteps(r),
 			}
-			pair.FileSkill = NLSkillEntry{
+			pair.FileSkill = corelib.NLSkillEntry{
 				Name:  "", // empty name
 				Steps: randomSteps(r),
 			}

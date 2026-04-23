@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -72,11 +73,7 @@ func (c *SkillHubClient) hubBaseURL() string {
 	if err != nil {
 		return ""
 	}
-	url := strings.TrimSpace(cfg.RemoteHubCenterURL)
-	if url == "" {
-		url = defaultRemoteHubCenterURL
-	}
-	return strings.TrimRight(url, "/")
+	return cfg.SkillHubBaseURL(defaultRemoteHubCenterURL)
 }
 
 // hubSkillSearchResult mirrors the hub's SkillSearchResult JSON.
@@ -201,7 +198,7 @@ var allowedFileExts = map[string]bool{
 // Install downloads a Skill from the hub, extracts bundled files to
 // ~/.maclaw/data/skills/<name>/, installs declared dependencies, and converts
 // the skill to an NLSkillEntry.
-func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL string) (*NLSkillEntry, error) {
+func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL string) (*corelib.NLSkillEntry, error) {
 	base := c.hubBaseURL()
 	if base == "" {
 		return nil, fmt.Errorf("hub URL not configured")
@@ -213,9 +210,9 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 		return nil, fmt.Errorf("下载 Skill 失败: %v", err)
 	}
 
-	steps := make([]NLSkillStep, 0, len(full.Steps))
+	steps := make([]corelib.NLSkillStep, 0, len(full.Steps))
 	for _, s := range full.Steps {
-		steps = append(steps, NLSkillStep{
+		steps = append(steps, corelib.NLSkillStep{
 			Action:    s.Action,
 			Params:    s.Params,
 			OnError:   s.OnError,
@@ -260,7 +257,7 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 		trustLevel = "trusted"
 	}
 
-	return &NLSkillEntry{
+	return &corelib.NLSkillEntry{
 		Name:          full.Name,
 		Description:   full.Description,
 		Triggers:      full.Triggers,
@@ -275,7 +272,7 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 	}, nil
 }
 
-func craftToolStepsFromBundledSkillFiles(files map[string]string, skillDir string) []NLSkillStep {
+func craftToolStepsFromBundledSkillFiles(files map[string]string, skillDir string) []corelib.NLSkillStep {
 	if len(files) == 0 {
 		return nil
 	}
@@ -294,7 +291,7 @@ func craftToolStepsFromBundledSkillFiles(files map[string]string, skillDir strin
 		if strings.TrimSpace(skillDir) != "" {
 			params["working_dir"] = skillDir
 		}
-		return []NLSkillStep{{
+		return []corelib.NLSkillStep{{
 			Action: "craft_tool",
 			Params: params,
 		}}

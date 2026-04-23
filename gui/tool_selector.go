@@ -4,11 +4,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// ToolProfile describes a programming tool's capability profile used for
-// intelligent tool selection. Each profile captures the languages, frameworks,
-// and task types the tool excels at, along with a base quality score.
-type ToolProfile = tool.Profile
-
 // ToolSelector recommends the best programming tool for a given task.
 // This is a thin wrapper around corelib/tool.Selector.
 type ToolSelector struct {

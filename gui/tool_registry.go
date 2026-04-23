@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"fmt"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ const (
 )
 
 type ToolHandler func(args map[string]interface{}) string
-type ToolHandlerWithProgress func(args map[string]interface{}, onProgress ProgressCallback) string
+type ToolHandlerWithProgress func(args map[string]interface{}, onProgress tool.ProgressCallback) string
 
 type RegisteredTool struct {
 	Name        string                  `json:"name"`

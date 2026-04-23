@@ -15,8 +15,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// MCPServerSource, MCPServerEntry — see corelib_aliases.go
-
 // MCPToolView is a tool exposed by an MCP Server.
 // The JSON tag uses snake_case ("input_schema") for internal serialization and
 // Wails bindings. MCP wire format uses camelCase ("inputSchema"); use
@@ -61,7 +59,7 @@ type MCPServerView struct {
 	AuthType     string            `json:"auth_type"`
 	AuthSecret   string            `json:"auth_secret"`
 	Headers      map[string]string `json:"headers,omitempty"`
-	Source       MCPServerSource   `json:"source"`
+	Source       corelib.MCPServerSource   `json:"source"`
 	Tools        []MCPToolView     `json:"tools"`
 	HealthStatus string            `json:"health_status"` // "healthy", "slow", "unavailable", "unknown"
 	FailCount    int               `json:"fail_count"`
@@ -106,7 +104,7 @@ func NewMCPRegistry(app *App) *MCPRegistry {
 }
 
 // loadServers reads MCP server entries from config.
-func (r *MCPRegistry) loadServers() []MCPServerEntry {
+func (r *MCPRegistry) loadServers() []corelib.MCPServerEntry {
 	cfg, err := r.app.LoadConfig()
 	if err != nil {
 		return nil
@@ -115,7 +113,7 @@ func (r *MCPRegistry) loadServers() []MCPServerEntry {
 }
 
 // saveServers persists MCP server entries to config.
-func (r *MCPRegistry) saveServers(servers []MCPServerEntry) error {
+func (r *MCPRegistry) saveServers(servers []corelib.MCPServerEntry) error {
 	cfg, err := r.app.LoadConfig()
 	if err != nil {
 		return err
@@ -146,7 +144,7 @@ func sanitizeMCPID(name string) string {
 }
 
 // Register adds a new MCP Server.
-func (r *MCPRegistry) Register(entry MCPServerEntry) error {
+func (r *MCPRegistry) Register(entry corelib.MCPServerEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -167,7 +165,7 @@ func (r *MCPRegistry) Register(entry MCPServerEntry) error {
 		entry.CreatedAt = time.Now().Format(time.RFC3339)
 	}
 	if entry.Source == "" {
-		entry.Source = MCPSourceManual
+		entry.Source = corelib.MCPSourceManual
 	}
 	servers = append(servers, entry)
 	if err := r.saveServers(servers); err != nil {
@@ -183,7 +181,7 @@ func (r *MCPRegistry) Register(entry MCPServerEntry) error {
 }
 
 // Update modifies an existing MCP Server.
-func (r *MCPRegistry) Update(entry MCPServerEntry) error {
+func (r *MCPRegistry) Update(entry corelib.MCPServerEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -264,7 +262,7 @@ func (r *MCPRegistry) ListServers() []MCPServerView {
 }
 
 // findServer looks up a server by ID under RLock and returns a copy.
-func (r *MCPRegistry) findServer(serverID string) (*MCPServerEntry, error) {
+func (r *MCPRegistry) findServer(serverID string) (*corelib.MCPServerEntry, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, s := range r.loadServers() {
@@ -313,7 +311,7 @@ func (r *MCPRegistry) ResolveServerID(serverRef string) (string, error) {
 // AuthType/AuthSecret (which take precedence over custom headers).
 // Content-Type and Accept are protocol-level headers set by newMCPJSONRequest
 // and are not overridable via custom headers.
-func setAuthHeader(req *http.Request, target *MCPServerEntry) {
+func setAuthHeader(req *http.Request, target *corelib.MCPServerEntry) {
 	// Apply custom headers first (lower precedence).
 	for k, v := range target.Headers {
 		if k == "" || v == "" {
@@ -340,7 +338,7 @@ func setAuthHeader(req *http.Request, target *MCPServerEntry) {
 
 // newMCPJSONRequest creates a JSON-RPC request to the given MCP server endpoint.
 // If a session ID is known for this server, it is included via the Mcp-Session-Id header.
-func (r *MCPRegistry) newMCPJSONRequest(target *MCPServerEntry, body []byte) (*http.Request, error) {
+func (r *MCPRegistry) newMCPJSONRequest(target *corelib.MCPServerEntry, body []byte) (*http.Request, error) {
 	url := strings.TrimRight(target.EndpointURL, "/")
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -358,7 +356,7 @@ func (r *MCPRegistry) newMCPJSONRequest(target *MCPServerEntry, body []byte) (*h
 
 // doMCPRoundTrip executes an MCP JSON-RPC request and extracts the session ID
 // from the response. Returns the parsed JSON-RPC payload.
-func (r *MCPRegistry) doMCPRoundTrip(target *MCPServerEntry, reqBody map[string]interface{}) ([]byte, error) {
+func (r *MCPRegistry) doMCPRoundTrip(target *corelib.MCPServerEntry, reqBody map[string]interface{}) ([]byte, error) {
 	data, _ := json.Marshal(reqBody)
 	req, err := r.newMCPJSONRequest(target, data)
 	if err != nil {
@@ -395,7 +393,7 @@ func (r *MCPRegistry) doMCPRoundTrip(target *MCPServerEntry, reqBody map[string]
 // ensureSession sends an MCP "initialize" handshake if no session exists for
 // the given server. Streamable HTTP servers (e.g. 智谱 BigModel) require this
 // handshake before tools/call will accept the API key.
-func (r *MCPRegistry) ensureSession(target *MCPServerEntry) error {
+func (r *MCPRegistry) ensureSession(target *corelib.MCPServerEntry) error {
 	if sess, ok := r.sessions[target.ID]; ok && sess.SessionID != "" {
 		// Session already established; check if it's stale (>30 min).
 		if time.Since(sess.CreatedAt) < 30*time.Minute {
@@ -588,7 +586,7 @@ func truncateMCPBody(body []byte) string {
 // RegisterAutoDiscovered registers an auto-discovered MCP Server.
 // If a manually registered server with the same ID already exists, the
 // auto-discovered entry is silently ignored to preserve manual configuration.
-func (r *MCPRegistry) RegisterAutoDiscovered(entry MCPServerEntry, source MCPServerSource) error {
+func (r *MCPRegistry) RegisterAutoDiscovered(entry corelib.MCPServerEntry, source corelib.MCPServerSource) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -601,7 +599,7 @@ func (r *MCPRegistry) RegisterAutoDiscovered(entry MCPServerEntry, source MCPSer
 		if s.ID == entry.ID {
 			// Conflict with an existing entry — if it was manually registered,
 			// silently ignore the auto-discovered one (requirement 1.5).
-			if s.Source == MCPSourceManual || s.Source == "" {
+			if s.Source == corelib.MCPSourceManual || s.Source == "" {
 				return nil
 			}
 			// Already registered from auto-discovery; skip duplicate.
@@ -694,10 +692,10 @@ func (r *MCPRegistry) RemoveUnhealthy() {
 	defer r.mu.Unlock()
 
 	servers := r.loadServers()
-	var kept []MCPServerEntry
+	var kept []corelib.MCPServerEntry
 	for _, s := range servers {
 		h, ok := r.health[s.ID]
-		if ok && h.FailCount >= 3 && s.Source != MCPSourceManual && s.Source != "" {
+		if ok && h.FailCount >= 3 && s.Source != corelib.MCPSourceManual && s.Source != "" {
 			// Auto-discovered server with >= 3 consecutive failures — remove it.
 			delete(r.health, s.ID)
 			delete(r.toolsCache, s.ID)
@@ -777,7 +775,7 @@ func (a *App) ListMCPServers() []MCPServerView {
 }
 
 // RegisterMCPServer registers a new MCP Server (Wails binding).
-func (a *App) RegisterMCPServer(server MCPServerEntry) error {
+func (a *App) RegisterMCPServer(server corelib.MCPServerEntry) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
@@ -785,7 +783,7 @@ func (a *App) RegisterMCPServer(server MCPServerEntry) error {
 }
 
 // UpdateMCPServer updates an existing MCP Server (Wails binding).
-func (a *App) UpdateMCPServer(server MCPServerEntry) error {
+func (a *App) UpdateMCPServer(server corelib.MCPServerEntry) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
@@ -830,10 +828,8 @@ func (a *App) ProbeMCPServers() []MCPServerView {
 
 // ─── Local (stdio) MCP Server support ───────────────────────────────────────
 
-// LocalMCPServerEntry — see corelib_aliases.go
-
 // loadLocalServers reads local MCP server entries from config.
-func (r *MCPRegistry) loadLocalServers() []LocalMCPServerEntry {
+func (r *MCPRegistry) loadLocalServers() []corelib.LocalMCPServerEntry {
 	cfg, err := r.app.LoadConfig()
 	if err != nil {
 		return nil
@@ -842,7 +838,7 @@ func (r *MCPRegistry) loadLocalServers() []LocalMCPServerEntry {
 }
 
 // saveLocalServers persists local MCP server entries to config.
-func (r *MCPRegistry) saveLocalServers(servers []LocalMCPServerEntry) error {
+func (r *MCPRegistry) saveLocalServers(servers []corelib.LocalMCPServerEntry) error {
 	cfg, err := r.app.LoadConfig()
 	if err != nil {
 		return err
@@ -852,7 +848,7 @@ func (r *MCPRegistry) saveLocalServers(servers []LocalMCPServerEntry) error {
 }
 
 // RegisterLocal adds a new local MCP server entry.
-func (r *MCPRegistry) RegisterLocal(entry LocalMCPServerEntry) error {
+func (r *MCPRegistry) RegisterLocal(entry corelib.LocalMCPServerEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	servers := r.loadLocalServers()
@@ -867,7 +863,7 @@ func (r *MCPRegistry) RegisterLocal(entry LocalMCPServerEntry) error {
 }
 
 // UpdateLocal updates an existing local MCP server entry.
-func (r *MCPRegistry) UpdateLocal(entry LocalMCPServerEntry) error {
+func (r *MCPRegistry) UpdateLocal(entry corelib.LocalMCPServerEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	servers := r.loadLocalServers()
@@ -910,7 +906,7 @@ func (r *MCPRegistry) SetLocalAutoStart(serverID string, enabled bool) error {
 }
 
 // ListLocalServers returns all local MCP server entries.
-func (r *MCPRegistry) ListLocalServers() []LocalMCPServerEntry {
+func (r *MCPRegistry) ListLocalServers() []corelib.LocalMCPServerEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.loadLocalServers()
@@ -919,7 +915,7 @@ func (r *MCPRegistry) ListLocalServers() []LocalMCPServerEntry {
 // ─── Wails bindings for Local MCP Servers ───────────────────────────────────
 
 // ListLocalMCPServers returns all local (stdio) MCP server configs (Wails binding).
-func (a *App) ListLocalMCPServers() []LocalMCPServerEntry {
+func (a *App) ListLocalMCPServers() []corelib.LocalMCPServerEntry {
 	if a.mcpRegistry == nil {
 		return nil
 	}
@@ -927,7 +923,7 @@ func (a *App) ListLocalMCPServers() []LocalMCPServerEntry {
 }
 
 // RegisterLocalMCPServer adds a new local MCP server config (Wails binding).
-func (a *App) RegisterLocalMCPServer(server LocalMCPServerEntry) error {
+func (a *App) RegisterLocalMCPServer(server corelib.LocalMCPServerEntry) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
@@ -935,7 +931,7 @@ func (a *App) RegisterLocalMCPServer(server LocalMCPServerEntry) error {
 }
 
 // UpdateLocalMCPServer updates an existing local MCP server config (Wails binding).
-func (a *App) UpdateLocalMCPServer(server LocalMCPServerEntry) error {
+func (a *App) UpdateLocalMCPServer(server corelib.LocalMCPServerEntry) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}

@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
 const (
@@ -90,6 +92,10 @@ type Gateway struct {
 	// handlerWg tracks in-flight handler goroutines so Stop() can wait
 	// for them to finish before returning.
 	handlerWg sync.WaitGroup
+
+	// interruptHandler is called when a new message arrives while the
+	// per-user lock is held. See corelib/progress.InterruptHandler.
+	interruptHandler progress.InterruptHandler
 }
 
 // NewGateway creates a new Telegram Bot gateway.
@@ -105,6 +111,11 @@ func NewGateway(config Config, handler MessageHandler) *Gateway {
 // SetStatusCallback sets a callback for connection status changes.
 func (g *Gateway) SetStatusCallback(cb StatusCallback) {
 	g.onStatus = cb
+}
+
+// SetInterruptHandler sets the handler for interrupt signals.
+func (g *Gateway) SetInterruptHandler(ih progress.InterruptHandler) {
+	g.interruptHandler = ih
 }
 
 // Start launches the long-polling loop in the background.
@@ -282,7 +293,17 @@ func (g *Gateway) pollLoop(ctx context.Context) {
 			g.handlerWg.Add(1)
 			go func() {
 				defer g.handlerWg.Done()
-				ul.Lock()
+				locked := ul.TryLock()
+				if !locked {
+					// Try interrupt handler before blocking.
+					if g.interruptHandler != nil && incoming.Text != "" {
+						result := g.interruptHandler.TryInterrupt(userKey, incoming.Text)
+						if result.Handled {
+							return // Cancel/Merge/StatusQuery — fully handled
+						}
+					}
+					ul.Lock()
+				}
 				defer ul.Unlock()
 				g.handler(incoming)
 			}()

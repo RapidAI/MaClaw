@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"fmt"
 	"log"
@@ -89,7 +90,7 @@ func (a *App) ensureCodeGenProxyIfNeeded() {
 	data := a.GetMaclawLLMProviders()
 
 	// Find the CodeGen SSO provider
-	var codegenProvider *MaclawLLMProvider
+	var codegenProvider *corelib.MaclawLLMProvider
 	for i := range data.Providers {
 		if data.Providers[i].Name == codegenProviderName && data.Providers[i].AuthType == "sso" {
 			codegenProvider = &data.Providers[i]
