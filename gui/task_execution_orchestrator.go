@@ -26,6 +26,16 @@ const (
 	TaskExecSkipped    TaskExecStatus = "skipped"
 )
 
+// TaskExecMode determines how a task is executed.
+type TaskExecMode string
+
+const (
+	// TaskExecModeExternal delegates coding to an external tool via create_session.
+	TaskExecModeExternal TaskExecMode = "external"
+	// TaskExecModeDirect uses maclaw's own agent loop (bash/write_file/edit_file).
+	TaskExecModeDirect TaskExecMode = "direct"
+)
+
 // TaskItem represents a single task extracted from the confirmed task list.
 type TaskItem struct {
 	Index              int
@@ -38,6 +48,13 @@ type TaskItem struct {
 	RetryCount         int
 	SessionID          string // session used for this task
 	ErrorSummary       string
+	ExecMode           TaskExecMode // resolved per-task at execution time
+}
+
+// ExternalToolChecker tests whether an external coding tool is available.
+// Implemented by the host (GUI provides SessionPrecheck-based impl).
+type ExternalToolChecker interface {
+	IsExternalToolAvailable(toolName, projectPath string) bool
 }
 
 // TaskExecutionOrchestrator tracks the state of per-task execution during
@@ -68,6 +85,10 @@ type TaskExecutionOrchestrator struct {
 
 	// Tool name for session creation (e.g. "claude", "codex").
 	Tool string
+
+	// ExternalChecker tests external tool availability at runtime.
+	// nil means always use direct mode.
+	ExternalChecker ExternalToolChecker
 }
 
 // NewTaskExecutionOrchestrator creates an orchestrator with default settings.
@@ -356,6 +377,71 @@ func (o *TaskExecutionOrchestrator) BuildIntegrationPrompt() string {
 	return b.String()
 }
 
+// ResolveExecutionMode determines the execution mode for the current task.
+// Called at runtime (not at Activate time) so it reflects the current state
+// of external tool availability. The result is cached on the TaskItem.
+func (o *TaskExecutionOrchestrator) ResolveExecutionMode() TaskExecMode {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.CurrentIndex >= len(o.Tasks) {
+		return TaskExecModeDirect
+	}
+	task := o.Tasks[o.CurrentIndex]
+	// Return cached mode if already resolved. Re-resolution only happens
+	// when AdvanceToNext moves to a new task (ExecMode is "" on fresh tasks).
+	if task.ExecMode != "" {
+		return task.ExecMode
+	}
+	mode := o.resolveModeLocked()
+	task.ExecMode = mode
+	return mode
+}
+
+// resolveModeLocked determines the mode without locking (caller holds mu).
+func (o *TaskExecutionOrchestrator) resolveModeLocked() TaskExecMode {
+	if o.Tool == "" {
+		return TaskExecModeDirect
+	}
+	if o.ExternalChecker == nil {
+		return TaskExecModeDirect
+	}
+	if o.ExternalChecker.IsExternalToolAvailable(o.Tool, o.ProjectPath) {
+		return TaskExecModeExternal
+	}
+	return TaskExecModeDirect
+}
+
+// DegradeCurrentToDirectMode switches the current task from external to
+// direct mode. Called when an external tool fails with a non-code error
+// (rate limit, connection failure, tool crash). Returns true if degraded.
+func (o *TaskExecutionOrchestrator) DegradeCurrentToDirectMode() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.CurrentIndex >= len(o.Tasks) {
+		return false
+	}
+	task := o.Tasks[o.CurrentIndex]
+	if task.ExecMode != TaskExecModeExternal {
+		return false
+	}
+	task.ExecMode = TaskExecModeDirect
+	log.Printf("[task-orchestrator] degraded task %d to direct mode", task.Index+1)
+	return true
+}
+
+// CurrentExecutionMode returns the resolved mode for the current task.
+func (o *TaskExecutionOrchestrator) CurrentExecutionMode() TaskExecMode {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.CurrentIndex >= len(o.Tasks) {
+		return TaskExecModeDirect
+	}
+	if o.Tasks[o.CurrentIndex].ExecMode == "" {
+		return TaskExecModeDirect
+	}
+	return o.Tasks[o.CurrentIndex].ExecMode
+}
+
 // BuildSystemInjection returns a system message to inject into the conversation
 // at the start of each iteration, reminding the LLM which task to focus on.
 func (o *TaskExecutionOrchestrator) BuildSystemInjection() string {
@@ -365,20 +451,20 @@ func (o *TaskExecutionOrchestrator) BuildSystemInjection() string {
 	if !o.Active || o.CurrentIndex >= len(o.Tasks) {
 		return ""
 	}
+
+	var b strings.Builder
+	b.WriteString(o.buildTaskContextLocked())
+	b.WriteString(o.buildExecutionGuideLocked())
+	return b.String()
+}
+
+// buildTaskContextLocked writes pure task context: current task, task list,
+// progress stats. No tool-specific instructions. Caller holds mu.
+func (o *TaskExecutionOrchestrator) buildTaskContextLocked() string {
 	task := o.Tasks[o.CurrentIndex]
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("🔧 [任务执行调度器] 当前正在执行任务 %d/%d: 「%s」\n", task.Index+1, len(o.Tasks), task.Title))
-
-	switch task.Status {
-	case TaskExecPending:
-		b.WriteString("📌 操作：调用 create_session 创建编程会话，然后用 send_and_observe 发送本任务的编程指令。\n")
-		b.WriteString("⚠️ 只发送当前任务的描述，不要发送整个项目的需求。系统会自动构造包含上下文的任务 prompt。\n")
-	case TaskExecInProgress:
-		b.WriteString("📌 操作：用 get_session_output 检查编程工具的进度。\n")
-	case TaskExecTesting:
-		b.WriteString("📌 操作：用 send_and_observe 发送 TDD 测试指令，验证任务完成质量。\n")
-	}
 
 	// Full task list with status
 	b.WriteString("\n📋 任务清单：\n")
@@ -401,7 +487,6 @@ func (o *TaskExecutionOrchestrator) BuildSystemInjection() string {
 		}
 	}
 
-	// Progress summary
 	passed, failed, remaining := o.countStatusLocked()
 	b.WriteString(fmt.Sprintf("\n📊 进度：✅ %d 通过 | ❌ %d 失败 | ⏳ %d 剩余\n", passed, failed, remaining))
 
@@ -410,6 +495,50 @@ func (o *TaskExecutionOrchestrator) BuildSystemInjection() string {
 	b.WriteString("T2: 任务描述 ⟳\n")
 	b.WriteString("T3: 任务描述\n")
 	b.WriteString("已完成的任务后面加 ✓，正在执行的加 ⟳，未开始的不加标记。不要把多个任务写在同一行。\n")
+
+	return b.String()
+}
+
+// buildExecutionGuideLocked writes tool-specific execution instructions
+// based on the current task's execution mode. Caller holds mu.
+func (o *TaskExecutionOrchestrator) buildExecutionGuideLocked() string {
+	task := o.Tasks[o.CurrentIndex]
+	mode := task.ExecMode
+	if mode == "" {
+		mode = TaskExecModeDirect // default if not yet resolved
+	}
+
+	var b strings.Builder
+
+	if mode == TaskExecModeDirect {
+		// Direct coding mode: maclaw's own agent loop writes code.
+		switch task.Status {
+		case TaskExecPending:
+			b.WriteString("\n📌 执行模式：直接编码\n")
+			b.WriteString("操作步骤：\n")
+			b.WriteString("1. 先用 read_file 理解涉及文件的现有代码结构\n")
+			b.WriteString("2. 用 write_file 创建新文件，用 edit_file 修改现有文件\n")
+			b.WriteString("3. 每个文件修改后用 bash 编译/lint 检查\n")
+			b.WriteString("4. 全部完成后用 bash 运行验收标准中的测试\n")
+			b.WriteString("⚠️ 优先用 edit_file 做增量修改，避免 write_file 全文覆盖已有文件。\n")
+			b.WriteString("⚠️ 单次 write_file 内容不超过 200 行，超过时分多次写入。\n")
+		case TaskExecInProgress:
+			b.WriteString("📌 继续用 write_file/edit_file 完成当前任务的编码。\n")
+		case TaskExecTesting:
+			b.WriteString("📌 用 bash 运行验收测试，验证任务完成质量。\n")
+		}
+	} else {
+		// External tool mode: delegate to create_session → send_and_observe.
+		switch task.Status {
+		case TaskExecPending:
+			b.WriteString("📌 操作：调用 create_session 创建编程会话，然后用 send_and_observe 发送本任务的编程指令。\n")
+			b.WriteString("⚠️ 只发送当前任务的描述，不要发送整个项目的需求。系统会自动构造包含上下文的任务 prompt。\n")
+		case TaskExecInProgress:
+			b.WriteString("📌 操作：用 get_session_output 检查编程工具的进度。\n")
+		case TaskExecTesting:
+			b.WriteString("📌 操作：用 send_and_observe 发送 TDD 测试指令，验证任务完成质量。\n")
+		}
+	}
 
 	return b.String()
 }

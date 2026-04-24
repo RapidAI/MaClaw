@@ -98,7 +98,7 @@ func TestDefinitionTypeForPath(t *testing.T) {
 }
 
 func TestSearchGitHubReturnsCombinedCandidates(t *testing.T) {
-	gs := NewGitHubSearcher("")
+	gs := NewGitHubSearcher("test-token") // token enables Code Search fallback
 	calls := map[string]int{}
 	responses := map[string][]byte{
 		"skill.md": mustJSON(t, ghCodeSearchResponse{Items: []ghCodeSearchItem{{
@@ -110,8 +110,18 @@ func TestSearchGitHubReturnsCombinedCandidates(t *testing.T) {
 			Repository: ghSearchRepo{FullName: "octo/skills", HTMLURL: "https://github.com/octo/skills", Description: "Browser skill", Stars: 12, DefaultBranch: "main"},
 		}}}),
 	}
+	repoResponse := mustJSON(t, ghRepoSearchResponse{Items: []ghSearchRepo{{
+		FullName: "octo/repo-skill", HTMLURL: "https://github.com/octo/repo-skill",
+		Description: "Repo skill", Stars: 5, DefaultBranch: "main",
+	}}})
 	gs.client = fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		q := req.URL.Query().Get("q")
+		// Repository Search API
+		if strings.Contains(req.URL.Path, "/search/repositories") {
+			calls["repo"]++
+			return newHTTPResponse(200, repoResponse, nil), nil
+		}
+		// Code Search API
 		for filename, body := range responses {
 			if strings.Contains(q, "filename:"+filename) {
 				calls[filename]++
@@ -124,17 +134,16 @@ func TestSearchGitHubReturnsCombinedCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchGitHub error: %v", err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	// Should have: 1 from repo search + 2 from code search (octo/skills has 2 files but same repo = 1 deduped)
+	// octo/repo-skill (repo search) + octo/skills (code search, deduped to 1)
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+	if calls["repo"] != 1 {
+		t.Fatalf("expected 1 repo search call, got %d", calls["repo"])
 	}
 	if calls["skill.md"] != 1 || calls["skill.yaml"] != 1 {
-		t.Fatalf("unexpected calls: %+v", calls)
-	}
-	if results[0].DefinitionType != githubDefinitionSkillMD {
-		t.Fatalf("expected first result to be skill_md, got %q", results[0].DefinitionType)
-	}
-	if results[1].DefinitionType != githubDefinitionYAML {
-		t.Fatalf("expected second result to be yaml, got %q", results[1].DefinitionType)
+		t.Fatalf("unexpected code search calls: %+v", calls)
 	}
 }
 

@@ -9,6 +9,16 @@ const (
 	defaultWindowSize       = 8
 	defaultSimilarityThresh = 0.8
 	loopPatternMinRepeat    = 3
+	// slowPollMinRepeat is the higher threshold for drift detection when
+	// consecutive identical calls are spread over a long time span. This
+	// indicates the LLM is interleaving other work (e.g., screenshot calls
+	// between list_directory polls while waiting for an async process),
+	// not stuck in a tight loop.
+	slowPollMinRepeat = 5
+	// slowPollTimeSpan is the minimum time span between the first and last
+	// consecutive identical calls to be considered "slow polling" rather
+	// than a tight loop. If the span exceeds this, use slowPollMinRepeat.
+	slowPollTimeSpan = 15 * time.Second
 )
 
 // ToolCallRecord 记录单次 tool_call 的关键信息。
@@ -110,6 +120,16 @@ func (d *DriftDetector) DetectDrift() DriftResult {
 	}
 
 	if consecutiveCount < loopPatternMinRepeat {
+		return DriftResult{}
+	}
+
+	// --- 时间跨度感知：区分紧密循环和慢速轮询 ---
+	// 如果连续相同调用的时间跨度超过 slowPollTimeSpan（15s），说明 LLM
+	// 在调用之间穿插了其他工作（如 screenshot），不是紧密循环。
+	// 此时提高触发阈值到 slowPollMinRepeat（5 次），给 LLM 更多轮询机会。
+	startIdx := len(window) - consecutiveCount
+	timeSpan := window[lastIdx].Timestamp.Sub(window[startIdx].Timestamp)
+	if timeSpan > slowPollTimeSpan && consecutiveCount < slowPollMinRepeat {
 		return DriftResult{}
 	}
 
@@ -236,6 +256,12 @@ func (d *DriftDetector) PreviewDrift() DriftResult {
 		}
 	}
 	if consecutiveCount < loopPatternMinRepeat {
+		return DriftResult{}
+	}
+	// Apply the same time-span check as DetectDrift.
+	startIdx := len(window) - consecutiveCount
+	timeSpan := window[lastIdx].Timestamp.Sub(window[startIdx].Timestamp)
+	if timeSpan > slowPollTimeSpan && consecutiveCount < slowPollMinRepeat {
 		return DriftResult{}
 	}
 	// Apply the same result-change check as DetectDrift.

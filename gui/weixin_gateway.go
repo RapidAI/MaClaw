@@ -377,6 +377,10 @@ func (m *weixinGatewayManager) ensureLocalHandler() *IMMessageHandler {
 		emb := a.memoryStore.Embedder()
 		if emb != nil && !embedding.IsNoop(emb) {
 			h.toolBuilder.SetEmbedder(emb)
+			// Wire embedder into interrupt handler for semantic relevance.
+			if h.interruptHandler != nil {
+				h.interruptHandler.SetEmbedder(emb)
+			}
 		}
 	}
 	h.SetTrajectoryRecorderFactory(a.buildTrajectoryRecorderFactory())

@@ -80,8 +80,11 @@ func TestRunLoop_NoToolCalls_ReturnsFinalText(t *testing.T) {
 	if result.Iterations != 1 {
 		t.Fatalf("expected 1 iteration, got %d", result.Iterations)
 	}
-	if len(cb.tokens) != 0 {
-		t.Fatalf("OnToken should not be called for non-streaming final text, got: %v", cb.tokens)
+	if len(cb.tokens) != 1 {
+		t.Fatalf("OnToken should be called once with full text via streaming, got: %v", cb.tokens)
+	}
+	if cb.tokens[0] != "Hello! How can I help?" {
+		t.Fatalf("OnToken delta mismatch: %q", cb.tokens[0])
 	}
 }
 

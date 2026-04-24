@@ -1009,7 +1009,17 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 						c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
 					}
 				}
-				return // All handled actions return — message was a control signal, not a new task.
+				return // Fully handled — message was a control signal, not a new task.
+			}
+			if result.Queued && result.Reply != "" {
+				// Insert/Enqueue — send instant feedback, then fall through
+				// to HandleIMMessageWithProgress (which will block on chatLoopMu
+				// until the current loop finishes, then process normally).
+				resp := &IMAgentResponse{Text: result.Reply}
+				if err := c.sendIMAgentResponse(requestID, resp); err != nil {
+					c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
+				}
+				// Don't return — let the message continue to normal processing below.
 			}
 		}
 

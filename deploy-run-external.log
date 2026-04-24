@@ -1,0 +1,19 @@
+﻿
+[1/9] Deployment topology
+  - hubs.mypapers.top: hubcenter[/data/soft/hubcenter] + hub[/data/soft/hub]
+  - hubs.maclaw.top: hubcenter[/data/soft/hubcenter] + hub[/data/soft/hub]
+  - hubs2.maclaw.top: hubcenter[/data/soft/hubcenter] only
+  Shared cluster secret: generated
+
+[2/9] Running remote prechecks...
+  - checking hubs.mypapers.top
+  - checking hubs.maclaw.top
+  - checking hubs2.maclaw.top
+[3/9] Preparing build workspace...
+Remove-Item : �޷�ɾ���� D:\workprj\aicoder\build\deploy-ha\maclaw-src.tar.gz: �ļ���maclaw-src.tar.gz��������һ����ʹ��
+����˸ý����޷����ʴ��ļ���
+����λ�� D:\workprj\aicoder\deploy\deploy_all_ha.ps1:98 �ַ�: 9
++         Remove-Item -LiteralPath $Path -Recurse -Force
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : WriteError: (maclaw-src.tar.gz:FileInfo) [Remove-Item], IOException
+    + FullyQualifiedErrorId : RemoveFileSystemItemIOError,Microsoft.PowerShell.Commands.RemoveItemCommand

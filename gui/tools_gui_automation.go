@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/accessibility"
 	"github.com/RapidAI/CodeClaw/corelib/guiautomation"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 )
 
 // guiReplayActivityAdapter wraps AgentActivityStore to satisfy guiautomation.GUIActivityUpdater.
@@ -339,6 +341,154 @@ func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopM
 			return string(result)
 		},
 	})
+
+	// --- gui_observe ---
+	// Provides structured state observation of desktop GUI applications,
+	// analogous to browser_observe for web pages. Returns accessibility
+	// tree elements, focused element info, and OCR text — all as structured
+	// text, no screenshot, no LLM vision cost.
+	guiObserver := guiautomation.NewGUIStateObserver(bridge, nil, screenshotFn, func(msg string) {
+		log.Printf("[gui-observe] %s", msg)
+	})
+
+	// Inject YOLO-based ScreenParser for vision-based UI element detection.
+	// The model is lazily loaded on first use — no startup cost if not needed.
+	yoloWeightsPath := findYOLOWeights()
+	if yoloWeightsPath != "" {
+		yoloParser := guiautomation.NewYOLOScreenParser(yoloWeightsPath, 0.3, 0.5)
+		guiObserver.SetScreenParser(yoloParser)
+		log.Printf("[gui-automation] YOLO ScreenParser configured: %s", yoloWeightsPath)
+	}
+	registry.Register(RegisteredTool{
+		Name:        "gui_observe",
+		Description: "观测桌面 GUI 程序的结构化状态（窗口元素树、焦点元素、OCR 文本）。返回纯文本，不截屏，不消耗 vision token。Observe desktop GUI state: accessibility tree, focused element, OCR text. Returns structured text, no screenshot.",
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"gui", "test", "automation", "桌面", "观测", "accessibility"},
+		Priority:    5,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"window": map[string]interface{}{"type": "string", "description": "窗口标题（子串匹配）。不传则返回所有顶层窗口列表 / Window title (substring match). Omit to list all top-level windows."},
+			"depth":  map[string]interface{}{"type": "integer", "description": "元素树深度（默认 3，最大 5）/ Element tree depth (default 3, max 5)"},
+		},
+		Source: "builtin:gui_automation",
+		Handler: func(args map[string]interface{}) string {
+			window := guiStrArg(args, "window", "")
+			depth := guiIntArg(args, "depth", 3)
+			if depth > 5 {
+				depth = 5
+			}
+			if depth < 1 {
+				depth = 1
+			}
+
+			if window == "" {
+				// List all top-level windows
+				elements, err := bridge.EnumElements("")
+				if err != nil {
+					return fmt.Sprintf("枚举窗口失败: %v", err)
+				}
+				if len(elements) == 0 {
+					return "未检测到窗口（accessibility bridge 可能不可用）"
+				}
+				var lines []string
+				for _, el := range elements {
+					lines = append(lines, fmt.Sprintf("  [%s] %q (%dx%d at %d,%d)",
+						el.Role, el.Name, el.Bounds.Width, el.Bounds.Height, el.Bounds.X, el.Bounds.Y))
+				}
+				return fmt.Sprintf("顶层窗口 (%d 个):\n%s", len(elements), strings.Join(lines, "\n"))
+			}
+
+			// Get element tree for specific window
+			elements, err := bridge.EnumElements(window)
+			if err != nil {
+				return fmt.Sprintf("枚举窗口 %q 元素失败: %v", window, err)
+			}
+
+			if len(elements) == 0 {
+				// Accessibility returned nothing — try ScreenParser (YOLO) fallback.
+				// Note: YOLO detects elements across the entire screen, not scoped
+				// to a specific window. The results are labeled accordingly.
+				if guiObserver != nil && guiObserver.ScreenParser() != nil && guiObserver.ScreenParser().IsAvailable() && screenshotFn != nil {
+					img, serr := screenshotFn()
+					if serr == nil {
+						uiElements, perr := guiObserver.ScreenParser().Parse(img)
+						if perr == nil && len(uiElements) > 0 {
+							var lines []string
+							for _, el := range uiElements {
+								lines = append(lines, fmt.Sprintf("  [%s] (%dx%d at %d,%d) conf=%.2f",
+									el.Type, el.BBox[2], el.BBox[3], el.BBox[0], el.BBox[1], el.Confidence))
+							}
+							return fmt.Sprintf("Accessibility 未找到窗口 %q。以下是全屏视觉检测到的 %d 个可交互元素:\n%s",
+								window, len(uiElements), strings.Join(lines, "\n"))
+						}
+					}
+				}
+				return fmt.Sprintf("未找到标题包含 %q 的窗口", window)
+			}
+
+			// Format element tree
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("窗口 %q 元素树:\n", window))
+			for _, el := range elements {
+				formatElementTree(&sb, &el, 0, depth)
+			}
+
+			result := sb.String()
+			if len(result) > 8000 {
+				result = result[:8000] + "\n... (truncated)"
+			}
+			return result
+		},
+	})
+
+	// --- gui_verify ---
+	// Structured verification of desktop GUI state, analogous to
+	// browser_task_verify. Checks criteria against accessibility tree
+	// and OCR without requiring screenshots or LLM vision.
+	registry.Register(RegisteredTool{
+		Name:        "gui_verify",
+		Description: "验证桌面 GUI 状态是否满足指定条件。支持: text_contains（OCR 文本包含）、element_exists（元素存在）、element_value（元素值匹配）、window_exists（窗口存在）。Verify desktop GUI state against criteria.",
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"gui", "test", "automation", "桌面", "验证", "assert"},
+		Priority:    5,
+		Status:      RegToolAvailable,
+		Required:    []string{"criteria"},
+		InputSchema: map[string]interface{}{
+			"criteria": map[string]interface{}{
+				"type":        "string",
+				"description": "JSON 数组，每个元素: {\"type\":\"...\", \"pattern\":\"...\", \"selector\":\"role::name\", \"window\":\"窗口标题\"}。type 可选: text_contains, element_exists, element_value, window_exists",
+			},
+		},
+		Source: "builtin:gui_automation",
+		Handler: func(args map[string]interface{}) string {
+			criteriaJSON := guiStrArg(args, "criteria", "")
+			if criteriaJSON == "" {
+				return "缺少 criteria 参数"
+			}
+
+			var criteria []guiautomation.VerifyCriterion
+			if err := json.Unmarshal([]byte(criteriaJSON), &criteria); err != nil {
+				return fmt.Sprintf("criteria JSON 解析失败: %v", err)
+			}
+			if len(criteria) == 0 {
+				return "criteria 为空"
+			}
+
+			// Convert to taskengine.CriterionSpec
+			specs := make([]taskengine.CriterionSpec, len(criteria))
+			for i, c := range criteria {
+				specs[i] = c.ToSpec()
+			}
+
+			result, err := guiObserver.Verify(specs)
+			if err != nil {
+				return fmt.Sprintf("验证失败: %v", err)
+			}
+
+			resp, _ := json.Marshal(result)
+			return string(resp)
+		},
+	})
 }
 
 // runGUIReplayBackground executes a GUI replay as a background task using
@@ -505,4 +655,37 @@ func guiIntArg(args map[string]interface{}, key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// formatElementTree recursively formats an accessibility element tree
+// as indented text for the gui_observe tool output.
+func formatElementTree(sb *strings.Builder, el *accessibility.Element, indent, maxDepth int) {
+	if indent >= maxDepth {
+		return
+	}
+	prefix := strings.Repeat("  ", indent)
+	valStr := ""
+	if el.Value != "" {
+		valStr = fmt.Sprintf(" value=%q", el.Value)
+	}
+	boundsStr := ""
+	if el.Bounds.Width > 0 || el.Bounds.Height > 0 {
+		boundsStr = fmt.Sprintf(" (%dx%d at %d,%d)", el.Bounds.Width, el.Bounds.Height, el.Bounds.X, el.Bounds.Y)
+	}
+	sb.WriteString(fmt.Sprintf("%s[%s] %q%s%s\n", prefix, el.Role, el.Name, valStr, boundsStr))
+	for i := range el.Children {
+		formatElementTree(sb, &el.Children[i], indent+1, maxDepth)
+	}
+}
+
+// findYOLOWeights returns the path to the YOLO model if it exists.
+func findYOLOWeights() string {
+	p := yoloModelPath()
+	if p == "" {
+		return ""
+	}
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
 }

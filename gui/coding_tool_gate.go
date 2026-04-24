@@ -48,11 +48,10 @@ type codingToolGateResult struct {
 	applied   bool           // true if any tools were actually stripped
 }
 
-// codingToolBlocklist lists tool names subject to stripping when the gate is active.
-// This includes coding session tools AND browser automation tools — during the
-// three-phase coding workflow (requirements → design → task breakdown), browser
-// tools are irrelevant and their presence (25+ definitions) pollutes the LLM
-// context, causing hallucinated "Browser:" role prefixes in output.
+// codingToolBlocklist lists tool names subject to stripping when the gate is
+// active during the three-phase workflow (requirements → design → task breakdown).
+// This includes coding session tools, direct coding tools, AND browser automation
+// tools — during the three-phase phases, none of these should be available.
 var codingToolBlocklist = map[string]bool{
 	// Coding session tools.
 	"create_session":   true,
@@ -75,6 +74,24 @@ var codingToolBlocklist = map[string]bool{
 	"browser_task_run": true, "browser_task_replay": true, "browser_task_verify": true, "browser_task_status": true,
 	"browser_record_start": true, "browser_record_stop": true, "browser_list_flows": true,
 	"gui_record_start": true, "gui_record_stop": true,
+	"gui_observe": true, "gui_verify": true,
+}
+
+// directModeSessionBlocklist lists session management tools that should be
+// stripped during the execution phase when using direct coding mode. In direct
+// mode, maclaw writes code itself using bash/write_file/edit_file — external
+// session tools are unnecessary and their presence confuses the LLM into
+// trying to delegate instead of coding directly.
+var directModeSessionBlocklist = map[string]bool{
+	"create_session":    true,
+	"send_and_observe":  true,
+	"control_session":   true,
+	"get_session_output": true,
+	"get_session_events": true,
+	"interrupt_session":  true,
+	"kill_session":       true,
+	"list_sessions":      true,
+	"send_input":         true,
 }
 
 // deliveryToolAllowlist lists tool names that are never intercepted.
@@ -164,6 +181,12 @@ func isBugFixOnly(text string) bool {
 // isCodingTool returns true iff name is in the blocklist and not in the allowlist.
 func isCodingTool(name string) bool {
 	return codingToolBlocklist[name] && !deliveryToolAllowlist[name]
+}
+
+// isDirectModeBlockedTool returns true if the tool should be stripped during
+// the execution phase when using direct coding mode.
+func isDirectModeBlockedTool(name string) bool {
+	return directModeSessionBlocklist[name]
 }
 
 // containsSkipSignal checks whether text contains any known skip signal

@@ -39,14 +39,16 @@ type SkillItem struct {
 	Publisher   string
 }
 
-// SkillSearchResult represents a search result from SkillHub.
+// SkillSearchResult represents a search result from SkillHub, ClawHub, or GitHub.
 type SkillSearchResult struct {
-	ID        string
-	Name      string
-	Version   string
-	Rating    float64
-	Downloads int
-	Trust     string
+	ID         string
+	Name       string
+	Version    string
+	Rating     float64
+	Downloads  int
+	Trust      string
+	Source     string // "skillhub", "clawhub", "github"
+	InstallRef string // JSON-serialized GitHubSkillCandidate (github only)
 }
 
 // MCPItem represents a configured MCP server for display.
@@ -71,8 +73,10 @@ type ToolSkillSearchResultMsg struct {
 
 // ToolSkillInstallMsg triggers a skill install.
 type ToolSkillInstallMsg struct {
-	SkillID string
-	HubURL  string
+	SkillID    string
+	HubURL     string
+	Source     string // "skillhub", "clawhub", or "github"
+	InstallRef string // JSON-serialized GitHubSkillCandidate (github only)
 }
 
 // ToolSkillInstallResultMsg returns install result.
@@ -107,6 +111,8 @@ type ToolStatusModel struct {
 	skillResults []SkillSearchResult
 	skillResultCursor int
 	skillMessage string // status message
+	skillConfirming bool   // true when showing install confirmation dialog
+	skillConfirmIdx int    // index of the result being confirmed
 
 	// MCP sub-tab state
 	mcpServers   []MCPItem
@@ -225,6 +231,33 @@ func (m ToolStatusModel) Update(msg tea.Msg) (ToolStatusModel, tea.Cmd) {
 }
 
 func (m ToolStatusModel) updateSkill(msg tea.KeyMsg) (ToolStatusModel, tea.Cmd) {
+	// Install confirmation dialog
+	if m.skillConfirming {
+		switch msg.String() {
+		case "y", "Y", "enter":
+			// Confirmed — proceed with install
+			m.skillConfirming = false
+			if m.skillConfirmIdx < len(m.skillResults) {
+				sr := m.skillResults[m.skillConfirmIdx]
+				m.skillMessage = "📦 安装中: " + sr.Name
+				return m, func() tea.Msg {
+					return ToolSkillInstallMsg{
+						SkillID:    sr.ID,
+						Source:     sr.Source,
+						InstallRef: sr.InstallRef,
+					}
+				}
+			}
+			return m, nil
+		case "n", "N", "esc":
+			// Cancelled
+			m.skillConfirming = false
+			m.skillMessage = ""
+			return m, nil
+		}
+		return m, nil
+	}
+
 	// Search input focused
 	if m.skillSearch.Focused() {
 		switch msg.String() {
@@ -269,13 +302,20 @@ func (m ToolStatusModel) updateSkill(msg tea.KeyMsg) (ToolStatusModel, tea.Cmd) 
 			m.skillCursor++
 		}
 	case "enter":
-		// Install selected search result
+		// Show confirmation dialog before installing
 		if len(m.skillResults) > 0 && m.skillResultCursor < len(m.skillResults) {
 			sr := m.skillResults[m.skillResultCursor]
-			m.skillMessage = "📦 安装中: " + sr.Name
-			return m, func() tea.Msg {
-				return ToolSkillInstallMsg{SkillID: sr.ID}
+			m.skillConfirming = true
+			m.skillConfirmIdx = m.skillResultCursor
+			sourceLabel := "SkillHub"
+			switch sr.Source {
+			case "clawhub":
+				sourceLabel = "ClawHub"
+			case "github":
+				sourceLabel = "GitHub"
 			}
+			m.skillMessage = fmt.Sprintf("确认安装 %s（来源: %s）？ [Y/n]", sr.Name, sourceLabel)
+			return m, nil
 		}
 	case "esc":
 		// Clear search results, go back to installed list
@@ -501,8 +541,9 @@ func (m ToolStatusModel) View() string {
 func (m ToolStatusModel) renderSubTabs() string {
 	active := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229")).Background(lipgloss.Color("57")).Padding(0, 1)
 	inactive := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(lipgloss.Color("238")).Padding(0, 1)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
-	names := [ToolSubCount]string{"Skill", "MCP"}
+	names := [ToolSubCount]string{"1:Skill", "2:MCP"}
 	var tabs string
 	for i, name := range names {
 		if i == m.subTab {
@@ -512,7 +553,11 @@ func (m ToolStatusModel) renderSubTabs() string {
 		}
 		tabs += " "
 	}
-	return "  " + tabs
+	hint := ""
+	if m.subTab == ToolSubSkill {
+		hint = dim.Render("  s:搜索  r:刷新")
+	}
+	return "  " + tabs + hint
 }
 
 func (m ToolStatusModel) viewSkill() string {
@@ -533,9 +578,20 @@ func (m ToolStatusModel) viewSkill() string {
 	if len(m.skillResults) > 0 {
 		b.WriteString(dim.Render("  搜索结果（Enter 安装，Esc 返回）:") + "\n")
 		for i, sr := range m.skillResults {
-			rating := fmt.Sprintf("★%.1f", sr.Rating)
-			line := fmt.Sprintf("  %-22s %-8s %-6s %-5s %s",
-				truncate(sr.Name, 22), sr.Version, sr.Trust, rating, fmt.Sprintf("%d↓", sr.Downloads))
+			sourceTag := "hub"
+			switch sr.Source {
+			case "clawhub":
+				sourceTag = "claw"
+			case "github":
+				sourceTag = "gh"
+			}
+			// For GitHub, Downloads field holds star count.
+			metric := fmt.Sprintf("%d↓", sr.Downloads)
+			if sr.Source == "github" {
+				metric = fmt.Sprintf("★%d", sr.Downloads)
+			}
+			line := fmt.Sprintf("  %-22s %-8s %-10s %s",
+				truncate(sr.Name, 22), sr.Version, sourceTag+" "+sr.Trust, metric)
 			if i == m.skillResultCursor {
 				b.WriteString(sel.Render(line))
 			} else {
@@ -574,7 +630,7 @@ func (m ToolStatusModel) viewSkill() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n" + dim.Render("  s:搜索  r:刷新  1/2:切换子标签"))
+	b.WriteString("\n" + dim.Render("  ↑↓:选择  s:搜索  r:刷新"))
 	return b.String()
 }
 
@@ -718,7 +774,8 @@ func parseEnvString(s string) map[string]string {
 	return env
 }
 
-// IsEditing returns true when a text input is focused (blocks tab navigation).
+// IsEditing returns true when a text input is focused or a confirmation
+// dialog is active (blocks tab navigation).
 func (m ToolStatusModel) IsEditing() bool {
-	return m.skillSearch.Focused() || m.mcpAdding
+	return m.skillSearch.Focused() || m.mcpAdding || m.skillConfirming
 }

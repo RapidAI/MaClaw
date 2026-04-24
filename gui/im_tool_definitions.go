@@ -143,16 +143,18 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"timeout":            map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
 			}, []string{"task"}),
 		// --- 本机直接操作工具 ---
-		toolDef("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。禁止通过 bash 执行 ssh/scp/rsync 命令——请使用内置 ssh 工具。",
+		toolDef("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。禁止通过 bash 执行 ssh/scp/rsync 命令——请使用内置 ssh 工具。支持 background=true 后台执行长时间命令（翻译、编译、下载等），返回 task_id 后可用 async_wait 查询状态。",
 			map[string]interface{}{
 				"command":     map[string]string{"type": "string", "description": "要执行的 shell 命令"},
 				"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
-				"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
+				"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120。background 模式下忽略）"},
+				"background":  map[string]string{"type": "boolean", "description": "后台执行（可选，默认 false）。设为 true 时命令在后台运行，立即返回 task_id，用 async_wait 查询进度。适用于翻译、编译、下载等长时间任务"},
 			}, []string{"command"}),
-		toolDef("read_file", "读取本机文件内容",
+		toolDef("read_file", "读取本机文件内容。支持 offset 参数从指定位置读取（适合监控日志文件的增量内容）",
 			map[string]interface{}{
-				"path":  map[string]string{"type": "string", "description": "文件路径（绝对路径或相对于主目录的路径）"},
-				"lines": map[string]string{"type": "integer", "description": "最多读取行数（可选，默认 200）"},
+				"path":   map[string]string{"type": "string", "description": "文件路径（绝对路径或相对于主目录的路径）"},
+				"lines":  map[string]string{"type": "integer", "description": "最多读取行数（可选，默认 200）"},
+				"offset": map[string]string{"type": "integer", "description": "从文件末尾倒数的行数开始读取（可选，类似 tail -n）。例如 offset=50 表示读取最后 50 行。与 lines 互斥，优先使用 offset"},
 			}, []string{"path"}),
 		toolDef("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。大文件请分块写入：先 overwrite 第一部分，再 append 后续部分）",
 			map[string]interface{}{
@@ -181,6 +183,14 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"target": map[string]string{"type": "string", "description": "要打开的文件路径、目录路径或 URL（如 C:\\Users\\test\\doc.pdf、https://example.com、mailto:test@example.com）"},
 			}, []string{"target"}),
+		// --- 后台任务管理工具 ---
+		toolDef("async_wait", "管理本机后台任务（与 bash(background=true) 配合使用）。action=check 查询状态，action=wait 阻塞等待完成，action=kill 终止任务，action=list 列出所有任务。",
+			map[string]interface{}{
+				"action":     map[string]string{"type": "string", "description": "操作: check（查询状态）、wait（等待完成）、kill（终止）、list（列出所有）"},
+				"task_id":    map[string]string{"type": "string", "description": "任务 ID（check/wait/kill 必填，由 bash(background=true) 返回）"},
+				"timeout":    map[string]string{"type": "integer", "description": "等待超时秒数（仅 wait，默认 60，最大 300）"},
+				"tail_lines": map[string]string{"type": "integer", "description": "返回日志尾部行数（可选，默认 50）"},
+			}, nil),
 		// --- 结构化提问工具 ---
 		toolDef("ask_user", "向用户提出结构化问题并等待回答。适用于需要用户从多个选项中选择、或提供缺失信息的场景。注意：编码工作流的阶段确认（需求/设计/任务确认）不要使用此工具，直接在回复文本中提示用户确认即可。",
 			map[string]interface{}{

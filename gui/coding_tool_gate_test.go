@@ -41,6 +41,7 @@ func TestCodingGate_BlocklistContainsAllCodingTools(t *testing.T) {
 		"browser_task_run", "browser_task_replay", "browser_task_verify", "browser_task_status",
 		"browser_record_start", "browser_record_stop", "browser_list_flows",
 		"gui_record_start", "gui_record_stop",
+		"gui_observe", "gui_verify",
 	}
 	expected := append(codingTools, browserTools...)
 	for _, name := range expected {

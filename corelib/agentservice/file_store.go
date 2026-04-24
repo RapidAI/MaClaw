@@ -113,6 +113,13 @@ func (s *FileStore) ListInstances(tenantID, userID string) ([]Instance, error) {
 	return s.inner.ListInstances(tenantID, userID)
 }
 
+func (s *FileStore) DeleteInstance(tenantID, userID, instanceID string) error {
+	if err := s.inner.DeleteInstance(tenantID, userID, instanceID); err != nil {
+		return err
+	}
+	return s.flush()
+}
+
 func (s *FileStore) SaveSession(v Session) error {
 	if err := s.inner.SaveSession(v); err != nil {
 		return err
@@ -126,6 +133,13 @@ func (s *FileStore) GetSession(tenantID, userID, instanceID, sessionID string) (
 
 func (s *FileStore) ListSessions(tenantID, userID, instanceID string) ([]Session, error) {
 	return s.inner.ListSessions(tenantID, userID, instanceID)
+}
+
+func (s *FileStore) DeleteSession(tenantID, userID, instanceID, sessionID string) error {
+	if err := s.inner.DeleteSession(tenantID, userID, instanceID, sessionID); err != nil {
+		return err
+	}
+	return s.flush()
 }
 
 func (s *FileStore) SaveMessage(v Message) error {

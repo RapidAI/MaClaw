@@ -53,6 +53,7 @@ var CoreToolNames = map[string]bool{
 	"set_nickname": true,
 	"discover_tool": true,
 	"task":          true,
+	"async_wait":    true,
 }
 
 type conditionalKeepRule struct {
@@ -143,6 +144,15 @@ var pptxReadKeywords = []string{
 	"pptx", "幻灯片", "演示文稿", "powerpoint", "ppt", "读取ppt",
 }
 
+var desktopGUIKeywords = []string{
+	"桌面", "窗口", "按钮", "菜单", "对话框", "输入框", "文本框",
+	"gui", "desktop", "window", "button", "menu", "dialog",
+	"记事本", "notepad", "计算器", "calculator",
+	"gui_observe", "gui_verify", "gui_record", "gui_replay",
+	"accessibility", "元素树", "控件",
+	"检查窗口", "验证窗口", "观测窗口", "查看窗口",
+}
+
 var conditionalKeepRules = []conditionalKeepRule{
 	{
 		keepTools: []string{"ssh"},
@@ -217,6 +227,14 @@ var conditionalKeepRules = []conditionalKeepRule{
 		keepTools: []string{"generate_pdf", "office"},
 		matches: func(msg string) bool {
 			return containsAnyKeyword(msg, codingWorkflowDocKeywords)
+		},
+	},
+	// Desktop GUI observation/verification tools — activated by desktop app
+	// keywords, independent of browser tools.
+	{
+		keepTools: []string{"gui_observe", "gui_verify", "gui_record_start", "gui_record_stop"},
+		matches: func(msg string) bool {
+			return containsAnyKeyword(msg, desktopGUIKeywords)
 		},
 	},
 }

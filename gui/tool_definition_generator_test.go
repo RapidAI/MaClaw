@@ -49,6 +49,7 @@ func makeBuiltinDefs() []map[string]interface{} {
 		toolDef("browser_click", "浏览器点击", nil, nil),
 		toolDef("discover_tool", "发现工具", nil, nil),
 		toolDef("generate_pdf", "生成PDF文档（仅编程流程）", nil, nil),
+		toolDef("async_wait", "异步等待", nil, nil),
 	}
 }
 

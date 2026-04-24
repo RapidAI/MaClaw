@@ -215,6 +215,12 @@ func (a *App) DownloadEmbeddingModel() error {
 // When emitErrors is false, errors are not sent to the frontend (used for silent fallback attempts).
 // Supports HTTP Range resume: if a .tmp file already exists, it sends a Range header to continue.
 func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
+	return a.downloadModelFromWithEvent(url, destPath, emitErrors, "embedding-download-progress")
+}
+
+// downloadModelFromWithEvent is the same as downloadModelFrom but allows specifying
+// a custom Wails event name for progress reporting.
+func (a *App) downloadModelFromWithEvent(url, destPath string, emitErrors bool, eventName string) error {
 	tmpPath := destPath + ".tmp"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -235,7 +241,7 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if emitErrors {
-			a.emitDownloadProgress(0, 0, 0, err.Error())
+			a.emitDownloadProgressNamed(eventName, 0, 0, 0, err.Error())
 		}
 		return fmt.Errorf("download request: %w", err)
 	}
@@ -244,7 +250,7 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		msg := fmt.Sprintf("HTTP %d from %s", resp.StatusCode, url)
 		if emitErrors {
-			a.emitDownloadProgress(0, 0, 0, msg)
+			a.emitDownloadProgressNamed(eventName, 0, 0, 0, msg)
 		}
 		return fmt.Errorf("%s", msg)
 	}
@@ -296,7 +302,7 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 		if n > 0 {
 			if _, wErr := out.Write(buf[:n]); wErr != nil {
 				if emitErrors {
-					a.emitDownloadProgress(0, downloaded, totalSize, wErr.Error())
+					a.emitDownloadProgressNamed(eventName, 0, downloaded, totalSize, wErr.Error())
 				}
 				return fmt.Errorf("write file: %w", wErr)
 			}
@@ -306,7 +312,7 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 				if totalSize > 0 {
 					pct = int(downloaded * 100 / totalSize)
 				}
-				a.emitDownloadProgress(pct, downloaded, totalSize, "")
+				a.emitDownloadProgressNamed(eventName, pct, downloaded, totalSize, "")
 				lastEmit = time.Now()
 			}
 		}
@@ -315,7 +321,7 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 		}
 		if readErr != nil {
 			if emitErrors {
-				a.emitDownloadProgress(0, downloaded, totalSize, readErr.Error())
+				a.emitDownloadProgressNamed(eventName, 0, downloaded, totalSize, readErr.Error())
 			}
 			return fmt.Errorf("read body: %w", readErr)
 		}
@@ -326,15 +332,19 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 
-	a.emitDownloadProgress(100, downloaded, totalSize, "")
+	a.emitDownloadProgressNamed(eventName, 100, downloaded, totalSize, "")
 	return nil
 }
 
 func (a *App) emitDownloadProgress(pct int, downloaded, total int64, errMsg string) {
+	a.emitDownloadProgressNamed("embedding-download-progress", pct, downloaded, total, errMsg)
+}
+
+func (a *App) emitDownloadProgressNamed(eventName string, pct int, downloaded, total int64, errMsg string) {
 	if a.ctx == nil {
 		return
 	}
-	runtime.EventsEmit(a.ctx, "embedding-download-progress", map[string]interface{}{
+	runtime.EventsEmit(a.ctx, eventName, map[string]interface{}{
 		"percent":    pct,
 		"downloaded": downloaded,
 		"total":      total,
@@ -522,6 +532,11 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
 		if handler := a.remoteSessions.hubClient.imHandler; handler != nil && handler.toolBuilder != nil {
 			handler.toolBuilder.SetEmbedder(emb)
+		}
+		// Wire embedder into interrupt handler for semantic relevance scoring.
+		if handler := a.remoteSessions.hubClient.imHandler; handler != nil && handler.interruptHandler != nil {
+			handler.interruptHandler.SetEmbedder(emb)
+			log.Println("[embedding] interrupt handler embedder wired")
 		}
 	}
 

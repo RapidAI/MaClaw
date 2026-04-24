@@ -3,7 +3,6 @@ package views
 import (
 	"fmt"
 
-	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -12,11 +11,11 @@ import (
 // Tab 索引常量。
 // Chat is first — it's the primary use case for TUI.
 // AgentNet removed — not relevant for standalone TUI.
+// Coding sessions removed — TUI codes directly via bash/write_file/edit_file.
 const (
 	TabChat = iota
-	TabSessions
 	TabTools
-	TabSchedule
+	TabTasks    // 任务（远程 + 后台 + 计划任务）
 	TabMemory
 	TabAudit
 	TabConfig
@@ -29,15 +28,10 @@ type RootModel struct {
 	height    int
 	tab       int
 	lang      string
-	appConfig corelib.AppConfig // shared config for coding tool wizard
 
 	// 子视图
-	Sessions      SessionListModel
-	SessionDetail *SessionDetailModel // nil = 不显示详情
-	SessionCreate *SessionCreateModel // nil = 不显示创建表单
-	CodingSetup   CodingSetupModel   // coding tool launch wizard
 	Tools         ToolStatusModel
-	Schedule      ScheduleModel
+	Tasks         TaskModel
 	Memory        MemoryModel
 	Audit         AuditModel
 	Config        ConfigModel
@@ -54,10 +48,8 @@ func NewRootModel(lang string) RootModel {
 	return RootModel{
 		tab:         TabChat,
 		lang:        lang,
-		Sessions:    NewSessionListModel(lang),
-		CodingSetup: NewCodingSetupModel(),
 		Tools:       NewToolStatusModel(lang),
-		Schedule: NewScheduleModel(lang),
+		Tasks:    NewTaskModel(lang),
 		Memory:   NewMemoryModel(lang),
 		Audit:    NewAuditModel(lang),
 		Config:   NewConfigModel(lang),
@@ -69,30 +61,18 @@ func NewRootModel(lang string) RootModel {
 
 func (m *RootModel) SetLang(lang string) {
 	m.lang = i18n.NormalizeLang(lang)
-	m.Sessions.SetLang(m.lang)
 	m.Tools.SetLang(m.lang)
-	m.Schedule.SetLang(m.lang)
+	m.Tasks.SetLang(m.lang)
 	m.Memory.SetLang(m.lang)
 	m.Audit.SetLang(m.lang)
 	m.Config.SetLang(m.lang)
 	m.Chat.SetLang(m.lang)
 	m.Help.SetLang(m.lang)
 	m.StatusBar.SetLang(m.lang)
-	if m.SessionDetail != nil {
-		m.SessionDetail.SetLang(m.lang)
-	}
-	if m.SessionCreate != nil {
-		m.SessionCreate.SetLang(m.lang)
-	}
 }
 
 func (m RootModel) Lang() string {
 	return m.lang
-}
-
-// SetAppConfig updates the shared config used by the coding tool wizard.
-func (m *RootModel) SetAppConfig(cfg corelib.AppConfig) {
-	m.appConfig = cfg
 }
 
 // Init 实现 tea.Model。
@@ -106,59 +86,10 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		if m.SessionDetail != nil {
-			d := *m.SessionDetail
-			d, _ = d.Update(msg)
-			m.SessionDetail = &d
-		}
-		if m.SessionCreate != nil {
-			c := *m.SessionCreate
-			c, _ = c.Update(msg)
-			m.SessionCreate = &c
-		}
-	case SessionOpenMsg:
-		detail := NewSessionDetailModel(msg.ID, msg.Tool, msg.Title, m.lang)
-		m.SessionDetail = &detail
-		return m, nil
-	case SessionCreateMsg:
-		// Show coding tool launch wizard instead of the old form.
-		m.CodingSetup.Show(m.appConfig)
-		return m, nil
-	case SessionCreateSubmitMsg:
-		m.SessionCreate = nil
-		m.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUISessionCreated, m.lang, msg.Tool, msg.Project))
-		return m, nil
 	case tea.KeyMsg:
 		if m.Help.IsVisible() {
 			var cmd tea.Cmd
 			m.Help, cmd = m.Help.Update(msg)
-			return m, cmd
-		}
-		if m.SessionCreate != nil {
-			if msg.String() == "esc" {
-				m.SessionCreate = nil
-				return m, nil
-			}
-			var cmd tea.Cmd
-			c := *m.SessionCreate
-			c, cmd = c.Update(msg)
-			m.SessionCreate = &c
-			return m, cmd
-		}
-		if m.CodingSetup.IsActive() {
-			var cmd tea.Cmd
-			m.CodingSetup, cmd = m.CodingSetup.Update(msg)
-			return m, cmd
-		}
-		if m.SessionDetail != nil {
-			if msg.String() == "esc" {
-				m.SessionDetail = nil
-				return m, nil
-			}
-			var cmd tea.Cmd
-			d := *m.SessionDetail
-			d, cmd = d.Update(msg)
-			m.SessionDetail = &d
 			return m, cmd
 		}
 		if m.tab == TabConfig && m.Config.IsEditing() {
@@ -237,20 +168,12 @@ func (m RootModel) View() string {
 	content := ""
 	if m.Help.IsVisible() {
 		content = m.Help.View()
-	} else if m.SessionCreate != nil {
-		content = m.SessionCreate.View()
-	} else if m.CodingSetup.IsActive() {
-		content = m.CodingSetup.View()
-	} else if m.tab == TabSessions && m.SessionDetail != nil {
-		content = m.SessionDetail.View()
 	} else {
 		switch m.tab {
-		case TabSessions:
-			content = m.Sessions.View()
 		case TabTools:
 			content = m.Tools.View()
-		case TabSchedule:
-			content = m.Schedule.View()
+		case TabTasks:
+			content = m.Tasks.View()
 		case TabMemory:
 			content = m.Memory.View()
 		case TabAudit:
@@ -286,9 +209,8 @@ func (m RootModel) renderTabs() string {
 
 	tabNames := [TabCount]string{
 		i18n.T(i18n.MsgTUITabChat, m.lang),
-		i18n.T(i18n.MsgTUITabSessions, m.lang),
 		i18n.T(i18n.MsgTUITabTools, m.lang),
-		i18n.T(i18n.MsgTUITabSchedule, m.lang),
+		i18n.T(i18n.MsgTUITabSchedule, m.lang),  // "任务" / "Tasks"
 		i18n.T(i18n.MsgTUITabMemory, m.lang),
 		i18n.T(i18n.MsgTUITabAudit, m.lang),
 		i18n.T(i18n.MsgTUITabConfig, m.lang),
@@ -314,12 +236,10 @@ func (m RootModel) ActiveTab() int {
 func (m *RootModel) updateActiveTab(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
 	switch m.tab {
-	case TabSessions:
-		m.Sessions, cmd = m.Sessions.Update(msg)
 	case TabTools:
 		m.Tools, cmd = m.Tools.Update(msg)
-	case TabSchedule:
-		m.Schedule, cmd = m.Schedule.Update(msg)
+	case TabTasks:
+		m.Tasks, cmd = m.Tasks.Update(msg)
 	case TabMemory:
 		m.Memory, cmd = m.Memory.Update(msg)
 	case TabAudit:

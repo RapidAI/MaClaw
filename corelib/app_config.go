@@ -153,8 +153,13 @@ type AppConfig struct {
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
 	// ASR toggle.
 	ASREnabled bool `json:"asr_enabled"`
+	// Screen parsing (YOLO) toggle — enables vision-based UI element detection.
+	// Default: enabled (nil = true). Uses *bool so we can distinguish "not set" from "false".
+	ScreenParsingEnabled *bool `json:"screen_parsing_enabled,omitempty"`
 	// UI zoom factor (0.5 ~ 2.0, 0 = default 1.0).
 	UIZoomFactor float64 `json:"ui_zoom_factor,omitempty"`
+	// Chat font size in pixels (12 ~ 24, 0 = default 14).
+	ChatFontSize int `json:"chat_font_size,omitempty"`
 	// SSH host presets.
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
 	// Knowledge Skill token budget.

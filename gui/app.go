@@ -6,7 +6,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,6 +32,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/session"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -144,6 +144,10 @@ type App struct {
 	steeringStore              *steering.Store          // declarative rule injection (corelib/steering)
 	codeEventEmitter           *CodeEventEmitter        // emits code file events to frontend for code preview panel
 	floatingAssistant          *FloatingAssistantManager
+
+	// IM audit store (SQLite-backed IM message audit for review/export).
+	imAuditStore   *IMAuditStore
+	imAuditStoreMu sync.Once
 
 	// Session search store (FTS5 full-text search across historical conversations).
 	sessionSearchStore *session.Store
@@ -931,6 +935,10 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			emb := a.memoryStore.Embedder()
 			if emb != nil && !embedding.IsNoop(emb) {
 				handler.toolBuilder.SetEmbedder(emb)
+				// Wire embedder into interrupt handler for semantic relevance.
+				if handler.interruptHandler != nil {
+					handler.interruptHandler.SetEmbedder(emb)
+				}
 			}
 		}
 		// Wire the statusC into the chat loop's LoopContext so it can drain
@@ -1133,6 +1141,10 @@ func (a *App) startup(ctx context.Context) {
 		// Auto-start local MCP servers that are enabled for app launch.
 		a.autoStartLocalMCPServers(config.LocalMCPServers)
 
+		// Background preload YOLO model for screen parsing (default: enabled).
+		// Downloads silently from GitHub → Hub fallback. ~77MB, no startup delay.
+		go a.backgroundPreloadYOLOModel()
+
 		// Do not eagerly preload the embedding model on startup. Loading or
 		// downloading it here causes a large idle RSS spike on first install.
 		// The existing explicit vector-search enable flow will initialize it
@@ -1232,6 +1244,37 @@ func (a *App) SetUIZoomFactor(factor float64) error {
 		return err
 	}
 	cfg.UIZoomFactor = factor
+	return a.SaveConfig(cfg)
+}
+
+// GetChatFontSize returns the saved chat font size in pixels (default 14).
+func (a *App) GetChatFontSize() int {
+	cfg, err := a.LoadConfig()
+	if err != nil || cfg.ChatFontSize <= 0 {
+		return 14
+	}
+	if cfg.ChatFontSize < 12 {
+		return 14
+	}
+	if cfg.ChatFontSize > 24 {
+		return 24
+	}
+	return cfg.ChatFontSize
+}
+
+// SetChatFontSize persists the chat font size (clamped to 12–24).
+func (a *App) SetChatFontSize(size int) error {
+	if size < 12 {
+		size = 12
+	}
+	if size > 24 {
+		size = 24
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.ChatFontSize = size
 	return a.SaveConfig(cfg)
 }
 
@@ -4525,29 +4568,9 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 		return UpdateResult{LatestVersion: "", ReleaseUrl: ""}, err
 	}
 	req.Header.Set("User-Agent", brand.Current().DisplayName)
-	// Add GitHub token for authentication (helps avoid rate limiting)
-	// Priority: 1) GITHUB_TOKEN environment variable, 2) Built-in default token (base64 encoded 3 times)
-	const defaultGitHubTokenEncoded = "V2pKb2QxZ3hjREJPVmtZeVVXNXNUV0ZZVmtOaFZFSktWbXBuTWxsWVNrOVNhbWhYWTI1a1ZsRlVUbXBWZWtaUVlsWk9TR1IzUFQwPQ=="
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		// Decode the base64 encoded token (3 times)
-		decoded := defaultGitHubTokenEncoded
-		for i := 0; i < 3; i++ {
-			decodedBytes, err := base64.StdEncoding.DecodeString(decoded)
-			if err != nil {
-				a.log(a.tr("CheckUpdate: Failed to decode token at iteration %d: %v", i+1, err))
-				decoded = ""
-				break
-			}
-			decoded = string(decodedBytes)
-		}
-		if decoded != "" {
-			token = decoded
-			a.log(a.tr("CheckUpdate: Using built-in GitHub token for authentication"))
-		}
-	} else {
-		a.log(a.tr("CheckUpdate: Using custom GitHub token from environment variable"))
-	}
+	// Add GitHub token for authentication (helps avoid rate limiting).
+	// Uses shared ResolveGitHubToken: env GITHUB_TOKEN > built-in default.
+	token := skill.ResolveGitHubToken()
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -4998,25 +5021,9 @@ func (a *App) fetchRemoteMarkdown(repo, file string) (string, error) {
 	req.Header.Set("User-Agent", "MaClaw-App")
 	req.Header.Set("Cache-Control", "no-cache, no-store")
 	req.Header.Set("Pragma", "no-cache")
-	// Add GitHub token for authentication (helps avoid rate limiting)
-	// Priority: 1) GITHUB_TOKEN environment variable, 2) Built-in default token (base64 encoded 3 times)
-	const defaultGitHubTokenEncoded = "V2pKb2QxZ3hjREJPVmtZeVVXNXNUV0ZZVmtOaFZFSktWbXBuTWxsWVNrOVNhbWhYWTI1a1ZsRlVUbXBWZWtaUVlsWk9TR1IzUFQwPQ=="
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		// Decode the base64 encoded token (3 times)
-		decoded := defaultGitHubTokenEncoded
-		for i := 0; i < 3; i++ {
-			decodedBytes, err := base64.StdEncoding.DecodeString(decoded)
-			if err != nil {
-				decoded = ""
-				break
-			}
-			decoded = string(decodedBytes)
-		}
-		if decoded != "" {
-			token = decoded
-		}
-	}
+	// Add GitHub token for authentication (helps avoid rate limiting).
+	// Uses shared ResolveGitHubToken: env GITHUB_TOKEN > built-in default.
+	token := skill.ResolveGitHubToken()
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}

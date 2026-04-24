@@ -41,6 +41,13 @@ type ChatMessage struct {
 }
 
 // ChatModel 是 AI 助手聊天视图。
+//
+// 渲染管线设计：
+//   renderLines() 是 O(messages × width) 的纯计算函数（Markdown 渲染、文本换行）。
+//   为避免在一个 View() 调用中重复计算，引入 cachedLines 缓存。
+//   任何修改 messages/width 的操作通过 invalidateCache() 标记缓存失效。
+//   getLines() 是唯一的缓存入口——首次调用时计算并缓存，后续调用直接返回。
+//   scrollToBottom/scrollDown/View 全部通过 getLines() 读取，零重复计算。
 type ChatModel struct {
 	messages    []ChatMessage
 	input       textinput.Model
@@ -51,6 +58,10 @@ type ChatModel struct {
 	width       int
 	lang        string
 	spinnerTick int // animation frame counter for waiting indicator
+
+	// 渲染缓存：避免 renderLines() 在一个事件周期内被重复调用。
+	cachedLines []string
+	cacheValid  bool
 }
 
 // spinnerFrames defines the animated spinner shown while waiting for AI response.
@@ -86,10 +97,27 @@ func (m *ChatModel) FocusInput() {
 	m.input.Focus()
 }
 
+// invalidateCache 标记渲染缓存失效。
+// 任何修改 messages、width、waiting、spinnerTick 的操作都必须调用此方法。
+func (m *ChatModel) invalidateCache() {
+	m.cacheValid = false
+}
+
+// getLines 返回当前渲染行列表（带缓存）。
+// 这是渲染管线的唯一入口——scrollToBottom、scrollDown、View 全部通过此方法读取。
+func (m *ChatModel) getLines() []string {
+	if !m.cacheValid {
+		m.cachedLines = m.renderLines()
+		m.cacheValid = true
+	}
+	return m.cachedLines
+}
+
 // AppendSystemMessage 追加一条系统消息到聊天记录。
 func (m *ChatModel) AppendSystemMessage(text string) {
 	m.messages = append(m.messages, ChatMessage{Role: "system", Content: text})
 	m.waiting = false
+	m.invalidateCache()
 	m.scrollToBottom()
 }
 
@@ -98,6 +126,7 @@ func (m *ChatModel) ClearMessages(systemMsg string) {
 	m.messages = []ChatMessage{{Role: "system", Content: systemMsg}}
 	m.scroll = 0
 	m.waiting = false
+	m.invalidateCache()
 }
 
 // SetMessages 设置聊天消息列表（用于从 memoryshot 恢复）。
@@ -107,6 +136,7 @@ func (m *ChatModel) SetMessages(msgs []ChatMessage) {
 	} else {
 		m.messages = msgs
 	}
+	m.invalidateCache()
 }
 
 // GetMessages 返回当前聊天消息列表。
@@ -135,8 +165,12 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if m.input.Width < 20 {
 			m.input.Width = 20
 		}
+		m.invalidateCache() // width 变化影响换行
+		// 终端缩小时 scroll 可能超出新的 maxScroll，钳位但不强制到底部
+		m.clampScroll()
 	case ChatResponseMsg:
 		m.waiting = false
+		m.invalidateCache()
 		if msg.Error != "" {
 			m.messages = append(m.messages, ChatMessage{Role: "system", Content: i18n.Tf(i18n.MsgTUIChatError, m.lang, msg.Error)})
 		} else if msg.Text != "" {
@@ -150,17 +184,27 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.messages = append(m.messages, ChatMessage{Role: "assistant", Content: msg.Text})
 			}
 		}
+		m.invalidateCache()
 		m.scrollToBottom()
 		return m, nil
 	case chatTickMsg:
 		if m.waiting {
 			m.spinnerTick++
+			m.invalidateCache() // spinner frame 变化
 			return m, tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return chatTickMsg{} })
 		}
 		return m, nil
 	case ChatStreamMsg:
+		m.invalidateCache()
 		switch msg.Type {
 		case "tool_call":
+			// 当 tool_call 到达时，如果最后一条消息是流式产生的 assistant 消息
+			// （同一 LLM 迭代中先输出 text 再输出 tool_calls），这段中间文本
+			// 不是最终回复——移除它。最终文本会通过 ChatResponseMsg 到达。
+			// 判断依据：最后一条消息是 assistant 且在最后一条 user 消息之后。
+			if idx := m.lastAssistantAfterUser(); idx >= 0 && idx == len(m.messages)-1 {
+				m.messages = m.messages[:len(m.messages)-1]
+			}
 			m.messages = append(m.messages, ChatMessage{Role: "system", Content: "🔧 " + msg.Tool + "..."})
 		case "tool_result":
 			// Update the last tool message with result status and optional elapsed time.
@@ -222,6 +266,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 						m.input.SetValue("")
 						m.waiting = true
 						m.spinnerTick = 0
+						m.invalidateCache()
 						m.scrollToBottom()
 						agentMode := m.agentMode
 						return m, tea.Batch(
@@ -260,6 +305,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			if !m.waiting {
 				m.messages = []ChatMessage{{Role: "system", Content: i18n.T(i18n.MsgTUIChatClearedMessage, m.lang)}}
 				m.scroll = 0
+				m.invalidateCache()
 				return m, func() tea.Msg { return ChatClearMsg{} }
 			}
 		case "a":
@@ -270,6 +316,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 					mode = i18n.T(i18n.MsgTUIChatModeAgent, m.lang)
 				}
 				m.messages = append(m.messages, ChatMessage{Role: "system", Content: i18n.Tf(i18n.MsgTUIChatModeSwitched, m.lang, mode)})
+				m.invalidateCache()
 				m.scrollToBottom()
 			}
 		}
@@ -284,9 +331,33 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	return m, nil
 }
 
+func (m *ChatModel) viewHeight() int {
+	vh := m.height - 3 // 减去分隔线、输入框、状态栏
+	if vh < 1 {
+		vh = 1
+	}
+	return vh
+}
+
+// clampScroll 将 scroll 钳位到有效范围 [0, maxScroll]。
+// 用于终端缩小后 scroll 可能越界的场景，不改变用户的阅读位置。
+func (m *ChatModel) clampScroll() {
+	lines := m.getLines()
+	maxScroll := len(lines) - m.viewHeight()
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.scroll > maxScroll {
+		m.scroll = maxScroll
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+}
+
 func (m *ChatModel) scrollDown() {
-	lines := m.renderLines()
-	maxScroll := len(lines) - m.height
+	lines := m.getLines()
+	maxScroll := len(lines) - m.viewHeight()
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -296,8 +367,8 @@ func (m *ChatModel) scrollDown() {
 }
 
 func (m *ChatModel) scrollToBottom() {
-	lines := m.renderLines()
-	maxScroll := len(lines) - m.height
+	lines := m.getLines()
+	maxScroll := len(lines) - m.viewHeight()
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -305,6 +376,7 @@ func (m *ChatModel) scrollToBottom() {
 }
 
 // renderLines 将所有消息渲染为行列表。
+// 这是一个纯计算函数——不要直接调用，通过 getLines() 使用缓存版本。
 func (m ChatModel) renderLines() []string {
 	userStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
 	assistStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("156"))
@@ -375,19 +447,33 @@ func (m ChatModel) renderLines() []string {
 	return lines
 }
 
-// wrapLine 自动换行：将超长行按 maxW 宽度折行，返回多行。
+// wrapLine 自动换行：将超长行按 maxW 显示宽度折行，返回多行。
+// 使用 displayWidth 正确处理 CJK 字符（宽度 2）和 ASCII 字符（宽度 1）。
 func wrapLine(s string, maxW int) string {
-	if maxW <= 0 || len([]rune(s)) <= maxW {
+	if maxW <= 0 {
+		return s
+	}
+	if displayWidth(s) <= maxW {
 		return s
 	}
 	runes := []rune(s)
 	var lines []string
-	for len(runes) > maxW {
-		lines = append(lines, string(runes[:maxW]))
-		runes = runes[maxW:]
+	lineStart := 0
+	w := 0
+	for i, r := range runes {
+		rw := 1
+		if r >= 0x1100 && isCJKOrFullwidth(r) {
+			rw = 2
+		}
+		if w+rw > maxW {
+			lines = append(lines, string(runes[lineStart:i]))
+			lineStart = i
+			w = 0
+		}
+		w += rw
 	}
-	if len(runes) > 0 {
-		lines = append(lines, string(runes))
+	if lineStart < len(runes) {
+		lines = append(lines, string(runes[lineStart:]))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -433,35 +519,59 @@ func (m *ChatModel) lastAssistantAfterUser() int {
 }
 
 // View 渲染聊天界面。
+//
+// 渲染管线：getLines()（缓存）→ 视口切片 → 滚动条 → 输入框 → 状态栏。
+// getLines() 在一个 View() 调用中只计算一次（缓存命中），
+// 滚动条和状态栏的 totalLines 信息零额外开销。
 func (m ChatModel) View() string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	var b strings.Builder
-	viewHeight := m.height - 3
-	if viewHeight < 1 {
-		viewHeight = 1
-	}
+	viewHeight := m.viewHeight()
 
 	if !m.hasUserMessages() {
-		// 无用户消息时显示 MaClaw logo
 		m.renderWelcomeView(&b, viewHeight)
 	} else {
-		// 正常聊天消息渲染
-		lines := m.renderLines()
+		lines := m.getLines() // 缓存入口——整个 View() 只调用一次
+		totalLines := len(lines)
 		start := m.scroll
 		end := start + viewHeight
-		if end > len(lines) {
-			end = len(lines)
+		if end > totalLines {
+			end = totalLines
 		}
 		if start > end {
 			start = end
 		}
 
-		for _, line := range lines[start:end] {
-			b.WriteString("  " + line + "\n")
+		// 滚动条：内容超出视口时在右侧显示。
+		// 基于 getLines() 的缓存结果，零额外 renderLines() 调用。
+		needsScrollBar := totalLines > viewHeight
+		var scrollTrack []rune
+		if needsScrollBar {
+			scrollTrack = buildScrollTrack(viewHeight, totalLines, m.scroll)
 		}
-		for i := end - start; i < viewHeight; i++ {
-			b.WriteString("\n")
+
+		visibleCount := end - start
+		for i := 0; i < visibleCount; i++ {
+			line := lines[start+i]
+			if needsScrollBar {
+				trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+				if scrollTrack[i] == '█' {
+					trackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
+				}
+				b.WriteString("  " + line + " " + trackStyle.Render(string(scrollTrack[i])) + "\n")
+			} else {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+		// 填充剩余空行
+		for i := visibleCount; i < viewHeight; i++ {
+			if needsScrollBar && i < len(scrollTrack) {
+				trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+				b.WriteString(strings.Repeat(" ", m.width-2) + trackStyle.Render(string(scrollTrack[i])) + "\n")
+			} else {
+				b.WriteString("\n")
+			}
 		}
 	}
 
@@ -480,9 +590,70 @@ func (m ChatModel) View() string {
 	if m.agentMode {
 		modeLabel = i18n.T(i18n.MsgTUIChatModeLabelAgent, m.lang)
 	}
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  %s  [%s]  %s", hint, modeLabel, i18n.Tf(i18n.MsgTUIChatMessageCount, m.lang, len(m.messages)-1))))
+
+	// 滚动位置指示器：基于 getLines() 缓存，零额外开销。
+	lines := m.getLines()
+	totalLines := len(lines)
+	scrollInfo := ""
+	if totalLines > viewHeight {
+		maxScroll := totalLines - viewHeight
+		if maxScroll < 1 {
+			maxScroll = 1
+		}
+		pct := m.scroll * 100 / maxScroll
+		if pct > 100 {
+			pct = 100
+		}
+		scrollInfo = fmt.Sprintf("  ↕%d%%", pct)
+	}
+
+	b.WriteString(dimStyle.Render(fmt.Sprintf("  %s  [%s]  %s%s", hint, modeLabel, i18n.Tf(i18n.MsgTUIChatMessageCount, m.lang, len(m.messages)-1), scrollInfo)))
 
 	return b.String()
+}
+
+// buildScrollTrack 生成垂直滚动条轨道。
+// 返回 viewHeight 长度的 rune 切片。滑块用 '█'，轨道用 '│'。
+// 滑块大小与 viewport/total 比例成正比（最小 1 行）。
+// 滑块位置与 scroll/maxScroll 成正比。
+func buildScrollTrack(viewHeight, totalLines, scroll int) []rune {
+	track := make([]rune, viewHeight)
+	for i := range track {
+		track[i] = '│'
+	}
+
+	if totalLines <= viewHeight || viewHeight < 1 {
+		return track
+	}
+
+	// 滑块大小：viewport/total 比例，最小 1 行。
+	thumbSize := viewHeight * viewHeight / totalLines
+	if thumbSize < 1 {
+		thumbSize = 1
+	}
+	if thumbSize > viewHeight {
+		thumbSize = viewHeight
+	}
+
+	maxScroll := totalLines - viewHeight
+	if maxScroll < 1 {
+		maxScroll = 1
+	}
+
+	// 滑块位置：scroll/maxScroll 比例。
+	thumbStart := scroll * (viewHeight - thumbSize) / maxScroll
+	if thumbStart < 0 {
+		thumbStart = 0
+	}
+	if thumbStart+thumbSize > viewHeight {
+		thumbStart = viewHeight - thumbSize
+	}
+
+	for i := thumbStart; i < thumbStart+thumbSize && i < viewHeight; i++ {
+		track[i] = '█'
+	}
+
+	return track
 }
 
 // renderWelcomeView renders the MaClaw logo centered in the chat area.
@@ -502,7 +673,6 @@ func (m ChatModel) renderWelcomeView(b *strings.Builder, viewHeight int) {
 		"  ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝",
 	}
 
-	// logo (6 lines) + blank + hint (2 lines) = 9 lines
 	contentLines := len(logoLines) + 3
 	topPad := (viewHeight - contentLines) / 2
 	if topPad < 0 {
@@ -519,7 +689,6 @@ func (m ChatModel) renderWelcomeView(b *strings.Builder, viewHeight int) {
 	b.WriteString(hintStyle.Render("  " + i18n.T(i18n.MsgTUIChatSystemReady, m.lang)) + "\n")
 	b.WriteString(hintStyle.Render("  输入消息开始对话，或输入 /help 查看命令") + "\n")
 
-	// 填充剩余空间
 	used := topPad + contentLines
 	for i := used; i < viewHeight; i++ {
 		b.WriteString("\n")

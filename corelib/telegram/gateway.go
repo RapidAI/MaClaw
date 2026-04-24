@@ -301,6 +301,14 @@ func (g *Gateway) pollLoop(ctx context.Context) {
 						if result.Handled {
 							return // Cancel/Merge/StatusQuery — fully handled
 						}
+						if result.Queued && result.Reply != "" {
+							// Insert/Enqueue — send instant feedback, then
+							// fall through to Lock (message queues normally).
+							_ = g.SendText(context.Background(), OutgoingText{
+								ChatID: m.Chat.ID,
+								Text:   result.Reply,
+							})
+						}
 					}
 					ul.Lock()
 				}

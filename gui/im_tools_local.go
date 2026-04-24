@@ -25,6 +25,11 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 		return "缺少 command 参数"
 	}
 
+	// --- Background mode: submit to LocalBackgroundTaskManager ---
+	if bg, ok := args["background"].(bool); ok && bg {
+		return h.toolBashBackground(command, stringVal(args, "working_dir"))
+	}
+
 	timeout := resolveBashTimeout(args, command)
 
 	workDir := resolvePath(stringVal(args, "working_dir"))
@@ -159,9 +164,24 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 	}
 
 	lines := strings.SplitAfter(string(data), "\n")
-	if len(lines) > maxLines {
+	totalLines := len(lines)
+
+	// offset 参数：从文件末尾倒数 N 行开始读取（类似 tail -n）
+	// 与 lines 互斥，优先使用 offset
+	if offset, ok := args["offset"].(float64); ok && offset > 0 {
+		tailN := int(offset)
+		if tailN >= totalLines {
+			// 文件行数不足，返回全部内容
+			return string(data)
+		}
+		startIdx := totalLines - tailN
+		tailContent := strings.Join(lines[startIdx:], "")
+		return fmt.Sprintf("... (跳过前 %d 行，显示最后 %d 行，共 %d 行)\n%s", startIdx, tailN, totalLines, tailContent)
+	}
+
+	if totalLines > maxLines {
 		lines = lines[:maxLines]
-		return strings.Join(lines, "") + fmt.Sprintf("\n... (已截断，共 %d 行，显示前 %d 行)", len(strings.SplitAfter(string(data), "\n")), maxLines)
+		return strings.Join(lines, "") + fmt.Sprintf("\n... (已截断，共 %d 行，显示前 %d 行)", totalLines, maxLines)
 	}
 	return string(data)
 }

@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -26,6 +26,7 @@ import { RemoteSessionList } from './components/remote/RemoteSessionList';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
 import { SkillsManagementPanel } from './components/remote/SkillsManagementPanel';
+import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { MCPManagementPanel } from './components/remote/MCPManagementPanel';
 import { LLMConfigPanel } from './components/remote/LLMConfigPanel';
 import { EmbeddingConfigPanel } from './components/remote/EmbeddingConfigPanel';
@@ -1827,6 +1828,7 @@ function App() {
     const [weixinStatus, setWeixinStatus] = useState<string>('disconnected');
     const [weixinLocalMode, setWeixinLocalModeState] = useState<boolean>(true);
     const [lansengerStatus, setLansengerStatus] = useState<string>('disabled');
+    const [imAuditPlatform, setIMAuditPlatform] = useState<string | null>(null);
     const [lansengerLocalMode, setLansengerLocalModeState] = useState<boolean>(true);
     const [weixinQRCode, setWeixinQRCode] = useState<string>('');
     const [weixinQRLoading, setWeixinQRLoading] = useState<boolean>(false);
@@ -1860,6 +1862,7 @@ function App() {
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
     const [uiZoom, setUiZoom] = useState<number>(1.0);
+    const [chatFontSize, setChatFontSize] = useState<number>(14);
 
     // Brand info from backend
     const [brandInfo, setBrandInfo] = useState<{id: string, displayName: string, displayNameCN: string, slogan: string, author: string, businessContact: string, websiteURL: string, githubURL: string, iconPath: string} | null>(null);
@@ -2263,6 +2266,13 @@ function App() {
                 }
             }).catch(() => {});
 
+            // Apply saved chat font size
+            GetChatFontSize().then((s) => {
+                if (s >= 12) {
+                    setChatFontSize(s);
+                }
+            }).catch(() => {});
+
             if (!cfg.pause_env_check) {
                 checkTools();
             }
@@ -2331,6 +2341,11 @@ function App() {
             GetUIZoomFactor().then((z) => {
                 if (z > 0) {
                     setUiZoom(z);
+                }
+            }).catch(() => {});
+            GetChatFontSize().then((s) => {
+                if (s >= 12) {
+                    setChatFontSize(s);
                 }
             }).catch(() => {});
             // Sync with tray menu changes — but don't yank the user away from
@@ -3650,8 +3665,8 @@ ${instruction}`;
         },
         {
             id: 'embedding' as const,
-            label: lang === 'zh-Hans' ? '嵌入模型' : lang === 'zh-Hant' ? '嵌入模型' : 'AI Model',
-            desc: lang === 'zh-Hans' ? '向量检索与嵌入模型管理' : lang === 'zh-Hant' ? '向量檢索與嵌入模型管理' : 'Vector search and embedding model management',
+            label: lang === 'zh-Hans' ? 'AI模型' : lang === 'zh-Hant' ? 'AI模型' : 'AI Model',
+            desc: lang === 'zh-Hans' ? 'AI模型管理（向量搜索、屏幕解析等）' : lang === 'zh-Hant' ? 'AI模型管理（向量搜索、螢幕解析等）' : 'AI model management (vector search, screen parsing, etc.)',
         },
         {
             id: 'agentnet' as const,
@@ -4014,6 +4029,7 @@ ${instruction}`;
                         <AIAssistantPanel
                         onClose={() => { switchTool('settings'); }}
                         lang={lang}
+                        chatFontSize={chatFontSize}
                         onThemeModeChange={setAIThemeMode}
                         state={{
                             messages: aiAssistant.messages,
@@ -5009,6 +5025,9 @@ ${instruction}`;
                                                 {opt.label}
                                             </button>
                                         ))}
+                                        <button type="button" onClick={() => setIMAuditPlatform('qq')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
+                                            📋 {lang === 'zh-Hans' ? '消息审计' : lang === 'zh-Hant' ? '訊息審計' : 'Message Audit'}
+                                        </button>
                                     </div>
 
                                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', maxWidth: '520px' }}>
@@ -5155,6 +5174,9 @@ ${instruction}`;
                                                 {opt.label}
                                             </button>
                                         ))}
+                                        <button type="button" onClick={() => setIMAuditPlatform('telegram')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
+                                            📋 {lang === 'zh-Hans' ? '消息审计' : lang === 'zh-Hant' ? '訊息審計' : 'Message Audit'}
+                                        </button>
                                     </div>
 
                                     <div style={{ maxWidth: '520px' }}>
@@ -5267,6 +5289,9 @@ ${instruction}`;
                                                 {opt.label}
                                             </button>
                                         ))}
+                                        <button type="button" onClick={() => setIMAuditPlatform('weixin')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
+                                            📋 {lang === 'zh-Hans' ? '消息审计' : lang === 'zh-Hant' ? '訊息審計' : 'Message Audit'}
+                                        </button>
                                     </div>
 
                                     {/* QR Login section */}
@@ -5474,6 +5499,9 @@ ${instruction}`;
                                                 {opt.label}
                                             </button>
                                         ))}
+                                        <button type="button" onClick={() => setIMAuditPlatform('lansenger')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
+                                            📋 {lang === 'zh-Hans' ? '消息审计' : lang === 'zh-Hant' ? '訊息審計' : 'Message Audit'}
+                                        </button>
                                     </div>
 
                                     <div style={{ maxWidth: '680px', display: 'grid', gap: '10px' }}>
@@ -5521,6 +5549,15 @@ ${instruction}`;
                                         </div>
                                     </div>
                                 </div>
+                                )}
+
+                                {/* IM Audit Panel modal */}
+                                {imAuditPlatform && (
+                                    <IMAuditPanel
+                                        platform={imAuditPlatform}
+                                        onClose={() => setIMAuditPlatform(null)}
+                                        lang={lang}
+                                    />
                                 )}
                             </div>
 
@@ -5630,6 +5667,29 @@ ${instruction}`;
                                     </div>
                                     <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
                                         {lang === 'zh-Hans' ? '调整界面整体缩放比例，适配高 DPI 屏幕或个人偏好。' : lang === 'zh-Hant' ? '調整介面整體縮放比例，適配高 DPI 螢幕或個人偏好。' : 'Adjust overall UI scale for HiDPI displays or personal preference.'}
+                                    </p>
+                                </div>
+                                <div className="form-group" style={{ marginBottom: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '聊天字体大小' : lang === 'zh-Hant' ? '聊天字體大小' : 'Chat Font Size'}</h4>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        <input type="range" min={12} max={24} step={1} value={chatFontSize}
+                                            onChange={e => {
+                                                setChatFontSize(Number(e.target.value));
+                                            }}
+                                            onPointerUp={async (e) => {
+                                                const v = Number((e.currentTarget as HTMLInputElement).value);
+                                                setChatFontSize(v);
+                                                await SetChatFontSize(v).catch(() => {});
+                                            }}
+                                            style={{ flex: 1, accentColor: 'var(--theme-primary)' }} />
+                                        <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{chatFontSize}px</span>
+                                        <button onClick={() => { setChatFontSize(14); SetChatFontSize(14).catch(() => {}); }}
+                                            style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}>
+                                            {lang === 'zh-Hans' ? '重置' : lang === 'zh-Hant' ? '重置' : 'Reset'}
+                                        </button>
+                                    </div>
+                                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
+                                        {lang === 'zh-Hans' ? '独立调整 AI 助手聊天区的字体大小（12–24px），不影响界面缩放。' : lang === 'zh-Hant' ? '獨立調整 AI 助手聊天區的字體大小（12–24px），不影響介面縮放。' : 'Adjust the AI assistant chat area font size (12–24px) independently from UI zoom.'}
                                     </p>
                                 </div>
                             </div>
@@ -8021,6 +8081,17 @@ ${instruction}`;
 }
 
 export default App;
+
+const imAuditBtnStyle: React.CSSProperties = {
+    padding: '5px 14px',
+    borderRadius: '6px',
+    border: '1px solid var(--theme-primary)',
+    background: 'transparent',
+    color: 'var(--theme-primary)',
+    fontSize: '0.75rem',
+    cursor: 'pointer',
+    fontWeight: 500,
+};
 
 
 

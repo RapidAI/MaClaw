@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -64,5 +65,50 @@ func TestValidateLocalBashScope(t *testing.T) {
 	}
 	if err := validateLocalBashScope(&agentservice.CoreAgentExecutor{AllowLocalBash: true, LocalBashTrustedSingleUser: true, LocalBashTenantID: "tenant_a", LocalBashUserID: "user_a"}); err != nil {
 		t.Fatalf("expected scoped local bash config to pass: %v", err)
+	}
+}
+
+func TestBuildCoreAgentExecutorFromEnv(t *testing.T) {
+	keys := []string{
+		"MACLAW_ENABLE_LOCAL_BASH",
+		"MACLAW_LOCAL_BASH_TRUSTED_SINGLE_USER",
+		"MACLAW_LOCAL_BASH_TENANT_ID",
+		"MACLAW_LOCAL_BASH_USER_ID",
+		"MACLAW_ENABLE_DIRECT_SSH",
+		"MACLAW_ENABLE_SSH_FILE_TRANSFER",
+	}
+	original := map[string]string{}
+	for _, key := range keys {
+		original[key] = os.Getenv(key)
+	}
+	defer func() {
+		for _, key := range keys {
+			if original[key] == "" {
+				_ = os.Unsetenv(key)
+			} else {
+				_ = os.Setenv(key, original[key])
+			}
+		}
+	}()
+
+	_ = os.Setenv("MACLAW_ENABLE_LOCAL_BASH", "true")
+	_ = os.Setenv("MACLAW_LOCAL_BASH_TRUSTED_SINGLE_USER", "true")
+	_ = os.Setenv("MACLAW_LOCAL_BASH_TENANT_ID", "tenant_demo")
+	_ = os.Setenv("MACLAW_LOCAL_BASH_USER_ID", "user_demo")
+	_ = os.Setenv("MACLAW_ENABLE_DIRECT_SSH", "true")
+	_ = os.Setenv("MACLAW_ENABLE_SSH_FILE_TRANSFER", "true")
+
+	executor := buildCoreAgentExecutorFromEnv()
+	if executor == nil {
+		t.Fatalf("expected executor")
+	}
+	if !executor.AllowLocalBash || !executor.LocalBashTrustedSingleUser {
+		t.Fatalf("unexpected local bash flags: %#v", executor)
+	}
+	if executor.LocalBashTenantID != "tenant_demo" || executor.LocalBashUserID != "user_demo" {
+		t.Fatalf("unexpected local bash scope: %#v", executor)
+	}
+	if !executor.AllowDirectSSH || !executor.AllowSSHFileTransfer {
+		t.Fatalf("unexpected ssh flags: %#v", executor)
 	}
 }

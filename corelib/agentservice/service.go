@@ -2,11 +2,13 @@ package agentservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -26,6 +28,9 @@ type Service struct {
 	dataRoot         string
 	credentialPepper string
 	now              func() time.Time
+
+	runMu       sync.Mutex
+	runningRuns map[string]context.CancelFunc
 }
 
 type auditRecord struct {
@@ -61,6 +66,40 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 }
 
 func (s *Service) DataRoot() string { return s.dataRoot }
+
+func (s *Service) registerRunCancel(runID string, cancel context.CancelFunc) {
+	if strings.TrimSpace(runID) == "" || cancel == nil {
+		return
+	}
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.runningRuns == nil {
+		s.runningRuns = map[string]context.CancelFunc{}
+	}
+	s.runningRuns[runID] = cancel
+}
+
+func (s *Service) takeRunCancel(runID string) (context.CancelFunc, bool) {
+	if strings.TrimSpace(runID) == "" {
+		return nil, false
+	}
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	cancel, ok := s.runningRuns[runID]
+	if ok {
+		delete(s.runningRuns, runID)
+	}
+	return cancel, ok
+}
+
+func (s *Service) clearRunCancel(runID string) {
+	if strings.TrimSpace(runID) == "" {
+		return
+	}
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	delete(s.runningRuns, runID)
+}
 
 func (s *Service) CreateTenant(ctx context.Context, in CreateTenantInput) (*Tenant, error) {
 	_ = ctx
@@ -481,6 +520,65 @@ func (s *Service) GetInstance(ctx context.Context, p Principal, instanceID strin
 	return &inst, nil
 }
 
+func (s *Service) UpdateInstance(ctx context.Context, p Principal, instanceID string, in UpdateInstanceInput) (*Instance, error) {
+	_ = ctx
+	inst, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	changed := false
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+		inst.Name = name
+		changed = true
+	}
+	if in.Description != nil {
+		inst.Description = strings.TrimSpace(*in.Description)
+		changed = true
+	}
+	if in.Metadata != nil {
+		inst.Metadata = cloneMap(in.Metadata)
+		changed = true
+	}
+	if !changed {
+		inst = s.withInstanceReadiness(inst)
+		return &inst, nil
+	}
+	inst.UpdatedAt = s.now()
+	inst = s.withInstanceReadiness(inst)
+	if err := s.store.SaveInstance(inst); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "instance.updated", ResourceType: "instance", ResourceID: inst.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID})
+	return &inst, nil
+}
+
+func (s *Service) DeleteInstance(ctx context.Context, p Principal, instanceID string) error {
+	_ = ctx
+	inst, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID)
+	if err != nil {
+		return err
+	}
+	busy, err := s.hasRunningRuns(p.TenantID, p.UserID, instanceID, "")
+	if err != nil {
+		return err
+	}
+	if busy {
+		return ErrInstanceBusy
+	}
+	if err := s.store.DeleteInstance(p.TenantID, p.UserID, instanceID); err != nil {
+		return err
+	}
+	if err := secureRemoveAllWithin(filepath.Join(s.userRoot(p.TenantID, p.UserID), "instances"), inst.RuntimeDir); err != nil {
+		return err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "instance.deleted", ResourceType: "instance", ResourceID: instanceID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID})
+	return nil
+}
+
 func (s *Service) StopInstance(ctx context.Context, p Principal, instanceID string) (*Instance, error) {
 	_ = ctx
 	inst, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID)
@@ -625,7 +723,7 @@ func (s *Service) CreateSession(ctx context.Context, p Principal, instanceID str
 	return &enriched, nil
 }
 
-func (s *Service) ListSessions(ctx context.Context, p Principal, instanceID string) ([]Session, error) {
+func (s *Service) ListSessions(ctx context.Context, p Principal, instanceID string, in ListSessionsInput) ([]Session, error) {
 	_ = ctx
 	if _, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID); err != nil {
 		return nil, err
@@ -633,6 +731,16 @@ func (s *Service) ListSessions(ctx context.Context, p Principal, instanceID stri
 	items, err := s.store.ListSessions(p.TenantID, p.UserID, instanceID)
 	if err != nil {
 		return nil, err
+	}
+	if !in.IncludeArchived {
+		filtered := make([]Session, 0, len(items))
+		for _, item := range items {
+			if item.Archived {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
 	}
 	return s.enrichSessions(items)
 }
@@ -650,12 +758,138 @@ func (s *Service) GetSession(ctx context.Context, p Principal, instanceID, sessi
 	return &enriched, nil
 }
 
-func (s *Service) ListMessages(ctx context.Context, p Principal, instanceID, sessionID string) ([]Message, error) {
+func (s *Service) UpdateSession(ctx context.Context, p Principal, instanceID, sessionID string, in UpdateSessionInput) (*Session, error) {
+	_ = ctx
+	sess, err := s.store.GetSession(p.TenantID, p.UserID, instanceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	changed := false
+	if in.Title != nil {
+		sess.Title = strings.TrimSpace(*in.Title)
+		changed = true
+	}
+	if in.Metadata != nil {
+		sess.Metadata = cloneMap(in.Metadata)
+		changed = true
+	}
+	if !changed {
+		enriched, enrichErr := s.enrichSession(sess)
+		if enrichErr != nil {
+			return nil, enrichErr
+		}
+		return &enriched, nil
+	}
+	sess.UpdatedAt = s.now()
+	if err := s.store.SaveSession(sess); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "session.updated", ResourceType: "session", ResourceID: sess.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID}})
+	enriched, err := s.enrichSession(sess)
+	if err != nil {
+		return nil, err
+	}
+	return &enriched, nil
+}
+
+func (s *Service) ArchiveSession(ctx context.Context, p Principal, instanceID, sessionID string) (*Session, error) {
+	_ = ctx
+	sess, err := s.store.GetSession(p.TenantID, p.UserID, instanceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if sess.Archived {
+		enriched, enrichErr := s.enrichSession(sess)
+		if enrichErr != nil {
+			return nil, enrichErr
+		}
+		return &enriched, nil
+	}
+	now := s.now()
+	sess.Archived = true
+	sess.ArchivedAt = &now
+	sess.UpdatedAt = now
+	if err := s.store.SaveSession(sess); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "session.archived", ResourceType: "session", ResourceID: sess.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID}})
+	enriched, err := s.enrichSession(sess)
+	if err != nil {
+		return nil, err
+	}
+	return &enriched, nil
+}
+
+func (s *Service) RestoreSession(ctx context.Context, p Principal, instanceID, sessionID string) (*Session, error) {
+	_ = ctx
+	sess, err := s.store.GetSession(p.TenantID, p.UserID, instanceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !sess.Archived {
+		enriched, enrichErr := s.enrichSession(sess)
+		if enrichErr != nil {
+			return nil, enrichErr
+		}
+		return &enriched, nil
+	}
+	sess.Archived = false
+	sess.ArchivedAt = nil
+	sess.UpdatedAt = s.now()
+	if err := s.store.SaveSession(sess); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "session.restored", ResourceType: "session", ResourceID: sess.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID}})
+	enriched, err := s.enrichSession(sess)
+	if err != nil {
+		return nil, err
+	}
+	return &enriched, nil
+}
+
+func (s *Service) DeleteSession(ctx context.Context, p Principal, instanceID, sessionID string) error {
+	_ = ctx
+	if _, err := s.store.GetSession(p.TenantID, p.UserID, instanceID, sessionID); err != nil {
+		return err
+	}
+	busy, err := s.hasRunningRuns(p.TenantID, p.UserID, instanceID, sessionID)
+	if err != nil {
+		return err
+	}
+	if busy {
+		return ErrSessionBusy
+	}
+	if err := s.store.DeleteSession(p.TenantID, p.UserID, instanceID, sessionID); err != nil {
+		return err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "session.deleted", ResourceType: "session", ResourceID: sessionID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID}})
+	return nil
+}
+
+func (s *Service) ListMessages(ctx context.Context, p Principal, instanceID, sessionID string, in ListMessagesInput) ([]Message, error) {
 	_ = ctx
 	if _, err := s.store.GetSession(p.TenantID, p.UserID, instanceID, sessionID); err != nil {
 		return nil, err
 	}
-	return s.store.ListMessages(sessionID)
+	items, err := s.store.ListMessages(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	role := in.Role
+	filtered := make([]Message, 0, len(items))
+	for _, item := range items {
+		if role != "" && item.Role != role {
+			continue
+		}
+		if in.Since != nil && item.CreatedAt.Before(*in.Since) {
+			continue
+		}
+		if in.Until != nil && item.CreatedAt.After(*in.Until) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID string, in SendMessageInput) (*Session, *Run, *Message, error) {
@@ -689,11 +923,21 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID strin
 
 func (s *Service) resolveSendSession(ctx context.Context, p Principal, instanceID string, in SendMessageInput) (*Session, error) {
 	if strings.TrimSpace(in.SessionID) != "" {
-		return s.GetSession(ctx, p, instanceID, in.SessionID)
+		sess, err := s.GetSession(ctx, p, instanceID, in.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if sess.Archived {
+			return nil, ErrSessionArchived
+		}
+		return sess, nil
 	}
 	clientSessionKey := strings.TrimSpace(in.ClientSessionKey)
 	if clientSessionKey != "" {
 		if sess, ok := s.findSessionByClientKey(p, instanceID, clientSessionKey); ok {
+			if sess.Archived {
+				return nil, ErrSessionArchived
+			}
 			return &sess, nil
 		}
 	}
@@ -772,6 +1016,9 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	if err != nil {
 		return nil, nil, err
 	}
+	if sess.Archived {
+		return nil, nil, ErrSessionArchived
+	}
 	cfg, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
 	if err != nil && err != ErrUserConfigNotFound {
 		return nil, nil, err
@@ -798,11 +1045,22 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	}
 	execMsg := userMsg
 	execMsg.Content = effectiveContent
-	res, execErr := s.executor.Execute(ctx, ExecuteRequest{Principal: p, Tenant: tenant, User: user, Instance: inst, Session: sess, Message: execMsg, History: history, DataDir: inst.DataDir, Config: cfg.AppConfig})
+	execCtx, cancelExec := context.WithCancel(ctx)
+	s.registerRunCancel(run.ID, cancelExec)
+	res, execErr := s.executor.Execute(execCtx, ExecuteRequest{Principal: p, Tenant: tenant, User: user, Instance: inst, Session: sess, Message: execMsg, History: history, DataDir: inst.DataDir, Config: cfg.AppConfig})
+	s.clearRunCancel(run.ID)
+	cancelExec()
 	completed := s.now()
 	run.CompletedAt = &completed
 	run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
 	if execErr != nil {
+		if errors.Is(execCtx.Err(), context.Canceled) || errors.Is(execErr, context.Canceled) {
+			run.Status = RunStatusCancelled
+			run.Error = "run cancelled"
+			_ = s.store.SaveRun(run)
+			_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.cancelled", ResourceType: "run", ResourceID: run.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": sessionID}})
+			return &run, nil, execErr
+		}
 		run.Status = RunStatusFailed
 		run.Error = execErr.Error()
 		_ = s.store.SaveRun(run)
@@ -869,6 +1127,43 @@ func (s *Service) GetRun(ctx context.Context, p Principal, instanceID, runID str
 	return &enriched, nil
 }
 
+func (s *Service) CancelRun(ctx context.Context, p Principal, instanceID, runID string) (*Run, error) {
+	_ = ctx
+	if _, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID); err != nil {
+		return nil, err
+	}
+	run, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, runID)
+	if err != nil {
+		return nil, err
+	}
+	cancel, ok := s.takeRunCancel(run.ID)
+	if !ok || run.Status != RunStatusRunning {
+		if run.Status == RunStatusCancelled {
+			enriched, enrichErr := s.enrichRun(run)
+			if enrichErr != nil {
+				return nil, enrichErr
+			}
+			return &enriched, nil
+		}
+		return nil, ErrRunNotRunning
+	}
+	cancel()
+	completed := s.now()
+	run.Status = RunStatusCancelled
+	run.Error = "run cancelled"
+	run.CompletedAt = &completed
+	run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
+	if err := s.store.SaveRun(run); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.cancel_requested", ResourceType: "run", ResourceID: run.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": run.SessionID}})
+	enriched, err := s.enrichRun(run)
+	if err != nil {
+		return nil, err
+	}
+	return &enriched, nil
+}
+
 func (s *Service) ListRuns(ctx context.Context, p Principal, instanceID string, in ListRunsInput) ([]Run, error) {
 	_ = ctx
 	if _, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID); err != nil {
@@ -880,12 +1175,19 @@ func (s *Service) ListRuns(ctx context.Context, p Principal, instanceID string, 
 	}
 	status := in.Status
 	sessionID := strings.TrimSpace(in.SessionID)
+	responseSource := strings.TrimSpace(in.ResponseSource)
 	filtered := make([]Run, 0, len(items))
 	for _, item := range items {
 		if status != "" && item.Status != status {
 			continue
 		}
 		if sessionID != "" && item.SessionID != sessionID {
+			continue
+		}
+		if responseSource != "" && strings.TrimSpace(item.ResponseSource) != responseSource {
+			continue
+		}
+		if in.WaitingForUser != nil && item.WaitingForUser != *in.WaitingForUser {
 			continue
 		}
 		filtered = append(filtered, item)
@@ -956,6 +1258,87 @@ func (s *Service) GetUsageSummary(ctx context.Context, p Principal) (*UsageSumma
 		}
 	}
 	return &summary, nil
+}
+
+func (s *Service) GetInstanceSummary(ctx context.Context, p Principal, instanceID string) (*InstanceSummary, error) {
+	_ = ctx
+	inst, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	inst = s.withInstanceReadiness(inst)
+	summary := InstanceSummary{
+		InstanceID:   inst.ID,
+		TenantID:     inst.TenantID,
+		UserID:       inst.UserID,
+		Status:       inst.Status,
+		Ready:        inst.Ready,
+		ReadyReason:  inst.ReadyReason,
+		RunsByStatus: map[RunStatus]int{},
+	}
+	summary.LastActivityAt = laterTime(summary.LastActivityAt, inst.UpdatedAt)
+
+	sessions, err := s.store.ListSessions(p.TenantID, p.UserID, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	summary.Sessions = len(sessions)
+	for _, sess := range sessions {
+		if sess.Archived {
+			summary.ArchivedSessions++
+		}
+		if sess.Metadata != nil && sess.Metadata[sessionMetaPendingAskUser] == "true" {
+			summary.WaitingSessions++
+		}
+		summary.LastActivityAt = laterTime(summary.LastActivityAt, sess.UpdatedAt)
+		messages, err := s.store.ListMessages(sess.ID)
+		if err != nil {
+			return nil, err
+		}
+		summary.Messages += len(messages)
+		for _, msg := range messages {
+			summary.LastActivityAt = laterTime(summary.LastActivityAt, msg.CreatedAt)
+			switch msg.Role {
+			case MessageRoleUser:
+				summary.UserMessages++
+			case MessageRoleAssistant:
+				summary.AssistantMessages++
+			}
+		}
+	}
+
+	runs, err := s.store.ListRuns(p.TenantID, p.UserID, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	summary.Runs = len(runs)
+	for _, run := range runs {
+		summary.RunsByStatus[run.Status]++
+		if run.WaitingForUser {
+			summary.WaitingRuns++
+		}
+		summary.LastActivityAt = laterTime(summary.LastActivityAt, run.StartedAt)
+		if run.CompletedAt != nil {
+			summary.LastActivityAt = laterTime(summary.LastActivityAt, *run.CompletedAt)
+		}
+	}
+	return &summary, nil
+}
+
+func (s *Service) hasRunningRuns(tenantID, userID, instanceID, sessionID string) (bool, error) {
+	runs, err := s.store.ListRuns(tenantID, userID, instanceID)
+	if err != nil {
+		return false, err
+	}
+	for _, run := range runs {
+		if sessionID != "" && run.SessionID != sessionID {
+			continue
+		}
+		if run.Status == RunStatusRunning {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) enrichSessions(items []Session) ([]Session, error) {

@@ -697,8 +697,8 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 			// running agent loop without waiting for the lock.
 			if g.interruptHandler != nil && incoming.Text != "" {
 				result := g.interruptHandler.TryInterrupt(fromUserID, incoming.Text)
-				if result.Handled {
-					wl.Log("gw.dispatch", "---", fromUserID, "INTERRUPT action=%s reply=%q", result.Action, result.Reply)
+				if result.Handled || result.Queued {
+					wl.Log("gw.dispatch", "---", fromUserID, "INTERRUPT action=%s handled=%v queued=%v reply=%q", result.Action, result.Handled, result.Queued, result.Reply)
 					if result.Reply != "" {
 						ctxToken := incoming.ContextToken
 						if ctxToken == "" {
@@ -712,13 +712,14 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 							})
 						}
 					}
-					// All handled actions return immediately — the message's
-					// purpose was to control the running loop, not to start
-					// a new task. For Replace: the cancel reply was already sent;
-					// processing the cancel message as a new task would confuse
-					// the LLM ("算了不做了" is not a task request).
-					// For Merge/StatusQuery: already handled inline.
-					return
+					if result.Handled {
+						// Fully handled (Replace/Merge/StatusQuery) — don't queue.
+						return
+					}
+					// Queued (Insert/Enqueue) — reply was sent as instant
+					// feedback, but the message continues to the normal
+					// queuing path below. It will be processed after the
+					// current loop releases the per-user lock.
 				}
 			}
 

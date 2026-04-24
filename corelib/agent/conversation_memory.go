@@ -42,6 +42,12 @@ func (e ConversationEntry) ToMessage() interface{} {
 	m := map[string]interface{}{"role": e.Role, "content": e.Content}
 	if e.ReasoningContent != "" {
 		m["reasoning_content"] = e.ReasoningContent
+	} else if e.ToolCalls != nil {
+		// DeepSeek thinking mode: the reasoning_content field MUST exist on
+		// assistant messages that have tool_calls. A missing field causes
+		// HTTP 400. An empty string is accepted.
+		// See: https://api-docs.deepseek.com/guides/thinking_mode
+		m["reasoning_content"] = ""
 	}
 	if e.ToolCalls != nil {
 		m["tool_calls"] = e.ToolCalls

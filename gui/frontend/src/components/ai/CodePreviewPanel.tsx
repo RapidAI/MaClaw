@@ -82,6 +82,8 @@ export interface CodePreviewPanelProps {
     activeFilePath: string;
     onSelectFile: (filePath: string) => void;
     onClose: () => void;
+    onResizeStart?: () => void;
+    onToggleMaximize?: () => void;
     theme: CodePreviewTheme;
 }
 
@@ -163,6 +165,7 @@ function PlainCodeView({ content, language, theme }: {
                             paddingRight: 8,
                             whiteSpace: 'pre',
                             color: theme.text,
+                            textAlign: 'left',
                         }}>
                             <HighlightedLine line={line} language={language} theme={theme} />
                         </td>
@@ -251,6 +254,7 @@ function DiffView({ diffLines, theme }: {
                                 paddingRight: 8,
                                 whiteSpace: 'pre',
                                 color: rowColor,
+                                textAlign: 'left',
                             }}>
                                 {dl.content}
                             </td>
@@ -269,6 +273,8 @@ export function CodePreviewPanel({
     activeFilePath,
     onSelectFile,
     onClose,
+    onResizeStart,
+    onToggleMaximize,
     theme,
 }: CodePreviewPanelProps) {
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -307,47 +313,74 @@ export function CodePreviewPanel({
         return (
             <div style={{
                 display: 'flex',
-                flexDirection: 'column',
+                flexDirection: 'row',
                 height: '100%',
-                background: theme.bg,
-                color: theme.text,
+                minWidth: 0,
             }}>
-                {/* Header */}
+                {/* Drag handle for resizing */}
+                <div
+                    onMouseDown={(e) => { e.preventDefault(); onResizeStart?.(); }}
+                    style={{
+                        width: 6,
+                        cursor: 'col-resize',
+                        background: theme.border,
+                        flexShrink: 0,
+                        transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.tabActiveText; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = theme.border; }}
+                />
                 <div style={{
                     display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'flex-end',
-                    padding: '8px 14px',
-                    borderBottom: `1px solid ${theme.border}`,
-                    background: theme.tabBg,
-                    flexShrink: 0,
-                }}>
-                    <button
-                        onClick={onClose}
-                        style={{
-                            background: 'none',
-                            border: 'none',
-                            cursor: 'pointer',
-                            fontSize: 16,
-                            padding: '2px 6px',
-                            borderRadius: 4,
-                            color: theme.textMuted,
-                            lineHeight: 1,
-                        }}
-                        title="关闭代码预览"
-                    >
-                        ×
-                    </button>
-                </div>
-                <div style={{
+                    flexDirection: 'column',
                     flex: 1,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: theme.textMuted,
-                    fontSize: 14,
+                    minWidth: 0,
+                    height: '100%',
+                    background: theme.bg,
+                    color: theme.text,
                 }}>
-                    暂无代码文件
+                    {/* Header */}
+                    <div
+                        onDoubleClick={() => onToggleMaximize?.()}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'flex-end',
+                            padding: '8px 14px',
+                            borderBottom: `1px solid ${theme.border}`,
+                            background: theme.tabBg,
+                            flexShrink: 0,
+                            '--wails-draggable': 'drag',
+                        } as any}
+                    >
+                        <button
+                            onClick={onClose}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                fontSize: 16,
+                                padding: '2px 6px',
+                                borderRadius: 4,
+                                color: theme.textMuted,
+                                lineHeight: 1,
+                                '--wails-draggable': 'no-drag',
+                            } as any}
+                            title="关闭代码预览"
+                        >
+                            ×
+                        </button>
+                    </div>
+                    <div style={{
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: theme.textMuted,
+                        fontSize: 14,
+                    }}>
+                        暂无代码文件
+                    </div>
                 </div>
             </div>
         );
@@ -356,21 +389,46 @@ export function CodePreviewPanel({
     return (
         <div style={{
             display: 'flex',
-            flexDirection: 'column',
+            flexDirection: 'row',
             height: '100%',
-            background: theme.bg,
-            color: theme.text,
+            minWidth: 0,
         }}>
-            {/* Header with close button */}
+            {/* Drag handle for resizing */}
+            <div
+                onMouseDown={(e) => { e.preventDefault(); onResizeStart?.(); }}
+                style={{
+                    width: 6,
+                    cursor: 'col-resize',
+                    background: theme.border,
+                    flexShrink: 0,
+                    transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.tabActiveText; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = theme.border; }}
+            />
             <div style={{
                 display: 'flex',
-                alignItems: 'center',
-                padding: '4px 8px 4px 0',
-                borderBottom: `1px solid ${theme.border}`,
-                background: theme.tabBg,
-                flexShrink: 0,
+                flexDirection: 'column',
+                flex: 1,
+                minWidth: 0,
+                height: '100%',
+                background: theme.bg,
+                color: theme.text,
             }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Header with close button — draggable for window move */}
+            <div
+                onDoubleClick={() => onToggleMaximize?.()}
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '4px 8px 4px 0',
+                    borderBottom: `1px solid ${theme.border}`,
+                    background: theme.tabBg,
+                    flexShrink: 0,
+                    '--wails-draggable': 'drag',
+                } as any}
+            >
+                <div style={{ flex: 1, minWidth: 0, '--wails-draggable': 'no-drag' } as any}>
                     <FileTabBar
                         files={files}
                         activeFilePath={activeFilePath}
@@ -391,7 +449,8 @@ export function CodePreviewPanel({
                         lineHeight: 1,
                         flexShrink: 0,
                         marginLeft: 4,
-                    }}
+                        '--wails-draggable': 'no-drag',
+                    } as any}
                     title="关闭代码预览"
                 >
                     ×
@@ -428,6 +487,7 @@ export function CodePreviewPanel({
                         文件未找到
                     </div>
                 )}
+            </div>
             </div>
         </div>
     );

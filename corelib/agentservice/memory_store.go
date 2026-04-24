@@ -24,9 +24,11 @@ type Store interface {
 	SaveInstance(Instance) error
 	GetInstance(string, string, string) (Instance, error)
 	ListInstances(string, string) ([]Instance, error)
+	DeleteInstance(string, string, string) error
 	SaveSession(Session) error
 	GetSession(string, string, string, string) (Session, error)
 	ListSessions(string, string, string) ([]Session, error)
+	DeleteSession(string, string, string, string) error
 	SaveMessage(Message) error
 	ListMessages(string) ([]Message, error)
 	SaveRun(Run) error
@@ -316,6 +318,28 @@ func (s *MemoryStore) ListInstances(tenantID, userID string) ([]Instance, error)
 	return out, nil
 }
 
+func (s *MemoryStore) DeleteInstance(tenantID, userID, instanceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.instances[instanceID]
+	if !ok || v.TenantID != tenantID || v.UserID != userID {
+		return ErrInstanceNotFound
+	}
+	delete(s.instances, instanceID)
+	for sessionID, sess := range s.sessions {
+		if sess.TenantID == tenantID && sess.UserID == userID && sess.InstanceID == instanceID {
+			delete(s.sessions, sessionID)
+			delete(s.messages, sessionID)
+		}
+	}
+	for runID, run := range s.runs {
+		if run.TenantID == tenantID && run.UserID == userID && run.InstanceID == instanceID {
+			delete(s.runs, runID)
+		}
+	}
+	return nil
+}
+
 func (s *MemoryStore) SaveSession(v Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -344,6 +368,23 @@ func (s *MemoryStore) ListSessions(tenantID, userID, instanceID string) ([]Sessi
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (s *MemoryStore) DeleteSession(tenantID, userID, instanceID, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.sessions[sessionID]
+	if !ok || v.TenantID != tenantID || v.UserID != userID || v.InstanceID != instanceID {
+		return ErrSessionNotFound
+	}
+	delete(s.sessions, sessionID)
+	delete(s.messages, sessionID)
+	for runID, run := range s.runs {
+		if run.TenantID == tenantID && run.UserID == userID && run.InstanceID == instanceID && run.SessionID == sessionID {
+			delete(s.runs, runID)
+		}
+	}
+	return nil
 }
 
 func (s *MemoryStore) SaveMessage(v Message) error {

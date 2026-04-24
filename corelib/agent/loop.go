@@ -141,9 +141,9 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 			return LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls}
 		}
 
-		// Call LLM with tools via corelib/llm.
+		// Call LLM with tools via corelib/llm (streaming for real-time display).
 		ctx := context.Background()
-		resp, err := doLLMRequestWithTools(ctx, cfg, conversation, tools, httpClient)
+		resp, err := doLLMRequestWithToolsStream(ctx, cfg, conversation, tools, httpClient, cb.OnToken)
 		if err != nil {
 			if shouldRetrySimpleLLMError(err) {
 				time.Sleep(2 * time.Second)
@@ -201,6 +201,13 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 		assistantMsg := map[string]interface{}{
 			"role":    "assistant",
 			"content": content,
+		}
+		if choice.Message.ReasoningContent != "" {
+			assistantMsg["reasoning_content"] = choice.Message.ReasoningContent
+		} else if len(choice.Message.ToolCalls) > 0 {
+			// DeepSeek thinking mode: reasoning_content field must exist on
+			// assistant messages with tool_calls. Missing field → HTTP 400.
+			assistantMsg["reasoning_content"] = ""
 		}
 		if len(choice.Message.ToolCalls) > 0 {
 			assistantMsg["tool_calls"] = choice.Message.ToolCalls
@@ -307,4 +314,24 @@ func doLLMRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfig, con
 		return llm.DoAnthropicRequest(ctx, cfg, conversation, tools, httpClient)
 	}
 	return llm.DoOpenAIRequest(ctx, cfg, conversation, tools, httpClient)
+}
+
+// doLLMRequestWithToolsStream sends a streaming LLM request, calling onToken
+// for each text delta. Falls back to non-streaming if the streaming request fails.
+func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, httpClient *http.Client, onToken llm.TokenCallback) (*llm.Response, error) {
+	if cfg.Protocol == "anthropic" {
+		resp, err := llm.DoAnthropicRequestStream(ctx, cfg, conversation, tools, httpClient, onToken)
+		if err != nil {
+			// Fallback to non-streaming on error.
+			log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)
+			return llm.DoAnthropicRequest(ctx, cfg, conversation, tools, httpClient)
+		}
+		return resp, nil
+	}
+	resp, err := llm.DoOpenAIRequestStream(ctx, cfg, conversation, tools, httpClient, onToken)
+	if err != nil {
+		log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)
+		return llm.DoOpenAIRequest(ctx, cfg, conversation, tools, httpClient)
+	}
+	return resp, nil
 }

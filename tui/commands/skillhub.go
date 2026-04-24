@@ -132,7 +132,16 @@ func skillhubSearch(args []string) error {
 
 	if *jsonOut {
 		if len(result.Skills) == 0 {
-			// JSON mode: also try GitHub fallback before returning empty.
+			// Fallback 1: ClawHub mirror
+			client := skill.NewHubClient()
+			clawResults := client.SearchClawHub(ctx, query)
+			if len(clawResults) > 0 {
+				return PrintJSON(map[string]interface{}{
+					"source":  "clawhub",
+					"results": clawResults,
+				})
+			}
+			// Fallback 2: GitHub
 			gs := skill.NewGitHubSearcher("")
 			candidates, ghErr := gs.SearchGitHub(query)
 			if ghErr == nil && len(candidates) > 0 {
@@ -146,8 +155,26 @@ func skillhubSearch(args []string) error {
 	}
 
 	if len(result.Skills) == 0 {
-		// Fallback: search GitHub for skill.yaml files matching the query.
-		fmt.Printf("SkillHub 未找到匹配 \"%s\" 的技能，正在搜索 GitHub...\n", query)
+		// Fallback 1: ClawHub mirror
+		fmt.Printf("SkillHub 未找到匹配 \"%s\" 的技能，正在搜索 ClawHub...\n", query)
+		client := skill.NewHubClient()
+		clawResults := client.SearchClawHub(ctx, query)
+		if len(clawResults) > 0 {
+			fmt.Printf("\n在 ClawHub 上找到 %d 个结果:\n\n", len(clawResults))
+			fmt.Printf("%-24s %-8s %-10s %s\n", "ID", "VERSION", "TRUST", "NAME")
+			fmt.Println(strings.Repeat("-", 70))
+			for _, r := range clawResults {
+				fmt.Printf("%-24s %-8s %-10s %s\n",
+					TruncateDisplay(r.ID, 24),
+					TruncateDisplay(r.Version, 8),
+					TruncateDisplay(r.TrustLevel, 10),
+					TruncateDisplay(r.Name, 30))
+			}
+			return nil
+		}
+
+		// Fallback 2: GitHub
+		fmt.Printf("ClawHub 也未找到，正在搜索 GitHub...\n")
 		gs := skill.NewGitHubSearcher("") // unauthenticated
 		candidates, ghErr := gs.SearchGitHub(query)
 		if ghErr != nil || len(candidates) == 0 {

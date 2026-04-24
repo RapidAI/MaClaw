@@ -52,8 +52,10 @@ MACLAW_DATA_ROOT/
 
 ## Integration Docs
 
-- See `API_MANUAL.md` for the detailed client integration guide aimed at AI coding tools, desktop apps, automation services, and external control planes.
-- See `API_MANUAL.zh-CN.md` for the Chinese integration manual.
+- See `QUICKSTART.md` for the shortest English integration path.
+- See `QUICKSTART.zh-CN.md` for the shortest Chinese integration path.
+- See `API_MANUAL.md` for the detailed English client integration guide aimed at AI coding tools, desktop apps, automation services, and external control planes.
+- See `API_MANUAL.zh-CN.md` for the detailed Chinese integration manual.
 
 ## REST API
 
@@ -77,21 +79,52 @@ MACLAW_DATA_ROOT/
 - `POST /api/v1/config/validate`
 - `POST /api/v1/config/test`
 - `GET /api/v1/usage/summary`
+- `GET /api/v1/mcp/servers`
+- `POST /api/v1/mcp/servers`
+- `GET /api/v1/mcp/servers/{serverId}`
+- `PATCH /api/v1/mcp/servers/{serverId}`
+- `DELETE /api/v1/mcp/servers/{serverId}`
+- `POST /api/v1/mcp/servers/{serverId}/start`
+- `POST /api/v1/mcp/servers/{serverId}/stop`
+- `POST /api/v1/mcp/servers/{serverId}/health-check`
+- `GET /api/v1/mcp/servers/{serverId}/tools`
+- `GET /api/v1/skills`
+- `POST /api/v1/skills/search`
+- `POST /api/v1/skills/install`
+- `POST /api/v1/skills/import`
+- `GET /api/v1/skill-uploads/{submissionId}`
+- `GET /api/v1/skill-market/account`
+- `GET /api/v1/skills/{skillName}`
+- `DELETE /api/v1/skills/{skillName}`
+- `GET /api/v1/skills/{skillName}/export`
+- `POST /api/v1/skills/{skillName}/validate`
+- `POST /api/v1/skills/{skillName}/improve`
+- `POST /api/v1/skills/{skillName}/upload`
 - `GET /api/v1/instances`
 - `POST /api/v1/instances`
 - `GET /api/v1/instances/{instanceId}`
+- `PATCH /api/v1/instances/{instanceId}`
+- `DELETE /api/v1/instances/{instanceId}`
+- `GET /api/v1/instances/{instanceId}/capabilities`
 - `POST /api/v1/instances/{instanceId}/stop`
 - `POST /api/v1/instances/{instanceId}/resume`
 - `POST /api/v1/instances/{instanceId}/refresh-readiness`
+- `GET /api/v1/instances/{instanceId}/summary`
 - `GET /api/v1/instances/{instanceId}/bootstrap`
 - `POST /api/v1/instances/{instanceId}/messages`
 - `GET /api/v1/instances/{instanceId}/sessions`
 - `POST /api/v1/instances/{instanceId}/sessions`
 - `GET /api/v1/instances/{instanceId}/sessions/{sessionId}`
+- `PATCH /api/v1/instances/{instanceId}/sessions/{sessionId}`
+- `DELETE /api/v1/instances/{instanceId}/sessions/{sessionId}`
+- `POST /api/v1/instances/{instanceId}/sessions/{sessionId}/archive`
+- `POST /api/v1/instances/{instanceId}/sessions/{sessionId}/restore`
 - `GET /api/v1/instances/{instanceId}/sessions/{sessionId}/messages`
 - `POST /api/v1/instances/{instanceId}/sessions/{sessionId}/messages`
 - `GET /api/v1/instances/{instanceId}/runs`
 - `GET /api/v1/instances/{instanceId}/runs/{runId}`
+- `GET /api/v1/instances/{instanceId}/runs/{runId}/events`
+- `POST /api/v1/instances/{instanceId}/runs/{runId}/cancel`
 
 ## Tenant and user status
 
@@ -131,8 +164,12 @@ Supported endpoints:
 
 Responses keep the backward-compatible `items` field and add `limit`, `has_more`, and optional `next_before`. Items are returned in chronological order inside the selected page, so callers can request older pages with `?before=<next_before>`.
 
+Archived sessions are hidden by default in `GET /api/v1/instances/{instanceId}/sessions`; add `?include_archived=true` when a control plane needs to show archived history.
+
 ## Instance readiness
 
+- `PATCH /api/v1/instances/{instanceId}` updates mutable instance fields such as `name`, `description`, and `metadata` without changing lifecycle state.
+- `GET /api/v1/instances/{instanceId}/summary` returns an aggregated instance view including session, message, run, waiting, and archival counters.
 - Instance responses now include `ready`, `ready_reason`, and `readiness`.
 - `readiness` currently reflects whether the instance runtime directory exists, whether the shared user data directory exists, whether the saved LLM config is valid, and whether the instance status is `ready`.
 - `GET /api/v1/instances` can be used as the main list view for control planes.
@@ -140,6 +177,14 @@ Responses keep the backward-compatible `items` field and add `limit`, `has_more`
 - `POST /api/v1/instances/{instanceId}/stop` marks the logical agent instance as stopped; stopped instances reject new messages.
 - `POST /api/v1/instances/{instanceId}/resume` re-validates the saved user config and marks the instance ready only when config is valid.
 - `POST /api/v1/instances/{instanceId}/refresh-readiness` recalculates readiness without changing the intended lifecycle state.
+
+## Session lifecycle
+
+- `PATCH /api/v1/instances/{instanceId}/sessions/{sessionId}` updates mutable session fields such as `title` and `metadata`.
+- `POST /api/v1/instances/{instanceId}/sessions/{sessionId}/archive` performs a soft archive and preserves all messages and runs.
+- Archived sessions are excluded from the default list response, but can still be fetched directly by ID.
+- Archived sessions reject new message sends with `409 Conflict`.
+- `POST /api/v1/instances/{instanceId}/sessions/{sessionId}/restore` re-enables the session for normal message flow.
 
 ## Messaging shortcuts
 
@@ -152,8 +197,13 @@ Responses keep the backward-compatible `items` field and add `limit`, `has_more`
 ## Run Query
 
 - `GET /api/v1/instances/{instanceId}/runs` returns runs for the authenticated user and instance.
-- Supports optional filters: `status` and `session_id`.
+- Supports optional filters: `status`, `session_id`, `response_source`, and `waiting_for_user`.
 - Uses `started_at` for `before` cursor pagination.
+
+## Message Query
+
+- `GET /api/v1/instances/{instanceId}/sessions/{sessionId}/messages` supports optional filters: `role`, `since`, and `until`.
+- `since` and `until` use RFC3339 timestamps and are applied before pagination.
 
 ## Usage Summary
 

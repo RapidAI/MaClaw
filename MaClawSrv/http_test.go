@@ -9,13 +9,43 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
-	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
+
+type blockingExecutor struct {
+	started chan string
+	release chan struct{}
+}
+
+func (e *blockingExecutor) Execute(ctx context.Context, req agentservice.ExecuteRequest) (*agentservice.ExecuteResult, error) {
+	if e.started != nil {
+		select {
+		case e.started <- req.Message.ID:
+		default:
+		}
+	}
+	if e.release == nil {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-e.release:
+		return &agentservice.ExecuteResult{Content: "released", OutputType: "text/plain"}, nil
+	}
+}
+
+func (e *blockingExecutor) DescribeCapabilities(ctx context.Context, req agentservice.ExecuteRequest) (*agentservice.AgentCapabilities, error) {
+	_ = ctx
+	_ = req
+	return &agentservice.AgentCapabilities{Executor: "blocking", SupportsSessions: true}, nil
+}
 
 func TestAdminCanListTenantsAndUsers(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
@@ -202,6 +232,195 @@ func TestListRunsFiltersByStatus(t *testing.T) {
 	}
 	if len(runs.Items) != 1 || runs.Items[0].ID != "run_1" || runs.Items[0].Status != agentservice.RunStatusFailed {
 		t.Fatalf("runs = %#v", runs.Items)
+	}
+}
+
+func TestListRunsFiltersByResponseSourceAndWaitingForUser(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	_, err = svc.UpdateUserConfig(context.Background(), principal, testLLMConfig())
+	if err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.SaveRun(agentservice.Run{ID: "run_wait", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: "sess_1", Status: agentservice.RunStatusSucceeded, ResponseSource: "ask_user", WaitingForUser: true, StartedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("SaveRun wait: %v", err)
+	}
+	if err := store.SaveRun(agentservice.Run{ID: "run_done", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: "sess_2", Status: agentservice.RunStatusSucceeded, ResponseSource: "assistant", WaitingForUser: false, StartedAt: now.Add(2 * time.Minute)}); err != nil {
+		t.Fatalf("SaveRun done: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest("GET", "/api/v1/instances/"+inst.ID+"/runs?response_source=ask_user&waiting_for_user=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list runs status = %d body = %s", w.Code, w.Body.String())
+	}
+	var runs struct {
+		Items []agentservice.Run `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&runs); err != nil {
+		t.Fatalf("decode runs: %v", err)
+	}
+	if len(runs.Items) != 1 || runs.Items[0].ID != "run_wait" {
+		t.Fatalf("runs = %#v", runs.Items)
+	}
+}
+
+func TestListMessagesFiltersByRoleAndSince(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	base := time.Date(2026, 4, 24, 10, 0, 0, 0, time.UTC)
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: base.Add(1 * time.Minute)}); err != nil {
+		t.Fatalf("SaveMessage msg_1: %v", err)
+	}
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_2", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleAssistant, Content: "hi", CreatedAt: base.Add(2 * time.Minute)}); err != nil {
+		t.Fatalf("SaveMessage msg_2: %v", err)
+	}
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_3", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleAssistant, Content: "followup", CreatedAt: base.Add(3 * time.Minute)}); err != nil {
+		t.Fatalf("SaveMessage msg_3: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest("GET", "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID+"/messages?role=assistant&since=2026-04-24T10:02:00Z", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list messages status = %d body = %s", w.Code, w.Body.String())
+	}
+	var messages struct {
+		Items []agentservice.Message `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&messages); err != nil {
+		t.Fatalf("decode messages: %v", err)
+	}
+	if len(messages.Items) != 2 || messages.Items[0].ID != "msg_2" || messages.Items[1].ID != "msg_3" {
+		t.Fatalf("messages = %#v", messages.Items)
+	}
+}
+
+func TestGetInstanceSummary(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	now := time.Now().UTC()
+	sess1 := agentservice.Session{ID: "sess_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, AgentID: "default", Metadata: map[string]string{"pending_ask_user": "true"}, CreatedAt: now, UpdatedAt: now}
+	sess2ArchivedAt := now.Add(2 * time.Minute)
+	sess2 := agentservice.Session{ID: "sess_2", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, AgentID: "default", Archived: true, ArchivedAt: &sess2ArchivedAt, CreatedAt: now.Add(time.Minute), UpdatedAt: now.Add(3 * time.Minute)}
+	if err := store.SaveSession(sess1); err != nil {
+		t.Fatalf("SaveSession sess1: %v", err)
+	}
+	if err := store.SaveSession(sess2); err != nil {
+		t.Fatalf("SaveSession sess2: %v", err)
+	}
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_user", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess1.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now.Add(4 * time.Minute)}); err != nil {
+		t.Fatalf("SaveMessage user: %v", err)
+	}
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_assistant", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess1.ID, Role: agentservice.MessageRoleAssistant, Content: "hi", CreatedAt: now.Add(5 * time.Minute)}); err != nil {
+		t.Fatalf("SaveMessage assistant: %v", err)
+	}
+	completed := now.Add(7 * time.Minute)
+	if err := store.SaveRun(agentservice.Run{ID: "run_wait", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess1.ID, Status: agentservice.RunStatusSucceeded, WaitingForUser: true, StartedAt: now.Add(6 * time.Minute), CompletedAt: &completed}); err != nil {
+		t.Fatalf("SaveRun wait: %v", err)
+	}
+	if err := store.SaveRun(agentservice.Run{ID: "run_failed", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess2.ID, Status: agentservice.RunStatusFailed, StartedAt: now.Add(8 * time.Minute)}); err != nil {
+		t.Fatalf("SaveRun failed: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/summary", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("summary status = %d body = %s", w.Code, w.Body.String())
+	}
+	var summary agentservice.InstanceSummary
+	if err := json.NewDecoder(w.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if summary.InstanceID != inst.ID || summary.Sessions != 2 || summary.ArchivedSessions != 1 || summary.WaitingSessions != 1 {
+		t.Fatalf("unexpected session summary: %#v", summary)
+	}
+	if summary.Messages != 2 || summary.UserMessages != 1 || summary.AssistantMessages != 1 {
+		t.Fatalf("unexpected message summary: %#v", summary)
+	}
+	if summary.Runs != 2 || summary.WaitingRuns != 1 || summary.RunsByStatus[agentservice.RunStatusSucceeded] != 1 || summary.RunsByStatus[agentservice.RunStatusFailed] != 1 {
+		t.Fatalf("unexpected run summary: %#v", summary)
+	}
+	if summary.LastActivityAt == nil {
+		t.Fatalf("expected last activity")
 	}
 }
 
@@ -452,7 +671,6 @@ func TestGetInstanceCapabilities(t *testing.T) {
 	}
 }
 
-
 func TestMCPRemoteServerCRUDAndTools(t *testing.T) {
 	tenantID, userID, token, server := newMCPAuthenticatedServer(t)
 	_ = tenantID
@@ -672,3 +890,547 @@ func TestLocalMCPHelperProcess(t *testing.T) {
 	}
 }
 
+func TestCancelRunEndpointCancelsRunningExecution(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	executor := &blockingExecutor{started: make(chan string, 1)}
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	resultCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		body := bytes.NewBufferString(`{"content":"please block"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/messages", body)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		resultCh <- rec
+	}()
+
+	select {
+	case <-executor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for executor to start")
+	}
+
+	var runID string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, err := store.ListRuns(tenant.ID, user.ID, inst.ID)
+		if err == nil && len(runs) > 0 {
+			runID = runs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runID == "" {
+		t.Fatalf("expected run to be persisted")
+	}
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/runs/"+runID+"/cancel", nil)
+	cancelReq.Header.Set("Authorization", "Bearer "+token)
+	cancelRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(cancelRec, cancelReq)
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("cancel run status = %d body = %s", cancelRec.Code, cancelRec.Body.String())
+	}
+	var cancelled agentservice.Run
+	if err := json.NewDecoder(cancelRec.Body).Decode(&cancelled); err != nil {
+		t.Fatalf("decode cancelled run: %v", err)
+	}
+	if cancelled.Status != agentservice.RunStatusCancelled {
+		t.Fatalf("expected cancelled run, got %#v", cancelled)
+	}
+
+	select {
+	case rec := <-resultCh:
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("send message status = %d body = %s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for send request to finish after cancel")
+	}
+
+	storedRun, err := store.GetRun(tenant.ID, user.ID, inst.ID, runID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if storedRun.Status != agentservice.RunStatusCancelled {
+		t.Fatalf("stored run = %#v", storedRun)
+	}
+}
+
+func TestUpdateInstanceEndpoint(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Old Name", Description: "old desc", Metadata: map[string]string{"tier": "dev"}})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	body := bytes.NewBufferString(`{"name":"Renamed Instance","description":"new desc","metadata":{"tier":"prod","region":"cn"}}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/instances/"+inst.ID, body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update instance status = %d body = %s", w.Code, w.Body.String())
+	}
+	var updated agentservice.Instance
+	if err := json.NewDecoder(w.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode updated instance: %v", err)
+	}
+	if updated.Name != "Renamed Instance" || updated.Description != "new desc" {
+		t.Fatalf("unexpected instance update: %#v", updated)
+	}
+	if len(updated.Metadata) != 2 || updated.Metadata["tier"] != "prod" || updated.Metadata["region"] != "cn" {
+		t.Fatalf("unexpected metadata: %#v", updated.Metadata)
+	}
+}
+
+func TestUpdateSessionEndpoint(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Old", Metadata: map[string]string{"a": "1"}})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	body := bytes.NewBufferString(`{"title":"Renamed","metadata":{"env":"prod","region":"cn"}}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID, body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update session status = %d body = %s", w.Code, w.Body.String())
+	}
+	var updated agentservice.Session
+	if err := json.NewDecoder(w.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode updated session: %v", err)
+	}
+	if updated.Title != "Renamed" {
+		t.Fatalf("unexpected title: %#v", updated)
+	}
+	if len(updated.Metadata) != 2 || updated.Metadata["env"] != "prod" || updated.Metadata["region"] != "cn" {
+		t.Fatalf("unexpected metadata: %#v", updated.Metadata)
+	}
+}
+
+func TestArchiveSessionLifecycle(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID+"/archive", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("archive session status = %d body = %s", w.Code, w.Body.String())
+	}
+	var archived agentservice.Session
+	if err := json.NewDecoder(w.Body).Decode(&archived); err != nil {
+		t.Fatalf("decode archived session: %v", err)
+	}
+	if !archived.Archived || archived.ArchivedAt == nil {
+		t.Fatalf("expected archived session, got %#v", archived)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list sessions status = %d body = %s", w.Code, w.Body.String())
+	}
+	var listed struct {
+		Items []agentservice.Session `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("expected archived session hidden from default list, got %#v", listed.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/sessions?include_archived=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list archived sessions status = %d body = %s", w.Code, w.Body.String())
+	}
+	listed = struct {
+		Items []agentservice.Session `json:"items"`
+	}{}
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode archived sessions: %v", err)
+	}
+	if len(listed.Items) != 1 || !listed.Items[0].Archived {
+		t.Fatalf("expected archived session in explicit list, got %#v", listed.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID+"/messages", bytes.NewBufferString(`{"content":"hello"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("post to archived session status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID+"/restore", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restore session status = %d body = %s", w.Code, w.Body.String())
+	}
+	var restored agentservice.Session
+	if err := json.NewDecoder(w.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode restored session: %v", err)
+	}
+	if restored.Archived || restored.ArchivedAt != nil {
+		t.Fatalf("expected restored session, got %#v", restored)
+	}
+}
+
+func TestDeleteSessionRemovesMessagesAndRuns(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now}); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	if err := store.SaveRun(agentservice.Run{ID: "run_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete session status = %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetSession(context.Background(), principal, inst.ID, sess.ID); err == nil {
+		t.Fatalf("expected deleted session to be missing")
+	}
+	msgs, err := store.ListMessages(sess.ID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("expected session messages deleted, got %#v", msgs)
+	}
+	if _, err := store.GetRun(tenant.ID, user.ID, inst.ID, "run_1"); err == nil {
+		t.Fatalf("expected session runs deleted")
+	}
+}
+
+func TestDeleteInstanceRemovesRuntimeAndChildren(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.SaveRun(agentservice.Run{ID: "run_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/instances/"+inst.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete instance status = %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetInstance(context.Background(), principal, inst.ID); err == nil {
+		t.Fatalf("expected deleted instance to be missing")
+	}
+	if _, err := svc.GetSession(context.Background(), principal, inst.ID, sess.ID); err == nil {
+		t.Fatalf("expected child session to be removed")
+	}
+	if _, err := store.GetRun(tenant.ID, user.ID, inst.ID, "run_1"); err == nil {
+		t.Fatalf("expected child run to be removed")
+	}
+	if _, err := os.Stat(inst.RuntimeDir); !os.IsNotExist(err) {
+		t.Fatalf("expected runtime dir removed, stat err = %v", err)
+	}
+}
+
+func TestRunEventsStreamPublishesRunningAndDoneSnapshots(t *testing.T) {
+	executor := &blockingExecutor{started: make(chan string, 1), release: make(chan struct{})}
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	httpSrv := httptest.NewServer(server.Handler())
+	defer httpSrv.Close()
+
+	resultCh := make(chan error, 1)
+	go func() {
+		body := bytes.NewBufferString(`{"content":"please stream"}`)
+		req, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/v1/instances/"+inst.ID+"/messages", body)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			resultCh <- err
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			resultCh <- fmt.Errorf("send status=%d", resp.StatusCode)
+			return
+		}
+		resultCh <- nil
+	}()
+
+	select {
+	case <-executor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for executor start")
+	}
+
+	var runID string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, err := svc.ListRuns(context.Background(), principal, inst.ID, agentservice.ListRunsInput{})
+		if err == nil && len(runs) > 0 {
+			runID = runs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runID == "" {
+		t.Fatalf("expected run id")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/instances/"+inst.ID+"/runs/"+runID+"/events", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream request: %v", err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("unexpected content type: %s", got)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	seenRunning := false
+	seenDone := false
+	for !seenDone {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("ReadString: %v", err)
+		}
+		if strings.HasPrefix(line, "data: ") {
+			var envelope struct {
+				Type     string `json:"type"`
+				Snapshot struct {
+					Run struct {
+						Status string `json:"status"`
+					} `json:"run"`
+					AssistantMessage *struct {
+						Content string `json:"content"`
+					} `json:"assistant_message,omitempty"`
+				} `json:"snapshot"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data: "))), &envelope); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
+			}
+			if envelope.Type == "snapshot" && envelope.Snapshot.Run.Status == string(agentservice.RunStatusRunning) {
+				if !seenRunning {
+					seenRunning = true
+					close(executor.release)
+				}
+			}
+			if envelope.Type == "done" {
+				seenDone = true
+				if envelope.Snapshot.Run.Status != string(agentservice.RunStatusSucceeded) {
+					t.Fatalf("expected succeeded done event, got %#v", envelope)
+				}
+				if envelope.Snapshot.AssistantMessage == nil || envelope.Snapshot.AssistantMessage.Content != "released" {
+					t.Fatalf("expected final assistant message, got %#v", envelope)
+				}
+			}
+		}
+	}
+	if !seenRunning {
+		t.Fatalf("expected running snapshot before done")
+	}
+	if err := <-resultCh; err != nil {
+		t.Fatalf("send request failed: %v", err)
+	}
+}

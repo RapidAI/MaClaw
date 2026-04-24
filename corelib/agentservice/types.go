@@ -41,6 +41,7 @@ const (
 	RunStatusRunning   RunStatus = "running"
 	RunStatusSucceeded RunStatus = "succeeded"
 	RunStatusFailed    RunStatus = "failed"
+	RunStatusCancelled RunStatus = "cancelled"
 )
 
 type MessageRole string
@@ -183,6 +184,8 @@ type Session struct {
 	AgentID        string             `json:"agent_id"`
 	Title          string             `json:"title,omitempty"`
 	Metadata       map[string]string  `json:"metadata,omitempty"`
+	Archived       bool               `json:"archived,omitempty"`
+	ArchivedAt     *time.Time         `json:"archived_at,omitempty"`
 	WaitingForUser bool               `json:"waiting_for_user,omitempty"`
 	PendingAsk     *SessionPendingAsk `json:"pending_ask,omitempty"`
 	LastMessageAt  *time.Time         `json:"last_message_at,omitempty"`
@@ -243,9 +246,21 @@ type ListAuditEventsInput struct {
 	ResourceType string `json:"resource_type,omitempty"`
 }
 
+type ListSessionsInput struct {
+	IncludeArchived bool `json:"include_archived,omitempty"`
+}
+
+type ListMessagesInput struct {
+	Role  MessageRole `json:"role,omitempty"`
+	Since *time.Time  `json:"since,omitempty"`
+	Until *time.Time  `json:"until,omitempty"`
+}
+
 type ListRunsInput struct {
-	Status    RunStatus `json:"status,omitempty"`
-	SessionID string    `json:"session_id,omitempty"`
+	Status         RunStatus `json:"status,omitempty"`
+	SessionID      string    `json:"session_id,omitempty"`
+	ResponseSource string    `json:"response_source,omitempty"`
+	WaitingForUser *bool     `json:"waiting_for_user,omitempty"`
 }
 
 type UsageSummary struct {
@@ -260,6 +275,25 @@ type UsageSummary struct {
 	UserMessages      int               `json:"user_messages"`
 	AssistantMessages int               `json:"assistant_messages"`
 	Runs              int               `json:"runs"`
+	RunsByStatus      map[RunStatus]int `json:"runs_by_status"`
+	LastActivityAt    *time.Time        `json:"last_activity_at,omitempty"`
+}
+
+type InstanceSummary struct {
+	InstanceID        string            `json:"instance_id"`
+	TenantID          string            `json:"tenant_id"`
+	UserID            string            `json:"user_id"`
+	Status            InstanceStatus    `json:"status"`
+	Ready             bool              `json:"ready"`
+	ReadyReason       string            `json:"ready_reason,omitempty"`
+	Sessions          int               `json:"sessions"`
+	ArchivedSessions  int               `json:"archived_sessions"`
+	WaitingSessions   int               `json:"waiting_sessions"`
+	Messages          int               `json:"messages"`
+	UserMessages      int               `json:"user_messages"`
+	AssistantMessages int               `json:"assistant_messages"`
+	Runs              int               `json:"runs"`
+	WaitingRuns       int               `json:"waiting_runs"`
 	RunsByStatus      map[RunStatus]int `json:"runs_by_status"`
 	LastActivityAt    *time.Time        `json:"last_activity_at,omitempty"`
 }
@@ -311,9 +345,20 @@ type CreateInstanceInput struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
+type UpdateInstanceInput struct {
+	Name        *string           `json:"name,omitempty"`
+	Description *string           `json:"description,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+}
+
 type CreateSessionInput struct {
 	AgentID  string            `json:"agent_id"`
 	Title    string            `json:"title,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type UpdateSessionInput struct {
+	Title    *string           `json:"title,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 

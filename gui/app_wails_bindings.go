@@ -1546,3 +1546,72 @@ func (a *App) ReadErrorLog() ([]string, error) {
 
 	return errors, nil
 }
+
+// ---------------------------------------------------------------------------
+// IM Audit Store — Wails bindings
+// ---------------------------------------------------------------------------
+
+// ensureIMAuditStore lazily initializes the IM audit SQLite store.
+func (a *App) ensureIMAuditStore() {
+	a.imAuditStoreMu.Do(func() {
+		dbPath := filepath.Join(a.GetDataDir(), "im_audit.db")
+		store, err := NewIMAuditStore(dbPath)
+		if err != nil {
+			log.Printf("[im-audit] failed to open store: %v", err)
+			return
+		}
+		a.imAuditStore = store
+	})
+}
+
+// getIMAuditStore returns the audit store, initializing if needed.
+func (a *App) getIMAuditStore() *IMAuditStore {
+	a.ensureIMAuditStore()
+	return a.imAuditStore
+}
+
+// QueryIMAuditMessages returns paginated IM audit messages (Wails binding).
+func (a *App) QueryIMAuditMessages(platform, userID, keyword string, page int) (*IMAuditQueryResult, error) {
+	store := a.getIMAuditStore()
+	if store == nil {
+		return &IMAuditQueryResult{Messages: []IMAuditMessage{}, PageSize: imAuditPageSize}, nil
+	}
+	return store.Query(platform, userID, keyword, page)
+}
+
+// DeleteIMAuditMessagesBefore removes IM audit messages older than N days (Wails binding).
+func (a *App) DeleteIMAuditMessagesBefore(days int) (int64, error) {
+	store := a.getIMAuditStore()
+	if store == nil {
+		return 0, nil
+	}
+	return store.DeleteBefore(days)
+}
+
+// ExportIMAuditCSV exports matching IM audit messages to CSV and returns the file path (Wails binding).
+func (a *App) ExportIMAuditCSV(platform, userID, keyword string) (string, error) {
+	store := a.getIMAuditStore()
+	if store == nil {
+		return "", fmt.Errorf("audit store not available")
+	}
+	outputDir := a.GetTempDir()
+	return store.ExportCSV(platform, userID, keyword, outputDir)
+}
+
+// GetIMAuditUsers returns distinct user IDs for the given platform (Wails binding).
+func (a *App) GetIMAuditUsers(platform string) ([]string, error) {
+	store := a.getIMAuditStore()
+	if store == nil {
+		return []string{}, nil
+	}
+	return store.ListUsers(platform)
+}
+
+// GetIMAuditStats returns per-platform message count statistics (Wails binding).
+func (a *App) GetIMAuditStats() (*IMAuditStats, error) {
+	store := a.getIMAuditStore()
+	if store == nil {
+		return &IMAuditStats{}, nil
+	}
+	return store.Stats()
+}

@@ -2036,6 +2036,10 @@ type IMMessageHandler struct {
 	sshMgr    *remote.SSHSessionManager
 	bgTaskMgr *remote.SSHBackgroundTaskManager
 
+	// Local background task manager for long-running local processes.
+	// Mirrors the SSH BackgroundTaskManager pattern: Submit/Check/Wait/Kill.
+	localBgTaskMgr *tool.LocalBackgroundTaskManager
+
 	// lastUserText stores the most recent user message text for the current
 	// agent loop. Used by toolCreateSession to detect non-coding tasks and
 	// prevent unnecessary session creation.
@@ -2256,6 +2260,9 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 
 	// Initialize task execution orchestrator for per-task coding workflow.
 	h.taskOrchestrator = NewTaskExecutionOrchestrator()
+	if h.sessionPrecheck != nil {
+		h.taskOrchestrator.ExternalChecker = &sessionPrecheckAdapter{precheck: h.sessionPrecheck}
+	}
 
 	// Initialize the nudge tracker for post-use skill nudge system.
 	h.nudgeTracker = nudge.NewNudgeTracker()
@@ -2498,6 +2505,10 @@ func (h *IMMessageHandler) SetUsageTracker(tracker *tool.UsageTracker) {
 // SetSessionPrecheck configures the session precheck for environment validation.
 func (h *IMMessageHandler) SetSessionPrecheck(precheck *SessionPrecheck) {
 	h.sessionPrecheck = precheck
+	// Keep orchestrator's external tool checker in sync.
+	if h.taskOrchestrator != nil && precheck != nil {
+		h.taskOrchestrator.ExternalChecker = &sessionPrecheckAdapter{precheck: precheck}
+	}
 }
 
 // SetStartupFeedback configures the startup feedback monitor.
@@ -2796,70 +2807,10 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 // downloadClawHubSkill fetches a skill from the ClawHub mirror and converts
 // the SKILL.md content into an NLSkillEntry with a single craft_tool step
 // that uses the SKILL.md as instructions.
+// Delegates to the shared corelib/skill.HubClient.
 func downloadClawHubSkill(ctx context.Context, slug string) (*corelib.NLSkillEntry, error) {
-	endpoint := ClawHubMirrorURL + "/api/v1/skills/" + url.PathEscape(slug)
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "MaClaw/1.0")
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	var raw struct {
-		Skill struct {
-			Slug        string `json:"slug"`
-			DisplayName string `json:"displayName"`
-			Summary     string `json:"summary"`
-		} `json:"skill"`
-		MetaContent struct {
-			SkillMD string `json:"skillMd"`
-		} `json:"metaContent"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
-	}
-
-	name := raw.Skill.DisplayName
-	if name == "" {
-		name = raw.Skill.Slug
-	}
-
-	// Convert SKILL.md content into a craft_tool step so the agent can
-	// use the knowledge guide to generate and execute a script.
-	skillMD := raw.MetaContent.SkillMD
-	if skillMD == "" {
-		return nil, fmt.Errorf("skill %s has no SKILL.md content", slug)
-	}
-
-	return &corelib.NLSkillEntry{
-		Name:        name,
-		Description: raw.Skill.Summary,
-		Triggers:    []string{raw.Skill.Slug},
-		Steps: []corelib.NLSkillStep{
-			{
-				Action: "craft_tool",
-				Params: map[string]interface{}{
-					"instructions":      skillMD,
-					"verification_mode": "artifact_required",
-					"register_policy":   "manual",
-				},
-			},
-		},
-		Status:     "active",
-		CreatedAt:  time.Now().Format(time.RFC3339),
-		Source:     "clawhub",
-		TrustLevel: "community",
-	}, nil
+	client := cskill.NewHubClient()
+	return client.DownloadClawHub(ctx, slug)
 }
 
 // downloadSkillJSON fetches a skill definition from the given URL and
@@ -3681,8 +3632,44 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 	return h.handleIMMessageWithLoop(msg, nil, onProgress, onToken, onNewRound, onStreamDone)
 }
 
-func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
+func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) (result *IMAgentResponse) {
 	trimmed := strings.TrimSpace(msg.Text)
+
+	// --- IM Audit: deferred write covers ALL return paths ---
+	// Record both the user message and the assistant response for IM platforms.
+	// Uses named return `result` so the deferred closure captures the final value
+	// regardless of which return path is taken.
+	isIMAuditPlatform := h.app != nil && msg.Platform != "" && msg.Platform != "desktop" && msg.Platform != "tui"
+	if isIMAuditPlatform && trimmed != "" {
+		defer func() {
+			store := h.app.getIMAuditStore()
+			if store == nil {
+				return
+			}
+			// Record user message.
+			store.Write(IMAuditMessage{
+				UserID:   msg.UserID,
+				Platform: msg.Platform,
+				Role:     "user",
+				Content:  msg.Text,
+			})
+			// Record assistant response.
+			if result != nil {
+				content := result.Text
+				if content == "" {
+					content = result.Error
+				}
+				if content != "" {
+					store.Write(IMAuditMessage{
+						UserID:   msg.UserID,
+						Platform: msg.Platform,
+						Role:     "assistant",
+						Content:  content,
+					})
+				}
+			}
+		}()
+	}
 
 	// Invalidate UIC cache after each message processing cycle completes,
 	// ensuring all consumers within the same cycle share the same result
@@ -4285,10 +4272,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if h.interruptHandler != nil && msg.Text != "" && h.currentLoopCtx != nil {
 			result := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
 			if result.Handled {
-				// All handled actions return immediately — the message's
+				// Fully handled (Replace/Merge/StatusQuery) — the message's
 				// purpose was to control the running loop, not to start a new task.
 				return &IMAgentResponse{Text: result.Reply}
 			}
+			// Queued (Insert/Enqueue) — fall through to Lock. The message
+			// will be processed normally after the current loop finishes.
+			// Desktop panel doesn't need instant feedback here because the
+			// user can see the buffer queue UI.
 		}
 		h.chatLoopMu.Lock()
 		defer h.chatLoopMu.Unlock()
@@ -4862,9 +4853,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// --- Event-driven progress tracker ---
 	// Replaces the old ack timer + "任务较复杂" patience hints with
 	// milestone-based progress that only sends messages when there's new info.
+	//
+	// Compute task embedding for the interrupt handler's relevance scoring.
+	// When a new message arrives during this loop, TryInterrupt computes
+	// cosine(taskEmbed, msgEmbed) to decide merge/replace/insert.
+	var taskEmbed []float32
+	if h.interruptHandler != nil {
+		taskEmbed = h.interruptHandler.EmbedText(userText)
+	}
 	milestoneTracker := progress.NewAgentProgressTracker(
 		func(text string) { sendProgress(text) },
-		userText, "", nil,
+		userText, "", taskEmbed,
 	)
 	defer milestoneTracker.Stop()
 	// Register tracker for interrupt handler access.
@@ -5114,7 +5113,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// write_file, ssh, etc.) to execute their unrelated request. Without this
 	// check, the coding gate strips bash/write_file even for non-coding tasks
 	// like "upload this skill to market", leaving the LLM unable to write files.
-	if gateConfig.active && !ctx.SkipNeedsConfirmGate {
+	//
+	// Also skip when the TaskExecutionOrchestrator is active — the orchestrator
+	// manages tool availability itself (direct mode keeps bash/write_file/edit_file,
+	// external mode keeps session tools). Applying the gate on top would strip
+	// tools that the orchestrator intentionally preserved.
+	//
+	// NOTE: orchestratorActive is a function, not a cached bool, because the
+	// orchestrator may be activated mid-loop (when the user confirms the task list).
+	orchestratorActive := func() bool {
+		return h.taskOrchestrator != nil && h.taskOrchestrator.IsActive()
+	}
+	if gateConfig.active && !ctx.SkipNeedsConfirmGate && !orchestratorActive() {
 		filtered := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
 			name := tool.ExtractToolName(t)
@@ -5200,6 +5210,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// After 2 consecutive failures, a system message is injected to guide the
 	// model to use mode=append for chunked writing.
 	consecutiveJSONTruncations := 0
+
+	// directModeToolsFiltered tracks whether session tools have already been
+	// stripped from the tools list for direct coding mode. Reset when tools
+	// are restored (e.g. recover path's tools = baseTools).
+	directModeToolsFiltered := false
 
 	// totalToolCallsInLoop tracks the cumulative number of tool calls across
 	// all iterations in this agent loop. Used by the nudge system to detect
@@ -5405,8 +5420,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				phase.SkillMode = skillPreferenceFallbackAllowed
 				phase.RemoteSearchExhausted = true
 				tools = baseTools
+				directModeToolsFiltered = false // reset: baseTools includes session tools
 				// Re-apply coding gate definition filter after restoring baseTools.
-				if gateConfig.active && !ctx.SkipNeedsConfirmGate {
+				if gateConfig.active && !ctx.SkipNeedsConfirmGate && !orchestratorActive() {
 					gateFiltered := make([]map[string]interface{}, 0, len(tools))
 					for _, t := range tools {
 						name := tool.ExtractToolName(t)
@@ -5415,6 +5431,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						}
 					}
 					tools = gateFiltered
+				}
+				// Re-apply direct-mode session tool filter after restoring baseTools.
+				if orchestratorActive() && h.taskOrchestrator.CurrentExecutionMode() == TaskExecModeDirect {
+					var directFiltered []map[string]interface{}
+					for _, t := range tools {
+						name := tool.ExtractToolName(t)
+						if !isDirectModeBlockedTool(name) {
+							directFiltered = append(directFiltered, t)
+						}
+					}
+					tools = directFiltered
 				}
 				toolsTokenBudget = estimateToolsTokens(tools)
 			}
@@ -5429,6 +5456,28 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		// --- Task Execution Orchestrator: inject per-task guidance ---
 		if h.taskOrchestrator != nil && h.taskOrchestrator.IsActive() {
+			// Resolve execution mode for the current task at runtime.
+			execMode := h.taskOrchestrator.ResolveExecutionMode()
+
+			// In direct mode, strip session management tools from the tool
+			// list so the LLM codes directly instead of trying to delegate.
+			// Only filter once per mode resolution — after the first pass,
+			// session tools are already gone from the tools slice.
+			if execMode == TaskExecModeDirect && !directModeToolsFiltered {
+				var directFiltered []map[string]interface{}
+				for _, t := range tools {
+					name := tool.ExtractToolName(t)
+					if !isDirectModeBlockedTool(name) {
+						directFiltered = append(directFiltered, t)
+					}
+				}
+				if len(directFiltered) < len(tools) {
+					log.Printf("[agent-loop] direct-mode: stripped %d session tools from tool list", len(tools)-len(directFiltered))
+					tools = directFiltered
+				}
+				directModeToolsFiltered = true
+			}
+
 			if taskInjection := h.taskOrchestrator.BuildSystemInjection(); taskInjection != "" {
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
@@ -5630,6 +5679,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		if msgReasoning != "" {
 			assistantMsg["reasoning_content"] = msgReasoning
+		} else if len(choice.Message.ToolCalls) > 0 {
+			// DeepSeek thinking mode: reasoning_content field must exist on
+			// assistant messages with tool_calls. Missing field → HTTP 400.
+			assistantMsg["reasoning_content"] = ""
 		}
 		if len(choice.Message.ToolCalls) > 0 {
 			assistantMsg["tool_calls"] = choice.Message.ToolCalls
@@ -5666,7 +5719,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// Previously this only fired on iteration == 0, so the LLM could
 		// output the requirements doc on iteration 1 and then immediately
 		// call create_session on iteration 2+ without any enforcement.
-		if gateConfig.active && !ctx.SkipNeedsConfirmGate && len(choice.Message.ToolCalls) > 0 {
+		if gateConfig.active && !ctx.SkipNeedsConfirmGate && !orchestratorActive() && len(choice.Message.ToolCalls) > 0 {
 			gateResult := applyCodingToolGate(choice.Message.ToolCalls)
 			if gateResult.applied {
 				// Log stripped and preserved tool names.
@@ -6881,6 +6934,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 			if bcReasoning != "" {
 				assistantMsg["reasoning_content"] = bcReasoning
+			} else if len(bc.Message.ToolCalls) > 0 {
+				assistantMsg["reasoning_content"] = ""
 			}
 			if len(bc.Message.ToolCalls) > 0 {
 				assistantMsg["tool_calls"] = bc.Message.ToolCalls

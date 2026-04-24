@@ -60,10 +60,18 @@ var (
 
 // RenderMarkdown converts a Markdown string into styled terminal lines.
 // Each returned string is a single rendered line (may contain ANSI codes).
+//
+// Streaming-aware: handles incomplete markdown at the end of content
+// (e.g., unclosed **bold** or partial table rows) by cleaning orphaned
+// delimiters before rendering. This prevents raw markdown markers from
+// appearing during streaming when content arrives incrementally.
 func RenderMarkdown(text string, maxWidth int) []string {
 	if maxWidth < 20 {
 		maxWidth = 60
 	}
+
+	// Clean orphaned delimiters at the end of streaming content.
+	text = cleanOrphanedDelimiters(text)
 
 	rawLines := strings.Split(text, "\n")
 	var result []string
@@ -78,15 +86,13 @@ func RenderMarkdown(text string, maxWidth int) []string {
 			if !inCodeBlock {
 				inCodeBlock = true
 				codeLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
-				label := "```"
 				if codeLang != "" {
-					label = "``` " + codeLang
+					// Show language label as a subtle tag.
+					result = append(result, mdCodeFenceStyle.Render("  ╭─ "+codeLang))
 				}
-				result = append(result, mdCodeFenceStyle.Render(label))
 			} else {
 				inCodeBlock = false
 				codeLang = ""
-				result = append(result, mdCodeFenceStyle.Render("```"))
 			}
 			continue
 		}
@@ -94,9 +100,11 @@ func RenderMarkdown(text string, maxWidth int) []string {
 		// Inside code block — render as-is with code style.
 		if inCodeBlock {
 			// Pad to maxWidth for consistent background.
+			// Use displayWidth (not rune count) so CJK chars are measured correctly.
 			rendered := line
-			if len([]rune(rendered)) < maxWidth-2 {
-				rendered = rendered + strings.Repeat(" ", maxWidth-2-len([]rune(rendered)))
+			dw := displayWidth(rendered)
+			if dw < maxWidth-2 {
+				rendered = rendered + strings.Repeat(" ", maxWidth-2-dw)
 			}
 			result = append(result, mdCodeBlockStyle.Render("  "+rendered))
 			continue
@@ -113,16 +121,19 @@ func RenderMarkdown(text string, maxWidth int) []string {
 		// Headings.
 		if strings.HasPrefix(trimmed, "### ") {
 			content := strings.TrimPrefix(trimmed, "### ")
+			content = renderInlineMarkdown(content)
 			result = append(result, mdH3Style.Render("  "+content))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "## ") {
 			content := strings.TrimPrefix(trimmed, "## ")
+			content = renderInlineMarkdown(content)
 			result = append(result, mdH2Style.Render("  "+content))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "# ") {
 			content := strings.TrimPrefix(trimmed, "# ")
+			content = renderInlineMarkdown(content)
 			result = append(result, mdH1Style.Render("  "+content))
 			continue
 		}
@@ -167,15 +178,34 @@ func RenderMarkdown(text string, maxWidth int) []string {
 			continue
 		}
 
+		// Orphaned table line (streaming): a single line that looks like a
+		// table row but has no following table line. Strip pipe delimiters
+		// and render as plain text so the user doesn't see raw | characters.
+		// Skip separator lines (|---|---|) — they're meaningless without a table.
+		if isTableLine(trimmed) {
+			if isTableSeparator(trimmed) {
+				// Separator without a table — skip entirely.
+				continue
+			}
+			cells := parseTableCells(trimmed)
+			cleaned := strings.Join(cells, "  ")
+			cleaned = renderInlineMarkdown(cleaned)
+			result = append(result, "  "+cleaned)
+			continue
+		}
+
 		// Empty line.
 		if trimmed == "" {
 			result = append(result, "")
 			continue
 		}
 
-		// Normal paragraph — apply inline formatting.
+		// Normal paragraph — apply inline formatting and wrap to width.
 		rendered := renderInlineMarkdown(line)
-		result = append(result, "  "+rendered)
+		wrapped := wrapToWidth(rendered, maxWidth-2)
+		for _, wl := range wrapped {
+			result = append(result, "  "+wl)
+		}
 	}
 
 	return result
@@ -185,12 +215,369 @@ func RenderMarkdown(text string, maxWidth int) []string {
 func renderInlineMarkdown(line string) string {
 	// Process inline code first (to avoid bold/italic inside code).
 	line = processInlineCode(line)
+	// Links: [text](url) → styled text.
+	line = processLinks(line)
 	// Bold: **text** or __text__
 	line = processInlinePattern(line, "**", "**", mdBoldStyle)
 	line = processInlinePattern(line, "__", "__", mdBoldStyle)
-	// Italic: *text* or _text_ (single)
-	line = processInlinePattern(line, "*", "*", mdItalicStyle)
+	// Italic: *text* (single). Skip if preceded/followed by * to avoid
+	// matching inside already-processed ** sequences or ANSI codes.
+	line = processItalic(line)
 	return line
+}
+
+// cleanOrphanedDelimiters strips incomplete markdown delimiters at the end
+// of content. During streaming, content arrives incrementally — a bold marker
+// ** may arrive before its closing ** in the next chunk. Without cleanup,
+// RenderMarkdown would display raw ** markers to the user.
+//
+// This function scans the LAST LINE of the text (where streaming truncation
+// happens) and removes orphaned delimiters. It does NOT modify content inside
+// code blocks or lines that are code fences themselves.
+func cleanOrphanedDelimiters(text string) string {
+	// Find the last line (streaming truncation point).
+	lastNL := strings.LastIndex(text, "\n")
+	var prefix, lastLine string
+	if lastNL >= 0 {
+		prefix = text[:lastNL+1]
+		lastLine = text[lastNL+1:]
+	} else {
+		prefix = ""
+		lastLine = text
+	}
+
+	if lastLine == "" {
+		return text
+	}
+
+	trimmedLast := strings.TrimSpace(lastLine)
+
+	// Don't touch code fence lines themselves (``` or ```python).
+	if strings.HasPrefix(trimmedLast, "```") {
+		return text
+	}
+
+	// Don't touch content inside code blocks.
+	// Count code fence lines (lines starting with ```) in prefix to determine
+	// if the last line is inside a code block. This is more robust than
+	// counting ``` substrings, which would miscount `````, inline ```, etc.
+	fenceCount := 0
+	for _, pline := range strings.Split(prefix, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(pline), "```") {
+			fenceCount++
+		}
+	}
+	if fenceCount%2 != 0 {
+		// Inside a code block — don't strip anything.
+		return text
+	}
+
+	// Strip orphaned bold markers: odd number of ** means unclosed bold.
+	// Use non-overlapping count that handles *** correctly.
+	lastLine = cleanOrphanedBoldMarker(lastLine)
+
+	// Strip orphaned underline bold markers.
+	lastLine = cleanOrphanedPairMarker(lastLine, "__")
+
+	// Strip orphaned inline code backtick (single `, not triple ```).
+	// Only count isolated backticks, not triple-backtick fences.
+	singleBackticks := countSingleBackticks(lastLine)
+	if singleBackticks%2 != 0 {
+		// Remove the last single backtick (the unclosed one).
+		idx := lastIndexSingleBacktick(lastLine)
+		if idx >= 0 {
+			lastLine = lastLine[:idx] + lastLine[idx+1:]
+		}
+	}
+
+	// Strip orphaned link syntax: [text]( without closing )
+	// Pattern: [...](... at end without )
+	if idx := strings.LastIndex(lastLine, "]("); idx >= 0 {
+		afterParen := lastLine[idx+2:]
+		if !strings.Contains(afterParen, ")") {
+			// Unclosed link — show just the link text.
+			bracketStart := strings.LastIndex(lastLine[:idx], "[")
+			if bracketStart >= 0 {
+				linkText := lastLine[bracketStart+1 : idx]
+				lastLine = lastLine[:bracketStart] + linkText
+			}
+		}
+	} else if idx := strings.LastIndex(lastLine, "["); idx >= 0 {
+		// Opening [ without ]( — might be mid-link.
+		afterBracket := lastLine[idx+1:]
+		if !strings.Contains(afterBracket, "]") {
+			// Unclosed bracket — remove the [
+			lastLine = lastLine[:idx] + lastLine[idx+1:]
+		}
+	}
+
+	return prefix + lastLine
+}
+
+// cleanOrphanedBoldMarker handles ** specifically, avoiding corruption of
+// *** (bold+italic) sequences. Scans for ** boundaries that are not part
+// of *** and removes the last unpaired one.
+func cleanOrphanedBoldMarker(line string) string {
+	// Count non-overlapping ** occurrences, skipping *** sequences.
+	// Walk through the string tracking * runs.
+	count := 0
+	lastIdx := -1
+	i := 0
+	runes := []rune(line)
+	for i < len(runes) {
+		if runes[i] == '*' {
+			// Count consecutive *
+			start := i
+			for i < len(runes) && runes[i] == '*' {
+				i++
+			}
+			runLen := i - start
+			// A run of exactly 2 is one ** marker.
+			// A run of 4 is two ** markers. Etc.
+			pairs := runLen / 2
+			count += pairs
+			if pairs > 0 {
+				// Last ** in this run starts at start + (runLen - runLen%2 - 2)
+				// if runLen is even, or start + (runLen - 1 - 2) if odd.
+				// Simplified: the last ** starts at start + 2*(pairs-1) + (runLen%2)
+				lastIdx = start + runLen - 2 // byte position of last ** in run
+			}
+			continue
+		}
+		i++
+	}
+	if count%2 != 0 && lastIdx >= 0 {
+		// Remove the last ** (2 runes at lastIdx).
+		result := string(runes[:lastIdx]) + string(runes[lastIdx+2:])
+		return result
+	}
+	return line
+}
+
+// cleanOrphanedPairMarker removes the last occurrence of a pair marker
+// (like __) if the count is odd (meaning one is unclosed).
+func cleanOrphanedPairMarker(line, marker string) string {
+	count := strings.Count(line, marker)
+	if count%2 != 0 {
+		// Odd count — remove the last occurrence (the unclosed one).
+		idx := strings.LastIndex(line, marker)
+		line = line[:idx] + line[idx+len(marker):]
+	}
+	return line
+}
+
+// countSingleBackticks counts backticks that are NOT part of triple-backtick
+// (```) sequences.
+func countSingleBackticks(s string) int {
+	count := 0
+	runes := []rune(s)
+	i := 0
+	for i < len(runes) {
+		if runes[i] == '`' {
+			start := i
+			for i < len(runes) && runes[i] == '`' {
+				i++
+			}
+			runLen := i - start
+			if runLen < 3 {
+				count += runLen
+			}
+			// Runs of 3+ are code fences, not inline code — skip them.
+			continue
+		}
+		i++
+	}
+	return count
+}
+
+// lastIndexSingleBacktick returns the index of the last backtick that is
+// NOT part of a triple-backtick sequence, or -1 if none.
+func lastIndexSingleBacktick(s string) int {
+	runes := []rune(s)
+	lastIdx := -1
+	i := 0
+	for i < len(runes) {
+		if runes[i] == '`' {
+			start := i
+			for i < len(runes) && runes[i] == '`' {
+				i++
+			}
+			runLen := i - start
+			if runLen < 3 {
+				// Last backtick in this short run.
+				lastIdx = i - 1
+			}
+			continue
+		}
+		i++
+	}
+	return lastIdx
+}
+
+// wrapToWidth wraps a rendered line (possibly containing ANSI codes) to fit
+// within the target display width. Uses display-width-aware measurement that
+// correctly handles CJK characters (width 2) and skips ANSI escape sequences.
+//
+// Returns a slice of wrapped lines. If the input fits within maxWidth, returns
+// a single-element slice.
+func wrapToWidth(s string, maxWidth int) []string {
+	if maxWidth <= 0 {
+		return []string{s}
+	}
+	if displayWidthVisible(s) <= maxWidth {
+		return []string{s}
+	}
+
+	runes := []rune(s)
+	var lines []string
+	lineStart := 0
+	w := 0
+	hasStyle := false // true if any non-reset ANSI sequence has been seen
+
+	i := 0
+	for i < len(runes) {
+		// Skip ANSI escape sequences (don't count as width).
+		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+			seqStart := i
+			i += 2
+			for i < len(runes) && (runes[i] < 0x40 || runes[i] > 0x7E) {
+				i++
+			}
+			if i < len(runes) {
+				i++ // skip final byte
+			}
+			// Track whether we're inside a styled region.
+			seq := string(runes[seqStart:i])
+			if seq == "\x1b[0m" {
+				hasStyle = false
+			} else {
+				hasStyle = true
+			}
+			continue
+		}
+
+		rw := 1
+		if runes[i] >= 0x1100 && isCJKOrFullwidth(runes[i]) {
+			rw = 2
+		}
+
+		if w+rw > maxWidth {
+			// Emit current line with style reset if needed.
+			lineContent := string(runes[lineStart:i])
+			if hasStyle {
+				lineContent += "\x1b[0m"
+			}
+			lines = append(lines, lineContent)
+			lineStart = i
+			w = 0
+			// Note: hasStyle carries over — the next line segment will
+			// inherit whatever ANSI state was active. The terminal resets
+			// at the line boundary due to the \x1b[0m we appended, and
+			// lipgloss re-applies styles per-render in the caller.
+		}
+
+		w += rw
+		i++
+	}
+
+	// Emit remaining content.
+	if lineStart < len(runes) {
+		lines = append(lines, string(runes[lineStart:]))
+	}
+
+	if len(lines) == 0 {
+		return []string{s}
+	}
+	return lines
+}
+
+// processLinks replaces [text](url) with styled link text.
+func processLinks(line string) string {
+	for {
+		start := strings.Index(line, "[")
+		if start < 0 {
+			break
+		}
+		rest := line[start+1:]
+		closeBracket := strings.Index(rest, "](")
+		if closeBracket < 0 {
+			break
+		}
+		text := rest[:closeBracket]
+		afterParen := rest[closeBracket+2:]
+		closeParen := strings.Index(afterParen, ")")
+		if closeParen < 0 {
+			break
+		}
+		// Render link text with underline style; URL is hidden in terminal.
+		styled := mdLinkStyle.Render(text)
+		line = line[:start] + styled + afterParen[closeParen+1:]
+	}
+	return line
+}
+
+// processItalic handles *text* italic without corrupting ANSI escape codes
+// injected by prior inline passes (bold, code).
+func processItalic(line string) string {
+	runes := []rune(line)
+	var result strings.Builder
+	i := 0
+	for i < len(runes) {
+		// Skip ANSI escape sequences entirely.
+		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+			result.WriteRune(runes[i])
+			i++
+			for i < len(runes) {
+				result.WriteRune(runes[i])
+				if runes[i] >= 0x40 && runes[i] <= 0x7E {
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+		// Match *text* where * is not adjacent to another *.
+		if runes[i] == '*' {
+			// Don't match if preceded by * (would be **).
+			if i > 0 && runes[i-1] == '*' {
+				result.WriteRune(runes[i])
+				i++
+				continue
+			}
+			// Don't match if followed by * (would be **).
+			if i+1 < len(runes) && runes[i+1] == '*' {
+				result.WriteRune(runes[i])
+				i++
+				continue
+			}
+			// Find closing *.
+			j := i + 1
+			for j < len(runes) && runes[j] != '*' {
+				// Skip ANSI inside italic span.
+				if runes[j] == '\x1b' && j+1 < len(runes) && runes[j+1] == '[' {
+					j += 2
+					for j < len(runes) && (runes[j] < 0x40 || runes[j] > 0x7E) {
+						j++
+					}
+					if j < len(runes) {
+						j++
+					}
+					continue
+				}
+				j++
+			}
+			if j < len(runes) && j > i+1 {
+				inner := string(runes[i+1 : j])
+				result.WriteString(mdItalicStyle.Render(inner))
+				i = j + 1
+				continue
+			}
+		}
+		result.WriteRune(runes[i])
+		i++
+	}
+	return result.String()
 }
 
 // processInlineCode replaces `code` with styled code.

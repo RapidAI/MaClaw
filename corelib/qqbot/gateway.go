@@ -572,6 +572,14 @@ func (g *Gateway) handleC2CMessage(data json.RawMessage) {
 					if result.Handled {
 						return // Cancel/Merge/StatusQuery — fully handled
 					}
+					if result.Queued && result.Reply != "" {
+						// Insert/Enqueue — send instant feedback, then
+						// fall through to Lock (message queues normally).
+						_ = g.SendText(context.Background(), OutgoingText{
+							OpenID: openID,
+							Text:   result.Reply,
+						})
+					}
 				}
 				ul.Lock()
 			}

@@ -106,6 +106,13 @@ const (
 	MsgTUIScheduleHeaderRuns           = "msg.tui_schedule_header_runs"
 	MsgTUIScheduleHeaderAction         = "msg.tui_schedule_header_action"
 	MsgTUIScheduleFooter               = "msg.tui_schedule_footer"
+	MsgTUITaskSubRemote                = "msg.tui_task_sub_remote"
+	MsgTUITaskSubBackground            = "msg.tui_task_sub_background"
+	MsgTUITaskSubScheduled             = "msg.tui_task_sub_scheduled"
+	MsgTUITaskRemoteEmpty              = "msg.tui_task_remote_empty"
+	MsgTUITaskBackgroundEmpty          = "msg.tui_task_background_empty"
+	MsgTUITaskRemoteFooter             = "msg.tui_task_remote_footer"
+	MsgTUITaskBackgroundFooter         = "msg.tui_task_background_footer"
 	MsgTUILoopManagerUnavailable       = "msg.tui_loop_manager_unavailable"
 	MsgTUILoopNoTasks                  = "msg.tui_loop_no_tasks"
 	MsgTUILoopTaskNotFound             = "msg.tui_loop_task_not_found"
@@ -200,6 +207,7 @@ const (
 	MsgTUIConfigNotSet                = "msg.tui_config_not_set"
 	MsgTUIConfigFooterEditing         = "msg.tui_config_footer_editing"
 	MsgTUIConfigFooterNormal          = "msg.tui_config_footer_normal"
+	MsgTUIConfigFooterSelect          = "msg.tui_config_footer_select"
 	MsgTUIConfigDescHubURL            = "msg.tui_config_desc_hub_url"
 	MsgTUIConfigDescToken             = "msg.tui_config_desc_token"
 	MsgTUIConfigDescDataDir           = "msg.tui_config_desc_data_dir"
@@ -216,6 +224,49 @@ const (
 	MsgTUIConfigDescTelegramEnabled   = "msg.tui_config_desc_telegram_enabled"
 	MsgTUIConfigDescTelegramToken     = "msg.tui_config_desc_telegram_token"
 	MsgTUIConfigDescSkillPurchaseMode = "msg.tui_config_desc_skill_purchase_mode"
+	// Config tab names
+	MsgTUIConfigTabGeneral  = "msg.tui_config_tab_general"
+	MsgTUIConfigTabLLM      = "msg.tui_config_tab_llm"
+	MsgTUIConfigTabIM       = "msg.tui_config_tab_im"
+	MsgTUIConfigTabProxy    = "msg.tui_config_tab_proxy"
+	MsgTUIConfigTabSecurity = "msg.tui_config_tab_security"
+	MsgTUIConfigTabAdvanced = "msg.tui_config_tab_advanced"
+	// New config field descriptions
+	MsgTUIConfigDescWorkDir          = "msg.tui_config_desc_work_dir"
+	MsgTUIConfigDescLanguage         = "msg.tui_config_desc_language"
+	MsgTUIConfigDescCheckUpdate      = "msg.tui_config_desc_check_update"
+	MsgTUIConfigDescAuxLLMURL        = "msg.tui_config_desc_aux_llm_url"
+	MsgTUIConfigDescAuxLLMKey        = "msg.tui_config_desc_aux_llm_key"
+	MsgTUIConfigDescAuxLLMModel      = "msg.tui_config_desc_aux_llm_model"
+	MsgTUIConfigDescAuxLLMProtocol   = "msg.tui_config_desc_aux_llm_protocol"
+	MsgTUIConfigDescWeixinEnabled    = "msg.tui_config_desc_weixin_enabled"
+	MsgTUIConfigDescWeixinToken      = "msg.tui_config_desc_weixin_token"
+	MsgTUIConfigDescWeixinBaseURL    = "msg.tui_config_desc_weixin_base_url"
+	MsgTUIConfigDescLansengerEnabled = "msg.tui_config_desc_lansenger_enabled"
+	MsgTUIConfigDescLansengerAppID   = "msg.tui_config_desc_lansenger_app_id"
+	MsgTUIConfigDescLansengerAppSecret = "msg.tui_config_desc_lansenger_app_secret"
+	MsgTUIConfigDescLansengerGateway = "msg.tui_config_desc_lansenger_gateway"
+	MsgTUIConfigDescProxyEnabled     = "msg.tui_config_desc_proxy_enabled"
+	MsgTUIConfigDescProxyProtocol    = "msg.tui_config_desc_proxy_protocol"
+	MsgTUIConfigDescProxyHost        = "msg.tui_config_desc_proxy_host"
+	MsgTUIConfigDescProxyPort        = "msg.tui_config_desc_proxy_port"
+	MsgTUIConfigDescProxyUser        = "msg.tui_config_desc_proxy_user"
+	MsgTUIConfigDescProxyPass        = "msg.tui_config_desc_proxy_pass"
+	MsgTUIConfigDescProxyScopeLLM    = "msg.tui_config_desc_proxy_scope_llm"
+	MsgTUIConfigDescProxyScopeAgent  = "msg.tui_config_desc_proxy_scope_agent"
+	MsgTUIConfigDescSecurityMode     = "msg.tui_config_desc_security_mode"
+	MsgTUIConfigDescSandbox          = "msg.tui_config_desc_sandbox"
+	MsgTUIConfigDescNetworkLevel     = "msg.tui_config_desc_network_level"
+	MsgTUIConfigDescYoloMode         = "msg.tui_config_desc_yolo_mode"
+	MsgTUIConfigDescFileOutbound     = "msg.tui_config_desc_file_outbound"
+	MsgTUIConfigDescImageOutbound    = "msg.tui_config_desc_image_outbound"
+	MsgTUIConfigDescUIMode           = "msg.tui_config_desc_ui_mode"
+	MsgTUIConfigDescMemoryCompress   = "msg.tui_config_desc_memory_compress"
+	MsgTUIConfigDescLogDetail        = "msg.tui_config_desc_log_detail"
+	MsgTUIConfigDescTrajectory       = "msg.tui_config_desc_trajectory"
+	MsgTUIConfigDescDebugTools       = "msg.tui_config_desc_debug_tools"
+	MsgTUIConfigDescGossip           = "msg.tui_config_desc_gossip"
+	MsgTUIConfigDescTrialReflect     = "msg.tui_config_desc_trial_reflect"
 	MsgTUIAgentNetLoading             = "msg.tui_agentnet_loading"
 	MsgTUIAgentNetTabPeers            = "msg.tui_agentnet_tab_peers"
 	MsgTUIAgentNetTabTasks            = "msg.tui_agentnet_tab_tasks"
@@ -284,9 +335,9 @@ var translations = map[string]map[string]string{
 		MsgWaitingInput:      "⚠️ 会话正在等待用户输入",
 		MsgSessionExited:      "会话已退出",
 		MsgSessionError:       "⚠️ 会话出错",
-		MsgTUITabSessions:     "会话",
+		MsgTUITabSessions:     "编程",
 		MsgTUITabTools:        "工具",
-		MsgTUITabSchedule:     "定时",
+		MsgTUITabSchedule:     "任务",
 		MsgTUITabMemory:       "记忆",
 		MsgTUITabAudit:        "审计",
 		MsgTUITabAgentNet:     "智网",
@@ -341,7 +392,14 @@ var translations = map[string]map[string]string{
 		MsgTUIScheduleHeaderTime: "TIME",
 		MsgTUIScheduleHeaderRuns: "RUNS",
 		MsgTUIScheduleHeaderAction: "ACTION",
-		MsgTUIScheduleFooter:  "↑↓:选择  p:暂停/恢复  d:删除",
+		MsgTUIScheduleFooter:  "↑↓:选择  p:暂停/恢复  d:删除  1/2/3:切换子标签",
+		MsgTUITaskSubRemote:   "远程",
+		MsgTUITaskSubBackground: "后台",
+		MsgTUITaskSubScheduled: "计划任务",
+		MsgTUITaskRemoteEmpty: "暂无远程任务\n\n通过 SSH 工具提交的远程后台任务将显示在此处",
+		MsgTUITaskBackgroundEmpty: "暂无后台任务\n\n通过 Agent 启动的后台循环任务将显示在此处",
+		MsgTUITaskRemoteFooter: "↑↓:选择  Enter:详情  1/2/3:切换子标签",
+		MsgTUITaskBackgroundFooter: "↑↓:选择  Enter:详情  s:停止  1/2/3:切换子标签",
 		MsgTUILoopManagerUnavailable: "后台任务管理器未初始化（需要在 daemon 或 TUI 模式下运行）",
 		MsgTUILoopNoTasks:     "无运行中的后台任务。",
 		MsgTUILoopTaskNotFound: "后台任务 '%s' 不存在",
@@ -388,8 +446,8 @@ var translations = map[string]map[string]string{
 		MsgTUIHelpTitle:       "  -- 快捷键 --",
 		MsgTUIHelpSectionGlobal: "全局",
 		MsgTUIHelpSectionListNavigation: "列表导航",
-		MsgTUIHelpSectionSessions: "会话",
-		MsgTUIHelpSectionScheduledTasks: "定时任务",
+		MsgTUIHelpSectionSessions: "编程",
+		MsgTUIHelpSectionScheduledTasks: "任务",
 		MsgTUIHelpSectionMemory: "记忆",
 		MsgTUIHelpSectionConfig: "配置",
 		MsgTUIHelpSectionAgentNet: "智网",
@@ -435,7 +493,8 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigTitle:     "配置",
 		MsgTUIConfigNotSet:    "(未设置)",
 		MsgTUIConfigFooterEditing: "Enter:确认  Esc:取消",
-		MsgTUIConfigFooterNormal:  "Up/Down:选择  Enter:编辑  r:刷新",
+		MsgTUIConfigFooterNormal:  "1-6:切换标签  ↑↓:移动  Enter:编辑  Space:切换开关",
+		MsgTUIConfigFooterSelect:  "←→:选择  Enter:确认  Esc:取消",
 		MsgTUIConfigDescHubURL:            "Hub 服务地址",
 		MsgTUIConfigDescToken:             "认证令牌",
 		MsgTUIConfigDescDataDir:           "数据目录",
@@ -452,6 +511,49 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescTelegramEnabled:   "启用 Telegram 机器人",
 		MsgTUIConfigDescTelegramToken:     "Telegram 机器人 Token",
 		MsgTUIConfigDescSkillPurchaseMode: "技能购买模式 (auto/free_only)",
+		// Config tab names
+		MsgTUIConfigTabGeneral:  "基本",
+		MsgTUIConfigTabLLM:      "LLM",
+		MsgTUIConfigTabIM:       "IM通道",
+		MsgTUIConfigTabProxy:    "代理",
+		MsgTUIConfigTabSecurity: "安全",
+		MsgTUIConfigTabAdvanced: "高级",
+		// New config field descriptions
+		MsgTUIConfigDescWorkDir:          "默认工作目录",
+		MsgTUIConfigDescLanguage:         "界面语言",
+		MsgTUIConfigDescCheckUpdate:      "启动时检查更新",
+		MsgTUIConfigDescAuxLLMURL:        "辅助 LLM API 地址",
+		MsgTUIConfigDescAuxLLMKey:        "辅助 LLM API 密钥",
+		MsgTUIConfigDescAuxLLMModel:      "辅助 LLM 模型名称",
+		MsgTUIConfigDescAuxLLMProtocol:   "辅助 LLM 协议",
+		MsgTUIConfigDescWeixinEnabled:    "启用微信",
+		MsgTUIConfigDescWeixinToken:      "微信 Token",
+		MsgTUIConfigDescWeixinBaseURL:    "微信 API 地址",
+		MsgTUIConfigDescLansengerEnabled: "启用蓝信",
+		MsgTUIConfigDescLansengerAppID:   "蓝信 AppID",
+		MsgTUIConfigDescLansengerAppSecret: "蓝信 AppSecret",
+		MsgTUIConfigDescLansengerGateway: "蓝信网关地址",
+		MsgTUIConfigDescProxyEnabled:     "启用代理",
+		MsgTUIConfigDescProxyProtocol:    "代理协议",
+		MsgTUIConfigDescProxyHost:        "代理主机",
+		MsgTUIConfigDescProxyPort:        "代理端口",
+		MsgTUIConfigDescProxyUser:        "代理用户名",
+		MsgTUIConfigDescProxyPass:        "代理密码",
+		MsgTUIConfigDescProxyScopeLLM:    "代理范围: LLM 请求",
+		MsgTUIConfigDescProxyScopeAgent:  "代理范围: Agent 网络",
+		MsgTUIConfigDescSecurityMode:     "安全策略模式",
+		MsgTUIConfigDescSandbox:          "沙箱模式",
+		MsgTUIConfigDescNetworkLevel:     "网络访问级别",
+		MsgTUIConfigDescYoloMode:         "允许 YOLO 模式",
+		MsgTUIConfigDescFileOutbound:     "允许文件外发",
+		MsgTUIConfigDescImageOutbound:    "允许图片外发",
+		MsgTUIConfigDescUIMode:           "界面模式 (pro=完整/lite=精简)",
+		MsgTUIConfigDescMemoryCompress:   "记忆自动压缩",
+		MsgTUIConfigDescLogDetail:        "详细日志",
+		MsgTUIConfigDescTrajectory:       "LLM 轨迹记录",
+		MsgTUIConfigDescDebugTools:       "调试工具调用",
+		MsgTUIConfigDescGossip:           "启用 Gossip",
+		MsgTUIConfigDescTrialReflect:     "启用试错反思",
 		MsgTUIAgentNetLoading: "正在加载 AgentNet...",
 		MsgTUIAgentNetTabPeers: "Peers",
 		MsgTUIAgentNetTabTasks: "Tasks",
@@ -509,9 +611,9 @@ var translations = map[string]map[string]string{
 		MsgWaitingInput:       "⚠️ Session is waiting for user input",
 		MsgSessionExited:      "Session exited",
 		MsgSessionError:       "⚠️ Session error",
-		MsgTUITabSessions:     "Sessions",
+		MsgTUITabSessions:     "Coding",
 		MsgTUITabTools:        "Tools",
-		MsgTUITabSchedule:     "Schedule",
+		MsgTUITabSchedule:     "Tasks",
 		MsgTUITabMemory:       "Memory",
 		MsgTUITabAudit:        "Audit",
 		MsgTUITabAgentNet:     "AgentNet",
@@ -566,7 +668,14 @@ var translations = map[string]map[string]string{
 		MsgTUIScheduleHeaderTime: "TIME",
 		MsgTUIScheduleHeaderRuns: "RUNS",
 		MsgTUIScheduleHeaderAction: "ACTION",
-		MsgTUIScheduleFooter:  "↑↓:select  p:pause/resume  d:delete",
+		MsgTUIScheduleFooter:  "↑↓:select  p:pause/resume  d:delete  1/2/3:switch sub-tab",
+		MsgTUITaskSubRemote:   "Remote",
+		MsgTUITaskSubBackground: "Background",
+		MsgTUITaskSubScheduled: "Scheduled",
+		MsgTUITaskRemoteEmpty: "No remote tasks\n\nRemote background tasks submitted via SSH will appear here",
+		MsgTUITaskBackgroundEmpty: "No background tasks\n\nBackground loop tasks started by Agent will appear here",
+		MsgTUITaskRemoteFooter: "↑↓:select  Enter:details  1/2/3:switch sub-tab",
+		MsgTUITaskBackgroundFooter: "↑↓:select  Enter:details  s:stop  1/2/3:switch sub-tab",
 		MsgTUILoopManagerUnavailable: "Background loop manager is not initialized (run in daemon or TUI mode)",
 		MsgTUILoopNoTasks:     "No running background tasks.",
 		MsgTUILoopTaskNotFound: "Background task '%s' not found",
@@ -613,8 +722,8 @@ var translations = map[string]map[string]string{
 		MsgTUIHelpTitle:       "  -- Keyboard Shortcuts --",
 		MsgTUIHelpSectionGlobal: "Global",
 		MsgTUIHelpSectionListNavigation: "List Navigation",
-		MsgTUIHelpSectionSessions: "Sessions",
-		MsgTUIHelpSectionScheduledTasks: "Scheduled Tasks",
+		MsgTUIHelpSectionSessions: "Coding",
+		MsgTUIHelpSectionScheduledTasks: "Tasks",
 		MsgTUIHelpSectionMemory: "Memory",
 		MsgTUIHelpSectionConfig: "Config",
 		MsgTUIHelpSectionAgentNet: "AgentNet",
@@ -660,7 +769,8 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigTitle:     "Configuration",
 		MsgTUIConfigNotSet:    "(not set)",
 		MsgTUIConfigFooterEditing: "Enter:confirm  Esc:cancel",
-		MsgTUIConfigFooterNormal:  "Up/Down:select  Enter:edit  r:refresh",
+		MsgTUIConfigFooterNormal:  "1-6:switch tab  Up/Down:move  Enter:edit  Space:toggle",
+		MsgTUIConfigFooterSelect:  "Left/Right:select  Enter:confirm  Esc:cancel",
 		MsgTUIConfigDescHubURL:            "Hub server URL",
 		MsgTUIConfigDescToken:             "auth token",
 		MsgTUIConfigDescDataDir:           "data directory",
@@ -677,6 +787,49 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescTelegramEnabled:   "enable Telegram bot",
 		MsgTUIConfigDescTelegramToken:     "Telegram Bot Token",
 		MsgTUIConfigDescSkillPurchaseMode: "Skill purchase mode (auto/free_only)",
+		// Config tab names
+		MsgTUIConfigTabGeneral:  "General",
+		MsgTUIConfigTabLLM:      "LLM",
+		MsgTUIConfigTabIM:       "IM",
+		MsgTUIConfigTabProxy:    "Proxy",
+		MsgTUIConfigTabSecurity: "Security",
+		MsgTUIConfigTabAdvanced: "Advanced",
+		// New config field descriptions
+		MsgTUIConfigDescWorkDir:          "Default working directory",
+		MsgTUIConfigDescLanguage:         "Interface language",
+		MsgTUIConfigDescCheckUpdate:      "Check for updates on startup",
+		MsgTUIConfigDescAuxLLMURL:        "Auxiliary LLM API URL",
+		MsgTUIConfigDescAuxLLMKey:        "Auxiliary LLM API key",
+		MsgTUIConfigDescAuxLLMModel:      "Auxiliary LLM model name",
+		MsgTUIConfigDescAuxLLMProtocol:   "Auxiliary LLM protocol",
+		MsgTUIConfigDescWeixinEnabled:    "Enable WeChat",
+		MsgTUIConfigDescWeixinToken:      "WeChat Token",
+		MsgTUIConfigDescWeixinBaseURL:    "WeChat API URL",
+		MsgTUIConfigDescLansengerEnabled: "Enable Lansenger",
+		MsgTUIConfigDescLansengerAppID:   "Lansenger AppID",
+		MsgTUIConfigDescLansengerAppSecret: "Lansenger AppSecret",
+		MsgTUIConfigDescLansengerGateway: "Lansenger gateway URL",
+		MsgTUIConfigDescProxyEnabled:     "Enable proxy",
+		MsgTUIConfigDescProxyProtocol:    "Proxy protocol",
+		MsgTUIConfigDescProxyHost:        "Proxy host",
+		MsgTUIConfigDescProxyPort:        "Proxy port",
+		MsgTUIConfigDescProxyUser:        "Proxy username",
+		MsgTUIConfigDescProxyPass:        "Proxy password",
+		MsgTUIConfigDescProxyScopeLLM:    "Proxy scope: LLM requests",
+		MsgTUIConfigDescProxyScopeAgent:  "Proxy scope: Agent network",
+		MsgTUIConfigDescSecurityMode:     "Security policy mode",
+		MsgTUIConfigDescSandbox:          "Sandbox mode",
+		MsgTUIConfigDescNetworkLevel:     "Network access level",
+		MsgTUIConfigDescYoloMode:         "Allow YOLO mode",
+		MsgTUIConfigDescFileOutbound:     "Allow file outbound",
+		MsgTUIConfigDescImageOutbound:    "Allow image outbound",
+		MsgTUIConfigDescUIMode:           "UI mode (pro=full/lite=simplified)",
+		MsgTUIConfigDescMemoryCompress:   "Auto-compress memory",
+		MsgTUIConfigDescLogDetail:        "Detailed logging",
+		MsgTUIConfigDescTrajectory:       "LLM trajectory logging",
+		MsgTUIConfigDescDebugTools:       "Debug tool calls",
+		MsgTUIConfigDescGossip:           "Enable Gossip",
+		MsgTUIConfigDescTrialReflect:     "Enable trial-and-reflect",
 		MsgTUIAgentNetLoading: "Loading AgentNet...",
 		MsgTUIAgentNetTabPeers: "Peers",
 		MsgTUIAgentNetTabTasks: "Tasks",

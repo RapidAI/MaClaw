@@ -5,22 +5,52 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
 // imInterruptHandler implements progress.InterruptHandler for the GUI layer.
 // It bridges the IM gateway's interrupt signal to the running agent loop's
 // cancel mechanism.
+//
+// Three-signal scheduling: relevance (embedding cosine) + domain match
+// (L1 keyword) + structure (negation/length). All five ScheduleActions
+// have execution paths: Replace, Merge, StatusQuery, Insert, Enqueue.
 type imInterruptHandler struct {
 	handler *IMMessageHandler
 
 	// milestoneTrackers stores the active AgentProgressTracker per user.
 	// Set by runAgentLoop when the tracker is created, cleared when it stops.
 	milestoneTrackers sync.Map // map[userID]*progress.AgentProgressTracker
+
+	// embedder computes message embeddings for relevance scoring.
+	// Set via SetEmbedder after the embedding model is loaded.
+	// May be nil or NoopEmbedder — relevance degrades to -1 (unavailable).
+	embedder embedding.Embedder
 }
 
 func newIMInterruptHandler(h *IMMessageHandler) *imInterruptHandler {
 	return &imInterruptHandler{handler: h}
+}
+
+// SetEmbedder configures the embedder for semantic relevance computation.
+// Called from app.go / activateEmbedderAsync after the embedding model loads.
+func (ih *imInterruptHandler) SetEmbedder(emb embedding.Embedder) {
+	ih.embedder = emb
+}
+
+// EmbedText computes the embedding vector for the given text.
+// Returns nil if no embedder is available or embedding fails.
+// Used by runAgentLoop to pre-compute taskEmbed for relevance scoring.
+func (ih *imInterruptHandler) EmbedText(text string) []float32 {
+	if ih.embedder == nil || embedding.IsNoop(ih.embedder) {
+		return nil
+	}
+	vec, err := ih.embedder.Embed(text)
+	if err != nil {
+		return nil
+	}
+	return vec
 }
 
 // SetTracker registers the active milestone tracker for a user.
@@ -51,14 +81,17 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 	// Compute scheduling signals.
 	structure := progress.AnalyzeStructure(messageText)
 
-	// Relevance: use embedding cosine if both vectors are available.
+	// Relevance: compute embedding cosine similarity between the new message
+	// and the current task description. When embedder is unavailable or task
+	// has no embedding, relevance stays at -1 and Schedule() degrades to
+	// domain match + structure only (two-signal mode).
 	var relevance float64 = -1
 	if tracker != nil {
 		taskEmbed := tracker.Buffer().TaskEmbed()
-		if taskEmbed != nil {
-			// TODO: compute message embedding via embedder when wired.
-			// For now, relevance stays at -1 (unavailable).
-			_ = taskEmbed
+		if taskEmbed != nil && ih.embedder != nil && !embedding.IsNoop(ih.embedder) {
+			if msgEmbed, err := ih.embedder.Embed(messageText); err == nil && len(msgEmbed) > 0 {
+				relevance = progress.CosineSimilarity(taskEmbed, msgEmbed)
+			}
 		}
 	}
 
@@ -124,17 +157,67 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		}
 
 	case progress.ActionMerge:
-		ih.handler.pendingInjection.Store(userID, messageText)
+		// Grade the injection by signal strength so LLM treats it with
+		// appropriate priority (directive > supplement > note).
+		injection := classifyMergeInjection(messageText, decision, progress.ScheduleInput{
+			Relevance:   relevance,
+			DomainMatch: domainMatch,
+			Structure:   structure,
+		})
+		ih.handler.pendingInjection.Store(userID, injection)
 		return progress.InterruptResult{
 			Handled: true,
 			Action:  progress.ActionMerge,
-			Reply:   "收到，已纳入当前任务。",
+			Reply:   "👌 收到，已纳入当前任务。",
+		}
+
+	case progress.ActionInsert:
+		// Don't consume the message — let it queue normally in the gateway.
+		// The gateway will process it after the current loop releases the lock.
+		// Queued=true tells the gateway to send Reply as instant feedback.
+		return progress.InterruptResult{
+			Handled: false,
+			Queued:  true,
+			Action:  progress.ActionInsert,
+			Reply:   "📋 收到，当前任务完成后立即处理。",
+		}
+
+	case progress.ActionEnqueue:
+		// Same as Insert — message queues normally, user gets instant feedback.
+		return progress.InterruptResult{
+			Handled: false,
+			Queued:  true,
+			Action:  progress.ActionEnqueue,
+			Reply:   "📋 收到，当前任务完成后处理。",
 		}
 
 	default:
-		// Insert, Enqueue — let the gateway queue normally.
 		return progress.InterruptResult{}
 	}
+}
+
+// classifyMergeInjection determines the injection prefix based on signal
+// strength. Three tiers ensure LLM treats the injected message with
+// appropriate priority:
+//
+//   - Directive: negation detected → user wants to CHANGE the current approach
+//   - Supplement: high confidence merge → user adds a clear requirement
+//   - Note: medium confidence → informational, LLM may consider
+//
+// This is not a keyword hack — the tiers are determined by computable signals
+// (negation structure + scheduler confidence), and the prefix wording exploits
+// LLM instruction-following characteristics (stronger wording = higher compliance).
+func classifyMergeInjection(text string, decision progress.ScheduleDecision, input progress.ScheduleInput) string {
+	if input.Structure.HasNegation {
+		// "不要 Python 改 C++"、"别用那个库"
+		return "[用户要求修改——必须立即执行] " + text
+	}
+	if decision.Confidence >= 0.80 {
+		// High-confidence merge = clear supplementary requirement.
+		return "[用户补充需求——请在当前任务中纳入] " + text
+	}
+	// Medium confidence = possibly relevant information.
+	return "[用户补充] " + text
 }
 
 // isCodingFamily returns true if the intent is in the coding domain family.

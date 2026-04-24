@@ -26,11 +26,11 @@ func TestRenderMarkdown_Headings(t *testing.T) {
 func TestRenderMarkdown_CodeBlock(t *testing.T) {
 	md := "text before\n```python\nprint('hello')\n```\ntext after"
 	lines := RenderMarkdown(md, 80)
-	// Should have: text, fence open, code line, fence close, text
-	if len(lines) < 5 {
-		t.Fatalf("expected >= 5 lines, got %d", len(lines))
+	// Should have: text, language label, code line, text = 4 lines
+	if len(lines) < 4 {
+		t.Fatalf("expected >= 4 lines, got %d", len(lines))
 	}
-	// Code fence lines should contain ```
+	// Language label should contain "python" (no raw ``` markers).
 	found := false
 	for _, l := range lines {
 		if strings.Contains(l, "python") {
@@ -49,6 +49,36 @@ func TestRenderMarkdown_CodeBlock(t *testing.T) {
 	}
 	if !foundCode {
 		t.Error("code content 'print' not found")
+	}
+	// Raw ``` markers should NOT appear in output.
+	for i, l := range lines {
+		if strings.Contains(l, "```") {
+			t.Errorf("line %d still contains raw ``` fence marker: %q", i, l)
+		}
+	}
+}
+
+func TestRenderMarkdown_CodeBlockNoLang(t *testing.T) {
+	md := "before\n```\nsome code\n```\nafter"
+	lines := RenderMarkdown(md, 80)
+	// No language → no label line. Should have: before, code line, after = 3 lines.
+	if len(lines) < 3 {
+		t.Fatalf("expected >= 3 lines, got %d", len(lines))
+	}
+	foundCode := false
+	for _, l := range lines {
+		if strings.Contains(l, "some code") {
+			foundCode = true
+		}
+	}
+	if !foundCode {
+		t.Error("code content 'some code' not found")
+	}
+	// Raw ``` markers should NOT appear in output.
+	for i, l := range lines {
+		if strings.Contains(l, "```") {
+			t.Errorf("line %d still contains raw ``` fence marker: %q", i, l)
+		}
 	}
 }
 
@@ -330,5 +360,102 @@ func TestDisplayWidthVisible(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("displayWidthVisible[%s](%q) = %d, want %d", tt.name, tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestRenderMarkdown_Link(t *testing.T) {
+	md := "see [Go docs](https://golang.org) for details"
+	lines := RenderMarkdown(md, 80)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "Go docs") {
+		t.Errorf("link text missing: %q", lines[0])
+	}
+	// Raw markdown link syntax should be stripped.
+	if strings.Contains(lines[0], "](") {
+		t.Errorf("raw link syntax still present: %q", lines[0])
+	}
+	if strings.Contains(lines[0], "https://golang.org") {
+		t.Errorf("URL should be hidden in terminal: %q", lines[0])
+	}
+}
+
+func TestRenderMarkdown_HeadingWithInlineFormatting(t *testing.T) {
+	md := "## **Bold Heading** with `code`"
+	lines := RenderMarkdown(md, 80)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if strings.Contains(lines[0], "**") {
+		t.Errorf("raw ** markers in heading: %q", lines[0])
+	}
+	if strings.Contains(lines[0], "`") {
+		t.Errorf("raw backtick in heading: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "Bold Heading") {
+		t.Errorf("heading text missing: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "code") {
+		t.Errorf("inline code text missing: %q", lines[0])
+	}
+}
+
+func TestRenderMarkdown_CodeBlockCJKPadding(t *testing.T) {
+	md := "```\n你好世界\n```"
+	lines := RenderMarkdown(md, 40)
+	// Should have 1 code line (no lang label, no fence markers).
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "你好世界") {
+		t.Errorf("CJK code content missing: %q", lines[0])
+	}
+}
+
+func TestRenderMarkdown_UnclosedCodeBlock(t *testing.T) {
+	md := "before\n```\ncode line 1\ncode line 2"
+	lines := RenderMarkdown(md, 80)
+	// Should render: before, code line 1, code line 2 (code block never closed).
+	if len(lines) < 3 {
+		t.Fatalf("expected >= 3 lines, got %d: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "before") {
+		t.Errorf("text before code block missing: %q", lines[0])
+	}
+	foundCode1 := false
+	foundCode2 := false
+	for _, l := range lines {
+		if strings.Contains(l, "code line 1") {
+			foundCode1 = true
+		}
+		if strings.Contains(l, "code line 2") {
+			foundCode2 = true
+		}
+	}
+	if !foundCode1 {
+		t.Error("code line 1 missing")
+	}
+	if !foundCode2 {
+		t.Error("code line 2 missing")
+	}
+}
+
+func TestRenderMarkdown_ItalicDoesNotCorruptBold(t *testing.T) {
+	md := "this is **bold** and *italic* text"
+	lines := RenderMarkdown(md, 80)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	// Both bold and italic content should be present.
+	if !strings.Contains(lines[0], "bold") {
+		t.Errorf("bold text missing: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "italic") {
+		t.Errorf("italic text missing: %q", lines[0])
+	}
+	// No raw markers should remain.
+	if strings.Contains(lines[0], "**") {
+		t.Errorf("raw ** markers still present: %q", lines[0])
 	}
 }

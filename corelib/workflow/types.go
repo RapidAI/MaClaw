@@ -78,6 +78,7 @@ var DocOnlyAllowedTools = map[string]bool{
 	"set_nickname": true,
 	"ssh":          true,
 	"screenshot":   true,
+	"async_wait":   true,
 }
 
 // InputRequirement describes a document/file that the user must provide

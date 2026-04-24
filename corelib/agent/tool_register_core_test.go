@@ -32,6 +32,7 @@ func TestCoreToolNames_AllRegistered(t *testing.T) {
 		"call_mcp_tool":    true, // requires MCPRegistry (Wails)
 		"set_nickname":     true, // requires GUI user model
 		"discover_tool":    true, // requires GUI ToolRegistry + deferred tools
+		"async_wait":       true, // requires IMMessageHandler + LoopContext cancel channel (GUI)
 	}
 
 	missing := reg.MissingTools(tool.CoreToolNames)

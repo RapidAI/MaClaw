@@ -542,6 +542,14 @@ export function SetUIZoomFactor(arg1) {
   return window['go']['main']['App']['SetUIZoomFactor'](arg1);
 }
 
+export function GetChatFontSize() {
+  return window['go']['main']['App']['GetChatFontSize']();
+}
+
+export function SetChatFontSize(arg1) {
+  return window['go']['main']['App']['SetChatFontSize'](arg1);
+}
+
 export function GetLLMTokenUsage(arg1) {
   return window['go']['main']['App']['GetLLMTokenUsage'](arg1);
 }
@@ -1296,6 +1304,23 @@ export function CheckASRModel() {
 
 export function DownloadASRModel() {
   return window['go']['main']['App']['DownloadASRModel']();
+}
+
+// Screen parsing (OminiParser-V2) bindings
+export function GetScreenParsingEnabled() {
+  return window['go']['main']['App']['GetScreenParsingEnabled']();
+}
+
+export function SetScreenParsingEnabled(arg1) {
+  return window['go']['main']['App']['SetScreenParsingEnabled'](arg1);
+}
+
+export function CheckYOLOModel() {
+  return window['go']['main']['App']['CheckYOLOModel']();
+}
+
+export function DownloadYOLOModel() {
+  return window['go']['main']['App']['DownloadYOLOModel']();
 }
 
 export function QuerySecurityEvents(arg1) {

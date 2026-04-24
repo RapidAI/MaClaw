@@ -57,6 +57,34 @@ type CreateInstanceInput struct {
 	Description string `json:"description"`
 }
 
+type UpdateInstanceInput struct {
+	InstanceID   string `json:"instance_id"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	MetadataJSON string `json:"metadata_json"`
+}
+
+type SessionActionInput struct {
+	InstanceID string `json:"instance_id"`
+	SessionID  string `json:"session_id"`
+}
+
+type MessageQueryInput struct {
+	InstanceID string `json:"instance_id"`
+	SessionID  string `json:"session_id"`
+	Role       string `json:"role"`
+	Since      string `json:"since"`
+	Until      string `json:"until"`
+}
+
+type RunQueryInput struct {
+	InstanceID     string `json:"instance_id"`
+	Status         string `json:"status"`
+	SessionID      string `json:"session_id"`
+	ResponseSource string `json:"response_source"`
+	WaitingForUser string `json:"waiting_for_user"`
+}
+
 type SendMessageInput struct {
 	InstanceID string `json:"instance_id"`
 	SessionID  string `json:"session_id"`
@@ -675,7 +703,47 @@ func (a *App) GetInstance(instanceID string) (*APITextResult, error) {
 	return doRequest(settings, http.MethodGet, "/api/v1/instances/"+instanceID, nil, requestOptions{NeedsAuth: true})
 }
 
-func (a *App) ListSessions(instanceID string) (*APITextResult, error) {
+func (a *App) GetInstanceSummary(instanceID string) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return nil, fmt.Errorf("instance_id is required")
+	}
+	return doRequest(settings, http.MethodGet, "/api/v1/instances/"+instanceID+"/summary", nil, requestOptions{NeedsAuth: true})
+}
+
+func (a *App) UpdateInstance(input UpdateInstanceInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	instanceID := strings.TrimSpace(input.InstanceID)
+	if instanceID == "" {
+		return nil, fmt.Errorf("instance_id is required")
+	}
+	payload := map[string]any{}
+	if name := strings.TrimSpace(input.Name); name != "" {
+		payload["name"] = name
+	}
+	payload["description"] = strings.TrimSpace(input.Description)
+	if strings.TrimSpace(input.MetadataJSON) != "" {
+		var metadata map[string]string
+		if err := json.Unmarshal([]byte(strings.TrimSpace(input.MetadataJSON)), &metadata); err != nil {
+			return nil, fmt.Errorf("invalid metadata_json: %w", err)
+		}
+		payload["metadata"] = metadata
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return doRequest(settings, http.MethodPatch, "/api/v1/instances/"+instanceID, body, requestOptions{NeedsAuth: true})
+}
+
+func (a *App) ListSessions(instanceID string, includeArchived bool) (*APITextResult, error) {
 	settings, err := a.LoadSettings()
 	if err != nil {
 		return nil, err
@@ -700,29 +768,86 @@ func (a *App) GetSession(instanceID, sessionID string) (*APITextResult, error) {
 	return doRequest(settings, http.MethodGet, "/api/v1/instances/"+instanceID+"/sessions/"+sessionID, nil, requestOptions{NeedsAuth: true})
 }
 
-func (a *App) ListMessages(instanceID, sessionID string) (*APITextResult, error) {
+func (a *App) ArchiveSession(input SessionActionInput) (*APITextResult, error) {
 	settings, err := a.LoadSettings()
 	if err != nil {
 		return nil, err
 	}
-	instanceID = strings.TrimSpace(instanceID)
-	sessionID = strings.TrimSpace(sessionID)
+	instanceID := strings.TrimSpace(input.InstanceID)
+	sessionID := strings.TrimSpace(input.SessionID)
 	if instanceID == "" || sessionID == "" {
 		return nil, fmt.Errorf("instance_id and session_id are required")
 	}
-	return doRequest(settings, http.MethodGet, "/api/v1/instances/"+instanceID+"/sessions/"+sessionID+"/messages", nil, requestOptions{NeedsAuth: true})
+	return doRequest(settings, http.MethodPost, "/api/v1/instances/"+instanceID+"/sessions/"+sessionID+"/archive", nil, requestOptions{NeedsAuth: true})
 }
 
-func (a *App) ListRuns(instanceID string) (*APITextResult, error) {
+func (a *App) RestoreSession(input SessionActionInput) (*APITextResult, error) {
 	settings, err := a.LoadSettings()
 	if err != nil {
 		return nil, err
 	}
-	instanceID = strings.TrimSpace(instanceID)
+	instanceID := strings.TrimSpace(input.InstanceID)
+	sessionID := strings.TrimSpace(input.SessionID)
+	if instanceID == "" || sessionID == "" {
+		return nil, fmt.Errorf("instance_id and session_id are required")
+	}
+	return doRequest(settings, http.MethodPost, "/api/v1/instances/"+instanceID+"/sessions/"+sessionID+"/restore", nil, requestOptions{NeedsAuth: true})
+}
+
+func (a *App) ListMessages(input MessageQueryInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	instanceID := strings.TrimSpace(input.InstanceID)
+	sessionID := strings.TrimSpace(input.SessionID)
+	if instanceID == "" || sessionID == "" {
+		return nil, fmt.Errorf("instance_id and session_id are required")
+	}
+	q := url.Values{}
+	if v := strings.TrimSpace(input.Role); v != "" {
+		q.Set("role", v)
+	}
+	if v := strings.TrimSpace(input.Since); v != "" {
+		q.Set("since", v)
+	}
+	if v := strings.TrimSpace(input.Until); v != "" {
+		q.Set("until", v)
+	}
+	path := "/api/v1/instances/" + instanceID + "/sessions/" + sessionID + "/messages"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAuth: true})
+}
+
+func (a *App) ListRuns(input RunQueryInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	instanceID := strings.TrimSpace(input.InstanceID)
 	if instanceID == "" {
 		return nil, fmt.Errorf("instance_id is required")
 	}
-	return doRequest(settings, http.MethodGet, "/api/v1/instances/"+instanceID+"/runs", nil, requestOptions{NeedsAuth: true})
+	q := url.Values{}
+	if v := strings.TrimSpace(input.Status); v != "" {
+		q.Set("status", v)
+	}
+	if v := strings.TrimSpace(input.SessionID); v != "" {
+		q.Set("session_id", v)
+	}
+	if v := strings.TrimSpace(input.ResponseSource); v != "" {
+		q.Set("response_source", v)
+	}
+	if v := strings.TrimSpace(input.WaitingForUser); v != "" {
+		q.Set("waiting_for_user", v)
+	}
+	path := "/api/v1/instances/" + instanceID + "/runs"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAuth: true})
 }
 
 func (a *App) GetRun(instanceID, runID string) (*APITextResult, error) {
@@ -751,7 +876,7 @@ func (a *App) RefreshConversation(input ConversationQueryInput) (*ConversationRe
 		if err != nil {
 			return nil, err
 		}
-		messages, err := a.ListMessages(instanceID, sessionID)
+		messages, err := a.ListMessages(MessageQueryInput{InstanceID: instanceID, SessionID: sessionID})
 		if err != nil {
 			return nil, err
 		}

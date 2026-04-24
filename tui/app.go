@@ -16,10 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -30,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/tui/commands"
@@ -191,20 +189,16 @@ func runTUI() {
 	// Populate initial tool data from config.
 	tuiModel.refreshToolData()
 
-	// Share config with root model for coding tool wizard.
-	tuiModel.root.SetAppConfig(appCfg)
-
 	// Populate config view from AppConfig.
 	tuiModel.root.Config.LoadFromAppConfig(appCfg)
 
 	// Populate memory view.
 	tuiModel.refreshMemoryData()
 
-	// Populate session view (SSH sessions).
-	tuiModel.refreshSessionData()
-
-	// Mark schedule/audit as loaded (no data source in standalone TUI yet).
-	tuiModel.root.Schedule.SetTasks(nil)
+	// Mark task sub-tabs and audit as loaded (no data source in standalone TUI yet).
+	tuiModel.root.Tasks.SetTasks(nil)
+	tuiModel.root.Tasks.SetRemoteTasks(nil)
+	tuiModel.root.Tasks.SetBackgroundTasks(nil)
 	tuiModel.root.Audit.SetEntries(nil)
 
 	p := tea.NewProgram(tuiModel, tea.WithAltScreen())
@@ -267,12 +261,11 @@ type TUIApp struct {
 
 // tuiModel is the Bubble Tea top-level model.
 type tuiModel struct {
-	app         *TUIApp
-	program     *tea.Program
-	root        views.RootModel
-	ready       bool
-	activeCb    *tuiCallbacks // non-nil while agent loop is running
-	pendingText string        // text waiting for render before starting agent loop
+	app      *TUIApp
+	program  *tea.Program
+	root     views.RootModel
+	ready    bool
+	activeCb *tuiCallbacks // non-nil while agent loop is running
 }
 
 func (m *tuiModel) Init() tea.Cmd {
@@ -283,7 +276,6 @@ func (m *tuiModel) Init() tea.Cmd {
 }
 
 type tuiReadyMsg struct{}
-type tuiStartLoopMsg struct{}
 
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -309,21 +301,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.handleSlashCommand(msg.Text)
 			return m, nil
 		}
-		// Use tea.Tick(0) to force a render of the user message before
-		// starting the blocking agent loop. Without this, Bubble Tea may
-		// batch the ChatSendMsg handling with the Enter key handling and
-		// skip the intermediate View call, so the user message only appears
-		// when the AI response arrives.
-		m.pendingText = msg.Text
-		return m, tea.Tick(0, func(time.Time) tea.Msg { return tuiStartLoopMsg{} })
-
-	case tuiStartLoopMsg:
-		if m.pendingText != "" {
-			text := m.pendingText
-			m.pendingText = ""
-			return m, m.handleChatSend(text)
-		}
-		return m, nil
+		// Start the agent loop directly. The user message was already added
+		// to ChatModel.messages and rendered in the previous Update→View cycle
+		// (ChatModel.Update handles the Enter key, adds the message, and
+		// returns ChatSendMsg as a Cmd — Bubble Tea renders View() between
+		// that Update and this one). No artificial delay needed.
+		return m, m.handleChatSend(msg.Text)
 
 	case views.ChatResponseMsg:
 		if m.activeCb == nil && msg.Error == "cancelled" {
@@ -340,7 +323,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.searchSkills(msg.Query)
 
 	case views.ToolSkillInstallMsg:
-		return m, m.installSkill(msg.SkillID, msg.HubURL)
+		return m, m.installSkill(msg.SkillID, msg.HubURL, msg.Source, msg.InstallRef)
 
 	case views.ToolMCPAddMsg:
 		return m, m.addLocalMCP(msg.Entry)
@@ -362,7 +345,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.ToolRefreshMsg:
 		m.refreshToolData()
 		m.refreshMemoryData()
-		m.refreshSessionData()
 		return m, nil
 
 	case views.MemoryDeleteMsg:
@@ -377,7 +359,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		store := commands.NewFileConfigStore(dataDir)
 		if cfg, err := store.LoadConfig(); err == nil {
 			m.app.appConfig = cfg
-			m.root.SetAppConfig(cfg)
 			if strings.HasPrefix(msg.Key, "maclaw_llm_") {
 				m.app.llmConfig = buildLLMConfigFromAppConfig(cfg)
 				label := m.app.llmConfig.Model
@@ -388,12 +369,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.root.StatusBar.SetMessage(fmt.Sprintf("✅ 已保存: %s", msg.Key))
-
-	case views.CodingConfigSaveMsg:
-		return m, m.saveCodingToolConfig(msg)
-
-	case views.CodingLaunchMsg:
-		return m, m.launchCodingTool(msg.ToolName, msg.Provider, msg.ProjectPath)
 	}
 
 	var cmd tea.Cmd
@@ -502,65 +477,114 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 func (m *tuiModel) searchSkills(query string) tea.Cmd {
 	return func() tea.Msg {
 		hubURL := m.app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
-		endpoint := fmt.Sprintf("%s/api/v1/skills/search?q=%s&page=1",
-			hubURL, url.QueryEscape(query))
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return views.ToolSkillSearchResultMsg{Error: err.Error()}
-		}
-		req.Header.Set("User-Agent", "MaClaw-TUI/1.0")
+		client := skill.NewHubClient()
+		hubResults := client.SearchAll(ctx, hubURL, query)
 
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return views.ToolSkillSearchResultMsg{Error: fmt.Sprintf("搜索失败: %v", err)}
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return views.ToolSkillSearchResultMsg{Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+		if len(hubResults) == 0 {
+			return views.ToolSkillSearchResultMsg{Error: "未找到匹配的 Skill"}
 		}
 
-		var raw struct {
-			Skills []struct {
-				ID         string  `json:"id"`
-				Name       string  `json:"name"`
-				Version    string  `json:"version"`
-				AvgRating  float64 `json:"avg_rating"`
-				Downloads  int     `json:"downloads"`
-				TrustLevel string  `json:"trust_level"`
-			} `json:"skills"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-			return views.ToolSkillSearchResultMsg{Error: fmt.Sprintf("解析失败: %v", err)}
-		}
-
-		var results []views.SkillSearchResult
-		for _, s := range raw.Skills {
+		results := make([]views.SkillSearchResult, 0, len(hubResults))
+		for _, r := range hubResults {
 			results = append(results, views.SkillSearchResult{
-				ID:        s.ID,
-				Name:      s.Name,
-				Version:   s.Version,
-				Rating:    s.AvgRating,
-				Downloads: s.Downloads,
-				Trust:     s.TrustLevel,
+				ID:         r.ID,
+				Name:       r.Name,
+				Version:    r.Version,
+				Rating:     r.AvgRating,
+				Downloads:  r.Downloads,
+				Trust:      r.TrustLevel,
+				Source:     r.Source,
+				InstallRef: r.InstallRef,
 			})
 		}
 		return views.ToolSkillSearchResultMsg{Results: results}
 	}
 }
 
-func (m *tuiModel) installSkill(skillID, hubURL string) tea.Cmd {
+func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRef string) tea.Cmd {
 	return func() tea.Msg {
-		// TUI cannot directly install skills (requires skill scanner + file system ops).
-		// Return guidance to use the chat assistant which has the manage_skill tool.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		client := skill.NewHubClient()
+
+		var entry *corelib.NLSkillEntry
+		var err error
+
+		switch source {
+		case "clawhub":
+			// Check if already installed.
+			for _, s := range m.app.appConfig.NLSkills {
+				if s.Source == "clawhub" && strings.EqualFold(s.Name, skillID) {
+					return views.ToolOperationResultMsg{
+						Tab: views.ToolSubSkill, Success: true,
+						Message: fmt.Sprintf("Skill '%s' 已安装", s.Name),
+					}
+				}
+			}
+			entry, err = client.DownloadClawHub(ctx, skillID)
+		case "github":
+			if installRef == "" {
+				return views.ToolOperationResultMsg{
+					Tab: views.ToolSubSkill, Success: false,
+					Message: "GitHub Skill 缺少安装引用信息",
+				}
+			}
+			entry, err = client.DownloadGitHub(ctx, installRef)
+		default:
+			if hubURL == "" {
+				hubURL = m.app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
+			}
+			// Check if already installed.
+			for _, s := range m.app.appConfig.NLSkills {
+				if s.HubSkillID == skillID {
+					return views.ToolOperationResultMsg{
+						Tab: views.ToolSubSkill, Success: true,
+						Message: fmt.Sprintf("Skill '%s' 已安装", s.Name),
+					}
+				}
+			}
+			entry, err = client.DownloadSkillHub(ctx, hubURL, skillID)
+		}
+
+		if err != nil {
+			return views.ToolOperationResultMsg{
+				Tab: views.ToolSubSkill, Success: false,
+				Message: err.Error(),
+			}
+		}
+
+		store := commands.NewFileConfigStore(commands.ResolveDataDir())
+		cfg, err := store.LoadConfig()
+		if err != nil {
+			return views.ToolOperationResultMsg{
+				Tab: views.ToolSubSkill, Success: false,
+				Message: fmt.Sprintf("加载配置失败: %v", err),
+			}
+		}
+		cfg.NLSkills = append(cfg.NLSkills, *entry)
+		if err := store.SaveConfig(cfg); err != nil {
+			return views.ToolOperationResultMsg{
+				Tab: views.ToolSubSkill, Success: false,
+				Message: fmt.Sprintf("保存失败: %v", err),
+			}
+		}
+		m.app.appConfig = cfg
+
+		sourceLabel := "SkillHub"
+		switch source {
+		case "clawhub":
+			sourceLabel = "ClawHub"
+		case "github":
+			sourceLabel = "GitHub"
+		}
 		return views.ToolOperationResultMsg{
-			Tab:     views.ToolSubSkill,
-			Success: false,
-			Message: "请在助手聊天中输入「安装 " + skillID + "」来安装此 Skill",
+			Tab: views.ToolSubSkill, Success: true,
+			Message: fmt.Sprintf("已安装: %s (来源: %s)", entry.Name, sourceLabel),
 		}
 	}
 }
@@ -601,145 +625,6 @@ func (m *tuiModel) addRemoteMCP(entry corelib.MCPServerEntry) tea.Cmd {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: "保存配置失败: " + err.Error()}
 		}
 		return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: true, Message: "已添加: " + entry.Name}
-	}
-}
-
-func (m *tuiModel) saveCodingToolConfig(msg views.CodingConfigSaveMsg) tea.Cmd {
-	return func() tea.Msg {
-		dataDir := commands.ResolveDataDir()
-		store := commands.NewFileConfigStore(dataDir)
-		cfg, err := store.LoadConfig()
-		if err != nil {
-			return nil
-		}
-		tc := agent.GetToolConfig(cfg, msg.ToolName)
-		if len(tc.Models) == 0 {
-			tc.Models = agent.DefaultProvidersForTool(msg.ToolName)
-		}
-		for i := range tc.Models {
-			if tc.Models[i].ModelName == msg.Provider {
-				if msg.ApiKey != "" {
-					tc.Models[i].ApiKey = msg.ApiKey
-				}
-				break
-			}
-		}
-		tc.CurrentModel = msg.Provider
-		agent.SetToolConfig(&cfg, msg.ToolName, tc)
-		store.SaveConfig(cfg)
-
-		// Update in-memory config so launch reads the latest.
-		m.app.appConfig = cfg
-
-		if msg.Launch {
-			return views.CodingLaunchMsg{
-				ToolName:    msg.ToolName,
-				Provider:    msg.Provider,
-				ProjectPath: msg.ProjectPath,
-			}
-		}
-		return views.ConfigSavedMsg{Key: msg.ToolName + "." + msg.Provider}
-	}
-}
-
-func (m *tuiModel) launchCodingTool(toolName, provider, projectPath string) tea.Cmd {
-	return func() tea.Msg {
-		// Find the tool info.
-		var toolInfo *agent.CodingToolInfo
-		for _, t := range agent.SupportedCodingTools() {
-			if t.Name == toolName {
-				ti := t
-				toolInfo = &ti
-				break
-			}
-		}
-		if toolInfo == nil {
-			return views.ChatResponseMsg{Error: "未知工具: " + toolName}
-		}
-
-		// Get the provider config.
-		tc := agent.GetToolConfig(m.app.appConfig, toolName)
-		var model *corelib.ModelConfig
-		for i := range tc.Models {
-			if tc.Models[i].ModelName == provider {
-				model = &tc.Models[i]
-				break
-			}
-		}
-		if model == nil {
-			return views.ChatResponseMsg{Error: "未找到服务商: " + provider}
-		}
-		if model.ApiKey == "" && !model.IsBuiltin {
-			return views.ChatResponseMsg{Error: "服务商 " + provider + " 未配置 API Key"}
-		}
-
-		// Build environment variables.
-		env := make(map[string]string)
-		if model.ApiKey != "" {
-			env[toolInfo.EnvKey] = model.ApiKey
-		}
-		if model.ModelUrl != "" {
-			env[toolInfo.EnvBaseURL] = model.ModelUrl
-		}
-		if model.ModelId != "" {
-			// Claude uses ANTHROPIC_MODEL, Codex uses OPENAI_MODEL, etc.
-			switch toolName {
-			case "claude":
-				env["ANTHROPIC_MODEL"] = model.ModelId
-			case "codex":
-				env["OPENAI_MODEL"] = model.ModelId
-			}
-		}
-
-		// Resolve project path.
-		if projectPath == "" {
-			if wd, err := os.Getwd(); err == nil {
-				projectPath = wd
-			}
-		}
-
-		// Launch the binary.
-		binary := toolInfo.Binary
-		args := []string{}
-		if projectPath != "" {
-			args = append(args, "--project", projectPath)
-		}
-
-		// Use exec to replace the TUI process with the coding tool.
-		// This gives the coding tool full terminal control.
-		execPath, err := exec.LookPath(binary)
-		if err != nil {
-			return views.ChatResponseMsg{Error: fmt.Sprintf("未找到 %s 命令。请先安装: npm install -g @anthropic-ai/claude-code", binary)}
-		}
-
-		// Build full environment.
-		fullEnv := os.Environ()
-		for k, v := range env {
-			fullEnv = append(fullEnv, k+"="+v)
-		}
-
-		// We can't exec.Replace in TUI mode (would kill Bubble Tea).
-		// Instead, run the tool in a subprocess and wait.
-		cmd := exec.Command(execPath, args...)
-		cmd.Dir = projectPath
-		cmd.Env = fullEnv
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		// Temporarily exit alt-screen so the coding tool gets the real terminal.
-		if m.program != nil {
-			m.program.ReleaseTerminal()
-		}
-		err = cmd.Run()
-		if m.program != nil {
-			m.program.RestoreTerminal()
-		}
-
-		if err != nil {
-			return views.ChatResponseMsg{Text: fmt.Sprintf("🔧 %s 已退出: %v", binary, err)}
-		}
-		return views.ChatResponseMsg{Text: fmt.Sprintf("🔧 %s 已退出", binary)}
 	}
 }
 
@@ -803,25 +688,6 @@ func (m *tuiModel) refreshMemoryData() {
 	m.root.Memory.SetEntries(items)
 }
 
-func (m *tuiModel) refreshSessionData() {
-	if m.app.sshMgr == nil {
-		m.root.Sessions.SetSessions(nil)
-		return
-	}
-	sshSessions := m.app.sshMgr.List()
-	var items []views.SessionItem
-	for _, s := range sshSessions {
-		summary := s.GetSummary()
-		items = append(items, views.SessionItem{
-			ID:     summary.SessionID,
-			Tool:   "ssh",
-			Title:  summary.HostID,
-			Status: summary.Status,
-		})
-	}
-	m.root.Sessions.SetSessions(items)
-}
-
 func (m *tuiModel) deleteMemory(id string) tea.Cmd {
 	return func() tea.Msg {
 		if m.app.memoryStore != nil {
@@ -848,37 +714,9 @@ func (m *tuiModel) saveConfig(section, key, value string) tea.Cmd {
 }
 
 // applyConfigValue sets a single config field by key name.
+// Delegates to the single source of truth in config_fields.go.
 func applyConfigValue(cfg *corelib.AppConfig, key, value string) {
-	switch key {
-	case "hub_url":
-		cfg.RemoteHubURL = value
-	case "token":
-		cfg.RemoteMachineToken = value
-	case "max_iterations":
-		fmt.Sscanf(value, "%d", &cfg.MaclawAgentMaxIterations)
-	case "agentnet_enabled":
-		cfg.AgentNetEnabled = value == "true"
-	case "maclaw_llm_url":
-		cfg.MaclawLLMUrl = value
-	case "maclaw_llm_key":
-		cfg.MaclawLLMKey = value
-	case "maclaw_llm_model":
-		cfg.MaclawLLMModel = value
-	case "maclaw_llm_protocol":
-		cfg.MaclawLLMProtocol = value
-	case "maclaw_llm_context_length":
-		fmt.Sscanf(value, "%d", &cfg.MaclawLLMContextLength)
-	case "qqbot_enabled":
-		cfg.QQBotEnabled = value == "true"
-	case "qqbot_app_id":
-		cfg.QQBotAppID = value
-	case "qqbot_app_secret":
-		cfg.QQBotAppSecret = value
-	case "telegram_bot_enabled":
-		cfg.TelegramBotEnabled = value == "true"
-	case "telegram_bot_token":
-		cfg.TelegramBotToken = value
-	}
+	views.ApplyConfigValue(cfg, key, value)
 }
 
 // tuiCallbacks implements agent.LoopCallbacks for the TUI.
@@ -930,10 +768,11 @@ func (c *tuiCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) stri
 
 	deps := agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
-			RoleName:        roleName,
-			RoleDescription: roleDesc,
-			IsProMode:       true,
-			Nickname:        cfg.RemoteNickname,
+			RoleName:          roleName,
+			RoleDescription:   roleDesc,
+			IsProMode:         true,
+			Nickname:          cfg.RemoteNickname,
+			HasCodingSessions: false, // TUI has no external coding session tools
 		},
 		MemoryStore: c.app.memoryStore,
 	}

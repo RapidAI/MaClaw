@@ -78,12 +78,8 @@ func (m HelpModel) View() string {
 			{"G", i18n.T(i18n.MsgTUIHelpDescJumpBottom, m.lang)},
 			{"r", i18n.T(i18n.MsgTUIHelpDescRefresh, m.lang)},
 		}},
-		{i18n.T(i18n.MsgTUIHelpSectionSessions, m.lang), []struct{ key, desc string }{
-			{"Enter", i18n.T(i18n.MsgTUIHelpDescViewDetails, m.lang)},
-			{"n / c", i18n.T(i18n.MsgTUIHelpDescNewSession, m.lang)},
-			{"d / x", i18n.T(i18n.MsgTUIHelpDescTerminateSession, m.lang)},
-		}},
 		{i18n.T(i18n.MsgTUIHelpSectionScheduledTasks, m.lang), []struct{ key, desc string }{
+			{"1 / 2 / 3", i18n.T(i18n.MsgTUIHelpDescSwitchSubTab, m.lang)},
 			{"p", i18n.T(i18n.MsgTUIHelpDescPauseResume, m.lang)},
 			{"d", i18n.T(i18n.MsgTUIHelpDescDelete, m.lang)},
 		}},
@@ -93,11 +89,6 @@ func (m HelpModel) View() string {
 		{i18n.T(i18n.MsgTUIHelpSectionConfig, m.lang), []struct{ key, desc string }{
 			{"Enter", i18n.T(i18n.MsgTUIHelpDescEdit, m.lang)},
 			{"Esc", i18n.T(i18n.MsgTUIHelpDescCancelEdit, m.lang)},
-		}},
-		{i18n.T(i18n.MsgTUIHelpSectionSessionDetail, m.lang), []struct{ key, desc string }{
-			{"Up/Down", i18n.T(i18n.MsgTUIHelpDescScroll, m.lang)},
-			{"g/G", i18n.T(i18n.MsgTUIHelpDescTopBottom, m.lang)},
-			{"Esc", i18n.T(i18n.MsgTUIHelpDescBackToList, m.lang)},
 		}},
 		{i18n.T(i18n.MsgTUIHelpSectionAIAssistant, m.lang), []struct{ key, desc string }{
 			{"i", i18n.T(i18n.MsgTUIHelpDescStartInput, m.lang)},

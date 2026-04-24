@@ -446,7 +446,7 @@ let llmServiceSelectedCardIDs = [];
 let llmServiceSelectedCardMap = {};
 let llmServiceCardSearch = '';
 let llmServiceCardPage = 1;
-const llmServiceCardPageSize = 10;
+const llmServiceCardPageSize = 32;
 let llmServiceCardsPageData = { items: [], total: 0, page: 1, page_size: llmServiceCardPageSize };
 const llmServiceCapabilityOptions = ['document', 'reasoning', 'tools'];
 const llmServicePriorityOptions = [0, 10, 30, 50, 80, 100];
@@ -560,6 +560,24 @@ function llmServiceCollectReferencedSecurityGroups(cache) {
   (cache && cache.group_bindings || []).forEach(function(binding) { refs.push(binding.group_id); });
   return refs;
 }
+function llmServiceCardGridColumns() {
+  if (window.innerWidth <= 720) return 1;
+  if (window.innerWidth <= 1200) return 2;
+  return 4;
+}
+function bindLLMServiceCardGridResize() {
+  if (bindLLMServiceCardGridResize.done) return;
+  var timer = null;
+  window.addEventListener('resize', function() {
+    if (!document.getElementById('llmServiceCardsList')) return;
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(function() {
+      if (llmServiceAdminCache) renderLLMServiceAdmin();
+    }, 120);
+  });
+  bindLLMServiceCardGridResize.done = true;
+}
+bindLLMServiceCardGridResize.done = false;
 function llmServiceSecurityGroupMap() {
   var map = {};
   (llmServiceSecurityGroupOptions || []).forEach(function(group) {
@@ -1396,27 +1414,34 @@ function renderLLMServiceAdmin() {
   var pageItems = filteredCards;
   const cardsRoot = document.getElementById('llmServiceCardsList');
   const selectedCardSet = llmServiceSelectedCardSet();
-  if (cardsRoot) cardsRoot.innerHTML = ui.renderList(pageItems, function(c) {
-    const cardHealth = llmServiceAnalyzeCard(c, llmServiceAdminCache);
-    const healthTone = cardHealth.health === 'ready' ? 'ok' : (cardHealth.health === 'partial' ? 'info' : 'warn');
-    const healthLabel = cardHealth.health === 'ready' ? lsx('cardHealthReady') : (cardHealth.health === 'partial' ? lsx('cardHealthPartial') : lsx('cardHealthBroken'));
-    const redemptionMeta = (c.redeemed_by_email || '') + (c.redeemed_at ? (' | ' + String(c.redeemed_at)) : '');
-    const groupLinks = '<div class="item-meta" style="margin-top:6px">' + escapeHtml(lsx('serviceGroups')) + ': ' + llmServiceGroupLinks(c.service_group_ids || []) + '</div>';
-    const summary = [
-      ui.meta(lsx('cardHealthGroups') + ': ' + String((cardHealth.groups || []).length) + ' / ' + String((c.service_group_ids || []).length), 'mono'),
-      ui.meta(lsx('cardHealthRoutes') + ': ' + String(cardHealth.liveRouteCount), 'mono', 'margin-top:6px'),
-      ui.meta(lsx('cardHealthActiveGrants') + ': ' + String((cardHealth.activeGrants || []).length), 'mono', 'margin-top:6px')
-    ];
-    const issueLines = (cardHealth.issues || []).map(function(issue) { return '<div class="item-meta" style="margin-top:6px;color:#c05621">' + escapeHtml(issue) + '</div>'; }).join('');
-    return ui.simpleCard({
-      title: c.label || c.id || lsx('card'),
-      titleMeta: (c.service_group_ids || []).join(', ') + ' | ' + lsx('daysCount', { count: String(c.duration_days || 0) }) + ' | ' + lsx('creditsCount', { count: String(c.credits || 0) }),
-      titleMetaClass: 'mono',
-      style: 'margin-top:10px',
-      headRight: '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><label class="item-meta" style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" ' + (selectedCardSet.has(String(c && c.id || '').trim()) ? 'checked' : '') + ' onchange="event.stopPropagation();llmServiceToggleCardSelection(' + JSON.stringify(c.id || '') + ', this.checked)">#</label>' + ui.badge(healthLabel, healthTone) + ui.badge(c.redeemed_at ? lsx('redeemed') : lsx('unused'), c.redeemed_at ? 'warn' : 'ok') + (c.redeemed_at ? '' : ui.actionButton(lsx('deleteCard'), 'btn-danger', 'llmServiceDeleteCard(' + JSON.stringify(c.id || '') + ')')) + '</div>',
-      body: groupLinks + summary.join('') + (redemptionMeta ? ui.meta(redemptionMeta, '', 'margin-top:6px') : '') + issueLines
-    });
-  }, lsx('noRedeemCards'));
+  if (cardsRoot) {
+    var cardsMarkup = pageItems.map(function(c) {
+      const cardHealth = llmServiceAnalyzeCard(c, llmServiceAdminCache);
+      const healthTone = cardHealth.health === 'ready' ? 'ok' : (cardHealth.health === 'partial' ? 'info' : 'warn');
+      const healthLabel = cardHealth.health === 'ready' ? lsx('cardHealthReady') : (cardHealth.health === 'partial' ? lsx('cardHealthPartial') : lsx('cardHealthBroken'));
+      const redemptionMeta = (c.redeemed_by_email || '') + (c.redeemed_at ? (' | ' + String(c.redeemed_at)) : '');
+      const groupLinks = '<div class="item-meta" style="margin-top:6px">' + escapeHtml(lsx('serviceGroups')) + ': ' + llmServiceGroupLinks(c.service_group_ids || []) + '</div>';
+      const summary = [
+        ui.meta(lsx('cardHealthGroups') + ': ' + String((cardHealth.groups || []).length) + ' / ' + String((c.service_group_ids || []).length), 'mono'),
+        ui.meta(lsx('cardHealthRoutes') + ': ' + String(cardHealth.liveRouteCount), 'mono', 'margin-top:6px'),
+        ui.meta(lsx('cardHealthActiveGrants') + ': ' + String((cardHealth.activeGrants || []).length), 'mono', 'margin-top:6px')
+      ];
+      const issueLines = (cardHealth.issues || []).map(function(issue) { return '<div class="item-meta" style="margin-top:6px;color:#c05621">' + escapeHtml(issue) + '</div>'; }).join('');
+      return ui.simpleCard({
+        title: c.label || c.id || lsx('card'),
+        titleMeta: (c.service_group_ids || []).join(', ') + ' | ' + lsx('daysCount', { count: String(c.duration_days || 0) }) + ' | ' + lsx('creditsCount', { count: String(c.credits || 0) }),
+        titleMetaClass: 'mono',
+        style: 'margin-top:0;height:100%',
+        headRight: '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><label class="item-meta" style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" ' + (selectedCardSet.has(String(c && c.id || '').trim()) ? 'checked' : '') + ' onchange="event.stopPropagation();llmServiceToggleCardSelection(' + JSON.stringify(c.id || '') + ', this.checked)">#</label>' + ui.badge(healthLabel, healthTone) + ui.badge(c.redeemed_at ? lsx('redeemed') : lsx('unused'), c.redeemed_at ? 'warn' : 'ok') + (c.redeemed_at ? '' : ui.actionButton(lsx('deleteCard'), 'btn-danger', 'llmServiceDeleteCard(' + JSON.stringify(c.id || '') + ')')) + '</div>',
+        body: groupLinks + summary.join('') + (redemptionMeta ? ui.meta(redemptionMeta, '', 'margin-top:6px') : '') + issueLines
+      });
+    }).join('');
+    if (cardsMarkup) {
+      cardsRoot.innerHTML = '<div style="display:grid;grid-template-columns:repeat(' + llmServiceCardGridColumns() + ', minmax(0, 1fr));gap:16px;align-items:stretch">' + cardsMarkup + '</div>';
+    } else {
+      cardsRoot.innerHTML = ui.hint(lsx('noRedeemCards'));
+    }
+  }
   var cardsPager = document.getElementById('llmServiceCardsPager');
   var cardsPagerMeta = document.getElementById('llmServiceCardsPagerMeta');
   var cardsPrevBtn = document.getElementById('llmServiceCardsPrevBtn');
@@ -1702,11 +1727,15 @@ function ensureLLMServiceCardsTab() {
   if (!tab || document.getElementById('llmServiceCardsStandalone')) return;
   const host = document.createElement('div');
   host.id = 'llmServiceCardsStandalone';
-  host.className = 'grid2';
+  host.className = '';
   host.style.marginTop = '16px';
+  host.style.display = 'grid';
+  host.style.gridTemplateColumns = 'minmax(0, 1fr)';
+  host.style.gap = '16px';
   host.innerHTML = llmServiceCardsPanelMarkup();
   tab.appendChild(host);
   applyLLMServiceI18n();
+  bindLLMServiceCardGridResize();
 }
 function applyLLMServiceTabI18n() {
   if (typeof tabMeta === 'object') {

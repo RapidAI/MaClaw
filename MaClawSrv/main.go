@@ -22,13 +22,7 @@ func main() {
 		log.Fatalf("invalid security configuration: %v", err)
 	}
 
-	executor := &agentservice.CoreAgentExecutor{
-		AllowLocalBash:       getenvBool("MACLAW_ENABLE_LOCAL_BASH", false),
-		LocalBashTenantID:    strings.TrimSpace(os.Getenv("MACLAW_LOCAL_BASH_TENANT_ID")),
-		LocalBashUserID:      strings.TrimSpace(os.Getenv("MACLAW_LOCAL_BASH_USER_ID")),
-		AllowDirectSSH:       getenvBool("MACLAW_ENABLE_DIRECT_SSH", false),
-		AllowSSHFileTransfer: getenvBool("MACLAW_ENABLE_SSH_FILE_TRANSFER", false),
-	}
+	executor := buildCoreAgentExecutorFromEnv()
 	if err := validateLocalBashScope(executor); err != nil {
 		log.Fatalf("invalid local bash configuration: %v", err)
 	}
@@ -106,6 +100,17 @@ func defaultDataRoot() string {
 		return ".maclaw_srv"
 	}
 	return filepath.Join(home, ".maclaw_srv")
+}
+
+func buildCoreAgentExecutorFromEnv() *agentservice.CoreAgentExecutor {
+	return &agentservice.CoreAgentExecutor{
+		AllowLocalBash:             getenvBool("MACLAW_ENABLE_LOCAL_BASH", false),
+		LocalBashTrustedSingleUser: getenvBool("MACLAW_LOCAL_BASH_TRUSTED_SINGLE_USER", false),
+		LocalBashTenantID:          strings.TrimSpace(os.Getenv("MACLAW_LOCAL_BASH_TENANT_ID")),
+		LocalBashUserID:            strings.TrimSpace(os.Getenv("MACLAW_LOCAL_BASH_USER_ID")),
+		AllowDirectSSH:             getenvBool("MACLAW_ENABLE_DIRECT_SSH", false),
+		AllowSSHFileTransfer:       getenvBool("MACLAW_ENABLE_SSH_FILE_TRANSFER", false),
+	}
 }
 
 func getenvBool(key string, fallback bool) bool {

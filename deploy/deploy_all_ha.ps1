@@ -47,7 +47,12 @@ function Escape-Psd1String {
 
 function New-ClusterSecret {
     $bytes = New-Object byte[] 48
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+    try {
+        $rng.GetBytes($bytes)
+    } finally {
+        $rng.Dispose()
+    }
     return [Convert]::ToBase64String($bytes).TrimEnd('=')
 }
 
@@ -131,9 +136,12 @@ function Stage-SourceTree {
 
     $buildSrc = Join-Path $SourceRoot 'build'
     $buildDst = Join-Path $StageRoot 'build'
+    $activeBuildRoot = Split-Path -Parent $StageRoot
     if (Test-Path $buildSrc) {
         New-Item -ItemType Directory -Path $buildDst -Force | Out-Null
-        Get-ChildItem -LiteralPath $buildSrc | Where-Object { $_.Name -ne 'deploy' } | ForEach-Object {
+        Get-ChildItem -LiteralPath $buildSrc | Where-Object {
+            $_.Name -ne 'deploy' -and $_.FullName -ne $activeBuildRoot
+        } | ForEach-Object {
             Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $buildDst $_.Name) -Recurse -Force
         }
     }
@@ -152,7 +160,15 @@ function Stage-SourceTree {
         'openclaw-bridge\node_modules',
         'openclaw-bridge\dist',
         'RapidSpeech.cpp\build',
-        'RapidSpeech.cpp\models'
+        'RapidSpeech.cpp\models',
+        'RapidSpeech.cpp\.git',
+        'RapidSpeech.cpp\ggml\.git',
+        'RapidSpeech.cpp\test',
+        'RapidSpeech.cpp\server',
+        'RapidSpeech.cpp\examples',
+        'RapidSpeech.cpp\assets',
+        'RapidSpeech.cpp\RapidSpeech.cpp.rar',
+        'corelib\yolo\weights'
     )
 
     foreach ($rel in $removePaths) {
@@ -481,19 +497,19 @@ function Write-RemoteScript {
 
 function Get-ConnectionArgs {
     param(
-        [string]$User,
-        [string]$Host,
+        [string]$UserName,
+        [string]$HostName,
         [int]$Port,
         [string]$Password,
         [string]$HostKey
     )
 
-    $args = @('-batch')
+    $connArgs = @('-batch')
     if (-not [string]::IsNullOrWhiteSpace($HostKey)) {
-        $args += @('-hostkey', $HostKey)
+        $connArgs += @('-hostkey', $HostKey)
     }
-    $args += @('-P', [string]$Port, '-pw', $Password, "$User@$Host")
-    return ,$args
+    $connArgs += @('-P', [string]$Port, '-pw', $Password, "$UserName@$HostName")
+    return ,$connArgs
 }
 
 function Invoke-Plink {
@@ -605,7 +621,7 @@ $targets = @(
     [pscustomobject]@{
         Name = 'hc-2'
         Host = Get-TargetSetting 'DEPLOY_HOST' 'hc-2' 'hubs.maclaw.top'
-        HostKey = Get-EnvOrDefault 'DEPLOY_HOSTKEY_HC2' ''
+        HostKey = Get-EnvOrDefault 'DEPLOY_HOSTKEY_HC2' 'ssh-ed25519 255 SHA256:yoyEXbuT2kezyG9Y8cJDZplBMZgaPAN7+sureAkVRVE'
         RemoteTmpDir = Get-TargetSetting 'REMOTE_TMP_DIR' 'hc-2' '/tmp/aicoder_deploy'
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-2' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-2' '/data/soft/hubcenter'
@@ -617,7 +633,7 @@ $targets = @(
     [pscustomobject]@{
         Name = 'hc-3'
         Host = Get-TargetSetting 'DEPLOY_HOST' 'hc-3' 'hubs2.maclaw.top'
-        HostKey = Get-EnvOrDefault 'DEPLOY_HOSTKEY_HC3' ''
+        HostKey = Get-EnvOrDefault 'DEPLOY_HOSTKEY_HC3' 'ssh-ed25519 255 SHA256:zmZI3syY35EV3kgVz1xjpqHBiU+CzfnmO+QPGcL76Mc'
         RemoteTmpDir = Get-TargetSetting 'REMOTE_TMP_DIR' 'hc-3' '/tmp/aicoder_deploy'
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-3' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-3' '/data/soft/hubcenter'
@@ -662,7 +678,7 @@ try {
 
     Write-Host '[2/9] Running remote prechecks...' -ForegroundColor Cyan
     foreach ($target in $targets) {
-        $connectionArgs = Get-ConnectionArgs -User $sshUser -Host $target.Host -Port $sshPort -Password $password -HostKey $target.HostKey
+        $connectionArgs = Get-ConnectionArgs -UserName $sshUser -HostName $target.Host -Port $sshPort -Password $password -HostKey $target.HostKey
         Write-Host ("  - checking {0}" -f $target.Host)
         [void](Invoke-RemotePrecheck -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -Target $target)
     }
@@ -694,7 +710,7 @@ try {
     $targetIndex = 0
     foreach ($target in $targets) {
         $targetIndex++
-        $connectionArgs = Get-ConnectionArgs -User $sshUser -Host $target.Host -Port $sshPort -Password $password -HostKey $target.HostKey
+        $connectionArgs = Get-ConnectionArgs -UserName $sshUser -HostName $target.Host -Port $sshPort -Password $password -HostKey $target.HostKey
         $hubCenterConfigPath = Join-Path $renderedDir $target.HubCenterConfig
         $hubConfigPath = if ($target.DeployHub) { Join-Path $renderedDir $target.HubConfig } else { '' }
         $ensureHubModels = '0'
@@ -778,4 +794,6 @@ finally {
         Remove-Item -LiteralPath $passwordFile -Force -ErrorAction SilentlyContinue
     }
 }
+
+
 

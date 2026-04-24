@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -195,19 +196,28 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/instances", s.withPrincipal(s.handleListInstances))
 	s.mux.HandleFunc("POST /api/v1/instances", s.withPrincipal(s.handleCreateInstance))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}", s.withPrincipal(s.handleGetInstance))
+	s.mux.HandleFunc("PATCH /api/v1/instances/{instanceId}", s.withPrincipal(s.handleUpdateInstance))
+	s.mux.HandleFunc("DELETE /api/v1/instances/{instanceId}", s.withPrincipal(s.handleDeleteInstance))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/capabilities", s.withPrincipal(s.handleGetInstanceCapabilities))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/stop", s.withPrincipal(s.handleStopInstance))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/resume", s.withPrincipal(s.handleResumeInstance))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/refresh-readiness", s.withPrincipal(s.handleRefreshInstanceReadiness))
+	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/summary", s.withPrincipal(s.handleGetInstanceSummary))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/bootstrap", s.withPrincipal(s.handleGetInstanceBootstrap))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/messages", s.withPrincipal(s.handleSendMessage))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions", s.withPrincipal(s.handleListSessions))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions", s.withPrincipal(s.handleCreateSession))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions/{sessionId}", s.withPrincipal(s.handleGetSession))
+	s.mux.HandleFunc("PATCH /api/v1/instances/{instanceId}/sessions/{sessionId}", s.withPrincipal(s.handleUpdateSession))
+	s.mux.HandleFunc("DELETE /api/v1/instances/{instanceId}/sessions/{sessionId}", s.withPrincipal(s.handleDeleteSession))
+	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/archive", s.withPrincipal(s.handleArchiveSession))
+	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/restore", s.withPrincipal(s.handleRestoreSession))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions/{sessionId}/messages", s.withPrincipal(s.handleListMessages))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/messages", s.withPrincipal(s.handlePostMessage))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs", s.withPrincipal(s.handleListRuns))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}", s.withPrincipal(s.handleGetRun))
+	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}/events", s.withPrincipal(s.handleStreamRunEvents))
+	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/runs/{runId}/cancel", s.withPrincipal(s.handleCancelRun))
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -680,6 +690,25 @@ func (s *HTTPServer) handleGetInstance(w http.ResponseWriter, r *http.Request, p
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func (s *HTTPServer) handleUpdateInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in agentservice.UpdateInstanceInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.UpdateInstance(r.Context(), p, r.PathValue("instanceId"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleDeleteInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if err := s.svc.DeleteInstance(r.Context(), p, r.PathValue("instanceId")); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
 func (s *HTTPServer) handleGetInstanceCapabilities(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetInstanceCapabilities(r.Context(), p, r.PathValue("instanceId"))
 	if err != nil {
@@ -716,6 +745,14 @@ func (s *HTTPServer) handleRefreshInstanceReadiness(w http.ResponseWriter, r *ht
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func (s *HTTPServer) handleGetInstanceSummary(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.GetInstanceSummary(r.Context(), p, r.PathValue("instanceId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 func (s *HTTPServer) handleGetInstanceBootstrap(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetInstanceBootstrap(r.Context(), p, r.PathValue("instanceId"))
 	if err != nil {
@@ -732,7 +769,11 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 	sess, run, msg, err := s.svc.SendMessage(r.Context(), p, r.PathValue("instanceId"), in)
 	if err != nil {
 		if run != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"session": sess, "run": run, "message": msg, "error": err.Error()})
+			status := http.StatusBadGateway
+			if run.Status == agentservice.RunStatusCancelled {
+				status = http.StatusConflict
+			}
+			writeJSON(w, status, map[string]any{"session": sess, "run": run, "message": msg, "error": err.Error()})
 			return
 		}
 		writeError(w, err)
@@ -741,7 +782,9 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": run, "message": msg})
 }
 func (s *HTTPServer) handleListSessions(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ListSessions(r.Context(), p, r.PathValue("instanceId"))
+	out, err := s.svc.ListSessions(r.Context(), p, r.PathValue("instanceId"), agentservice.ListSessionsInput{
+		IncludeArchived: parseBoolQuery(r, "include_archived"),
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -774,8 +817,57 @@ func (s *HTTPServer) handleGetSession(w http.ResponseWriter, r *http.Request, p 
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func (s *HTTPServer) handleUpdateSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in agentservice.UpdateSessionInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.UpdateSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleDeleteSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if err := s.svc.DeleteSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId")); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+func (s *HTTPServer) handleArchiveSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.ArchiveSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleRestoreSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.RestoreSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 func (s *HTTPServer) handleListMessages(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ListMessages(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"))
+	since, err := parseOptionalTimeQuery(r, "since")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	until, err := parseOptionalTimeQuery(r, "until")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	out, err := s.svc.ListMessages(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), agentservice.ListMessagesInput{
+		Role:  agentservice.MessageRole(strings.TrimSpace(r.URL.Query().Get("role"))),
+		Since: since,
+		Until: until,
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -812,10 +904,154 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agen
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+
+type runStreamSnapshot struct {
+	Run              *agentservice.Run     `json:"run"`
+	Session          *agentservice.Session `json:"session,omitempty"`
+	AssistantMessage *agentservice.Message `json:"assistant_message,omitempty"`
+}
+
+type runStreamEnvelope struct {
+	Type     string             `json:"type"`
+	Snapshot *runStreamSnapshot `json:"snapshot,omitempty"`
+}
+
+func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	instanceID := r.PathValue("instanceId")
+	runID := r.PathValue("runId")
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	lastPayload := ""
+	sendSnapshot := func(eventType string, snap *runStreamSnapshot) bool {
+		payload, err := json.Marshal(runStreamEnvelope{Type: eventType, Snapshot: snap})
+		if err != nil {
+			return false
+		}
+		if eventType == "snapshot" && string(payload) == lastPayload {
+			return true
+		}
+		if eventType == "snapshot" {
+			lastPayload = string(payload)
+		}
+		if _, err := w.Write([]byte("event: " + eventType + "\n")); err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return false
+		}
+		if _, err := w.Write(payload); err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("\n\n")); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	snapshot, err := s.loadRunStreamSnapshot(r.Context(), p, instanceID, runID)
+	if err != nil {
+		writeSSEError(w, flusher, err)
+		return
+	}
+	if !sendSnapshot("snapshot", snapshot) {
+		return
+	}
+	if snapshot.Run != nil && snapshot.Run.Status != agentservice.RunStatusRunning {
+		_ = sendSnapshot("done", snapshot)
+		return
+	}
+
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			snapshot, err := s.loadRunStreamSnapshot(r.Context(), p, instanceID, runID)
+			if err != nil {
+				writeSSEError(w, flusher, err)
+				return
+			}
+			if !sendSnapshot("snapshot", snapshot) {
+				return
+			}
+			if snapshot.Run != nil && snapshot.Run.Status != agentservice.RunStatusRunning {
+				_ = sendSnapshot("done", snapshot)
+				return
+			}
+		}
+	}
+}
+
+func (s *HTTPServer) loadRunStreamSnapshot(ctx context.Context, p agentservice.Principal, instanceID, runID string) (*runStreamSnapshot, error) {
+	run, err := s.svc.GetRun(ctx, p, instanceID, runID)
+	if err != nil {
+		return nil, err
+	}
+	snap := &runStreamSnapshot{Run: run}
+	if run == nil || strings.TrimSpace(run.SessionID) == "" {
+		return snap, nil
+	}
+	sess, err := s.svc.GetSession(ctx, p, instanceID, run.SessionID)
+	if err != nil && !errors.Is(err, agentservice.ErrSessionNotFound) {
+		return nil, err
+	}
+	if err == nil {
+		snap.Session = sess
+	}
+	if strings.TrimSpace(run.AssistantMessageID) == "" {
+		return snap, nil
+	}
+	messages, err := s.svc.ListMessages(ctx, p, instanceID, run.SessionID, agentservice.ListMessagesInput{})
+	if err != nil {
+		return nil, err
+	}
+	for i := range messages {
+		if messages[i].ID == run.AssistantMessageID {
+			msg := messages[i]
+			snap.AssistantMessage = &msg
+			break
+		}
+	}
+	return snap, nil
+}
+
+func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
+	payload, _ := json.Marshal(map[string]string{"error": err.Error()})
+	_, _ = w.Write([]byte("event: error\n"))
+	_, _ = w.Write([]byte("data: "))
+	_, _ = w.Write(payload)
+	_, _ = w.Write([]byte("\n\n"))
+	flusher.Flush()
+}
+func (s *HTTPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.CancelRun(r.Context(), p, r.PathValue("instanceId"), r.PathValue("runId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	waitingForUser, err := parseOptionalBoolQuery(r, "waiting_for_user")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	out, err := s.svc.ListRuns(r.Context(), p, r.PathValue("instanceId"), agentservice.ListRunsInput{
-		Status:    agentservice.RunStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
-		SessionID: strings.TrimSpace(r.URL.Query().Get("session_id")),
+		Status:         agentservice.RunStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
+		SessionID:      strings.TrimSpace(r.URL.Query().Get("session_id")),
+		ResponseSource: strings.TrimSpace(r.URL.Query().Get("response_source")),
+		WaitingForUser: waitingForUser,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -917,6 +1153,35 @@ const (
 	defaultPageLimit = 100
 	maxPageLimit     = 500
 )
+
+func parseBoolQuery(r *http.Request, key string) bool {
+	v, err := strconv.ParseBool(strings.TrimSpace(r.URL.Query().Get(key)))
+	return err == nil && v
+}
+
+func parseOptionalBoolQuery(r *http.Request, key string) (*bool, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return nil, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return nil, errors.New(key + " must be a boolean")
+	}
+	return &v, nil
+}
+
+func parseOptionalTimeQuery(r *http.Request, key string) (*time.Time, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return nil, nil
+	}
+	v, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return nil, errors.New(key + " must be an RFC3339 timestamp")
+	}
+	return &v, nil
+}
 
 func parsePageQuery(r *http.Request) (pageQuery, error) {
 	q := r.URL.Query()
@@ -1084,6 +1349,8 @@ func writeError(w http.ResponseWriter, err error) {
 		code = http.StatusForbidden
 	case errors.Is(err, agentservice.ErrTenantNotFound), errors.Is(err, agentservice.ErrUserNotFound), errors.Is(err, agentservice.ErrCredentialNotFound), errors.Is(err, agentservice.ErrUserConfigNotFound), errors.Is(err, agentservice.ErrInstanceNotFound), errors.Is(err, agentservice.ErrSessionNotFound), errors.Is(err, agentservice.ErrRunNotFound):
 		code = http.StatusNotFound
+	case errors.Is(err, agentservice.ErrRunNotRunning), errors.Is(err, agentservice.ErrInstanceBusy), errors.Is(err, agentservice.ErrSessionBusy), errors.Is(err, agentservice.ErrSessionArchived):
+		code = http.StatusConflict
 	}
 	writeJSON(w, code, map[string]string{"error": err.Error()})
 }

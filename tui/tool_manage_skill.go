@@ -8,7 +8,7 @@ package main
 //   - corelib/skill.ScanAllSkillDirs() for listing
 //   - corelib/skill.ImportMarkdownSkillDir() for step resolution
 //   - tui/commands.FileConfigStore for config persistence
-//   - Hub HTTP API for search/install (direct HTTP, no GUI SkillHubClient)
+//   - corelib/skill.HubClient for search/install (shared with GUI)
 
 import (
 	"archive/zip"
@@ -20,7 +20,6 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,39 +114,26 @@ func skillSearch(app *TUIApp, args map[string]interface{}) string {
 	hubURL := app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/api/v1/skills/search?q=%s&page=1", hubURL, url.QueryEscape(query)), nil)
-	if err != nil {
-		return fmt.Sprintf("搜索请求创建失败: %v", err)
-	}
-	req.Header.Set("User-Agent", "MaClaw-TUI/1.0")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Sprintf("搜索失败: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("SkillHub 返回 HTTP %d", resp.StatusCode)
-	}
-	var result struct {
-		Skills []struct {
-			ID, Name, Description, Version, Author, TrustLevel string
-			Downloads                                           int
-			Tags                                                []string
-		} `json:"skills"`
-		Total int `json:"total"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
-		return fmt.Sprintf("解析失败: %v", err)
-	}
-	if len(result.Skills) == 0 {
+
+	client := skill.NewHubClient()
+	results := client.SearchAll(ctx, hubURL, query)
+
+	if len(results) == 0 {
 		return fmt.Sprintf("未找到匹配 \"%s\" 的 Skill。", query)
 	}
+
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("搜索 \"%s\" — %d 个结果\n\n", query, result.Total))
-	for _, s := range result.Skills {
-		b.WriteString(fmt.Sprintf("- [%s] %s (v%s): %s (trust:%s, downloads:%d, hub:%s)\n",
-			s.ID, s.Name, s.Version, s.Description, s.TrustLevel, s.Downloads, hubURL))
+	b.WriteString(fmt.Sprintf("搜索 \"%s\" — %d 个结果（SkillHub + ClawHub + GitHub）\n\n", query, len(results)))
+	for _, s := range results {
+		sourceLabel := "SkillHub"
+		switch s.Source {
+		case "clawhub":
+			sourceLabel = "ClawHub"
+		case "github":
+			sourceLabel = "GitHub"
+		}
+		b.WriteString(fmt.Sprintf("- [%s] %s (v%s): %s (source:%s, trust:%s, downloads:%d)\n",
+			s.ID, s.Name, s.Version, s.Description, sourceLabel, s.TrustLevel, s.Downloads))
 	}
 	b.WriteString("\n使用 manage_skill(action=\"install\", skill_id=\"<ID>\") 安装。")
 	return b.String()
@@ -160,55 +146,62 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 	if skillID == "" {
 		return "缺少 skill_id 参数"
 	}
+	source := sval(args, "source") // "clawhub", "github", or empty (default: skillhub)
 	hubURL := sval(args, "hub_url")
 	if hubURL == "" {
 		hubURL = app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
 	}
+
+	// Check if already installed.
 	for _, s := range app.appConfig.NLSkills {
-		if s.HubSkillID == skillID {
+		if s.HubSkillID == skillID || (s.Source == "clawhub" && strings.EqualFold(s.Name, skillID)) ||
+			(s.Source == "github" && strings.EqualFold(s.Name, skillID)) {
 			return fmt.Sprintf("Skill '%s' 已安装", s.Name)
 		}
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/api/v1/skills/%s/download", hubURL, url.PathEscape(skillID)), nil)
+
+	client := skill.NewHubClient()
+	var entry *corelib.NLSkillEntry
+	var err error
+
+	switch source {
+	case "clawhub":
+		entry, err = client.DownloadClawHub(ctx, skillID)
+	case "github":
+		installRef := sval(args, "install_ref")
+		if installRef == "" {
+			return "GitHub Skill 缺少 install_ref 参数"
+		}
+		entry, err = client.DownloadGitHub(ctx, installRef)
+	default:
+		entry, err = client.DownloadSkillHub(ctx, hubURL, skillID)
+	}
 	if err != nil {
-		return fmt.Sprintf("下载请求创建失败: %v", err)
+		return fmt.Sprintf("安装失败: %v", err)
 	}
-	req.Header.Set("User-Agent", "MaClaw-TUI/1.0")
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		return fmt.Sprintf("下载失败: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("SkillHub 返回 HTTP %d", resp.StatusCode)
-	}
-	var full struct {
-		Name, Description, Version, Author, TrustLevel string
-		Triggers                                        []string `json:"triggers"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&full); err != nil {
-		return fmt.Sprintf("解析失败: %v", err)
-	}
+
 	store := commands.NewFileConfigStore(commands.ResolveDataDir())
 	cfg, err := store.LoadConfig()
 	if err != nil {
 		return fmt.Sprintf("加载配置失败: %v", err)
 	}
-	cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
-		Name: full.Name, Description: full.Description,
-		Status: "active", Source: "hub", SourceProject: hubURL,
-		HubSkillID: skillID, HubVersion: full.Version, TrustLevel: full.TrustLevel,
-		Triggers: full.Triggers, CreatedAt: time.Now().Format(time.RFC3339),
-	})
+	cfg.NLSkills = append(cfg.NLSkills, *entry)
 	if err := store.SaveConfig(cfg); err != nil {
 		return fmt.Sprintf("保存失败: %v", err)
 	}
 	app.appConfig = cfg
-	return fmt.Sprintf("✅ Skill '%s' (v%s) 已安装  作者:%s  信任:%s",
-		full.Name, full.Version, full.Author, full.TrustLevel)
+
+	sourceLabel := "SkillHub"
+	switch source {
+	case "clawhub":
+		sourceLabel = "ClawHub"
+	case "github":
+		sourceLabel = "GitHub"
+	}
+	return fmt.Sprintf("✅ Skill '%s' 已安装 (来源: %s)", entry.Name, sourceLabel)
 }
 
 // --- run ---

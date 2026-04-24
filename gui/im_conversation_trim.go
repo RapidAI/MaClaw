@@ -332,14 +332,27 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 		for k, v := range mm {
 			cp[k] = v
 		}
-		// Truncate reasoning_content first (it can be very long with
-		// thinking-mode models like Kimi) since it's less critical than
-		// the actual content for subsequent reasoning.
-		if rc, _ := cp["reasoning_content"].(string); len(rc) > 200 {
-			runes := []rune(rc)
-			if len(runes) > 200 {
-				cp["reasoning_content"] = string(runes[:100]) + "\n…(reasoning truncated)…\n" + string(runes[len(runes)-50:])
-			}
+		// DeepSeek thinking mode rule for reasoning_content:
+		//   - The field MUST EXIST on assistant messages with tool_calls
+		//   - Missing field → HTTP 400; truncated/empty string → OK
+		//   - On messages without tool_calls, the API ignores it
+		//
+		// Verified empirically:
+		//   Full reasoning_content      → 200 ✅
+		//   Truncated reasoning_content → 200 ✅
+		//   Empty string ""             → 200 ✅
+		//   Field missing entirely      → 400 ❌
+		//
+		// See: https://api-docs.deepseek.com/guides/thinking_mode
+		if msgHasToolCalls(cp) {
+			// Tool-call turn: reasoning_content field must exist.
+			// Keep it as-is (full content). Do NOT truncate — while the API
+			// currently accepts truncated values, preserving the full chain-of-
+			// thought allows the model to continue reasoning coherently.
+		} else {
+			// Non-tool-call turn: API ignores reasoning_content.
+			// Delete it entirely to reclaim token budget.
+			delete(cp, "reasoning_content")
 		}
 		content, _ := cp["content"].(string)
 		if len(content) <= 200 {

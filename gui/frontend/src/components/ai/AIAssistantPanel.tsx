@@ -55,6 +55,7 @@ interface AIAssistantPanelWindowProps {
 interface AIAssistantPanelProps {
     onClose: () => void;
     lang: string; // 'zh-Hans' | 'zh-Hant' | 'en'
+    chatFontSize?: number; // 12–24px, default 14
     state: AIAssistantPanelStateProps;
     actions: AIAssistantPanelActionProps;
     window?: AIAssistantPanelWindowProps;
@@ -785,7 +786,7 @@ function renderFields(fields: Array<{ label: string; value: string }>, t: Theme)
                         border: `1px solid ${t.fieldBorder}`,
                         borderRadius: "4px",
                         padding: "4px 8px",
-                        fontSize: "12px",
+                        fontSize: "1em",
                     }}>
                         <span style={{ color: t.fieldLabel, marginRight: "6px" }}>{f.label}:</span>
                         <span data-testid={isRecovery ? 'recovery-badge' : undefined} style={recoveryStyle}>{f.value}</span>
@@ -812,7 +813,7 @@ function renderActions(
                         ...baseInputBtnStyle,
                         color: a.style === "danger" ? t.errorText : t.btnColor,
                         borderColor: a.style === "danger" ? t.errorText : t.btnBorder,
-                        fontSize: "12px",
+                        fontSize: "1em",
                         padding: "4px 10px",
                         minHeight: "28px",
                     }}
@@ -828,7 +829,7 @@ function renderConfirmationList(testId: string, title: string, items: string[], 
     if (items.length === 0) return null;
     return (
         <div data-testid={testId} style={{ marginTop: "8px" }}>
-            <div style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "4px" }}>{title}</div>
+            <div style={{ color: t.fieldLabel, fontSize: "0.917em", marginBottom: "4px" }}>{title}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                 {items.map((item, index) => (
                     <div key={`${testId}-${index}`} style={{ minHeight: "1.4em", color: t.text }}>
@@ -871,7 +872,7 @@ function renderConfirmationCard(
                     : localizeText(lang, "Pre-execution confirmation", "执行前确认")}
             </div>
             {status && (
-                <div data-testid="confirmation-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
+                <div data-testid="confirmation-status" style={{ color: t.fieldLabel, fontSize: "0.917em", marginBottom: "6px" }}>
                     {localizeText(lang, `Status: ${status}`, `状态：${status}`)}
                 </div>
             )}
@@ -909,7 +910,7 @@ function renderUnfinishedSlotCard(
                 {localizeText(lang, "Unfinished task", "未完成任务")}
             </div>
             {slot.status && (
-                <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
+                <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "0.917em", marginBottom: "6px" }}>
                     {localizeText(lang, `Status: ${slot.status}`, `状态：${slot.status}`)}
                 </div>
             )}
@@ -1016,7 +1017,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
             );
         case "progress":
             return (
-                <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "1px 0", fontStyle: "italic" }}>
+                <div key={msg.id} style={{ color: t.textMuted, fontSize: "0.917em", padding: "1px 0", fontStyle: "italic" }}>
                     {msg.content}
                 </div>
             );
@@ -1030,7 +1031,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     boxShadow: `inset 0 0 0 1px ${t.codeBlockBorder}`,
                     borderLeft: `3px solid ${t.promptColor}`,
                     color: t.text,
-                    fontSize: "12px",
+                    fontSize: "1em",
                     lineHeight: "1.6",
                 }}>
                     {msg.kind === 'trace' && msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
@@ -1046,7 +1047,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     padding: "4px 8px",
                     margin: "2px 0",
                     borderRadius: "2px",
-                    fontSize: "12px",
+                    fontSize: "1em",
                 }}>
                     {msg.content}
                 </div>
@@ -1079,7 +1080,7 @@ async function savePastedImage(base64: string, ext: string): Promise<string> {
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, state, actions, window: panelWindow, onThemeModeChange }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, actions, window: panelWindow, onThemeModeChange }: AIAssistantPanelProps) {
     const {
         messages,
         progressMessages = [],
@@ -1168,6 +1169,27 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const showWorkflowPreview = workflowState.splitMode;
     const showCodePreview = !showWorkflowPreview && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview;
+
+    // Shared resize handler for split-pane drag handle (used by both WorkflowDocPreview and CodePreviewPanel)
+    const handleSplitResizeStart = useCallback(() => {
+        const container = document.querySelector('[data-testid="ai-panel-root"]')?.parentElement;
+        if (!container) return;
+        const onMouseMove = (e: MouseEvent) => {
+            const rect = container.getBoundingClientRect();
+            const newRatio = Math.max(0.2, Math.min(0.8, (e.clientX - rect.left) / rect.width));
+            setWorkflowSplitRatio(newRatio);
+        };
+        const onMouseUp = () => {
+            document.removeEventListener("mousemove", onMouseMove);
+            document.removeEventListener("mouseup", onMouseUp);
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+        };
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+    }, [setWorkflowSplitRatio]);
 
     const title = localizeText(lang, "AI Assistant", "AI 助手");
     const thinkingText = localizeText(lang, "Thinking... (you can type ahead)", "正在思考...（可预输入）");
@@ -1611,7 +1633,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         return progressMessages
             .filter(msg => !dismissedProgressIds.has(msg.id))
             .map(msg => (
-                <div key={msg.id} style={{ display: "flex", alignItems: "center", gap: "4px", color: t.textMuted, fontSize: "11px", padding: "1px 0", fontStyle: "italic" }}>
+                <div key={msg.id} style={{ display: "flex", alignItems: "center", gap: "4px", color: t.textMuted, fontSize: "0.917em", padding: "1px 0", fontStyle: "italic" }}>
                     <span style={{ flex: 1 }}>{msg.content}</span>
                     <button
                         onClick={() => dismissProgress(msg.id)}
@@ -1621,7 +1643,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             color: t.textMuted,
                             cursor: "pointer",
                             padding: "0 2px",
-                            fontSize: "11px",
+                            fontSize: "1em",
                             lineHeight: 1,
                             opacity: 0.6,
                             flexShrink: 0,
@@ -2017,7 +2039,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     boxSizing: "border-box",
                     maxHeight: "none",
                     padding: "8px 10px",
-                    fontSize: "12px",
+                    fontSize: `${chatFontSize}px`,
                     lineHeight: 1.5,
                     overflowY: "auto",
                     overflowX: "hidden",
@@ -2086,7 +2108,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                                         background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(139,92,246,0.06))",
                                         borderLeft: `3px solid ${t.promptColor}`,
                                         color: t.text,
-                                        fontSize: "11px",
+                                        fontSize: "0.917em",
                                         lineHeight: "1.4",
                                         overflow: "hidden",
                                     }}>
@@ -2121,12 +2143,12 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     </>
                 )}
                 {showThinkingState && (
-                    <div style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>
+                    <div style={{ color: t.textMuted, fontSize: "0.917em", padding: "4px 0", fontStyle: "italic" }}>
                         {thinkingText}
                     </div>
                 )}
                 {showProcessingState && (
-                    <div style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>
+                    <div style={{ color: t.textMuted, fontSize: "0.917em", padding: "4px 0", fontStyle: "italic" }}>
                         {processingText}
                     </div>
                 )}
@@ -2560,25 +2582,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         quoteText: t.quoteText,
                         quoteBg: t === darkTheme ? "rgba(99,102,241,0.08)" : "rgba(99,102,241,0.04)",
                     }}
-                    onResizeStart={() => {
-                        const container = document.querySelector('[data-testid="ai-panel-root"]')?.parentElement;
-                        if (!container) return;
-                        const onMouseMove = (e: MouseEvent) => {
-                            const rect = container.getBoundingClientRect();
-                            const newRatio = Math.max(0.2, Math.min(0.8, (e.clientX - rect.left) / rect.width));
-                            setWorkflowSplitRatio(newRatio);
-                        };
-                        const onMouseUp = () => {
-                            document.removeEventListener("mousemove", onMouseMove);
-                            document.removeEventListener("mouseup", onMouseUp);
-                            document.body.style.cursor = "";
-                            document.body.style.userSelect = "";
-                        };
-                        document.body.style.cursor = "col-resize";
-                        document.body.style.userSelect = "none";
-                        document.addEventListener("mousemove", onMouseMove);
-                        document.addEventListener("mouseup", onMouseUp);
-                    }}
+                    onResizeStart={handleSplitResizeStart}
                 />
             </div>
         )}
@@ -2589,6 +2593,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     activeFilePath={codePreviewState.activeFilePath}
                     onSelectFile={selectCodeFile}
                     onClose={closeCodePreview}
+                    onToggleMaximize={inline ? onToggleMaximize : undefined}
+                    onResizeStart={handleSplitResizeStart}
                     theme={themeMode === 'dark' ? darkCodePreviewTheme : lightCodePreviewTheme}
                 />
             </div>

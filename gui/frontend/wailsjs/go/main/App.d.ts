@@ -272,6 +272,10 @@ export function GetUIZoomFactor():Promise<number>;
 
 export function SetUIZoomFactor(arg1:number):Promise<void>;
 
+export function GetChatFontSize():Promise<number>;
+
+export function SetChatFontSize(arg1:number):Promise<void>;
+
 export function GetLLMTokenUsage(arg1:string):Promise<any>;
 
 export function GetAllLLMTokenUsage():Promise<any>;
@@ -597,6 +601,15 @@ export function SetASREnabled(arg1:boolean):Promise<void>;
 export function CheckASRModel():Promise<{[key:string]:any}>;
 
 export function DownloadASRModel():Promise<void>;
+
+// Screen parsing (OminiParser-V2) bindings
+export function GetScreenParsingEnabled():Promise<boolean>;
+
+export function SetScreenParsingEnabled(arg1:boolean):Promise<void>;
+
+export function CheckYOLOModel():Promise<{[key:string]:any}>;
+
+export function DownloadYOLOModel():Promise<void>;
 
 export function QuerySecurityEvents(arg1:number):Promise<Array<any>>;
 

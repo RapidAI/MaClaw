@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf"
+const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow"
 
 type hubModelFileView struct {
 	Name        string `json:"name"`
@@ -112,9 +112,16 @@ func resolveModelPublicPath(modelsDir string, legacyDataDir string, filename str
 	return candidates[0]
 }
 
+// isAllowedModelExtension checks if a filename has a permitted model file extension.
+// Allows .gguf (embedding/ASR models) and .yolow (YOLO vision models).
+func isAllowedModelExtension(filename string) bool {
+	lower := strings.ToLower(filename)
+	return strings.HasSuffix(lower, ".gguf") || strings.HasSuffix(lower, ".yolow")
+}
+
 // ModelDownloadHandler serves model files while keeping the public URL stable.
 // Files are primarily stored under data/models, with legacy fallback to data/.
-// Only allows downloading files with .gguf extension for safety.
+// Only allows downloading files with permitted extensions for safety.
 // GET /api/v1/models/{filename}
 func ModelDownloadHandler(configPath string) http.HandlerFunc {
 	legacyDataDir, modelsDir, _, _ := resolveHubModelDirs(configPath)
@@ -128,8 +135,8 @@ func ModelDownloadHandler(configPath string) http.HandlerFunc {
 			http.Error(w, "invalid filename", http.StatusBadRequest)
 			return
 		}
-		if !strings.HasSuffix(strings.ToLower(filename), ".gguf") {
-			http.Error(w, "only .gguf files are allowed", http.StatusForbidden)
+		if !isAllowedModelExtension(filename) {
+			http.Error(w, "unsupported model file extension", http.StatusForbidden)
 			return
 		}
 

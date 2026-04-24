@@ -116,8 +116,9 @@ func (s *SkillSearcher) Search(ctx context.Context, query string, tags []string,
 	return wrapper.Results, nil
 }
 
-// ClawHubMirrorURL is the China mirror for ClawHub skill search.
-const ClawHubMirrorURL = "https://cn.clawhub-mirror.com"
+// ClawHubMirrorURL re-exports the shared constant for backward compatibility.
+// New code should use cskill.ClawHubMirrorURL directly.
+const ClawHubMirrorURL = cskill.ClawHubMirrorURL
 
 // SearchAll aggregates SkillMarket, ClawHub mirror, and GitHub results for GUI search.
 func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSkillSearchResult, error) {
@@ -133,17 +134,14 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 		}
 	}
 
-	for _, r := range s.searchClawHubMirror(ctx, query) {
-		results = append(results, s.toMixedSkillSearchResult(r))
+	// ClawHub + GitHub via shared HubClient (single implementation).
+	hubClient := cskill.NewHubClient()
+	for _, r := range hubClient.SearchClawHub(ctx, query) {
+		results = append(results, hubSearchResultToMixed(r))
 	}
-
-	gs := cskill.NewGitHubSearcher("")
-	ghResults, err := gs.SearchGitHub(query)
-	if err != nil {
-		errs = append(errs, fmt.Sprintf("github: %v", err))
-	} else {
-		for _, c := range ghResults {
-			results = append(results, s.toMixedGitHubResult(c))
+	if ctx.Err() == nil {
+		for _, r := range hubClient.SearchGitHub(query) {
+			results = append(results, hubSearchResultToMixed(r))
 		}
 	}
 
@@ -214,32 +212,33 @@ func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkill
 	}
 }
 
-func (s *SkillSearcher) toMixedGitHubResult(c cskill.GitHubSkillCandidate) MixedSkillSearchResult {
-	installRefBytes, _ := json.Marshal(c)
-	name := c.RepoFullName
-	if strings.TrimSpace(c.FilePath) != "" {
-		name = fmt.Sprintf("%s · %s", c.RepoFullName, c.FilePath)
-	}
-	return MixedSkillSearchResult{
-		ID:          c.RepoFullName,
-		Name:        name,
-		Description: c.Description,
-		Source:      "github",
-		SourceLabel: mixedSourceLabel("github"),
-		InstallRef:  string(installRefBytes),
-		FilePath:    c.FilePath,
-		TrustLevel:  mixedTrustLevel("github"),
-		Downloads:   c.Stars,
-		RepoURL:     c.RepoURL,
-	}
-}
-
 func mixedTrustLevel(source string) string {
 	switch source {
 	case "clawhub", "github":
 		return "community"
 	default:
 		return ""
+	}
+}
+
+// hubSearchResultToMixed converts a shared HubSearchResult (from corelib/skill.HubClient)
+// to the GUI-specific MixedSkillSearchResult display type.
+func hubSearchResultToMixed(r cskill.HubSearchResult) MixedSkillSearchResult {
+	return MixedSkillSearchResult{
+		ID:          r.ID,
+		Name:        r.Name,
+		Description: r.Description,
+		Source:      r.Source,
+		SourceLabel: mixedSourceLabel(r.Source),
+		TrustLevel:  mixedTrustLevel(r.Source),
+		Version:     r.Version,
+		Author:      r.Author,
+		AvgRating:   r.AvgRating,
+		Downloads:   r.Downloads,
+		Score:       r.Score,
+		InstallRef:  r.InstallRef,
+		FilePath:    r.FilePath,
+		RepoURL:     r.RepoURL,
 	}
 }
 
@@ -328,62 +327,25 @@ func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*Sk
 }
 
 // searchClawHubMirror queries the ClawHub China mirror for skills.
-// API: GET /api/v1/search?q=<query> → {"results": [...]}
-// Returns nil on any error (non-fatal fallback).
+// Delegates to the shared HubClient and converts results to the legacy
+// SkillSearchResult format (used by SearchAndInstall).
 func (s *SkillSearcher) searchClawHubMirror(ctx context.Context, query string) []SkillSearchResult {
-	endpoint := ClawHubMirrorURL + "/api/v1/search?q=" + url.QueryEscape(query)
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
-	if err != nil {
-		log.Printf("[skill-search] clawhub mirror request error: %v", err)
+	hubClient := cskill.NewHubClient()
+	hubResults := hubClient.SearchClawHub(ctx, query)
+	if len(hubResults) == 0 {
 		return nil
 	}
-	req.Header.Set("User-Agent", "MaClaw/1.0")
-
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		log.Printf("[skill-search] clawhub mirror error: %v", err)
-		return nil
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[skill-search] clawhub mirror HTTP %d", resp.StatusCode)
-		return nil
-	}
-
-	var raw struct {
-		Results []struct {
-			Slug        string  `json:"slug"`
-			DisplayName string  `json:"displayName"`
-			Summary     string  `json:"summary"`
-			Version     string  `json:"version"`
-			Score       float64 `json:"score"`
-			UpdatedAt   int64   `json:"updatedAt"`
-		} `json:"results"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		log.Printf("[skill-search] clawhub mirror decode error: %v", err)
-		return nil
-	}
-
-	var results []SkillSearchResult
-	for _, r := range raw.Results {
-		name := r.DisplayName
-		if name == "" {
-			name = r.Slug
-		}
+	results := make([]SkillSearchResult, 0, len(hubResults))
+	for _, r := range hubResults {
 		results = append(results, SkillSearchResult{
-			ID:          r.Slug,
-			Name:        name,
-			Description: r.Summary,
+			ID:          r.ID,
+			Name:        r.Name,
+			Description: r.Description,
 			Score:       r.Score,
 			Status:      "clawhub",
 		})
 	}
-	if len(results) > 0 {
-		log.Printf("[skill-search] clawhub mirror found %d results for: %s", len(results), query)
-	}
+	log.Printf("[skill-search] clawhub mirror found %d results for: %s", len(results), query)
 	return results
 }
 

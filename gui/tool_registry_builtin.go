@@ -348,6 +348,19 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"target"},
 		func(args map[string]interface{}) string { return h.toolOpen(args) })
 
+	// --- 后台任务管理工具 ---
+	regP("async_wait", "管理本机后台任务（与 bash(background=true) 配合使用）",
+		ToolCategoryBuiltin, []string{"wait", "async", "background", "task", "check"},
+		map[string]interface{}{
+			"action":     map[string]string{"type": "string", "description": "操作: check/wait/kill/list"},
+			"task_id":    map[string]string{"type": "string", "description": "任务 ID"},
+			"timeout":    map[string]string{"type": "integer", "description": "等待超时秒数（仅 wait）"},
+			"tail_lines": map[string]string{"type": "integer", "description": "日志尾部行数"},
+		}, nil,
+		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
+			return h.toolAsyncWait(args, onProgress)
+		})
+
 	// --- Long-term memory (unified) ---
 	reg("memory", "管理长期记忆（action: recall/save/list/delete）。recall 按需检索相关记忆，save 保存新记忆。",
 		ToolCategoryBuiltin, []string{"memory", "save", "remember", "list", "search", "delete", "recall"},

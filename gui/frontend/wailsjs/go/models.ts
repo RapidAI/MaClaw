@@ -207,6 +207,8 @@ export namespace main {
 	    default_tool: string;
 	    default_tool_provider: string;
 	    working_directory: string;
+	    ui_zoom_factor: number;
+	    chat_font_size: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -330,6 +332,8 @@ export namespace main {
 	        this.default_tool = source["default_tool"];
 	        this.default_tool_provider = source["default_tool_provider"];
 	        this.working_directory = source["working_directory"];
+	        this.ui_zoom_factor = source["ui_zoom_factor"];
+	        this.chat_font_size = source["chat_font_size"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -40,8 +40,13 @@ type GitHubSearcher struct {
 	token  string // optional GitHub token for higher rate limits
 }
 
-// NewGitHubSearcher creates a new searcher. token can be empty.
+// NewGitHubSearcher creates a new searcher.
+// When token is empty, automatically resolves the built-in default token
+// via ResolveGitHubToken(). Callers do NOT need to know about token resolution.
 func NewGitHubSearcher(token string) *GitHubSearcher {
+	if token == "" {
+		token = ResolveGitHubToken()
+	}
 	return &GitHubSearcher{
 		client: &http.Client{Timeout: 30 * time.Second},
 		token:  token,
@@ -74,46 +79,112 @@ type githubSearchTarget struct {
 	definitionType string
 }
 
-// SearchGitHub searches GitHub for repositories containing supported skill
-// definition files matching the given query. Returns up to 10 candidates per
-// definition type and merges them by repo/path.
+// SearchGitHub searches GitHub for skill repositories matching the query.
+//
+// Strategy:
+//  1. Repository Search API (/search/repositories) with topic:skill filter.
+//     This API does NOT require authentication and finds repos tagged as skills.
+//  2. Code Search API (/search/code) as fallback — only when a GitHub token
+//     is configured, because this API requires authentication since 2023.
+//
+// Returns up to 10 candidates, deduplicated by repo.
 func (gs *GitHubSearcher) SearchGitHub(query string) ([]GitHubSkillCandidate, error) {
 	if query == "" {
 		return nil, fmt.Errorf("empty search query")
 	}
 
-	// Sanitize query: remove GitHub search syntax special chars to avoid
-	// breaking the Code Search API query.
 	sanitized := sanitizeGitHubQuery(query)
 	if sanitized == "" {
 		return nil, fmt.Errorf("query contains only special characters")
 	}
 
-	targets := []githubSearchTarget{
-		{filename: "skill.md", definitionType: githubDefinitionSkillMD},
-		{filename: "SKILL.md", definitionType: githubDefinitionSkillMD},
-		{filename: "skill.yaml", definitionType: githubDefinitionYAML},
-	}
 	var candidates []GitHubSkillCandidate
 	seen := make(map[string]bool)
 	var errs []string
-	for _, target := range targets {
-		resp, err := gs.searchGitHubByFilename(sanitized, target)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", target.filename, err))
-			continue
-		}
-		for _, item := range resp.Items {
-			key := item.Repository.FullName + ":" + item.Path
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			candidates = append(candidates, newGitHubCandidate(item, target.definitionType))
+
+	// Primary: Repository Search (no auth required, topic-filtered).
+	repoCandidates, err := gs.searchGitHubByRepo(sanitized)
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("repo-search: %v", err))
+	}
+	for _, c := range repoCandidates {
+		if !seen[c.RepoFullName] {
+			seen[c.RepoFullName] = true
+			candidates = append(candidates, c)
 		}
 	}
+
+	// Fallback: Code Search (requires auth token).
+	if gs.token != "" {
+		targets := []githubSearchTarget{
+			{filename: "skill.md", definitionType: githubDefinitionSkillMD},
+			{filename: "SKILL.md", definitionType: githubDefinitionSkillMD},
+			{filename: "skill.yaml", definitionType: githubDefinitionYAML},
+		}
+		for _, target := range targets {
+			resp, err := gs.searchGitHubByFilename(sanitized, target)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", target.filename, err))
+				continue
+			}
+			for _, item := range resp.Items {
+				key := item.Repository.FullName
+				if !seen[key] {
+					seen[key] = true
+					candidates = append(candidates, newGitHubCandidate(item, target.definitionType))
+				}
+			}
+		}
+	}
+
 	if len(candidates) == 0 && len(errs) > 0 {
 		return nil, fmt.Errorf("GitHub search failed: %s", strings.Join(errs, "; "))
+	}
+	return candidates, nil
+}
+
+// ghRepoSearchResponse is the GitHub Repository Search API response.
+type ghRepoSearchResponse struct {
+	TotalCount int            `json:"total_count"`
+	Items      []ghSearchRepo `json:"items"`
+}
+
+// searchGitHubByRepo uses the Repository Search API (/search/repositories)
+// which does NOT require authentication. Filters by topic:skill to find
+// skill repositories, then infers the skill definition file path.
+func (gs *GitHubSearcher) searchGitHubByRepo(query string) ([]GitHubSkillCandidate, error) {
+	// Search for repos with the "skill" topic matching the user query.
+	// Also include "claude-code" topic repos as they often contain skills.
+	searchQuery := fmt.Sprintf("%s topic:skill", query)
+	endpoint := fmt.Sprintf("https://api.github.com/search/repositories?q=%s&per_page=10&sort=stars&order=desc",
+		url.QueryEscape(searchQuery))
+
+	body, err := gs.httpGet(endpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp ghRepoSearchResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse GitHub repo response: %w", err)
+	}
+
+	var candidates []GitHubSkillCandidate
+	for _, repo := range resp.Items {
+		branch := repo.DefaultBranch
+		if branch == "" {
+			branch = "main"
+		}
+		candidates = append(candidates, GitHubSkillCandidate{
+			RepoFullName:   repo.FullName,
+			RepoURL:        repo.HTMLURL,
+			Description:    repo.Description,
+			Stars:          repo.Stars,
+			FilePath:       "SKILL.md", // default; ImportFromCandidate will try multiple paths
+			RawURL:         fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/SKILL.md", repo.FullName, branch),
+			Branch:         branch,
+			DefinitionType: githubDefinitionSkillMD,
+		})
 	}
 	return candidates, nil
 }
@@ -152,12 +223,40 @@ func newGitHubCandidate(item ghCodeSearchItem, fallbackType string) GitHubSkillC
 
 // ImportFromCandidate downloads a supported GitHub skill definition file and
 // converts it to an NLSkillEntry ready for local registration.
+// When the initial RawURL fails (e.g. repo-search results with a guessed path),
+// it tries common skill definition file paths as fallback.
 func (gs *GitHubSearcher) ImportFromCandidate(c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
 	data, err := gs.httpGet(c.RawURL)
-	if err != nil {
-		return nil, fmt.Errorf("download GitHub skill file: %w", err)
+	if err == nil {
+		return gs.parseCandidateData(data, c)
 	}
-	return gs.parseCandidateData(data, c)
+
+	// Fallback: try common skill definition file paths.
+	baseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/", c.RepoFullName, c.Branch)
+	fallbackPaths := []struct {
+		path string
+		defType string
+	}{
+		{"SKILL.md", githubDefinitionSkillMD},
+		{"skill.md", githubDefinitionSkillMD},
+		{"skill.yaml", githubDefinitionYAML},
+	}
+	for _, fb := range fallbackPaths {
+		fbURL := baseURL + fb.path
+		if fbURL == c.RawURL {
+			continue // already tried
+		}
+		data, fbErr := gs.httpGet(fbURL)
+		if fbErr != nil {
+			continue
+		}
+		fc := c
+		fc.RawURL = fbURL
+		fc.FilePath = fb.path
+		fc.DefinitionType = fb.defType
+		return gs.parseCandidateData(data, fc)
+	}
+	return nil, fmt.Errorf("download GitHub skill file: %w", err)
 }
 
 // ImportFromRepoURL imports all skills from a GitHub repository URL.

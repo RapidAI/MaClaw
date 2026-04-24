@@ -22,7 +22,17 @@ type InterruptHandler interface {
 // Using a struct instead of (bool, string) avoids workarounds like
 // parsing reply text to determine the action type.
 type InterruptResult struct {
-	Handled bool           // true if the message was processed
+	Handled bool           // true if the message was fully processed (don't queue it)
 	Action  ScheduleAction // which action was taken
-	Reply   string         // optional text to send back to the user
+	Reply   string         // optional text to send back to the user immediately
+
+	// Queued indicates the message was acknowledged but NOT consumed.
+	// The gateway should send Reply as immediate feedback, then let the
+	// message continue through the normal queuing path (wait for lock).
+	// When Queued is true, Handled MUST be false.
+	//
+	// Used by Insert/Enqueue: the user gets instant "收到，完成后处理"
+	// feedback, and the message is processed normally after the current
+	// loop finishes — using the gateway's own response delivery mechanism.
+	Queued bool
 }
