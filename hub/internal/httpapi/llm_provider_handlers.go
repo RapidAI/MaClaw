@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -653,7 +654,7 @@ func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSetti
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		status, models, _, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
+		status, models, _, _, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -697,14 +698,23 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 			return
 		}
-		status, models, providerReg, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
+		status, models, providerReg, serviceReg, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		authorizedModel, requestedModel, err := resolveAuthorizedModel(body, models)
-		selectedModelDebug := explainModelSelection(body, models, authorizedModel)
+		billableModels, deniedByModel, deniedCode, deniedMessage := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.Email, body, models)
+		authorizedModel, requestedModel, err := resolveAuthorizedModel(body, billableModels)
+		selectedModelDebug := explainModelSelection(body, billableModels, authorizedModel)
 		if err != nil {
+			if denial, ok := deniedByModel[strings.ToLower(strings.TrimSpace(requestedModel))]; ok && requestedModel != "" && !strings.EqualFold(requestedModel, "auto") && !strings.EqualFold(requestedModel, "default") {
+				writeError(w, http.StatusForbidden, denial.Code, denial.Message)
+				return
+			}
+			if len(models) > 0 && len(billableModels) == 0 && deniedCode != "" {
+				writeError(w, http.StatusForbidden, deniedCode, deniedMessage)
+				return
+			}
 			writeError(w, http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
@@ -1048,21 +1058,87 @@ func preserveCardHashes(next *llmservice.Registry, old *llmservice.Registry) {
 	}
 }
 
-func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, email string) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *im.LLMProviderRegistry, error) {
+func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, email string) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *im.LLMProviderRegistry, *llmservice.Registry, error) {
 	reg, err := llmservice.LoadRegistry(ctx, system)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	status, models, err := llmservice.ResolveStatusFromRegistry(ctx, reg, securitySvc, email, externalLLMBaseURL(r))
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	status, models = filterAuthorizedModelsByProviderRegistry(status, models, providerReg)
-	return status, models, providerReg, nil
+	return status, models, providerReg, reg, nil
+}
+
+type llmBillingDenial struct {
+	Code    string
+	Message string
+}
+
+func filterAuthorizedModelsByBillingEligibility(reg *llmservice.Registry, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, string, string) {
+	filtered := make([]llmservice.AuthorizedModel, 0, len(models))
+	denied := map[string]llmBillingDenial{}
+	firstCode := ""
+	firstMessage := ""
+	for i := range models {
+		eligibleModel, code, err := filterAuthorizedModelByBillingEligibility(reg, email, body, &models[i])
+		if err != nil {
+			denial := llmBillingDenial{Code: code, Message: err.Error()}
+			denied[strings.ToLower(strings.TrimSpace(models[i].Name))] = denial
+			if firstCode == "" {
+				firstCode = code
+				firstMessage = err.Error()
+			}
+			continue
+		}
+		filtered = append(filtered, *eligibleModel)
+	}
+	return filtered, denied, firstCode, firstMessage
+}
+
+func filterAuthorizedModelByBillingEligibility(reg *llmservice.Registry, email string, body map[string]any, model *llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, string, error) {
+	if model == nil || reg == nil {
+		return model, "", nil
+	}
+	orderedProviders := llmservice.OrderProvidersForRequest(body, model)
+	if len(orderedProviders) == 0 {
+		orderedProviders = append([]string(nil), model.ProviderIDs...)
+	}
+	eligibleProviderIDs := make([]string, 0, len(orderedProviders))
+	firstCode := ""
+	firstMessage := ""
+	now := time.Now().UTC()
+	for _, providerID := range orderedProviders {
+		allowed, code, message := billingEligibilityForProvider(reg, email, llmservice.ServiceGroupIDsForProvider(model, providerID), now)
+		if allowed {
+			eligibleProviderIDs = append(eligibleProviderIDs, providerID)
+			continue
+		}
+		if firstCode == "" {
+			firstCode = code
+			firstMessage = message
+		}
+	}
+	if len(eligibleProviderIDs) == 0 {
+		if firstCode == "" {
+			firstCode = "LLM_SERVICE_CREDITS_REQUIRED"
+			firstMessage = "selected model requires an active grant with remaining credits"
+		}
+		return nil, firstCode, errors.New(firstMessage)
+	}
+	clone := *model
+	clone.ProviderIDs = eligibleProviderIDs
+	return &clone, "", nil
+}
+
+func billingEligibilityForProvider(reg *llmservice.Registry, email string, serviceGroupIDs []string, now time.Time) (bool, string, string) {
+	allowed, _, code, message, _, _, _ := llmservice.BillingEligibilityForServiceGroups(reg, email, serviceGroupIDs, now)
+	return allowed, code, message
 }
 
 func resolveAuthorizedModel(body map[string]any, models []llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, string, error) {

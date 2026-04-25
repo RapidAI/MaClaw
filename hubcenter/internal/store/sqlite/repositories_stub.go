@@ -22,11 +22,19 @@ type adminAuditRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+type failureEventLogRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 type hubRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
 type hubUserLinkRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type hubDomainRouteRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
@@ -74,8 +82,10 @@ func NewStore(p *Provider) *store.Store {
 		Admins:           &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		System:           &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		AdminAudit:       &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		FailureLogs:      &failureEventLogRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Hubs:             &hubRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		HubUserLinks:     &hubUserLinkRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HubDomainRoutes:  &hubDomainRouteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		BlockedEmails:    &blockedEmailRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		BlockedIPs:       &blockedIPRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		HASyncOps:        &haSyncOpRepo{db: p.Write, readDB: p.Read, batch: p.batch},
@@ -93,6 +103,81 @@ func execWrite(ctx context.Context, batch *writeBatcher, db *sql.DB, query strin
 	}
 	_, err := db.ExecContext(ctx, query, args...)
 	return err
+}
+
+func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubInstance, error) {
+	var item store.HubInstance
+	var isDisabled int
+	var invitationCodeRequired int
+	var acceptPublicSignup int
+	var lastSeen sql.NullString
+	var createdAt string
+	var updatedAt string
+	if err := scanner.Scan(
+		&item.ID,
+		&item.InstallationID,
+		&item.OwnerEmail,
+		&item.Name,
+		&item.Description,
+		&item.BaseURL,
+		&item.Host,
+		&item.Port,
+		&item.Visibility,
+		&item.EnrollmentMode,
+		&item.CorporateEmailDomain,
+		&acceptPublicSignup,
+		&item.Status,
+		&isDisabled,
+		&item.DisabledReason,
+		&item.CapabilitiesJSON,
+		&item.HubSecretHash,
+		&invitationCodeRequired,
+		&lastSeen,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	item.IsDisabled = isDisabled == 1
+	item.AcceptPublicSignup = acceptPublicSignup == 1
+	item.InvitationCodeRequired = invitationCodeRequired == 1
+	if lastSeen.Valid {
+		ts, err := time.Parse(time.RFC3339, lastSeen.String)
+		if err == nil {
+			item.LastSeenAt = &ts
+		}
+	}
+	item.CreatedAt = mustParseTime(createdAt)
+	item.UpdatedAt = mustParseTime(updatedAt)
+	return &item, nil
+}
+
+func scanHubUserLink(scanner interface{ Scan(dest ...any) error }) (*store.HubUserLink, error) {
+	var item store.HubUserLink
+	var isDefault int
+	var createdAt string
+	var updatedAt string
+	if err := scanner.Scan(&item.ID, &item.HubID, &item.Email, &isDefault, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	item.IsDefault = isDefault == 1
+	item.CreatedAt = mustParseTime(createdAt)
+	item.UpdatedAt = mustParseTime(updatedAt)
+	return &item, nil
+}
+
+func scanHubDomainRoute(scanner interface{ Scan(dest ...any) error }) (*store.HubDomainRoute, error) {
+	var item store.HubDomainRoute
+	var enabled int
+	var createdAt string
+	var updatedAt string
+	if err := scanner.Scan(&item.ID, &item.HubID, &item.Domain, &enabled, &item.Priority, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	item.Enabled = enabled == 1
+	item.CreatedAt = mustParseTime(createdAt)
+	item.UpdatedAt = mustParseTime(updatedAt)
+	return &item, nil
 }
 
 func (r *adminRepo) Create(ctx context.Context, admin *store.AdminUser) error {
@@ -195,6 +280,37 @@ func (r *systemRepo) Get(ctx context.Context, key string) (string, error) {
 	return value, nil
 }
 
+func (r *systemRepo) List(ctx context.Context) ([]*store.SystemSettingEntry, error) {
+	rows, err := r.readDB.QueryContext(ctx, `
+		SELECT key, value_json, updated_at
+		FROM system_settings
+		ORDER BY key ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]*store.SystemSettingEntry, 0)
+	for rows.Next() {
+		var (
+			item         store.SystemSettingEntry
+			rawUpdatedAt string
+		)
+		if err := rows.Scan(&item.Key, &item.ValueJSON, &rawUpdatedAt); err != nil {
+			return nil, err
+		}
+		if ts, err := time.Parse(time.RFC3339, rawUpdatedAt); err == nil {
+			item.UpdatedAt = ts
+		}
+		items = append(items, &item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func (r *adminAuditRepo) Create(ctx context.Context, log *store.AdminAuditLog) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO admin_audit_logs (id, admin_user_id, action, payload_json, created_at)
@@ -212,10 +328,10 @@ func (r *adminAuditRepo) Create(ctx context.Context, log *store.AdminAuditLog) e
 func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO hub_instances (
-			id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
-			status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
+			id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
+			accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
 			invitation_code_required, last_seen_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		hub.ID,
 		hub.InstallationID,
@@ -227,6 +343,8 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 		hub.Port,
 		hub.Visibility,
 		hub.EnrollmentMode,
+		hub.CorporateEmailDomain,
+		boolToInt(hub.AcceptPublicSignup),
 		hub.Status,
 		boolToInt(hub.IsDisabled),
 		hub.DisabledReason,
@@ -241,109 +359,39 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 }
 func (r *hubRepo) GetByID(ctx context.Context, id string) (*store.HubInstance, error) {
 	row := r.readDB.QueryRowContext(ctx, `
-		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
-		       status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
+		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
+		       accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
 		       invitation_code_required, last_seen_at, created_at, updated_at
 		FROM hub_instances
 		WHERE id = ?
 	`, id)
 
-	var item store.HubInstance
-	var isDisabled int
-	var invitationCodeRequired int
-	var lastSeen sql.NullString
-	var createdAt string
-	var updatedAt string
-	if err := row.Scan(
-		&item.ID,
-		&item.InstallationID,
-		&item.OwnerEmail,
-		&item.Name,
-		&item.Description,
-		&item.BaseURL,
-		&item.Host,
-		&item.Port,
-		&item.Visibility,
-		&item.EnrollmentMode,
-		&item.Status,
-		&isDisabled,
-		&item.DisabledReason,
-		&item.CapabilitiesJSON,
-		&item.HubSecretHash,
-		&invitationCodeRequired,
-		&lastSeen,
-		&createdAt,
-		&updatedAt,
-	); err != nil {
+	item, err := scanHubInstance(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	item.IsDisabled = isDisabled == 1
-	item.InvitationCodeRequired = invitationCodeRequired == 1
-	if lastSeen.Valid {
-		ts, err := time.Parse(time.RFC3339, lastSeen.String)
-		if err == nil {
-			item.LastSeenAt = &ts
-		}
-	}
-	item.CreatedAt = mustParseTime(createdAt)
-	item.UpdatedAt = mustParseTime(updatedAt)
-	return &item, nil
+	return item, nil
 }
 func (r *hubRepo) GetByInstallationID(ctx context.Context, installationID string) (*store.HubInstance, error) {
 	row := r.readDB.QueryRowContext(ctx, `
-		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
-		       status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
+		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
+		       accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
 		       invitation_code_required, last_seen_at, created_at, updated_at
 		FROM hub_instances
 		WHERE installation_id = ?
 	`, installationID)
 
-	var item store.HubInstance
-	var isDisabled int
-	var invitationCodeRequired int
-	var lastSeen sql.NullString
-	var createdAt string
-	var updatedAt string
-	if err := row.Scan(
-		&item.ID,
-		&item.InstallationID,
-		&item.OwnerEmail,
-		&item.Name,
-		&item.Description,
-		&item.BaseURL,
-		&item.Host,
-		&item.Port,
-		&item.Visibility,
-		&item.EnrollmentMode,
-		&item.Status,
-		&isDisabled,
-		&item.DisabledReason,
-		&item.CapabilitiesJSON,
-		&item.HubSecretHash,
-		&invitationCodeRequired,
-		&lastSeen,
-		&createdAt,
-		&updatedAt,
-	); err != nil {
+	item, err := scanHubInstance(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	item.IsDisabled = isDisabled == 1
-	item.InvitationCodeRequired = invitationCodeRequired == 1
-	if lastSeen.Valid {
-		ts, err := time.Parse(time.RFC3339, lastSeen.String)
-		if err == nil {
-			item.LastSeenAt = &ts
-		}
-	}
-	item.CreatedAt = mustParseTime(createdAt)
-	item.UpdatedAt = mustParseTime(updatedAt)
-	return &item, nil
+	return item, nil
 }
 func (r *hubRepo) UpdateHeartbeat(ctx context.Context, hubID string, at time.Time) error {
 	return execWrite(ctx, r.batch, r.db, `
@@ -356,7 +404,7 @@ func (r *hubRepo) UpdateHeartbeat(ctx context.Context, hubID string, at time.Tim
 func (r *hubRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubInstance, error) {
 	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT DISTINCT h.id, h.installation_id, h.owner_email, h.name, h.description, h.base_url, h.host, h.port, h.visibility,
-		       h.enrollment_mode, h.status, h.is_disabled, h.disabled_reason,
+		       h.enrollment_mode, h.corporate_email_domain, h.accept_public_signup, h.status, h.is_disabled, h.disabled_reason,
 		       h.capabilities_json, h.hub_secret_hash, h.invitation_code_required, h.last_seen_at, h.created_at, h.updated_at
 		FROM hub_instances h
 		LEFT JOIN hub_user_links l ON l.hub_id = h.id
@@ -370,54 +418,19 @@ func (r *hubRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubIn
 
 	var out []*store.HubInstance
 	for rows.Next() {
-		var item store.HubInstance
-		var isDisabled int
-		var invitationCodeRequired int
-		var lastSeen sql.NullString
-		var createdAt string
-		var updatedAt string
-		if err := rows.Scan(
-			&item.ID,
-			&item.InstallationID,
-			&item.OwnerEmail,
-			&item.Name,
-			&item.Description,
-			&item.BaseURL,
-			&item.Host,
-			&item.Port,
-			&item.Visibility,
-			&item.EnrollmentMode,
-			&item.Status,
-			&isDisabled,
-			&item.DisabledReason,
-			&item.CapabilitiesJSON,
-			&item.HubSecretHash,
-			&invitationCodeRequired,
-			&lastSeen,
-			&createdAt,
-			&updatedAt,
-		); err != nil {
+		item, err := scanHubInstance(rows)
+		if err != nil {
 			return nil, err
 		}
-		item.IsDisabled = isDisabled == 1
-		item.InvitationCodeRequired = invitationCodeRequired == 1
-		if lastSeen.Valid {
-			ts, err := time.Parse(time.RFC3339, lastSeen.String)
-			if err == nil {
-				item.LastSeenAt = &ts
-			}
-		}
-		item.CreatedAt = mustParseTime(createdAt)
-		item.UpdatedAt = mustParseTime(updatedAt)
-		out = append(out, &item)
+		out = append(out, item)
 	}
 	return out, rows.Err()
 }
 
 func (r *hubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
 	rows, err := r.readDB.QueryContext(ctx, `
-		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
-		       status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
+		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
+		       accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
 		       invitation_code_required, last_seen_at, created_at, updated_at
 		FROM hub_instances
 		ORDER BY updated_at DESC
@@ -429,46 +442,11 @@ func (r *hubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
 
 	var out []*store.HubInstance
 	for rows.Next() {
-		var item store.HubInstance
-		var isDisabled int
-		var invitationCodeRequired int
-		var lastSeen sql.NullString
-		var createdAt string
-		var updatedAt string
-		if err := rows.Scan(
-			&item.ID,
-			&item.InstallationID,
-			&item.OwnerEmail,
-			&item.Name,
-			&item.Description,
-			&item.BaseURL,
-			&item.Host,
-			&item.Port,
-			&item.Visibility,
-			&item.EnrollmentMode,
-			&item.Status,
-			&isDisabled,
-			&item.DisabledReason,
-			&item.CapabilitiesJSON,
-			&item.HubSecretHash,
-			&invitationCodeRequired,
-			&lastSeen,
-			&createdAt,
-			&updatedAt,
-		); err != nil {
+		item, err := scanHubInstance(rows)
+		if err != nil {
 			return nil, err
 		}
-		item.IsDisabled = isDisabled == 1
-		item.InvitationCodeRequired = invitationCodeRequired == 1
-		if lastSeen.Valid {
-			ts, err := time.Parse(time.RFC3339, lastSeen.String)
-			if err == nil {
-				item.LastSeenAt = &ts
-			}
-		}
-		item.CreatedAt = mustParseTime(createdAt)
-		item.UpdatedAt = mustParseTime(updatedAt)
-		out = append(out, &item)
+		out = append(out, item)
 	}
 	return out, rows.Err()
 }
@@ -499,7 +477,7 @@ func (r *hubRepo) UpdateRegistration(ctx context.Context, hub *store.HubInstance
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE hub_instances
 		SET installation_id = ?, owner_email = ?, name = ?, description = ?, base_url = ?,
-		    host = ?, port = ?, visibility = ?, enrollment_mode = ?, status = ?,
+		    host = ?, port = ?, visibility = ?, enrollment_mode = ?, corporate_email_domain = ?, accept_public_signup = ?, status = ?,
 		    is_disabled = ?, disabled_reason = ?, capabilities_json = ?, hub_secret_hash = ?,
 		    last_seen_at = ?, updated_at = ?
 		WHERE id = ?
@@ -513,6 +491,8 @@ func (r *hubRepo) UpdateRegistration(ctx context.Context, hub *store.HubInstance
 		hub.Port,
 		hub.Visibility,
 		hub.EnrollmentMode,
+		hub.CorporateEmailDomain,
+		boolToInt(hub.AcceptPublicSignup),
 		hub.Status,
 		boolToInt(hub.IsDisabled),
 		hub.DisabledReason,
@@ -556,17 +536,33 @@ func (r *hubUserLinkRepo) ListByEmail(ctx context.Context, email string) ([]*sto
 
 	var out []*store.HubUserLink
 	for rows.Next() {
-		var item store.HubUserLink
-		var isDefault int
-		var createdAt string
-		var updatedAt string
-		if err := rows.Scan(&item.ID, &item.HubID, &item.Email, &isDefault, &createdAt, &updatedAt); err != nil {
+		item, err := scanHubUserLink(rows)
+		if err != nil {
 			return nil, err
 		}
-		item.IsDefault = isDefault == 1
-		item.CreatedAt = mustParseTime(createdAt)
-		item.UpdatedAt = mustParseTime(updatedAt)
-		out = append(out, &item)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (r *hubUserLinkRepo) ListAll(ctx context.Context) ([]*store.HubUserLink, error) {
+	rows, err := r.readDB.QueryContext(ctx, `
+		SELECT id, hub_id, email, is_default, created_at, updated_at
+		FROM hub_user_links
+		ORDER BY updated_at DESC, id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*store.HubUserLink
+	for rows.Next() {
+		item, err := scanHubUserLink(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
 	}
 	return out, rows.Err()
 }
@@ -586,6 +582,27 @@ func (r *hubUserLinkRepo) Create(ctx context.Context, link *store.HubUserLink) e
 	return err
 }
 
+func (r *hubUserLinkRepo) Upsert(ctx context.Context, link *store.HubUserLink) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			hub_id = excluded.hub_id,
+			email = excluded.email,
+			is_default = excluded.is_default,
+			created_at = excluded.created_at,
+			updated_at = excluded.updated_at
+	`,
+		link.ID,
+		link.HubID,
+		link.Email,
+		boolToInt(link.IsDefault),
+		link.CreatedAt.Format(time.RFC3339),
+		link.UpdatedAt.Format(time.RFC3339),
+	)
+	return err
+}
+
 func (r *hubUserLinkRepo) GetDefaultByEmail(ctx context.Context, email string) (*store.HubUserLink, error) {
 	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, hub_id, email, is_default, created_at, updated_at
@@ -594,25 +611,88 @@ func (r *hubUserLinkRepo) GetDefaultByEmail(ctx context.Context, email string) (
 		LIMIT 1
 	`, email)
 
-	var item store.HubUserLink
-	var isDefault int
-	var createdAt string
-	var updatedAt string
-	if err := row.Scan(&item.ID, &item.HubID, &item.Email, &isDefault, &createdAt, &updatedAt); err != nil {
+	item, err := scanHubUserLink(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	item.IsDefault = isDefault == 1
-	item.CreatedAt = mustParseTime(createdAt)
-	item.UpdatedAt = mustParseTime(updatedAt)
-	return &item, nil
+	return item, nil
+}
+
+func (r *hubUserLinkRepo) DeleteByID(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM hub_user_links
+		WHERE id = ?
+	`, id)
+	return err
 }
 
 func (r *hubUserLinkRepo) DeleteByHubID(ctx context.Context, hubID string) error {
 	_, err := r.db.ExecContext(ctx, `
 		DELETE FROM hub_user_links
+		WHERE hub_id = ?
+	`, hubID)
+	return err
+}
+
+func (r *hubDomainRouteRepo) Upsert(ctx context.Context, route *store.HubDomainRoute) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO hub_domain_routes (id, hub_id, domain, enabled, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			hub_id = excluded.hub_id,
+			domain = excluded.domain,
+			enabled = excluded.enabled,
+			priority = excluded.priority,
+			created_at = excluded.created_at,
+			updated_at = excluded.updated_at
+	`,
+		route.ID,
+		route.HubID,
+		route.Domain,
+		boolToInt(route.Enabled),
+		route.Priority,
+		route.CreatedAt.Format(time.RFC3339),
+		route.UpdatedAt.Format(time.RFC3339),
+	)
+	return err
+}
+
+func (r *hubDomainRouteRepo) ListAll(ctx context.Context) ([]*store.HubDomainRoute, error) {
+	rows, err := r.readDB.QueryContext(ctx, `
+		SELECT id, hub_id, domain, enabled, priority, created_at, updated_at
+		FROM hub_domain_routes
+		ORDER BY priority ASC, updated_at DESC, id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*store.HubDomainRoute
+	for rows.Next() {
+		item, err := scanHubDomainRoute(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (r *hubDomainRouteRepo) DeleteByID(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM hub_domain_routes
+		WHERE id = ?
+	`, id)
+	return err
+}
+
+func (r *hubDomainRouteRepo) DeleteByHubID(ctx context.Context, hubID string) error {
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM hub_domain_routes
 		WHERE hub_id = ?
 	`, hubID)
 	return err
@@ -764,8 +844,7 @@ func timePtrString(v *time.Time) any {
 	return v.Format(time.RFC3339)
 }
 
-// 闁冲厜鍋撻柍鍏夊亾 Gossip Repository 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
-
+// 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Gossip Repository 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?
 func (r *gossipRepo) CreatePost(ctx context.Context, post *store.GossipPost) error {
 	return execWrite(ctx, r.batch, r.db,
 		`INSERT INTO gossip_posts (id, machine_id, user_email, nickname, content, category, score, votes, locked, flagged, created_at)
@@ -869,6 +948,36 @@ func (r *gossipRepo) FlagPost(ctx context.Context, id string, flagged bool) erro
 	return execWrite(ctx, r.batch, r.db, `UPDATE gossip_posts SET flagged = ? WHERE id = ?`, boolToInt(flagged), id)
 }
 
+func (r *gossipRepo) ReplaceAll(ctx context.Context, posts []*store.GossipPost, comments []*store.GossipComment) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gossip_comments`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gossip_posts`); err != nil {
+		return err
+	}
+	for _, post := range posts {
+		if post == nil {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO gossip_posts (id, machine_id, user_email, nickname, content, category, score, votes, locked, flagged, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, post.ID, post.MachineID, post.UserEmail, post.Nickname, post.Content, post.Category, post.Score, post.Votes, boolToInt(post.Locked), boolToInt(post.Flagged), post.CreatedAt.Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	for _, comment := range comments {
+		if comment == nil {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO gossip_comments (id, post_id, machine_id, user_email, nickname, content, rating, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, comment.ID, comment.PostID, comment.MachineID, comment.UserEmail, comment.Nickname, comment.Content, comment.Rating, comment.CreatedAt.Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
 func (r *gossipRepo) ListFlaggedPosts(ctx context.Context, offset, limit int) ([]*store.GossipPost, int, error) {
 	var total int
 	if err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gossip_posts WHERE flagged = 1`).Scan(&total); err != nil {
@@ -973,7 +1082,7 @@ func (r *gossipRepo) RateComment(ctx context.Context, comment *store.GossipComme
 		return store.ErrAlreadyRated
 	}
 
-	// Insert the rating comment 闁?unique index acts as final safety net
+	// Insert the rating comment 闂?unique index acts as final safety net
 	if _, err := conn.ExecContext(ctx,
 		`INSERT INTO gossip_comments (id, post_id, machine_id, user_email, nickname, content, rating, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1011,4 +1120,60 @@ func (r *gossipRepo) HasRated(ctx context.Context, postID, machineID string) (bo
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (r *failureEventLogRepo) Create(ctx context.Context, log *store.FailureEventLog) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO failure_event_logs (id, category, event_code, message, entity_id, email, client_ip, details_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, log.ID, log.Category, log.EventCode, log.Message, log.EntityID, log.Email, log.ClientIP, log.DetailsJSON, log.CreatedAt.Format(time.RFC3339))
+	return err
+}
+
+func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEventLogFilter) ([]*store.FailureEventLog, int, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	keyword := strings.TrimSpace(filter.Keyword)
+	category := strings.TrimSpace(filter.Category)
+	where := make([]string, 0, 2)
+	args := make([]any, 0, 8)
+	if category != "" {
+		where = append(where, "category = ?")
+		args = append(args, category)
+	}
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		where = append(where, "(event_code LIKE ? OR message LIKE ? OR entity_id LIKE ? OR email LIKE ? OR client_ip LIKE ? OR details_json LIKE ?)")
+		args = append(args, like, like, like, like, like, like)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	if err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM failure_event_logs`+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, category, event_code, message, entity_id, email, client_ip, details_json, created_at FROM failure_event_logs`+whereSQL+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]*store.FailureEventLog, 0, limit)
+	for rows.Next() {
+		var item store.FailureEventLog
+		var createdAt string
+		if err := rows.Scan(&item.ID, &item.Category, &item.EventCode, &item.Message, &item.EntityID, &item.Email, &item.ClientIP, &item.DetailsJSON, &createdAt); err != nil {
+			return nil, 0, err
+		}
+		item.CreatedAt = mustParseTime(createdAt)
+		items = append(items, &item)
+	}
+	return items, total, rows.Err()
 }

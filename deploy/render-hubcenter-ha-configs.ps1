@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$InventoryPath,
 
@@ -12,6 +12,27 @@ function Normalize-Url {
     return $Value.Trim().TrimEnd('/')
 }
 
+function Get-Fqdn {
+    param([hashtable]$Center)
+
+    foreach ($candidate in @($Center.FQDN, $Center.PublicBaseURL, $Center.AdvertiseURL)) {
+        if ([string]::IsNullOrWhiteSpace([string]$candidate)) {
+            continue
+        }
+        $value = ([string]$candidate).Trim()
+        if ($value -match '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+            try {
+                return ([uri]$value).Host.ToLowerInvariant()
+            }
+            catch {
+            }
+        }
+        return $value.Trim().Trim('/').ToLowerInvariant()
+    }
+
+    throw "HubCenter entry is missing FQDN/PublicBaseURL/AdvertiseURL"
+}
+
 function Quote-YamlString {
     param([string]$Value)
     if ($null -eq $Value) {
@@ -23,15 +44,16 @@ function Quote-YamlString {
 function Render-HubCenterConfig {
     param(
         [hashtable]$Center,
-        [array]$Peers,
+        [array]$Centers,
         [string]$ClusterSecret
     )
 
-    $peerLines = foreach ($peer in $Peers) {
+    $nodeLines = foreach ($node in $Centers) {
 @"
-    - node_id: $($peer.NodeID)
-      name: $($peer.NodeName)
-      base_url: $(Normalize-Url $peer.AdvertiseURL)
+    - fqdn: $(Get-Fqdn $node)
+      node_id: $($node.NodeID)
+      node_name: $($node.NodeName)
+      advertise_url: $(Normalize-Url $node.AdvertiseURL)
       enabled: true
 "@
     }
@@ -44,15 +66,14 @@ server:
 
 ha:
   enabled: true
-  node_id: $($Center.NodeID)
-  node_name: $($Center.NodeName)
-  advertise_url: $(Normalize-Url $Center.AdvertiseURL)
+  self_fqdn: $(Get-Fqdn $Center)
+  private_key_path: ./data/ha_node_key.pem
   cluster_secret: $ClusterSecret
   sync_interval_seconds: 3
   pull_batch_size: 200
   heartbeat_sync_min_interval_seconds: 10
-  peers:
-$($peerLines -join "`r`n")
+  nodes:
+$($nodeLines -join "`r`n")
 
 database:
   driver: sqlite
@@ -85,6 +106,32 @@ function Render-HubConfig {
 
     $centerLines = foreach ($url in $Hub.CenterBaseURLs) {
         "    - $(Normalize-Url $url)"
+    }
+    $hubName = if ([string]::IsNullOrWhiteSpace([string]$Hub.Name)) { 'MaClaw Hub' } else { [string]$Hub.Name }
+    $hubDescription = if ([string]::IsNullOrWhiteSpace([string]$Hub.Description)) { 'Self-hosted MaClaw remote hub' } else { [string]$Hub.Description }
+    $hubVisibility = if ([string]::IsNullOrWhiteSpace([string]$Hub.Visibility)) { 'private' } else { ([string]$Hub.Visibility).Trim().ToLowerInvariant() }
+    $corpDomain = ''
+    if ($null -ne $Hub.CorporateEmailDomain) {
+        $corpDomain = ([string]$Hub.CorporateEmailDomain).Trim()
+    }
+    $corpDomains = @()
+    if ($null -ne $Hub.CorporateEmailDomains) {
+        $corpDomains = @($Hub.CorporateEmailDomains | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() })
+    }
+    $acceptPublicSignup = $true
+    if ($null -ne $Hub.AcceptPublicSignup) {
+        $acceptPublicSignup = [bool]$Hub.AcceptPublicSignup
+    }
+    $corpDomainLines = @()
+    if ($corpDomains.Count -gt 0) {
+        $corpDomainLines += '  corporate_email_domains:'
+        foreach ($domain in $corpDomains) {
+            $corpDomainLines += ('    - {0}' -f (Quote-YamlString $domain))
+        }
+    }
+    $corpDomainBlock = ''
+    if ($corpDomainLines.Count -gt 0) {
+        $corpDomainBlock = "`r`n" + ($corpDomainLines -join "`r`n")
     }
 
 @"
@@ -120,9 +167,11 @@ $($centerLines -join "`r`n")
   heartbeat_interval_sec: 30
 
 hub:
-  name: MaClaw Hub
-  description: Self-hosted MaClaw remote hub
-  visibility: private
+  name: $(Quote-YamlString $hubName)
+  description: $(Quote-YamlString $hubDescription)
+  visibility: $(Quote-YamlString $hubVisibility)
+  corporate_email_domain: $(Quote-YamlString $corpDomain)$corpDomainBlock
+  accept_public_signup: $($acceptPublicSignup.ToString().ToLowerInvariant())
 
 mail:
   enabled: false
@@ -139,7 +188,6 @@ logging:
   dir: ./data/logs
 "@
 }
-
 $inventory = Import-PowerShellDataFile -Path $InventoryPath
 if ($null -eq $inventory) {
     throw "Failed to load inventory from $InventoryPath"
@@ -166,8 +214,7 @@ if ($hubs.Count -eq 0) {
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 foreach ($center in $centers) {
-    $peers = @($centers | Where-Object { $_.NodeID -ne $center.NodeID })
-    $content = Render-HubCenterConfig -Center $center -Peers $peers -ClusterSecret $inventory.ClusterSecret
+    $content = Render-HubCenterConfig -Center $center -Centers $centers -ClusterSecret $inventory.ClusterSecret
     $target = Join-Path $OutputDir ("hubcenter-{0}.yaml" -f $center.NodeID)
     Set-Content -Path $target -Value $content -Encoding UTF8
     Write-Host "Wrote $target" -ForegroundColor Green
@@ -189,3 +236,4 @@ for ($i = 0; $i -lt $hubs.Count; $i++) {
     Set-Content -Path $hubTarget -Value $hubContent -Encoding UTF8
     Write-Host "Wrote $hubTarget" -ForegroundColor Green
 }
+

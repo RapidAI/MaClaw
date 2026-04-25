@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-// ── PurchaseRepository implementation ───────────────────────────────────
+// 鈹€鈹€ PurchaseRepository implementation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 func (s *Store) CreatePurchase(ctx context.Context, rec *PurchaseRecord) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -18,6 +18,9 @@ func (s *Store) CreatePurchase(ctx context.Context, rec *PurchaseRecord) error {
 		rec.PurchaseType, rec.AmountPaid, rec.PlatformFee, rec.SellerEarning, rec.SellerID,
 		rec.KeyStatus, rec.APIKeyID, rec.Status, fmtTime(rec.CreatedAt),
 	)
+	if err == nil {
+		s.emitSync(ctx)
+	}
 	return err
 }
 
@@ -44,12 +47,18 @@ func (s *Store) UpdatePurchaseKeyStatus(ctx context.Context, id, keyStatus, apiK
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sm_purchase_records SET key_status = ?, api_key_id = ? WHERE id = ?`,
 		keyStatus, apiKeyID, id)
+	if err == nil {
+		s.emitSync(ctx)
+	}
 	return err
 }
 
 func (s *Store) MarkPurchaseRefunded(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sm_purchase_records SET status = 'refunded' WHERE id = ?`, id)
+	if err == nil {
+		s.emitSync(ctx)
+	}
 	return err
 }
 
@@ -72,7 +81,7 @@ func (s *Store) GetOldestPendingKeyPurchase(ctx context.Context, skillID string)
 		LIMIT 1`, skillID))
 }
 
-// ── helpers ─────────────────────────────────────────────────────────────
+// 鈹€鈹€ helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 func (s *Store) listPurchases(ctx context.Context, col, val string, offset, limit int) ([]PurchaseRecord, int, error) {
 	var total int

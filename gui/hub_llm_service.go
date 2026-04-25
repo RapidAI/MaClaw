@@ -39,6 +39,7 @@ type HubLLMServiceStatus struct {
 	AvailableModels   []string                `json:"available_models,omitempty"`
 	AuthorizedModels  []HubLLMAuthorizedModel `json:"authorized_models,omitempty"`
 	ActiveGrants      []HubLLMActiveGrant     `json:"active_grants,omitempty"`
+	InactiveReasons   []string                `json:"inactive_reasons,omitempty"`
 	NearestExpiresAt  string                  `json:"nearest_expires_at,omitempty"`
 	DefaultModel      string                  `json:"default_model,omitempty"`
 	HubLLMBaseURL     string                  `json:"hub_llm_base_url,omitempty"`
@@ -58,8 +59,14 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 	if err != nil {
 		return HubLLMServiceStatus{}, err
 	}
-	if a.applyHubLLMServiceStatusToConfig(&cfg, status) {
-		if saveErr := a.SaveConfig(cfg); saveErr != nil {
+	// Reload config before applying status to avoid overwriting concurrent
+	// changes made while the HTTP call was in flight.
+	freshCfg, err := a.LoadConfig()
+	if err != nil {
+		return status, err
+	}
+	if a.applyHubLLMServiceStatusToConfig(&freshCfg, status) {
+		if saveErr := a.SaveConfig(freshCfg); saveErr != nil {
 			return status, saveErr
 		}
 	}
@@ -110,8 +117,15 @@ func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return HubLLMServiceStatus{}, err
 	}
-	if a.applyHubLLMServiceStatusToConfig(&cfg, result.ServiceStatus) {
-		if err := a.SaveConfig(cfg); err != nil {
+	// Reload config before applying status to avoid overwriting concurrent
+	// changes (e.g. user editing LLM providers while redeem HTTP call was
+	// in flight). Same pattern as #11 SSO config race fix.
+	freshCfg, err := a.LoadConfig()
+	if err != nil {
+		return result.ServiceStatus, err
+	}
+	if a.applyHubLLMServiceStatusToConfig(&freshCfg, result.ServiceStatus) {
+		if err := a.SaveConfig(freshCfg); err != nil {
 			return result.ServiceStatus, err
 		}
 	}
@@ -135,9 +149,17 @@ func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 	if err != nil {
 		return
 	}
-	if a.applyHubLLMServiceStatusToConfig(cfg, status) {
-		_ = a.SaveConfig(*cfg)
+	// Reload config before applying to avoid overwriting concurrent changes.
+	freshCfg, loadErr := a.LoadConfig()
+	if loadErr != nil {
+		// Fall back to the passed-in config if reload fails.
+		freshCfg = *cfg
 	}
+	if a.applyHubLLMServiceStatusToConfig(&freshCfg, status) {
+		_ = a.SaveConfig(freshCfg)
+	}
+	// Update the caller's copy so syncedMaclawLLMProviders returns fresh data.
+	*cfg = freshCfg
 }
 
 func (a *App) fetchHubLLMServiceStatus(cfg corelib.AppConfig) (HubLLMServiceStatus, error) {

@@ -6,6 +6,7 @@ export interface Colleague {
   code: string;
   role_id: string;
   role_name: string;
+  role_code: string;
   status: string;
   created_at: string;
 }

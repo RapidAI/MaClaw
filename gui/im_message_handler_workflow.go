@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -21,6 +22,73 @@ func (h *IMMessageHandler) getWorkflowEngine() *workflow.WorkflowEngine {
 		return nil
 	}
 	return h.app.workflowEngine
+}
+
+// getTaskOrchestrator returns the per-user task execution orchestrator.
+// Creates one on demand if the registry exists but no orchestrator for
+// this user yet. Returns nil if the registry is not initialized.
+func (h *IMMessageHandler) getTaskOrchestrator(userID string) *TaskExecutionOrchestrator {
+	if h.taskOrchestratorRegistry == nil {
+		return nil
+	}
+	return h.taskOrchestratorRegistry.GetOrCreate(userID)
+}
+
+// getTaskOrchestratorReadOnly returns the per-user orchestrator if it exists,
+// without creating one. Used for read-only checks (IsActive, ShouldUseSubAgent)
+// to avoid polluting the registry with empty orchestrator entries.
+func (h *IMMessageHandler) getTaskOrchestratorReadOnly(userID string) *TaskExecutionOrchestrator {
+	if h.taskOrchestratorRegistry == nil {
+		return nil
+	}
+	return h.taskOrchestratorRegistry.Get(userID)
+}
+
+// handlePostStartWorkflow is the single post-StartWorkflow handler for all
+// GUI-side workflow start paths (UIC, IUM, keyword fallback). It:
+//  1. Emits suggest_maximize for the desktop panel
+//  2. Builds the overview text ("🚀 工作流已启动")
+//  3. For input-required workflows: returns the overview + upload prompt
+//  4. For other workflows: sends overview via callback, then re-routes to
+//     handleActiveWorkflow which triggers the first phase's agent loop
+//
+// extraText is appended to the overview (e.g. IUM's reply text). Pass "" if none.
+func (h *IMMessageHandler) handlePostStartWorkflow(
+	engine *workflow.WorkflowEngine,
+	userID, text string,
+	state *workflow.WorkflowState,
+	extraText string,
+) *IMAgentResponse {
+	// Suggest maximizing the AI panel for workflow experience.
+	if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+		adapter.EmitSuggestMaximize(userID, string(state.Type))
+	}
+
+	overview := fmt.Sprintf("🚀 工作流已启动：%s\n📋 当前阶段：%s", state.Type, state.CurrentPhase)
+	if extraText != "" {
+		overview += "\n\n" + extraText
+	}
+
+	// Input-required workflows must wait for user to provide documents.
+	if req := engine.GetInputRequirement(userID); req != nil {
+		overview += "\n\n📎 " + req.Description
+		if len(req.FileTypes) > 0 {
+			overview += fmt.Sprintf("（支持格式：%s）", strings.Join(req.FileTypes, "、"))
+		}
+		if req.AcceptText {
+			overview += "\n也可以直接将文档内容粘贴到对话框中，或提供网址由系统自动抓取。"
+		}
+		return &IMAgentResponse{Text: overview}
+	}
+
+	// Non-input workflows: send overview, then re-route to handleActiveWorkflow
+	// which calls HandleInput → PhasePrompt + RunAgentLoop → agent loop runs.
+	if cb := engine.GetCallbacks(); cb != nil {
+		_ = cb.SendTextToUser(userID, overview)
+	}
+	log.Printf("[WorkflowInterception] StartWorkflow succeeded, re-routing to handleActiveWorkflow for user=%s type=%s phase=%s",
+		userID, state.Type, state.CurrentPhase)
+	return h.handleActiveWorkflow(engine, userID, text)
 }
 
 // handleWorkflowInterception checks if the message should be handled by the
@@ -68,6 +136,43 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAg
 
 // handleActiveWorkflow processes input for a user with an active workflow.
 func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine, userID, text string) *IMAgentResponse {
+	// ── Cross-type task detection via UIC ──
+	//
+	// Before delegating to the engine, check if the message is a completely
+	// different type of workflow task. The UIC (UnifiedIntentClassifier)
+	// maps messages to workflow types via L1 keywords + L2 embedding + L3
+	// tree reasoning — the same mechanism handleNeedsUnderstanding uses to
+	// decide which workflow to start.
+	//
+	// This MUST run before HandleInput because HandleInput has multiple
+	// branches (PendingConfirm, WaitingForInput, default) and cross-type
+	// detection needs to work regardless of which branch would fire.
+	//
+	// When the UIC determines a workflow type that DIFFERS from the active
+	// workflow with sufficient confidence, the user has moved on. Cancel
+	// the current workflow and re-route through the full pipeline.
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		ws := engine.GetActiveWorkflow(userID)
+		if ws != nil {
+			uicResult := uic.Classify(intent.MessageContext{
+				Text:   text,
+				UserID: userID,
+			})
+			if uicResult.WorkflowType != "" &&
+				uicResult.WorkflowType != "none" &&
+				workflow.WorkflowType(uicResult.WorkflowType) != ws.Type &&
+				uicResult.Confidence >= 0.70 {
+				log.Printf("[WorkflowInterception] cross-type replacement: user=%s "+
+					"active=%s uic_workflow=%s intent=%s conf=%.2f — "+
+					"cancelling active workflow and re-routing",
+					userID, ws.Type, uicResult.WorkflowType,
+					uicResult.Primary, uicResult.Confidence)
+				_ = engine.CancelWorkflow(userID)
+				return h.handleWorkflowInterception(userID, text)
+			}
+		}
+	}
+
 	resp, err := engine.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] HandleInput error for user %s: %v", userID, err)
@@ -94,14 +199,58 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine,
 		}
 		return &IMAgentResponse{Text: resp.Text}
 	}
+
+	// When the engine signals an execution phase, attempt to activate the
+	// task orchestrator. The engine provides the preceding phase's output
+	// as TaskBreakdownText. If it parses as a task list → orchestrator +
+	// SubAgent. If not (e.g. PPT's slide_scripting output) → fall through
+	// to the normal agent loop which handles execution via tools directly.
+	if resp.ActivateOrchestrator {
+		taskOrch := h.getTaskOrchestrator(userID)
+		if taskOrch != nil && !taskOrch.IsActive() && resp.TaskBreakdownText != "" {
+			tasks := ParseTaskListFromText(resp.TaskBreakdownText)
+			if len(tasks) > 0 {
+				projectPath := h.traceProjectPath()
+				if projectPath == "" {
+					home, _ := os.UserHomeDir()
+					projectPath = home
+				}
+				taskOrch.Activate(tasks, resp.RequirementsContext, resp.DesignContext, projectPath, "")
+				log.Printf("[WorkflowInterception] orchestrator activated by engine: "+
+					"%d tasks for user=%s project=%s", len(tasks), userID, projectPath)
+			} else {
+				log.Printf("[WorkflowInterception] execution phase entered but "+
+					"preceding output is not a task list — using normal agent loop "+
+					"for user=%s", userID)
+			}
+		}
+	}
+
 	// RunAgentLoop=true — the workflow engine wants the agent loop to
 	// generate phase output.
-	if !resp.DefaultInput {
-		if resp.PhasePrompt != "" {
-			h.stashedPhasePrompt.Store(userID, resp.PhasePrompt)
-		}
-		h.workflowAgentLoopMarker.Store(userID, true)
+	//
+	// Phase prompt injection and doc capture marker are ALWAYS set when
+	// the engine provides a PhasePrompt. The phase prompt is the engine's
+	// instruction to the LLM ("you are in the audience_goal phase,
+	// generate..."). Without it, the LLM has no idea what to produce.
+	// The marker enables doc capture (SavePhaseOutput) so the generated
+	// document is saved and the workflow can advance.
+	//
+	// DefaultInput=true means the user's message reached the engine's
+	// default branch (no confirm/skip match). This happens both for
+	// legitimate phase triggers ("开工") and unrelated messages ("check
+	// server status"). In both cases, the phase prompt guides the LLM
+	// to produce the phase deliverable. If the LLM instead answers the
+	// unrelated question, the NeedsConfirm gate will force-return the
+	// output for user review — the user can then re-trigger the phase.
+	//
+	// Previously, DefaultInput=true suppressed both phase prompt injection
+	// and doc capture, causing the workflow to stall completely — the LLM
+	// received no phase instructions and produced no captured output.
+	if resp.PhasePrompt != "" {
+		h.stashedPhasePrompt.Store(userID, resp.PhasePrompt)
 	}
+	h.workflowAgentLoopMarker.Store(userID, true)
 	if resp.Advance && resp.Text != "" {
 		if cb := engine.GetCallbacks(); cb != nil {
 			_ = cb.SendTextToUser(userID, resp.Text)
@@ -118,13 +267,19 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine,
 func (h *IMMessageHandler) handlePendingConfirm(engine *workflow.WorkflowEngine, userID, text string) *IMAgentResponse {
 	ctx := context.Background()
 
+	// Cross-type detection is handled by handleActiveWorkflow BEFORE
+	// HandleInput is called. By the time we reach here, the message is
+	// confirmed to be directed at the current workflow (same type or
+	// non-workflow). We only need to classify confirm/modify/cancel/other.
+
+	ws := engine.GetActiveWorkflow(userID)
+
 	// Build compact context: phase name + first ~200 chars of the document +
 	// the system's last prompt to the user + the last assistant message.
 	// The last assistant message is critical — it often contains instructions
 	// like "确定了就告诉我'开工'" which the LLM needs to understand that
 	// "开工" is a direct response to that prompt, not an unrelated message.
 	phaseContext := ""
-	ws := engine.GetActiveWorkflow(userID)
 	if ws != nil {
 		tmpl := engine.GetRegistry().Match(ws.Type)
 		if tmpl != nil && ws.PhaseIndex < len(tmpl.Phases) {
@@ -171,6 +326,9 @@ IMPORTANT: Pay close attention to the assistant's last message. If the assistant
 Classify the user's response into exactly one category. Reply with ONLY the category word, nothing else:
 - "confirm" — user approves and wants to proceed. This includes any form of agreement, acceptance, or readiness signal in the context of the ongoing review. A short or vague reply after being shown a document almost always means approval.
 - "modify" — user provides specific feedback, corrections, additions, or requests changes to the DOCUMENT CONTENT itself (e.g. "加一个登录功能", "把技术栈改成React", "需求里漏了XX").
+- "cancel" — user wants to abandon, cancel, or discard the current workflow entirely. This includes:
+  - Explicit cancellation: "放弃", "取消", "不做了", "算了", "不要了", "cancel", "abort"
+  - NOTE: Starting a completely different task type (e.g. coding task during a PPT workflow) is handled separately by the engine's cross-type detection. You do NOT need to detect that here.
 - "other" — user is asking something clearly unrelated to the document or workflow. This includes:
   - Server/infrastructure operations: "更新omniroute", "登录服务器", "重启服务", "npm install", "部署"
   - Information queries: weather, search, off-topic questions
@@ -200,6 +358,12 @@ When in doubt between "confirm" and "other", prefer "confirm" — the conversati
 	switch {
 	case strings.Contains(intent, "confirm"):
 		return h.advanceAndRespond(engine, userID)
+
+	case strings.Contains(intent, "cancel"):
+		// User explicitly wants to abandon the workflow.
+		_ = engine.CancelWorkflow(userID)
+		log.Printf("[workflow-confirm] user=%s cancelled workflow via LLM classification", userID)
+		return &IMAgentResponse{Text: "已取消当前工作流。有什么其他需要帮助的吗？"}
 
 	case strings.Contains(intent, "modify"):
 		// User wants to modify the phase document — fall through to the
@@ -310,52 +474,7 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 			log.Printf("[WorkflowInterception] StartWorkflow error for user %s: %v", userID, err)
 			return &IMAgentResponse{Error: fmt.Sprintf("启动工作流失败: %v", err)}
 		}
-		// Suggest maximizing the AI panel for workflow experience.
-		if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
-			adapter.EmitSuggestMaximize(userID, string(state.Type))
-		}
-		overview := fmt.Sprintf("🚀 工作流已启动：%s\n📋 当前阶段：%s", state.Type, state.CurrentPhase)
-		if reply != "" {
-			overview += "\n\n" + reply
-		}
-		// For document-required workflows, append the upload prompt to the
-		// startup message so the user knows to provide the input document.
-		// These workflows wait for user input before generating phase content.
-		if req := engine.GetInputRequirement(userID); req != nil {
-			overview += "\n\n📎 " + req.Description
-			if len(req.FileTypes) > 0 {
-				overview += fmt.Sprintf("（支持格式：%s）", strings.Join(req.FileTypes, "、"))
-			}
-			if req.AcceptText {
-				overview += "\n也可以直接将文档内容粘贴到对话框中，或提供网址由系统自动抓取。"
-			}
-			return &IMAgentResponse{Text: overview}
-		}
-
-		// Non-input-driven workflows: automatically trigger the agent loop
-		// to generate the first phase document, instead of requiring the
-		// user to send a second message (e.g. "开工").
-		//
-		// Send the overview as an intermediate message, then set up the
-		// agent loop markers so the caller runs the phase generation.
-		// This mirrors the pattern in handleActiveWorkflow() when
-		// engine.HandleInput() returns RunAgentLoop=true.
-		log.Printf("[WorkflowInterception] auto-triggering agent loop for first phase: user=%s type=%s phase=%s",
-			userID, state.Type, state.CurrentPhase)
-		if cb := engine.GetCallbacks(); cb != nil {
-			_ = cb.SendTextToUser(userID, overview)
-		}
-		// Build the phase prompt for the first phase.
-		tmpl := engine.GetRegistry().Match(state.Type)
-		if tmpl != nil && len(tmpl.Phases) > 0 {
-			firstPhase := &tmpl.Phases[0]
-			phasePrompt := workflow.BuildPhaseSystemPrompt(state, firstPhase, engine.GetRegistry())
-			if phasePrompt != "" {
-				h.stashedPhasePrompt.Store(userID, phasePrompt)
-			}
-		}
-		h.workflowAgentLoopMarker.Store(userID, true)
-		return nil // fall through to agent loop
+		return h.handlePostStartWorkflow(engine, userID, text, state, reply)
 	}
 	return &IMAgentResponse{Text: reply}
 }
@@ -372,42 +491,75 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		return nil
 	}
 
-	// ── UIC pre-check: fast-reject non-workflow intents ──────────────
+	// ── Unified classification: UIC fusion produces both IntentLabel and WorkflowType ──
 	//
-	// The UnifiedIntentClassifier (UIC) runs a three-layer pipeline
-	// (L1 keywords <1ms, L2 embedding ~5ms, L3 LLM tree ~2-8s) that
-	// is MUCH faster than IntentUnderstandingManager's dedicated LLM
-	// call (10-30s). When UIC confidently classifies the message as a
-	// non-workflow intent (document_delivery, non_coding, search, etc.),
-	// we skip the IUM call entirely.
+	// The UIC's L3 tree reasoning channel now outputs workflow_type alongside
+	// the intent label in a single LLM call. This eliminates the need for a
+	// separate IUM LLM call (10-30s) to determine workflow type.
 	//
-	// This implements Phase 3 of the intent-fusion upgrade design:
-	// "工作流意图融合" — letting the two classification pipelines share
-	// signals instead of running independently.
+	// Decision flow:
+	//   1. UIC.Classify() → ClassificationResult with Primary + WorkflowType
+	//   2. WorkflowType non-empty → directly start workflow (skip IUM LLM call)
+	//   3. WorkflowType empty → not a workflow task → return nil (normal agent loop)
 	//
-	// The workflow-candidate set is derived from IntentDefinition.MayTriggerWorkflow
-	// (data-driven, not a hardcoded list). The threshold is sourced from
-	// FusionConfig.WorkflowRejectThreshold (tunable via calibration).
+	// L1 keywords no longer short-circuit the fusion pipeline. Even if L1
+	// misclassifies "宣传ppt" as non_coding, L2+L3 fusion corrects it to
+	// office with workflow_type="presentation_design".
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		uicResult := uic.Classify(intent.MessageContext{
 			Text:   text,
 			UserID: userID,
 		})
-		threshold := uic.GetWorkflowRejectThreshold()
-		if uicResult.Confidence >= threshold && !uic.IsWorkflowCandidate(uicResult.Primary) {
-			log.Printf("[WorkflowInterception] UIC pre-check rejected workflow for user %s: "+
-				"intent=%s conf=%.2f layer=%d threshold=%.2f — fast-rejecting before IUM LLM call, text=%q",
-				userID, uicResult.Primary, uicResult.Confidence, uicResult.Layer, threshold,
-				truncateRunes(text, 80))
-			return nil
+
+		// UIC determined a specific workflow type via L3 tree reasoning.
+		if uicResult.WorkflowType != "" && uicResult.WorkflowType != "none" {
+			log.Printf("[WorkflowInterception] UIC fusion determined workflow for user %s: "+
+				"intent=%s conf=%.2f layer=%d workflow_type=%s text=%q",
+				userID, uicResult.Primary, uicResult.Confidence, uicResult.Layer,
+				uicResult.WorkflowType, truncateRunes(text, 80))
+
+			wfType := workflow.WorkflowType(uicResult.WorkflowType)
+			registry := engine.GetRegistry()
+			if registry != nil && registry.Match(wfType) != nil {
+				// Valid workflow type — start workflow directly, skip IUM LLM call.
+				wfIntent := workflow.StructuredIntent{
+					Category:   wfType,
+					Summary:    fmt.Sprintf("UIC fusion: %s (conf=%.2f)", uicResult.Primary, uicResult.Confidence),
+					Goals:      []string{text},
+					Confidence: uicResult.Confidence,
+				}
+				state, err := engine.StartWorkflow(userID, wfIntent)
+				if err != nil {
+					log.Printf("[WorkflowInterception] UIC-driven StartWorkflow error for user %s: %v", userID, err)
+					// Fall through to IUM for deeper analysis rather than
+					// dropping to normal agent loop — the user clearly wants
+					// a workflow task.
+				} else {
+					return h.handlePostStartWorkflow(engine, userID, text, state, "")
+				}
+			}
+			// Unknown workflow type — fall through to IUM for clarification.
+			log.Printf("[WorkflowInterception] UIC workflow_type %q not found in registry, falling through to IUM", uicResult.WorkflowType)
 		}
-		// UIC says it might be a workflow task, or confidence is too low
-		// to reject. Fall through to IUM for the definitive classification.
-		if uicResult.Confidence >= 0.50 {
-			log.Printf("[WorkflowInterception] UIC pre-check: intent=%s conf=%.2f layer=%d — "+
-				"not a clear non-workflow signal, proceeding to IUM",
-				uicResult.Primary, uicResult.Confidence, uicResult.Layer)
+
+		// UIC says no workflow — check if it's a confident non-workflow signal.
+		// Only reject if the classification came from fusion (layer >= 2),
+		// not from L1 keywords alone (layer == 1 in degraded mode).
+		if uicResult.WorkflowType == "" && uicResult.Layer >= 2 {
+			threshold := uic.GetWorkflowRejectThreshold()
+			if uicResult.Confidence >= threshold && !uic.IsWorkflowCandidate(uicResult.Primary) {
+				log.Printf("[WorkflowInterception] UIC fusion rejected workflow for user %s: "+
+					"intent=%s conf=%.2f layer=%d threshold=%.2f — text=%q",
+					userID, uicResult.Primary, uicResult.Confidence, uicResult.Layer, threshold,
+					truncateRunes(text, 80))
+				return nil
+			}
 		}
+
+		// UIC not confident enough or ambiguous — fall through to IUM for deeper analysis.
+		log.Printf("[WorkflowInterception] UIC fusion: intent=%s conf=%.2f layer=%d wf=%s — "+
+			"not decisive, proceeding to IUM",
+			uicResult.Primary, uicResult.Confidence, uicResult.Layer, uicResult.WorkflowType)
 	}
 
 	result, err := understanding.Start(userID, text)
@@ -421,16 +573,6 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 
 	// LLM determined this is NOT a workflow task — trust the LLM's judgment
 	// and fall through to the normal agent loop. No session was created.
-	//
-	// Previously this path called tryKeywordWorkflowFallback(strongOnly=true)
-	// to override the LLM with keyword matching. This caused false positives:
-	// "打开桌面上的PPT文件并截图" was correctly rejected by the LLM but then
-	// overridden by the "PPT" strong keyword match into presentation_design.
-	//
-	// The LLM has full semantic understanding of the user's intent. Keyword
-	// matching cannot distinguish "打开PPT文件" (file operation) from
-	// "设计一个PPT" (creation task). When the LLM explicitly says "not a
-	// workflow", we trust it.
 	if result.Rejected {
 		log.Printf("[WorkflowInterception] understanding rejected task for user %s: %q — trusting LLM, no keyword override", userID, truncateRunes(text, 80))
 		return nil
@@ -438,10 +580,7 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 
 	// LLM says it IS a workflow task — an understanding session has been
 	// created. The user will go through multi-round clarification before
-	// the workflow actually starts. Do NOT emit suggest_maximize here;
-	// it will be emitted when StartWorkflow succeeds (in handleActiveUnderstanding
-	// or tryKeywordWorkflowFallback).
-
+	// the workflow actually starts.
 	return &IMAgentResponse{Text: result.Reply}
 }
 
@@ -495,24 +634,7 @@ func (h *IMMessageHandler) tryKeywordWorkflowFallback(engine *workflow.WorkflowE
 		log.Printf("[WorkflowInterception] keyword fallback StartWorkflow error for user %s: %v", userID, err)
 		return nil
 	}
-	if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
-		adapter.EmitSuggestMaximize(userID, string(state.Type))
-	}
-	overview := fmt.Sprintf("🚀 工作流已启动：%s\n📋 当前阶段：%s", state.Type, state.CurrentPhase)
-
-	// Append input requirement prompt for document-required workflows
-	// (bid_response, contract_review, etc.).
-	if req := engine.GetInputRequirement(userID); req != nil {
-		overview += "\n\n📎 " + req.Description
-		if len(req.FileTypes) > 0 {
-			overview += fmt.Sprintf("（支持格式：%s）", strings.Join(req.FileTypes, "、"))
-		}
-		if req.AcceptText {
-			overview += "\n也可以直接将文档内容粘贴到对话框中，或提供网址由系统自动抓取。"
-		}
-	}
-
-	return &IMAgentResponse{Text: overview}
+	return h.handlePostStartWorkflow(engine, userID, text, state, "")
 }
 
 // cancelWorkflowForUser cancels any active workflow and understanding session

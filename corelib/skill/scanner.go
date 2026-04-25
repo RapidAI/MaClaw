@@ -196,6 +196,7 @@ type SkillYAMLFile struct {
 	RequiredEnv      []string             `yaml:"required_env,omitempty"`      // required environment variables
 	PreferredShell   string               `yaml:"shell,omitempty"`             // "bash" or "cmd"; empty = auto-detect
 	Operations       []SkillYAMLOperation `yaml:"operations,omitempty"`        // named operations for api_workflow mode
+	Params           []SkillYAMLParam     `yaml:"params,omitempty"`            // parameter schema (aliases, CLI flags, defaults)
 	Type             string               `yaml:"type,omitempty"`              // "executable" (default) | "knowledge"
 	Content          string               `yaml:"content,omitempty"`           // Markdown content for knowledge-type skills
 	// Tool availability conditions
@@ -216,6 +217,18 @@ type SkillYAMLOperation struct {
 	Description string   `yaml:"description"`
 	Params      []string `yaml:"params,omitempty"`
 	Labels      []string `yaml:"labels,omitempty"`
+}
+
+// SkillYAMLParam declares a single parameter in the skill's parameter schema.
+// This is the YAML on-disk format; it is converted to corelib.NLSkillParam
+// during skill loading.
+type SkillYAMLParam struct {
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description,omitempty"`
+	Aliases     []string `yaml:"aliases,omitempty"`
+	CLIFlag     string   `yaml:"cli_flag,omitempty"`
+	Default     string   `yaml:"default,omitempty"`
+	Required    bool     `yaml:"required,omitempty"`
 }
 
 // SkillYAMLRequires declares runtime dependencies that should be auto-installed
@@ -261,7 +274,7 @@ func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
 		"name": true, "description": true, "triggers": true, "steps": true,
 		"status": true, "platforms": true, "requires_gui": true,
 		"produces_artifact": true, "required_args": true, "required_env": true,
-		"shell": true, "mode": true, "operations": true,
+		"shell": true, "mode": true, "operations": true, "params": true,
 		"type": true, "content": true,
 		"requires_tools": true, "fallback_for_tools": true,
 		"requires_toolsets": true, "fallback_for_toolsets": true,
@@ -483,6 +496,18 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				Labels:      op.Labels,
 			})
 		}
+		// Convert YAML params to runtime params.
+		var skillParams []corelib.NLSkillParam
+		for _, p := range sf.Params {
+			skillParams = append(skillParams, corelib.NLSkillParam{
+				Name:        p.Name,
+				Description: p.Description,
+				Aliases:     p.Aliases,
+				CLIFlag:     p.CLIFlag,
+				Default:     p.Default,
+				Required:    p.Required,
+			})
+		}
 		producesArtifact := true
 		if sf.ProducesArtifact != nil && !*sf.ProducesArtifact {
 			producesArtifact = false
@@ -504,6 +529,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			CreatedAt:   fileModTime(yamlPath),
 			ProducesArtifact: producesArtifact,
 			Operations:     operations,
+			Params:         skillParams,
 			RequiredArgs:   sf.RequiredArgs,
 			RequiredEnv:    sf.RequiredEnv,
 			PreferredShell: sf.PreferredShell,

@@ -50,18 +50,18 @@ const subscriptionUrls: { [key: string]: string } = {
     "GLM": "https://bigmodel.cn/glm-coding",
     "Kimi": "https://www.kimi.com/membership/pricing?from=upgrade_plan&track_id=1d2446f5-f45f-4ae5-961e-c0afe936a115",
     "Doubao": "https://www.volcengine.com/activity/codingplan",
-    "腾讯云": "https://cloud.tencent.com/document/product/1772/128947",
-    "讯飞星辰": "https://www.xfyun.cn/doc/spark/CodingPlan.html",
+    "Tencent Cloud": "https://cloud.tencent.com/document/product/1772/128947",
+    "iFlytek": "https://www.xfyun.cn/doc/spark/CodingPlan.html",
     "MiniMax": "https://platform.minimaxi.com/user-center/payment/coding-plan",
-    "百度千帆": "https://cloud.baidu.com/product/codingplan.html",
+    "Baidu Qianfan": "https://cloud.baidu.com/product/codingplan.html",
     "Codex": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
     "Gemini": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
     "DeepSeek": "https://platform.deepseek.com/api_keys",
     "ChatFire": "https://api.chatfire.cn/register?aff=jira",
     "XiaoMi": "https://platform.xiaomimimo.com/#/console/api-keys",
-    "摩尔线程": "https://code.mthreads.com/",
-    "快手": "https://www.streamlake.com/marketing/coding-plan",
-    "阿里云": "https://coding.dashscope.aliyuncs.com/"
+    "Moore Threads": "https://code.mthreads.com/",
+    "Kuaishou": "https://www.streamlake.com/marketing/coding-plan",
+    "Aliyun": "https://coding.dashscope.aliyuncs.com/"
 };
 
 // Known provider API endpoints database
@@ -107,7 +107,7 @@ const knownProviderEndpoints: ProviderEndpoint[] = [
     { name: "Claude Official", url: "https://api.anthropic.com/v1", protocol: "anthropic", region: "global", description: "Official Claude API" },
     { name: "MiniMax", url: "https://api.minimaxi.com/anthropic", protocol: "anthropic", region: "china" },
     { name: "DeepSeek", url: "https://api.deepseek.com/anthropic", protocol: "anthropic", region: "china" },
-    { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/anthropic", protocol: "anthropic", region: "china", description: "Tencent Cloud Claude-compatible endpoint" },
+    { name: "Tencent Cloud", url: "https://api.lkeap.cloud.tencent.com/coding/anthropic", protocol: "anthropic", region: "china", description: "Tencent Cloud Claude-compatible endpoint" },
     { name: "ChatFire", url: "https://api.chatfire.cn/v1", protocol: "anthropic", region: "china" },
     { name: "OpenRouter", url: "https://openrouter.ai/api", protocol: "anthropic", region: "global" },
     
@@ -121,7 +121,7 @@ const knownProviderEndpoints: ProviderEndpoint[] = [
     { name: "智谱编程", url: "https://open.bigmodel.cn/api/anthropic", protocol: "anthropic", region: "china" },
     { name: "Kimi", url: "https://api.kimi.com/coding/v1", protocol: "openai", region: "china" },
     { name: "Doubao", url: "https://ark.cn-beijing.volces.com/api/coding", protocol: "openai", region: "china" },
-    { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/v3", protocol: "openai", region: "china", description: "Tencent Cloud OpenAI-compatible endpoint" },
+    { name: "Tencent Cloud", url: "https://api.lkeap.cloud.tencent.com/coding/v3", protocol: "openai", region: "china", description: "Tencent Cloud OpenAI-compatible endpoint" },
     { name: "Doubao Codex", url: "https://ark.cn-beijing.volces.com/api/coding/v3", protocol: "openai", region: "china" },
     { name: "DeepSeek Codex", url: "https://api.aicodemirror.com/api/codex/backend-api/codex", protocol: "openai", region: "china" },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", protocol: "openai", region: "global" },
@@ -143,9 +143,9 @@ const recommendedModels: { [provider: string]: { id: string; note?: string }[] }
     "DeepSeek": [{ id: "deepseek-chat" }],
     "ChatFire": [{ id: "sonnet" }, { id: "gpt-5.1-codex-mini" }, { id: "gpt-4o" }, { id: "gemini-2.5-pro" }],
     "XiaoMi": [{ id: "mimo-v2-flash" }],
-    "摩尔线程": [{ id: "GLM-4.7" }],
-    "快手": [{ id: "kat-coder-pro-v1" }],
-    "腾讯云": [
+    "Moore Threads": [{ id: "GLM-4.7" }],
+    "Kuaishou": [{ id: "kat-coder-pro-v1" }],
+    "Tencent Cloud": [
         { id: "glm-5", note: "默认" },
         { id: "tc-code-latest", note: "Auto" },
         { id: "hunyuan-2.0-instruct" },
@@ -155,7 +155,7 @@ const recommendedModels: { [provider: string]: { id: string; note?: string }[] }
         { id: "minimax-m2.5" },
         { id: "kimi-k2.5" },
     ],
-    "阿里云": [
+    "Aliyun": [
         { id: "qwen3.5-plus", note: "支持图片理解" },
         { id: "kimi-k2.5", note: "支持图片理解" },
         { id: "glm-5" },
@@ -201,19 +201,31 @@ const MarkdownLink = ({ node, ...props }: any) => (
     />
 );
 
-// Localized display names for providers that use non-English ModelName identifiers
+// Localized display names for providers that use English ModelName identifiers
 const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
     "en": {
-        "摩尔线程": "MooreThreads",
-        "快手": "Kuaishou"
+        "Tencent Cloud": "Tencent Cloud",
+        "Moore Threads": "MooreThreads",
+        "Kuaishou": "Kuaishou",
+        "Aliyun": "Aliyun",
+        "Baidu Qianfan": "Baidu Qianfan",
+        "iFlytek": "iFlytek"
     },
     "zh-Hans": {
-        "摩尔线程": "摩尔线程",
-        "快手": "快手"
+        "Tencent Cloud": "腾讯云",
+        "Moore Threads": "摩尔线程",
+        "Kuaishou": "快手",
+        "Aliyun": "阿里云",
+        "Baidu Qianfan": "百度千帆",
+        "iFlytek": "讯飞星辰"
     },
     "zh-Hant": {
-        "摩尔线程": "摩爾線程",
-        "快手": "快手"
+        "Tencent Cloud": "騰訊雲",
+        "Moore Threads": "摩爾線程",
+        "Kuaishou": "快手",
+        "Aliyun": "阿里雲",
+        "Baidu Qianfan": "百度千帆",
+        "iFlytek": "訊飛星辰"
     }
 };
 
@@ -292,7 +304,7 @@ const translations: any = {
         "version": "Version",
         "author": "Author",
         "aboutSectionTag": "ABOUT",
-        "aboutProductName": "MaClaw Bedrock",
+        "aboutProductName": "MaClaw Metamorphosis",
         "buildLabel": "Build",
         "quickActionsTitle": "Quick Actions",
         "quickActionsDesc": "Open official resources, check updates, or report issues.",
@@ -806,7 +818,7 @@ const translations: any = {
         "version": "版本",
         "author": "作者",
         "aboutSectionTag": "关于",
-        "aboutProductName": "码卡龙·磐石 MaClaw",
+        "aboutProductName": "码卡龙·蜕变 MaClaw",
         "buildLabel": "构建",
         "quickActionsTitle": "快捷操作",
         "quickActionsDesc": "打开官网资源、检查更新或反馈问题。",
@@ -1296,7 +1308,7 @@ const translations: any = {
         "version": "版本",
         "author": "作者",
         "aboutSectionTag": "關於",
-        "aboutProductName": "碼卡龍·磐石 MaClaw",
+        "aboutProductName": "碼卡龍·蜕變 MaClaw",
         "buildLabel": "構建",
         "quickActionsTitle": "快捷操作",
         "quickActionsDesc": "打開官網資源、檢查更新或反饋問題。",
@@ -3206,8 +3218,8 @@ function App() {
             if (p.includes("aigocode")) return "claude-3-5-sonnet-20241022";
             if (p.includes("aicodemirror")) return "Haiku";
             if (p.includes("coderelay")) return "claude-3-5-sonnet-20241022";
-            if (p.includes("摩尔线程")) return "GLM-4.7";
-            if (p.includes("快手")) return "kat-coder-pro-v1";
+            if (p.includes("moore threads") || p.includes("摩尔线程")) return "GLM-4.7";
+            if (p.includes("kuaishou") || p.includes("快手")) return "kat-coder-pro-v1";
         } else if (tool === "gemini") {
             return "gemini-2.0-flash-exp";
         } else if (tool === "codex") {
@@ -3223,8 +3235,8 @@ function App() {
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
-            if (p.includes("摩尔线程")) return "GLM-4.7";
-            if (p.includes("快手")) return "kat-coder-pro-v1";
+            if (p.includes("moore threads") || p.includes("摩尔线程")) return "GLM-4.7";
+            if (p.includes("kuaishou") || p.includes("快手")) return "kat-coder-pro-v1";
         }
         return "";
     };
@@ -3700,7 +3712,7 @@ ${instruction}`;
             style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
         >
             <div className="app-scale-layer">
-                <div id="App">
+                <div id="App" data-ai-theme={aiThemeMode}>
             <div style={{
                 height: '30px',
                 width: isLiteMode ? '60px' : '180px',
@@ -7099,7 +7111,7 @@ ${instruction}`;
                                             />
                                             {(() => {
                                                 const providerName = (config as any)[activeTool].models[activeTab].model_name;
-                                                const models = (activeTool === 'claude' || (providerName !== '阿里云' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;
+                                                const models = (activeTool === 'claude' || (providerName !== 'Aliyun' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;
                                                 if (!models || models.length === 0) return null;
                                                 return (
                                                     <button
@@ -7112,7 +7124,7 @@ ${instruction}`;
                                         </div>
                                         {showModelRecommend && (() => {
                                             const providerName = (config as any)[activeTool].models[activeTab].model_name;
-                                            const models = (activeTool === 'claude' || (providerName !== '阿里云' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;
+                                            const models = (activeTool === 'claude' || (providerName !== 'Aliyun' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;
                                             if (!models || models.length === 0) return null;
                                             return (
                                                 <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 100, marginTop: '4px', background: 'var(--theme-surface)', border: '1px solid var(--theme-border)', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', minWidth: '200px', maxHeight: '240px', overflowY: 'auto', padding: '4px 0' }}>

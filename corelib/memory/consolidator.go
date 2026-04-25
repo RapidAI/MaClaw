@@ -32,7 +32,8 @@ func NewConsolidator(store *Store, tree *TemporalTree, llm LLMChatCaller) *Conso
 
 // ConsolidateSegment performs online L1 consolidation for a single dialog turn.
 // It creates a segment-level memory from the raw user-assistant exchange.
-func (c *Consolidator) ConsolidateSegment(ctx context.Context, userMsg, assistantMsg string, turnTime time.Time) (*ConsolidationResult, error) {
+// ownerID is used for multi-tenant isolation (empty string for single-user mode).
+func (c *Consolidator) ConsolidateSegment(ctx context.Context, userMsg, assistantMsg string, turnTime time.Time, ownerID string) (*ConsolidationResult, error) {
 	if c.llm == nil || !c.llm.IsConfigured() {
 		return &ConsolidationResult{Level: LevelSegment}, nil
 	}
@@ -67,6 +68,7 @@ func (c *Consolidator) ConsolidateSegment(ctx context.Context, userMsg, assistan
 		Tags:     []string{"tmt", "L1", "segment"},
 		Level:    LevelSegment,
 		Interval: &interval,
+		OwnerID:  ownerID, // 多租户隔离
 	}
 
 	if err := c.store.Save(entry); err != nil {
@@ -90,7 +92,8 @@ func (c *Consolidator) ConsolidateSegment(ctx context.Context, userMsg, assistan
 // ConsolidateLevel performs scheduled consolidation at the specified level
 // for the given time window. It gathers child memories from (level-1) within
 // the window, plus historical context, and generates a consolidated summary.
-func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel, window TimeInterval) (*ConsolidationResult, error) {
+// ownerID is used for multi-tenant isolation (empty string for single-user mode).
+func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel, window TimeInterval, ownerID string) (*ConsolidationResult, error) {
 	if level < LevelSession || level > LevelProfile {
 		return nil, fmt.Errorf("consolidator: invalid level %d for scheduled consolidation", level)
 	}
@@ -110,6 +113,15 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 	childIDs := c.tree.FindPendingConsolidation(level, window)
 	if len(childIDs) == 0 {
 		return &ConsolidationResult{Level: level}, nil
+	}
+
+	// 多租户隔离：验证所有 child entries 的 OwnerID 一致
+	// 如果 ownerID 非空，过滤掉不属于该用户的 child entries
+	if ownerID != "" {
+		childIDs = c.filterChildrenByOwner(childIDs, ownerID)
+		if len(childIDs) == 0 {
+			return &ConsolidationResult{Level: level}, nil
+		}
 	}
 
 	// Gather child contents.
@@ -143,6 +155,7 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 		Tags:     []string{"tmt", fmt.Sprintf("L%d", level), level.String()},
 		Level:    level,
 		Interval: &window,
+		OwnerID:  ownerID, // 多租户隔离
 	}
 
 	if err := c.store.Save(entry); err != nil {
@@ -175,7 +188,8 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 
 // RunScheduledConsolidation checks all levels L2-L5 and consolidates any
 // completed temporal windows. Called periodically by the pipeline.
-func (c *Consolidator) RunScheduledConsolidation(ctx context.Context, now time.Time) []ConsolidationResult {
+// ownerID is used for multi-tenant isolation (empty string for single-user mode).
+func (c *Consolidator) RunScheduledConsolidation(ctx context.Context, now time.Time, ownerID string) []ConsolidationResult {
 	var results []ConsolidationResult
 
 	type levelConfig struct {
@@ -209,7 +223,7 @@ func (c *Consolidator) RunScheduledConsolidation(ctx context.Context, now time.T
 			continue
 		}
 
-		result, err := c.ConsolidateLevel(ctx, cfg.level, window)
+		result, err := c.ConsolidateLevel(ctx, cfg.level, window, ownerID)
 		if err != nil {
 			log.Printf("[consolidator] L%d error: %v", cfg.level, err)
 			continue
@@ -375,6 +389,39 @@ func (c *Consolidator) gatherContents(ids []string) []string {
 		}
 	}
 	return contents
+}
+
+// filterChildrenByOwner filters child entry IDs to only include those
+// belonging to the specified owner. Used for multi-tenant isolation.
+func (c *Consolidator) filterChildrenByOwner(childIDs []string, ownerID string) []string {
+	if ownerID == "" {
+		return childIDs
+	}
+
+	c.store.mu.RLock()
+	defer c.store.mu.RUnlock()
+
+	// Build ID → OwnerID map in single pass.
+	ownerByID := make(map[string]string, len(childIDs))
+	idSet := make(map[string]bool, len(childIDs))
+	for _, id := range childIDs {
+		idSet[id] = true
+	}
+	for _, e := range c.store.entries {
+		if idSet[e.ID] {
+			ownerByID[e.ID] = e.OwnerID
+		}
+	}
+
+	// Filter: keep only entries with matching OwnerID or empty OwnerID (shared).
+	var filtered []string
+	for _, id := range childIDs {
+		entryOwner := ownerByID[id]
+		if entryOwner == "" || entryOwner == ownerID {
+			filtered = append(filtered, id)
+		}
+	}
+	return filtered
 }
 
 func (c *Consolidator) findEntryByContent(content string, level TemporalLevel) string {

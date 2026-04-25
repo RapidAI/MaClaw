@@ -8,13 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
-// ── Data structures ─────────────────────────────────────────────────────
-
-// GossipPost 帖子数据（从 HubCenter API 返回）。
 type GossipPost struct {
 	ID        string `json:"id"`
 	Nickname  string `json:"nickname"`
@@ -26,7 +22,6 @@ type GossipPost struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// GossipComment 评论数据。
 type GossipComment struct {
 	ID        string `json:"id"`
 	Nickname  string `json:"nickname"`
@@ -35,13 +30,11 @@ type GossipComment struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// GossipPublishResult 发布帖子的响应。
 type GossipPublishResult struct {
 	OK   bool       `json:"ok"`
 	Post GossipPost `json:"post"`
 }
 
-// GossipBrowseResult 浏览帖子列表的响应。
 type GossipBrowseResult struct {
 	OK    bool         `json:"ok"`
 	Posts []GossipPost `json:"posts"`
@@ -49,13 +42,11 @@ type GossipBrowseResult struct {
 	Page  int          `json:"page"`
 }
 
-// GossipCommentResult 提交评论的响应。
 type GossipCommentResult struct {
 	OK      bool          `json:"ok"`
 	Comment GossipComment `json:"comment"`
 }
 
-// GossipCommentsResult 获取评论列表的响应。
 type GossipCommentsResult struct {
 	OK       bool            `json:"ok"`
 	Comments []GossipComment `json:"comments"`
@@ -63,7 +54,6 @@ type GossipCommentsResult struct {
 	Page     int             `json:"page"`
 }
 
-// GossipSnapshotResult 快照轮询的响应。
 type GossipSnapshotResult struct {
 	Changed bool         `json:"changed"`
 	Posts   []GossipPost `json:"posts,omitempty"`
@@ -71,15 +61,11 @@ type GossipSnapshotResult struct {
 	ETag    string       `json:"etag,omitempty"`
 }
 
-// ── GossipClient ────────────────────────────────────────────────────────
-
-// GossipClient 与 HubCenter Gossip API 交互。
 type GossipClient struct {
 	app    *App
 	client *http.Client
 }
 
-// NewGossipClient 创建 GossipClient。
 func NewGossipClient(app *App) *GossipClient {
 	return &GossipClient{
 		app:    app,
@@ -87,24 +73,12 @@ func NewGossipClient(app *App) *GossipClient {
 	}
 }
 
-func (c *GossipClient) baseURL() string {
-	cfg, err := c.app.LoadConfig()
-	if err != nil {
-		return ""
-	}
-	url := strings.TrimSpace(cfg.RemoteHubCenterURL)
-	if url == "" {
-		url = defaultRemoteHubCenterURL
-	}
-	return strings.TrimRight(url, "/")
-}
-
 func (c *GossipClient) machineID() string {
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(cfg.RemoteMachineID)
+	return cfg.RemoteMachineID
 }
 
 func (c *GossipClient) userEmail() string {
@@ -112,44 +86,37 @@ func (c *GossipClient) userEmail() string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(cfg.RemoteEmail)
+	return cfg.RemoteEmail
 }
 
-// ── API methods ─────────────────────────────────────────────────────────
-
-// readErrorBody reads at most 4KB from the response body for error messages.
 func readErrorBody(body io.Reader) string {
 	b, _ := io.ReadAll(io.LimitReader(body, 4096))
 	return string(b)
 }
 
-// requireBase returns the HubCenter base URL or an error if not configured.
-func (c *GossipClient) requireBase() (string, error) {
-	base := c.baseURL()
-	if base == "" {
-		return "", fmt.Errorf("hubcenter URL not configured")
+func (c *GossipClient) requireBase(ctx context.Context) (string, []string, error) {
+	base, discovered, err := c.app.resolveHubCenterBaseURLCached(ctx, c.client)
+	if err != nil {
+		return "", nil, err
 	}
-	return base, nil
+	c.app.rememberHubCenterSelection(base, discovered)
+	return base, discovered, nil
 }
 
-// requireWrite returns (base, machineID) or an error if either is missing.
-// Write operations (publish/comment/rate) need both.
-func (c *GossipClient) requireWrite() (base, mid string, err error) {
-	base, err = c.requireBase()
+func (c *GossipClient) requireWrite(ctx context.Context) (base, mid string, discovered []string, err error) {
+	base, discovered, err = c.requireBase(ctx)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	mid = c.machineID()
 	if mid == "" {
-		return "", "", fmt.Errorf("machine_id not configured")
+		return "", "", nil, fmt.Errorf("machine_id not configured")
 	}
-	return base, mid, nil
+	return base, mid, discovered, nil
 }
 
-// errGossipForbidden is returned when gossip operations are blocked by Hub security policy.
-var errGossipForbidden = fmt.Errorf("Gossip 功能已被管理员禁止")
+var errGossipForbidden = fmt.Errorf("gossip is disabled by hub policy")
 
-// checkGossipPermission returns an error if gossip is disallowed by Hub security policy (Req 6.4).
 func (c *GossipClient) checkGossipPermission() error {
 	if c.app != nil && !c.app.isGossipAllowed() {
 		return errGossipForbidden
@@ -157,89 +124,58 @@ func (c *GossipClient) checkGossipPermission() error {
 	return nil
 }
 
-// PublishPost 发布帖子。POST /api/gossip/publish
 func (c *GossipClient) PublishPost(ctx context.Context, content, category string) (*GossipPublishResult, error) {
 	if err := c.checkGossipPermission(); err != nil {
 		return nil, err
 	}
-
-	base, mid, err := c.requireWrite()
+	base, mid, discovered, err := c.requireWrite(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	payload, _ := json.Marshal(map[string]string{
 		"machine_id": mid,
 		"user_email": c.userEmail(),
 		"content":    content,
 		"category":   category,
 	})
-
-	req, err := http.NewRequestWithContext(ctx, "POST", base+"/api/gossip/publish", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/gossip/publish", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Machine-ID", mid)
-
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("request failed (%d): %s", resp.StatusCode, readErrorBody(resp.Body))
 	}
-
 	var result GossipPublishResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
+	c.app.rememberHubCenterSelection(base, discovered)
 	return &result, nil
 }
 
-// BrowsePosts 浏览帖子列表。GET /api/gossip/browse?page=N
 func (c *GossipClient) BrowsePosts(ctx context.Context, page int) (*GossipBrowseResult, error) {
-	base, err := c.requireBase()
-	if err != nil {
-		return nil, err
-	}
-
-	reqURL := fmt.Sprintf("%s/api/gossip/browse?page=%d", base, page)
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("request failed (%d): %s", resp.StatusCode, readErrorBody(resp.Body))
-	}
-
 	var result GossipBrowseResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if _, _, err := c.app.getHubCenterJSON(ctx, c.client, fmt.Sprintf("/api/gossip/browse?page=%d", page), 0, &result); err != nil {
+		return nil, err
 	}
 	return &result, nil
 }
 
-// AddComment 提交评论。POST /api/gossip/comment
 func (c *GossipClient) AddComment(ctx context.Context, postID, content string, rating int) (*GossipCommentResult, error) {
 	if err := c.checkGossipPermission(); err != nil {
 		return nil, err
 	}
-
-	base, mid, err := c.requireWrite()
+	base, mid, discovered, err := c.requireWrite(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	payload, _ := json.Marshal(map[string]interface{}{
 		"machine_id": mid,
 		"user_email": c.userEmail(),
@@ -247,137 +183,128 @@ func (c *GossipClient) AddComment(ctx context.Context, postID, content string, r
 		"content":    content,
 		"rating":     rating,
 	})
-
-	req, err := http.NewRequestWithContext(ctx, "POST", base+"/api/gossip/comment", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/gossip/comment", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Machine-ID", mid)
-
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("request failed (%d): %s", resp.StatusCode, readErrorBody(resp.Body))
 	}
-
 	var result GossipCommentResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
+	c.app.rememberHubCenterSelection(base, discovered)
 	return &result, nil
 }
 
-// RatePost 评分帖子。POST /api/gossip/rate
 func (c *GossipClient) RatePost(ctx context.Context, postID string, rating int) error {
 	if err := c.checkGossipPermission(); err != nil {
 		return err
 	}
-
-	base, mid, err := c.requireWrite()
+	base, mid, discovered, err := c.requireWrite(ctx)
 	if err != nil {
 		return err
 	}
-
 	payload, _ := json.Marshal(map[string]interface{}{
 		"machine_id": mid,
 		"user_email": c.userEmail(),
 		"post_id":    postID,
 		"rating":     rating,
 	})
-
-	req, err := http.NewRequestWithContext(ctx, "POST", base+"/api/gossip/rate", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/gossip/rate", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Machine-ID", mid)
-
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("request failed (%d): %s", resp.StatusCode, readErrorBody(resp.Body))
 	}
+	c.app.rememberHubCenterSelection(base, discovered)
 	return nil
 }
 
-// GetComments 获取评论列表。GET /api/gossip/comments?post_id=X&page=N
 func (c *GossipClient) GetComments(ctx context.Context, postID string, page int) (*GossipCommentsResult, error) {
-	base, err := c.requireBase()
-	if err != nil {
-		return nil, err
-	}
-
-	reqURL := fmt.Sprintf("%s/api/gossip/comments?post_id=%s&page=%d", base, url.QueryEscape(postID), page)
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("request failed (%d): %s", resp.StatusCode, readErrorBody(resp.Body))
-	}
-
 	var result GossipCommentsResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	path := fmt.Sprintf("/api/gossip/comments?post_id=%s&page=%d", url.QueryEscape(postID), page)
+	if _, _, err := c.app.getHubCenterJSON(ctx, c.client, path, 0, &result); err != nil {
+		return nil, err
 	}
 	return &result, nil
 }
 
-// GetSnapshot 获取快照数据，支持 ETag 条件请求。GET /api/gossip/snapshot
-// 当服务端返回 304 Not Modified 时，返回 Changed=false。
 func (c *GossipClient) GetSnapshot(ctx context.Context, etag string) (*GossipSnapshotResult, error) {
-	base, err := c.requireBase()
+	bases, err := c.app.resolveHubCenterCandidates(ctx, c.client)
 	if err != nil {
 		return nil, err
 	}
+	var lastErr error
+	for _, base := range bases {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/gossip/snapshot", nil)
+		if err != nil {
+			return nil, err
+		}
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		func() {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusNotModified {
+				lastErr = nil
+				return
+			}
+			if resp.StatusCode >= 300 {
+				lastErr = fmt.Errorf("request failed (%d): %s", resp.StatusCode, readErrorBody(resp.Body))
+				return
+			}
+			var result GossipSnapshotResult
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				lastErr = fmt.Errorf("decode response: %w", err)
+				return
+			}
+			result.Changed = true
+			if newETag := resp.Header.Get("ETag"); newETag != "" {
+				result.ETag = newETag
+			}
+			c.app.rememberHubCenterSelection(base, bases)
+			lastErr = snapshotResultError{result: &result}
+		}()
+		if lastErr == nil {
+			c.app.rememberHubCenterSelection(base, bases)
+			return &GossipSnapshotResult{Changed: false}, nil
+		}
+		if wrapped, ok := lastErr.(snapshotResultError); ok {
+			return wrapped.result, nil
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no reachable hubcenter")
+}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", base+"/api/gossip/snapshot", nil)
-	if err != nil {
-		return nil, err
-	}
-	if etag != "" {
-		req.Header.Set("If-None-Match", etag)
-	}
+type snapshotResultError struct {
+	result *GossipSnapshotResult
+}
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	// 304 Not Modified — data unchanged
-	if resp.StatusCode == http.StatusNotModified {
-		return &GossipSnapshotResult{Changed: false}, nil
-	}
-
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("request failed (%d): %s", resp.StatusCode, readErrorBody(resp.Body))
-	}
-
-	var result GossipSnapshotResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	result.Changed = true
-	// Capture ETag from response header if present
-	if newETag := resp.Header.Get("ETag"); newETag != "" {
-		result.ETag = newETag
-	}
-	return &result, nil
+func (e snapshotResultError) Error() string {
+	return "snapshot result"
 }

@@ -45,13 +45,13 @@ func newGossipTestEnv(t *testing.T) *gossipTestEnv {
 	st := sqlite.NewStore(provider)
 	adminSvc := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
 	mailer := &httpTestMailer{}
-	hubSvc := hubs.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
-	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
+	hubSvc := hubs.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
 
 	cachePath := filepath.Join(t.TempDir(), "gossip_snapshot.json.gz")
 	gossipCache := NewGossipCache(st.Gossip, cachePath)
 
-	handler := NewRouter(adminSvc, hubSvc, entrySvc, nil, nil, st.Gossip, gossipCache, nil, st.System, st.News, nil)
+	handler := NewRouter(adminSvc, hubSvc, entrySvc, nil, nil, st.FailureLogs, st.Gossip, gossipCache, nil, st.System, st.News, nil)
 
 	env := &gossipTestEnv{handler: handler, cache: gossipCache}
 
@@ -93,11 +93,11 @@ func TestGossipPublishBrowseCommentRateSnapshot(t *testing.T) {
 	resp := doJSONRequest(t, env.handler, http.MethodPost, "/api/gossip/publish", map[string]any{
 		"machine_id": "test-machine-001",
 		"user_email": "user@test.com",
-        "content":    "MaClaw finished the overtime coding for me.",
-        "category":   "owner",
-    }, "")
-    if resp.Code != http.StatusOK {
-        t.Fatalf("publish: %d %s", resp.Code, resp.Body.String())
+		"content":    "MaClaw finished the overtime coding for me.",
+		"category":   "owner",
+	}, "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("publish: %d %s", resp.Code, resp.Body.String())
 	}
 	pubData := decodeJSON(t, resp.Body.Bytes())
 	post, _ := pubData["post"].(map[string]any)
@@ -129,7 +129,7 @@ func TestGossipPublishBrowseCommentRateSnapshot(t *testing.T) {
 	resp = doJSONRequest(t, env.handler, http.MethodPost, "/api/gossip/comment", map[string]any{
 		"machine_id": "test-machine-002",
 		"post_id":    postID,
-        "content":    "This is a follow-up comment.",
+		"content":    "This is a follow-up comment.",
 		"rating":     0,
 	}, "")
 	if resp.Code != http.StatusOK {
@@ -174,11 +174,11 @@ func TestGossipPublishBrowseCommentRateSnapshot(t *testing.T) {
 	// Snapshot is served from file, need to trigger cache refresh first via a new publish
 	resp = doJSONRequest(t, env.handler, http.MethodPost, "/api/gossip/publish", map[string]any{
 		"machine_id": "test-machine-004",
-        "content":    "snapshot refresh post",
-        "category":   "news",
-    }, "")
-    if resp.Code != http.StatusOK {
-        t.Fatalf("publish 2: %d %s", resp.Code, resp.Body.String())
+		"content":    "snapshot refresh post",
+		"category":   "news",
+	}, "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("publish 2: %d %s", resp.Code, resp.Body.String())
 	}
 
 	// Give async cache refresh a moment, then check snapshot

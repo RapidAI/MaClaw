@@ -148,6 +148,28 @@ func TestAdminLegacyMirrorTreeRemoved(t *testing.T) {
 	}
 }
 
+func TestHubAdminPageIncludesFailureLogsUI(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "index.html"))
+	if err != nil {
+		t.Fatalf("read admin index: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		`data-tab="failurelogs"`,
+		`id="tab-failurelogs"`,
+		`/admin/failure-logs-tab.js`,
+		`loadFailureLogs()`,
+		`id="centerCorporateEmailDomains"`,
+		`id="centerAcceptPublicSignup"`,
+		`id="centerCorporateEmailDomainsHero"`,
+		`id="centerAcceptPublicSignupHero"`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("admin index missing %s", want)
+		}
+	}
+}
+
 func TestAdminIndexScriptRefsExist(t *testing.T) {
 	indexPath := filepath.Join("..", "..", "web", "admin", "index.html")
 	body, err := os.ReadFile(indexPath)

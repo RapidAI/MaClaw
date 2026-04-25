@@ -81,55 +81,11 @@ func classifyTaskIntent(text string) taskIntentResult {
 		}
 	}
 
-	// Fallback: keyword-based classification when UIC is nil.
-	msg := strings.ToLower(strings.TrimSpace(text))
-	if msg == "" {
-		return taskIntentResult{Intent: intentUnknown}
-	}
-
-	codingHits := collectIntentMatches(msg, codingKeywords)
-	sshHits := collectIntentMatches(msg, sshKeywords)
-	nonCodingHits := collectIntentMatches(msg, nonCodingKeywords)
-	ambiguousHits := collectIntentMatches(msg, ambiguousKeywords)
-	if ipv4Pattern.MatchString(msg) {
-		sshHits = appendIfMissing(sshHits, "ip")
-	}
-
-	hasCoding := len(codingHits) > 0
-	hasSSH := len(sshHits) > 0
-	hasNonCoding := len(nonCodingHits) > 0
-	hasAmbiguous := len(ambiguousHits) > 0
-
-	switch {
-	case hasNonCoding && hasCoding && !hasSSH:
-		if hasOnlyWeakCodingEvidence(codingHits) {
-			return taskIntentResult{Intent: intentNonCoding, Matched: nonCodingHits[0], Evidence: combineEvidence(nonCodingHits, codingHits), Source: "rules"}
-		}
-		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(nonCodingHits, codingHits), Evidence: combineEvidence(nonCodingHits, codingHits), Source: "rules"}
-	case hasCoding && !hasSSH && !hasAmbiguous:
-		// Weak coding evidence alone (e.g. "测试" appearing in a file name)
-		// should not trigger coding classification — treat as non-coding.
-		if hasOnlyWeakCodingEvidence(codingHits) {
-			return taskIntentResult{Intent: intentNonCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
-		}
-		return taskIntentResult{Intent: intentCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
-	case hasSSH && !hasCoding && !hasNonCoding:
-		return taskIntentResult{Intent: intentSSH, Matched: sshHits[0], Evidence: sshHits, Source: "rules"}
-	case hasNonCoding && !hasCoding && !hasSSH:
-		return taskIntentResult{Intent: intentNonCoding, Matched: nonCodingHits[0], Evidence: nonCodingHits, Source: "rules"}
-	case hasSSH && hasCoding:
-		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(ambiguousHits, sshHits, codingHits), Evidence: combineEvidence(sshHits, codingHits, ambiguousHits), Source: "rules"}
-	case hasAmbiguous:
-		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(ambiguousHits, sshHits, codingHits, nonCodingHits), Evidence: combineEvidence(ambiguousHits, sshHits, codingHits, nonCodingHits), Source: "rules"}
-	case hasSSH:
-		return taskIntentResult{Intent: intentSSH, Matched: sshHits[0], Evidence: sshHits, Source: "rules"}
-	case hasNonCoding:
-		return taskIntentResult{Intent: intentNonCoding, Matched: nonCodingHits[0], Evidence: nonCodingHits, Source: "rules"}
-	case hasCoding:
-		return taskIntentResult{Intent: intentCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
-	default:
-		return taskIntentResult{Intent: intentAmbiguous, Source: "rules"}
-	}
+	// Fallback: UIC is nil — return ambiguous instead of guessing with keywords.
+	// Keyword-based classification is unreliable (e.g., "基于文档生成PPT" gets
+	// misclassified as non_coding because "PPT" is in nonCodingKeywords).
+	// Returning ambiguous lets callers take the conservative path.
+	return taskIntentResult{Intent: intentAmbiguous, Source: "rules-degraded", Reason: "UIC unavailable, keyword classification disabled"}
 }
 
 func shouldRequireExecutionConfirmationForIntent(msg IMUserMessage, pending *pendingConfirmation, intent taskIntentResult) bool {

@@ -71,9 +71,18 @@ Entry resolution should:
 
 - accept email
 - filter blocked users
+- respect direct user-to-hub bindings first
+- route by `corporate_email_domain` when a hub claims a company mail domain
+- fall back to a hub whose `corporate_email_domain` is empty when no domain-specific hub matches
 - find matching hubs
 - pick a default PWA URL
 - return `single`, `multiple`, or `none`
+
+Corporate routing rule:
+
+- If a hub registers `corporate_email_domain: rapidai.tech`, new users with `*@rapidai.tech` should resolve to that hub.
+- If no exact corporate domain hub matches, Hub Center should try hubs with empty `corporate_email_domain` as the default catch-all route.
+- Existing explicit user-hub bindings still win over automatic corporate routing.
 
 ## 8. Governance
 

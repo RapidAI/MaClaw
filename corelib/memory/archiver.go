@@ -93,6 +93,7 @@ func (a *Archiver) Archive(userID string, entries []ConversationEntry) error {
 		Content:  summary,
 		Category: CategoryConversationSummary,
 		Tags:     tags,
+		OwnerID:  userID, // 多租户隔离：设置记忆所有者
 	}
 	return a.store.Save(entry)
 }

@@ -37,6 +37,7 @@ func NewRouter(
 	system store.SystemSettingsRepository,
 	llmPromptCache *llmcache.Cache,
 	adminAudit store.AdminAuditRepository,
+	failureLogs store.FailureEventLogRepository,
 	feishuNotifier *feishu.Notifier,
 	feishuPlugin *feishu.FeishuPlugin,
 	openclawIMPlugin *im.WebhookIMPlugin,
@@ -97,6 +98,7 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/machines/force-by-email", RequireAdmin(admins, ForceDeleteMachinesByEmailHandler(deviceSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/debug/sessions", RequireAdmin(admins, DebugListSessionsHandler(sessionSvc)))
 	mux.HandleFunc("GET /api/admin/debug/session", RequireAdmin(admins, DebugGetSessionHandler(sessionSvc)))
+	mux.HandleFunc("GET /api/admin/failure-logs", RequireAdmin(admins, ListFailureLogsHandler(failureLogs)))
 	mux.HandleFunc("GET /api/admin/sessions/all", RequireAdmin(admins, AdminListAllSessionsHandler(sessionSvc)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", RequireAdmin(admins, ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", RequireAdmin(admins, ListUsersHandler(identity, system, securitySvc)))

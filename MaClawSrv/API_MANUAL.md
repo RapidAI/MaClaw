@@ -39,9 +39,10 @@ Response:
 
 Transport guidance:
 
-- By default, plain HTTP should only be used on loopback.
+- By default, plain HTTP should only be used on loopback, and the default bind is `127.0.0.1:18080`.
 - For remote deployment, configure TLS with `MACLAW_TLS_CERT_FILE` and `MACLAW_TLS_KEY_FILE`.
 - Do not send admin secrets, API secrets, or bearer tokens over insecure remote HTTP.
+- Machine-readable API discovery is available at `GET /openapi.json` and `GET /api/v1/openapi.json`.
 
 ## 3. Server environment variables
 
@@ -52,7 +53,7 @@ Required security variables:
 
 Common runtime variables:
 
-- `MACLAW_HTTP_ADDR`: listen address. Default `:18080`.
+- `MACLAW_HTTP_ADDR`: listen address. Default `127.0.0.1:18080`. Wildcard addresses such as `:18080` are treated as non-loopback and require TLS or `MACLAW_ALLOW_INSECURE_HTTP=true`.
 - `MACLAW_DATA_ROOT`: root data directory. Default `~/.maclaw_srv`.
 - `MACLAW_TLS_CERT_FILE`: TLS cert path.
 - `MACLAW_TLS_KEY_FILE`: TLS key path.
@@ -70,6 +71,10 @@ Important:
 
 - Local bash is security-sensitive and should stay disabled in multi-tenant deployments unless an outer OS/container sandbox exists.
 
+
+- Admin PATCH tenant/user requests also support `max_instances`, `max_sessions`, `max_messages`, and `max_runs` quota fields.
+- A value of `0` means unlimited. When both tenant and user quotas are set, the stricter limit applies.
+- Quota violations return `429 Too Many Requests`.
 ## 4. Authentication model
 
 `MaClawSrv` has two authentication layers: admin APIs and user runtime APIs.
@@ -136,6 +141,7 @@ Response fields:
 - `expires_at`: expiration timestamp in RFC3339 format.
 - `principal.tenant_id`: current tenant.
 - `principal.user_id`: current user.
+- Bearer tokens are bound to the issuing credential version, so secret rotation or credential revoke invalidates previously issued tokens immediately.
 
 Current-user endpoint:
 
@@ -234,7 +240,7 @@ Several list endpoints support cursor pagination.
 Query parameters:
 
 - `limit`: default `100`, max `500`.
-- `before`: RFC3339 or RFC3339Nano timestamp.
+- `before`: endpoint-specific cursor value. Most list endpoints use an RFC3339 or RFC3339Nano timestamp. `GET /api/v1/skills` uses the skill `name` returned by `next_before`.
 
 Typical response shape:
 
@@ -256,11 +262,16 @@ Field meanings:
 
 Supported on:
 
+- `GET /api/v1/admin/tenants`
+- `GET /api/v1/admin/tenants/{tenantId}/users`
+- `GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials`
 - `GET /api/v1/instances`
 - `GET /api/v1/instances/{instanceId}/sessions`
 - `GET /api/v1/instances/{instanceId}/sessions/{sessionId}/messages`
 - `GET /api/v1/instances/{instanceId}/runs`
 - `GET /api/v1/admin/audit-events`
+- `GET /api/v1/mcp/servers`
+- `GET /api/v1/skills`
 
 ## 9. Admin API
 
@@ -300,6 +311,8 @@ Main fields:
 GET /api/v1/admin/tenants
 ```
 
+Supports filtering via `status` and `name`, plus pagination via `limit` and `before`.
+
 Response:
 
 ```json
@@ -320,6 +333,8 @@ Response:
 GET /api/v1/admin/tenants/{tenantId}
 PATCH /api/v1/admin/tenants/{tenantId}
 ```
+
+`GET /api/v1/admin/tenants/{tenantId}/users` supports filtering via `status`, `name`, and `email`, plus pagination via `limit` and `before`.
 
 Patch fields may include:
 
@@ -374,6 +389,8 @@ GET /api/v1/admin/tenants/{tenantId}/users/{userId}
 PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}
 ```
 
+`GET /api/v1/admin/tenants/{tenantId}/users` supports filtering via `status`, `name`, and `email`, plus pagination via `limit` and `before`.
+
 Patch fields may include:
 
 - `name`
@@ -420,6 +437,7 @@ Notes:
 
 - `api_secret` is only known to the client at creation time.
 - Bearer tokens are associated with the credential that issued them.
+- Rotating a credential secret or revoking that credential invalidates already-issued bearer tokens from that credential immediately.
 
 ### 9.7 List or revoke credentials
 
@@ -427,6 +445,54 @@ Notes:
 GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials
 DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}
 ```
+
+`GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials` supports pagination via `limit` and `before`.
+
+### 9.8 Admin overview, dashboard, alerts, and metrics
+
+```http
+GET /api/v1/admin/overview
+GET /api/v1/admin/dashboard
+GET /api/v1/admin/alerts
+```
+
+Recommended usage:
+
+- `overview`: whole-service counters for tenants, users, instances, sessions, messages, runs, and audit totals.
+- `dashboard`: overview plus recent audit events and 24h/7d trend buckets for homepages and operator consoles.
+- `alerts`: operational alert feed for unready instances, waiting runs, and failed runs.
+
+`GET /api/v1/admin/alerts` supports these query parameters:
+
+- `tenant_id`
+- `user_id`
+- `kind`: `unready_instance`, `waiting_run`, or `failed_run`
+- `since`: RFC3339 or RFC3339Nano timestamp
+- `limit`: limits normalized alert `items`
+
+`GET /metrics` returns Prometheus text format counters for tenants, users, instances, sessions, messages, runs, and audit events.
+
+Response notes for `alerts`:
+
+- `items`: normalized alert list for admin dashboards and automation consumers.
+- `unready_instances`: backward-compatible detailed instance list.
+- `waiting_runs`: backward-compatible detailed waiting run list.
+- `failed_runs`: backward-compatible detailed failed run list.
+- `generated_at`: response generation timestamp.
+
+Each `items[]` entry may include:
+
+- `kind`
+- `severity`
+- `title`
+- `suggested_action`
+- `tenant_id`
+- `user_id`
+- `instance_id`
+- `session_id`
+- `run_id`
+- `occurred_at`
+- `reason`
 
 ### 9.8 Audit events
 
@@ -456,6 +522,65 @@ Response items are `AuditEvent` objects. Main fields include:
 - `resource_id`
 - `metadata`
 - `created_at`
+
+### 9.9 Export service, tenant, or user state
+
+```http
+GET /api/v1/admin/export
+```
+
+Query parameters:
+
+- `tenant_id`: optional, narrows export to one tenant.
+- `user_id`: optional, requires `tenant_id`, narrows export to one user.
+- `include_messages`: optional boolean, default `true`.
+- `include_runs`: optional boolean, default `true`.
+- `include_audit`: optional boolean, default `true`.
+- `include_secrets`: optional boolean, default `false`.
+
+Behavior:
+
+- Export scope is `service`, `tenant`, or `user` depending on filters.
+- Default export is safe-by-default: config secrets are masked and credential internals are sanitized.
+- Setting `include_secrets=true` returns unsanitized user config plus internal credential hash fields that are useful for backup or migration tooling.
+- `user_id` without `tenant_id` returns `400`.
+
+Response includes:
+
+- `tenants`
+- `users[]`
+- `users[].config`
+- `users[].credentials`
+- `users[].instances[].sessions[].messages` when enabled
+- `users[].instances[].runs` when enabled
+- `audit_events` when enabled
+- `exported_at`
+
+### 9.10 Import previously exported state
+
+```http
+POST /api/v1/admin/import
+```
+
+Supported request styles:
+
+- Raw `ExportServiceStateOutput` JSON body.
+- Wrapper body: `{ "data": <export>, "overwrite": true|false, "dry_run": true|false }`.
+
+Query parameters:
+
+- `overwrite`: optional boolean override for body-level overwrite behavior.
+- `dry_run`: optional boolean precheck mode that validates and reports conflicts without writing state.
+
+Behavior:
+
+- Imported instance `data_dir`, `runtime_dir`, and `workspace_dir` are remapped into the current service data root.
+- Importing the same IDs twice returns `409 Conflict` unless `overwrite=true`.
+- `dry_run=true` returns `200` with predicted counters plus `conflicts`, `warnings`, and a detailed `plan` array describing per-resource `create` or `overwrite` actions, and does not mutate service state.
+- For full credential restore, the export must be created with `include_secrets=true` so `secret_digest` is present.
+- Safe display exports can still be imported for structural restore, but masked config secrets will stay masked and are not suitable for a fully working runtime.
+
+Response includes aggregate counters for imported tenants, users, credentials, instances, sessions, messages, runs, and audit events. During precheck, it can also include `conflicts`, `warnings`, and `plan` entries such as tenant/user overwrite actions and nested resource create actions.
 
 ## 10. User config API
 
@@ -628,7 +753,7 @@ An instance is a logical runtime entrypoint. It does not own separate long-term 
 GET /api/v1/instances
 ```
 
-Supports pagination via `limit` and `before`.
+Supports filtering via `status` and `name`, plus pagination via `limit` and `before`.
 
 Response items are `Instance` objects. Main fields include:
 
@@ -710,6 +835,8 @@ Fields typically worth surfacing prominently:
 PATCH /api/v1/instances/{instanceId}
 ```
 
+`GET /api/v1/admin/tenants/{tenantId}/users` supports filtering via `status`, `name`, and `email`, plus pagination via `limit` and `before`.
+
 Patch fields may include:
 
 - `name`
@@ -739,6 +866,12 @@ GET /api/v1/instances/{instanceId}/capabilities
 ```
 
 This is a key endpoint for AI clients and should usually be called immediately after selecting an instance.
+
+Important policy notes:
+
+- `supports_ssh` is only `true` when the deployment allows direct SSH or the user has configured SSH host labels.
+- `supports_local_bash` is only `true` for the explicitly scoped trusted single-user deployment.
+- Clients should hide or disable SSH and bash affordances when the corresponding capability is `false` or the tool entry is disabled.
 
 Main fields:
 
@@ -901,6 +1034,8 @@ PATCH /api/v1/instances/{instanceId}/sessions/{sessionId}
 DELETE /api/v1/instances/{instanceId}/sessions/{sessionId}
 ```
 
+`GET /api/v1/admin/tenants/{tenantId}/users` supports filtering via `status`, `name`, and `email`, plus pagination via `limit` and `before`.
+
 Patch fields may include:
 
 - `title`
@@ -927,7 +1062,7 @@ Behavior notes:
 GET /api/v1/instances/{instanceId}/sessions/{sessionId}/messages
 ```
 
-Supports pagination via `limit` and `before`.
+Supports filtering via `status` and `name`, plus pagination via `limit` and `before`.
 
 Response items are `Message` objects. Main fields include:
 
@@ -1096,6 +1231,9 @@ Skills are user-scoped shared resources. All instances of the same user share th
 GET /api/v1/skills
 ```
 
+Supports filtering via `status` and `name`, plus pagination via `limit` and `before`.
+For this endpoint, `before` is a case-insensitive skill-name cursor rather than a timestamp.
+
 ### 14.2 Search remote skill sources
 
 ```http
@@ -1117,6 +1255,8 @@ Request body:
 ```
 
 ### 14.3 Install a skill
+
+Add `?async=true` to return `202 Accepted` and a job resource instead of waiting for completion.
 
 ```http
 POST /api/v1/skills/install
@@ -1157,6 +1297,8 @@ Zip example:
 
 ### 14.4 Import a skill archive directly
 
+Add `?async=true` to start an async import job and poll later.
+
 ```http
 POST /api/v1/skills/import
 ```
@@ -1196,6 +1338,8 @@ POST /api/v1/skills/{skillName}/improve
 
 ### 14.7 Upload a skill to market
 
+Add `?async=true` to start upload in the background and poll the returned job.
+
 ```http
 POST /api/v1/skills/{skillName}/upload
 ```
@@ -1209,6 +1353,45 @@ Request body:
 }
 ```
 
+
+### 14.8 Poll an async job
+
+```http
+GET /api/v1/jobs/{jobId}
+```
+
+Example response:
+
+```json
+{
+  "id": "job_xxx",
+  "kind": "skill.import",
+  "status": "succeeded",
+  "tenant_id": "tenant_xxx",
+  "user_id": "user_xxx",
+  "result": {
+    "items": [
+      { "name": "demo-skill" }
+    ]
+  },
+  "created_at": "2026-04-26T10:00:00Z",
+  "started_at": "2026-04-26T10:00:00Z",
+  "completed_at": "2026-04-26T10:00:01Z"
+}
+```
+
+
+### 14.9 List or cancel async jobs
+
+```http
+GET /api/v1/jobs?kind=skill.import&status=succeeded
+DELETE /api/v1/jobs?status=succeeded&before=2026-04-26T10:05:00Z
+POST /api/v1/jobs/{jobId}/cancel
+DELETE /api/v1/jobs/{jobId}
+```
+
+Use `GET /api/v1/jobs?kind=skill.import&status=succeeded` for recent user-scoped jobs, `DELETE /api/v1/jobs?status=succeeded&before=<timestamp>` or `DELETE /api/v1/jobs?all=true` for bulk cleanup of finished jobs, `POST /api/v1/jobs/{jobId}/cancel` to request cancellation for a pending or running job, and `DELETE /api/v1/jobs/{jobId}` to remove a single finished job record.
+`status` can be `pending`, `running`, `succeeded`, `failed`, or `canceled`. Bulk deletion only accepts terminal statuses.
 Check async upload status:
 
 ```http
@@ -1220,6 +1403,16 @@ Get market account profile:
 ```http
 GET /api/v1/skill-market/account?email=author@example.com&base_url=https://market.example.com
 ```
+
+
+Async MCP actions are also supported for heavier operations:
+
+- `POST /api/v1/mcp/servers?async=true`
+- `PATCH /api/v1/mcp/servers/{serverId}?async=true`
+- `POST /api/v1/mcp/servers/{serverId}/start?async=true`
+- `POST /api/v1/mcp/servers/{serverId}/stop?async=true`
+- `POST /api/v1/mcp/servers/{serverId}/health-check?async=true`
+- Poll with `GET /api/v1/jobs/{jobId}`
 
 ## 15. MCP API
 
@@ -1392,7 +1585,10 @@ Recommended call chain:
 4. `GET /api/v1/admin/tenants`
 5. `GET /api/v1/admin/tenants/{tenantId}/users`
 6. `GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials`
-7. `GET /api/v1/admin/audit-events`
+7. `GET /api/v1/admin/overview`
+8. `GET /api/v1/admin/dashboard`
+9. `GET /api/v1/admin/alerts`
+10. `GET /api/v1/admin/audit-events`
 
 Implementation focus:
 
@@ -1517,6 +1713,9 @@ A production-grade caller should support at least:
 Admin:
 
 - `GET /health`
+- `GET /api/v1/admin/overview`
+- `GET /api/v1/admin/dashboard`
+- `GET /api/v1/admin/alerts`
 - `GET /api/v1/admin/audit-events`
 - `POST /api/v1/admin/tenants`
 - `GET /api/v1/admin/tenants`
@@ -1591,3 +1790,16 @@ MCP:
 - `POST /api/v1/mcp/servers/{serverId}/stop`
 - `POST /api/v1/mcp/servers/{serverId}/health-check`
 - `GET /api/v1/mcp/servers/{serverId}/tools`
+
+
+
+
+
+
+
+
+
+
+
+
+

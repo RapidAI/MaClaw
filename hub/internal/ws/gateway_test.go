@@ -24,6 +24,10 @@ func (s *testIdentityService) AuthenticateViewer(ctx context.Context, rawToken s
 	return &auth.ViewerPrincipal{UserID: "user-1", Email: "viewer@example.com"}, nil
 }
 
+func (s *testIdentityService) IssueViewerTokenForUser(ctx context.Context, userID string) (string, error) {
+	return "test-viewer-token-for-" + userID, nil
+}
+
 type testDeviceBinder struct {
 	boundMachineID   string
 	unboundMachineID string

@@ -3,6 +3,7 @@ package collaboration
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -95,6 +96,44 @@ func (r *Repo) ListAll(tenantID string) ([]*Task, error) {
 	}
 	defer rows.Close()
 	return scanTasks(rows)
+}
+
+// CountOpenTasksByColleagueIDs returns active task counts for each colleague id.
+func (r *Repo) CountOpenTasksByColleagueIDs(tenantID string, colleagueIDs []string) (map[string]int, error) {
+	result := make(map[string]int, len(colleagueIDs))
+	if len(colleagueIDs) == 0 {
+		return result, nil
+	}
+
+	placeholders := make([]string, 0, len(colleagueIDs))
+	args := make([]any, 0, len(colleagueIDs)+1)
+	args = append(args, tenantID)
+	for _, id := range colleagueIDs {
+		result[id] = 0
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(`SELECT to_colleague_id, COUNT(*)
+		FROM collaboration_tasks
+		WHERE tenant_id=? AND status IN ('pending','accepted','in_progress') AND to_colleague_id IN (%s)
+		GROUP BY to_colleague_id`, strings.Join(placeholders, ","))
+
+	rows, err := r.read.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var colleagueID string
+		var count int
+		if err := rows.Scan(&colleagueID, &count); err != nil {
+			return nil, err
+		}
+		result[colleagueID] = count
+	}
+	return result, rows.Err()
 }
 
 // InsertEvent records a state change event.

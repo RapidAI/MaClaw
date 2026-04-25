@@ -5,10 +5,10 @@ package intent
 // Returns (intent string, matched string, evidence []string, reason string, confidence float64).
 //
 // Mapping:
-//   - coding, bug_fix, maintenance → "coding"
-//   - ssh → "ssh"
-//   - non_coding, browser, search, document_delivery, office → "non_coding"
-//   - ambiguous, unknown, continuation → "ambiguous"
+//   - coding, bug_fix, maintenance -> "coding"
+//   - ssh -> "ssh"
+//   - non_coding, browser, search, document_delivery, office -> "non_coding"
+//   - ambiguous, unknown, continuation -> "ambiguous"
 func (r *ClassificationResult) ToTaskIntent() (intent, matched string, evidence []string, reason string, confidence float64) {
 	switch r.Primary {
 	case LabelCoding, LabelBugFix, LabelMaintenance:
@@ -39,13 +39,13 @@ func (r *ClassificationResult) ToTaskIntent() (intent, matched string, evidence 
 // Returns (intent string, confidence float64, gap float64, layer int, reason string).
 //
 // Mapping:
-//   - coding (with creation signals) → "new_project"
-//   - coding (without creation signals) → "maintenance"
-//   - bug_fix → "bug_fix"
-//   - maintenance → "maintenance"
-//   - non_coding, search, document_delivery, office, browser → "non_coding"
-//   - continuation → "continuation"
-//   - ambiguous, unknown → "unknown"
+//   - coding (with creation signals) -> "new_project"
+//   - coding (without creation signals) -> "maintenance"
+//   - bug_fix -> "bug_fix"
+//   - maintenance -> "maintenance"
+//   - non_coding, search, document_delivery, office, browser -> "non_coding"
+//   - continuation -> "continuation"
+//   - ambiguous, unknown -> "unknown"
 func (r *ClassificationResult) ToGateIntent() (intent string, confidence float64, gap float64, layer int, reason string) {
 	switch r.Primary {
 	case LabelCoding:
@@ -98,12 +98,12 @@ func (r *ClassificationResult) IsNonCodingLike() bool {
 // creation-oriented coding task.
 //
 // Decision logic:
-//  1. If CreationOriented is explicitly true (set by L1 keywords or fusion) → true.
-//  2. If secondary contains bug_fix or maintenance → definitely not creation → false.
-//  3. If the result came from Layer 1 (which has authoritative keyword data and
-//     explicitly sets CreationOriented), trust its false value → false.
-//  4. For Layer 2/fusion results where CreationOriented wasn't set, the absence
-//     of counter-signals (bug_fix/maintenance) implies creation → true.
+//  1. If CreationOriented is explicitly true (set by fusion from WorkflowType), return true.
+//  2. If secondary contains bug_fix or maintenance, return false.
+//  3. For fusion results (Layer 23) or tree-only (Layer 3), CreationOriented is
+//     derived from WorkflowType="coding". If it was not set, check counter-signals.
+//  4. For degraded mode (Layer 1), no reliable creation detection is available,
+//     so default to true when no counter-signals exist.
 func hasCreationSignals(r *ClassificationResult) bool {
 	if r.CreationOriented {
 		return true
@@ -113,12 +113,7 @@ func hasCreationSignals(r *ClassificationResult) bool {
 			return false
 		}
 	}
-	// Layer 1 explicitly computed CreationOriented from keyword tags.
-	// If it's false, trust it — the user's keywords were not creation-oriented.
-	if r.Layer == 1 {
-		return false
-	}
-	// Layer 2/3/fusion: no keyword-level creation data available.
-	// Default to creation when no counter-signals exist.
+	// No explicit creation signal and no counter-signals.
+	// Default to true so the gate activates for ambiguous coding tasks.
 	return true
 }

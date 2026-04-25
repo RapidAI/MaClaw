@@ -110,7 +110,7 @@
         root.innerHTML = '<div class="feishu-bind-grid">' + bindings.map(function(b) {
           const safeEmail = escapeHtml(b.email);
           const safeOid = escapeHtml(b.open_id);
-          return '<div class="feishu-bind-card"><div class="fbc-email">' + safeEmail + '</div><div class="fbc-oid">' + safeOid + '</div><div style="font-size:12px;color:var(--muted)">' + escapeHtml(b.mobile || '-') + '</div><button class="btn-danger" style="height:28px;font-size:11px;padding:0 8px;margin-top:auto;align-self:flex-start" data-email="' + safeEmail + '" onclick="unbindFeishu(this.dataset.email)">' + fsh('unbind') + '</button></div>';
+          return '<div class="feishu-bind-card"><div class="fbc-email">' + safeEmail + '</div><div class="fbc-oid">' + safeOid + '</div><div style="font-size:11px;color:var(--muted)">' + escapeHtml(b.mobile || '-') + '</div><button class="btn-danger" style="height:28px;font-size:11px;padding:0 8px;margin-top:auto;align-self:flex-start" data-email="' + safeEmail + '" onclick="unbindFeishu(this.dataset.email)">' + fsh('unbind') + '</button></div>';
         }).join('') + '</div>';
       }
       const pager = document.getElementById('feishuBindingsPager');

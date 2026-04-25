@@ -21,6 +21,12 @@ var modifyIndicators = []string{"改一下", "修改", "调整", "更新"}
 // are eligible for cleanup.
 const workflowExpiry = 7 * 24 * time.Hour
 
+// workflowStaleTimeout is the maximum age of an active workflow before it
+// is considered abandoned and automatically cancelled during RestoreFromStore.
+// Active workflows are updated on every phase transition, so a 24-hour gap
+// strongly indicates the user has moved on.
+const workflowStaleTimeout = 24 * time.Hour
+
 // WorkflowEngine is the core state-machine engine that manages workflow
 // lifecycle: creation, phase advancement, cancellation, and persistence.
 // It is safe for concurrent use.
@@ -32,6 +38,7 @@ type WorkflowEngine struct {
 	store         PersistenceStore
 	callbacks     EngineCallbacks
 	filter        *QuickFilter
+	artifactSaver ArtifactSaver // optional: saves phase outputs to long-term memory
 }
 
 // NewWorkflowEngine creates a WorkflowEngine with all dependencies wired.
@@ -51,6 +58,15 @@ func NewWorkflowEngine(
 	}
 	e.filter = NewQuickFilter(e)
 	return e
+}
+
+// SetArtifactSaver wires an optional long-term memory saver for phase outputs.
+// When set, SavePhaseOutput will persist a summary of each phase's output
+// to long-term memory so it survives conversation history truncation.
+func (e *WorkflowEngine) SetArtifactSaver(saver ArtifactSaver) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.artifactSaver = saver
 }
 
 // ---------------------------------------------------------------------------
@@ -199,14 +215,20 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 	}
 
 	// 2. Check for confirm words (only meaningful when NeedsConfirm=true).
+	//
+	// IMPORTANT: Only use the keyword shortcut when the message is purely
+	// a confirm word (no substantial additional content). When the user
+	// says "好的，但是把技术栈改成React", the "好的" matches a confirmWord
+	// but the message also contains a modification request. In this case,
+	// delegate to the LLM classifier (PendingConfirm path) which can
+	// distinguish "pure confirm" from "confirm + modify".
 	_, hasOutput := ws.PhaseOutputs[ws.CurrentPhase]
-	if phase.NeedsConfirm && containsAny(trimmed, confirmWords) {
-		if hasOutput {
-			resp := e.advancePhase(userID, ws, tmpl)
-			return resp, nil
-		}
-		// No output yet — treat as normal input to generate the phase document.
+	if phase.NeedsConfirm && hasOutput && isOnlyConfirmWord(trimmed, confirmWords) {
+		resp := e.advancePhase(userID, ws, tmpl)
+		return resp, nil
 	}
+	// When NeedsConfirm but no output yet, confirm words are treated as
+	// "start generating" signals — fall through to the default branch.
 
 	// 3. LLM-delegated confirm/modify (Kiro-style).
 	//
@@ -302,13 +324,54 @@ func (e *WorkflowEngine) advancePhase(userID string, ws *WorkflowState, tmpl *Wo
 	nextPhase := &tmpl.Phases[nextIndex]
 	phasePrompt := BuildPhaseSystemPrompt(ws, nextPhase, e.registry)
 
-	return &WorkflowResponse{
+	resp := &WorkflowResponse{
 		Text:         fmt.Sprintf("✅ 进入阶段 %d/%d：%s", nextIndex+1, len(tmpl.Phases), nextPhase.Name),
 		PhasePrompt:  phasePrompt,
 		ToolFilter:   nextPhase.ToolPolicy,
 		RunAgentLoop: true,
 		Advance:      true,
 	}
+
+	// When advancing to an execution phase (ToolFilterFull + !NeedsConfirm),
+	// signal the caller to activate the task orchestrator. This is the
+	// workflow engine's declaration that "planning phases are done, execute."
+	// The caller decides HOW to execute (SubAgent vs main loop vs external).
+	//
+	// This decouples orchestrator activation from specific phase IDs —
+	// coding's "implementation", testing's "test_execution", and PPT's
+	// "ppt_generation" all satisfy ToolFilterFull && !NeedsConfirm.
+	if nextPhase.ToolPolicy == ToolFilterFull && !nextPhase.NeedsConfirm {
+		resp.ActivateOrchestrator = true
+		// The task list is in the phase immediately before the execution phase.
+		if nextIndex > 0 {
+			prevPhaseID := tmpl.Phases[nextIndex-1].ID
+			resp.TaskBreakdownText = ws.PhaseOutputs[prevPhaseID]
+		}
+		// Collect context from all completed planning phases before the
+		// execution phase. The first phase's output is the requirements/
+		// goals context; the rest form the design context. Derived from
+		// template phase order, not hardcoded phase IDs.
+		var reqParts, designParts []string
+		for i := 0; i < nextIndex; i++ {
+			output := ws.PhaseOutputs[tmpl.Phases[i].ID]
+			if output == "" {
+				continue
+			}
+			runes := []rune(output)
+			if len(runes) > 500 {
+				output = string(runes[:500])
+			}
+			if i == 0 {
+				reqParts = append(reqParts, output)
+			} else {
+				designParts = append(designParts, output)
+			}
+		}
+		resp.RequirementsContext = strings.Join(reqParts, "\n")
+		resp.DesignContext = strings.Join(designParts, "\n")
+	}
+
+	return resp
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +521,28 @@ func (e *WorkflowEngine) RestoreFromStore() error {
 		if ws == nil || ws.Status != WorkflowActive || ws.UserID == "" {
 			continue
 		}
+
+		// Stale workflow cleanup: workflows not updated in 24 hours are
+		// likely abandoned. Cancel them to prevent zombie workflows from
+		// blocking new workflow creation across application restarts.
+		//
+		// 24 hours is conservative — covers "user left for the day and
+		// came back next morning". Active workflows are updated on every
+		// phase transition, so a 24-hour gap strongly indicates abandonment.
+		if time.Since(ws.UpdatedAt) > workflowStaleTimeout {
+			log.Printf("[WorkflowEngine] cancelling stale workflow %s for user %s "+
+				"(type=%s, phase=%s, last_updated=%s, age=%s)",
+				ws.ID, ws.UserID, ws.Type, ws.CurrentPhase,
+				ws.UpdatedAt.Format("2006-01-02 15:04:05"),
+				time.Since(ws.UpdatedAt).Round(time.Minute))
+			ws.Status = WorkflowCancelled
+			ws.UpdatedAt = time.Now()
+			if e.store != nil {
+				_ = e.store.SaveWorkflowState(ws)
+			}
+			continue
+		}
+
 		// Validate phase consistency: if the workflow has advanced past
 		// requirements but has no output for earlier phases, it was
 		// corrupted by the premature-advance bug. Reset to phase 0.
@@ -533,15 +618,16 @@ func (e *WorkflowEngine) GetRegistry() *WorkflowRegistry {
 // has checklist items.
 func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	ws := e.workflows[userID]
 	if ws == nil || ws.Status != WorkflowActive {
+		e.mu.Unlock()
 		return ""
 	}
 
 	phaseID := ws.CurrentPhase
 	if phaseID == "" {
+		e.mu.Unlock()
 		return ""
 	}
 
@@ -549,8 +635,6 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 	ws.UpdatedAt = time.Now()
 
 	// Run quality gate check against the phase's checklist.
-	// Look up the phase by ID (not by index) to ensure the correct
-	// checklist is used even when PhaseIndex and CurrentPhase diverge.
 	tmpl := e.registry.Match(ws.Type)
 	if tmpl != nil {
 		var phase *PhaseTemplate
@@ -563,7 +647,6 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 		if phase != nil {
 			if gateResult := RunQualityGate(phase, content); gateResult != nil {
 				ws.GateResults[phaseID] = gateResult
-				// Emit gate result to frontend (best-effort, non-blocking).
 				if e.callbacks != nil {
 					_ = e.callbacks.EmitGateResult(userID, phaseID, gateResult)
 				}
@@ -573,6 +656,35 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 
 	if e.store != nil {
 		_ = e.store.SaveWorkflowState(ws)
+	}
+
+	// Capture values needed for artifact sinking before releasing the lock.
+	saver := e.artifactSaver
+	wsType := string(ws.Type)
+	projectPath := ws.ProjectPath
+
+	e.mu.Unlock()
+
+	// Sink phase output summary to long-term memory OUTSIDE the engine lock.
+	// This avoids WorkflowEngine.mu → memory.Store.mu lock nesting.
+	if saver != nil && len([]rune(content)) > 200 {
+		summary := content
+		runes := []rune(summary)
+		if len(runes) > 800 {
+			cutoff := 800
+			for i := cutoff; i > 600; i-- {
+				if runes[i] == '\n' {
+					cutoff = i
+					break
+				}
+			}
+			summary = string(runes[:cutoff]) + "\n…(摘要截断)"
+		}
+		tags := []string{"workflow", phaseID, wsType}
+		if projectPath != "" {
+			tags = append(tags, projectPath)
+		}
+		_ = saver.SaveArtifact(summary, tags, "")
 	}
 
 	return phaseID

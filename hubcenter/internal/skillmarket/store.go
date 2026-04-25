@@ -10,13 +10,14 @@ import (
 
 const timeFmt = time.RFC3339
 
-// Store 是 SkillMarket 的 SQLite 存储层，实现所有 Repository 接口。
+// Store 鏄?SkillMarket 鐨?SQLite 瀛樺偍灞傦紝瀹炵幇鎵€鏈?Repository 鎺ュ彛銆?
 type Store struct {
 	db     *sql.DB
 	readDB *sql.DB
+	sync   SyncRecorder
 }
 
-// NewStore 创建 SkillMarket 存储层并执行迁移。
+// NewStore 鍒涘缓 SkillMarket 瀛樺偍灞傚苟鎵ц杩佺Щ銆?
 func NewStore(writeDB, readDB *sql.DB) (*Store, error) {
 	s := &Store{db: writeDB, readDB: readDB}
 	if err := s.migrate(); err != nil {
@@ -86,7 +87,7 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_buyer_skill ON sm_purchase_records(buyer_id, skill_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_seller ON sm_purchase_records(seller_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_pending_key ON sm_purchase_records(key_status) WHERE key_status = 'pending_key';`,
-		// ── Ratings ──
+		// 鈹€鈹€ Ratings 鈹€鈹€
 		`CREATE TABLE IF NOT EXISTS sm_ratings (
 			skill_id   TEXT NOT NULL,
 			email      TEXT NOT NULL,
@@ -96,12 +97,12 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (skill_id, email)
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_ratings_skill ON sm_ratings(skill_id);`,
-		// ── Admin Config ──
+		// 鈹€鈹€ Admin Config 鈹€鈹€
 		`CREATE TABLE IF NOT EXISTS sm_admin_config (
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT ''
 		);`,
-		// ── Uploader Tiers ──
+		// 鈹€鈹€ Uploader Tiers 鈹€鈹€
 		`CREATE TABLE IF NOT EXISTS sm_uploader_tiers (
 			user_id          TEXT PRIMARY KEY,
 			tier             INTEGER NOT NULL DEFAULT 1,
@@ -123,12 +124,12 @@ func (s *Store) migrate() error {
 	return nil
 }
 
-// ── helpers ─────────────────────────────────────────────────────────────
+// 鈹€鈹€ helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-// DB 返回写数据库连接。
+// DB 杩斿洖鍐欐暟鎹簱杩炴帴銆?
 func (s *Store) DB() *sql.DB { return s.db }
 
-// ReadDB 返回读数据库连接。
+// ReadDB 杩斿洖璇绘暟鎹簱杩炴帴銆?
 func (s *Store) ReadDB() *sql.DB { return s.readDB }
 
 func parseTime(v string) time.Time {
@@ -146,7 +147,7 @@ func fmtTime(t time.Time) string {
 	return t.Format(timeFmt)
 }
 
-// generateID 生成唯一 ID（时间戳 + 随机后缀）。
+// generateID 鐢熸垚鍞竴 ID锛堟椂闂存埑 + 闅忔満鍚庣紑锛夈€?
 func generateID() string {
 	var buf [8]byte
 	_, _ = rand.Read(buf[:])

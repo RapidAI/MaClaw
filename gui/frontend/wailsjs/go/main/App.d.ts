@@ -303,6 +303,8 @@ export function UpdateHubSkill(arg1:string):Promise<void>;
 
 export function RateHubSkill(arg1:string, arg2:number):Promise<void>;
 
+export function GetHubRecommendations():Promise<Array<any>>;
+
 // Memory management bindings
 export function ListMemories(arg1:string, arg2:string):Promise<Array<any>>;
 

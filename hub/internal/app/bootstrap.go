@@ -14,6 +14,7 @@ import (
 	chatpush "github.com/RapidAI/CodeClaw/hub/internal/chat/push"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/httpapi"
@@ -50,6 +51,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	if err := sqlite.RunMigrations(provider.Write); err != nil {
 		return nil, err
 	}
+	log.Printf("[hub] sqlite migrations complete for %s", cfg.Database.DSN)
 
 	st := sqlite.NewStore(provider)
 	promptCacheCfg := httpapi.LoadHubLLMPromptCacheConfig(context.Background(), st.System)
@@ -60,6 +62,13 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 
 	identityService := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, invitationService, cfg.Identity.EnrollmentMode, cfg.Identity.AllowSelfEnroll, mailer, cfg.Server.PublicBaseURL)
 	centerService := center.NewService(cfg, st.System)
+	failureRecorder := diagnostics.NewFailureEventRecorder(st.FailureLogs)
+	centerService.SetFailureEventRecorder(failureRecorder)
+	if status, err := centerService.Status(context.Background()); err == nil {
+		log.Printf("[hub] center registration bootstrap: visibility=%s enrollment=%s corporate_domains=%v accept_public_signup=%t registered=%t pending=%t disabled=%t", status.Visibility, status.EnrollmentMode, status.CorporateEmailDomains, status.AcceptPublicSignup, status.Registered, status.PendingConfirmation, status.Disabled)
+	} else {
+		log.Printf("[hub] center registration bootstrap status unavailable: %v", err)
+	}
 	deviceRuntime := device.NewRuntime()
 	deviceService := device.NewService(st.Machines, deviceRuntime)
 	sessionCache := session.NewCache()
@@ -94,11 +103,11 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	// Agent Passthrough IM modules
 	// -----------------------------------------------------------------------
 
-	// 1. MessageRouter 鈥?routes IM messages to MaClaw Agent via WebSocket
+	// 1. MessageRouter 闂?routes IM messages to MaClaw Agent via WebSocket
 	deviceFinder := &im.DeviceServiceFinder{Svc: deviceService}
 	messageRouter := im.NewMessageRouter(deviceFinder)
 
-	// 2. IM_Adapter 鈥?create with a temporary nil identity resolver; we wire
+	// 2. IM_Adapter 闂?create with a temporary nil identity resolver; we wire
 	//    the real one (PluginIdentityResolver) after plugin registration.
 	imAdapter := im.NewAdapter(messageRouter, nil)
 
@@ -106,7 +115,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	pluginIdentity := im.NewPluginIdentityResolver(imAdapter)
 	imAdapter.SetIdentityResolver(pluginIdentity)
 
-	// Hub LLM Coordinator 鈥?sits between Adapter and MessageRouter.
+	// Hub LLM Coordinator 闂?sits between Adapter and MessageRouter.
 	// Provides seamless smart mode when Hub LLM is configured.
 	llmConfigProvider := func() *im.HubLLMConfig {
 		raw, err := st.System.Get(context.Background(), "hub_llm_config")
@@ -125,8 +134,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	coordinator := im.NewCoordinator(messageRouter, deviceFinder, llmConfigProvider)
 	imAdapter.SetCoordinator(coordinator)
 
-	// ── Workflow Engine (removed) ─────────────────────────────────────
-	// Workflow logic is now handled by the device-side agent (corelib/workflow).
+	// 闁冲厜鍋撻柍鍏夊亾 Workflow Engine (removed) 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?	// Workflow logic is now handled by the device-side agent (corelib/workflow).
 	// Hub no longer creates WorkflowEngine, WorkflowRegistry, or UnderstandingManager.
 	// The /workflow command is forwarded to the device via RouteToAgent.
 
@@ -147,7 +155,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		}
 	}()
 
-	// Initialize background task dispatcher 鈥?enables non-blocking IM:
+	// Initialize background task dispatcher 闂?enables non-blocking IM:
 	// simple queries (direct_answer) are answered immediately, while
 	// device-bound tasks are queued and results pushed asynchronously.
 	imAdapter.InitTaskDispatcher(5)
@@ -164,7 +172,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	discussionConductor := im.NewDiscussionConductor(llmConfigProvider, coordinator.Breaker(), messageRouter)
 	messageRouter.SetConductor(discussionConductor)
 
-	// Device notifier 鈥?sends online/offline notifications to active IM users.
+	// Device notifier 闂?sends online/offline notifications to active IM users.
 	deviceNotifier := im.NewDeviceNotifier(imAdapter, coordinator)
 	imAdapter.SetDeviceNotifier(deviceNotifier)
 
@@ -205,7 +213,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	feishuNotifier.SetPlugin(feishuPlugin)
 	feishuPlugin.SetAdapter(imAdapter)
 
-	// 7. OpenClaw IM Webhook Plugin 鈥?enables external IM adapters to
+	// 7. OpenClaw IM Webhook Plugin 闂?enables external IM adapters to
 	//     communicate with Hub via the OpenClaw IM protocol.
 	openclawIMPlugin := im.NewWebhookIMPlugin("openclaw", func() im.WebhookConfig {
 		raw, err := st.System.Get(context.Background(), "openclaw_im_config")
@@ -226,8 +234,8 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		log.Printf("[bootstrap] failed to register openclaw IM plugin: %v", err)
 	}
 
-	// 8a. Remote Gateway Plugins 鈥?client-side IM gateways (QQ Bot, Telegram)
-	//     forwarded through the existing Hub鈫擟lient WebSocket.
+	// 8a. Remote Gateway Plugins 闂?client-side IM gateways (QQ Bot, Telegram)
+	//     forwarded through the existing Hub闂佹剚鍋呴幗鏄筰ent WebSocket.
 	qqRemotePlugin := im.NewRemoteGatewayPlugin("qqbot_remote", deviceService, st.Users, st.System)
 	if err := imAdapter.RegisterPlugin(qqRemotePlugin); err != nil {
 		log.Printf("[bootstrap] failed to register qqbot_remote plugin: %v", err)
@@ -249,7 +257,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	gateway.RegisterIMGatewayPlugin(weixinPlugin)
 	gateway.RegisterIMGatewayPlugin(lansengerPlugin)
 
-	// 8b. QQBot Plugin 鈥?connects to QQ Bot via WebSocket gateway (Hub-native)
+	// 8b. QQBot Plugin 闂?connects to QQ Bot via WebSocket gateway (Hub-native)
 	qqbotPlugin := qqbot.New(func() qqbot.Config {
 		raw, err := st.System.Get(context.Background(), "qqbot_config")
 		if err != nil || raw == "" {
@@ -275,7 +283,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		log.Printf("[bootstrap] failed to start qqbot plugin: %v", err)
 	}
 
-	// 8c. WeCom Plugin 鈥?connects to WeCom Bot via WebSocket gateway (Hub-native)
+	// 8c. WeCom Plugin 闂?connects to WeCom Bot via WebSocket gateway (Hub-native)
 	wecomPlugin := wecom.New(func() wecom.Config {
 		raw, err := st.System.Get(context.Background(), "wecom_config")
 		if err != nil || raw == "" {
@@ -297,7 +305,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		log.Printf("[bootstrap] failed to start wecom plugin: %v", err)
 	}
 
-	// 8d. DingTalk Plugin 鈥?connects to DingTalk Bot via Stream Mode (Hub-native)
+	// 8d. DingTalk Plugin 闂?connects to DingTalk Bot via Stream Mode (Hub-native)
 	dingtalkPlugin := dingtalk.New(func() dingtalk.Config {
 		raw, err := st.System.Get(context.Background(), "dingtalk_config")
 		if err != nil || raw == "" {
@@ -316,7 +324,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		log.Printf("[bootstrap] failed to start dingtalk plugin: %v", err)
 	}
 
-	// 9. Cross-IM NotifyBroadcaster 鈥?sends verification codes to all
+	// 9. Cross-IM NotifyBroadcaster 闂?sends verification codes to all
 	//    reachable channels (email + any already-bound IM platforms).
 	broadcaster := im.NewNotifyBroadcaster(imAdapter, mailer)
 	broadcaster.SetActiveUserProvider(deviceNotifier)
@@ -325,7 +333,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	wecomPlugin.SetBroadcaster(broadcaster)
 	dingtalkPlugin.SetBroadcaster(broadcaster)
 
-	// 10. Proactive message sender 鈥?allows MaClaw clients to push
+	// 10. Proactive message sender 闂?allows MaClaw clients to push
 	//     non-request-based messages (e.g. scheduled task results) to users.
 	proactiveSender := im.NewProactiveSender(broadcaster, &userEmailLookup{users: st.Users})
 	gateway.SetIMProactiveSender(proactiveSender)
@@ -342,12 +350,12 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	// Wire login link broadcaster into identity service so PWA login
 	// confirmation links are also sent to bound IM channels.
 	identityService.SetLoginNotifier(broadcaster)
+	identityService.SetUserRouteSyncer(centerService)
 
-	// Register session event listener 鈥?routes through IM Adapter when available,
+	// Register session event listener 闂?routes through IM Adapter when available,
 	// falls back to legacy notifier path.
 	sessionService.RegisterListener(feishuNotifier.HandleEvent)
 
-	// 鈹€鈹€ Chat Module 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 	chatStore, err := chat.NewStore(provider.Write)
 	if err != nil {
 		return nil, fmt.Errorf("chat store: %w", err)
@@ -376,7 +384,6 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 
 	voiceprintSvc := voiceprint.NewService(st.Voiceprints, st.System)
 
-	// 鈹€鈹€ Security Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 	securityStore := security.NewSecurityStore(provider.Write)
 	if err := securityStore.InitSchema(context.Background()); err != nil {
 		return nil, fmt.Errorf("security schema: %w", err)
@@ -428,6 +435,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		st.System,
 		promptCache,
 		st.AdminAudit,
+		st.FailureLogs,
 		feishuNotifier,
 		feishuPlugin,
 		openclawIMPlugin,

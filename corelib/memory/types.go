@@ -13,6 +13,7 @@ const (
 	CategoryInstruction         Category = "instruction"
 	CategoryConversationSummary Category = "conversation_summary"
 	CategorySessionCheckpoint   Category = "session_checkpoint"
+	CategoryTaskArtifact        Category = "task_artifact" // workflow phase output summaries (requirements, design, task list)
 	CategoryProfile             Category = "profile"
 
 	// Claude-style four-type taxonomy (inspired by Claude Code memdir).
@@ -252,6 +253,12 @@ type Entry struct {
 	Versions []VersionSnapshot `json:"versions,omitempty"`
 	// --- Stale flag: set by dream cycle when newer conflicting entry exists ---
 	Stale bool `json:"stale,omitempty"`
+	// --- Multi-tenant ownership (maclawsrv only) ---
+	// OwnerID identifies the user who owns this memory entry.
+	// Empty string means "shared" — visible to all users.
+	// In GUI/TUI (single-user): always empty, all memories belong to the same user.
+	// In maclawsrv (multi-tenant): set to the IM user ID (e.g. feishu_ou_xxx).
+	OwnerID string `json:"owner_id,omitempty"`
 }
 
 // IsActive returns true if the entry participates in normal recall.

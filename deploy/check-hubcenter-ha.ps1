@@ -34,12 +34,25 @@ function Invoke-StatusGet {
     )
 
     try {
-        Invoke-WebRequest -Uri $Url -Method Get -Headers $Headers -TimeoutSec $TimeoutSec | Out-Null
-        return 200
+        $response = Invoke-WebRequest -Uri $Url -Method Get -Headers $Headers -TimeoutSec $TimeoutSec -UseBasicParsing
+        return [int]$response.StatusCode
     }
     catch {
-        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
-            return [int]$_.Exception.Response.StatusCode
+        $resp = $null
+        if ($null -ne $_.Exception) {
+            $resp = $_.Exception.Response
+        }
+        if ($null -ne $resp) {
+            try {
+                return [int]$resp.StatusCode
+            }
+            catch {
+                try {
+                    return [int]$resp.StatusCode.value__
+                }
+                catch {
+                }
+            }
         }
         throw
     }
@@ -97,7 +110,7 @@ foreach ($center in $centers) {
         }
     }
     catch {
-        $row.error = $_.Exception.Message
+        $row.error = (($_ | Out-String).Trim())
     }
 
     $results += [pscustomobject]$row

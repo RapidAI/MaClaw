@@ -15,10 +15,10 @@ import (
 
 // Service handles workflow definition and runtime logic.
 type Service struct {
-	repo        *Repo
-	dbProvider  *db.Provider
-	collabRepo  *collaboration.Repo
-	colleagueRp *colleagueRepo.ColleagueRepo
+	repo         *Repo
+	dbProvider   *db.Provider
+	collabRepo   *collaboration.Repo
+	colleagueRp  *colleagueRepo.ColleagueRepo
 	expExtractor *experience.Extractor // optional, may be nil
 }
 
@@ -36,10 +36,10 @@ func (s *Service) SetExperienceExtractor(ext *experience.Extractor) {
 
 // CreateDefinitionRequest holds fields for creating a workflow definition.
 type CreateDefinitionRequest struct {
-	Name        string                  `json:"name"`
-	Description string                  `json:"description"`
-	TriggerType string                  `json:"trigger_type"`
-	Steps       []CreateStepDefRequest  `json:"steps"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	TriggerType string                 `json:"trigger_type"`
+	Steps       []CreateStepDefRequest `json:"steps"`
 }
 
 // CreateStepDefRequest holds fields for a step within a definition.
@@ -196,7 +196,7 @@ func (s *Service) StartInstance(tenantID string, req StartInstanceRequest) (*Ins
 	collabTask := &collaboration.Task{
 		ID:                     idgen.New("collab"),
 		Title:                  fmt.Sprintf("[%s] %s", inst.Title, firstStep.StepName),
-		Description:            fmt.Sprintf("工作流步骤: %s", firstStep.StepName),
+		Description:            fmt.Sprintf("鐎规悶鍎扮紞鏂棵规担璇″妱濡? %s", firstStep.StepName),
 		FromColleagueID:        inst.InitiatorID,
 		ToColleagueID:          assigneeID,
 		ToRoleCode:             firstStep.AssigneeRoleCode,
@@ -300,7 +300,7 @@ func (s *Service) CompleteStep(tenantID string, stepInstanceID, actorID, result 
 		}
 
 		if nextStepDef == nil {
-			// No more steps — workflow completed
+			// No more steps 闁?workflow completed
 			inst.Status = InstStatusCompleted
 			inst.UpdatedAt = now
 			if err := s.repo.UpdateInstanceTx(tenantID, tx, inst); err != nil {
@@ -333,7 +333,7 @@ func (s *Service) CompleteStep(tenantID string, stepInstanceID, actorID, result 
 		nextCollab := &collaboration.Task{
 			ID:                     idgen.New("collab"),
 			Title:                  fmt.Sprintf("[%s] %s", inst.Title, nextStepDef.StepName),
-			Description:            fmt.Sprintf("工作流步骤: %s", nextStepDef.StepName),
+			Description:            fmt.Sprintf("鐎规悶鍎扮紞鏂棵规担璇″妱濡? %s", nextStepDef.StepName),
 			FromColleagueID:        stepInst.AssigneeColleagueID,
 			ToColleagueID:          nextAssignee,
 			ToRoleCode:             nextStepDef.AssigneeRoleCode,
@@ -463,11 +463,10 @@ func (s *Service) resolveAssignee(tenantID string, stepDef *StepDefinition) (str
 	if stepDef.AssigneeMode == "fixed_colleague" && stepDef.AssigneeColleagueID != "" {
 		return stepDef.AssigneeColleagueID, nil
 	}
-	// by_role: find first active colleague with matching role code
 	if stepDef.AssigneeRoleCode != "" {
-		colleagues, err := s.colleagueRp.ListByRoleCode(tenantID, stepDef.AssigneeRoleCode)
-		if err == nil && len(colleagues) > 0 {
-			return colleagues[0].ID, nil
+		selected, _, err := collaboration.ResolveRoleAssignee(s.collabRepo, s.colleagueRp, tenantID, stepDef.AssigneeRoleCode)
+		if err == nil && selected != nil {
+			return selected.ID, nil
 		}
 	}
 	return "", fmt.Errorf("no assignee found for step %s (role=%s)", stepDef.StepCode, stepDef.AssigneeRoleCode)

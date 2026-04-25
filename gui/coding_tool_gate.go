@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -58,6 +59,7 @@ var codingToolBlocklist = map[string]bool{
 	"bash":             true,
 	"write_file":       true,
 	"edit_file":        true,
+	"edit_lines":       true,
 	"craft_tool":       true,
 	"send_and_observe": true,
 	"control_session":  true,
@@ -113,6 +115,8 @@ var skipSignalsChinese = []string{
 	"不用确认", "马上做", "赶紧做", "跳过文档", "不需要文档",
 	// Action/continuation phrases — user wants to start working on an
 	// already-discussed task, not go through the three-phase workflow again.
+	// NOTE: These are degraded-mode fallbacks only. When GIC/UIC is available,
+	// the classifier's GateIntentContinuation handles these phrases semantically.
 	"开工", "开干", "动手", "搞起来", "搞起", "干吧", "做吧",
 	"开始吧", "开始做", "开始干", "开始搞",
 }
@@ -225,7 +229,7 @@ func mapGateIntentToConfig(result GateIntentResult, skip bool) codingToolGateCon
 	}
 
 	if skip {
-		cfg.reason = "gate inactive: skip signal detected"
+		cfg.reason = fmt.Sprintf("gate inactive: continuation/skip (classifier: %s, conf=%.2f)", result.Intent, result.Confidence)
 		return cfg
 	}
 
@@ -270,47 +274,65 @@ func newCodingToolGateConfig(userText string, loopKind LoopKind) codingToolGateC
 // accepts an optional GateIntentClassifier for semantic classification and
 // a userID for conversation context lookup.
 //
-// When the classifier is available and ready, semantic classification is tried
-// first. When unavailable, falls back to keyword-based classifyTaskIntent() +
-// isBugFixOnly() logic.
+// Classification priority:
+//  1. GateIntentClassifier (semantic, delegates to UIC when available)
+//  2. classifyTaskIntent (delegates to UIC when available, keyword fallback only when UIC is nil)
+//
+// isBugFixOnly() keyword detection is only used when classifyTaskIntent falls
+// back to keyword rules (UIC unavailable). When UIC is available, bug-fix
+// detection is handled by the UIC's LabelBugFix classification.
 func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, gic *GateIntentClassifier, userID string) codingToolGateConfig {
-	skip := containsSkipSignal(userText)
-
 	// Background loop always bypasses the gate, regardless of classification.
 	if loopKind == LoopKindBackground {
 		return codingToolGateConfig{
-			skipSignal: skip,
-			reason:     "gate inactive: background loop",
+			reason: "gate inactive: background loop",
 		}
 	}
 
 	// Try semantic classification first when classifier is available and ready.
+	// When a classifier is available, the skip signal is derived from the
+	// classifier's result (GateIntentContinuation), NOT from keyword matching.
+	// containsSkipSignal is only used in degraded mode (no classifier).
 	if gic != nil && gic.Ready() {
 		result := gic.Classify(userText, userID)
+		skip := result.Intent == GateIntentContinuation
 		cfg := mapGateIntentToConfig(result, skip)
 		return cfg
 	}
 
-	// Fallback to keyword-based classification when classifier unavailable.
-	result := classifyTaskIntent(userText)
-	bugfix := isBugFixOnly(userText)
+	// Fallback: GIC unavailable. Try UIC directly, then keyword fallback.
+	// This path is reached when GIC hasn't been initialized yet (early startup)
+	// or when embedding is unavailable (GIC.Ready() returns false).
+	if uic := unifiedClassifier; uic != nil {
+		// UIC available — use it directly for classification.
+		uicResult := uic.Classify(intent.MessageContext{Text: userText})
+		gateIntent, confidence, _, layer, reason := uicResult.ToGateIntent()
+		gateResult := GateIntentResult{
+			Intent:     GateIntent(gateIntent),
+			Confidence: confidence,
+			Layer:      layer,
+			Reason:     reason,
+		}
+		skip := gateResult.Intent == GateIntentContinuation
+		cfg := mapGateIntentToConfig(gateResult, skip)
+		return cfg
+	}
 
+	// Neither GIC nor UIC available — degraded mode.
+	// Use keyword-based skip signal detection as last resort.
+	skip := containsSkipSignal(userText)
+	bugfix := isBugFixOnly(userText)
 	cfg := codingToolGateConfig{
-		intent:     result.Intent,
+		intent:     intentAmbiguous,
 		skipSignal: skip,
 		bugFix:     bugfix,
 	}
-
-	switch {
-	case result.Intent != intentCoding:
-		cfg.reason = fmt.Sprintf("gate inactive: intent=%s", result.Intent)
-	case skip:
-		cfg.reason = "gate inactive: skip signal detected"
-	case bugfix:
-		cfg.reason = "gate inactive: bug-fix/debug task (no three-phase needed)"
-	default:
-		cfg.active = true
-		cfg.reason = "gate active: intentCoding, no skip signal, chat loop"
+	if bugfix {
+		cfg.reason = "gate inactive: bug-fix detected (keyword fallback, UIC unavailable)"
+	} else if skip {
+		cfg.reason = "gate inactive: skip signal detected (keyword fallback, UIC unavailable)"
+	} else {
+		cfg.reason = "gate inactive: intent=ambiguous (degraded mode, UIC unavailable)"
 	}
 	return cfg
 }

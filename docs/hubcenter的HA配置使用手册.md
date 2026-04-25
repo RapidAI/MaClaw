@@ -293,6 +293,7 @@ center:
 
 - `embeddinggemma-300M-Q8_0.gguf`
 - `moonshine-base-zh.gguf`
+- `omniparser-v2.yolow`
 
 ### 下载时机
 
@@ -451,3 +452,4 @@ ls -la /data/soft/hub/data/models
 - 定期检查 `quality_score`、`lag_seconds`、`backlog`、`last_error`
 - 对 `hub` 额外关注模型下载日志与磁盘空间
 - 如果某台节点长期离线，恢复后会按 peer cursor 继续追同步日志
+

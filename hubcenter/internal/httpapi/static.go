@@ -8,6 +8,7 @@ import (
 )
 
 func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
+	staticDir = resolveStaticDir(staticDir)
 	staticDir = strings.TrimSpace(staticDir)
 	if staticDir == "" {
 		return
@@ -24,6 +25,52 @@ func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix stri
 	mux.HandleFunc("GET "+routePrefix+"/{rest...}", func(w http.ResponseWriter, r *http.Request) {
 		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
 	})
+}
+
+func resolveStaticDir(staticDir string) string {
+	staticDir = strings.TrimSpace(staticDir)
+	if staticDir == "" {
+		return ""
+	}
+	if filepath.IsAbs(staticDir) {
+		return filepath.Clean(staticDir)
+	}
+
+	baseDirs := []string{"."}
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		exeDir := filepath.Dir(exe)
+		baseDirs = append(baseDirs, exeDir, filepath.Join(exeDir, ".."), filepath.Join(exeDir, "..", ".."))
+	}
+
+	return resolveStaticDirFromBases(staticDir, baseDirs)
+}
+
+func resolveStaticDirFromBases(staticDir string, baseDirs []string) string {
+	staticDir = strings.TrimSpace(staticDir)
+	if staticDir == "" {
+		return ""
+	}
+	if filepath.IsAbs(staticDir) {
+		return filepath.Clean(staticDir)
+	}
+
+	seen := map[string]struct{}{}
+	for _, baseDir := range baseDirs {
+		baseDir = strings.TrimSpace(baseDir)
+		if baseDir == "" {
+			continue
+		}
+		candidate := filepath.Clean(filepath.Join(baseDir, staticDir))
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+
+	return filepath.Clean(staticDir)
 }
 
 // registerAdminStaticRoutes is an alias for registerStaticRoutes with /admin default.

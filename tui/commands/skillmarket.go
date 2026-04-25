@@ -36,10 +36,27 @@ func RunSkillMarket(args []string) error {
 	}
 }
 
+// resolveHubCenterURL resolves the HubCenter URL with multi-node failover.
+// This is the single entry point for all CLI commands that need HubCenter access
+// (skillmarket, gossip, etc.). It performs discovery + probe and persists the
+// successful selection for subsequent calls.
+//
+// This delegates to the shared ResolveHubCenterWithFailover() for failover logic.
 func resolveHubCenterURL() string {
 	store := NewFileConfigStore(ResolveDataDir())
-	cfg, _ := store.LoadConfig()
-	return cfg.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return remote.DefaultRemoteHubCenterURL
+	}
+
+	hubURL := cfg.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
+	if hubURL == "" {
+		return remote.DefaultRemoteHubCenterURL
+	}
+
+	// Use the shared failover logic from skill_search_api.go.
+	// This ensures all CLI commands use the same singleton cache and persister.
+	return ResolveHubCenterWithFailover(cfg, hubURL, nil, nil)
 }
 
 func resolveEmail() string {

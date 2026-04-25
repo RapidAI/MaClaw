@@ -52,10 +52,9 @@ export function ASRConfigPanel({ lang }: Props) {
                 setEnabled(true); // auto-enable after download
             }
         };
-        // downloadModelFrom emits embedding-download-progress; emitASRProgress emits asr-*
+        // ASR downloads now emit their own dedicated event.
         EventsOn('asr-download-progress', handler);
-        EventsOn('embedding-download-progress', handler);
-        return () => { EventsOff('asr-download-progress'); EventsOff('embedding-download-progress'); };
+        return () => { EventsOff('asr-download-progress'); };
     }, []);
 
     const handleToggle = async (on: boolean) => {

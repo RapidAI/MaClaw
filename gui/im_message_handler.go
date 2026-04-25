@@ -182,6 +182,12 @@ type agentLoopPhase struct {
 	// for a tool availability hallucination (e.g. "我没有 bash 工具").
 	// Only one correction per loop to avoid infinite cycles.
 	ToolHallucinationCorrected bool
+
+	// LengthContinuations tracks how many times the loop has injected a
+	// continuation prompt after the LLM's text output was truncated
+	// (finish_reason="length"). Capped at maxLengthContinuations to
+	// prevent infinite loops.
+	LengthContinuations int
 }
 
 // skillHintWordBoundaryRe matches a skill preference hint as a whole word,
@@ -2109,9 +2115,13 @@ type IMMessageHandler struct {
 
 	// workflowAgentLoopMarker is set by handleActiveWorkflow when the
 	// workflow engine returns RunAgentLoop=true. Consumed (LoadAndDelete)
-	// by handleIMMessageWithLoop to enable doc capture only when the agent
-	// loop is running on behalf of the workflow — not for unrelated messages
-	// that happen to coexist with a stale active workflow.
+	// by handleIMMessageWithLoop to enable phase prompt injection and
+	// doc capture when the agent loop is running on behalf of the workflow.
+	//
+	// This marker is set for ALL RunAgentLoop=true responses, including
+	// DefaultInput=true (first phase execution). The phase prompt guides
+	// the LLM to produce the phase deliverable, and doc capture saves it
+	// so the workflow can advance via NeedsConfirm.
 	workflowAgentLoopMarker sync.Map
 
 	// workflowPendingConfirmOther is set by handlePendingConfirm when the
@@ -2165,7 +2175,8 @@ type IMMessageHandler struct {
 	// workflow's Execution Phase. When active, it injects per-task system
 	// messages and constructs focused prompts for send_and_observe instead
 	// of letting the LLM dump the entire project description at once.
-	taskOrchestrator *TaskExecutionOrchestrator
+	// Uses a per-user registry to isolate concurrent workflows in maclawsrv.
+	taskOrchestratorRegistry *TaskOrchestratorRegistry
 
 	// nudgeTracker manages the post-use skill nudge system per session.
 	// It tracks cooldown timing, deduplication, and iteration thresholds
@@ -2259,9 +2270,9 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	})
 
 	// Initialize task execution orchestrator for per-task coding workflow.
-	h.taskOrchestrator = NewTaskExecutionOrchestrator()
+	h.taskOrchestratorRegistry = NewTaskOrchestratorRegistry()
 	if h.sessionPrecheck != nil {
-		h.taskOrchestrator.ExternalChecker = &sessionPrecheckAdapter{precheck: h.sessionPrecheck}
+		h.taskOrchestratorRegistry.SetExternalChecker(&sessionPrecheckAdapter{precheck: h.sessionPrecheck})
 	}
 
 	// Initialize the nudge tracker for post-use skill nudge system.
@@ -2346,6 +2357,24 @@ func hasRecentFailedToolCall(history []agent.ConversationEntry) bool {
 	return false
 }
 
+// wasSkillRecentlyRepaired checks if a skill was auto-repaired within the
+// last 5 minutes by examining its persisted RepairHistory. This uses
+// persisted data (not the one-shot ConsumeRepairNotifications) to avoid
+// competing with appendSkillRepairNotifications for the same data.
+func (h *IMMessageHandler) wasSkillRecentlyRepaired(skillName string) bool {
+	if h.getSkillExecutor() == nil {
+		return false
+	}
+	for _, s := range h.getSkillExecutor().loadSkills() {
+		if s.Name == skillName && s.RepairAttemptCount > 0 && s.LastRepairAt != "" {
+			if t, err := time.Parse(time.RFC3339, s.LastRepairAt); err == nil {
+				return time.Since(t) < 5*time.Minute
+			}
+		}
+	}
+	return false
+}
+
 // injectNudgeMessages checks nudge conditions and appends appropriate system
 // messages to the conversation history. Nudges are injected AFTER the current
 // response is delivered — they go into the conversation history for the NEXT
@@ -2392,11 +2421,17 @@ func (h *IMMessageHandler) injectNudgeMessages(
 	}
 
 	// 2. Skill failure workaround nudge: skill failed + LLM resolved via alternative tools.
+	//    Coordinates with self-repair: checks the skill's persisted repair history
+	//    to determine if self-repair was recently attempted (within 5 minutes).
+	//    This avoids competing with appendSkillRepairNotifications for the
+	//    one-shot ConsumeRepairNotifications data.
 	if phase.FailedSkillName != "" {
+		selfRepairAttempted := h.wasSkillRecentlyRepaired(phase.FailedSkillName)
 		event := nudge.NudgeEvent{
-			Type:           nudge.SkillFailureWorkaround,
-			SkillName:      phase.FailedSkillName,
-			IterationCount: iteration,
+			Type:                nudge.SkillFailureWorkaround,
+			SkillName:           phase.FailedSkillName,
+			SelfRepairAttempted: selfRepairAttempted,
+			IterationCount:      iteration,
 		}
 		if tracker.ShouldNudge(event) {
 			msg := nudge.NudgeMessage(event)
@@ -2406,7 +2441,8 @@ func (h *IMMessageHandler) injectNudgeMessages(
 					Content: msg,
 				})
 				tracker.RecordNudge(event)
-				log.Printf("[nudge] injected SkillFailureWorkaround nudge: skill=%q iteration=%d", phase.FailedSkillName, iteration)
+				log.Printf("[nudge] injected SkillFailureWorkaround nudge: skill=%q selfRepairAttempted=%v iteration=%d",
+					phase.FailedSkillName, selfRepairAttempted, iteration)
 			}
 		}
 	}
@@ -2506,8 +2542,8 @@ func (h *IMMessageHandler) SetUsageTracker(tracker *tool.UsageTracker) {
 func (h *IMMessageHandler) SetSessionPrecheck(precheck *SessionPrecheck) {
 	h.sessionPrecheck = precheck
 	// Keep orchestrator's external tool checker in sync.
-	if h.taskOrchestrator != nil && precheck != nil {
-		h.taskOrchestrator.ExternalChecker = &sessionPrecheckAdapter{precheck: precheck}
+	if h.taskOrchestratorRegistry != nil && precheck != nil {
+		h.taskOrchestratorRegistry.SetExternalChecker(&sessionPrecheckAdapter{precheck: precheck})
 	}
 }
 
@@ -2788,17 +2824,10 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", sendStatus)
 	}
 
-	// SkillMarket result → download via HubCenter API.
-	smClient := NewSkillMarketClient(h.app)
-	base := smClient.baseURL()
-	if base == "" {
-		return fmt.Sprintf("🔎 找到 Skill「%s」但 HubCenter URL 未配置，无法下载", best.Name)
-	}
-	downloadURL := base + "/api/v1/skills/" + url.PathEscape(best.ID) + "/download"
-	skill, dlErr := downloadSkillJSON(ctx, downloadURL)
+	// SkillMarket result: download through the HubCenter failover pool.
+	skill, dlErr := downloadSkillJSONFromHubCenter(ctx, h.app, "/api/v1/skills/"+url.PathEscape(best.ID)+"/download")
 	if dlErr != nil {
-		return fmt.Sprintf("🔎 找到 Skill「%s」: %s\n下载失败: %v\n请在设置面板的 Hub 市场中手动安装。",
-			best.Name, best.Description, dlErr)
+		return fmt.Sprintf("Found skill %s but download failed: %v", best.Name, dlErr)
 	}
 	skill.Source = "auto_hub"
 	return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_hub", sendStatus)
@@ -2809,7 +2838,7 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 // that uses the SKILL.md as instructions.
 // Delegates to the shared corelib/skill.HubClient.
 func downloadClawHubSkill(ctx context.Context, slug string) (*corelib.NLSkillEntry, error) {
-	client := cskill.NewHubClient()
+	client := cskill.DefaultHubClient()
 	return client.DownloadClawHub(ctx, slug)
 }
 
@@ -3204,7 +3233,34 @@ func extractBrowserRootCause(text string) string {
 
 func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
 	startedAt := time.Now()
-	h.memory.Save(userID, trimHistory(history))
+
+	// Build optional callbacks only when trimming will actually occur.
+	var summarizer func(string) string
+	var memorySink func(string, []string)
+
+	if len(history) > agent.MaxConversationTurns {
+		// LLM summarizer for dropped entries (Phase 7).
+		if h.app != nil {
+			cfg := h.app.GetMaclawLLMConfig()
+			if cfg.URL != "" && cfg.Model != "" {
+				summarizer = makeSummarizer(cfg, &http.Client{Timeout: 15 * time.Second})
+			}
+		}
+		// Memory sink for substantial dropped assistant messages (Phase 1 supplement).
+		if h.memoryStore != nil {
+			memorySink = func(content string, tags []string) {
+				entry := memory.Entry{
+					Content:  content,
+					Category: memory.CategoryTaskArtifact,
+					Tags:     tags,
+					Scope:    memory.ScopeProject,
+				}
+				_ = h.memoryStore.Save(entry)
+			}
+		}
+	}
+
+	h.memory.Save(userID, trimHistoryWithSummary(history, summarizer, memorySink))
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
 	}
@@ -3738,11 +3794,28 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if trimmed == "/help" {
 		return &IMAgentResponse{Text: "📖 可用命令:\n" +
 			"/new /reset — 重置对话\n" +
+			"/btw <查询> — 侧查询（不打断当前任务上下文）\n" +
 			"/compress — 压缩当前对话历史\n" +
 			"/cancel /取消 — 取消当前正在执行的任务\n" +
 			"/exit /quit — 终止所有会话，退出编程模式\n" +
 			"/sessions — 查看当前会话状态\n" +
 			"/help — 显示此帮助"}
+	}
+	// --- /btw side query: independent agent loop for quick lookups ---
+	// Runs in a clean context (no workflow, no 40+ tools) and appends only
+	// the final result to the main conversation history.
+	if strings.HasPrefix(trimmed, "/btw ") || trimmed == "/btw" {
+		btwQuery := ""
+		if len(trimmed) > 5 {
+			btwQuery = strings.TrimSpace(trimmed[5:])
+		}
+		if btwQuery == "" {
+			return &IMAgentResponse{Text: "用法: /btw <查询内容>\n\n示例:\n  /btw 最新的 Go 1.23 有什么新特性\n  /btw React 19 的主要变化\n  /btw 这个项目用了什么框架"}
+		}
+		if !h.isMaclawLLMConfigured() {
+			return &IMAgentResponse{Error: "LLM 未配置，无法执行 /btw 查询。"}
+		}
+		return h.handleBtwCommand(msg, btwQuery, onProgress, onToken)
 	}
 	if trimmed == "/cancel" || trimmed == "/取消" {
 		// Cancel active workflow if any.
@@ -3906,8 +3979,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 	// Check if handlePendingConfirm classified this message as "other"
 	// (unrelated to the active workflow). If so, the agent loop should
-	// skip the NeedsConfirm gate to prevent unrelated LLM output (e.g.
-	// weather info) from being captured as a workflow phase document.
+	// skip workflow-engine-specific gates (NeedsConfirm phase capture,
+	// doc_only tool filtering) to prevent unrelated LLM output from
+	// being captured as a workflow phase document.
+	//
+	// NOTE: This does NOT bypass the Coding Tool Gate — when the message
+	// is a new coding task, gateConfig.active controls that independently.
 	_, skipNeedsConfirmGate := h.workflowPendingConfirmOther.LoadAndDelete(msg.UserID)
 
 	// Also skip workflow gates when the attachment bypass was triggered —
@@ -4196,12 +4273,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 	systemPrompt += h.buildResumeTraceContext(msg.UserID, msg.Text)
 
-	// Inject workflow phase prompt only when the agent loop is running on
-	// behalf of the workflow engine (RunAgentLoop=true). This prevents stale
-	// workflow prompts from leaking into unrelated messages (e.g., weather
-	// queries) when a previous workflow wasn't properly cleaned up.
-	// Prefer the stashed prompt from HandleInput (includes modify context)
-	// over the generic BuildPhasePrompt.
+	// Inject workflow phase prompt when the agent loop is running on behalf
+	// of the workflow engine (workflowAgentLoop=true). The stashed prompt
+	// is set by handleActiveWorkflow (from engine.HandleInput) or by
+	// advanceAndRespond (from engine.AdvancePhase). It contains the
+	// phase-specific system instructions ("you are in the audience_goal
+	// phase, generate...").
+	//
+	// Prefer the stashed prompt (includes modify context or the exact
+	// prompt from HandleInput) over the generic BuildPhasePrompt fallback.
 	if workflowAgentLoop && h.getWorkflowEngine() != nil {
 		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(msg.UserID); ok {
 			systemPrompt += "\n" + stashed.(string)
@@ -4285,6 +4365,128 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		defer h.chatLoopMu.Unlock()
 	}
 
+	// --- SubAgent interception for coding execution ---
+	//
+	// The orchestrator is ONLY activated when the workflow engine has
+	// completed the three-phase flow (requirements → design → task breakdown)
+	// ── SubAgent activation ──
+	//
+	// The orchestrator is activated by the workflow engine when advancePhase
+	// enters an execution phase (ToolFilterFull && !NeedsConfirm). This
+	// happens in handleActiveWorkflow when it processes the ActivateOrchestrator
+	// signal from WorkflowResponse. By the time we reach here, the orchestrator
+	// is already active if the workflow engine triggered it.
+	//
+	// Previously, a hardcoded "Path 1" check existed here:
+	//   ws.CurrentPhase == PhaseCodingImplementation
+	// This coupled SubAgent activation to the coding workflow's specific
+	// phase ID. Now the engine declares execution phases via ToolFilterFull
+	// && !NeedsConfirm, which works for all 19 workflow templates.
+
+	// When the orchestrator is active and the task should use SubAgent (direct
+	// mode, no external coding tool), run the SubAgent instead of the main loop.
+	if ShouldUseSubAgent(h.getTaskOrchestratorReadOnly(msg.UserID)) {
+		log.Printf("[subagent-intercept] routing to SubAgent for user=%s", msg.UserID)
+		cfg := h.getMaclawLLMConfig()
+		taskOrch := h.getTaskOrchestratorReadOnly(msg.UserID)
+
+		if onProgress != nil {
+			onProgress("🚀 启动编码 SubAgent（纯净上下文模式）")
+		}
+
+		runner := NewSubAgentTaskRunner(h, cfg, httpClient, taskOrch, loopCtx)
+		report := runner.RunAllTasks(onToken, func(text string) {
+			if onProgress != nil {
+				onProgress(text)
+			}
+		})
+
+		// Deactivate orchestrator after all tasks are done.
+		// NOTE: Deactivate is called AFTER integration and AdvancePhase
+		// because those operations need the orchestrator's task state
+		// (HasPassedTasks, BuildIntegrationPrompt, ProjectPath, etc.).
+		defer taskOrch.Deactivate()
+
+		// --- Fix #1: Save implementation phase output and advance workflow ---
+		// Previously, SubAgent completion only deactivated the orchestrator
+		// without updating the workflow engine. This left the workflow stuck
+		// in the "implementation" phase forever — the integration and review
+		// phases were never reached.
+		//
+		// Now we:
+		// 1. Save the execution report as the implementation phase output
+		// 2. Run the integration phase (BuildIntegrationPrompt) if all tasks passed
+		// 3. Advance the workflow to the review phase
+		if engine := h.getWorkflowEngine(); engine != nil {
+			// Save implementation phase output so the engine knows it's done.
+			engine.SavePhaseOutput(msg.UserID, report)
+
+			// Run integration phase if there are completed tasks to integrate.
+			if taskOrch.HasPassedTasks() && !loopCtx.IsCancelled() {
+				integrationPrompt := taskOrch.BuildIntegrationPrompt()
+				if integrationPrompt != "" {
+					if onProgress != nil {
+						onProgress("🔗 启动集成联调阶段...")
+					}
+					integrationResult := RunTaskWithSubAgent(
+						h, cfg, httpClient,
+						&TaskItem{
+							Title:       "集成联调",
+							Description: integrationPrompt,
+						},
+						taskOrch.ProjectPath,
+						taskOrch.RequirementsContext,
+						taskOrch.DesignContext,
+						runner.collectPreviousOutputs(),
+						loopCtx, onToken,
+						func(text string) {
+							if onProgress != nil {
+								onProgress(text)
+							}
+						},
+					)
+					report += "\n\n## 集成联调\n\n" + integrationResult.Summary
+				}
+			}
+
+			// Advance from implementation to review phase.
+			// Skip if the user cancelled — don't advance to review when
+			// the implementation was interrupted.
+			if !loopCtx.IsCancelled() {
+				advResp, advErr := engine.AdvancePhase(msg.UserID)
+				if advErr != nil {
+					log.Printf("[subagent-intercept] AdvancePhase error after SubAgent: %v", advErr)
+				} else if advResp != nil {
+					if advResp.Text != "" {
+						report += "\n\n---\n" + advResp.Text
+					}
+					// If the review phase needs the agent loop, stash the prompt
+					// so the next user message triggers it.
+					if advResp.RunAgentLoop && advResp.PhasePrompt != "" {
+						h.stashedPhasePrompt.Store(msg.UserID, advResp.PhasePrompt)
+						h.workflowAgentLoopMarker.Store(msg.UserID, true)
+					}
+					if advResp.Complete {
+						if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+							adapter.ResetSuggestMaximize(msg.UserID)
+						}
+					}
+				}
+			}
+		}
+
+		// Preserve SubAgent execution context in conversation history so the
+		// LLM has context for follow-up messages ("改一下 Player 的跳跃逻辑").
+		history = append(history, agent.ConversationEntry{
+			Role:    "assistant",
+			Content: report,
+		})
+
+		resp := &IMAgentResponse{Text: report}
+		h.saveConversationHistoryTimed(msg.UserID, history, resp)
+		return resp
+	}
+
 	resp := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, onToken, onNewRound, onStreamDone, msg.MinIterations, msg.Platform)
 	if resp == nil {
 		resp = &IMAgentResponse{}
@@ -4365,6 +4567,45 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 	}
 	b.WriteString("\n对话已重置，后续消息将正常对话。")
 	return &IMAgentResponse{Text: b.String()}
+}
+
+// handleBtwCommand runs a /btw side query in an independent agent loop.
+// The query runs with a minimal tool set (web_search, web_fetch, read_file,
+// memory) and does not pollute the main conversation with intermediate steps.
+// Only the final result is appended to the main history as a single message.
+func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) *IMAgentResponse {
+	cfg := h.getMaclawLLMConfig()
+	httpClient := h.client
+
+	// Create an independent LoopContext — not tied to the main chat loop.
+	loopCtx := NewLoopContext("btw", 15, httpClient)
+
+	btw := NewBtwSubAgent(h, cfg, httpClient, loopCtx)
+	btw.SetCallbacks(onToken, func(text string) {
+		if onProgress != nil {
+			onProgress(text)
+		}
+	})
+
+	result := btw.Execute(query)
+
+	if result.Error != "" && result.Text == "" {
+		return &IMAgentResponse{Error: fmt.Sprintf("/btw 查询失败: %s", result.Error)}
+	}
+
+	// Append only the final result to the main conversation history.
+	// Intermediate tool calls (web_search, web_fetch, etc.) stay in the
+	// SubAgent's independent conversation and are discarded.
+	history := h.memory.Load(msg.UserID)
+	history = append(history,
+		agent.ConversationEntry{Role: "user", Content: "/btw " + query},
+		agent.ConversationEntry{Role: "assistant", Content: result.Text},
+	)
+	h.saveConversationHistoryTimed(msg.UserID, history, nil)
+
+	log.Printf("[btw] completed query=%q iterations=%d tools=%d", truncateRunes(query, 50), result.Iterations, result.ToolCalls)
+
+	return &IMAgentResponse{Text: result.Text}
 }
 
 // handleSessionsCommand returns a quick status summary of active sessions.
@@ -5067,19 +5308,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	// maxIter defaults to 300 (MaxAgentIterationsCap).
-	// We still enforce a hard safety cap to prevent runaway loops.
-	effectiveMax := maxIter
+	// Use the single source of truth for configured → effective conversion.
+	effectiveMax := config.EffectiveMaxIterations(maxIter)
 	chatFinalizeGrace := 0
 	if ctx.Kind == LoopKindChat {
 		chatFinalizeGrace = 2
 	}
-	if effectiveMax <= 0 {
-		effectiveMax = config.MaxAgentIterationsCap
-	}
-	if effectiveMax < config.MinAgentIterations {
-		effectiveMax = config.MinAgentIterations
-	}
 	// Apply minimum iterations floor (e.g. scheduled tasks need more rounds).
+	// This is an additional business rule on top of EffectiveMaxIterations.
 	if minIterations > 0 && effectiveMax < minIterations {
 		effectiveMax = minIterations
 		if effectiveMax > config.MaxAgentIterationsCap {
@@ -5107,12 +5343,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// definitions during the three-phase coding workflow, which wastes context
 	// tokens and causes hallucinated "Browser:" role prefixes in output.
 	//
-	// Skip when SkipNeedsConfirmGate is set — this means handlePendingConfirm
-	// classified the user's message as unrelated to the active workflow ("other"
-	// or "modify"). In that case, the user needs the full tool set (bash,
-	// write_file, ssh, etc.) to execute their unrelated request. Without this
-	// check, the coding gate strips bash/write_file even for non-coding tasks
-	// like "upload this skill to market", leaving the LLM unable to write files.
+	// NOTE: We do NOT skip this filter when SkipNeedsConfirmGate is set.
+	// SkipNeedsConfirmGate means handlePendingConfirm classified the message
+	// as "other" (unrelated to the active workflow), but gateConfig.active is
+	// independently computed from the message's coding intent. When the
+	// "unrelated" message is itself a new coding task (e.g. "开发超级玛利游戏"
+	// during an active PPT workflow), gateConfig.active=true and the gate
+	// must strip coding tools to enforce the three-phase flow.
+	// Non-coding "other" messages (e.g. "查天气") have gateConfig.active=false,
+	// so the gate naturally does not fire and the full tool set is preserved.
 	//
 	// Also skip when the TaskExecutionOrchestrator is active — the orchestrator
 	// manages tool availability itself (direct mode keeps bash/write_file/edit_file,
@@ -5122,9 +5361,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// NOTE: orchestratorActive is a function, not a cached bool, because the
 	// orchestrator may be activated mid-loop (when the user confirms the task list).
 	orchestratorActive := func() bool {
-		return h.taskOrchestrator != nil && h.taskOrchestrator.IsActive()
+		if h.taskOrchestratorRegistry == nil {
+			return false
+		}
+		o := h.taskOrchestratorRegistry.Get(userID) // read-only: don't create empty entries
+		return o != nil && o.IsActive()
 	}
-	if gateConfig.active && !ctx.SkipNeedsConfirmGate && !orchestratorActive() {
+	if gateConfig.active && !orchestratorActive() {
 		filtered := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
 			name := tool.ExtractToolName(t)
@@ -5221,6 +5464,19 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// complex tasks (≥5 tool calls).
 	totalToolCallsInLoop := 0
 
+	// --- Coding iteration budget ---
+	// When the main agent loop is executing coding tasks (write_file, edit_file,
+	// bash), it can run for 90+ iterations and blow up the context. This counter
+	// tracks consecutive iterations with coding tool calls. When it exceeds the
+	// soft limit, a progress reminder is injected. At the hard limit, the loop
+	// force-returns with a progress summary.
+	//
+	// This is a safety net for when the main agent loop handles coding directly
+	// (e.g. workflow engine unavailable, or coding gate enforcing three-phase).
+	const codingIterBudgetSoft = 50  // inject progress reminder
+	const codingIterBudgetHard = 65  // force return
+	codingIterCount := 0             // consecutive iterations with coding tools
+
 	// --- In-flight task marker ---
 	// Mark that an agent loop is now executing. If the process is killed
 	// before the loop completes, this marker persists on disk and tells
@@ -5238,6 +5494,21 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// the next successful persist cycle.
 		_ = h.memory.FlushNow()
 	}()
+
+	// effectiveTokenLimit is the calibrated context token budget for
+	// trimConversation. Updated each iteration based on API-reported
+	// actual token counts. Also used by the bonus round after the loop.
+	effectiveTokenLimit := cfg.EffectiveContextTokens()
+
+	// lengthContinuationBuf accumulates text across finish_reason=length
+	// continuations. When the LLM's output is truncated by the output token
+	// limit, the continuation mechanism injects a "please continue" prompt
+	// and loops. Each iteration's msgContent only contains that iteration's
+	// chunk. Without accumulation, resp.Text (and therefore post-loop doc
+	// capture / SavePhaseOutput) would only contain the LAST chunk, losing
+	// all preceding content. This is critical for workflow phases where the
+	// full document must be saved as the phase output.
+	var lengthContinuationBuf strings.Builder
 
 	for iteration := 0; ; iteration++ {
 		ctx.SetIteration(iteration)
@@ -5375,7 +5646,80 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		iterationPrepStartedAt := time.Now()
 		conversation = autoCompressConversation(conversation, cfg, httpClient)
-		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
+
+		// --- Actual-token calibration ---
+		// estimateConversationTokens may underestimate the real token count
+		// (especially for mixed CJK/code content). When the API reports
+		// actual input tokens exceeding the effective context budget, the
+		// estimate is too optimistic and trimConversation won't trigger.
+		//
+		// Fix: use the API-reported token count from the previous iteration
+		// to compute a calibration ratio. If the ratio > 1.0, reduce the
+		// token limit passed to trimConversation so it trims more aggressively.
+		// effectiveTokenLimit is updated each iteration and also used by the
+		// bonus round after the loop exits.
+		effectiveTokenLimit = cfg.EffectiveContextTokens()
+		if lastLLMInputTokens > 0 {
+			estimated := estimateConversationTokens(conversation)
+			if estimated > 0 {
+				ratio := float64(lastLLMInputTokens) / float64(estimated)
+				if ratio > 1.15 { // >15% underestimate — apply calibration
+					calibrated := int(float64(effectiveTokenLimit) / ratio)
+					if calibrated < 4000 {
+						calibrated = 4000
+					}
+					log.Printf("[trim-calibration] API reported %d tokens, estimated %d (ratio=%.2f), reducing limit from %d to %d",
+						lastLLMInputTokens, estimated, ratio, effectiveTokenLimit, calibrated)
+					effectiveTokenLimit = calibrated
+				}
+			}
+
+			// --- API-reported token hard ceiling ---
+			// The configured ContextLength may exceed the model's actual
+			// effective capacity (e.g. glm-5.1 configured at 180K but
+			// returns empty responses above ~120K). When the API reports
+			// input tokens exceeding 85% of the ORIGINAL effective budget
+			// (before calibration), force trim to 65%. This catches the
+			// case where the estimate is accurate but the budget itself
+			// is too generous for the model's real capacity.
+			//
+			// Use cfg.EffectiveContextTokens() (not effectiveTokenLimit)
+			// because effectiveTokenLimit may already be reduced by the
+			// ratio calibration above. The hard ceiling should compare
+			// against the original budget to avoid double-reduction.
+			originalEffective := cfg.EffectiveContextTokens()
+			hardCeiling := originalEffective * 85 / 100
+			if lastLLMInputTokens > hardCeiling {
+				forcedLimit := originalEffective * 65 / 100
+				if forcedLimit < 4000 {
+					forcedLimit = 4000
+				}
+				if forcedLimit < effectiveTokenLimit {
+					log.Printf("[trim-hardlimit] API reported %d tokens > 85%% ceiling %d (effective=%d), forcing limit from %d to %d",
+						lastLLMInputTokens, hardCeiling, originalEffective, effectiveTokenLimit, forcedLimit)
+					effectiveTokenLimit = forcedLimit
+				}
+			}
+
+			// --- Empty response proactive trim ---
+			// When the previous LLM call returned an empty response
+			// (output=0), the model is likely struggling with context
+			// size. Proactively trim to 60% of effective before the
+			// next call, instead of only injecting a Recover prompt
+			// (which further inflates context).
+			if lastLLMOutputTokens == 0 {
+				emptyTrimLimit := cfg.EffectiveContextTokens() * 60 / 100
+				if emptyTrimLimit < 4000 {
+					emptyTrimLimit = 4000
+				}
+				if emptyTrimLimit < effectiveTokenLimit {
+					log.Printf("[trim-empty-response] previous response was empty (input=%d), forcing aggressive trim from %d to %d",
+						lastLLMInputTokens, effectiveTokenLimit, emptyTrimLimit)
+					effectiveTokenLimit = emptyTrimLimit
+				}
+			}
+		}
+		conversation = trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, makeSummarizer(cfg, httpClient))
 
 		// --- Harness: inject GoalAnchor content ---
 		systemMessagesStart := len(conversation)
@@ -5422,7 +5766,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				tools = baseTools
 				directModeToolsFiltered = false // reset: baseTools includes session tools
 				// Re-apply coding gate definition filter after restoring baseTools.
-				if gateConfig.active && !ctx.SkipNeedsConfirmGate && !orchestratorActive() {
+				if gateConfig.active && !orchestratorActive() {
 					gateFiltered := make([]map[string]interface{}, 0, len(tools))
 					for _, t := range tools {
 						name := tool.ExtractToolName(t)
@@ -5433,15 +5777,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					tools = gateFiltered
 				}
 				// Re-apply direct-mode session tool filter after restoring baseTools.
-				if orchestratorActive() && h.taskOrchestrator.CurrentExecutionMode() == TaskExecModeDirect {
-					var directFiltered []map[string]interface{}
-					for _, t := range tools {
-						name := tool.ExtractToolName(t)
-						if !isDirectModeBlockedTool(name) {
-							directFiltered = append(directFiltered, t)
+				if orchestratorActive() {
+					orchInst := h.taskOrchestratorRegistry.Get(userID)
+					if orchInst != nil && orchInst.CurrentExecutionMode() == TaskExecModeDirect {
+						var directFiltered []map[string]interface{}
+						for _, t := range tools {
+							name := tool.ExtractToolName(t)
+							if !isDirectModeBlockedTool(name) {
+								directFiltered = append(directFiltered, t)
+							}
 						}
+						tools = directFiltered
 					}
-					tools = directFiltered
 				}
 				toolsTokenBudget = estimateToolsTokens(tools)
 			}
@@ -5455,37 +5802,40 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		// --- Task Execution Orchestrator: inject per-task guidance ---
-		if h.taskOrchestrator != nil && h.taskOrchestrator.IsActive() {
-			// Resolve execution mode for the current task at runtime.
-			execMode := h.taskOrchestrator.ResolveExecutionMode()
+		if h.taskOrchestratorRegistry != nil {
+			orchInst := h.taskOrchestratorRegistry.Get(userID)
+			if orchInst != nil && orchInst.IsActive() {
+				// Resolve execution mode for the current task at runtime.
+				execMode := orchInst.ResolveExecutionMode()
 
-			// In direct mode, strip session management tools from the tool
-			// list so the LLM codes directly instead of trying to delegate.
-			// Only filter once per mode resolution — after the first pass,
-			// session tools are already gone from the tools slice.
-			if execMode == TaskExecModeDirect && !directModeToolsFiltered {
-				var directFiltered []map[string]interface{}
-				for _, t := range tools {
-					name := tool.ExtractToolName(t)
-					if !isDirectModeBlockedTool(name) {
-						directFiltered = append(directFiltered, t)
+				// In direct mode, strip session management tools from the tool
+				// list so the LLM codes directly instead of trying to delegate.
+				// Only filter once per mode resolution — after the first pass,
+				// session tools are already gone from the tools slice.
+				if execMode == TaskExecModeDirect && !directModeToolsFiltered {
+					var directFiltered []map[string]interface{}
+					for _, t := range tools {
+						name := tool.ExtractToolName(t)
+						if !isDirectModeBlockedTool(name) {
+							directFiltered = append(directFiltered, t)
+						}
 					}
+					if len(directFiltered) < len(tools) {
+						log.Printf("[agent-loop] direct-mode: stripped %d session tools from tool list", len(tools)-len(directFiltered))
+						tools = directFiltered
+					}
+					directModeToolsFiltered = true
 				}
-				if len(directFiltered) < len(tools) {
-					log.Printf("[agent-loop] direct-mode: stripped %d session tools from tool list", len(tools)-len(directFiltered))
-					tools = directFiltered
-				}
-				directModeToolsFiltered = true
-			}
 
-			if taskInjection := h.taskOrchestrator.BuildSystemInjection(); taskInjection != "" {
-				conversation = append(conversation, map[string]string{
-					"role":    "system",
-					"content": taskInjection,
-				})
-				if h.traceService != nil && ctx.RunID != "" {
-					h.appendTraceEvent(ctx, "task_orchestrator.injection", "info",
-						"Injected per-task guidance", truncateTraceText(taskInjection, 220), "", "")
+				if taskInjection := orchInst.BuildSystemInjection(); taskInjection != "" {
+					conversation = append(conversation, map[string]string{
+						"role":    "system",
+						"content": taskInjection,
+					})
+					if h.traceService != nil && ctx.RunID != "" {
+						h.appendTraceEvent(ctx, "task_orchestrator.injection", "info",
+							"Injected per-task guidance", truncateTraceText(taskInjection, 220), "", "")
+					}
 				}
 			}
 		}
@@ -5719,7 +6069,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// Previously this only fired on iteration == 0, so the LLM could
 		// output the requirements doc on iteration 1 and then immediately
 		// call create_session on iteration 2+ without any enforcement.
-		if gateConfig.active && !ctx.SkipNeedsConfirmGate && !orchestratorActive() && len(choice.Message.ToolCalls) > 0 {
+		if gateConfig.active && !orchestratorActive() && len(choice.Message.ToolCalls) > 0 {
 			gateResult := applyCodingToolGate(choice.Message.ToolCalls)
 			if gateResult.applied {
 				// Log stripped and preserved tool names.
@@ -5787,6 +6137,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						phase.Stage = agentStageFinalize
 						strippedContent := stripThinkingTags(msgContent)
 						finalResp := &IMAgentResponse{Text: strippedContent}
+
 						// Desktop: intercept text output for the doc preview panel.
 						if platform == "desktop" && h.getWorkflowEngine() != nil {
 							trimmedStripped := strings.TrimSpace(strippedContent)
@@ -5857,6 +6208,38 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 			}
 
+			// --- finish_reason=length continuation for text-only responses ---
+			// When the LLM's text output is truncated (finish_reason="length")
+			// and there are no tool calls, the model hit its output token limit
+			// mid-sentence. Instead of returning the truncated text to the user,
+			// inject a continuation prompt so the LLM can finish its output.
+			//
+			// This is especially important when the coding tool gate is active:
+			// the LLM is forced to output text-only (coding tools are stripped),
+			// and may produce very long narrations that get truncated. Without
+			// this handling, the user sees a confusing wall of text ending
+			// mid-sentence.
+			//
+			// Cap at 3 continuations to prevent infinite loops when the model
+			// keeps producing max-length outputs.
+			const maxLengthContinuations = 3
+			if choice.FinishReason == "length" && phase.LengthContinuations < maxLengthContinuations {
+				phase.LengthContinuations++
+				phase.ConsecutiveNoTool = 0 // reset — this is not a stall
+				// Accumulate the truncated chunk so the final response contains
+				// the full document, not just the last continuation's output.
+				lengthContinuationBuf.WriteString(msgContent)
+				log.Printf("[agent-loop] finish_reason=length on text-only response (continuation %d/%d, iter=%d, textLen=%d, accumulated=%d), injecting continuation prompt",
+					phase.LengthContinuations, maxLengthContinuations, iteration, len(msgContent), lengthContinuationBuf.Len())
+				systemMessagesStart := len(conversation)
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": "[系统提示] 你的输出因长度限制被截断。请从截断处继续输出，不要重复已输出的内容。",
+				})
+				recordSystemMessages(systemMessagesStart, conversation)
+				continue
+			}
+
 			// --- Workflow NeedsConfirm hard gate ---
 			// When the current workflow phase requires user confirmation
 			// (e.g. requirements, tech design, task breakdown), and the LLM
@@ -5882,7 +6265,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// (unrelated to the workflow), skip the NeedsConfirm gate so
 				// the unrelated output (e.g. weather info) is not captured as
 				// a phase document.
-				if ctx.SkipNeedsConfirmGate {
+				//
+				// EXCEPTION: When gateConfig.active is true, the current
+				// message is a NEW coding task that needs the three-phase
+				// flow (requirements → design → task breakdown). In this
+				// case, do NOT bypass — let the Coding Tool Gate enforce
+				// the three-phase flow even though the message came through
+				// the "other" path of handlePendingConfirm.
+				if ctx.SkipNeedsConfirmGate && !gateConfig.active {
 					semanticBypass = true
 				}
 				if !semanticBypass {
@@ -5963,17 +6353,26 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							truncateTraceText(trimmedForGate, 220), "", "")
 					}
 					phase.Stage = agentStageFinalize
-					finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+					// Use accumulated continuation text if available.
+					gateText := msgContent
+					if lengthContinuationBuf.Len() > 0 {
+						gateText = lengthContinuationBuf.String() + msgContent
+					}
+					finalResp := &IMAgentResponse{Text: stripThinkingTags(gateText)}
 					if !streamDoneAt.IsZero() {
 						postStreamLastReturnPrepAt = time.Now()
 					}
+
 					// Desktop: intercept text output for the doc preview panel.
+					// Use the full accumulated text (gateText) for doc preview,
+					// not just the current chunk (trimmedForGate).
+					docPreviewText := strings.TrimSpace(stripThinkingTags(gateText))
 					if platform == "desktop" && h.getWorkflowEngine() != nil {
 						if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
 							emitted := false
 							// Path 1: steering detector (coding workflow without engine)
 							if steeringDetector != nil {
-								steeringDetector.interceptTextOutput(trimmedForGate, func(phaseID, content string) {
+								steeringDetector.interceptTextOutput(docPreviewText, func(phaseID, content string) {
 									_ = adapter.EmitDocUpdate(userID, phaseID, content)
 									log.Printf("[SteeringWorkflow] emitted doc_update from text output for user=%s phase=%s len=%d", userID, phaseID, len(content))
 									emitted = true
@@ -5985,11 +6384,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							// Use a lower threshold (50 chars) than the old 200 — the engine already confirmed
 							// this is a NeedsConfirm phase, so even shorter text is a valid deliverable.
 							// Also emit suggest_maximize in case it wasn't emitted yet (e.g. dedup cleared).
-							if !emitted && engineGateActive && len(trimmedForGate) >= 50 {
+							if !emitted && engineGateActive && len(docPreviewText) >= 50 {
 								if ws := h.getWorkflowEngine().GetActiveWorkflow(userID); ws != nil {
-									_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedForGate)
+									_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, docPreviewText)
 									adapter.EmitSuggestMaximize(userID, string(ws.Type))
-									log.Printf("[WorkflowEngine] emitted doc_update for user=%s phase=%s type=%s len=%d", userID, ws.CurrentPhase, ws.Type, len(trimmedForGate))
+									log.Printf("[WorkflowEngine] emitted doc_update for user=%s phase=%s type=%s len=%d", userID, ws.CurrentPhase, ws.Type, len(docPreviewText))
 								} else {
 									log.Printf("[WorkflowEngine] WARNING: engineGateActive=true but GetActiveWorkflow returned nil for user=%s", userID)
 								}
@@ -6016,7 +6415,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if phase.ConsecutiveNoTool > maxConsecutiveNoTool && trimmedVisibleContent != "" {
 				log.Printf("[agent-loop] hard cap: %d consecutive no-tool iterations, force-returning response", phase.ConsecutiveNoTool)
 				phase.Stage = agentStageFinalize
-				finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+				hardCapText := msgContent
+				if lengthContinuationBuf.Len() > 0 {
+					hardCapText = lengthContinuationBuf.String() + msgContent
+				}
+				finalResp := &IMAgentResponse{Text: stripThinkingTags(hardCapText)}
 				if !streamDoneAt.IsZero() {
 					postStreamLastReturnPrepAt = time.Now()
 				}
@@ -6161,7 +6564,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}()
 			}
 			phase.Stage = agentStageFinalize
-			finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+			// When finish_reason=length continuations occurred, the accumulated
+			// buffer contains all chunks. Append the final chunk and use the
+			// full text as the response. This ensures post-loop doc capture
+			// (SavePhaseOutput) saves the complete document, not just the last chunk.
+			finalText := msgContent
+			if lengthContinuationBuf.Len() > 0 {
+				finalText = lengthContinuationBuf.String() + msgContent
+				log.Printf("[agent-loop] assembled %d continuation chunks into final response (totalLen=%d)", phase.LengthContinuations+1, len(finalText))
+			}
+			finalResp := &IMAgentResponse{Text: stripThinkingTags(finalText)}
 			if !streamDoneAt.IsZero() {
 				postStreamLastReturnPrepAt = time.Now()
 				handlerPostStreamResponseStartedAt := time.Now()
@@ -6617,6 +7029,48 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 		}
 
+		// --- Coding iteration budget enforcement ---
+		// Track consecutive iterations where the LLM is primarily calling
+		// coding tools (write_file, edit_file, bash). When the budget is
+		// exceeded, force-return to prevent context blowup.
+		{
+			codingToolsThisIter := 0
+			for _, tc := range choice.Message.ToolCalls {
+				name := strings.TrimSpace(tc.Function.Name)
+				switch name {
+				case "write_file", "edit_file", "bash":
+					codingToolsThisIter++
+				}
+			}
+			if len(choice.Message.ToolCalls) > 0 && codingToolsThisIter*100/len(choice.Message.ToolCalls) >= 80 {
+				codingIterCount++
+			} else if len(choice.Message.ToolCalls) == 0 {
+				// No tool calls — don't reset, the LLM might be thinking
+				// between coding bursts.
+			} else {
+				codingIterCount = 0 // non-coding tools, reset
+			}
+
+			if codingIterCount >= codingIterBudgetHard {
+				log.Printf("[coding-budget] hard limit reached: %d consecutive coding iterations, force-returning (iter=%d)", codingIterCount, iteration)
+				phase.Stage = agentStageFinalize
+				summaryText := fmt.Sprintf("⏸️ 编码执行已达到 %d 轮迭代上限。已完成的工作已保存。\n\n如需继续，请发送「继续」。", codingIterCount)
+				finalResp := &IMAgentResponse{Text: summaryText}
+				attachLLMTelemetry(finalResp)
+				h.saveConversationHistoryTimed(userID, history, finalResp)
+				return finalResp
+			}
+			if codingIterCount == codingIterBudgetSoft {
+				log.Printf("[coding-budget] soft limit reached: %d consecutive coding iterations, injecting progress reminder (iter=%d)", codingIterCount, iteration)
+				systemMessagesStart := len(conversation)
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": fmt.Sprintf("[系统提示] 你已连续执行了 %d 轮编码操作。请在完成当前文件后暂停，向用户汇报进度（已完成哪些文件、还剩哪些），然后等待用户确认是否继续。", codingIterCount),
+				})
+				recordSystemMessages(systemMessagesStart, conversation)
+			}
+		}
+
 		// If a direct screenshot was captured, return it immediately as an image response.
 		// However, if the screenshot was part of a multi-tool call (LLM called screenshot
 		// alongside other tools) or the agent has been actively working (prior tool calls
@@ -6819,7 +7273,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// When handlePendingConfirm classified the message as "other"
 		// (unrelated to the workflow), skip the NeedsConfirm gate so
 		// the unrelated tool output is not captured as a phase document.
-		if needsConfirmToolBranch && ctx.SkipNeedsConfirmGate {
+		//
+		// EXCEPTION: When gateConfig.active is true, the current message
+		// is a NEW coding task that needs the three-phase flow. Do NOT
+		// bypass — let the Coding Tool Gate enforce the three-phase flow.
+		if needsConfirmToolBranch && ctx.SkipNeedsConfirmGate && !gateConfig.active {
 			needsConfirmToolBranch = false
 			log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: pending confirm classified as 'other' (iter=%d user=%s)", iteration, userID)
 		}
@@ -6844,7 +7302,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) && isSubstantivePhaseDocument(trimmedAfterTools) {
 				log.Printf("[workflow-gate] NeedsConfirm (tool branch): force-returning after tool execution for user confirmation (iteration=%d len=%d)", iteration, len(trimmedAfterTools))
 				phase.Stage = agentStageFinalize
-				finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+				toolBranchText := msgContent
+				if lengthContinuationBuf.Len() > 0 {
+					toolBranchText = lengthContinuationBuf.String() + msgContent
+				}
+				finalResp := &IMAgentResponse{Text: stripThinkingTags(toolBranchText)}
 				// Desktop: intercept text output for the doc preview panel.
 				if platform == "desktop" && h.getWorkflowEngine() != nil {
 					if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
@@ -6892,7 +7354,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		// Run one bonus iteration to let the agent observe current session state.
 		conversation = autoCompressConversation(conversation, cfg, httpClient)
-		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
+		conversation = trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, makeSummarizer(cfg, httpClient))
 		if onNewRound != nil {
 			onNewRound()
 		}

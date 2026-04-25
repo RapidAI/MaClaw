@@ -494,6 +494,33 @@ function getWindowControlButtonStyle(t: Theme, variant: "hide" | "fullscreen", a
 
 /* ── Themed inline markdown rendering ── */
 
+/** Detect whether a string looks like a file/directory path (Windows or Unix) */
+function looksLikeFilePath(s: string): boolean {
+    // Windows: drive letter + backslash (e.g. C:\Users\...)
+    if (/^[A-Za-z]:\\/.test(s)) return true;
+    // Unix absolute or home: /Users/..., /home/..., ~/...
+    if (/^(~|\/(?:Users|home|tmp|var|opt|etc|usr))[/\\]/.test(s)) return true;
+    return false;
+}
+
+/** Render a clickable path link element.
+ *  @param trimTrailing — strip trailing prose punctuation that the regex may over-capture
+ *                         on bare (unwrapped) paths. Paths extracted from backticks/bold
+ *                         are already clean and should pass false. */
+function renderPathLink(filePath: string, key: number, t: Theme, trimTrailing = false): React.ReactNode {
+    const display = trimTrailing
+        ? filePath.replace(/[\s,;:!?。，；：！？）\]]+$/, "")
+        : filePath;
+    return (
+        <a key={key}
+           href="#"
+           onClick={(event) => openFileInFolder(event, display)}
+           style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }}
+           title={display}
+        >📂 {display}</a>
+    );
+}
+
 function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
     if (!text) return ["\u00A0"];
     const parts: React.ReactNode[] = [];
@@ -510,9 +537,21 @@ function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
         }
         const m = match[0];
         if (match[1]) {
-            parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{m.slice(1, -1)}</code>);
+            // Inline code — check if content is a file path
+            const inner = m.slice(1, -1);
+            if (looksLikeFilePath(inner)) {
+                parts.push(renderPathLink(inner, idx++, t));
+            } else {
+                parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
+            }
         } else if (match[2]) {
-            parts.push(<strong key={idx++} style={{ color: t.boldColor, fontWeight: 700 }}>{m.slice(2, -2)}</strong>);
+            // Bold — check if content is a file path
+            const inner = m.slice(2, -2);
+            if (looksLikeFilePath(inner)) {
+                parts.push(renderPathLink(inner, idx++, t));
+            } else {
+                parts.push(<strong key={idx++} style={{ color: t.boldColor, fontWeight: 700 }}>{inner}</strong>);
+            }
         } else if (match[3]) {
             parts.push(<em key={idx++} style={{ color: t.italicColor }}>{m.slice(1, -1)}</em>);
         } else if (match[4]) {
@@ -521,6 +560,15 @@ function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
                 const href = lm[2];
                 if (/^https?:\/\//i.test(href)) {
                     parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer" }}>{lm[1]}</a>);
+                } else if (looksLikeFilePath(href)) {
+                    // Local file path in markdown link: [label](C:\path\to\file)
+                    parts.push(
+                        <a key={idx++} href="#"
+                           onClick={(event) => openFileInFolder(event, href)}
+                           style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }}
+                           title={href}
+                        >📂 {lm[1]}</a>
+                    );
                 } else {
                     parts.push(<span key={idx++} style={{ color: t.linkColor }}>{lm[1]}</span>);
                 }
@@ -528,20 +576,13 @@ function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
                 parts.push(m);
             }
         } else if (match[5] || match[6] || match[7] || match[9]) {
-            // Trim trailing punctuation/whitespace that isn't part of the path
-            const filePath = m.replace(/[\s,;:!?。，；：！？）\]]+$/, "");
-            if (filePath.length !== m.length) {
+            // Bare path (not wrapped in backticks or bold) — may over-capture trailing punctuation
+            const cleaned = m.replace(/[\s,;:!?。，；：！？）\]]+$/, "");
+            if (cleaned.length !== m.length) {
                 // Rewind regex lastIndex so trimmed chars are re-processed
-                re.lastIndex -= (m.length - filePath.length);
+                re.lastIndex -= (m.length - cleaned.length);
             }
-            parts.push(
-                <a key={idx++}
-                   href="#"
-                   onClick={(event) => openFileInFolder(event, filePath)}
-                   style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }}
-                   title={filePath}
-                >📂 {filePath}</a>
-            );
+            parts.push(renderPathLink(cleaned, idx++, t));
         }
         lastIndex = re.lastIndex;
     }
@@ -1519,26 +1560,29 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     }, []);
 
     // ── submitLocked true→false transition: process next queued entry ──
-    // Changed from mergeAndFire (all-at-once) to extractEntry (one-at-a-time).
     // Each entry gets its own independent agent loop. When the loop finishes
     // (submitLocked goes false again), the next entry is automatically processed.
+    //
+    // We read entry data directly from queue[0], remove it, then send.
+    // sendMessage checks activeRoundRef (a ref, not state) synchronously —
+    // it will accept the message because the round must be idle when
+    // submitLocked just transitioned to false.
     useEffect(() => {
         if (prevSubmitLockedRef.current && !submitLocked && queue.length > 0) {
             const firstEntry = queue[0];
-            const extracted = extractEntry(firstEntry.id);
-            if (extracted) {
-                const outgoing = extracted.filePaths.length > 0
-                    ? buildOutgoingMessageMulti(extracted.text, extracted.filePaths)
-                    : extracted.text;
-                recordSubmittedPrompt?.(extracted.text);
-                sendMessage(outgoing).catch(() => {
-                    // On failure, entry is already removed by extractEntry.
-                    // Remaining queue entries will be processed on next transition.
-                });
-            }
+            const filePaths = firstEntry.attachments.map(a => a.filePath);
+            const outgoing = filePaths.length > 0
+                ? buildOutgoingMessageMulti(firstEntry.text, filePaths)
+                : firstEntry.text;
+            recordSubmittedPrompt?.(firstEntry.text);
+            removeEntry(firstEntry.id);
+            sendMessage(outgoing).catch(() => {
+                // On failure, entry is already removed. Remaining queue
+                // entries will be processed on next submitLocked transition.
+            });
         }
         prevSubmitLockedRef.current = submitLocked;
-    }, [submitLocked, queue.length, extractEntry, sendMessage, recordSubmittedPrompt]);
+    }, [submitLocked, queue.length, removeEntry, sendMessage, recordSubmittedPrompt]);
 
     // ── BufferQueuePanel edit handlers (Task 12.1) ──
     const handleEditEntry = useCallback((id: string) => setEditingEntryId(id), []);
@@ -1551,8 +1595,6 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     // ── Fire (send) a single queued entry, interrupting the current session ──
     const handleFireEntry = useCallback(async (id: string) => {
         if (!cancelSession || cancelPending) return;
-        const extracted = extractEntry(id);
-        if (!extracted) return;
 
         const restoreSeq = ++cancelRestoreSeqRef.current;
         setCancelPending(true);
@@ -1560,7 +1602,11 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             await cancelSession();
             if (cancelRestoreSeqRef.current !== restoreSeq) return;
 
-            // Build and send the extracted entry
+            // Extract AFTER cancelSession succeeds — if cancel fails or is
+            // superseded, the entry stays in the queue instead of being lost.
+            const extracted = extractEntry(id);
+            if (!extracted) return;
+
             const outgoing = extracted.filePaths.length > 0
                 ? buildOutgoingMessageMulti(extracted.text, extracted.filePaths)
                 : extracted.text;
@@ -1596,6 +1642,10 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             // time — remaining entries will be processed via the submitLocked
             // transition effect when this entry's agent loop finishes.
             if (queue.length > 0) {
+                // Use extractEntry so that if the draining effect already
+                // consumed this entry (race: agent completed while cancel
+                // was in flight), extractEntry returns null and we skip the
+                // duplicate send.
                 const firstEntry = queue[0];
                 const pending = extractEntry(firstEntry.id);
                 if (pending) {

@@ -8,8 +8,8 @@ import (
 )
 
 func TestValidateTransportSecurityRequiresTLSOrLoopback(t *testing.T) {
-	if err := validateTransportSecurity(":18080", "", "", false); err != nil {
-		t.Fatalf("loopback-style addr should allow insecure http: %v", err)
+	if err := validateTransportSecurity(":18080", "", "", false); err == nil {
+		t.Fatalf("wildcard addr should require tls or explicit insecure override")
 	}
 	if err := validateTransportSecurity("127.0.0.1:18080", "", "", false); err != nil {
 		t.Fatalf("loopback addr should allow insecure http: %v", err)
@@ -27,7 +27,7 @@ func TestValidateTransportSecurityRequiresTLSOrLoopback(t *testing.T) {
 
 func TestIsLoopbackListenAddr(t *testing.T) {
 	cases := map[string]bool{
-		":18080":             true,
+		":18080":             false,
 		"127.0.0.1:18080":    true,
 		"localhost:18080":    true,
 		"[::1]:18080":        true,
@@ -68,6 +68,34 @@ func TestValidateLocalBashScope(t *testing.T) {
 	}
 }
 
+func TestValidateStartupSecrets(t *testing.T) {
+	if err := validateStartupSecrets("short", "also-short"); err == nil {
+		t.Fatalf("expected short secrets to be rejected")
+	}
+	if err := validateStartupSecrets("maclaw-admin-dev-0123456789", "maclaw-token-dev"); err == nil {
+		t.Fatalf("expected default token secret to be rejected")
+	}
+	if err := validateStartupSecrets("admin-secret-012345678901234567", "token-secret-012345678901234567890123"); err != nil {
+		t.Fatalf("expected valid secrets: %v", err)
+	}
+}
+
+func TestDefaultDataRoot(t *testing.T) {
+	t.Setenv("MACLAW_DATA_ROOT", "D:/custom/maclaw")
+	if got := defaultDataRoot(); got != "D:/custom/maclaw" {
+		t.Fatalf("defaultDataRoot() with explicit root = %q", got)
+	}
+
+	t.Setenv("MACLAW_DATA_ROOT", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	if got := defaultDataRoot(); got != home+string(os.PathSeparator)+".maclaw_srv" {
+		t.Fatalf("defaultDataRoot() with home env = %q", got)
+	}
+}
 func TestBuildCoreAgentExecutorFromEnv(t *testing.T) {
 	keys := []string{
 		"MACLAW_ENABLE_LOCAL_BASH",

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 const (
@@ -634,6 +635,32 @@ func buildCraftSuccessResult(app *App, request craftToolRequest, attempt craftAt
 		sendProgress("📦 正在注册为 Skill...")
 		result.WriteString("\n")
 		result.WriteString(registerCraftedSkillEntry(app, request.OriginalTask, request.SkillName, attempt.ScriptPath, attempt.Language))
+
+		// Persist the crafted script to disk as a reusable skill (async).
+		// This complements the in-memory registration above — the persisted
+		// skill survives app restarts and can be discovered by ScanSkillDir.
+		go func() {
+			skillsRoot, err := cskill.PrimarySkillsDir()
+			if err != nil {
+				log.Printf("[craft-persist] cannot determine skills dir: %v", err)
+				return
+			}
+			scriptContent, readErr := os.ReadFile(attempt.ScriptPath)
+			if readErr != nil {
+				log.Printf("[craft-persist] cannot read script %s: %v", attempt.ScriptPath, readErr)
+				return
+			}
+			persistResult, persistErr := cskill.PersistCraftedSkill(skillsRoot, request.OriginalTask, string(scriptContent), attempt.Language)
+			if persistErr != nil {
+				log.Printf("[craft-persist] failed to persist crafted skill: %v", persistErr)
+				return
+			}
+			action := "created"
+			if persistResult.IsUpdate {
+				action = "updated"
+			}
+			log.Printf("[craft-persist] %s skill %q at %s", action, persistResult.SkillName, persistResult.SkillDir)
+		}()
 	} else if request.SaveAsSkill {
 		result.WriteString("\n📦 默认未自动注册为 Skill：该脚本更像一次性任务或强输出绑定结果。")
 	}
@@ -879,6 +906,19 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 		skillName = generateSkillName(task)
 	}
 	runCmd := buildRunCommand(scriptPath, language)
+
+	// Extract parameter schema from the generated script so the skill has
+	// proper params for BindParams alias resolution and LLM context injection.
+	// Without this, craft_tool-generated skills have no params schema and
+	// the LLM doesn't know what arguments to pass when reusing the skill.
+	var skillParams []corelib.NLSkillParam
+	if scriptContent, err := os.ReadFile(scriptPath); err == nil {
+		skillParams = cskill.ExtractScriptParams(string(scriptContent), language)
+		if len(skillParams) > 0 {
+			log.Printf("[craft-register] extracted %d params from script %s for skill %q", len(skillParams), scriptPath, skillName)
+		}
+	}
+
 	entry := corelib.NLSkillEntry{
 		Name:        skillName,
 		Description: task,
@@ -890,6 +930,7 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 				"timeout": float64(120),
 			},
 		}},
+		Params:    skillParams,
 		Status:    "active",
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Source:    "crafted",

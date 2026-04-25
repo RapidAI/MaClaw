@@ -20,6 +20,9 @@ const (
 	DefaultModelServiceGroupName = "Default (No Model Access)"
 	DefaultTokensPerCredit       = 10000
 	CardCodeLength               = 20
+
+	AccessPolicyFree          = "free"
+	AccessPolicyGrantRequired = "grant_required"
 )
 
 const cardCodeAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -41,10 +44,11 @@ type Registry struct {
 }
 
 type ModelServiceGroup struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Description string              `json:"description,omitempty"`
-	Models      []ModelServiceModel `json:"models,omitempty"`
+	ID           string              `json:"id"`
+	Name         string              `json:"name"`
+	Description  string              `json:"description,omitempty"`
+	AccessPolicy string              `json:"access_policy,omitempty"`
+	Models       []ModelServiceModel `json:"models,omitempty"`
 }
 
 type ModelServiceModel struct {
@@ -180,12 +184,14 @@ func (r *Registry) Normalize() {
 		g.ID = strings.TrimSpace(g.ID)
 		g.Name = strings.TrimSpace(g.Name)
 		g.Description = strings.TrimSpace(g.Description)
+		g.AccessPolicy = NormalizeAccessPolicy(g.AccessPolicy)
 		for j := range g.Models {
 			m := &g.Models[j]
 			m.Name = strings.TrimSpace(m.Name)
 			m.Description = strings.TrimSpace(m.Description)
 			m.normalizeProviderConfigs()
 		}
+		g.mergeModelsByName()
 	}
 	for i := range r.GroupBindings {
 		r.GroupBindings[i].GroupID = strings.TrimSpace(r.GroupBindings[i].GroupID)
@@ -338,6 +344,89 @@ func (m ModelServiceModel) providerConfigByID(providerID string) (ModelServicePr
 	return ModelServiceProviderConfig{}, false
 }
 
+func (g *ModelServiceGroup) mergeModelsByName() {
+	if g == nil || len(g.Models) <= 1 {
+		return
+	}
+	merged := make([]ModelServiceModel, 0, len(g.Models))
+	indexByName := map[string]int{}
+	for _, model := range g.Models {
+		key := strings.ToLower(strings.TrimSpace(model.Name))
+		if key == "" {
+			merged = append(merged, model)
+			continue
+		}
+		idx, ok := indexByName[key]
+		if !ok {
+			merged = append(merged, model)
+			indexByName[key] = len(merged) - 1
+			continue
+		}
+		merged[idx] = mergeModelServiceModel(merged[idx], model)
+	}
+	for i := range merged {
+		merged[i].normalizeProviderConfigs()
+	}
+	g.Models = merged
+}
+
+func mergeModelServiceModel(dst ModelServiceModel, src ModelServiceModel) ModelServiceModel {
+	if strings.TrimSpace(dst.Name) == "" {
+		dst.Name = strings.TrimSpace(src.Name)
+	}
+	if strings.TrimSpace(dst.Description) == "" {
+		dst.Description = strings.TrimSpace(src.Description)
+	}
+	dst.ProviderIDs = mergeStrings(dst.ProviderIDs, src.ProviderIDs)
+	configIndex := map[string]int{}
+	for i, cfg := range dst.ProviderConfigs {
+		key := strings.ToLower(strings.TrimSpace(cfg.ProviderID))
+		if key == "" {
+			continue
+		}
+		configIndex[key] = i
+	}
+	for _, cfg := range src.ProviderConfigs {
+		key := strings.ToLower(strings.TrimSpace(cfg.ProviderID))
+		if key == "" {
+			continue
+		}
+		if idx, ok := configIndex[key]; ok {
+			dst.ProviderConfigs[idx] = mergeModelServiceProviderConfig(dst.ProviderConfigs[idx], cfg)
+			continue
+		}
+		dst.ProviderConfigs = append(dst.ProviderConfigs, cfg)
+		configIndex[key] = len(dst.ProviderConfigs) - 1
+	}
+	dst.CapabilityTags = mergeStrings(dst.CapabilityTags, src.CapabilityTags)
+	if src.Priority > dst.Priority {
+		dst.Priority = src.Priority
+	}
+	if dst.ResolutionTier == 0 || (src.ResolutionTier > 0 && src.ResolutionTier < dst.ResolutionTier) {
+		dst.ResolutionTier = src.ResolutionTier
+	}
+	if candidate := normalizeCreditMultiplier(src.CreditMultiplier); dst.CreditMultiplier == 0 || candidate < dst.CreditMultiplier {
+		dst.CreditMultiplier = candidate
+	}
+	return dst
+}
+
+func mergeModelServiceProviderConfig(dst ModelServiceProviderConfig, src ModelServiceProviderConfig) ModelServiceProviderConfig {
+	if strings.TrimSpace(dst.ProviderID) == "" {
+		dst.ProviderID = strings.TrimSpace(src.ProviderID)
+	}
+	dst.CapabilityTags = mergeStrings(dst.CapabilityTags, src.CapabilityTags)
+	if src.Priority > dst.Priority {
+		dst.Priority = src.Priority
+	}
+	if dst.ResolutionTier == 0 || (src.ResolutionTier > 0 && src.ResolutionTier < dst.ResolutionTier) {
+		dst.ResolutionTier = src.ResolutionTier
+	}
+	if candidate := normalizeCreditMultiplier(src.CreditMultiplier); dst.CreditMultiplier == 0 || candidate < dst.CreditMultiplier {
+		dst.CreditMultiplier = candidate
+	}
+	return dst
+}
 func containsNormalizedString(items []string, target string) bool {
 	needle := strings.ToLower(strings.TrimSpace(target))
 	if needle == "" {
@@ -391,6 +480,14 @@ func (r *Registry) FindModelServiceGroup(id string) *ModelServiceGroup {
 	return nil
 }
 
+func (r *Registry) AccessPolicyForServiceGroup(id string) string {
+	group := r.FindModelServiceGroup(id)
+	if group == nil {
+		return AccessPolicyFree
+	}
+	return NormalizeAccessPolicy(group.AccessPolicy)
+}
+
 func (r *Registry) FindCardByCode(code string) (*RechargeCard, int) {
 	hash := HashCode(code)
 	for i := range r.Cards {
@@ -412,6 +509,15 @@ func (r *Registry) FindCardByID(id string) (*RechargeCard, int) {
 		}
 	}
 	return nil, -1
+}
+
+func NormalizeAccessPolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case AccessPolicyGrantRequired:
+		return AccessPolicyGrantRequired
+	default:
+		return AccessPolicyFree
+	}
 }
 
 func normalizeStringSlice(items []string) []string {

@@ -382,8 +382,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if first.AuthType != "oauth" {
 		t.Errorf("OpenAI AuthType = %q, want %q", first.AuthType, "oauth")
 	}
-	if first.ContextLength != 128000 {
-		t.Errorf("OpenAI ContextLength = %d, want %d", first.ContextLength, 128000)
+	if first.ContextLength != 110000 {
+		t.Errorf("OpenAI ContextLength = %d, want %d", first.ContextLength, 110000)
 	}
 	if first.TimeoutSec != 360 {
 		t.Errorf("OpenAI TimeoutSec = %d, want %d", first.TimeoutSec, 360)

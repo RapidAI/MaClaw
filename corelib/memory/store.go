@@ -36,6 +36,7 @@ type Store struct {
 	archive  *ArchiveStore      // cold storage for evicted entries
 	tmt      *TemporalTree
 	gating   *RecallGating
+	partMgr  *partitionManager // category-based partitioned persistence
 }
 
 // NewStore creates a Store that persists to the given path.
@@ -55,6 +56,7 @@ func NewStore(path string) (*Store, error) {
 		vecIndex: newVectorIndex(),
 		graph:    newMemoryGraph(),
 		tmt:      NewTemporalTree(),
+		partMgr:  newPartitionManager(filepath.Dir(absPath)),
 	}
 
 	if err := s.load(); err != nil {
@@ -99,8 +101,34 @@ func computeContentHash(content string) string {
 // exists, it updates that entry instead of creating a duplicate.
 // Content is scanned for prompt injection patterns before saving.
 func (s *Store) Save(entry Entry) error {
+	return s.SaveWithContext(entry, "")
+}
+
+// SaveForUser stores a memory entry owned by the specified user.
+// In single-user mode (GUI/TUI), pass empty string for ownerID.
+// In multi-tenant mode (maclawsrv), pass the IM user ID.
+func (s *Store) SaveForUser(entry Entry, ownerID string) error {
+	entry.OwnerID = ownerID
+	return s.Save(entry)
+}
+
+// SaveWithContext stores a memory entry with additional context for tag enrichment.
+// contextHint is surrounding conversation text that provides aliases and related
+// terms not present in the entry content itself. When non-empty, entities are
+// extracted from contextHint and merged into the entry's tags, improving recall
+// when the user later queries with those alias terms.
+func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	if err := ScanForInjection(entry.Content); err != nil {
 		return fmt.Errorf("memory_store: rejected: %w", err)
+	}
+
+	// Enrich tags from conversation context: extract entities from contextHint
+	// that are not already present in the entry's content-derived tags.
+	if contextHint != "" {
+		ctxExpanded := ExpandQuery(contextHint)
+		if len(ctxExpanded.Entities) > 0 {
+			entry.Tags = mergeTags(entry.Tags, ctxExpanded.Entities)
+		}
 	}
 
 	hash := computeContentHash(entry.Content)
@@ -111,8 +139,15 @@ func (s *Store) Save(entry Entry) error {
 	now := time.Now()
 
 	// Idempotent: check by content hash first (O(n) but fast string compare).
+	// Multi-tenant isolation: only dedup within the same owner (or shared entries).
 	for i := range s.entries {
 		if s.entries[i].ContentHash == hash || s.entries[i].Content == entry.Content {
+			// Multi-tenant isolation: skip entries from different users.
+			// Empty OwnerID (shared) can match with any user.
+			existingOwner := s.entries[i].OwnerID
+			if entry.OwnerID != "" && existingOwner != "" && existingOwner != entry.OwnerID {
+				continue
+			}
 			s.entries[i].UpdatedAt = now
 			s.entries[i].AccessCount++
 			s.entries[i].Tags = mergeTags(s.entries[i].Tags, entry.Tags)
@@ -124,6 +159,32 @@ func (s *Store) Save(entry Entry) error {
 			s.signalSave()
 			return nil
 		}
+	}
+
+	// Substring dedup: check if the new content is a substring of (or contains)
+	// a recent existing entry. This catches semantically duplicate entries that
+	// differ in wording (e.g. KnowledgeExtractor extracts similar knowledge
+	// points across sessions). Only scan the most recent 50 entries to bound
+	// write latency. When a match is found, merge tags into the existing entry
+	// instead of creating a duplicate.
+	// Multi-tenant isolation: only dedup within the same owner (or shared entries).
+	if substringDupIdx := s.findSubstringDuplicate(entry.Content, entry.OwnerID); substringDupIdx >= 0 {
+		s.entries[substringDupIdx].UpdatedAt = now
+		s.entries[substringDupIdx].AccessCount++
+		s.entries[substringDupIdx].Tags = mergeTags(s.entries[substringDupIdx].Tags, entry.Tags)
+		// If the new content is a superset (contains the existing content),
+		// update to the longer version to preserve more information.
+		existingLen := len([]rune(s.entries[substringDupIdx].Content))
+		newLen := len([]rune(entry.Content))
+		if newLen > existingLen {
+			s.entries[substringDupIdx].Content = entry.Content
+			s.entries[substringDupIdx].ContentHash = hash
+		}
+		s.bm25.updateEntry(s.entries[substringDupIdx])
+		s.dirty = true
+		s.signalSave()
+		log.Printf("[memory_store] merged substring duplicate into entry %s (kept longer: %v)", s.entries[substringDupIdx].ID, newLen > existingLen)
+		return nil
 	}
 
 	if entry.ID == "" {
@@ -699,6 +760,39 @@ func rrfFuseScores(bm25Scores, vecScores []float64, entries []Entry, projectLowe
 //   - Exact match (case-insensitive): +2.0
 //   - Containment match (tag contains token or vice versa, min 3 runes): +1.0
 //   - Cap: 6.0
+// tagExactMatchBoost returns a score boost when any query entity exactly
+// matches (case-insensitive) one of the entry's tags. This is a stronger
+// signal than tagCrossScore's containment matching — it means the user is
+// querying with the exact same term that was stored as a tag (possibly from
+// conversation context via SaveWithContext).
+func tagExactMatchBoost(entry Entry, entities []string) float64 {
+	if len(entry.Tags) == 0 || len(entities) == 0 {
+		return 0
+	}
+	boost := 0.0
+	for _, entity := range entities {
+		entityLower := strings.ToLower(entity)
+		if len([]rune(entityLower)) < 2 {
+			continue
+		}
+		for _, tag := range entry.Tags {
+			if strings.ToLower(tag) == entityLower {
+				boost += 5.0 // strong boost for exact tag match
+				break
+			}
+		}
+	}
+	// Cap to prevent a single entry from dominating.
+	if boost > 10.0 {
+		boost = 10.0
+	}
+	return boost
+}
+
+// tagCrossScore computes the cross-match score between user message tokens
+// and a memory entry's tags.
+//   - Exact match (case-insensitive): +2.0
+//   - Containment match (tag contains token or vice versa, min 3 runes): +1.0
 func tagCrossScore(entry Entry, queryTokens []string) float64 {
 	if len(entry.Tags) == 0 || len(queryTokens) == 0 {
 		return 0
@@ -776,6 +870,8 @@ func CategoryImportanceWeight(c Category) float64 {
 		return 2.0
 	case CategoryProjectKnowledge:
 		return 2.0
+	case CategoryTaskArtifact:
+		return 3.0
 	case CategorySessionCheckpoint:
 		return 1.5
 	case CategoryConversationSummary:
@@ -898,7 +994,12 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 // user_fact entries (which are injected separately as a compressed summary).
 // Uses RRF (Reciprocal Rank Fusion) with Memory Stream scoring.
 // Filters out dormant and superseded entries.
-func (s *Store) RecallDynamic(query string, category Category, projectPath string) []Entry {
+//
+// ownerID is optional (variadic). When provided and non-empty, only entries
+// with matching OwnerID or empty OwnerID (shared) are returned. This enables
+// multi-tenant isolation in maclawsrv. In GUI/TUI (single-user), omit ownerID
+// or pass empty string — all entries are returned.
+func (s *Store) RecallDynamic(query string, category Category, projectPath string, ownerID ...string) []Entry {
 	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
 	expanded := ExpandQuery(query)
 	bm25Scores := s.multiQueryBM25(query, expanded.Entities)
@@ -913,6 +1014,12 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 	projectLower := strings.ToLower(projectPath)
 	now := time.Now()
 
+	// Extract optional ownerID for multi-tenant filtering.
+	filterOwner := ""
+	if len(ownerID) > 0 {
+		filterOwner = ownerID[0]
+	}
+
 	type rawCandidate struct {
 		entry Entry
 		bm25  float64
@@ -922,6 +1029,11 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 
 	for _, e := range s.entries {
 		if !e.IsActive() {
+			continue
+		}
+		// Multi-tenant isolation: when filterOwner is set, only return entries
+		// owned by that user or shared entries (empty OwnerID).
+		if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
 			continue
 		}
 		if e.Category == CategoryUserFact {
@@ -955,12 +1067,38 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		candidates = append(candidates, recallScored{entry: c.entry, score: sc})
 	}
 
+	// Tag exact match boost: when a query entity exactly matches an entry's
+	// tag, give a significant score boost. This bridges the "write-recall
+	// semantic gap" — e.g. user saved SSH info with tag "4090服务器" from
+	// conversation context, and later queries "查看 4090 服务器 GPU".
+	// The BM25/Vec channels may miss this because the content doesn't contain
+	// "4090", but the tag does.
+	if len(expanded.Entities) > 0 {
+		for i := range candidates {
+			boost := tagExactMatchBoost(candidates[i].entry, expanded.Entities)
+			candidates[i].score += boost
+		}
+	}
+
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
 
 	// 1-hop graph expansion: expand top candidates to discover related entries.
 	candidates = s.graphExpand(candidates, graphExpandSeeds)
+
+	// Post-expansion OwnerID filter: graphExpand may pull in entries from
+	// other users via graph edges. Re-apply the OwnerID filter.
+	if filterOwner != "" {
+		var filtered []recallScored
+		for _, c := range candidates {
+			if c.entry.OwnerID != "" && c.entry.OwnerID != filterOwner {
+				continue
+			}
+			filtered = append(filtered, c)
+		}
+		candidates = filtered
+	}
 
 	// Recall gating: LLM-based post-retrieval filtering.
 	if s.gating != nil {
@@ -1497,6 +1635,27 @@ func (s *Store) Flush() error { return s.flush() }
 // Path returns the file path of the store.
 func (s *Store) Path() string { return s.path }
 
+// UniqueOwnerIDs returns a deduplicated list of all OwnerIDs in the store.
+// Empty OwnerID (shared entries) is excluded from the result.
+// Used by Pipeline to run consolidation per-user in multi-tenant mode.
+func (s *Store) UniqueOwnerIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	for _, e := range s.entries {
+		if e.OwnerID != "" {
+			seen[e.OwnerID] = true
+		}
+	}
+
+	result := make([]string, 0, len(seen))
+	for id := range seen {
+		result = append(result, id)
+	}
+	return result
+}
+
 // queryEmbeddingCached returns the embedding for a query string.
 // Returns nil if no embedder is configured (graceful degradation).
 func (s *Store) queryEmbeddingCached(query string) []float32 {
@@ -1990,9 +2149,23 @@ func (s *Store) load() error {
 		return fmt.Errorf("memory_store: create dir: %w", err)
 	}
 
+	// Try loading from partition files first.
+	if s.partMgr != nil {
+		if entries, ok := s.partMgr.loadPartitions(); ok {
+			s.entries = entries
+			s.partMgr.enable()
+			log.Printf("[memory_store] loaded %d entries from partition files", len(entries))
+			return nil
+		}
+	}
+
+	// Fall back to legacy single file.
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// No legacy file either — fresh install. Keep using legacy mode
+			// (partitions will be enabled on first migration when the store
+			// grows large enough).
 			return nil
 		}
 		return fmt.Errorf("memory_store: read file: %w", err)
@@ -2011,11 +2184,46 @@ func (s *Store) load() error {
 		return nil
 	}
 	s.entries = entries
+
+	// Migrate legacy file to partitions when the store is large enough.
+	// Small stores (<100 entries) stay as single files — no overhead.
+	const migrationThreshold = 100
+	if s.partMgr != nil && len(entries) >= migrationThreshold {
+		if err := s.partMgr.migrateFromLegacy(entries, s.path); err != nil {
+			log.Printf("[memory_store] WARNING: partition migration failed: %v, continuing with legacy mode", err)
+		}
+	}
+
 	return nil
 }
 
 func (s *Store) flush() error {
 	s.mu.RLock()
+
+	// Partitioned flush: write all partitions when dirty.
+	if s.partMgr != nil && s.partMgr.isEnabled() && s.dirty {
+		s.partMgr.markAllDirty()
+		entries := make([]Entry, len(s.entries))
+		copy(entries, s.entries)
+		s.mu.RUnlock()
+
+		// flushDirty operates on the copied slice — no lock needed.
+		_, err := s.partMgr.flushDirty(entries)
+		if err != nil {
+			return fmt.Errorf("memory_store: partition flush: %w", err)
+		}
+		s.mu.Lock()
+		s.dirty = false
+		s.mu.Unlock()
+		return nil
+	}
+
+	if !s.dirty {
+		s.mu.RUnlock()
+		return nil
+	}
+
+	// Legacy single-file flush.
 	data, err := json.MarshalIndent(s.entries, "", "  ")
 	s.mu.RUnlock()
 	if err != nil {
@@ -2047,6 +2255,45 @@ func containsKeyword(e Entry, kw string) bool {
 		}
 	}
 	return false
+}
+
+// findSubstringDuplicate checks if the new content is a substring of (or
+// contains) a recent existing entry's content. Returns the index of the
+// matching entry, or -1 if no match. Only scans the most recent 50 entries
+// to bound write latency. Caller MUST hold s.mu.Lock.
+//
+// Multi-tenant isolation: only matches entries with the same OwnerID or
+// shared entries (empty OwnerID). Different users' entries are never
+// considered duplicates of each other.
+func (s *Store) findSubstringDuplicate(content string, ownerID string) int {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	if len(lower) < minSubstringLen {
+		return -1
+	}
+
+	// Scan the most recent 50 entries (by slice position, which correlates
+	// with creation order since new entries are appended).
+	start := len(s.entries) - 50
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(s.entries); i++ {
+		// Multi-tenant isolation: skip entries from different users.
+		// Empty OwnerID (shared) can match with any user.
+		existingOwner := s.entries[i].OwnerID
+		if ownerID != "" && existingOwner != "" && existingOwner != ownerID {
+			continue
+		}
+
+		existing := strings.ToLower(strings.TrimSpace(s.entries[i].Content))
+		if len(existing) < minSubstringLen {
+			continue
+		}
+		if strings.Contains(existing, lower) || strings.Contains(lower, existing) {
+			return i
+		}
+	}
+	return -1
 }
 
 // MergeTags combines two tag slices, removing duplicates.

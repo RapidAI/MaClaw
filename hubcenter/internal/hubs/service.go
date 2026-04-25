@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
@@ -43,8 +44,14 @@ type syncRecorder interface {
 	DeleteBlockedIP(ctx context.Context, ip string)
 	AppendHubInstance(ctx context.Context, item *store.HubInstance)
 	DeleteHubInstance(ctx context.Context, hubID string)
+	AppendHubDomainRoute(ctx context.Context, item *store.HubDomainRoute)
+	DeleteHubDomainRoute(ctx context.Context, routeID string)
 	AppendHubUserLink(ctx context.Context, item *store.HubUserLink)
-	DeleteHubUserLink(ctx context.Context, hubID string)
+	DeleteHubUserLink(ctx context.Context, linkID string)
+}
+
+type routeSnapshotRefresher interface {
+	Rebuild(ctx context.Context) error
 }
 
 type BlockedEmailRepository interface {
@@ -62,16 +69,19 @@ type BlockedIPRepository interface {
 }
 
 type RegisterHubRequest struct {
-	InstallationID string         `json:"installation_id"`
-	OwnerEmail     string         `json:"owner_email"`
-	Name           string         `json:"name"`
-	Description    string         `json:"description"`
-	BaseURL        string         `json:"base_url"`
-	Host           string         `json:"host"`
-	Port           int            `json:"port"`
-	Visibility     string         `json:"visibility"`
-	EnrollmentMode string         `json:"enrollment_mode"`
-	Capabilities   map[string]any `json:"capabilities"`
+	InstallationID        string         `json:"installation_id"`
+	OwnerEmail            string         `json:"owner_email"`
+	Name                  string         `json:"name"`
+	Description           string         `json:"description"`
+	BaseURL               string         `json:"base_url"`
+	Host                  string         `json:"host"`
+	Port                  int            `json:"port"`
+	Visibility            string         `json:"visibility"`
+	EnrollmentMode        string         `json:"enrollment_mode"`
+	CorporateEmailDomain  string         `json:"corporate_email_domain,omitempty"`
+	CorporateEmailDomains []string       `json:"corporate_email_domains,omitempty"`
+	AcceptPublicSignup    *bool          `json:"accept_public_signup,omitempty"`
+	Capabilities          map[string]any `json:"capabilities"`
 }
 
 type RegisterHubResult struct {
@@ -81,21 +91,36 @@ type RegisterHubResult struct {
 	Message             string `json:"message,omitempty"`
 }
 
+type HeartbeatHubUpdate struct {
+	BaseURL               string
+	Host                  string
+	Port                  int
+	Visibility            string
+	EnrollmentMode        string
+	CorporateEmailDomain  string
+	CorporateEmailDomains []string
+	AcceptPublicSignup    *bool
+}
+
 type Service struct {
 	hubs          store.HubRepository
 	links         store.HubUserLinkRepository
+	routes        store.HubDomainRouteRepository
 	blockedEmails BlockedEmailRepository
 	blockedIPs    BlockedIPRepository
 	settings      store.SystemSettingsRepository
 	mailer        mail.Mailer
 	publicBaseURL string
 	sync          syncRecorder
+	refresher     routeSnapshotRefresher
+	recorder      *diagnostics.FailureEventRecorder
 }
 
-func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, blockedEmails BlockedEmailRepository, blockedIPs BlockedIPRepository, settings store.SystemSettingsRepository, mailer mail.Mailer, publicBaseURL string) *Service {
+func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails BlockedEmailRepository, blockedIPs BlockedIPRepository, settings store.SystemSettingsRepository, mailer mail.Mailer, publicBaseURL string) *Service {
 	return &Service{
 		hubs:          hubs,
 		links:         links,
+		routes:        routes,
 		blockedEmails: blockedEmails,
 		blockedIPs:    blockedIPs,
 		settings:      settings,
@@ -106,6 +131,29 @@ func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, blo
 
 func (s *Service) SetSyncRecorder(recorder syncRecorder) {
 	s.sync = recorder
+}
+
+func (s *Service) SetRouteSnapshotRefresher(refresher routeSnapshotRefresher) {
+	s.refresher = refresher
+}
+
+func (s *Service) SetFailureEventRecorder(recorder *diagnostics.FailureEventRecorder) {
+	s.recorder = recorder
+}
+
+func (s *Service) recordFailure(ctx context.Context, category, eventCode, message, entityID, email, clientIP string, details map[string]any) {
+	if s == nil || s.recorder == nil {
+		return
+	}
+	s.recorder.Record(ctx, diagnostics.FailureEventInput{
+		Category:  category,
+		EventCode: eventCode,
+		Message:   message,
+		EntityID:  entityID,
+		Email:     email,
+		ClientIP:  clientIP,
+		Details:   details,
+	})
 }
 
 func (s *Service) RegisterHub(ctx context.Context, req RegisterHubRequest) (*RegisterHubResult, error) {
@@ -135,6 +183,19 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	}
 
 	installationID := strings.TrimSpace(req.InstallationID)
+	corporateEmailDomains := normalizeCorporateEmailDomains(req.CorporateEmailDomains)
+	corporateEmailDomain := normalizeCorporateEmailDomain(req.CorporateEmailDomain)
+	if len(corporateEmailDomains) == 0 && corporateEmailDomain != "" {
+		corporateEmailDomains = []string{corporateEmailDomain}
+	}
+	if len(corporateEmailDomains) > 0 {
+		corporateEmailDomain = corporateEmailDomains[0]
+	}
+	visibility := normalizeVisibility(req.Visibility)
+	acceptPublicSignup := len(corporateEmailDomains) == 0 && isPublicSignupVisibility(visibility)
+	if req.AcceptPublicSignup != nil {
+		acceptPublicSignup = *req.AcceptPublicSignup
+	}
 	if installationID != "" {
 		existing, err := s.hubs.GetByInstallationID(ctx, installationID)
 		if err != nil {
@@ -152,8 +213,10 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			existing.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
 			existing.Host = strings.TrimSpace(req.Host)
 			existing.Port = req.Port
-			existing.Visibility = normalizeVisibility(req.Visibility)
+			existing.Visibility = visibility
 			existing.EnrollmentMode = normalizeEnrollmentMode(req.EnrollmentMode)
+			existing.CorporateEmailDomain = corporateEmailDomain
+			existing.AcceptPublicSignup = acceptPublicSignup
 			existing.CapabilitiesJSON = string(capJSON)
 			existing.HubSecretHash = hashToken(rawSecret)
 			existing.LastSeenAt = &now
@@ -169,6 +232,10 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			if err := s.syncOwnerLink(ctx, existing.ID, existing.OwnerEmail, now); err != nil {
 				return nil, err
 			}
+			if err := s.syncDomainRoutes(ctx, existing, corporateEmailDomains, now); err != nil {
+				return nil, err
+			}
+			s.refreshRoutes(ctx)
 
 			if alreadyConfirmed {
 				return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: false, Message: "Hub re-registered successfully, already confirmed"}, nil
@@ -181,24 +248,26 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	}
 
 	hub := &store.HubInstance{
-		ID:               newID("hub"),
-		InstallationID:   installationID,
-		OwnerEmail:       ownerEmail,
-		Name:             strings.TrimSpace(req.Name),
-		Description:      strings.TrimSpace(req.Description),
-		BaseURL:          strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"),
-		Host:             strings.TrimSpace(req.Host),
-		Port:             req.Port,
-		Visibility:       normalizeVisibility(req.Visibility),
-		EnrollmentMode:   normalizeEnrollmentMode(req.EnrollmentMode),
-		Status:           "pending_confirmation",
-		IsDisabled:       false,
-		DisabledReason:   "",
-		CapabilitiesJSON: string(capJSON),
-		HubSecretHash:    hashToken(rawSecret),
-		LastSeenAt:       &now,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                   newID("hub"),
+		InstallationID:       installationID,
+		OwnerEmail:           ownerEmail,
+		Name:                 strings.TrimSpace(req.Name),
+		Description:          strings.TrimSpace(req.Description),
+		BaseURL:              strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"),
+		Host:                 strings.TrimSpace(req.Host),
+		Port:                 req.Port,
+		Visibility:           visibility,
+		EnrollmentMode:       normalizeEnrollmentMode(req.EnrollmentMode),
+		CorporateEmailDomain: corporateEmailDomain,
+		AcceptPublicSignup:   acceptPublicSignup,
+		Status:               "pending_confirmation",
+		IsDisabled:           false,
+		DisabledReason:       "",
+		CapabilitiesJSON:     string(capJSON),
+		HubSecretHash:        hashToken(rawSecret),
+		LastSeenAt:           &now,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 
 	if err := s.hubs.Create(ctx, hub); err != nil {
@@ -208,6 +277,10 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if err := s.syncOwnerLink(ctx, hub.ID, hub.OwnerEmail, now); err != nil {
 		return nil, err
 	}
+	if err := s.syncDomainRoutes(ctx, hub, corporateEmailDomains, now); err != nil {
+		return nil, err
+	}
+	s.refreshRoutes(ctx)
 	if err := s.sendConfirmation(ctx, hub.ID, hub.OwnerEmail, hub.Name); err != nil {
 		return nil, err
 	}
@@ -216,10 +289,10 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 }
 
 func (s *Service) HeartbeatHub(ctx context.Context, hubID string) error {
-	return s.HeartbeatHubWithSecret(ctx, hubID, "", nil)
+	return s.HeartbeatHubWithSecret(ctx, hubID, "", nil, nil)
 }
 
-func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret string, invitationCodeRequired *bool) error {
+func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret string, invitationCodeRequired *bool, update *HeartbeatHubUpdate) error {
 	hub, err := s.hubs.GetByID(ctx, hubID)
 	if err != nil {
 		return err
@@ -236,11 +309,49 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 	if hub.Status == "pending_confirmation" {
 		return ErrHubPendingConfirmation
 	}
-	if err := s.hubs.UpdateHeartbeat(ctx, hubID, time.Now()); err != nil {
+
+	now := time.Now()
+	if update != nil {
+		corporateEmailDomains := normalizeCorporateEmailDomains(update.CorporateEmailDomains)
+		corporateEmailDomain := normalizeCorporateEmailDomain(update.CorporateEmailDomain)
+		if len(corporateEmailDomains) == 0 && corporateEmailDomain != "" {
+			corporateEmailDomains = []string{corporateEmailDomain}
+		}
+		if len(corporateEmailDomains) > 0 {
+			corporateEmailDomain = corporateEmailDomains[0]
+		}
+		visibility := normalizeVisibility(update.Visibility)
+		acceptPublicSignup := len(corporateEmailDomains) == 0 && isPublicSignupVisibility(visibility)
+		if update.AcceptPublicSignup != nil {
+			acceptPublicSignup = *update.AcceptPublicSignup
+		}
+		hub.BaseURL = strings.TrimRight(strings.TrimSpace(update.BaseURL), "/")
+		hub.Host = strings.TrimSpace(update.Host)
+		hub.Port = update.Port
+		hub.Visibility = visibility
+		hub.EnrollmentMode = normalizeEnrollmentMode(update.EnrollmentMode)
+		hub.CorporateEmailDomain = corporateEmailDomain
+		hub.AcceptPublicSignup = acceptPublicSignup
+		hub.LastSeenAt = &now
+		hub.UpdatedAt = now
+		if hub.IsDisabled || hub.Status == "disabled" {
+			hub.Status = "disabled"
+		} else {
+			hub.Status = "online"
+		}
+		if err := s.hubs.UpdateRegistration(ctx, hub); err != nil {
+			return err
+		}
+		s.recordHubInstance(ctx, hub)
+		if err := s.syncDomainRoutes(ctx, hub, corporateEmailDomains, now); err != nil {
+			return err
+		}
+	}
+	if err := s.hubs.UpdateHeartbeat(ctx, hubID, now); err != nil {
 		return err
 	}
 	if invitationCodeRequired != nil {
-		if err := s.hubs.UpdateInvitationCodeRequired(ctx, hubID, *invitationCodeRequired, time.Now()); err != nil {
+		if err := s.hubs.UpdateInvitationCodeRequired(ctx, hubID, *invitationCodeRequired, now); err != nil {
 			return err
 		}
 	}
@@ -250,6 +361,7 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 	if s.sync != nil {
 		s.sync.SyncHubHeartbeat(ctx, hubID)
 	}
+	s.refreshRoutes(ctx)
 	return nil
 }
 
@@ -327,6 +439,7 @@ func (s *Service) confirmHubRegistration(ctx context.Context, hub *store.HubInst
 		return err
 	}
 	s.recordHubInstance(ctx, hub)
+	s.refreshRoutes(ctx)
 	if s.settings != nil {
 		if err := s.settings.Set(ctx, hubConfirmationPrefix+hubID, mustJSON(confirmationTokenState{Tokens: []confirmationTokenRecord{}})); err != nil {
 			return err
@@ -346,26 +459,55 @@ func (s *Service) UpdateVisibility(ctx context.Context, hubID, visibility string
 	if err := s.hubs.UpdateVisibility(ctx, strings.TrimSpace(hubID), normalizeVisibility(visibility), time.Now()); err != nil {
 		return err
 	}
-	return s.recordHubByID(ctx, hubID)
+	if err := s.recordHubByID(ctx, hubID); err != nil {
+		return err
+	}
+	s.refreshRoutes(ctx)
+	return nil
 }
 
 func (s *Service) DisableHub(ctx context.Context, hubID, reason string) error {
 	if err := s.hubs.SetDisabled(ctx, hubID, true, strings.TrimSpace(reason), time.Now()); err != nil {
 		return err
 	}
-	return s.recordHubByID(ctx, hubID)
+	if err := s.recordHubByID(ctx, hubID); err != nil {
+		return err
+	}
+	s.refreshRoutes(ctx)
+	return nil
 }
 
 func (s *Service) EnableHub(ctx context.Context, hubID string) error {
 	if err := s.hubs.SetDisabled(ctx, hubID, false, "", time.Now()); err != nil {
 		return err
 	}
-	return s.recordHubByID(ctx, hubID)
+	if err := s.recordHubByID(ctx, hubID); err != nil {
+		return err
+	}
+	s.refreshRoutes(ctx)
+	return nil
 }
 
 func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 	if s.links != nil {
+		items, err := s.links.ListAll(ctx)
+		if err != nil {
+			return err
+		}
 		if err := s.links.DeleteByHubID(ctx, hubID); err != nil {
+			return err
+		}
+		if s.sync != nil {
+			for _, item := range items {
+				if item == nil || strings.TrimSpace(item.HubID) != strings.TrimSpace(hubID) {
+					continue
+				}
+				s.sync.DeleteHubUserLink(ctx, item.ID)
+			}
+		}
+	}
+	if s.routes != nil {
+		if err := s.routes.DeleteByHubID(ctx, hubID); err != nil {
 			return err
 		}
 	}
@@ -373,9 +515,12 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 		return err
 	}
 	if s.sync != nil {
-		s.sync.DeleteHubUserLink(ctx, hubID)
+		for idx := 0; idx < 16; idx++ {
+			s.sync.DeleteHubDomainRoute(ctx, domainRouteID(hubID, idx))
+		}
 		s.sync.DeleteHubInstance(ctx, hubID)
 	}
+	s.refreshRoutes(ctx)
 	return nil
 }
 
@@ -391,6 +536,7 @@ func (s *Service) AddBlockedEmail(ctx context.Context, email, reason string) err
 	if s.sync != nil {
 		s.sync.AppendBlockedEmail(ctx, item)
 	}
+	s.refreshRoutes(ctx)
 	return nil
 }
 
@@ -412,6 +558,7 @@ func (s *Service) RemoveBlockedEmail(ctx context.Context, email string) error {
 	if s.sync != nil {
 		s.sync.DeleteBlockedEmail(ctx, normalized)
 	}
+	s.refreshRoutes(ctx)
 	return nil
 }
 
@@ -427,6 +574,7 @@ func (s *Service) AddBlockedIP(ctx context.Context, ip, reason string) error {
 	if s.sync != nil {
 		s.sync.AppendBlockedIP(ctx, item)
 	}
+	s.refreshRoutes(ctx)
 	return nil
 }
 
@@ -448,6 +596,7 @@ func (s *Service) RemoveBlockedIP(ctx context.Context, ip string) error {
 	if s.sync != nil {
 		s.sync.DeleteBlockedIP(ctx, normalized)
 	}
+	s.refreshRoutes(ctx)
 	return nil
 }
 
@@ -547,15 +696,95 @@ func (s *Service) syncOwnerLink(ctx context.Context, hubID, ownerEmail string, n
 	if s.links == nil || ownerEmail == "" {
 		return nil
 	}
-	if err := s.links.DeleteByHubID(ctx, hubID); err != nil {
-		return err
-	}
-	link := &store.HubUserLink{ID: newID("hul"), HubID: hubID, Email: ownerEmail, IsDefault: true, CreatedAt: now, UpdatedAt: now}
-	if err := s.links.Create(ctx, link); err != nil {
+	link := &store.HubUserLink{ID: primaryOwnerLinkID(hubID), HubID: hubID, Email: ownerEmail, IsDefault: true, CreatedAt: now, UpdatedAt: now}
+	if err := s.links.Upsert(ctx, link); err != nil {
 		return err
 	}
 	if s.sync != nil {
 		s.sync.AppendHubUserLink(ctx, link)
+	}
+	return nil
+}
+
+func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email string, isDefault bool) error {
+	hubID = strings.TrimSpace(hubID)
+	email = normalizeEmail(email)
+	if hubID == "" || email == "" {
+		return errors.New("hub id and email are required")
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return err
+	}
+	if hub == nil {
+		return ErrHubUnauthorized
+	}
+	if rawSecret == "" || hub.HubSecretHash != hashToken(rawSecret) {
+		return ErrHubUnauthorized
+	}
+	if hub.Status == "pending_confirmation" {
+		return ErrHubPendingConfirmation
+	}
+	if hub.IsDisabled || hub.Status == "disabled" {
+		return ErrHubDisabled
+	}
+	if s.links == nil {
+		return nil
+	}
+	items, err := s.links.ListByEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item == nil || isOwnerLink(item) {
+			continue
+		}
+		if err := s.links.DeleteByID(ctx, item.ID); err != nil {
+			return err
+		}
+		if s.sync != nil {
+			s.sync.DeleteHubUserLink(ctx, item.ID)
+		}
+	}
+	now := time.Now()
+	link := &store.HubUserLink{ID: primaryUserLinkID(hubID, email), HubID: hubID, Email: email, IsDefault: isDefault, CreatedAt: now, UpdatedAt: now}
+	if err := s.links.Upsert(ctx, link); err != nil {
+		return err
+	}
+	if s.sync != nil {
+		s.sync.AppendHubUserLink(ctx, link)
+	}
+	s.refreshRoutes(ctx)
+	return nil
+}
+
+func (s *Service) syncDomainRoutes(ctx context.Context, hub *store.HubInstance, domains []string, now time.Time) error {
+	if s.routes == nil || hub == nil {
+		return nil
+	}
+	domains = normalizeCorporateEmailDomains(domains)
+	if len(domains) == 0 {
+		legacy := normalizeCorporateEmailDomain(hub.CorporateEmailDomain)
+		if legacy != "" {
+			domains = []string{legacy}
+		}
+	}
+	if err := s.routes.DeleteByHubID(ctx, hub.ID); err != nil {
+		return err
+	}
+	if s.sync != nil {
+		for idx := 0; idx < 16; idx++ {
+			s.sync.DeleteHubDomainRoute(ctx, domainRouteID(hub.ID, idx))
+		}
+	}
+	for idx, domain := range domains {
+		route := &store.HubDomainRoute{ID: domainRouteID(hub.ID, idx), HubID: hub.ID, Domain: domain, Enabled: true, Priority: 100 + idx, CreatedAt: now, UpdatedAt: now}
+		if err := s.routes.Upsert(ctx, route); err != nil {
+			return err
+		}
+		if s.sync != nil {
+			s.sync.AppendHubDomainRoute(ctx, route)
+		}
 	}
 	return nil
 }
@@ -664,4 +893,63 @@ func normalizeVisibility(v string) string {
 	default:
 		return "private"
 	}
+}
+
+func normalizeCorporateEmailDomain(v string) string {
+	v = strings.TrimSpace(strings.ToLower(v))
+	v = strings.TrimPrefix(v, "@")
+	v = strings.TrimPrefix(v, ".")
+	return strings.TrimSpace(v)
+}
+
+func normalizeCorporateEmailDomains(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeCorporateEmailDomain(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func primaryOwnerLinkID(hubID string) string {
+	return "hul_owner_" + strings.TrimSpace(hubID)
+}
+
+func isOwnerLink(link *store.HubUserLink) bool {
+	if link == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(link.ID), "hul_owner_")
+}
+
+func primaryUserLinkID(hubID, email string) string {
+	return fmt.Sprintf("hul_user_%s_%s", strings.TrimSpace(hubID), hashToken(normalizeEmail(email))[:16])
+}
+
+func domainRouteID(hubID string, index int) string {
+	return fmt.Sprintf("hdr_%s_%d", strings.TrimSpace(hubID), index)
+}
+
+func isPublicSignupVisibility(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "shared", "public":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) refreshRoutes(ctx context.Context) {
+	if s.refresher == nil {
+		return
+	}
+	_ = s.refresher.Rebuild(ctx)
 }

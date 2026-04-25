@@ -4,8 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
 type publicBaseURLReader interface {
@@ -14,6 +19,10 @@ type publicBaseURLReader interface {
 
 type publicBaseURLWriter interface {
 	SetPublicBaseURL(rctx context.Context, publicBaseURL string) (string, error)
+}
+
+type routingDiagnosticsReader interface {
+	RoutingDiagnostics(ctx context.Context) (entry.RoutingDiagnostics, error)
 }
 
 type AdminSetupRequest struct {
@@ -223,5 +232,75 @@ func UpdateAdminServerConfigHandler(hubService publicBaseURLWriter) http.Handler
 			"ok":              true,
 			"public_base_url": publicBaseURL,
 		})
+	}
+}
+
+func AdminRoutingDiagnosticsHandler(service routingDiagnosticsReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if service == nil {
+			writeError(w, http.StatusNotImplemented, "ROUTING_DIAGNOSTICS_UNAVAILABLE", "Routing diagnostics are unavailable")
+			return
+		}
+		diagnostics, err := service.RoutingDiagnostics(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ROUTING_DIAGNOSTICS_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, diagnostics)
+	}
+}
+
+type FailureLogView struct {
+	ID        string         `json:"id"`
+	Category  string         `json:"category"`
+	EventCode string         `json:"event_code"`
+	Message   string         `json:"message"`
+	EntityID  string         `json:"entity_id"`
+	Email     string         `json:"email"`
+	ClientIP  string         `json:"client_ip"`
+	Details   map[string]any `json:"details"`
+	CreatedAt string         `json:"created_at"`
+}
+
+func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if repo == nil {
+			writeError(w, http.StatusNotImplemented, "FAILURE_LOGS_UNAVAILABLE", "Failure logs are unavailable")
+			return
+		}
+		limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+		offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
+		items, total, err := repo.List(r.Context(), store.FailureEventLogFilter{
+			Keyword:  strings.TrimSpace(r.URL.Query().Get("keyword")),
+			Category: strings.TrimSpace(r.URL.Query().Get("category")),
+			Offset:   offset,
+			Limit:    limit,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LIST_FAILURE_LOGS_FAILED", err.Error())
+			return
+		}
+		logs := make([]FailureLogView, 0, len(items))
+		for _, item := range items {
+			if item == nil {
+				continue
+			}
+			details := map[string]any{}
+			if strings.TrimSpace(item.DetailsJSON) != "" {
+				_ = json.Unmarshal([]byte(item.DetailsJSON), &details)
+			}
+			logs = append(logs, FailureLogView{
+				ID:        item.ID,
+				Category:  item.Category,
+				EventCode: item.EventCode,
+				Message:   item.Message,
+				EntityID:  item.EntityID,
+				Email:     item.Email,
+				ClientIP:  item.ClientIP,
+				Details:   details,
+				CreatedAt: item.CreatedAt.Format(time.RFC3339),
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"logs": logs, "total": total, "offset": offset, "limit": limit})
 	}
 }

@@ -40,6 +40,12 @@ MaClaw Hub Center is responsible for:
 - email-to-entry resolution
 - platform-level governance
 
+For multi-hub deployment, Hub Center can route users by corporate email domain:
+
+- exact `corporate_email_domain` matches go to the matching Hub
+- if no exact match exists, a Hub with empty `corporate_email_domain` can act as the default catch-all
+- explicit user-to-hub bindings still take priority over automatic domain routing
+
 Hub Center is not an auth server and does not relay live sessions.
 
 ### 2.4 Pocket-first
@@ -79,7 +85,7 @@ Work Hub:
 ### 3.3 MaClaw Hub Center
 Official and self-hosted hub directory:
 
-- default official address: `https://hubs.mypapers.top`
+- default official address: `https://hubs.maclaw.top`
 - resolves entry by email
 - tracks registered hubs
 - provides platform governance

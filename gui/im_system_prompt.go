@@ -8,6 +8,7 @@ import (
 	"time"
 
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -290,6 +291,15 @@ office 工具是统一的文档操作工具，支持以下 action：
 - **write_excel**: 写入 XLSX 表格文件。参数：file_path（必填）、data（必填，JSON 格式 {"sheets": [{"name": "Sheet1", "rows": [[...]]}]}）。支持公式（以 = 开头的字符串）和样式（bold、font_size、background_color、number_format）。
 - **read_pptx**: 读取 PPTX 演示文稿。参数：file_path（必填）。返回结构化 JSON，包含幻灯片、形状、文本（含格式）、表格、图表、演讲者备注。
 
+## 文件编辑策略（重要）
+- **修改已有文件时，优先使用 edit_file 或 edit_lines**，不要用 write_file 重写整个文件。
+- **edit_file**（搜索替换）：提供 old_string 和 new_string。old_string 必须精确匹配文件原文（含缩进），建议包含修改点前后 1-2 行确保唯一匹配。
+- **edit_lines**（行号编辑）：提供行号范围和新内容。先 read_file 看行号，再 edit_lines(operation="replace/insert/delete", start_line=N, end_line=M, content="...")。适合文件中有重复内容或需要精确定位的场景。
+- edit_file 失败（"未找到要替换的内容"）时，改用 edit_lines 按行号编辑。
+- 一个文件改多处时，对每处分别调用。
+- **只有创建全新文件时才用 write_file**。禁止用 write_file 重写已有文件来做小修改。
+- 修改前先 read_file 确认文件当前内容，不要凭记忆修改。
+
 ## 文件编码与大文件写入
 - write_file 工具始终以 UTF-8 编码写入文件，不会产生 GBK 乱码。如果用户反馈乱码，问题通常在打开文件的程序（如记事本）而非写入过程。
 - bash 工具在 Windows 上已自动设置 UTF-8 输出编码（PYTHONIOENCODING=utf-8, PYTHONUTF8=1, [Console]::OutputEncoding=UTF8），Python/Node 脚本的中文输出不会乱码。
@@ -323,6 +333,11 @@ office 工具是统一的文档操作工具，支持以下 action：
 - 用 send_file 通过 IM 通道直接发送文件给用户。如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
 - ⚠️ 飞书、微信、QQ 等 IM 平台均已实现完整的文件上传能力，系统会自动处理上传流程。严禁告诉用户"平台不支持文件上传"——直接调用 send_file 即可。
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
+
+## 文件编辑策略
+- 修改已有文件时，优先使用 edit_file（搜索替换）或 edit_lines（行号编辑），不要用 write_file 重写整个文件。
+- edit_lines 按行号精确定位：先 read_file 看行号，再 edit_lines(operation="replace", start_line=N, end_line=M, content="...")。
+- 只有创建全新文件时才用 write_file。
 
 ## 文件编码与大文件写入
 - write_file 工具始终以 UTF-8 编码写入文件，不会产生 GBK 乱码。
@@ -542,6 +557,12 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 	// Inject matched knowledge skills after memory section, before tool definitions.
 	// Requirements: 1.5, 1.6, 8.1, 8.2, 8.3, 8.4
 	h.appendKnowledgeSkillSection(&b, msg)
+
+	// Inject repair notifications for skills that were auto-repaired since
+	// the last LLM turn. This closes the signal gap: self-repair modifies
+	// skill steps in the background, but the LLM needs to know so it can
+	// adjust its calling strategy (e.g., pass different parameters).
+	h.appendSkillRepairNotifications(&b)
 
 	// Inject bundle context banner for namespaced skills (Requirement 5.5).
 	h.appendBundleContextBanner(&b)
@@ -840,9 +861,10 @@ const defaultKnowledgeSkillTokenBudget = 2000
 // matchedKnowledgeSkill holds a knowledge skill that matched the user message
 // along with its relevance score (number of trigger matches).
 type matchedKnowledgeSkill struct {
-	Name    string
-	Content string
-	Score   int // number of triggers that matched
+	Name        string
+	Content     string
+	ParamSchema string // formatted parameter schema for LLM context
+	Score       int    // number of triggers that matched
 }
 
 // appendKnowledgeSkillSection injects matched skill documentation into the
@@ -913,9 +935,10 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 		}
 
 		matched = append(matched, matchedKnowledgeSkill{
-			Name:    s.Name,
-			Content: content,
-			Score:   score,
+			Name:        s.Name,
+			Content:     content,
+			ParamSchema: buildParamSchemaForSkill(s),
+			Score:       score,
 		})
 	}
 
@@ -956,11 +979,42 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 		totalTokensUsed += contentTokens
 
 		b.WriteString(fmt.Sprintf("\n### Skill: %s\n", m.Name))
+
+		// Inject parameter schema if available (explicit or synthesized).
+		if m.ParamSchema != "" {
+			b.WriteString(m.ParamSchema)
+		}
+
 		b.WriteString(content)
 		if !strings.HasSuffix(content, "\n") {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n---\n")
+	}
+}
+
+// appendSkillRepairNotifications injects notifications about recently
+// auto-repaired skills into the system prompt. This closes the signal gap
+// between background self-repair and LLM awareness: when a skill's steps
+// are modified by the repair system, the LLM needs to know so it can
+// adjust its calling strategy.
+//
+// Notifications are consumed (one-shot) — each repair is injected exactly
+// once into the next LLM turn, then cleared.
+func (h *IMMessageHandler) appendSkillRepairNotifications(b *strings.Builder) {
+	runner := h.getSkillRunner()
+	if runner == nil {
+		return
+	}
+
+	repairs := runner.ConsumeRepairNotifications()
+	if len(repairs) == 0 {
+		return
+	}
+
+	b.WriteString("\n\n## 最近自动修复的 Skill\n")
+	for name, explanation := range repairs {
+		b.WriteString(fmt.Sprintf("- Skill「%s」已自动修复：%s。下次调用将使用修复后的版本。\n", name, explanation))
 	}
 }
 
@@ -1131,6 +1185,22 @@ func sortMatchedKnowledgeSkills(matched []matchedKnowledgeSkill) {
 			}
 		}
 	}
+}
+
+// buildParamSchemaForSkill returns a formatted parameter schema string for
+// a skill. If the skill has explicit params, uses those. Otherwise,
+// auto-synthesizes from command templates. Returns empty string if no
+// params are found.
+func buildParamSchemaForSkill(s NLSkillDefinition) string {
+	params := s.Params
+	if len(params) == 0 && len(s.Steps) > 0 {
+		// Auto-synthesize from command templates.
+		params = cskill.SynthesizeParams(s.Steps, s.RequiredArgs)
+	}
+	if len(params) == 0 {
+		return ""
+	}
+	return cskill.FormatParamSchema(params)
 }
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,17 @@ export type CenterTab =
   | 'auth'
   | 'settings';
 
+export interface CommunicationsNavigationTarget {
+  task_id?: string;
+  role_code?: string;
+  source?: string;
+}
+
+export interface OverviewNavigationTarget {
+  role_code?: string;
+  source?: string;
+}
+
 export interface Metric {
   label: string;
   value: string;
@@ -24,12 +35,80 @@ export interface DashboardItem {
   title: string;
   description: string;
   status: string;
+  signal_priority?: number;
+  role_code?: string;
+  role_label?: string;
+}
+
+export interface ExecutiveAction {
+  title: string;
+  owner: string;
+  owner_role_code: string;
+  owner_role_label: string;
+  description: string;
+  linked_task_id?: string;
+  linked_task_status?: string;
+  linked_task_result?: string;
+}
+
+export interface ExecutiveBriefing extends DashboardItem {}
+
+export interface ExecutiveBoardFocus {
+  title: string;
+  summary: string;
+  description: string;
+  status: string;
+  signal_priority?: number;
+  role_code?: string;
+  role_label?: string;
+}
+
+export interface ExecutiveBoardHistoryItem {
+  id: string;
+  title: string;
+  detail: string;
+  timestamp: string;
+  tone: 'ok' | 'info' | 'warn';
+  navigationTarget?: CommunicationsNavigationTarget;
+  detailLines?: string[];
+  isCluster?: boolean;
+  clusterSkillTitle?: string;
+  clusterFocusTitle?: string;
+  clusterTaskTitle?: string;
+  clusterRoleCode?: string;
+  clusterExecutionStatus?: string;
+  clusterExecutionResult?: string;
+}
+export interface ExecutiveSkill {
+  id: string;
+  title: string;
+  question: string;
+  description: string;
+}
+
+export interface ExecutiveSkillResult {
+  skill_id: string;
+  title: string;
+  summary: string;
+  focus: ExecutiveBoardFocus;
+  findings: string[];
+  recommendations: ExecutiveAction[];
 }
 
 export interface DashboardData {
   metrics: Metric[];
   alerts: DashboardItem[];
   recent: DashboardItem[];
+  briefing?: ExecutiveBriefing;
+  board_summary?: string;
+  board_focus?: ExecutiveBoardFocus;
+  priority_decision?: ExecutiveBoardFocus;
+  priority_summary?: string;
+  board_signals?: DashboardItem[];
+  board_history?: ExecutiveBoardHistoryItem[];
+  risks?: DashboardItem[];
+  actions?: ExecutiveAction[];
+  updated_at?: string;
 }
 
 export interface CenterStatus {
@@ -44,3 +123,9 @@ export interface CenterSettings {
   work_type_tier?: Record<string, string>;
   role_provider_boost?: Record<string, string[]>;
 }
+
+
+
+
+
+

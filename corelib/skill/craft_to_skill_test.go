@@ -192,11 +192,14 @@ func TestIsRepairableError(t *testing.T) {
 		{"file_not_found", true},
 		{"command_not_found", true},
 		{"timeout", true},
-		{"auth_error", true},
 		{"session_not_found", true},
+		{"unknown", true},
 		{"", true},
+		// External/transient errors — not fixable by modifying skill steps.
 		{"rate_limit", false},
 		{"network_error", false},
+		{"auth_error", false},
+		{"missing_env_var", false},
 	}
 
 	for _, tt := range tests {

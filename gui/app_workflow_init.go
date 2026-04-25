@@ -56,6 +56,12 @@ func (a *App) initWorkflowEngineWithStore(store workflow.PersistenceStore) {
 	// 8. Store engine reference.
 	a.workflowEngine = engine
 
+	// 8.1 Wire artifact saver: persist phase outputs to long-term memory
+	// so they survive conversation history truncation.
+	// memoryStore may not be initialized yet (lazy init), so we use a
+	// deferred adapter that calls ensureMemoryStore on first use.
+	engine.SetArtifactSaver(&deferredArtifactSaver{app: a})
+
 	// 9. Start periodic cleanup goroutine.
 	go workflowCleanupLoop(engine, understanding)
 }

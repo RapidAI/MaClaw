@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -331,32 +332,42 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 		return "缺少 query 参数"
 	}
 
-	if h.getSkillHubClient() == nil {
-		h.ensureSkillHubClient()
+	// Use the unified HubClient.SearchAll() which searches all three sources
+	// (SkillHub + ClawHub + GitHub) through a single code path. This ensures
+	// the LLM tool call sees the same results as the GUI/TUI search panels.
+	//
+	// Resolve the SkillHub base URL from HubCenter (same as SkillHubClient).
+	// If resolution fails, SearchAll still queries ClawHub and GitHub.
+	hubURL := ""
+	if h.app != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if base, _, err := h.app.resolveHubCenterBaseURLCached(ctx, &http.Client{Timeout: 10 * time.Second}); err == nil {
+			hubURL = base
+		}
 	}
-	if h.getSkillHubClient() == nil {
-		return "SkillHub 客户端未初始化，请检查配置中的 skill_hub_urls"
-	}
-
-	results, err := h.getSkillHubClient().Search(context.Background(), query)
-	if err != nil {
-		return fmt.Sprintf("搜索失败: %s", err.Error())
-	}
+	results := cskill.DefaultHubClient().SearchAll(context.Background(), hubURL, query)
 	if len(results) == 0 {
-		return fmt.Sprintf("在 SkillHub 上未找到与 %q 相关的 Skill", query)
+		return fmt.Sprintf("在 SkillHub/ClawHub/GitHub 上均未找到与 %q 相关的 Skill", query)
 	}
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("找到 %d 个 Skill：\n", len(results)))
 	for _, r := range results {
-		tags := ""
-		if len(r.Tags) > 0 {
-			tags = " [" + strings.Join(r.Tags, ", ") + "]"
+		switch r.Source {
+		case "skillhub":
+			b.WriteString(fmt.Sprintf("- [SkillHub] ID: %s | %s: %s (trust: %s, downloads: %d)\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"%s\")\n",
+				r.ID, r.Name, r.Description, r.TrustLevel, r.Downloads, r.ID, hubURL))
+		case "clawhub":
+			b.WriteString(fmt.Sprintf("- [ClawHub] ID: %s | %s: %s (downloads: %d)\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"%s\")\n",
+				r.ID, r.Name, r.Description, r.Downloads, r.ID, cskill.ClawHubMirrorURL))
+		case "github":
+			b.WriteString(fmt.Sprintf("- [GitHub] %s: %s (repo: %s)\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"github\", install_ref=%q)\n",
+				r.Name, r.Description, r.RepoURL, r.Name, r.InstallRef))
+		default:
+			b.WriteString(fmt.Sprintf("- [%s] %s: %s\n", r.Source, r.Name, r.Description))
 		}
-		b.WriteString(fmt.Sprintf("- ID: %s | %s: %s%s (trust: %s, downloads: %d, hub: %s)\n",
-			r.ID, r.Name, r.Description, tags, r.TrustLevel, r.Downloads, r.HubURL))
 	}
-	b.WriteString("\n使用 install_skill_hub 工具安装，需提供 skill_id 和 hub_url 参数。")
 	return b.String()
 }
 
@@ -370,20 +381,48 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		return "缺少 hub_url 参数"
 	}
 
-	if h.getSkillHubClient() == nil {
-		h.ensureSkillHubClient()
-	}
-	if h.getSkillHubClient() == nil {
-		return "SkillHub 客户端未初始化"
-	}
 	if h.getSkillExecutor() == nil {
 		return "Skill Executor 未初始化"
 	}
 
-	// Download from Hub
-	entry, err := h.getSkillHubClient().Install(context.Background(), skillID, hubURL)
+	// Route download to the correct source based on hub_url.
+	// This ensures the install path is symmetric with the search path:
+	// - SearchAll returns results from SkillHub/ClawHub/GitHub with source-specific install instructions
+	// - Install must handle all three sources, not just SkillHub
+	ctx := context.Background()
+	var entry *corelib.NLSkillEntry
+	var err error
+	var sourceLabel string
+
+	switch {
+	case strings.EqualFold(hubURL, "github"):
+		// GitHub source: requires install_ref (JSON-serialized GitHubSkillCandidate).
+		installRef, _ := args["install_ref"].(string)
+		if installRef == "" {
+			return "GitHub Skill 安装缺少 install_ref 参数"
+		}
+		entry, err = cskill.DefaultHubClient().DownloadGitHub(ctx, installRef)
+		sourceLabel = "GitHub"
+
+	case strings.Contains(hubURL, "clawhub") || strings.Contains(hubURL, "clawhub-mirror"):
+		// ClawHub source: skillID is the slug.
+		entry, err = cskill.DefaultHubClient().DownloadClawHub(ctx, skillID)
+		sourceLabel = "ClawHub"
+
+	default:
+		// SkillHub source (default): use SkillHubClient for HubCenter-aware download.
+		if h.getSkillHubClient() == nil {
+			h.ensureSkillHubClient()
+		}
+		if h.getSkillHubClient() == nil {
+			return "SkillHub 客户端未初始化"
+		}
+		entry, err = h.getSkillHubClient().Install(ctx, skillID, hubURL)
+		sourceLabel = "SkillHub"
+	}
+
 	if err != nil {
-		return fmt.Sprintf("安装失败: %s", err.Error())
+		return fmt.Sprintf("安装失败 (%s): %s", sourceLabel, err.Error())
 	}
 
 	// Security review if risk assessor is available
@@ -485,7 +524,11 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 
 	if autoRun {
 		b.WriteString(fmt.Sprintf("\n正在立即执行 Skill「%s」...\n", entry.Name))
-		runID, err := h.app.RunNLSkillAsync(entry.Name, nil)
+		// Pass user-supplied run arguments (input, output, args, etc.) to the
+		// skill runner so the auto-run after install actually has the parameters
+		// the user intended. Previously this passed nil, causing skills that
+		// require parameters to fail on auto-run every time.
+		runID, err := h.app.RunNLSkillAsync(entry.Name, buildRunSkillArgs(args))
 		if err != nil {
 			b.WriteString(fmt.Sprintf("执行启动失败: %s", err.Error()))
 		} else {
@@ -663,7 +706,34 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	} else if status.Status == "success" || status.Status == "failed" {
 		// Skill has finished — step outputs are already shown above.
 		// No need to direct the LLM to poll or wait for session_ready.
-		b.WriteString("- Skill 已执行完毕，步骤输出已在上方显示。请直接基于输出内容回复用户。\n")
+		if status.Status == "failed" {
+			// Include action hint from the last failed step to guide the LLM
+			// on what to do next (retry, patch, search alternative, etc.).
+			for i := len(status.Steps) - 1; i >= 0; i-- {
+				if status.Steps[i].Status == "failed" && status.Steps[i].Error != "" {
+					ce := cskill.ClassifyStepError(
+						status.Steps[i].ExitCode,
+						status.Steps[i].Output,
+						status.Steps[i].Error,
+						status.Steps[i].CommandResolved,
+					)
+					if ce.ActionHint != "" {
+						b.WriteString(fmt.Sprintf("- 建议操作: %s\n", ce.ActionHint))
+					}
+					if ce.Retryable {
+						b.WriteString("- 此错误可重试（transient error）\n")
+					}
+					break
+				}
+			}
+			if status.SelfRepairPending {
+				b.WriteString("- ⚙️ 系统正在自动修复此 Skill，建议等待 10 秒后使用 manage_skill(action=\"status\", run_id=\"" + runID + "\") 检查修复状态，再重试执行。\n")
+			} else {
+				b.WriteString("- Skill 执行失败，步骤输出已在上方显示。请根据建议操作决定下一步。\n")
+			}
+		} else {
+			b.WriteString("- Skill 已执行完毕，步骤输出已在上方显示。请直接基于输出内容回复用户。\n")
+		}
 	} else {
 		b.WriteString("- 使用 get_skill_run(run_id) 查看最终结果。\n")
 	}
@@ -829,11 +899,18 @@ var buildRunSkillArgsExcludeKeys = map[string]bool{
 	"query":        true, // search action
 	"skill_id":     true, // install action
 	"hub_url":      true, // install action
+	"install_ref":  true, // install action (GitHub source)
 	"auto_run":     true, // install action
 	"wait_seconds": true, // handled by caller before StartRun
 	"run_id":       true, // status action
 	"auto_fix":     true, // validate action
+	"force":        true, // upload action
 	"name":         true, // consumed by caller to resolve skill
+	"skill_name":   true, // patch action
+	"mode":         true, // patch action
+	"step_index":   true, // patch step mode
+	"field":        true, // patch step mode
+	"value":        true, // patch step mode
 }
 
 func buildRunSkillArgs(args map[string]interface{}) map[string]interface{} {
@@ -900,6 +977,155 @@ func (h *IMMessageHandler) toolPatchSkill(args map[string]interface{}) string {
 	if skillName == "" {
 		return "缺少 skill_name 参数"
 	}
+
+	// Dispatch by mode: "text" (default, find-and-replace) or "step" (structured).
+	mode := stringVal(args, "mode")
+	if mode == "" {
+		mode = "text"
+	}
+
+	switch mode {
+	case "step":
+		return h.toolPatchSkillStructured(skillName, args)
+	case "text":
+		return h.toolPatchSkillText(skillName, args)
+	default:
+		return fmt.Sprintf("未知 patch mode: %q（支持: text/step）", mode)
+	}
+}
+
+// toolPatchSkillStructured performs a structured modification of a specific
+// step field in the skill definition. This is more robust than text-level
+// find-and-replace because it operates on the parsed YAML structure, not
+// raw text — immune to formatting differences (indentation, quoting).
+func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[string]interface{}) string {
+	exec := h.getSkillExecutor()
+	if exec == nil {
+		return "Skill Executor 未初始化"
+	}
+
+	exec.mu.RLock()
+	skills := exec.loadSkills()
+	exec.mu.RUnlock()
+
+	var target *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].MatchesName(skillName) {
+			target = &skills[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Sprintf("未找到 Skill「%s」", skillName)
+	}
+	if target.SkillDir == "" {
+		return fmt.Sprintf("Skill「%s」没有关联的目录，无法执行 patch", skillName)
+	}
+
+	defPath, defFormat := findSkillDefinitionFile(target.SkillDir)
+	if defPath == "" || defFormat != "yaml" {
+		return fmt.Sprintf("结构化 patch 仅支持 skill.yaml 格式（当前: %s）", defFormat)
+	}
+
+	content, err := os.ReadFile(defPath)
+	if err != nil {
+		return fmt.Sprintf("读取 Skill 定义文件失败: %s", err.Error())
+	}
+
+	// Parse YAML into a generic map.
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return fmt.Sprintf("解析 skill.yaml 失败: %s", err.Error())
+	}
+
+	// Extract step_index and field.
+	stepIdxRaw, ok := args["step_index"]
+	if !ok {
+		return "结构化 patch 缺少 step_index 参数"
+	}
+	stepIdx := 0
+	switch v := stepIdxRaw.(type) {
+	case float64:
+		stepIdx = int(v)
+	case int:
+		stepIdx = v
+	case string:
+		fmt.Sscanf(v, "%d", &stepIdx)
+	default:
+		return fmt.Sprintf("step_index 类型无效: %T", stepIdxRaw)
+	}
+
+	field := stringVal(args, "field")
+	if field == "" {
+		return "结构化 patch 缺少 field 参数（支持: command/on_error/action/working_dir/timeout/preferred_shell）"
+	}
+	value := stringVal(args, "value")
+	reason := stringVal(args, "reason")
+
+	// Navigate to steps[step_index].
+	stepsRaw, ok := doc["steps"]
+	if !ok {
+		return "skill.yaml 中没有 steps 字段"
+	}
+	steps, ok := stepsRaw.([]interface{})
+	if !ok {
+		return "skill.yaml 中 steps 字段格式无效"
+	}
+	if stepIdx < 0 || stepIdx >= len(steps) {
+		return fmt.Sprintf("step_index %d 超出范围（共 %d 个步骤）", stepIdx, len(steps))
+	}
+	step, ok := steps[stepIdx].(map[string]interface{})
+	if !ok {
+		return fmt.Sprintf("步骤 %d 格式无效", stepIdx)
+	}
+
+	// Modify the field.
+	// For fields nested under "params" (command, working_dir, timeout), navigate into params.
+	paramsFields := map[string]bool{"command": true, "working_dir": true, "timeout": true}
+	if paramsFields[field] {
+		params, ok := step["params"].(map[string]interface{})
+		if !ok {
+			params = make(map[string]interface{})
+			step["params"] = params
+		}
+		oldValue := fmt.Sprintf("%v", params[field])
+		params[field] = value
+		log.Printf("[skill-patch-step] step %d params.%s: %q → %q", stepIdx, field, oldValue, value)
+	} else {
+		// Top-level step fields: action, on_error, preferred_shell, etc.
+		oldValue := fmt.Sprintf("%v", step[field])
+		step[field] = value
+		log.Printf("[skill-patch-step] step %d .%s: %q → %q", stepIdx, field, oldValue, value)
+	}
+
+	// Serialize back to YAML.
+	modified, err := yaml.Marshal(doc)
+	if err != nil {
+		return fmt.Sprintf("序列化 YAML 失败: %s", err.Error())
+	}
+
+	// Save.
+	if err := fileutil.AtomicWriteFile(defPath, modified, 0644); err != nil {
+		return fmt.Sprintf("保存 Skill 定义文件失败: %s", err.Error())
+	}
+
+	log.Printf("[skill-patch-step] patched %s step %d field %s in %s", skillName, stepIdx, field, defPath)
+
+	// Audit trail.
+	if auditErr := appendPatchRecord(target.SkillDir, patchRecord{
+		Timestamp: time.Now().Format(time.RFC3339),
+		Find:      fmt.Sprintf("step[%d].%s", stepIdx, field),
+		Replace:   value,
+		Reason:    reason,
+	}); auditErr != nil {
+		log.Printf("[skill-patch-step] warning: failed to write audit trail: %v", auditErr)
+	}
+
+	return fmt.Sprintf("✅ Skill「%s」步骤 %d 的 %s 已修改为 %q", skillName, stepIdx, field, value)
+}
+
+// toolPatchSkillText performs the original text-level find-and-replace patch.
+func (h *IMMessageHandler) toolPatchSkillText(skillName string, args map[string]interface{}) string {
 	find := stringVal(args, "find")
 	if find == "" {
 		return "缺少 find 参数"
@@ -1114,6 +1340,37 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
 	if name == "" {
 		return "缺少 name 参数（要上传的 Skill 名称）"
 	}
+
+	// Quality gate: prevent uploading untested or consistently failing skills.
+	// Skip when force=true (user explicitly wants to upload regardless).
+	force := false
+	if v, ok := args["force"]; ok {
+		switch val := v.(type) {
+		case bool:
+			force = val
+		case string:
+			force = strings.EqualFold(val, "true")
+		}
+	}
+	if !force {
+		if exec := h.getSkillExecutor(); exec != nil {
+			exec.mu.RLock()
+			skills := exec.loadSkills()
+			exec.mu.RUnlock()
+			for _, s := range skills {
+				if s.MatchesName(name) {
+					if s.UsageCount < 2 {
+						return fmt.Sprintf("Skill「%s」尚未经过充分测试（使用 %d 次）。建议先执行几次确认可用后再上传。如需强制上传，请传入 force=true", name, s.UsageCount)
+					}
+					if s.SuccessCount == 0 {
+						return fmt.Sprintf("Skill「%s」从未成功执行过（使用 %d 次，成功 0 次）。建议先修复后再上传。如需强制上传，请传入 force=true", name, s.UsageCount)
+					}
+					break
+				}
+			}
+		}
+	}
+
 	submissionID, err := h.appUploadNLSkillToMarket(name)
 	if err != nil {
 		return fmt.Sprintf("上传失败: %s", err.Error())
@@ -1446,7 +1703,11 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			Category: corememory.Category(category),
 			Tags:     tags,
 		}
-		if err := h.memoryStore.Save(entry); err != nil {
+		// Enrich tags from recent conversation context: extract entities
+		// from the last few user+assistant messages so alias terms (e.g.
+		// user calls api.rapidai.tech "4090服务器") become searchable tags.
+		contextHint := h.buildMemoryContextHint()
+		if err := h.memoryStore.SaveWithContext(entry, contextHint); err != nil {
 			return fmt.Sprintf("保存记忆失败: %s", err.Error())
 		}
 		summary := content
@@ -1486,6 +1747,48 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	default:
 		return "action 参数无效，可选值: recall, save, list, delete"
 	}
+}
+
+// buildMemoryContextHint extracts recent conversation text (last 5 user+assistant
+// messages) to provide alias and context terms for tag enrichment during memory save.
+func (h *IMMessageHandler) buildMemoryContextHint() string {
+	if h.memory == nil {
+		return ""
+	}
+	userID := h.lastUserID
+	if userID == "" {
+		userID = "desktop-user"
+	}
+	entries := h.memory.Load(userID)
+	if len(entries) == 0 {
+		return ""
+	}
+
+	// Take the last 10 entries (roughly 5 user+assistant pairs).
+	start := len(entries) - 10
+	if start < 0 {
+		start = 0
+	}
+
+	var sb strings.Builder
+	for _, e := range entries[start:] {
+		role, _ := e.Role, ""
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		text, ok := e.Content.(string)
+		if !ok || text == "" {
+			continue
+		}
+		// Truncate each message to avoid excessive context.
+		runes := []rune(text)
+		if len(runes) > 300 {
+			text = string(runes[:300])
+		}
+		sb.WriteString(text)
+		sb.WriteString(" ")
+	}
+	return sb.String()
 }
 
 // ---------------------------------------------------------------------------
@@ -1752,13 +2055,8 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 	if !ok || n < 1 {
 		return fmt.Sprintf("缺少或无效的 max_iterations 参数（需要 %d-%d 的整数）", config.MinAgentIterations, config.MaxAgentIterationsCap)
 	}
-	limit := int(n)
-	if limit < config.MinAgentIterations {
-		limit = config.MinAgentIterations
-	}
-	if limit > config.MaxAgentIterationsCap {
-		limit = config.MaxAgentIterationsCap
-	}
+	// Use the single source of truth for value normalization.
+	limit := config.EffectiveMaxIterations(int(n))
 	reason := stringVal(args, "reason")
 	h.loopMaxOverride = limit
 	// Also update the active LoopContext so background loops see the change.

@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en" id="html-root">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MaClaw 绑定管理</title>
+  <title>MaClaw Binding Manager</title>
   <style>
     :root{--bg:#f0f5ff;--panel:#fff;--text:#1a2b42;--muted:#6b7f99;--primary:#2c6fca;--ok:#1f8f6a;--danger:#bf5648;--warn:#b98219;--line:rgba(37,84,140,.15);--radius:14px;--shadow:0 12px 32px rgba(37,84,140,.1)}
     *{box-sizing:border-box;margin:0;padding:0}
@@ -42,7 +42,6 @@
     .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700}
     .badge-ok{background:rgba(31,143,106,.12);color:var(--ok)}.badge-warn{background:rgba(185,130,25,.12);color:var(--warn)}
     .warn-box{padding:14px 16px;border-radius:var(--radius);background:rgba(185,130,25,.06);border:1px dashed rgba(185,130,25,.3);color:var(--warn);font-size:13px;line-height:1.6;margin-bottom:16px}
-    /* Compact mode for iframe embedding (?embed=1) */
     body.embed{min-height:auto;padding:0;background:#fff;align-items:flex-start}
     body.embed .container{border-radius:0;box-shadow:none;width:100%}
     body.embed .header{padding:14px 20px 10px}
@@ -66,43 +65,43 @@
 <body>
 <div class="container">
   <div class="header">
-    <h1>🔗 MaClaw 绑定管理</h1>
-    <p>绑定、查询或解绑您的设备</p>
+    <h1 id="pageTitle">MaClaw Binding Manager</h1>
+    <p id="pageDesc"></p>
   </div>
   <div class="tabs" role="tablist">
-    <button role="tab" data-tab="bind" class="active" aria-selected="true">绑定设备</button>
-    <button role="tab" data-tab="query" aria-selected="false">查询绑定</button>
-    <button role="tab" data-tab="unbind" aria-selected="false">解除绑定</button>
+    <button role="tab" data-tab="bind" class="active" aria-selected="true" data-i18n="tabBind">Bind Device</button>
+    <button role="tab" data-tab="query" aria-selected="false" data-i18n="tabQuery">Query Binding</button>
+    <button role="tab" data-tab="unbind" aria-selected="false" data-i18n="tabUnbind">Unbind Device</button>
   </div>
 
   <div id="tab-bind" class="panel active" role="tabpanel">
-    <div class="field"><label for="bindEmail">邮箱</label><input id="bindEmail" type="email" placeholder="your@email.com"></div>
-    <div id="bindCodeField" class="field"><label for="bindCode">邀请码</label><input id="bindCode" type="text" placeholder="输入邀请码"></div>
-    <button class="btn btn-primary" id="btnBind">绑定</button>
+    <div class="field"><label for="bindEmail" data-i18n="emailLabel">Email</label><input id="bindEmail" type="email" placeholder="your@email.com"></div>
+    <div id="bindCodeField" class="field"><label for="bindCode" data-i18n="inviteCodeLabel">Invitation Code</label><input id="bindCode" type="text"></div>
+    <button class="btn btn-primary" id="btnBind" data-i18n="bindAction">Bind</button>
     <div id="bindResult" class="result hidden"></div>
   </div>
 
   <div id="tab-query" class="panel" role="tabpanel">
-    <div class="field"><label for="queryEmail">邮箱</label><input id="queryEmail" type="email" placeholder="your@email.com"></div>
-    <button class="btn btn-secondary" id="btnQuery">查询</button>
+    <div class="field"><label for="queryEmail" data-i18n="emailLabel">Email</label><input id="queryEmail" type="email" placeholder="your@email.com"></div>
+    <button class="btn btn-secondary" id="btnQuery" data-i18n="queryAction">Query</button>
     <div id="queryResult" class="result hidden"></div>
   </div>
 
   <div id="tab-unbind" class="panel" role="tabpanel">
     <div id="unbindWarning" class="warn-box hidden"></div>
-    <div class="field"><label for="unbindEmail">邮箱</label><input id="unbindEmail" type="email" placeholder="your@email.com"></div>
-    <label>发送验证码渠道</label>
+    <div class="field"><label for="unbindEmail" data-i18n="emailLabel">Email</label><input id="unbindEmail" type="email" placeholder="your@email.com"></div>
+    <label data-i18n="sendCodeChannel">Verification Channel</label>
     <div class="channel-select" role="radiogroup">
-      <button role="radio" aria-checked="true" class="active" data-channel="email">📧 邮箱</button>
-      <button role="radio" aria-checked="false" data-channel="feishu">💬 飞书</button>
-      <button role="radio" aria-checked="false" data-channel="both">📧+💬 两者</button>
+      <button role="radio" aria-checked="true" class="active" data-channel="email" data-i18n="channelEmail">Email</button>
+      <button role="radio" aria-checked="false" data-channel="feishu" data-i18n="channelFeishu">Feishu</button>
+      <button role="radio" aria-checked="false" data-channel="both" data-i18n="channelBoth">Both</button>
     </div>
     <div class="code-row">
-      <div class="field"><label for="unbindCode">验证码</label><input id="unbindCode" type="text" placeholder="6位验证码" maxlength="6" inputmode="numeric" pattern="[0-9]*"></div>
-      <button id="sendCodeBtn" class="btn btn-secondary">发送验证码</button>
+      <div class="field"><label for="unbindCode" data-i18n="verifyCodeLabel">Verification Code</label><input id="unbindCode" type="text" maxlength="6" inputmode="numeric" pattern="[0-9]*"></div>
+      <button id="sendCodeBtn" class="btn btn-secondary" data-i18n="sendCode">Send Code</button>
     </div>
     <div style="height:16px"></div>
-    <button class="btn btn-danger" id="btnUnbind">确认解绑</button>
+    <button class="btn btn-danger" id="btnUnbind" data-i18n="unbindConfirm">Confirm Unbind</button>
     <div id="unbindResult" class="result hidden"></div>
   </div>
 </div>
@@ -110,16 +109,61 @@
 <script>
 (function() {
   'use strict';
-  // Detect embed mode from URL param
-  if (new URLSearchParams(window.location.search).get('embed') === '1') {
-    document.body.classList.add('embed');
-  }
-  var selectedChannel = 'email';
-  var countdownTimer = null;
-  var invCodeRequired = false;
 
-  // Derive API base from current page URL so it works in both standalone and iframe modes
-  var apiBase = window.location.origin;
+  var LANG = (navigator.language || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
+
+  var I18N = {
+    title: { zh: '绑定管理', en: 'Binding Manager' },
+    pageTitle: { zh: 'MaClaw 绑定管理', en: 'MaClaw Binding Manager' },
+    pageDesc: { zh: '绑定、查询或解除您的设备绑定', en: 'Bind, query, or remove your device binding.' },
+    tabBind: { zh: '绑定设备', en: 'Bind Device' },
+    tabQuery: { zh: '查询绑定', en: 'Query Binding' },
+    tabUnbind: { zh: '解除绑定', en: 'Unbind Device' },
+    emailLabel: { zh: '邮箱', en: 'Email' },
+    inviteCodeLabel: { zh: '邀请码', en: 'Invitation Code' },
+    inviteCodePlaceholder: { zh: '输入邀请码', en: 'Enter invitation code' },
+    bindAction: { zh: '绑定', en: 'Bind' },
+    queryAction: { zh: '查询', en: 'Query' },
+    sendCodeChannel: { zh: '发送验证码渠道', en: 'Verification Channel' },
+    channelEmail: { zh: '📧 邮箱', en: 'Email' },
+    channelFeishu: { zh: '💬 飞书', en: 'Feishu' },
+    channelBoth: { zh: '📧+💬 两者', en: 'Both' },
+    verifyCodeLabel: { zh: '验证码', en: 'Verification Code' },
+    verifyCodePlaceholder: { zh: '6位验证码', en: '6-digit code' },
+    sendCode: { zh: '发送验证码', en: 'Send Code' },
+    unbindConfirm: { zh: '确认解绑', en: 'Confirm Unbind' },
+    unbindWarning: { zh: '⚠️ 解绑将删除所有设备绑定、IM 绑定（飞书/QQ等）。', en: 'Unbinding will remove all device bindings and IM bindings (Feishu/QQ, etc.).' },
+    unbindWarningInvite: { zh: '原邀请码将失效，解绑后需要获取新的邀请码才能重新绑定。', en: 'The original invitation code will become invalid. You will need a new invitation code to bind again.' },
+    pleaseEnterEmail: { zh: '请输入邮箱', en: 'Please enter your email.' },
+    pleaseEnterEmailAndCode: { zh: '请输入邮箱和验证码', en: 'Please enter your email and verification code.' },
+    bindSuccess: { zh: '✅ 绑定成功', en: 'Bind successful' },
+    pendingApproval: { zh: '⏳ 已提交，等待管理员审批', en: 'Submitted. Waiting for administrator approval.' },
+    manualBindingRequired: { zh: '⚠️ 当前需要管理员手动绑定，请联系管理员', en: 'Manual administrator binding is required. Please contact the administrator.' },
+    bindFailed: { zh: '绑定失败', en: 'Bind failed' },
+    queryNoBinding: { zh: '该邮箱尚未绑定', en: 'This email is not bound yet.' },
+    networkError: { zh: '网络错误', en: 'Network error' },
+    statusLabel: { zh: '状态', en: 'Status' },
+    boundBadge: { zh: '已绑定', en: 'Bound' },
+    userStatusLabel: { zh: '用户状态', en: 'User Status' },
+    createdAtLabel: { zh: '注册时间', en: 'Created At' },
+    deviceIdLabel: { zh: '设备ID', en: 'Device ID' },
+    codeSent: { zh: '✅ 验证码已发送至: {channels}', en: 'Verification code sent to: {channels}' },
+    sendFailed: { zh: '发送失败', en: 'Send failed' },
+    confirmUnbind: { zh: '\u786e\u5b9a\u8981\u89e3\u9664 {email} \u7684\u6240\u6709\u7ed1\u5b9a\u5417\uff1f\n\n\u5c06\u4f1a\uff1a\n\u2022 \u5220\u9664\u6240\u6709\u8bbe\u5907\u7ed1\u5b9a\n\u2022 \u5220\u9664\u98de\u4e66/QQ\u7b49 IM \u7ed1\u5b9a', en: 'Are you sure you want to remove all bindings for {email}?\n\nThis will:\n- Remove all device bindings\n- Remove IM bindings such as Feishu/QQ' },
+    confirmUnbindInvite: { zh: '\n\u2022 \u539f\u9080\u8bf7\u7801\u5c06\u5931\u6548\n\n\u26a0\ufe0f \u89e3\u7ed1\u540e\u9700\u8981\u83b7\u53d6\u65b0\u7684\u9080\u8bf7\u7801\u624d\u80fd\u91cd\u65b0\u7ed1\u5b9a\uff01', en: '\n- The original invitation code will be invalidated\n\nYou will need a new invitation code to bind again.' },
+    unbindSuccess: { zh: '✅ 解绑成功，已删除 {count} 台设备', en: 'Unbind successful. Removed {count} device(s).' },
+    codesDeleted: { zh: '，已删除 {count} 个邀请码', en: ', and removed {count} invitation code(s)' },
+    needNewInvite: { zh: '⚠️ 重新绑定需要获取新的邀请码', en: 'A new invitation code is required to bind again.' },
+    unbindFailed: { zh: '解绑失败', en: 'Unbind failed' }
+  };
+
+  function t(key, vars) {
+    var text = (I18N[key] && I18N[key][LANG]) || key;
+    return String(text).replace(/{(w+)}/g, function(_, name) {
+      return vars && vars[name] != null ? vars[name] : '';
+    });
+  }
 
   function esc(s) {
     var d = document.createElement('div');
@@ -127,25 +171,41 @@
     return d.innerHTML;
   }
 
-  // Load server config on startup
+  function applyI18n() {
+    document.title = 'MaClaw ' + t('title');
+    document.getElementById('pageTitle').textContent = t('pageTitle');
+    document.getElementById('pageDesc').textContent = t('pageDesc');
+    document.querySelectorAll('[data-i18n]').forEach(function(el) {
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    document.getElementById('bindCode').placeholder = t('inviteCodePlaceholder');
+    document.getElementById('unbindCode').placeholder = t('verifyCodePlaceholder');
+  }
+
+  if (new URLSearchParams(window.location.search).get('embed') === '1') {
+    document.body.classList.add('embed');
+  }
+
+  var selectedChannel = 'email';
+  var countdownTimer = null;
+  var invCodeRequired = false;
+  var apiBase = window.location.origin;
+
+  applyI18n();
+
   fetch(apiBase + '/api/bind/config').then(function(r) { return r.json(); }).then(function(cfg) {
     invCodeRequired = !!cfg.invitation_code_required;
-    // Show/hide invitation code field on bind tab
     if (!invCodeRequired) {
       var f = document.getElementById('bindCodeField');
       if (f) f.classList.add('hidden');
     }
-    // Show unbind warning
     var warn = document.getElementById('unbindWarning');
-    var msg = '⚠️ 解绑将删除所有设备绑定、IM 绑定（飞书/QQ等）。';
-    if (invCodeRequired) {
-      msg += '<br>原邀请码将失效，解绑后需要获取新的邀请码才能重新绑定。';
-    }
+    var msg = esc(t('unbindWarning'));
+    if (invCodeRequired) msg += '<br>' + esc(t('unbindWarningInvite'));
     warn.innerHTML = msg;
     warn.classList.remove('hidden');
   }).catch(function() {});
 
-  // Tab switching
   document.querySelector('.tabs').addEventListener('click', function(e) {
     var btn = e.target.closest('[data-tab]');
     if (!btn) return;
@@ -159,7 +219,6 @@
     document.getElementById('tab-' + name).classList.add('active');
   });
 
-  // Channel selection
   document.querySelector('.channel-select').addEventListener('click', function(e) {
     var btn = e.target.closest('[data-channel]');
     if (!btn) return;
@@ -186,11 +245,10 @@
     return resp.json();
   }
 
-  // Bind
   document.getElementById('btnBind').addEventListener('click', async function() {
     var email = document.getElementById('bindEmail').value.trim();
     var code = document.getElementById('bindCode').value.trim();
-    if (!email) return showResult('bindResult', '请输入邮箱', 'error');
+    if (!email) return showResult('bindResult', esc(t('pleaseEnterEmail')), 'error');
 
     try {
       var data = await api('/api/enroll/start', {
@@ -198,51 +256,49 @@
         machine_name: 'WebBind', platform: 'web'
       });
       if (data.status === 'approved' || data.status === 'already_enrolled') {
-        var h = '<strong>✅ 绑定成功</strong><br>';
-        if (data.email) h += '邮箱: ' + esc(data.email) + '<br>';
+        var h = '<strong>' + esc(t('bindSuccess')) + '</strong><br>';
+        if (data.email) h += esc(t('emailLabel')) + ': ' + esc(data.email) + '<br>';
         if (data.sn) h += 'SN: ' + esc(data.sn) + '<br>';
-        if (data.machine_id) h += '设备ID: ' + esc(data.machine_id) + '<br>';
+        if (data.machine_id) h += esc(t('deviceIdLabel')) + ': ' + esc(data.machine_id) + '<br>';
         showResult('bindResult', h, 'success');
       } else if (data.status === 'pending_approval') {
-        showResult('bindResult', '⏳ 已提交，等待管理员审批', 'info');
+        showResult('bindResult', esc(t('pendingApproval')), 'info');
       } else if (data.status === 'manual_binding_required') {
-        showResult('bindResult', '⚠️ 当前需要管理员手动绑定，请联系管理员', 'error');
+        showResult('bindResult', esc(t('manualBindingRequired')), 'error');
       } else {
-        showResult('bindResult', '❌ ' + esc(data.message || data.code || '绑定失败'), 'error');
+        showResult('bindResult', esc(data.message || data.code || t('bindFailed')), 'error');
       }
     } catch (e) {
-      showResult('bindResult', '❌ 网络错误: ' + esc(e.message), 'error');
+      showResult('bindResult', esc(t('networkError')) + ': ' + esc(e.message), 'error');
     }
   });
 
-  // Query
   document.getElementById('btnQuery').addEventListener('click', async function() {
     var email = document.getElementById('queryEmail').value.trim();
-    if (!email) return showResult('queryResult', '请输入邮箱', 'error');
+    if (!email) return showResult('queryResult', esc(t('pleaseEnterEmail')), 'error');
 
     try {
       var data = await api('/api/bind/query', { email: email });
       if (data.bound) {
         var h = '<div class="info-grid">';
-        h += '<div class="info-row"><span class="info-label">状态</span><span class="info-value"><span class="badge badge-ok">已绑定</span></span></div>';
-        h += '<div class="info-row"><span class="info-label">邮箱</span><span class="info-value">' + esc(data.email) + '</span></div>';
+        h += '<div class="info-row"><span class="info-label">' + esc(t('statusLabel')) + '</span><span class="info-value"><span class="badge badge-ok">' + esc(t('boundBadge')) + '</span></span></div>';
+        h += '<div class="info-row"><span class="info-label">' + esc(t('emailLabel')) + '</span><span class="info-value">' + esc(data.email) + '</span></div>';
         h += '<div class="info-row"><span class="info-label">SN</span><span class="info-value">' + esc(data.sn) + '</span></div>';
-        h += '<div class="info-row"><span class="info-label">用户状态</span><span class="info-value">' + esc(data.status) + '</span></div>';
-        h += '<div class="info-row"><span class="info-label">注册时间</span><span class="info-value">' + esc(new Date(data.created_at).toLocaleString()) + '</span></div>';
+        h += '<div class="info-row"><span class="info-label">' + esc(t('userStatusLabel')) + '</span><span class="info-value">' + esc(data.status) + '</span></div>';
+        h += '<div class="info-row"><span class="info-label">' + esc(t('createdAtLabel')) + '</span><span class="info-value">' + esc(new Date(data.created_at).toLocaleString(LANG === 'zh' ? 'zh-CN' : 'en-US')) + '</span></div>';
         h += '</div>';
         showResult('queryResult', h, 'info');
       } else {
-        showResult('queryResult', '该邮箱尚未绑定', 'info');
+        showResult('queryResult', esc(t('queryNoBinding')), 'info');
       }
     } catch (e) {
-      showResult('queryResult', '❌ 网络错误: ' + esc(e.message), 'error');
+      showResult('queryResult', esc(t('networkError')) + ': ' + esc(e.message), 'error');
     }
   });
 
-  // Send code
   document.getElementById('sendCodeBtn').addEventListener('click', async function() {
     var email = document.getElementById('unbindEmail').value.trim();
-    if (!email) return showResult('unbindResult', '请输入邮箱', 'error');
+    if (!email) return showResult('unbindResult', esc(t('pleaseEnterEmail')), 'error');
 
     var btn = this;
     btn.disabled = true;
@@ -255,54 +311,51 @@
         clearInterval(countdownTimer);
         countdownTimer = null;
         btn.disabled = false;
-        btn.textContent = '发送验证码';
+        btn.textContent = t('sendCode');
       }
     }, 1000);
 
     try {
       var data = await api('/api/bind/send-code', { email: email, channel: selectedChannel });
       if (data.ok) {
-        showResult('unbindResult', '✅ 验证码已发送至: ' + esc((data.sent_via || []).join(', ')), 'success');
+        showResult('unbindResult', esc(t('codeSent', { channels: (data.sent_via || []).join(', ') })), 'success');
       } else {
         clearInterval(countdownTimer);
         countdownTimer = null;
         btn.disabled = false;
-        btn.textContent = '发送验证码';
-        showResult('unbindResult', '❌ ' + esc(data.message || '发送失败'), 'error');
+        btn.textContent = t('sendCode');
+        showResult('unbindResult', esc(data.message || t('sendFailed')), 'error');
       }
     } catch (e) {
       clearInterval(countdownTimer);
       countdownTimer = null;
       btn.disabled = false;
-      btn.textContent = '发送验证码';
-      showResult('unbindResult', '❌ 网络错误: ' + esc(e.message), 'error');
+      btn.textContent = t('sendCode');
+      showResult('unbindResult', esc(t('networkError')) + ': ' + esc(e.message), 'error');
     }
   });
 
-  // Unbind
   document.getElementById('btnUnbind').addEventListener('click', async function() {
     var email = document.getElementById('unbindEmail').value.trim();
     var code = document.getElementById('unbindCode').value.trim();
-    if (!email || !code) return showResult('unbindResult', '请输入邮箱和验证码', 'error');
+    if (!email || !code) return showResult('unbindResult', esc(t('pleaseEnterEmailAndCode')), 'error');
 
-    var confirmMsg = '确定要解除 ' + email + ' 的所有绑定吗？\n\n将会：\n• 删除所有设备绑定\n• 删除飞书/QQ等 IM 绑定';
-    if (invCodeRequired) {
-      confirmMsg += '\n• 原邀请码将失效\n\n⚠️ 解绑后需要获取新的邀请码才能重新绑定！';
-    }
+    var confirmMsg = t('confirmUnbind', { email: email });
+    if (invCodeRequired) confirmMsg += t('confirmUnbindInvite');
     if (!confirm(confirmMsg)) return;
 
     try {
       var data = await api('/api/bind/unbind', { email: email, code: code });
       if (data.ok) {
-        var msg = '✅ 解绑成功，已删除 ' + esc(String(data.deleted_machines)) + ' 台设备';
-        if (data.codes_deleted > 0) msg += '，已删除 ' + esc(String(data.codes_deleted)) + ' 个邀请码';
-        if (invCodeRequired) msg += '<br><br>⚠️ 重新绑定需要获取新的邀请码';
+        var msg = esc(t('unbindSuccess', { count: String(data.deleted_machines) }));
+        if (data.codes_deleted > 0) msg += esc(t('codesDeleted', { count: String(data.codes_deleted) }));
+        if (invCodeRequired) msg += '<br><br>' + esc(t('needNewInvite'));
         showResult('unbindResult', msg, 'success');
       } else {
-        showResult('unbindResult', '❌ ' + esc(data.message || '解绑失败'), 'error');
+        showResult('unbindResult', esc(data.message || t('unbindFailed')), 'error');
       }
     } catch (e) {
-      showResult('unbindResult', '❌ 网络错误: ' + esc(e.message), 'error');
+      showResult('unbindResult', esc(t('networkError')) + ': ' + esc(e.message), 'error');
     }
   });
 })();

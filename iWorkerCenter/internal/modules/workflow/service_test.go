@@ -2,14 +2,14 @@ package workflow
 
 import (
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/collaboration"
-	colleagueRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/repo"
 	colleagueDomain "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/domain"
-	roleRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/repo"
+	colleagueRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/repo"
 	roleDomain "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/domain"
+	roleRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/repo"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/db"
-	"time"
 )
 
 const testTenantID = "tenant-test-001"
@@ -32,34 +32,34 @@ func seedRolesAndColleagues(t *testing.T, p *db.Provider) {
 	rr := roleRepo.New(p.Write, p.Read)
 	now := time.Now()
 	_ = rr.Insert(testTenantID, &roleDomain.Role{
-		ID: "role-quality", Name: "质量同事", Code: "quality",
+		ID: "role-quality", Name: "Quality", Code: "quality",
 		DefaultStrengths: []string{}, ApplicableTasks: []string{},
 		Status: "active", CreatedAt: now, UpdatedAt: now,
 	})
 	_ = rr.Insert(testTenantID, &roleDomain.Role{
-		ID: "role-production", Name: "生产同事", Code: "production",
+		ID: "role-production", Name: "Production", Code: "production",
 		DefaultStrengths: []string{}, ApplicableTasks: []string{},
 		Status: "active", CreatedAt: now, UpdatedAt: now,
 	})
 	_ = rr.Insert(testTenantID, &roleDomain.Role{
-		ID: "role-office", Name: "办公同事", Code: "office",
+		ID: "role-office", Name: "Office", Code: "office",
 		DefaultStrengths: []string{}, ApplicableTasks: []string{},
 		Status: "active", CreatedAt: now, UpdatedAt: now,
 	})
 
 	cr := colleagueRepo.New(p.Write, p.Read)
 	_ = cr.Insert(testTenantID, &colleagueDomain.Colleague{
-		ID: "col-xiaozhou", Name: "小周", RoleID: "role-quality",
+		ID: "col-xiaozhou", Name: "Xiaozhou", RoleID: "role-quality",
 		Strengths: []string{}, Tasks: []string{}, Status: "active",
 		CreatedAt: now, UpdatedAt: now,
 	})
 	_ = cr.Insert(testTenantID, &colleagueDomain.Colleague{
-		ID: "col-laochen", Name: "老陈", RoleID: "role-production",
+		ID: "col-laochen", Name: "Laochen", RoleID: "role-production",
 		Strengths: []string{}, Tasks: []string{}, Status: "active",
 		CreatedAt: now, UpdatedAt: now,
 	})
 	_ = cr.Insert(testTenantID, &colleagueDomain.Colleague{
-		ID: "col-xiaodi", Name: "小迪", RoleID: "role-office",
+		ID: "col-xiaodi", Name: "Xiaodi", RoleID: "role-office",
 		Strengths: []string{}, Tasks: []string{}, Status: "active",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -78,11 +78,11 @@ func TestCreateDefinition_Atomic(t *testing.T) {
 	svc := newTestService(t, p)
 
 	def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
-		Name: "质量问题闭环",
+		Name: "Quality loop",
 		Steps: []CreateStepDefRequest{
-			{StepName: "问题分析", AssigneeRoleCode: "quality"},
-			{StepName: "整改方案", AssigneeRoleCode: "production"},
-			{StepName: "归档通知", AssigneeRoleCode: "office"},
+			{StepName: "Issue analysis", AssigneeRoleCode: "quality"},
+			{StepName: "Fix plan", AssigneeRoleCode: "production"},
+			{StepName: "Archive notice", AssigneeRoleCode: "office"},
 		},
 	})
 	if err != nil {
@@ -104,18 +104,59 @@ func TestCreateDefinition_Atomic(t *testing.T) {
 	}
 }
 
+func TestResolveAssignee_UsesLeastLoadedColleague(t *testing.T) {
+	p := setupTestDB(t)
+	svc := newTestService(t, p)
+	rr := roleRepo.New(p.Write, p.Read)
+	cr := colleagueRepo.New(p.Write, p.Read)
+	now := time.Now()
+
+	_ = rr.Insert(testTenantID, &roleDomain.Role{
+		ID: "role-shared", Name: "Shared Delivery", Code: "shared-delivery",
+		DefaultStrengths: []string{}, ApplicableTasks: []string{},
+		Status: "active", CreatedAt: now, UpdatedAt: now,
+	})
+	_ = cr.Insert(testTenantID, &colleagueDomain.Colleague{
+		ID: "col-shared-a", Name: "Alpha", RoleID: "role-shared",
+		Strengths: []string{}, Tasks: []string{}, Status: "active", CreatedAt: now, UpdatedAt: now,
+	})
+	_ = cr.Insert(testTenantID, &colleagueDomain.Colleague{
+		ID: "col-shared-b", Name: "Beta", RoleID: "role-shared",
+		Strengths: []string{}, Tasks: []string{}, Status: "active", CreatedAt: now, UpdatedAt: now,
+	})
+	if err := svc.collabRepo.InsertTask(testTenantID, &collaboration.Task{
+		ID:              "task-busy-a",
+		Title:           "busy-a",
+		FromColleagueID: "col-shared-b",
+		ToColleagueID:   "col-shared-a",
+		ToRoleCode:      "shared-delivery",
+		Status:          collaboration.StatusPending,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("seed collaboration task: %v", err)
+	}
+
+	assignee, err := svc.resolveAssignee(testTenantID, &StepDefinition{StepCode: "shared", AssigneeRoleCode: "shared-delivery"})
+	if err != nil {
+		t.Fatalf("resolve assignee: %v", err)
+	}
+	if assignee != "col-shared-b" {
+		t.Fatalf("assignee = %q, want col-shared-b", assignee)
+	}
+}
+
 func TestWorkflowLifecycle_FullRun(t *testing.T) {
 	p := setupTestDB(t)
 	seedRolesAndColleagues(t, p)
 	svc := newTestService(t, p)
 
-	// Create and publish definition
 	def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
-		Name: "质量问题闭环",
+		Name: "Quality loop",
 		Steps: []CreateStepDefRequest{
-			{StepName: "问题分析", AssigneeRoleCode: "quality"},
-			{StepName: "整改方案", AssigneeRoleCode: "production"},
-			{StepName: "归档通知", AssigneeRoleCode: "office"},
+			{StepName: "Issue analysis", AssigneeRoleCode: "quality"},
+			{StepName: "Fix plan", AssigneeRoleCode: "production"},
+			{StepName: "Archive notice", AssigneeRoleCode: "office"},
 		},
 	})
 	if err != nil {
@@ -125,10 +166,9 @@ func TestWorkflowLifecycle_FullRun(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	// Start instance
 	inst, err := svc.StartInstance(testTenantID, StartInstanceRequest{
 		DefinitionID: def.ID,
-		Title:        "质量问题 #1",
+		Title:        "Quality loop #1",
 		InitiatorID:  "col-xiaozhou",
 	})
 	if err != nil {
@@ -138,7 +178,6 @@ func TestWorkflowLifecycle_FullRun(t *testing.T) {
 		t.Errorf("expected running, got %s", inst.Status)
 	}
 
-	// Verify first step created
 	stepInstances, _ := svc.ListStepInstances(testTenantID, inst.ID)
 	if len(stepInstances) != 1 {
 		t.Fatalf("expected 1 step instance, got %d", len(stepInstances))
@@ -147,8 +186,7 @@ func TestWorkflowLifecycle_FullRun(t *testing.T) {
 		t.Errorf("step 1 assignee: expected col-xiaozhou, got %s", stepInstances[0].AssigneeColleagueID)
 	}
 
-	// Complete step 1 → should advance to step 2
-	if err := svc.CompleteStep(testTenantID, stepInstances[0].ID, "col-xiaozhou", "分析完成"); err != nil {
+	if err := svc.CompleteStep(testTenantID, stepInstances[0].ID, "col-xiaozhou", "analysis done"); err != nil {
 		t.Fatalf("complete step 1: %v", err)
 	}
 
@@ -160,8 +198,7 @@ func TestWorkflowLifecycle_FullRun(t *testing.T) {
 		t.Errorf("step 2 assignee: expected col-laochen, got %s", stepInstances[1].AssigneeColleagueID)
 	}
 
-	// Complete step 2 → should advance to step 3
-	if err := svc.CompleteStep(testTenantID, stepInstances[1].ID, "col-laochen", "整改完成"); err != nil {
+	if err := svc.CompleteStep(testTenantID, stepInstances[1].ID, "col-laochen", "plan done"); err != nil {
 		t.Fatalf("complete step 2: %v", err)
 	}
 
@@ -173,8 +210,7 @@ func TestWorkflowLifecycle_FullRun(t *testing.T) {
 		t.Errorf("step 3 assignee: expected col-xiaodi, got %s", stepInstances[2].AssigneeColleagueID)
 	}
 
-	// Complete step 3 → workflow should complete
-	if err := svc.CompleteStep(testTenantID, stepInstances[2].ID, "col-xiaodi", "已归档"); err != nil {
+	if err := svc.CompleteStep(testTenantID, stepInstances[2].ID, "col-xiaodi", "archived"); err != nil {
 		t.Fatalf("complete step 3: %v", err)
 	}
 
@@ -183,7 +219,6 @@ func TestWorkflowLifecycle_FullRun(t *testing.T) {
 		t.Errorf("expected completed, got %s", inst.Status)
 	}
 
-	// Verify events
 	events, _ := svc.ListEvents(testTenantID, inst.ID)
 	if len(events) < 4 {
 		t.Errorf("expected at least 4 events, got %d", len(events))
@@ -196,10 +231,10 @@ func TestWorkflowReject_TerminatesProcess(t *testing.T) {
 	svc := newTestService(t, p)
 
 	def, _ := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
-		Name: "测试流程",
+		Name: "Reject path",
 		Steps: []CreateStepDefRequest{
-			{StepName: "步骤1", AssigneeRoleCode: "quality"},
-			{StepName: "步骤2", AssigneeRoleCode: "production"},
+			{StepName: "Step 1", AssigneeRoleCode: "quality"},
+			{StepName: "Step 2", AssigneeRoleCode: "production"},
 		},
 	})
 	_ = svc.PublishDefinition(testTenantID, def.ID)
@@ -207,11 +242,9 @@ func TestWorkflowReject_TerminatesProcess(t *testing.T) {
 	inst, _ := svc.StartInstance(testTenantID, StartInstanceRequest{
 		DefinitionID: def.ID, InitiatorID: "col-xiaozhou",
 	})
-
 	steps, _ := svc.ListStepInstances(testTenantID, inst.ID)
 
-	// Reject step 1
-	if err := svc.RejectStep(testTenantID, steps[0].ID, "col-xiaozhou", "不合格"); err != nil {
+	if err := svc.RejectStep(testTenantID, steps[0].ID, "col-xiaozhou", "invalid input"); err != nil {
 		t.Fatalf("reject: %v", err)
 	}
 
@@ -220,7 +253,6 @@ func TestWorkflowReject_TerminatesProcess(t *testing.T) {
 		t.Errorf("expected rejected, got %s", inst.Status)
 	}
 
-	// Cannot complete a rejected step
 	if err := svc.CompleteStep(testTenantID, steps[0].ID, "col-xiaozhou", ""); err == nil {
 		t.Error("expected error completing rejected step")
 	}
@@ -232,9 +264,9 @@ func TestTerminalStepCannotTransition(t *testing.T) {
 	svc := newTestService(t, p)
 
 	def, _ := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
-		Name: "单步流程",
+		Name: "Single step",
 		Steps: []CreateStepDefRequest{
-			{StepName: "唯一步骤", AssigneeRoleCode: "quality"},
+			{StepName: "Only step", AssigneeRoleCode: "quality"},
 		},
 	})
 	_ = svc.PublishDefinition(testTenantID, def.ID)
@@ -246,7 +278,6 @@ func TestTerminalStepCannotTransition(t *testing.T) {
 
 	_ = svc.CompleteStep(testTenantID, steps[0].ID, "col-xiaozhou", "done")
 
-	// Try to complete again
 	if err := svc.CompleteStep(testTenantID, steps[0].ID, "col-xiaozhou", "again"); err == nil {
 		t.Error("expected error on double-complete")
 	}
@@ -257,9 +288,9 @@ func TestUnpublishedDefinitionCannotStart(t *testing.T) {
 	svc := newTestService(t, p)
 
 	def, _ := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
-		Name: "草稿流程",
+		Name: "Draft only",
 		Steps: []CreateStepDefRequest{
-			{StepName: "步骤1", AssigneeRoleCode: "quality"},
+			{StepName: "Step 1", AssigneeRoleCode: "quality"},
 		},
 	})
 

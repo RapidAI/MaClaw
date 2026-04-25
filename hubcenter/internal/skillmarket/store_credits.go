@@ -2,7 +2,7 @@ package skillmarket
 
 import "context"
 
-// ── CreditsRepository implementation ────────────────────────────────────
+// 鈹€鈹€ CreditsRepository implementation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 func (s *Store) CreateTransaction(ctx context.Context, tx *CreditsTransaction) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -11,6 +11,9 @@ func (s *Store) CreateTransaction(ctx context.Context, tx *CreditsTransaction) e
 		tx.ID, tx.UserID, tx.Type, tx.Amount, tx.Balance,
 		tx.SkillID, tx.PurchaseID, tx.Description, fmtTime(tx.CreatedAt),
 	)
+	if err == nil {
+		s.emitSync(ctx)
+	}
 	return err
 }
 

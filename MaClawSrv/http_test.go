@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,39 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
+
+func TestOpenAPIDocumentIsAvailable(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("openapi status = %d body = %s", w.Code, w.Body.String())
+	}
+	var doc struct {
+		OpenAPI    string         `json:"openapi"`
+		Paths      map[string]any `json:"paths"`
+		Components struct {
+			SecuritySchemes map[string]any `json:"securitySchemes"`
+		} `json:"components"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode openapi: %v", err)
+	}
+	if doc.OpenAPI == "" {
+		t.Fatalf("missing openapi version: %#v", doc)
+	}
+	if _, ok := doc.Paths["/api/v1/instances"]; !ok {
+		t.Fatalf("expected instance path in openapi doc")
+	}
+	if _, ok := doc.Components.SecuritySchemes["bearerAuth"]; !ok {
+		t.Fatalf("expected bearerAuth security scheme")
+	}
+}
 
 type blockingExecutor struct {
 	started chan string
@@ -47,6 +82,250 @@ func (e *blockingExecutor) DescribeCapabilities(ctx context.Context, req agentse
 	return &agentservice.AgentCapabilities{Executor: "blocking", SupportsSessions: true}, nil
 }
 
+func TestGetAdminAlerts(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	readyInst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Ready Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance ready: %v", err)
+	}
+	unreadyInst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Unready Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance unready: %v", err)
+	}
+	unreadyInst.Status = agentservice.InstanceStatusStopped
+	unreadyInst.Ready = false
+	unreadyInst.ReadyReason = "config validation failed"
+	unreadyInst.UpdatedAt = time.Now().UTC()
+	if err := store.SaveInstance(*unreadyInst); err != nil {
+		t.Fatalf("SaveInstance unready: %v", err)
+	}
+	waitingRun := agentservice.Run{
+		ID:             "run_wait",
+		TenantID:       tenant.ID,
+		UserID:         user.ID,
+		InstanceID:     readyInst.ID,
+		SessionID:      "sess_wait",
+		Status:         agentservice.RunStatusSucceeded,
+		ResponseSource: "ask_user",
+		WaitingForUser: true,
+		StartedAt:      time.Now().UTC().Add(-time.Minute),
+	}
+	failedRun := agentservice.Run{
+		ID:         "run_fail",
+		TenantID:   tenant.ID,
+		UserID:     user.ID,
+		InstanceID: readyInst.ID,
+		SessionID:  "sess_fail",
+		Status:     agentservice.RunStatusFailed,
+		Error:      "boom",
+		StartedAt:  time.Now().UTC().Add(-2 * time.Minute),
+	}
+	if err := store.SaveRun(waitingRun); err != nil {
+		t.Fatalf("SaveRun waiting: %v", err)
+	}
+	if err := store.SaveRun(failedRun); err != nil {
+		t.Fatalf("SaveRun failed: %v", err)
+	}
+
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/alerts?kind=failed_run&limit=1", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("alerts status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	var alerts agentservice.AdminAlerts
+	if err := json.NewDecoder(w.Body).Decode(&alerts); err != nil {
+		t.Fatalf("decode alerts: %v", err)
+	}
+	if len(alerts.Items) != 1 {
+		t.Fatalf("expected exactly one normalized alert item, got %#v", alerts.Items)
+	}
+	if alerts.Items[0].Kind != "failed_run" || alerts.Items[0].RunID != failedRun.ID {
+		t.Fatalf("unexpected normalized alert item: %#v", alerts.Items[0])
+	}
+	if len(alerts.UnreadyInstances) != 0 {
+		t.Fatalf("expected unready instances filtered out, got %#v", alerts.UnreadyInstances)
+	}
+	if len(alerts.WaitingRuns) != 0 {
+		t.Fatalf("expected waiting runs filtered out, got %#v", alerts.WaitingRuns)
+	}
+	if len(alerts.FailedRuns) != 1 || alerts.FailedRuns[0].ID != failedRun.ID {
+		t.Fatalf("expected failed run retained in legacy list, got %#v", alerts.FailedRuns)
+	}
+	if alerts.GeneratedAt.IsZero() {
+		t.Fatalf("expected generated_at: %#v", alerts)
+	}
+}
+
+func TestGetAdminDashboard(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Hour)
+	sess := agentservice.Session{ID: "sess_dash", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, AgentID: "default", CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_dash_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now.Add(-2 * time.Hour)}); err != nil {
+		t.Fatalf("SaveMessage recent: %v", err)
+	}
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_dash_2", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "older", CreatedAt: now.Add(-48 * time.Hour)}); err != nil {
+		t.Fatalf("SaveMessage older: %v", err)
+	}
+	completed := now.Add(-90 * time.Minute)
+	if err := store.SaveRun(agentservice.Run{ID: "run_dash_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now.Add(-90 * time.Minute), CompletedAt: &completed}); err != nil {
+		t.Fatalf("SaveRun recent: %v", err)
+	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_dash_1", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "dashboard.opened", ResourceType: "system", ResourceID: "dashboard", CreatedAt: now.Add(-30 * time.Minute)}); err != nil {
+		t.Fatalf("SaveAuditEvent: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/dashboard", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d body = %s", w.Code, w.Body.String())
+	}
+	var dashboard agentservice.AdminDashboard
+	if err := json.NewDecoder(w.Body).Decode(&dashboard); err != nil {
+		t.Fatalf("decode dashboard: %v", err)
+	}
+	if dashboard.Overview.Tenants != 1 || dashboard.Overview.Users != 1 {
+		t.Fatalf("unexpected overview: %#v", dashboard.Overview)
+	}
+	foundDashboardAudit := false
+	for _, event := range dashboard.RecentAuditEvents {
+		if event.Action == "dashboard.opened" {
+			foundDashboardAudit = true
+			break
+		}
+	}
+	if len(dashboard.RecentAuditEvents) == 0 || !foundDashboardAudit {
+		t.Fatalf("unexpected recent audits: %#v", dashboard.RecentAuditEvents)
+	}
+	if len(dashboard.Last24Hours) != 24 || len(dashboard.Last7Days) != 7 {
+		t.Fatalf("unexpected trend lengths: %#v", dashboard)
+	}
+	recentHourHasMessage := false
+	recentDayHasMessage := false
+	for _, point := range dashboard.Last24Hours {
+		if point.Messages > 0 || point.Runs > 0 || point.AuditEvents > 0 {
+			recentHourHasMessage = true
+			break
+		}
+	}
+	for _, point := range dashboard.Last7Days {
+		if point.Messages > 0 || point.Runs > 0 || point.AuditEvents > 0 {
+			recentDayHasMessage = true
+			break
+		}
+	}
+	if !recentHourHasMessage || !recentDayHasMessage || dashboard.GeneratedAt.IsZero() {
+		t.Fatalf("unexpected dashboard trend payload: %#v", dashboard)
+	}
+}
+
+func TestGetAdminOverview(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	now := time.Now().UTC()
+	sess := agentservice.Session{ID: "sess_overview", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, AgentID: "default", CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_overview_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("SaveMessage user: %v", err)
+	}
+	completed := now.Add(2 * time.Minute)
+	if err := store.SaveRun(agentservice.Run{ID: "run_overview_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now.Add(time.Minute), CompletedAt: &completed}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_custom", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "overview.checked", ResourceType: "system", ResourceID: "overview", CreatedAt: now.Add(3 * time.Minute)}); err != nil {
+		t.Fatalf("SaveAuditEvent: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/overview", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("overview status = %d body = %s", w.Code, w.Body.String())
+	}
+	var overview agentservice.AdminOverview
+	if err := json.NewDecoder(w.Body).Decode(&overview); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	if overview.Tenants != 1 || overview.ActiveTenants != 1 || overview.Users != 1 || overview.ActiveUsers != 1 {
+		t.Fatalf("unexpected tenant/user counts: %#v", overview)
+	}
+	if overview.Instances != 1 || overview.ReadyInstances != 1 || overview.Sessions != 1 || overview.Messages != 1 || overview.Runs != 1 {
+		t.Fatalf("unexpected activity counts: %#v", overview)
+	}
+	if overview.RunsByStatus[agentservice.RunStatusSucceeded] != 1 || overview.AuditEvents == 0 {
+		t.Fatalf("unexpected run/audit counts: %#v", overview)
+	}
+	if overview.LastActivityAt == nil || overview.LastAuditAt == nil {
+		t.Fatalf("expected last activity and last audit timestamps: %#v", overview)
+	}
+}
+
 func TestAdminCanListTenantsAndUsers(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -70,13 +349,19 @@ func TestAdminCanListTenantsAndUsers(t *testing.T) {
 		t.Fatalf("list tenants status = %d body = %s", w.Code, w.Body.String())
 	}
 	var tenants struct {
-		Items []agentservice.Tenant `json:"items"`
+		Items      []agentservice.Tenant `json:"items"`
+		Limit      int                   `json:"limit"`
+		HasMore    bool                  `json:"has_more"`
+		NextBefore string                `json:"next_before"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&tenants); err != nil {
 		t.Fatalf("decode tenants: %v", err)
 	}
 	if len(tenants.Items) != 1 || tenants.Items[0].ID != tenant.ID {
 		t.Fatalf("tenants = %#v", tenants.Items)
+	}
+	if tenants.Limit != defaultPageLimit || tenants.HasMore || tenants.NextBefore != "" {
+		t.Fatalf("unexpected tenant page meta: %#v", tenants)
 	}
 
 	req = httptest.NewRequest("GET", "/api/v1/admin/tenants/"+tenant.ID+"/users", nil)
@@ -87,7 +372,10 @@ func TestAdminCanListTenantsAndUsers(t *testing.T) {
 		t.Fatalf("list users status = %d body = %s", w.Code, w.Body.String())
 	}
 	var users struct {
-		Items []agentservice.User `json:"items"`
+		Items      []agentservice.User `json:"items"`
+		Limit      int                 `json:"limit"`
+		HasMore    bool                `json:"has_more"`
+		NextBefore string              `json:"next_before"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&users); err != nil {
 		t.Fatalf("decode users: %v", err)
@@ -95,8 +383,164 @@ func TestAdminCanListTenantsAndUsers(t *testing.T) {
 	if len(users.Items) != 1 || users.Items[0].ID != user.ID {
 		t.Fatalf("users = %#v", users.Items)
 	}
+	if users.Limit != defaultPageLimit || users.HasMore || users.NextBefore != "" {
+		t.Fatalf("unexpected user page meta: %#v", users)
+	}
 }
 
+func TestAdminListTenantsSupportsFilters(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	alpha, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Alpha Team"})
+	if err != nil {
+		t.Fatalf("CreateTenant alpha: %v", err)
+	}
+	beta, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Beta Team"})
+	if err != nil {
+		t.Fatalf("CreateTenant beta: %v", err)
+	}
+	disabled := agentservice.TenantStatusDisabled
+	if _, err := svc.UpdateTenant(context.Background(), beta.ID, agentservice.UpdateTenantInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateTenant beta: %v", err)
+	}
+
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants?status=disabled", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list tenants by status = %d body = %s", w.Code, w.Body.String())
+	}
+	var byStatus struct {
+		Items []agentservice.Tenant `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&byStatus); err != nil {
+		t.Fatalf("decode byStatus: %v", err)
+	}
+	if len(byStatus.Items) != 1 || byStatus.Items[0].ID != beta.ID {
+		t.Fatalf("unexpected tenants by status: %#v", byStatus.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants?name=alpha", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list tenants by name = %d body = %s", w.Code, w.Body.String())
+	}
+	var byName struct {
+		Items []agentservice.Tenant `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&byName); err != nil {
+		t.Fatalf("decode byName: %v", err)
+	}
+	if len(byName.Items) != 1 || byName.Items[0].ID != alpha.ID {
+		t.Fatalf("unexpected tenants by name: %#v", byName.Items)
+	}
+}
+
+func TestAdminListUsersSupportsFilters(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	alpha, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Alpha User", Email: "alpha@example.com"})
+	if err != nil {
+		t.Fatalf("CreateUser alpha: %v", err)
+	}
+	beta, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Beta User", Email: "beta@example.com"})
+	if err != nil {
+		t.Fatalf("CreateUser beta: %v", err)
+	}
+	disabled := agentservice.UserStatusDisabled
+	if _, err := svc.UpdateUser(context.Background(), tenant.ID, beta.ID, agentservice.UpdateUserInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateUser beta: %v", err)
+	}
+
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users?status=disabled", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list users by status = %d body = %s", w.Code, w.Body.String())
+	}
+	var byStatus struct {
+		Items []agentservice.User `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&byStatus); err != nil {
+		t.Fatalf("decode byStatus: %v", err)
+	}
+	if len(byStatus.Items) != 1 || byStatus.Items[0].ID != beta.ID {
+		t.Fatalf("unexpected users by status: %#v", byStatus.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users?name=alpha", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list users by name = %d body = %s", w.Code, w.Body.String())
+	}
+	var byName struct {
+		Items []agentservice.User `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&byName); err != nil {
+		t.Fatalf("decode byName: %v", err)
+	}
+	if len(byName.Items) != 1 || byName.Items[0].ID != alpha.ID {
+		t.Fatalf("unexpected users by name: %#v", byName.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users?email=alpha@example.com", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list users by email = %d body = %s", w.Code, w.Body.String())
+	}
+	var byEmail struct {
+		Items []agentservice.User `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&byEmail); err != nil {
+		t.Fatalf("decode byEmail: %v", err)
+	}
+	if len(byEmail.Items) != 1 || byEmail.Items[0].ID != alpha.ID {
+		t.Fatalf("unexpected users by email: %#v", byEmail.Items)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "# TYPE maclaw_metrics_up gauge") ||
+		!strings.Contains(body, "maclaw_metrics_up 1") ||
+		!strings.Contains(body, "maclaw_tenants_total ") ||
+		!strings.Contains(body, "maclaw_users_total ") ||
+		!strings.Contains(body, "maclaw_audit_events_total ") {
+		t.Fatalf("unexpected metrics body: %s", body)
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/plain") {
+		t.Fatalf("unexpected metrics content type: %s", got)
+	}
+}
 func TestAdminCanListAndRevokeCredentials(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -124,13 +568,19 @@ func TestAdminCanListAndRevokeCredentials(t *testing.T) {
 		t.Fatalf("list credentials status = %d body = %s", w.Code, w.Body.String())
 	}
 	var listed struct {
-		Items []agentservice.Credential `json:"items"`
+		Items      []agentservice.Credential `json:"items"`
+		Limit      int                       `json:"limit"`
+		HasMore    bool                      `json:"has_more"`
+		NextBefore string                    `json:"next_before"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
 		t.Fatalf("decode credentials: %v", err)
 	}
 	if len(listed.Items) != 1 || listed.Items[0].ID != cred.ID || listed.Items[0].Status != agentservice.CredentialStatusActive {
 		t.Fatalf("credentials = %#v", listed.Items)
+	}
+	if listed.Limit != defaultPageLimit || listed.HasMore || listed.NextBefore != "" {
+		t.Fatalf("unexpected credential page meta: %#v", listed)
 	}
 
 	req = httptest.NewRequest("DELETE", "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials/"+cred.ID, bytes.NewReader(nil))
@@ -142,6 +592,143 @@ func TestAdminCanListAndRevokeCredentials(t *testing.T) {
 	}
 	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: "key", APISecret: "secret"}); err == nil {
 		t.Fatalf("expected revoked credential to reject token issuance")
+	}
+}
+
+func TestAdminPaginationForTenantsUsersAndCredentials(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	createdTenants := make([]agentservice.Tenant, 0, 3)
+	for i := 1; i <= 3; i++ {
+		tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: fmt.Sprintf("Tenant %d", i)})
+		if err != nil {
+			t.Fatalf("CreateTenant %d: %v", i, err)
+		}
+		createdTenants = append(createdTenants, *tenant)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	targetTenant := createdTenants[2]
+	createdUsers := make([]agentservice.User, 0, 3)
+	for i := 1; i <= 3; i++ {
+		user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: targetTenant.ID, Name: fmt.Sprintf("User %d", i)})
+		if err != nil {
+			t.Fatalf("CreateUser %d: %v", i, err)
+		}
+		createdUsers = append(createdUsers, *user)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	targetUser := createdUsers[2]
+	createdCredentials := make([]agentservice.Credential, 0, 3)
+	for i := 1; i <= 3; i++ {
+		cred, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{
+			TenantID:  targetTenant.ID,
+			UserID:    targetUser.ID,
+			Name:      fmt.Sprintf("Cred %d", i),
+			APIKey:    fmt.Sprintf("key-%d", i),
+			APISecret: fmt.Sprintf("secret-%d", i),
+		})
+		if err != nil {
+			t.Fatalf("CreateCredential %d: %v", i, err)
+		}
+		createdCredentials = append(createdCredentials, *cred)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	server := NewHTTPServer(svc, "admin-secret")
+
+	var tenantsPage struct {
+		Items      []agentservice.Tenant `json:"items"`
+		Limit      int                   `json:"limit"`
+		HasMore    bool                  `json:"has_more"`
+		NextBefore string                `json:"next_before"`
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants?limit=2", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tenant page status = %d body = %s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&tenantsPage); err != nil {
+		t.Fatalf("decode tenant page: %v", err)
+	}
+	if tenantsPage.Limit != 2 || !tenantsPage.HasMore || tenantsPage.NextBefore == "" {
+		t.Fatalf("unexpected tenant page meta: %#v", tenantsPage)
+	}
+	if len(tenantsPage.Items) != 2 || tenantsPage.Items[0].ID != createdTenants[1].ID || tenantsPage.Items[1].ID != createdTenants[2].ID {
+		t.Fatalf("unexpected tenant page items: %#v", tenantsPage.Items)
+	}
+
+	var tenantTail struct {
+		Items      []agentservice.Tenant `json:"items"`
+		Limit      int                   `json:"limit"`
+		HasMore    bool                  `json:"has_more"`
+		NextBefore string                `json:"next_before"`
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants?limit=2&before="+url.QueryEscape(tenantsPage.NextBefore), nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tenant tail status = %d body = %s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&tenantTail); err != nil {
+		t.Fatalf("decode tenant tail: %v", err)
+	}
+	if tenantTail.HasMore || tenantTail.NextBefore != "" || len(tenantTail.Items) != 1 || tenantTail.Items[0].ID != createdTenants[0].ID {
+		t.Fatalf("unexpected tenant tail: %#v", tenantTail)
+	}
+
+	var usersPage struct {
+		Items      []agentservice.User `json:"items"`
+		Limit      int                 `json:"limit"`
+		HasMore    bool                `json:"has_more"`
+		NextBefore string              `json:"next_before"`
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+targetTenant.ID+"/users?limit=2", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("user page status = %d body = %s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&usersPage); err != nil {
+		t.Fatalf("decode user page: %v", err)
+	}
+	if usersPage.Limit != 2 || !usersPage.HasMore || usersPage.NextBefore == "" {
+		t.Fatalf("unexpected user page meta: %#v", usersPage)
+	}
+	if len(usersPage.Items) != 2 || usersPage.Items[0].ID != createdUsers[1].ID || usersPage.Items[1].ID != createdUsers[2].ID {
+		t.Fatalf("unexpected user page items: %#v", usersPage.Items)
+	}
+
+	var credentialsPage struct {
+		Items      []agentservice.Credential `json:"items"`
+		Limit      int                       `json:"limit"`
+		HasMore    bool                      `json:"has_more"`
+		NextBefore string                    `json:"next_before"`
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+targetTenant.ID+"/users/"+targetUser.ID+"/credentials?limit=2", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("credential page status = %d body = %s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&credentialsPage); err != nil {
+		t.Fatalf("decode credential page: %v", err)
+	}
+	if credentialsPage.Limit != 2 || !credentialsPage.HasMore || credentialsPage.NextBefore == "" {
+		t.Fatalf("unexpected credential page meta: %#v", credentialsPage)
+	}
+	if len(credentialsPage.Items) != 2 || credentialsPage.Items[0].ID != createdCredentials[1].ID || credentialsPage.Items[1].ID != createdCredentials[2].ID {
+		t.Fatalf("unexpected credential page items: %#v", credentialsPage.Items)
 	}
 }
 
@@ -424,6 +1011,182 @@ func TestGetInstanceSummary(t *testing.T) {
 	}
 }
 
+func TestGetTenantSummary(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user1, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User One", Email: "one@example.com"})
+	if err != nil {
+		t.Fatalf("CreateUser user1: %v", err)
+	}
+	user2, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User Two", Email: "two@example.com"})
+	if err != nil {
+		t.Fatalf("CreateUser user2: %v", err)
+	}
+	tenantInstanceLimit := 5
+	tenantMessageLimit := 10
+	if _, err := svc.UpdateTenant(context.Background(), tenant.ID, agentservice.UpdateTenantInput{MaxInstances: &tenantInstanceLimit, MaxMessages: &tenantMessageLimit}); err != nil {
+		t.Fatalf("UpdateTenant quota: %v", err)
+	}
+	user1SessionLimit := 3
+	user1MessageLimit := 4
+	if _, err := svc.UpdateUser(context.Background(), tenant.ID, user1.ID, agentservice.UpdateUserInput{MaxSessions: &user1SessionLimit, MaxMessages: &user1MessageLimit}); err != nil {
+		t.Fatalf("UpdateUser user1 quota: %v", err)
+	}
+	disabled := agentservice.UserStatusDisabled
+	if _, err := svc.UpdateUser(context.Background(), tenant.ID, user2.ID, agentservice.UpdateUserInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateUser user2: %v", err)
+	}
+	principal1 := agentservice.Principal{TenantID: tenant.ID, UserID: user1.ID}
+	principal2 := agentservice.Principal{TenantID: tenant.ID, UserID: user2.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal1, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig user1: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal2, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig user2: %v", err)
+	}
+	inst1, err := svc.CreateInstance(context.Background(), principal1, agentservice.CreateInstanceInput{Name: "Instance One"})
+	if err != nil {
+		t.Fatalf("CreateInstance user1: %v", err)
+	}
+	inst2, err := svc.CreateInstance(context.Background(), principal2, agentservice.CreateInstanceInput{Name: "Instance Two"})
+	if err != nil {
+		t.Fatalf("CreateInstance user2: %v", err)
+	}
+	if _, err := svc.StopInstance(context.Background(), principal2, inst2.ID); err != nil {
+		t.Fatalf("StopInstance user2: %v", err)
+	}
+	base := time.Date(2026, 4, 25, 9, 0, 0, 0, time.UTC)
+	for _, sess := range []agentservice.Session{
+		{ID: "sess_1", TenantID: tenant.ID, UserID: user1.ID, InstanceID: inst1.ID, AgentID: "default", CreatedAt: base, UpdatedAt: base.Add(2 * time.Minute)},
+		{ID: "sess_2", TenantID: tenant.ID, UserID: user2.ID, InstanceID: inst2.ID, AgentID: "default", CreatedAt: base.Add(3 * time.Minute), UpdatedAt: base.Add(4 * time.Minute)},
+	} {
+		if err := store.SaveSession(sess); err != nil {
+			t.Fatalf("SaveSession %s: %v", sess.ID, err)
+		}
+	}
+	for _, msg := range []agentservice.Message{
+		{ID: "msg_1", TenantID: tenant.ID, UserID: user1.ID, InstanceID: inst1.ID, SessionID: "sess_1", Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: base.Add(5 * time.Minute)},
+		{ID: "msg_2", TenantID: tenant.ID, UserID: user1.ID, InstanceID: inst1.ID, SessionID: "sess_1", Role: agentservice.MessageRoleAssistant, Content: "hi", CreatedAt: base.Add(6 * time.Minute)},
+		{ID: "msg_3", TenantID: tenant.ID, UserID: user2.ID, InstanceID: inst2.ID, SessionID: "sess_2", Role: agentservice.MessageRoleUser, Content: "ping", CreatedAt: base.Add(7 * time.Minute)},
+	} {
+		if err := store.SaveMessage(msg); err != nil {
+			t.Fatalf("SaveMessage %s: %v", msg.ID, err)
+		}
+	}
+	completed := base.Add(9 * time.Minute)
+	for _, run := range []agentservice.Run{
+		{ID: "run_1", TenantID: tenant.ID, UserID: user1.ID, InstanceID: inst1.ID, SessionID: "sess_1", Status: agentservice.RunStatusSucceeded, StartedAt: base.Add(6 * time.Minute), CompletedAt: &completed},
+		{ID: "run_2", TenantID: tenant.ID, UserID: user2.ID, InstanceID: inst2.ID, SessionID: "sess_2", Status: agentservice.RunStatusFailed, StartedAt: base.Add(8 * time.Minute)},
+	} {
+		if err := store.SaveRun(run); err != nil {
+			t.Fatalf("SaveRun %s: %v", run.ID, err)
+		}
+	}
+
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/summary", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tenant summary status = %d body = %s", w.Code, w.Body.String())
+	}
+	var summary agentservice.TenantSummary
+	if err := json.NewDecoder(w.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode tenant summary: %v", err)
+	}
+	if summary.TenantID != tenant.ID || summary.Users != 2 || summary.ActiveUsers != 1 || summary.DisabledUsers != 1 {
+		t.Fatalf("unexpected tenant user summary: %#v", summary)
+	}
+	if summary.Instances != 2 || summary.ReadyInstances != 1 || summary.StoppedInstances != 1 {
+		t.Fatalf("unexpected instance totals: %#v", summary)
+	}
+	if summary.Sessions != 2 || summary.Messages != 3 || summary.UserMessages != 2 || summary.AssistantMessages != 1 || summary.Runs != 2 {
+		t.Fatalf("unexpected activity totals: %#v", summary)
+	}
+	if summary.RunsByStatus[agentservice.RunStatusSucceeded] != 1 || summary.RunsByStatus[agentservice.RunStatusFailed] != 1 {
+		t.Fatalf("unexpected run statuses: %#v", summary)
+	}
+	if len(summary.UserSummaries) != 2 || summary.LastActivityAt == nil {
+		t.Fatalf("unexpected user breakdown: %#v", summary)
+	}
+	if summary.Quota.MaxInstances != 5 || summary.QuotaUsage.Instances.Limit != 5 || summary.QuotaUsage.Instances.Used != 2 {
+		t.Fatalf("unexpected tenant quota snapshot: %#v", summary.QuotaUsage)
+	}
+	if summary.QuotaUsage.Instances.Remaining == nil || *summary.QuotaUsage.Instances.Remaining != 3 {
+		t.Fatalf("unexpected tenant remaining instances: %#v", summary.QuotaUsage.Instances)
+	}
+	var user1Summary *agentservice.TenantUserSummary
+	for i := range summary.UserSummaries {
+		if summary.UserSummaries[i].UserID == user1.ID {
+			user1Summary = &summary.UserSummaries[i]
+			break
+		}
+	}
+	if user1Summary == nil {
+		t.Fatalf("missing user1 summary: %#v", summary.UserSummaries)
+	}
+	if user1Summary.EffectiveQuota.MaxSessions != 3 || user1Summary.QuotaUsage.Sessions.Limit != 3 || user1Summary.QuotaUsage.Sessions.Used != 1 {
+		t.Fatalf("unexpected user1 quota usage: %#v", user1Summary)
+	}
+	if user1Summary.QuotaUsage.Sessions.Remaining == nil || *user1Summary.QuotaUsage.Sessions.Remaining != 2 {
+		t.Fatalf("unexpected user1 remaining sessions: %#v", user1Summary.QuotaUsage.Sessions)
+	}
+	if user1Summary.EffectiveQuota.MaxMessages != 4 || user1Summary.QuotaUsage.Messages.Remaining == nil || *user1Summary.QuotaUsage.Messages.Remaining != 2 {
+		t.Fatalf("unexpected user1 message quota usage: %#v", user1Summary)
+	}
+}
+
+func TestCreateInstanceReturnsTooManyRequestsWhenQuotaExceeded(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	one := 1
+	if _, err := svc.UpdateUser(context.Background(), tenant.ID, user.ID, agentservice.UpdateUserInput{MaxInstances: &one}); err != nil {
+		t.Fatalf("UpdateUser quota: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	body := `{"name":"first"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first create instance status = %d body = %s", w.Code, w.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/instances", bytes.NewBufferString(`{"name":"second"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second create instance status = %d body = %s", w.Code, w.Body.String())
+	}
+}
 func TestGetUsageSummary(t *testing.T) {
 	store := agentservice.NewMemoryStore()
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
@@ -439,6 +1202,13 @@ func TestGetUsageSummary(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	instanceLimit := 3
+	sessionLimit := 4
+	messageLimit := 5
+	runLimit := 6
+	if _, err := svc.UpdateUser(context.Background(), tenant.ID, user.ID, agentservice.UpdateUserInput{MaxInstances: &instanceLimit, MaxSessions: &sessionLimit, MaxMessages: &messageLimit, MaxRuns: &runLimit}); err != nil {
+		t.Fatalf("UpdateUser quota: %v", err)
+	}
 	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
 		t.Fatalf("UpdateUserConfig: %v", err)
 	}
@@ -483,6 +1253,15 @@ func TestGetUsageSummary(t *testing.T) {
 	}
 	if summary.RunsByStatus[agentservice.RunStatusSucceeded] != 1 || summary.LastActivityAt == nil {
 		t.Fatalf("summary run status/last activity = %#v", summary)
+	}
+	if summary.Quota.MaxInstances != 3 || summary.Quota.MaxMessages != 5 || summary.QuotaUsage.Messages.Limit != 5 || summary.QuotaUsage.Messages.Used != 2 {
+		t.Fatalf("unexpected usage quota snapshot: %#v", summary)
+	}
+	if summary.QuotaUsage.Messages.Remaining == nil || *summary.QuotaUsage.Messages.Remaining != 3 {
+		t.Fatalf("unexpected usage message remaining: %#v", summary.QuotaUsage.Messages)
+	}
+	if summary.QuotaUsage.Runs.Remaining == nil || *summary.QuotaUsage.Runs.Remaining != 5 {
+		t.Fatalf("unexpected usage run remaining: %#v", summary.QuotaUsage.Runs)
 	}
 }
 
@@ -663,11 +1442,86 @@ func TestGetInstanceCapabilities(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&caps); err != nil {
 		t.Fatalf("decode capabilities: %v", err)
 	}
-	if caps.Executor != "core_agent" || !caps.SupportsSSH || !caps.SupportsAskUser {
+	if caps.Executor != "core_agent" || caps.SupportsSSH || !caps.SupportsAskUser {
 		t.Fatalf("unexpected capabilities: %#v", caps)
 	}
 	if len(caps.Tools) == 0 {
 		t.Fatalf("expected tools in capabilities")
+	}
+}
+
+func TestListSkillsSupportsNameCursorPagination(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	skillsRoot := filepath.Join(dataRoot, "tenants", tenant.ID, "users", user.ID, "skills")
+	for _, name := range []string{"alpha", "bravo", "charlie"} {
+		dir := filepath.Join(skillsRoot, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "KNOWLEDGE.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	server := NewHTTPServer(svc, "admin-secret")
+	var page struct {
+		Items      []corelib.NLSkillEntry `json:"items"`
+		Limit      int                    `json:"limit"`
+		HasMore    bool                   `json:"has_more"`
+		NextBefore string                 `json:"next_before"`
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/skills?limit=2", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list skills page status = %d body = %s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&page); err != nil {
+		t.Fatalf("decode skills page: %v", err)
+	}
+	if page.Limit != 2 || !page.HasMore || page.NextBefore != "bravo" {
+		t.Fatalf("unexpected skills page meta: %#v", page)
+	}
+	if len(page.Items) != 2 || page.Items[0].Name != "bravo" || page.Items[1].Name != "charlie" {
+		t.Fatalf("unexpected skills page items: %#v", page.Items)
+	}
+
+	var tail struct {
+		Items      []corelib.NLSkillEntry `json:"items"`
+		Limit      int                    `json:"limit"`
+		HasMore    bool                   `json:"has_more"`
+		NextBefore string                 `json:"next_before"`
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/skills?limit=2&before="+url.QueryEscape(page.NextBefore), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list skills tail status = %d body = %s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&tail); err != nil {
+		t.Fatalf("decode skills tail: %v", err)
+	}
+	if tail.HasMore || tail.NextBefore != "" || len(tail.Items) != 1 || tail.Items[0].Name != "alpha" {
+		t.Fatalf("unexpected skills tail: %#v", tail)
 	}
 }
 
@@ -761,6 +1615,71 @@ func TestMCPRemoteServerCRUDAndTools(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete remote MCP status = %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListMCPServersSupportsPagination(t *testing.T) {
+	_, _, token, server := newMCPAuthenticatedServer(t)
+
+	created := make([]agentservice.MCPServerView, 0, 3)
+	for i := 1; i <= 3; i++ {
+		body := fmt.Sprintf(`{"kind":"local","name":%q,"command":%q,"args":["-test.run=TestLocalMCPHelperProcess","--"],"env":{"GO_WANT_LOCAL_MCP_HELPER":"1"}}`, fmt.Sprintf("Local %d", i), os.Args[0])
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create mcp %d status = %d body = %s", i, w.Code, w.Body.String())
+		}
+		var item agentservice.MCPServerView
+		if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+			t.Fatalf("decode mcp %d: %v", i, err)
+		}
+		created = append(created, item)
+		time.Sleep(1100 * time.Millisecond)
+	}
+
+	var page struct {
+		Items      []agentservice.MCPServerView `json:"items"`
+		Limit      int                          `json:"limit"`
+		HasMore    bool                         `json:"has_more"`
+		NextBefore string                       `json:"next_before"`
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/mcp/servers?limit=2", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list mcp page status = %d body = %s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&page); err != nil {
+		t.Fatalf("decode mcp page: %v", err)
+	}
+	if page.Limit != 2 || !page.HasMore || page.NextBefore == "" {
+		t.Fatalf("unexpected mcp page meta: %#v", page)
+	}
+	if len(page.Items) != 2 || page.Items[0].ID != created[1].ID || page.Items[1].ID != created[2].ID {
+		t.Fatalf("unexpected mcp page items: %#v", page.Items)
+	}
+
+	var tail struct {
+		Items      []agentservice.MCPServerView `json:"items"`
+		Limit      int                          `json:"limit"`
+		HasMore    bool                         `json:"has_more"`
+		NextBefore string                       `json:"next_before"`
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/mcp/servers?limit=2&before="+url.QueryEscape(page.NextBefore), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list mcp tail status = %d body = %s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&tail); err != nil {
+		t.Fatalf("decode mcp tail: %v", err)
+	}
+	if tail.HasMore || tail.NextBefore != "" || len(tail.Items) != 1 || tail.Items[0].ID != created[0].ID {
+		t.Fatalf("unexpected mcp tail: %#v", tail)
 	}
 }
 

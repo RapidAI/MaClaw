@@ -1,16 +1,15 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"log"
 	"net"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -24,6 +23,7 @@ type RemoteActivationResult struct {
 	SN           string `json:"sn,omitempty"`
 	MachineID    string `json:"machine_id,omitempty"`
 	MachineToken string `json:"machine_token,omitempty"`
+	ViewerToken  string `json:"viewer_token,omitempty"`
 	ExpiresAt    string `json:"expires_at,omitempty"`
 	VIPFlag      bool   `json:"vip_flag,omitempty"`
 }
@@ -43,25 +43,6 @@ type RemoteActivationStatus struct {
 }
 
 type RemoteHubCenterHub struct {
-	HubID          string `json:"hub_id"`
-	Name           string `json:"name"`
-	BaseURL        string `json:"base_url"`
-	PWAURL         string `json:"pwa_url"`
-	Visibility     string `json:"visibility"`
-	EnrollmentMode string `json:"enrollment_mode"`
-	Status         string `json:"status"`
-}
-
-type hubCenterResolveResult struct {
-	Email        string                `json:"email"`
-	Mode         string                `json:"mode"`
-	DefaultHubID string                `json:"default_hub_id,omitempty"`
-	DefaultPWA   string                `json:"default_pwa_url,omitempty"`
-	Hubs         []hubCenterResolveHub `json:"hubs,omitempty"`
-	Message      string                `json:"message,omitempty"`
-}
-
-type hubCenterResolveHub struct {
 	HubID          string `json:"hub_id"`
 	Name           string `json:"name"`
 	BaseURL        string `json:"base_url"`
@@ -141,106 +122,97 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		return RemoteActivationResult{}, fmt.Errorf("email is required")
 	}
 
-	hubResolveStart := time.Now()
-	hubURL := strings.TrimSpace(cfg.RemoteHubURL)
-	if hubURL == "" {
-		hubURL, err = a.resolveRemoteHubURL(cfg, email)
-		if err != nil {
-			return RemoteActivationResult{}, err
-		}
-		cfg.RemoteHubURL = hubURL
-	}
-	log.Printf("[onboarding] ActivateRemote resolve_hub=%s reused=%t", time.Since(hubResolveStart), strings.TrimSpace(cfg.RemoteHubURL) != "")
-
+	// Build enrollment config from app config.
 	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
-	body := map[string]any{
-		"email":        email,
-		"machine_name": profile.Name,
-		"platform":     profile.Platform,
-		"hostname":     profile.Hostname,
-		"arch":         profile.Arch,
-		"app_version":  profile.AppVersion,
-	}
-	body["heartbeat_interval_sec"] = profile.HeartbeatSec
-	if invitationCode != "" {
-		body["invitation_code"] = invitationCode
-	}
-	if mobile != "" {
-		body["mobile"] = strings.TrimSpace(mobile)
+	enrollCfg := remote.EnrollConfig{
+		Email:          email,
+		InvitationCode: invitationCode,
+		Mobile:         mobile,
+		ClientID:       cfg.RemoteClientID,
+		HubURL:         strings.TrimSpace(cfg.RemoteHubURL),
+		HubCenterURL:   strings.TrimSpace(cfg.RemoteHubCenterURL),
+		HubCenterURLs:  cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs),
+		MachineName:    profile.Name,
+		Platform:       profile.Platform,
+		Hostname:       profile.Hostname,
+		Arch:           profile.Arch,
+		AppVersion:     profile.AppVersion,
+		HeartbeatSec:   profile.HeartbeatSec,
 	}
 
-	// Generate a stable client_id on first run so re-enrollment reuses the same machine record
-	clientIDStart := time.Now()
-	if cfg.RemoteClientID == "" {
-		cfg.RemoteClientID = generateClientID()
-		if err := a.SaveConfig(cfg); err != nil {
+	// Ensure stable client_id.
+	if enrollCfg.ClientID == "" {
+		enrollCfg.ClientID = remote.GenerateClientID()
+		// Persist client_id immediately — reload config to avoid overwriting
+		// concurrent changes (same pattern as #11 CodeGen SSO fix).
+		cidCfg, cidErr := a.LoadConfig()
+		if cidErr != nil {
+			cidCfg = cfg
+		}
+		cidCfg.RemoteClientID = enrollCfg.ClientID
+		if err := a.SaveConfig(cidCfg); err != nil {
 			return RemoteActivationResult{}, err
 		}
 	}
-	log.Printf("[onboarding] ActivateRemote ensure_client_id=%s created=%t", time.Since(clientIDStart), cfg.RemoteClientID != "")
-	body["client_id"] = cfg.RemoteClientID
-	marshalStart := time.Now()
-	data, err := json.Marshal(body)
+
+	// Delegate to shared enrollment client.
+	enrollClient := &remote.EnrollmentClient{HTTPClient: hubHTTPClient}
+	enrollResult, err := enrollClient.Enroll(context.Background(), enrollCfg)
 	if err != nil {
 		return RemoteActivationResult{}, err
 	}
-	log.Printf("[onboarding] ActivateRemote marshal_request=%s", time.Since(marshalStart))
 
-	enrollStart := time.Now()
-	enrollURL := strings.TrimRight(hubURL, "/") + "/api/enroll/start"
-	ctx, cancel := context.WithTimeout(context.Background(), remoteEnrollTimeout)
-	defer cancel()
-	log.Printf("[onboarding] ActivateRemote enroll_request:start timeout=%s url=%s", remoteEnrollTimeout, enrollURL)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, enrollURL, bytes.NewReader(data))
-	if err != nil {
-		return RemoteActivationResult{}, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	resp, err := hubHTTPClient.Do(request)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || isHTTPTimeoutError(err) {
-			log.Printf("[onboarding] ActivateRemote enroll_request:timeout after=%s url=%s err=%v", time.Since(enrollStart), enrollURL, err)
-			return RemoteActivationResult{}, fmt.Errorf("registration timed out after %s", remoteEnrollTimeout)
-		}
-		log.Printf("[onboarding] ActivateRemote enroll_request:failed after=%s url=%s err=%v", time.Since(enrollStart), enrollURL, err)
-		return RemoteActivationResult{}, err
-	}
-	log.Printf("[onboarding] ActivateRemote enroll_http=%s status=%d", time.Since(enrollStart), resp.StatusCode)
-	defer resp.Body.Close()
-
-	decodeStart := time.Now()
-	var result RemoteActivationResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return RemoteActivationResult{}, err
-	}
-	log.Printf("[onboarding] ActivateRemote decode_response=%s status=%d enrollment_status=%s", time.Since(decodeStart), resp.StatusCode, result.Status)
-	if resp.StatusCode >= 300 {
-		if result.Code != "" {
-			if result.ExpiresAt != "" {
-				return RemoteActivationResult{}, fmt.Errorf("%s: %s expires_at:%s", result.Code, result.Message, result.ExpiresAt)
-			}
-			return RemoteActivationResult{}, fmt.Errorf("%s: %s", result.Code, result.Message)
-		}
-		if result.Message != "" {
-			return RemoteActivationResult{}, fmt.Errorf("%s", result.Message)
-		}
-		return RemoteActivationResult{}, fmt.Errorf("remote registration failed: %s", resp.Status)
-	}
-
+	// Persist credentials — reload config to avoid overwriting concurrent changes
+	// (e.g. user changed LLM settings in UI while enrollment was in progress).
+	// Only merge enrollment-specific fields into the fresh config.
 	persistStart := time.Now()
-	cfg.RemoteEmail = result.Email
-	cfg.RemoteSN = result.SN
-	cfg.RemoteUserID = result.UserID
-	cfg.RemoteMachineID = result.MachineID
-	cfg.RemoteMachineToken = result.MachineToken
-	cfg.RemoteHubURL = hubURL
-	log.Printf("[onboarding] ActivateRemote save_config:start machine_id=%s email=%s", result.MachineID, result.Email)
-	if err := a.SaveConfig(cfg); err != nil {
+	freshCfg, err := a.LoadConfig()
+	if err != nil {
+		// Fall back to the stale cfg if reload fails.
+		freshCfg = cfg
+	}
+	freshCfg.RemoteEmail = enrollResult.Email
+	freshCfg.RemoteSN = enrollResult.SN
+	freshCfg.RemoteUserID = enrollResult.UserID
+	freshCfg.RemoteMachineID = enrollResult.MachineID
+	freshCfg.RemoteMachineToken = enrollResult.MachineToken
+	freshCfg.RemoteHubURL = enrollResult.HubURL
+	freshCfg.RemoteEnabled = true // Mark remote as enabled for consistency with TUI
+	if enrollResult.ViewerToken != "" {
+		freshCfg.RemoteViewerToken = enrollResult.ViewerToken
+	}
+	if enrollResult.ClientID != "" && freshCfg.RemoteClientID == "" {
+		freshCfg.RemoteClientID = enrollResult.ClientID
+	}
+	if enrollResult.HubCenterURL != "" {
+		freshCfg.RemoteHubCenterURL = enrollResult.HubCenterURL
+	}
+	if len(enrollResult.DiscoveredURLs) > 0 {
+		freshCfg.RemoteHubCenterURLs = remote.NormalizeHubCenterURLs(enrollResult.DiscoveredURLs)
+	}
+	log.Printf("[onboarding] ActivateRemote save_config:start machine_id=%s email=%s", enrollResult.MachineID, enrollResult.Email)
+	if err := a.SaveConfig(freshCfg); err != nil {
 		log.Printf("[onboarding] ActivateRemote save_config:failed after=%s err=%v", time.Since(persistStart), err)
 		return RemoteActivationResult{}, err
 	}
 	log.Printf("[onboarding] ActivateRemote save_config=%s", time.Since(persistStart))
 
+	// Convert to GUI result type.
+	result := RemoteActivationResult{
+		Status:       enrollResult.Status,
+		Message:      enrollResult.Message,
+		Code:         enrollResult.Code,
+		UserID:       enrollResult.UserID,
+		Email:        enrollResult.Email,
+		SN:           enrollResult.SN,
+		MachineID:    enrollResult.MachineID,
+		MachineToken: enrollResult.MachineToken,
+		ViewerToken:  enrollResult.ViewerToken,
+		ExpiresAt:    enrollResult.ExpiresAt,
+		VIPFlag:      enrollResult.VIPFlag,
+	}
+
+	// GUI-specific: emit state change + background hub connection.
 	a.emitRemoteStateChanged()
 	go func(launchedAt time.Time) {
 		infraStart := time.Now()
@@ -364,6 +336,7 @@ func (a *App) clearMachineCredentials() {
 	cfg.RemoteUserID = ""
 	cfg.RemoteMachineID = ""
 	cfg.RemoteMachineToken = ""
+	cfg.RemoteViewerToken = ""
 	_ = a.SaveConfig(cfg)
 
 	a.emitRemoteStateChanged()
@@ -383,6 +356,7 @@ func (a *App) ClearRemoteActivation() error {
 	cfg.RemoteUserID = ""
 	cfg.RemoteMachineID = ""
 	cfg.RemoteMachineToken = ""
+	cfg.RemoteViewerToken = ""
 	if err := a.SaveConfig(cfg); err != nil {
 		return err
 	}
@@ -405,15 +379,29 @@ func (a *App) ListRemoteHubs(centerURL string, email string) ([]RemoteHubCenterH
 		return nil, fmt.Errorf("email is required")
 	}
 
-	result, err := a.resolveRemoteHubCenter(centerURL, email, cfg)
+	// Delegate to the shared enrollment client for hub resolution.
+	enrollClient := &remote.EnrollmentClient{HTTPClient: hubHTTPClient}
+	result, usedCenter, ordered, err := enrollClient.ResolveHubs(
+		context.Background(),
+		email,
+		strings.TrimSpace(centerURL),
+		cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs),
+	)
 	if err != nil {
 		return nil, err
 	}
+
+	// Persist the successfully used HubCenter URL for next time.
+	if usedCenter != "" {
+		go a.rememberHubCenterSelectionThrottled(usedCenter, ordered)
+	}
+
 	if len(result.Hubs) == 0 {
-		if result.Message == "" {
-			result.Message = "no available hubs found"
+		msg := result.Message
+		if msg == "" {
+			msg = "no available hubs found"
 		}
-		return nil, fmt.Errorf("%s", result.Message)
+		return nil, fmt.Errorf("%s", msg)
 	}
 
 	hubs := make([]RemoteHubCenterHub, 0, len(result.Hubs))
@@ -432,79 +420,7 @@ func (a *App) ListRemoteHubs(centerURL string, email string) ([]RemoteHubCenterH
 	return hubs, nil
 }
 
-func (a *App) resolveRemoteHubURL(cfg corelib.AppConfig, email string) (string, error) {
-	result, err := a.resolveRemoteHubCenter("", email, cfg)
-	if err != nil {
-		return "", err
-	}
-
-	if len(result.Hubs) == 0 {
-		if result.Message == "" {
-			result.Message = "no available hubs found"
-		}
-		return "", fmt.Errorf("%s", result.Message)
-	}
-
-	if result.DefaultHubID != "" {
-		for _, hub := range result.Hubs {
-			if hub.HubID == result.DefaultHubID && strings.TrimSpace(hub.BaseURL) != "" {
-				return strings.TrimRight(hub.BaseURL, "/"), nil
-			}
-		}
-	}
-
-	for _, hub := range result.Hubs {
-		if strings.TrimSpace(hub.BaseURL) != "" {
-			return strings.TrimRight(hub.BaseURL, "/"), nil
-		}
-	}
-
-	return "", fmt.Errorf("hub center did not return a usable hub url")
-}
-
-func (a *App) resolveRemoteHubCenter(centerURL string, email string, cfg corelib.AppConfig) (hubCenterResolveResult, error) {
-	centerURL = strings.TrimSpace(centerURL)
-	if centerURL == "" {
-		centerURL = strings.TrimSpace(cfg.RemoteHubCenterURL)
-	}
-	if centerURL == "" {
-		centerURL = defaultRemoteHubCenterURL
-	}
-
-	payload := map[string]string{
-		"email": strings.TrimSpace(email),
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return hubCenterResolveResult{}, err
-	}
-
-	resp, err := hubHTTPClient.Post(strings.TrimRight(centerURL, "/")+"/api/entry/resolve", "application/json", bytes.NewReader(data))
-	if err != nil {
-		return hubCenterResolveResult{}, fmt.Errorf("resolve remote hub via center: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result hubCenterResolveResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return hubCenterResolveResult{}, fmt.Errorf("decode center response: %w", err)
-	}
-	if resp.StatusCode >= 300 {
-		if result.Message != "" {
-			return hubCenterResolveResult{}, fmt.Errorf("%s", result.Message)
-		}
-		return hubCenterResolveResult{}, fmt.Errorf("hub center resolve failed: %s", resp.Status)
-	}
-
-	return result, nil
-}
-
-// generateClientID produces a UUID v4 string used to stably identify this desktop instance.
+// generateClientID delegates to the shared corelib implementation.
 func generateClientID() string {
-	var buf [16]byte
-	_, _ = rand.Read(buf[:])
-	buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
-	buf[8] = (buf[8] & 0x3f) | 0x80 // variant 10
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
+	return remote.GenerateClientID()
 }

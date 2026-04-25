@@ -20,6 +20,7 @@ const AddExternalSkillDirMock = vi.fn();
 const RemoveExternalSkillDirMock = vi.fn();
 const SelectProjectDirMock = vi.fn();
 const OpenSystemUrlMock = vi.fn();
+const GetHubRecommendationsMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListNLSkills: (...args: unknown[]) => ListNLSkillsMock(...args),
@@ -40,6 +41,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     RemoveExternalSkillDir: (...args: unknown[]) => RemoveExternalSkillDirMock(...args),
     SelectProjectDir: (...args: unknown[]) => SelectProjectDirMock(...args),
     OpenSystemUrl: (...args: unknown[]) => OpenSystemUrlMock(...args),
+    GetHubRecommendations: (...args: unknown[]) => GetHubRecommendationsMock(...args),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -99,6 +101,7 @@ describe('SkillsManagementPanel execution class', () => {
         CheckHubSkillUpdatesMock.mockResolvedValue([]);
         SearchMixedSkillsMock.mockResolvedValue([]);
         ListExternalSkillDirsDetailedMock.mockResolvedValue([]);
+        GetHubRecommendationsMock.mockResolvedValue([]);
     });
 
     it('shows execution class badges for installed skills', async () => {
@@ -133,6 +136,7 @@ describe('SkillsManagementPanel modal backdrop mousedown+click guard', () => {
         CheckHubSkillUpdatesMock.mockResolvedValue([]);
         SearchMixedSkillsMock.mockResolvedValue([]);
         ListExternalSkillDirsDetailedMock.mockResolvedValue([]);
+        GetHubRecommendationsMock.mockResolvedValue([]);
     });
 
     /** Helper: open the create/edit form dialog and return the backdrop element */

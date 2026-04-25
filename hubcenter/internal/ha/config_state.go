@@ -69,6 +69,12 @@ func validateHAConfig(cfg config.HAConfig) error {
 func mergeHAConfig(base, override config.HAConfig) config.HAConfig {
 	merged := base
 	merged.Enabled = override.Enabled
+	if strings.TrimSpace(override.SelfFQDN) != "" {
+		merged.SelfFQDN = override.SelfFQDN
+	}
+	if strings.TrimSpace(override.PrivateKeyPath) != "" {
+		merged.PrivateKeyPath = override.PrivateKeyPath
+	}
 	if strings.TrimSpace(override.NodeID) != "" {
 		merged.NodeID = override.NodeID
 	}
@@ -90,6 +96,9 @@ func mergeHAConfig(base, override config.HAConfig) config.HAConfig {
 	if override.HeartbeatSyncMinIntervalSeconds > 0 {
 		merged.HeartbeatSyncMinIntervalSeconds = override.HeartbeatSyncMinIntervalSeconds
 	}
+	if override.Nodes != nil {
+		merged.Nodes = append([]config.HANodeConfig(nil), override.Nodes...)
+	}
 	if override.Peers != nil {
 		merged.Peers = append([]config.HAPeerConfig(nil), override.Peers...)
 	}
@@ -106,25 +115,23 @@ func normalizeHAConfig(defaults, cfg config.HAConfig) config.HAConfig {
 	if cfg.HeartbeatSyncMinIntervalSeconds <= 0 {
 		cfg.HeartbeatSyncMinIntervalSeconds = defaults.HeartbeatSyncMinIntervalSeconds
 	}
+	cfg.SelfFQDN = config.NormalizeHAFQDN(cfg.SelfFQDN)
+	cfg.PrivateKeyPath = strings.TrimSpace(cfg.PrivateKeyPath)
 	cfg.NodeID = strings.TrimSpace(cfg.NodeID)
 	cfg.NodeName = strings.TrimSpace(cfg.NodeName)
-	cfg.AdvertiseURL = strings.TrimRight(strings.TrimSpace(cfg.AdvertiseURL), "/")
+	cfg.AdvertiseURL = config.NormalizeHAURL(cfg.AdvertiseURL)
 	cfg.ClusterSecret = strings.TrimSpace(cfg.ClusterSecret)
-	peers := make([]config.HAPeerConfig, 0, len(cfg.Peers))
-	for _, peer := range cfg.Peers {
-		normalized := config.HAPeerConfig{
-			NodeID:  strings.TrimSpace(peer.NodeID),
-			Name:    strings.TrimSpace(peer.Name),
-			BaseURL: strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/"),
-			Enabled: peer.Enabled,
-		}
-		if !normalized.Enabled && normalized.NodeID == "" && normalized.Name == "" && normalized.BaseURL == "" {
-			continue
-		}
-		peers = append(peers, normalized)
+	if !cfg.Enabled {
+		return cfg
 	}
-	cfg.Peers = peers
-	return cfg
+	resolved, err := config.ResolveHAConfig(cfg)
+	if err != nil {
+		return cfg
+	}
+	if strings.TrimSpace(resolved.PrivateKeyPath) == "" {
+		resolved.PrivateKeyPath = cfg.PrivateKeyPath
+	}
+	return resolved
 }
 
 func mustJSON(v any) string {

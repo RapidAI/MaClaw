@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
@@ -70,15 +71,15 @@ func newHubCenterHTTPTestServices(t *testing.T) *hubCenterHTTPTestServices {
 	st := sqlite.NewStore(provider)
 	adminService := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
 	mailer := &httpTestMailer{}
-	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
-	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
+	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
 
 	return &hubCenterHTTPTestServices{
 		store:   st,
 		admins:  adminService,
 		hubs:    hubService,
 		entry:   entryService,
-		handler: NewRouter(adminService, hubService, entryService, nil, nil, nil, nil, nil, st.System, st.News, nil),
+		handler: NewRouter(adminService, hubService, entryService, nil, nil, st.FailureLogs, nil, nil, nil, st.System, st.News, nil),
 		mailer:  mailer,
 	}
 }
@@ -98,6 +99,31 @@ func doJSONRequest(t *testing.T, handler http.Handler, method, target string, bo
 	}
 
 	req := httptest.NewRequest(method, target, reader)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr
+}
+func doJSONRequestWithHost(t *testing.T, handler http.Handler, method, target string, body any, token string, requestURL string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	var reader *bytes.Reader
+	if body == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		reader = bytes.NewReader(data)
+	}
+
+	req := httptest.NewRequest(method, requestURL, reader)
+	req.URL.Path = target
+	req.RequestURI = target
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -136,6 +162,42 @@ func issueAdminToken(t *testing.T, svc *hubCenterHTTPTestServices) string {
 		t.Fatalf("expected access token, got %v", payload)
 	}
 	return token
+}
+
+func registerConfirmAndHeartbeatHub(t *testing.T, svc *hubCenterHTTPTestServices, body map[string]any) map[string]any {
+	t.Helper()
+
+	registerResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/register", body, "")
+	if registerResp.Code != http.StatusOK {
+		t.Fatalf("register status = %d, body = %s", registerResp.Code, registerResp.Body.String())
+	}
+
+	var registerResult map[string]any
+	if err := json.Unmarshal(registerResp.Body.Bytes(), &registerResult); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	hubID, _ := registerResult["hub_id"].(string)
+	hubSecret, _ := registerResult["hub_secret"].(string)
+	if hubID == "" || hubSecret == "" {
+		t.Fatalf("unexpected register result: %+v", registerResult)
+	}
+
+	token := strings.TrimPrefix(svc.mailer.lastConfirmURL, "http://127.0.0.1:9388/hub-registration/confirm?token=")
+	confirmReq := httptest.NewRequest(http.MethodGet, "/hub-registration/confirm?token="+token, nil)
+	confirmResp := httptest.NewRecorder()
+	svc.handler.ServeHTTP(confirmResp, confirmReq)
+	if confirmResp.Code != http.StatusOK {
+		t.Fatalf("confirm status = %d, body = %s", confirmResp.Code, confirmResp.Body.String())
+	}
+
+	heartbeatResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
+		"hub_secret": hubSecret,
+	}, "")
+	if heartbeatResp.Code != http.StatusOK {
+		t.Fatalf("heartbeat status = %d, body = %s", heartbeatResp.Code, heartbeatResp.Body.String())
+	}
+
+	return registerResult
 }
 
 func TestAdminSetupAndLoginHandlers(t *testing.T) {
@@ -217,7 +279,7 @@ func TestAdminStatusHandlerReflectsInitialization(t *testing.T) {
 func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 
-	registerResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/register", map[string]any{
+	registerResult := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
 		"owner_email":     "owner@example.com",
 		"name":            "MaClaw Team Hub",
 		"description":     "Team remote coding hub",
@@ -227,35 +289,7 @@ func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 		"capabilities": map[string]any{
 			"supports_remote_control": true,
 		},
-	}, "")
-	if registerResp.Code != http.StatusOK {
-		t.Fatalf("register status = %d, body = %s", registerResp.Code, registerResp.Body.String())
-	}
-
-	var registerResult map[string]any
-	if err := json.Unmarshal(registerResp.Body.Bytes(), &registerResult); err != nil {
-		t.Fatalf("decode register response: %v", err)
-	}
-	hubID, _ := registerResult["hub_id"].(string)
-	hubSecret, _ := registerResult["hub_secret"].(string)
-	if hubID == "" || hubSecret == "" {
-		t.Fatalf("unexpected register result: %+v", registerResult)
-	}
-
-	token := svc.mailer.lastConfirmURL[len("http://127.0.0.1:9388/hub-registration/confirm?token="):]
-	confirmReq := httptest.NewRequest(http.MethodGet, "/hub-registration/confirm?token="+token, nil)
-	confirmResp := httptest.NewRecorder()
-	svc.handler.ServeHTTP(confirmResp, confirmReq)
-	if confirmResp.Code != http.StatusOK {
-		t.Fatalf("confirm status = %d, body = %s", confirmResp.Code, confirmResp.Body.String())
-	}
-
-	heartbeatResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
-		"hub_secret": hubSecret,
-	}, "")
-	if heartbeatResp.Code != http.StatusOK {
-		t.Fatalf("heartbeat status = %d, body = %s", heartbeatResp.Code, heartbeatResp.Body.String())
-	}
+	})
 
 	resolveResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
 		"email": "owner@example.com",
@@ -273,6 +307,81 @@ func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 	}
 	if resolveResult.DefaultPWA == "" {
 		t.Fatalf("expected default pwa url, got %+v", resolveResult)
+	}
+	if resolveResult.DefaultHubID != registerResult["hub_id"] {
+		t.Fatalf("expected default hub %v, got %+v", registerResult["hub_id"], resolveResult)
+	}
+}
+
+func TestResolveHandlersRouteByCorporateEmailDomain(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	exactHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":             "owner-qx@example.com",
+		"name":                    "Qianxin Hub",
+		"base_url":                "https://qianxin.example.com",
+		"visibility":              "shared",
+		"enrollment_mode":         "approval",
+		"corporate_email_domain":  "rapidai.tech",
+		"corporate_email_domains": []string{"rapidai.tech", "subsidiary.example"},
+	})
+
+	defaultHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-default@example.com",
+		"name":            "Default Hub",
+		"base_url":        "https://default.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+
+	resolveExactResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
+		"email": "user@rapidai.tech",
+	}, "")
+	if resolveExactResp.Code != http.StatusOK {
+		t.Fatalf("resolve exact status = %d, body = %s", resolveExactResp.Code, resolveExactResp.Body.String())
+	}
+
+	var exactResult entry.ResolveResult
+	if err := json.Unmarshal(resolveExactResp.Body.Bytes(), &exactResult); err != nil {
+		t.Fatalf("decode exact resolve response: %v", err)
+	}
+	if exactResult.DefaultHubID != exactHub["hub_id"] {
+		t.Fatalf("expected qianxin hub %v, got %+v", exactHub["hub_id"], exactResult)
+	}
+	if len(exactResult.Hubs) != 1 || exactResult.Hubs[0].CorporateEmailDomain != "rapidai.tech" {
+		t.Fatalf("expected exact corporate route, got %+v", exactResult.Hubs)
+	}
+
+	resolveExtraResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
+		"email": "user@subsidiary.example",
+	}, "")
+	if resolveExtraResp.Code != http.StatusOK {
+		t.Fatalf("resolve extra status = %d, body = %s", resolveExtraResp.Code, resolveExtraResp.Body.String())
+	}
+	var extraResult entry.ResolveResult
+	if err := json.Unmarshal(resolveExtraResp.Body.Bytes(), &extraResult); err != nil {
+		t.Fatalf("decode extra resolve response: %v", err)
+	}
+	if extraResult.DefaultHubID != exactHub["hub_id"] || len(extraResult.Hubs) != 1 || extraResult.Hubs[0].CorporateEmailDomain != "subsidiary.example" {
+		t.Fatalf("expected extra corporate route, got %+v", extraResult)
+	}
+
+	resolveDefaultResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
+		"email": "user@other.com",
+	}, "")
+	if resolveDefaultResp.Code != http.StatusOK {
+		t.Fatalf("resolve default status = %d, body = %s", resolveDefaultResp.Code, resolveDefaultResp.Body.String())
+	}
+
+	var defaultResult entry.ResolveResult
+	if err := json.Unmarshal(resolveDefaultResp.Body.Bytes(), &defaultResult); err != nil {
+		t.Fatalf("decode default resolve response: %v", err)
+	}
+	if defaultResult.DefaultHubID != defaultHub["hub_id"] {
+		t.Fatalf("expected catch-all hub %v, got %+v", defaultHub["hub_id"], defaultResult)
+	}
+	if len(defaultResult.Hubs) != 1 || defaultResult.Hubs[0].CorporateEmailDomain != "" {
+		t.Fatalf("expected catch-all route without corporate domain, got %+v", defaultResult.Hubs)
 	}
 }
 
@@ -527,6 +636,65 @@ func TestManagementHandlersBlockEmailAndDisableHub(t *testing.T) {
 	}
 }
 
+func TestListFailureLogsHandlerReturnsFilteredLogs(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	now := time.Date(2026, 4, 25, 9, 0, 0, 0, time.UTC)
+	for _, item := range []*store.FailureEventLog{
+		{
+			ID:          "center_fail_register_1",
+			Category:    "registration",
+			EventCode:   "HUB_REGISTER_VALIDATE_FAILED",
+			Message:     "hub registration validation failed",
+			EntityID:    "hub_rapidai",
+			Email:       "owner@rapidai.tech",
+			ClientIP:    "172.16.0.10",
+			DetailsJSON: `{"field":"base_url","reason":"missing"}`,
+			CreatedAt:   now,
+		},
+		{
+			ID:          "center_fail_ha_1",
+			Category:    "ha",
+			EventCode:   "HA_APPLY_FAILED",
+			Message:     "ha apply failed",
+			EntityID:    "peer_1",
+			ClientIP:    "172.16.0.11",
+			DetailsJSON: `{"peer":"node-b"}`,
+			CreatedAt:   now.Add(time.Minute),
+		},
+	} {
+		if err := svc.store.FailureLogs.Create(context.Background(), item); err != nil {
+			t.Fatalf("create failure log %s: %v", item.ID, err)
+		}
+	}
+
+	resp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/failure-logs?category=registration&keyword=rapidai&limit=5&offset=0", nil, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	body := resp.Body.String()
+	for _, want := range []string{
+		`"total":1`,
+		`"event_code":"HUB_REGISTER_VALIDATE_FAILED"`,
+		`"email":"owner@rapidai.tech"`,
+		`"field":"base_url"`,
+		`"reason":"missing"`,
+		`"created_at":"2026-04-25T09:00:00Z"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected body to contain %s, body=%s", want, body)
+		}
+	}
+	if strings.Contains(body, "HA_APPLY_FAILED") {
+		t.Fatalf("expected filtered response to exclude ha log, body=%s", body)
+	}
+	if strings.Contains(body, `"details_json"`) {
+		t.Fatalf("expected decoded details payload, body=%s", body)
+	}
+}
+
 func TestDeleteHubHandlerRemovesHubAndHeartbeatBecomesUnregistered(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 	token := issueAdminToken(t, svc)
@@ -648,6 +816,50 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	}
 }
 
+func TestAdminRoutingDiagnosticsHandlerReturnsSnapshotAndMigrationState(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":            "owner-routing@example.com",
+		"name":                   "RapidAI Hub",
+		"base_url":               "https://rapidai.example.com",
+		"visibility":             "shared",
+		"enrollment_mode":        "approval",
+		"corporate_email_domain": "rapidai.tech",
+	})
+	registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-default@example.com",
+		"name":            "Default Hub",
+		"base_url":        "https://default.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	if err := svc.entry.Rebuild(context.Background()); err != nil {
+		t.Fatalf("rebuild snapshot: %v", err)
+	}
+
+	resp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/routing/diagnostics", nil, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	body := resp.Body.String()
+	for _, want := range []string{
+		`"domain_routes":1`,
+		`"public_hubs":1`,
+		`"total":2`,
+		`"online":2`,
+		`"legacy_domain_hubs":1`,
+		`"enabled_domain_routes":1`,
+		`"legacy_domain_backfill_pending":0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected body to contain %s, body=%s", want, body)
+		}
+	}
+}
+
 func TestAdminStaticRouteServesIndexAndAssets(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("center-admin"), 0644); err != nil {
@@ -675,6 +887,28 @@ func TestAdminStaticRouteServesIndexAndAssets(t *testing.T) {
 	}
 }
 
+func TestHubCenterAdminPageIncludesFailureLogsUI(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "index.html"))
+	if err != nil {
+		t.Fatalf("read admin index: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		`data-tab="failurelogs"`,
+		`id="tab-failurelogs"`,
+		`loadFailureLogs`,
+		`/api/admin/failure-logs`,
+		`routingDiagnosticsTitle`,
+		`id="routingDiagnosticsGrid"`,
+		`loadRoutingDiagnostics`,
+		`/api/admin/routing/diagnostics`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("admin index missing %s", want)
+		}
+	}
+}
+
 func TestHealthRoute(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 
@@ -684,5 +918,45 @@ func TestHealthRoute(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAdminRouteQueryByDomainReturnsOnlyExactMatches(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	exactHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":            "owner-qx@example.com",
+		"name":                   "Qianxin Hub",
+		"base_url":               "https://qianxin.example.com",
+		"visibility":             "shared",
+		"enrollment_mode":        "approval",
+		"corporate_email_domain": "qianxin.com",
+	})
+	registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-default@example.com",
+		"name":            "Default Hub",
+		"base_url":        "https://default.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/query", map[string]any{
+		"query":      "qianxin.com",
+		"query_type": "domain",
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("query status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+
+	var result entry.ResolveResult
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+	if result.DefaultHubID != exactHub["hub_id"] {
+		t.Fatalf("expected exact hub %v, got %+v", exactHub["hub_id"], result)
+	}
+	if len(result.Hubs) != 1 || result.Hubs[0].CorporateEmailDomain != "qianxin.com" {
+		t.Fatalf("expected exact domain route only, got %+v", result.Hubs)
 	}
 }

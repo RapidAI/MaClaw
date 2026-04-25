@@ -14,6 +14,62 @@ import (
 	"sync"
 )
 
+// TaskOrchestratorRegistry provides per-user orchestrator isolation.
+// In maclawsrv (multi-tenant), each user gets their own orchestrator
+// instance so concurrent coding workflows don't interfere. In GUI/TUI
+// (single-user), there's effectively only one entry.
+type TaskOrchestratorRegistry struct {
+	mu              sync.RWMutex
+	orchestrators   map[string]*TaskExecutionOrchestrator // userID → orchestrator
+	externalChecker ExternalToolChecker                   // shared across all orchestrators
+}
+
+// NewTaskOrchestratorRegistry creates a new registry.
+func NewTaskOrchestratorRegistry() *TaskOrchestratorRegistry {
+	return &TaskOrchestratorRegistry{
+		orchestrators: make(map[string]*TaskExecutionOrchestrator),
+	}
+}
+
+// SetExternalChecker sets the external tool checker for all orchestrators.
+func (r *TaskOrchestratorRegistry) SetExternalChecker(checker ExternalToolChecker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.externalChecker = checker
+	// Update existing orchestrators.
+	for _, o := range r.orchestrators {
+		o.ExternalChecker = checker
+	}
+}
+
+// Get returns the orchestrator for the given user, or nil if none exists.
+func (r *TaskOrchestratorRegistry) Get(userID string) *TaskExecutionOrchestrator {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.orchestrators[userID]
+}
+
+// GetOrCreate returns the orchestrator for the given user, creating one
+// if it doesn't exist yet.
+func (r *TaskOrchestratorRegistry) GetOrCreate(userID string) *TaskExecutionOrchestrator {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if o, ok := r.orchestrators[userID]; ok {
+		return o
+	}
+	o := NewTaskExecutionOrchestrator()
+	o.ExternalChecker = r.externalChecker
+	r.orchestrators[userID] = o
+	return o
+}
+
+// Remove removes the orchestrator for the given user.
+func (r *TaskOrchestratorRegistry) Remove(userID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.orchestrators, userID)
+}
+
 // TaskExecStatus represents the execution status of a single task.
 type TaskExecStatus string
 
@@ -42,6 +98,7 @@ type TaskItem struct {
 	Title              string
 	Description        string
 	Files              []string // expected files to create/modify
+	ActualFiles        []string // files actually modified during execution (populated by SubAgent)
 	AcceptanceCriteria []string // TDD test criteria
 	DependsOn          []int    // indices of prerequisite tasks
 	Status             TaskExecStatus
@@ -573,6 +630,19 @@ func (o *TaskExecutionOrchestrator) ProgressSummary() string {
 		b.WriteString(fmt.Sprintf(", %d 失败", failed))
 	}
 	return b.String()
+}
+
+// HasPassedTasks returns true if at least one task has passed.
+// Used to determine whether the integration phase should run.
+func (o *TaskExecutionOrchestrator) HasPassedTasks() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, t := range o.Tasks {
+		if t.Status == TaskExecPassed {
+			return true
+		}
+	}
+	return false
 }
 
 // FinalReport generates the verification report after all tasks are done.

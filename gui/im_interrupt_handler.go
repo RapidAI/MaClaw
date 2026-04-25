@@ -95,9 +95,8 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		}
 	}
 
-	// Domain match: use L1 keyword classification on both the current task
-	// and the new message. This is the same classifyTaskIntent used by
-	// CodingToolGate — zero latency, no LLM call.
+	// Domain match: use classifyTaskIntent (delegates to UIC when available)
+	// on both the current task and the new message.
 	domainMatch := false
 	if tracker != nil {
 		taskIntent := tracker.Buffer().TaskIntent()

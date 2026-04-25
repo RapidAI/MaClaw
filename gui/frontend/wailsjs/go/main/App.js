@@ -599,6 +599,10 @@ export function RateHubSkill(arg1, arg2) {
   return window['go']['main']['App']['RateHubSkill'](arg1, arg2);
 }
 
+export function GetHubRecommendations() {
+  return window['go']['main']['App']['GetHubRecommendations']();
+}
+
 // Memory management bindings
 export function ListMemories(arg1, arg2) {
   return window['go']['main']['App']['ListMemories'](arg1, arg2);

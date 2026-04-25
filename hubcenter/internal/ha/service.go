@@ -2,6 +2,7 @@ package ha
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,27 +13,40 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
 const (
-	EntityBlockedEmail = "blocked_email"
-	EntityBlockedIP    = "blocked_ip"
-	EntityNewsArticle  = "news_article"
-	EntityHubInstance  = "hub_instance"
-	EntityHubUserLink  = "hub_user_link"
+	EntityBlockedEmail        = "blocked_email"
+	EntityBlockedIP           = "blocked_ip"
+	EntityNewsArticle         = "news_article"
+	EntityHubInstance         = "hub_instance"
+	EntityHubDomainRoute      = "hub_domain_route"
+	EntityHubUserLink         = "hub_user_link"
+	EntitySystemSetting       = "system_setting"
+	EntityGossipSnapshot      = "gossip_snapshot"
+	EntitySkillHubSnapshot    = "skillhub_snapshot"
+	EntitySkillMarketSnapshot = "skillmarket_snapshot"
 
 	OpUpsert = "upsert"
 	OpDelete = "delete"
 )
+
+var opIDCounter uint64
 
 type Service struct {
 	nodeID        string
 	nodeName      string
 	advertiseURL  string
 	clusterSecret string
+	privateKey    *rsa.PrivateKey
+	publicKeyPEM  string
 
 	ops                      store.HASyncOpRepository
 	cursors                  store.HAPeerCursorRepository
@@ -41,18 +55,48 @@ type Service struct {
 	blockedIPs               store.BlockedIPRepository
 	news                     store.NewsRepository
 	hubs                     store.HubRepository
+	routes                   store.HubDomainRouteRepository
 	links                    store.HubUserLinkRepository
+	settings                 store.SystemSettingsRepository
+	gossip                   store.GossipRepository
+	skillStore               *skill.SkillStore
+	skillMarket              *skillmarket.Store
 	heartbeatSync            store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval time.Duration
 
-	mu     sync.RWMutex
-	opMu   sync.Mutex
-	peers  map[string]*PeerRuntimeState
-	client *http.Client
+	mu             sync.RWMutex
+	opMu           sync.Mutex
+	peers          map[string]*PeerRuntimeState
+	peerPublicKeys map[string]*rsa.PublicKey
+	client         *http.Client
+	refresher      interface{ Rebuild(context.Context) error }
+	recorder       *diagnostics.FailureEventRecorder
+}
+
+func (s *Service) SetFailureEventRecorder(recorder *diagnostics.FailureEventRecorder) {
+	s.recorder = recorder
+}
+
+func (s *Service) recordFailure(ctx context.Context, category, eventCode, message, entityID string, details map[string]any) {
+	if s == nil || s.recorder == nil {
+		return
+	}
+	s.recorder.Record(ctx, diagnostics.FailureEventInput{
+		Category:  category,
+		EventCode: eventCode,
+		Message:   message,
+		EntityID:  entityID,
+		Details:   details,
+	})
+}
+
+type localOpAppender interface {
+	AppendLocalWithVersion(ctx context.Context, op *store.HASyncOp) (int64, error)
 }
 
 func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []StaticPeer) *Service {
 	peerMap := make(map[string]*PeerRuntimeState, len(peers))
+	peerKeys := make(map[string]*rsa.PublicKey, len(peers))
 	for _, peer := range peers {
 		id := strings.TrimSpace(peer.NodeID)
 		if id == "" {
@@ -62,8 +106,12 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 			NodeID:        id,
 			NodeName:      strings.TrimSpace(peer.NodeName),
 			BaseURL:       strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/"),
+			PublicKeyPEM:  strings.TrimSpace(peer.PublicKeyPEM),
 			ServiceStatus: "unknown",
 			ClusterStatus: "unknown",
+		}
+		if pub, err := parseRSAPublicKeyPEM(peer.PublicKeyPEM); err == nil && pub != nil {
+			peerKeys[id] = pub
 		}
 	}
 
@@ -73,7 +121,8 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 		advertiseURL:             strings.TrimRight(strings.TrimSpace(advertiseURL), "/"),
 		clusterSecret:            strings.TrimSpace(clusterSecret),
 		peers:                    peerMap,
-		client:                   &http.Client{Timeout: 2 * time.Second},
+		peerPublicKeys:           peerKeys,
+		client:                   &http.Client{Timeout: 8 * time.Second},
 		heartbeatSyncMinInterval: 10 * time.Second,
 	}
 }
@@ -89,10 +138,33 @@ func (s *Service) AttachStore(st *store.Store) {
 	s.blockedIPs = st.BlockedIPs
 	s.news = st.News
 	s.hubs = st.Hubs
+	s.routes = st.HubDomainRoutes
 	s.links = st.HubUserLinks
+	s.settings = st.System
+	s.gossip = st.Gossip
 	s.heartbeatSync = st.HAHeartbeatSync
 }
 
+func (s *Service) AttachSkillStore(ss *skill.SkillStore) {
+	if s == nil {
+		return
+	}
+	s.skillStore = ss
+}
+
+func (s *Service) AttachSkillMarket(sm *skillmarket.Store) {
+	if s == nil {
+		return
+	}
+	s.skillMarket = sm
+}
+
+func (s *Service) SetRouteSnapshotRefresher(refresher interface{ Rebuild(context.Context) error }) {
+	if s == nil {
+		return
+	}
+	s.refresher = refresher
+}
 func (s *Service) NodeID() string {
 	if s == nil {
 		return ""
@@ -115,6 +187,71 @@ func (s *Service) ClusterSecret() string {
 		return ""
 	}
 	return s.clusterSecret
+}
+
+func (s *Service) SetNodeKeyMaterial(material *NodeKeyMaterial) {
+	if s == nil || material == nil {
+		return
+	}
+	s.privateKey = material.PrivateKey
+	s.publicKeyPEM = strings.TrimSpace(material.PublicKeyPEM)
+	if s.publicKeyPEM == "" && material.PrivateKey != nil {
+		s.publicKeyPEM = encodeRSAPublicKeyPEM(&material.PrivateKey.PublicKey)
+	}
+}
+
+func (s *Service) PublicKeyPEM() string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.publicKeyPEM)
+}
+
+func (s *Service) SignPeerRequest(req *http.Request) error {
+	if s == nil || req == nil || s.privateKey == nil {
+		return nil
+	}
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	canonical := requestCanonicalPayload(req, s.nodeID, timestamp)
+	signature, err := signHACanonicalRequest(s.privateKey, canonical)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(haHeaderNodeID, s.nodeID)
+	req.Header.Set(haHeaderTimestamp, timestamp)
+	req.Header.Set(haHeaderSignature, signature)
+	return nil
+}
+
+func (s *Service) AuthenticatePeerRequest(r *http.Request) error {
+	if s == nil {
+		return nil
+	}
+	if secret := strings.TrimSpace(s.clusterSecret); secret != "" {
+		if got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); got != secret {
+			return fmt.Errorf("invalid cluster secret")
+		}
+	}
+	nodeID := strings.TrimSpace(r.Header.Get(haHeaderNodeID))
+	timestamp := strings.TrimSpace(r.Header.Get(haHeaderTimestamp))
+	signature := strings.TrimSpace(r.Header.Get(haHeaderSignature))
+	if nodeID == "" || timestamp == "" || signature == "" {
+		if len(s.peerPublicKeys) == 0 {
+			return nil
+		}
+		return fmt.Errorf("missing ha signature headers")
+	}
+	if err := timestampWithinHABounds(timestamp, time.Now().UTC(), 5*time.Minute); err != nil {
+		return err
+	}
+	pub := s.peerPublicKeys[nodeID]
+	if pub == nil {
+		if len(s.peerPublicKeys) == 0 {
+			return nil
+		}
+		return fmt.Errorf("unknown peer public key for node %s", nodeID)
+	}
+	return verifyHACanonicalRequest(pub, requestCanonicalPayload(r, nodeID, timestamp), signature)
 }
 
 func (s *Service) listPeerStates() []*PeerRuntimeState {
@@ -274,6 +411,174 @@ func (s *Service) ListClientEndpoints(ctx context.Context) (*EndpointsView, erro
 	return &EndpointsView{OK: true, Nodes: nodes, TTLSeconds: 60, ServerTime: time.Now().UTC()}, nil
 }
 
+type adminSyncCategorySpec struct {
+	Key         string
+	Label       string
+	EntityTypes map[string]struct{}
+}
+
+type adminSyncCategoryState struct {
+	Spec      adminSyncCategorySpec
+	LastOpSeq int64
+	LastOpAt  *time.Time
+}
+
+func adminSyncCategorySpecs() []adminSyncCategorySpec {
+	return []adminSyncCategorySpec{
+		{Key: "routing", Label: "Hub Routing", EntityTypes: map[string]struct{}{EntityHubDomainRoute: {}, EntityHubInstance: {}, EntityHubUserLink: {}}},
+		{Key: "system", Label: "System Settings", EntityTypes: map[string]struct{}{EntitySystemSetting: {}, EntityBlockedEmail: {}, EntityBlockedIP: {}}},
+		{Key: "gossip", Label: "Gossip Wall", EntityTypes: map[string]struct{}{EntityGossipSnapshot: {}}},
+		{Key: "skillhub", Label: "Skill Library", EntityTypes: map[string]struct{}{EntitySkillHubSnapshot: {}}},
+		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}}},
+		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
+	}
+}
+
+func countSkillMarketSnapshotRecords(snap *skillmarket.Snapshot) int64 {
+	if snap == nil {
+		return 0
+	}
+	return int64(len(snap.Users) + len(snap.Transactions) + len(snap.Submissions) + len(snap.Purchases) + len(snap.Ratings) + len(snap.Configs) + len(snap.Tiers) + len(snap.AuthTokens) + len(snap.Sessions) + len(snap.APIKeys) + len(snap.PendingKeyOrders) + len(snap.NotificationSequences))
+}
+
+func (s *Service) localSyncRecordCounts(ctx context.Context) map[string]int64 {
+	counts := map[string]int64{}
+	if s == nil {
+		return counts
+	}
+	if s.hubs != nil {
+		if items, err := s.hubs.ListAll(ctx); err == nil {
+			counts["routing"] += int64(len(items))
+		}
+	}
+	if s.routes != nil {
+		if items, err := s.routes.ListAll(ctx); err == nil {
+			counts["routing"] += int64(len(items))
+		}
+	}
+	if s.links != nil {
+		if items, err := s.links.ListAll(ctx); err == nil {
+			counts["routing"] += int64(len(items))
+		}
+	}
+	if s.blockedEmails != nil {
+		if items, err := s.blockedEmails.List(ctx); err == nil {
+			counts["system"] += int64(len(items))
+		}
+	}
+	if s.blockedIPs != nil {
+		if items, err := s.blockedIPs.List(ctx); err == nil {
+			counts["system"] += int64(len(items))
+		}
+	}
+	if s.gossip != nil {
+		if posts, total, err := s.gossip.ListAllPosts(ctx, 0, 1); err == nil {
+			if total > 0 {
+				counts["gossip"] += int64(total)
+			} else {
+				counts["gossip"] += int64(len(posts))
+			}
+		}
+	}
+	if s.skillStore != nil {
+		if snap, err := s.skillStore.DumpSnapshot(); err == nil {
+			counts["skillhub"] += int64(len(snap.Skills))
+		}
+	}
+	if s.skillMarket != nil {
+		if snap, err := s.skillMarket.DumpSnapshot(ctx); err == nil {
+			counts["skillmarket"] += countSkillMarketSnapshotRecords(snap)
+		}
+	}
+	if s.news != nil {
+		if _, total, err := s.news.List(ctx, 0, 1); err == nil {
+			counts["news"] += int64(total)
+		}
+	}
+	return counts
+}
+
+func buildAdminSyncDetails(ops []*store.HASyncOp, peers []AdminPeerView, localCounts map[string]int64) []AdminSyncCategoryView {
+	states := make([]adminSyncCategoryState, 0, len(adminSyncCategorySpecs()))
+	for _, spec := range adminSyncCategorySpecs() {
+		states = append(states, adminSyncCategoryState{Spec: spec})
+	}
+	for _, op := range ops {
+		if op == nil {
+			continue
+		}
+		for i := range states {
+			if _, ok := states[i].Spec.EntityTypes[op.EntityType]; !ok {
+				continue
+			}
+			if op.Seq > states[i].LastOpSeq {
+				states[i].LastOpSeq = op.Seq
+				t := op.OccurredAt
+				states[i].LastOpAt = &t
+			}
+		}
+	}
+
+	views := make([]AdminSyncCategoryView, 0, len(states))
+	for _, state := range states {
+		item := AdminSyncCategoryView{
+			Key:          state.Spec.Key,
+			Label:        state.Spec.Label,
+			Status:       "idle",
+			LocalRecords: localCounts[state.Spec.Key],
+			LastOpSeq:    state.LastOpSeq,
+			LastOpAt:     state.LastOpAt,
+			Peers:        make([]AdminSyncCategoryPeerView, 0, len(peers)),
+		}
+		for _, peer := range peers {
+			pending := int64(0)
+			if state.LastOpSeq > peer.CursorLastPulledSeq {
+				pending = state.LastOpSeq - peer.CursorLastPulledSeq
+			}
+			if pending > 0 {
+				item.PendingPeers++
+				item.PendingOps += pending
+			}
+			status := "synced"
+			if state.LastOpSeq == 0 {
+				if item.LocalRecords > 0 {
+					status = "needs_seed"
+				} else {
+					status = "idle"
+				}
+			} else if strings.TrimSpace(peer.LastError) != "" {
+				status = "error"
+				item.ErrorPeers++
+			} else if pending > 0 {
+				status = "pending"
+			}
+			item.Peers = append(item.Peers, AdminSyncCategoryPeerView{
+				NodeID:              peer.NodeID,
+				NodeName:            peer.NodeName,
+				Status:              status,
+				PendingOps:          pending,
+				CursorLastPulledSeq: peer.CursorLastPulledSeq,
+				CursorLastSuccessAt: peer.CursorLastSuccessAt,
+				LastError:           peer.LastError,
+			})
+		}
+		switch {
+		case state.LastOpSeq == 0 && item.LocalRecords > 0:
+			item.Status = "needs_seed"
+		case state.LastOpSeq == 0:
+			item.Status = "idle"
+		case item.ErrorPeers > 0:
+			item.Status = "error"
+		case item.PendingPeers > 0:
+			item.Status = "syncing"
+		default:
+			item.Status = "healthy"
+		}
+		views = append(views, item)
+	}
+	return views
+}
+
 func (s *Service) GetAdminStatus(ctx context.Context) (*AdminStatusView, error) {
 	if s == nil {
 		return &AdminStatusView{Enabled: false, GeneratedAt: time.Now().UTC()}, nil
@@ -285,8 +590,13 @@ func (s *Service) GetAdminStatus(ctx context.Context) (*AdminStatusView, error) 
 	}
 
 	maxSeq := int64(0)
+	var ops []*store.HASyncOp
 	if s.ops != nil {
 		maxSeq, err = s.ops.GetMaxSeq(ctx)
+		if err != nil {
+			return nil, err
+		}
+		ops, err = s.ops.ListAfterSeq(ctx, 0, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -352,6 +662,7 @@ func (s *Service) GetAdminStatus(ctx context.Context) (*AdminStatusView, error) 
 		}
 		view.Peers = append(view.Peers, item)
 	}
+	view.Sync.Details = buildAdminSyncDetails(ops, view.Peers, s.localSyncRecordCounts(ctx))
 
 	return view, nil
 }
@@ -368,6 +679,50 @@ func (s *Service) MaxOpSeq(ctx context.Context) (int64, error) {
 		return 0, errors.New("ha sync store not configured")
 	}
 	return s.ops.GetMaxSeq(ctx)
+}
+
+func (s *Service) HasEntityVersion(ctx context.Context, entityType, entityID string) (bool, error) {
+	if s == nil || s.versions == nil {
+		return false, nil
+	}
+	item, err := s.versions.Get(ctx, entityType, entityID)
+	if err != nil {
+		return false, err
+	}
+	return item != nil, nil
+}
+
+func (s *Service) HasEntityTypeOps(ctx context.Context, entityTypes ...string) (bool, error) {
+	if s == nil || s.ops == nil {
+		return false, nil
+	}
+	if len(entityTypes) == 0 {
+		return false, nil
+	}
+	want := make(map[string]struct{}, len(entityTypes))
+	for _, entityType := range entityTypes {
+		entityType = strings.TrimSpace(entityType)
+		if entityType == "" {
+			continue
+		}
+		want[entityType] = struct{}{}
+	}
+	if len(want) == 0 {
+		return false, nil
+	}
+	ops, err := s.ops.ListAfterSeq(ctx, 0, 0)
+	if err != nil {
+		return false, err
+	}
+	for _, op := range ops {
+		if op == nil {
+			continue
+		}
+		if _, ok := want[op.EntityType]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) AppendUpsert(ctx context.Context, entityType, entityID string, payload any, updatedAt time.Time) error {
@@ -388,19 +743,27 @@ func (s *Service) appendOp(ctx context.Context, entityType, entityID, opType str
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
-	// Serialize local version allocation and oplog append so concurrent writers on
-	// the same node cannot emit duplicate entity versions for the same record.
+	payloadJSON, payloadHash, err := marshalPayload(payload)
+	if err != nil {
+		return err
+	}
+	op := &store.HASyncOp{OpID: newOpID(s.nodeID, entityType, entityID, updatedAt), SourceNodeID: s.nodeID, EntityType: entityType, EntityID: entityID, OpType: opType, OccurredAt: updatedAt, PayloadJSON: payloadJSON, PayloadHash: payloadHash}
+	if appender, ok := s.ops.(localOpAppender); ok {
+		_, err := appender.AppendLocalWithVersion(ctx, op)
+		return err
+	}
+
+	// Fallback for tests or alternate store backends that have not implemented
+	// atomic local append yet. The mutex still prevents duplicate local versions
+	// within this process.
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	version, err := s.nextEntityVersion(ctx, entityType, entityID, updatedAt)
 	if err != nil {
 		return err
 	}
-	payloadJSON, payloadHash, err := marshalPayload(payload)
-	if err != nil {
-		return err
-	}
-	return s.ops.Append(ctx, &store.HASyncOp{OpID: newOpID(s.nodeID, updatedAt), SourceNodeID: s.nodeID, EntityType: entityType, EntityID: entityID, OpType: opType, EntityVersion: version, OccurredAt: updatedAt, PayloadJSON: payloadJSON, PayloadHash: payloadHash})
+	op.EntityVersion = version
+	return s.ops.Append(ctx, op)
 }
 
 func (s *Service) nextEntityVersion(ctx context.Context, entityType, entityID string, updatedAt time.Time) (int64, error) {
@@ -448,6 +811,9 @@ func (s *Service) ApplyRemoteOp(ctx context.Context, op *store.HASyncOp) error {
 	if err := s.applyEntityOp(ctx, op); err != nil {
 		return err
 	}
+	if s.refresher != nil {
+		_ = s.refresher.Rebuild(ctx)
+	}
 	if err := s.versions.Upsert(ctx, &store.HAEntityVersion{EntityType: op.EntityType, EntityID: op.EntityID, Version: op.EntityVersion, UpdatedAt: op.OccurredAt, UpdatedByNodeID: op.SourceNodeID}); err != nil {
 		return err
 	}
@@ -480,8 +846,18 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyNewsArticleOp(ctx, op)
 	case EntityHubInstance:
 		return s.applyHubInstanceOp(ctx, op)
+	case EntityHubDomainRoute:
+		return s.applyHubDomainRouteOp(ctx, op)
 	case EntityHubUserLink:
 		return s.applyHubUserLinkOp(ctx, op)
+	case EntitySystemSetting:
+		return s.applySystemSettingOp(ctx, op)
+	case EntityGossipSnapshot:
+		return s.applyGossipSnapshotOp(ctx, op)
+	case EntitySkillHubSnapshot:
+		return s.applySkillHubSnapshotOp(ctx, op)
+	case EntitySkillMarketSnapshot:
+		return s.applySkillMarketSnapshotOp(ctx, op)
 	default:
 		return fmt.Errorf("unsupported entity type: %s", op.EntityType)
 	}
@@ -635,21 +1011,96 @@ func (s *Service) applyHubUserLinkOp(ctx context.Context, op *store.HASyncOp) er
 		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
 			return err
 		}
-		if err := s.links.DeleteByHubID(ctx, item.HubID); err != nil {
-			return err
-		}
-		return s.links.Create(ctx, &item)
+		return s.links.Upsert(ctx, &item)
 	case OpDelete:
 		var payload struct {
-			HubID string `json:"hub_id"`
+			ID string `json:"id"`
 		}
 		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
 			return err
 		}
-		return s.links.DeleteByHubID(ctx, payload.HubID)
+		return s.links.DeleteByID(ctx, payload.ID)
 	default:
 		return fmt.Errorf("unsupported hub user link op: %s", op.OpType)
 	}
+}
+
+func (s *Service) applyHubDomainRouteOp(ctx context.Context, op *store.HASyncOp) error {
+	if s.routes == nil {
+		return nil
+	}
+	switch op.OpType {
+	case OpUpsert:
+		var item store.HubDomainRoute
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
+			return err
+		}
+		return s.routes.Upsert(ctx, &item)
+	case OpDelete:
+		var payload struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return err
+		}
+		return s.routes.DeleteByID(ctx, payload.ID)
+	default:
+		return fmt.Errorf("unsupported hub domain route op: %s", op.OpType)
+	}
+}
+
+type systemSettingPayload struct {
+	Key       string `json:"key"`
+	ValueJSON string `json:"value_json"`
+}
+
+type GossipSnapshot struct {
+	Posts    []*store.GossipPost    `json:"posts"`
+	Comments []*store.GossipComment `json:"comments"`
+}
+
+func (s *Service) applySystemSettingOp(ctx context.Context, op *store.HASyncOp) error {
+	if s.settings == nil || op.OpType != OpUpsert {
+		return nil
+	}
+	var payload systemSettingPayload
+	if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+		return err
+	}
+	return s.settings.Set(ctx, payload.Key, payload.ValueJSON)
+}
+
+func (s *Service) applyGossipSnapshotOp(ctx context.Context, op *store.HASyncOp) error {
+	if s.gossip == nil || op.OpType != OpUpsert {
+		return nil
+	}
+	var snap GossipSnapshot
+	if err := json.Unmarshal([]byte(op.PayloadJSON), &snap); err != nil {
+		return err
+	}
+	return s.gossip.ReplaceAll(ctx, snap.Posts, snap.Comments)
+}
+
+func (s *Service) applySkillHubSnapshotOp(ctx context.Context, op *store.HASyncOp) error {
+	if s.skillStore == nil || op.OpType != OpUpsert {
+		return nil
+	}
+	var snap skill.Snapshot
+	if err := json.Unmarshal([]byte(op.PayloadJSON), &snap); err != nil {
+		return err
+	}
+	return s.skillStore.LoadSnapshot(&snap)
+}
+
+func (s *Service) applySkillMarketSnapshotOp(ctx context.Context, op *store.HASyncOp) error {
+	if s.skillMarket == nil || op.OpType != OpUpsert {
+		return nil
+	}
+	var snap skillmarket.Snapshot
+	if err := json.Unmarshal([]byte(op.PayloadJSON), &snap); err != nil {
+		return err
+	}
+	return s.skillMarket.LoadSnapshot(ctx, &snap)
 }
 
 func (s *Service) markApplied(ctx context.Context, op *store.HASyncOp) error {
@@ -662,12 +1113,14 @@ func (s *Service) AppendBlockedEmail(ctx context.Context, item *store.BlockedEma
 	}
 	if err := s.AppendUpsert(ctx, EntityBlockedEmail, item.Email, item, item.UpdatedAt); err != nil {
 		log.Printf("[hubcenter][ha] append blocked email: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_blocked_email_failed", err.Error(), item.Email, nil)
 	}
 }
 
 func (s *Service) DeleteBlockedEmail(ctx context.Context, email string) {
 	if err := s.AppendDelete(ctx, EntityBlockedEmail, email, map[string]string{"email": email}, time.Now().UTC()); err != nil {
 		log.Printf("[hubcenter][ha] delete blocked email: %v", err)
+		s.recordFailure(ctx, "ha_sync", "delete_blocked_email_failed", err.Error(), email, nil)
 	}
 }
 
@@ -677,12 +1130,14 @@ func (s *Service) AppendBlockedIP(ctx context.Context, item *store.BlockedIP) {
 	}
 	if err := s.AppendUpsert(ctx, EntityBlockedIP, item.IP, item, item.UpdatedAt); err != nil {
 		log.Printf("[hubcenter][ha] append blocked ip: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_blocked_ip_failed", err.Error(), item.IP, nil)
 	}
 }
 
 func (s *Service) DeleteBlockedIP(ctx context.Context, ip string) {
 	if err := s.AppendDelete(ctx, EntityBlockedIP, ip, map[string]string{"ip": ip}, time.Now().UTC()); err != nil {
 		log.Printf("[hubcenter][ha] delete blocked ip: %v", err)
+		s.recordFailure(ctx, "ha_sync", "delete_blocked_ip_failed", err.Error(), ip, nil)
 	}
 }
 
@@ -707,12 +1162,14 @@ func (s *Service) AppendHubInstance(ctx context.Context, item *store.HubInstance
 	}
 	if err := s.AppendUpsert(ctx, EntityHubInstance, item.ID, item, item.UpdatedAt); err != nil {
 		log.Printf("[hubcenter][ha] append hub instance: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_hub_instance_failed", err.Error(), item.ID, nil)
 	}
 }
 
 func (s *Service) DeleteHubInstance(ctx context.Context, hubID string) {
 	if err := s.AppendDelete(ctx, EntityHubInstance, hubID, map[string]string{"id": hubID}, time.Now().UTC()); err != nil {
 		log.Printf("[hubcenter][ha] delete hub instance: %v", err)
+		s.recordFailure(ctx, "ha_sync", "delete_hub_instance_failed", err.Error(), hubID, nil)
 	}
 }
 
@@ -720,14 +1177,69 @@ func (s *Service) AppendHubUserLink(ctx context.Context, item *store.HubUserLink
 	if item == nil {
 		return
 	}
-	if err := s.AppendUpsert(ctx, EntityHubUserLink, item.HubID, item, item.UpdatedAt); err != nil {
+	if err := s.AppendUpsert(ctx, EntityHubUserLink, item.ID, item, item.UpdatedAt); err != nil {
 		log.Printf("[hubcenter][ha] append hub user link: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_hub_user_link_failed", err.Error(), item.ID, nil)
 	}
 }
 
-func (s *Service) DeleteHubUserLink(ctx context.Context, hubID string) {
-	if err := s.AppendDelete(ctx, EntityHubUserLink, hubID, map[string]string{"hub_id": hubID}, time.Now().UTC()); err != nil {
+func (s *Service) DeleteHubUserLink(ctx context.Context, linkID string) {
+	if err := s.AppendDelete(ctx, EntityHubUserLink, linkID, map[string]string{"id": linkID}, time.Now().UTC()); err != nil {
 		log.Printf("[hubcenter][ha] delete hub user link: %v", err)
+		s.recordFailure(ctx, "ha_sync", "delete_hub_user_link_failed", err.Error(), linkID, nil)
+	}
+}
+
+func (s *Service) AppendHubDomainRoute(ctx context.Context, item *store.HubDomainRoute) {
+	if item == nil {
+		return
+	}
+	if err := s.AppendUpsert(ctx, EntityHubDomainRoute, item.ID, item, item.UpdatedAt); err != nil {
+		log.Printf("[hubcenter][ha] append hub domain route: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_hub_domain_route_failed", err.Error(), item.ID, nil)
+	}
+}
+
+func (s *Service) DeleteHubDomainRoute(ctx context.Context, routeID string) {
+	if err := s.AppendDelete(ctx, EntityHubDomainRoute, routeID, map[string]string{"id": routeID}, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] delete hub domain route: %v", err)
+		s.recordFailure(ctx, "ha_sync", "delete_hub_domain_route_failed", err.Error(), routeID, nil)
+	}
+}
+
+func (s *Service) AppendSystemSetting(ctx context.Context, key, valueJSON string) {
+	if strings.TrimSpace(key) == "" {
+		return
+	}
+	if err := s.AppendUpsert(ctx, EntitySystemSetting, key, systemSettingPayload{Key: key, ValueJSON: valueJSON}, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] append system setting: %v", err)
+	}
+}
+
+func (s *Service) AppendGossipSnapshot(ctx context.Context, snap *GossipSnapshot) {
+	if snap == nil {
+		return
+	}
+	if err := s.AppendUpsert(ctx, EntityGossipSnapshot, "gossip", snap, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] append gossip snapshot: %v", err)
+	}
+}
+
+func (s *Service) AppendSkillHubSnapshot(ctx context.Context, snap *skill.Snapshot) {
+	if snap == nil {
+		return
+	}
+	if err := s.AppendUpsert(ctx, EntitySkillHubSnapshot, "skillhub", snap, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] append skillhub snapshot: %v", err)
+	}
+}
+
+func (s *Service) AppendSkillMarketSnapshot(ctx context.Context, snap *skillmarket.Snapshot) {
+	if snap == nil {
+		return
+	}
+	if err := s.AppendUpsert(ctx, EntitySkillMarketSnapshot, "skillmarket", snap, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] append skillmarket snapshot: %v", err)
 	}
 }
 
@@ -761,10 +1273,17 @@ func computeQuality(totalNodes int, reachablePeers int, maxLagSeconds int64, max
 	if missingPeers >= 2 {
 		score -= 50
 	}
-	if maxLagSeconds > 10 {
+
+	// In hot-standby mode, short-lived sync lag without backlog is common and should
+	// not immediately downgrade a fully reachable cluster. Keep lag penalties light
+	// until the delay is sustained for several minutes.
+	if maxLagSeconds > 60 {
+		score -= 5
+	}
+	if maxLagSeconds > 180 {
 		score -= 10
 	}
-	if maxLagSeconds > 30 {
+	if maxLagSeconds > 600 {
 		score -= 15
 	}
 	if maxBacklog > 100 {
@@ -798,6 +1317,9 @@ func marshalPayload(payload any) (string, string, error) {
 	return string(data), hex.EncodeToString(sum[:]), nil
 }
 
-func newOpID(nodeID string, now time.Time) string {
-	return fmt.Sprintf("op_%s_%d", nodeID, now.UnixNano())
+func newOpID(nodeID, entityType, entityID string, occurredAt time.Time) string {
+	seq := atomic.AddUint64(&opIDCounter, 1)
+	now := time.Now().UTC().UnixNano()
+	entitySum := sha256.Sum256([]byte(entityType + "\x00" + entityID))
+	return fmt.Sprintf("op_%s_%d_%d_%d_%x", nodeID, occurredAt.UTC().UnixNano(), now, seq, entitySum[:4])
 }

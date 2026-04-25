@@ -53,6 +53,13 @@ func (s *FileStore) ListTenants() ([]Tenant, error) {
 	return s.inner.ListTenants()
 }
 
+func (s *FileStore) DeleteTenant(tenantID string) error {
+	if err := s.inner.DeleteTenant(tenantID); err != nil {
+		return err
+	}
+	return s.flush()
+}
+
 func (s *FileStore) SaveUser(v User) error {
 	if err := s.inner.SaveUser(v); err != nil {
 		return err
@@ -66,6 +73,13 @@ func (s *FileStore) GetUser(tenantID, userID string) (User, error) {
 
 func (s *FileStore) ListUsers(tenantID string) ([]User, error) {
 	return s.inner.ListUsers(tenantID)
+}
+
+func (s *FileStore) DeleteUser(tenantID, userID string) error {
+	if err := s.inner.DeleteUser(tenantID, userID); err != nil {
+		return err
+	}
+	return s.flush()
 }
 
 func (s *FileStore) SaveCredential(v Credential) error {

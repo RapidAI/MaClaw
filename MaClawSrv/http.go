@@ -23,15 +23,22 @@ type configEnvelope struct {
 	AppConfig corelib.AppConfig `json:"app_config"`
 }
 
+type importStateEnvelope struct {
+	Data      agentservice.ExportServiceStateOutput `json:"data"`
+	Overwrite bool                                  `json:"overwrite,omitempty"`
+	DryRun    bool                                  `json:"dry_run,omitempty"`
+}
+
 type HTTPServer struct {
 	svc         *agentservice.Service
 	adminSecret string
 	mux         *http.ServeMux
 	authLimiter *authLimiter
+	jobs        *asyncJobManager
 }
 
 func NewHTTPServer(svc *agentservice.Service, adminSecret string) *HTTPServer {
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute)}
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), jobs: newAsyncJobManager(svc.DataRoot())}
 	s.routes()
 	return s
 }
@@ -152,17 +159,34 @@ func (s *HTTPServer) Handler() http.Handler { return s.mux }
 
 func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("GET /livez", s.handleLive)
+	s.mux.HandleFunc("GET /readyz", s.handleReady)
+	s.mux.HandleFunc("GET /version", s.handleVersion)
+	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
+	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
+	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPI)
+	s.mux.HandleFunc("GET /api/v1/admin/overview", s.withAdmin(s.handleGetAdminOverview))
+	s.mux.HandleFunc("GET /api/v1/admin/dashboard", s.withAdmin(s.handleGetAdminDashboard))
+	s.mux.HandleFunc("GET /api/v1/admin/alerts", s.withAdmin(s.handleGetAdminAlerts))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants", s.withAdmin(s.handleListTenants))
 	s.mux.HandleFunc("GET /api/v1/admin/audit-events", s.withAdmin(s.handleListAuditEvents))
+	s.mux.HandleFunc("GET /api/v1/admin/export", s.withAdmin(s.handleExportServiceState))
+	s.mux.HandleFunc("POST /api/v1/admin/import", s.withAdmin(s.handleImportServiceState))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants", s.withAdmin(s.handleCreateTenant))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleGetTenant))
+	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/summary", s.withAdmin(s.handleGetTenantSummary))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleUpdateTenant))
+	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleDeleteTenant))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleListUsers))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleCreateUser))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleGetUser))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleUpdateUser))
+	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleDeleteUser))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", s.withAdmin(s.handleListCredentials))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", s.withAdmin(s.handleCreateCredential))
+	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleGetCredential))
+	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleUpdateCredential))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-secret", s.withAdmin(s.handleRotateCredentialSecret))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleRevokeCredential))
 	s.mux.HandleFunc("POST /api/v1/auth/token", s.handleIssueToken)
 	s.mux.HandleFunc("GET /api/v1/me", s.withPrincipal(s.handleGetMe))
@@ -185,8 +209,12 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/skills/search", s.withPrincipal(s.handleSearchSkills))
 	s.mux.HandleFunc("POST /api/v1/skills/install", s.withPrincipal(s.handleInstallSkill))
 	s.mux.HandleFunc("POST /api/v1/skills/import", s.withPrincipal(s.handleImportSkill))
+	s.mux.HandleFunc("GET /api/v1/jobs", s.withPrincipal(s.handleListAsyncJobs))
+	s.mux.HandleFunc("DELETE /api/v1/jobs", s.withPrincipal(s.handleDeleteAsyncJobs))
+	s.mux.HandleFunc("GET /api/v1/jobs/{jobId}", s.withPrincipal(s.handleGetAsyncJob))
+	s.mux.HandleFunc("POST /api/v1/jobs/{jobId}/cancel", s.withPrincipal(s.handleCancelAsyncJob))
+	s.mux.HandleFunc("DELETE /api/v1/jobs/{jobId}", s.withPrincipal(s.handleDeleteAsyncJob))
 	s.mux.HandleFunc("GET /api/v1/skill-uploads/{submissionId}", s.withPrincipal(s.handleGetSkillUploadStatus))
-	s.mux.HandleFunc("GET /api/v1/skill-market/account", s.withPrincipal(s.handleGetSkillMarketAccount))
 	s.mux.HandleFunc("GET /api/v1/skills/{skillName}", s.withPrincipal(s.handleGetSkill))
 	s.mux.HandleFunc("DELETE /api/v1/skills/{skillName}", s.withPrincipal(s.handleDeleteSkill))
 	s.mux.HandleFunc("GET /api/v1/skills/{skillName}/export", s.withPrincipal(s.handleExportSkill))
@@ -223,13 +251,126 @@ func (s *HTTPServer) routes() {
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
-func (s *HTTPServer) handleListTenants(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.ListTenants(r.Context())
+func (s *HTTPServer) handleLive(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
+}
+func (s *HTTPServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+func (s *HTTPServer) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"version": serviceVersion, "commit": serviceCommit, "built_at": serviceBuiltAt})
+}
+func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	overview, err := s.svc.GetAdminOverview(r.Context())
+	if err != nil {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		return
+	}
+	var b strings.Builder
+	b.WriteString("# HELP maclaw_metrics_up Whether metrics collection succeeded\n")
+	b.WriteString("# TYPE maclaw_metrics_up gauge\n")
+	b.WriteString("maclaw_metrics_up 1\n")
+	b.WriteString("# HELP maclaw_tenants_total Number of tenants\n")
+	b.WriteString("# TYPE maclaw_tenants_total gauge\n")
+	b.WriteString("maclaw_tenants_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.Tenants), 10))
+	b.WriteString("\n# HELP maclaw_users_total Number of users\n")
+	b.WriteString("# TYPE maclaw_users_total gauge\n")
+	b.WriteString("maclaw_users_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.Users), 10))
+	b.WriteString("\n# HELP maclaw_instances_total Number of instances\n")
+	b.WriteString("# TYPE maclaw_instances_total gauge\n")
+	b.WriteString("maclaw_instances_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.Instances), 10))
+	b.WriteString("\n# HELP maclaw_sessions_total Number of sessions\n")
+	b.WriteString("# TYPE maclaw_sessions_total gauge\n")
+	b.WriteString("maclaw_sessions_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.Sessions), 10))
+	b.WriteString("\n# HELP maclaw_messages_total Number of messages\n")
+	b.WriteString("# TYPE maclaw_messages_total gauge\n")
+	b.WriteString("maclaw_messages_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.Messages), 10))
+	b.WriteString("\n# HELP maclaw_runs_total Number of runs\n")
+	b.WriteString("# TYPE maclaw_runs_total gauge\n")
+	b.WriteString("maclaw_runs_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.Runs), 10))
+	b.WriteString("\n# HELP maclaw_audit_events_total Number of audit events\n")
+	b.WriteString("# TYPE maclaw_audit_events_total gauge\n")
+	b.WriteString("maclaw_audit_events_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.AuditEvents), 10))
+	b.WriteString("\n")
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(b.String()))
+}
+func (s *HTTPServer) handleGetAdminOverview(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetAdminOverview(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleGetAdminDashboard(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetAdminDashboard(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleGetAdminAlerts(w http.ResponseWriter, r *http.Request) {
+	var since *time.Time
+	sinceRaw := strings.TrimSpace(r.URL.Query().Get("since"))
+	if sinceRaw != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, sinceRaw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid since"})
+			return
+		}
+		since = &parsed
+	}
+	limit := 0
+	limitRaw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if limitRaw != "" {
+		parsed, err := strconv.Atoi(limitRaw)
+		if err != nil || parsed < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
+			return
+		}
+		limit = parsed
+	}
+	out, err := s.svc.GetAdminAlerts(r.Context(), agentservice.AdminAlertsInput{
+		TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id")),
+		UserID:   strings.TrimSpace(r.URL.Query().Get("user_id")),
+		Kind:     strings.TrimSpace(r.URL.Query().Get("kind")),
+		Since:    since,
+		Limit:    limit,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleListTenants(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.ListTenants(r.Context(), agentservice.ListTenantsInput{
+		Status: agentservice.TenantStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
+		Name:   strings.TrimSpace(r.URL.Query().Get("name")),
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	items, meta := paginateTenants(out, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleListAuditEvents(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{
@@ -249,6 +390,65 @@ func (s *HTTPServer) handleListAuditEvents(w http.ResponseWriter, r *http.Reques
 	}
 	items, meta := paginateAuditEvents(out, page)
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
+}
+func (s *HTTPServer) handleExportServiceState(w http.ResponseWriter, r *http.Request) {
+	includeMessages, err := parseOptionalBoolQuery(r, "include_messages")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	includeRuns, err := parseOptionalBoolQuery(r, "include_runs")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	includeAudit, err := parseOptionalBoolQuery(r, "include_audit")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	includeSecrets, err := parseOptionalBoolQuery(r, "include_secrets")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	out, err := s.svc.ExportServiceState(r.Context(), agentservice.ExportServiceStateInput{
+		TenantID:        strings.TrimSpace(r.URL.Query().Get("tenant_id")),
+		UserID:          strings.TrimSpace(r.URL.Query().Get("user_id")),
+		IncludeMessages: includeMessages == nil || *includeMessages,
+		IncludeRuns:     includeRuns == nil || *includeRuns,
+		IncludeAudit:    includeAudit == nil || *includeAudit,
+		IncludeSecrets:  includeSecrets != nil && *includeSecrets,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Request) {
+	in, ok := decodeImportStateRequest(w, r)
+	if !ok {
+		return
+	}
+	if overwrite, err := parseOptionalBoolQuery(r, "overwrite"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	} else if overwrite != nil {
+		in.Overwrite = *overwrite
+	}
+	if dryRun, err := parseOptionalBoolQuery(r, "dry_run"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	} else if dryRun != nil {
+		in.DryRun = *dryRun
+	}
+	out, err := s.svc.ImportServiceState(r.Context(), *in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 	var in agentservice.CreateTenantInput
@@ -270,6 +470,14 @@ func (s *HTTPServer) handleGetTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func (s *HTTPServer) handleGetTenantSummary(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetTenantSummary(r.Context(), r.PathValue("tenantId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 func (s *HTTPServer) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 	var in agentservice.UpdateTenantInput
 	if !decodeJSON(w, r, &in) {
@@ -282,13 +490,30 @@ func (s *HTTPServer) handleUpdateTenant(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteTenant(r.Context(), r.PathValue("tenantId")); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
 func (s *HTTPServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.ListUsers(r.Context(), r.PathValue("tenantId"))
+	out, err := s.svc.ListUsers(r.Context(), r.PathValue("tenantId"), agentservice.ListUsersAdminInput{
+		Status: agentservice.UserStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
+		Name:   strings.TrimSpace(r.URL.Query().Get("name")),
+		Email:  strings.TrimSpace(r.URL.Query().Get("email")),
+	})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	items, meta := paginateUsers(out, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var in agentservice.CreateUserInput
@@ -323,13 +548,26 @@ func (s *HTTPServer) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func (s *HTTPServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId")); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
 func (s *HTTPServer) handleListCredentials(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.ListCredentials(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	items, meta := paginateCredentials(out, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleCreateCredential(w http.ResponseWriter, r *http.Request) {
 	var in agentservice.CreateCredentialInput
@@ -344,6 +582,38 @@ func (s *HTTPServer) handleCreateCredential(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
+}
+func (s *HTTPServer) handleGetCredential(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleUpdateCredential(w http.ResponseWriter, r *http.Request) {
+	var in agentservice.UpdateCredentialInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.UpdateCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleRotateCredentialSecret(w http.ResponseWriter, r *http.Request) {
+	var in agentservice.RotateCredentialSecretInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.RotateCredentialSecret(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleRevokeCredential(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.RevokeCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"))
@@ -460,11 +730,24 @@ func (s *HTTPServer) handleListMCPServers(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	items, meta := paginateMCPServers(out, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleCreateMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.MCPServerCreateInput
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if parseBoolQuery(r, "async") {
+		job := s.jobs.createUserJob("mcp.create", p, func(ctx context.Context) (any, error) {
+			return s.svc.CreateMCPServer(ctx, p, in)
+		})
+		writeJSON(w, http.StatusAccepted, job)
 		return
 	}
 	out, err := s.svc.CreateMCPServer(r.Context(), p, in)
@@ -487,6 +770,13 @@ func (s *HTTPServer) handleUpdateMCPServer(w http.ResponseWriter, r *http.Reques
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	if parseBoolQuery(r, "async") {
+		job := s.jobs.createUserJob("mcp.update", p, func(ctx context.Context) (any, error) {
+			return s.svc.UpdateMCPServer(ctx, p, r.PathValue("serverId"), in)
+		})
+		writeJSON(w, http.StatusAccepted, job)
+		return
+	}
 	out, err := s.svc.UpdateMCPServer(r.Context(), p, r.PathValue("serverId"), in)
 	if err != nil {
 		writeError(w, err)
@@ -502,6 +792,13 @@ func (s *HTTPServer) handleDeleteMCPServer(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 func (s *HTTPServer) handleStartMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if parseBoolQuery(r, "async") {
+		job := s.jobs.createUserJob("mcp.start", p, func(ctx context.Context) (any, error) {
+			return s.svc.StartMCPServer(ctx, p, r.PathValue("serverId"))
+		})
+		writeJSON(w, http.StatusAccepted, job)
+		return
+	}
 	out, err := s.svc.StartMCPServer(r.Context(), p, r.PathValue("serverId"))
 	if err != nil {
 		writeError(w, err)
@@ -510,6 +807,13 @@ func (s *HTTPServer) handleStartMCPServer(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleStopMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if parseBoolQuery(r, "async") {
+		job := s.jobs.createUserJob("mcp.stop", p, func(ctx context.Context) (any, error) {
+			return s.svc.StopMCPServer(ctx, p, r.PathValue("serverId"))
+		})
+		writeJSON(w, http.StatusAccepted, job)
+		return
+	}
 	out, err := s.svc.StopMCPServer(r.Context(), p, r.PathValue("serverId"))
 	if err != nil {
 		writeError(w, err)
@@ -518,6 +822,13 @@ func (s *HTTPServer) handleStopMCPServer(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleCheckMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if parseBoolQuery(r, "async") {
+		job := s.jobs.createUserJob("mcp.health_check", p, func(ctx context.Context) (any, error) {
+			return s.svc.CheckMCPServer(ctx, p, r.PathValue("serverId"))
+		})
+		writeJSON(w, http.StatusAccepted, job)
+		return
+	}
 	out, err := s.svc.CheckMCPServer(r.Context(), p, r.PathValue("serverId"))
 	if err != nil {
 		writeError(w, err)
@@ -540,7 +851,13 @@ func (s *HTTPServer) handleListSkills(w http.ResponseWriter, r *http.Request, p 
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	page, err := parseSkillPageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	items, meta := paginateSkills(out, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleGetSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetSkill(r.Context(), p, r.PathValue("skillName"))
@@ -574,6 +891,17 @@ func (s *HTTPServer) handleInstallSkill(w http.ResponseWriter, r *http.Request, 
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	if parseBoolQuery(r, "async") {
+		job := s.jobs.createUserJob("skill.install", p, func(ctx context.Context) (any, error) {
+			out, err := s.svc.InstallSkill(ctx, p, in)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"items": out}, nil
+		})
+		writeJSON(w, http.StatusAccepted, job)
+		return
+	}
 	out, err := s.svc.InstallSkill(r.Context(), p, in)
 	if err != nil {
 		writeError(w, err)
@@ -584,6 +912,17 @@ func (s *HTTPServer) handleInstallSkill(w http.ResponseWriter, r *http.Request, 
 func (s *HTTPServer) handleImportSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.SkillImportInput
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if parseBoolQuery(r, "async") {
+		job := s.jobs.createUserJob("skill.import", p, func(ctx context.Context) (any, error) {
+			out, err := s.svc.ImportSkillArchive(ctx, p, in)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"items": out}, nil
+		})
+		writeJSON(w, http.StatusAccepted, job)
 		return
 	}
 	out, err := s.svc.ImportSkillArchive(r.Context(), p, in)
@@ -626,12 +965,92 @@ func (s *HTTPServer) handleUploadSkill(w http.ResponseWriter, r *http.Request, p
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	if parseBoolQuery(r, "async") {
+		job := s.jobs.createUserJob("skill.upload", p, func(ctx context.Context) (any, error) {
+			return s.svc.UploadSkill(ctx, p, r.PathValue("skillName"), in)
+		})
+		writeJSON(w, http.StatusAccepted, job)
+		return
+	}
 	out, err := s.svc.UploadSkill(r.Context(), p, r.PathValue("skillName"), in)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleListAsyncJobs(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	status, ok := parseAsyncJobStatus(r.URL.Query().Get("status"), false)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
+		return
+	}
+	out := s.jobs.listUserJobs(p, kind, status)
+	items, meta := paginateAsyncJobs(out, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
+}
+
+func (s *HTTPServer) handleDeleteAsyncJobs(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	statusRaw := strings.TrimSpace(r.URL.Query().Get("status"))
+	status, ok := parseAsyncJobStatus(statusRaw, true)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be succeeded, failed, or canceled"})
+		return
+	}
+	before, err := parseOptionalTimeQuery(r, "before")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	deleteAll, err := parseOptionalBoolQuery(r, "all")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if (deleteAll == nil || !*deleteAll) && kind == "" && statusRaw == "" && before == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "specify kind, status, before, or all=true"})
+		return
+	}
+	items := s.jobs.deleteUserJobs(p, kind, status, before)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "deleted": len(items), "items": items})
+}
+
+func (s *HTTPServer) handleGetAsyncJob(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	job, ok := s.jobs.getUserJob(r.PathValue("jobId"), p)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *HTTPServer) handleCancelAsyncJob(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	job, ok := s.jobs.cancelUserJob(r.PathValue("jobId"), p)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *HTTPServer) handleDeleteAsyncJob(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	job, found, deleted := s.jobs.deleteUserJob(r.PathValue("jobId"), p)
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
+		return
+	}
+	if !deleted {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "job is still active", "job": job})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "job": job})
 }
 func (s *HTTPServer) handleGetSkillUploadStatus(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetSkillUploadStatus(r.Context(), p, r.PathValue("submissionId"), strings.TrimSpace(r.URL.Query().Get("base_url")))
@@ -1110,6 +1529,30 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	}
 	return true
 }
+func decodeImportStateRequest(w http.ResponseWriter, r *http.Request) (*agentservice.ImportServiceStateRequest, bool) {
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read request body"})
+		return nil, false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request body is required"})
+		return nil, false
+	}
+	var envelope importStateEnvelope
+	if err := json.Unmarshal(body, &envelope); err == nil && (envelope.Data.Scope != "" || len(envelope.Data.Tenants) > 0 || len(envelope.Data.Users) > 0 || len(envelope.Data.AuditEvents) > 0) {
+		return &agentservice.ImportServiceStateRequest{Data: envelope.Data, Overwrite: envelope.Overwrite, DryRun: envelope.DryRun}, true
+	}
+	var raw agentservice.ExportServiceStateOutput
+	if err := json.Unmarshal(body, &raw); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return nil, false
+	}
+	return &agentservice.ImportServiceStateRequest{Data: raw}, true
+}
+
 func decodeOptionalAppConfig(w http.ResponseWriter, r *http.Request) (*corelib.AppConfig, bool) {
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
@@ -1141,6 +1584,11 @@ func isZeroAppConfig(cfg corelib.AppConfig) bool {
 type pageQuery struct {
 	Limit  int
 	Before time.Time
+}
+
+type skillPageQuery struct {
+	Limit  int
+	Before string
 }
 
 type pageMeta struct {
@@ -1183,22 +1631,50 @@ func parseOptionalTimeQuery(r *http.Request, key string) (*time.Time, error) {
 	return &v, nil
 }
 
-func parsePageQuery(r *http.Request) (pageQuery, error) {
-	q := r.URL.Query()
-	page := pageQuery{Limit: defaultPageLimit}
-
-	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
-		limit, err := strconv.Atoi(raw)
-		if err != nil || limit <= 0 {
-			return pageQuery{}, errors.New("limit must be a positive integer")
-		}
-		if limit > maxPageLimit {
-			limit = maxPageLimit
-		}
-		page.Limit = limit
+func parseAsyncJobStatus(raw string, terminalOnly bool) (asyncJobStatus, bool) {
+	statusRaw := strings.TrimSpace(raw)
+	if statusRaw == "" {
+		return "", true
 	}
+	status := asyncJobStatus(statusRaw)
+	if terminalOnly {
+		switch status {
+		case asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled:
+			return status, true
+		default:
+			return "", false
+		}
+	}
+	switch status {
+	case asyncJobStatusPending, asyncJobStatusRunning, asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled:
+		return status, true
+	default:
+		return "", false
+	}
+}
 
-	if raw := strings.TrimSpace(q.Get("before")); raw != "" {
+func parsePageLimit(r *http.Request) (int, error) {
+	limit := defaultPageLimit
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			return 0, errors.New("limit must be a positive integer")
+		}
+		if parsed > maxPageLimit {
+			parsed = maxPageLimit
+		}
+		limit = parsed
+	}
+	return limit, nil
+}
+
+func parsePageQuery(r *http.Request) (pageQuery, error) {
+	limit, err := parsePageLimit(r)
+	if err != nil {
+		return pageQuery{}, err
+	}
+	page := pageQuery{Limit: limit}
+	if raw := strings.TrimSpace(r.URL.Query().Get("before")); raw != "" {
 		before, err := time.Parse(time.RFC3339Nano, raw)
 		if err != nil {
 			return pageQuery{}, errors.New("before must be an RFC3339 timestamp")
@@ -1206,6 +1682,14 @@ func parsePageQuery(r *http.Request) (pageQuery, error) {
 		page.Before = before
 	}
 	return page, nil
+}
+
+func parseSkillPageQuery(r *http.Request) (skillPageQuery, error) {
+	limit, err := parsePageLimit(r)
+	if err != nil {
+		return skillPageQuery{}, err
+	}
+	return skillPageQuery{Limit: limit, Before: strings.TrimSpace(r.URL.Query().Get("before"))}, nil
 }
 
 func listResponse(items any, meta pageMeta) map[string]any {
@@ -1300,6 +1784,132 @@ func paginateRuns(items []agentservice.Run, page pageQuery) ([]agentservice.Run,
 	})
 }
 
+func paginateTenants(items []agentservice.Tenant, page pageQuery) ([]agentservice.Tenant, pageMeta) {
+	filtered := make([]agentservice.Tenant, 0, len(items))
+	for _, item := range items {
+		if page.Before.IsZero() || item.CreatedAt.Before(page.Before) {
+			filtered = append(filtered, item)
+		}
+	}
+	start := 0
+	if len(filtered) > page.Limit {
+		start = len(filtered) - page.Limit
+	}
+	window := filtered[start:]
+	return window, buildPageMeta(len(filtered), start, page.Limit, func() time.Time {
+		if len(window) == 0 {
+			return time.Time{}
+		}
+		return window[0].CreatedAt
+	})
+}
+
+func paginateUsers(items []agentservice.User, page pageQuery) ([]agentservice.User, pageMeta) {
+	filtered := make([]agentservice.User, 0, len(items))
+	for _, item := range items {
+		if page.Before.IsZero() || item.CreatedAt.Before(page.Before) {
+			filtered = append(filtered, item)
+		}
+	}
+	start := 0
+	if len(filtered) > page.Limit {
+		start = len(filtered) - page.Limit
+	}
+	window := filtered[start:]
+	return window, buildPageMeta(len(filtered), start, page.Limit, func() time.Time {
+		if len(window) == 0 {
+			return time.Time{}
+		}
+		return window[0].CreatedAt
+	})
+}
+
+func paginateCredentials(items []agentservice.Credential, page pageQuery) ([]agentservice.Credential, pageMeta) {
+	filtered := make([]agentservice.Credential, 0, len(items))
+	for _, item := range items {
+		if page.Before.IsZero() || item.CreatedAt.Before(page.Before) {
+			filtered = append(filtered, item)
+		}
+	}
+	start := 0
+	if len(filtered) > page.Limit {
+		start = len(filtered) - page.Limit
+	}
+	window := filtered[start:]
+	return window, buildPageMeta(len(filtered), start, page.Limit, func() time.Time {
+		if len(window) == 0 {
+			return time.Time{}
+		}
+		return window[0].CreatedAt
+	})
+}
+
+func paginateAsyncJobs(items []asyncJobRecord, page pageQuery) ([]asyncJobRecord, pageMeta) {
+	filtered := make([]asyncJobRecord, 0, len(items))
+	for _, item := range items {
+		if page.Before.IsZero() || item.CreatedAt.Before(page.Before) {
+			filtered = append(filtered, item)
+		}
+	}
+	start := 0
+	if len(filtered) > page.Limit {
+		start = len(filtered) - page.Limit
+	}
+	window := filtered[start:]
+	return window, buildPageMeta(len(filtered), start, page.Limit, func() time.Time {
+		if len(window) == 0 {
+			return time.Time{}
+		}
+		return window[0].CreatedAt
+	})
+}
+
+func paginateMCPServers(items []agentservice.MCPServerView, page pageQuery) ([]agentservice.MCPServerView, pageMeta) {
+	filtered := make([]agentservice.MCPServerView, 0, len(items))
+	for _, item := range items {
+		createdAt, ok := parseCursorTime(item.CreatedAt)
+		if !ok {
+			continue
+		}
+		if page.Before.IsZero() || createdAt.Before(page.Before) {
+			filtered = append(filtered, item)
+		}
+	}
+	start := 0
+	if len(filtered) > page.Limit {
+		start = len(filtered) - page.Limit
+	}
+	window := filtered[start:]
+	return window, buildPageMeta(len(filtered), start, page.Limit, func() time.Time {
+		if len(window) == 0 {
+			return time.Time{}
+		}
+		cursor, _ := parseCursorTime(window[0].CreatedAt)
+		return cursor
+	})
+}
+
+func paginateSkills(items []corelib.NLSkillEntry, page skillPageQuery) ([]corelib.NLSkillEntry, pageMeta) {
+	filtered := make([]corelib.NLSkillEntry, 0, len(items))
+	before := strings.ToLower(strings.TrimSpace(page.Before))
+	for _, item := range items {
+		name := strings.ToLower(strings.TrimSpace(item.Name))
+		if before == "" || name < before {
+			filtered = append(filtered, item)
+		}
+	}
+	start := 0
+	if len(filtered) > page.Limit {
+		start = len(filtered) - page.Limit
+	}
+	window := filtered[start:]
+	meta := pageMeta{Limit: page.Limit, HasMore: start > 0}
+	if meta.HasMore && len(window) > 0 {
+		meta.NextBefore = window[0].Name
+	}
+	return window, meta
+}
+
 func paginateAuditEvents(items []agentservice.AuditEvent, page pageQuery) ([]agentservice.AuditEvent, pageMeta) {
 	filtered := make([]agentservice.AuditEvent, 0, len(items))
 	for _, item := range items {
@@ -1318,6 +1928,19 @@ func paginateAuditEvents(items []agentservice.AuditEvent, page pageQuery) ([]age
 		}
 		return window[0].CreatedAt
 	})
+}
+
+func parseCursorTime(raw string) (time.Time, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func buildPageMeta(total, start, limit int, cursor func() time.Time) pageMeta {
@@ -1349,8 +1972,10 @@ func writeError(w http.ResponseWriter, err error) {
 		code = http.StatusForbidden
 	case errors.Is(err, agentservice.ErrTenantNotFound), errors.Is(err, agentservice.ErrUserNotFound), errors.Is(err, agentservice.ErrCredentialNotFound), errors.Is(err, agentservice.ErrUserConfigNotFound), errors.Is(err, agentservice.ErrInstanceNotFound), errors.Is(err, agentservice.ErrSessionNotFound), errors.Is(err, agentservice.ErrRunNotFound):
 		code = http.StatusNotFound
-	case errors.Is(err, agentservice.ErrRunNotRunning), errors.Is(err, agentservice.ErrInstanceBusy), errors.Is(err, agentservice.ErrSessionBusy), errors.Is(err, agentservice.ErrSessionArchived):
+	case errors.Is(err, agentservice.ErrRunNotRunning), errors.Is(err, agentservice.ErrInstanceBusy), errors.Is(err, agentservice.ErrUserBusy), errors.Is(err, agentservice.ErrTenantBusy), errors.Is(err, agentservice.ErrSessionBusy), errors.Is(err, agentservice.ErrSessionArchived), errors.Is(err, agentservice.ErrAlreadyExists):
 		code = http.StatusConflict
+	case errors.Is(err, agentservice.ErrQuotaExceeded):
+		code = http.StatusTooManyRequests
 	}
 	writeJSON(w, code, map[string]string{"error": err.Error()})
 }

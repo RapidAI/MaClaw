@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GetHubLLMServiceStatus, RedeemHubLLMService } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 
@@ -23,6 +23,7 @@ interface HubLLMServiceStatus {
     available_models?: string[];
     authorized_models?: HubLLMAuthorizedModel[];
     active_grants?: HubLLMActiveGrant[];
+    inactive_reasons?: string[];
     nearest_expires_at?: string;
     default_model?: string;
     hub_llm_base_url?: string;
@@ -137,6 +138,13 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     const [redeeming, setRedeeming] = useState(false);
     const [redeemResult, setRedeemResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
+    // Stabilize onStatusChange with a ref to break the re-render cascade.
+    // Without this, every App re-render (e.g. PingMaclawLLM every 60s) creates
+    // a new inline arrow function → loadStatus is recreated → useEffect fires →
+    // setLoading(true) destroys the DOM → input loses focus + page flickers.
+    const onStatusChangeRef = useRef(onStatusChange);
+    onStatusChangeRef.current = onStatusChange;
+
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) => (
         lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
     ), [lang]);
@@ -148,15 +156,16 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         try {
             const next = await GetHubLLMServiceStatus() as HubLLMServiceStatus;
             setStatus(next);
-            onStatusChange?.(next);
+            onStatusChangeRef.current?.(next);
         } catch (error) {
             setLoadError(String(error));
         } finally {
             setLoading(false);
             setRefreshing(false);
         }
-    }, [onStatusChange]);
+    }, []); // no deps — onStatusChange is read from ref
 
+    // Load once on mount. loadStatus is stable (no deps), so this runs exactly once.
     useEffect(() => {
         loadStatus();
     }, [loadStatus]);
@@ -182,14 +191,15 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             const next = await RedeemHubLLMService(code) as HubLLMServiceStatus;
             setStatus(next);
             setRedeemCode("");
-            onStatusChange?.(next);
+            setLoadError(null);
+            onStatusChangeRef.current?.(next);
             setRedeemResult({ ok: true, msg: t("Redeem successful", "兑换成功") });
         } catch (error) {
             setRedeemResult({ ok: false, msg: String(error) });
         } finally {
             setRedeeming(false);
         }
-    }, [redeemCode, onStatusChange, t]);
+    }, [redeemCode, t]);
 
     if (loading) {
         return <div style={{ padding: 16, color: colors.textMuted }}>{t("Loading service status...", "正在加载服务状态...")}</div>;
@@ -197,25 +207,50 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
     return (
         <div style={panelStyle}>
+            {/* ── Card 1: Redeem code input — primary action, always visible first ── */}
+            <div style={cardStyle}>
+                <div style={{ marginBottom: 12 }}>
+                    <label style={labelStyle}>{t("Redeem Code", "兑换码")}</label>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input
+                            value={redeemCode}
+                            onChange={(e) => setRedeemCode(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter" && !redeeming) handleRedeem(); }}
+                            placeholder={t("Enter service card code", "请输入服务卡兑换码")}
+                            disabled={redeeming}
+                            style={{ ...inputStyle, flex: 1 }}
+                        />
+                        <button type="button" onClick={handleRedeem} disabled={redeeming} style={{ ...primaryButtonStyle, whiteSpace: "nowrap" }}>
+                            {redeeming ? t("Redeeming...", "兑换中...") : t("Redeem Now", "立即兑换")}
+                        </button>
+                    </div>
+                </div>
+                {redeemResult && (
+                    <div style={{ padding: "8px 10px", borderRadius: radius.md, background: redeemResult.ok ? colors.successBg : colors.dangerBg, color: redeemResult.ok ? colors.success : colors.danger, border: `1px solid ${redeemResult.ok ? colors.success : colors.danger}` }}>
+                        {redeemResult.msg}
+                    </div>
+                )}
+            </div>
+
+            {/* ── Card 2: Service status overview ── */}
             <div style={cardStyle}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
-                    <div>
-                        <h3 style={sectionTitleStyle}>{t("Service Exchange", "服务兑换")}</h3>
-                        <div style={{ ...valueStyle, color: colors.textSecondary, marginTop: 4 }}>
-                            {t(
-                                "Redeem a service card to activate MaClaw model service permissions on this account.",
-                                "兑换服务卡后，可为当前账号开通 MaClaw 模型服务权限。"
-                            )}
-                        </div>
-                    </div>
+                    <h3 style={sectionTitleStyle}>{t("Service Status", "服务状态")}</h3>
                     <button type="button" onClick={() => loadStatus(true)} disabled={refreshing} style={secondaryButtonStyle}>
                         {refreshing ? t("Refreshing...", "刷新中...") : t("Refresh", "刷新")}
                     </button>
                 </div>
 
+                {/* loadError: show inline in the status card — not above the redeem input */}
+                {loadError && (
+                    <div style={{ marginBottom: 12, padding: "8px 10px", borderRadius: radius.md, background: colors.warningBg, color: colors.warning, border: `1px solid ${colors.warning}`, fontSize: "0.8rem" }}>
+                        {loadError}
+                    </div>
+                )}
+
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
                     <div style={mutedCardStyle}>
-                        <div style={labelStyle}>{t("Service Status", "服务状态")}</div>
+                        <div style={labelStyle}>{t("Status", "状态")}</div>
                         <div style={{ ...chipStyle, background: status?.active ? colors.successBg : colors.warningBg, color: status?.active ? colors.success : colors.warning, borderColor: status?.active ? colors.success : colors.warning }}>
                             {status?.active ? t("Active", "已开通") : t("Not Active", "未开通")}
                         </div>
@@ -234,41 +269,17 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                     </div>
                 </div>
 
-                {loadError && (
-                    <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: radius.md, background: colors.dangerBg, color: colors.danger, border: `1px solid ${colors.danger}` }}>
-                        {loadError}
+                {/* inactive_reasons from Hub — diagnostic info for "Not Active" state */}
+                {!status?.active && status?.inactive_reasons?.length ? (
+                    <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: radius.md, background: colors.warningBg, color: colors.warning, border: `1px solid ${colors.warning}`, fontSize: "0.78rem", lineHeight: 1.6 }}>
+                        {status.inactive_reasons.map((reason, i) => (
+                            <div key={i}>• {reason}</div>
+                        ))}
                     </div>
-                )}
+                ) : null}
             </div>
 
-            <div style={cardStyle}>
-                <div style={{ marginBottom: 12 }}>
-                    <label style={labelStyle}>{t("Redeem Code", "兑换码")}</label>
-                    <input
-                        value={redeemCode}
-                        onChange={(e) => setRedeemCode(e.target.value)}
-                        placeholder={t("Enter service card code", "请输入服务卡兑换码")}
-                        style={inputStyle}
-                    />
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                    <div style={{ ...valueStyle, color: colors.textSecondary, flex: 1, minWidth: 220 }}>
-                        {t(
-                            "After successful redeem, Hub-managed MaClaw model service will be enabled automatically if your account becomes authorized.",
-                            "兑换成功后，如果当前账号获得授权，Hub 托管的 MaClaw 模型服务会自动启用。"
-                        )}
-                    </div>
-                    <button type="button" onClick={handleRedeem} disabled={redeeming} style={primaryButtonStyle}>
-                        {redeeming ? t("Redeeming...", "兑换中...") : t("Redeem Now", "立即兑换")}
-                    </button>
-                </div>
-                {redeemResult && (
-                    <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: radius.md, background: redeemResult.ok ? colors.successBg : colors.dangerBg, color: redeemResult.ok ? colors.success : colors.danger, border: `1px solid ${redeemResult.ok ? colors.success : colors.danger}` }}>
-                        {redeemResult.msg}
-                    </div>
-                )}
-            </div>
-
+            {/* ── Card 3: Authorization details (collapsible-style, always visible) ── */}
             <div style={cardStyle}>
                 <h3 style={{ ...sectionTitleStyle, marginBottom: 12 }}>{t("Current Authorization Details", "当前授权详情")}</h3>
                 <div style={{ display: "grid", gap: 12 }}>
@@ -318,4 +329,3 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         </div>
     );
 }
-

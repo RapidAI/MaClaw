@@ -210,7 +210,7 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 
 	// --- Steering rules ---
 	if deps.SteeringResolver != nil {
-		contextTokens := 128000 // default
+		contextTokens := 110000 // default
 		resolved := deps.SteeringResolver(userMessage, contextTokens)
 		if len(resolved) > 0 {
 			b.WriteString("\n## 用户规则（Steering）\n")

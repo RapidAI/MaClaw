@@ -21,9 +21,10 @@ import (
 
 // TreeCandidate is a candidate returned by the LLM tree reasoning channel.
 type TreeCandidate struct {
-	Label  IntentLabel
-	Score  float64
-	Reason string
+	Label        IntentLabel
+	Score        float64
+	Reason       string
+	WorkflowType string // non-empty when the intent maps to a workflow template
 }
 
 // BuildIntentTreeText constructs a domain-grouped intent tree prompt from
@@ -32,10 +33,15 @@ type TreeCandidate struct {
 // disambiguation note is auto-appended listing the sibling intents,
 // so the LLM knows what alternatives exist without hardcoded "区别于 X" hints.
 //
+// When an IntentDefinition has WorkflowTypes, the tree text includes
+// workflow_type guidance so the LLM can output the specific workflow
+// template type in a single reasoning pass.
+//
 // Output format:
 //
 //	── Coding ──
 //	  coding: user wants to create new software...
+//	    → workflow_type: "coding"
 //	  bug_fix: user wants to fix bugs...
 //	  maintenance: user wants to refactor...
 //	  (Note: choose the single best match among coding/bug_fix/maintenance)
@@ -49,6 +55,12 @@ func BuildIntentTreeText(defs []IntentDefinition) string {
 
 	for _, def := range defs {
 		line := fmt.Sprintf("  %s: %s", def.Label, def.TreeText)
+		// Append workflow_type guidance if this intent can trigger workflows.
+		if len(def.WorkflowTypes) == 1 {
+			line += fmt.Sprintf("\n    → workflow_type: %q (when applicable, otherwise \"\")", def.WorkflowTypes[0])
+		} else if len(def.WorkflowTypes) > 1 {
+			line += "\n    → workflow_type: choose from " + strings.Join(quoteAll(def.WorkflowTypes), ", ") + " (or \"\" if none applies)"
+		}
 		e, exists := domainMap[def.Domain]
 		if !exists {
 			e = &domainEntry{}
@@ -75,6 +87,15 @@ func BuildIntentTreeText(defs []IntentDefinition) string {
 	return strings.Join(parts, "\n")
 }
 
+// quoteAll wraps each string in double quotes.
+func quoteAll(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = fmt.Sprintf("%q", s)
+	}
+	return out
+}
+
 // intentTreePromptTemplate is the LLM prompt for tree reasoning.
 // Uses chain-of-thought inside <think> tags, then outputs structured JSON.
 const intentTreePromptTemplate = `You are an intent classifier. Given the user message, select the best matching intents from the intent tree below.
@@ -90,16 +111,22 @@ First reason inside <think> tags:
 1. What does the user want? (action + object)
 2. Which domain is most likely?
 3. Which intent in that domain fits best? What did you rule out?
+4. If the intent has a workflow_type annotation, which workflow type applies?
 
 Then output JSON:
-{"top": [{"skill": "intent_name", "score": 0.0-1.0}, ...]}
+{"top": [{"skill": "intent_name", "score": 0.0-1.0, "workflow_type": "type_or_empty"}, ...]}
 
 Rules:
 - Output exactly 3 candidates, sorted by score descending
 - Intent names must exactly match the tree (no invention)
+- workflow_type: copy from the tree annotation if the intent has one; use "" if none
 - Score guide: very confident 0.85-0.95, fairly confident 0.65-0.84, uncertain 0.40-0.64
 - Focus on the ACTION (what the user wants to do) and the OBJECT (what they want to do it to)
+- Key test: does the output require DESIGN DECISIONS (audience, structure, style)? If yes → workflow. If the output is deterministic from the input (translate, summarize, convert) → no workflow.
+- "基于文档" does NOT mean "content processing" — "基于文档做PPT" still needs audience targeting + content architecture + visual design → office (workflow_type="presentation_design")
 - Short action phrases (≤5 chars) like "继续"/"开工"/"go ahead" → continuation
+- "生成/制作/设计 PPT" or "基于X做PPT" = needs design decisions → office (workflow_type="presentation_design")
+- "打开/查看/转换/截图 PPT" = file operation, no design decisions → document_delivery or non_coding (no workflow)
 - When a message is genuinely ambiguous without context, give the top candidate a lower score (0.50-0.65) rather than forcing high confidence`
 
 // BuildTreePrompt constructs the full LLM prompt for tree reasoning.
@@ -148,9 +175,10 @@ func ParseTreeResponse(text string) []TreeCandidate {
 func tryParseTreeJSON(s string) []TreeCandidate {
 	var data struct {
 		Top []struct {
-			Skill  string  `json:"skill"`
-			Score  float64 `json:"score"`
-			Reason string  `json:"reason"`
+			Skill        string  `json:"skill"`
+			Score        float64 `json:"score"`
+			Reason       string  `json:"reason"`
+			WorkflowType string  `json:"workflow_type"`
 		} `json:"top"`
 	}
 
@@ -172,9 +200,10 @@ func tryParseTreeJSON(s string) []TreeCandidate {
 			score = 1
 		}
 		candidates = append(candidates, TreeCandidate{
-			Label:  label,
-			Score:  score,
-			Reason: item.Reason,
+			Label:        label,
+			Score:        score,
+			Reason:       item.Reason,
+			WorkflowType: item.WorkflowType,
 		})
 	}
 	return candidates

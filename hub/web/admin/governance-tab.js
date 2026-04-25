@@ -71,26 +71,20 @@
   }
 
   global.renderBlockedEmails = function renderBlockedEmails(items) {
-    const helper = ui();
     document.getElementById('blockedCountHero').textContent = String(items.length);
     const root = document.getElementById('blockedEmails');
     if (!items.length) {
       root.innerHTML = hint(tr('emptyBlocked'));
       return;
     }
-    if (helper && typeof helper.simpleCard === 'function') {
-      root.innerHTML = items.map(function(item) {
-        return helper.simpleCard({
-          title: item.email,
-          headRight: helper.badge(tr('addBlock'), 'danger'),
-          body: helper.meta(item.reason || tr('noReason'))
-        });
-      }).join('');
-      return;
-    }
-    root.innerHTML = items.map(function(item) {
-      return '<div class="item"><div class="item-head"><div class="item-title">' + escapeHtml(item.email) + '</div><span class="badge danger">' + escapeHtml(tr('addBlock')) + '</span></div><div class="item-meta">' + escapeHtml(item.reason || tr('noReason')) + '</div></div>';
-    }).join('');
+    root.innerHTML = '<div style="display:grid;gap:6px">' + items.map(function(item) {
+      return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
+        + '<div style="display:grid;grid-template-columns:minmax(180px,1.2fr) minmax(0,2fr) auto;gap:10px;align-items:center">'
+        + '<div style="min-width:0"><div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(item.email) + '</div></div>'
+        + '<div class="item-meta" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(item.reason || tr('noReason')) + '</div>'
+        + '<span class="badge danger" style="padding:4px 8px;font-size:10px">' + escapeHtml(tr('addBlock')) + '</span>'
+        + '</div></div>';
+    }).join('') + '</div>';
   };
 
   global.renderBoundUsers = function renderBoundUsers(items) {
@@ -117,27 +111,33 @@
     const filtered = query ? items.filter(function(item) {
       return (item.email || '').toLowerCase().indexOf(query) !== -1 || (item.sn || '').toLowerCase().indexOf(query) !== -1;
     }) : items;
-    const pageSize = 40;
+    const pageSize = 36;
     const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
     if (global._boundUsersPage > totalPages) global._boundUsersPage = totalPages;
     if (global._boundUsersPage < 1) global._boundUsersPage = 1;
     const start = (global._boundUsersPage - 1) * pageSize;
     const pageItems = filtered.slice(start, start + pageSize);
-    const lang = typeof currentLang !== 'undefined' ? currentLang : 'en';
-    const searchHtml = '<div style="margin-bottom:10px"><input id="boundUsersSearchInput" placeholder="' + gt('boundUsersSearchPlaceholder') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="max-width:320px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)"></div>';
-    const cards = pageItems.map(function(item) {
+    const searchHtml = '<div style="margin-bottom:8px"><input id="boundUsersSearchInput" placeholder="' + gt('boundUsersSearchPlaceholder') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="max-width:260px;height:34px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)"></div>';
+    const rows = pageItems.map(function(item) {
       var smartRoute = item.smart_route;
       var toggleId = 'sr_' + item.id;
-      var userIdExpr = JSON.stringify(String(item.id || ''));
-      var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="font-size:10px;padding:4px 8px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '';
-      return '<div class="user-card" style="flex-direction:column;gap:6px;cursor:default"><div style="min-width:0"><div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">' + escapeHtml(item.email) + '</div><div class="item-meta mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">' + escapeHtml(item.sn || tr('na')) + '</div></div><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="badge info" style="font-size:10px;padding:4px 8px">' + escapeHtml(formatStatus(item.enrollment_status || item.status || 'active')) + '</span>' + serviceBadge + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' onchange="toggleSmartRoute(' + userIdExpr + ', this.checked)"><span>AI</span></label></div></div>';
+      var userIdValue = String(item.id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="padding:4px 8px;font-size:10px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '<span class="badge info" style="padding:4px 8px;font-size:10px">-</span>';
+      return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
+        + '<div style="display:grid;grid-template-columns:minmax(180px,1.45fr) minmax(110px,.95fr) auto auto auto;gap:10px;align-items:center">'
+        + '<div style="min-width:0"><div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(item.email) + '</div></div>'
+        + '<div class="item-meta mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(item.sn || tr('na')) + '</div>'
+        + '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(formatStatus(item.enrollment_status || item.status || 'active')) + '</span>'
+        + serviceBadge
+        + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '" style="justify-content:flex-end;font-size:11px"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' data-user-id="' + escapeHtml(String(item.id || '')) + '" onchange="toggleSmartRoute(this.dataset.userId, this.checked)"><span>AI</span></label>'
+        + '</div></div>';
     }).join('');
     var pagerHtml = '';
     var showCount = filtered.length > 0 ? (start + 1) + '-' + (start + pageItems.length) + ' / ' + filtered.length : '0 / 0';
     if (totalPages > 1 || query) {
-      pagerHtml = '<div class="pager" style="margin-top:10px;display:flex;align-items:center;justify-content:center;gap:8px"><button class="btn-secondary" style="height:28px;font-size:12px;padding:0 10px" onclick="window._boundUsersPage=Math.max(1,window._boundUsersPage-1);_renderBoundUsersPage()" ' + (global._boundUsersPage <= 1 ? 'disabled' : '') + '>\u2039</button><span style="font-size:13px">' + showCount + '</span><button class="btn-secondary" style="height:28px;font-size:12px;padding:0 10px" onclick="window._boundUsersPage=Math.min(' + totalPages + ',window._boundUsersPage+1);_renderBoundUsersPage()" ' + (global._boundUsersPage >= totalPages ? 'disabled' : '') + '>\u203a</button></div>';
+      pagerHtml = '<div class="pager" style="margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px"><button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="window._boundUsersPage=Math.max(1,window._boundUsersPage-1);_renderBoundUsersPage()" ' + (global._boundUsersPage <= 1 ? 'disabled' : '') + '>Prev</button><span style="font-size:11px">' + showCount + '</span><button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="window._boundUsersPage=Math.min(' + totalPages + ',window._boundUsersPage+1);_renderBoundUsersPage()" ' + (global._boundUsersPage >= totalPages ? 'disabled' : '') + '>Next</button></div>';
     }
-    root.innerHTML = searchHtml + '<div class="user-grid-wrap" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px">' + (pageItems.length ? cards : '<div class="hint" style="grid-column:1/-1">' + gt('noMatches') + '</div>') + '</div>' + pagerHtml;
+    root.innerHTML = searchHtml + '<div class="user-grid-wrap" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">' + (pageItems.length ? rows : '<div class="hint" style="grid-column:1 / -1">' + gt('noMatches') + '</div>') + '</div>' + pagerHtml;
     var searchInput = document.getElementById('boundUsersSearchInput');
     if (searchInput && query) {
       searchInput.focus();
@@ -200,25 +200,23 @@
 
   global.renderInvites = function renderInvites(items) {
     global._invitesAll = items || [];
-    const helper = ui();
     document.getElementById('inviteCountHero').textContent = String(items.length);
     const root = document.getElementById('invites');
     if (!items.length) {
       root.innerHTML = hint(tr('emptyInvites'));
       return;
     }
-    root.innerHTML = items.map(function(item) {
+    root.innerHTML = '<div style="display:grid;gap:6px">' + items.map(function(item) {
       const status = item.status || 'active';
-      const inviteExpr = JSON.stringify(String(item.id || ''));
-      if (helper && typeof helper.simpleCard === 'function') {
-        return helper.simpleCard({
-          title: item.email,
-          body: helper.meta(tr('role') + ': ' + (item.role || tr('roleViewer'))),
-          headRight: '<div style="display:flex;align-items:center;gap:8px">' + helper.badge(formatStatus(status), statusBadgeClass(status)) + helper.actionButton(tr('deleteInviteLabel'), 'btn-danger', 'deleteInvite(' + inviteExpr + ')', { style: 'height:32px;font-size:12px;padding:0 10px' }) + '</div>'
-        });
-      }
-      return '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHtml(item.email) + '</div><div class="item-meta">' + escapeHtml(tr('role') + ': ' + (item.role || tr('roleViewer'))) + '</div></div><div style="display:flex;align-items:center;gap:8px"><span class="badge ' + escapeHtml(statusBadgeClass(status)) + '">' + escapeHtml(formatStatus(status)) + '</span></div></div></div>';
-    }).join('');
+      const inviteValue = String(item.id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
+        + '<div style="display:grid;grid-template-columns:minmax(180px,1.3fr) minmax(90px,.8fr) auto auto;gap:10px;align-items:center">'
+        + '<div style="min-width:0"><div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(item.email) + '</div></div>'
+        + '<div class="item-meta" style="font-size:11px">' + escapeHtml(item.role || tr('roleViewer')) + '</div>'
+        + '<span class="badge ' + escapeHtml(statusBadgeClass(status)) + '" style="padding:4px 8px;font-size:10px">' + escapeHtml(formatStatus(status)) + '</span>'
+        + '<button class="btn-danger" style="height:28px;font-size:11px;padding:0 9px" data-invite-id="' + escapeHtml(String(item.id || '')) + '" onclick="deleteInvite(this.dataset.inviteId)">' + escapeHtml(tr('deleteInviteLabel')) + '</button>'
+        + '</div></div>';
+    }).join('') + '</div>';
   };
 
   global.addInvite = async function addInvite() {

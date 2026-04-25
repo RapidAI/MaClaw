@@ -199,7 +199,7 @@ func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMess
 	if cons != nil {
 		for i := 0; i+1 < len(filtered); i += 2 {
 			if filtered[i].Role == "user" && filtered[i+1].Role == "assistant" {
-				_, _ = cons.ConsolidateSegment(ctx, filtered[i].Content, filtered[i+1].Content, time.Now())
+				_, _ = cons.ConsolidateSegment(ctx, filtered[i].Content, filtered[i+1].Content, time.Now(), userID)
 			}
 		}
 	}
@@ -236,6 +236,7 @@ func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMess
 			Content:  content,
 			Category: cat,
 			Tags:     tags,
+			OwnerID:  userID, // multi-tenant: associate with the user who had this conversation
 		}
 		if err := ke.store.Save(entry); err != nil {
 			return fmt.Errorf("knowledge_extractor: save: %w", err)

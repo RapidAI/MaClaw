@@ -303,6 +303,12 @@ func (mc *Compressor) dedup() int {
 }
 
 func isDuplicateLower(a, b Entry, ca, cb string) bool {
+	// 多租户隔离：不同用户的记忆不视为重复
+	// 空 OwnerID 表示共享记忆，可以与任何用户的记忆去重
+	if a.OwnerID != "" && b.OwnerID != "" && a.OwnerID != b.OwnerID {
+		return false
+	}
+
 	if ca == cb {
 		return true
 	}
@@ -350,25 +356,34 @@ func pickLoser(entries []Entry, i, j int) int {
 
 const mergeBatchSize = 25
 
+// catOwnerKey is a composite key for grouping entries by (Category, OwnerID).
+// This ensures multi-tenant isolation: entries from different users are never merged.
+type catOwnerKey struct {
+	Category Category
+	OwnerID  string
+}
+
 func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) {
 	totalMerged := 0
 
+	// 多租户隔离：按 (Category, OwnerID) 二元组分组，而非仅按 Category
+	// 这确保不同用户的记忆永远不会被合并
 	mc.store.mu.RLock()
-	catSet := make(map[Category]bool)
+	groupSet := make(map[catOwnerKey]bool)
 	for _, e := range mc.store.entries {
-		catSet[e.Category] = true
+		groupSet[catOwnerKey{Category: e.Category, OwnerID: e.OwnerID}] = true
 	}
 	mc.store.mu.RUnlock()
 
-	for cat := range catSet {
+	for key := range groupSet {
 		// Never merge protected categories (e.g. self_identity).
-		if cat.IsProtected() {
+		if key.Category.IsProtected() {
 			continue
 		}
 		mc.store.mu.RLock()
 		var entries []Entry
 		for _, e := range mc.store.entries {
-			if e.Category == cat && !e.Pinned {
+			if e.Category == key.Category && e.OwnerID == key.OwnerID && !e.Pinned {
 				entries = append(entries, e)
 			}
 		}
@@ -704,11 +719,18 @@ func (mc *Compressor) entryCount() int {
 // 4. Scan archive for entries relevant to top-20 recently accessed active entries
 // 5. Revive matching archived entries (limit 10 per cycle)
 // 6. Emit memory:gc event with GCResult
-func (mc *Compressor) RunGC(ctx context.Context) (*GCResult, error) {
+// ownerID is used for multi-tenant isolation (empty string for single-user mode).
+func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
+	}
+
+	// Extract ownerID from variadic parameter (for backward compatibility).
+	filterOwner := ""
+	if len(ownerID) > 0 {
+		filterOwner = ownerID[0]
 	}
 
 	mc.store.mu.Lock()
@@ -721,6 +743,11 @@ func (mc *Compressor) RunGC(ctx context.Context) (*GCResult, error) {
 	var protected []Entry
 	var evictable []Entry
 	for _, e := range mc.store.entries {
+		// 多租户隔离：只处理属于该用户的记忆（或共享记忆）
+		if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+			protected = append(protected, e) // 其他用户的记忆视为受保护
+			continue
+		}
 		if e.Pinned || e.Category.IsProtected() {
 			protected = append(protected, e)
 			result.SkippedPinned++
@@ -811,11 +838,15 @@ func (mc *Compressor) RunGC(ctx context.Context) (*GCResult, error) {
 			cats = append(cats, c)
 		}
 
-		relevant := mc.store.archive.FindRelevant(tags, cats, 10)
+		relevant := mc.store.archive.FindRelevant(tags, cats, 10, filterOwner)
 		var revived []Entry
 		for _, re := range relevant {
 			if len(revived) >= 10 {
 				break
+			}
+			// 多租户隔离：二次验证 revive 的记忆属于该用户
+			if filterOwner != "" && re.OwnerID != "" && re.OwnerID != filterOwner {
+				continue
 			}
 			removed, err := mc.store.archive.Remove(re.ID)
 			if err != nil {

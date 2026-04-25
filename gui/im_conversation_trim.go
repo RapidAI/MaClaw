@@ -386,6 +386,21 @@ func makeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(s
 }
 
 func trimHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {
+	return trimHistoryWithSummary(entries, nil, nil)
+}
+
+// trimHistoryWithSummary performs two-tier trimming with optional LLM
+// summarization of dropped entries and optional memory sinking of
+// substantial assistant messages that would otherwise be lost.
+//
+// summarizer: if non-nil, called with the text of dropped entries to produce
+// a compressed summary (replaces the static "[...已省略...]" placeholder).
+// Returns empty string on failure — caller falls back to static placeholder.
+//
+// memorySink: if non-nil, substantial assistant messages (>500 runes) that
+// are being dropped (not in tier-1, not in recent window) are saved to
+// long-term memory as task_artifact entries before being discarded.
+func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(string) string, memorySink func(string, []string)) []agent.ConversationEntry {
 	if len(entries) <= agent.MaxConversationTurns {
 		return entries
 	}
@@ -460,9 +475,59 @@ func trimHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {
 			result = append(result, entries[i])
 		}
 	}
+
+	// Sink substantial assistant messages that are being dropped to long-term
+	// memory (Phase 1 supplement: catches non-workflow documents like analysis
+	// reports, research summaries, etc. that aren't captured by SavePhaseOutput).
+	if memorySink != nil {
+		for i := 0; i < recentStart; i++ {
+			if outsideSet[i] {
+				continue // already preserved as tier-1
+			}
+			if entries[i].Role != "assistant" {
+				continue
+			}
+			text, ok := entries[i].Content.(string)
+			if !ok || len([]rune(text)) < 500 {
+				continue
+			}
+			// Truncate to 800 runes for the memory entry.
+			runes := []rune(text)
+			if len(runes) > 800 {
+				text = string(runes[:800])
+			}
+			memorySink(text, []string{"trimmed", "auto_salvaged"})
+		}
+	}
+
+	// Build separator: LLM summary of dropped entries, or static placeholder.
+	separator := "[...中间的工具调用和执行细节已省略...]"
+	if summarizer != nil {
+		var droppedText strings.Builder
+		for i := 0; i < recentStart; i++ {
+			if outsideSet[i] {
+				continue // tier-1, already preserved
+			}
+			text, ok := entries[i].Content.(string)
+			if !ok || text == "" {
+				continue
+			}
+			runes := []rune(text)
+			if len(runes) > 200 {
+				text = string(runes[:200])
+			}
+			droppedText.WriteString(fmt.Sprintf("[%s] %s\n", entries[i].Role, text))
+		}
+		if droppedText.Len() > 100 {
+			if summary := summarizer(droppedText.String()); summary != "" {
+				separator = "[对话摘要] " + summary
+			}
+		}
+	}
+
 	result = append(result, agent.ConversationEntry{
 		Role:    "system",
-		Content: "[...中间的工具调用和执行细节已省略...]",
+		Content: separator,
 	})
 	result = append(result, entries[recentStart:]...)
 

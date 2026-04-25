@@ -28,6 +28,7 @@ const HUB_LLM_I18N = {
     statusUnknown: '\u26aa Status: {status}',
     cacheRate: 'Cache rate {rate}%',
     cacheDisk: 'Disk cache {bytes}',
+    cacheMemory: 'Memory {bytes}',
     cacheConfigTitle: 'Prompt Cache',
     cacheConfigDesc: 'Configure local prompt cache TTL and memory/disk budget.',
     cacheEnabled: 'Enable local cache',
@@ -101,6 +102,7 @@ const HUB_LLM_I18N = {
     statusUnknown: '\u26aa \u72b6\u6001\uff1a{status}',
     cacheRate: '\u7f13\u5b58\u7387 {rate}%',
     cacheDisk: '\u78c1\u76d8\u7f13\u5b58 {bytes}',
+    cacheMemory: '\u5185\u5b58 {bytes}',
     cacheConfigTitle: 'Prompt \u7f13\u5b58',
     cacheConfigDesc: '\u914d\u7f6e\u672c\u5730 prompt \u7f13\u5b58\u7684 TTL \u548c\u5185\u5b58/\u78c1\u76d8\u989d\u5ea6\u3002',
     cacheEnabled: '\u542f\u7528\u672c\u5730\u7f13\u5b58',
@@ -231,8 +233,8 @@ function renderHubLlmCacheEntries(entries) {
     const expires = escapeHubHtml(hli('cacheEntryExpires', { value: item.expires_at || '-' }));
     const key = escapeHubHtml(item.cache_key || '-');
     const cached = escapeHubHtml(hli('cacheEntryCachedTokens', { count: String(item.cached_input_tokens || 0) }));
-    const deleteBtn = '<button class="btn-danger" type="button" style="height:32px;padding:0 12px" onclick="deleteHubLlmPromptCacheEntry(' + "'" + encodeURIComponent(item.cache_key || '') + "'" + ')">' + escapeHubHtml(hli('cacheEntryDelete')) + '</button>';
-    return '<div class="item" style="margin-top:8px;padding:14px 16px"><div class="item-head"><div><div class="item-title">' + title + '</div><div class="item-meta">' + meta + '</div></div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge info">' + cached + '</span>' + deleteBtn + '</div></div><div class="item-meta mono" style="margin-top:8px">' + key + '</div><div class="grid2" style="margin-top:10px"><div class="item-meta">' + accessed + '</div><div class="item-meta">' + expires + '</div></div></div>';
+    const deleteBtn = '<button class="btn-danger" type="button" style="height:28px;padding:0 10px" onclick="deleteHubLlmPromptCacheEntry(' + "'" + encodeURIComponent(item.cache_key || '') + "'" + ')">' + escapeHubHtml(hli('cacheEntryDelete')) + '</button>';
+    return '<div class="item" style="margin-top:8px;padding:12px 14px"><div class="item-head"><div><div class="item-title">' + title + '</div><div class="item-meta">' + meta + '</div></div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="badge info">' + cached + '</span>' + deleteBtn + '</div></div><div class="item-meta mono" style="margin-top:8px">' + key + '</div><div class="grid2" style="margin-top:10px"><div class="item-meta">' + accessed + '</div><div class="item-meta">' + expires + '</div></div></div>';
   }).join('');
 }
 
@@ -340,16 +342,16 @@ function renderHubLlmCacheHitBreakdown(data) {
   const diskPct = totalHits > 0 ? ((diskHits / totalHits) * 100).toFixed(1).replace(/\.0$/, '') : '0';
   root.innerHTML = '' +
     '<div class="grid2" style="margin-top:10px">' +
-      '<div class="item" style="min-height:auto;padding:14px 16px">' +
+      '<div class="item" style="min-height:auto;padding:12px 14px">' +
         '<div class="item-title" style="font-size:14px">' + escapeHubHtml(hli('cacheHitMemory')) + '</div>' +
         '<div class="item-meta">' + escapeHubHtml(hli('cacheHitShare', { label: hli('cacheHitMemory'), count: String(memoryHits), pct: memoryPct })) + '</div>' +
       '</div>' +
-      '<div class="item" style="min-height:auto;padding:14px 16px">' +
+      '<div class="item" style="min-height:auto;padding:12px 14px">' +
         '<div class="item-title" style="font-size:14px">' + escapeHubHtml(hli('cacheHitDisk')) + '</div>' +
         '<div class="item-meta">' + escapeHubHtml(hli('cacheHitShare', { label: hli('cacheHitDisk'), count: String(diskHits), pct: diskPct })) + '</div>' +
       '</div>' +
     '</div>' +
-    '<div style="margin-top:12px;border-radius:999px;overflow:hidden;height:12px;background:rgba(31,34,48,.08)">' +
+    '<div style="margin-top:10px;border-radius:999px;overflow:hidden;height:12px;background:rgba(31,34,48,.08)">' +
       '<div style="display:flex;height:100%">' +
         '<div style="width:' + escapeHubHtml(memoryPct) + '%;background:linear-gradient(135deg,#57c59a,#23a26d)"></div>' +
         '<div style="width:' + escapeHubHtml(diskPct) + '%;background:linear-gradient(135deg,#ef6a7c,#e8566a)"></div>' +
@@ -396,7 +398,7 @@ function renderHubLlmStatus(data) {
   const diskText = hli('cacheDisk', { bytes: formatHubBytes(storage.disk_bytes || 0) });
   badge.dataset.statusKey = status;
   badge.textContent = baseText + ' | ' + cacheText;
-  badge.title = cacheText + ' (' + String(cache.cached_requests || 0) + '/' + String(cache.requests || 0) + ') | ' + diskText + ' | memory ' + formatHubBytes(storage.memory_bytes || 0);
+  badge.title = cacheText + ' (' + String(cache.cached_requests || 0) + '/' + String(cache.requests || 0) + ') | ' + diskText + ' | ' + hli('cacheMemory', { bytes: formatHubBytes(storage.memory_bytes || 0) });
   badge.className = 'badge ' + cls;
   renderHubLlmCacheSummary(data);
   renderHubLlmCacheHitBreakdown(data);

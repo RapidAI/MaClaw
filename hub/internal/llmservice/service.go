@@ -21,7 +21,22 @@ type EntitlementDiagnostic struct {
 	DirectUserBindings       []UserBinding  `json:"direct_user_bindings,omitempty"`
 	MatchedGroupBindings     []GroupBinding `json:"matched_group_bindings,omitempty"`
 	ActiveGrants             []Grant        `json:"active_grants,omitempty"`
+	BillingRoutes            []BillingRoute `json:"billing_routes,omitempty"`
 	ServiceStatus            *ServiceStatus `json:"service_status,omitempty"`
+}
+
+type BillingRoute struct {
+	ModelName         string   `json:"model_name"`
+	ProviderID        string   `json:"provider_id"`
+	ServiceGroupIDs   []string `json:"service_group_ids,omitempty"`
+	AccessPolicy      string   `json:"access_policy,omitempty"`
+	Eligible          bool     `json:"eligible"`
+	ReasonCode        string   `json:"reason_code,omitempty"`
+	ReasonMessage     string   `json:"reason_message,omitempty"`
+	CreditsAvailable  float64  `json:"credits_available,omitempty"`
+	HasActiveGrant    bool     `json:"has_active_grant,omitempty"`
+	HasAnyGrant       bool     `json:"has_any_grant,omitempty"`
+	RequiresGrantOnly bool     `json:"requires_grant_only,omitempty"`
 }
 
 func ExplainEntitlementDiagnostic(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, email string, hubBaseURL string) (*EntitlementDiagnostic, error) {
@@ -79,6 +94,7 @@ func ExplainEntitlementDiagnosticFromRegistry(ctx context.Context, reg *Registry
 	if err != nil {
 		return nil, err
 	}
+	diag.BillingRoutes = ExplainBillingRoutes(reg, email, status.AuthorizedModels, time.Now().UTC())
 	diag.ServiceStatus = status
 	return diag, nil
 }
@@ -241,6 +257,28 @@ func nextGrantStart(reg *Registry, email, serviceGroupID string, now time.Time) 
 		}
 	}
 	return start
+}
+
+func hasGrantWithSource(reg *Registry, email, serviceGroupID, source string) bool {
+	if reg == nil {
+		return false
+	}
+	email = normalizeEmail(email)
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	source = strings.TrimSpace(source)
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != email {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(grant.Source), source) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc *security.SecurityService, email string, now time.Time) ([]string, []Grant, error) {
@@ -565,6 +603,9 @@ func GrantDefaultServiceForNewUser(ctx context.Context, system SystemSettingsRep
 		if reg.FindModelServiceGroup(serviceGroupID) == nil {
 			continue
 		}
+		if hasGrantWithSource(reg, email, serviceGroupID, "new_user_default") {
+			continue
+		}
 		startsAt := nextGrantStart(reg, email, serviceGroupID, now)
 		expiresAt := startsAt.Add(time.Duration(days) * 24 * time.Hour)
 		reg.Grants = append(reg.Grants, Grant{
@@ -693,6 +734,123 @@ func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupI
 		total += remainingGrantCredits(grant)
 	}
 	return roundCredits(total)
+}
+
+func HasAnyGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string) bool {
+	if reg == nil {
+		return false
+	}
+	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
+	if len(serviceGroupIDs) == 0 {
+		return false
+	}
+	serviceGroupSet := map[string]struct{}{}
+	for _, id := range serviceGroupIDs {
+		serviceGroupSet[strings.ToLower(id)] = struct{}{}
+	}
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func HasActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) bool {
+	if reg == nil {
+		return false
+	}
+	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
+	if len(serviceGroupIDs) == 0 {
+		return false
+	}
+	serviceGroupSet := map[string]struct{}{}
+	for _, id := range serviceGroupIDs {
+		serviceGroupSet[strings.ToLower(id)] = struct{}{}
+	}
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
+			continue
+		}
+		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func BillingEligibilityForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) (bool, string, string, string, float64, bool, bool) {
+	if reg == nil {
+		return true, AccessPolicyFree, "", "", 0, false, false
+	}
+	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
+	grantRequiredGroupIDs := make([]string, 0, len(serviceGroupIDs))
+	for _, serviceGroupID := range serviceGroupIDs {
+		if reg.AccessPolicyForServiceGroup(serviceGroupID) != AccessPolicyGrantRequired {
+			return true, AccessPolicyFree, "", "", 0, false, false
+		}
+		grantRequiredGroupIDs = append(grantRequiredGroupIDs, serviceGroupID)
+	}
+	if len(grantRequiredGroupIDs) == 0 {
+		return true, AccessPolicyFree, "", "", 0, false, false
+	}
+	availableCredits := AvailableCreditsForServiceGroups(reg, email, grantRequiredGroupIDs, now)
+	if availableCredits > 0 {
+		return true, AccessPolicyGrantRequired, "", "", roundCredits(availableCredits), true, true
+	}
+	hasActiveGrant := HasActiveGrantForServiceGroups(reg, email, grantRequiredGroupIDs, now)
+	if hasActiveGrant {
+		return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_EXHAUSTED", "selected model requires remaining credits in an active grant", 0, true, true
+	}
+	hasAnyGrant := HasAnyGrantForServiceGroups(reg, email, grantRequiredGroupIDs)
+	if hasAnyGrant {
+		return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_EXPIRED", "selected model requires an active grant for this service group", 0, false, true
+	}
+	return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_REQUIRED", "selected model requires a grant-backed service group with remaining credits", 0, false, false
+}
+
+func ExplainBillingRoutes(reg *Registry, email string, models []AuthorizedModel, now time.Time) []BillingRoute {
+	if reg == nil || len(models) == 0 {
+		return nil
+	}
+	email = normalizeEmail(email)
+	routes := make([]BillingRoute, 0)
+	for _, model := range models {
+		for _, providerID := range model.ProviderIDs {
+			serviceGroupIDs := ServiceGroupIDsForProvider(&model, providerID)
+			eligible, accessPolicy, code, message, creditsAvailable, hasActiveGrant, hasAnyGrant := BillingEligibilityForServiceGroups(reg, email, serviceGroupIDs, now)
+			routes = append(routes, BillingRoute{
+				ModelName:         model.Name,
+				ProviderID:        providerID,
+				ServiceGroupIDs:   append([]string(nil), serviceGroupIDs...),
+				AccessPolicy:      accessPolicy,
+				Eligible:          eligible,
+				ReasonCode:        code,
+				ReasonMessage:     message,
+				CreditsAvailable:  creditsAvailable,
+				HasActiveGrant:    hasActiveGrant,
+				HasAnyGrant:       hasAnyGrant,
+				RequiresGrantOnly: accessPolicy == AccessPolicyGrantRequired,
+			})
+		}
+	}
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Eligible != routes[j].Eligible {
+			return routes[i].Eligible
+		}
+		if routes[i].ModelName != routes[j].ModelName {
+			return strings.ToLower(routes[i].ModelName) < strings.ToLower(routes[j].ModelName)
+		}
+		return strings.ToLower(routes[i].ProviderID) < strings.ToLower(routes[j].ProviderID)
+	})
+	return routes
 }
 
 type ModelSelectionDebug struct {

@@ -119,12 +119,19 @@ func New(cfg Config) *UnifiedIntentClassifier {
 // text return the cached result without recomputation.
 //
 // Execution model:
-//  1. Layer 1 (keywords): fast path, <1ms. If confident → return immediately.
+//  1. Layer 1 (keywords): always runs, provides prior signal for tool affinity
+//     and CreationOriented detection. NEVER used for intent classification decisions.
 //  2. If both L2 (embedding) and L3 (LLM) are available → run in parallel,
 //     fuse results using α·emb + (1-α)·tree, apply three-state verdict.
 //  3. If only L2 available → α forced to 1.0 (embedding only).
 //  4. If only L3 available → α forced to 0.0 (tree only).
-//  5. If neither available → return L1 result.
+//  5. If neither available → return L1 result (degraded mode only).
+//
+// L1 keywords NEVER override fusion results. When fusion produces a low
+// confidence verdict, the result is Ambiguous — not a fallback to L1.
+// This prevents keyword misclassification from overriding correct semantic
+// analysis (e.g., "基于文档生成PPT" being classified as non_coding by
+// keywords because "基于" looks like content processing).
 func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationResult {
 	// Check cache first.
 	if cached, ok := u.cache.Load(msg.Text); ok {
@@ -138,21 +145,6 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	isReady := u.ready
 	u.mu.RUnlock()
 
-	var bestResult ClassificationResult
-
-	// Layer 1: keyword classification (fast path).
-	l1Result, l1Confident := classifyByKeywords(u.registry, u.affinity, msg)
-	bestResult = l1Result
-
-	if l1Confident {
-		u.cacheAndLog(msg.Text, &bestResult)
-		return bestResult
-	}
-
-	// Log Layer 1 escalation.
-	log.Printf("[UnifiedIntentClassifier] Layer 1 escalating: %s (conf=%.2f, reason=%s)",
-		truncateText(msg.Text, 30), l1Result.Confidence, l1Result.Reason)
-
 	canEmb := !isNoop && isReady
 	canTree := hasLLM
 
@@ -164,7 +156,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	if canEmb && canTree {
 		fusionResult := u.classifyWithFusion(msg.Text)
 		u.fusionCache.Store(msg.Text, fusionResult) // store for diagnostics
-		bestResult = u.fusionToClassification(fusionResult, l1Result)
+		bestResult := u.fusionToClassification(fusionResult)
 		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
 		u.cacheAndLog(msg.Text, &bestResult)
 		return bestResult
@@ -172,36 +164,44 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 
 	// Single-channel fallback: embedding only.
 	if canEmb {
-		l2Result, l2Confident := classifyByEmbedding(u.embedder, u.anchors, msg.Text)
-		if l2Confident || l2Result.Confidence > bestResult.Confidence {
-			bestResult = l2Result
-		}
-		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
-		u.cacheAndLog(msg.Text, &bestResult)
-		return bestResult
+		l2Result, _ := classifyByEmbedding(u.embedder, u.anchors, msg.Text)
+		l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
+		u.cacheAndLog(msg.Text, &l2Result)
+		return l2Result
 	}
 
-	// Single-channel fallback: LLM only (legacy flat prompt).
+	// Single-channel fallback: LLM only (tree reasoning).
 	if canTree {
 		u.mu.RLock()
 		llmFn := u.llmFunc
 		u.mu.RUnlock()
 
-		l3Result, err := classifyByLLM(llmFn, u.llmPrompt, msg)
-		if err == nil {
-			bestResult = l3Result
-		} else {
-			log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v, using Layer 1 result", err)
+		candidates, err := ClassifyByTree(llmFn, u.treeText, msg.Text)
+		if err == nil && len(candidates) > 0 {
+			top := candidates[0]
+			bestResult := ClassificationResult{
+				Primary:      top.Label,
+				Confidence:   top.Score,
+				Layer:        3,
+				Reason:       fmt.Sprintf("tree-only: %s (%.3f)", top.Label, top.Score),
+				WorkflowType: top.WorkflowType,
+			}
+			if top.Label == LabelCoding && top.WorkflowType == "coding" {
+				bestResult.CreationOriented = true
+			}
+			bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
+			u.cacheAndLog(msg.Text, &bestResult)
+			return bestResult
 		}
-		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
-		u.cacheAndLog(msg.Text, &bestResult)
-		return bestResult
+		log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v, falling back to L1 keywords (degraded)", err)
 	}
 
-	// Neither channel available — return L1 result.
-	bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
-	u.cacheAndLog(msg.Text, &bestResult)
-	return bestResult
+	// Degraded mode: neither L2 nor L3 available (or L3 failed).
+	// L1 keyword classification is the last resort.
+	l1Result, _ := classifyByKeywords(u.registry, u.affinity, msg)
+	l1Result.ToolNames = u.affinity.Resolve(l1Result.Primary, l1Result.Secondary)
+	u.cacheAndLog(msg.Text, &l1Result)
+	return l1Result
 }
 
 // InvalidateCache clears the per-message cache. Called once per message
@@ -416,14 +416,21 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 		log.Printf("[UnifiedIntentClassifier] fusion degraded: embedding channel returned no scores")
 	}
 
-	// Convert tree candidates to labelScore pairs.
+	// Convert tree candidates to labelScore pairs and extract workflow types.
 	var treeScores []labelScore
+	var treeWorkflowTypes map[IntentLabel]string
 	for _, c := range tree.candidates {
 		treeScores = append(treeScores, LabelScore(c.Label, c.Score))
+		if c.WorkflowType != "" {
+			if treeWorkflowTypes == nil {
+				treeWorkflowTypes = make(map[IntentLabel]string)
+			}
+			treeWorkflowTypes[c.Label] = c.WorkflowType
+		}
 	}
 
 	// Merge and score.
-	candidates := MergeAndScore(emb.scores, treeScores, alpha)
+	candidates := MergeAndScore(emb.scores, treeScores, alpha, treeWorkflowTypes)
 	result := Decide(candidates, fusionCfg)
 	result.EmbMs = emb.ms
 	result.TreeMs = tree.ms
@@ -450,23 +457,39 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 
 // fusionToClassification converts a FusionResult to a ClassificationResult,
 // maintaining backward compatibility with all existing consumers.
-func (u *UnifiedIntentClassifier) fusionToClassification(fr FusionResult, l1Fallback ClassificationResult) ClassificationResult {
-	// Both channels failed — use L1 fallback.
+//
+// WorkflowType is extracted from the winning candidate's tree channel data.
+// This eliminates the need for a separate IUM LLM call to determine workflow type.
+//
+// L1 keyword results are NOT used as fallback — when fusion produces a low
+// confidence result, we return Ambiguous rather than falling back to keyword
+// classification. Keywords lack semantic understanding and can override correct
+// fusion decisions (e.g., classifying "基于文档生成PPT" as non_coding because
+// "基于" looks like content processing).
+func (u *UnifiedIntentClassifier) fusionToClassification(fr FusionResult) ClassificationResult {
+	// Both channels failed — return ambiguous.
 	if fr.Verdict == VerdictLow && len(fr.ActiveChannels) == 0 {
-		return l1Fallback
+		return ClassificationResult{
+			Primary:    LabelAmbiguous,
+			Confidence: 0,
+			Layer:      1,
+			Reason:     "fusion: both channels failed, no confident classification",
+		}
 	}
 
 	result := ClassificationResult{
-		Primary:    fr.Top.Label,
-		Confidence: fr.Top.FinalScore,
-		Layer:      23, // indicates fusion of L2+L3
+		Primary:      fr.Top.Label,
+		Confidence:   fr.Top.FinalScore,
+		Layer:        23, // indicates fusion of L2+L3
+		WorkflowType: fr.Top.WorkflowType,
 	}
 
-	// Inherit CreationOriented from L1 when fusion confirms coding intent.
-	// L1's creation detection is based on structured KeywordEntry.Creation tags,
-	// which is more reliable than parsing LLM reason strings.
-	if result.Primary == LabelCoding {
-		result.CreationOriented = l1Fallback.CreationOriented
+	// CreationOriented is determined by the fusion result itself, not L1 keywords.
+	// When the tree channel classifies as coding with workflow_type="coding",
+	// that's a creation-oriented task. Bug-fix and maintenance intents from
+	// the tree channel don't set CreationOriented.
+	if result.Primary == LabelCoding && result.WorkflowType == "coding" {
+		result.CreationOriented = true
 	}
 
 	switch fr.Verdict {
@@ -482,11 +505,9 @@ func (u *UnifiedIntentClassifier) fusionToClassification(fr FusionResult, l1Fall
 			result.Reason = fmt.Sprintf("fusion-ambiguous: %s (%.3f)", fr.Top.Label, fr.Top.FinalScore)
 		}
 	case VerdictLow:
-		// Low confidence — check if L1 had a better signal.
-		if l1Fallback.Confidence > fr.Top.FinalScore && l1Fallback.Primary != LabelUnknown {
-			return l1Fallback
-		}
+		// Low confidence — return ambiguous. Do NOT fall back to L1 keywords.
 		result.Primary = LabelAmbiguous
+		result.WorkflowType = "" // low confidence → don't trust workflow type
 		result.Reason = fmt.Sprintf("fusion-low: top=%s (%.3f) below threshold", fr.Top.Label, fr.Top.FinalScore)
 	}
 

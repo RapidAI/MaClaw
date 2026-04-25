@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -202,6 +203,124 @@ func TestForwardAuthorizedModelRequestUsesLocalCacheWhenAvailable(t *testing.T) 
 	}
 	if status.MemoryHits != 1 {
 		t.Fatalf("memory hits = %d, want 1", status.MemoryHits)
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerRejectsGrantRequiredServiceWithoutCredits(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "grant-required@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "grant-required@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "LLM_SERVICE_CREDITS_REQUIRED") {
+		t.Fatalf("expected credits required error, body = %s", rr.Body.String())
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("expected upstream to be blocked, hits = %d", upstreamHits.Load())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerAllowsFreeServiceWithoutCredits(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "free-binding@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "free-binding@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "upstream",
+			"model": "auto",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "free-ok"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+		})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("expected upstream to be called once, hits = %d", upstreamHits.Load())
 	}
 }
 

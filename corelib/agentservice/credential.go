@@ -32,3 +32,10 @@ func credentialLookupKey(v Credential) string {
 	}
 	return hashAPIKey(v.APIKey)
 }
+
+func credentialTokenVersion(v Credential) int {
+	if v.TokenVersion <= 0 {
+		return 1
+	}
+	return v.TokenVersion
+}

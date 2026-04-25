@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/url"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 )
 
 func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
@@ -85,6 +87,57 @@ func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
 	}
 }
 
+func TestIdentityServiceEnrollmentAndEmailLoginCreatesDefaultLLMServiceGrant(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	ctx := context.Background()
+	if err := llmservice.SaveRegistry(ctx, deps.store.System, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:   "coding-basic",
+			Name: "Coding Basic",
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		DefaultNewUserServiceGroups: []string{"coding-basic"},
+		DefaultNewUserDurationDays:  7,
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+
+	if _, err := svc.RequestEmailLogin(ctx, "grantme@example.com"); err != nil {
+		t.Fatalf("RequestEmailLogin: %v", err)
+	}
+
+	reg, err := llmservice.LoadRegistry(ctx, deps.store.System)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	count := 0
+	for _, grant := range reg.Grants {
+		if grant.Email == "grantme@example.com" && grant.ServiceGroupID == "coding-basic" && grant.Source == "new_user_default" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 default LLM service grant, got %d", count)
+	}
+}
+
 func TestIdentityServiceApprovalModeCreatesPendingEnrollment(t *testing.T) {
 	deps := newTestStore(t)
 	svc := NewIdentityService(
@@ -144,3 +197,4 @@ func TestIdentityServiceManualModeRequiresExistingBinding(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
+

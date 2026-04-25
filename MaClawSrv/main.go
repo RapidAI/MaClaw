@@ -1,17 +1,26 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+)
+
+var (
+	serviceVersion = "dev"
+	serviceCommit  = ""
+	serviceBuiltAt = ""
 )
 
 func main() {
@@ -41,7 +50,7 @@ func main() {
 	}
 
 	server := NewHTTPServer(svc, adminSecret)
-	addr := getenv("MACLAW_HTTP_ADDR", ":18080")
+	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           server.Handler(),
@@ -56,18 +65,38 @@ func main() {
 	if err := validateTransportSecurity(addr, tlsCertFile, tlsKeyFile, getenvBool("MACLAW_ALLOW_INSECURE_HTTP", false)); err != nil {
 		log.Fatalf("invalid transport configuration: %v", err)
 	}
-	log.Printf("MaClawSrv listening on %s with data root %s", addr, svc.DataRoot())
-	var serveErr error
-	if tlsCertFile != "" || tlsKeyFile != "" {
-		if tlsCertFile == "" || tlsKeyFile == "" {
-			log.Fatal("both MACLAW_TLS_CERT_FILE and MACLAW_TLS_KEY_FILE are required when TLS is enabled")
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("MaClawSrv listening on %s with data root %s", addr, svc.DataRoot())
+		if tlsCertFile != "" || tlsKeyFile != "" {
+			if tlsCertFile == "" || tlsKeyFile == "" {
+				errCh <- errors.New("both MACLAW_TLS_CERT_FILE and MACLAW_TLS_KEY_FILE are required when TLS is enabled")
+				return
+			}
+			errCh <- httpServer.ListenAndServeTLS(tlsCertFile, tlsKeyFile)
+			return
 		}
-		serveErr = httpServer.ListenAndServeTLS(tlsCertFile, tlsKeyFile)
-	} else {
-		serveErr = httpServer.ListenAndServe()
-	}
-	if err := serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+		errCh <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	case <-ctx.Done():
+		log.Printf("shutdown requested, stopping MaClawSrv")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Fatalf("shutdown server: %v", err)
+		}
+		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
 	}
 }
 
@@ -148,14 +177,12 @@ func isLoopbackListenAddr(addr string) bool {
 		return false
 	}
 	host := trimmed
-	if strings.HasPrefix(trimmed, ":") {
-		return true
-	}
+
 	if h, _, err := net.SplitHostPort(trimmed); err == nil {
 		host = h
 	}
 	host = strings.Trim(host, "[]")
-	if host == "" || host == "localhost" {
+	if host == "localhost" {
 		return true
 	}
 	ip := net.ParseIP(host)

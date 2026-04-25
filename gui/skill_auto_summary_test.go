@@ -1,11 +1,18 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func TestSkillAutoSummary_AnalyzeComplexity_NilSession(t *testing.T) {
@@ -780,5 +787,145 @@ func TestShouldUpdateSkill_SameStepsSameErrors(t *testing.T) {
 	}
 	if shouldUpdateSkill(newDraft, existing) {
 		t.Error("same steps and errors should NOT trigger update")
+	}
+}
+
+func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var backup *httptest.Server
+	backup = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{backup.URL, "https://upload-backup.example"}})
+		case "/api/v1/skills/submit":
+			_ = json.NewEncoder(w).Encode(map[string]any{"submission_id": "sub-123"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backup.Close()
+
+	app := &App{testHomeDir: tempHome}
+	skillExec := NewSkillExecutor(app, nil, nil)
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubCenterURL = "http://127.0.0.1:1"
+	cfg.RemoteHubCenterURLs = []string{backup.URL}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "auto-upload-skill",
+		Description: "demo",
+		Source:      "learned",
+		Status:      "active",
+		Steps:       []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{"instructions": "hello"}}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	client := NewSkillMarketClient(app)
+	trigger := NewAutoUploadTrigger(client, func() string { return "user@example.com" })
+	for i := 0; i < 3; i++ {
+		trigger.RecordExecution("auto-upload-skill", 1, "hash-1")
+	}
+
+	skillDir := filepath.Join(tempHome, "auto-upload-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := RunAutoUpload(context.Background(), "auto-upload-skill", skillDir, 1, trigger, skillExec, client); err != nil {
+		t.Fatalf("RunAutoUpload() error = %v", err)
+	}
+
+	statusPath := filepath.Join(skillDir, "upload_status.json")
+	data, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatalf("ReadFile(upload_status.json) error = %v", err)
+	}
+	var status map[string]string
+	if err := json.Unmarshal(data, &status); err != nil {
+		t.Fatalf("Unmarshal(upload_status.json) error = %v", err)
+	}
+	if status["submission_id"] != "sub-123" {
+		t.Fatalf("submission_id = %q, want sub-123", status["submission_id"])
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.RemoteHubCenterURL != backup.URL {
+		t.Fatalf("RemoteHubCenterURL = %q, want %q", saved.RemoteHubCenterURL, backup.URL)
+	}
+	if !containsString(saved.RemoteHubCenterURLs, "https://upload-backup.example") {
+		t.Fatalf("RemoteHubCenterURLs = %#v", saved.RemoteHubCenterURLs)
+	}
+}
+
+func TestRunAutoUpload_SkipsWhenNoHubCenterReachable(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	app := &App{testHomeDir: tempHome}
+	skillExec := NewSkillExecutor(app, nil, nil)
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubCenterURL = "http://127.0.0.1:1"
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "skip-upload-skill",
+		Description: "demo",
+		Source:      "learned",
+		Status:      "active",
+		Steps:       []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{"instructions": "hello"}}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	client := NewSkillMarketClient(app)
+	trigger := NewAutoUploadTrigger(client, func() string { return "user@example.com" })
+	for i := 0; i < 3; i++ {
+		trigger.RecordExecution("skip-upload-skill", 1, "hash-2")
+	}
+
+	skillDir := filepath.Join(tempHome, "skip-upload-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := RunAutoUpload(context.Background(), "skip-upload-skill", skillDir, 1, trigger, skillExec, client); err != nil {
+		t.Fatalf("RunAutoUpload() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "upload_status.json")); !os.IsNotExist(err) {
+		t.Fatalf("upload_status.json should not exist, stat err = %v", err)
 	}
 }

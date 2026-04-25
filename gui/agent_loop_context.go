@@ -83,8 +83,15 @@ type LoopContext struct {
 
 	// SkipNeedsConfirmGate is set when handlePendingConfirm classifies the
 	// user's message as "other" (unrelated to the active workflow). When true,
-	// the agent loop skips the NeedsConfirm gate to prevent unrelated LLM
-	// output (e.g. weather info) from being captured as a phase document.
+	// the agent loop skips workflow-engine-specific gates (NeedsConfirm phase
+	// capture, doc_only tool filtering) to prevent unrelated LLM output from
+	// being captured as a phase document.
+	//
+	// This flag does NOT bypass the Coding Tool Gate. When the message is a
+	// new coding task (gateConfig.active=true), the coding gate enforces the
+	// three-phase flow independently of this flag. The two signals are
+	// orthogonal: SkipNeedsConfirmGate controls workflow-engine behavior,
+	// gateConfig.active controls coding-intent behavior.
 	SkipNeedsConfirmGate bool
 
 	// IsAskUserResponse is true when the current message is a response to a

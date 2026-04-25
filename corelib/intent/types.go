@@ -78,6 +78,12 @@ type ClassificationResult struct {
 	Layer            int           // 1, 2, or 3 (23 = fusion of L2+L3)
 	Reason           string        // human-readable explanation
 	CreationOriented bool          // true when the coding intent is creation-oriented (new project/feature)
+
+	// WorkflowType is the workflow template type determined by L3 tree reasoning.
+	// Non-empty when the intent maps to a multi-phase workflow (e.g., "coding",
+	// "presentation_design", "product_design"). Empty string means no workflow.
+	// This eliminates the need for a separate IUM LLM call to determine workflow type.
+	WorkflowType string
 }
 
 // MessageContext is the input to the classifier.

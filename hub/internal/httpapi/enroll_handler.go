@@ -113,6 +113,9 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 		if resp.MachineToken != "" {
 			respMap["machine_token"] = resp.MachineToken
 		}
+		if resp.ViewerToken != "" {
+			respMap["viewer_token"] = resp.ViewerToken
+		}
 		if resp.ExpiresAt != "" {
 			respMap["expires_at"] = resp.ExpiresAt
 		}

@@ -1,4 +1,12 @@
-﻿param()
+﻿param(
+    [ValidateSet('full', 'hubcenter-only')]
+    [string]$Scope = 'full',
+
+    [ValidateSet('rapidai', 'tigerclaw')]
+    [string]$Brand = 'rapidai',
+
+    [switch]$NoCheck
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -45,6 +53,35 @@ function Escape-Psd1String {
     return ($Value -replace "'", "''")
 }
 
+function Quote-ShellEnvValue {
+    param([string]$Value)
+
+    if ($null -eq $Value) {
+        return "''"
+    }
+    return "'" + ($Value -replace "'", "'\''") + "'"
+}
+
+function Get-ExistingClusterSecret {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return ''
+    }
+
+    try {
+        $data = Import-PowerShellDataFile -LiteralPath $Path
+        $secret = [string]$data.ClusterSecret
+        if ([string]::IsNullOrWhiteSpace($secret)) {
+            return ''
+        }
+        return $secret.Trim()
+    }
+    catch {
+        Write-Warning ("Failed to read existing cluster secret from {0}: {1}" -f $Path, $_.Exception.Message)
+        return ''
+    }
+}
 function New-ClusterSecret {
     $bytes = New-Object byte[] 48
     $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
@@ -134,17 +171,6 @@ function Stage-SourceTree {
         }
     }
 
-    $buildSrc = Join-Path $SourceRoot 'build'
-    $buildDst = Join-Path $StageRoot 'build'
-    $activeBuildRoot = Split-Path -Parent $StageRoot
-    if (Test-Path $buildSrc) {
-        New-Item -ItemType Directory -Path $buildDst -Force | Out-Null
-        Get-ChildItem -LiteralPath $buildSrc | Where-Object {
-            $_.Name -ne 'deploy' -and $_.FullName -ne $activeBuildRoot
-        } | ForEach-Object {
-            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $buildDst $_.Name) -Recurse -Force
-        }
-    }
 
     $removePaths = @(
         'hub\bin',
@@ -200,46 +226,54 @@ function Write-InventoryFile {
             NodeName      = 'hubcenter-1'
             PublicBaseURL = 'https://hubs.mypapers.top'
             AdvertiseURL  = 'https://hubs.mypapers.top'
-            DatabaseDSN   = './data/hubcenter-hc-1.db'
+            DatabaseDSN   = './data/codeclaw-hubcenter.db'
         },
         @{
             NodeID        = 'hc-2'
             NodeName      = 'hubcenter-2'
             PublicBaseURL = 'https://hubs.maclaw.top'
             AdvertiseURL  = 'https://hubs.maclaw.top'
-            DatabaseDSN   = './data/hubcenter-hc-2.db'
+            DatabaseDSN   = './data/codeclaw-hubcenter.db'
         },
         @{
             NodeID        = 'hc-3'
             NodeName      = 'hubcenter-3'
             PublicBaseURL = 'https://hubs2.maclaw.top'
             AdvertiseURL  = 'https://hubs2.maclaw.top'
-            DatabaseDSN   = './data/hubcenter-hc-3.db'
+            DatabaseDSN   = './data/codeclaw-hubcenter.db'
         }
     )
 
     Hubs = @(
         @{
-            FileName             = 'hub-mypapers.yaml'
-            PublicBaseURL        = 'https://hub.mypapers.top'
-            PrimaryCenterBaseURL = 'https://hubs.mypapers.top'
-            CenterBaseURLs       = @(
+            FileName              = 'hub-mypapers.yaml'
+            PublicBaseURL         = 'https://hub.mypapers.top'
+            PrimaryCenterBaseURL  = 'https://hubs.mypapers.top'
+            CenterBaseURLs        = @(
                 'https://hubs.mypapers.top',
                 'https://hubs.maclaw.top',
                 'https://hubs2.maclaw.top'
             )
-            DatabaseDSN = './data/maclaw-hub-mypapers.db'
+            DatabaseDSN           = './data/codeclaw-hub.db'
+            Visibility            = 'shared'
+            CorporateEmailDomain  = 'rapidai.tech'
+            CorporateEmailDomains = @('rapidai.tech', 'qianxin.com')
+            AcceptPublicSignup    = `$false
         },
         @{
-            FileName             = 'hub-maclaw.yaml'
-            PublicBaseURL        = 'https://hub.maclaw.top'
-            PrimaryCenterBaseURL = 'https://hubs.maclaw.top'
-            CenterBaseURLs       = @(
+            FileName              = 'hub-maclaw.yaml'
+            PublicBaseURL         = 'https://hub.maclaw.top'
+            PrimaryCenterBaseURL  = 'https://hubs.maclaw.top'
+            CenterBaseURLs        = @(
                 'https://hubs.mypapers.top',
                 'https://hubs.maclaw.top',
                 'https://hubs2.maclaw.top'
             )
-            DatabaseDSN = './data/maclaw-hub-maclaw.db'
+            DatabaseDSN           = './data/codeclaw-hub.db'
+            Visibility            = 'shared'
+            CorporateEmailDomain  = ''
+            CorporateEmailDomains = @()
+            AcceptPublicSignup    = `$true
         }
     )
 }
@@ -265,6 +299,9 @@ function Write-RemoteScript {
         ': "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf}"',
         ': "${HUB_CONFIG_BASENAME:=}"',
         ': "${HUBCENTER_CONFIG_BASENAME:=hubcenter-config.yaml}"',
+        ': "${HUB_BINARY_NAME:=maclaw-hub}"',
+        ': "${HUBCENTER_BINARY_NAME:=maclaw-hubcenter}"',
+        ': "${BRAND_BUILD_TAG:=}"',
         '',
         'if ! command -v go >/dev/null 2>&1; then',
         '  echo "[ERROR] go is not installed on remote host" >&2',
@@ -293,6 +330,7 @@ function Write-RemoteScript {
         'RS_BUILD_SCRIPT="$SRC_ROOT/build/build_rapidspeech.sh"',
         'RS_LIB="$SRC_ROOT/RapidSpeech.cpp/build/librapidspeech_static.a"',
         'EXTRA_TAGS=""',
+        'BUILD_TAGS=""',
         'if [ -f "$RS_BUILD_SCRIPT" ]; then',
         '  echo "[remote] Building RapidSpeech static library (optional)..."',
         '  chmod +x "$RS_BUILD_SCRIPT"',
@@ -305,12 +343,19 @@ function Write-RemoteScript {
         '  fi',
         'fi',
         '',
+        'if [ -n "$BRAND_BUILD_TAG" ]; then',
+        '  BUILD_TAGS="$EXTRA_TAGS $BRAND_BUILD_TAG"',
+        'else',
+        '  BUILD_TAGS="$EXTRA_TAGS"',
+        'fi',
+        'BUILD_TAGS=$(printf "%s" "$BUILD_TAGS" | xargs)',
+        '',
         'echo "[remote] Building hubcenter..."',
-        'GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$EXTRA_TAGS" -o "$BUILD_ROOT/maclaw-hubcenter" ./hubcenter/cmd/hubcenter',
+        'GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$BUILD_TAGS" -o "$BUILD_ROOT/$HUBCENTER_BINARY_NAME" ./hubcenter/cmd/hubcenter',
         '',
         'if [ "$DEPLOY_HUB" = "1" ]; then',
         '  echo "[remote] Building hub..."',
-        '  GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$EXTRA_TAGS" -o "$BUILD_ROOT/maclaw-hub" ./hub/cmd/hub',
+        '  GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$BUILD_TAGS" -o "$BUILD_ROOT/$HUB_BINARY_NAME" ./hub/cmd/hub',
         'fi',
         '',
         'backup_and_write_config() {',
@@ -396,11 +441,12 @@ function Write-RemoteScript {
         '',
         'deploy_hubcenter() {',
         '  mkdir -p "$REMOTE_HUBCENTER_DIR" "$REMOTE_HUBCENTER_DIR/configs" "$REMOTE_HUBCENTER_DIR/data" "$REMOTE_HUBCENTER_DIR/data/logs"',
-        '  cp -f "$BUILD_ROOT/maclaw-hubcenter" "$REMOTE_HUBCENTER_DIR/maclaw-hubcenter"',
-        '  chmod +x "$REMOTE_HUBCENTER_DIR/maclaw-hubcenter"',
+        '  cp -f "$BUILD_ROOT/$HUBCENTER_BINARY_NAME" "$REMOTE_HUBCENTER_DIR/$HUBCENTER_BINARY_NAME"',
+        '  chmod +x "$REMOTE_HUBCENTER_DIR/$HUBCENTER_BINARY_NAME"',
         '  if [ -f "$SRC_ROOT/hubcenter/start.sh" ]; then',
         '    cp -f "$SRC_ROOT/hubcenter/start.sh" "$REMOTE_HUBCENTER_DIR/start.sh"',
         '    sed -i ''s/\r$//'' "$REMOTE_HUBCENTER_DIR/start.sh"',
+        '    sed -i "s/maclaw-hubcenter/$HUBCENTER_BINARY_NAME/g" "$REMOTE_HUBCENTER_DIR/start.sh"',
         '    chmod +x "$REMOTE_HUBCENTER_DIR/start.sh"',
         '  fi',
         '  if [ -f "$SRC_ROOT/hubcenter/configs/config.example.yaml" ]; then',
@@ -415,11 +461,12 @@ function Write-RemoteScript {
         '',
         'deploy_hub() {',
         '  mkdir -p "$REMOTE_HUB_DIR" "$REMOTE_HUB_DIR/configs" "$REMOTE_HUB_DIR/data" "$REMOTE_HUB_DIR/data/logs"',
-        '  cp -f "$BUILD_ROOT/maclaw-hub" "$REMOTE_HUB_DIR/maclaw-hub"',
-        '  chmod +x "$REMOTE_HUB_DIR/maclaw-hub"',
+        '  cp -f "$BUILD_ROOT/$HUB_BINARY_NAME" "$REMOTE_HUB_DIR/$HUB_BINARY_NAME"',
+        '  chmod +x "$REMOTE_HUB_DIR/$HUB_BINARY_NAME"',
         '  if [ -f "$SRC_ROOT/hub/start.sh" ]; then',
         '    cp -f "$SRC_ROOT/hub/start.sh" "$REMOTE_HUB_DIR/start.sh"',
         '    sed -i ''s/\r$//'' "$REMOTE_HUB_DIR/start.sh"',
+        '    sed -i "s/maclaw-hub/$HUB_BINARY_NAME/g" "$REMOTE_HUB_DIR/start.sh"',
         '    chmod +x "$REMOTE_HUB_DIR/start.sh"',
         '  fi',
         '  if [ -f "$SRC_ROOT/hub/configs/config.example.yaml" ]; then',
@@ -555,6 +602,74 @@ function Invoke-PscpUpload {
     }
 }
 
+function Invoke-UrlStatusCheck {
+    param(
+        [string]$Url,
+        [int]$TimeoutSec = 10
+    )
+
+    try {
+        $response = Invoke-WebRequest -Uri $Url -Method Get -UseBasicParsing -TimeoutSec $TimeoutSec
+        return [int]$response.StatusCode
+    }
+    catch {
+        $resp = $null
+        if ($null -ne $_.Exception) {
+            $resp = $_.Exception.Response
+        }
+        if ($null -ne $resp) {
+            try {
+                return [int]$resp.StatusCode
+            }
+            catch {
+                try {
+                    return [int]$resp.StatusCode.value__
+                }
+                catch {
+                }
+            }
+        }
+        throw
+    }
+}
+
+function Invoke-PostDeploySmokeCheck {
+    param(
+        [object[]]$Targets,
+        [int]$TimeoutSec = 10
+    )
+
+    $failures = @()
+    foreach ($target in $Targets) {
+        $checks = @(
+            [pscustomobject]@{ Label = 'hubcenter healthz'; Url = ("https://{0}/healthz" -f $target.Host); Want = 200 },
+            [pscustomobject]@{ Label = 'hubcenter admin'; Url = ("https://{0}/admin" -f $target.Host); Want = 200 }
+        )
+        if ($target.DeployHub -and -not [string]::IsNullOrWhiteSpace($target.HubPublicUrl)) {
+            $checks += [pscustomobject]@{ Label = 'hub healthz'; Url = ("{0}/healthz" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
+            $checks += [pscustomobject]@{ Label = 'hub admin'; Url = ("{0}/admin" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
+        }
+
+        foreach ($check in $checks) {
+            try {
+                $status = Invoke-UrlStatusCheck -Url $check.Url -TimeoutSec $TimeoutSec
+                Write-Host ("  - {0}: {1} -> {2}" -f $target.Host, $check.Label, $status)
+                if ($status -ne $check.Want) {
+                    $failures += ("{0}: {1} expected {2}, got {3} ({4})" -f $target.Host, $check.Label, $check.Want, $status, $check.Url)
+                }
+            }
+            catch {
+                $message = (($_ | Out-String).Trim())
+                Write-Host ("  - {0}: {1} -> ERROR" -f $target.Host, $check.Label)
+                $failures += ("{0}: {1} failed: {2} ({3})" -f $target.Host, $check.Label, $message, $check.Url)
+            }
+        }
+    }
+
+    if ($failures.Count -gt 0) {
+        throw ("Post-deploy smoke check failed:`n - " + ($failures -join "`n - "))
+    }
+}
 function Invoke-RemotePrecheck {
     param(
         [string]$PlinkExe,
@@ -605,6 +720,16 @@ $goproxy = Get-EnvOrDefault 'GOPROXY' 'https://goproxy.cn,direct'
 $hubModelBaseUrl = Get-EnvOrDefault 'HUB_MODEL_BASE_URL' 'https://github.com/RapidAI/MaClaw/releases/download/Model_Release'
 $hubModelFiles = Get-EnvOrDefault 'HUB_MODEL_FILES' 'embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf'
 
+$brandKey = $Brand.ToLowerInvariant()
+$brandBuildTag = ''
+$hubBinaryName = 'maclaw-hub'
+$hubCenterBinaryName = 'maclaw-hubcenter'
+if ($brandKey -eq 'tigerclaw') {
+    $brandBuildTag = 'oem_qianxin'
+    $hubBinaryName = 'tigerclaw-hub'
+    $hubCenterBinaryName = 'tigerclaw-hubcenter'
+}
+
 $targets = @(
     [pscustomobject]@{
         Name = 'hc-1'
@@ -638,19 +763,29 @@ $targets = @(
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-3' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-3' '/data/soft/hubcenter'
         HubCenterConfig = 'hubcenter-hc-3.yaml'
-        DeployHub = $false
-        HubConfig = ''
-        HubPublicUrl = ''
+        DeployHub = $true
+        HubConfig = 'hub2-maclaw.yaml'
+        HubPublicUrl = 'https://hub2.maclaw.top'
     }
 )
 
+if ($Scope -eq 'hubcenter-only') {
+    foreach ($target in $targets) {
+        $target.DeployHub = $false
+        $target.HubConfig = ''
+        $target.HubPublicUrl = ''
+    }
+}
+
 $passwordFile = Join-Path $env:TEMP ("deploy_all_password_{0}_{1}.txt" -f (Get-Random), (Get-Random))
-$buildRoot = Join-Path $rootDir 'build\deploy-ha'
+$buildBaseRoot = Join-Path $rootDir 'build\deploy-ha'
+$runStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$buildRoot = Join-Path $buildBaseRoot ('run-{0}-{1}' -f $runStamp, $PID)
 $stageRoot = Join-Path $buildRoot 'stage'
-$renderedDir = Join-Path $buildRoot 'rendered-configs'
+$renderedDir = Join-Path $rootDir 'deploy\rendered-configs-temp'
 $archivePath = Join-Path $buildRoot 'maclaw-src.tar.gz'
 $remoteScriptPath = Join-Path $buildRoot 'remote_deploy.sh'
-$inventoryPath = Join-Path $buildRoot 'hubcenter-ha.inventory.generated.psd1'
+$inventoryPath = Join-Path $rootDir 'deploy\hubcenter-ha.inventory.generated.psd1'
 $modelStatuses = @()
 
 try {
@@ -659,8 +794,14 @@ try {
     $clusterSecret = Get-EnvOrDefault 'CLUSTER_SECRET' ''
     $secretSource = 'environment'
     if ([string]::IsNullOrWhiteSpace($clusterSecret)) {
-        $clusterSecret = New-ClusterSecret
-        $secretSource = 'generated'
+        $clusterSecret = Get-ExistingClusterSecret -Path $inventoryPath
+        if (-not [string]::IsNullOrWhiteSpace($clusterSecret)) {
+            $secretSource = 'existing-inventory'
+        }
+        else {
+            $clusterSecret = New-ClusterSecret
+            $secretSource = 'generated'
+        }
     }
 
     Write-Host ''
@@ -740,28 +881,40 @@ try {
 
         $deployHubFlag = if ($target.DeployHub) { '1' } else { '0' }
         $envParts = @(
-            "CGO_ENABLED=$cgoEnabled",
-            "GOPROXY=$goproxy",
-            "REMOTE_TMP_DIR=$($target.RemoteTmpDir)",
-            "REMOTE_HUB_DIR=$($target.RemoteHubDir)",
-            "REMOTE_HUBCENTER_DIR=$($target.RemoteHubCenterDir)",
-            "DEPLOY_HUB=$deployHubFlag",
-            "ENSURE_HUB_MODELS=$ensureHubModels",
-            "HUB_MODEL_BASE_URL=$hubModelBaseUrl",
-            "HUB_MODEL_FILES=$hubModelFiles",
-            "HUBCENTER_CONFIG_BASENAME=$($target.HubCenterConfig)"
+            ("export CGO_ENABLED={0}" -f (Quote-ShellEnvValue $cgoEnabled)),
+            ("export GOPROXY={0}" -f (Quote-ShellEnvValue $goproxy)),
+            ("export REMOTE_TMP_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteTmpDir)),
+            ("export REMOTE_HUB_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubDir)),
+            ("export REMOTE_HUBCENTER_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubCenterDir)),
+            ("export DEPLOY_HUB={0}" -f (Quote-ShellEnvValue $deployHubFlag)),
+            ("export ENSURE_HUB_MODELS={0}" -f (Quote-ShellEnvValue $ensureHubModels)),
+            ("export HUB_MODEL_BASE_URL={0}" -f (Quote-ShellEnvValue $hubModelBaseUrl)),
+            ("export HUB_MODEL_FILES={0}" -f (Quote-ShellEnvValue $hubModelFiles)),
+            ("export HUBCENTER_CONFIG_BASENAME={0}" -f (Quote-ShellEnvValue $target.HubCenterConfig)),
+            ("export HUB_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubBinaryName)),
+            ("export HUBCENTER_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubCenterBinaryName)),
+            ("export BRAND_BUILD_TAG={0}" -f (Quote-ShellEnvValue $brandBuildTag))
         )
         if ($target.DeployHub) {
-            $envParts += "HUB_CONFIG_BASENAME=$($target.HubConfig)"
+            $envParts += ("export HUB_CONFIG_BASENAME={0}" -f (Quote-ShellEnvValue $target.HubConfig))
         }
 
-        $remoteCommand = "sed -i 's/\r$//' $($target.RemoteTmpDir)/remote_deploy.sh && chmod +x $($target.RemoteTmpDir)/remote_deploy.sh && {0} $($target.RemoteTmpDir)/remote_deploy.sh" -f ($envParts -join ' ')
+        $remoteCommand = "sed -i 's/\r$//' $($target.RemoteTmpDir)/remote_deploy.sh && chmod +x $($target.RemoteTmpDir)/remote_deploy.sh && {0} && $($target.RemoteTmpDir)/remote_deploy.sh" -f ($envParts -join ' && ')
 
         Write-Host ("[9/9][{0}/{1}] Building and deploying on {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan
         Invoke-Plink -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText $remoteCommand
     }
 
     Write-Host ''
+    if ($NoCheck) {
+        Write-Host 'Post-deploy smoke check skipped (--no-check).' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host 'Running post-deploy smoke checks...' -ForegroundColor Cyan
+        Start-Sleep -Seconds 3
+        Invoke-PostDeploySmokeCheck -Targets $targets
+    }
+
     Write-Host 'Deployment completed successfully.' -ForegroundColor Green
     Write-Host ("Rendered configs: {0}" -f $renderedDir)
     Write-Host 'Services deployed:'
@@ -794,6 +947,12 @@ finally {
         Remove-Item -LiteralPath $passwordFile -Force -ErrorAction SilentlyContinue
     }
 }
+
+
+
+
+
+
 
 
 

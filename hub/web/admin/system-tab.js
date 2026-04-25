@@ -31,7 +31,10 @@ const TLS_I18N = {
     restartActionDisable: 'disabled',
     restartVisit: 'Visit the new address: {url}',
     saveFailed: 'Save TLS config failed: {error}',
-    sans: 'SANs: {value}'
+    sans: 'SANs: {value}',
+    statusOkBadge: '[OK]',
+    statusExpiredBadge: '[EXPIRED]',
+    statusPendingBadge: '[PENDING]'
   },
   zh: {
     title: 'TLS / HTTPS',
@@ -61,7 +64,10 @@ const TLS_I18N = {
     restartActionDisable: '\u5173\u95ed',
     restartVisit: '\u70b9\u51fb\u8bbf\u95ee\u65b0\u5730\u5740: {url}',
     saveFailed: '\u4fdd\u5b58 TLS \u914d\u7f6e\u5931\u8d25: {error}',
-    sans: 'SANs: {value}'
+    sans: 'SANs: {value}',
+    statusOkBadge: '[\u6b63\u5e38]',
+    statusExpiredBadge: '[\u5df2\u8fc7\u671f]',
+    statusPendingBadge: '[\u5f85\u751f\u6210]'
   }
 };
 const tlsx = (key, vars = {}) => ((TLS_I18N[currentLang] || TLS_I18N.en)[key] || TLS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
@@ -88,15 +94,15 @@ async function loadTlsConfig() {
     const info = document.getElementById('tlsCertInfo');
     if (data.cert_valid) {
       const expiry = new Date(data.cert_expiry).toLocaleDateString();
-      badge.textContent = '[OK] ' + tlsx('statusValidUntil', { date: expiry });
+      badge.textContent = tlsx('statusOkBadge') + ' ' + tlsx('statusValidUntil', { date: expiry });
       badge.className = 'badge ok';
       info.innerHTML = '<div class="item-meta">' + escapeHtml(tlsx('sans', { value: data.cert_sans || '-' })) + '</div>';
     } else if (data.cert_expiry) {
-      badge.textContent = '[EXPIRED] ' + tlsx('statusExpired');
+      badge.textContent = tlsx('statusExpiredBadge') + ' ' + tlsx('statusExpired');
       badge.className = 'badge danger';
       info.innerHTML = '<div class="item-meta" style="color:var(--danger)">' + escapeHtml(tlsx('certExpiredHint')) + '</div>';
     } else {
-      badge.textContent = '[PENDING] ' + tlsx('statusNotGenerated');
+      badge.textContent = tlsx('statusPendingBadge') + ' ' + tlsx('statusNotGenerated');
       badge.className = 'badge info';
       info.innerHTML = '<div class="item-meta">' + escapeHtml(tlsx('certGenerateHint')) + '</div>';
     }
@@ -104,6 +110,117 @@ async function loadTlsConfig() {
     const msg = tlsx('loadFailed', { error: err.message });
     setOutput(msg);
     showToast(msg, 'error');
+  }
+}
+
+const ROUTING_I18N = {
+  en: {
+    title: 'Enterprise Email Routing',
+    desc: 'Edit the hub\'s corporate email domains and sync them to Hub Center.',
+    reload: 'Reload',
+    primaryDomain: 'Primary Corporate Email Domain',
+    primaryPlaceholder: 'rapidai.tech',
+    domains: 'Corporate Email Domains',
+    domainsPlaceholder: 'rapidai.tech, subsidiary.example',
+    domainsHint: 'Comma or newline separated. The first domain is treated as the primary route when the primary field is empty.',
+    acceptPublicSignup: 'Accept Public Signup',
+    acceptPublicSignupHint: 'Enable this only on the hub that should accept signups outside configured enterprise domains.',
+    save: 'Save Routing',
+    loadFailed: 'Load enterprise email routing failed: {error}',
+    saveFailed: 'Save enterprise email routing failed: {error}',
+    saved: 'Enterprise email routing saved.'
+  },
+  zh: {
+    title: '\u4f01\u4e1a\u90ae\u7bb1\u8def\u7531',
+    desc: '\u4fee\u6539 Hub \u5173\u8054\u7684\u4f01\u4e1a\u90ae\u7bb1\u57df\u540d\uff0c\u5e76\u540c\u6b65\u5230 Hub Center\u3002',
+    reload: '\u5237\u65b0',
+    primaryDomain: '\u4e3b\u4f01\u4e1a\u90ae\u7bb1\u57df\u540d',
+    primaryPlaceholder: 'rapidai.tech',
+    domains: '\u4f01\u4e1a\u90ae\u7bb1\u57df\u540d\u5217\u8868',
+    domainsPlaceholder: 'rapidai.tech, subsidiary.example',
+    domainsHint: '\u652f\u6301\u9017\u53f7\u6216\u6362\u884c\u5206\u9694\uff0c\u5f53\u4e3b\u57df\u540d\u4e3a\u7a7a\u65f6\u53d6\u5217\u8868\u7684\u7b2c\u4e00\u4e2a\u4f5c\u4e3a\u4e3b\u8def\u7531\u57df\u540d\u3002',
+    acceptPublicSignup: '\u5141\u8bb8\u6563\u6237\u6ce8\u518c',
+    acceptPublicSignupHint: '\u53ea\u5e94\u5728\u627f\u63a5\u975e\u4f01\u4e1a\u57df\u540d\u7528\u6237\u7684 Hub \u4e0a\u5f00\u542f\u3002',
+    save: '\u4fdd\u5b58\u8def\u7531\u914d\u7f6e',
+    loadFailed: '\u52a0\u8f7d\u4f01\u4e1a\u90ae\u7bb1\u8def\u7531\u5931\u8d25: {error}',
+    saveFailed: '\u4fdd\u5b58\u4f01\u4e1a\u90ae\u7bb1\u8def\u7531\u5931\u8d25: {error}',
+    saved: '\u4f01\u4e1a\u90ae\u7bb1\u8def\u7531\u5df2\u4fdd\u5b58\u3002'
+  }
+};
+const srx = (key, vars = {}) => ((ROUTING_I18N[currentLang] || ROUTING_I18N.en)[key] || ROUTING_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+function normalizeSystemRoutingDomains(value) {
+  return String(value || '')
+    .split(/[\n,]/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+function formatSystemRoutingDomains(value) {
+  return normalizeSystemRoutingDomains(value).join('\n');
+}
+function applySystemRoutingI18n() {
+  _s('systemRoutingTitle', 'textContent', srx('title'));
+  _s('systemRoutingDesc', 'textContent', srx('desc'));
+  _s('systemRoutingReloadBtn', 'textContent', srx('reload'));
+  _s('systemCorporateEmailDomainLabel', 'textContent', srx('primaryDomain'));
+  _s('systemCorporateEmailDomainsLabel', 'textContent', srx('domains'));
+  _s('systemCorporateEmailDomainsHint', 'textContent', srx('domainsHint'));
+  _s('systemAcceptPublicSignupLabel', 'textContent', srx('acceptPublicSignup'));
+  _s('systemAcceptPublicSignupHint', 'textContent', srx('acceptPublicSignupHint'));
+  _s('systemRoutingSaveBtn', 'textContent', srx('save'));
+  _s('systemCorporateEmailDomain', 'placeholder', srx('primaryPlaceholder'));
+  _s('systemCorporateEmailDomains', 'placeholder', srx('domainsPlaceholder'));
+}
+async function loadSystemRoutingConfig() {
+  applySystemRoutingI18n();
+  try {
+    const data = await api('/api/admin/center/status');
+    const domains = Array.isArray(data.corporate_email_domains) ? data.corporate_email_domains.filter(Boolean) : [];
+    document.getElementById('systemCorporateEmailDomain').value = data.corporate_email_domain || '';
+    document.getElementById('systemCorporateEmailDomains').value = domains.length ? domains.join('\n') : formatSystemRoutingDomains(data.corporate_email_domain || '');
+    document.getElementById('systemAcceptPublicSignup').checked = !!data.accept_public_signup;
+    return data;
+  } catch (err) {
+    const msg = srx('loadFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+    throw err;
+  }
+}
+async function saveSystemRoutingConfig() {
+  const btn = document.getElementById('systemRoutingSaveBtn');
+  const previousLabel = btn ? btn.textContent : '';
+  if (btn) btn.disabled = true;
+  try {
+    const current = await api('/api/admin/center/status');
+    let corporateDomains = normalizeSystemRoutingDomains(document.getElementById('systemCorporateEmailDomains').value);
+    let primaryDomain = document.getElementById('systemCorporateEmailDomain').value.trim();
+    if (!corporateDomains.length && primaryDomain) corporateDomains = [primaryDomain];
+    if (!primaryDomain && corporateDomains.length) primaryDomain = corporateDomains[0];
+    await api('/api/admin/center/config', {
+      method: 'POST',
+      body: JSON.stringify({
+        base_url: current.base_url || '',
+        public_base_url: current.public_base_url || '',
+        visibility: current.visibility || 'private',
+        enrollment_mode: current.enrollment_mode || 'open',
+        corporate_email_domain: primaryDomain,
+        corporate_email_domains: corporateDomains,
+        accept_public_signup: !!document.getElementById('systemAcceptPublicSignup').checked
+      })
+    });
+    await loadSystemRoutingConfig();
+    const msg = srx('saved');
+    setOutput(msg);
+    showToast(msg, 'success');
+  } catch (err) {
+    const msg = srx('saveFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = previousLabel || srx('save');
+    }
   }
 }
 
@@ -144,9 +261,11 @@ async function saveTlsConfig() {
 if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange === 'function') {
   window.AdminTabRegistry.onLanguageChange(function() {
     applyTLSI18n();
+    applySystemRoutingI18n();
   });
 }
 applyTLSI18n();
+applySystemRoutingI18n();
 function findMailPreset(provider) { return MAIL_PRESETS[provider] || MAIL_PRESETS.custom; }
 function detectMailProvider(cfg) { const host = String(cfg?.smtp_host || '').trim().toLowerCase(); const port = Number(cfg?.smtp_port || 0); const encryption = String(cfg?.smtp_encryption || '').trim().toLowerCase(); for (const [provider, preset] of Object.entries(MAIL_PRESETS)) { if (provider === 'custom') continue; if (host === preset.smtp_host && (!port || port === preset.smtp_port) && (!encryption || encryption === preset.smtp_encryption)) return provider; } return String(cfg?.provider || '').trim() || 'custom'; }
 function renderMailConfig(cfg = {}) { const provider = detectMailProvider(cfg); document.getElementById('mailProvider').value = MAIL_PRESETS[provider] ? provider : 'custom'; document.getElementById('mailHost').value = cfg.smtp_host || ''; document.getElementById('mailPort').value = cfg.smtp_port ? String(cfg.smtp_port) : ''; document.getElementById('mailEncryption').value = cfg.smtp_encryption || 'auto'; document.getElementById('mailUsername').value = cfg.smtp_username || ''; document.getElementById('mailPassword').value = cfg.smtp_password || ''; document.getElementById('mailFromName').value = cfg.from_name || 'MaClaw Hub'; document.getElementById('mailFromEmail').value = cfg.from_email || cfg.smtp_username || ''; }

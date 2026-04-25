@@ -40,7 +40,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// /health — always available
+	// /health - always available
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if center != nil && center.Mux != nil {
@@ -66,7 +66,7 @@ func main() {
 	mux.HandleFunc("/diworker-auth/", forwardOrUnavailable)
 
 	// Prepare SPA file server for the admin frontend.
-	// Embed layout: web/admin/index.html → after fs.Sub("web/admin") → index.html
+	// Embed layout: web/admin/index.html -> after fs.Sub("web/admin") -> index.html
 	adminFS, err := fs.Sub(webAssets, "web/admin")
 	if err != nil {
 		log.Fatalf("embed web assets: %v", err)
@@ -74,12 +74,12 @@ func main() {
 	spaFS := http.FS(adminFS)
 	spaFileServer := http.StripPrefix("/admin/", http.FileServer(spaFS))
 
-	// /admin — redirect to /admin/
+	// /admin - redirect to /admin/
 	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/", http.StatusMovedPermanently)
 	})
 
-	// /admin/ — API routes + SPA fallback
+	// /admin/ - API routes + SPA fallback
 	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
 		// If the path matches a known admin API prefix, forward to center.Mux
 		if isAdminAPIPath(r.URL.Path) {
@@ -101,7 +101,7 @@ func main() {
 			spaFileServer.ServeHTTP(w, r)
 			return
 		}
-		// File doesn't exist — serve index.html for SPA client-side routing
+		// File does not exist; serve index.html for SPA client-side routing
 		r.URL.Path = "/admin/index.html"
 		spaFileServer.ServeHTTP(w, r)
 	})
@@ -161,6 +161,7 @@ func isAdminAPIPath(path string) bool {
 		"/admin/diworker-auth",
 		"/admin/compute",
 		"/admin/recommend",
+		"/admin/executive",
 		"/admin/profile",
 		"/admin/password",
 	}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -311,8 +312,14 @@ func synthesizeAdminEmail(username string) string {
 	return slug + "@local.admin"
 }
 
+// idCounter ensures newID returns unique values even when called multiple
+// times within the same nanosecond (e.g. enrollment issuing both a machine
+// token and a viewer token in quick succession).
+var idCounter atomic.Int64
+
 func newID(prefix string) string {
-	return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+	seq := idCounter.Add(1)
+	return fmt.Sprintf("%s_%d_%d", prefix, time.Now().UnixNano(), seq)
 }
 
 func randomToken(size int) (string, error) {

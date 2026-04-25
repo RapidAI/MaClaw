@@ -34,26 +34,32 @@ type RepairContext struct {
 	PreviousRepairCount int              `json:"previous_repair_count"`
 }
 
-// nonRepairableErrorClasses lists error types caused by external/transient
-// factors that cannot be fixed by modifying the skill's steps.
-var nonRepairableErrorClasses = map[string]bool{
-	"rate_limit":    true,
-	"network_error": true,
-}
-
 // IsRepairableError returns true if the error class is worth attempting
-// automated repair. External/transient errors return false.
+// automated repair. Delegates to the unified rules table in error_classifier.go
+// which is the single source of truth for repairable/non-repairable classification.
+//
+// When the errorClass matches a known rule, returns that rule's repairable flag.
+// Unknown error classes default to repairable (optimistic — worth trying).
 func IsRepairableError(errorClass string) bool {
-	return !nonRepairableErrorClasses[errorClass]
+	ec := ErrorClass(errorClass)
+	for _, rule := range rules {
+		if rule.class == ec {
+			return rule.repairable
+		}
+	}
+	return true // unknown → optimistic
 }
 
-// ShouldAttemptRepair returns true if the skill has enough usage data and
-// a low enough success rate to warrant an automated repair attempt.
+// ShouldAttemptRepair returns true if the skill should undergo an automated
+// repair attempt. Two paths:
+//
+// Path 1 (newly installed hub skill): First failure is a strong signal that
+// the skill is incompatible with the current environment. Repair immediately
+// without waiting for the statistical threshold.
+//
+// Path 2 (statistical): Enough usage data to judge — success rate below 50%.
 func ShouldAttemptRepair(skill *corelib.NLSkillEntry) bool {
 	if skill == nil {
-		return false
-	}
-	if skill.UsageCount < SelfRepairThreshold {
 		return false
 	}
 	if skill.LastError == "" {
@@ -62,8 +68,50 @@ func ShouldAttemptRepair(skill *corelib.NLSkillEntry) bool {
 	if skill.RepairAttemptCount >= SelfRepairMaxAttempts {
 		return false
 	}
+
+	// Path 1: Newly installed hub/github skill — first failure is a strong
+	// signal (environment incompatibility). Repair immediately if the error
+	// class is repairable.
+	if skill.UsageCount <= 2 && isHubSource(skill.Source) {
+		errorClass := ExtractErrorClass(skill.LastError)
+		return IsRepairableError(errorClass)
+	}
+
+	// Path 2: Statistical — enough data to judge.
+	if skill.UsageCount < SelfRepairThreshold {
+		return false
+	}
 	successRate := float64(skill.SuccessCount) / float64(skill.UsageCount)
 	return successRate < 0.5
+}
+
+// isHubSource returns true if the skill source indicates it was installed
+// from a hub or auto-discovered (not locally created).
+func isHubSource(source string) bool {
+	switch source {
+	case "hub", "auto_hub", "auto_github":
+		return true
+	}
+	return false
+}
+
+// ExtractErrorClass extracts the error class from a formatted error string
+// that contains a [class: xxx] tag (produced by FormatErrorForLLM).
+// Returns the class string, or "unknown" if no tag is found.
+//
+// Uses errorClassPrefix/Suffix from error_classifier.go — single source of
+// truth for the wire format.
+func ExtractErrorClass(lastError string) string {
+	idx := strings.Index(lastError, errorClassPrefix)
+	if idx < 0 {
+		return string(ErrUnknown)
+	}
+	rest := lastError[idx+len(errorClassPrefix):]
+	end := strings.Index(rest, errorClassSuffix)
+	if end < 0 {
+		return string(ErrUnknown)
+	}
+	return rest[:end]
 }
 
 // RepairResult holds the outcome of a self-repair attempt.

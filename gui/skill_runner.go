@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,21 +57,22 @@ type SkillRunSummary struct {
 
 // SkillRunStatus 表示一次 skill 执行的状态。
 type SkillRunStatus struct {
-	RunID           string               `json:"run_id"`
-	Skill           string               `json:"skill"`
-	Status          string               `json:"status"` // "running", "success", "failed", "cancelled"
-	Steps           []StepResult         `json:"steps"`
-	Session         *SkillRunSessionMeta `json:"session,omitempty"`
-	SessionProgress *SessionProgressInfo `json:"session_progress,omitempty"`
-	Summary         SkillRunSummary      `json:"summary,omitempty"`
-	ExpectedOutput  string               `json:"expected_output,omitempty"`
-	StartedAt       string               `json:"started_at"`
-	EndedAt         string               `json:"ended_at,omitempty"`
-	Error           string               `json:"error,omitempty"`
-	DurationMs      int64                `json:"duration_ms,omitempty"`
-	TotalSteps      int                  `json:"total_steps,omitempty"`
-	FailedSteps     int                  `json:"failed_steps,omitempty"`
-	SkippedSteps    int                  `json:"skipped_steps,omitempty"`
+	RunID             string               `json:"run_id"`
+	Skill             string               `json:"skill"`
+	Status            string               `json:"status"` // "running", "success", "failed", "cancelled"
+	Steps             []StepResult         `json:"steps"`
+	Session           *SkillRunSessionMeta `json:"session,omitempty"`
+	SessionProgress   *SessionProgressInfo `json:"session_progress,omitempty"`
+	Summary           SkillRunSummary      `json:"summary,omitempty"`
+	ExpectedOutput    string               `json:"expected_output,omitempty"`
+	StartedAt         string               `json:"started_at"`
+	EndedAt           string               `json:"ended_at,omitempty"`
+	Error             string               `json:"error,omitempty"`
+	DurationMs        int64                `json:"duration_ms,omitempty"`
+	TotalSteps        int                  `json:"total_steps,omitempty"`
+	FailedSteps       int                  `json:"failed_steps,omitempty"`
+	SkippedSteps      int                  `json:"skipped_steps,omitempty"`
+	SelfRepairPending bool                 `json:"self_repair_pending,omitempty"` // true when async self-repair is in progress
 }
 
 // SessionProgressInfo captures the latest state from the session's internal
@@ -116,6 +118,13 @@ type SkillRunner struct {
 	counter       int
 	uploadTrigger *AutoUploadTrigger
 	packageFn     func(skillName string) (string, error) // packageSkillForMarket
+
+	// recentRepairs tracks skills that were recently auto-repaired.
+	// Consumed by the system prompt builder to notify the LLM about
+	// repaired skills so it can adjust its calling strategy.
+	// Key: skill name, Value: repair explanation.
+	// Entries are consumed (deleted) after being injected into the prompt.
+	recentRepairs sync.Map
 }
 
 type skillRun struct {
@@ -796,14 +805,66 @@ func buildArgsExample(keys []string) string {
 	return strings.Join(parts, ", ")
 }
 
-func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir string) corelib.NLSkillStep {
+func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir string, params []corelib.NLSkillParam) (corelib.NLSkillStep, error) {
+	// Phase 1: Parameter binding — alias resolution, defaults, required validation.
+	// When params are available (explicit or synthesized), BindParams normalizes
+	// the vars map so that canonical param names are used for substitution.
+	// This is the single path that closes the LLM↔Skill parameter name gap.
+	bindVars := vars
+	if len(params) > 0 {
+		bindResult := cskill.BindParams(params, vars)
+		for _, w := range bindResult.Warnings {
+			log.Printf("[skill-runner] param bind warning: %s", w)
+		}
+		if bindResult.HasErrors() {
+			return step, fmt.Errorf("参数绑定失败: %s", bindResult.ErrorString())
+		}
+		// Use resolved vars (canonical names) for template substitution.
+		// Merge back any vars that weren't consumed by params (e.g., captured
+		// vars from previous steps that aren't in the schema).
+		bindVars = make(map[string]string, len(bindResult.ResolvedVars)+len(vars))
+		for k, v := range vars {
+			bindVars[k] = v
+		}
+		for k, v := range bindResult.ResolvedVars {
+			bindVars[k] = v // canonical names override aliases
+		}
+
+		// Phase 1b: CLI args appending (only for explicit schema with CLIFlag).
+		if len(bindResult.CLIArgs) > 0 {
+			if cmd, ok := step.Params["command"].(string); ok && cmd != "" {
+				// Filter out CLI args whose param name is already referenced
+				// as a placeholder in the command template (avoid double-apply).
+				filtered := filterConsumedCLIArgs(bindResult.CLIArgs, params, cmd)
+				if len(filtered) > 0 {
+					cp := make(map[string]interface{}, len(step.Params))
+					for k, v := range step.Params {
+						cp[k] = v
+					}
+					// Quote values for shell safety. CLI args are [flag, value, flag, value, ...].
+					// Flags don't need quoting; values do.
+					var quotedParts []string
+					for i := 0; i < len(filtered); i += 2 {
+						quotedParts = append(quotedParts, filtered[i]) // flag
+						if i+1 < len(filtered) {
+							quotedParts = append(quotedParts, quoteSkillInputForShell(filtered[i+1])) // value
+						}
+					}
+					cp["command"] = cmd + " " + strings.Join(quotedParts, " ")
+					step.Params = cp
+				}
+			}
+		}
+	}
+
+	// Phase 2: Template substitution (existing logic, handles shell quoting).
 	resolved := step
-	if params, ok := resolveSkillValue(step.Params, vars).(map[string]interface{}); ok {
-		resolved.Params = params
+	if resolvedParams, ok := resolveSkillValue(step.Params, bindVars).(map[string]interface{}); ok {
+		resolved.Params = resolvedParams
 	} else if step.Params != nil {
 		resolved.Params = map[string]interface{}{}
 	}
-	if resolved.Action == "craft_tool" && len(vars) != 0 {
+	if resolved.Action == "craft_tool" && len(bindVars) != 0 {
 		if resolved.Params == nil {
 			resolved.Params = map[string]interface{}{}
 		}
@@ -811,7 +872,7 @@ func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir
 			if strings.TrimSpace(stringVal(resolved.Params, key)) != "" {
 				continue
 			}
-			if value := strings.TrimSpace(vars[key]); value != "" {
+			if value := strings.TrimSpace(bindVars[key]); value != "" {
 				resolved.Params[key] = value
 			}
 		}
@@ -819,7 +880,38 @@ func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir
 	if workDir, _ := resolved.Params["working_dir"].(string); workDir != "" && !filepath.IsAbs(workDir) && skillDir != "" {
 		resolved.Params["working_dir"] = filepath.Clean(filepath.Join(skillDir, workDir))
 	}
-	return resolved
+	return resolved, nil
+}
+
+// filterConsumedCLIArgs removes CLI flag+value pairs from cliArgs when the
+// corresponding param name is already referenced as a placeholder in the
+// command template. This prevents double-application: if a param has both
+// a CLIFlag and a template placeholder, the template substitution handles it.
+func filterConsumedCLIArgs(cliArgs []string, params []corelib.NLSkillParam, originalCmd string) []string {
+	consumedFlags := make(map[string]bool)
+	for _, p := range params {
+		if p.CLIFlag != "" && commandReferencesParam(originalCmd, p.Name) {
+			consumedFlags[p.CLIFlag] = true
+		}
+	}
+	if len(consumedFlags) == 0 {
+		return cliArgs
+	}
+	var filtered []string
+	for i := 0; i < len(cliArgs); i += 2 {
+		if i+1 < len(cliArgs) && !consumedFlags[cliArgs[i]] {
+			filtered = append(filtered, cliArgs[i], cliArgs[i+1])
+		}
+	}
+	return filtered
+}
+
+// commandReferencesParam checks if a command string contains a placeholder
+// reference to the given param name ({{name}}, ${name}, or {name}).
+func commandReferencesParam(cmd, paramName string) bool {
+	return strings.Contains(cmd, "{{"+paramName+"}}") ||
+		strings.Contains(cmd, "${"+paramName+"}") ||
+		strings.Contains(cmd, "{"+paramName+"}")
 }
 
 func resolveSkillValue(value interface{}, vars map[string]string) interface{} {
@@ -1204,6 +1296,18 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	if isAPIWorkflow && len(run.selectedSteps) > 0 {
 		log.Printf("[skill-runner]   selected_steps: %v", run.selectedSteps)
 	}
+
+	// ── Parameter schema: ensure every skill has params (explicit or synthesized) ──
+	// This is the single path that ensures BindParams is called for all skills,
+	// closing the LLM↔Skill parameter name gap.
+	skillParams := skill.Params
+	if len(skillParams) == 0 {
+		skillParams = cskill.SynthesizeParams(skill.Steps, skill.RequiredArgs)
+		if len(skillParams) > 0 {
+			log.Printf("[skill-runner] synthesized %d params from command templates for %q", len(skillParams), skill.Name)
+		}
+	}
+
 	for i, step := range skill.Steps {
 		// Check for global timeout
 		select {
@@ -1285,7 +1389,25 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		run.status.Steps[i].Status = "running"
 		r.mu.Unlock()
 
-		resolvedStep := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir)
+		resolvedStep, resolveErr := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir, skillParams)
+		if resolveErr != nil {
+			r.mu.Lock()
+			run.status.Steps[i].Status = "failed"
+			run.status.Steps[i].Error = resolveErr.Error()
+			hasFailure = true
+			execErr = resolveErr
+			if step.OnError == "continue" || step.OnError == "skip" {
+				r.mu.Unlock()
+				log.Printf("[skill-runner] step %d/%d: param bind failed (on_error=%s): %v", i+1, len(skill.Steps), step.OnError, resolveErr)
+				continue
+			}
+			run.status.Status = "failed"
+			run.status.Error = resolveErr.Error()
+			run.status.EndedAt = time.Now().Format(time.RFC3339)
+			r.mu.Unlock()
+			log.Printf("[skill-runner] step %d/%d: param bind failed, aborting: %v", i+1, len(skill.Steps), resolveErr)
+			break
+		}
 		// Propagate skill-level preferred_shell to bash steps so the shell
 		// selection logic can respect it.
 		if resolvedStep.Action == "bash" && skill.PreferredShell != "" {
@@ -1439,6 +1561,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 
 func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr error) {
 	shouldEmit := false
+	var updatedEntry *corelib.NLSkillEntry
 
 	r.executor.mu.Lock()
 	skills := r.executor.loadSkills()
@@ -1449,14 +1572,31 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 			if execErr == nil {
 				skills[i].SuccessCount++
 				skills[i].LastError = ""
+				// Skill succeeded after a previous repair — the fix worked.
+				if skills[i].RepairAttemptCount > 0 {
+					cskill.ResetRepairCount(&skills[i])
+					cskill.MarkRepairVerified(&skills[i])
+					log.Printf("[skill-repair-gui] skill %q succeeded after repair, reset repair count", skill.Name)
+				}
 			} else {
 				skills[i].FailureCount++
-				skills[i].LastError = execErr.Error()
+				// Classify the error and store the LLM-formatted version
+				// (includes [class: xxx] tag and action hint) so that:
+				// 1. Self-repair can extract the error class via extractErrorClass()
+				// 2. LLM receives actionable repair suggestions
+				skills[i].LastError = formatExecErrorForStorage(execErr)
 			}
 			_ = r.executor.saveSkills(skills)
 			log.Printf("[skill-runner] usage stats updated for %q: usage=%d success=%d failure=%d workaround=%d",
 				skill.Name, skills[i].UsageCount, skills[i].SuccessCount, skills[i].FailureCount, skills[i].WorkaroundCount)
 			shouldEmit = true
+			// Deep copy for async self-repair (outside lock).
+			if execErr != nil {
+				cp := skills[i]
+				cp.Steps = append([]corelib.NLSkillStep(nil), skills[i].Steps...)
+				cp.RepairHistory = append([]corelib.SkillRepairRecord(nil), skills[i].RepairHistory...)
+				updatedEntry = &cp
+			}
 			break
 		}
 	}
@@ -1466,6 +1606,152 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 	if shouldEmit && r.executor.app != nil {
 		r.executor.app.emitEvent("skill:usage_updated")
 	}
+
+	// Trigger async self-repair for failed skills (outside lock, non-blocking).
+	if updatedEntry != nil {
+		// Mark the run as having a pending self-repair so the LLM knows to
+		// wait before retrying. The flag is set on the run status (if still
+		// accessible) before launching the goroutine.
+		if cskill.ShouldAttemptRepair(updatedEntry) {
+			r.markSelfRepairPending(updatedEntry.Name)
+		}
+		go r.maybeRepairSkill(updatedEntry)
+	}
+}
+
+// markSelfRepairPending sets SelfRepairPending=true on the most recent run
+// for the given skill name. This tells the LLM (via appendSkillRunSummary)
+// that a repair is in progress and it should wait before retrying.
+func (r *SkillRunner) markSelfRepairPending(skillName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, run := range r.runs {
+		if run.status.Skill == skillName && run.status.Status == "failed" {
+			run.status.SelfRepairPending = true
+			break
+		}
+	}
+}
+
+// maybeRepairSkill checks if a skill is eligible for LLM-driven self-repair
+// and attempts it in the background. The entry must be a deep copy — this
+// method runs in a goroutine and must not hold any locks.
+func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
+	if !cskill.ShouldAttemptRepair(entry) {
+		return
+	}
+
+	repairer := r.buildSkillRepairer()
+	if repairer == nil {
+		return
+	}
+
+	log.Printf("[skill-repair-gui] attempting repair for %q (attempt %d, usage=%d, success=%d)",
+		entry.Name, entry.RepairAttemptCount+1, entry.UsageCount, entry.SuccessCount)
+
+	result, err := cskill.AttemptRepair(repairer, entry)
+	if err != nil {
+		log.Printf("[skill-repair-gui] repair failed for %q: %v", entry.Name, err)
+		return
+	}
+
+	if !cskill.ApplyRepair(entry, result) {
+		log.Printf("[skill-repair-gui] repair not applied for %q: repaired=%v should_disable=%v",
+			entry.Name, result.Repaired, result.ShouldDisable)
+		// If should_disable, persist the status change.
+		if result.ShouldDisable {
+			r.persistRepairResult(entry)
+		}
+		return
+	}
+
+	// Persist the repaired steps back to config.
+	r.persistRepairResult(entry)
+	log.Printf("[skill-repair-gui] repaired skill %q: %s", entry.Name, result.Explanation)
+
+	// Store repair notification for LLM context injection.
+	r.recentRepairs.Store(entry.Name, result.Explanation)
+
+	// Notify frontend.
+	if r.executor.app != nil {
+		r.executor.app.emitEvent("skill:repaired")
+	}
+}
+
+// persistRepairResult writes the repaired skill entry back to the config.
+func (r *SkillRunner) persistRepairResult(entry *corelib.NLSkillEntry) {
+	r.executor.mu.Lock()
+	defer r.executor.mu.Unlock()
+
+	skills := r.executor.loadSkills()
+	for i, s := range skills {
+		if s.Name == entry.Name {
+			skills[i].Steps = entry.Steps
+			skills[i].Status = entry.Status
+			skills[i].LastError = entry.LastError
+			skills[i].RepairAttemptCount = entry.RepairAttemptCount
+			skills[i].LastRepairAt = entry.LastRepairAt
+			skills[i].RepairHistory = entry.RepairHistory
+			_ = r.executor.saveSkills(skills)
+			return
+		}
+	}
+}
+
+// ConsumeRepairNotifications returns and clears all pending repair
+// notifications. Called by the system prompt builder to inject repair
+// context into the LLM's next turn. Each entry is consumed exactly once.
+func (r *SkillRunner) ConsumeRepairNotifications() map[string]string {
+	result := make(map[string]string)
+	r.recentRepairs.Range(func(key, value interface{}) bool {
+		name, _ := key.(string)
+		explanation, _ := value.(string)
+		if name != "" {
+			result[name] = explanation
+		}
+		r.recentRepairs.Delete(key)
+		return true
+	})
+	return result
+}
+
+// guiSkillRepairer adapts the GUI's LLM calling to skill.LLMRepairer.
+type guiSkillRepairer struct {
+	cfg    corelib.MaclawLLMConfig
+	client *http.Client
+}
+
+func (r *guiSkillRepairer) ChatCall(messages []map[string]string) (string, error) {
+	ifaces := make([]interface{}, len(messages))
+	for i, m := range messages {
+		ifaces[i] = m
+	}
+	resp, err := doSimpleLLMRequest(context.Background(), r.cfg, ifaces, r.client, 60*time.Second)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
+func (r *guiSkillRepairer) IsConfigured() bool {
+	return r.cfg.URL != "" && (r.cfg.Key != "" || r.cfg.Model != "")
+}
+
+// buildSkillRepairer creates an LLMRepairer from the current app config.
+// Returns nil if LLM is not configured.
+func (r *SkillRunner) buildSkillRepairer() cskill.LLMRepairer {
+	if r.executor == nil || r.executor.app == nil {
+		return nil
+	}
+	cfg := r.executor.app.GetMaclawLLMConfig()
+	repairer := &guiSkillRepairer{
+		cfg:    cfg,
+		client: &http.Client{Timeout: 60 * time.Second},
+	}
+	if !repairer.IsConfigured() {
+		return nil
+	}
+	return repairer
 }
 
 // RecordSkillOutcome records an execution outcome for a skill by name.
@@ -2073,66 +2359,35 @@ func (e *bashStepError) Stdout() string   { return e.stdout }
 func (e *bashStepError) Stderr() string   { return e.stderr }
 
 // classifyBashError adds context to error messages by detecting common
-// failure patterns like missing parameters, missing commands, etc.
+// failure patterns. Delegates to the unified error classifier in
+// corelib/skill/error_classifier.go — single source of truth for all
+// error patterns across GUI, TUI, and self-repair.
 func classifyBashError(errMsg, command string, exitCode int) string {
-	combined := strings.ToLower(errMsg)
-	// Detect "command not found" (exit code 9009 on Windows, 127 on Unix)
-	if exitCode == 9009 || exitCode == 127 {
-		cmdName := strings.Fields(strings.TrimSpace(command))
-		if len(cmdName) > 0 {
-			hint := fmt.Sprintf("命令 %q 未找到 (exit %d)。", cmdName[0], exitCode)
-			cmdLower := strings.ToLower(cmdName[0])
-			switch {
-			case cmdLower == "python3" || cmdLower == "python":
-				hint += " 请安装 Python 3.x 并确保在 PATH 中。Windows 用户请从 python.org 安装。"
-			case cmdLower == "pip" || cmdLower == "pip3":
-				hint += " 请运行: python -m ensurepip --upgrade"
-			case cmdLower == "node" || cmdLower == "npm" || cmdLower == "npx":
-				hint += " 请安装 Node.js: https://nodejs.org/"
-			default:
-				hint += " 请确认已安装并在 PATH 中。"
-			}
-			return hint + " | " + errMsg
-		}
+	result := cskill.ClassifyStepError(exitCode, "", errMsg, command)
+	return result.UserMessage
+}
+
+// classifyBashErrorFull returns the full ClassifiedError for callers that
+// need the error class and metadata (e.g., self-repair trigger).
+func classifyBashErrorFull(errMsg, output, command string, exitCode int) cskill.ClassifiedError {
+	return cskill.ClassifyStepError(exitCode, output, errMsg, command)
+}
+
+// formatExecErrorForStorage classifies an execution error and formats it
+// with [class: xxx] tag and action hint for storage in LastError. This
+// enables self-repair to extract the error class and LLM to receive
+// actionable suggestions.
+func formatExecErrorForStorage(execErr error) string {
+	if execErr == nil {
+		return ""
 	}
-	// BUG-002: Shebang treated as command in Windows CMD/PowerShell
-	if (strings.Contains(combined, "'#'") || strings.Contains(combined, "\"#\"")) &&
-		strings.Contains(combined, "not recognized") {
-		return fmt.Sprintf("Bash 脚本的 shebang 行在 Windows CMD 中被当作命令执行。建议设置 preferred_shell: bash 或改用跨平台脚本。%s", errMsg)
+	if bErr, ok := execErr.(*bashStepError); ok {
+		ce := cskill.ClassifyStepError(bErr.ExitCode(), bErr.Stdout()+"\n"+bErr.Stderr(), bErr.Error(), "")
+		return cskill.FormatErrorForLLM(ce)
 	}
-	// BUG-001: Windows 8.3 short path resolution failure
-	if runtime.GOOS == "windows" && strings.Contains(combined, "~") &&
-		(strings.Contains(combined, "enoent") || strings.Contains(combined, "no such file")) {
-		return fmt.Sprintf("Windows 8.3 短路径解析失败，文件路径中的 '~' 缩写无法被识别。建议使用完整路径。%s", errMsg)
-	}
-	// Detect missing parameter patterns (usage text, "required", "missing argument")
-	if exitCode == 1 || exitCode == 2 {
-		if strings.Contains(combined, "usage:") || strings.Contains(combined, "usage：") ||
-			strings.Contains(combined, "missing argument") || strings.Contains(combined, "required") ||
-			strings.Contains(combined, "no input") || strings.Contains(combined, "缺少") {
-			return fmt.Sprintf("Skill 可能缺少必需参数。%s", errMsg)
-		}
-	}
-	// Detect missing environment variable (common patterns from various languages)
-	if strings.Contains(combined, "environment variable") ||
-		strings.Contains(combined, "env var") ||
-		(strings.Contains(combined, "_key") && strings.Contains(combined, "not set")) ||
-		(strings.Contains(combined, "_token") && strings.Contains(combined, "not set")) {
-		return fmt.Sprintf("Skill 可能缺少必需的环境变量。%s", errMsg)
-	}
-	// P4: HTTP 429 rate limit detection
-	if strings.Contains(combined, "429") && (strings.Contains(combined, "rate limit") || strings.Contains(combined, "too many requests") || strings.Contains(combined, "频率限制")) {
-		return fmt.Sprintf("API 调用过于频繁 (HTTP 429)，请稍后再试。%s", errMsg)
-	}
-	// P3: File not found (ENOENT) — provide friendly hint
-	if strings.Contains(combined, "enoent") || (strings.Contains(combined, "no such file") && strings.Contains(combined, "directory")) {
-		return fmt.Sprintf("输入文件不存在，请检查文件路径是否正确。%s", errMsg)
-	}
-	// BUG-003: craft_tool hanging / timeout detection
-	if strings.Contains(combined, "context deadline exceeded") || strings.Contains(combined, "signal: killed") {
-		return fmt.Sprintf("步骤执行超时，可能是脚本挂起。建议增加 timeout 参数或检查脚本是否有阻塞操作。%s", errMsg)
-	}
-	return errMsg
+	// Non-bash errors: classify with zero exit code and error message only.
+	ce := cskill.ClassifyStepError(0, "", execErr.Error(), "")
+	return cskill.FormatErrorForLLM(ce)
 }
 
 // extractExitCode extracts the exit code from an error if possible.

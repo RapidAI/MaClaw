@@ -11,7 +11,7 @@ function getMermaid(): Promise<any> {
     if (mermaidInitPromise) return mermaidInitPromise;
     mermaidInitPromise = import("mermaid").then((m) => {
         const mermaid = m.default || m;
-        mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
+        mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose", suppressErrorRendering: true });
         mermaidMod = mermaid;
         return mermaid;
     });
@@ -27,7 +27,7 @@ function sanitizeMermaidCode(raw: string): string {
     // Diagram type declarations that must be lowercase (line start)
     const diagramTypeRe = /^(\s*)(Graph|Flowchart|SequenceDiagram|StateDiagram|StateDiagram-v2|ClassDiagram|ErDiagram|Gantt|Pie|Gitgraph|Journey|Mindmap|Timeline|Quadrantchart|Sankey-beta|Xychart-beta)\b/i;
     // Keywords that appear at line start and must be lowercase
-    const keywordRe = /^(\s*)(Subgraph|ClassDef|Style|Click|Note|Loop|Alt|Else|Opt|Par|Critical|Break|Rect|Activate|Deactivate)\b/i;
+    const keywordRe = /^(\s*)(Subgraph|ClassDef|Style|Click|Note|Loop|Alt|Else|Opt|Par|Critical|Break|Rect|Activate|Deactivate|Direction)\b/i;
     // "end" on its own line
     const endRe = /^(\s*)End\s*$/;
 
@@ -67,6 +67,21 @@ function sanitizeMermaidCode(raw: string): string {
 function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme }) {
     const [svg, setSvg] = useState<string>("");
     const [error, setError] = useState<string>("");
+    // Hidden workspace div that Mermaid uses during rendering. By providing this
+    // as the third argument to render(), Mermaid creates its temp <div id="d{id}">
+    // inside our container instead of document.body.
+    //
+    // Mechanism: Mermaid's render() creates a temp element, renders the diagram SVG
+    // into it, extracts the SVG string, then calls removeTempElements() to clean up.
+    // On parse/draw error, it throws *before* removeTempElements(), leaving an
+    // orphaned element with the "Syntax error in text" error SVG. Without a
+    // container, this orphan lives in document.body — the full-page red banner.
+    // With a container, the orphan is scoped to our hidden div.
+    //
+    // suppressErrorRendering: true (set in initialize) makes Mermaid call
+    // removeTempElements() before throwing, so the orphan is cleaned up by Mermaid
+    // itself. The container is defense-in-depth for any edge cases.
+    const containerRef = useRef<HTMLDivElement>(null);
     const idRef = useRef(`mermaid-${Math.random().toString(36).slice(2, 10)}`);
 
     useEffect(() => {
@@ -75,10 +90,19 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
         getMermaid().then(async (m) => {
             if (cancelled) return;
             try {
-                const { svg: rendered } = await m.render(idRef.current, sanitized.trim());
+                const { svg: rendered } = await m.render(
+                    idRef.current,
+                    sanitized.trim(),
+                    containerRef.current ?? undefined,
+                );
                 if (!cancelled) setSvg(rendered);
             } catch (e: any) {
-                if (!cancelled) setError(e?.message || "Mermaid render error");
+                if (!cancelled) {
+                    setError(e?.message || "Mermaid render error");
+                    if (containerRef.current) {
+                        containerRef.current.innerHTML = "";
+                    }
+                }
             }
         }).catch((e) => {
             if (!cancelled) setError(e?.message || "Failed to load mermaid");
@@ -86,8 +110,9 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
         return () => { cancelled = true; };
     }, [code]);
 
+    let content: React.ReactNode;
     if (error) {
-        return (
+        content = (
             <pre style={{
                 background: theme.codeBlockBg,
                 border: `1px solid ${theme.codeBlockBorder}`,
@@ -101,21 +126,26 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
                 <code style={{ color: theme.codeText }}>{code}</code>
             </pre>
         );
-    }
-
-    if (svg) {
-        return (
+    } else if (svg) {
+        content = (
             <div
                 style={{ margin: "8px 0", overflow: "auto" }}
                 dangerouslySetInnerHTML={{ __html: svg }}
             />
         );
+    } else {
+        content = (
+            <div style={{ margin: "8px 0", padding: "12px", color: theme.textMuted, fontSize: "12px" }}>
+                ⏳ Rendering diagram...
+            </div>
+        );
     }
 
     return (
-        <div style={{ margin: "8px 0", padding: "12px", color: theme.textMuted, fontSize: "12px" }}>
-            ⏳ Rendering diagram...
-        </div>
+        <>
+            <div ref={containerRef} style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }} />
+            {content}
+        </>
     );
 }
 

@@ -9,6 +9,78 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
+func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HASyncOp) (int64, error) {
+	if op == nil {
+		return 0, errors.New("nil ha sync op")
+	}
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return 0, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+
+	var current sql.NullInt64
+	if err := conn.QueryRowContext(ctx, `
+		SELECT version
+		FROM ha_entity_versions
+		WHERE entity_type = ? AND entity_id = ?
+	`, op.EntityType, op.EntityID).Scan(&current); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+
+	version := int64(1)
+	if current.Valid {
+		version = current.Int64 + 1
+	}
+
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO ha_entity_versions (entity_type, entity_id, version, updated_at, updated_by_node_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+			version = excluded.version,
+			updated_at = excluded.updated_at,
+			updated_by_node_id = excluded.updated_by_node_id
+	`, op.EntityType, op.EntityID, version, op.OccurredAt.Format(time.RFC3339), op.SourceNodeID); err != nil {
+		return 0, err
+	}
+
+	op.EntityVersion = version
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO ha_sync_ops (
+			op_id, source_node_id, entity_type, entity_id, op_type,
+			entity_version, occurred_at, payload_json, payload_hash
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		op.OpID,
+		op.SourceNodeID,
+		op.EntityType,
+		op.EntityID,
+		op.OpType,
+		op.EntityVersion,
+		op.OccurredAt.Format(time.RFC3339),
+		op.PayloadJSON,
+		op.PayloadHash,
+	); err != nil {
+		return 0, err
+	}
+
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return 0, err
+	}
+	committed = true
+	return version, nil
+}
+
 func (r *haSyncOpRepo) Append(ctx context.Context, op *store.HASyncOp) error {
 	return execWrite(ctx, r.batch, r.db, `
 		INSERT INTO ha_sync_ops (
@@ -29,13 +101,18 @@ func (r *haSyncOpRepo) Append(ctx context.Context, op *store.HASyncOp) error {
 }
 
 func (r *haSyncOpRepo) ListAfterSeq(ctx context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error) {
-	rows, err := r.readDB.QueryContext(ctx, `
+	query := `
 		SELECT seq, op_id, source_node_id, entity_type, entity_id, op_type, entity_version, occurred_at, payload_json, payload_hash
 		FROM ha_sync_ops
 		WHERE seq > ?
-		ORDER BY seq ASC
-		LIMIT ?
-	`, afterSeq, limit)
+		ORDER BY seq ASC`
+	args := []any{afterSeq}
+	if limit > 0 {
+		query += `
+		LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := r.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

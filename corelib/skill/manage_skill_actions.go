@@ -28,7 +28,7 @@ var ManageSkillActions = []ManageSkillAction{
 	{"status", "查询运行状态（run 返回 run_id 后继续观察进度）"},
 	{"upload", "上传本地 Skill 到 SkillMarket"},
 	{"validate", "检查 Skill 的跨平台可移植性并可选自动修复"},
-	{"patch", "对 Skill 定义文件执行精准 find-and-replace 修补"},
+	{"patch", "对 Skill 定义执行修补（mode=text: find-and-replace；mode=step: 结构化修改步骤字段）"},
 	{"history", "查看 Skill 的修补历史记录"},
 }
 

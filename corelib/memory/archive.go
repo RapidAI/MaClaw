@@ -114,7 +114,9 @@ func (a *ArchiveStore) List(category Category, keyword string) []Entry {
 // FindRelevant returns archived entries that match any of the given tags or
 // categories, limited to `limit` results. Used by GC to revive relevant
 // archived entries.
-func (a *ArchiveStore) FindRelevant(tags []string, categories []Category, limit int) []Entry {
+// ownerID is used for multi-tenant isolation: only entries belonging to the
+// specified owner (or shared entries with empty OwnerID) are returned.
+func (a *ArchiveStore) FindRelevant(tags []string, categories []Category, limit int, ownerID string) []Entry {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
@@ -135,6 +137,11 @@ func (a *ArchiveStore) FindRelevant(tags []string, categories []Category, limit 
 	for _, e := range a.entries {
 		if len(result) >= limit {
 			break
+		}
+		// 多租户隔离：跳过不属于该用户的记忆
+		// 空 OwnerID 表示共享记忆，对所有用户可见
+		if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+			continue
 		}
 		// Match by category.
 		if catSet[e.Category] {

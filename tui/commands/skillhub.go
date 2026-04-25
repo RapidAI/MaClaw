@@ -61,8 +61,11 @@ func RunSkillHub(args []string) error {
 	}
 }
 
-// resolveHubURL 从本地配置读取 SkillHub API 的 base URL。
+// resolveHubURL 从本地配置读取 SkillHub API 的 base URL，并执行 failover。
 // SkillHub API 在 HubCenter 上，通过 AppConfig.SkillHubBaseURL() 获取。
+// 如果配置的 URL 不可达，会尝试 failover 到其他已知节点，并持久化成功的选择。
+//
+// This delegates to the shared ResolveHubCenterWithFailover() for failover logic.
 func resolveHubURL() (string, error) {
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
@@ -73,7 +76,11 @@ func resolveHubURL() (string, error) {
 	if hubURL == "" {
 		return "", fmt.Errorf("HubCenter URL 未配置")
 	}
-	return hubURL, nil
+
+	// Use the shared failover logic from skill_search_api.go.
+	// This ensures all CLI commands use the same singleton cache and persister.
+	resolved := ResolveHubCenterWithFailover(cfg, hubURL, nil, nil)
+	return resolved, nil
 }
 
 // resolveMaclawID 从本地配置读取 MachineID 作为 maclaw_id。
@@ -133,7 +140,7 @@ func skillhubSearch(args []string) error {
 	if *jsonOut {
 		if len(result.Skills) == 0 {
 			// Fallback 1: ClawHub mirror
-			client := skill.NewHubClient()
+			client := skill.DefaultHubClient()
 			clawResults := client.SearchClawHub(ctx, query)
 			if len(clawResults) > 0 {
 				return PrintJSON(map[string]interface{}{
@@ -157,7 +164,7 @@ func skillhubSearch(args []string) error {
 	if len(result.Skills) == 0 {
 		// Fallback 1: ClawHub mirror
 		fmt.Printf("SkillHub 未找到匹配 \"%s\" 的技能，正在搜索 ClawHub...\n", query)
-		client := skill.NewHubClient()
+		client := skill.DefaultHubClient()
 		clawResults := client.SearchClawHub(ctx, query)
 		if len(clawResults) > 0 {
 			fmt.Printf("\n在 ClawHub 上找到 %d 个结果:\n\n", len(clawResults))

@@ -51,21 +51,22 @@ type AppConfig struct {
 	DefaultProxyScopeCodingTools bool   `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
 	DefaultProxyScopeAgent       bool   `json:"default_proxy_scope_agent,omitempty"`        // web_search / web_fetch
 	// Terminal settings (Windows only)
-	UseWindowsTerminal bool   `json:"use_windows_terminal"`
-	RemoteEnabled      bool   `json:"remote_enabled"`
-	RemoteHubURL       string `json:"remote_hub_url"`
-	RemoteHubCenterURL string `json:"remote_hubcenter_url"`
-	RemoteEmail        string `json:"remote_email"`
-	RemoteMobile       string `json:"remote_mobile"`
-	RemoteSN           string `json:"remote_sn"`
-	RemoteUserID       string `json:"remote_user_id"`
-	RemoteMachineID    string `json:"remote_machine_id"`
-	RemoteMachineToken string `json:"remote_machine_token"`
-	RemoteViewerToken  string `json:"remote_viewer_token,omitempty"`
-	RemoteHeartbeatSec int    `json:"remote_heartbeat_sec"`
-	RemoteNickname     string `json:"remote_nickname,omitempty"`
-	RemoteClientID     string `json:"remote_client_id"`
-	DefaultLaunchMode  string `json:"default_launch_mode"`
+	UseWindowsTerminal  bool     `json:"use_windows_terminal"`
+	RemoteEnabled       bool     `json:"remote_enabled"`
+	RemoteHubURL        string   `json:"remote_hub_url"`
+	RemoteHubCenterURL  string   `json:"remote_hubcenter_url"`
+	RemoteHubCenterURLs []string `json:"remote_hubcenter_urls,omitempty"`
+	RemoteEmail         string   `json:"remote_email"`
+	RemoteMobile        string   `json:"remote_mobile"`
+	RemoteSN            string   `json:"remote_sn"`
+	RemoteUserID        string   `json:"remote_user_id"`
+	RemoteMachineID     string   `json:"remote_machine_id"`
+	RemoteMachineToken  string   `json:"remote_machine_token"`
+	RemoteViewerToken   string   `json:"remote_viewer_token,omitempty"`
+	RemoteHeartbeatSec  int      `json:"remote_heartbeat_sec"`
+	RemoteNickname      string   `json:"remote_nickname,omitempty"`
+	RemoteClientID      string   `json:"remote_client_id"`
+	DefaultLaunchMode   string   `json:"default_launch_mode"`
 	// MaClaw LLM configuration
 	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
 	MaclawLLMKey             string              `json:"maclaw_llm_key"`
@@ -326,6 +327,31 @@ func (c *AppConfig) SetLansengerLocal(v bool) {
 // SkillHubBaseURL returns the base URL for SkillHub APIs (/api/v1/skills/*).
 // SkillHub is hosted on the HubCenter server, NOT on the user's private Hub.
 // All Skill search, download, install, rate, and update operations use this URL.
+func (c *AppConfig) HubCenterBaseURLs(defaultHubCenterURL string, defaultHubCenterURLs []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(defaultHubCenterURLs)+2)
+	add := func(value string) {
+		value = strings.TrimRight(strings.TrimSpace(value), "/")
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	add(c.RemoteHubCenterURL)
+	for _, value := range c.RemoteHubCenterURLs {
+		add(value)
+	}
+	add(defaultHubCenterURL)
+	for _, value := range defaultHubCenterURLs {
+		add(value)
+	}
+	return out
+}
+
 func (c *AppConfig) SkillHubBaseURL(defaultHubCenterURL string) string {
 	u := strings.TrimSpace(c.RemoteHubCenterURL)
 	if u == "" {

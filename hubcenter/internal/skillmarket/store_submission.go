@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// ── SubmissionRepository implementation ─────────────────────────────────
+// 鈹€鈹€ SubmissionRepository implementation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 func (s *Store) CreateSubmission(ctx context.Context, sub *SkillSubmission) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -18,6 +18,9 @@ func (s *Store) CreateSubmission(ctx context.Context, sub *SkillSubmission) erro
 		sub.Status, sub.ZipPath, sub.ErrorMsg,
 		fmtTime(sub.CreatedAt), fmtTime(sub.UpdatedAt),
 	)
+	if err == nil {
+		s.emitSync(ctx)
+	}
 	return err
 }
 
@@ -47,10 +50,13 @@ func (s *Store) UpdateSubmissionStatus(ctx context.Context, id, status, errorMsg
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sm_submissions SET status = ?, error_msg = ?, skill_id = ?, updated_at = ?
 		WHERE id = ?`, status, errorMsg, skillID, time.Now().Format(timeFmt), id)
+	if err == nil {
+		s.emitSync(ctx)
+	}
 	return err
 }
 
-// CountRecentSubmissions 统计指定 email 在最近 withinHours 小时内的有效提交数（排除 failed）。
+// CountRecentSubmissions 缁熻鎸囧畾 email 鍦ㄦ渶杩?withinHours 灏忔椂鍐呯殑鏈夋晥鎻愪氦鏁帮紙鎺掗櫎 failed锛夈€?
 func (s *Store) CountRecentSubmissions(ctx context.Context, email string, withinHours int) (int, error) {
 	since := time.Now().Add(-time.Duration(withinHours) * time.Hour).Format(timeFmt)
 	var count int
@@ -65,7 +71,7 @@ func (s *Store) CountRecentSubmissions(ctx context.Context, email string, within
 	return count, nil
 }
 
-// CountRecentDailySubmissions 统计指定 email 在今天（UTC）的有效提交数。
+// CountRecentDailySubmissions 缁熻鎸囧畾 email 鍦ㄤ粖澶╋紙UTC锛夌殑鏈夋晥鎻愪氦鏁般€?
 func (s *Store) CountRecentDailySubmissions(ctx context.Context, email string) (int, error) {
 	today := time.Now().UTC().Truncate(24 * time.Hour).Format(timeFmt)
 	var count int
@@ -80,7 +86,7 @@ func (s *Store) CountRecentDailySubmissions(ctx context.Context, email string) (
 	return count, nil
 }
 
-// GetLatestSuccessSubmissionByFingerprint 查询同 fingerprint 的最新成功提交。
+// GetLatestSuccessSubmissionByFingerprint 鏌ヨ鍚?fingerprint 鐨勬渶鏂版垚鍔熸彁浜ゃ€?
 func (s *Store) GetLatestSuccessSubmissionByFingerprint(ctx context.Context, fingerprint string) (*SkillSubmission, error) {
 	row := s.readDB.QueryRowContext(ctx, `
 		SELECT id, email, user_id, skill_id, fingerprint, status, zip_path, error_msg, created_at, updated_at
@@ -105,7 +111,7 @@ func (s *Store) GetLatestSuccessSubmissionByFingerprint(ctx context.Context, fin
 	return &sub, nil
 }
 
-// CountSuccessSubmissionsByFingerprint 统计同 fingerprint 的成功提交数。
+// CountSuccessSubmissionsByFingerprint 缁熻鍚?fingerprint 鐨勬垚鍔熸彁浜ゆ暟銆?
 func (s *Store) CountSuccessSubmissionsByFingerprint(ctx context.Context, fingerprint string) (int, error) {
 	var count int
 	err := s.readDB.QueryRowContext(ctx, `
@@ -115,9 +121,12 @@ func (s *Store) CountSuccessSubmissionsByFingerprint(ctx context.Context, finger
 	return count, err
 }
 
-// UpdateSubmissionFingerprint 更新 submission 的 fingerprint。
+// UpdateSubmissionFingerprint 鏇存柊 submission 鐨?fingerprint銆?
 func (s *Store) UpdateSubmissionFingerprint(ctx context.Context, id, fingerprint string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sm_submissions SET fingerprint = ?, updated_at = ? WHERE id = ?`,
 		fingerprint, time.Now().Format(timeFmt), id)
+	if err == nil {
+		s.emitSync(ctx)
+	}
 	return err
 }

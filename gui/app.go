@@ -93,6 +93,9 @@ type App struct {
 	skillHubClient        *SkillHubClient
 	capabilityGapDetector *CapabilityGapDetector
 	stopHubTicker         chan struct{} // signals the 24h recommendation refresh goroutine to stop
+	hubUpdCache           *hubUpdateCache
+	hubCenterCache        *remote.HubCenterSelectionCache // shared cache from corelib/remote
+	hubCenterPersister    *guiHubCenterPersister          // persister for HubCenter URL config
 	oauthMu               sync.Mutex
 	oauthCancel           context.CancelFunc
 	// Smart session components
@@ -186,6 +189,8 @@ func NewApp() *App {
 		toolInstallLocks:  make(map[string]bool),
 		floatingAssistant: nil,
 		managers:          NewAppManagers(bgCtx),
+		hubUpdCache:       newHubUpdateCache(),
+		hubCenterCache:    remote.NewHubCenterSelectionCache(60 * time.Second),
 	}
 }
 
@@ -570,7 +575,12 @@ func (a *App) ensureSkillHubClient() {
 	}
 	a.ensureInteractionInfra()
 	a.skillHubClient = NewSkillHubClient(a)
-	_ = a.skillHubClient.RefreshRecommendations(context.Background())
+	// Async: don't block initialization on HubCenter reachability.
+	go func(client *SkillHubClient) {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		_ = client.RefreshRecommendations(ctx)
+	}(a.skillHubClient)
 	if a.stopHubTicker == nil {
 		a.stopHubTicker = make(chan struct{})
 		go func(stop <-chan struct{}, client *SkillHubClient) {
@@ -4020,6 +4030,67 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if config.Claude.CurrentModel == "" && len(config.Claude.Models) > 0 {
 		config.Claude.CurrentModel = config.Claude.Models[0].ModelName
 	}
+	// Helper to rename a model (migrate old name → new name), preserving user's API key and settings.
+	// If newName already exists, the old entry is removed to avoid duplicates.
+	renameModel := func(models *[]corelib.ModelConfig, oldName, newName string, currentModel *string) {
+		newIdx := -1
+		oldIdx := -1
+		for i := range *models {
+			if (*models)[i].ModelName == oldName {
+				oldIdx = i
+			}
+			if strings.EqualFold((*models)[i].ModelName, newName) {
+				newIdx = i
+			}
+		}
+		if oldIdx == -1 {
+			return // old name not found, nothing to migrate
+		}
+		if newIdx != -1 && newIdx != oldIdx {
+			// Both old and new exist — merge: copy user settings from old to new if new has none, then remove old
+			if (*models)[newIdx].ApiKey == "" && (*models)[oldIdx].ApiKey != "" {
+				(*models)[newIdx].ApiKey = (*models)[oldIdx].ApiKey
+			}
+			if (*models)[newIdx].ModelId == "" && (*models)[oldIdx].ModelId != "" {
+				(*models)[newIdx].ModelId = (*models)[oldIdx].ModelId
+			}
+			if (*models)[newIdx].ModelUrl == "" && (*models)[oldIdx].ModelUrl != "" {
+				(*models)[newIdx].ModelUrl = (*models)[oldIdx].ModelUrl
+			}
+			if (*models)[newIdx].WireApi == "" && (*models)[oldIdx].WireApi != "" {
+				(*models)[newIdx].WireApi = (*models)[oldIdx].WireApi
+			}
+			*models = append((*models)[:oldIdx], (*models)[oldIdx+1:]...)
+		} else if newIdx == -1 {
+			// Only old exists — just rename
+			(*models)[oldIdx].ModelName = newName
+		}
+		// Update current_model reference
+		if *currentModel == oldName {
+			*currentModel = newName
+		}
+	}
+
+	// Migrate Chinese provider names to English (legacy config compatibility).
+	// Previous versions used Chinese names; current version uses English names.
+	chineseToEnglish := map[string]string{
+		"腾讯云":  "Tencent Cloud",
+		"摩尔线程": "Moore Threads",
+		"快手":   "Kuaishou",
+		"阿里云":  "Aliyun",
+		"百度千帆": "Baidu Qianfan",
+		"讯飞星辰": "iFlytek",
+	}
+	allToolCfgs := []*corelib.ToolConfig{
+		&config.Claude, &config.Gemini, &config.Codex, &config.Opencode,
+		&config.CodeBuddy, &config.IFlow, &config.Kilo, &config.Cursor,
+	}
+	for oldName, newName := range chineseToEnglish {
+		for _, tc := range allToolCfgs {
+			renameModel(&tc.Models, oldName, newName, &tc.CurrentModel)
+		}
+	}
+
 	// Helper to ensure a model exists in the list
 	ensureModel := func(models *[]corelib.ModelConfig, name, url, id, wireApi string, hasSubscription ...bool) {
 		hasSub := false

@@ -102,6 +102,62 @@ func TestGrantDefaultServiceForNewUser(t *testing.T) {
 	}
 }
 
+func TestGrantDefaultServiceForNewUserIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:   "coding-basic",
+			Name: "Coding Basic",
+			Models: []ModelServiceModel{{
+				Name:        "gpt-5",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		DefaultNewUserServiceGroups: []string{"coding-basic"},
+		DefaultNewUserDurationDays:  7,
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantDefaultServiceForNewUser(ctx, system, "newuser@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantDefaultServiceForNewUser(ctx, system, "newuser@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, grant := range saved.Grants {
+		if grant.Email == "newuser@example.com" && grant.ServiceGroupID == "coding-basic" && grant.Source == "new_user_default" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 default grant, got %d", count)
+	}
+}
+
+func TestRegistryNormalizeDefaultsAccessPolicyToFree(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:   "group-a",
+			Name: "Group A",
+		}},
+	}
+	reg.Normalize()
+	group := reg.FindModelServiceGroup("group-a")
+	if group == nil {
+		t.Fatal("expected group-a to exist")
+	}
+	if group.AccessPolicy != AccessPolicyFree {
+		t.Fatalf("expected access policy %q, got %q", AccessPolicyFree, group.AccessPolicy)
+	}
+}
+
 func TestRegistryNormalizeEnsuresBuiltinDefaultGroup(t *testing.T) {
 	reg := &Registry{}
 	reg.Normalize()
@@ -336,6 +392,54 @@ func TestRegistryNormalizeMigratesLegacyModelFieldsToProviderConfigs(t *testing.
 	}
 }
 
+func TestRegistryNormalizeMergesDuplicateModelAliasesWithinGroup(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:   "group-a",
+			Name: "Group A",
+			Models: []ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+				ProviderConfigs: []ModelServiceProviderConfig{{
+					ProviderID:     "provider-a",
+					CapabilityTags: []string{"document"},
+					Priority:       60,
+				}},
+			}, {
+				Name:        "AUTO",
+				ProviderIDs: []string{"provider-b"},
+				ProviderConfigs: []ModelServiceProviderConfig{{
+					ProviderID:       "provider-b",
+					CapabilityTags:   []string{"reasoning", "tools"},
+					Priority:         80,
+					ResolutionTier:   2,
+					CreditMultiplier: 1.5,
+				}},
+			}},
+		}},
+	}
+	reg.Normalize()
+	if len(reg.ModelServiceGroups) < 2 {
+		t.Fatalf("expected builtin default group plus custom group, got %#v", reg.ModelServiceGroups)
+	}
+	models := reg.ModelServiceGroups[1].Models
+	if len(models) != 1 {
+		t.Fatalf("expected duplicate aliases to merge into one model, got %#v", models)
+	}
+	model := models[0]
+	if model.Name != "auto" {
+		t.Fatalf("merged model name = %q, want auto", model.Name)
+	}
+	if len(model.ProviderIDs) != 2 || model.ProviderIDs[0] != "provider-a" || model.ProviderIDs[1] != "provider-b" {
+		t.Fatalf("merged provider ids = %#v", model.ProviderIDs)
+	}
+	if len(model.ProviderConfigs) != 2 {
+		t.Fatalf("merged provider configs = %#v", model.ProviderConfigs)
+	}
+	if !containsString(model.CapabilityTags, "document") || !containsString(model.CapabilityTags, "reasoning") || !containsString(model.CapabilityTags, "tools") {
+		t.Fatalf("merged capability tags = %#v", model.CapabilityTags)
+	}
+}
 func containsString(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {
@@ -458,5 +562,121 @@ func TestRedeemCardRejectsInvalidCodeFormat(t *testing.T) {
 	}
 	if _, err := RedeemCard(ctx, system, nil, "user@example.com", "bad-code", "http://hub.test/api/llm/v1"); err == nil {
 		t.Fatal("expected invalid code format to be rejected")
+	}
+}
+
+func TestBillingEligibilityForServiceGroups(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "free-group", Name: "Free", AccessPolicy: AccessPolicyFree}, {ID: "grant-group", Name: "Grant", AccessPolicy: AccessPolicyGrantRequired}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   10,
+			CreditsUsed:    10,
+		}},
+	}
+	reg.Normalize()
+
+	allowed, policy, code, _, credits, hasActiveGrant, hasAnyGrant := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"free-group"}, now)
+	if !allowed || policy != AccessPolicyFree || code != "" || credits != 0 || hasActiveGrant || hasAnyGrant {
+		t.Fatalf("unexpected free eligibility: allowed=%v policy=%q code=%q credits=%v active=%v any=%v", allowed, policy, code, credits, hasActiveGrant, hasAnyGrant)
+	}
+
+	allowed, policy, code, _, credits, hasActiveGrant, hasAnyGrant = BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
+	if allowed || policy != AccessPolicyGrantRequired || code != "LLM_SERVICE_CREDITS_EXHAUSTED" || credits != 0 || !hasActiveGrant || !hasAnyGrant {
+		t.Fatalf("unexpected exhausted eligibility: allowed=%v policy=%q code=%q credits=%v active=%v any=%v", allowed, policy, code, credits, hasActiveGrant, hasAnyGrant)
+	}
+
+	allowed, policy, code, _, credits, hasActiveGrant, hasAnyGrant = BillingEligibilityForServiceGroups(reg, "other@example.com", []string{"grant-group"}, now)
+	if allowed || policy != AccessPolicyGrantRequired || code != "LLM_SERVICE_CREDITS_REQUIRED" || credits != 0 || hasActiveGrant || hasAnyGrant {
+		t.Fatalf("unexpected required eligibility: allowed=%v policy=%q code=%q credits=%v active=%v any=%v", allowed, policy, code, credits, hasActiveGrant, hasAnyGrant)
+	}
+}
+
+func TestExplainBillingRoutes(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "grant-group", Name: "Grant", AccessPolicy: AccessPolicyGrantRequired}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   12,
+			CreditsUsed:    2,
+		}},
+	}
+	reg.Normalize()
+	models := []AuthorizedModel{{
+		Name:                  "auto",
+		ProviderIDs:           []string{"provider-a"},
+		ProviderServiceGroups: map[string][]string{"provider-a": {"grant-group"}},
+	}}
+
+	routes := ExplainBillingRoutes(reg, "user@example.com", models, now)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %#v", routes)
+	}
+	if !routes[0].Eligible || routes[0].AccessPolicy != AccessPolicyGrantRequired || routes[0].CreditsAvailable != 10 {
+		t.Fatalf("unexpected route diagnostic: %#v", routes[0])
+	}
+}
+
+func TestExplainEntitlementDiagnosticIncludesBillingRoutes(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:           "grant-group",
+			Name:         "Grant Group",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models: []ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []UserBinding{{
+			Email:           "user@example.com",
+			ServiceGroupIDs: []string{"grant-group"},
+		}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   8,
+			CreditsUsed:    3,
+		}},
+	}
+	reg.Normalize()
+
+	diag, err := ExplainEntitlementDiagnosticFromRegistry(ctx, reg, nil, "user@example.com", "http://hub.test/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diag == nil || diag.ServiceStatus == nil {
+		t.Fatalf("expected service status, got %#v", diag)
+	}
+	if len(diag.BillingRoutes) != 1 {
+		t.Fatalf("expected 1 billing route, got %#v", diag.BillingRoutes)
+	}
+	route := diag.BillingRoutes[0]
+	if route.ModelName != "auto" || route.ProviderID != "provider-a" {
+		t.Fatalf("unexpected route identity: %#v", route)
+	}
+	if !route.Eligible || route.AccessPolicy != AccessPolicyGrantRequired {
+		t.Fatalf("unexpected route eligibility: %#v", route)
+	}
+	if route.CreditsAvailable != 5 {
+		t.Fatalf("credits available = %v, want 5", route.CreditsAvailable)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
@@ -89,39 +90,39 @@ func presetProviders() []presetProvider {
 	return []presetProvider{
 		{
 			Name: "智谱 GLM (龙虾)", URL: "https://open.bigmodel.cn/api/coding/paas/v4",
-			Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			Model: "glm-5-turbo", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "open.bigmodel.cn 获取 API Key",
 		},
 		{
 			Name: "智谱 GLM (Coding)", URL: "https://open.bigmodel.cn/api/anthropic",
 			Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0",
-			ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "open.bigmodel.cn 获取 API Key（Anthropic 协议）",
 		},
 		{
 			Name: "MiniMax", URL: "https://api.minimaxi.com/v1",
-			Model: "MiniMax-M2.7", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "platform.minimaxi.com 获取 API Key",
 		},
 		{
 			Name: "Kimi", URL: "https://api.kimi.com/coding/v1",
-			Model: "kimi-for-coding", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", AgentType: "claude-code/2.0.0", Hint: "platform.moonshot.cn 获取 API Key",
 		},
 		{
 			Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
-			Model: "astron-code-latest", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			Model: "astron-code-latest", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "training.xfyun.cn 获取 API Key",
 		},
 		{
 			Name: "OpenAI (API Key)", URL: "https://api.openai.com/v1",
-			Model: "gpt-4o", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			Model: "gpt-4o", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "platform.openai.com 获取 API Key",
 		},
 		{
 			Name: "Anthropic", URL: "https://api.anthropic.com",
 			Model: "claude-sonnet-4-20250514", Protocol: "anthropic", AgentType: "claude-code/2.0.0",
-			ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "console.anthropic.com 获取 API Key",
 		},
 		{
@@ -542,29 +543,25 @@ func llmSetProvider(args []string) error {
 
 func llmSetMaxIterations(args []string) error {
 	fs := flag.NewFlagSet("llm set-max-iterations", flag.ExitOnError)
-	value := fs.Int("value", 0, "最大推理轮次（30-300）")
+	value := fs.Int("value", 0, fmt.Sprintf("最大推理轮次（%d-%d）", config.MinAgentIterations, config.MaxAgentIterationsCap))
 	fs.Parse(args)
 
 	if *value <= 0 {
-		return NewUsageError("usage: llm set-max-iterations --value <N> (30-300)")
+		return NewUsageError("usage: llm set-max-iterations --value <N> (%d-%d)", config.MinAgentIterations, config.MaxAgentIterationsCap)
 	}
-	if *value < 30 {
-		*value = 30
-	}
-	if *value > 300 {
-		*value = 300
-	}
+	// Use the single source of truth for value normalization.
+	normalizedValue := config.EffectiveMaxIterations(*value)
 
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
-	cfg.MaclawAgentMaxIterations = *value
+	cfg.MaclawAgentMaxIterations = normalizedValue
 	if err := store.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
-	fmt.Printf("Agent 最大推理轮次已设置为 %d\n", *value)
+	fmt.Printf("Agent 最大推理轮次已设置为 %d\n", normalizedValue)
 	return nil
 }
 
@@ -578,10 +575,7 @@ func llmGetMaxIterations(args []string) error {
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
-	value := cfg.MaclawAgentMaxIterations
-	if value <= 0 {
-		value = 300 // default
-	}
+	value := config.EffectiveMaxIterations(cfg.MaclawAgentMaxIterations)
 	if *jsonOut {
 		return PrintJSON(map[string]int{"max_iterations": value})
 	}
@@ -669,7 +663,7 @@ func llmLoginOpenAI(args []string) error {
 	if !found {
 		p := corelib.MaclawLLMProvider{
 			Name: "OpenAI", URL: "https://api.openai.com/v1",
-			Model: "gpt-4o", AuthType: "oauth", ContextLength: 128000,
+			Model: "gpt-4o", AuthType: "oauth", ContextLength: 110000,
 		}
 		p = oauth.ApplyTokenResult(p, result)
 		appCfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider{p}, appCfg.MaclawLLMProviders...)

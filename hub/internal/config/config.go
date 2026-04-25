@@ -40,9 +40,12 @@ type Config struct {
 	} `yaml:"center"`
 
 	Hub struct {
-		Name        string `yaml:"name"`
-		Description string `yaml:"description"`
-		Visibility  string `yaml:"visibility"`
+		Name                  string   `yaml:"name"`
+		Description           string   `yaml:"description"`
+		Visibility            string   `yaml:"visibility"`
+		CorporateEmailDomain  string   `yaml:"corporate_email_domain"`
+		CorporateEmailDomains []string `yaml:"corporate_email_domains"`
+		AcceptPublicSignup    bool     `yaml:"accept_public_signup"`
 	} `yaml:"hub"`
 
 	Feishu struct {

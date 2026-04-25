@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -78,6 +79,33 @@ func NewHubClient() *HubClient {
 		userAgent:   "MaClaw/1.0",
 		githubToken: ResolveGitHubToken(),
 	}
+}
+
+// defaultClient is a package-level singleton that reuses TCP connections
+// across searches. Initialized lazily on first call to DefaultHubClient().
+var (
+	defaultClient     *HubClient
+	defaultClientOnce sync.Once
+)
+
+// DefaultHubClient returns a shared HubClient singleton that reuses HTTP
+// connections. Prefer this over NewHubClient() for repeated searches.
+func DefaultHubClient() *HubClient {
+	defaultClientOnce.Do(func() {
+		defaultClient = &HubClient{
+			httpClient: &http.Client{
+				Timeout: 15 * time.Second,
+				Transport: &http.Transport{
+					MaxIdleConns:        10,
+					MaxIdleConnsPerHost: 5,
+					IdleConnTimeout:     90 * time.Second,
+				},
+			},
+			userAgent:   "MaClaw/1.0",
+			githubToken: ResolveGitHubToken(),
+		}
+	})
+	return defaultClient
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -165,12 +193,14 @@ func (c *HubClient) SearchClawHub(ctx context.Context, query string) []HubSearch
 
 // SearchGitHub queries GitHub for skill definition files (skill.yaml, SKILL.md).
 // Uses the GitHubSearcher already in this package.
+// The token is resolved dynamically on each call (not cached from construction)
+// so that runtime changes to GITHUB_TOKEN are picked up.
 // Returns nil on any error (non-fatal).
 func (c *HubClient) SearchGitHub(query string) []HubSearchResult {
 	if query == "" {
 		return nil
 	}
-	gs := NewGitHubSearcher(c.githubToken)
+	gs := NewGitHubSearcher(ResolveGitHubToken())
 	candidates, err := gs.SearchGitHub(query)
 	if err != nil || len(candidates) == 0 {
 		return nil
@@ -284,7 +314,7 @@ func (c *HubClient) DownloadGitHub(ctx context.Context, installRef string) (*cor
 	if err := json.Unmarshal([]byte(installRef), &cand); err != nil {
 		return nil, fmt.Errorf("invalid GitHub install ref: %w", err)
 	}
-	gs := NewGitHubSearcher(c.githubToken)
+	gs := NewGitHubSearcher(ResolveGitHubToken())
 	entry, err := gs.ImportFromCandidate(cand)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub import failed: %w", err)

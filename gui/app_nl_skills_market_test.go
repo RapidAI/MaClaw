@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -734,5 +735,68 @@ func TestSkillExecutorDeleteRemovesExternalSkillDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
 		t.Fatalf("skillDir still exists after Delete(): err = %v", err)
+	}
+}
+
+func TestInstallMixedSkillSkillMarketFailsOver(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var backup *httptest.Server
+	backup = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{backup.URL}})
+		case "/api/v1/skills/failover-skill/download":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":          "failover-skill",
+				"name":        "Failover Skill",
+				"description": "downloaded via backup hubcenter",
+				"version":     "1.0.0",
+				"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "hello"}}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backup.Close()
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: "http://127.0.0.1:1", RemoteHubCenterURLs: []string{backup.URL}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.InstallMixedSkill("skillmarket", "failover-skill", ""); err != nil {
+		t.Fatalf("InstallMixedSkill() error = %v", err)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	var found *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].Name == "Failover Skill" {
+			found = &skills[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected failover skill to be registered, skills = %#v", skills)
+	}
+	if found.HubSkillID != "failover-skill" {
+		t.Fatalf("HubSkillID = %q, want failover-skill", found.HubSkillID)
 	}
 }

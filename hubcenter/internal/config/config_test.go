@@ -29,6 +29,41 @@ ha:
 		}
 	})
 
+	t.Run("resolves self fqdn from node catalog", func(t *testing.T) {
+		path := writeConfigFile(t, `
+ha:
+  enabled: true
+  self_fqdn: https://Hubs.Maclaw.Top/admin
+  cluster_secret: shared-secret
+  nodes:
+    - fqdn: hubs.mypapers.top
+      node_id: hc-1
+      advertise_url: https://hubs.mypapers.top
+    - fqdn: hubs.maclaw.top
+      node_id: hc-2
+      advertise_url: https://hubs.maclaw.top
+    - fqdn: hubs2.maclaw.top
+      node_id: hc-3
+      advertise_url: https://hubs2.maclaw.top
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got := cfg.HA.SelfFQDN; got != "hubs.maclaw.top" {
+			t.Fatalf("self_fqdn = %q", got)
+		}
+		if got := cfg.HA.NodeID; got != "hc-2" {
+			t.Fatalf("node_id = %q", got)
+		}
+		if got := cfg.HA.AdvertiseURL; got != "https://hubs.maclaw.top" {
+			t.Fatalf("advertise_url = %q", got)
+		}
+		if len(cfg.HA.Peers) != 2 {
+			t.Fatalf("peer count = %d", len(cfg.HA.Peers))
+		}
+	})
+
 	t.Run("missing cluster secret", func(t *testing.T) {
 		path := writeConfigFile(t, `
 ha:
@@ -43,6 +78,26 @@ ha:
 		_, err := Load(path)
 		if err == nil || !strings.Contains(err.Error(), "ha.cluster_secret") {
 			t.Fatalf("Load() error = %v, want cluster_secret validation error", err)
+		}
+	})
+
+	t.Run("missing self fqdn match", func(t *testing.T) {
+		path := writeConfigFile(t, `
+ha:
+  enabled: true
+  self_fqdn: hubs.unknown.top
+  cluster_secret: shared-secret
+  nodes:
+    - fqdn: hubs.mypapers.top
+      node_id: hc-1
+      advertise_url: https://hubs.mypapers.top
+    - fqdn: hubs.maclaw.top
+      node_id: hc-2
+      advertise_url: https://hubs.maclaw.top
+`)
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "does not match any enabled ha.nodes entry") {
+			t.Fatalf("Load() error = %v, want self_fqdn match error", err)
 		}
 	})
 

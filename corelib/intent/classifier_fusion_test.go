@@ -20,9 +20,8 @@ func TestFusionToClassification_Clear(t *testing.T) {
 		},
 		ActiveChannels: []string{"embedding", "tree"},
 	}
-	l1 := ClassificationResult{Primary: LabelUnknown, Confidence: 0}
 
-	result := u.fusionToClassification(fr, l1)
+	result := u.fusionToClassification(fr)
 
 	if result.Primary != LabelSSH {
 		t.Errorf("expected primary=ssh, got %s", result.Primary)
@@ -53,9 +52,8 @@ func TestFusionToClassification_Ambiguous(t *testing.T) {
 		},
 		ActiveChannels: []string{"embedding", "tree"},
 	}
-	l1 := ClassificationResult{Primary: LabelUnknown, Confidence: 0}
 
-	result := u.fusionToClassification(fr, l1)
+	result := u.fusionToClassification(fr)
 
 	if result.Primary != LabelCoding {
 		t.Errorf("expected primary=coding, got %s", result.Primary)
@@ -65,9 +63,9 @@ func TestFusionToClassification_Ambiguous(t *testing.T) {
 	}
 }
 
-// TestFusionToClassification_Low_FallsBackToL1 verifies that a LOW verdict
-// with a better L1 result falls back to L1.
-func TestFusionToClassification_Low_FallsBackToL1(t *testing.T) {
+// TestFusionToClassification_Low_ReturnsAmbiguous verifies that a LOW verdict
+// returns Ambiguous — no L1 keyword fallback.
+func TestFusionToClassification_Low_ReturnsAmbiguous(t *testing.T) {
 	u := &UnifiedIntentClassifier{
 		affinity: NewToolAffinityRegistry(),
 	}
@@ -77,21 +75,16 @@ func TestFusionToClassification_Low_FallsBackToL1(t *testing.T) {
 		Top:            FusedCandidate{Label: LabelUnknown, FinalScore: 0.05},
 		ActiveChannels: []string{"embedding", "tree"},
 	}
-	l1 := ClassificationResult{Primary: LabelContinuation, Confidence: 0.85, Layer: 1}
 
-	result := u.fusionToClassification(fr, l1)
+	result := u.fusionToClassification(fr)
 
-	// L1 had better signal, should fall back.
-	if result.Primary != LabelContinuation {
-		t.Errorf("expected fallback to L1 continuation, got %s", result.Primary)
-	}
-	if result.Layer != 1 {
-		t.Errorf("expected layer=1 (L1 fallback), got %d", result.Layer)
+	if result.Primary != LabelAmbiguous {
+		t.Errorf("expected Ambiguous, got %s", result.Primary)
 	}
 }
 
 // TestFusionToClassification_BothChannelsFailed verifies that when both
-// channels fail, the L1 fallback is used.
+// channels fail, the result is Ambiguous.
 func TestFusionToClassification_BothChannelsFailed(t *testing.T) {
 	u := &UnifiedIntentClassifier{
 		affinity: NewToolAffinityRegistry(),
@@ -102,32 +95,68 @@ func TestFusionToClassification_BothChannelsFailed(t *testing.T) {
 		ActiveChannels: []string{}, // both failed
 		Degraded:       true,
 	}
-	l1 := ClassificationResult{Primary: LabelSSH, Confidence: 0.92, Layer: 1}
 
-	result := u.fusionToClassification(fr, l1)
+	result := u.fusionToClassification(fr)
 
-	if result.Primary != LabelSSH {
-		t.Errorf("expected L1 fallback to ssh, got %s", result.Primary)
+	if result.Primary != LabelAmbiguous {
+		t.Errorf("expected Ambiguous, got %s", result.Primary)
+	}
+}
+
+// TestFusionToClassification_CodingWithWorkflowType verifies that
+// CreationOriented is set from WorkflowType, not L1 keywords.
+func TestFusionToClassification_CodingWithWorkflowType(t *testing.T) {
+	u := &UnifiedIntentClassifier{
+		affinity: NewToolAffinityRegistry(),
+	}
+
+	fr := FusionResult{
+		Verdict: VerdictClear,
+		Top:     FusedCandidate{Label: LabelCoding, FinalScore: 0.88, WorkflowType: "coding"},
+		ActiveChannels: []string{"embedding", "tree"},
+	}
+
+	result := u.fusionToClassification(fr)
+
+	if !result.CreationOriented {
+		t.Error("expected CreationOriented=true when WorkflowType=coding")
+	}
+}
+
+// TestFusionToClassification_CodingWithoutWorkflowType verifies that
+// CreationOriented is false when WorkflowType is empty (bug-fix/maintenance).
+func TestFusionToClassification_CodingWithoutWorkflowType(t *testing.T) {
+	u := &UnifiedIntentClassifier{
+		affinity: NewToolAffinityRegistry(),
+	}
+
+	fr := FusionResult{
+		Verdict: VerdictClear,
+		Top:     FusedCandidate{Label: LabelCoding, FinalScore: 0.85, WorkflowType: ""},
+		ActiveChannels: []string{"embedding", "tree"},
+	}
+
+	result := u.fusionToClassification(fr)
+
+	if result.CreationOriented {
+		t.Error("expected CreationOriented=false when WorkflowType is empty")
 	}
 }
 
 // TestEmbeddingTopK_ReturnsTopK verifies that embeddingTopK returns at most
 // topK results sorted by score descending.
 func TestEmbeddingTopK_SortedDescending(t *testing.T) {
-	// This test uses the fusion MergeAndScore to verify sorting behavior
-	// since embeddingTopK requires a real embedder.
 	emb := []labelScore{
 		LabelScore(LabelCoding, 0.90),
 		LabelScore(LabelSSH, 0.70),
 		LabelScore(LabelBugFix, 0.80),
 	}
 
-	candidates := MergeAndScore(emb, nil, 1.0)
+	candidates := MergeAndScore(emb, nil, 1.0, nil)
 
 	if len(candidates) != 3 {
 		t.Fatalf("expected 3 candidates, got %d", len(candidates))
 	}
-	// Should be sorted: coding(0.90) > bugfix(0.80) > ssh(0.70)
 	if candidates[0].Label != LabelCoding {
 		t.Errorf("expected first=coding, got %s", candidates[0].Label)
 	}

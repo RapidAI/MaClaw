@@ -22,6 +22,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelCoding,
 			Domain: "编码开发 (Coding)",
 			MayTriggerWorkflow: true, // coding workflow (needs → design → tasks → implement → review)
+			WorkflowTypes:      []string{"coding"},
 			TreeText: "用户要从零创建软件/应用/游戏/工具/脚本，需要完整开发流程。" +
 				"关键信号：开发、创建、实现、写代码、编程、游戏、前端、后端。",
 			EmbedTexts: []string{
@@ -209,8 +210,13 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelOffice,
 			Domain: "内容处理 (Content)",
 			MayTriggerWorkflow: true, // presentation_design workflow
-			TreeText: "用户要创建新的 PPT/Excel/Word 等办公文档。" +
-				"关键信号：制作PPT、生成Excel、创建Word、做一份报表。",
+			WorkflowTypes:      []string{"presentation_design"},
+			TreeText: "用户要创建需要设计决策的演示文稿（PPT/幻灯片/slide）。" +
+				"判据：产出物是否需要受众定位、内容架构、视觉风格等设计决策。" +
+				"需要工作流：「生成/制作/设计 PPT」「基于文档做宣传PPT」「做投资人路演PPT」— 同一素材可产出截然不同的PPT，需要设计决策 → office + workflow_type。" +
+				"不需要工作流：「打开/查看/转换/截图 PPT」— 文件操作，无设计决策 → document_delivery 或 non_coding。" +
+				"注意：「基于已有素材」不等于「内容处理」。基于文档做PPT仍需要受众定位+内容取舍+风格设计等多阶段决策。" +
+				"Excel/Word 等其他办公文档创建不需要工作流，workflow_type 留空。",
 			EmbedTexts: []string{
 				"帮我制作一个PPT演示文稿",
 				"生成一份Excel报表",

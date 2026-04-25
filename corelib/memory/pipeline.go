@@ -93,10 +93,30 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 	}
 
 	// Step 4: Stratified consolidation (L2-L5).
+	// In multi-tenant mode, run consolidation per-user to maintain isolation.
 	if p.consolidator != nil && ctx.Err() == nil {
-		cr := p.consolidator.RunScheduledConsolidation(ctx, time.Now())
-		if len(cr) > 0 {
-			result.Consolidation = cr
+		// Get all unique owner IDs (users with memories).
+		ownerIDs := p.store.UniqueOwnerIDs()
+
+		if len(ownerIDs) == 0 {
+			// Single-user mode or no user-specific memories: run with empty ownerID.
+			cr := p.consolidator.RunScheduledConsolidation(ctx, time.Now(), "")
+			if len(cr) > 0 {
+				result.Consolidation = cr
+			}
+		} else {
+			// Multi-tenant mode: run consolidation for each user separately.
+			var allResults []ConsolidationResult
+			for _, ownerID := range ownerIDs {
+				if ctx.Err() != nil {
+					break
+				}
+				cr := p.consolidator.RunScheduledConsolidation(ctx, time.Now(), ownerID)
+				allResults = append(allResults, cr...)
+			}
+			if len(allResults) > 0 {
+				result.Consolidation = allResults
+			}
 		}
 	}
 

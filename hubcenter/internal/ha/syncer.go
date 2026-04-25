@@ -1,4 +1,4 @@
-package ha
+﻿package ha
 
 import (
 	"context"
@@ -37,7 +37,12 @@ func NewSyncer(svc *Service, interval time.Duration, limit int) *Syncer {
 	if limit > 500 {
 		limit = 500
 	}
-	return &Syncer{svc: svc, client: &http.Client{Timeout: 3 * time.Second}, interval: interval, limit: limit}
+	return &Syncer{
+		svc:      svc,
+		client:   &http.Client{Timeout: 30 * time.Second},
+		interval: interval,
+		limit:    limit,
+	}
 }
 
 func (s *Syncer) Run(ctx context.Context) {
@@ -86,6 +91,7 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 		now := time.Now().UTC()
 		if len(resp.Ops) == 0 {
 			_ = s.svc.cursors.Upsert(ctx, &store.HAPeerCursor{PeerNodeID: peer.NodeID, LastPulledSeq: afterSeq, LastPulledAt: &now, LastSuccessAt: &now, LastError: ""})
+			s.svc.updatePeerSync(peer.NodeID, 0)
 			return
 		}
 		if err := s.svc.ApplyRemoteOps(ctx, resp.Ops); err != nil {
@@ -118,7 +124,9 @@ func (s *Syncer) pullOps(ctx context.Context, peer *PeerRuntimeState, afterSeq i
 	if secret := strings.TrimSpace(s.svc.ClusterSecret()); secret != "" {
 		req.Header.Set("Authorization", "Bearer "+secret)
 	}
-	req.Header.Set("X-HubCenter-Node", s.svc.nodeID)
+	if err := s.svc.SignPeerRequest(req); err != nil {
+		return nil, err
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -133,3 +141,4 @@ func (s *Syncer) pullOps(ctx context.Context, peer *PeerRuntimeState, afterSeq i
 	}
 	return &out, nil
 }
+

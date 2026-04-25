@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/config"
 )
 
 func clientIPFromRequest(r *http.Request) string {
@@ -30,4 +32,27 @@ func clientIPFromRequest(r *http.Request) string {
 	}
 
 	return strings.TrimSpace(r.RemoteAddr)
+}
+
+func requestHAFQDNHint(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	candidates := []string{
+		strings.TrimSpace(r.Header.Get("X-Forwarded-Host")),
+		strings.TrimSpace(r.Header.Get("X-Original-Host")),
+		strings.TrimSpace(r.Host),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		parts := strings.Split(candidate, ",")
+		for _, part := range parts {
+			if fqdn := config.NormalizeHAFQDN(part); fqdn != "" {
+				return fqdn
+			}
+		}
+	}
+	return ""
 }

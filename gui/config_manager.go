@@ -656,16 +656,8 @@ func (m *ConfigManager) applyMaclawLLMChange(cfg *corelib.AppConfig, key, value 
 		if err != nil {
 			return "", fmt.Errorf("invalid integer value for maclaw_agent_max_iterations: %q", value)
 		}
-		if n <= 0 {
-			n = config.MaxAgentIterationsCap // default 300
-		}
-		if n < config.MinAgentIterations {
-			n = config.MinAgentIterations
-		}
-		if n > config.MaxAgentIterationsCap {
-			n = config.MaxAgentIterationsCap
-		}
-		cfg.MaclawAgentMaxIterations = n // 30-300
+		// Use the single source of truth for value normalization.
+		cfg.MaclawAgentMaxIterations = config.EffectiveMaxIterations(n)
 		return old, nil
 	}
 	return "", fmt.Errorf("unsupported maclaw_llm key %q", key)
@@ -848,7 +840,7 @@ func (m *ConfigManager) initSchema() {
 				{Key: "maclaw_llm_url", Description: "Maclaw LLM 服务地址", Type: "string"},
 				{Key: "maclaw_llm_key", Description: "Maclaw LLM API 密钥", Type: "string"},
 				{Key: "maclaw_llm_model", Description: "Maclaw LLM 模型名称", Type: "string"},
-				{Key: "maclaw_llm_context_length", Description: "LLM 上下文长度 (tokens)，0=默认128000", Type: "int", Default: "0"},
+				{Key: "maclaw_llm_context_length", Description: "LLM 上下文长度 (tokens)，0=默认110000", Type: "int", Default: "0"},
 				{Key: "maclaw_llm_current_provider", Description: "当前 LLM 提供商", Type: "string"},
 				{Key: "maclaw_agent_max_iterations", Description: "Agent 最大推理轮次（30-300，默认300）", Type: "int", Default: "300"},
 			},

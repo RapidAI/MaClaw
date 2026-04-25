@@ -20,12 +20,13 @@ const (
 
 // FusedCandidate is a single candidate after merging both channels.
 type FusedCandidate struct {
-	Label      IntentLabel
-	FinalScore float64
-	EmbScore   float64
-	TreeScore  float64
-	InEmb      bool // appeared in embedding channel results
-	InTree     bool // appeared in tree channel results
+	Label        IntentLabel
+	FinalScore   float64
+	EmbScore     float64
+	TreeScore    float64
+	InEmb        bool   // appeared in embedding channel results
+	InTree       bool   // appeared in tree channel results
+	WorkflowType string // workflow type from tree channel (non-empty when intent triggers a workflow)
 }
 
 // FusionResult is the output of dual-channel fusion.
@@ -57,6 +58,7 @@ type IntentDefinition struct {
 	TreeText           string         // Layer 3: descriptive text for LLM tree reasoning
 	ToolNames          []string       // tool affinity: tools to activate when this intent wins
 	MayTriggerWorkflow bool           // true if this intent could start a multi-phase workflow
+	WorkflowTypes      []string       // workflow template types this intent can trigger (e.g., ["coding"], ["presentation_design"])
 }
 
 // Fusion parameters — defaults calibrated for MacLaw's intent space.

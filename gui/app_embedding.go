@@ -336,10 +336,6 @@ func (a *App) downloadModelFromWithEvent(url, destPath string, emitErrors bool, 
 	return nil
 }
 
-func (a *App) emitDownloadProgress(pct int, downloaded, total int64, errMsg string) {
-	a.emitDownloadProgressNamed("embedding-download-progress", pct, downloaded, total, errMsg)
-}
-
 func (a *App) emitDownloadProgressNamed(eventName string, pct int, downloaded, total int64, errMsg string) {
 	if a.ctx == nil {
 		return

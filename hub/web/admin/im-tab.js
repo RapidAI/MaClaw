@@ -9,7 +9,7 @@
   }
 
   function bindingCard(title, meta, actionText, onclickExpr) {
-    return '<div class="item" style="margin-bottom:8px"><div class="item-head"><div><div class="item-title">' + escapeHtml(title || '') + '</div><div class="item-meta mono">' + escapeHtml(meta || '') + '</div></div><button class="btn-danger" style="height:32px;font-size:12px;padding:0 10px" onclick="' + onclickExpr + '">' + escapeHtml(actionText || '') + '</button></div></div>';
+    return '<div class="item" style="margin-bottom:6px;padding:10px 12px;border-radius:12px;box-shadow:none"><div class="item-head" style="align-items:center;gap:8px"><div style="min-width:0;flex:1"><div class="item-title" style="font-size:13px">' + escapeHtml(title || '') + '</div><div class="item-meta mono" style="margin-top:2px;font-size:11px">' + escapeHtml(meta || '') + '</div></div><button class="btn-danger" style="height:30px;font-size:11px;padding:0 10px;flex-shrink:0" onclick="' + onclickExpr + '">' + escapeHtml(actionText || '') + '</button></div></div>';
   }
 
   const DINGTALK_I18N = {
@@ -152,7 +152,7 @@
     try {
       await global.saveOpenclawImConfig();
       const data = await api('/api/admin/settings/openclaw_im/test', { method: 'POST' });
-      const msg = data.ok ? ocim('testSuccess', { status: String(data.status) }) : ocim('testFailed', { message: data.message || 'Unknown error' });
+      const msg = data.ok ? ocim('testSuccess', { status: String(data.status) }) : ocim('testFailed', { message: data.message || ocim('unknownError') });
       setOutput(msg);
       showToast(msg, data.ok ? 'success' : 'error');
     } catch (err) {
@@ -205,9 +205,9 @@
         const label = escapeHtml(lang === 'zh' ? (f.label_zh || f.label) : f.label);
         const val = escapeHtml((ch.config && ch.config[f.key]) || '');
         const inputType = f.type === 'password' ? 'password' : 'text';
-        return '<div><label style="font-size:12px;font-weight:600;color:var(--muted)">' + label + '</label><input id="bridge_' + escapeHtml(ch.id) + '_' + escapeHtml(f.key) + '" type="' + inputType + '" value="' + val + '" placeholder="' + escapeHtml(f.placeholder || '') + '" style="font-size:13px"></div>';
+        return '<div><label style="font-size:11px;font-weight:600;color:var(--muted)">' + label + '</label><input id="bridge_' + escapeHtml(ch.id) + '_' + escapeHtml(f.key) + '" type="' + inputType + '" value="' + val + '" placeholder="' + escapeHtml(f.placeholder || '') + '" style="font-size:11px"></div>';
       }).join('');
-      return '<div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="display:flex;align-items:center;gap:8px"><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="bridge_' + escapeHtml(ch.id) + '_enabled" ' + enabledChecked + '> ' + name + '</label>' + installedBadge + '</div><button class="btn-primary" style="height:32px;font-size:12px;padding:0 14px" onclick="saveBridgeChannel(' + JSON.stringify(String(ch.id || '')) + ')">' + ocim('channelSave') + '</button></div><div class="item-meta" style="margin-bottom:8px">' + desc + '</div><div class="grid2" style="gap:10px">' + fields + '</div></div>';
+      return '<div class="item" style="margin-bottom:8px;padding:10px 12px;border-radius:12px;box-shadow:none"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap"><div style="display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap"><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:11px;font-weight:700;min-width:0"><input type="checkbox" id="bridge_' + escapeHtml(ch.id) + '_enabled" ' + enabledChecked + '> <span style="word-break:break-word">' + name + '</span></label>' + installedBadge + '</div><button class="btn-primary" style="height:30px;font-size:11px;padding:0 12px" onclick="saveBridgeChannel(' + JSON.stringify(String(ch.id || '')) + ')">' + ocim('channelSave') + '</button></div><div class="item-meta" style="margin-bottom:8px;font-size:11px">' + desc + '</div><div class="grid2" style="gap:6px">' + fields + '</div></div>';
     }).join('');
   };
 
@@ -226,7 +226,7 @@
       const name = currentLang === 'zh' ? (ch.name_zh || ch.name) : ch.name;
       let msg = ocim('channelSaved', { name: name });
       if (data.install_msg) msg += ' ' + data.install_msg;
-      if (data.config_err) msg += ' config.json: ' + data.config_err;
+      if (data.config_err) msg += ' ' + ocim('configJsonError', { error: data.config_err });
       setOutput(msg);
       showToast(msg, data.config_err ? 'error' : 'success');
       await global.loadBridgeChannels();

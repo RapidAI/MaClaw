@@ -23,6 +23,25 @@ type AdminAuditLog struct {
 	CreatedAt   time.Time
 }
 
+type FailureEventLog struct {
+	ID          string
+	Category    string
+	EventCode   string
+	Message     string
+	EntityID    string
+	Email       string
+	ClientIP    string
+	DetailsJSON string
+	CreatedAt   time.Time
+}
+
+type FailureEventLogFilter struct {
+	Keyword  string
+	Category string
+	Offset   int
+	Limit    int
+}
+
 type User struct {
 	ID               string
 	Email            string
@@ -154,6 +173,11 @@ type SystemSettingsRepository interface {
 
 type AdminAuditRepository interface {
 	Create(ctx context.Context, log *AdminAuditLog) error
+}
+
+type FailureEventLogRepository interface {
+	Create(ctx context.Context, log *FailureEventLog) error
+	List(ctx context.Context, filter FailureEventLogFilter) ([]*FailureEventLog, int, error)
 }
 
 type UserRepository interface {
@@ -345,6 +369,7 @@ type Store struct {
 	Admins          AdminUserRepository
 	System          SystemSettingsRepository
 	AdminAudit      AdminAuditRepository
+	FailureLogs     FailureEventLogRepository
 	Users           UserRepository
 	Enrollments     EnrollmentRepository
 	EmailBlocks     EmailBlocklistRepository

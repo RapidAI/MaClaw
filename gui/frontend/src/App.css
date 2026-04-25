@@ -1544,20 +1544,6 @@ body {
 .sidebar[data-ai-theme='dark'] {
     background: linear-gradient(180deg, var(--theme-surface) 0%, var(--theme-page-bg) 100%);
     color: var(--theme-text-primary);
-    --theme-primary: #818cf8;
-    --theme-primary-strong: #6366f1;
-    --theme-primary-soft: rgba(129, 140, 248, 0.18);
-    --theme-page-bg: #0b1220;
-    --theme-surface: #111827;
-    --theme-surface-muted: #0f172a;
-    --theme-text-primary: #e5e7eb;
-    --theme-text-secondary: #cbd5e1;
-    --theme-text-muted: #94a3b8;
-    --theme-border: #334155;
-    --theme-border-subtle: #1e293b;
-    --theme-danger: #f87171;
-    --theme-info-bg: rgba(99, 102, 241, 0.14);
-    --theme-link-color: #a5b4fc;
 }
 
 .sidebar[data-ai-theme='dark'] .sidebar-item {
@@ -1588,6 +1574,16 @@ body {
 
 .main-container[data-ai-theme='dark'] {
     background: #0b1220;
+}
+
+/*
+ * Dark theme CSS variable overrides.
+ * Placed on #App so that ALL descendants — including modals rendered
+ * outside .main-container — inherit the dark palette.
+ * .main-container is a child of #App, so it inherits these variables
+ * automatically; only its own `background` needs a separate rule above.
+ */
+#App[data-ai-theme='dark'] {
     --theme-primary: #818cf8;
     --theme-primary-strong: #6366f1;
     --theme-primary-soft: rgba(129, 140, 248, 0.18);
@@ -1607,6 +1603,110 @@ body {
     --theme-danger-bg: rgba(239, 68, 68, 0.12);
     --theme-link-color: #a5b4fc;
     --theme-info-bg: rgba(99, 102, 241, 0.14);
+}
+
+/* Dark theme: modals rendered outside .main-container */
+#App[data-ai-theme='dark'] .modal-overlay {
+    background-color: rgba(0, 0, 0, 0.6);
+}
+
+#App[data-ai-theme='dark'] .modal-content {
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    border-color: var(--theme-border);
+}
+
+#App[data-ai-theme='dark'] .modal-content h3,
+#App[data-ai-theme='dark'] .modal-content h2 {
+    color: var(--theme-text-primary);
+}
+
+#App[data-ai-theme='dark'] .modal-content .form-label {
+    color: var(--theme-text-secondary);
+}
+
+#App[data-ai-theme='dark'] .modal-content .form-input,
+#App[data-ai-theme='dark'] .modal-content input:not([type="checkbox"]):not([type="radio"]),
+#App[data-ai-theme='dark'] .modal-content textarea,
+#App[data-ai-theme='dark'] .modal-content select {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+    border-color: var(--theme-border);
+}
+
+#App[data-ai-theme='dark'] .modal-content .form-input::placeholder,
+#App[data-ai-theme='dark'] .modal-content input::placeholder {
+    color: var(--theme-text-muted);
+}
+
+#App[data-ai-theme='dark'] .modal-content .btn-link {
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    border-color: var(--theme-border);
+}
+
+#App[data-ai-theme='dark'] .modal-content .btn-link:hover {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+}
+
+#App[data-ai-theme='dark'] .modal-content .btn-hide {
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    border-color: var(--theme-border);
+}
+
+#App[data-ai-theme='dark'] .modal-content .btn-hide:hover {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+}
+
+#App[data-ai-theme='dark'] .modal-content .btn-primary {
+    background: var(--theme-primary-strong);
+    color: #ffffff;
+    border-color: var(--theme-primary);
+}
+
+#App[data-ai-theme='dark'] .modal-content .btn-primary:hover {
+    background: var(--theme-primary);
+}
+
+#App[data-ai-theme='dark'] .modal-content .btn-secondary {
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    border-color: var(--theme-border);
+}
+
+#App[data-ai-theme='dark'] .modal-content .btn-close,
+#App[data-ai-theme='dark'] .modal-content .modal-close {
+    color: var(--theme-text-muted);
+}
+
+#App[data-ai-theme='dark'] .modal-content .btn-close:hover,
+#App[data-ai-theme='dark'] .modal-content .modal-close:hover {
+    color: var(--theme-text-primary);
+}
+
+#App[data-ai-theme='dark'] .modal-content .tab-button {
+    color: var(--theme-text-muted);
+    border-color: transparent;
+}
+
+#App[data-ai-theme='dark'] .modal-content .tab-button:hover {
+    color: var(--theme-text-primary);
+    background: var(--theme-surface-muted);
+}
+
+#App[data-ai-theme='dark'] .modal-content .tab-button.active {
+    color: var(--theme-text-primary);
+    background: var(--theme-surface-muted);
+    border-color: var(--theme-border);
+    border-bottom-color: var(--theme-surface-muted);
+}
+
+#App[data-ai-theme='dark'] .modal-content select option {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
 }
 
 .main-container[data-ai-theme='dark'] .top-header {

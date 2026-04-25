@@ -299,7 +299,7 @@ func TestEffectiveBudget(t *testing.T) {
 		ctx      int
 		expected int
 	}{
-		{"default 128K", 102400, MaxSteeringTokenBudget},
+		{"default 110K", 88000, MaxSteeringTokenBudget},
 		{"large 200K", 160000, MaxSteeringTokenBudget},
 		{"zero (fallback)", 0, MaxSteeringTokenBudget},
 		{"small 32K", 25600, 768},

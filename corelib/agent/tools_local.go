@@ -155,8 +155,17 @@ func ToolReadFile(args map[string]interface{}) string {
 	}
 
 	maxLines := ReadFileMaxLines
+	explicitLines := false
 	if n, ok := args["lines"].(float64); ok && n > 0 {
 		maxLines = int(n)
+		explicitLines = true
+	}
+
+	startLine := 1
+	explicitStart := false
+	if n, ok := args["start_line"].(float64); ok && n > 1 {
+		startLine = int(n)
+		explicitStart = true
 	}
 
 	data, err := os.ReadFile(absPath)
@@ -165,11 +174,189 @@ func ToolReadFile(args map[string]interface{}) string {
 	}
 
 	lines := strings.SplitAfter(string(data), "\n")
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
-		return strings.Join(lines, "") + fmt.Sprintf("\n... (已截断，共 %d 行，显示前 %d 行)", len(strings.SplitAfter(string(data), "\n")), maxLines)
+	totalLines := len(lines)
+
+	// 自适应策略：LLM 未指定 start_line/lines 时，根据文件大小自动决定返回内容
+	if !explicitLines && !explicitStart && totalLines > ReadFileMaxLines {
+		return BuildAdaptiveReadResult(lines, totalLines, absPath)
+	}
+
+	// 精准读取模式
+	startIdx := startLine - 1
+	if startIdx >= totalLines {
+		return fmt.Sprintf("start_line=%d 超出文件总行数 %d", startLine, totalLines)
+	}
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	remaining := lines[startIdx:]
+
+	if len(remaining) > maxLines {
+		chunk := remaining[:maxLines]
+		endLine := startLine + maxLines - 1
+		nextStart := endLine + 1
+		return strings.Join(chunk, "") + fmt.Sprintf(
+			"\n... (共 %d 行，显示第 %d-%d 行。下一段: start_line=%d)",
+			totalLines, startLine, endLine, nextStart)
+	}
+
+	if startIdx > 0 {
+		return fmt.Sprintf("(第 %d-%d 行，共 %d 行)\n%s", startLine, totalLines, totalLines, strings.Join(remaining, ""))
 	}
 	return string(data)
+}
+
+// BuildAdaptiveReadResult 根据文件类型和大小自动决定返回内容。
+// 返回结构摘要（标题/函数签名/关键行）+ 预览，LLM 再用 start_line 精准读取。
+func BuildAdaptiveReadResult(lines []string, totalLines int, absPath string) string {
+	ext := strings.ToLower(filepath.Ext(absPath))
+	var buf strings.Builder
+
+	buf.WriteString(fmt.Sprintf("[文件概览] %s（共 %d 行）\n\n", filepath.Base(absPath), totalLines))
+
+	outline := ExtractStructureOutline(lines, totalLines, ext)
+	if outline != "" {
+		buf.WriteString("=== 结构摘要 ===\n")
+		buf.WriteString(outline)
+		buf.WriteString("\n")
+	}
+
+	previewLines := 80
+	if totalLines > 1000 {
+		previewLines = 50
+	}
+	buf.WriteString(fmt.Sprintf("=== 前 %d 行预览 ===\n", previewLines))
+	if previewLines > totalLines {
+		previewLines = totalLines
+	}
+	preview := lines[:previewLines]
+	buf.WriteString(strings.Join(preview, ""))
+
+	buf.WriteString(fmt.Sprintf("\n\n... (预览结束。如需查看特定段落，请使用 start_line 参数精准读取，如 start_line=%d)", previewLines+1))
+	return buf.String()
+}
+
+// ExtractStructureOutline 从文件内容中提取结构性行（标题、函数签名等）。
+func ExtractStructureOutline(lines []string, totalLines int, ext string) string {
+	var result []string
+
+	isCode := IsCodeFileExt(ext)
+	isMarkdown := ext == ".md" || ext == ".markdown" || ext == ".mdx"
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lineNum := i + 1
+		keep := false
+
+		if isMarkdown {
+			if strings.HasPrefix(trimmed, "#") {
+				keep = true
+			}
+		} else if isCode {
+			keep = IsCodeStructureLine(trimmed, ext)
+		} else {
+			keep = IsTextStructureLine(trimmed, i, lines)
+		}
+
+		if keep {
+			display := trimmed
+			if len([]rune(display)) > 120 {
+				display = string([]rune(display)[:117]) + "..."
+			}
+			result = append(result, fmt.Sprintf("  L%-4d %s", lineNum, display))
+		}
+	}
+
+	maxOutlineLines := 60
+	if len(result) > maxOutlineLines {
+		result = append(result[:maxOutlineLines], fmt.Sprintf("  ... (共 %d 个结构行，已截断)", len(result)))
+	}
+
+	if len(result) == 0 {
+		return ""
+	}
+	return strings.Join(result, "\n") + "\n"
+}
+
+// IsCodeFileExt returns true for known source code file extensions.
+func IsCodeFileExt(ext string) bool {
+	switch ext {
+	case ".go", ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h", ".hpp",
+		".cs", ".rb", ".rs", ".swift", ".kt", ".scala", ".php", ".lua", ".sh", ".bash",
+		".pl", ".r", ".m", ".mm", ".zig", ".v", ".dart", ".ex", ".exs", ".clj", ".hs",
+		".vue", ".svelte":
+		return true
+	}
+	return false
+}
+
+// IsCodeStructureLine detects function/class/struct definition lines.
+func IsCodeStructureLine(trimmed string, ext string) bool {
+	switch ext {
+	case ".go":
+		return strings.HasPrefix(trimmed, "func ") || strings.HasPrefix(trimmed, "type ") ||
+			strings.HasPrefix(trimmed, "package ") || strings.HasPrefix(trimmed, "import ")
+	case ".py":
+		return strings.HasPrefix(trimmed, "def ") || strings.HasPrefix(trimmed, "class ") ||
+			strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "from ")
+	case ".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte":
+		return strings.HasPrefix(trimmed, "function ") || strings.HasPrefix(trimmed, "class ") ||
+			strings.HasPrefix(trimmed, "export ") || strings.HasPrefix(trimmed, "import ") ||
+			strings.HasPrefix(trimmed, "const ") || strings.HasPrefix(trimmed, "interface ")
+	case ".java", ".cs", ".kt", ".scala":
+		return strings.HasPrefix(trimmed, "public ") || strings.HasPrefix(trimmed, "private ") ||
+			strings.HasPrefix(trimmed, "protected ") || strings.HasPrefix(trimmed, "class ") ||
+			strings.HasPrefix(trimmed, "interface ") || strings.HasPrefix(trimmed, "import ") ||
+			strings.HasPrefix(trimmed, "package ") || strings.HasPrefix(trimmed, "fun ")
+	case ".c", ".cpp", ".h", ".hpp", ".rs":
+		return strings.HasPrefix(trimmed, "#include") || strings.HasPrefix(trimmed, "#define") ||
+			strings.HasPrefix(trimmed, "struct ") || strings.HasPrefix(trimmed, "enum ") ||
+			strings.HasPrefix(trimmed, "fn ") || strings.HasPrefix(trimmed, "impl ") ||
+			strings.HasPrefix(trimmed, "pub ") || strings.HasPrefix(trimmed, "mod ") ||
+			strings.HasPrefix(trimmed, "use ") || strings.HasPrefix(trimmed, "typedef ")
+	case ".rb":
+		return strings.HasPrefix(trimmed, "def ") || strings.HasPrefix(trimmed, "class ") ||
+			strings.HasPrefix(trimmed, "module ") || strings.HasPrefix(trimmed, "require ")
+	case ".php":
+		return strings.HasPrefix(trimmed, "function ") || strings.HasPrefix(trimmed, "class ") ||
+			strings.HasPrefix(trimmed, "namespace ") || strings.HasPrefix(trimmed, "use ") ||
+			strings.HasPrefix(trimmed, "public ") || strings.HasPrefix(trimmed, "private ")
+	case ".sh", ".bash":
+		return strings.Contains(trimmed, "()") && strings.HasSuffix(trimmed, "{")
+	}
+	return false
+}
+
+// IsTextStructureLine detects heading-like lines in plain text files.
+func IsTextStructureLine(trimmed string, idx int, lines []string) bool {
+	if len(trimmed) > 3 && len(trimmed) < 80 && strings.ToUpper(trimmed) == trimmed && !strings.ContainsAny(trimmed, "{}()[]<>|") {
+		return true
+	}
+	if len(trimmed) > 2 && trimmed[0] >= '0' && trimmed[0] <= '9' {
+		prefix := trimmed[:min(5, len(trimmed))]
+		if strings.Contains(prefix, ".") || strings.Contains(prefix, "、") {
+			return true
+		}
+	}
+	if idx+1 < len(lines) {
+		nextTrimmed := strings.TrimSpace(lines[idx+1])
+		if len(nextTrimmed) >= 3 && (allSameCharCorelib(nextTrimmed, '=') || allSameCharCorelib(nextTrimmed, '-')) {
+			return true
+		}
+	}
+	return false
+}
+
+func allSameCharCorelib(s string, ch byte) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != ch {
+			return false
+		}
+	}
+	return true
 }
 
 // --- Write File ---

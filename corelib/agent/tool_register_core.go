@@ -63,10 +63,11 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "read_file",
-		Description: "Read file content. Supports an optional lines parameter to limit output.",
+		Description: "Read file content. Small files returned in full; large files return a structure outline + preview. Use start_line to read specific sections.",
 		Properties: map[string]interface{}{
-			"path":  map[string]string{"type": "string", "description": "File path"},
-			"lines": map[string]string{"type": "integer", "description": "Maximum lines to read, default 200"},
+			"path":       map[string]string{"type": "string", "description": "File path"},
+			"lines":      map[string]string{"type": "integer", "description": "Max lines to read (optional, default 200). Specifying this bypasses adaptive mode."},
+			"start_line": map[string]string{"type": "integer", "description": "Starting line number, 1-based (optional). Specifying this bypasses adaptive mode."},
 		},
 		Required: []string{"path"},
 		Handler:  func(args map[string]interface{}) string { return ToolReadFile(args) },

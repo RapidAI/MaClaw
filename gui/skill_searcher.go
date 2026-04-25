@@ -1,10 +1,10 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"log"
 	"net/http"
 	"net/url"
@@ -15,7 +15,7 @@ import (
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
-// SkillSearchResult 搜索结果条目。
+// SkillSearchResult is one SkillMarket search result.
 type SkillSearchResult struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
@@ -58,13 +58,13 @@ type MixedSkillSearchResult struct {
 	HasUpdate     bool     `json:"has_update"`
 }
 
-// SkillSearcher MaClaw 端智能搜索模块。
+// SkillSearcher handles mixed skill search across sources.
 type SkillSearcher struct {
 	client *SkillMarketClient
 	app    *App
 }
 
-// NewSkillSearcher 创建搜索模块。
+// NewSkillSearcher creates a searcher.
 func NewSkillSearcher(client *SkillMarketClient) *SkillSearcher {
 	var app *App
 	if client != nil {
@@ -73,11 +73,10 @@ func NewSkillSearcher(client *SkillMarketClient) *SkillSearcher {
 	return &SkillSearcher{client: client, app: app}
 }
 
-// Search 调用 HubCenter 搜索 API。
+// Search queries SkillMarket through the current HubCenter pool.
 func (s *SkillSearcher) Search(ctx context.Context, query string, tags []string, topN int) ([]SkillSearchResult, error) {
-	base := s.client.baseURL()
-	if base == "" {
-		return nil, fmt.Errorf("hubcenter URL not configured")
+	if s.client == nil || s.app == nil {
+		return nil, fmt.Errorf("hubcenter client not initialized")
 	}
 	if topN <= 0 {
 		topN = 20
@@ -90,27 +89,10 @@ func (s *SkillSearcher) Search(ctx context.Context, query string, tags []string,
 	}
 	params.Set("top_n", fmt.Sprintf("%d", topN))
 
-	reqURL := base + "/api/v1/skillmarket/search?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	httpClient := &http.Client{Timeout: 15 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("search failed: %s", resp.Status)
-	}
-
 	var wrapper struct {
 		Results []SkillSearchResult `json:"results"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
+	if _, _, err := s.app.getHubCenterJSON(ctx, &http.Client{Timeout: 15 * time.Second}, "/api/v1/skillmarket/search?"+params.Encode(), 0, &wrapper); err != nil {
 		return nil, err
 	}
 	return wrapper.Results, nil
@@ -135,7 +117,7 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 	}
 
 	// ClawHub + GitHub via shared HubClient (single implementation).
-	hubClient := cskill.NewHubClient()
+	hubClient := cskill.DefaultHubClient()
 	for _, r := range hubClient.SearchClawHub(ctx, query) {
 		results = append(results, hubSearchResultToMixed(r))
 	}
@@ -160,7 +142,42 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 		}
 		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
 	})
+
+	// Demote results with poor local execution history (P2 #A signal feedback).
+	// This stable sort preserves the source-priority order for results with
+	// equal local penalty, but pushes consistently-failing or disabled skills
+	// to the bottom regardless of their Hub popularity.
+	if s.app != nil && s.app.skillExecutor != nil {
+		localSkills := s.app.skillExecutor.loadSkills()
+		if len(localSkills) > 0 {
+			skillMap := make(map[string]*corelib.NLSkillEntry, len(localSkills))
+			for i := range localSkills {
+				skillMap[localSkills[i].Name] = &localSkills[i]
+			}
+			sort.SliceStable(results, func(i, j int) bool {
+				pi := localSearchPenalty(results[i].Name, results[i].InstalledName, skillMap)
+				pj := localSearchPenalty(results[j].Name, results[j].InstalledName, skillMap)
+				return pi < pj
+			})
+		}
+	}
+
 	return results, nil
+}
+
+// localSearchPenalty returns a penalty for a search result based on local
+// execution history. Checks both the result name and the installed name
+// (which may differ from the Hub name).
+func localSearchPenalty(name, installedName string, skillMap map[string]*corelib.NLSkillEntry) int {
+	if s, ok := skillMap[name]; ok {
+		return cskill.LocalPenalty(s)
+	}
+	if installedName != "" {
+		if s, ok := skillMap[installedName]; ok {
+			return cskill.LocalPenalty(s)
+		}
+	}
+	return 0
 }
 
 func sourcePriority(source string) int {
@@ -247,14 +264,10 @@ func (s *SkillSearcher) enrichInstalledState(results []MixedSkillSearchResult) {
 		return
 	}
 	skills := s.app.skillExecutor.loadSkills()
-	updatesByHubID := map[string]bool{}
-	for _, update := range s.app.checkHubSkillUpdatesSafe() {
-		for _, skill := range skills {
-			if skill.Name == update.SkillName && skill.HubSkillID != "" {
-				updatesByHubID[skill.HubSkillID] = true
-			}
-		}
-	}
+	// Read update info from cache — zero HTTP requests.
+	// The cache is populated by CheckHubSkillUpdates (frontend tab switch)
+	// or refreshHubUpdateCacheAsync (background).
+	updatesByHubID := s.app.getCachedHubUpdates() // may be nil if cache cold
 	for i := range results {
 		for _, skill := range skills {
 			if mixedResultMatchesSkill(results[i], skill) {
@@ -262,7 +275,9 @@ func (s *SkillSearcher) enrichInstalledState(results []MixedSkillSearchResult) {
 				results[i].InstalledName = skill.Name
 				if skill.Source == "hub" && skill.HubSkillID != "" {
 					results[i].CanUpdate = true
-					results[i].HasUpdate = updatesByHubID[skill.HubSkillID]
+					if updatesByHubID != nil {
+						results[i].HasUpdate = updatesByHubID[skill.HubSkillID]
+					}
 				}
 				break
 			}
@@ -283,12 +298,9 @@ func mixedResultMatchesSkill(result MixedSkillSearchResult, skill corelib.NLSkil
 	}
 }
 
-// SearchAndInstall 搜索并自动安装最佳匹配的 Skill。
-// 搜索顺序: SkillMarket → ClawHub 中国镜像 → GitHub。
-// 搜索无结果时记录日志并返回 nil，不中断任务。
-// 根据 SkillPurchaseMode 配置过滤结果：free_only 模式只选择免费 Skill。
+// SearchAndInstall searches and auto-installs the best matching skill.
+// Search order: SkillMarket, then ClawHub mirror, then GitHub.
 func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*SkillSearchResult, error) {
-	// Step 1: SkillMarket (HubCenter)
 	results, err := s.Search(ctx, query, nil, 5)
 	if err != nil {
 		log.Printf("[skill-search] skillmarket search error: %v", err)
@@ -320,9 +332,8 @@ func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*Sk
 		results = filtered
 	}
 
-	// 选择第一个结果（已按质量排序）
+	// Choose the first result; results are already sorted by quality.
 	best := &results[0]
-	log.Printf("[skill-search] found: %s (score=%.2f, rating=%.1f)", best.Name, best.Score, best.AvgRating)
 	return best, nil
 }
 
@@ -330,7 +341,7 @@ func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*Sk
 // Delegates to the shared HubClient and converts results to the legacy
 // SkillSearchResult format (used by SearchAndInstall).
 func (s *SkillSearcher) searchClawHubMirror(ctx context.Context, query string) []SkillSearchResult {
-	hubClient := cskill.NewHubClient()
+	hubClient := cskill.DefaultHubClient()
 	hubResults := hubClient.SearchClawHub(ctx, query)
 	if len(hubResults) == 0 {
 		return nil
@@ -364,7 +375,7 @@ func (s *SkillSearcher) searchGitHubFallback(ctx context.Context, query string) 
 	}
 	best := candidates[0]
 	installRefBytes, _ := json.Marshal(best)
-	log.Printf("[skill-search] GitHub fallback found: %s (★%d)", best.RepoFullName, best.Stars)
+	log.Printf("[skill-search] GitHub fallback found: %s (stars=%d)", best.RepoFullName, best.Stars)
 	return &SkillSearchResult{
 		ID:          best.RepoFullName,
 		Name:        best.RepoFullName,

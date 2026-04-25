@@ -75,6 +75,48 @@ func TestRevokedCredentialCannotIssueToken(t *testing.T) {
 	}
 }
 
+func TestRotatedCredentialInvalidatesExistingToken(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	cred, err := svc.CreateCredential(context.Background(), CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "rotate-key", APISecret: "secret-old"})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "rotate-key", APISecret: "secret-old"})
+	if err != nil {
+		t.Fatalf("IssueToken before rotate: %v", err)
+	}
+	if _, err := svc.RotateCredentialSecret(context.Background(), tenant.ID, user.ID, cred.ID, RotateCredentialSecretInput{APISecret: "secret-new"}); err != nil {
+		t.Fatalf("RotateCredentialSecret: %v", err)
+	}
+	if _, err := svc.Authenticate(token.AccessToken); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Authenticate after rotate error = %v, want ErrUnauthorized", err)
+	}
+	if _, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "rotate-key", APISecret: "secret-new"}); err != nil {
+		t.Fatalf("IssueToken with new secret: %v", err)
+	}
+}
+
+func TestCredentialRenameKeepsExistingTokenValid(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	cred, err := svc.CreateCredential(context.Background(), CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "rename-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "rename-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken before rename: %v", err)
+	}
+	newName := "Renamed API"
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, cred.ID, UpdateCredentialInput{Name: &newName}); err != nil {
+		t.Fatalf("UpdateCredential: %v", err)
+	}
+	if _, err := svc.Authenticate(token.AccessToken); err != nil {
+		t.Fatalf("Authenticate after rename: %v", err)
+	}
+}
+
 func newStatusTestService(t *testing.T) *Service {
 	t.Helper()
 	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test", TokenTTL: time.Hour}, NewMemoryStore(), EchoExecutor{})

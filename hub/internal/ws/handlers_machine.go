@@ -208,6 +208,7 @@ type SessionService interface {
 type identityService interface {
 	AuthenticateMachine(ctx context.Context, machineID, rawToken string) (*auth.MachinePrincipal, error)
 	AuthenticateViewer(ctx context.Context, rawToken string) (*auth.ViewerPrincipal, error)
+	IssueViewerTokenForUser(ctx context.Context, userID string) (string, error)
 }
 
 // IMAgentResponseHandler handles agent responses routed back from MaClaw clients.
@@ -596,7 +597,21 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 	ctx.MachineID = principal.MachineID
 	log.Printf("[ws] handleMachineAuth: auth OK machine_id=%s user_id=%s, calling BindDesktop", principal.MachineID, principal.UserID)
 	g.Devices.BindDesktop(principal.MachineID, ctx)
-	return writeWSJSON(ctx.Conn, map[string]any{"type": "auth.ok", "payload": map[string]any{"role": "machine", "machine_id": principal.MachineID}})
+
+	authPayload := map[string]any{"role": "machine", "machine_id": principal.MachineID}
+
+	// Always issue a fresh viewer token on connect. The client persists it
+	// and uses it for LLM service API calls (redeem, status, chat completions).
+	// Issuing on every connect ensures the client always has a valid token
+	// (viewer tokens expire after 30 days; reconnects keep it fresh).
+	// Old tokens expire naturally — no accumulation concern for SQLite.
+	if viewerToken, err := g.Identity.IssueViewerTokenForUser(context.Background(), principal.UserID); err == nil {
+		authPayload["viewer_token"] = viewerToken
+	} else {
+		log.Printf("[ws] handleMachineAuth: failed to issue viewer token for user_id=%s: %v", principal.UserID, err)
+	}
+
+	return writeWSJSON(ctx.Conn, map[string]any{"type": "auth.ok", "payload": authPayload})
 }
 
 func (g *Gateway) handleViewerAuth(ctx *ConnContext, msg Envelope) error {

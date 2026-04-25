@@ -56,3 +56,37 @@ site/
 
 # RapidSpeech model files (large GGUF/ONNX)
 RapidSpeech.cpp/models/
+
+# AI coding tool temp files
+.aicoder/
+.claude/
+
+# Deploy artifacts and logs
+build/deploy-ha/*.tar.gz
+build/deploy-ha/stage/
+build/deploy-ha/run-*/
+build/deploy-ha/rendered-configs/
+build/deploy-ha/remote_deploy.sh
+build/deploy-ha/*.log
+build/deploy-ha/*.err.log
+build/deploy-single-hub/
+build/deploy-ha-*.log
+build/deploy-ha-*.err.log
+build/deploy-ha-direct.log
+build/deploy-ha-direct.err.log
+deploy/rendered-configs-temp/
+deploy/*.generated.*
+
+# Binary and resource files
+hub.exe
+*.syso
+**/build/bin/*.exe
+
+# YOLO model weights (large binary files)
+corelib/yolo/weights/
+
+# npm cache in all frontend dirs
+**/frontend/.npm_cache/
+
+# Build temp files
+build/windows/installer/*.nsh.tmp

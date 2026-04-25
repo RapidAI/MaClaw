@@ -140,8 +140,8 @@ func TestCoreAgentBuildToolsDisablesBashByDefault(t *testing.T) {
 	if seen["bash"] {
 		t.Fatalf("did not expect bash tool definition by default in %#v", seen)
 	}
-	if !seen["ssh"] {
-		t.Fatalf("expected ssh tool definition in %#v", seen)
+	if seen["ssh"] {
+		t.Fatalf("did not expect ssh tool definition without SSH availability in %#v", seen)
 	}
 }
 
@@ -165,7 +165,7 @@ func TestCoreAgentDescribeCapabilitiesShowsDisabledBash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DescribeCapabilities: %v", err)
 	}
-	if caps == nil || caps.Executor != "core_agent" || !caps.SupportsSSH || !caps.SupportsAskUser || caps.SupportsLocalBash {
+	if caps == nil || caps.Executor != "core_agent" || caps.SupportsSSH || !caps.SupportsAskUser || caps.SupportsLocalBash {
 		t.Fatalf("unexpected capabilities: %#v", caps)
 	}
 	var bash *AgentToolCapability
@@ -201,11 +201,55 @@ func TestCoreAgentDescribeCapabilitiesEnablesBashWhenAllowed(t *testing.T) {
 	}
 }
 
+func TestCoreAgentDescribeCapabilitiesShowsSSHUnavailableByDefault(t *testing.T) {
+	executor := &CoreAgentExecutor{}
+	caps, err := executor.DescribeCapabilities(context.Background(), ExecuteRequest{Instance: Instance{Workspace: "/tmp/workspace"}})
+	if err != nil {
+		t.Fatalf("DescribeCapabilities: %v", err)
+	}
+	if caps.SupportsSSH {
+		t.Fatalf("expected ssh to be unavailable by default, got %#v", caps)
+	}
+	for i := range caps.Tools {
+		if caps.Tools[i].Name == "ssh" && (caps.Tools[i].Enabled || caps.Tools[i].DisabledReason == "") {
+			t.Fatalf("expected disabled ssh capability, got %#v", caps.Tools[i])
+		}
+	}
+}
+
+func TestCoreAgentDescribeCapabilitiesEnablesSSHWhenHostsConfigured(t *testing.T) {
+	executor := &CoreAgentExecutor{}
+	caps, err := executor.DescribeCapabilities(context.Background(), ExecuteRequest{Config: corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "prod", Host: "example.com", User: "root"}}}, Instance: Instance{Workspace: "/tmp/workspace"}})
+	if err != nil {
+		t.Fatalf("DescribeCapabilities: %v", err)
+	}
+	if !caps.SupportsSSH {
+		t.Fatalf("expected ssh support when hosts are configured, got %#v", caps)
+	}
+	foundEnabled := false
+	for i := range caps.Tools {
+		if caps.Tools[i].Name == "ssh" && caps.Tools[i].Enabled {
+			foundEnabled = true
+		}
+	}
+	if !foundEnabled {
+		t.Fatalf("expected enabled ssh capability, got %#v", caps.Tools)
+	}
+}
+
 func TestCoreAgentValidateSSHArgsRequiresLabelByDefault(t *testing.T) {
 	cb := &coreAgentCallbacks{workspace: t.TempDir()}
 	_, err := cb.validateSSHArgs(map[string]interface{}{"action": "connect", "host": "example.com", "user": "root"})
 	if err == nil || !strings.Contains(err.Error(), "configured label") {
 		t.Fatalf("expected label requirement error, got %v", err)
+	}
+}
+
+func TestCoreAgentExecuteSSHReturnsUnavailableWhenNotConfigured(t *testing.T) {
+	cb := &coreAgentCallbacks{}
+	out := cb.ExecuteTool("ssh", `{"action":"connect","label":"prod"}`)
+	if !strings.Contains(out, "ssh is unavailable") {
+		t.Fatalf("expected ssh unavailable error, got %q", out)
 	}
 }
 

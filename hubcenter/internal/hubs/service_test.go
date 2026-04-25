@@ -37,6 +37,30 @@ func (m *testMailer) SendHubRegistrationConfirmation(ctx context.Context, to str
 
 var _ mail.Mailer = (*testMailer)(nil)
 
+type fakeSyncRecorder struct {
+	deletedHubInstances []string
+	deletedHubLinks     []string
+	deletedHubRoutes    []string
+}
+
+func (f *fakeSyncRecorder) SyncHubHeartbeat(context.Context, string)                {}
+func (f *fakeSyncRecorder) AppendBlockedEmail(context.Context, *store.BlockedEmail) {}
+func (f *fakeSyncRecorder) DeleteBlockedEmail(context.Context, string)              {}
+func (f *fakeSyncRecorder) AppendBlockedIP(context.Context, *store.BlockedIP)       {}
+func (f *fakeSyncRecorder) DeleteBlockedIP(context.Context, string)                 {}
+func (f *fakeSyncRecorder) AppendHubInstance(context.Context, *store.HubInstance)   {}
+func (f *fakeSyncRecorder) DeleteHubInstance(_ context.Context, hubID string) {
+	f.deletedHubInstances = append(f.deletedHubInstances, hubID)
+}
+func (f *fakeSyncRecorder) AppendHubDomainRoute(context.Context, *store.HubDomainRoute) {}
+func (f *fakeSyncRecorder) DeleteHubDomainRoute(_ context.Context, routeID string) {
+	f.deletedHubRoutes = append(f.deletedHubRoutes, routeID)
+}
+func (f *fakeSyncRecorder) AppendHubUserLink(context.Context, *store.HubUserLink) {}
+func (f *fakeSyncRecorder) DeleteHubUserLink(_ context.Context, linkID string) {
+	f.deletedHubLinks = append(f.deletedHubLinks, linkID)
+}
+
 func newTestStore(t *testing.T) *sqlite.Provider {
 	t.Helper()
 
@@ -64,11 +88,76 @@ func newTestStore(t *testing.T) *sqlite.Provider {
 	return provider
 }
 
+func TestSyncHubUserLinkReplacesPreviousUserBinding(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+
+	hubA := &store.HubInstance{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", HubSecretHash: hashToken("secret-a"), CreatedAt: now, UpdatedAt: now}
+	hubB := &store.HubInstance{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", HubSecretHash: hashToken("secret-b"), CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{hubA, hubB} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: primaryUserLinkID(hubA.ID, "user@example.com"), HubID: hubA.ID, Email: "user@example.com", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed user link: %v", err)
+	}
+
+	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "user@example.com", true); err != nil {
+		t.Fatalf("SyncHubUserLink: %v", err)
+	}
+	items, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	if len(items) != 1 || items[0].HubID != hubB.ID {
+		t.Fatalf("expected only hub_b binding, got %+v", items)
+	}
+}
+
+func TestRegisterHubKeepsExistingUserLinksOnReRegister(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_keep_links", InstallationID: "inst_keep_links", OwnerEmail: "owner@example.com", Name: "Hub", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("old-secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: primaryUserLinkID(hub.ID, "user@example.com"), HubID: hub.ID, Email: "user@example.com", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed user link: %v", err)
+	}
+
+	if _, err := svc.RegisterHub(ctx, RegisterHubRequest{InstallationID: hub.InstallationID, OwnerEmail: "owner@example.com", Name: "Hub", BaseURL: "https://hub.example.com"}); err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+	items, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	if len(items) != 1 || items[0].HubID != hub.ID {
+		t.Fatalf("expected user link preserved, got %+v", items)
+	}
+	ownerLink, err := st.HubUserLinks.GetDefaultByEmail(ctx, "owner@example.com")
+	if err != nil {
+		t.Fatalf("GetDefaultByEmail owner: %v", err)
+	}
+	if ownerLink == nil || ownerLink.HubID != hub.ID {
+		t.Fatalf("expected owner link for hub, got %+v", ownerLink)
+	}
+}
 func TestRegisterAndHeartbeatHub(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
 	mailer := &testMailer{}
-	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	result, err := svc.RegisterHub(ctx, RegisterHubRequest{
@@ -118,11 +207,11 @@ func TestRegisterAndHeartbeatHub(t *testing.T) {
 		t.Fatalf("ConfirmRegistration: %v", err)
 	}
 
-	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil); err != nil {
+	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil, nil); err != nil {
 		t.Fatalf("HeartbeatHubWithSecret: %v", err)
 	}
 
-	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, "wrong-secret", nil); err != ErrHubUnauthorized {
+	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, "wrong-secret", nil, nil); err != ErrHubUnauthorized {
 		t.Fatalf("expected ErrHubUnauthorized, got %v", err)
 	}
 }
@@ -131,7 +220,7 @@ func TestRegisterHubUsesConfiguredPublicBaseURLForConfirmation(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
 	mailer := &testMailer{}
-	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	if _, err := svc.SetPublicBaseURL(ctx, "https://center.example.com"); err != nil {
@@ -149,11 +238,74 @@ func TestRegisterHubUsesConfiguredPublicBaseURLForConfirmation(t *testing.T) {
 	}
 }
 
+func TestRegisterHubNormalizesCorporateEmailDomain(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+
+	result, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		OwnerEmail:           "owner@example.com",
+		Name:                 "Corporate Hub",
+		BaseURL:              "https://corp.example.com",
+		CorporateEmailDomain: "@RAPIDAI.TECH",
+	})
+	if err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+
+	hub, err := st.Hubs.GetByID(ctx, result.HubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub == nil {
+		t.Fatal("expected hub to exist")
+	}
+	if hub.CorporateEmailDomain != "rapidai.tech" {
+		t.Fatalf("expected normalized corporate domain, got %+v", hub)
+	}
+}
+
+func TestRegisterHubStoresMultipleCorporateEmailDomains(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+
+	result, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		OwnerEmail:            "owner@example.com",
+		Name:                  "Corporate Hub",
+		BaseURL:               "https://corp.example.com",
+		CorporateEmailDomains: []string{"@RAPIDAI.TECH", "subsidiary.example", "rapidai.tech"},
+		AcceptPublicSignup:    boolPtr(true),
+	})
+	if err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+
+	hub, err := st.Hubs.GetByID(ctx, result.HubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub == nil || hub.CorporateEmailDomain != "rapidai.tech" || !hub.AcceptPublicSignup {
+		t.Fatalf("unexpected hub: %+v", hub)
+	}
+	routes, err := st.HubDomainRoutes.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("ListAll routes: %v", err)
+	}
+	if len(routes) != 2 || routes[0].Domain != "rapidai.tech" || routes[1].Domain != "subsidiary.example" {
+		t.Fatalf("unexpected routes: %+v", routes)
+	}
+}
+
 func TestConfirmHubRegistrationByAdmin(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
 	mailer := &testMailer{}
-	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	result, err := svc.RegisterHub(ctx, RegisterHubRequest{
@@ -183,7 +335,7 @@ func TestConfirmHubRegistrationByAdmin(t *testing.T) {
 func TestRegisterHubRejectsBlockedEmailAndIP(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
-	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	now := time.Now()
@@ -236,7 +388,7 @@ func TestDisabledHubStaysDisabledAfterHeartbeat(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
 	mailer := &testMailer{}
-	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{
@@ -260,7 +412,7 @@ func TestDisabledHubStaysDisabledAfterHeartbeat(t *testing.T) {
 		t.Fatalf("DisableHub: %v", err)
 	}
 
-	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil); err != ErrHubDisabled {
+	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil, nil); err != ErrHubDisabled {
 		t.Fatalf("expected ErrHubDisabled, got %v", err)
 	}
 
@@ -283,7 +435,7 @@ func TestDisabledHubCannotReregister(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
 	mailer := &testMailer{}
-	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{
@@ -326,7 +478,7 @@ func TestDisabledHubCannotReregister(t *testing.T) {
 func TestDeleteHubRemovesRegistrationAndLinks(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
-	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{
@@ -362,7 +514,7 @@ func TestDeleteHubRemovesRegistrationAndLinks(t *testing.T) {
 		t.Fatalf("expected default link to be removed, got %+v", link)
 	}
 
-	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil); err != ErrHubUnauthorized {
+	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil, nil); err != ErrHubUnauthorized {
 		t.Fatalf("expected deleted hub heartbeat to be unauthorized, got %v", err)
 	}
 }
@@ -370,7 +522,7 @@ func TestDeleteHubRemovesRegistrationAndLinks(t *testing.T) {
 func TestRegisterHubReusesExistingInstallationID(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
-	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	first, err := hubService.RegisterHub(ctx, RegisterHubRequest{
@@ -428,7 +580,7 @@ func TestRegisterHubKeepsRecentConfirmationLinksValid(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
 	mailer := &testMailer{}
-	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	first, err := hubService.RegisterHub(ctx, RegisterHubRequest{
@@ -473,5 +625,40 @@ func TestRegisterHubKeepsRecentConfirmationLinksValid(t *testing.T) {
 	}
 	if hub == nil || hub.Status != "online" {
 		t.Fatalf("expected hub to be online after confirming earlier token, got %+v", hub)
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func TestDeleteHubSyncsHubUserLinkDeletes(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	sync := &fakeSyncRecorder{}
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	hubService.SetSyncRecorder(sync)
+	ctx := context.Background()
+
+	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{
+		OwnerEmail:     "owner@example.com",
+		Name:           "Delete Sync",
+		BaseURL:        "https://delete-sync.example.com",
+		Host:           "delete-sync.example.com",
+		Port:           9399,
+		Visibility:     "private",
+		EnrollmentMode: "open",
+	})
+	if err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+
+	if err := hubService.DeleteHub(ctx, result.HubID); err != nil {
+		t.Fatalf("DeleteHub: %v", err)
+	}
+
+	if len(sync.deletedHubLinks) != 1 || sync.deletedHubLinks[0] != primaryOwnerLinkID(result.HubID) {
+		t.Fatalf("unexpected deleted hub links: %+v", sync.deletedHubLinks)
+	}
+	if len(sync.deletedHubInstances) != 1 || sync.deletedHubInstances[0] != result.HubID {
+		t.Fatalf("unexpected deleted hub instances: %+v", sync.deletedHubInstances)
 	}
 }

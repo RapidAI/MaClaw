@@ -19,7 +19,7 @@ import { SecurityPage } from './pages/SecurityPage';
 import { SetupTenantPage } from './pages/SetupTenantPage';
 import { UsagePage } from './pages/UsagePage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
-import type { CenterTab } from './types';
+import type { CenterTab, CommunicationsNavigationTarget, OverviewNavigationTarget } from './types';
 
 export default function App() {
   const { t } = useTranslation();
@@ -27,6 +27,8 @@ export default function App() {
   const [checking, setChecking] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [activeTab, setActiveTab] = useState<CenterTab>('overview');
+  const [communicationsTarget, setCommunicationsTarget] = useState<CommunicationsNavigationTarget | null>(null);
+  const [overviewTarget, setOverviewTarget] = useState<OverviewNavigationTarget | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -40,13 +42,23 @@ export default function App() {
   }, []);
 
   // useMemo MUST be called before any conditional returns (React hooks rules)
+  const handleNavigateToCommunications = (target: CommunicationsNavigationTarget) => {
+    setCommunicationsTarget(target);
+    setActiveTab('communications');
+  };
+
+  const handleNavigateToOverview = (target: OverviewNavigationTarget) => {
+    setOverviewTarget(target);
+    setActiveTab('overview');
+  };
+
   const content = useMemo(() => {
     switch (activeTab) {
       case 'employees': return <EmployeesPage />;
       case 'models': return <ModelRoutingPage />;
       case 'compute': return <ComputePowerPage />;
-      case 'overview': return <OverviewPage />;
-      case 'communications': return <CommunicationsPage />;
+      case 'overview': return <OverviewPage navigationTarget={overviewTarget} onNavigationHandled={() => setOverviewTarget(null)} onNavigateToCommunications={handleNavigateToCommunications} />;
+      case 'communications': return <CommunicationsPage navigationTarget={communicationsTarget} onNavigationHandled={() => setCommunicationsTarget(null)} onNavigateToOverview={handleNavigateToOverview} />;
       case 'workflows': return <WorkflowsPage />;
       case 'knowledge': return <KnowledgePage />;
       case 'packages': return <PackagesPage />;
@@ -58,7 +70,7 @@ export default function App() {
       case 'settings': return <AccountSettingsPage />;
       default: return null;
     }
-  }, [activeTab]);
+  }, [activeTab, communicationsTarget, overviewTarget]);
 
   if (checking) {
     return (

@@ -12,38 +12,33 @@ import (
 	"time"
 )
 
-// APIKey 代表一个 API Key 记录。
 type APIKey struct {
 	ID           string    `json:"id"`
 	SkillID      string    `json:"skill_id"`
 	EnvName      string    `json:"env_name"`
 	EncryptedKey string    `json:"-"`
-	Status       string    `json:"status"` // available, assigned, refunded
+	Status       string    `json:"status"`
 	BuyerEmail   string    `json:"buyer_email,omitempty"`
 	AssignedAt   time.Time `json:"assigned_at,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-// PendingKeyOrder 代表一个待分配 Key 的订单。
 type PendingKeyOrder struct {
 	ID               string    `json:"id"`
 	PurchaseRecordID string    `json:"purchase_record_id"`
 	SkillID          string    `json:"skill_id"`
 	BuyerEmail       string    `json:"buyer_email"`
 	EnvName          string    `json:"env_name"`
-	Status           string    `json:"status"` // pending_key, key_delivered, cancelled
+	Status           string    `json:"status"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
-// APIKeyPoolService 管理 API Key 池。
 type APIKeyPoolService struct {
 	store     *Store
-	encSecret []byte // 用于 AES 加密 Key 的密钥
+	encSecret []byte
 }
 
-// NewAPIKeyPoolService 创建 APIKeyPoolService。
-// encSecret 应为 RSA 私钥的 SHA256 哈希（32 字节）。
 func NewAPIKeyPoolService(store *Store, encSecret []byte) (*APIKeyPoolService, error) {
 	svc := &APIKeyPoolService{store: store, encSecret: encSecret}
 	if err := svc.migrate(); err != nil {
@@ -85,14 +80,12 @@ func (s *APIKeyPoolService) migrate() error {
 	return nil
 }
 
-// UploadKeys 批量上传 API Key（加密存储）。
 func (s *APIKeyPoolService) UploadKeys(ctx context.Context, skillID, envName string, keys []string) (int, error) {
 	tx, err := s.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-
 	count := 0
 	now := fmtTime(time.Now())
 	for _, key := range keys {
@@ -104,75 +97,67 @@ func (s *APIKeyPoolService) UploadKeys(ctx context.Context, skillID, envName str
 			return 0, fmt.Errorf("encrypt key: %w", err)
 		}
 		id := generateID()
-		_, err = tx.ExecContext(ctx, `INSERT INTO sm_api_keys (id, skill_id, env_name, encrypted_key, status, created_at) VALUES (?, ?, ?, ?, 'available', ?)`,
-			id, skillID, envName, enc, now)
-		if err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO sm_api_keys (id, skill_id, env_name, encrypted_key, status, created_at) VALUES (?, ?, ?, ?, 'available', ?)`, id, skillID, envName, enc, now); err != nil {
 			return 0, err
 		}
 		count++
 	}
-	return count, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	s.store.emitSync(ctx)
+	return count, nil
 }
 
-// AssignKey 从 available 池中分配一个 Key 给买家。
 func (s *APIKeyPoolService) AssignKey(ctx context.Context, skillID, buyerEmail, envName string) (*APIKey, error) {
 	tx, err := s.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-
 	var k APIKey
-	var encKey, assignedAt string
-	err = tx.QueryRowContext(ctx, `SELECT id, skill_id, env_name, encrypted_key, created_at FROM sm_api_keys WHERE skill_id = ? AND status = 'available' AND env_name = ? LIMIT 1`,
-		skillID, envName).Scan(&k.ID, &k.SkillID, &k.EnvName, &encKey, &assignedAt)
+	var encKey, createdAt string
+	err = tx.QueryRowContext(ctx, `SELECT id, skill_id, env_name, encrypted_key, created_at FROM sm_api_keys WHERE skill_id = ? AND status = 'available' AND env_name = ? LIMIT 1`, skillID, envName).Scan(&k.ID, &k.SkillID, &k.EnvName, &encKey, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("no available key for skill %s env %s", skillID, envName)
 	}
-
 	now := fmtTime(time.Now())
-	_, err = tx.ExecContext(ctx, `UPDATE sm_api_keys SET status = 'assigned', buyer_email = ?, assigned_at = ? WHERE id = ?`,
-		buyerEmail, now, k.ID)
-	if err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE sm_api_keys SET status = 'assigned', buyer_email = ?, assigned_at = ? WHERE id = ?`, buyerEmail, now, k.ID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-
+	s.store.emitSync(ctx)
 	k.Status = "assigned"
 	k.BuyerEmail = buyerEmail
 	k.AssignedAt = parseTime(now)
 	k.EncryptedKey = encKey
-	k.CreatedAt = parseTime(assignedAt)
+	k.CreatedAt = parseTime(createdAt)
 	return &k, nil
 }
 
-// DecryptAssignedKey 解密已分配的 Key 明文。
 func (s *APIKeyPoolService) DecryptAssignedKey(k *APIKey) (string, error) {
 	return s.decryptKey(k.EncryptedKey)
 }
 
-// CreatePendingOrder 池耗尽时创建 pending_key 订单。
 func (s *APIKeyPoolService) CreatePendingOrder(ctx context.Context, purchaseRecordID, skillID, buyerEmail, envName string) error {
 	now := fmtTime(time.Now())
 	id := generateID()
-	_, err := s.store.db.ExecContext(ctx, `INSERT INTO sm_pending_key_orders (id, purchase_record_id, skill_id, buyer_email, env_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending_key', ?, ?)`,
-		id, purchaseRecordID, skillID, buyerEmail, envName, now, now)
+	_, err := s.store.db.ExecContext(ctx, `INSERT INTO sm_pending_key_orders (id, purchase_record_id, skill_id, buyer_email, env_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending_key', ?, ?)`, id, purchaseRecordID, skillID, buyerEmail, envName, now, now)
+	if err == nil {
+		s.store.emitSync(ctx)
+	}
 	return err
 }
 
-// FulfillPendingOrders 补货后按购买时间顺序自动分配 Key。
 func (s *APIKeyPoolService) FulfillPendingOrders(ctx context.Context, skillID string) (int, error) {
 	rows, err := s.store.readDB.QueryContext(ctx, `SELECT id, purchase_record_id, buyer_email, env_name FROM sm_pending_key_orders WHERE skill_id = ? AND status = 'pending_key' ORDER BY created_at ASC`, skillID)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
-
-	type order struct {
-		id, purchaseRecordID, buyerEmail, envName string
-	}
+	type order struct{ id, purchaseRecordID, buyerEmail, envName string }
 	var orders []order
 	for rows.Next() {
 		var o order
@@ -181,29 +166,27 @@ func (s *APIKeyPoolService) FulfillPendingOrders(ctx context.Context, skillID st
 		}
 		orders = append(orders, o)
 	}
-
 	fulfilled := 0
 	now := fmtTime(time.Now())
 	for _, o := range orders {
 		key, err := s.AssignKey(ctx, skillID, o.buyerEmail, o.envName)
 		if err != nil {
-			break // 没有更多可用 Key
+			break
 		}
-		// 更新 pending order 状态
 		_, _ = s.store.db.ExecContext(ctx, `UPDATE sm_pending_key_orders SET status = 'key_delivered', updated_at = ? WHERE id = ?`, now, o.id)
-		// 更新 purchase record 的 key_status
 		_, _ = s.store.db.ExecContext(ctx, `UPDATE sm_purchase_records SET key_status = 'key_delivered', api_key_id = ? WHERE id = ?`, key.ID, o.purchaseRecordID)
 		fulfilled++
+	}
+	if fulfilled > 0 {
+		s.store.emitSync(ctx)
 	}
 	return fulfilled, nil
 }
 
-// GetStockStatus 返回库存状态："充足"/"紧张"/"缺货"。
 func (s *APIKeyPoolService) GetStockStatus(ctx context.Context, skillID string) string {
 	var available, total int
 	_ = s.store.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sm_api_keys WHERE skill_id = ? AND status = 'available'`, skillID).Scan(&available)
 	_ = s.store.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sm_api_keys WHERE skill_id = ?`, skillID).Scan(&total)
-
 	if available == 0 {
 		return "缺货"
 	}
@@ -213,14 +196,11 @@ func (s *APIKeyPoolService) GetStockStatus(ctx context.Context, skillID string) 
 	return "紧张"
 }
 
-// GetPendingOrderCount 返回待分配订单数。
 func (s *APIKeyPoolService) GetPendingOrderCount(ctx context.Context, skillID string) int {
 	var count int
 	_ = s.store.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sm_pending_key_orders WHERE skill_id = ? AND status = 'pending_key'`, skillID).Scan(&count)
 	return count
 }
-
-// ── encryption helpers ──────────────────────────────────────────────────
 
 func (s *APIKeyPoolService) encryptKey(plaintext string) (string, error) {
 	key := sha256.Sum256(s.encSecret)

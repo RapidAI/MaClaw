@@ -110,6 +110,7 @@ func (a *ConversationArchiver) Archive(userID string, entries []agent.Conversati
 		Content:  summary,
 		Category: memory.CategoryConversationSummary,
 		Tags:     tags,
+		OwnerID:  userID, // multi-tenant: associate with the user who had this conversation
 	}
 	if err := a.memoryStore.Save(entry); err != nil {
 		return err

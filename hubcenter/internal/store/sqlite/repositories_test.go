@@ -99,20 +99,22 @@ func TestHubRepositoriesRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	hub := &store.HubInstance{
-		ID:               "hub_1",
-		OwnerEmail:       "owner@example.com",
-		Name:             "MaClaw Hub",
-		Description:      "Primary hub",
-		BaseURL:          "https://hub.example.com",
-		Visibility:       "private",
-		EnrollmentMode:   "open",
-		Status:           "offline",
-		IsDisabled:       false,
-		DisabledReason:   "",
-		CapabilitiesJSON: `{"supports_pwa":true}`,
-		HubSecretHash:    "secret-hash",
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                   "hub_1",
+		OwnerEmail:           "owner@example.com",
+		Name:                 "MaClaw Hub",
+		Description:          "Primary hub",
+		BaseURL:              "https://hub.example.com",
+		Visibility:           "private",
+		EnrollmentMode:       "open",
+		CorporateEmailDomain: "rapidai.tech",
+		AcceptPublicSignup:   true,
+		Status:               "offline",
+		IsDisabled:           false,
+		DisabledReason:       "",
+		CapabilitiesJSON:     `{"supports_pwa":true}`,
+		HubSecretHash:        "secret-hash",
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	if err := st.Hubs.Create(ctx, hub); err != nil {
 		t.Fatalf("create hub: %v", err)
@@ -122,7 +124,7 @@ func TestHubRepositoriesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get hub: %v", err)
 	}
-	if gotHub == nil || gotHub.BaseURL != hub.BaseURL {
+	if gotHub == nil || gotHub.BaseURL != hub.BaseURL || gotHub.CorporateEmailDomain != hub.CorporateEmailDomain || gotHub.AcceptPublicSignup != hub.AcceptPublicSignup {
 		t.Fatalf("unexpected hub: %#v", gotHub)
 	}
 
@@ -167,6 +169,26 @@ func TestHubRepositoriesRoundTrip(t *testing.T) {
 	}
 	if len(listByEmail) != 1 || listByEmail[0].ID != hub.ID {
 		t.Fatalf("unexpected hubs by email: %#v", listByEmail)
+	}
+
+	route := &store.HubDomainRoute{
+		ID:        "hdr_primary_hub_1",
+		HubID:     hub.ID,
+		Domain:    "rapidai.tech",
+		Enabled:   true,
+		Priority:  100,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, route); err != nil {
+		t.Fatalf("upsert hub domain route: %v", err)
+	}
+	routes, err := st.HubDomainRoutes.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("list hub domain routes: %v", err)
+	}
+	if len(routes) != 1 || routes[0].HubID != hub.ID || routes[0].Domain != route.Domain || !routes[0].Enabled {
+		t.Fatalf("unexpected hub domain routes: %#v", routes)
 	}
 }
 

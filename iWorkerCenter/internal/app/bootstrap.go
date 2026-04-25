@@ -14,12 +14,13 @@ import (
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/capabilities"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/collaboration"
-	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/compute"
 	colleagueHandler "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/handler"
 	colleagueRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/repo"
 	colleagueService "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/service"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/compute"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/delivery"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/diworkerauth"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/executive"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/experience"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/imconfig"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/memories"
@@ -82,25 +83,28 @@ func Bootstrap() (*Center, error) {
 	// --- wire capabilities module ---
 	capHandler := capabilities.NewHandler(provider.Write, provider.Read)
 
+	// --- wire audit module ---
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	auditHandler := audit.NewHandler(auditRepo)
+
 	// --- wire collaboration module ---
 	collabRepo := collaboration.NewRepo(provider.Write, provider.Read)
-	collabSvc := collaboration.NewService(collabRepo)
-	collabHandler := collaboration.NewHandler(collabSvc)
+	collabSvc := collaboration.NewService(collabRepo, colRepo)
+	collabHandler := collaboration.NewHandler(collabSvc, auditRepo)
 
 	// --- wire workflow module (depends on collaboration + colleagues) ---
 	wfRepo := workflow.NewRepo(provider.Write, provider.Read)
 	wfSvc := workflow.NewService(wfRepo, provider, collabRepo, colRepo)
 	wfHandler := workflow.NewHandler(wfSvc)
 
-	// --- wire audit module ---
-	auditRepo := audit.NewRepo(provider.Write, provider.Read)
-	auditHandler := audit.NewHandler(auditRepo)
-
 	// --- wire delivery module ---
 	deliveryHandler := delivery.NewHandler(provider.Write, provider.Read)
 
 	// --- wire recommend module ---
 	recHandler := recommend.NewHandler(colRepo, rRepo)
+
+	// --- wire executive module ---
+	execHandler := executive.NewHandler(provider.Read, auditRepo)
 
 	// --- wire security module ---
 	secRepo := security.NewRepo(provider.Write, provider.Read)
@@ -187,6 +191,7 @@ func Bootstrap() (*Center, error) {
 	deliveryHandler.RegisterAdminRoutes(mux)
 	deliveryHandler.RegisterClientRoutes(mux)
 	recHandler.RegisterClientRoutes(mux)
+	execHandler.RegisterAdminRoutes(mux)
 	secHandler.RegisterAdminRoutes(mux)
 	secGroupHandler.RegisterAdminRoutes(mux)
 	mrHandler.RegisterAdminRoutes(mux)
@@ -271,11 +276,11 @@ func parseCloudConfig(data []byte, cfg *tenant.CloudConfig) {
 	// Use gopkg.in/yaml.v3 if available, otherwise simple line parsing
 	type yamlCfg struct {
 		Cloud struct {
-			BaseURL            string `yaml:"base_url"`
+			BaseURL             string `yaml:"base_url"`
 			PublicKeyCacheHours int    `yaml:"public_key_cache_hours"`
 		} `yaml:"cloud"`
 	}
-	// Try to import yaml — for now use a simple approach
+	// Try to import yaml; for now use a simple approach
 	// since the project already has gopkg.in/yaml.v3
 	var parsed yamlCfg
 	if err := yamlUnmarshal(data, &parsed); err == nil {

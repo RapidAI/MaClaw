@@ -23,11 +23,11 @@ pwa:
 
 center:
   enabled: true
-  base_url: http://hubs.mypapers.top:9388
+  base_url: https://hubs.maclaw.top
   base_urls:
-    - http://hc-1.example.com:9388
-    - http://hc-2.example.com:9388
-    - http://hc-3.example.com:9388
+    - https://hubs.maclaw.top
+    - https://hc-2.example.com
+    - https://hc-3.example.com
   register_on_startup: true
   heartbeat_interval_sec: 30
 
@@ -35,6 +35,7 @@ hub:
   name: MaClaw Hub
   description: Self-hosted MaClaw remote hub
   visibility: private
+  corporate_email_domain: ""
 
 mail:
   enabled: false
@@ -49,5 +50,3 @@ mail:
 logging:
   level: info
   dir: ./data/logs
-
-

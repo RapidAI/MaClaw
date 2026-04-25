@@ -58,22 +58,31 @@ type Principal struct {
 	Roles    []string `json:"roles,omitempty"`
 }
 
+type TenantQuota struct {
+	MaxInstances int `json:"max_instances,omitempty"`
+	MaxSessions  int `json:"max_sessions,omitempty"`
+	MaxMessages  int `json:"max_messages,omitempty"`
+	MaxRuns      int `json:"max_runs,omitempty"`
+}
+
 type Tenant struct {
 	ID        string       `json:"id"`
 	Name      string       `json:"name"`
 	Status    TenantStatus `json:"status"`
+	Quota     TenantQuota  `json:"quota,omitempty"`
 	CreatedAt time.Time    `json:"created_at"`
 	UpdatedAt time.Time    `json:"updated_at"`
 }
 
 type User struct {
-	ID        string     `json:"id"`
-	TenantID  string     `json:"tenant_id"`
-	Name      string     `json:"name"`
-	Email     string     `json:"email,omitempty"`
-	Status    UserStatus `json:"status"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ID        string      `json:"id"`
+	TenantID  string      `json:"tenant_id"`
+	Name      string      `json:"name"`
+	Email     string      `json:"email,omitempty"`
+	Status    UserStatus  `json:"status"`
+	Quota     TenantQuota `json:"quota,omitempty"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 
 type Credential struct {
@@ -85,6 +94,7 @@ type Credential struct {
 	APIKeyPrefix string           `json:"api_key_prefix,omitempty"`
 	APIKeyHash   string           `json:"api_key_hash,omitempty"`
 	Status       CredentialStatus `json:"status"`
+	TokenVersion int              `json:"token_version,omitempty"`
 	SecretDigest string           `json:"-"`
 	CreatedAt    time.Time        `json:"created_at"`
 	UpdatedAt    time.Time        `json:"updated_at"`
@@ -263,10 +273,88 @@ type ListRunsInput struct {
 	WaitingForUser *bool     `json:"waiting_for_user,omitempty"`
 }
 
+type QuotaUsageItem struct {
+	Limit     int  `json:"limit,omitempty"`
+	Used      int  `json:"used"`
+	Remaining *int `json:"remaining,omitempty"`
+	Unlimited bool `json:"unlimited,omitempty"`
+}
+
+type QuotaUsageSnapshot struct {
+	Instances QuotaUsageItem `json:"instances"`
+	Sessions  QuotaUsageItem `json:"sessions"`
+	Messages  QuotaUsageItem `json:"messages"`
+	Runs      QuotaUsageItem `json:"runs"`
+}
+
 type UsageSummary struct {
-	TenantID          string            `json:"tenant_id"`
-	UserID            string            `json:"user_id"`
-	DataDir           string            `json:"data_dir"`
+	TenantID          string             `json:"tenant_id"`
+	UserID            string             `json:"user_id"`
+	DataDir           string             `json:"data_dir"`
+	Quota             TenantQuota        `json:"quota,omitempty"`
+	QuotaUsage        QuotaUsageSnapshot `json:"quota_usage"`
+	Instances         int                `json:"instances"`
+	ReadyInstances    int                `json:"ready_instances"`
+	StoppedInstances  int                `json:"stopped_instances"`
+	Sessions          int                `json:"sessions"`
+	Messages          int                `json:"messages"`
+	UserMessages      int                `json:"user_messages"`
+	AssistantMessages int                `json:"assistant_messages"`
+	Runs              int                `json:"runs"`
+	RunsByStatus      map[RunStatus]int  `json:"runs_by_status"`
+	LastActivityAt    *time.Time         `json:"last_activity_at,omitempty"`
+}
+
+type TenantUserSummary struct {
+	UserID            string             `json:"user_id"`
+	Name              string             `json:"name"`
+	Email             string             `json:"email,omitempty"`
+	Status            UserStatus         `json:"status"`
+	DataDir           string             `json:"data_dir"`
+	Quota             TenantQuota        `json:"quota,omitempty"`
+	EffectiveQuota    TenantQuota        `json:"effective_quota,omitempty"`
+	QuotaUsage        QuotaUsageSnapshot `json:"quota_usage"`
+	Instances         int                `json:"instances"`
+	ReadyInstances    int                `json:"ready_instances"`
+	StoppedInstances  int                `json:"stopped_instances"`
+	Sessions          int                `json:"sessions"`
+	Messages          int                `json:"messages"`
+	UserMessages      int                `json:"user_messages"`
+	AssistantMessages int                `json:"assistant_messages"`
+	Runs              int                `json:"runs"`
+	RunsByStatus      map[RunStatus]int  `json:"runs_by_status"`
+	LastActivityAt    *time.Time         `json:"last_activity_at,omitempty"`
+}
+
+type TenantSummary struct {
+	TenantID          string              `json:"tenant_id"`
+	Name              string              `json:"name"`
+	Status            TenantStatus        `json:"status"`
+	Quota             TenantQuota         `json:"quota,omitempty"`
+	QuotaUsage        QuotaUsageSnapshot  `json:"quota_usage"`
+	Users             int                 `json:"users"`
+	ActiveUsers       int                 `json:"active_users"`
+	DisabledUsers     int                 `json:"disabled_users"`
+	Instances         int                 `json:"instances"`
+	ReadyInstances    int                 `json:"ready_instances"`
+	StoppedInstances  int                 `json:"stopped_instances"`
+	Sessions          int                 `json:"sessions"`
+	Messages          int                 `json:"messages"`
+	UserMessages      int                 `json:"user_messages"`
+	AssistantMessages int                 `json:"assistant_messages"`
+	Runs              int                 `json:"runs"`
+	RunsByStatus      map[RunStatus]int   `json:"runs_by_status"`
+	LastActivityAt    *time.Time          `json:"last_activity_at,omitempty"`
+	UserSummaries     []TenantUserSummary `json:"user_summaries,omitempty"`
+}
+
+type AdminOverview struct {
+	Tenants           int               `json:"tenants"`
+	ActiveTenants     int               `json:"active_tenants"`
+	DisabledTenants   int               `json:"disabled_tenants"`
+	Users             int               `json:"users"`
+	ActiveUsers       int               `json:"active_users"`
+	DisabledUsers     int               `json:"disabled_users"`
 	Instances         int               `json:"instances"`
 	ReadyInstances    int               `json:"ready_instances"`
 	StoppedInstances  int               `json:"stopped_instances"`
@@ -276,7 +364,144 @@ type UsageSummary struct {
 	AssistantMessages int               `json:"assistant_messages"`
 	Runs              int               `json:"runs"`
 	RunsByStatus      map[RunStatus]int `json:"runs_by_status"`
+	AuditEvents       int               `json:"audit_events"`
 	LastActivityAt    *time.Time        `json:"last_activity_at,omitempty"`
+	LastAuditAt       *time.Time        `json:"last_audit_at,omitempty"`
+}
+
+type AdminTrendPoint struct {
+	BucketStart  time.Time         `json:"bucket_start"`
+	Messages     int               `json:"messages"`
+	Runs         int               `json:"runs"`
+	RunsByStatus map[RunStatus]int `json:"runs_by_status,omitempty"`
+	AuditEvents  int               `json:"audit_events"`
+}
+
+type AdminDashboard struct {
+	Overview          AdminOverview     `json:"overview"`
+	RecentAuditEvents []AuditEvent      `json:"recent_audit_events,omitempty"`
+	Last24Hours       []AdminTrendPoint `json:"last_24_hours,omitempty"`
+	Last7Days         []AdminTrendPoint `json:"last_7_days,omitempty"`
+	GeneratedAt       time.Time         `json:"generated_at"`
+}
+
+type AdminAlertItem struct {
+	Kind            string     `json:"kind"`
+	Severity        string     `json:"severity"`
+	Title           string     `json:"title"`
+	SuggestedAction string     `json:"suggested_action,omitempty"`
+	TenantID        string     `json:"tenant_id,omitempty"`
+	UserID          string     `json:"user_id,omitempty"`
+	InstanceID      string     `json:"instance_id,omitempty"`
+	SessionID       string     `json:"session_id,omitempty"`
+	RunID           string     `json:"run_id,omitempty"`
+	OccurredAt      *time.Time `json:"occurred_at,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+}
+
+type AdminAlertsInput struct {
+	TenantID string     `json:"tenant_id,omitempty"`
+	UserID   string     `json:"user_id,omitempty"`
+	Kind     string     `json:"kind,omitempty"`
+	Since    *time.Time `json:"since,omitempty"`
+	Limit    int        `json:"limit,omitempty"`
+}
+
+type AdminAlerts struct {
+	Items            []AdminAlertItem `json:"items,omitempty"`
+	UnreadyInstances []Instance       `json:"unready_instances,omitempty"`
+	WaitingRuns      []Run            `json:"waiting_runs,omitempty"`
+	FailedRuns       []Run            `json:"failed_runs,omitempty"`
+	GeneratedAt      time.Time        `json:"generated_at"`
+}
+
+type ExportServiceStateInput struct {
+	TenantID        string `json:"tenant_id,omitempty"`
+	UserID          string `json:"user_id,omitempty"`
+	IncludeMessages bool   `json:"include_messages,omitempty"`
+	IncludeRuns     bool   `json:"include_runs,omitempty"`
+	IncludeAudit    bool   `json:"include_audit,omitempty"`
+	IncludeSecrets  bool   `json:"include_secrets,omitempty"`
+}
+
+type ExportedCredential struct {
+	ID           string           `json:"id"`
+	TenantID     string           `json:"tenant_id"`
+	UserID       string           `json:"user_id"`
+	Name         string           `json:"name"`
+	APIKey       string           `json:"api_key,omitempty"`
+	APIKeyPrefix string           `json:"api_key_prefix,omitempty"`
+	APIKeyHash   string           `json:"api_key_hash,omitempty"`
+	Status       CredentialStatus `json:"status"`
+	TokenVersion int              `json:"token_version,omitempty"`
+	SecretDigest string           `json:"secret_digest,omitempty"`
+	CreatedAt    time.Time        `json:"created_at"`
+	UpdatedAt    time.Time        `json:"updated_at"`
+}
+
+type ExportedSession struct {
+	Session  Session   `json:"session"`
+	Messages []Message `json:"messages,omitempty"`
+}
+
+type ExportedInstance struct {
+	Instance Instance          `json:"instance"`
+	Sessions []ExportedSession `json:"sessions,omitempty"`
+	Runs     []Run             `json:"runs,omitempty"`
+}
+
+type ExportedUser struct {
+	User        User                 `json:"user"`
+	Config      *UserConfig          `json:"config,omitempty"`
+	Credentials []ExportedCredential `json:"credentials,omitempty"`
+	Instances   []ExportedInstance   `json:"instances,omitempty"`
+}
+
+type ExportServiceStateOutput struct {
+	Scope           string         `json:"scope"`
+	TenantID        string         `json:"tenant_id,omitempty"`
+	UserID          string         `json:"user_id,omitempty"`
+	IncludeMessages bool           `json:"include_messages"`
+	IncludeRuns     bool           `json:"include_runs"`
+	IncludeAudit    bool           `json:"include_audit"`
+	IncludeSecrets  bool           `json:"include_secrets"`
+	Tenants         []Tenant       `json:"tenants,omitempty"`
+	Users           []ExportedUser `json:"users,omitempty"`
+	AuditEvents     []AuditEvent   `json:"audit_events,omitempty"`
+	ExportedAt      time.Time      `json:"exported_at"`
+}
+
+type ImportServiceStateRequest struct {
+	Data      ExportServiceStateOutput `json:"data"`
+	Overwrite bool                     `json:"overwrite,omitempty"`
+	DryRun    bool                     `json:"dry_run,omitempty"`
+}
+
+type ImportPlanItem struct {
+	ResourceType string `json:"resource_type"`
+	ResourceID   string `json:"resource_id"`
+	Action       string `json:"action"`
+	Message      string `json:"message,omitempty"`
+}
+
+type ImportServiceStateOutput struct {
+	Scope       string           `json:"scope"`
+	TenantID    string           `json:"tenant_id,omitempty"`
+	UserID      string           `json:"user_id,omitempty"`
+	Overwrite   bool             `json:"overwrite"`
+	DryRun      bool             `json:"dry_run"`
+	Tenants     int              `json:"tenants"`
+	Users       int              `json:"users"`
+	Credentials int              `json:"credentials"`
+	Instances   int              `json:"instances"`
+	Sessions    int              `json:"sessions"`
+	Messages    int              `json:"messages"`
+	Runs        int              `json:"runs"`
+	AuditEvents int              `json:"audit_events"`
+	Conflicts   []string         `json:"conflicts,omitempty"`
+	Warnings    []string         `json:"warnings,omitempty"`
+	Plan        []ImportPlanItem `json:"plan,omitempty"`
+	ImportedAt  time.Time        `json:"imported_at"`
 }
 
 type InstanceSummary struct {
@@ -302,6 +527,17 @@ type CreateTenantInput struct {
 	Name string `json:"name"`
 }
 
+type ListTenantsInput struct {
+	Status TenantStatus `json:"status,omitempty"`
+	Name   string       `json:"name,omitempty"`
+}
+
+type ListUsersAdminInput struct {
+	Status UserStatus `json:"status,omitempty"`
+	Name   string     `json:"name,omitempty"`
+	Email  string     `json:"email,omitempty"`
+}
+
 type CreateUserInput struct {
 	TenantID string `json:"tenant_id"`
 	Name     string `json:"name"`
@@ -309,14 +545,22 @@ type CreateUserInput struct {
 }
 
 type UpdateTenantInput struct {
-	Name   *string       `json:"name,omitempty"`
-	Status *TenantStatus `json:"status,omitempty"`
+	Name         *string       `json:"name,omitempty"`
+	Status       *TenantStatus `json:"status,omitempty"`
+	MaxInstances *int          `json:"max_instances,omitempty"`
+	MaxSessions  *int          `json:"max_sessions,omitempty"`
+	MaxMessages  *int          `json:"max_messages,omitempty"`
+	MaxRuns      *int          `json:"max_runs,omitempty"`
 }
 
 type UpdateUserInput struct {
-	Name   *string     `json:"name,omitempty"`
-	Email  *string     `json:"email,omitempty"`
-	Status *UserStatus `json:"status,omitempty"`
+	Name         *string     `json:"name,omitempty"`
+	Email        *string     `json:"email,omitempty"`
+	Status       *UserStatus `json:"status,omitempty"`
+	MaxInstances *int        `json:"max_instances,omitempty"`
+	MaxSessions  *int        `json:"max_sessions,omitempty"`
+	MaxMessages  *int        `json:"max_messages,omitempty"`
+	MaxRuns      *int        `json:"max_runs,omitempty"`
 }
 
 type CreateCredentialInput struct {
@@ -324,6 +568,15 @@ type CreateCredentialInput struct {
 	UserID    string `json:"user_id"`
 	Name      string `json:"name"`
 	APIKey    string `json:"api_key"`
+	APISecret string `json:"api_secret"`
+}
+
+type UpdateCredentialInput struct {
+	Name   *string           `json:"name,omitempty"`
+	Status *CredentialStatus `json:"status,omitempty"`
+}
+
+type RotateCredentialSecretInput struct {
 	APISecret string `json:"api_secret"`
 }
 

@@ -234,27 +234,34 @@
     var pageMembers = members.slice(start, start + pageSize);
     var html = '';
     if (children.length) {
-      html += '<div style="margin-bottom:8px;font-size:12px;color:var(--muted)">' + st('subgroupLabel') + '</div>';
+      html += '<div style="margin-bottom:6px;font-size:11px;color:var(--muted)">' + st('subgroupLabel') + '</div>';
+      html += '<div style="display:grid;gap:4px">';
       children.forEach(function(child) {
-        html += '<div class="item" style="min-height:auto;padding:8px 12px;margin-bottom:4px"><span style="font-weight:600">\ud83d\udcc1 ' + escapeHtml(child.name) + '</span><span style="color:var(--muted);font-size:11px;margin-left:8px">(' + String(Number(child.member_count || 0)) + ')</span></div>';
+        html += '<div class="item" style="min-height:auto;padding:8px 10px;border-radius:10px;box-shadow:none">'
+          + '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center">'
+          + '<div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(child.name) + '</div>'
+          + '<div class="item-meta">' + String(Number(child.member_count || 0)) + '</div>'
+          + '</div></div>';
       });
+      html += '</div>';
     }
     if (totalMembers) {
-      html += '<div style="margin:12px 0 10px;font-size:12px;color:var(--muted)">' + (st('membersLabel') + ' (' + totalMembers + '):') + '</div>';
-      html += '<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px" id="secMembersGrid">';
+      html += '<div style="margin:10px 0 6px;font-size:11px;color:var(--muted)">' + (st('membersLabel') + ' (' + totalMembers + ')') + '</div>';
+      html += '<div style="display:grid;gap:4px" id="secMembersGrid">';
       pageMembers.forEach(function(email, idx) {
         var absoluteIndex = start + idx + 1;
-        html += '<div class="item" style="min-height:auto;padding:12px 12px 10px;gap:8px">';
-        html += '<div style="font-weight:600;word-break:break-all;line-height:1.45">' + escapeHtml(email) + '</div>';
-        html += '<div class="item-meta">' + st('userIndex', { index: absoluteIndex }) + '</div>';
-        html += '<div class="actions" style="margin-top:auto"><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger);width:100%" onclick="removeSecGroupMember(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')">' + st('remove') + '</button></div>';
-        html += '</div>';
+        html += '<div class="item" style="min-height:auto;padding:8px 10px;border-radius:10px;box-shadow:none">';
+        html += '<div style="display:grid;grid-template-columns:minmax(0,1.5fr) auto auto;gap:8px;align-items:center">';
+        html += '<div style="min-width:0"><div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(email) + '</div></div>';
+        html += '<div class="item-meta" style="font-size:11px">#' + absoluteIndex + '</div>';
+        html += '<button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px;color:var(--danger)" data-email="' + escapeHtml(email) + '" onclick="removeSecGroupMember(this.dataset.email)">' + st('remove') + '</button>';
+        html += '</div></div>';
       });
       html += '</div>';
       if (totalPages > 1) {
         var startIdx = start + 1;
         var endIdx = Math.min(start + pageMembers.length, totalMembers);
-        html += '<div class="pager" style="margin-top:14px"><div class="pager-meta">' + st('pagerSummary', { page: sec.membersPage, totalPages: totalPages, start: startIdx, end: endIdx, total: totalMembers }) + '</div><div class="pager-actions"><button class="btn-ghost" style="height:32px" onclick="changeSecMembersPage(-1)"' + (sec.membersPage <= 1 ? ' disabled' : '') + '>' + st('previous') + '</button><button class="btn-ghost" style="height:32px" onclick="changeSecMembersPage(1)"' + (sec.membersPage >= totalPages ? ' disabled' : '') + '>' + st('next') + '</button></div></div>';
+        html += '<div class="pager" style="margin-top:8px"><div class="pager-meta">' + st('pagerSummary', { page: sec.membersPage, totalPages: totalPages, start: startIdx, end: endIdx, total: totalMembers }) + '</div><div class="pager-actions"><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" onclick="changeSecMembersPage(-1)"' + (sec.membersPage <= 1 ? ' disabled' : '') + '>' + st('previous') + '</button><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" onclick="changeSecMembersPage(1)"' + (sec.membersPage >= totalPages ? ' disabled' : '') + '>' + st('next') + '</button></div></div>';
       }
     }
     return html || hint(st('noMembers'));
@@ -348,12 +355,12 @@
     }
     nodes.forEach(function(node) {
       var row = document.createElement('div');
-      row.style.padding = '4px 8px 4px ' + (depth * 18 + 8) + 'px';
-      row.style.borderRadius = '6px';
+      row.style.padding = '3px 8px 3px ' + (depth * 16 + 8) + 'px';
+      row.style.borderRadius = '8px';
       row.style.transition = 'background .15s';
       row.style.display = 'flex';
       row.style.alignItems = 'center';
-      row.style.gap = '8px';
+      row.style.gap = '6px';
       row.style.cursor = 'pointer';
       if (node.id === sec.selectedGroupId) {
         row.style.background = 'var(--accent-bg, #e8f0fe)';
@@ -362,9 +369,9 @@
 
       var toggle = document.createElement('button');
       toggle.type = 'button';
-      toggle.style.width = '20px';
-      toggle.style.minWidth = '20px';
-      toggle.style.height = '20px';
+      toggle.style.width = '18px';
+      toggle.style.minWidth = '18px';
+      toggle.style.height = '18px';
       toggle.style.padding = '0';
       toggle.style.border = 'none';
       toggle.style.borderRadius = '6px';
@@ -389,7 +396,7 @@
 
       var label = document.createElement('div');
       label.style.flex = '1';
-      label.innerHTML = '<span>' + escapeHtml(node.name) + '</span><span style="color:var(--muted);font-size:11px;margin-left:8px">(' + String(Number(node.member_count || 0)) + ')</span>';
+      label.innerHTML = '<span style="font-size:12px;font-weight:600">' + escapeHtml(node.name) + '</span><span style="color:var(--muted);font-size:10px;margin-left:6px">(' + String(Number(node.member_count || 0)) + ')</span>'; 
       row.appendChild(toggle);
       row.appendChild(label);
       row.addEventListener('click', function(event) {
@@ -470,7 +477,7 @@
       root.innerHTML = rows.map(function(user) {
         var email = user.email || '';
         var selected = sec.selectedAssignEmail === email;
-        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-weight:600">' + escapeHtml(email) + '</div><div class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(st('status')) + ': ' + escapeHtml(localizeUserStatus(user.status)) + '</div></div><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px">' + escapeHtml(st('move')) + '</button></div></div>';
+        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:6px"><div><div style="font-weight:600">' + escapeHtml(email) + '</div><div class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(st('status')) + ': ' + escapeHtml(localizeUserStatus(user.status)) + '</div></div><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px">' + escapeHtml(st('move')) + '</button></div></div>';
       }).join('');
     }
     _s('assignUsersCount', 'textContent', st('showingUsers', { visible: rows.length, total: sec.assignUsers.length }));
@@ -591,12 +598,12 @@
         var sourceTag = source === 'self'
           ? '<span style="color:var(--accent);font-size:11px;margin-left:6px">' + st('custom') + '</span>'
           : '<span style="color:var(--muted);font-size:11px;margin-left:6px">' + st('inheritedFrom') + escapeHtml(sourceName) + '</span>';
-        html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)">';
-        html += '<div>' + escapeHtml(pk.label) + sourceTag + '</div>';
+        html += '<div style="display:grid;grid-template-columns:minmax(160px,1.2fr) auto;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)">';
+        html += '<div style="font-size:12px;font-weight:600">' + escapeHtml(pk.label) + sourceTag + '</div>'; 
         if (pk.type === 'bool') {
-          html += '<label style="cursor:pointer"><input type="checkbox" data-policy-key="' + pk.key + '" data-policy-type="bool" ' + (value ? 'checked' : '') + '></label>';
+          html += '<label style="cursor:pointer;justify-self:end"><input type="checkbox" data-policy-key="' + pk.key + '" data-policy-type="bool" ' + (value ? 'checked' : '') + '></label>'; 
         } else {
-          html += '<select data-policy-key="' + pk.key + '" data-policy-type="select" style="font-size:13px;padding:2px 8px;border-radius:6px;border:1px solid var(--line)">';
+          html += '<select data-policy-key="' + pk.key + '" data-policy-type="select" style="font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line)">';
           pk.options.forEach(function(option) {
             html += '<option value="' + option + '"' + (value === option ? ' selected' : '') + '>' + escapeHtml(policyOptionLabel(pk.key, option)) + '</option>';
           });

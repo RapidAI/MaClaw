@@ -9,6 +9,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/config"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/httpapi"
@@ -39,32 +40,78 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	if err := sqlite.RunMigrations(provider.Write); err != nil {
 		return nil, err
 	}
+	log.Printf("[hubcenter] sqlite migrations complete for %s", cfg.Database.DSN)
 
 	st := sqlite.NewStore(provider)
+	failureRecorder := diagnostics.NewFailureEventRecorder(st.FailureLogs)
+	dataDir := filepath.Dir(cfg.Database.DSN)
 	haConfigSvc := ha.NewConfigService(cfg.HA, st.System)
 	effectiveHA, err := haConfigSvc.CurrentConfig(context.Background())
 	if err != nil {
 		return nil, err
 	}
 	cfg.HA = effectiveHA
-	adminService := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
-	mailer := mail.New(*cfg, st.System)
-	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, cfg.Server.PublicBaseURL)
-	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
 
-	// Skill store directory comes from the database location.
-	skillStoreDir := filepath.Join(filepath.Dir(cfg.Database.DSN), "skills")
+	var haSvc *ha.Service
+	if cfg.HA.Enabled {
+		keyMaterial, err := ha.EnsureNodeKeyPair(dataDir, &cfg.HA)
+		if err != nil {
+			return nil, err
+		}
+		peers := make([]ha.StaticPeer, 0, len(cfg.HA.Peers))
+		for _, peer := range cfg.HA.Peers {
+			if !peer.Enabled || strings.TrimSpace(peer.NodeID) == "" || strings.TrimSpace(peer.BaseURL) == "" {
+				continue
+			}
+			peers = append(peers, ha.StaticPeer{
+				NodeID:       peer.NodeID,
+				NodeName:     peer.Name,
+				BaseURL:      peer.BaseURL,
+				PublicKeyPEM: peer.PublicKeyPEM,
+			})
+		}
+		haSvc = ha.NewService(cfg.HA.NodeID, cfg.HA.NodeName, cfg.HA.AdvertiseURL, cfg.HA.ClusterSecret, peers)
+		haSvc.SetNodeKeyMaterial(keyMaterial)
+		haSvc.AttachStore(st)
+		haSvc.SetHeartbeatSyncMinInterval(time.Duration(cfg.HA.HeartbeatSyncMinIntervalSeconds) * time.Second)
+		haSvc.SetFailureEventRecorder(failureRecorder)
+	}
+
+	systemSettings := st.System
+	gossipRepo := st.Gossip
+	if haSvc != nil {
+		systemSettings = &haSystemSettings{inner: st.System, sync: haSvc}
+		gossipRepo = &haGossipRepo{inner: st.Gossip, sync: haSvc}
+	}
+
+	adminService := auth.NewAdminService(st.Admins, systemSettings, st.AdminAudit)
+	mailer := mail.New(*cfg, systemSettings)
+	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, systemSettings, mailer, cfg.Server.PublicBaseURL)
+	hubService.SetFailureEventRecorder(failureRecorder)
+	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	hubService.SetRouteSnapshotRefresher(entryService)
+	if err := entryService.Rebuild(context.Background()); err != nil {
+		return nil, err
+	}
+	routeStats := entryService.SnapshotStats()
+	log.Printf("[hubcenter] route snapshot rebuilt: defaults=%d email_routes=%d domain_routes=%d public_hubs=%d blocked_emails=%d blocked_ips=%d", routeStats.DefaultHubIDs, routeStats.EmailRoutes, routeStats.DomainRoutes, routeStats.PublicHubs, routeStats.BlockedEmails, routeStats.BlockedIPs)
+
+	skillStoreDir := filepath.Join(dataDir, "skills")
 	skillStore := skill.NewSkillStore(skillStoreDir)
 
-	// Gossip cache is served as a static gzip snapshot for cheap polling.
-	gossipCachePath := filepath.Join(filepath.Dir(cfg.Database.DSN), "gossip_cache.json.gz")
+	gossipCachePath := filepath.Join(dataDir, "gossip_cache.json.gz")
 	gossipCache := httpapi.NewGossipCache(st.Gossip, gossipCachePath)
 	gossipCache.EnsureExists(context.Background())
 
-	dataDir := filepath.Dir(cfg.Database.DSN)
 	smStore, err := skillmarket.NewStore(provider.Write, provider.Read)
 	if err != nil {
 		return nil, err
+	}
+	if haSvc != nil {
+		skillStore.SetSyncRecorder(haSvc)
+		smStore.SetSyncRecorder(haSvc)
+		haSvc.AttachSkillStore(skillStore)
+		haSvc.AttachSkillMarket(smStore)
 	}
 	userSvc := skillmarket.NewUserService(smStore, mailer)
 	creditsSvc := skillmarket.NewCreditsService(smStore)
@@ -142,28 +189,15 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		}
 	}()
 
-	var haSvc *ha.Service
-	if cfg.HA.Enabled {
-		peers := make([]ha.StaticPeer, 0, len(cfg.HA.Peers))
-		for _, peer := range cfg.HA.Peers {
-			if !peer.Enabled || strings.TrimSpace(peer.NodeID) == "" || strings.TrimSpace(peer.BaseURL) == "" {
-				continue
-			}
-			peers = append(peers, ha.StaticPeer{
-				NodeID:   peer.NodeID,
-				NodeName: peer.Name,
-				BaseURL:  peer.BaseURL,
-			})
-		}
-		haSvc = ha.NewService(cfg.HA.NodeID, cfg.HA.NodeName, cfg.HA.AdvertiseURL, cfg.HA.ClusterSecret, peers)
-		haSvc.AttachStore(st)
-		haSvc.SetHeartbeatSyncMinInterval(time.Duration(cfg.HA.HeartbeatSyncMinIntervalSeconds) * time.Second)
+	if haSvc != nil {
 		hubService.SetSyncRecorder(haSvc)
+		haSvc.SetRouteSnapshotRefresher(entryService)
+		go seedInitialHASnapshots(context.Background(), haSvc, entryService, st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.System, st.Gossip, st.News, skillStore, smStore)
 		go ha.NewProber(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second).Run(context.Background())
 		go ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run(context.Background())
 	}
 
-	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.Gossip, gossipCache, smHandlers, st.System, st.News, haConfigSvc, haSvc)
+	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc)
 
 	return &App{
 		Config:       cfg,

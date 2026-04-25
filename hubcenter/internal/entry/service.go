@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
@@ -20,6 +21,7 @@ type HubAccessView struct {
 	PWAURL                 string `json:"pwa_url"`
 	Visibility             string `json:"visibility"`
 	EnrollmentMode         string `json:"enrollment_mode"`
+	CorporateEmailDomain   string `json:"corporate_email_domain,omitempty"`
 	Status                 string `json:"status"`
 	InvitationCodeRequired bool   `json:"invitation_code_required"`
 }
@@ -33,15 +35,121 @@ type ResolveResult struct {
 	Message      string          `json:"message,omitempty"`
 }
 
+type RouteSnapshotStats struct {
+	BlockedEmails int `json:"blocked_emails"`
+	BlockedIPs    int `json:"blocked_ips"`
+	DefaultHubIDs int `json:"default_hub_ids"`
+	EmailRoutes   int `json:"email_routes"`
+	DomainRoutes  int `json:"domain_routes"`
+	PublicHubs    int `json:"public_hubs"`
+}
+
+type RoutingHubStats struct {
+	Total               int `json:"total"`
+	Online              int `json:"online"`
+	Pending             int `json:"pending"`
+	Disabled            int `json:"disabled"`
+	PublicSignup        int `json:"public_signup"`
+	LegacyDomainHubs    int `json:"legacy_domain_hubs"`
+	EnabledDomainRoutes int `json:"enabled_domain_routes"`
+}
+
+type RoutingMigrationStats struct {
+	LegacyDomainBackfillPending int `json:"legacy_domain_backfill_pending"`
+}
+
+type RoutingDiagnostics struct {
+	Snapshot  RouteSnapshotStats    `json:"snapshot"`
+	Hubs      RoutingHubStats       `json:"hubs"`
+	Migration RoutingMigrationStats `json:"migration"`
+}
+
 type Service struct {
 	hubs          store.HubRepository
 	links         store.HubUserLinkRepository
+	routes        store.HubDomainRouteRepository
 	blockedEmails store.BlockedEmailRepository
 	blockedIPs    store.BlockedIPRepository
+	snapshot      atomic.Pointer[routeSnapshot]
 }
 
-func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, blockedEmails store.BlockedEmailRepository, blockedIPs store.BlockedIPRepository) *Service {
-	return &Service{hubs: hubs, links: links, blockedEmails: blockedEmails, blockedIPs: blockedIPs}
+func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails store.BlockedEmailRepository, blockedIPs store.BlockedIPRepository) *Service {
+	return &Service{hubs: hubs, links: links, routes: routes, blockedEmails: blockedEmails, blockedIPs: blockedIPs}
+}
+
+func (s *Service) Rebuild(ctx context.Context) error {
+	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, false)
+	if err != nil {
+		return err
+	}
+	s.snapshot.Store(snap)
+	return nil
+}
+
+func (s *Service) SnapshotStats() RouteSnapshotStats {
+	snap := s.snapshot.Load()
+	if snap == nil {
+		return RouteSnapshotStats{}
+	}
+	return snap.stats()
+}
+
+func (s *Service) RoutingDiagnostics(ctx context.Context) (RoutingDiagnostics, error) {
+	if err := s.Rebuild(ctx); err != nil {
+		return RoutingDiagnostics{}, err
+	}
+	diagnostics := RoutingDiagnostics{Snapshot: s.SnapshotStats()}
+
+	hubItems, err := s.hubs.ListAll(ctx)
+	if err != nil {
+		return RoutingDiagnostics{}, err
+	}
+	routeItems, err := s.routes.ListAll(ctx)
+	if err != nil {
+		return RoutingDiagnostics{}, err
+	}
+
+	enabledRoutesByHubDomain := make(map[string]struct{}, len(routeItems))
+	for _, route := range routeItems {
+		if route == nil || !route.Enabled {
+			continue
+		}
+		domain := normalizeCorporateEmailDomain(route.Domain)
+		if domain == "" {
+			continue
+		}
+		enabledRoutesByHubDomain[route.HubID+"|"+domain] = struct{}{}
+		diagnostics.Hubs.EnabledDomainRoutes++
+	}
+
+	for _, hub := range hubItems {
+		if hub == nil {
+			continue
+		}
+		diagnostics.Hubs.Total++
+		if hub.IsDisabled {
+			diagnostics.Hubs.Disabled++
+		}
+		switch strings.ToLower(strings.TrimSpace(hub.Status)) {
+		case "online":
+			diagnostics.Hubs.Online++
+		case "pending_confirmation":
+			diagnostics.Hubs.Pending++
+		}
+		if hub.AcceptPublicSignup {
+			diagnostics.Hubs.PublicSignup++
+		}
+		legacyDomain := normalizeCorporateEmailDomain(hub.CorporateEmailDomain)
+		if legacyDomain == "" {
+			continue
+		}
+		diagnostics.Hubs.LegacyDomainHubs++
+		if _, ok := enabledRoutesByHubDomain[hub.ID+"|"+legacyDomain]; !ok {
+			diagnostics.Migration.LegacyDomainBackfillPending++
+		}
+	}
+
+	return diagnostics, nil
 }
 
 func (s *Service) ResolveByEmail(ctx context.Context, email string) (*ResolveResult, error) {
@@ -53,84 +161,48 @@ func (s *Service) ResolveByEmailFromIP(ctx context.Context, email string, client
 	if email == "" {
 		return &ResolveResult{Email: email, Mode: "none", Message: "Email is required"}, nil
 	}
-
-	if s.blockedIPs != nil {
-		blockedIP, err := s.blockedIPs.GetByIP(ctx, strings.TrimSpace(clientIP))
-		if err != nil {
+	if s.snapshot.Load() == nil {
+		if err := s.Rebuild(ctx); err != nil {
 			return nil, err
 		}
-		if blockedIP != nil {
-			return nil, ErrIPBlocked
-		}
 	}
-
-	blocked, err := s.blockedEmails.GetByEmail(ctx, email)
-	if err != nil {
-		return nil, err
-	}
-	if blocked != nil {
-		return &ResolveResult{
-			Email:   email,
-			Mode:    "none",
-			Message: "Email is blocked",
-		}, nil
-	}
-
-	_, err = s.hubs.ListByEmail(ctx, email)
-	if err != nil {
-		return nil, err
-	}
-	allHubs, err := s.hubs.ListAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	defaultLinkHubID := ""
-	if link, err := s.links.GetDefaultByEmail(ctx, email); err == nil && link != nil {
-		defaultLinkHubID = link.HubID
-	}
-
-	byID := map[string]*store.HubInstance{}
-	for _, hub := range allHubs {
-		if hub == nil || byID[hub.ID] != nil {
-			continue
-		}
-		if isPubliclyDiscoverable(hub) {
-			byID[hub.ID] = hub
-		}
-	}
-
-	items := make([]HubAccessView, 0, len(byID))
-	for _, hub := range byID {
-		if hub == nil || hub.IsDisabled || hub.Status != "online" {
-			continue
-		}
-		items = append(items, hubToAccessView(hub, email))
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		return compareHubPriority(items[i], items[j], email, defaultLinkHubID)
-	})
-
-	if len(items) == 0 {
+	snap := s.snapshot.Load()
+	if snap == nil {
 		return &ResolveResult{Email: email, Mode: "none", Message: "No available hubs found"}, nil
 	}
-	if len(items) == 1 {
-		return &ResolveResult{
-			Email:        email,
-			Mode:         "single",
-			DefaultHubID: items[0].HubID,
-			DefaultPWA:   items[0].PWAURL,
-			Hubs:         items,
-		}, nil
-	}
+	return snap.resolve(email, clientIP)
+}
 
-	return &ResolveResult{
-		Email:        email,
-		Mode:         "multiple",
-		DefaultHubID: items[0].HubID,
-		DefaultPWA:   items[0].PWAURL,
-		Hubs:         items,
-	}, nil
+func (s *Service) ResolveAdminByEmail(ctx context.Context, email string) (*ResolveResult, error) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return &ResolveResult{Email: email, Mode: "none", Message: "Email is required"}, nil
+	}
+	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, true)
+	if err != nil {
+		return nil, err
+	}
+	if snap == nil {
+		return &ResolveResult{Email: email, Mode: "none", Message: "No available hubs found"}, nil
+	}
+	return snap.resolveAdminEmail(email), nil
+}
+
+func (s *Service) ResolveByDomain(ctx context.Context, domain string) (*ResolveResult, error) {
+	domain = normalizeCorporateEmailDomain(domain)
+	if domain == "" {
+		return &ResolveResult{Email: domain, Mode: "none", Message: "Domain is required"}, nil
+	}
+	if s.snapshot.Load() == nil {
+		if err := s.Rebuild(ctx); err != nil {
+			return nil, err
+		}
+	}
+	snap := s.snapshot.Load()
+	if snap == nil {
+		return &ResolveResult{Email: domain, Mode: "none", Message: "No available hubs found"}, nil
+	}
+	return snap.resolveDomain(domain), nil
 }
 
 func BuildPWAURL(baseURL, email string) string {
@@ -141,14 +213,23 @@ func BuildPWAURL(baseURL, email string) string {
 	)
 }
 
-func hubToAccessView(hub *store.HubInstance, email string) HubAccessView {
+func hubToAccessView(hub *store.HubInstance, email, routeDomain string) HubAccessView {
+	corporateDomain := normalizeCorporateEmailDomain(routeDomain)
+	if corporateDomain == "" {
+		corporateDomain = normalizeCorporateEmailDomain(hub.CorporateEmailDomain)
+	}
+	pwaURL := ""
+	if strings.TrimSpace(email) != "" {
+		pwaURL = BuildPWAURL(hub.BaseURL, email)
+	}
 	return HubAccessView{
 		HubID:                  hub.ID,
 		Name:                   hub.Name,
 		BaseURL:                hub.BaseURL,
-		PWAURL:                 BuildPWAURL(hub.BaseURL, email),
+		PWAURL:                 pwaURL,
 		Visibility:             hub.Visibility,
 		EnrollmentMode:         hub.EnrollmentMode,
+		CorporateEmailDomain:   corporateDomain,
 		Status:                 hub.Status,
 		InvitationCodeRequired: hub.InvitationCodeRequired,
 	}
@@ -163,27 +244,52 @@ func isPubliclyDiscoverable(hub *store.HubInstance) bool {
 	}
 }
 
-func compareHubPriority(a, b HubAccessView, email, defaultLinkHubID string) bool {
-	pa := hubPriority(a, email, defaultLinkHubID)
-	pb := hubPriority(b, email, defaultLinkHubID)
-	if pa != pb {
-		return pa < pb
+func compareHubPriority(a, b resolvedCandidate) bool {
+	if a.rank != b.rank {
+		return a.rank < b.rank
 	}
-	if a.Name != b.Name {
-		return a.Name < b.Name
+	if a.routePriority != b.routePriority {
+		return a.routePriority < b.routePriority
 	}
-	return a.HubID < b.HubID
+	va := visibilityPriority(a.view.Visibility)
+	vb := visibilityPriority(b.view.Visibility)
+	if va != vb {
+		return va < vb
+	}
+	if a.view.Name != b.view.Name {
+		return a.view.Name < b.view.Name
+	}
+	return a.view.HubID < b.view.HubID
 }
 
-func hubPriority(item HubAccessView, email, defaultLinkHubID string) int {
-	if item.HubID == defaultLinkHubID && !strings.EqualFold(item.Visibility, "private") {
+func visibilityPriority(v string) int {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "shared":
 		return 0
-	}
-	if strings.EqualFold(item.Visibility, "shared") {
+	case "public":
 		return 1
-	}
-	if strings.EqualFold(item.Visibility, "public") {
+	default:
 		return 2
 	}
-	return 3
+}
+
+func extractEmailDomain(email string) string {
+	_, domain, ok := strings.Cut(strings.TrimSpace(strings.ToLower(email)), "@")
+	if !ok {
+		return ""
+	}
+	return normalizeCorporateEmailDomain(domain)
+}
+
+func normalizeCorporateEmailDomain(domain string) string {
+	domain = strings.TrimSpace(strings.ToLower(domain))
+	domain = strings.TrimPrefix(domain, "@")
+	domain = strings.TrimPrefix(domain, ".")
+	return strings.TrimSpace(domain)
+}
+
+func sortCandidates(items []resolvedCandidate) {
+	sort.SliceStable(items, func(i, j int) bool {
+		return compareHubPriority(items[i], items[j])
+	})
 }

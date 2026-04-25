@@ -11,7 +11,7 @@ const RequiredNodeVersion = "24.13.0"
 
 // DefaultContextTokens is the fallback context limit when no explicit
 // context_length is configured on the LLM provider.
-const DefaultContextTokens = 128_000
+const DefaultContextTokens = 110_000
 
 // DefaultLLMTimeoutSec is the fallback response-header timeout in seconds
 // when no explicit timeout_sec is configured on the LLM provider.
@@ -196,6 +196,25 @@ type NLSkillEntry struct {
 	RepairAttemptCount int         `json:"repair_attempt_count,omitempty"`
 	LastRepairAt     string        `json:"last_repair_at,omitempty"`
 	RepairHistory    []SkillRepairRecord `json:"repair_history,omitempty"`
+
+	// Params is the parameter schema for this skill. When explicitly declared
+	// in skill.yaml, it provides aliases, CLI flags, defaults, and descriptions.
+	// When absent, SynthesizeParams auto-generates it from command templates.
+	// All skills flow through the same BindParams path regardless of source.
+	Params []NLSkillParam `json:"params,omitempty"`
+}
+
+// NLSkillParam describes a single parameter in a skill's parameter schema.
+// This is the contract between the LLM (which provides args) and the skill
+// (which consumes them via command template placeholders or CLI flags).
+type NLSkillParam struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`     // alternative names the LLM might use
+	CLIFlag     string   `json:"cli_flag,omitempty"`    // e.g. "--format" — appended to command
+	Default     string   `json:"default,omitempty"`     // default value when not provided
+	Required    bool     `json:"required,omitempty"`    // must be provided for execution
+	Synthetic   bool     `json:"synthetic,omitempty"`   // true = auto-generated from template
 }
 
 // SkillRepairRecord stores a single self-repair attempt for audit trail.

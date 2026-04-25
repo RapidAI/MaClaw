@@ -22,11 +22,12 @@ type TokenManager struct {
 }
 
 type tokenClaims struct {
-	TenantID     string    `json:"tenant_id"`
-	UserID       string    `json:"user_id"`
-	CredentialID string    `json:"credential_id,omitempty"`
-	JTI          string    `json:"jti,omitempty"`
-	Exp          time.Time `json:"exp"`
+	TenantID          string    `json:"tenant_id"`
+	UserID            string    `json:"user_id"`
+	CredentialID      string    `json:"credential_id,omitempty"`
+	CredentialVersion int       `json:"credential_version,omitempty"`
+	JTI               string    `json:"jti,omitempty"`
+	Exp               time.Time `json:"exp"`
 }
 
 func NewTokenManager(secret string, ttl time.Duration) *TokenManager {
@@ -56,10 +57,10 @@ func HashSecretWithPepper(secret, pepper string) string {
 }
 
 func (m *TokenManager) Issue(p Principal) (string, time.Time, error) {
-	return m.IssueForCredential(p, "")
+	return m.IssueForCredential(p, "", 0)
 }
 
-func (m *TokenManager) IssueForCredential(p Principal, credentialID string) (string, time.Time, error) {
+func (m *TokenManager) IssueForCredential(p Principal, credentialID string, credentialVersion int) (string, time.Time, error) {
 	if len(m.secret) == 0 {
 		return "", time.Time{}, errors.New("token secret is empty")
 	}
@@ -68,7 +69,7 @@ func (m *TokenManager) IssueForCredential(p Principal, credentialID string) (str
 	if _, err := rand.Read(jti); err != nil {
 		return "", time.Time{}, err
 	}
-	claims := tokenClaims{TenantID: p.TenantID, UserID: p.UserID, CredentialID: credentialID, JTI: hex.EncodeToString(jti), Exp: exp}
+	claims := tokenClaims{TenantID: p.TenantID, UserID: p.UserID, CredentialID: credentialID, CredentialVersion: credentialVersion, JTI: hex.EncodeToString(jti), Exp: exp}
 	payload, err := json.Marshal(claims)
 	if err != nil {
 		return "", time.Time{}, err
@@ -131,26 +132,26 @@ func secretWithPepper(secret, pepper string) []byte {
 	return []byte(secret + "::pepper::" + pepper)
 }
 
-func (m *TokenManager) Parse(token string) (*Principal, time.Time, string, error) {
+func (m *TokenManager) Parse(token string) (*Principal, time.Time, string, int, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 2 {
-		return nil, time.Time{}, "", ErrUnauthorized
+		return nil, time.Time{}, "", 0, ErrUnauthorized
 	}
 	if !hmac.Equal([]byte(m.sign(parts[0])), []byte(parts[1])) {
-		return nil, time.Time{}, "", ErrUnauthorized
+		return nil, time.Time{}, "", 0, ErrUnauthorized
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return nil, time.Time{}, "", ErrUnauthorized
+		return nil, time.Time{}, "", 0, ErrUnauthorized
 	}
 	var claims tokenClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, time.Time{}, "", ErrUnauthorized
+		return nil, time.Time{}, "", 0, ErrUnauthorized
 	}
 	if time.Now().After(claims.Exp) {
-		return nil, time.Time{}, "", ErrUnauthorized
+		return nil, time.Time{}, "", 0, ErrUnauthorized
 	}
-	return &Principal{TenantID: claims.TenantID, UserID: claims.UserID, Roles: []string{"user"}}, claims.Exp, claims.CredentialID, nil
+	return &Principal{TenantID: claims.TenantID, UserID: claims.UserID, Roles: []string{"user"}}, claims.Exp, claims.CredentialID, claims.CredentialVersion, nil
 }
 
 func (m *TokenManager) sign(body string) string {

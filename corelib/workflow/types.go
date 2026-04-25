@@ -30,6 +30,17 @@ const (
 	WorkflowPatentAnalysis      WorkflowType = "patent_analysis"
 )
 
+// Phase IDs for the coding workflow. These are the canonical identifiers
+// used in codingTemplate().Phases[].ID. Other code should reference these
+// constants instead of hardcoding string literals.
+const (
+	PhaseCodingRequirements  = "requirements"
+	PhaseCodingTechDesign    = "tech_design"
+	PhaseCodingTaskBreakdown = "task_breakdown"
+	PhaseCodingImplementation = "implementation"
+	PhaseCodingReview        = "review"
+)
+
 // StructuredIntent is the output of the intent understanding phase.
 type StructuredIntent struct {
 	Category      WorkflowType `json:"category"`
@@ -64,21 +75,23 @@ const (
 // falls back to running raw `ssh` CLI commands via bash — which hangs because
 // the subprocess has no access to stored SSH credentials or connection management.
 var DocOnlyAllowedTools = map[string]bool{
-	"bash":         true,
-	"write_file":   true,
-	"read_file":    true,
-	"edit_file":    true,
-	"memory":       true,
-	"generate_pdf": true,
-	"office":       true,
-	"send_file":    true,
-	"web_search":   true,
-	"web_fetch":    true,
-	"open":         true,
-	"set_nickname": true,
-	"ssh":          true,
-	"screenshot":   true,
-	"async_wait":   true,
+	"bash":           true,
+	"write_file":     true,
+	"read_file":      true,
+	"edit_file":      true,
+	"edit_lines":     true,
+	"memory":         true,
+	"generate_pdf":   true,
+	"office":         true,
+	"send_file":      true,
+	"web_search":     true,
+	"web_fetch":      true,
+	"open":           true,
+	"set_nickname":   true,
+	"ssh":            true,
+	"screenshot":     true,
+	"async_wait":     true,
+	"list_directory": true,
 }
 
 // InputRequirement describes a document/file that the user must provide
@@ -150,10 +163,12 @@ type WorkflowResponse struct {
 	GateResult   *QualityGateResult // quality gate check result, if any
 
 	// DefaultInput is true when the engine's HandleInput fell through to
-	// the default branch (no confirm/skip/modify match). The caller can
-	// use this to decide whether to capture the agent loop output as
-	// workflow phase content. When true, the message may be unrelated to
-	// the workflow (e.g. a weather query while a coding workflow is active).
+	// the default branch (no confirm/skip/modify match). This is a
+	// diagnostic signal — it indicates the user's message was not
+	// recognized as a workflow control command. The caller (handleActive-
+	// Workflow) still sets the workflow marker and stashes the phase
+	// prompt, because the phase prompt guides the LLM to produce the
+	// deliverable regardless of the user's message content.
 	DefaultInput bool
 
 	// PendingConfirm is true when the phase has output and the user's
@@ -163,6 +178,17 @@ type WorkflowResponse struct {
 	//   - No new document → treat as confirmation, call AdvancePhase()
 	//   - New document    → treat as modification, wait for next confirm
 	PendingConfirm bool
+
+	// ActivateOrchestrator is true when the workflow has advanced into an
+	// execution phase (ToolFilterFull && !NeedsConfirm). The caller should
+	// attempt to parse the TaskBreakdownText as a task list and activate
+	// the orchestrator if parsing succeeds. If parsing fails (e.g. PPT
+	// workflow's slide_scripting output is not a task list), the caller
+	// falls through to the normal agent loop for execution.
+	ActivateOrchestrator bool
+	TaskBreakdownText    string // output from the phase preceding the execution phase
+	RequirementsContext  string // truncated first-phase output (requirements/goals)
+	DesignContext        string // truncated middle-phase outputs (design/specification)
 }
 
 // WorkflowStatus tracks the lifecycle state of a workflow.
@@ -193,6 +219,11 @@ type WorkflowState struct {
 	// when it detects a document upload or substantial text input during
 	// the waiting-for-input state.
 	InputReceived bool `json:"input_received,omitempty"`
+
+	// ProjectPath is the working directory associated with this workflow
+	// (e.g., the project root for coding workflows). Used for artifact
+	// tagging and context scoping.
+	ProjectPath string `json:"project_path,omitempty"`
 }
 
 // QualityGateResult records the outcome of a phase quality gate check.
@@ -265,6 +296,15 @@ type EngineCallbacks interface {
 // LLMCaller abstracts LLM invocation for testability.
 type LLMCaller interface {
 	DoSimpleLLMRequest(messages []interface{}, timeout time.Duration) (string, error)
+}
+
+// ArtifactSaver abstracts saving workflow phase outputs to long-term memory.
+// Implemented by memory.Store (via a thin adapter in gui/tui) to avoid
+// corelib/workflow importing corelib/memory.
+type ArtifactSaver interface {
+	// SaveArtifact persists a workflow phase output summary to long-term memory.
+	// category should be "task_artifact", tags should include phaseID and workflowType.
+	SaveArtifact(content string, tags []string, sourceURL string) error
 }
 
 // PersistenceStore abstracts workflow state persistence.

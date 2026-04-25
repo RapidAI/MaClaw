@@ -3,6 +3,12 @@
  * ASCII only.
  */
 (function(global) {
+  function ensureMachinePagingState() {
+    if (!Array.isArray(global.machineItemsCache)) global.machineItemsCache = [];
+    if (!Number.isFinite(global.machinePage) || global.machinePage < 1) global.machinePage = 1;
+    if (!Number.isFinite(global.machinePageSize) || global.machinePageSize < 1) global.machinePageSize = 10;
+  }
+
   function textHint(message) {
     return '<div class="hint">' + escapeHtml(message || '') + '</div>';
   }
@@ -12,11 +18,11 @@
   }
 
   function renderHeader() {
-    return '<div class="row header"><div>' + tr('machine') + '</div><div>' + ml('boundEmail') + '</div><div>' + ml('runtime') + '</div><div>' + ml('heartbeat') + '</div><div>' + tr('status') + '</div><div>' + tr('lastSeen') + '</div><div>' + ml('actions') + '</div></div>';
+    return '<div class="row header" style="grid-template-columns:1.08fr .92fr 1.02fr .84fr .62fr .78fr .98fr"><div>' + tr('machine') + '</div><div>' + ml('boundEmail') + '</div><div>' + ml('runtime') + '</div><div>' + ml('heartbeat') + '</div><div>' + tr('status') + '</div><div>' + tr('lastSeen') + '</div><div>' + ml('actions') + '</div></div>';
   }
 
   function actionButton(label, className, onclick) {
-    return '<button class="' + className + '" style="height:32px;font-size:12px;padding:0 10px" onclick="' + onclick + '">' + label + '</button>';
+    return '<button class="' + className + '" style="height:27px;font-size:11px;padding:0 8px" onclick="' + onclick + '">' + label + '</button>';
   }
 
   function machineNameExpr(value) {
@@ -24,6 +30,7 @@
   }
 
   global.renderMachineList = function renderMachineList(items) {
+    ensureMachinePagingState();
     global.machineItemsCache = Array.isArray(items) ? items : [];
     const countHero = document.getElementById('machineCountHero');
     const root = document.getElementById('machines');
@@ -66,7 +73,7 @@
       const renameBtn = actionButton(ml('renameMachine'), 'btn-secondary', 'renameMachine(' + machineID + ',' + aliasExpr + ')');
       const deleteBtn = actionButton(ml('deleteMachine'), 'btn-danger', 'deleteMachine(' + machineID + ')');
       const sessionsBtn = isOnline ? actionButton(ml('viewSessions'), 'btn-secondary', 'viewMachineSessions(' + machineID + ',' + machineNameExpr(item.user_id || '') + ',' + sessionNameExpr + ')') : '';
-      return '<div class="row"><div><strong>' + displayName + '</strong>' + aliasLine + '<div class="item-meta mono">' + escapeHtml(item.machine_id || '') + '</div></div><div><div>' + escapeHtml(email) + '</div><div class="item-meta mono">' + escapeHtml(item.user_id || '') + '</div></div><div>' + runtime.map(function(line) { return '<div class="item-meta">' + escapeHtml(line) + '</div>'; }).join('') + '</div><div>' + (heartbeat.length ? heartbeat.map(function(line) { return '<div class="item-meta">' + escapeHtml(line) + '</div>'; }).join('') : ('<div class="item-meta">' + tr('na') + '</div>')) + '</div><div><span class="badge ' + (isOnline ? 'ok' : 'warn') + '">' + escapeHtml(state) + '</span></div><div>' + escapeHtml(item.last_seen_at || tr('na')) + '</div><div style="display:flex;gap:4px;flex-wrap:wrap">' + renameBtn + sessionsBtn + deleteBtn + '</div></div>';
+      return '<div class="row" style="grid-template-columns:1.08fr .92fr 1.02fr .84fr .62fr .78fr .98fr"><div style="min-width:0"><strong style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block">' + displayName + '</strong>' + aliasLine + '<div class="item-meta mono" style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(item.machine_id || '') + '</div></div><div style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(email) + '</div><div class="item-meta mono" style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(item.user_id || '') + '</div></div><div>' + runtime.map(function(line) { return '<div class="item-meta" style="margin-top:2px">' + escapeHtml(line) + '</div>'; }).join('') + '</div><div>' + (heartbeat.length ? heartbeat.map(function(line) { return '<div class="item-meta" style="margin-top:2px">' + escapeHtml(line) + '</div>'; }).join('') : ('<div class="item-meta">' + tr('na') + '</div>')) + '</div><div><span class="badge ' + (isOnline ? 'ok' : 'warn') + '">' + escapeHtml(state) + '</span></div><div class="item-meta">' + escapeHtml(item.last_seen_at || tr('na')) + '</div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">' + renameBtn + sessionsBtn + deleteBtn + '</div></div>';
     }).join('');
     const start = startIndex + 1;
     const end = startIndex + pageItems.length;
@@ -79,6 +86,7 @@
   };
 
   global.changeMachinesPage = function changeMachinesPage(step) {
+    ensureMachinePagingState();
     const totalPages = Math.max(1, Math.ceil(global.machineItemsCache.length / global.machinePageSize));
     global.machinePage = Math.min(totalPages, Math.max(1, global.machinePage + step));
     global.renderMachineList(global.machineItemsCache);
@@ -121,17 +129,13 @@
 
   global.loadMachines = async function loadMachines() {
     try {
+      ensureMachinePagingState();
       global.machinePage = 1;
-      const scope = document.getElementById('bindEmail').value.trim();
       const emailScope = document.getElementById('machineEmailSearch').value.trim();
       const showAll = document.getElementById('machinesShowAll') && document.getElementById('machinesShowAll').checked;
       let path = '/api/admin/debug/machines';
       if (emailScope) {
         path = '/api/admin/debug/machines?email=' + encodeURIComponent(emailScope);
-      } else if (scope) {
-        const user = await lookupScopedUser(scope);
-        if (!user || !user.id) throw new Error(tr('noHubUser', { email: scope }));
-        path = '/api/admin/debug/machines?user_id=' + encodeURIComponent(user.id);
       } else if (showAll) {
         path = '/api/admin/debug/machines?all=1';
       }

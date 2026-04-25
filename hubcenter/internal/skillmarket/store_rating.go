@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// ── RatingRepository implementation ─────────────────────────────────────
+// 鈹€鈹€ RatingRepository implementation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-// UpsertRating 插入或更新评分（email 去重，覆盖旧评分）。
+// UpsertRating 鎻掑叆鎴栨洿鏂拌瘎鍒嗭紙email 鍘婚噸锛岃鐩栨棫璇勫垎锛夈€?
 func (s *Store) UpsertRating(ctx context.Context, r *Rating) error {
 	now := time.Now().Format(timeFmt)
 	_, err := s.db.ExecContext(ctx, `
@@ -15,10 +15,13 @@ func (s *Store) UpsertRating(ctx context.Context, r *Rating) error {
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(skill_id, email) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`,
 		r.SkillID, r.Email, r.Score, now, now)
+	if err == nil {
+		s.emitSync(ctx)
+	}
 	return err
 }
 
-// GetRatingStats 返回 Skill 的评分统计（去重后）。
+// GetRatingStats 杩斿洖 Skill 鐨勮瘎鍒嗙粺璁★紙鍘婚噸鍚庯級銆?
 func (s *Store) GetRatingStats(ctx context.Context, skillID string) (*RatingStats, error) {
 	var stats RatingStats
 	stats.SkillID = skillID
@@ -32,7 +35,7 @@ func (s *Store) GetRatingStats(ctx context.Context, skillID string) (*RatingStat
 	return &stats, nil
 }
 
-// ListRatingsBySkill 返回 Skill 的所有评分。
+// ListRatingsBySkill 杩斿洖 Skill 鐨勬墍鏈夎瘎鍒嗐€?
 func (s *Store) ListRatingsBySkill(ctx context.Context, skillID string) ([]Rating, error) {
 	rows, err := s.readDB.QueryContext(ctx, `
 		SELECT skill_id, email, score, created_at, updated_at

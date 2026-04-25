@@ -36,6 +36,55 @@ func (r *fakeSettingsRepo) Get(ctx context.Context, key string) (string, error) 
 	return r.values[key], nil
 }
 
+func TestSyncUserRouteUsesStoredRegistration(t *testing.T) {
+	var (
+		gotPath   string
+		gotSecret string
+		gotEmail  string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		gotSecret, _ = payload["hub_secret"].(string)
+		gotEmail, _ = payload["email"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.Enabled = true
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+	err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true,
+		HubID:      "hub_sync",
+		HubSecret:  "secret_sync",
+	}))
+	if err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := svc.SyncUserRoute(context.Background(), "User@Example.com"); err != nil {
+		t.Fatalf("SyncUserRoute() error = %v", err)
+	}
+	if gotPath != "/api/hubs/hub_sync/user-links/sync" {
+		t.Fatalf("sync path = %q, want %q", gotPath, "/api/hubs/hub_sync/user-links/sync")
+	}
+	if gotSecret != "secret_sync" {
+		t.Fatalf("hub_secret = %q, want %q", gotSecret, "secret_sync")
+	}
+	if gotEmail != "user@example.com" {
+		t.Fatalf("email = %q, want %q", gotEmail, "user@example.com")
+	}
+}
 func TestAdvertisedEndpointPrefersConfiguredPublicBaseURL(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.PublicBaseURL = "https://hub.example.com"
@@ -444,6 +493,183 @@ func TestStatusAndRegisterUseStoredVisibility(t *testing.T) {
 		t.Fatalf("expected shared visibility in registration payload, got %q", gotVisibility)
 	}
 }
+
+func TestStatusFallsBackToConfiguredCorporateEmailDomain(t *testing.T) {
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = "http://127.0.0.1:9388"
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+	cfg.Hub.CorporateEmailDomain = "@RAPIDAI.TECH"
+
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+
+	status, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if status.CorporateEmailDomain != "rapidai.tech" {
+		t.Fatalf("expected normalized configured corporate domain, got %+v", status)
+	}
+}
+
+func TestRegisterUsesNormalizedStoredCorporateEmailDomain(t *testing.T) {
+	var gotCorporateDomain string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hubs/register" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		gotCorporateDomain, _ = payload["corporate_email_domain"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hub_id":"hub_corp","hub_secret":"secret_corp"}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyAdminEmail, mustJSON(map[string]string{"value": "admin@example.com"}))
+
+	svc := NewService(cfg, settings)
+	if _, err := svc.SetCorporateEmailDomain(context.Background(), "@RAPIDAI.TECH"); err != nil {
+		t.Fatalf("SetCorporateEmailDomain() error = %v", err)
+	}
+
+	status, err := svc.Register(context.Background(), "admin@example.com")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if status == nil || !status.Registered {
+		t.Fatalf("unexpected registration status: %+v", status)
+	}
+	if gotCorporateDomain != "rapidai.tech" {
+		t.Fatalf("expected normalized corporate domain in registration payload, got %q", gotCorporateDomain)
+	}
+}
+
+func TestStatusAndRegisterUseLegacyStoredCorporateDomain(t *testing.T) {
+	var gotDomains []string
+	var gotCorporateDomain string
+	var gotAcceptPublicSignup bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hubs/register" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		gotCorporateDomain, _ = payload["corporate_email_domain"].(string)
+		if rawDomains, ok := payload["corporate_email_domains"].([]any); ok {
+			for _, item := range rawDomains {
+				gotDomains = append(gotDomains, item.(string))
+			}
+		}
+		gotAcceptPublicSignup, _ = payload["accept_public_signup"].(bool)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hub_id":"hub_legacy_domain","hub_secret":"secret_legacy_domain"}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+	cfg.Hub.Visibility = "shared"
+
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyAdminEmail, mustJSON(map[string]string{"value": "admin@example.com"}))
+	_ = settings.Set(context.Background(), systemKeyHubCorporateEmailDomain, mustJSON(map[string]string{"value": "@RAPIDAI.TECH"}))
+
+	svc := NewService(cfg, settings)
+	status, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if status.CorporateEmailDomain != "rapidai.tech" || len(status.CorporateEmailDomains) != 1 || status.CorporateEmailDomains[0] != "rapidai.tech" {
+		t.Fatalf("unexpected legacy domain status: %+v", status)
+	}
+	if status.AcceptPublicSignup {
+		t.Fatalf("expected legacy corporate domain to disable public signup, got %+v", status)
+	}
+
+	status, err = svc.Register(context.Background(), "admin@example.com")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if status == nil || !status.Registered {
+		t.Fatalf("unexpected registration status: %+v", status)
+	}
+	if gotCorporateDomain != "rapidai.tech" {
+		t.Fatalf("expected legacy corporate domain in registration payload, got %q", gotCorporateDomain)
+	}
+	if len(gotDomains) != 1 || gotDomains[0] != "rapidai.tech" {
+		t.Fatalf("expected legacy domain to populate corporate_email_domains, got %#v", gotDomains)
+	}
+	if gotAcceptPublicSignup {
+		t.Fatalf("expected legacy corporate domain to keep accept_public_signup false")
+	}
+}
+
+func TestRegisterUsesCorporateEmailDomainsAndPublicSignup(t *testing.T) {
+	var gotDomains []string
+	var gotAcceptPublicSignup bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hubs/register" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		for _, item := range payload["corporate_email_domains"].([]any) {
+			gotDomains = append(gotDomains, item.(string))
+		}
+		gotAcceptPublicSignup, _ = payload["accept_public_signup"].(bool)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hub_id":"hub_multi_domain","hub_secret":"secret_multi_domain"}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+	cfg.Hub.CorporateEmailDomains = []string{"@RAPIDAI.TECH", "subsidiary.example", "rapidai.tech"}
+
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyAdminEmail, mustJSON(map[string]string{"value": "admin@example.com"}))
+
+	svc := NewService(cfg, settings)
+	if _, err := svc.SetAcceptPublicSignup(context.Background(), true); err != nil {
+		t.Fatalf("SetAcceptPublicSignup() error = %v", err)
+	}
+
+	status, err := svc.Register(context.Background(), "admin@example.com")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if status == nil || !status.Registered {
+		t.Fatalf("unexpected registration status: %+v", status)
+	}
+	if len(gotDomains) != 2 || gotDomains[0] != "rapidai.tech" || gotDomains[1] != "subsidiary.example" {
+		t.Fatalf("expected normalized corporate domains, got %#v", gotDomains)
+	}
+	if !gotAcceptPublicSignup {
+		t.Fatalf("expected accept_public_signup to be true")
+	}
+	if status.CorporateEmailDomain != "rapidai.tech" || len(status.CorporateEmailDomains) != 2 {
+		t.Fatalf("unexpected status domains: %+v", status)
+	}
+}
+
 func TestRegisterFallsBackToSecondaryCenterNode(t *testing.T) {
 	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"temporary failure"}`, http.StatusInternalServerError)
@@ -548,5 +774,48 @@ func TestSendHeartbeatFallsBackWhenNodeNotReady(t *testing.T) {
 	}
 	if record.LastError != "" {
 		t.Fatalf("LastError = %q, want empty", record.LastError)
+	}
+}
+
+func TestRefreshStatusClearsPendingConfirmationWhenHubWasRemoved(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"code":"HUB_UNREGISTERED","message":"Hub is not registered"}`, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.Enabled = true
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+	err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		PendingConfirmation: true,
+		HubID:               "hub_pending_removed",
+		HubSecret:           "secret_pending_removed",
+		LastBaseURL:         server.URL,
+		LastError:           "waiting for confirmation",
+		LastRegisteredAt:    time.Now().Unix(),
+	}))
+	if err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	status, err := svc.RefreshStatus(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshStatus() error = %v", err)
+	}
+	if status.Registered || status.PendingConfirmation || status.Disabled {
+		t.Fatalf("expected pending registration to be cleared, got %+v", status)
+	}
+	if status.HubID != "" || status.ActiveBaseURL != "" {
+		t.Fatalf("expected hub credentials/base url to be cleared, got %+v", status)
+	}
+	if status.LastError != "hub registration was removed by Hub Center" {
+		t.Fatalf("unexpected LastError: %+v", status)
+	}
+	if status.LastRegisteredAt != 0 {
+		t.Fatalf("expected LastRegisteredAt to reset, got %+v", status)
 	}
 }

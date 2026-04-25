@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -86,10 +86,24 @@ function persistQueue(queue: BufferEntry[]): void {
 // ---------------------------------------------------------------------------
 
 export function useBufferQueue(): UseBufferQueueReturn {
-    const [queue, setQueue] = useState<BufferEntry[]>([]);
-    // Track whether the queue has been initialized (restored or first mutation)
-    // to avoid overwriting persisted data with an empty array on mount.
-    const initializedRef = { current: false };
+    // Restore persisted queue from localStorage on first mount.
+    const [queue, setQueue] = useState<BufferEntry[]>(() => {
+        try {
+            const raw = localStorage.getItem(BUFFER_QUEUE_STORAGE_KEY);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return [];
+            return parsed.filter(
+                (e: any) => e && typeof e.id === "string" && typeof e.text === "string",
+            ) as BufferEntry[];
+        } catch {
+            return [];
+        }
+    });
+    // Skip persisting on the very first render — the lazy initializer already
+    // loaded from localStorage, so writing it back would be a no-op.
+    // Subsequent queue mutations set initializedRef via their callbacks.
+    const initializedRef = useRef(false);
 
     const addEntry = useCallback((text: string, attachments: AttachmentInfo[]) => {
         // Reject whitespace-only text with no attachments
@@ -211,9 +225,14 @@ export function useBufferQueue(): UseBufferQueueReturn {
         }
     }, []);
 
-    // Persist queue to localStorage after every mutation (skip initial empty state)
+    // Persist queue to localStorage after every mutation.
+    // Skip the first run (mount) — the lazy initializer already loaded from
+    // localStorage, writing it back would be a no-op.
     useEffect(() => {
-        if (!initializedRef.current) return;
+        if (!initializedRef.current) {
+            initializedRef.current = true;
+            return;
+        }
         persistQueue(queue);
     }, [queue]);
 

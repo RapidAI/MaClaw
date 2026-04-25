@@ -15,6 +15,29 @@ const MaxAgentIterationsCap = 300
 // MinAgentIterations is the minimum allowed value for agent loops.
 const MinAgentIterations = 30
 
+// EffectiveMaxIterations returns the effective max iterations value.
+// This is the SINGLE SOURCE OF TRUTH for converting a configured value
+// to an effective value. All GetMaxIterations() implementations and
+// the RunLoop fallback should use this function.
+//
+// Rules:
+//   - configured <= 0: returns MaxAgentIterationsCap (300)
+//   - configured < MinAgentIterations: returns MinAgentIterations (30)
+//   - configured > MaxAgentIterationsCap: returns MaxAgentIterationsCap (300)
+//   - otherwise: returns configured
+func EffectiveMaxIterations(configured int) int {
+	if configured <= 0 {
+		return MaxAgentIterationsCap
+	}
+	if configured < MinAgentIterations {
+		return MinAgentIterations
+	}
+	if configured > MaxAgentIterationsCap {
+		return MaxAgentIterationsCap
+	}
+	return configured
+}
+
 // ConfigSection describes a group of related configuration keys.
 type ConfigSection struct {
 	Name        string            `json:"name"`
@@ -683,16 +706,8 @@ func (m *Manager) applyMaclawLLMChange(cfg *corelib.AppConfig, key, value string
 		if err != nil {
 			return "", fmt.Errorf("invalid integer value for maclaw_agent_max_iterations: %q", value)
 		}
-		if n <= 0 {
-			n = MaxAgentIterationsCap // default 300
-		}
-		if n < MinAgentIterations {
-			n = MinAgentIterations
-		}
-		if n > MaxAgentIterationsCap {
-			n = MaxAgentIterationsCap
-		}
-		cfg.MaclawAgentMaxIterations = n // 30-300
+		// Use the single source of truth for value normalization.
+		cfg.MaclawAgentMaxIterations = EffectiveMaxIterations(n)
 		return old, nil
 	}
 	return "", fmt.Errorf("unsupported maclaw_llm key %q", key)
@@ -938,7 +953,7 @@ func (m *Manager) initSchema() {
 				{Key: "maclaw_llm_url", Description: "Maclaw LLM 服务地址", Type: "string"},
 				{Key: "maclaw_llm_key", Description: "Maclaw LLM API 密钥", Type: "string"},
 				{Key: "maclaw_llm_model", Description: "Maclaw LLM 模型名称", Type: "string"},
-				{Key: "maclaw_llm_context_length", Description: "LLM 上下文长度 (tokens)，0=默认128000", Type: "int", Default: "0"},
+				{Key: "maclaw_llm_context_length", Description: "LLM 上下文长度 (tokens)，0=默认110000", Type: "int", Default: "0"},
 				{Key: "maclaw_llm_current_provider", Description: "当前 LLM 提供商", Type: "string"},
 				{Key: "maclaw_agent_max_iterations", Description: "Agent 最大推理轮次（30-300，默认300）", Type: "int", Default: "300"},
 				{Key: "llm_trajectory_logging", Description: "记录 LLM 交互 trajectory（用于模型训练）", Type: "bool", Default: "false"},

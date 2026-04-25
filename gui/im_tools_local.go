@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -154,8 +155,17 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 	}
 
 	maxLines := readFileMaxLines
+	explicitLines := false
 	if n, ok := args["lines"].(float64); ok && n > 0 {
 		maxLines = int(n)
+		explicitLines = true
+	}
+
+	startLine := 1
+	explicitStart := false
+	if n, ok := args["start_line"].(float64); ok && n > 1 {
+		startLine = int(n)
+		explicitStart = true
 	}
 
 	data, err := os.ReadFile(absPath)
@@ -167,11 +177,10 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 	totalLines := len(lines)
 
 	// offset 参数：从文件末尾倒数 N 行开始读取（类似 tail -n）
-	// 与 lines 互斥，优先使用 offset
+	// 与 lines/start_line 互斥，优先使用 offset
 	if offset, ok := args["offset"].(float64); ok && offset > 0 {
 		tailN := int(offset)
 		if tailN >= totalLines {
-			// 文件行数不足，返回全部内容
 			return string(data)
 		}
 		startIdx := totalLines - tailN
@@ -179,9 +188,52 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 		return fmt.Sprintf("... (跳过前 %d 行，显示最后 %d 行，共 %d 行)\n%s", startIdx, tailN, totalLines, tailContent)
 	}
 
-	if totalLines > maxLines {
-		lines = lines[:maxLines]
-		return strings.Join(lines, "") + fmt.Sprintf("\n... (已截断，共 %d 行，显示前 %d 行)", totalLines, maxLines)
+	// 自适应策略：LLM 未指定 start_line/lines 时，根据文件大小自动决定返回内容
+	// 小文件全量返回；大文件返回结构摘要+预览，LLM 再按需精准读取
+	if !explicitLines && !explicitStart && totalLines > readFileMaxLines {
+		return buildAdaptiveReadResult(lines, totalLines, absPath)
+	}
+
+	// 精准读取模式：LLM 显式指定了 start_line 或 lines
+	startIdx := startLine - 1
+	if startIdx >= totalLines {
+		return fmt.Sprintf("start_line=%d 超出文件总行数 %d", startLine, totalLines)
+	}
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	remaining := lines[startIdx:]
+
+	if len(remaining) > maxLines {
+		chunk := remaining[:maxLines]
+		endLine := startLine + maxLines - 1
+		nextStart := endLine + 1
+		// Add line numbers when using precise read mode (start_line specified).
+		// This helps the LLM use edit_lines with correct line numbers.
+		if explicitStart {
+			var numbered strings.Builder
+			for i, line := range chunk {
+				numbered.WriteString(fmt.Sprintf("%4d | %s", startLine+i, line))
+			}
+			return numbered.String() + fmt.Sprintf(
+				"\n... (共 %d 行，显示第 %d-%d 行。下一段: start_line=%d)",
+				totalLines, startLine, endLine, nextStart)
+		}
+		return strings.Join(chunk, "") + fmt.Sprintf(
+			"\n... (共 %d 行，显示第 %d-%d 行。下一段: start_line=%d)",
+			totalLines, startLine, endLine, nextStart)
+	}
+
+	if startIdx > 0 {
+		// Add line numbers for precise reads.
+		if explicitStart {
+			var numbered strings.Builder
+			for i, line := range remaining {
+				numbered.WriteString(fmt.Sprintf("%4d | %s", startLine+i, line))
+			}
+			return fmt.Sprintf("(第 %d-%d 行，共 %d 行)\n%s", startLine, totalLines, totalLines, numbered.String())
+		}
+		return fmt.Sprintf("(第 %d-%d 行，共 %d 行)\n%s", startLine, totalLines, totalLines, strings.Join(remaining, ""))
 	}
 	return string(data)
 }
@@ -241,6 +293,85 @@ func (h *IMMessageHandler) toolEditFile(args map[string]interface{}) string {
 		return fmt.Sprintf("编辑失败: %s", err.Error())
 	}
 	return fmt.Sprintf("已编辑 %s（替换 %d 处，当前 %d 字节）", res.Path, res.Count, res.Size)
+}
+
+func (h *IMMessageHandler) toolEditLines(args map[string]interface{}) string {
+	p, _ := args["path"].(string)
+	if p == "" {
+		return "缺少 path 参数"
+	}
+	absPath, err := resolveFileToolPath(p)
+	if err != nil {
+		return err.Error()
+	}
+	opStr, _ := args["operation"].(string)
+	if opStr == "" {
+		return "缺少 operation 参数（replace/insert/delete）"
+	}
+	op := coretool.EditLineOperation(opStr)
+
+	startLine := 0
+	if v, ok := args["start_line"].(float64); ok {
+		startLine = int(v)
+	} else if v, ok := args["start_line"].(int); ok {
+		startLine = v
+	}
+
+	endLine := startLine
+	if v, ok := args["end_line"].(float64); ok {
+		endLine = int(v)
+	} else if v, ok := args["end_line"].(int); ok {
+		endLine = v
+	}
+
+	content, _ := args["content"].(string)
+
+	res, err := coretool.EditFileByLine(absPath, op, startLine, endLine, content)
+	if err != nil {
+		return fmt.Sprintf("行编辑失败: %s", err.Error())
+	}
+
+	// Return a few lines around the edit point so the LLM can verify.
+	contextPreview := buildEditLineContext(absPath, startLine, res.TotalLines)
+
+	return fmt.Sprintf("已编辑 %s（%s %d 行，当前共 %d 行，%d 字节）\n%s",
+		res.Path, opStr, res.LinesChanged, res.TotalLines, res.Size, contextPreview)
+}
+
+// buildEditLineContext reads a few lines around the edit point from the file
+// and formats them with line numbers, so the LLM can verify the edit.
+func buildEditLineContext(path string, editLine, totalLines int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	// Show 3 lines before and after the edit point.
+	start := editLine - 3
+	if start < 1 {
+		start = 1
+	}
+	end := editLine + 3
+	if end > len(lines) {
+		end = len(lines)
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("编辑区域预览（第 %d-%d 行）:\n", start, end))
+	for i := start; i <= end && i <= len(lines); i++ {
+		prefix := "  "
+		if i == editLine {
+			prefix = "→ "
+		}
+		b.WriteString(fmt.Sprintf("%s%4d | %s\n", prefix, i, lines[i-1]))
+	}
+	return b.String()
+}
+
+// buildAdaptiveReadResult 根据文件类型和大小自动决定返回内容。
+// 小文件（≤200行）由调用方全量返回，此函数只处理大文件（>200行）。
+// 策略：返回结构摘要（标题/函数签名/关键行）+ 预览，LLM 再用 start_line 精准读取。
+func buildAdaptiveReadResult(lines []string, totalLines int, absPath string) string {
+	return agent.BuildAdaptiveReadResult(lines, totalLines, absPath)
 }
 
 func (h *IMMessageHandler) toolListDirectory(args map[string]interface{}) string {

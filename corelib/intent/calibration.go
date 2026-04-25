@@ -210,7 +210,7 @@ func evalCase(
 		effectiveAlpha = 1.0
 	}
 
-	candidates := MergeAndScore(embTop, treeTop, effectiveAlpha)
+	candidates := MergeAndScore(embTop, treeTop, effectiveAlpha, nil)
 	result := Decide(candidates, cfg)
 
 	got := LabelUnknown

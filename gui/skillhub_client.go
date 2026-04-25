@@ -1,13 +1,13 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/RapidAI/CodeClaw/corelib"
+
 	"net/http"
 	"net/url"
 	"os"
@@ -67,13 +67,13 @@ func NewSkillHubClient(app *App) *SkillHubClient {
 	}
 }
 
-// hubBaseURL returns the hubcenter's API base URL from app config.
-func (c *SkillHubClient) hubBaseURL() string {
-	cfg, err := c.app.LoadConfig()
+func (c *SkillHubClient) selectBaseURL(ctx context.Context) (string, []string, error) {
+	base, discovered, err := c.app.resolveHubCenterBaseURLCached(ctx, c.client)
 	if err != nil {
-		return ""
+		return "", nil, err
 	}
-	return cfg.SkillHubBaseURL(defaultRemoteHubCenterURL)
+	c.app.rememberHubCenterSelection(base, discovered)
+	return base, discovered, nil
 }
 
 // hubSkillSearchResult mirrors the hub's SkillSearchResult JSON.
@@ -100,25 +100,25 @@ type hubSkillItem struct {
 // hubSkillFull mirrors the hub's HubSkillFull JSON for download.
 type hubSkillFull struct {
 	hubSkillItem
-	Triggers     []string           `json:"triggers"`
-	Steps        []hubSkillStep     `json:"steps"`
-	Manifest     hubSkillManifest   `json:"manifest,omitempty"`
-	Files        map[string]string  `json:"files,omitempty"`          // path → base64 content
-	AgentSkillMD string             `json:"agent_skill_md,omitempty"` // SKILL.md content
+	Triggers     []string          `json:"triggers"`
+	Steps        []hubSkillStep    `json:"steps"`
+	Manifest     hubSkillManifest  `json:"manifest,omitempty"`
+	Files        map[string]string `json:"files,omitempty"`          // path -> base64 content
+	AgentSkillMD string            `json:"agent_skill_md,omitempty"` // SKILL.md content
 }
 
 // hubSkillManifest mirrors the hub's SkillManifest.
 type hubSkillManifest struct {
-	MinMaclawVersion string              `json:"min_maclaw_version,omitempty"`
-	RequiredMCP      []string            `json:"required_mcp,omitempty"`
-	Permissions      []string            `json:"permissions,omitempty"`
+	MinMaclawVersion string               `json:"min_maclaw_version,omitempty"`
+	RequiredMCP      []string             `json:"required_mcp,omitempty"`
+	Permissions      []string             `json:"permissions,omitempty"`
 	Dependencies     []hubSkillDependency `json:"dependencies,omitempty"`
-	Compatibility    string              `json:"compatibility,omitempty"`
+	Compatibility    string               `json:"compatibility,omitempty"`
 }
 
 // hubSkillDependency mirrors the hub's SkillDependency.
 type hubSkillDependency struct {
-	Type    string `json:"type"`              // "pip", "npm", "brew", "apt", "binary"
+	Type    string `json:"type"` // "pip", "npm", "brew", "apt", "binary"
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`
 }
@@ -163,15 +163,11 @@ func (c *SkillHubClient) Search(ctx context.Context, query string) ([]HubSkillMe
 	}
 	c.mu.RUnlock()
 
-	base := c.hubBaseURL()
-	if base == "" {
-		return nil, fmt.Errorf("hub URL not configured")
-	}
-
-	endpoint := base + "/api/v1/skills/search?q=" + url.QueryEscape(query) + "&page=1"
+	path := "/api/v1/skills/search?q=" + url.QueryEscape(query) + "&page=1"
 	var result hubSkillSearchResult
-	if err := c.getJSON(ctx, endpoint, &result); err != nil {
-		return nil, fmt.Errorf("搜索 SkillHub 失败: %v", err)
+	base, _, err := c.getJSON(ctx, path, &result)
+	if err != nil {
+		return nil, fmt.Errorf("search SkillHub failed: %v", err)
 	}
 
 	skills := make([]HubSkillMeta, 0, len(result.Skills))
@@ -199,15 +195,11 @@ var allowedFileExts = map[string]bool{
 // ~/.maclaw/data/skills/<name>/, installs declared dependencies, and converts
 // the skill to an NLSkillEntry.
 func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL string) (*corelib.NLSkillEntry, error) {
-	base := c.hubBaseURL()
-	if base == "" {
-		return nil, fmt.Errorf("hub URL not configured")
-	}
-
-	endpoint := base + "/api/v1/skills/" + url.PathEscape(skillID) + "/download"
+	path := "/api/v1/skills/" + url.PathEscape(skillID) + "/download"
 	var full hubSkillFull
-	if err := c.getJSON(ctx, endpoint, &full); err != nil {
-		return nil, fmt.Errorf("下载 Skill 失败: %v", err)
+	base, _, err := c.getJSON(ctx, path, &full)
+	if err != nil {
+		return nil, fmt.Errorf("download skill failed: %v", err)
 	}
 
 	steps := make([]corelib.NLSkillStep, 0, len(full.Steps))
@@ -231,7 +223,6 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 	if len(steps) == 0 {
 		steps = craftToolStepsFromBundledSkillFiles(full.Files, installSkillDir)
 	}
-
 
 	// Extract bundled files to ~/.maclaw/data/skills/<name>/
 	if len(full.Files) > 0 {
@@ -333,7 +324,7 @@ func (c *SkillHubClient) extractFiles(skillName string, files map[string]string)
 			return fmt.Errorf("total file size exceeds 1MB limit")
 		}
 
-		// Sanitize path — prevent directory traversal and absolute paths.
+		// Sanitize path to prevent directory traversal and absolute paths.
 		clean := filepath.ToSlash(filepath.Clean(relPath))
 		if strings.Contains(clean, "..") || filepath.IsAbs(relPath) || strings.HasPrefix(clean, "/") {
 			continue
@@ -414,14 +405,10 @@ func (c *SkillHubClient) installDependencies(deps []hubSkillDependency) error {
 
 // CheckUpdate checks whether a Skill has a newer version available on the hub.
 func (c *SkillHubClient) CheckUpdate(ctx context.Context, skillID string, currentVersion string) (*HubSkillMeta, error) {
-	base := c.hubBaseURL()
-	if base == "" {
-		return nil, nil
-	}
-
-	endpoint := base + "/api/v1/skills/" + url.PathEscape(skillID)
+	path := "/api/v1/skills/" + url.PathEscape(skillID)
 	var item hubSkillItem
-	if err := c.getJSON(ctx, endpoint, &item); err != nil {
+	base, _, err := c.getJSON(ctx, path, &item)
+	if err != nil {
 		return nil, nil
 	}
 
@@ -435,9 +422,9 @@ func (c *SkillHubClient) CheckUpdate(ctx context.Context, skillID string, curren
 
 // Rate submits a rating for a skill to the hub.
 func (c *SkillHubClient) Rate(ctx context.Context, skillID string, maclawID string, score int) error {
-	base := c.hubBaseURL()
-	if base == "" {
-		return fmt.Errorf("hub URL not configured")
+	base, discovered, err := c.selectBaseURL(ctx)
+	if err != nil {
+		return err
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
@@ -462,14 +449,15 @@ func (c *SkillHubClient) Rate(ctx context.Context, skillID string, maclawID stri
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d rating skill %s", resp.StatusCode, skillID)
 	}
+	c.app.rememberHubCenterSelection(base, discovered)
 	return nil
 }
 
 // Publish publishes a local skill to the hub's SkillHub.
 func (c *SkillHubClient) Publish(ctx context.Context, full hubSkillFull) error {
-	base := c.hubBaseURL()
-	if base == "" {
-		return fmt.Errorf("hub URL not configured")
+	base, discovered, err := c.selectBaseURL(ctx)
+	if err != nil {
+		return err
 	}
 
 	body, err := json.Marshal(full)
@@ -494,19 +482,15 @@ func (c *SkillHubClient) Publish(ctx context.Context, full hubSkillFull) error {
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d publishing skill", resp.StatusCode)
 	}
+	c.app.rememberHubCenterSelection(base, discovered)
 	return nil
 }
 
 // RefreshRecommendations fetches popular skills and caches them.
 func (c *SkillHubClient) RefreshRecommendations(ctx context.Context) error {
-	base := c.hubBaseURL()
-	if base == "" {
-		return nil
-	}
-
-	endpoint := base + "/api/v1/skills/popular"
 	var items []hubSkillItem
-	if err := c.getJSON(ctx, endpoint, &items); err != nil {
+	base, _, err := c.getJSON(ctx, "/api/v1/skills/popular", &items)
+	if err != nil {
 		return err
 	}
 
@@ -534,23 +518,8 @@ func (c *SkillHubClient) GetRecommendations() []HubSkillMeta {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func (c *SkillHubClient) getJSON(ctx context.Context, endpoint string, dest interface{}) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", "MaClaw/1.0")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, endpoint)
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, maxDownloadSize)).Decode(dest)
+func (c *SkillHubClient) getJSON(ctx context.Context, path string, dest interface{}) (string, []string, error) {
+	return c.app.getHubCenterJSON(ctx, c.client, path, maxDownloadSize, dest)
 }
 
 func (c *SkillHubClient) cacheResults(query string, results []HubSkillMeta) {

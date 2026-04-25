@@ -3,7 +3,9 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
@@ -27,10 +29,68 @@ type BlockEmailRequest struct {
 }
 
 type CenterConfigRequest struct {
-	BaseURL        string `json:"base_url"`
-	PublicBaseURL  string `json:"public_base_url"`
-	Visibility     string `json:"visibility"`
-	EnrollmentMode string `json:"enrollment_mode"`
+	BaseURL               string   `json:"base_url"`
+	PublicBaseURL         string   `json:"public_base_url"`
+	Visibility            string   `json:"visibility"`
+	EnrollmentMode        string   `json:"enrollment_mode"`
+	CorporateEmailDomain  *string  `json:"corporate_email_domain,omitempty"`
+	CorporateEmailDomains []string `json:"corporate_email_domains,omitempty"`
+	AcceptPublicSignup    *bool    `json:"accept_public_signup,omitempty"`
+}
+
+type FailureLogView struct {
+	ID        string         `json:"id"`
+	Category  string         `json:"category"`
+	EventCode string         `json:"event_code"`
+	Message   string         `json:"message"`
+	EntityID  string         `json:"entity_id"`
+	Email     string         `json:"email"`
+	ClientIP  string         `json:"client_ip"`
+	Details   map[string]any `json:"details"`
+	CreatedAt string         `json:"created_at"`
+}
+
+func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if repo == nil {
+			writeError(w, http.StatusNotImplemented, "FAILURE_LOGS_UNAVAILABLE", "Failure logs are unavailable")
+			return
+		}
+		limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+		offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
+		items, total, err := repo.List(r.Context(), store.FailureEventLogFilter{
+			Keyword:  strings.TrimSpace(r.URL.Query().Get("keyword")),
+			Category: strings.TrimSpace(r.URL.Query().Get("category")),
+			Offset:   offset,
+			Limit:    limit,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LIST_FAILURE_LOGS_FAILED", err.Error())
+			return
+		}
+		logs := make([]FailureLogView, 0, len(items))
+		for _, item := range items {
+			if item == nil {
+				continue
+			}
+			details := map[string]any{}
+			if strings.TrimSpace(item.DetailsJSON) != "" {
+				_ = json.Unmarshal([]byte(item.DetailsJSON), &details)
+			}
+			logs = append(logs, FailureLogView{
+				ID:        item.ID,
+				Category:  item.Category,
+				EventCode: item.EventCode,
+				Message:   item.Message,
+				EntityID:  item.EntityID,
+				Email:     item.Email,
+				ClientIP:  item.ClientIP,
+				Details:   details,
+				CreatedAt: item.CreatedAt.Format(time.RFC3339),
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"logs": logs, "total": total, "offset": offset, "limit": limit})
+	}
 }
 
 type BoundUserView struct {
@@ -215,9 +275,14 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 
 func GetCenterStatusHandler(centerSvc *center.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		status, err := centerSvc.Status(r.Context())
+		status, err := centerSvc.RefreshStatus(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CENTER_STATUS_FAILED", err.Error())
+			return
+		}
+		status, err = centerSvc.RefreshStatus(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CENTER_CONFIG_FAILED", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, status)
@@ -231,8 +296,8 @@ func UpdateCenterConfigHandler(centerSvc *center.Service, identity *auth.Identit
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if req.BaseURL == "" && req.PublicBaseURL == "" && req.Visibility == "" && req.EnrollmentMode == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Base URL, public base URL, visibility, or enrollment mode is required")
+		if req.BaseURL == "" && req.PublicBaseURL == "" && req.Visibility == "" && req.EnrollmentMode == "" && req.CorporateEmailDomain == nil && len(req.CorporateEmailDomains) == 0 && req.AcceptPublicSignup == nil {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Base URL, public base URL, visibility, enrollment mode, corporate email domains, or public signup setting is required")
 			return
 		}
 		var (
@@ -274,6 +339,32 @@ func UpdateCenterConfigHandler(centerSvc *center.Service, identity *auth.Identit
 				writeError(w, http.StatusInternalServerError, "CENTER_CONFIG_FAILED", err.Error())
 				return
 			}
+		}
+		if req.CorporateEmailDomain != nil {
+			status, err = centerSvc.SetCorporateEmailDomain(r.Context(), *req.CorporateEmailDomain)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "CENTER_CONFIG_FAILED", err.Error())
+				return
+			}
+		}
+		if len(req.CorporateEmailDomains) > 0 {
+			status, err = centerSvc.SetCorporateEmailDomains(r.Context(), req.CorporateEmailDomains)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "CENTER_CONFIG_FAILED", err.Error())
+				return
+			}
+		}
+		if req.AcceptPublicSignup != nil {
+			status, err = centerSvc.SetAcceptPublicSignup(r.Context(), *req.AcceptPublicSignup)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "CENTER_CONFIG_FAILED", err.Error())
+				return
+			}
+		}
+		status, err = centerSvc.RefreshStatus(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CENTER_CONFIG_FAILED", err.Error())
+			return
 		}
 		writeJSON(w, http.StatusOK, status)
 	}

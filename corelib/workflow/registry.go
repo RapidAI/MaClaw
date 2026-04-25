@@ -205,6 +205,36 @@ func (r *WorkflowRegistry) BestTemplateScore(text string) float64 {
 	return best
 }
 
+// BestTemplateType returns the WorkflowType of the template with the highest
+// BM25 score for the given text. Returns empty string if no templates match
+// or the best score is below the threshold (2.0).
+func (r *WorkflowRegistry) BestTemplateType(text string) WorkflowType {
+	r.mu.Lock()
+	if r.bm25Index == nil || r.bm25Dirty {
+		r.rebuildBM25Locked()
+	}
+	idx := r.bm25Index
+	r.mu.Unlock()
+
+	if idx == nil {
+		return ""
+	}
+
+	scores := idx.Score(text)
+	bestScore := 0.0
+	bestID := ""
+	for id, s := range scores {
+		if s > bestScore {
+			bestScore = s
+			bestID = id
+		}
+	}
+	if bestID == "" || bestScore < 2.0 {
+		return ""
+	}
+	return WorkflowType(bestID)
+}
+
 // rebuildBM25Locked rebuilds the BM25 index from all registered templates.
 // Each template becomes one document with ID=Type and Text=Name+Description+Keywords.
 // Must be called with r.mu held for writing.

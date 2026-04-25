@@ -52,6 +52,8 @@ type NLSkillDefinition struct {
 	Publisher      string        `json:"publisher,omitempty"`      // Plugin namespace publisher
 	Mode           string        `json:"mode,omitempty"`           // "sequential" (default) | "interactive" | "api_workflow"
 	SkillDir       string        `json:"-"`                        // skill directory path (internal use, not serialized to frontend)
+	Params         []corelib.NLSkillParam `json:"params,omitempty"`  // parameter schema (explicit or synthesized)
+	RequiredArgs   []string      `json:"required_args,omitempty"`   // required template variables
 	UsageCount     int           `json:"usage_count"`
 	SuccessCount   int           `json:"success_count"`
 	FailureCount   int           `json:"failure_count"`
@@ -460,6 +462,8 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			Publisher:      s.Publisher,
 			Mode:           s.Mode,
 			SkillDir:       s.SkillDir,
+			Params:         s.Params,
+			RequiredArgs:   s.RequiredArgs,
 			UsageCount:     s.UsageCount,
 			SuccessCount:   s.SuccessCount,
 			FailureCount:   s.FailureCount,
@@ -1476,7 +1480,11 @@ func (a *App) DeleteNLSkill(name string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	return a.skillExecutor.Delete(name)
+	err := a.skillExecutor.Delete(name)
+	if err == nil && a.hubUpdCache != nil {
+		a.hubUpdCache.invalidate()
+	}
+	return err
 }
 
 // ImportNLSkillZip opens a file dialog to select a zip file, validates it as a

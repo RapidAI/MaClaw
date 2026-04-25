@@ -83,8 +83,10 @@ func TestHandleIMMessageWithProgressAndStream_PresentationTaskSkipsCodingConfirm
 	if got := h.confirmationStore.get("u1"); got != nil {
 		t.Fatalf("expected no pending confirmation for presentation task, got %+v", got)
 	}
-	if got := classifyTaskIntent("生成宣传PPT"); got.Intent != intentNonCoding {
-		t.Fatalf("expected presentation task to classify as non-coding, got %+v", got)
+	// Without UIC, classifyTaskIntent returns ambiguous (conservative).
+	// With UIC, it would return the correct semantic classification.
+	if got := classifyTaskIntent("生成宣传PPT"); got.Intent != intentAmbiguous {
+		t.Fatalf("expected presentation task to classify as ambiguous without UIC, got %+v", got)
 	}
 }
 

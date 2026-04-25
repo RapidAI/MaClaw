@@ -118,6 +118,20 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL
 		);`,
 
+		`CREATE TABLE IF NOT EXISTS failure_event_logs (
+			id TEXT PRIMARY KEY,
+			category TEXT NOT NULL,
+			event_code TEXT NOT NULL,
+			message TEXT NOT NULL,
+			entity_id TEXT NOT NULL DEFAULT '',
+			email TEXT NOT NULL DEFAULT '',
+			client_ip TEXT NOT NULL DEFAULT '',
+			details_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_created_at ON failure_event_logs(created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_category_created_at ON failure_event_logs(category, created_at DESC);`,
+
 		`CREATE TABLE IF NOT EXISTS invitation_codes (
 			id TEXT PRIMARY KEY,
 			code TEXT NOT NULL UNIQUE,

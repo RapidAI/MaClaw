@@ -20,17 +20,21 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
+	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
 )
 
 const (
-	systemKeyCenterBaseURL          = "center_base_url"
-	systemKeyCenterRegistration     = "center_registration"
-	systemKeyAdminEmail             = "admin_email"
-	systemKeyInstallationID         = "hub_installation_id"
-	systemKeyHubVisibility          = "hub_visibility"
-	systemKeyHubEnrollmentMode      = "hub_enrollment_mode"
-	systemKeyPublicBaseURL          = "server_public_base_url"
-	systemKeyInvitationCodeRequired = "invitation_code_required"
+	systemKeyCenterBaseURL            = "center_base_url"
+	systemKeyCenterRegistration       = "center_registration"
+	systemKeyAdminEmail               = "admin_email"
+	systemKeyInstallationID           = "hub_installation_id"
+	systemKeyHubVisibility            = "hub_visibility"
+	systemKeyHubEnrollmentMode        = "hub_enrollment_mode"
+	systemKeyHubCorporateEmailDomain  = "hub_corporate_email_domain"
+	systemKeyHubCorporateEmailDomains = "hub_corporate_email_domains"
+	systemKeyHubAcceptPublicSignup    = "hub_accept_public_signup"
+	systemKeyPublicBaseURL            = "server_public_base_url"
+	systemKeyInvitationCodeRequired   = "invitation_code_required"
 )
 
 type SystemSettingsRepository interface {
@@ -39,25 +43,28 @@ type SystemSettingsRepository interface {
 }
 
 type RegistrationState struct {
-	Enabled             bool     `json:"enabled"`
-	BaseURL             string   `json:"base_url"`
-	BaseURLs            []string `json:"base_urls"`
-	PublicBaseURL       string   `json:"public_base_url"`
-	Visibility          string   `json:"visibility"`
-	EnrollmentMode      string   `json:"enrollment_mode"`
-	AdvertisedBaseURL   string   `json:"advertised_base_url,omitempty"`
-	Host                string   `json:"host,omitempty"`
-	Port                int      `json:"port,omitempty"`
-	RegisterOnStartup   bool     `json:"register_on_startup"`
-	AdminEmailPresent   bool     `json:"admin_email_present"`
-	Registered          bool     `json:"registered"`
-	PendingConfirmation bool     `json:"pending_confirmation"`
-	Disabled            bool     `json:"disabled"`
-	HubID               string   `json:"hub_id,omitempty"`
-	DisabledReason      string   `json:"disabled_reason,omitempty"`
-	LastError           string   `json:"last_error,omitempty"`
-	ActiveBaseURL       string   `json:"active_base_url,omitempty"`
-	LastRegisteredAt    int64    `json:"last_registered_at,omitempty"`
+	Enabled               bool     `json:"enabled"`
+	BaseURL               string   `json:"base_url"`
+	BaseURLs              []string `json:"base_urls"`
+	PublicBaseURL         string   `json:"public_base_url"`
+	Visibility            string   `json:"visibility"`
+	EnrollmentMode        string   `json:"enrollment_mode"`
+	CorporateEmailDomain  string   `json:"corporate_email_domain"`
+	CorporateEmailDomains []string `json:"corporate_email_domains,omitempty"`
+	AcceptPublicSignup    bool     `json:"accept_public_signup"`
+	AdvertisedBaseURL     string   `json:"advertised_base_url,omitempty"`
+	Host                  string   `json:"host,omitempty"`
+	Port                  int      `json:"port,omitempty"`
+	RegisterOnStartup     bool     `json:"register_on_startup"`
+	AdminEmailPresent     bool     `json:"admin_email_present"`
+	Registered            bool     `json:"registered"`
+	PendingConfirmation   bool     `json:"pending_confirmation"`
+	Disabled              bool     `json:"disabled"`
+	HubID                 string   `json:"hub_id,omitempty"`
+	DisabledReason        string   `json:"disabled_reason,omitempty"`
+	LastError             string   `json:"last_error,omitempty"`
+	ActiveBaseURL         string   `json:"active_base_url,omitempty"`
+	LastRegisteredAt      int64    `json:"last_registered_at,omitempty"`
 }
 
 type registrationRecord struct {
@@ -84,16 +91,19 @@ type centerErrorPayload struct {
 }
 
 type registerHubRequest struct {
-	InstallationID string         `json:"installation_id"`
-	OwnerEmail     string         `json:"owner_email"`
-	Name           string         `json:"name"`
-	Description    string         `json:"description"`
-	BaseURL        string         `json:"base_url"`
-	Host           string         `json:"host"`
-	Port           int            `json:"port"`
-	Visibility     string         `json:"visibility"`
-	EnrollmentMode string         `json:"enrollment_mode"`
-	Capabilities   map[string]any `json:"capabilities"`
+	InstallationID        string         `json:"installation_id"`
+	OwnerEmail            string         `json:"owner_email"`
+	Name                  string         `json:"name"`
+	Description           string         `json:"description"`
+	BaseURL               string         `json:"base_url"`
+	Host                  string         `json:"host"`
+	Port                  int            `json:"port"`
+	Visibility            string         `json:"visibility"`
+	EnrollmentMode        string         `json:"enrollment_mode"`
+	CorporateEmailDomain  string         `json:"corporate_email_domain,omitempty"`
+	CorporateEmailDomains []string       `json:"corporate_email_domains,omitempty"`
+	AcceptPublicSignup    bool           `json:"accept_public_signup"`
+	Capabilities          map[string]any `json:"capabilities"`
 }
 
 type registerHubResponse struct {
@@ -101,6 +111,12 @@ type registerHubResponse struct {
 	HubSecret           string `json:"hub_secret"`
 	PendingConfirmation bool   `json:"pending_confirmation"`
 	Message             string `json:"message"`
+}
+
+type syncUserLinkRequest struct {
+	HubSecret string `json:"hub_secret"`
+	Email     string `json:"email"`
+	IsDefault bool   `json:"is_default"`
 }
 
 type Service struct {
@@ -111,6 +127,7 @@ type Service struct {
 	mu               sync.Mutex
 	heartbeatStarted bool
 	heartbeatCancel  context.CancelFunc
+	recorder         *diagnostics.FailureEventRecorder
 }
 
 func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service {
@@ -121,6 +138,35 @@ func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service 
 			Timeout: 15 * time.Second,
 		},
 	}
+}
+
+func (s *Service) SetFailureEventRecorder(recorder *diagnostics.FailureEventRecorder) {
+	s.recorder = recorder
+}
+
+func (s *Service) recordFailure(ctx context.Context, category, eventCode, message, entityID, email string, details map[string]any) {
+	if s == nil || s.recorder == nil {
+		return
+	}
+	s.recorder.Record(ctx, diagnostics.FailureEventInput{
+		Category:  category,
+		EventCode: eventCode,
+		Message:   message,
+		EntityID:  entityID,
+		Email:     email,
+		Details:   details,
+	})
+}
+
+func (s *Service) RefreshStatus(ctx context.Context) (*RegistrationState, error) {
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if (record.Registered || record.PendingConfirmation || record.Disabled) && record.HubID != "" && record.HubSecret != "" {
+		_ = s.sendHeartbeat(ctx)
+	}
+	return s.Status(ctx)
 }
 
 func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
@@ -149,6 +195,18 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 	if err != nil {
 		return nil, err
 	}
+	corporateEmailDomain, err := s.corporateEmailDomain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	corporateEmailDomains, err := s.corporateEmailDomains(ctx)
+	if err != nil {
+		return nil, err
+	}
+	acceptPublicSignup, err := s.acceptPublicSignup(ctx)
+	if err != nil {
+		return nil, err
+	}
 	adminEmail, err := s.adminEmail(ctx)
 	if err != nil {
 		return nil, err
@@ -162,25 +220,28 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 	}
 
 	return &RegistrationState{
-		Enabled:             s.cfg.Center.Enabled,
-		BaseURL:             baseURL,
-		BaseURLs:            baseURLs,
-		PublicBaseURL:       publicBaseURL,
-		Visibility:          visibility,
-		EnrollmentMode:      enrollmentMode,
-		AdvertisedBaseURL:   advertisedBaseURL,
-		Host:                advertisedHost,
-		Port:                advertisedPort,
-		RegisterOnStartup:   s.cfg.Center.RegisterOnStartup,
-		AdminEmailPresent:   adminEmail != "",
-		Registered:          record.Registered,
-		PendingConfirmation: record.PendingConfirmation,
-		Disabled:            record.Disabled,
-		HubID:               record.HubID,
-		DisabledReason:      record.DisabledReason,
-		LastError:           record.LastError,
-		ActiveBaseURL:       record.LastBaseURL,
-		LastRegisteredAt:    record.LastRegisteredAt,
+		Enabled:               s.cfg.Center.Enabled,
+		BaseURL:               baseURL,
+		BaseURLs:              baseURLs,
+		PublicBaseURL:         publicBaseURL,
+		Visibility:            visibility,
+		EnrollmentMode:        enrollmentMode,
+		CorporateEmailDomain:  corporateEmailDomain,
+		CorporateEmailDomains: corporateEmailDomains,
+		AcceptPublicSignup:    acceptPublicSignup,
+		AdvertisedBaseURL:     advertisedBaseURL,
+		Host:                  advertisedHost,
+		Port:                  advertisedPort,
+		RegisterOnStartup:     s.cfg.Center.RegisterOnStartup,
+		AdminEmailPresent:     adminEmail != "",
+		Registered:            record.Registered,
+		PendingConfirmation:   record.PendingConfirmation,
+		Disabled:              record.Disabled,
+		HubID:                 record.HubID,
+		DisabledReason:        record.DisabledReason,
+		LastError:             record.LastError,
+		ActiveBaseURL:         record.LastBaseURL,
+		LastRegisteredAt:      record.LastRegisteredAt,
 	}, nil
 }
 func (s *Service) SetBaseURL(ctx context.Context, baseURL string) (*RegistrationState, error) {
@@ -242,6 +303,39 @@ func (s *Service) SetEnrollmentMode(ctx context.Context, mode string) (*Registra
 	return s.Status(ctx)
 }
 
+func (s *Service) SetCorporateEmailDomain(ctx context.Context, domain string) (*RegistrationState, error) {
+	normalized := normalizeCorporateEmailDomain(domain)
+	if err := s.settings.Set(ctx, systemKeyHubCorporateEmailDomain, mustJSON(map[string]string{"value": normalized})); err != nil {
+		return nil, err
+	}
+	if _, err := s.SetCorporateEmailDomains(ctx, []string{normalized}); err != nil {
+		return nil, err
+	}
+	return s.Status(ctx)
+}
+
+func (s *Service) SetCorporateEmailDomains(ctx context.Context, domains []string) (*RegistrationState, error) {
+	normalized := normalizeCorporateEmailDomains(domains)
+	if err := s.settings.Set(ctx, systemKeyHubCorporateEmailDomains, mustJSON(map[string][]string{"values": normalized})); err != nil {
+		return nil, err
+	}
+	primary := ""
+	if len(normalized) > 0 {
+		primary = normalized[0]
+	}
+	if err := s.settings.Set(ctx, systemKeyHubCorporateEmailDomain, mustJSON(map[string]string{"value": primary})); err != nil {
+		return nil, err
+	}
+	return s.Status(ctx)
+}
+
+func (s *Service) SetAcceptPublicSignup(ctx context.Context, enabled bool) (*RegistrationState, error) {
+	if err := s.settings.Set(ctx, systemKeyHubAcceptPublicSignup, mustJSON(map[string]bool{"value": enabled})); err != nil {
+		return nil, err
+	}
+	return s.Status(ctx)
+}
+
 func (s *Service) Register(ctx context.Context, ownerEmail string) (*RegistrationState, error) {
 	record, err := s.loadRegistration(ctx)
 	if err != nil {
@@ -289,17 +383,32 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 	if err != nil {
 		return nil, err
 	}
+	corporateEmailDomain, err := s.corporateEmailDomain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	corporateEmailDomains, err := s.corporateEmailDomains(ctx)
+	if err != nil {
+		return nil, err
+	}
+	acceptPublicSignup, err := s.acceptPublicSignup(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	reqBody := registerHubRequest{
-		InstallationID: installationID,
-		OwnerEmail:     ownerEmail,
-		Name:           s.cfg.Hub.Name,
-		Description:    s.cfg.Hub.Description,
-		BaseURL:        advertisedBaseURL,
-		Host:           advertisedHost,
-		Port:           advertisedPort,
-		Visibility:     visibility,
-		EnrollmentMode: enrollmentMode,
+		InstallationID:        installationID,
+		OwnerEmail:            ownerEmail,
+		Name:                  s.cfg.Hub.Name,
+		Description:           s.cfg.Hub.Description,
+		BaseURL:               advertisedBaseURL,
+		Host:                  advertisedHost,
+		Port:                  advertisedPort,
+		Visibility:            visibility,
+		EnrollmentMode:        enrollmentMode,
+		CorporateEmailDomain:  corporateEmailDomain,
+		CorporateEmailDomains: corporateEmailDomains,
+		AcceptPublicSignup:    acceptPublicSignup,
 		Capabilities: map[string]any{
 			"supports_remote_control": true,
 			"supports_pwa":            true,
@@ -362,6 +471,7 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 		}
 		if registerResp.HubID == "" || registerResp.HubSecret == "" {
 			lastErr = fmt.Errorf("hub center register returned incomplete credentials")
+			s.recordFailure(ctx, "registration", "incomplete_credentials", lastErr.Error(), "", ownerEmail, map[string]any{"base_url": baseURL})
 			continue
 		}
 
@@ -387,7 +497,9 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 		_ = s.updateRegistrationError(ctx, lastErr.Error())
 		return nil, lastErr
 	}
-	return nil, fmt.Errorf("hub center register failed")
+	msg := "hub center register failed"
+	s.recordFailure(ctx, "registration", "register_failed", msg, record.HubID, ownerEmail, nil)
+	return nil, errors.New(msg)
 }
 func (s *Service) StartBackgroundSync() {
 	if !s.cfg.Center.Enabled {
@@ -626,6 +738,90 @@ func (s *Service) enrollmentMode(ctx context.Context) (string, error) {
 	return normalizeEnrollmentMode(payload.Value), nil
 }
 
+func (s *Service) corporateEmailDomain(ctx context.Context) (string, error) {
+	domains, err := s.corporateEmailDomains(ctx)
+	if err == nil && len(domains) > 0 {
+		return domains[0], nil
+	}
+	raw, err := s.settings.Get(ctx, systemKeyHubCorporateEmailDomain)
+	if err != nil {
+		return "", err
+	}
+	if raw == "" {
+		return normalizeCorporateEmailDomain(s.cfg.Hub.CorporateEmailDomain), nil
+	}
+
+	var payload struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", err
+	}
+	return normalizeCorporateEmailDomain(payload.Value), nil
+}
+
+func (s *Service) corporateEmailDomains(ctx context.Context) ([]string, error) {
+	raw, err := s.settings.Get(ctx, systemKeyHubCorporateEmailDomains)
+	if err != nil {
+		return nil, err
+	}
+	if raw != "" {
+		var payload struct {
+			Values []string `json:"values"`
+		}
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return nil, err
+		}
+		return normalizeCorporateEmailDomains(payload.Values), nil
+	}
+	configured := normalizeCorporateEmailDomains(s.cfg.Hub.CorporateEmailDomains)
+	legacySettingRaw, err := s.settings.Get(ctx, systemKeyHubCorporateEmailDomain)
+	if err != nil {
+		return nil, err
+	}
+	legacy := ""
+	if legacySettingRaw != "" {
+		var payload struct {
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal([]byte(legacySettingRaw), &payload); err != nil {
+			return nil, err
+		}
+		legacy = normalizeCorporateEmailDomain(payload.Value)
+	} else {
+		legacy = normalizeCorporateEmailDomain(s.cfg.Hub.CorporateEmailDomain)
+	}
+	if legacy != "" {
+		configured = normalizeCorporateEmailDomains(append(configured, legacy))
+	}
+	return configured, nil
+}
+
+func (s *Service) acceptPublicSignup(ctx context.Context) (bool, error) {
+	raw, err := s.settings.Get(ctx, systemKeyHubAcceptPublicSignup)
+	if err != nil {
+		return false, err
+	}
+	if raw != "" {
+		var payload struct {
+			Value bool `json:"value"`
+		}
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return false, err
+		}
+		return payload.Value, nil
+	}
+	domains, err := s.corporateEmailDomains(ctx)
+	if err != nil {
+		return false, err
+	}
+	visibility, err := s.visibility(ctx)
+	if err != nil {
+		return false, err
+	}
+	return len(domains) == 0 && isPublicSignupVisibility(visibility), nil
+}
+
 func (s *Service) invitationCodeRequired(ctx context.Context) (bool, error) {
 	raw, err := s.settings.Get(ctx, systemKeyInvitationCodeRequired)
 	if err != nil {
@@ -715,6 +911,70 @@ func (s *Service) startHeartbeatLoop() {
 	}()
 }
 
+func (s *Service) SyncUserRoute(ctx context.Context, email string) error {
+	email = normalizeEmail(email)
+	if email == "" {
+		return nil
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return nil
+	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return err
+	}
+	if len(baseURLs) == 0 {
+		return fmt.Errorf("hub center base url is required")
+	}
+	payload, err := json.Marshal(syncUserLinkRequest{HubSecret: record.HubSecret, Email: email, IsDefault: true})
+	if err != nil {
+		return err
+	}
+
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/user-links/sync", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			if record.LastBaseURL != baseURL {
+				record.LastBaseURL = baseURL
+				_ = s.saveRegistration(context.Background(), record)
+			}
+			return nil
+		}
+		var apiErr centerErrorPayload
+		_ = json.Unmarshal(body, &apiErr)
+		message := strings.TrimSpace(apiErr.Message)
+		if message == "" {
+			message = fmt.Sprintf("hub center user-route sync failed with status %d", resp.StatusCode)
+		}
+		lastErr = errors.New(message)
+	}
+	if lastErr != nil {
+		s.recordFailure(ctx, "sync", "user_route_sync_failed", lastErr.Error(), record.HubID, email, nil)
+	}
+	return lastErr
+}
+
 func (s *Service) sendHeartbeat(ctx context.Context) error {
 	record, err := s.loadRegistration(ctx)
 	if err != nil {
@@ -732,9 +992,29 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 	}
 
 	invCodeRequired, _ := s.invitationCodeRequired(ctx)
+	visibility, _ := s.visibility(ctx)
+	enrollmentMode, _ := s.enrollmentMode(ctx)
+	corporateEmailDomain, _ := s.corporateEmailDomain(ctx)
+	corporateEmailDomains, _ := s.corporateEmailDomains(ctx)
+	acceptPublicSignup, _ := s.acceptPublicSignup(ctx)
+	advertisedBaseURL, advertisedHost, advertisedPort, advErr := s.advertisedEndpoint()
+	if advErr != nil {
+		advertisedBaseURL = ""
+		advertisedHost = ""
+		advertisedPort = 0
+	}
+
 	payload, err := json.Marshal(map[string]any{
 		"hub_secret":               record.HubSecret,
 		"invitation_code_required": invCodeRequired,
+		"base_url":                 advertisedBaseURL,
+		"host":                     advertisedHost,
+		"port":                     advertisedPort,
+		"visibility":               visibility,
+		"enrollment_mode":          enrollmentMode,
+		"corporate_email_domain":   corporateEmailDomain,
+		"corporate_email_domains":  corporateEmailDomains,
+		"accept_public_signup":     acceptPublicSignup,
 	})
 	if err != nil {
 		return err
@@ -823,13 +1103,17 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 		record.HubID = ""
 		record.HubSecret = ""
 		record.DisabledReason = ""
-		record.LastError = "hub registration was removed by Hub Center"
+		msg := "hub registration was removed by Hub Center"
+		s.recordFailure(ctx, "heartbeat", "hub_unregistered", msg, record.HubID, "", nil)
+		record.LastError = msg
 		record.LastBaseURL = ""
 		record.LastRegisteredAt = 0
 		return s.saveRegistration(context.Background(), record)
 	}
 	if notReadyCount > 0 {
-		return s.updateRegistrationError(context.Background(), "hub metadata is not available on this hubcenter node yet")
+		msg := "hub metadata is not available on this hubcenter node yet"
+		s.recordFailure(ctx, "heartbeat", "hub_not_ready_on_node", msg, record.HubID, "", nil)
+		return s.updateRegistrationError(context.Background(), msg)
 	}
 	if lastErr != nil {
 		return s.updateRegistrationError(context.Background(), lastErr.Error())
@@ -886,6 +1170,39 @@ func normalizeEnrollmentMode(v string) string {
 		return "manual"
 	default:
 		return "open"
+	}
+}
+
+func normalizeCorporateEmailDomain(v string) string {
+	v = strings.TrimSpace(strings.ToLower(v))
+	v = strings.TrimPrefix(v, "@")
+	v = strings.TrimPrefix(v, ".")
+	return strings.TrimSpace(v)
+}
+
+func normalizeCorporateEmailDomains(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeCorporateEmailDomain(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func isPublicSignupVisibility(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "shared", "public":
+		return true
+	default:
+		return false
 	}
 }
 

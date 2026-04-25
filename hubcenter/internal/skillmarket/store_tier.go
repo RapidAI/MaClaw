@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// ── TierRepository implementation ───────────────────────────────────────
+// 鈹€鈹€ TierRepository implementation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-// GetTier 获取上传者信誉等级。
+// GetTier 鑾峰彇涓婁紶鑰呬俊瑾夌瓑绾с€?
 func (s *Store) GetTier(ctx context.Context, userID string) (*UploaderTier, error) {
 	var t UploaderTier
 	var updatedAt string
@@ -27,7 +27,7 @@ func (s *Store) GetTier(ctx context.Context, userID string) (*UploaderTier, erro
 	return &t, nil
 }
 
-// UpsertTier 插入或更新上传者信誉等级。
+// UpsertTier 鎻掑叆鎴栨洿鏂颁笂浼犺€呬俊瑾夌瓑绾с€?
 func (s *Store) UpsertTier(ctx context.Context, t *UploaderTier) error {
 	now := time.Now().Format(timeFmt)
 	_, err := s.db.ExecContext(ctx, `
@@ -40,5 +40,8 @@ func (s *Store) UpsertTier(ctx context.Context, t *UploaderTier) error {
 			total_downloads = excluded.total_downloads,
 			updated_at = excluded.updated_at`,
 		t.UserID, t.Tier, t.PublishedCount, t.AvgRating, t.TotalDownloads, now)
+	if err == nil {
+		s.emitSync(ctx)
+	}
 	return err
 }

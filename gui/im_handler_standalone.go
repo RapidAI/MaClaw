@@ -162,7 +162,7 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 	})
 
 	// Initialize task execution orchestrator.
-	h.taskOrchestrator = NewTaskExecutionOrchestrator()
+	h.taskOrchestratorRegistry = NewTaskOrchestratorRegistry()
 
 	// Initialize nudge tracker.
 	h.nudgeTracker = nudge.NewNudgeTracker()

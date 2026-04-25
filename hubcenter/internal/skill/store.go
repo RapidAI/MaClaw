@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,14 +14,14 @@ import (
 
 const pageSize = 40
 
-// SkillStore 管理 Hub Center 侧的 Skill 存储。
-// 使用 JSON 文件存储，每个 Skill 一个 JSON 文件。
+// SkillStore manages Hub Center skill storage on disk.
 type SkillStore struct {
 	mu      sync.RWMutex
 	dir     string
 	index   []HubSkillMeta
 	skills  map[string]*HubSkillFull
 	ratings map[string][]SkillRating
+	sync    SyncRecorder
 }
 
 func NewSkillStore(dir string) *SkillStore {
@@ -103,33 +104,34 @@ func (s *SkillStore) Publish(sk HubSkillFull) error {
 	sk.Visible = true
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Upsert：如果同 ID 已存在，保留下载量和评分
 	if existing, ok := s.skills[sk.ID]; ok {
 		sk.Downloads = existing.Downloads
 		sk.DownloadCount = existing.DownloadCount
 		sk.RatingSum = existing.RatingSum
 		sk.RatingCount = existing.RatingCount
 		sk.AvgRating = existing.AvgRating
-		sk.CreatedAt = existing.CreatedAt // 保留首次创建时间
+		sk.CreatedAt = existing.CreatedAt
 		sk.UpdatedAt = fmtTimeNow()
 	}
 
 	data, err := json.MarshalIndent(sk, "", "  ")
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("marshal skill: %w", err)
 	}
 	path := filepath.Join(s.dir, sk.ID+".json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("write skill file: %w", err)
 	}
 	s.skills[sk.ID] = &sk
 	s.rebuildIndexFromSkills()
+	s.mu.Unlock()
+
+	s.emitSync(context.Background())
 	return nil
 }
 
-// GetByID 根据 ID 查找 Skill（返回 nil 表示不存在）。
 func (s *SkillStore) GetByID(id string) *HubSkillMeta {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -154,7 +156,7 @@ func (s *SkillStore) RebuildIndex() error {
 	}
 	skills := make(map[string]*HubSkillFull)
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.HasSuffix(entry.Name(), "_ratings.json") {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
@@ -208,21 +210,26 @@ func (s *SkillStore) TopByDownloads(n int) []HubSkillMeta {
 
 func (s *SkillStore) SetVisibility(id string, visible bool) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sk, ok := s.skills[id]
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("skill not found: %s", id)
 	}
 	sk.Visible = visible
 	data, err := json.MarshalIndent(sk, "", "  ")
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("marshal skill: %w", err)
 	}
 	path := filepath.Join(s.dir, id+".json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("write skill file: %w", err)
 	}
 	s.rebuildIndexFromSkills()
+	s.mu.Unlock()
+
+	s.emitSync(context.Background())
 	return nil
 }
 
@@ -230,28 +237,33 @@ func (s *SkillStore) SetVisibility(id string, visible bool) error {
 // Valid values: "builtin", "trusted", "community", "agent-created".
 func (s *SkillStore) SetTrustLevel(id string, trustLevel string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sk, ok := s.skills[id]
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("skill not found: %s", id)
 	}
 	sk.TrustLevel = trustLevel
 	data, err := json.MarshalIndent(sk, "", "  ")
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("marshal skill: %w", err)
 	}
 	path := filepath.Join(s.dir, id+".json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("write skill file: %w", err)
 	}
 	s.rebuildIndexFromSkills()
+	s.mu.Unlock()
+
+	s.emitSync(context.Background())
 	return nil
 }
 
 func (s *SkillStore) DeleteSkill(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if _, ok := s.skills[id]; !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("skill not found: %s", id)
 	}
 	_ = os.Remove(filepath.Join(s.dir, id+".json"))
@@ -259,6 +271,9 @@ func (s *SkillStore) DeleteSkill(id string) error {
 	delete(s.skills, id)
 	delete(s.ratings, id)
 	s.rebuildIndexFromSkills()
+	s.mu.Unlock()
+
+	s.emitSync(context.Background())
 	return nil
 }
 
@@ -267,9 +282,9 @@ func (s *SkillStore) Rate(skillID, maclawID string, score int) error {
 		return fmt.Errorf("score must be between 1 and 5")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sk, ok := s.skills[skillID]
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("skill not found: %s", skillID)
 	}
 	ratings := s.ratings[skillID]
@@ -288,7 +303,9 @@ func (s *SkillStore) Rate(skillID, maclawID string, score int) error {
 		sk.RatingSum = sk.RatingSum - oldScore + score
 	} else {
 		ratings = append(ratings, SkillRating{
-			SkillID: skillID, MaclawID: maclawID, Score: score,
+			SkillID:   skillID,
+			MaclawID:  maclawID,
+			Score:     score,
 			CreatedAt: time.Now().Format(time.RFC3339),
 		})
 		sk.RatingSum += score
@@ -299,13 +316,22 @@ func (s *SkillStore) Rate(skillID, maclawID string, score int) error {
 	}
 	s.ratings[skillID] = ratings
 	if err := s.saveRatings(skillID); err != nil {
+		s.mu.Unlock()
 		return err
 	}
 	data, err := json.MarshalIndent(sk, "", "  ")
 	if err != nil {
+		s.mu.Unlock()
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.dir, skillID+".json"), data, 0o644)
+	if err := os.WriteFile(filepath.Join(s.dir, skillID+".json"), data, 0o644); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+
+	s.emitSync(context.Background())
+	return nil
 }
 
 func (s *SkillStore) saveRatings(skillID string) error {
@@ -368,44 +394,59 @@ func matchesSkill(meta HubSkillMeta, queryTerms []string, tags []string) bool {
 	return true
 }
 
-// IncrementDownloadCount 原子递增 Skill 的下载计数。
 func (s *SkillStore) IncrementDownloadCount(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sk, ok := s.skills[id]
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("skill not found: %s", id)
 	}
 	sk.DownloadCount++
-	sk.Downloads = sk.DownloadCount // 同步两个字段
+	sk.Downloads = sk.DownloadCount
 	data, err := json.MarshalIndent(sk, "", "  ")
 	if err != nil {
+		s.mu.Unlock()
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.dir, id+".json"), data, 0o644)
+	if err := os.WriteFile(filepath.Join(s.dir, id+".json"), data, 0o644); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.rebuildIndexFromSkills()
+	s.mu.Unlock()
+
+	s.emitSync(context.Background())
+	return nil
 }
 
-// UpdateStatus 更新 Skill 状态（使用乐观锁）。
 func (s *SkillStore) UpdateStatus(id, expectedStatus, newStatus string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sk, ok := s.skills[id]
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("skill not found: %s", id)
 	}
 	if expectedStatus != "" && sk.Status != expectedStatus {
+		s.mu.Unlock()
 		return fmt.Errorf("concurrent conflict: expected status %s, got %s", expectedStatus, sk.Status)
 	}
 	sk.Status = newStatus
 	data, err := json.MarshalIndent(sk, "", "  ")
 	if err != nil {
+		s.mu.Unlock()
 		return err
 	}
 	s.rebuildIndexFromSkills()
-	return os.WriteFile(filepath.Join(s.dir, id+".json"), data, 0o644)
+	if err := os.WriteFile(filepath.Join(s.dir, id+".json"), data, 0o644); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+
+	s.emitSync(context.Background())
+	return nil
 }
 
-// GetByFingerprint 根据 fingerprint 查找 Skill。
 func (s *SkillStore) GetByFingerprint(fingerprint string) *HubSkillMeta {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -417,7 +458,6 @@ func (s *SkillStore) GetByFingerprint(fingerprint string) *HubSkillMeta {
 	return nil
 }
 
-// ListByUploader 返回指定 uploader_email 的所有 Skill 元数据。
 func (s *SkillStore) ListByUploader(email string) []HubSkillMeta {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -431,7 +471,6 @@ func (s *SkillStore) ListByUploader(email string) []HubSkillMeta {
 	return result
 }
 
-// FindBySourceURL 根据 source_url 和 name 查找已存在的 Skill（用于覆盖更新）。
 func (s *SkillStore) FindBySourceURL(sourceURL, name string) *HubSkillMeta {
 	if sourceURL == "" {
 		return nil

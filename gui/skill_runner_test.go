@@ -149,7 +149,7 @@ func TestNormalizeSkillRunVars_CoercesNonStringArgs(t *testing.T) {
 
 func TestResolveSkillStep_ReplacesNestedPlaceholders(t *testing.T) {
 	skillDir := filepath.Join("base", "skill")
-	resolved := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command":     "printf '%s %s' {{input}} ${output}",
@@ -159,7 +159,10 @@ func TestResolveSkillStep_ReplacesNestedPlaceholders(t *testing.T) {
 			},
 			"items": []interface{}{"${output}", 7},
 		},
-	}, map[string]string{"input": "report.md", "output": "out.pdf"}, skillDir)
+	}, map[string]string{"input": "report.md", "output": "out.pdf"}, skillDir, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	command, _ := resolved.Params["command"].(string)
 	if !strings.Contains(command, "report.md") || !strings.Contains(command, "out.pdf") {
@@ -184,7 +187,7 @@ func TestResolveSkillStep_ReplacesNestedPlaceholders(t *testing.T) {
 }
 
 func TestResolveSkillStep_CraftToolInheritsRunArgs(t *testing.T) {
-	resolved := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "craft_tool",
 		Params: map[string]interface{}{
 			"instructions": "Generate slides.",
@@ -192,7 +195,10 @@ func TestResolveSkillStep_CraftToolInheritsRunArgs(t *testing.T) {
 	}, map[string]string{
 		"output": "out/live_test_deck.pptx",
 		"topic":  "Quarterly product review",
-	}, "")
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got, _ := resolved.Params["output"].(string); got != "out/live_test_deck.pptx" {
 		t.Fatalf("output = %q, want propagated run arg", got)
 	}
@@ -202,12 +208,15 @@ func TestResolveSkillStep_CraftToolInheritsRunArgs(t *testing.T) {
 }
 
 func TestResolveSkillStep_StripsMissingOptionalPlaceholder(t *testing.T) {
-	resolved := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command": "node ./tool.mjs {{input}} {{output}}",
 		},
-	}, map[string]string{"input": "report.md"}, "")
+	}, map[string]string{"input": "report.md"}, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	command, _ := resolved.Params["command"].(string)
 	if strings.Contains(command, "{{output}}") || strings.Contains(command, "${output}") {
 		t.Fatalf("command = %q, want unresolved output placeholder stripped", command)
@@ -386,5 +395,124 @@ func TestDetectImplicitRequiredArgs_MixedBraceStyles(t *testing.T) {
 	// Should be sorted
 	if missing[0] != "format" || missing[1] != "output" {
 		t.Fatalf("detectImplicitRequiredArgs() = %v, want [format, output]", missing)
+	}
+}
+
+// ── Parameter Contract Integration Tests ──
+
+func TestResolveSkillStep_WithParamBinding_AliasResolution(t *testing.T) {
+	// Skill declares "description" with alias "content".
+	// LLM passes "content" → BindParams resolves to "description".
+	params := []corelib.NLSkillParam{
+		{Name: "description", Aliases: []string{"content", "input"}},
+	}
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "node gen.js --desc {{description}}",
+		},
+	}, map[string]string{"content": "北京5环图"}, "", params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	command, _ := resolved.Params["command"].(string)
+	if !strings.Contains(command, "北京5环图") {
+		t.Fatalf("command = %q, want alias-resolved value", command)
+	}
+}
+
+func TestResolveSkillStep_WithParamBinding_RequiredMissing(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "input", Required: true},
+	}
+	_, err := resolveSkillStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "tool {{input}}",
+		},
+	}, map[string]string{}, "", params)
+	if err == nil {
+		t.Fatal("expected error for missing required param")
+	}
+	if !strings.Contains(err.Error(), "input") {
+		t.Fatalf("error should mention 'input', got %q", err.Error())
+	}
+}
+
+func TestResolveSkillStep_WithParamBinding_DefaultValue(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "format", Default: "png"},
+	}
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "convert --format {{format}}",
+		},
+	}, map[string]string{}, "", params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	command, _ := resolved.Params["command"].(string)
+	if !strings.Contains(command, "png") {
+		t.Fatalf("command = %q, want default value applied", command)
+	}
+}
+
+func TestResolveSkillStep_WithParamBinding_CLIFlagAppend(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "format", CLIFlag: "--format"},
+	}
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "node gen.js",
+		},
+	}, map[string]string{"format": "svg"}, "", params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	command, _ := resolved.Params["command"].(string)
+	if !strings.Contains(command, "--format") || !strings.Contains(command, "svg") {
+		t.Fatalf("command = %q, want CLI flag appended", command)
+	}
+}
+
+func TestResolveSkillStep_WithParamBinding_CLIFlagNotDuplicated(t *testing.T) {
+	// When a param has both CLIFlag and a template placeholder, the CLI flag
+	// should NOT be appended (template substitution handles it).
+	params := []corelib.NLSkillParam{
+		{Name: "format", CLIFlag: "--format"},
+	}
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "node gen.js --format {{format}}",
+		},
+	}, map[string]string{"format": "svg"}, "", params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	command, _ := resolved.Params["command"].(string)
+	// Should contain --format exactly once (from template), not twice.
+	count := strings.Count(command, "--format")
+	if count != 1 {
+		t.Fatalf("command = %q, want --format exactly once (got %d)", command, count)
+	}
+}
+
+func TestResolveSkillStep_NilParams_BackwardCompatible(t *testing.T) {
+	// When params is nil, resolveSkillStep should work exactly as before.
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "echo {{name}}",
+		},
+	}, map[string]string{"name": "world"}, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	command, _ := resolved.Params["command"].(string)
+	if !strings.Contains(command, "world") {
+		t.Fatalf("command = %q, want substituted value", command)
 	}
 }

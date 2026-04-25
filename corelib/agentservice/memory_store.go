@@ -12,9 +12,11 @@ type Store interface {
 	SaveTenant(Tenant) error
 	GetTenant(string) (Tenant, error)
 	ListTenants() ([]Tenant, error)
+	DeleteTenant(string) error
 	SaveUser(User) error
 	GetUser(string, string) (User, error)
 	ListUsers(string) ([]User, error)
+	DeleteUser(string, string) error
 	SaveCredential(Credential) error
 	GetCredential(string, string, string) (Credential, error)
 	ListCredentials(string, string) ([]Credential, error)
@@ -192,6 +194,47 @@ func (s *MemoryStore) ListTenants() ([]Tenant, error) {
 	return out, nil
 }
 
+func (s *MemoryStore) DeleteTenant(tenantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tenants[tenantID]; !ok {
+		return ErrTenantNotFound
+	}
+	delete(s.tenants, tenantID)
+	for key, user := range s.users {
+		if user.TenantID == tenantID {
+			delete(s.users, key)
+		}
+	}
+	for key, cred := range s.credentials {
+		if cred.TenantID == tenantID {
+			delete(s.credentials, key)
+		}
+	}
+	for key, cfg := range s.userConfigs {
+		if cfg.TenantID == tenantID {
+			delete(s.userConfigs, key)
+		}
+	}
+	for instanceID, inst := range s.instances {
+		if inst.TenantID == tenantID {
+			delete(s.instances, instanceID)
+		}
+	}
+	for sessionID, sess := range s.sessions {
+		if sess.TenantID == tenantID {
+			delete(s.sessions, sessionID)
+			delete(s.messages, sessionID)
+		}
+	}
+	for runID, run := range s.runs {
+		if run.TenantID == tenantID {
+			delete(s.runs, runID)
+		}
+	}
+	return nil
+}
+
 func (s *MemoryStore) SaveUser(v User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -220,6 +263,39 @@ func (s *MemoryStore) ListUsers(tenantID string) ([]User, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (s *MemoryStore) DeleteUser(tenantID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := composite(tenantID, userID)
+	if _, ok := s.users[key]; !ok {
+		return ErrUserNotFound
+	}
+	delete(s.users, key)
+	delete(s.userConfigs, key)
+	for lookupKey, cred := range s.credentials {
+		if cred.TenantID == tenantID && cred.UserID == userID {
+			delete(s.credentials, lookupKey)
+		}
+	}
+	for instanceID, inst := range s.instances {
+		if inst.TenantID == tenantID && inst.UserID == userID {
+			delete(s.instances, instanceID)
+		}
+	}
+	for sessionID, sess := range s.sessions {
+		if sess.TenantID == tenantID && sess.UserID == userID {
+			delete(s.sessions, sessionID)
+			delete(s.messages, sessionID)
+		}
+	}
+	for runID, run := range s.runs {
+		if run.TenantID == tenantID && run.UserID == userID {
+			delete(s.runs, runID)
+		}
+	}
+	return nil
 }
 
 func (s *MemoryStore) SaveCredential(v Credential) error {
@@ -488,5 +564,6 @@ func normalizeStoredCredential(v Credential, legacyLookupKey string) Credential 
 	if strings.TrimSpace(v.APIKeyHash) != "" {
 		v.APIKey = ""
 	}
+	v.TokenVersion = credentialTokenVersion(v)
 	return v
 }

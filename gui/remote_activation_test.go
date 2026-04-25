@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/configfile"
-	"github.com/gorilla/websocket"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/gorilla/websocket"
 )
 
 func TestNormalizedRemotePlatform(t *testing.T) {
@@ -317,97 +318,15 @@ func TestBuildClaudeLaunchSpec_UsesSavedCurrentProjectWhenProjectDirEmpty(t *tes
 	}
 }
 
-func TestResolveRemoteHubURL_PicksDefaultHub(t *testing.T) {
-	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/entry/resolve" {
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"email":          "user@example.com",
-			"mode":           "multiple",
-			"default_hub_id": "hub-b",
-			"hubs": []map[string]any{
-				{"hub_id": "hub-a", "base_url": "https://hub-a.example.com", "pwa_url": "https://hub-a.example.com/app"},
-				{"hub_id": "hub-b", "base_url": "https://hub-b.example.com/", "pwa_url": "https://hub-b.example.com/app"},
-			},
-		})
-	}))
-	defer center.Close()
-
-	app := &App{}
-	got, err := app.resolveRemoteHubURL(corelib.AppConfig{RemoteHubCenterURL: center.URL}, "user@example.com")
-	if err != nil {
-		t.Fatalf("resolveRemoteHubURL() error = %v", err)
-	}
-	if got != "https://hub-b.example.com" {
-		t.Fatalf("resolveRemoteHubURL() = %q", got)
-	}
-}
-
-func TestResolveRemoteHubURL_FallsBackToFirstUsableHub(t *testing.T) {
-	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"email": "user@example.com",
-			"mode":  "multiple",
-			"hubs": []map[string]any{
-				{"hub_id": "hub-a", "base_url": "", "pwa_url": "https://hub-a.example.com/app"},
-				{"hub_id": "hub-b", "base_url": "https://hub-b.example.com", "pwa_url": "https://hub-b.example.com/app"},
-			},
-		})
-	}))
-	defer center.Close()
-
-	app := &App{}
-	got, err := app.resolveRemoteHubURL(corelib.AppConfig{RemoteHubCenterURL: center.URL}, "user@example.com")
-	if err != nil {
-		t.Fatalf("resolveRemoteHubURL() error = %v", err)
-	}
-	if got != "https://hub-b.example.com" {
-		t.Fatalf("resolveRemoteHubURL() = %q", got)
-	}
-}
-
-func TestResolveRemoteHubURL_UsesDefaultCenterWhenUnset(t *testing.T) {
-	originalDefaultCenter := defaultRemoteHubCenterURL
-	defer func() {
-		defaultRemoteHubCenterURL = originalDefaultCenter
-	}()
-
-	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/entry/resolve" {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"email": "user@example.com",
-			"mode":  "single",
-			"hubs": []map[string]any{
-				{
-					"hub_id":   "hub-default",
-					"base_url": "https://hub-default.example.com",
-					"pwa_url":  "https://hub-default.example.com/app",
-				},
-			},
-		})
-	}))
-	defer center.Close()
-
-	defaultRemoteHubCenterURL = center.URL
-
-	app := &App{}
-	got, err := app.resolveRemoteHubURL(corelib.AppConfig{}, "user@example.com")
-	if err != nil {
-		t.Fatalf("resolveRemoteHubURL() error = %v", err)
-	}
-	if got != "https://hub-default.example.com" {
-		t.Fatalf("resolveRemoteHubURL() = %q", got)
-	}
-}
+// Note: Tests for resolveRemoteHubURL and buildCenterURLList have been removed
+// because these functions are now delegated to corelib/remote.EnrollmentClient.
+// The corresponding tests are in corelib/remote/enrollment_test.go.
 
 func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
+	remote.InvalidateCenterCache()
 
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -450,6 +369,19 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	}))
 	defer center.Close()
 
+	// Override defaults so the enrollment client doesn't probe real HubCenter URLs.
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	origDefault := remote.DefaultRemoteHubCenterURL
+	origGUIDefault := defaultRemoteHubCenterURL
+	remote.DefaultRemoteHubCenterURLs = []string{center.URL}
+	remote.DefaultRemoteHubCenterURL = center.URL
+	defaultRemoteHubCenterURL = center.URL
+	defer func() {
+		remote.DefaultRemoteHubCenterURLs = origDefaults
+		remote.DefaultRemoteHubCenterURL = origDefault
+		defaultRemoteHubCenterURL = origGUIDefault
+	}()
+
 	app := &App{testHomeDir: tmpHome}
 	cfg := corelib.AppConfig{
 		RemoteHubCenterURL: center.URL,
@@ -478,6 +410,10 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	}
 	if saved.RemoteMachineID != "m_123" || saved.RemoteMachineToken != "mt_123" {
 		t.Fatalf("saved machine identity mismatch: %+v", saved)
+	}
+	// Verify RemoteEnabled is set
+	if !saved.RemoteEnabled {
+		t.Fatal("RemoteEnabled should be true after activation")
 	}
 }
 

@@ -16,20 +16,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
 	tea "github.com/charmbracelet/bubbletea"
@@ -71,6 +75,13 @@ func runTUI() {
 		os.Exit(1)
 	}
 
+	// Hint: incomplete remote config (has email+hub but no credentials).
+	if appCfg.RemoteEmail != "" && appCfg.RemoteHubURL != "" &&
+		(appCfg.RemoteMachineID == "" || appCfg.RemoteMachineToken == "") {
+		fmt.Fprintln(os.Stderr, "提示: 远程模式配置不完整（有邮箱和 Hub URL 但缺少凭据）。")
+		fmt.Fprintf(os.Stderr, "运行 %s-tui remote activate 完成注册。\n", strings.ToLower(brand.Current().DisplayName))
+	}
+
 	// Initialize memory store (shared with GUI — same ~/.maclaw/memory/).
 	memoryDir := filepath.Join(dataDir, "memory")
 	os.MkdirAll(memoryDir, 0755)
@@ -101,6 +112,8 @@ func runTUI() {
 	convMemory := agent.NewPersistentConversationMemory(convPath)
 
 	// Build the TUI app.
+	// HubCenter failover uses the shared singleton cache and persister from
+	// tui/commands/skill_search_api.go — no need to create local instances.
 	app := &TUIApp{
 		logger:        logger,
 		llmConfig:     llmCfg,
@@ -112,6 +125,9 @@ func runTUI() {
 		taskStore:     task.NewStore(),
 		toolRegistry:  agent.NewCoreToolRegistry(),
 	}
+
+	// Initialize workflow engine (19 templates, same as GUI).
+	app.workflowEngine = app.initWorkflowEngine()
 
 	// Register tools: definition + handler bound together.
 	sshHandler := func(args map[string]interface{}) string {
@@ -257,6 +273,24 @@ type TUIApp struct {
 	history       *agent.ConversationMemory
 	taskStore     *task.Store
 	toolRegistry  *agent.CoreToolRegistry
+	// HubCenter failover uses the shared singleton cache and persister from
+	// tui/commands/skill_search_api.go — no fields needed here.
+
+	// Workflow engine integration (Fix #6).
+	workflowEngine *workflow.WorkflowEngine
+
+	// workflowMu protects pendingPhasePrompt and workflowAgentLoop from
+	// concurrent access between the Bubble Tea main goroutine (which sets
+	// them in handleWorkflowInterception) and the agent loop goroutine
+	// (which reads and clears them in handleChatSend).
+	workflowMu         sync.Mutex
+	pendingPhasePrompt string // stashed phase prompt for the next agent loop
+	workflowAgentLoop  bool   // true when the agent loop runs on behalf of the workflow
+}
+
+// cancellable is implemented by agent loop callbacks that support cancellation.
+type cancellable interface {
+	Cancel()
 }
 
 // tuiModel is the Bubble Tea top-level model.
@@ -265,7 +299,7 @@ type tuiModel struct {
 	program  *tea.Program
 	root     views.RootModel
 	ready    bool
-	activeCb *tuiCallbacks // non-nil while agent loop is running
+	activeCb cancellable // non-nil while agent loop is running
 }
 
 func (m *tuiModel) Init() tea.Cmd {
@@ -298,6 +332,10 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.ChatSendMsg:
 		// Handle slash commands locally.
 		if strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
+			// /btw requires an async agent loop — route through handleChatSend.
+			if strings.HasPrefix(strings.TrimSpace(msg.Text), "/btw") {
+				return m, m.handleChatSend(msg.Text)
+			}
 			m.handleSlashCommand(msg.Text)
 			return m, nil
 		}
@@ -382,6 +420,14 @@ func (m *tuiModel) handleSlashCommand(text string) {
 	switch {
 	case text == "/new" || text == "/clear":
 		m.app.history.Clear("tui-user")
+		// Cancel active workflow if any.
+		if m.app.workflowEngine != nil {
+			_ = m.app.workflowEngine.CancelWorkflow("tui-user")
+		}
+		m.app.workflowMu.Lock()
+		m.app.pendingPhasePrompt = ""
+		m.app.workflowAgentLoop = false
+		m.app.workflowMu.Unlock()
 		m.root.Chat.ClearMessages("🗑 对话已清除")
 
 	case text == "/model":
@@ -423,6 +469,7 @@ func (m *tuiModel) handleSlashCommand(text string) {
 	case text == "/help":
 		help := `可用命令:
   /new      清除对话历史，开始新对话
+  /btw      侧查询（不打断当前任务上下文）
   /model    显示当前 LLM 模型信息
   /memory   查看记忆库摘要
   /help     显示此帮助
@@ -451,17 +498,98 @@ func (m *tuiModel) View() string {
 func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 	prog := m.program
 	app := m.app
+
+	// --- /btw side query: independent agent loop ---
+	trimmedText := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmedText, "/btw") {
+		btwQuery := ""
+		if len(trimmedText) > 4 {
+			btwQuery = strings.TrimSpace(trimmedText[4:])
+		}
+		if btwQuery == "" {
+			return func() tea.Msg {
+				return views.ChatResponseMsg{Text: "用法: /btw <查询内容>\n\n示例:\n  /btw 最新的 Go 1.23 有什么新特性\n  /btw React 19 的主要变化"}
+			}
+		}
+		cb := newTuiBtwCallbacks(app, prog)
+		m.activeCb = cb
+		return func() tea.Msg {
+			result := agent.RunLoop(cb, btwQuery, nil, nil)
+
+			responseText := result.Text
+			if responseText == "" && result.Error != "" {
+				return views.ChatResponseMsg{Error: fmt.Sprintf("/btw 查询失败: %s", result.Error)}
+			}
+			if responseText == "" {
+				responseText = "未找到相关信息。"
+			}
+			responseText = "🔍 **/btw 查询结果**\n\n" + responseText
+
+			// Append only the final result to history (no intermediate steps).
+			history := app.history.Load("tui-user")
+			history = append(history,
+				agent.ConversationEntry{Role: "user", Content: "/btw " + btwQuery},
+				agent.ConversationEntry{Role: "assistant", Content: responseText},
+			)
+			app.history.Save("tui-user", history)
+
+			return views.ChatResponseMsg{Text: responseText}
+		}
+	}
+
 	cb := newTuiCallbacks(app, prog)
 	m.activeCb = cb
 
 	return func() tea.Msg {
+		// --- Workflow engine interception (Fix #6) ---
+		// Check if the message should be handled by the workflow engine
+		// before running the agent loop. This provides the same structured
+		// workflow experience as the GUI (19 templates with phase-by-phase
+		// execution).
+		if wfResp := app.handleWorkflowInterception(text); wfResp != "" {
+			// Save both the user message and workflow response to history
+			// so the agent loop has context when it runs for phase generation.
+			history := app.history.Load("tui-user")
+			history = append(history,
+				agent.ConversationEntry{Role: "user", Content: text},
+				agent.ConversationEntry{Role: "assistant", Content: wfResp},
+			)
+			app.history.Save("tui-user", history)
+			return views.ChatResponseMsg{Text: wfResp}
+		}
+
 		history := app.history.Load("tui-user")
+
+		// Inject workflow phase prompt if the workflow engine requested
+		// an agent loop run (e.g., to generate a phase document).
+		app.workflowMu.Lock()
+		phasePrompt := app.pendingPhasePrompt
+		wasWorkflowLoop := app.workflowAgentLoop
+		app.pendingPhasePrompt = ""
+		app.workflowAgentLoop = false
+		app.workflowMu.Unlock()
+
+		if wasWorkflowLoop && phasePrompt != "" {
+			cb.phasePromptOverride = phasePrompt
+		}
+
 		result := agent.RunLoop(cb, text, history, nil)
 
 		// Save conversation history (persisted to disk).
 		history = append(history, agent.ConversationEntry{Role: "user", Content: text})
 		if result.Text != "" {
 			history = append(history, agent.ConversationEntry{Role: "assistant", Content: result.Text})
+
+			// --- Workflow doc capture ---
+			// When the agent loop ran on behalf of the workflow engine,
+			// save the output as the phase document.
+			if cb.phasePromptOverride != "" {
+				if engine := app.workflowEngine; engine != nil {
+					if phaseID := engine.SavePhaseOutput("tui-user", result.Text); phaseID != "" {
+						log.Printf("[TUI-workflow] saved phase output: phase=%s len=%d", phaseID, len(result.Text))
+					}
+				}
+			}
 		}
 		app.history.Save("tui-user", history)
 
@@ -478,10 +606,14 @@ func (m *tuiModel) searchSkills(query string) tea.Cmd {
 	return func() tea.Msg {
 		hubURL := m.app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
 
+		// Multi-node failover using shared infrastructure from tui/commands.
+		// This is the single source of truth for failover logic.
+		hubURL = commands.ResolveHubCenterWithFailover(m.app.appConfig, hubURL, nil, nil)
+
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		client := skill.NewHubClient()
+		client := skill.DefaultHubClient()
 		hubResults := client.SearchAll(ctx, hubURL, query)
 
 		if len(hubResults) == 0 {
@@ -510,7 +642,7 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		client := skill.NewHubClient()
+		client := skill.DefaultHubClient()
 
 		var entry *corelib.NLSkillEntry
 		var err error
@@ -725,6 +857,10 @@ type tuiCallbacks struct {
 	program  *tea.Program
 	stopped  bool
 	cancelCh chan struct{} // closed by Esc key to cancel the running loop
+
+	// phasePromptOverride is set when the workflow engine wants the agent
+	// loop to generate a phase document. It's appended to the system prompt.
+	phasePromptOverride string
 }
 
 func newTuiCallbacks(app *TUIApp, prog *tea.Program) *tuiCallbacks {
@@ -749,10 +885,7 @@ func (c *tuiCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 }
 
 func (c *tuiCallbacks) GetMaxIterations() int {
-	if n := c.app.appConfig.MaclawAgentMaxIterations; n > 0 {
-		return n
-	}
-	return 30
+	return config.EffectiveMaxIterations(c.app.appConfig.MaclawAgentMaxIterations)
 }
 
 func (c *tuiCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
@@ -795,7 +928,15 @@ func (c *tuiCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) stri
 		}
 	}
 
-	return agent.BuildSystemPrompt(deps, userText, isFirstTurn)
+	prompt := agent.BuildSystemPrompt(deps, userText, isFirstTurn)
+
+	// Inject workflow phase prompt when the agent loop runs on behalf of
+	// the workflow engine (e.g., generating a requirements document).
+	if c.phasePromptOverride != "" {
+		prompt += "\n" + c.phasePromptOverride
+	}
+
+	return prompt
 }
 
 func (c *tuiCallbacks) BuildTools(userText string) []map[string]interface{} {
@@ -852,5 +993,185 @@ func (c *tuiCallbacks) ShouldStop() bool {
 		return true
 	default:
 		return c.stopped
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tuiBtwCallbacks implements agent.LoopCallbacks for /btw side queries.
+// Minimal tool set: web_search, web_fetch, read_file, memory (recall only).
+// Independent conversation — does not pollute the main chat history.
+// ---------------------------------------------------------------------------
+
+var tuiBtwToolNames = map[string]bool{
+	"web_search": true,
+	"web_fetch":  true,
+	"read_file":  true,
+	"memory":     true,
+}
+
+type tuiBtwCallbacks struct {
+	app      *TUIApp
+	program  *tea.Program
+	stopped  bool
+	cancelCh chan struct{}
+
+	cachedTools []map[string]interface{}
+}
+
+func newTuiBtwCallbacks(app *TUIApp, prog *tea.Program) *tuiBtwCallbacks {
+	return &tuiBtwCallbacks{
+		app:      app,
+		program:  prog,
+		cancelCh: make(chan struct{}),
+	}
+}
+
+func (c *tuiBtwCallbacks) Cancel() {
+	select {
+	case <-c.cancelCh:
+	default:
+		close(c.cancelCh)
+		c.stopped = true
+	}
+}
+
+func (c *tuiBtwCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
+	return c.app.llmConfig
+}
+
+func (c *tuiBtwCallbacks) GetMaxIterations() int {
+	return config.EffectiveMaxIterations(15)
+}
+
+func (c *tuiBtwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
+	return buildTuiBtwSystemPrompt()
+}
+
+func (c *tuiBtwCallbacks) BuildTools(userText string) []map[string]interface{} {
+	if c.cachedTools == nil {
+		c.cachedTools = buildTuiBtwToolDefinitions(c.app)
+	}
+	return c.cachedTools
+}
+
+func (c *tuiBtwCallbacks) ExecuteTool(name, argsJSON string) string {
+	if !tuiBtwToolNames[name] {
+		return fmt.Sprintf("未知工具: %s（/btw 仅支持 web_search, web_fetch, read_file, memory）", name)
+	}
+
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return fmt.Sprintf("参数解析失败: %v", err)
+	}
+
+	// Delegate to the shared tool registry.
+	result := c.app.toolRegistry.Execute(name, args)
+
+	if c.program != nil {
+		c.program.Send(views.ChatStreamMsg{Type: "tool_result", Tool: name})
+	}
+	return result
+}
+
+func (c *tuiBtwCallbacks) OnToken(delta string) {
+	if c.program != nil {
+		c.program.Send(views.ChatStreamMsg{Type: "text_delta", Content: delta})
+	}
+}
+
+func (c *tuiBtwCallbacks) OnProgress(text string) {
+	if c.program != nil {
+		c.program.Send(views.ChatStreamMsg{Type: "thinking", Content: text})
+	}
+}
+
+func (c *tuiBtwCallbacks) OnToolCall(name string) {
+	if c.program != nil {
+		c.program.Send(views.ChatStreamMsg{Type: "tool_call", Tool: name, Content: name})
+	}
+}
+
+func (c *tuiBtwCallbacks) OnToolResult(name string) {}
+
+func (c *tuiBtwCallbacks) ShouldStop() bool {
+	select {
+	case <-c.cancelCh:
+		return true
+	default:
+		return c.stopped
+	}
+}
+
+func buildTuiBtwSystemPrompt() string {
+	return "你是一个高效的信息查询助手。用户通过 /btw 命令发起了一个侧查询（side query），请快速、准确地回答。\n\n" +
+		"## 规则\n\n" +
+		"1. 优先使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容\n" +
+		"2. 如果问题涉及本地项目文件，使用 read_file 查看\n" +
+		"3. 如果问题涉及之前的对话或记忆，使用 memory(action=\"recall\", query=\"...\") 召回\n" +
+		"4. 回答要简洁、结构化，直接给出关键信息\n" +
+		"5. 引用网络来源时附上 URL\n" +
+		"6. 这是一个只读查询——不要修改任何文件\n" +
+		"7. memory 工具只允许 action=\"recall\"，不要使用 save/delete/list\n" +
+		"8. 尽量在 2-3 轮工具调用内完成查询\n"
+}
+
+func buildTuiBtwToolDefinitions(app *TUIApp) []map[string]interface{} {
+	// Try to get definitions from the shared tool registry.
+	if app != nil && app.toolRegistry != nil {
+		allDefs := app.toolRegistry.BuildDefinitions()
+		var btwDefs []map[string]interface{}
+		for _, def := range allDefs {
+			fn, _ := def["function"].(map[string]interface{})
+			if fn == nil {
+				continue
+			}
+			name, _ := fn["name"].(string)
+			if tuiBtwToolNames[name] {
+				btwDefs = append(btwDefs, def)
+			}
+		}
+		if len(btwDefs) > 0 {
+			return btwDefs
+		}
+	}
+
+	// Fallback: inline definitions (same as GUI btw_subagent.go).
+	return []map[string]interface{}{
+		tuiBtwToolDef("web_search", "搜索互联网获取最新信息",
+			map[string]interface{}{
+				"query":       map[string]string{"type": "string", "description": "搜索关键词"},
+				"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 8）"},
+			}, []string{"query"}),
+		tuiBtwToolDef("web_fetch", "抓取指定 URL 的网页内容并提取正文",
+			map[string]interface{}{
+				"url":       map[string]string{"type": "string", "description": "要抓取的 URL"},
+				"max_chars": map[string]string{"type": "integer", "description": "最多返回字符数（可选）"},
+			}, []string{"url"}),
+		tuiBtwToolDef("read_file", "读取本地文件内容",
+			map[string]interface{}{
+				"path":   map[string]string{"type": "string", "description": "文件路径"},
+				"lines":  map[string]string{"type": "integer", "description": "读取行数（可选）"},
+				"offset": map[string]string{"type": "integer", "description": "从末尾倒数行数开始读取（可选）"},
+			}, []string{"path"}),
+		tuiBtwToolDef("memory", "查询长期记忆",
+			map[string]interface{}{
+				"action": map[string]string{"type": "string", "description": "操作: recall"},
+				"query":  map[string]string{"type": "string", "description": "查询关键词"},
+			}, []string{"action"}),
+	}
+}
+
+func tuiBtwToolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        name,
+			"description": desc,
+			"parameters": map[string]interface{}{
+				"type":       "object",
+				"properties": props,
+				"required":   required,
+			},
+		},
 	}
 }

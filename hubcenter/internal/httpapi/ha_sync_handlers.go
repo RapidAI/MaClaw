@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
@@ -13,7 +12,7 @@ type haSyncReader interface {
 	NodeID() string
 	ListOpsAfterSeq(ctx context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error)
 	MaxOpSeq(ctx context.Context) (int64, error)
-	ClusterSecret() string
+	AuthenticatePeerRequest(r *http.Request) error
 }
 
 func HAOpsPullHandler(svc haSyncReader) http.HandlerFunc {
@@ -22,11 +21,9 @@ func HAOpsPullHandler(svc haSyncReader) http.HandlerFunc {
 			writeError(w, http.StatusNotImplemented, "HA_NOT_ENABLED", "HA sync is not enabled")
 			return
 		}
-		if secret := strings.TrimSpace(svc.ClusterSecret()); secret != "" {
-			if got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); got != secret {
-				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid cluster secret")
-				return
-			}
+		if err := svc.AuthenticatePeerRequest(r); err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+			return
 		}
 		afterSeq := int64(0)
 		if raw := r.URL.Query().Get("after_seq"); raw != "" {

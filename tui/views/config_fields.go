@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
@@ -114,7 +115,7 @@ var allConfigFields = []ConfigFieldDef{
 	},
 	{
 		Key: "max_iterations", Tab: CfgTabGeneral, Section: "general",
-		DescKey: i18n.MsgTUIConfigDescMaxIterations, Default: "300",
+		DescKey: i18n.MsgTUIConfigDescMaxIterations, Default: fmt.Sprintf("%d", config.MaxAgentIterationsCap),
 		Get: intGet(func(c *corelib.AppConfig) int { return c.MaclawAgentMaxIterations }),
 		Set: intSet(func(c *corelib.AppConfig, v int) { c.MaclawAgentMaxIterations = v }),
 	},

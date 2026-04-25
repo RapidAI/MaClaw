@@ -33,6 +33,14 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	h.workflowPendingConfirmOther.Delete(userID)
 	h.stashedPhasePrompt.Delete(userID)
 
+	// Task execution orchestrator: deactivate to prevent stale orchestrator
+	// state from routing the next message to SubAgent after a session reset.
+	if h.taskOrchestratorRegistry != nil {
+		if o := h.taskOrchestratorRegistry.Get(userID); o != nil && o.IsActive() {
+			o.Deactivate()
+		}
+	}
+
 	// Steering file context (per-user partitioned).
 	h.clearSteeringContextFiles(userID)
 

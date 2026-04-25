@@ -1,16 +1,22 @@
-import type { DashboardData, CenterStatus, CenterSettings } from '../types';
-
-// These endpoints are not yet implemented in the backend.
-// Return empty/default data to avoid 404 errors.
+import { apiGet, apiPost } from './client';
+import type { DashboardData, CenterStatus, CenterSettings, ExecutiveSkill, ExecutiveSkillResult } from '../types';
 
 export function fetchDashboard(): Promise<DashboardData> {
-  return Promise.resolve({ alerts: [], recent: [], metrics: [] } as DashboardData);
+  return apiGet<DashboardData>('/admin/executive/overview');
+}
+
+export function fetchExecutiveSkills(): Promise<{ skills: ExecutiveSkill[] }> {
+  return apiGet<{ skills: ExecutiveSkill[] }>('/admin/executive/skills');
+}
+
+export function runExecutiveSkill(skillId: string): Promise<ExecutiveSkillResult> {
+  return apiPost<ExecutiveSkillResult>('/admin/executive/skills/run', { skill_id: skillId });
 }
 
 export function fetchCenterStatus(): Promise<CenterStatus> {
-  return Promise.resolve({ status: 'unknown' } as CenterStatus);
+  return Promise.resolve({ status: 'unknown', provider_count: 0, config_path: '' } as CenterStatus);
 }
 
 export function fetchCenterSettings(): Promise<CenterSettings> {
-  return Promise.resolve({} as CenterSettings);
+  return Promise.resolve({ providers: [] } as CenterSettings);
 }

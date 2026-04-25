@@ -113,7 +113,7 @@ func TestSystemPrompt_FileOperationGuidance(t *testing.T) {
 		},
 		{
 			"ppt_disambiguation",
-			"PPT 特别注意",
+			"基于已有素材」不等于「内容处理」",
 		},
 	}
 

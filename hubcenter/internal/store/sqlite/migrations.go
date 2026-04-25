@@ -32,6 +32,8 @@ func RunMigrations(db *sql.DB) error {
 			port INTEGER NOT NULL DEFAULT 0,
 			visibility TEXT NOT NULL,
 			enrollment_mode TEXT NOT NULL,
+			corporate_email_domain TEXT NOT NULL DEFAULT '',
+			accept_public_signup INTEGER NOT NULL DEFAULT 0,
 			status TEXT NOT NULL DEFAULT 'offline',
 			is_disabled INTEGER NOT NULL DEFAULT 0,
 			disabled_reason TEXT NOT NULL DEFAULT '',
@@ -46,6 +48,15 @@ func RunMigrations(db *sql.DB) error {
 			hub_id TEXT NOT NULL,
 			email TEXT NOT NULL,
 			is_default INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS hub_domain_routes (
+			id TEXT PRIMARY KEY,
+			hub_id TEXT NOT NULL,
+			domain TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			priority INTEGER NOT NULL DEFAULT 100,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
@@ -70,6 +81,19 @@ func RunMigrations(db *sql.DB) error {
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			created_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS failure_event_logs (
+			id TEXT PRIMARY KEY,
+			category TEXT NOT NULL,
+			event_code TEXT NOT NULL,
+			message TEXT NOT NULL,
+			entity_id TEXT NOT NULL DEFAULT '',
+			email TEXT NOT NULL DEFAULT '',
+			client_ip TEXT NOT NULL DEFAULT '',
+			details_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_created_at ON failure_event_logs(created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_category_created_at ON failure_event_logs(category, created_at DESC);`,
 		`CREATE TABLE IF NOT EXISTS gossip_posts (
 			id TEXT PRIMARY KEY,
 			machine_id TEXT NOT NULL,
@@ -93,7 +117,7 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_gossip_comments_post_id ON gossip_comments(post_id);`,
-		// 閳光偓閳光偓 News (announcements) 閳光偓閳光偓
+		// 闁冲厜鍋撻柍鍏夊亾 News (announcements) 闁冲厜鍋撻柍鍏夊亾
 		`CREATE TABLE IF NOT EXISTS news_articles (
 			id TEXT PRIMARY KEY,
 			title TEXT NOT NULL,
@@ -118,8 +142,38 @@ func RunMigrations(db *sql.DB) error {
 	if err := ensureInvitationCodeRequiredColumn(db); err != nil {
 		return err
 	}
+	if err := ensureCorporateEmailDomainColumn(db); err != nil {
+		return err
+	}
+	if err := ensureAcceptPublicSignupColumn(db); err != nil {
+		return err
+	}
+	if err := ensureHubDomainRoutesTable(db); err != nil {
+		return err
+	}
+	if err := backfillPrimaryHubRoutes(db); err != nil {
+		return err
+	}
 	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_gossip_comments_unique_rating ON gossip_comments(post_id, machine_id) WHERE rating > 0`); err != nil {
 		return fmt.Errorf("create gossip rating unique index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_user_links_email_default ON hub_user_links(email, is_default, updated_at DESC)`); err != nil {
+		return fmt.Errorf("create hub_user_links email/default index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_user_links_hub_id ON hub_user_links(hub_id)`); err != nil {
+		return fmt.Errorf("create hub_user_links hub_id index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_instances_status_disabled ON hub_instances(status, is_disabled)`); err != nil {
+		return fmt.Errorf("create hub_instances status/disabled index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_instances_public_signup ON hub_instances(accept_public_signup, status, is_disabled)`); err != nil {
+		return fmt.Errorf("create hub_instances public signup index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_domain_routes_domain_enabled_priority ON hub_domain_routes(domain, enabled, priority, updated_at DESC)`); err != nil {
+		return fmt.Errorf("create hub_domain_routes domain index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_domain_routes_hub_id ON hub_domain_routes(hub_id)`); err != nil {
+		return fmt.Errorf("create hub_domain_routes hub_id index: %w", err)
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ha_sync_ops (
 		seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,6 +297,111 @@ func ensureInvitationCodeRequiredColumn(db *sql.DB) error {
 
 	if _, err := db.Exec(`ALTER TABLE hub_instances ADD COLUMN invitation_code_required BOOLEAN NOT NULL DEFAULT 0`); err != nil {
 		return fmt.Errorf("add hub invitation_code_required column: %w", err)
+	}
+	return nil
+}
+
+func ensureCorporateEmailDomainColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(hub_instances)`)
+	if err != nil {
+		return fmt.Errorf("inspect hub_instances columns: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return fmt.Errorf("scan hub_instances column: %w", err)
+		}
+		if name == "corporate_email_domain" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate hub_instances columns: %w", err)
+	}
+
+	if _, err := db.Exec(`ALTER TABLE hub_instances ADD COLUMN corporate_email_domain TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add hub corporate_email_domain column: %w", err)
+	}
+	return nil
+}
+
+func ensureAcceptPublicSignupColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(hub_instances)`)
+	if err != nil {
+		return fmt.Errorf("inspect hub_instances columns: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return fmt.Errorf("scan hub_instances column: %w", err)
+		}
+		if name == "accept_public_signup" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate hub_instances columns: %w", err)
+	}
+
+	if _, err := db.Exec(`ALTER TABLE hub_instances ADD COLUMN accept_public_signup INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add hub accept_public_signup column: %w", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE hub_instances
+		SET accept_public_signup = CASE
+			WHEN TRIM(corporate_email_domain) = '' AND LOWER(TRIM(visibility)) IN ('shared', 'public') THEN 1
+			ELSE 0
+		END
+	`); err != nil {
+		return fmt.Errorf("backfill hub accept_public_signup column: %w", err)
+	}
+	return nil
+}
+
+func ensureHubDomainRoutesTable(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS hub_domain_routes (
+		id TEXT PRIMARY KEY,
+		hub_id TEXT NOT NULL,
+		domain TEXT NOT NULL,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		priority INTEGER NOT NULL DEFAULT 100,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create hub_domain_routes: %w", err)
+	}
+	return nil
+}
+
+func backfillPrimaryHubRoutes(db *sql.DB) error {
+	if _, err := db.Exec(`
+		INSERT INTO hub_domain_routes (id, hub_id, domain, enabled, priority, created_at, updated_at)
+		SELECT 'hdr_primary_' || id, id, LOWER(TRIM(TRIM(corporate_email_domain, '@'), '.')), 1, 100, created_at, updated_at
+		FROM hub_instances
+		WHERE TRIM(corporate_email_domain) <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM hub_domain_routes r WHERE r.id = 'hdr_primary_' || hub_instances.id
+		  )
+	`); err != nil {
+		return fmt.Errorf("backfill hub_domain_routes: %w", err)
 	}
 	return nil
 }

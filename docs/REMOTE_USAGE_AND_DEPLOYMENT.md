@@ -133,6 +133,7 @@ Hub registration reports:
 - advertised `base_url`
 - `host`
 - `port`
+- optional `corporate_email_domain`
 
 Registration prefers the domain/host parsed from `server.public_base_url`. If that is missing, it falls back to auto-detected local IP plus the configured listening port.
 
@@ -141,6 +142,17 @@ For virtual-host deployments, you should always set:
 - `server.public_base_url`
 
 in Hub config.
+
+You can also set in Hub config:
+
+- `hub.corporate_email_domain`
+
+Routing rule for multi-hub deployment:
+
+- Set `hub.corporate_email_domain: rapidai.tech` on the Hub that should receive `*@rapidai.tech` users.
+- Leave `hub.corporate_email_domain` empty on the default catch-all Hub.
+- Hub Center will resolve exact company domain matches first, then fall back to the empty-domain Hub when no company-specific Hub matches.
+- Explicit user bindings inside Hub Center still take priority over this automatic routing.
 
 ## 8. PWA Login Flow
 
@@ -253,6 +265,7 @@ For a self-hosted deployment:
 3. Configure Hub:
    - `server.public_base_url`
    - `center.base_url`
+   - `hub.corporate_email_domain` when this Hub should own a company mail domain
    - `identity.enrollment_mode`
    - SMTP, if mail-based login is needed
 4. Initialize Hub admin.

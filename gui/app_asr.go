@@ -109,7 +109,7 @@ func (a *App) autoEnableASR() {
 }
 
 func (a *App) downloadASRFrom(url, destPath string, emitErrors bool) error {
-	return a.downloadModelFrom(url, destPath, emitErrors)
+	return a.downloadModelFromWithEvent(url, destPath, emitErrors, "asr-download-progress")
 }
 
 func (a *App) emitASRProgress(pct int, downloaded, total int64, errMsg string) {
@@ -151,7 +151,7 @@ func (a *App) backgroundPreloadASRModel() {
 
 	// GitHub first (3 retries)
 	for attempt := 0; attempt < 3; attempt++ {
-		if err := a.downloadModelFrom(asrModelDefaultURL, destPath, false); err == nil {
+		if err := a.downloadModelFromWithEvent(asrModelDefaultURL, destPath, false, "asr-download-progress"); err == nil {
 			cfg.ASREnabled = true
 			a.SaveConfig(cfg)
 			fmt.Println("[asr] background preload: download complete, auto-enabled")
@@ -166,7 +166,7 @@ func (a *App) backgroundPreloadASRModel() {
 		return
 	}
 	fallbackURL := hubURL + "/api/v1/models/" + asrModelFilename
-	if err := a.downloadModelFrom(fallbackURL, destPath, false); err == nil {
+	if err := a.downloadModelFromWithEvent(fallbackURL, destPath, false, "asr-download-progress"); err == nil {
 		cfg.ASREnabled = true
 		a.SaveConfig(cfg)
 		fmt.Println("[asr] background preload: hub download complete, auto-enabled")

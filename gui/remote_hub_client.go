@@ -136,6 +136,27 @@ func (c *RemoteHubClient) loadConfig() error {
 	return c.applyConfig(cfg)
 }
 
+// persistViewerToken saves a viewer token received from the hub auth.ok
+// response into the local config. This runs in a goroutine so it doesn't
+// block the WebSocket connect path. Uses LoadConfig → merge → SaveConfig
+// to avoid overwriting concurrent config changes.
+func (c *RemoteHubClient) persistViewerToken(token string) {
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		log.Printf("[hub-client] persistViewerToken: load config failed: %v", err)
+		return
+	}
+	if cfg.RemoteViewerToken == token {
+		return // already up to date
+	}
+	cfg.RemoteViewerToken = token
+	if err := c.app.SaveConfig(cfg); err != nil {
+		log.Printf("[hub-client] persistViewerToken: save config failed: %v", err)
+		return
+	}
+	log.Printf("[hub-client] viewer token persisted from auth.ok response")
+}
+
 func (c *RemoteHubClient) applyConfig(cfg corelib.AppConfig) error {
 	c.hubURL = strings.TrimRight(cfg.RemoteHubURL, "/")
 	c.machineID = cfg.RemoteMachineID
@@ -282,6 +303,18 @@ func (c *RemoteHubClient) connectLocked() error {
 		c.connected = false
 		c.lastError = "Machine authentication failed"
 		return errHubAuthFailed
+	}
+
+	// Extract viewer_token from auth.ok payload if present.
+	// This allows existing clients (which only have machine_token) to
+	// obtain a viewer_token for LLM service APIs without re-enrolling.
+	if authResp.Type == "auth.ok" && len(authResp.Payload) > 0 {
+		var authPayload struct {
+			ViewerToken string `json:"viewer_token"`
+		}
+		if json.Unmarshal(authResp.Payload, &authPayload) == nil && authPayload.ViewerToken != "" {
+			go c.persistViewerToken(authPayload.ViewerToken)
+		}
 	}
 
 	helloStart := time.Now()

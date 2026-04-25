@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -27,6 +28,15 @@ type LoopCallbacks interface {
 	GetLLMConfig() corelib.MaclawLLMConfig
 
 	// GetMaxIterations returns the maximum number of loop iterations.
+	// Implementations MUST use config.EffectiveMaxIterations(configuredValue)
+	// to ensure consistent behavior across all hosts. Example:
+	//
+	//   func (c *myCallbacks) GetMaxIterations() int {
+	//       return config.EffectiveMaxIterations(c.cfg.MaclawAgentMaxIterations)
+	//   }
+	//
+	// This ensures the same default (300), minimum (30), and maximum (300)
+	// are applied everywhere.
 	GetMaxIterations() int
 
 	// BuildSystemPrompt constructs the system prompt for the LLM.
@@ -99,7 +109,10 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 
 	maxIter := cb.GetMaxIterations()
 	if maxIter <= 0 {
-		maxIter = 30
+		// This should never happen if GetMaxIterations() is implemented correctly
+		// (using config.EffectiveMaxIterations). Log a warning to surface bugs.
+		log.Printf("[agent-loop] WARNING: GetMaxIterations() returned %d, using fallback. This indicates a bug in the LoopCallbacks implementation.", maxIter)
+		maxIter = config.EffectiveMaxIterations(0)
 	}
 
 	systemPrompt := cb.BuildSystemPrompt(userText, len(history) == 0)

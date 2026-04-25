@@ -25,7 +25,7 @@ func makeToolCall(name string) llm.ToolCall {
 func TestCodingGate_BlocklistContainsAllCodingTools(t *testing.T) {
 	// Coding session tools.
 	codingTools := []string{
-		"create_session", "bash", "write_file", "edit_file",
+		"create_session", "bash", "write_file", "edit_file", "edit_lines",
 		"craft_tool", "send_and_observe", "control_session",
 	}
 	// Browser automation tools.
@@ -71,33 +71,32 @@ func TestCodingGate_AllowlistContainsAllDeliveryTools(t *testing.T) {
 	}
 }
 
-// 4.4 Test newCodingToolGateConfig returns active=true for intentCoding + LoopKindChat + no skip signal.
-func TestCodingGate_ActiveForCodingChatNoSkip(t *testing.T) {
-	// "帮我写代码" triggers intentCoding via coding keywords.
+// 4.4 Test newCodingToolGateConfig without UIC returns inactive (degraded mode).
+// Without UIC, classifyTaskIntent returns ambiguous, so the gate cannot
+// confidently determine this is a coding task and stays inactive.
+func TestCodingGate_WithoutUIC_ReturnsInactive(t *testing.T) {
 	cfg := newCodingToolGateConfig("帮我写代码", LoopKindChat)
-	if !cfg.active {
-		t.Errorf("expected active=true, got false; reason=%s", cfg.reason)
+	if cfg.active {
+		t.Errorf("without UIC, expected active=false (degraded mode), got true; reason=%s", cfg.reason)
 	}
-	if cfg.intent != intentCoding {
-		t.Errorf("expected intent=coding, got %s", cfg.intent)
+	if cfg.intent != intentAmbiguous {
+		t.Errorf("without UIC, expected intent=ambiguous, got %s", cfg.intent)
 	}
 }
 
-// 4.5 Test newCodingToolGateConfig returns active=false for non-coding intents.
-func TestCodingGate_InactiveForNonCodingIntents(t *testing.T) {
-	cases := []struct {
-		text   string
-		intent taskIntent
-	}{
-		{"帮我翻译这段话", intentNonCoding},
-		{"ssh 到服务器看日志", intentSSH},
-		{"部署到线上", intentAmbiguous},
-		{"", intentUnknown},
+// 4.5 Test newCodingToolGateConfig without UIC returns inactive for all intents.
+// Without UIC, all messages return ambiguous → gate inactive.
+func TestCodingGate_WithoutUIC_AllInactive(t *testing.T) {
+	cases := []string{
+		"帮我翻译这段话",
+		"ssh 到服务器看日志",
+		"部署到线上",
+		"",
 	}
-	for _, tc := range cases {
-		cfg := newCodingToolGateConfig(tc.text, LoopKindChat)
+	for _, text := range cases {
+		cfg := newCodingToolGateConfig(text, LoopKindChat)
 		if cfg.active {
-			t.Errorf("text=%q: expected active=false for intent=%s, got true; reason=%s", tc.text, tc.intent, cfg.reason)
+			t.Errorf("text=%q: without UIC, expected active=false, got true; reason=%s", text, cfg.reason)
 		}
 	}
 }
@@ -278,12 +277,11 @@ func TestCodingGate_InactiveForBugFix(t *testing.T) {
 	}
 }
 
-// Test gate remains active for new project tasks that mention bugs.
-func TestCodingGate_ActiveForNewProjectWithBugMention(t *testing.T) {
-	// "开发" is a creation keyword, so even though "bug" is present,
-	// this is a new project task and should go through three-phase workflow.
+// Test gate without UIC stays inactive for mixed tasks (degraded mode).
+func TestCodingGate_WithoutUIC_MixedTaskInactive(t *testing.T) {
+	// Without UIC, classifyTaskIntent returns ambiguous regardless of keywords.
 	cfg := newCodingToolGateConfig("开发一个bug追踪系统", LoopKindChat)
-	if !cfg.active {
-		t.Errorf("expected active=true for new project task, got false; reason=%s", cfg.reason)
+	if cfg.active {
+		t.Errorf("without UIC, expected active=false (degraded mode), got true; reason=%s", cfg.reason)
 	}
 }

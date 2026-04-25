@@ -163,7 +163,7 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 	// Apply nickname from hello payload (persisted on client side).
 	var assignedNickname string
 	if nn := strings.TrimSpace(hello.Nickname); nn != "" {
-		// Client reported a nickname — check for Alias conflict with
+		// Client reported a nickname 闂?check for Alias conflict with
 		// same-user online machines before accepting it.
 		aliasConflict := false
 		if conn != nil {
@@ -183,7 +183,7 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 			}
 		}
 		if aliasConflict {
-			// Nickname conflicts with another online device — reassign.
+			// Nickname conflicts with another online device 闂?reassign.
 			assignedNickname = s.pickNicknameLocked(machineID, conn)
 			if assignedNickname != "" {
 				info.Alias = assignedNickname
@@ -194,7 +194,7 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 			log.Printf("[device] MarkOnline: nickname=%q for machine_id=%s", nn, machineID)
 		}
 	} else if info.Alias == "" {
-		// No nickname provided and none previously set — auto-assign one
+		// No nickname provided and none previously set 闂?auto-assign one
 		// so the device has a stable identity in IM from the start.
 		assignedNickname = s.pickNicknameLocked(machineID, conn)
 		if assignedNickname != "" {
@@ -278,7 +278,7 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 			"type": "machine.name_conflict",
 			"payload": map[string]any{
 				"name":    conflictWith,
-				"message": fmt.Sprintf("昵称 %q 已被您的另一台在线设备使用，请修改昵称以便通过 IM 区分设备。", conflictWith),
+				"message": fmt.Sprintf("Machine name %q is already used by another online device. Rename it so IM can tell them apart.", conflictWith),
 			},
 		})
 	}
@@ -477,58 +477,17 @@ func (s *Service) ListMachines(ctx context.Context, userID string) ([]MachineRun
 	s.runtime.mu.RLock()
 	defer s.runtime.mu.RUnlock()
 
-	out := make([]MachineRuntimeInfo, 0, len(items))
+	out := make([]MachineRuntimeInfo, 0, len(items)+len(s.runtime.desktopsByMachine))
+	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		info := MachineRuntimeInfo{
-			MachineID:            item.ID,
-			UserID:               item.UserID,
-			Name:                 item.Name,
-			Alias:                item.Alias,
-			Platform:             item.Platform,
-			Hostname:             item.Hostname,
-			Arch:                 item.Arch,
-			AppVersion:           item.AppVersion,
-			HeartbeatIntervalSec: item.HeartbeatSec,
-			Status:               item.Status,
-			LastSeenAt:           item.LastSeenAt,
+		out = append(out, s.mergeMachineInfo(item))
+		seen[item.ID] = struct{}{}
+	}
+	for machineID, conn := range s.runtime.desktopsByMachine {
+		if _, ok := seen[machineID]; ok || conn == nil || conn.UserID != userID {
+			continue
 		}
-		if meta, ok := s.runtime.metadataByMachine[item.ID]; ok {
-			if info.Name == "" {
-				info.Name = meta.Name
-			}
-			// Runtime Alias takes precedence over DB — unlike other fields
-			// which use DB-first fallback, Alias uses runtime-first override
-			// because the runtime value reflects the most recent nickname
-			// update from the machine (best-effort persisted to DB).
-			if meta.Alias != "" {
-				info.Alias = meta.Alias
-			}
-			if info.Platform == "" {
-				info.Platform = meta.Platform
-			}
-			if info.Hostname == "" {
-				info.Hostname = meta.Hostname
-			}
-			if info.Arch == "" {
-				info.Arch = meta.Arch
-			}
-			if info.AppVersion == "" {
-				info.AppVersion = meta.AppVersion
-			}
-			if info.HeartbeatIntervalSec == 0 {
-				info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
-			}
-			info.ActiveSessions = meta.ActiveSessions
-			info.LLMConfigured = meta.LLMConfigured
-			if meta.LastSeenAt != nil {
-				info.LastSeenAt = meta.LastSeenAt
-			}
-		}
-		if conn, ok := s.runtime.desktopsByMachine[item.ID]; ok && conn != nil && conn.Conn != nil {
-			info.Role = conn.Role
-			info.Online = true
-		}
-		out = append(out, info)
+		out = append(out, s.runtimeOnlyMachineInfo(machineID, conn))
 	}
 	return out, nil
 }
@@ -551,61 +510,108 @@ func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, er
 		log.Printf("[device] ListAllMachines: runtime entry machine_id=%s conn_nil=%v ws_nil=%v user_id=%s", mid, conn == nil, conn != nil && conn.Conn == nil, safeConnUserID(conn))
 	}
 
-	out := make([]MachineRuntimeInfo, 0, len(items))
+	out := make([]MachineRuntimeInfo, 0, len(items)+len(s.runtime.desktopsByMachine))
+	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		info := MachineRuntimeInfo{
-			MachineID:            item.ID,
-			UserID:               item.UserID,
-			Name:                 item.Name,
-			Alias:                item.Alias,
-			Platform:             item.Platform,
-			Hostname:             item.Hostname,
-			Arch:                 item.Arch,
-			AppVersion:           item.AppVersion,
-			HeartbeatIntervalSec: item.HeartbeatSec,
-			Status:               item.Status,
-			LastSeenAt:           item.LastSeenAt,
+		out = append(out, s.mergeMachineInfo(item))
+		seen[item.ID] = struct{}{}
+	}
+	for machineID, conn := range s.runtime.desktopsByMachine {
+		if _, ok := seen[machineID]; ok || conn == nil {
+			continue
 		}
-		if meta, ok := s.runtime.metadataByMachine[item.ID]; ok {
-			if info.Name == "" {
-				info.Name = meta.Name
-			}
-			// Runtime Alias override — see comment in ListMachines.
-			if meta.Alias != "" {
-				info.Alias = meta.Alias
-			}
-			if info.Platform == "" {
-				info.Platform = meta.Platform
-			}
-			if info.Hostname == "" {
-				info.Hostname = meta.Hostname
-			}
-			if info.Arch == "" {
-				info.Arch = meta.Arch
-			}
-			if info.AppVersion == "" {
-				info.AppVersion = meta.AppVersion
-			}
-			if info.HeartbeatIntervalSec == 0 {
-				info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
-			}
-			info.ActiveSessions = meta.ActiveSessions
-			info.LLMConfigured = meta.LLMConfigured
-			if meta.LastSeenAt != nil {
-				info.LastSeenAt = meta.LastSeenAt
-			}
-		}
-		if conn, ok := s.runtime.desktopsByMachine[item.ID]; ok && conn != nil && conn.Conn != nil {
-			info.Role = conn.Role
-			info.Online = true
-			log.Printf("[device] ListAllMachines: machine_id=%s -> ONLINE (conn found, ws valid)", item.ID)
-		} else {
-			log.Printf("[device] ListAllMachines: machine_id=%s -> OFFLINE (in_map=%v, conn_nil=%v, ws_nil=%v, db_status=%s)",
-				item.ID, ok, !ok || conn == nil, ok && conn != nil && conn.Conn == nil, item.Status)
-		}
-		out = append(out, info)
+		log.Printf("[device] ListAllMachines: machine_id=%s -> ONLINE (runtime-only)", machineID)
+		out = append(out, s.runtimeOnlyMachineInfo(machineID, conn))
 	}
 	return out, nil
+}
+
+func (s *Service) mergeMachineInfo(item *store.Machine) MachineRuntimeInfo {
+	info := MachineRuntimeInfo{
+		MachineID:            item.ID,
+		UserID:               item.UserID,
+		Name:                 item.Name,
+		Alias:                item.Alias,
+		Platform:             item.Platform,
+		Hostname:             item.Hostname,
+		Arch:                 item.Arch,
+		AppVersion:           item.AppVersion,
+		HeartbeatIntervalSec: item.HeartbeatSec,
+		Status:               item.Status,
+		LastSeenAt:           item.LastSeenAt,
+	}
+	if meta, ok := s.runtime.metadataByMachine[item.ID]; ok {
+		if info.Name == "" {
+			info.Name = meta.Name
+		}
+		if meta.Alias != "" {
+			info.Alias = meta.Alias
+		}
+		if info.Platform == "" {
+			info.Platform = meta.Platform
+		}
+		if info.Hostname == "" {
+			info.Hostname = meta.Hostname
+		}
+		if info.Arch == "" {
+			info.Arch = meta.Arch
+		}
+		if info.AppVersion == "" {
+			info.AppVersion = meta.AppVersion
+		}
+		if info.HeartbeatIntervalSec == 0 {
+			info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
+		}
+		info.ActiveSessions = meta.ActiveSessions
+		info.LLMConfigured = meta.LLMConfigured
+		if meta.LastSeenAt != nil {
+			info.LastSeenAt = meta.LastSeenAt
+		}
+	}
+	if conn, ok := s.runtime.desktopsByMachine[item.ID]; ok && conn != nil {
+		info.Role = conn.Role
+		info.Online = true
+		if info.Status == "" || strings.EqualFold(info.Status, "offline") {
+			info.Status = "online"
+		}
+		log.Printf("[device] mergeMachineInfo: machine_id=%s -> ONLINE (conn found, ws valid)", item.ID)
+	} else {
+		log.Printf("[device] mergeMachineInfo: machine_id=%s -> OFFLINE (db_status=%s)", item.ID, item.Status)
+	}
+	return info
+}
+
+func (s *Service) runtimeOnlyMachineInfo(machineID string, conn *ws.ConnContext) MachineRuntimeInfo {
+	info := MachineRuntimeInfo{
+		MachineID: machineID,
+		Online:    conn != nil,
+		Status:    "online",
+	}
+	if conn != nil {
+		info.UserID = conn.UserID
+		info.Role = conn.Role
+	}
+	if meta, ok := s.runtime.metadataByMachine[machineID]; ok {
+		info.Name = meta.Name
+		info.Alias = meta.Alias
+		info.Platform = meta.Platform
+		info.Hostname = meta.Hostname
+		info.Arch = meta.Arch
+		info.AppVersion = meta.AppVersion
+		info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
+		info.ActiveSessions = meta.ActiveSessions
+		info.LLMConfigured = meta.LLMConfigured
+		if meta.LastSeenAt != nil {
+			info.LastSeenAt = meta.LastSeenAt
+		}
+		if strings.TrimSpace(meta.Status) != "" {
+			info.Status = meta.Status
+		}
+	}
+	if !info.Online && strings.TrimSpace(info.Status) == "" {
+		info.Status = "offline"
+	}
+	return info
 }
 
 func (s *Service) DeleteMachine(ctx context.Context, machineID string) error {
@@ -638,7 +644,7 @@ func (s *Service) SetAlias(ctx context.Context, machineID string, alias string) 
 	s.setRuntimeAlias(machineID, alias)
 	log.Printf("[device] SetAlias: machine_id=%s alias=%q", machineID, alias)
 
-	// Best-effort DB persistence — failure is logged but does not block the caller.
+	// Best-effort DB persistence 闂?failure is logged but does not block the caller.
 	if s.repo != nil {
 		if err := s.repo.UpdateAlias(ctx, machineID, alias); err != nil {
 			log.Printf("[device] SetAlias WARNING: DB persist failed for machine_id=%s: %v", machineID, err)
@@ -786,7 +792,7 @@ func defaultMachinePlatform(v string) string {
 
 // defaultNicknames is the pool of friendly Chinese nicknames auto-assigned
 // to machines that connect without a nickname.
-var defaultNicknames = []string{"张三", "李四", "王五", "赵六", "孙七"}
+var defaultNicknames = []string{"Alpha", "Bravo", "Charlie", "Delta", "Echo"}
 
 // pickNicknameLocked selects a nickname for the given machine from the pool,
 // avoiding names already used by other online machines of the same user.
@@ -814,9 +820,9 @@ func (s *Service) pickNicknameLocked(machineID string, conn *ws.ConnContext) str
 			return n
 		}
 	}
-	// Fallback: 助手N
+	// Fallback: 闂備礁鎲￠弻锟犲疾濠婂嫭娅犳繛?
 	for i := len(defaultNicknames) + 1; ; i++ {
-		n := fmt.Sprintf("助手%d", i)
+		n := fmt.Sprintf("Machine-%d", i)
 		if !used[n] {
 			return n
 		}

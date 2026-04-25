@@ -1,0 +1,17 @@
+﻿{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "iWorker",
+  "outputfilename": "iWorker",
+  "frontend:install": "npm install --cache ./.npm_cache",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "info": {
+    "productName": "iWorker",
+    "productVersion": "0.1.0",
+    "companyName": "RapidAI",
+    "copyright": "Copyright (C) 2026 RapidAI",
+    "comments": "iWorker: your digital colleague workspace."
+  }
+}
+

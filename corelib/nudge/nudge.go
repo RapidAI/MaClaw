@@ -19,6 +19,15 @@ type NudgeEvent struct {
 	// SkillName is the name of the skill involved (used for skill_failure_workaround events).
 	SkillName string
 
+	// ErrorClass is the unified error classification from corelib/skill.ClassifyStepError
+	// (used for skill_failure_workaround events to provide actionable repair hints).
+	ErrorClass string
+
+	// SelfRepairAttempted indicates whether the self-repair system already
+	// attempted to fix this skill. When true, the nudge message changes from
+	// "consider patching" to "self-repair was attempted but failed".
+	SelfRepairAttempted bool
+
 	// ToolCallCount is the number of tool calls in the agent loop (used for complex_task events).
 	ToolCallCount int
 
@@ -118,17 +127,31 @@ func (t *NudgeTracker) RecordNudge(event NudgeEvent) {
 }
 
 // NudgeMessage returns the appropriate system message text for the given event type.
+// Messages are in Chinese (matching the target user base) and include actionable
+// information when available (error class, self-repair status).
 func NudgeMessage(event NudgeEvent) string {
 	switch event.Type {
 	case ComplexTask:
-		return "This was a complex task. Consider saving the approach as a skill for future reuse."
+		return "刚才的任务比较复杂（多步工具调用）。可以考虑将这个方法保存为 Skill，下次遇到类似任务时直接复用。"
 	case SkillFailureWorkaround:
+		if event.SelfRepairAttempted {
+			return fmt.Sprintf(
+				"Skill「%s」执行失败，系统已尝试自动修复但未成功。可以用 manage_skill(action=patch, skill_name=\"%s\") 手动修补。",
+				event.SkillName, event.SkillName,
+			)
+		}
+		if event.ErrorClass != "" {
+			return fmt.Sprintf(
+				"Skill「%s」执行失败（错误类型: %s）。可以用 manage_skill(action=patch, skill_name=\"%s\") 修补它。",
+				event.SkillName, event.ErrorClass, event.SkillName,
+			)
+		}
 		return fmt.Sprintf(
-			"The skill '%s' didn't cover this scenario. Consider patching it with manage_skill(action=patch).",
-			event.SkillName,
+			"Skill「%s」未能覆盖这个场景。可以用 manage_skill(action=patch, skill_name=\"%s\") 修补它。",
+			event.SkillName, event.SkillName,
 		)
 	case UserCorrection:
-		return "The user corrected your approach. Consider saving this as a memory entry or skill."
+		return "用户纠正了你的方法。可以考虑将正确的方法保存为记忆条目或 Skill，避免下次重复犯错。"
 	default:
 		return ""
 	}

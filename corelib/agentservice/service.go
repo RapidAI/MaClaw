@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -119,9 +121,28 @@ func (s *Service) CreateTenant(ctx context.Context, in CreateTenantInput) (*Tena
 	return &t, nil
 }
 
-func (s *Service) ListTenants(ctx context.Context) ([]Tenant, error) {
+func (s *Service) ListTenants(ctx context.Context, in ListTenantsInput) ([]Tenant, error) {
 	_ = ctx
-	return s.store.ListTenants()
+	items, err := s.store.ListTenants()
+	if err != nil {
+		return nil, err
+	}
+	status := strings.TrimSpace(string(in.Status))
+	name := strings.ToLower(strings.TrimSpace(in.Name))
+	if status == "" && name == "" {
+		return items, nil
+	}
+	filtered := make([]Tenant, 0, len(items))
+	for _, item := range items {
+		if status != "" && string(item.Status) != status {
+			continue
+		}
+		if name != "" && !strings.Contains(strings.ToLower(item.Name), name) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 func (s *Service) GetTenant(ctx context.Context, tenantID string) (*Tenant, error) {
@@ -152,12 +173,49 @@ func (s *Service) UpdateTenant(ctx context.Context, tenantID string, in UpdateTe
 		}
 		t.Status = *in.Status
 	}
+	if err := applyQuotaUpdate(&t.Quota, in.MaxInstances, in.MaxSessions, in.MaxMessages, in.MaxRuns); err != nil {
+		return nil, err
+	}
 	t.UpdatedAt = s.now()
 	if err := s.store.SaveTenant(t); err != nil {
 		return nil, err
 	}
 	_ = s.recordAudit(auditRecord{TenantID: t.ID, Action: "tenant.updated", ResourceType: "tenant", ResourceID: t.ID, ActorType: "admin", Metadata: map[string]string{"status": string(t.Status)}})
 	return &t, nil
+}
+
+func (s *Service) DeleteTenant(ctx context.Context, tenantID string) error {
+	_ = ctx
+	if _, err := s.store.GetTenant(tenantID); err != nil {
+		return err
+	}
+	users, err := s.store.ListUsers(tenantID)
+	if err != nil {
+		return err
+	}
+	for _, user := range users {
+		instances, instErr := s.store.ListInstances(tenantID, user.ID)
+		if instErr != nil {
+			return instErr
+		}
+		for _, inst := range instances {
+			busy, busyErr := s.hasRunningRuns(tenantID, user.ID, inst.ID, "")
+			if busyErr != nil {
+				return busyErr
+			}
+			if busy {
+				return ErrTenantBusy
+			}
+		}
+	}
+	if err := s.store.DeleteTenant(tenantID); err != nil {
+		return err
+	}
+	if err := secureRemoveAllWithin(filepath.Join(s.dataRoot, "tenants"), filepath.Join(s.dataRoot, "tenants", slugID(tenantID))); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: tenantID, Action: "tenant.deleted", ResourceType: "tenant", ResourceID: tenantID, ActorType: "admin"})
+	return nil
 }
 
 func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, error) {
@@ -194,12 +252,35 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, er
 	return &u, nil
 }
 
-func (s *Service) ListUsers(ctx context.Context, tenantID string) ([]User, error) {
+func (s *Service) ListUsers(ctx context.Context, tenantID string, in ListUsersAdminInput) ([]User, error) {
 	_ = ctx
 	if _, err := s.store.GetTenant(tenantID); err != nil {
 		return nil, err
 	}
-	return s.store.ListUsers(tenantID)
+	items, err := s.store.ListUsers(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	status := strings.TrimSpace(string(in.Status))
+	name := strings.ToLower(strings.TrimSpace(in.Name))
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+	if status == "" && name == "" && email == "" {
+		return items, nil
+	}
+	filtered := make([]User, 0, len(items))
+	for _, item := range items {
+		if status != "" && string(item.Status) != status {
+			continue
+		}
+		if name != "" && !strings.Contains(strings.ToLower(item.Name), name) {
+			continue
+		}
+		if email != "" && !strings.Contains(strings.ToLower(item.Email), email) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 func (s *Service) GetUser(ctx context.Context, tenantID, userID string) (*User, error) {
@@ -236,12 +317,46 @@ func (s *Service) UpdateUser(ctx context.Context, tenantID, userID string, in Up
 		}
 		u.Status = *in.Status
 	}
+	if err := applyQuotaUpdate(&u.Quota, in.MaxInstances, in.MaxSessions, in.MaxMessages, in.MaxRuns); err != nil {
+		return nil, err
+	}
 	u.UpdatedAt = s.now()
 	if err := s.store.SaveUser(u); err != nil {
 		return nil, err
 	}
 	_ = s.recordAudit(auditRecord{TenantID: u.TenantID, UserID: u.ID, Action: "user.updated", ResourceType: "user", ResourceID: u.ID, ActorType: "admin", Metadata: map[string]string{"status": string(u.Status)}})
 	return &u, nil
+}
+
+func (s *Service) DeleteUser(ctx context.Context, tenantID, userID string) error {
+	_ = ctx
+	if _, err := s.store.GetTenant(tenantID); err != nil {
+		return err
+	}
+	if _, err := s.store.GetUser(tenantID, userID); err != nil {
+		return err
+	}
+	instances, err := s.store.ListInstances(tenantID, userID)
+	if err != nil {
+		return err
+	}
+	for _, inst := range instances {
+		busy, busyErr := s.hasRunningRuns(tenantID, userID, inst.ID, "")
+		if busyErr != nil {
+			return busyErr
+		}
+		if busy {
+			return ErrUserBusy
+		}
+	}
+	if err := s.store.DeleteUser(tenantID, userID); err != nil {
+		return err
+	}
+	if err := secureRemoveAllWithin(filepath.Join(s.dataRoot, "tenants", slugID(tenantID), "users"), s.userRoot(tenantID, userID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: tenantID, UserID: userID, Action: "user.deleted", ResourceType: "user", ResourceID: userID, ActorType: "admin"})
+	return nil
 }
 
 func (s *Service) CreateCredential(ctx context.Context, in CreateCredentialInput) (*Credential, error) {
@@ -269,6 +384,7 @@ func (s *Service) CreateCredential(ctx context.Context, in CreateCredentialInput
 		APIKeyPrefix: deriveAPIKeyPrefix(apiKey),
 		APIKeyHash:   hashAPIKey(apiKey),
 		Status:       CredentialStatusActive,
+		TokenVersion: 1,
 		SecretDigest: digest,
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -301,6 +417,90 @@ func (s *Service) ListCredentials(ctx context.Context, tenantID, userID string) 
 	return items, nil
 }
 
+func (s *Service) GetCredential(ctx context.Context, tenantID, userID, credentialID string) (*Credential, error) {
+	_ = ctx
+	if _, err := s.store.GetTenant(tenantID); err != nil {
+		return nil, err
+	}
+	if _, err := s.store.GetUser(tenantID, userID); err != nil {
+		return nil, err
+	}
+	cred, err := s.store.GetCredential(tenantID, userID, credentialID)
+	if err != nil {
+		return nil, err
+	}
+	cred = sanitizeCredential(cred)
+	return &cred, nil
+}
+
+func (s *Service) UpdateCredential(ctx context.Context, tenantID, userID, credentialID string, in UpdateCredentialInput) (*Credential, error) {
+	_ = ctx
+	if _, err := s.store.GetTenant(tenantID); err != nil {
+		return nil, err
+	}
+	if _, err := s.store.GetUser(tenantID, userID); err != nil {
+		return nil, err
+	}
+	cred, err := s.store.GetCredential(tenantID, userID, credentialID)
+	if err != nil {
+		return nil, err
+	}
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+		cred.Name = name
+	}
+	if in.Status != nil {
+		if !validCredentialStatus(*in.Status) {
+			return nil, fmt.Errorf("invalid credential status")
+		}
+		if credentialStatus(cred) != *in.Status {
+			cred.TokenVersion = credentialTokenVersion(cred) + 1
+		}
+		cred.Status = *in.Status
+	}
+	cred.UpdatedAt = s.now()
+	if err := s.store.SaveCredential(cred); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: cred.TenantID, UserID: cred.UserID, Action: "credential.updated", ResourceType: "credential", ResourceID: cred.ID, ActorType: "admin", Metadata: map[string]string{"status": string(credentialStatus(cred))}})
+	cred = sanitizeCredential(cred)
+	return &cred, nil
+}
+
+func (s *Service) RotateCredentialSecret(ctx context.Context, tenantID, userID, credentialID string, in RotateCredentialSecretInput) (*Credential, error) {
+	_ = ctx
+	if _, err := s.store.GetTenant(tenantID); err != nil {
+		return nil, err
+	}
+	if _, err := s.store.GetUser(tenantID, userID); err != nil {
+		return nil, err
+	}
+	apiSecret := strings.TrimSpace(in.APISecret)
+	if apiSecret == "" {
+		return nil, fmt.Errorf("api_secret is required")
+	}
+	cred, err := s.store.GetCredential(tenantID, userID, credentialID)
+	if err != nil {
+		return nil, err
+	}
+	digest := HashSecretWithPepper(apiSecret, s.credentialPepper)
+	if digest == "" {
+		return nil, fmt.Errorf("failed to derive credential secret")
+	}
+	cred.SecretDigest = digest
+	cred.TokenVersion = credentialTokenVersion(cred) + 1
+	cred.UpdatedAt = s.now()
+	if err := s.store.SaveCredential(cred); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: cred.TenantID, UserID: cred.UserID, Action: "credential.secret_rotated", ResourceType: "credential", ResourceID: cred.ID, ActorType: "admin"})
+	cred = sanitizeCredential(cred)
+	return &cred, nil
+}
+
 func (s *Service) RevokeCredential(ctx context.Context, tenantID, userID, credentialID string) (*Credential, error) {
 	_ = ctx
 	if _, err := s.store.GetTenant(tenantID); err != nil {
@@ -314,6 +514,7 @@ func (s *Service) RevokeCredential(ctx context.Context, tenantID, userID, creden
 		return nil, err
 	}
 	cred.Status = CredentialStatusRevoked
+	cred.TokenVersion = credentialTokenVersion(cred) + 1
 	cred.UpdatedAt = s.now()
 	if err := s.store.SaveCredential(cred); err != nil {
 		return nil, err
@@ -336,7 +537,7 @@ func (s *Service) IssueToken(ctx context.Context, in IssueTokenInput) (*IssueTok
 		return nil, err
 	}
 	p := Principal{TenantID: cred.TenantID, UserID: cred.UserID, Roles: []string{"user"}}
-	token, exp, err := s.tokens.IssueForCredential(p, cred.ID)
+	token, exp, err := s.tokens.IssueForCredential(p, cred.ID, credentialTokenVersion(cred))
 	if err != nil {
 		return nil, err
 	}
@@ -375,13 +576,16 @@ func (s *Service) recordTokenAuthEvent(apiKey, remoteIP, reason, action string) 
 }
 
 func (s *Service) Authenticate(accessToken string) (*Principal, error) {
-	p, _, credentialID, err := s.tokens.Parse(accessToken)
+	p, _, credentialID, credentialVersion, err := s.tokens.Parse(accessToken)
 	if err != nil {
 		return nil, ErrUnauthorized
 	}
 	if strings.TrimSpace(credentialID) != "" {
 		cred, credErr := s.store.GetCredential(p.TenantID, p.UserID, credentialID)
 		if credErr != nil || credentialStatus(cred) != CredentialStatusActive {
+			return nil, ErrUnauthorized
+		}
+		if credentialVersion > 0 && credentialTokenVersion(cred) != credentialVersion {
 			return nil, ErrUnauthorized
 		}
 	}
@@ -478,6 +682,9 @@ func (s *Service) CreateInstance(ctx context.Context, p Principal, in CreateInst
 		return nil, err
 	}
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
+		return nil, err
+	}
+	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricInstances); err != nil {
 		return nil, err
 	}
 	validation, err := s.ValidateUserConfig(ctx, p)
@@ -704,6 +911,9 @@ func (s *Service) ListInstances(ctx context.Context, p Principal) ([]Instance, e
 func (s *Service) CreateSession(ctx context.Context, p Principal, instanceID string, in CreateSessionInput) (*Session, error) {
 	_ = ctx
 	if _, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID); err != nil {
+		return nil, err
+	}
+	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricSessions); err != nil {
 		return nil, err
 	}
 	now := s.now()
@@ -1027,6 +1237,12 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	if content == "" {
 		return nil, nil, fmt.Errorf("content is required")
 	}
+	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricMessages); err != nil {
+		return nil, nil, err
+	}
+	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricRuns); err != nil {
+		return nil, nil, err
+	}
 	effectiveContent, pendingAskReq := buildEffectiveUserContent(sess, content)
 	now := s.now()
 	userMsg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Metadata: cloneMap(in.Metadata), CreatedAt: now}
@@ -1195,19 +1411,1016 @@ func (s *Service) ListRuns(ctx context.Context, p Principal, instanceID string, 
 	return s.enrichRuns(filtered)
 }
 
+type quotaMetric string
+
+const (
+	quotaMetricInstances quotaMetric = "instances"
+	quotaMetricSessions  quotaMetric = "sessions"
+	quotaMetricMessages  quotaMetric = "messages"
+	quotaMetricRuns      quotaMetric = "runs"
+)
+
+func applyQuotaUpdate(quota *TenantQuota, maxInstances, maxSessions, maxMessages, maxRuns *int) error {
+	if quota == nil {
+		return nil
+	}
+	if maxInstances != nil {
+		if *maxInstances < 0 {
+			return fmt.Errorf("max_instances must be >= 0")
+		}
+		quota.MaxInstances = *maxInstances
+	}
+	if maxSessions != nil {
+		if *maxSessions < 0 {
+			return fmt.Errorf("max_sessions must be >= 0")
+		}
+		quota.MaxSessions = *maxSessions
+	}
+	if maxMessages != nil {
+		if *maxMessages < 0 {
+			return fmt.Errorf("max_messages must be >= 0")
+		}
+		quota.MaxMessages = *maxMessages
+	}
+	if maxRuns != nil {
+		if *maxRuns < 0 {
+			return fmt.Errorf("max_runs must be >= 0")
+		}
+		quota.MaxRuns = *maxRuns
+	}
+	return nil
+}
+
+func effectiveQuotaLimit(tenantQuota, userQuota TenantQuota, metric quotaMetric) int {
+	tenantLimit := quotaValue(tenantQuota, metric)
+	userLimit := quotaValue(userQuota, metric)
+	if tenantLimit == 0 {
+		return userLimit
+	}
+	if userLimit == 0 {
+		return tenantLimit
+	}
+	if tenantLimit < userLimit {
+		return tenantLimit
+	}
+	return userLimit
+}
+
+func quotaValue(quota TenantQuota, metric quotaMetric) int {
+	switch metric {
+	case quotaMetricInstances:
+		return quota.MaxInstances
+	case quotaMetricSessions:
+		return quota.MaxSessions
+	case quotaMetricMessages:
+		return quota.MaxMessages
+	case quotaMetricRuns:
+		return quota.MaxRuns
+	default:
+		return 0
+	}
+}
+
+func (s *Service) enforceQuotaLimit(tenantID, userID string, metric quotaMetric) error {
+	tenant, err := s.store.GetTenant(tenantID)
+	if err != nil {
+		return err
+	}
+	user, err := s.store.GetUser(tenantID, userID)
+	if err != nil {
+		return err
+	}
+	limit := effectiveQuotaLimit(tenant.Quota, user.Quota, metric)
+	if limit <= 0 {
+		return nil
+	}
+	count, err := s.currentQuotaUsage(tenantID, userID, metric)
+	if err != nil {
+		return err
+	}
+	if count >= limit {
+		return fmt.Errorf("%w: %s limit reached (%d)", ErrQuotaExceeded, metric, limit)
+	}
+	return nil
+}
+
+func (s *Service) currentQuotaUsage(tenantID, userID string, metric quotaMetric) (int, error) {
+	instances, err := s.store.ListInstances(tenantID, userID)
+	if err != nil {
+		return 0, err
+	}
+	switch metric {
+	case quotaMetricInstances:
+		return len(instances), nil
+	case quotaMetricSessions, quotaMetricMessages, quotaMetricRuns:
+		count := 0
+		for _, inst := range instances {
+			sessions, err := s.store.ListSessions(tenantID, userID, inst.ID)
+			if err != nil {
+				return 0, err
+			}
+			if metric == quotaMetricSessions {
+				count += len(sessions)
+				continue
+			}
+			if metric == quotaMetricRuns {
+				runs, err := s.store.ListRuns(tenantID, userID, inst.ID)
+				if err != nil {
+					return 0, err
+				}
+				count += len(runs)
+				continue
+			}
+			for _, sess := range sessions {
+				messages, err := s.store.ListMessages(sess.ID)
+				if err != nil {
+					return 0, err
+				}
+				count += len(messages)
+			}
+		}
+		return count, nil
+	default:
+		return 0, nil
+	}
+}
+func mergeQuota(tenantQuota, userQuota TenantQuota) TenantQuota {
+	return TenantQuota{
+		MaxInstances: effectiveQuotaLimit(tenantQuota, userQuota, quotaMetricInstances),
+		MaxSessions:  effectiveQuotaLimit(tenantQuota, userQuota, quotaMetricSessions),
+		MaxMessages:  effectiveQuotaLimit(tenantQuota, userQuota, quotaMetricMessages),
+		MaxRuns:      effectiveQuotaLimit(tenantQuota, userQuota, quotaMetricRuns),
+	}
+}
+
+func buildQuotaUsageItem(limit, used int) QuotaUsageItem {
+	item := QuotaUsageItem{Limit: limit, Used: used}
+	if limit <= 0 {
+		item.Unlimited = true
+		item.Limit = 0
+		return item
+	}
+	remaining := limit - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	item.Remaining = &remaining
+	return item
+}
+
+func buildQuotaUsageSnapshot(limit TenantQuota, usage *UsageSummary) QuotaUsageSnapshot {
+	if usage == nil {
+		usage = &UsageSummary{}
+	}
+	return QuotaUsageSnapshot{
+		Instances: buildQuotaUsageItem(limit.MaxInstances, usage.Instances),
+		Sessions:  buildQuotaUsageItem(limit.MaxSessions, usage.Sessions),
+		Messages:  buildQuotaUsageItem(limit.MaxMessages, usage.Messages),
+		Runs:      buildQuotaUsageItem(limit.MaxRuns, usage.Runs),
+	}
+}
 func (s *Service) GetUsageSummary(ctx context.Context, p Principal) (*UsageSummary, error) {
 	_ = ctx
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
-	instances, err := s.store.ListInstances(p.TenantID, p.UserID)
+	return s.buildUsageSummary(p.TenantID, p.UserID)
+}
+
+func (s *Service) GetAdminOverview(ctx context.Context) (*AdminOverview, error) {
+	_ = ctx
+	tenants, err := s.store.ListTenants()
 	if err != nil {
 		return nil, err
 	}
+	overview := &AdminOverview{Tenants: len(tenants), RunsByStatus: map[RunStatus]int{}}
+	for _, tenant := range tenants {
+		if tenant.Status == TenantStatusDisabled {
+			overview.DisabledTenants++
+		} else {
+			overview.ActiveTenants++
+		}
+		users, err := s.store.ListUsers(tenant.ID)
+		if err != nil {
+			return nil, err
+		}
+		overview.Users += len(users)
+		for _, user := range users {
+			if user.Status == UserStatusDisabled {
+				overview.DisabledUsers++
+			} else {
+				overview.ActiveUsers++
+			}
+			usage, err := s.buildUsageSummary(tenant.ID, user.ID)
+			if err != nil {
+				return nil, err
+			}
+			overview.Instances += usage.Instances
+			overview.ReadyInstances += usage.ReadyInstances
+			overview.StoppedInstances += usage.StoppedInstances
+			overview.Sessions += usage.Sessions
+			overview.Messages += usage.Messages
+			overview.UserMessages += usage.UserMessages
+			overview.AssistantMessages += usage.AssistantMessages
+			overview.Runs += usage.Runs
+			if usage.LastActivityAt != nil {
+				overview.LastActivityAt = laterTime(overview.LastActivityAt, *usage.LastActivityAt)
+			}
+			for status, count := range usage.RunsByStatus {
+				overview.RunsByStatus[status] += count
+			}
+		}
+	}
+	auditEvents, err := s.store.ListAuditEvents("", "")
+	if err != nil {
+		return nil, err
+	}
+	overview.AuditEvents = len(auditEvents)
+	for _, event := range auditEvents {
+		overview.LastAuditAt = laterTime(overview.LastAuditAt, event.CreatedAt)
+	}
+	return overview, nil
+}
+func buildAdminTrendPoints(now time.Time, points int, bucketSize time.Duration) []AdminTrendPoint {
+	items := make([]AdminTrendPoint, 0, points)
+	start := now.Truncate(bucketSize).Add(-bucketSize * time.Duration(points-1))
+	for i := 0; i < points; i++ {
+		items = append(items, AdminTrendPoint{BucketStart: start.Add(bucketSize * time.Duration(i)), RunsByStatus: map[RunStatus]int{}})
+	}
+	return items
+}
+
+func addTrendMessage(points []AdminTrendPoint, ts time.Time, bucketSize time.Duration) {
+	for i := range points {
+		start := points[i].BucketStart
+		end := start.Add(bucketSize)
+		if (ts.Equal(start) || ts.After(start)) && ts.Before(end) {
+			points[i].Messages++
+			return
+		}
+	}
+}
+
+func addTrendRun(points []AdminTrendPoint, run Run, bucketSize time.Duration) {
+	for i := range points {
+		start := points[i].BucketStart
+		end := start.Add(bucketSize)
+		if (run.StartedAt.Equal(start) || run.StartedAt.After(start)) && run.StartedAt.Before(end) {
+			points[i].Runs++
+			points[i].RunsByStatus[run.Status]++
+			return
+		}
+	}
+}
+
+func addTrendAudit(points []AdminTrendPoint, event AuditEvent, bucketSize time.Duration) {
+	for i := range points {
+		start := points[i].BucketStart
+		end := start.Add(bucketSize)
+		if (event.CreatedAt.Equal(start) || event.CreatedAt.After(start)) && event.CreatedAt.Before(end) {
+			points[i].AuditEvents++
+			return
+		}
+	}
+}
+
+func (s *Service) GetAdminDashboard(ctx context.Context) (*AdminDashboard, error) {
+	overview, err := s.GetAdminOverview(ctx)
+	if err != nil {
+		return nil, err
+	}
+	auditEvents, err := s.store.ListAuditEvents("", "")
+	if err != nil {
+		return nil, err
+	}
+	now := s.now().UTC()
+	last24 := buildAdminTrendPoints(now, 24, time.Hour)
+	last7 := buildAdminTrendPoints(now, 7, 24*time.Hour)
+	tenants, err := s.store.ListTenants()
+	if err != nil {
+		return nil, err
+	}
+	for _, tenant := range tenants {
+		users, err := s.store.ListUsers(tenant.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range users {
+			instances, err := s.store.ListInstances(tenant.ID, user.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, inst := range instances {
+				sessions, err := s.store.ListSessions(tenant.ID, user.ID, inst.ID)
+				if err != nil {
+					return nil, err
+				}
+				for _, sess := range sessions {
+					messages, err := s.store.ListMessages(sess.ID)
+					if err != nil {
+						return nil, err
+					}
+					for _, msg := range messages {
+						addTrendMessage(last24, msg.CreatedAt.UTC(), time.Hour)
+						addTrendMessage(last7, msg.CreatedAt.UTC(), 24*time.Hour)
+					}
+				}
+				runs, err := s.store.ListRuns(tenant.ID, user.ID, inst.ID)
+				if err != nil {
+					return nil, err
+				}
+				for _, run := range runs {
+					addTrendRun(last24, run, time.Hour)
+					addTrendRun(last7, run, 24*time.Hour)
+				}
+			}
+		}
+	}
+	for _, event := range auditEvents {
+		addTrendAudit(last24, event, time.Hour)
+		addTrendAudit(last7, event, 24*time.Hour)
+	}
+	sort.Slice(auditEvents, func(i, j int) bool { return auditEvents[i].CreatedAt.After(auditEvents[j].CreatedAt) })
+	recent := auditEvents
+	if len(recent) > 10 {
+		recent = recent[:10]
+	}
+	return &AdminDashboard{
+		Overview:          *overview,
+		RecentAuditEvents: recent,
+		Last24Hours:       last24,
+		Last7Days:         last7,
+		GeneratedAt:       now,
+	}, nil
+}
+
+func (s *Service) GetAdminAlerts(ctx context.Context, in AdminAlertsInput) (*AdminAlerts, error) {
+	_ = ctx
+	alerts := &AdminAlerts{GeneratedAt: s.now().UTC()}
+	tenants, err := s.store.ListTenants()
+	if err != nil {
+		return nil, err
+	}
+	kind := strings.TrimSpace(in.Kind)
+	for _, tenant := range tenants {
+		if strings.TrimSpace(in.TenantID) != "" && tenant.ID != strings.TrimSpace(in.TenantID) {
+			continue
+		}
+		users, err := s.store.ListUsers(tenant.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range users {
+			if strings.TrimSpace(in.UserID) != "" && user.ID != strings.TrimSpace(in.UserID) {
+				continue
+			}
+			instances, err := s.store.ListInstances(tenant.ID, user.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, inst := range instances {
+				inst = s.withInstanceReadiness(inst)
+				if !inst.Ready && (kind == "" || kind == "unready_instance") {
+					if in.Since == nil || !inst.UpdatedAt.Before(*in.Since) {
+						alerts.UnreadyInstances = append(alerts.UnreadyInstances, inst)
+						occurredAt := inst.UpdatedAt
+						alerts.Items = append(alerts.Items, AdminAlertItem{
+							Kind:            "unready_instance",
+							Severity:        "high",
+							Title:           "Instance not ready",
+							SuggestedAction: "Review user config and refresh instance readiness.",
+							TenantID:        inst.TenantID,
+							UserID:          inst.UserID,
+							InstanceID:      inst.ID,
+							OccurredAt:      &occurredAt,
+							Reason:          inst.ReadyReason,
+						})
+					}
+				}
+				runs, err := s.store.ListRuns(tenant.ID, user.ID, inst.ID)
+				if err != nil {
+					return nil, err
+				}
+				enrichedRuns, err := s.enrichRuns(runs)
+				if err != nil {
+					return nil, err
+				}
+				for _, run := range enrichedRuns {
+					if in.Since != nil && run.StartedAt.Before(*in.Since) {
+						continue
+					}
+					if run.WaitingForUser && (kind == "" || kind == "waiting_run") {
+						alerts.WaitingRuns = append(alerts.WaitingRuns, run)
+						occurredAt := run.StartedAt
+						alerts.Items = append(alerts.Items, AdminAlertItem{
+							Kind:            "waiting_run",
+							Severity:        "medium",
+							Title:           "Run waiting for user input",
+							SuggestedAction: "Prompt the user to answer the pending question and resume the session.",
+							TenantID:        run.TenantID,
+							UserID:          run.UserID,
+							InstanceID:      run.InstanceID,
+							SessionID:       run.SessionID,
+							RunID:           run.ID,
+							OccurredAt:      &occurredAt,
+							Reason:          "run is waiting for user input",
+						})
+					}
+					if run.Status == RunStatusFailed && (kind == "" || kind == "failed_run") {
+						alerts.FailedRuns = append(alerts.FailedRuns, run)
+						occurredAt := run.StartedAt
+						alerts.Items = append(alerts.Items, AdminAlertItem{
+							Kind:            "failed_run",
+							Severity:        "high",
+							Title:           "Run failed",
+							SuggestedAction: "Inspect the run error and retry after fixing configuration or inputs.",
+							TenantID:        run.TenantID,
+							UserID:          run.UserID,
+							InstanceID:      run.InstanceID,
+							SessionID:       run.SessionID,
+							RunID:           run.ID,
+							OccurredAt:      &occurredAt,
+							Reason:          run.Error,
+						})
+					}
+				}
+			}
+		}
+	}
+	sort.Slice(alerts.UnreadyInstances, func(i, j int) bool {
+		return alerts.UnreadyInstances[i].UpdatedAt.After(alerts.UnreadyInstances[j].UpdatedAt)
+	})
+	sort.Slice(alerts.WaitingRuns, func(i, j int) bool { return alerts.WaitingRuns[i].StartedAt.After(alerts.WaitingRuns[j].StartedAt) })
+	sort.Slice(alerts.FailedRuns, func(i, j int) bool { return alerts.FailedRuns[i].StartedAt.After(alerts.FailedRuns[j].StartedAt) })
+	sort.Slice(alerts.Items, func(i, j int) bool {
+		if alerts.Items[i].OccurredAt == nil {
+			return false
+		}
+		if alerts.Items[j].OccurredAt == nil {
+			return true
+		}
+		return alerts.Items[i].OccurredAt.After(*alerts.Items[j].OccurredAt)
+	})
+	if in.Limit > 0 && len(alerts.Items) > in.Limit {
+		alerts.Items = alerts.Items[:in.Limit]
+	}
+	return alerts, nil
+}
+func (s *Service) ExportServiceState(ctx context.Context, in ExportServiceStateInput) (*ExportServiceStateOutput, error) {
+	_ = ctx
+	in.TenantID = strings.TrimSpace(in.TenantID)
+	in.UserID = strings.TrimSpace(in.UserID)
+	if in.UserID != "" && in.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required when user_id is set")
+	}
+	out := &ExportServiceStateOutput{
+		IncludeMessages: in.IncludeMessages,
+		IncludeRuns:     in.IncludeRuns,
+		IncludeAudit:    in.IncludeAudit,
+		IncludeSecrets:  in.IncludeSecrets,
+		ExportedAt:      s.now().UTC(),
+	}
+	var tenants []Tenant
+	if in.TenantID != "" {
+		tenant, err := s.store.GetTenant(in.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		tenants = []Tenant{tenant}
+		out.Scope = "tenant"
+		out.TenantID = in.TenantID
+		if in.UserID != "" {
+			out.Scope = "user"
+			out.UserID = in.UserID
+		}
+	} else {
+		items, err := s.store.ListTenants()
+		if err != nil {
+			return nil, err
+		}
+		tenants = items
+		out.Scope = "service"
+	}
+	out.Tenants = append([]Tenant(nil), tenants...)
+	for _, tenant := range tenants {
+		users, err := s.store.ListUsers(tenant.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range users {
+			if in.UserID != "" && user.ID != in.UserID {
+				continue
+			}
+			exported, err := s.exportUserState(tenant.ID, user.ID, in)
+			if err != nil {
+				return nil, err
+			}
+			out.Users = append(out.Users, exported)
+		}
+	}
+	if in.UserID != "" && len(out.Users) == 0 {
+		return nil, ErrUserNotFound
+	}
+	if in.IncludeAudit {
+		auditTenantID := in.TenantID
+		auditUserID := in.UserID
+		items, err := s.store.ListAuditEvents(auditTenantID, auditUserID)
+		if err != nil {
+			return nil, err
+		}
+		out.AuditEvents = items
+	}
+	return out, nil
+}
+
+func (s *Service) exportUserState(tenantID, userID string, in ExportServiceStateInput) (ExportedUser, error) {
+	user, err := s.store.GetUser(tenantID, userID)
+	if err != nil {
+		return ExportedUser{}, err
+	}
+	out := ExportedUser{User: user}
+	cfg, err := s.getOrLoadUserConfig(tenantID, userID)
+	if err == nil {
+		if !in.IncludeSecrets {
+			cfg.AppConfig = SanitizeAppConfig(cfg.AppConfig)
+		}
+		out.Config = &cfg
+	} else if err != ErrUserConfigNotFound {
+		return ExportedUser{}, err
+	}
+	creds, err := s.store.ListCredentials(tenantID, userID)
+	if err != nil {
+		return ExportedUser{}, err
+	}
+	out.Credentials = make([]ExportedCredential, 0, len(creds))
+	for _, cred := range creds {
+		out.Credentials = append(out.Credentials, exportCredential(cred, in.IncludeSecrets))
+	}
+	instances, err := s.store.ListInstances(tenantID, userID)
+	if err != nil {
+		return ExportedUser{}, err
+	}
+	out.Instances = make([]ExportedInstance, 0, len(instances))
+	for _, inst := range instances {
+		inst = s.withInstanceReadiness(inst)
+		exportedInst := ExportedInstance{Instance: inst}
+		sessions, err := s.store.ListSessions(tenantID, userID, inst.ID)
+		if err != nil {
+			return ExportedUser{}, err
+		}
+		exportedInst.Sessions = make([]ExportedSession, 0, len(sessions))
+		for _, sess := range sessions {
+			sess, err = s.enrichSession(sess)
+			if err != nil {
+				return ExportedUser{}, err
+			}
+			exportedSession := ExportedSession{Session: sess}
+			if in.IncludeMessages {
+				messages, err := s.store.ListMessages(sess.ID)
+				if err != nil {
+					return ExportedUser{}, err
+				}
+				exportedSession.Messages = messages
+			}
+			exportedInst.Sessions = append(exportedInst.Sessions, exportedSession)
+		}
+		if in.IncludeRuns {
+			runs, err := s.store.ListRuns(tenantID, userID, inst.ID)
+			if err != nil {
+				return ExportedUser{}, err
+			}
+			runs, err = s.enrichRuns(runs)
+			if err != nil {
+				return ExportedUser{}, err
+			}
+			exportedInst.Runs = runs
+		}
+		out.Instances = append(out.Instances, exportedInst)
+	}
+	return out, nil
+}
+
+func exportCredential(cred Credential, includeSecrets bool) ExportedCredential {
+	out := ExportedCredential{
+		ID:           cred.ID,
+		TenantID:     cred.TenantID,
+		UserID:       cred.UserID,
+		Name:         cred.Name,
+		APIKey:       cred.APIKey,
+		APIKeyPrefix: cred.APIKeyPrefix,
+		APIKeyHash:   cred.APIKeyHash,
+		Status:       credentialStatus(cred),
+		TokenVersion: credentialTokenVersion(cred),
+		CreatedAt:    cred.CreatedAt,
+		UpdatedAt:    cred.UpdatedAt,
+	}
+	if includeSecrets {
+		out.SecretDigest = cred.SecretDigest
+		return out
+	}
+	sanitized := sanitizeCredential(cred)
+	out.APIKey = sanitized.APIKey
+	out.APIKeyHash = ""
+	out.SecretDigest = ""
+	return out
+}
+
+func (s *Service) ImportServiceState(ctx context.Context, in ImportServiceStateRequest) (*ImportServiceStateOutput, error) {
+	_ = ctx
+	data := in.Data
+	out := &ImportServiceStateOutput{
+		Scope:      strings.TrimSpace(data.Scope),
+		TenantID:   strings.TrimSpace(data.TenantID),
+		UserID:     strings.TrimSpace(data.UserID),
+		Overwrite:  in.Overwrite,
+		DryRun:     in.DryRun,
+		ImportedAt: s.now().UTC(),
+	}
+	if out.Scope == "" {
+		out.Scope = "service"
+	}
+	if err := s.assessImportState(data, out); err != nil {
+		return nil, err
+	}
+	if in.DryRun {
+		return out, nil
+	}
+	if len(out.Conflicts) > 0 && !in.Overwrite {
+		return nil, fmt.Errorf("import conflicts detected: %w", ErrAlreadyExists)
+	}
+	for _, tenant := range data.Tenants {
+		if err := s.store.SaveTenant(tenant); err != nil {
+			return nil, err
+		}
+		if err := secureMkdirAll(filepath.Join(s.dataRoot, "tenants", slugID(tenant.ID))); err != nil {
+			return nil, err
+		}
+	}
+	for _, exportedUser := range data.Users {
+		if _, err := s.store.GetUser(exportedUser.User.TenantID, exportedUser.User.ID); err == nil {
+			if err := s.deleteUserStateForImport(exportedUser.User.TenantID, exportedUser.User.ID); err != nil {
+				return nil, err
+			}
+		} else if err != ErrUserNotFound {
+			return nil, err
+		}
+		if err := s.store.SaveUser(exportedUser.User); err != nil {
+			return nil, err
+		}
+		if err := secureMkdirAll(s.userDataRoot(exportedUser.User.TenantID, exportedUser.User.ID)); err != nil {
+			return nil, err
+		}
+		if err := secureMkdirAll(filepath.Join(s.userRoot(exportedUser.User.TenantID, exportedUser.User.ID), "instances")); err != nil {
+			return nil, err
+		}
+		if exportedUser.Config != nil {
+			cfg := *exportedUser.Config
+			cfg.TenantID = exportedUser.User.TenantID
+			cfg.UserID = exportedUser.User.ID
+			if err := s.store.SaveUserConfig(cfg); err != nil {
+				return nil, err
+			}
+			if err := saveUserConfigToFile(s.userConfigPath(exportedUser.User.TenantID, exportedUser.User.ID), cfg); err != nil {
+				return nil, err
+			}
+			if err := writeRuntimeConfig(s.userDataRoot(exportedUser.User.TenantID, exportedUser.User.ID), cfg.AppConfig); err != nil {
+				return nil, err
+			}
+		}
+		for _, cred := range exportedUser.Credentials {
+			storedCred, err := importCredential(exportedUser.User.TenantID, exportedUser.User.ID, cred)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.store.SaveCredential(storedCred); err != nil {
+				return nil, err
+			}
+		}
+		for _, exportedInst := range exportedUser.Instances {
+			inst := s.remapImportedInstance(exportedUser.User.TenantID, exportedUser.User.ID, exportedInst.Instance)
+			if err := secureMkdirAll(inst.Workspace); err != nil {
+				return nil, err
+			}
+			inst = s.withInstanceReadiness(inst)
+			if err := s.store.SaveInstance(inst); err != nil {
+				return nil, err
+			}
+			for _, exportedSession := range exportedInst.Sessions {
+				sess := exportedSession.Session
+				sess.TenantID = exportedUser.User.TenantID
+				sess.UserID = exportedUser.User.ID
+				sess.InstanceID = inst.ID
+				if err := s.store.SaveSession(sess); err != nil {
+					return nil, err
+				}
+				for _, msg := range exportedSession.Messages {
+					msg.TenantID = exportedUser.User.TenantID
+					msg.UserID = exportedUser.User.ID
+					msg.InstanceID = inst.ID
+					msg.SessionID = sess.ID
+					if err := s.store.SaveMessage(msg); err != nil {
+						return nil, err
+					}
+				}
+			}
+			for _, run := range exportedInst.Runs {
+				run.TenantID = exportedUser.User.TenantID
+				run.UserID = exportedUser.User.ID
+				run.InstanceID = inst.ID
+				if err := s.store.SaveRun(run); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	if len(data.AuditEvents) > 0 {
+		existingAudit, err := s.store.ListAuditEvents("", "")
+		if err != nil {
+			return nil, err
+		}
+		existingByID := make(map[string]struct{}, len(existingAudit))
+		for _, item := range existingAudit {
+			if strings.TrimSpace(item.ID) != "" {
+				existingByID[item.ID] = struct{}{}
+			}
+		}
+		for _, event := range data.AuditEvents {
+			if strings.TrimSpace(event.ID) != "" {
+				if _, ok := existingByID[event.ID]; ok {
+					continue
+				}
+				existingByID[event.ID] = struct{}{}
+			}
+			if err := s.store.SaveAuditEvent(event); err != nil {
+				return nil, err
+			}
+		}
+	}
+	_ = s.recordAudit(auditRecord{TenantID: out.TenantID, UserID: out.UserID, Action: "admin.imported", ResourceType: "service_state", ResourceID: out.Scope, ActorType: "admin", Metadata: map[string]string{"overwrite": strconv.FormatBool(in.Overwrite), "dry_run": strconv.FormatBool(in.DryRun)}})
+	return out, nil
+}
+
+func (s *Service) assessImportState(data ExportServiceStateOutput, out *ImportServiceStateOutput) error {
+	incomingTenants := map[string]struct{}{}
+	for _, tenant := range data.Tenants {
+		if strings.TrimSpace(tenant.ID) == "" {
+			return fmt.Errorf("tenant id is required")
+		}
+		incomingTenants[tenant.ID] = struct{}{}
+		if existing, err := s.store.GetTenant(tenant.ID); err == nil && existing.ID != "" {
+			out.Conflicts = append(out.Conflicts, fmt.Sprintf("tenant %s already exists", tenant.ID))
+			appendImportPlan(out, "tenant", tenant.ID, "overwrite", "tenant already exists and would be updated")
+		} else {
+			appendImportPlan(out, "tenant", tenant.ID, "create", "tenant would be imported")
+		}
+		out.Tenants++
+	}
+	for _, exportedUser := range data.Users {
+		if strings.TrimSpace(exportedUser.User.TenantID) == "" || strings.TrimSpace(exportedUser.User.ID) == "" {
+			return fmt.Errorf("user tenant_id and id are required")
+		}
+		if _, ok := incomingTenants[exportedUser.User.TenantID]; !ok {
+			if _, err := s.store.GetTenant(exportedUser.User.TenantID); err != nil {
+				return err
+			}
+		}
+		if _, err := s.store.GetUser(exportedUser.User.TenantID, exportedUser.User.ID); err == nil {
+			out.Conflicts = append(out.Conflicts, fmt.Sprintf("user %s/%s already exists", exportedUser.User.TenantID, exportedUser.User.ID))
+			appendImportPlan(out, "user", exportedUser.User.TenantID+"/"+exportedUser.User.ID, "overwrite", "user already exists and would be replaced with imported state")
+		} else if err != ErrUserNotFound {
+			return err
+		} else {
+			appendImportPlan(out, "user", exportedUser.User.TenantID+"/"+exportedUser.User.ID, "create", "user would be imported")
+		}
+		out.Users++
+		if exportedUser.Config != nil {
+			if strings.TrimSpace(exportedUser.Config.AppConfig.MaclawLLMKey) == "******" {
+				out.Warnings = append(out.Warnings, fmt.Sprintf("user %s/%s config contains masked secrets and may need manual repair", exportedUser.User.TenantID, exportedUser.User.ID))
+			}
+		}
+		for _, cred := range exportedUser.Credentials {
+			storedCred, err := importCredential(exportedUser.User.TenantID, exportedUser.User.ID, cred)
+			if err != nil {
+				return nilOrErr(out, err)
+			}
+			_ = storedCred
+			appendImportPlan(out, "credential", exportedUser.User.TenantID+"/"+exportedUser.User.ID+"/"+cred.ID, "create", "credential would be imported")
+			out.Credentials++
+		}
+		for _, exportedInst := range exportedUser.Instances {
+			appendImportPlan(out, "instance", exportedUser.User.TenantID+"/"+exportedUser.User.ID+"/"+exportedInst.Instance.ID, "create", "instance would be imported and remapped into current data root")
+			out.Instances++
+			for _, exportedSession := range exportedInst.Sessions {
+				appendImportPlan(out, "session", exportedUser.User.TenantID+"/"+exportedUser.User.ID+"/"+exportedSession.Session.ID, "create", "session would be imported")
+				out.Sessions++
+				if len(exportedSession.Messages) > 0 {
+					appendImportPlan(out, "message_batch", exportedUser.User.TenantID+"/"+exportedUser.User.ID+"/"+exportedSession.Session.ID, "create", fmt.Sprintf("%d messages would be imported", len(exportedSession.Messages)))
+				}
+				out.Messages += len(exportedSession.Messages)
+			}
+			if len(exportedInst.Runs) > 0 {
+				appendImportPlan(out, "run_batch", exportedUser.User.TenantID+"/"+exportedUser.User.ID+"/"+exportedInst.Instance.ID, "create", fmt.Sprintf("%d runs would be imported", len(exportedInst.Runs)))
+			}
+			out.Runs += len(exportedInst.Runs)
+		}
+	}
+	if len(data.AuditEvents) > 0 {
+		existingAudit, err := s.store.ListAuditEvents("", "")
+		if err != nil {
+			return err
+		}
+		existingByID := make(map[string]struct{}, len(existingAudit))
+		for _, item := range existingAudit {
+			if strings.TrimSpace(item.ID) != "" {
+				existingByID[item.ID] = struct{}{}
+			}
+		}
+		for _, event := range data.AuditEvents {
+			if strings.TrimSpace(event.ID) != "" {
+				if _, ok := existingByID[event.ID]; ok {
+					out.Warnings = append(out.Warnings, fmt.Sprintf("audit event %s already exists and would be skipped", event.ID))
+					continue
+				}
+				existingByID[event.ID] = struct{}{}
+			}
+			appendImportPlan(out, "audit_event", event.ID, "create", "audit event would be imported")
+			out.AuditEvents++
+		}
+	}
+	return nil
+}
+
+func appendImportPlan(out *ImportServiceStateOutput, resourceType, resourceID, action, message string) {
+	out.Plan = append(out.Plan, ImportPlanItem{
+		ResourceType: strings.TrimSpace(resourceType),
+		ResourceID:   strings.TrimSpace(resourceID),
+		Action:       strings.TrimSpace(action),
+		Message:      strings.TrimSpace(message),
+	})
+}
+
+func nilOrErr(out *ImportServiceStateOutput, err error) error {
+	return err
+}
+
+func (s *Service) remapImportedInstance(tenantID, userID string, inst Instance) Instance {
+	inst.TenantID = tenantID
+	inst.UserID = userID
+	inst.DataDir = s.userDataRoot(tenantID, userID)
+	inst.RuntimeDir = filepath.Join(s.userRoot(tenantID, userID), "instances", slugID(inst.ID))
+	inst.Workspace = filepath.Join(inst.RuntimeDir, "workspace")
+	return inst
+}
+
+func importCredential(tenantID, userID string, in ExportedCredential) (Credential, error) {
+	cred := Credential{
+		ID:           strings.TrimSpace(in.ID),
+		TenantID:     tenantID,
+		UserID:       userID,
+		Name:         strings.TrimSpace(in.Name),
+		APIKey:       strings.TrimSpace(in.APIKey),
+		APIKeyPrefix: strings.TrimSpace(in.APIKeyPrefix),
+		APIKeyHash:   strings.TrimSpace(in.APIKeyHash),
+		Status:       in.Status,
+		TokenVersion: in.TokenVersion,
+		SecretDigest: strings.TrimSpace(in.SecretDigest),
+		CreatedAt:    in.CreatedAt,
+		UpdatedAt:    in.UpdatedAt,
+	}
+	if cred.ID == "" {
+		return Credential{}, fmt.Errorf("credential id is required")
+	}
+	if cred.Status == "" {
+		cred.Status = CredentialStatusActive
+	}
+	cred.TokenVersion = credentialTokenVersion(cred)
+	if cred.APIKeyHash == "" && cred.APIKey != "" {
+		cred.APIKeyHash = hashAPIKey(cred.APIKey)
+	}
+	if cred.APIKeyPrefix == "" && cred.APIKey != "" {
+		cred.APIKeyPrefix = deriveAPIKeyPrefix(cred.APIKey)
+	}
+	if cred.APIKeyHash == "" || cred.APIKeyPrefix == "" {
+		return Credential{}, fmt.Errorf("credential api key hash and prefix are required for import")
+	}
+	if cred.SecretDigest == "" {
+		return Credential{}, fmt.Errorf("credential secret_digest is required for import; export with include_secrets=true")
+	}
+	return cred, nil
+}
+
+func (s *Service) deleteUserStateForImport(tenantID, userID string) error {
+	instances, err := s.store.ListInstances(tenantID, userID)
+	if err != nil {
+		return err
+	}
+	for _, inst := range instances {
+		busy, err := s.hasRunningRuns(tenantID, userID, inst.ID, "")
+		if err != nil {
+			return err
+		}
+		if busy {
+			return ErrUserBusy
+		}
+	}
+	if err := s.store.DeleteUser(tenantID, userID); err != nil {
+		return err
+	}
+	if err := secureRemoveAllWithin(filepath.Join(s.dataRoot, "tenants", slugID(tenantID), "users"), s.userRoot(tenantID, userID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (s *Service) GetTenantSummary(ctx context.Context, tenantID string) (*TenantSummary, error) {
+	_ = ctx
+	tenant, err := s.store.GetTenant(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	users, err := s.store.ListUsers(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	summary := TenantSummary{
+		TenantID:      tenant.ID,
+		Name:          tenant.Name,
+		Status:        tenant.Status,
+		Quota:         tenant.Quota,
+		Users:         len(users),
+		RunsByStatus:  map[RunStatus]int{},
+		UserSummaries: make([]TenantUserSummary, 0, len(users)),
+	}
+	for _, user := range users {
+		if user.Status == UserStatusDisabled {
+			summary.DisabledUsers++
+		} else {
+			summary.ActiveUsers++
+		}
+		usage, err := s.buildUsageSummary(tenantID, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		effectiveQuota := mergeQuota(tenant.Quota, user.Quota)
+		userSummary := TenantUserSummary{
+			UserID:            user.ID,
+			Name:              user.Name,
+			Email:             user.Email,
+			Status:            user.Status,
+			DataDir:           usage.DataDir,
+			Quota:             user.Quota,
+			EffectiveQuota:    effectiveQuota,
+			QuotaUsage:        buildQuotaUsageSnapshot(effectiveQuota, usage),
+			Instances:         usage.Instances,
+			ReadyInstances:    usage.ReadyInstances,
+			StoppedInstances:  usage.StoppedInstances,
+			Sessions:          usage.Sessions,
+			Messages:          usage.Messages,
+			UserMessages:      usage.UserMessages,
+			AssistantMessages: usage.AssistantMessages,
+			Runs:              usage.Runs,
+			RunsByStatus:      usage.RunsByStatus,
+			LastActivityAt:    usage.LastActivityAt,
+		}
+		summary.UserSummaries = append(summary.UserSummaries, userSummary)
+		summary.Instances += usage.Instances
+		summary.ReadyInstances += usage.ReadyInstances
+		summary.StoppedInstances += usage.StoppedInstances
+		summary.Sessions += usage.Sessions
+		summary.Messages += usage.Messages
+		summary.UserMessages += usage.UserMessages
+		summary.AssistantMessages += usage.AssistantMessages
+		summary.Runs += usage.Runs
+		if usage.LastActivityAt != nil {
+			summary.LastActivityAt = laterTime(summary.LastActivityAt, *usage.LastActivityAt)
+		}
+		for status, count := range usage.RunsByStatus {
+			summary.RunsByStatus[status] += count
+		}
+	}
+	summary.QuotaUsage = buildQuotaUsageSnapshot(tenant.Quota, &UsageSummary{Instances: summary.Instances, Sessions: summary.Sessions, Messages: summary.Messages, Runs: summary.Runs})
+	return &summary, nil
+}
+
+func (s *Service) buildUsageSummary(tenantID, userID string) (*UsageSummary, error) {
+	instances, err := s.store.ListInstances(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	tenant, err := s.store.GetTenant(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.store.GetUser(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	effectiveQuota := mergeQuota(tenant.Quota, user.Quota)
 	summary := UsageSummary{
-		TenantID:     p.TenantID,
-		UserID:       p.UserID,
-		DataDir:      s.userDataRoot(p.TenantID, p.UserID),
+		TenantID:     tenantID,
+		UserID:       userID,
+		DataDir:      s.userDataRoot(tenantID, userID),
+		Quota:        effectiveQuota,
 		Instances:    len(instances),
 		RunsByStatus: map[RunStatus]int{},
 	}
@@ -1221,7 +2434,7 @@ func (s *Service) GetUsageSummary(ctx context.Context, p Principal) (*UsageSumma
 		}
 		summary.LastActivityAt = laterTime(summary.LastActivityAt, inst.UpdatedAt)
 
-		sessions, err := s.store.ListSessions(p.TenantID, p.UserID, inst.ID)
+		sessions, err := s.store.ListSessions(tenantID, userID, inst.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -1244,7 +2457,7 @@ func (s *Service) GetUsageSummary(ctx context.Context, p Principal) (*UsageSumma
 			}
 		}
 
-		runs, err := s.store.ListRuns(p.TenantID, p.UserID, inst.ID)
+		runs, err := s.store.ListRuns(tenantID, userID, inst.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -1257,6 +2470,7 @@ func (s *Service) GetUsageSummary(ctx context.Context, p Principal) (*UsageSumma
 			}
 		}
 	}
+	summary.QuotaUsage = buildQuotaUsageSnapshot(summary.Quota, &summary)
 	return &summary, nil
 }
 
@@ -1522,6 +2736,10 @@ func validUserStatus(status UserStatus) bool {
 	return status == UserStatusActive || status == UserStatusDisabled
 }
 
+func validCredentialStatus(status CredentialStatus) bool {
+	return status == CredentialStatusActive || status == CredentialStatusRevoked
+}
+
 func credentialStatus(cred Credential) CredentialStatus {
 	if cred.Status == "" {
 		return CredentialStatusActive
@@ -1536,6 +2754,7 @@ func sanitizeCredential(cred Credential) Credential {
 	if cred.Status == "" {
 		cred.Status = CredentialStatusActive
 	}
+	cred.TokenVersion = credentialTokenVersion(cred)
 	return cred
 }
 

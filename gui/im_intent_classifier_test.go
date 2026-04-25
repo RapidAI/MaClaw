@@ -5,123 +5,51 @@ import (
 	"testing"
 )
 
-func TestClassifyTaskIntent_Coding(t *testing.T) {
-	result := classifyTaskIntent("帮我修复这个 Go 项目的 bug 并修改代码")
-	if result.Intent != intentCoding {
-		t.Fatalf("expected coding intent, got %q with evidence %#v", result.Intent, result.Evidence)
+// ---------------------------------------------------------------------------
+// classifyTaskIntent without UIC — all return ambiguous (degraded mode)
+// ---------------------------------------------------------------------------
+
+// When UIC is nil, classifyTaskIntent returns ambiguous for all inputs.
+// This is by design: keyword-based classification is unreliable and has been
+// disabled in favor of UIC semantic classification.
+func TestClassifyTaskIntent_WithoutUIC_ReturnsAmbiguous(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"coding task", "帮我修复这个 Go 项目的 bug 并修改代码"},
+		{"ssh task", "ssh 到 10.0.0.8 看 nginx 日志"},
+		{"non-coding task", "帮我翻译这篇论文"},
+		{"ambiguous task", "帮我处理一下线上问题"},
+		{"knowledge base", "现在帮我把桌面上的 AI 编程评测报告放入知识库"},
+		{"promo ppt", "生成宣传PPT"},
+		{"product intro ppt", "帮我做一个产品介绍PPT"},
+		{"presentation doc", "把这份内容整理成演示文稿"},
 	}
-	if result.Source != "rules" {
-		t.Fatalf("expected rules source, got %q", result.Source)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifyTaskIntent(tt.text)
+			if result.Intent != intentAmbiguous {
+				t.Fatalf("without UIC, expected ambiguous for %q, got %q", tt.text, result.Intent)
+			}
+			if result.Source != "rules-degraded" {
+				t.Fatalf("expected rules-degraded source, got %q", result.Source)
+			}
+		})
 	}
 }
 
-func TestClassifyTaskIntent_SSH(t *testing.T) {
-	result := classifyTaskIntent("ssh 到 10.0.0.8 看 nginx 日志")
-	if result.Intent != intentSSH {
-		t.Fatalf("expected ssh intent, got %q with evidence %#v", result.Intent, result.Evidence)
-	}
-}
-
-func TestClassifyTaskIntent_NonCoding(t *testing.T) {
-	result := classifyTaskIntent("帮我翻译这篇论文")
-	if result.Intent != intentNonCoding {
-		t.Fatalf("expected non-coding intent, got %q with evidence %#v", result.Intent, result.Evidence)
-	}
-}
-
-func TestClassifyTaskIntent_Ambiguous(t *testing.T) {
-	result := classifyTaskIntent("帮我处理一下线上问题")
+// Empty message still returns unknown (not ambiguous).
+func TestClassifyTaskIntent_Empty(t *testing.T) {
+	result := classifyTaskIntent("")
 	if result.Intent != intentAmbiguous {
-		t.Fatalf("expected ambiguous intent, got %q with evidence %#v", result.Intent, result.Evidence)
+		t.Fatalf("expected ambiguous for empty text, got %q", result.Intent)
 	}
 }
 
-func TestClassifyTaskIntent_NonCodingKnowledgeBaseReport(t *testing.T) {
-	result := classifyTaskIntent("现在帮我把桌面上的 AI 编程评测报告放入知识库")
-	if result.Intent != intentNonCoding {
-		t.Fatalf("expected non-coding intent, got %q with evidence %#v", result.Intent, result.Evidence)
-	}
-}
-
-func TestClassifyTaskIntent_PresentationTasks(t *testing.T) {
-	tests := []struct {
-		name     string
-		text     string
-		evidence string
-	}{
-		{name: "promo ppt", text: "生成宣传PPT", evidence: "ppt"},
-		{name: "product intro ppt", text: "帮我做一个产品介绍PPT", evidence: "ppt"},
-		{name: "presentation doc", text: "把这份内容整理成演示文稿", evidence: "演示文稿"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := classifyTaskIntent(tt.text)
-			if result.Intent != intentNonCoding {
-				t.Fatalf("expected non-coding intent, got %q with evidence %#v", result.Intent, result.Evidence)
-			}
-			if !strings.Contains(formatIntentEvidence(result), tt.evidence) {
-				t.Fatalf("expected evidence to mention %q, got %q", tt.evidence, formatIntentEvidence(result))
-			}
-		})
-	}
-}
-
-func TestClassifyTaskIntent_PresentationCodingTasksDoNotBecomeNonCoding(t *testing.T) {
-	tests := []string{
-		"写代码生成 PPTX 文件",
-		"修复 PPT 导出 bug",
-	}
-	for _, text := range tests {
-		result := classifyTaskIntent(text)
-		if result.Intent == intentNonCoding {
-			t.Fatalf("expected coding-related task %q to avoid non-coding classification, got %q with evidence %#v", text, result.Intent, result.Evidence)
-		}
-		if !strings.Contains(formatIntentEvidence(result), "ppt") {
-			t.Fatalf("expected evidence to mention ppt for %q, got %q", text, formatIntentEvidence(result))
-		}
-	}
-}
-
-func TestClassifyTaskIntent_WeakCodingEvidenceAloneIsNonCoding(t *testing.T) {
-	// File names containing "测试" should not trigger coding classification
-	// when there is no other coding evidence.
-	tests := []struct {
-		name string
-		text string
-	}{
-		{name: "xmind test case file", text: "参考: 微补丁丁终端功能测试用例_完整版.xmind，这个格式是正常的"},
-		{name: "test case document", text: "微补丁丁终端功能测试用例_v4.xmind 文件打开失败"},
-		{name: "bare test keyword", text: "这个测试文件打不开"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := classifyTaskIntent(tt.text)
-			if result.Intent == intentCoding {
-				t.Fatalf("weak coding evidence %q should not classify as coding, got %q with evidence %#v", tt.text, result.Intent, result.Evidence)
-			}
-		})
-	}
-}
-
-func TestClassifyTaskIntent_StrongCodingEvidenceStillWorks(t *testing.T) {
-	// "测试" combined with strong coding keywords should still be coding.
-	tests := []struct {
-		name string
-		text string
-	}{
-		{name: "write unit test", text: "帮我写单元测试"},
-		{name: "fix test bug", text: "修复测试中的 bug"},
-		{name: "run test", text: "帮我跑一下这个项目的测试并修改代码"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := classifyTaskIntent(tt.text)
-			if result.Intent == intentNonCoding {
-				t.Fatalf("strong coding task %q should not be non-coding, got %q with evidence %#v", tt.text, result.Intent, result.Evidence)
-			}
-		})
-	}
-}
+// ---------------------------------------------------------------------------
+// Tests that don't depend on keyword classification
+// ---------------------------------------------------------------------------
 
 func TestNormalizeIntentClassification(t *testing.T) {
 	result, err := normalizeIntentClassification(llmIntentClassification{
@@ -170,5 +98,43 @@ func TestSummarizeAttachmentTypesAndNames(t *testing.T) {
 	names := summarizeAttachmentNames(attachments)
 	if len(names) != 3 || names[0] != "shot.png" {
 		t.Fatalf("unexpected attachment names: %#v", names)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Confirmation gate test — presentation tasks without UIC
+// ---------------------------------------------------------------------------
+
+func TestConfirmationGate_PresentationTask_WithoutUIC(t *testing.T) {
+	// Without UIC, classifyTaskIntent returns ambiguous for PPT tasks.
+	// This means the confirmation gate WILL trigger (ambiguous → requires confirmation).
+	// This is the conservative behavior we want.
+	result := classifyTaskIntent("生成宣传PPT")
+	if result.Intent != intentAmbiguous {
+		t.Fatalf("expected ambiguous for PPT task without UIC, got %q", result.Intent)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helper function tests (not dependent on keyword classification)
+// ---------------------------------------------------------------------------
+
+func TestHasOnlyWeakCodingEvidence(t *testing.T) {
+	if !hasOnlyWeakCodingEvidence([]string{"代码"}) {
+		t.Fatal("expected true for weak evidence '代码'")
+	}
+	if hasOnlyWeakCodingEvidence([]string{"开发"}) {
+		t.Fatal("expected false for strong evidence '开发'")
+	}
+	if hasOnlyWeakCodingEvidence([]string{"代码", "开发"}) {
+		t.Fatal("expected false for mixed evidence")
+	}
+}
+
+func TestFormatIntentEvidence(t *testing.T) {
+	r := taskIntentResult{Evidence: []string{"ssh", "服务器"}}
+	formatted := formatIntentEvidence(r)
+	if !strings.Contains(formatted, "ssh") {
+		t.Fatalf("expected evidence to contain 'ssh', got %q", formatted)
 	}
 }

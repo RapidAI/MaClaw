@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
@@ -20,9 +21,28 @@ type EntryResolveRequest struct {
 	Email string `json:"email"`
 }
 
+type AdminRouteQueryRequest struct {
+	Query     string `json:"query"`
+	QueryType string `json:"query_type,omitempty"`
+}
+
 type HubHeartbeatRequest struct {
-	HubSecret              string `json:"hub_secret"`
-	InvitationCodeRequired *bool  `json:"invitation_code_required,omitempty"`
+	HubSecret              string   `json:"hub_secret"`
+	InvitationCodeRequired *bool    `json:"invitation_code_required,omitempty"`
+	BaseURL                string   `json:"base_url,omitempty"`
+	Host                   string   `json:"host,omitempty"`
+	Port                   int      `json:"port,omitempty"`
+	Visibility             string   `json:"visibility,omitempty"`
+	EnrollmentMode         string   `json:"enrollment_mode,omitempty"`
+	CorporateEmailDomain   string   `json:"corporate_email_domain,omitempty"`
+	CorporateEmailDomains  []string `json:"corporate_email_domains,omitempty"`
+	AcceptPublicSignup     *bool    `json:"accept_public_signup,omitempty"`
+}
+
+type HubUserLinkSyncRequest struct {
+	HubSecret string `json:"hub_secret"`
+	Email     string `json:"email"`
+	IsDefault bool   `json:"is_default"`
 }
 
 func RegisterHubHandler(service *hubs.Service) http.HandlerFunc {
@@ -75,7 +95,17 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 			return
 		}
 
-		if err := service.HeartbeatHubWithSecret(r.Context(), hubID, req.HubSecret, req.InvitationCodeRequired); err != nil {
+		update := &hubs.HeartbeatHubUpdate{
+			BaseURL:               req.BaseURL,
+			Host:                  req.Host,
+			Port:                  req.Port,
+			Visibility:            req.Visibility,
+			EnrollmentMode:        req.EnrollmentMode,
+			CorporateEmailDomain:  req.CorporateEmailDomain,
+			CorporateEmailDomains: req.CorporateEmailDomains,
+			AcceptPublicSignup:    req.AcceptPublicSignup,
+		}
+		if err := service.HeartbeatHubWithSecret(r.Context(), hubID, req.HubSecret, req.InvitationCodeRequired, update); err != nil {
 			if errors.Is(err, hubs.ErrHubNotReadyOnNode) {
 				writeClientAwareError(w, http.StatusConflict, "HUB_NOT_READY_ON_NODE", "Hub metadata is not available on this node yet.", true, true)
 				return
@@ -100,6 +130,38 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "online"})
+	}
+}
+
+func HubUserLinkSyncHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hubID := r.PathValue("id")
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		var req HubUserLinkSyncRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if err := service.SyncHubUserLink(r.Context(), hubID, req.HubSecret, req.Email, req.IsDefault); err != nil {
+			if errors.Is(err, hubs.ErrHubUnauthorized) {
+				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
+				return
+			}
+			if errors.Is(err, hubs.ErrHubPendingConfirmation) {
+				writeError(w, http.StatusConflict, "HUB_PENDING_CONFIRMATION", "Hub registration is waiting for email confirmation")
+				return
+			}
+			if errors.Is(err, hubs.ErrHubDisabled) {
+				writeError(w, http.StatusLocked, "HUB_DISABLED", "Hub has been disabled by Hub Center")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "HUB_USER_LINK_SYNC_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 
@@ -143,7 +205,34 @@ func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 	}
 }
 
-func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service, skillStore *skill.SkillStore, gossipRepo store.GossipRepository, gossipCache *GossipCache, smHandlers *SkillMarketHandlers, systemSettings store.SystemSettingsRepository, newsRepo store.NewsRepository, haConfigSvc *ha.ConfigService, haSvcs ...*ha.Service) http.Handler {
+func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req AdminRouteQueryRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		query := strings.TrimSpace(strings.ToLower(req.Query))
+		queryType := strings.TrimSpace(strings.ToLower(req.QueryType))
+		var (
+			resp *entry.ResolveResult
+			err  error
+		)
+		switch queryType {
+		case "domain":
+			resp, err = service.ResolveByDomain(r.Context(), query)
+		default:
+			resp, err = service.ResolveAdminByEmail(r.Context(), query)
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ADMIN_ROUTE_QUERY_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service, skillStore *skill.SkillStore, failureLogs store.FailureEventLogRepository, gossipRepo store.GossipRepository, gossipCache *GossipCache, smHandlers *SkillMarketHandlers, systemSettings store.SystemSettingsRepository, newsRepo store.NewsRepository, haConfigSvc *ha.ConfigService, haSvcs ...*ha.Service) http.Handler {
 	var haSvc *ha.Service
 	if len(haSvcs) > 0 {
 		haSvc = haSvcs[0]
@@ -155,11 +244,16 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/login", AdminLoginHandler(adminService))
 	mux.HandleFunc("POST /api/admin/password", RequireAdmin(adminService, AdminChangePasswordHandler(adminService)))
 	mux.HandleFunc("POST /api/admin/profile", RequireAdmin(adminService, AdminUpdateProfileHandler(adminService)))
+	mux.HandleFunc("GET /api/admin/failure-logs", RequireAdmin(adminService, ListFailureLogsHandler(failureLogs)))
+	mux.HandleFunc("GET /api/admin/routing/diagnostics", RequireAdmin(adminService, AdminRoutingDiagnosticsHandler(entryService)))
+	mux.HandleFunc("POST /api/admin/routing/query", RequireAdmin(adminService, AdminRouteQueryHandler(entryService)))
 	mux.HandleFunc("GET /api/admin/server/config", RequireAdmin(adminService, GetAdminServerConfigHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/server/config", RequireAdmin(adminService, UpdateAdminServerConfigHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/ha/status", RequireAdmin(adminService, AdminHAStatusHandler(haSvc)))
-	mux.HandleFunc("GET /api/admin/ha/config", RequireAdmin(adminService, GetHAConfigHandler(haConfigSvc)))
-	mux.HandleFunc("POST /api/admin/ha/config", RequireAdmin(adminService, UpdateHAConfigHandler(haConfigSvc)))
+	mux.HandleFunc("GET /api/admin/ha/config", RequireAdmin(adminService, GetHAConfigHandler(haConfigSvc, haSvc)))
+	mux.HandleFunc("POST /api/admin/ha/config", RequireAdmin(adminService, UpdateHAConfigHandler(haConfigSvc, haSvc)))
+	mux.HandleFunc("GET /api/admin/ha/public-key", RequireAdmin(adminService, HAKeyMaterialHandler(haConfigSvc, haSvc)))
+	mux.HandleFunc("GET /api/admin/ha/public-keys", RequireAdmin(adminService, HACollectedPublicKeysHandler(haConfigSvc, haSvc, haSvc)))
 	mux.HandleFunc("GET /api/admin/mail/config", RequireAdmin(adminService, GetMailConfigHandler(mailer)))
 	mux.HandleFunc("POST /api/admin/mail/config", RequireAdmin(adminService, UpdateMailConfigHandler(mailer)))
 	mux.HandleFunc("GET /api/admin/hubs", RequireAdmin(adminService, ListHubsHandler(hubService)))
@@ -178,12 +272,15 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/mail/test", RequireAdmin(adminService, AdminSendTestMailHandler(mailer)))
 	mux.HandleFunc("POST /api/hubs/register", RegisterHubHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService, haSvc))
+	mux.HandleFunc("POST /api/hubs/{id}/user-links/sync", HubUserLinkSyncHandler(hubService))
 	mux.HandleFunc("GET /hub-registration/confirm", ConfirmHubRegistrationHandler(hubService))
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
 	mux.HandleFunc("GET /api/client/quality", ClientQualityHandler(haSvc))
 	mux.HandleFunc("GET /api/client/endpoints", ClientEndpointsHandler(haSvc))
+	mux.HandleFunc("GET /api/client/hubcenters", ClientHubCentersHandler(haConfigSvc))
 	if haSvc != nil {
 		mux.HandleFunc("GET /api/internal/ha/ops", HAOpsPullHandler(haSvc))
+		mux.HandleFunc("GET /api/internal/ha/public-key", HAInternalKeyMaterialHandler(haConfigSvc, haSvc, haSvc))
 	}
 	// Skill Catalog API
 	var searchRemover skillSearchRemover

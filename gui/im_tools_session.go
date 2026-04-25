@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"encoding/json"
 	"fmt"
@@ -59,11 +60,12 @@ var codingKeywords = []string{
 	"前端", "后端", "frontend", "backend",
 }
 
-// codingActionPhrases are short action/continuation phrases that indicate
-// the user wants to start or continue a coding task. These are NOT added to
-// codingKeywords because they are too generic on their own — they only
-// indicate coding intent when conversation history already contains coding
-// context. Used by checkSessionTaskGuard for context-aware gating.
+// codingActionPhrases are short action/continuation phrases. These are
+// retained for reference but no longer used directly — the GateIntentClassifier's
+// gateContPhrases + hasCodingSignals pipeline handles continuation detection
+// semantically. See gate_intent_classifier.go.
+//
+// Deprecated: use GateIntentClassifier.Classify() instead.
 var codingActionPhrases = []string{
 	"开工", "开干", "动手", "搞起来", "搞起", "干吧", "做吧",
 	"开始吧", "开始做", "开始干", "开始搞",
@@ -81,15 +83,14 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 		return ""
 	}
 
-	// Context-aware gating: when the current message is ambiguous/unknown but
-	// contains an action phrase (e.g. "开工", "动手", "start"), check whether
-	// the conversation history already established coding context. If so,
-	// treat the action phrase as a continuation signal and allow session creation.
+	// Context-aware gating: when the current message is ambiguous/unknown,
+	// check the GateIntentClassifier for semantic classification. The GIC
+	// handles continuation phrases ("继续"/"开工"/"直接做") through its
+	// gateContPhrases + hasCodingSignals pipeline (or UIC delegation when
+	// available), returning GateIntentContinuation for coding continuations.
+	//
+	// This replaces the keyword-based hasCodingActionPhrase workaround.
 	if result.Intent == intentAmbiguous || result.Intent == intentUnknown {
-		if hasCodingActionPhrase(h.lastUserText) && h.conversationHasCodingContext() {
-			return ""
-		}
-
 		// GateIntentClassifier: five-category semantic classification for the
 		// session guard. Consulted before the generic IntentClassifier because
 		// it produces gate-specific categories (new_project, bug_fix,
@@ -170,6 +171,10 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 // "动手", "start"). These phrases are too generic to classify as coding
 // on their own, but combined with conversation context they indicate the
 // user wants to proceed with a previously discussed coding task.
+//
+// Deprecated: use GateIntentClassifier.Classify() which handles continuation
+// detection semantically through gateContPhrases + hasCodingSignals.
+// Retained for degraded-mode fallback when no classifier is available.
 func hasCodingActionPhrase(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	for _, phrase := range codingActionPhrases {
@@ -185,18 +190,25 @@ func hasCodingActionPhrase(text string) bool {
 // development, code, projects). This allows short follow-up messages like
 // "开工" to pass through the session guard when context is established.
 func (h *IMMessageHandler) conversationHasCodingContext() bool {
+	// When UIC is available, classify the most recent user message from
+	// conversation history. This is more accurate than keyword scanning
+	// because UIC uses embedding + LLM fusion.
+	if uic := unifiedClassifier; uic != nil {
+		return h.conversationHasCodingContextUIC(uic)
+	}
+
+	// Fallback: keyword scan when UIC is unavailable.
 	if h.memory == nil {
 		return false
 	}
 	userID := h.lastUserID
 	if userID == "" {
-		userID = "desktop-user" // fallback for desktop mode
+		userID = "desktop-user"
 	}
 	entries := h.memory.Load(userID)
 	if len(entries) == 0 {
 		return false
 	}
-	// Scan the last few entries (up to 10) for coding keywords.
 	start := 0
 	if len(entries) > 10 {
 		start = len(entries) - 10
@@ -212,6 +224,46 @@ func (h *IMMessageHandler) conversationHasCodingContext() bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// conversationHasCodingContextUIC checks recent conversation history for
+// coding context using the UIC's semantic classification. Classifies the
+// most recent user message — if it's coding-like, the conversation has
+// coding context.
+//
+// Only checks one message (not 5) because:
+// 1. Each UIC.Classify() may trigger L2+L3 (embedding + LLM), costing 2-8s
+// 2. If the most recent user message is coding-related, that's sufficient
+//    context for a follow-up "开工" to be treated as continuation
+func (h *IMMessageHandler) conversationHasCodingContextUIC(uic *intent.UnifiedIntentClassifier) bool {
+	if h.memory == nil {
+		return false
+	}
+	userID := h.lastUserID
+	if userID == "" {
+		userID = "desktop-user"
+	}
+	entries := h.memory.Load(userID)
+	if len(entries) == 0 {
+		return false
+	}
+	// Find the most recent user message (skip the current one which triggered this check).
+	for i := len(entries) - 1; i >= 0; i-- {
+		text, ok := entries[i].Content.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			continue
+		}
+		if entries[i].Role != "user" {
+			continue
+		}
+		// Skip if this is the same text as the current message (avoid self-match).
+		if strings.TrimSpace(text) == strings.TrimSpace(h.lastUserText) {
+			continue
+		}
+		result := uic.Classify(intent.MessageContext{Text: text})
+		return result.IsCodingLike()
 	}
 	return false
 }
@@ -899,16 +951,21 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 
 	// Task orchestrator enrichment: when active, prepend per-task context
 	// to the text being sent to the coding session.
-	if h.taskOrchestrator != nil && h.taskOrchestrator.IsActive() {
-		task := h.taskOrchestrator.CurrentTask()
+	userIDForOrch := h.lastUserID
+	var taskOrch *TaskExecutionOrchestrator
+	if h.taskOrchestratorRegistry != nil && userIDForOrch != "" {
+		taskOrch = h.taskOrchestratorRegistry.Get(userIDForOrch)
+	}
+	if taskOrch != nil && taskOrch.IsActive() {
+		task := taskOrch.CurrentTask()
 		if task != nil {
 			// Record which session is handling this task.
-			h.taskOrchestrator.SetCurrentSessionID(sessionID)
+			taskOrch.SetCurrentSessionID(sessionID)
 
 			// If the task is pending, this is the initial send — use the
 			// orchestrator's focused prompt instead of the LLM's text.
 			if task.Status == TaskExecPending {
-				taskPrompt := h.taskOrchestrator.BuildTaskPrompt()
+				taskPrompt := taskOrch.BuildTaskPrompt()
 				if taskPrompt != "" {
 					// Prepend the structured task prompt; append the LLM's
 					// original text as supplementary context (it may contain
@@ -921,7 +978,7 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 					log.Printf("[task-orchestrator] enriched send_and_observe for task %d: %s",
 						task.Index+1, task.Title)
 				}
-				h.taskOrchestrator.MarkCurrentStatus(TaskExecInProgress, "")
+				taskOrch.MarkCurrentStatus(TaskExecInProgress, "")
 			}
 		}
 	}

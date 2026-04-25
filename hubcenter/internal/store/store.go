@@ -27,6 +27,25 @@ type AdminAuditLog struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type FailureEventLog struct {
+	ID          string    `json:"id"`
+	Category    string    `json:"category"`
+	EventCode   string    `json:"event_code"`
+	Message     string    `json:"message"`
+	EntityID    string    `json:"entity_id"`
+	Email       string    `json:"email"`
+	ClientIP    string    `json:"client_ip"`
+	DetailsJSON string    `json:"details_json"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type FailureEventLogFilter struct {
+	Keyword  string
+	Category string
+	Offset   int
+	Limit    int
+}
+
 type HubInstance struct {
 	ID                     string     `json:"id"`
 	InstallationID         string     `json:"installation_id"`
@@ -38,6 +57,8 @@ type HubInstance struct {
 	Port                   int        `json:"port"`
 	Visibility             string     `json:"visibility"`
 	EnrollmentMode         string     `json:"enrollment_mode"`
+	CorporateEmailDomain   string     `json:"corporate_email_domain"`
+	AcceptPublicSignup     bool       `json:"accept_public_signup"`
 	Status                 string     `json:"status"`
 	IsDisabled             bool       `json:"is_disabled"`
 	DisabledReason         string     `json:"disabled_reason"`
@@ -54,6 +75,16 @@ type HubUserLink struct {
 	HubID     string    `json:"hub_id"`
 	Email     string    `json:"email"`
 	IsDefault bool      `json:"is_default"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type HubDomainRoute struct {
+	ID        string    `json:"id"`
+	HubID     string    `json:"hub_id"`
+	Domain    string    `json:"domain"`
+	Enabled   bool      `json:"enabled"`
+	Priority  int       `json:"priority"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -115,6 +146,13 @@ type HAHeartbeatSyncState struct {
 	HubID            string     `json:"hub_id"`
 	LastSyncedSeenAt *time.Time `json:"last_synced_seen_at,omitempty"`
 }
+
+type SystemSettingEntry struct {
+	Key       string    `json:"key"`
+	ValueJSON string    `json:"value_json"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type AdminUserRepository interface {
 	Create(ctx context.Context, admin *AdminUser) error
 	GetByUsername(ctx context.Context, username string) (*AdminUser, error)
@@ -127,10 +165,16 @@ type AdminUserRepository interface {
 type SystemSettingsRepository interface {
 	Set(ctx context.Context, key, valueJSON string) error
 	Get(ctx context.Context, key string) (string, error)
+	List(ctx context.Context) ([]*SystemSettingEntry, error)
 }
 
 type AdminAuditRepository interface {
 	Create(ctx context.Context, log *AdminAuditLog) error
+}
+
+type FailureEventLogRepository interface {
+	Create(ctx context.Context, log *FailureEventLog) error
+	List(ctx context.Context, filter FailureEventLogFilter) ([]*FailureEventLog, int, error)
 }
 
 type HubRepository interface {
@@ -149,8 +193,18 @@ type HubRepository interface {
 
 type HubUserLinkRepository interface {
 	Create(ctx context.Context, link *HubUserLink) error
+	Upsert(ctx context.Context, link *HubUserLink) error
 	ListByEmail(ctx context.Context, email string) ([]*HubUserLink, error)
+	ListAll(ctx context.Context) ([]*HubUserLink, error)
 	GetDefaultByEmail(ctx context.Context, email string) (*HubUserLink, error)
+	DeleteByID(ctx context.Context, id string) error
+	DeleteByHubID(ctx context.Context, hubID string) error
+}
+
+type HubDomainRouteRepository interface {
+	Upsert(ctx context.Context, route *HubDomainRoute) error
+	ListAll(ctx context.Context) ([]*HubDomainRoute, error)
+	DeleteByID(ctx context.Context, id string) error
 	DeleteByHubID(ctx context.Context, hubID string) error
 }
 
@@ -224,6 +278,7 @@ type GossipRepository interface {
 	DeletePost(ctx context.Context, id string) error
 	LockPost(ctx context.Context, id string, locked bool) error
 	FlagPost(ctx context.Context, id string, flagged bool) error
+	ReplaceAll(ctx context.Context, posts []*GossipPost, comments []*GossipComment) error
 	CreateComment(ctx context.Context, comment *GossipComment) error
 	ListComments(ctx context.Context, postID string, offset, limit int) ([]*GossipComment, int, error)
 	DeleteComment(ctx context.Context, id string) error
@@ -256,8 +311,10 @@ type Store struct {
 	Admins           AdminUserRepository
 	System           SystemSettingsRepository
 	AdminAudit       AdminAuditRepository
+	FailureLogs      FailureEventLogRepository
 	Hubs             HubRepository
 	HubUserLinks     HubUserLinkRepository
+	HubDomainRoutes  HubDomainRouteRepository
 	BlockedEmails    BlockedEmailRepository
 	BlockedIPs       BlockedIPRepository
 	HASyncOps        HASyncOpRepository

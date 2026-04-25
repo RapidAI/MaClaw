@@ -14,11 +14,24 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
+type hubAdminRouterTestServices struct {
+	handler http.Handler
+	admins  *auth.AdminService
+	store   *store.Store
+}
+
 func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService) {
+	t.Helper()
+	services := newAdminRouterTestContext(t)
+	return services.handler, services.admins
+}
+
+func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "hub-admin-router-test.db")
@@ -45,7 +58,10 @@ func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService)
 	admins := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
 	promptCache := llmcache.New(st.LLMPromptCache, llmcache.Config{})
 	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
-	centerSvc := center.NewService(config.Default(), st.System)
+	testCfg := config.Default()
+	testCfg.Center.BaseURL = ""
+	testCfg.Center.BaseURLs = nil
+	centerSvc := center.NewService(testCfg, st.System)
 	deviceSvc := device.NewService(st.Machines, device.NewRuntime())
 	sessionSvc := session.NewService(session.NewCache(), st.Sessions)
 	gateway := &ws.Gateway{Identity: identity, Devices: deviceSvc, Sessions: sessionSvc}
@@ -62,6 +78,7 @@ func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService)
 		st.System,
 		promptCache,
 		st.AdminAudit,
+		st.FailureLogs,
 		nil,
 		nil,
 		nil,
@@ -87,7 +104,11 @@ func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService)
 		"/app",
 		"",
 	)
-	return router, admins
+	return &hubAdminRouterTestServices{
+		handler: router,
+		admins:  admins,
+		store:   st,
+	}
 }
 
 func doHubAdminJSONRequest(t *testing.T, handler http.Handler, method, target string, body any, token string) *httptest.ResponseRecorder {
@@ -205,6 +226,7 @@ func TestAdminPromptCacheClearHandlerAcceptsToken(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }
+
 func TestAdminPromptCacheEntriesHandlerAcceptsToken(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	token := issueHubAdminToken(t, router)
@@ -213,6 +235,7 @@ func TestAdminPromptCacheEntriesHandlerAcceptsToken(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }
+
 func TestAdminPromptCacheEntryDeleteHandlerAcceptsToken(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	token := issueHubAdminToken(t, router)

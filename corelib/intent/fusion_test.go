@@ -15,7 +15,7 @@ func TestMergeAndScore_BothChannels(t *testing.T) {
 		{LabelMaintenance, 0.30},
 	}
 
-	candidates := MergeAndScore(emb, tree, 0.15)
+	candidates := MergeAndScore(emb, tree, 0.15, nil)
 
 	if len(candidates) == 0 {
 		t.Fatal("expected candidates")
@@ -43,7 +43,7 @@ func TestMergeAndScore_EmbeddingOnly(t *testing.T) {
 	}
 	var tree []labelScore // empty
 
-	candidates := MergeAndScore(emb, tree, 1.0) // alpha=1.0 (embedding only)
+	candidates := MergeAndScore(emb, tree, 1.0, nil) // alpha=1.0 (embedding only)
 
 	if len(candidates) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(candidates))
@@ -62,7 +62,7 @@ func TestMergeAndScore_TreeOnly(t *testing.T) {
 		{LabelBrowser, 0.75},
 	}
 
-	candidates := MergeAndScore(emb, tree, 0.0) // alpha=0.0 (tree only)
+	candidates := MergeAndScore(emb, tree, 0.0, nil) // alpha=0.0 (tree only)
 
 	if len(candidates) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(candidates))
@@ -86,7 +86,7 @@ func TestMergeAndScore_CrossChannelAgreementBoost(t *testing.T) {
 		// bug_fix NOT in tree
 	}
 
-	candidates := MergeAndScore(emb, tree, 0.15)
+	candidates := MergeAndScore(emb, tree, 0.15, nil)
 
 	// coding: 0.15*0.70 + 0.85*0.85 = 0.105 + 0.7225 = 0.8275
 	// bug_fix: 0.15*0.80 + 0.85*0.00 = 0.12

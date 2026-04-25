@@ -36,7 +36,11 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 		if relPath != "" {
 			candidate := filepath.Join(staticDir, filepath.FromSlash(relPath))
 			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				if strings.ToLower(filepath.Ext(relPath)) == ".js" && brandName != "" && brandName != "MaClaw" {
+				ext := strings.ToLower(filepath.Ext(relPath))
+				if ext == ".js" {
+					w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+				}
+				if ext == ".js" && brandName != "" && brandName != "MaClaw" {
 					data, err := os.ReadFile(candidate)
 					if err != nil {
 						http.NotFound(w, r)
@@ -44,7 +48,6 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 					}
 					replaced := strings.ReplaceAll(string(data), "MaClaw", brandName)
 					w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-					w.Header().Set("Cache-Control", "no-cache")
 					_, _ = w.Write([]byte(replaced))
 					return
 				}

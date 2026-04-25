@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -37,6 +38,11 @@ type LoginNotifier interface {
 	BroadcastLoginLink(ctx context.Context, email, confirmURL string) []string
 }
 
+// UserRouteSyncer pushes confirmed user-to-hub bindings to Hub Center when available.
+type UserRouteSyncer interface {
+	SyncUserRoute(ctx context.Context, email string) error
+}
+
 const (
 	systemKeyEnrollmentMode = "identity_enrollment_mode"
 	systemKeyPublicBaseURL  = "server_public_base_url"
@@ -50,6 +56,7 @@ type EnrollmentResult struct {
 	SN           string `json:"sn,omitempty"`
 	MachineID    string `json:"machine_id,omitempty"`
 	MachineToken string `json:"machine_token,omitempty"`
+	ViewerToken  string `json:"viewer_token,omitempty"`
 	ExpiresAt    string `json:"expires_at,omitempty"`
 }
 
@@ -106,6 +113,7 @@ type IdentityService struct {
 	mailer          mail.Mailer
 	publicBaseURL   string
 	loginNotifier   LoginNotifier
+	userRouteSyncer UserRouteSyncer
 }
 
 func (s *IdentityService) UsersRepo() store.UserRepository {
@@ -165,6 +173,17 @@ func (s *IdentityService) SetLoginNotifier(n LoginNotifier) {
 	s.loginNotifier = n
 }
 
+func (s *IdentityService) SetUserRouteSyncer(syncer UserRouteSyncer) {
+	s.userRouteSyncer = syncer
+}
+
+func (s *IdentityService) syncUserRoute(ctx context.Context, email string) {
+	if s == nil || s.userRouteSyncer == nil || strings.TrimSpace(email) == "" {
+		return
+	}
+	_ = s.userRouteSyncer.SyncUserRoute(ctx, email)
+}
+
 func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineName, platform, clientID, invitationCode string) (*EnrollmentResult, error) {
 	email = normalizeEmail(email)
 	if email == "" {
@@ -184,7 +203,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 		expired, expiresAt, _ := s.invitationSvc.CheckExpiry(ctx, email)
 		if expired {
 			if strings.TrimSpace(invitationCode) != "" {
-				// Expired user provided a new invitation code — rebind
+				// Expired user provided a new invitation code - rebind
 				if err := s.invitationSvc.ValidateAndConsume(ctx, invitationCode, email); err != nil {
 					return nil, ErrInvalidInvitationCode
 				}
@@ -204,7 +223,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 		}
 	}
 
-	// Invitation code validation — only required for new users
+	// Invitation code validation - only required for new users
 	if user == nil && s.invitationSvc != nil {
 		required, err := s.invitationSvc.IsRequired(ctx)
 		if err != nil {
@@ -371,12 +390,12 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 	var channels []string
 	var emailErr error
 
-	// 1. Send via email (best-effort — don't block IM delivery on email failure)
+	// 1. Send via email (best-effort - don't block IM delivery on email failure)
 	if s.mailer != nil {
 		if err := s.mailer.SendLoginConfirmation(ctx, email, confirmURL); err != nil {
 			emailErr = err
 		} else {
-			channels = append(channels, "邮箱")
+			channels = append(channels, "email")
 		}
 	}
 
@@ -391,7 +410,7 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 		if emailErr != nil {
 			return nil, emailErr
 		}
-		// No mailer and no IM channels — dev mode fallback
+		// No mailer and no IM channels - dev mode fallback
 		return &EmailLoginRequestResult{
 			Status:  "pending_email_confirmation",
 			Message: fmt.Sprintf("Use this confirm URL for development: %s", confirmURL),
@@ -405,7 +424,7 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 	}
 	return &EmailLoginRequestResult{
 		Status:  "pending_email_confirmation",
-		Message: fmt.Sprintf("验证链接已发送到: %s", sentTo),
+		Message: fmt.Sprintf("Verification link sent to: %s", sentTo),
 		PollID:  rawPollToken,
 		SentTo:  sentTo,
 	}, nil
@@ -511,7 +530,7 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 		return &EmailPollResult{Status: "pending"}, nil
 	}
 
-	// Token was consumed — the user confirmed via email link.
+	// Token was consumed - the user confirmed via email link.
 	// Issue a viewer token for this polling client too.
 	user, err := s.users.GetByEmail(ctx, loginToken.Email)
 	if err != nil {
@@ -707,6 +726,28 @@ func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, ra
 	return &MachinePrincipal{UserID: machine.UserID, MachineID: machine.ID}, nil
 }
 
+// IssueViewerTokenForUser creates a new viewer token for the given user.
+// This is called during WebSocket machine auth so that existing clients
+// (which only have a machine_token) can obtain a viewer_token without
+// re-enrolling.
+func (s *IdentityService) IssueViewerTokenForUser(ctx context.Context, userID string) (string, error) {
+	raw, err := randomToken(32)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	if err := s.viewerTok.Create(ctx, &store.ViewerToken{
+		ID:        newID("vt"),
+		UserID:    userID,
+		TokenHash: hashToken(raw),
+		ExpiresAt: now.Add(30 * 24 * time.Hour),
+		CreatedAt: now,
+	}); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
 func (s *IdentityService) AuthenticateViewer(ctx context.Context, rawToken string) (*ViewerPrincipal, error) {
 	if strings.TrimSpace(rawToken) == "" {
 		return nil, ErrInvalidUserCredentials
@@ -751,7 +792,18 @@ func (s *IdentityService) createApprovedUser(ctx context.Context, email string) 
 	if err := s.users.Create(ctx, user); err != nil {
 		return nil, err
 	}
+	if err := s.ensureDefaultLLMServiceForUser(ctx, email); err != nil {
+		return nil, err
+	}
+	s.syncUserRoute(ctx, email)
 	return user, nil
+}
+
+func (s *IdentityService) ensureDefaultLLMServiceForUser(ctx context.Context, email string) error {
+	if s == nil || s.settings == nil {
+		return nil
+	}
+	return llmservice.GrantDefaultServiceForNewUser(ctx, s.settings, email)
 }
 
 // ListPendingEnrollments returns all enrollment requests with status "pending".
@@ -766,7 +818,7 @@ func (s *IdentityService) ListAllEnrollments(ctx context.Context) ([]*store.User
 
 // ApproveEnrollment approves a pending enrollment and creates an active user.
 func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*store.User, *store.UserEnrollment, error) {
-	// We need to find the enrollment to get the email — list all pending and find by ID
+	// We need to find the enrollment to get the email - list all pending and find by ID
 	pending, err := s.enrollments.ListPending(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -789,8 +841,12 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 	if existing != nil {
 		existing.EnrollmentStatus = "approved"
 		existing.Status = "active"
+		if err := s.ensureDefaultLLMServiceForUser(ctx, target.Email); err != nil {
+			return nil, nil, err
+		}
 		// Consume any pending login token so the PWA poll returns "confirmed".
 		s.consumePendingLoginToken(ctx, target.Email)
+		s.syncUserRoute(ctx, target.Email)
 		return existing, target, nil
 	}
 	user, err := s.createApprovedUser(ctx, target.Email)
@@ -799,6 +855,7 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 	}
 	// Consume any pending login token so the PWA poll returns "confirmed".
 	s.consumePendingLoginToken(ctx, target.Email)
+	s.syncUserRoute(ctx, target.Email)
 	return user, target, nil
 }
 
@@ -840,6 +897,7 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 
 	// Consume the pending login token so the PWA poll returns "confirmed".
 	s.consumePendingLoginToken(ctx, email)
+	s.syncUserRoute(ctx, email)
 
 	return user, nil
 }
@@ -890,6 +948,8 @@ func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.U
 		return nil, err
 	}
 
+	now := time.Now()
+
 	existing, err := s.machines.GetByID(ctx, machineID)
 	if err != nil {
 		return nil, err
@@ -899,38 +959,47 @@ func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.U
 		if err := s.machines.UpdateTokenHash(ctx, machineID, hashToken(rawToken)); err != nil {
 			return nil, err
 		}
-		return &EnrollmentResult{
-			Status:       "approved",
-			UserID:       user.ID,
-			Email:        user.Email,
-			SN:           user.SN,
-			MachineID:    machineID,
-			MachineToken: rawToken,
-		}, nil
+	} else {
+		machine := &store.Machine{
+			ID:               machineID,
+			UserID:           user.ID,
+			ClientID:         clientID,
+			Name:             defaultIfEmpty(machineName, "MaClaw Desktop"),
+			Platform:         defaultIfEmpty(platform, "unknown"),
+			MachineTokenHash: hashToken(rawToken),
+			Status:           "offline",
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		if err := s.machines.Create(ctx, machine); err != nil {
+			return nil, err
+		}
 	}
 
-	now := time.Now()
-	machine := &store.Machine{
-		ID:               machineID,
-		UserID:           user.ID,
-		ClientID:         clientID,
-		Name:             defaultIfEmpty(machineName, "MaClaw Desktop"),
-		Platform:         defaultIfEmpty(platform, "unknown"),
-		MachineTokenHash: hashToken(rawToken),
-		Status:           "offline",
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}
-	if err := s.machines.Create(ctx, machine); err != nil {
+	// Issue a viewer token after the machine operation succeeds, so we don't
+	// leave orphan tokens in the DB if machine creation/update fails.
+	rawViewerToken, err := randomToken(32)
+	if err != nil {
 		return nil, err
 	}
+	if err := s.viewerTok.Create(ctx, &store.ViewerToken{
+		ID:        newID("vt"),
+		UserID:    user.ID,
+		TokenHash: hashToken(rawViewerToken),
+		ExpiresAt: now.Add(30 * 24 * time.Hour),
+		CreatedAt: now,
+	}); err != nil {
+		return nil, err
+	}
+
 	return &EnrollmentResult{
 		Status:       "approved",
 		UserID:       user.ID,
 		Email:        user.Email,
 		SN:           user.SN,
-		MachineID:    machine.ID,
+		MachineID:    machineID,
 		MachineToken: rawToken,
+		ViewerToken:  rawViewerToken,
 	}, nil
 }
 
@@ -1035,3 +1104,5 @@ func (s *IdentityService) resolvePublicBaseURL() string {
 	}
 	return strings.TrimRight(payload.Value, "/")
 }
+
+

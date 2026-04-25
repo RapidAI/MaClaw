@@ -126,13 +126,8 @@ func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 		}
 
 		// Verify both loopMaxOverride and ctx are in sync.
-		expected := cfg.LoopOverride
-		if expected < config.MinAgentIterations {
-			expected = config.MinAgentIterations
-		}
-		if expected > config.MaxAgentIterationsCap {
-			expected = config.MaxAgentIterationsCap
-		}
+		// Use the single source of truth for expected value calculation.
+		expected := config.EffectiveMaxIterations(cfg.LoopOverride)
 		if h.loopMaxOverride != expected {
 			t.Logf("loopMaxOverride=%d, expected=%d", h.loopMaxOverride, expected)
 			return false

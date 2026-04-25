@@ -45,12 +45,12 @@ func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.Macl
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 	return []corelib.MaclawLLMProvider{
-		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
-		{Name: zhipuLobsterProviderName, URL: "https://open.bigmodel.cn/api/coding/paas/v4", Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
-		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
-		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
-		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0"},
-		{Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
+		{Name: zhipuLobsterProviderName, URL: "https://open.bigmodel.cn/api/coding/paas/v4", Model: "glm-5-turbo", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0"},
+		{Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Custom2", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 	}
@@ -228,10 +228,8 @@ func (a *App) GetMaclawLLMPanelState() struct {
 		}
 	}
 	providerState := a.GetMaclawLLMProviders()
-	maxIter := cfg.MaclawAgentMaxIterations
-	if maxIter <= 0 {
-		maxIter = config.MaxAgentIterationsCap
-	}
+	// Use the single source of truth for configured → effective conversion.
+	maxIter := config.EffectiveMaxIterations(cfg.MaclawAgentMaxIterations)
 	return struct {
 		Providers           []corelib.MaclawLLMProvider `json:"providers"`
 		Current             string              `json:"current"`
@@ -850,16 +848,8 @@ func (a *App) SetMaclawAgentMaxIterations(n int) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if n <= 0 {
-		n = config.MaxAgentIterationsCap // default 300
-	}
-	if n < config.MinAgentIterations {
-		n = config.MinAgentIterations
-	}
-	if n > config.MaxAgentIterationsCap {
-		n = config.MaxAgentIterationsCap
-	}
-	cfg.MaclawAgentMaxIterations = n // 30-300
+	// Use the single source of truth for value normalization.
+	cfg.MaclawAgentMaxIterations = config.EffectiveMaxIterations(n)
 	return a.SaveConfig(cfg)
 }
 

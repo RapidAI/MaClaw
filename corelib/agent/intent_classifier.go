@@ -134,15 +134,12 @@ const IntentClassifierSystemPrompt = `你是一个任务执行方式分类器，
 // ---------------------------------------------------------------------------
 
 // ClassifyTaskIntent classifies a user message into a task intent using
-// the UIC (if available) or keyword-based rules as fallback.
+// the UIC (if available) or returning ambiguous as fallback.
 //
-// NOTE: This function references CodingKeywords and NonCodingKeywords which
-// are defined in gui/im_tools_session.go. Callers must ensure those package-
-// level variables are accessible. For the corelib version, the function
-// accepts them via the package-level variables imported by gui/ aliases.
-//
-// The gui/ package sets CodingKeywords and NonCodingKeywords at init time.
-func ClassifyTaskIntent(text string, codingKeywords, nonCodingKeywords []string) TaskIntentResult {
+// Keyword-based classification has been disabled in favor of UIC semantic
+// classification. When UIC is unavailable, returns IntentAmbiguous to let
+// callers take the conservative path.
+func ClassifyTaskIntent(text string) TaskIntentResult {
 	// Delegate to UIC when available.
 	if uic := UnifiedClassifier; uic != nil {
 		result := uic.Classify(intent.MessageContext{Text: text})
@@ -157,53 +154,15 @@ func ClassifyTaskIntent(text string, codingKeywords, nonCodingKeywords []string)
 		}
 	}
 
-	// Fallback: keyword-based classification when UIC is nil.
+	// Fallback: UIC is nil — return ambiguous instead of guessing with keywords.
+	// Keyword-based classification is unreliable and can misclassify tasks
+	// (e.g., "基于文档生成PPT" as non_coding). Returning ambiguous lets
+	// callers take the conservative path.
 	msg := strings.ToLower(strings.TrimSpace(text))
 	if msg == "" {
 		return TaskIntentResult{Intent: IntentUnknown}
 	}
-
-	codingHits := CollectIntentMatches(msg, codingKeywords)
-	sshHits := CollectIntentMatches(msg, SSHKeywords)
-	nonCodingHits := CollectIntentMatches(msg, nonCodingKeywords)
-	ambiguousHits := CollectIntentMatches(msg, AmbiguousKeywords)
-	if IPv4Pattern.MatchString(msg) {
-		sshHits = AppendIfMissing(sshHits, "ip")
-	}
-
-	hasCoding := len(codingHits) > 0
-	hasSSH := len(sshHits) > 0
-	hasNonCoding := len(nonCodingHits) > 0
-	hasAmbiguous := len(ambiguousHits) > 0
-
-	switch {
-	case hasNonCoding && hasCoding && !hasSSH:
-		if HasOnlyWeakCodingEvidence(codingHits) {
-			return TaskIntentResult{Intent: IntentNonCoding, Matched: nonCodingHits[0], Evidence: CombineEvidence(nonCodingHits, codingHits), Source: "rules"}
-		}
-		return TaskIntentResult{Intent: IntentAmbiguous, Matched: FirstMatch(nonCodingHits, codingHits), Evidence: CombineEvidence(nonCodingHits, codingHits), Source: "rules"}
-	case hasCoding && !hasSSH && !hasAmbiguous:
-		if HasOnlyWeakCodingEvidence(codingHits) {
-			return TaskIntentResult{Intent: IntentNonCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
-		}
-		return TaskIntentResult{Intent: IntentCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
-	case hasSSH && !hasCoding && !hasNonCoding:
-		return TaskIntentResult{Intent: IntentSSH, Matched: sshHits[0], Evidence: sshHits, Source: "rules"}
-	case hasNonCoding && !hasCoding && !hasSSH:
-		return TaskIntentResult{Intent: IntentNonCoding, Matched: nonCodingHits[0], Evidence: nonCodingHits, Source: "rules"}
-	case hasSSH && hasCoding:
-		return TaskIntentResult{Intent: IntentAmbiguous, Matched: FirstMatch(ambiguousHits, sshHits, codingHits), Evidence: CombineEvidence(sshHits, codingHits, ambiguousHits), Source: "rules"}
-	case hasAmbiguous:
-		return TaskIntentResult{Intent: IntentAmbiguous, Matched: FirstMatch(ambiguousHits, sshHits, codingHits, nonCodingHits), Evidence: CombineEvidence(ambiguousHits, sshHits, codingHits, nonCodingHits), Source: "rules"}
-	case hasSSH:
-		return TaskIntentResult{Intent: IntentSSH, Matched: sshHits[0], Evidence: sshHits, Source: "rules"}
-	case hasNonCoding:
-		return TaskIntentResult{Intent: IntentNonCoding, Matched: nonCodingHits[0], Evidence: nonCodingHits, Source: "rules"}
-	case hasCoding:
-		return TaskIntentResult{Intent: IntentCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
-	default:
-		return TaskIntentResult{Intent: IntentAmbiguous, Source: "rules"}
-	}
+	return TaskIntentResult{Intent: IntentAmbiguous, Source: "rules-degraded", Reason: "UIC unavailable, keyword classification disabled"}
 }
 
 // ShouldRequireExecutionConfirmationForIntent determines whether a message

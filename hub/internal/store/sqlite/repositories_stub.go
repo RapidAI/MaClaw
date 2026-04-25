@@ -22,6 +22,10 @@ type adminAuditRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+type failureEventLogRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 type userRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
@@ -72,6 +76,7 @@ func NewStore(p *Provider) *store.Store {
 		Admins:          &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		System:          &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		AdminAudit:      &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		FailureLogs:     &failureEventLogRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Users:           &userRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Enrollments:     &enrollmentRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		EmailBlocks:     &emailBlockRepo{db: p.Write, readDB: p.Read, batch: p.batch},
@@ -1534,4 +1539,70 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func (r *failureEventLogRepo) Create(ctx context.Context, log *store.FailureEventLog) error {
+	_, err := r.db.ExecContext(
+		ctx,
+		`INSERT INTO failure_event_logs (id, category, event_code, message, entity_id, email, client_ip, details_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		log.ID,
+		log.Category,
+		log.EventCode,
+		log.Message,
+		log.EntityID,
+		log.Email,
+		log.ClientIP,
+		log.DetailsJSON,
+		log.CreatedAt.Format(time.RFC3339),
+	)
+	return err
+}
+
+func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEventLogFilter) ([]*store.FailureEventLog, int, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	keyword := strings.TrimSpace(filter.Keyword)
+	category := strings.TrimSpace(filter.Category)
+	where := make([]string, 0, 2)
+	args := make([]any, 0, 8)
+	if category != "" {
+		where = append(where, "category = ?")
+		args = append(args, category)
+	}
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		where = append(where, "(event_code LIKE ? OR message LIKE ? OR entity_id LIKE ? OR email LIKE ? OR client_ip LIKE ? OR details_json LIKE ?)")
+		args = append(args, like, like, like, like, like, like)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	if err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM failure_event_logs`+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, category, event_code, message, entity_id, email, client_ip, details_json, created_at FROM failure_event_logs`+whereSQL+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]*store.FailureEventLog, 0, limit)
+	for rows.Next() {
+		var item store.FailureEventLog
+		var createdAt string
+		if err := rows.Scan(&item.ID, &item.Category, &item.EventCode, &item.Message, &item.EntityID, &item.Email, &item.ClientIP, &item.DetailsJSON, &createdAt); err != nil {
+			return nil, 0, err
+		}
+		item.CreatedAt = mustParseTime(createdAt)
+		items = append(items, &item)
+	}
+	return items, total, rows.Err()
 }

@@ -134,6 +134,44 @@ func containsAny(text string, words []string) bool {
 	return false
 }
 
+// isOnlyConfirmWord returns true if the text is purely a confirm word with
+// no substantial additional content. This prevents greedy keyword matching
+// from swallowing modification requests like "好的，但是把技术栈改成React"
+// where "好的" matches a confirmWord but the message also contains a change
+// request.
+//
+// The check strips all confirm words, punctuation, and whitespace from the
+// text. If nothing substantial remains, it's a pure confirm.
+func isOnlyConfirmWord(text string, words []string) bool {
+	if text == "" {
+		return false
+	}
+	// First check: does the text contain any confirm word at all?
+	if !containsAny(text, words) {
+		return false
+	}
+	// Strip all confirm words from the text.
+	remaining := text
+	for _, w := range words {
+		remaining = strings.ReplaceAll(remaining, w, "")
+	}
+	// Strip common punctuation and whitespace.
+	remaining = strings.TrimSpace(remaining)
+	for _, r := range []string{"，", "。", "！", "、", ",", ".", "!", " ", "~", "～", "👍", "👌", "✅"} {
+		remaining = strings.ReplaceAll(remaining, r, "")
+	}
+	remaining = strings.TrimSpace(remaining)
+	// If nothing substantial remains, it's a pure confirm.
+	return len([]rune(remaining)) < 3
+}
+
+// IsOnlyConfirmWordExported is the exported version of isOnlyConfirmWord,
+// using the package-level confirmWords list. Used by the TUI workflow
+// integration which doesn't have access to the engine's internal state.
+func IsOnlyConfirmWordExported(text string) bool {
+	return isOnlyConfirmWord(text, confirmWords)
+}
+
 // substantialInputMinLen is the minimum character count for user text to be
 // considered "substantial" input (i.e., likely a pasted document or detailed
 // description rather than a short command like "好的" or "开工").

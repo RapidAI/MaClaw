@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -205,10 +206,7 @@ func convertHistoryToEntries(history []Message, currentID string) []agent.Conver
 func (c *coreAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig { return c.llmCfg }
 
 func (c *coreAgentCallbacks) GetMaxIterations() int {
-	if c.appCfg.MaclawAgentMaxIterations > 0 {
-		return c.appCfg.MaclawAgentMaxIterations
-	}
-	return 20
+	return config.EffectiveMaxIterations(c.appCfg.MaclawAgentMaxIterations)
 }
 
 func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
@@ -245,7 +243,7 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 		Executor:          "core_agent",
 		SupportsSessions:  true,
 		SupportsAskUser:   true,
-		SupportsSSH:       true,
+		SupportsSSH:       cb.canUseSSH(),
 		SupportsLocalBash: cb.canUseLocalBash(),
 		Tools:             cb.toolCapabilities(),
 		Metadata: map[string]string{
@@ -287,8 +285,14 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "ssh",
-			Description: sshToolDescription(c.allowDirectSSH, c.allowSSHFileTransfer),
-			Enabled:     true,
+			Description: sshToolDescription(c.allowDirectSSH, c.allowSSHFileTransfer, len(c.appCfg.SSHHosts) > 0),
+			Enabled:     c.canUseSSH(),
+			DisabledReason: func() string {
+				if !c.canUseSSH() {
+					return c.sshDeniedReason()
+				}
+				return ""
+			}(),
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -399,6 +403,9 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 		}
 		return agent.ToolBash(ensureBashWorkingDir(args, c.workspace), c.OnProgress)
 	case "ssh":
+		if !c.canUseSSH() {
+			return "Error: " + c.sshDeniedReason()
+		}
 		validated, err := c.validateSSHArgs(args)
 		if err != nil {
 			return fmt.Sprintf("Error: %v", err)
@@ -459,10 +466,14 @@ func sshAllowedActions(allowFileTransfer bool) []string {
 	return actions
 }
 
-func sshToolDescription(allowDirectSSH, allowFileTransfer bool) string {
+func sshToolDescription(allowDirectSSH, allowFileTransfer, hasConfiguredHosts bool) string {
 	parts := []string{"Manage remote SSH connections and commands for pure agent operations without coding-session orchestration."}
 	if !allowDirectSSH {
-		parts = append(parts, "Direct host credentials are disabled; use a preconfigured SSH host label.")
+		if hasConfiguredHosts {
+			parts = append(parts, "Direct host credentials are disabled; use a preconfigured SSH host label.")
+		} else {
+			parts = append(parts, "No SSH access is currently available in this MaClawSrv deployment.")
+		}
 	}
 	if !allowFileTransfer {
 		parts = append(parts, "Local file transfer is disabled by default on MaClawSrv.")
@@ -591,4 +602,12 @@ func ensureBashWorkingDir(args map[string]interface{}, workspace string) map[str
 	}
 	cloned["working_dir"] = workspace
 	return cloned
+}
+
+func (c *coreAgentCallbacks) canUseSSH() bool {
+	return c.allowDirectSSH || len(c.appCfg.SSHHosts) > 0
+}
+
+func (c *coreAgentCallbacks) sshDeniedReason() string {
+	return "ssh is unavailable because this MaClawSrv deployment has no direct SSH access and no configured SSH host labels"
 }

@@ -68,7 +68,10 @@ func ToolMemory(store *memory.Store, args map[string]interface{}) string {
 			Category: memory.Category(category),
 			Tags:     tags,
 		}
-		if err := store.Save(entry); err != nil {
+		// Use SaveWithContext when conversation context is available,
+		// enriching tags with entities from surrounding dialogue.
+		contextHint := StringArg(args, "_context_hint")
+		if err := store.SaveWithContext(entry, contextHint); err != nil {
 			return fmt.Sprintf("保存记忆失败: %s", err.Error())
 		}
 		summary := content

@@ -1,151 +1,216 @@
-<!doctype html>
-<html lang="zh-CN">
+﻿<!doctype html>
+<html lang="en" id="html-root">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>🦞 龙虾盛宴 — SkillHub</title>
+  <title>SkillHub</title>
   <style>
-    :root{--bg:#f8fafc;--card:#fff;--text:#1a202c;--muted:#64748b;--primary:#2563eb;--primary-light:#eff6ff;--border:#e2e8f0;--star:#f59e0b;--radius:12px;--shadow:0 1px 3px rgba(0,0,0,.08)}
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.6}
-    .container{max-width:1200px;margin:0 auto;padding:24px 20px}
-    header{text-align:center;padding:32px 0 24px}
-    header h1{font-size:28px;margin-bottom:6px}
-    header p{color:var(--muted);font-size:14px}
-    .search-bar{display:flex;gap:8px;max-width:600px;margin:20px auto 0}
-    .search-bar input{flex:1;height:42px;padding:0 14px;border:1px solid var(--border);border-radius:var(--radius);font:inherit;font-size:14px;outline:none;transition:border-color .2s}
-    .search-bar input:focus{border-color:var(--primary)}
-    .search-bar button{height:42px;padding:0 20px;border:none;border-radius:var(--radius);background:var(--primary);color:#fff;font:inherit;font-weight:600;cursor:pointer}
-    .search-bar button:disabled{opacity:.6;cursor:default}
-    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:24px}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px;transition:box-shadow .2s}
-    .card:hover{box-shadow:0 4px 12px rgba(0,0,0,.1)}
-    .card-name{font-weight:700;font-size:15px;display:flex;align-items:center;gap:6px}
-    .card-desc{font-size:13px;color:var(--muted);flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-    .card-tags{display:flex;flex-wrap:wrap;gap:4px}
-    .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;background:#f1f5f9;color:#475569;border:1px solid var(--border)}
-    .card-footer{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:auto;padding-top:8px;border-top:1px solid #f1f5f9}
-    .stars{color:var(--star);letter-spacing:1px}
-    .trust-badge{display:inline-block;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:600}
-    .trust-community{background:#eff6ff;color:#2563eb;border:1px solid #93c5fd}
-    .trust-official{background:#f0fdf4;color:#16a34a;border:1px solid #86efac}
-    .trust-unknown{background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0}
-    .pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:24px;padding:16px 0}
-    .pager button{height:36px;padding:0 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card);font:inherit;cursor:pointer}
-    .pager button:disabled{opacity:.4;cursor:default}
-    .pager span{font-size:13px;color:var(--muted)}
-    .empty{text-align:center;padding:48px 0;color:var(--muted);font-size:14px}
-    .loading{text-align:center;padding:48px 0;color:var(--muted);font-size:14px}
-    @media(max-width:960px){.grid{grid-template-columns:repeat(2,1fr)}}
-    @media(max-width:560px){.grid{grid-template-columns:1fr}}
+    :root{--bg:#f5f7fb;--panel:#fff;--text:#162033;--muted:#667085;--line:#dbe2ea;--primary:#2563eb;--official:#16a34a;--official-soft:#dcfce7;--community:#7c3aed;--community-soft:#ede9fe;--unknown:#64748b;--unknown-soft:#e2e8f0;--star:#f59e0b;--shadow:0 10px 30px rgba(22,32,51,.08);--radius:16px}
+    *{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#fbfcff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    .wrap{max-width:1180px;margin:0 auto;padding:32px 20px 40px}.hero{text-align:center;margin-bottom:24px}.hero h1{margin:0 0 8px;font-size:34px}.hero p{margin:0;color:var(--muted);font-size:14px}
+    .toolbar{display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;margin-bottom:20px}.toolbar input{width:min(540px,100%);height:44px;padding:0 14px;border:1px solid var(--line);border-radius:12px;background:#fff;font:inherit}.toolbar button{height:44px;padding:0 18px;border:0;border-radius:12px;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;font:inherit;font-weight:700;cursor:pointer}.toolbar button:disabled{opacity:.6;cursor:default}
+    .summary{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;margin-bottom:16px}.summary-card{min-width:140px;padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.86);box-shadow:var(--shadow);text-align:center}.summary-card strong{display:block;font-size:24px}.summary-card span{font-size:12px;color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}.card{display:flex;flex-direction:column;gap:10px;padding:18px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);box-shadow:var(--shadow)}.card-name{font-size:16px;font-weight:800;line-height:1.35}.card-desc{color:var(--muted);font-size:13px;line-height:1.65;min-height:42px}.card-tags{display:flex;gap:6px;flex-wrap:wrap}.tag{display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;font-size:11px;background:#f8fafc;border:1px solid var(--line);color:#475467}.meta{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}.footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:auto;padding-top:10px;border-top:1px solid #eef2f6;font-size:12px;color:var(--muted)}
+    .trust{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700}.trust-official{background:var(--official-soft);color:var(--official)}.trust-community{background:var(--community-soft);color:var(--community)}.trust-unknown{background:var(--unknown-soft);color:var(--unknown)}
+    .pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:22px}.pager button{height:38px;padding:0 16px;border:1px solid var(--line);border-radius:12px;background:#fff;font:inherit;cursor:pointer}.pager button:disabled{opacity:.45;cursor:default}.pager span{font-size:13px;color:var(--muted)}
+    .state{padding:42px 18px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:var(--radius);background:rgba(255,255,255,.72)}
+    @media (max-width:1000px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width:640px){.wrap{padding:22px 14px 30px}.hero h1{font-size:28px}.toolbar{justify-content:stretch}.toolbar input,.toolbar button{width:100%}.grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>🦞 龙虾盛宴</h1>
-      <p>MaClaw SkillHub — 搜索、发现、分享 Skill</p>
-    </header>
-    <div class="search-bar">
-      <input id="searchInput" placeholder="搜索 Skill 名称、描述、标签..." autofocus>
-      <button id="searchBtn" onclick="doSearch(1)">搜索</button>
+  <div class="wrap">
+    <div class="hero">
+      <h1 id="pageTitle">SkillHub</h1>
+      <p id="pageDesc"></p>
     </div>
-    <div id="content"><div class="empty">输入关键词搜索，或直接点击搜索浏览全部 Skill</div></div>
+
+    <div class="toolbar">
+      <input id="searchInput" autocomplete="off">
+      <button id="searchBtn" type="button" onclick="doSearch(1)"></button>
+    </div>
+
+    <div class="summary">
+      <div class="summary-card"><strong id="summaryTotal">0</strong><span id="summaryTotalLabel"></span></div>
+      <div class="summary-card"><strong id="summaryDownloads">0</strong><span id="summaryDownloadsLabel"></span></div>
+    </div>
+
+    <div id="content" class="state"></div>
+
     <div id="pager" class="pager" style="display:none">
-      <button id="prevBtn" onclick="doSearch(currentPage-1)">上一页</button>
+      <button id="prevBtn" type="button" onclick="doSearch(currentPage-1)"></button>
       <span id="pageInfo"></span>
-      <button id="nextBtn" onclick="doSearch(currentPage+1)">下一页</button>
+      <button id="nextBtn" type="button" onclick="doSearch(currentPage+1)"></button>
     </div>
   </div>
-<script>
-var currentPage = 1;
-var pageSize = 40;
 
-document.getElementById('searchInput').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') doSearch(1);
-});
+  <script>
+    var currentPage = 1;
+    var pageSize = 40;
+    var currentItems = [];
+    var currentTotal = 0;
+    var LANG = (navigator.language || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+    document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
 
-function doSearch(page) {
-  if (page < 1) return;
-  currentPage = page;
-  var q = document.getElementById('searchInput').value.trim();
-  var url = '/api/v1/skills/search?page=' + page + '&q=' + encodeURIComponent(q);
-  document.getElementById('content').innerHTML = '<div class="loading">加载中...</div>';
-  document.getElementById('searchBtn').disabled = true;
+    var I18N = {
+      title: { zh: '\u6280\u80fd\u76ee\u5f55', en: 'SkillHub' },
+      desc: { zh: '\u641c\u7d22\u3001\u53d1\u73b0\u5e76\u6d4f\u89c8\u53ef\u516c\u5f00\u8bbf\u95ee\u7684\u6280\u80fd\u3002', en: 'Search, discover, and browse publicly available skills.' },
+      searchPlaceholder: { zh: '\u641c\u7d22\u6280\u80fd\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e', en: 'Search skill name, description, tags' },
+      search: { zh: '搜索', en: 'Search' },
+      loading: { zh: '加载中...', en: 'Loading...' },
+      emptyInitial: { zh: '\u8f93\u5165\u5173\u952e\u8bcd\u5f00\u59cb\u641c\u7d22\uff0c\u6216\u76f4\u63a5\u70b9\u51fb\u641c\u7d22\u6d4f\u89c8\u5168\u90e8\u6280\u80fd\u3002', en: 'Enter keywords to search, or click search to browse all skills.' },
+      emptyResult: { zh: '\u6ca1\u6709\u627e\u5230\u5339\u914d\u7684\u6280\u80fd\u3002', en: 'No matching skills found.' },
+      loadFailed: { zh: '加载失败: {error}', en: 'Load failed: {error}' },
+      page: { zh: '第 {current} / {total} 页，共 {count} 条', en: 'Page {current} / {total}, {count} items' },
+      prev: { zh: '上一页', en: 'Previous' },
+      next: { zh: '下一页', en: 'Next' },
+      total: { zh: '结果总数', en: 'Total Results' },
+      downloadsSummary: { zh: '总下载量', en: 'Total Downloads' },
+      downloads: { zh: '下载', en: 'Downloads' },
+      rating: { zh: '评分', en: 'Rating' },
+      ratings: { zh: '条评分', en: 'ratings' },
+      noDescription: { zh: '暂无描述', en: 'No description' },
+      updated: { zh: '更新于', en: 'Updated' },
+      official: { zh: '官方', en: 'Official' },
+      community: { zh: '社区', en: 'Community' },
+      unknown: { zh: '未知', en: 'Unknown' }
+    };
 
-  fetch(url).then(function(r) { return r.json(); }).then(function(data) {
-    document.getElementById('searchBtn').disabled = false;
-    var skills = data.skills || [];
-    var total = data.total || 0;
-    if (skills.length === 0) {
-      document.getElementById('content').innerHTML = '<div class="empty">没有找到匹配的 Skill</div>';
+    function t(key, vars) {
+      var text = (I18N[key] && I18N[key][LANG]) || key;
+      return String(text).replace(/\{(\w+)\}/g, function(_, name) {
+        return vars && vars[name] != null ? vars[name] : '';
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+      });
+    }
+
+    function formatDate(value) {
+      if (!value) return '-';
+      try {
+        var dt = new Date(value);
+        if (isNaN(dt)) return String(value);
+        return dt.toLocaleDateString(LANG === 'zh' ? 'zh-CN' : 'en-US', { year:'numeric', month:'2-digit', day:'2-digit' });
+      } catch (_) {
+        return String(value);
+      }
+    }
+
+    function formatCompactNumber(value) {
+      var n = Number(value || 0);
+      if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + (LANG === 'zh' ? '万' : 'w');
+      if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+      return String(n);
+    }
+
+    function trustMeta(level) {
+      var raw = String(level || '').toLowerCase();
+      if (raw === 'official') return { cls:'trust-official', text:t('official') };
+      if (raw === 'community') return { cls:'trust-community', text:t('community') };
+      return { cls:'trust-unknown', text:t('unknown') };
+    }
+
+    function applyI18n() {
+      document.title = t('title');
+      document.getElementById('pageTitle').textContent = t('title');
+      document.getElementById('pageDesc').textContent = t('desc');
+      document.getElementById('searchInput').placeholder = t('searchPlaceholder');
+      document.getElementById('searchBtn').textContent = t('search');
+      document.getElementById('prevBtn').textContent = t('prev');
+      document.getElementById('nextBtn').textContent = t('next');
+      document.getElementById('summaryTotalLabel').textContent = t('total');
+      document.getElementById('summaryDownloadsLabel').textContent = t('downloadsSummary');
+      if (!currentItems.length && !currentTotal) document.getElementById('content').textContent = t('emptyInitial');
+    }
+
+    function renderSummary(items, total) {
+      var downloads = 0;
+      for (var i = 0; i < items.length; i++) downloads += Number(items[i].downloads || 0);
+      document.getElementById('summaryTotal').textContent = String(total || 0);
+      document.getElementById('summaryDownloads').textContent = formatCompactNumber(downloads);
+    }
+
+    function renderCard(skill) {
+      var trust = trustMeta(skill.trust_level);
+      var tags = Array.isArray(skill.tags) ? skill.tags.slice(0, 4).map(function(tag) { return '<span class="tag">' + escapeHtml(tag) + '</span>'; }).join('') : '';
+      var ratingCount = Number(skill.rating_count || 0);
+      var ratingText = ratingCount > 0 ? (Number(skill.avg_rating || 0).toFixed(1) + ' (' + ratingCount + ' ' + t('ratings') + ')') : '-';
+      var desc = escapeHtml(skill.description || t('noDescription'));
+      var dateText = skill.updated_at && skill.updated_at !== skill.created_at ? t('updated') + ': ' + formatDate(skill.updated_at) : formatDate(skill.created_at);
+      return '<div class="card">'
+        + '<div class="card-name">' + escapeHtml(skill.name || '-') + (skill.version ? ' <span style="font-size:12px;color:var(--muted);font-weight:500">v' + escapeHtml(skill.version) + '</span>' : '') + '</div>'
+        + '<div><span class="trust ' + trust.cls + '">' + trust.text + '</span></div>'
+        + '<div class="card-desc">' + desc + '</div>'
+        + (tags ? '<div class="card-tags">' + tags + '</div>' : '')
+        + '<div class="meta"><span>' + t('downloads') + ': ' + formatCompactNumber(skill.downloads || 0) + '</span><span>' + t('rating') + ': ' + ratingText + '</span></div>'
+        + '<div class="footer"><span>' + escapeHtml(dateText) + '</span><span>' + escapeHtml(skill.source_url || '') + '</span></div>'
+      + '</div>';
+    }
+
+    function renderList(items, total) {
+      currentItems = items;
+      currentTotal = total;
+      renderSummary(items, total);
+      var content = document.getElementById('content');
+      if (!items.length) {
+        content.className = 'state';
+        content.textContent = t('emptyResult');
+        document.getElementById('pager').style.display = 'none';
+        return;
+      }
+      content.className = 'grid';
+      content.innerHTML = items.map(renderCard).join('');
+    }
+
+    function renderPager(page, total) {
+      var totalPages = Math.max(1, Math.ceil((total || 0) / pageSize));
+      document.getElementById('pager').style.display = totalPages > 1 ? 'flex' : 'none';
+      document.getElementById('pageInfo').textContent = t('page', { current: page, total: totalPages, count: total || 0 });
+      document.getElementById('prevBtn').disabled = page <= 1;
+      document.getElementById('nextBtn').disabled = page >= totalPages;
+    }
+
+    function setLoading() {
+      document.getElementById('content').className = 'state';
+      document.getElementById('content').textContent = t('loading');
+      document.getElementById('searchBtn').disabled = true;
+    }
+
+    function setLoadError(error) {
+      document.getElementById('content').className = 'state';
+      document.getElementById('content').textContent = t('loadFailed', { error: error && error.message ? error.message : String(error || '') });
       document.getElementById('pager').style.display = 'none';
-      return;
     }
-    var totalPages = Math.ceil(total / pageSize);
-    var html = '<div class="grid">';
-    for (var i = 0; i < skills.length; i++) {
-      var s = skills[i];
-      html += renderCard(s);
+
+    function doSearch(page) {
+      if (page < 1) return;
+      currentPage = page;
+      var q = document.getElementById('searchInput').value.trim();
+      setLoading();
+      fetch('/api/v1/skills/search?page=' + currentPage + '&q=' + encodeURIComponent(q))
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          var items = data.skills || [];
+          var total = Number(data.total || 0);
+          document.getElementById('searchBtn').disabled = false;
+          renderList(items, total);
+          renderPager(currentPage, total);
+        })
+        .catch(function(err) {
+          document.getElementById('searchBtn').disabled = false;
+          setLoadError(err);
+        });
     }
-    html += '</div>';
-    document.getElementById('content').innerHTML = html;
-    document.getElementById('pager').style.display = 'flex';
-    document.getElementById('pageInfo').textContent = '第 ' + page + ' / ' + totalPages + ' 页 (共 ' + total + ' 个)';
-    document.getElementById('prevBtn').disabled = page <= 1;
-    document.getElementById('nextBtn').disabled = page >= totalPages;
-  }).catch(function(err) {
-    document.getElementById('searchBtn').disabled = false;
-    document.getElementById('content').innerHTML = '<div class="empty">加载失败: ' + escapeHtml(String(err)) + '</div>';
-  });
-}
 
-function renderCard(s) {
-  var trustClass = 'trust-' + (s.trust_level || 'unknown');
-  var trustLabel = s.trust_level === 'official' ? '官方' : s.trust_level === 'community' ? '社区' : '未知';
-  var stars = renderStars(s.avg_rating || 0);
-  var ratingText = s.rating_count > 0 ? ' (' + (s.avg_rating || 0).toFixed(1) + ', ' + s.rating_count + '评)' : '';
-  var verText = s.version ? ' <span style="font-size:11px;color:#64748b;font-weight:400">v' + escapeHtml(s.version) + '</span>' : '';
-  var dateText = s.created_at ? fmtDateShort(s.created_at) : '';
-  var tags = '';
-  if (s.tags && s.tags.length > 0) {
-    tags = '<div class="card-tags">';
-    for (var j = 0; j < s.tags.length && j < 4; j++) {
-      tags += '<span class="tag">' + escapeHtml(s.tags[j]) + '</span>';
-    }
-    tags += '</div>';
-  }
-  return '<div class="card">' +
-    '<div class="card-name">' + escapeHtml(s.name) + verText + ' <span class="trust-badge ' + trustClass + '">' + trustLabel + '</span></div>' +
-    '<div class="card-desc">' + escapeHtml(s.description || '暂无描述') + '</div>' +
-    tags +
-    '<div class="card-footer"><span class="stars">' + stars + ratingText + '</span><span>' + (dateText ? '📅 ' + dateText + ' · ' : '') + '⬇ ' + formatDL(s.downloads || 0) + '</span></div>' +
-    '</div>';
-}
+    document.getElementById('searchInput').addEventListener('keydown', function(event) {
+      if (event.key === 'Enter') doSearch(1);
+    });
 
-function renderStars(avg) {
-  var full = Math.round(avg);
-  var s = '';
-  for (var i = 1; i <= 5; i++) s += i <= full ? '★' : '☆';
-  return s;
-}
-
-function formatDL(n) {
-  if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + 'w';
-  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-  return String(n);
-}
-
-function fmtDateShort(d) {
-  if (!d) return '';
-  try { var t = new Date(d); if (isNaN(t)) return d; return t.toLocaleDateString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit'}); } catch(e) { return d; }
-}
-
-function escapeHtml(s) {
-  if (!s) return '';
-  var m = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
-  return String(s).replace(/[&<>"']/g, function(c) { return m[c]; });
-}
-</script>
+    applyI18n();
+  </script>
 </body>
 </html>

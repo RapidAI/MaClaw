@@ -1,3 +1,5 @@
 package main
 
-var defaultRemoteHubCenterURL = "http://hubs.mypapers.top:9388"
+import "github.com/RapidAI/CodeClaw/corelib/remote"
+
+var defaultRemoteHubCenterURL = remote.DefaultRemoteHubCenterURL

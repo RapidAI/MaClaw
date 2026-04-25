@@ -299,11 +299,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			return h.toolBash(args, onProgress)
 		})
 
-	reg("read_file", "读取本机文件内容",
+	reg("read_file", "读取本机文件内容（小文件自动全量返回；大文件自动返回结构摘要+预览，可用 start_line 精准读取特定段落）",
 		ToolCategoryBuiltin, []string{"file", "read"},
 		map[string]interface{}{
-			"path":  map[string]string{"type": "string", "description": "文件路径（绝对路径或相对于主目录的路径）"},
-			"lines": map[string]string{"type": "integer", "description": "最多读取行数（可选，默认 200）"},
+			"path":       map[string]string{"type": "string", "description": "文件路径（绝对路径或相对于主目录的路径）"},
+			"lines":      map[string]string{"type": "integer", "description": "最多读取行数（可选，默认 200。指定后跳过自适应策略，按精确行数返回）"},
+			"start_line": map[string]string{"type": "integer", "description": "起始行号（从 1 开始，可选。指定后跳过自适应策略，从该行开始精确读取）"},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolReadFile(args) })
 
@@ -316,7 +317,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"path", "content"},
 		func(args map[string]interface{}) string { return h.toolWriteFile(args) })
 
-	reg("edit_file", "编辑已有文件内容（按文本替换，支持替换首处或全部匹配）",
+	reg("edit_file", "修改已有文件的首选工具（搜索替换模式，token 开销极小）。old_string 必须精确匹配文件原文（含缩进），建议包含修改点前后 1-2 行确保唯一匹配。修改已有文件时优先用此工具，不要用 write_file 重写整个文件。",
 		ToolCategoryBuiltin, []string{"file", "edit", "replace"},
 		map[string]interface{}{
 			"path":        map[string]string{"type": "string", "description": "文件路径"},
@@ -325,6 +326,17 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"replace_all": map[string]string{"type": "boolean", "description": "是否替换全部匹配，默认 false"},
 		}, []string{"path", "old_string", "new_string"},
 		func(args map[string]interface{}) string { return h.toolEditFile(args) })
+
+	reg("edit_lines", "按行号精确编辑文件（替换/插入/删除指定行）。比 edit_file 更精确——用行号定位，不怕重复内容。先用 read_file 查看行号，再用此工具编辑。",
+		ToolCategoryBuiltin, []string{"file", "edit", "line", "patch"},
+		map[string]interface{}{
+			"path":       map[string]string{"type": "string", "description": "文件路径"},
+			"operation":  map[string]string{"type": "string", "description": "操作类型: replace（替换行）、insert（插入行）、delete（删除行）"},
+			"start_line": map[string]string{"type": "integer", "description": "起始行号（1-indexed）。insert 时 0 表示插入到文件开头"},
+			"end_line":   map[string]string{"type": "integer", "description": "结束行号（含，replace/delete 时必填）"},
+			"content":    map[string]string{"type": "string", "description": "新内容（replace/insert 时必填，delete 时忽略）"},
+		}, []string{"path", "operation", "start_line"},
+		func(args map[string]interface{}) string { return h.toolEditLines(args) })
 
 	reg("list_directory", "列出本机目录内容",
 		ToolCategoryBuiltin, []string{"file", "directory", "list"},

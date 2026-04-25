@@ -238,16 +238,19 @@ func TestHasCreationSignals_CreationOrientedTrue(t *testing.T) {
 	}
 }
 
-func TestHasCreationSignals_Layer1NotCreation(t *testing.T) {
-	// Layer 1 explicitly set CreationOriented=false (e.g., "改代码")
+func TestHasCreationSignals_NoBugFixOrMaintenance_DefaultsToCreation(t *testing.T) {
+	// Without counter-signals (bug_fix/maintenance in secondary),
+	// hasCreationSignals defaults to true regardless of layer.
+	// This is the conservative behavior — the gate activates for ambiguous
+	// coding tasks.
 	r := &ClassificationResult{
 		Primary:          LabelCoding,
 		Layer:            1,
 		CreationOriented: false,
 	}
 	intent, _, _, _, _ := r.ToGateIntent()
-	if intent != "maintenance" {
-		t.Errorf("got intent=%q, want %q (Layer 1, CreationOriented=false)", intent, "maintenance")
+	if intent != "new_project" {
+		t.Errorf("got intent=%q, want %q (no counter-signals → default to creation)", intent, "new_project")
 	}
 }
 

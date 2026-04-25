@@ -114,6 +114,25 @@ type CreateUserInput struct {
 	Email    string `json:"email"`
 }
 
+type UpdateTenantInput struct {
+	Name         *string `json:"name,omitempty"`
+	Status       *string `json:"status,omitempty"`
+	MaxInstances *int    `json:"max_instances,omitempty"`
+	MaxSessions  *int    `json:"max_sessions,omitempty"`
+	MaxMessages  *int    `json:"max_messages,omitempty"`
+	MaxRuns      *int    `json:"max_runs,omitempty"`
+}
+
+type UpdateUserInput struct {
+	Name         *string `json:"name,omitempty"`
+	Email        *string `json:"email,omitempty"`
+	Status       *string `json:"status,omitempty"`
+	MaxInstances *int    `json:"max_instances,omitempty"`
+	MaxSessions  *int    `json:"max_sessions,omitempty"`
+	MaxMessages  *int    `json:"max_messages,omitempty"`
+	MaxRuns      *int    `json:"max_runs,omitempty"`
+}
+
 type CreateCredentialInput struct {
 	TenantID  string `json:"tenant_id"`
 	UserID    string `json:"user_id"`
@@ -129,6 +148,28 @@ type ProvisionDemoInput struct {
 	CredentialName string `json:"credential_name"`
 	APIKey         string `json:"api_key"`
 	APISecret      string `json:"api_secret"`
+}
+
+type AdminAlertsQueryInput struct {
+	TenantID string `json:"tenant_id"`
+	UserID   string `json:"user_id"`
+	Kind     string `json:"kind"`
+	Since    string `json:"since"`
+	Limit    int    `json:"limit"`
+}
+
+type AuditEventsQueryInput struct {
+	TenantID     string `json:"tenant_id"`
+	UserID       string `json:"user_id"`
+	Action       string `json:"action"`
+	ResourceType string `json:"resource_type"`
+	Limit        int    `json:"limit"`
+	Before       string `json:"before"`
+}
+
+type ListPageInput struct {
+	Limit  int    `json:"limit"`
+	Before string `json:"before"`
 }
 
 type ProvisionDemoResult struct {
@@ -404,11 +445,26 @@ func (a *App) GetUsageSummary() (*APITextResult, error) {
 }
 
 func (a *App) ListSkills() (*APITextResult, error) {
+	return a.ListSkillsPage(ListPageInput{})
+}
+
+func (a *App) ListSkillsPage(input ListPageInput) (*APITextResult, error) {
 	settings, err := a.LoadSettings()
 	if err != nil {
 		return nil, err
 	}
-	return doRequest(settings, http.MethodGet, "/api/v1/skills", nil, requestOptions{NeedsAuth: true})
+	q := url.Values{}
+	if input.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", input.Limit))
+	}
+	if v := strings.TrimSpace(input.Before); v != "" {
+		q.Set("before", v)
+	}
+	path := "/api/v1/skills"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAuth: true})
 }
 
 func (a *App) GetSkill(name string) (*APITextResult, error) {
@@ -560,11 +616,26 @@ func (a *App) ExportSkill(name string) (*APITextResult, error) {
 }
 
 func (a *App) ListMCPServers() (*APITextResult, error) {
+	return a.ListMCPServersPage(ListPageInput{})
+}
+
+func (a *App) ListMCPServersPage(input ListPageInput) (*APITextResult, error) {
 	settings, err := a.LoadSettings()
 	if err != nil {
 		return nil, err
 	}
-	return doRequest(settings, http.MethodGet, "/api/v1/mcp/servers", nil, requestOptions{NeedsAuth: true})
+	q := url.Values{}
+	if input.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", input.Limit))
+	}
+	if v := strings.TrimSpace(input.Before); v != "" {
+		q.Set("before", v)
+	}
+	path := "/api/v1/mcp/servers"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAuth: true})
 }
 
 func (a *App) CreateMCPServer(input MCPServerPayload) (*APITextResult, error) {
@@ -752,7 +823,11 @@ func (a *App) ListSessions(instanceID string, includeArchived bool) (*APITextRes
 	if instanceID == "" {
 		return nil, fmt.Errorf("instance_id is required")
 	}
-	return doRequest(settings, http.MethodGet, "/api/v1/instances/"+instanceID+"/sessions", nil, requestOptions{NeedsAuth: true})
+	path := "/api/v1/instances/" + instanceID + "/sessions"
+	if includeArchived {
+		path += "?include_archived=true"
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAuth: true})
 }
 
 func (a *App) GetSession(instanceID, sessionID string) (*APITextResult, error) {
@@ -924,12 +999,114 @@ func (a *App) SendMessage(input SendMessageInput) (*APITextResult, error) {
 	return doRequest(settings, http.MethodPost, "/api/v1/instances/"+instanceID+"/messages", body, requestOptions{NeedsAuth: true})
 }
 
-func (a *App) ListTenants() (*APITextResult, error) {
+func (a *App) GetAdminOverview() (*APITextResult, error) {
 	settings, err := a.LoadSettings()
 	if err != nil {
 		return nil, err
 	}
-	return doRequest(settings, http.MethodGet, "/api/v1/admin/tenants", nil, requestOptions{NeedsAdmin: true})
+	return doRequest(settings, http.MethodGet, "/api/v1/admin/overview", nil, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) GetAdminDashboard() (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	return doRequest(settings, http.MethodGet, "/api/v1/admin/dashboard", nil, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) GetAdminAlerts(input AdminAlertsQueryInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	if v := strings.TrimSpace(input.TenantID); v != "" {
+		q.Set("tenant_id", v)
+	}
+	if v := strings.TrimSpace(input.UserID); v != "" {
+		q.Set("user_id", v)
+	}
+	if v := strings.TrimSpace(input.Kind); v != "" {
+		q.Set("kind", v)
+	}
+	if v := strings.TrimSpace(input.Since); v != "" {
+		q.Set("since", v)
+	}
+	if input.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", input.Limit))
+	}
+	path := "/api/v1/admin/alerts"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) GetTenantSummary(tenantID string) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	return doRequest(settings, http.MethodGet, "/api/v1/admin/tenants/"+tenantID+"/summary", nil, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) ListAuditEvents(input AuditEventsQueryInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	if v := strings.TrimSpace(input.TenantID); v != "" {
+		q.Set("tenant_id", v)
+	}
+	if v := strings.TrimSpace(input.UserID); v != "" {
+		q.Set("user_id", v)
+	}
+	if v := strings.TrimSpace(input.Action); v != "" {
+		q.Set("action", v)
+	}
+	if v := strings.TrimSpace(input.ResourceType); v != "" {
+		q.Set("resource_type", v)
+	}
+	if input.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", input.Limit))
+	}
+	if v := strings.TrimSpace(input.Before); v != "" {
+		q.Set("before", v)
+	}
+	path := "/api/v1/admin/audit-events"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) ListTenants() (*APITextResult, error) {
+	return a.ListTenantsPage(ListPageInput{})
+}
+
+func (a *App) ListTenantsPage(input ListPageInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	if input.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", input.Limit))
+	}
+	if v := strings.TrimSpace(input.Before); v != "" {
+		q.Set("before", v)
+	}
+	path := "/api/v1/admin/tenants"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAdmin: true})
 }
 
 func (a *App) CreateTenant(input CreateTenantInput) (*APITextResult, error) {
@@ -945,7 +1122,7 @@ func (a *App) CreateTenant(input CreateTenantInput) (*APITextResult, error) {
 	return doRequest(settings, http.MethodPost, "/api/v1/admin/tenants", body, requestOptions{NeedsAdmin: true})
 }
 
-func (a *App) ListUsers(tenantID string) (*APITextResult, error) {
+func (a *App) GetTenant(tenantID string) (*APITextResult, error) {
 	settings, err := a.LoadSettings()
 	if err != nil {
 		return nil, err
@@ -954,7 +1131,50 @@ func (a *App) ListUsers(tenantID string) (*APITextResult, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
-	return doRequest(settings, http.MethodGet, "/api/v1/admin/tenants/"+tenantID+"/users", nil, requestOptions{NeedsAdmin: true})
+	return doRequest(settings, http.MethodGet, "/api/v1/admin/tenants/"+tenantID, nil, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) UpdateTenant(tenantID string, input UpdateTenantInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	return doRequest(settings, http.MethodPatch, "/api/v1/admin/tenants/"+tenantID, body, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) ListUsers(tenantID string) (*APITextResult, error) {
+	return a.ListUsersPage(tenantID, ListPageInput{})
+}
+
+func (a *App) ListUsersPage(tenantID string, input ListPageInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	q := url.Values{}
+	if input.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", input.Limit))
+	}
+	if v := strings.TrimSpace(input.Before); v != "" {
+		q.Set("before", v)
+	}
+	path := "/api/v1/admin/tenants/" + tenantID + "/users"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAdmin: true})
 }
 
 func (a *App) CreateUser(input CreateUserInput) (*APITextResult, error) {
@@ -977,7 +1197,7 @@ func (a *App) CreateUser(input CreateUserInput) (*APITextResult, error) {
 	return doRequest(settings, http.MethodPost, "/api/v1/admin/tenants/"+tenantID+"/users", body, requestOptions{NeedsAdmin: true})
 }
 
-func (a *App) ListCredentials(tenantID, userID string) (*APITextResult, error) {
+func (a *App) GetUser(tenantID, userID string) (*APITextResult, error) {
 	settings, err := a.LoadSettings()
 	if err != nil {
 		return nil, err
@@ -987,7 +1207,52 @@ func (a *App) ListCredentials(tenantID, userID string) (*APITextResult, error) {
 	if tenantID == "" || userID == "" {
 		return nil, fmt.Errorf("tenant_id and user_id are required")
 	}
-	return doRequest(settings, http.MethodGet, "/api/v1/admin/tenants/"+tenantID+"/users/"+userID+"/credentials", nil, requestOptions{NeedsAdmin: true})
+	return doRequest(settings, http.MethodGet, "/api/v1/admin/tenants/"+tenantID+"/users/"+userID, nil, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) UpdateUser(tenantID, userID string, input UpdateUserInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	if tenantID == "" || userID == "" {
+		return nil, fmt.Errorf("tenant_id and user_id are required")
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	return doRequest(settings, http.MethodPatch, "/api/v1/admin/tenants/"+tenantID+"/users/"+userID, body, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) ListCredentials(tenantID, userID string) (*APITextResult, error) {
+	return a.ListCredentialsPage(tenantID, userID, ListPageInput{})
+}
+
+func (a *App) ListCredentialsPage(tenantID, userID string, input ListPageInput) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	if tenantID == "" || userID == "" {
+		return nil, fmt.Errorf("tenant_id and user_id are required")
+	}
+	q := url.Values{}
+	if input.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", input.Limit))
+	}
+	if v := strings.TrimSpace(input.Before); v != "" {
+		q.Set("before", v)
+	}
+	path := "/api/v1/admin/tenants/" + tenantID + "/users/" + userID + "/credentials"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return doRequest(settings, http.MethodGet, path, nil, requestOptions{NeedsAdmin: true})
 }
 
 func (a *App) CreateCredential(input CreateCredentialInput) (*APITextResult, error) {
@@ -1010,6 +1275,20 @@ func (a *App) CreateCredential(input CreateCredentialInput) (*APITextResult, err
 		return nil, err
 	}
 	return doRequest(settings, http.MethodPost, "/api/v1/admin/tenants/"+tenantID+"/users/"+userID+"/credentials", body, requestOptions{NeedsAdmin: true})
+}
+
+func (a *App) RevokeCredential(tenantID, userID, credentialID string) (*APITextResult, error) {
+	settings, err := a.LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	credentialID = strings.TrimSpace(credentialID)
+	if tenantID == "" || userID == "" || credentialID == "" {
+		return nil, fmt.Errorf("tenant_id, user_id and credential_id are required")
+	}
+	return doRequest(settings, http.MethodDelete, "/api/v1/admin/tenants/"+tenantID+"/users/"+userID+"/credentials/"+credentialID, nil, requestOptions{NeedsAdmin: true})
 }
 
 func (a *App) ProvisionDemo(input ProvisionDemoInput) (*ProvisionDemoResult, error) {

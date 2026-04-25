@@ -16,7 +16,10 @@ import "sort"
 // embTop: top-k candidates from embedding channel (label → score).
 // treeTop: top candidates from tree channel (label → score).
 // alpha: embedding channel weight [0, 1].
-func MergeAndScore(embTop []labelScore, treeTop []labelScore, alpha float64) []FusedCandidate {
+// treeWorkflowTypes: workflow type annotations from tree channel (label → workflow_type).
+//
+//	May be nil when tree channel is unavailable.
+func MergeAndScore(embTop []labelScore, treeTop []labelScore, alpha float64, treeWorkflowTypes map[IntentLabel]string) []FusedCandidate {
 	cands := make(map[IntentLabel]*FusedCandidate)
 
 	for _, ls := range embTop {
@@ -36,6 +39,15 @@ func MergeAndScore(embTop []labelScore, treeTop []labelScore, alpha float64) []F
 				Label:     ls.label,
 				TreeScore: ls.score,
 				InTree:    true,
+			}
+		}
+	}
+
+	// Attach workflow types from tree channel.
+	if treeWorkflowTypes != nil {
+		for label, wfType := range treeWorkflowTypes {
+			if c, ok := cands[label]; ok {
+				c.WorkflowType = wfType
 			}
 		}
 	}

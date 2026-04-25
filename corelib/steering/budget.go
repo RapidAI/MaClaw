@@ -2,10 +2,10 @@ package steering
 
 // Token budget constants for steering injection.
 //
-// Budget rationale (based on default 128K context window):
-//   Total context:           128,000 tokens
-//   Output reserve (20%):    -25,600
-//   Effective input:         102,400
+// Budget rationale (based on default 110K context window):
+//   Total context:           110,000 tokens
+//   Output reserve (20%):    -22,000
+//   Effective input:          88,000
 //   System prompt fixed:      ~3,000 (identity, core principles, device status)
 //   Coding workflow rules:    ~2,500 (Pro mode 9-step flow)
 //   Tool definitions:         ~3,000-5,000 (15-40 tools)
@@ -13,10 +13,10 @@ package steering
 //   Knowledge skills:         ~2,000 (defaultKnowledgeSkillTokenBudget)
 //   Workflow phase prompt:    ~500-1,000 (when active)
 //   ★ Steering budget:        ~3,000 (this package)
-//   Conversation history:    ~85,000-90,000 (remainder)
+//   Conversation history:    ~70,000-75,000 (remainder)
 const (
 	// MaxSteeringTokenBudget is the total token budget for all steering
-	// files injected into the system prompt. ~3% of the default 128K
+	// files injected into the system prompt. ~3% of the default 110K
 	// context window's effective input budget.
 	MaxSteeringTokenBudget = 3000
 

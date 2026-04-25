@@ -90,6 +90,40 @@ func TestDebugListMachineEventsHandlerReturnsRecentEvents(t *testing.T) {
 	}
 }
 
+func TestDebugListMachinesHandlerIncludesRuntimeOnlyMachinesWhenAllRequested(t *testing.T) {
+	identity, deviceSvc, _ := newHTTPAPITestServices(t)
+	machineID := "machine_runtime_only_all"
+	userID := "user_runtime_only_all"
+
+	deviceSvc.BindDesktop(machineID, &ws.ConnContext{UserID: userID, Role: "machine"})
+	if err := deviceSvc.MarkOnline(context.Background(), machineID, ws.MachineHelloPayload{
+		Name:                 "runtime-only-host",
+		Platform:             "windows",
+		Hostname:             "runtime-only-box",
+		Arch:                 "amd64",
+		AppVersion:           "9.9.9",
+		HeartbeatIntervalSec: 15,
+	}); err != nil {
+		t.Fatalf("MarkOnline: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/debug/machines?all=1", nil)
+	rr := httptest.NewRecorder()
+
+	DebugListMachinesHandler(deviceSvc, identity.UsersRepo()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, machineID) || !strings.Contains(body, `"status":"online"`) {
+		t.Fatalf("expected runtime-only machine in body=%s", body)
+	}
+	if !strings.Contains(body, `"hostname":"runtime-only-box"`) {
+		t.Fatalf("expected runtime metadata in body=%s", body)
+	}
+}
 func deviceOnlyTestService() *device.Service {
 	return device.NewService(nil, device.NewRuntime())
 }

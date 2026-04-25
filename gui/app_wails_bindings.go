@@ -1,16 +1,16 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/remote"
-	"github.com/RapidAI/CodeClaw/corelib/scheduler"
-	"github.com/RapidAI/CodeClaw/corelib/security"
-	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"log"
 	"net/url"
 	"os"
@@ -19,14 +19,15 @@ import (
 	"strings"
 	"time"
 
-	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/session"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // HubSkillUpdateInfo describes an available update for a locally installed Hub Skill.
 type HubSkillUpdateInfo struct {
 	SkillName      string `json:"skill_name"`
+	HubSkillID     string `json:"hub_skill_id"`
 	CurrentVersion string `json:"current_version"`
 	LatestVersion  string `json:"latest_version"`
 	HubURL         string `json:"hub_url"`
@@ -38,15 +39,14 @@ func isVisibleAIAssistantProgressText(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
-	blockedMarkers := []string{
-		"先搜索一下", "先查", "我先", "让我先", "来啦", "伯伯", "正在执行工具", "thinking", "thought", "search first",
-	}
+	blockedMarkers := []string{"search", "thinking", "thought", "search first", "running tool", "preparing"}
+
 	for _, marker := range blockedMarkers {
 		if strings.Contains(lower, strings.ToLower(marker)) {
 			return false
 		}
 	}
-	visiblePrefixes := []string{"⏳", "⌛", "正在", "已接近", "Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving"}
+	visiblePrefixes := []string{"Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving"}
 	for _, prefix := range visiblePrefixes {
 		if strings.HasPrefix(trimmed, prefix) {
 			return true
@@ -72,7 +72,7 @@ func (a *App) ExportLearnedSkillsZip(names []string) error {
 		return fmt.Errorf("skill executor not initialized")
 	}
 	dest, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "导出自学习技能",
+		Title:           "Export Learned Skills",
 		DefaultFilename: "learned-skills.zip",
 		Filters: []runtime.FileFilter{
 			{DisplayName: "Zip Files", Pattern: "*.zip"},
@@ -164,7 +164,7 @@ func (a *App) QuerySecurityEvents(days int) ([]SecurityEventItem, error) {
 
 func isDeniedResult(result string) bool {
 	r := strings.ToLower(result)
-	return strings.Contains(r, "denied") || strings.Contains(r, "rejected") || strings.Contains(r, "拒绝")
+	return strings.Contains(r, "denied") || strings.Contains(r, "rejected") || strings.Contains(r, "鎷掔粷")
 }
 
 // formatDenyReason produces a human-readable reason from an AuditEntry.
@@ -257,18 +257,21 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
+	// Invalidate update cache — installed skill set changed.
+	defer func() {
+		if a.hubUpdCache != nil {
+			a.hubUpdCache.invalidate()
+		}
+	}()
 	ctx := context.Background()
 	switch strings.TrimSpace(source) {
 	case "skillmarket":
-		base := NewSkillMarketClient(a).baseURL()
-		if base == "" {
-			return fmt.Errorf("hubcenter URL not configured")
-		}
-		skill, err := downloadSkillJSON(ctx, base+"/api/v1/skills/"+url.PathEscape(id)+"/download")
+		skill, err := downloadSkillJSONFromHubCenter(ctx, a, "/api/v1/skills/"+url.PathEscape(id)+"/download")
 		if err != nil {
 			return err
 		}
 		return a.skillExecutor.Register(*skill)
+
 	case "clawhub":
 		skill, err := downloadClawHubSkill(ctx, id)
 		if err != nil {
@@ -337,7 +340,7 @@ func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
 	nodeModules := filepath.Join(skillDir, "node_modules")
 
 	if _, err := os.Stat(pkgJSON); err == nil {
-		// Has package.json — check if node_modules exists.
+		// Has package.json 鈥?check if node_modules exists.
 		if _, err := os.Stat(nodeModules); os.IsNotExist(err) {
 			log.Printf("[skill-deps] installing npm dependencies for %s...", skillName)
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -354,7 +357,7 @@ func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
 		}
 	}
 	if _, err := os.Stat(reqTxt); err == nil {
-		// Has requirements.txt — run pip install.
+		// Has requirements.txt 鈥?run pip install.
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "pip", "install", "-r", reqTxt)
@@ -370,7 +373,16 @@ func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
 }
 
 // CheckHubSkillUpdates checks all locally installed Hub Skills for available updates (Wails binding).
+// Results are cached for 10 minutes. Within the TTL, returns cached data without HTTP requests.
+// When cache is expired, fetches updates concurrently (max 3 parallel) instead of serially.
 func (a *App) CheckHubSkillUpdates() ([]HubSkillUpdateInfo, error) {
+	// Fast path: return cached results if still fresh.
+	if a.hubUpdCache != nil {
+		if cached, ok := a.hubUpdCache.getUpdates(); ok {
+			return cached, nil
+		}
+	}
+
 	a.ensureSkillHubClient()
 	if a.skillHubClient == nil {
 		return nil, fmt.Errorf("skill hub client not initialized")
@@ -380,24 +392,26 @@ func (a *App) CheckHubSkillUpdates() ([]HubSkillUpdateInfo, error) {
 	}
 
 	skills := a.skillExecutor.loadSkills()
-	var updates []HubSkillUpdateInfo
-	ctx := context.Background()
-
+	var checks []hubSkillForUpdateCheck
 	for _, s := range skills {
 		if s.Source != "hub" || s.HubSkillID == "" {
 			continue
 		}
-		meta, err := a.skillHubClient.CheckUpdate(ctx, s.HubSkillID, s.HubVersion)
-		if err != nil || meta == nil {
-			continue
-		}
-		updates = append(updates, HubSkillUpdateInfo{
-			SkillName:      s.Name,
-			CurrentVersion: s.HubVersion,
-			LatestVersion:  meta.Version,
-			HubURL:         meta.HubURL,
+		checks = append(checks, hubSkillForUpdateCheck{
+			name:       s.Name,
+			hubSkillID: s.HubSkillID,
+			hubVersion: s.HubVersion,
 		})
 	}
+
+	// Concurrent fetch (max 3 parallel) instead of serial N+1.
+	updates := fetchHubSkillUpdatesConcurrent(a.skillHubClient, checks)
+
+	// Populate cache.
+	if a.hubUpdCache != nil {
+		a.hubUpdCache.set(updates)
+	}
+
 	return updates, nil
 }
 
@@ -415,7 +429,11 @@ func (a *App) UpdateHubSkill(skillName string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	return a.skillExecutor.UpdateFromHub(skillName)
+	err := a.skillExecutor.UpdateFromHub(skillName)
+	if err == nil && a.hubUpdCache != nil {
+		a.hubUpdCache.invalidate()
+	}
+	return err
 }
 
 // RateHubSkill submits a rating for a Hub Skill (Wails binding).
@@ -433,6 +451,42 @@ func (a *App) RateHubSkill(skillID string, score int) error {
 		return fmt.Errorf("machine not registered")
 	}
 	return a.skillHubClient.Rate(context.Background(), skillID, maclawID, score)
+}
+
+// GetHubRecommendations returns the cached popular skills list for the Hub tab
+// initial state (Wails binding). Returns data from the in-memory cache populated
+// by the 24h RefreshRecommendations ticker — zero HTTP requests.
+func (a *App) GetHubRecommendations() ([]MixedSkillSearchResult, error) {
+	a.ensureSkillHubClient()
+	if a.skillHubClient == nil {
+		return nil, nil
+	}
+	recs := a.skillHubClient.GetRecommendations()
+	if len(recs) == 0 {
+		return nil, nil
+	}
+	results := make([]MixedSkillSearchResult, 0, len(recs))
+	for _, r := range recs {
+		results = append(results, MixedSkillSearchResult{
+			ID:          r.ID,
+			Name:        r.Name,
+			Description: r.Description,
+			Source:      "skillhub",
+			SourceLabel: "SkillHub",
+			TrustLevel:  r.TrustLevel,
+			Version:     r.Version,
+			Author:      r.Author,
+			AvgRating:   r.AvgRating,
+			RatingCount: r.RatingCount,
+			Downloads:   r.Downloads,
+		})
+	}
+	// Mark already-installed skills.
+	if a.skillExecutor != nil {
+		searcher := &SkillSearcher{app: a}
+		searcher.enrichInstalledState(results)
+	}
+	return results, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,7 +1218,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	}
 	// Trace enrichment and gossip detection are non-critical post-processing.
 	// Run them asynchronously so the Wails binding returns immediately after
-	// the agent loop completes — this unblocks the frontend input box which
+	// the agent loop completes 鈥?this unblocks the frontend input box which
 	// was locked while awaiting this synchronous call.
 	// Note: resp.TraceSummary/TraceEventCount/EvidenceCount are already
 	// populated by finalizeTraceResult inside the agent loop. The async
@@ -1199,7 +1253,7 @@ func (a *App) ClearAIAssistantHistory() error {
 	}
 	handler := hubClient.ensureIMHandler()
 	handler.memory.Clear("desktop-user")
-	// 同步清空 gossip 检测缓冲区
+	// 鍚屾娓呯┖ gossip 妫€娴嬬紦鍐插尯
 	if a.gossipAutoPublish != nil {
 		a.gossipAutoPublish.ClearBuffer()
 	}
@@ -1455,7 +1509,7 @@ func (a *App) SavePastedImage(base64Data string, extension string) (string, erro
 		return "", fmt.Errorf("unsupported image extension: %s", ext)
 	}
 
-	// Validate base64 data size (≤ 50MB before decoding).
+	// Validate base64 data size (鈮?50MB before decoding).
 	const maxBase64Size = 50 * 1024 * 1024 // 50MB
 	if len(base64Data) > maxBase64Size {
 		return "", fmt.Errorf("image data too large (max 50MB)")
@@ -1548,7 +1602,7 @@ func (a *App) ReadErrorLog() ([]string, error) {
 }
 
 // ---------------------------------------------------------------------------
-// IM Audit Store — Wails bindings
+// IM Audit Store 鈥?Wails bindings
 // ---------------------------------------------------------------------------
 
 // ensureIMAuditStore lazily initializes the IM audit SQLite store.

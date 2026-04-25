@@ -37,6 +37,7 @@ import {
     RemoveExternalSkillDir,
     SelectProjectDir,
     OpenSystemUrl,
+    GetHubRecommendations,
 } from "../../../wailsjs/go/main/App";
 
 interface NLSkillStep {
@@ -199,6 +200,8 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [hubSearching, setHubSearching] = useState(false);
     const [hubError, setHubError] = useState("");
     const [hubSearched, setHubSearched] = useState(false);
+    const [hubRecommendations, setHubRecommendations] = useState<MixedSkillSearchResult[]>([]);
+    const [hubRecsLoading, setHubRecsLoading] = useState(false);
 
     // Localize backend error messages
     const localizeHubError = useMemo(() => makeLocalizeHubError(localizeText), [localizeText]);
@@ -319,10 +322,20 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     }, []);
 
-    // When switching to Hub tab, check for updates
+    // When switching to Hub tab, check for updates and load recommendations
     useEffect(() => {
         if (activeTab === "hub") {
             checkUpdates();
+            // Load recommendations for initial state (no search performed yet)
+            if (!hubSearched && hubRecommendations.length === 0 && !hubRecsLoading) {
+                setHubRecsLoading(true);
+                GetHubRecommendations()
+                    .then((recs) => {
+                        setHubRecommendations(Array.isArray(recs) ? recs : []);
+                    })
+                    .catch(() => {})
+                    .finally(() => setHubRecsLoading(false));
+            }
         }
     }, [activeTab, checkUpdates]);
 
@@ -1104,17 +1117,67 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         </div>
                     )}
 
-                    {/* Initial state — no search performed yet */}
+                    {/* Initial state — no search performed yet: show recommendations */}
                     {!hubSearching && !hubSearched && !hubError && (
-                        <div style={{
-                            ...remoteLoadingStateStyle,
-                            minHeight: "120px",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                        }}>
-                            {localizeText("Enter keywords to search the Skill Market", "输入关键词搜索技能市场上的 Skill", "輸入關鍵詞搜尋技能市場上的 Skill")}
-                        </div>
+                        <>
+                            {hubRecsLoading && (
+                                <div style={{
+                                    ...remoteLoadingStateStyle,
+                                    minHeight: "80px",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                }}>
+                                    {localizeText("Loading recommendations...", "加载推荐中...", "載入推薦中...")}
+                                </div>
+                            )}
+                            {!hubRecsLoading && hubRecommendations.length > 0 && (
+                                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                                    <div style={{ fontSize: "0.78rem", color: colors.textSecondary, fontWeight: 500 }}>
+                                        🔥 {localizeText("Popular Skills", "热门 Skill", "熱門 Skill")}
+                                    </div>
+                                    {hubRecommendations.map((skill) => (
+                                        <div key={skill.id} style={hubCardStyle}>
+                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                                        <span style={{ fontWeight: 600, fontSize: "0.82rem", color: colors.text }}>{skill.name}</span>
+                                                        {skill.version && (
+                                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>v{skill.version}</span>
+                                                        )}
+                                                    </div>
+                                                    <div style={{ fontSize: "0.76rem", color: colors.textSecondary, marginTop: "4px", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }} title={skill.description || undefined}>
+                                                        {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
+                                                    </div>
+                                                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px", fontSize: "0.68rem", color: colors.textMuted }}>
+                                                        {skill.author && <span>{skill.author}</span>}
+                                                        {skill.downloads > 0 && <span>⬇ {formatDownloads(skill.downloads)}</span>}
+                                                        {skill.rating_count > 0 && (
+                                                            <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                                                                <span style={{ color: colors.warning }}>{renderStars(skill.avg_rating)}</span>
+                                                                <span>({skill.rating_count})</span>
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                {renderHubActionButton(skill)}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            {!hubRecsLoading && hubRecommendations.length === 0 && (
+                                <div style={{
+                                    ...remoteLoadingStateStyle,
+                                    minHeight: "120px",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                }}>
+                                    {localizeText("Enter keywords to search the Skill Market", "输入关键词搜索技能市场上的 Skill", "輸入關鍵詞搜尋技能市場上的 Skill")}
+                                </div>
+                            )}
+                        </>
                     )}
                 </>
             )}
