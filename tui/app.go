@@ -333,7 +333,8 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle slash commands locally.
 		if strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
 			// /btw requires an async agent loop — route through handleChatSend.
-			if strings.HasPrefix(strings.TrimSpace(msg.Text), "/btw") {
+			trimmedCmd := strings.TrimSpace(msg.Text)
+			if trimmedCmd == "/btw" || strings.HasPrefix(trimmedCmd, "/btw ") {
 				return m, m.handleChatSend(msg.Text)
 			}
 			m.handleSlashCommand(msg.Text)
@@ -501,7 +502,7 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 
 	// --- /btw side query: independent agent loop ---
 	trimmedText := strings.TrimSpace(text)
-	if strings.HasPrefix(trimmedText, "/btw") {
+	if trimmedText == "/btw" || strings.HasPrefix(trimmedText, "/btw ") {
 		btwQuery := ""
 		if len(trimmedText) > 4 {
 			btwQuery = strings.TrimSpace(trimmedText[4:])
@@ -526,6 +527,7 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 			responseText = "🔍 **/btw 查询结果**\n\n" + responseText
 
 			// Append only the final result to history (no intermediate steps).
+			// TUI is single-threaded (Bubble Tea event loop), so no race here.
 			history := app.history.Load("tui-user")
 			history = append(history,
 				agent.ConversationEntry{Role: "user", Content: "/btw " + btwQuery},
@@ -1040,7 +1042,9 @@ func (c *tuiBtwCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 }
 
 func (c *tuiBtwCallbacks) GetMaxIterations() int {
-	return config.EffectiveMaxIterations(15)
+	// Use MinAgentIterations (30) — EffectiveMaxIterations enforces a floor
+	// of 30. Side queries typically finish in 3-5 iterations.
+	return config.EffectiveMaxIterations(config.MinAgentIterations)
 }
 
 func (c *tuiBtwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {

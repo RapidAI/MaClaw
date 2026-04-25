@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -2200,6 +2201,11 @@ type IMMessageHandler struct {
 	// interruptHandler bridges IM gateways to the running agent loop's
 	// cancel/merge/status mechanisms. Set during construction.
 	interruptHandler *imInterruptHandler
+
+	// activeBtwSubAgent holds the currently running /btw SubAgent (if any).
+	// Used by /cancel to cancel a running side query. Stored/cleared
+	// atomically by handleBtwCommand.
+	activeBtwSubAgent atomic.Pointer[BtwSubAgent]
 }
 
 // NewIMMessageHandler creates a new handler.
@@ -3826,6 +3832,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
 			}
 		}
+		// Cancel active /btw side query if any.
+		if btw := h.activeBtwSubAgent.Load(); btw != nil {
+			btw.Cancel()
+			return &IMAgentResponse{Text: "⏹️ 已取消 /btw 侧查询。"}
+		}
 		ctx := h.currentLoopCtx
 		if ctx == nil {
 			return &IMAgentResponse{Text: "ℹ️ 当前没有正在执行的任务。"}
@@ -4573,19 +4584,24 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 // The query runs with a minimal tool set (web_search, web_fetch, read_file,
 // memory) and does not pollute the main conversation with intermediate steps.
 // Only the final result is appended to the main history as a single message.
+//
+// Concurrency: /btw runs before chatLoopMu (by design — side queries should
+// not block on the main loop). History append uses memory.Append to avoid
+// the Load→modify→Save race with a concurrent main loop.
 func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) *IMAgentResponse {
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
 
-	// Create an independent LoopContext — not tied to the main chat loop.
-	loopCtx := NewLoopContext("btw", 15, httpClient)
-
-	btw := NewBtwSubAgent(h, cfg, httpClient, loopCtx)
+	btw := NewBtwSubAgent(h, cfg, httpClient)
 	btw.SetCallbacks(onToken, func(text string) {
 		if onProgress != nil {
 			onProgress(text)
 		}
 	})
+
+	// Wire cancellation: store the SubAgent so /cancel can reach it.
+	h.activeBtwSubAgent.Store(btw)
+	defer h.activeBtwSubAgent.Store((*BtwSubAgent)(nil))
 
 	result := btw.Execute(query)
 
@@ -4596,12 +4612,13 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 	// Append only the final result to the main conversation history.
 	// Intermediate tool calls (web_search, web_fetch, etc.) stay in the
 	// SubAgent's independent conversation and are discarded.
-	history := h.memory.Load(msg.UserID)
-	history = append(history,
+	//
+	// Use memory.Append (atomic append) instead of Load→append→Save to
+	// avoid racing with a concurrent main agent loop's Save.
+	h.memory.Append(msg.UserID,
 		agent.ConversationEntry{Role: "user", Content: "/btw " + query},
 		agent.ConversationEntry{Role: "assistant", Content: result.Text},
 	)
-	h.saveConversationHistoryTimed(msg.UserID, history, nil)
 
 	log.Printf("[btw] completed query=%q iterations=%d tools=%d", truncateRunes(query, 50), result.Iterations, result.ToolCalls)
 

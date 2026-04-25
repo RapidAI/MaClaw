@@ -1216,16 +1216,31 @@ export function OverviewPage({
   const autonomousEscalationTarget = useMemo(() => {
     const describedRoles = topBoardRoles.map((roleItem) => ({
       roleItem,
-      suggestedAction: roleSuggestedAction(
-        roleItem,
-        findBatchTargetForRole(pendingBatchTargets, roleItem.roleCode),
-        findBatchTargetForRole(acceptedBatchTargets, roleItem.roleCode),
-      ),
+      pendingTarget: findBatchTargetForRole(pendingBatchTargets, roleItem.roleCode),
+      acceptedTarget: findBatchTargetForRole(acceptedBatchTargets, roleItem.roleCode),
+    })).map((item) => ({
+      ...item,
+      suggestedAction: roleSuggestedAction(item.roleItem, item.pendingTarget, item.acceptedTarget),
     }));
     return describedRoles.find((item) => item.suggestedAction.action === 'open_communications')
       || describedRoles.find((item) => item.roleItem.risk === 'critical')
       || null;
   }, [topBoardRoles, pendingBatchTargets, acceptedBatchTargets]);
+  const autonomousEscalationReason = useMemo(() => {
+    if (!autonomousEscalationTarget) {
+      return '';
+    }
+    if (autonomousEscalationTarget.suggestedAction.action === 'open_communications') {
+      return `${autonomousEscalationTarget.roleItem.roleCode} needs management review because execution blockers are no longer being cleared inside normal delegation.`;
+    }
+    if (autonomousEscalationTarget.roleItem.risk === 'critical') {
+      return `${autonomousEscalationTarget.roleItem.roleCode} is at critical operating risk and needs management attention to restore healthy coverage.`;
+    }
+    if (autonomousEscalationTarget.acceptedTarget || autonomousEscalationTarget.pendingTarget) {
+      return `${autonomousEscalationTarget.roleItem.roleCode} still carries a high-impact handoff that should not remain unattended.`;
+    }
+    return `${autonomousEscalationTarget.roleItem.roleCode} has crossed the normal operating boundary and now needs management review.`;
+  }, [autonomousEscalationTarget]);
 
   const handleRunSkill = async (skill: ExecutiveSkill) => {
     try {
@@ -1486,10 +1501,13 @@ export function OverviewPage({
             </span>
           </div>
           {autonomousEscalationTarget ? (
-            <div className="executive-action-row">
-              <button
-                type="button"
-                className="executive-assign-button"
+            <div className="item-row">
+              <span className="badge warn">Why escalation</span>
+              <p>{autonomousEscalationReason}</p>
+              <div className="executive-action-row">
+                <button
+                  type="button"
+                  className="executive-assign-button"
                 onClick={() => {
                   setFocusedOverviewRoleCode(autonomousEscalationTarget.roleItem.roleCode);
                   onNavigateToCommunications({
@@ -2085,6 +2103,8 @@ export function OverviewPage({
     </div>
   );
 }
+
+
 
 
 

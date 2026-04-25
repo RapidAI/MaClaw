@@ -343,6 +343,27 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 	cm.markDirtyAndScheduleFlush()
 }
 
+// Append atomically appends entries to a user's conversation history.
+// Unlike Load→append→Save, this is safe to call concurrently with Save
+// because the read-modify-write happens under a single lock acquisition.
+// Used by /btw side queries that run concurrently with the main agent loop.
+func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	s := sh.sessions[userID]
+	if s == nil {
+		s = &conversationSession{}
+		sh.sessions[userID] = s
+	}
+	s.entries = append(s.entries, entries...)
+	s.lastAccess = time.Now()
+	sh.mu.Unlock()
+	cm.markDirtyAndScheduleFlush()
+}
+
 // Clear removes all conversation data for a user.
 func (cm *ConversationMemory) Clear(userID string) {
 	sh := cm.shard(userID)

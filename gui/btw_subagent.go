@@ -17,6 +17,19 @@ package main
 //   │ Duties: workflow,    │  result   │ fetch, read, recall  │
 //   │ IM, memory, routing  │ (1 msg)  │                      │
 //   └──────────────────────┘           └──────────────────────┘
+//
+// Mechanism-level design decisions:
+//
+// 1. Tool allowlist enforced at ExecuteTool level, not just system prompt.
+//    The memory tool is restricted to action="recall" — save/delete/list
+//    are rejected with an error, regardless of what the LLM requests.
+//
+// 2. History isolation: /btw runs with empty history (nil). The final result
+//    is appended to the main history by the caller (handleBtwCommand), not
+//    by the SubAgent itself. This keeps the SubAgent stateless.
+//
+// 3. Cancellation: the caller passes a LoopContext whose Cancel() is wired
+//    to the user's cancel action. ShouldStop() checks this context.
 
 import (
 	"encoding/json"
@@ -24,6 +37,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -35,7 +49,10 @@ type BtwSubAgent struct {
 	handler    *IMMessageHandler
 	cfg        corelib.MaclawLLMConfig
 	httpClient *http.Client
-	loopCtx    *LoopContext
+
+	// cancelled is set to 1 by Cancel(). ShouldStop() reads it.
+	// This is the mechanism-level cancellation — no dependency on LoopContext.
+	cancelled atomic.Int32
 
 	onToken    func(string)
 	onProgress func(string)
@@ -50,13 +67,17 @@ type BtwResult struct {
 }
 
 // NewBtwSubAgent creates a SubAgent for /btw side queries.
-func NewBtwSubAgent(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, loopCtx *LoopContext) *BtwSubAgent {
+func NewBtwSubAgent(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client) *BtwSubAgent {
 	return &BtwSubAgent{
 		handler:    handler,
 		cfg:        cfg,
 		httpClient: httpClient,
-		loopCtx:    loopCtx,
 	}
+}
+
+// Cancel signals the SubAgent to stop at the next iteration.
+func (b *BtwSubAgent) Cancel() {
+	b.cancelled.Store(1)
 }
 
 // SetCallbacks configures optional streaming and progress callbacks.
@@ -65,10 +86,16 @@ func (b *BtwSubAgent) SetCallbacks(onToken func(string), onProgress func(string)
 	b.onProgress = onProgress
 }
 
+// btwMaxIterations is the iteration cap for /btw side queries.
+// Set to MinAgentIterations (30) because EffectiveMaxIterations enforces
+// a floor of 30. Side queries typically finish in 3-5 iterations; the cap
+// is a safety net, not a target.
+const btwMaxIterations = config.MinAgentIterations
+
 // Execute runs the /btw query in an independent agent loop.
 // The conversation is independent — no IM rules, no workflow, no 40+ tools.
 func (b *BtwSubAgent) Execute(query string) *BtwResult {
-	log.Printf("[btw-subagent] starting query: %s", truncateRunesForBtw(query, 80))
+	log.Printf("[btw-subagent] starting query: %s", truncateRunesForSubAgent(query, 80))
 
 	if b.onProgress != nil {
 		b.onProgress("🔍 /btw 侧查询中...")
@@ -119,8 +146,7 @@ func (c *btwCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 }
 
 func (c *btwCallbacks) GetMaxIterations() int {
-	// Side queries should be fast — 15 iterations is generous for search+fetch.
-	return config.EffectiveMaxIterations(15)
+	return config.EffectiveMaxIterations(btwMaxIterations)
 }
 
 func (c *btwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
@@ -129,19 +155,28 @@ func (c *btwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) stri
 
 func (c *btwCallbacks) BuildTools(userText string) []map[string]interface{} {
 	if c.cachedTools == nil {
-		c.cachedTools = buildBtwToolDefinitions(c.subagent.handler)
+		c.cachedTools = buildBtwToolDefinitions()
 	}
 	return c.cachedTools
 }
 
 func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {
 	if !btwToolNames[name] {
-		return fmt.Sprintf("未知工具: %s（/btw 仅支持 %v）", name, btwToolNameList())
+		return fmt.Sprintf("未知工具: %s（/btw 仅支持 web_search, web_fetch, read_file, memory）", name)
 	}
 
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("参数解析失败: %v", err)
+	}
+
+	// Mechanism-level enforcement: memory tool is recall-only in /btw.
+	// This is not a prompt-level suggestion — the LLM cannot bypass it.
+	if name == "memory" {
+		action, _ := args["action"].(string)
+		if action != "recall" {
+			return "错误: /btw 侧查询中 memory 工具仅支持 action=\"recall\"（只读查询）"
+		}
 	}
 
 	h := c.subagent.handler
@@ -180,10 +215,7 @@ func (c *btwCallbacks) OnToolCall(name string) {
 func (c *btwCallbacks) OnToolResult(name string) {}
 
 func (c *btwCallbacks) ShouldStop() bool {
-	if c.subagent.loopCtx != nil {
-		return c.subagent.loopCtx.IsCancelled()
-	}
-	return false
+	return c.subagent.cancelled.Load() != 0
 }
 
 // ---------------------------------------------------------------------------
@@ -198,48 +230,34 @@ var btwToolNames = map[string]bool{
 	"memory":     true,
 }
 
-func btwToolNameList() []string {
-	names := make([]string, 0, len(btwToolNames))
-	for n := range btwToolNames {
-		names = append(names, n)
-	}
-	return names
-}
-
 // buildBtwToolDefinitions constructs the minimal tool definitions for /btw.
-// Uses inline definitions to keep the SubAgent self-contained — no dependency
-// on the main agent's tool registry initialization order.
-func buildBtwToolDefinitions(_ *IMMessageHandler) []map[string]interface{} {
-	return buildBtwToolDefinitionsFallback()
-}
-
-func buildBtwToolDefinitionsFallback() []map[string]interface{} {
+func buildBtwToolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
-		buildBtwToolDef("web_search", "搜索互联网获取最新信息",
+		btwToolDef("web_search", "搜索互联网获取最新信息",
 			map[string]interface{}{
 				"query":       map[string]string{"type": "string", "description": "搜索关键词"},
 				"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 8）"},
 			}, []string{"query"}),
-		buildBtwToolDef("web_fetch", "抓取指定 URL 的网页内容并提取正文",
+		btwToolDef("web_fetch", "抓取指定 URL 的网页内容并提取正文",
 			map[string]interface{}{
 				"url":       map[string]string{"type": "string", "description": "要抓取的 URL"},
 				"max_chars": map[string]string{"type": "integer", "description": "最多返回字符数（可选）"},
 			}, []string{"url"}),
-		buildBtwToolDef("read_file", "读取本地文件内容",
+		btwToolDef("read_file", "读取本地文件内容",
 			map[string]interface{}{
 				"path":   map[string]string{"type": "string", "description": "文件路径"},
 				"lines":  map[string]string{"type": "integer", "description": "读取行数（可选）"},
 				"offset": map[string]string{"type": "integer", "description": "从末尾倒数行数开始读取（可选）"},
 			}, []string{"path"}),
-		buildBtwToolDef("memory", "查询长期记忆",
+		btwToolDef("memory", "查询长期记忆（仅支持 recall）",
 			map[string]interface{}{
-				"action": map[string]string{"type": "string", "description": "操作: recall"},
+				"action": map[string]string{"type": "string", "description": "操作: recall（仅支持 recall）"},
 				"query":  map[string]string{"type": "string", "description": "查询关键词"},
-			}, []string{"action"}),
+			}, []string{"action", "query"}),
 	}
 }
 
-func buildBtwToolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
+func btwToolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
 	return map[string]interface{}{
 		"type": "function",
 		"function": map[string]interface{}{
@@ -267,20 +285,7 @@ func buildBtwSystemPrompt() string {
 	b.WriteString("3. 如果问题涉及之前的对话或记忆，使用 memory(action=\"recall\", query=\"...\") 召回\n")
 	b.WriteString("4. 回答要简洁、结构化，直接给出关键信息\n")
 	b.WriteString("5. 引用网络来源时附上 URL\n")
-	b.WriteString("6. 这是一个只读查询——不要修改任何文件，不要执行任何写操作\n")
-	b.WriteString("7. memory 工具只允许 action=\"recall\"，不要使用 save/delete/list\n")
-	b.WriteString("8. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索\n")
+	b.WriteString("6. 这是一个只读查询——不要修改任何文件\n")
+	b.WriteString("7. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索\n")
 	return b.String()
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-func truncateRunesForBtw(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes]) + "..."
 }

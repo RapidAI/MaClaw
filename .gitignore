@@ -2,7 +2,6 @@ build/bin
 dist/
 node_modules
 frontend/dist
-frontend/.npm_cache
 build/windows/installer/tmp
 .kode/
 .kiro/
@@ -33,7 +32,6 @@ build/deploy/*.tar.gz
 build/deploy/stage/
 build/deploy_last.log
 build/windows/*.tmp
-resource_windows_arm64.syso
 mobile/.gradle-user-home/
 mobile/.gradle/
 mobile/android/.gradle/
@@ -47,11 +45,7 @@ tmp-hubcenter-admin-check.js
 temp_fix_app.ps1
 hub/web/admin/.tmp-check.js
 hub/web/admin/_syntax_check.js
-hubcenter/web/admin/.tmp-check.js
-hubcenter/web/admin/_syntax_check.js
-hub/hub.exe
 gui.exe
-gui/frontend/.npm_cache/
 site/
 
 # RapidSpeech model files (large GGUF/ONNX)
@@ -61,23 +55,19 @@ RapidSpeech.cpp/models/
 .aicoder/
 .claude/
 
-# Deploy artifacts and logs
+# Deploy HA artifacts and logs
 build/deploy-ha/*.tar.gz
 build/deploy-ha/stage/
 build/deploy-ha/run-*/
 build/deploy-ha/rendered-configs/
 build/deploy-ha/remote_deploy.sh
 build/deploy-ha/*.log
-build/deploy-ha/*.err.log
-build/deploy-single-hub/
 build/deploy-ha-*.log
-build/deploy-ha-*.err.log
-build/deploy-ha-direct.log
-build/deploy-ha-direct.err.log
+build/deploy-single-hub/
 deploy/rendered-configs-temp/
 deploy/*.generated.*
 
-# Binary and resource files
+# Binary and resource files — covers hub.exe, hub/hub.exe, *.syso, etc.
 hub.exe
 *.syso
 **/build/bin/*.exe
@@ -85,7 +75,7 @@ hub.exe
 # YOLO model weights (large binary files)
 corelib/yolo/weights/
 
-# npm cache in all frontend dirs
+# npm cache in all frontend dirs — covers gui/frontend, iWorker/frontend, DiWorker/frontend, etc.
 **/frontend/.npm_cache/
 
 # Build temp files
