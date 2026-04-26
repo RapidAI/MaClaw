@@ -9158,3 +9158,9 @@ Behavior:
 1. Set the flag when creating or updating a tenant or user.
 2. `delete-check` reports `delete_protected=true` and returns a `delete_protected` blocker.
 3. Final delete requests still return `409` until the protection flag is removed.
+
+## Server-generated credentials
+
+Server-generated credentials: omit `api_key` and/or `api_secret` when creating a credential.
+
+`POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials` returns generated values only once in the create response. Store the returned `api_secret` on the client side if the caller needs to use that credential later; subsequent credential reads return only masked key information.

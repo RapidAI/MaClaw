@@ -566,15 +566,26 @@ func (s *Service) CreateCredential(ctx context.Context, in CreateCredentialInput
 	if _, err := s.store.GetUser(in.TenantID, in.UserID); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(in.APIKey) == "" || strings.TrimSpace(in.APISecret) == "" {
-		return nil, fmt.Errorf("api_key and api_secret are required")
-	}
 	now := s.now()
 	apiKey := strings.TrimSpace(in.APIKey)
-	if err := s.ensureCredentialAPIKeyAvailable(apiKey, ""); err != nil {
+	if apiKey == "" {
+		var err error
+		apiKey, err = s.generateUniqueCredentialAPIKey()
+		if err != nil {
+			return nil, err
+		}
+	} else if err := s.ensureCredentialAPIKeyAvailable(apiKey, ""); err != nil {
 		return nil, err
 	}
-	digest := HashSecretWithPepper(in.APISecret, s.credentialPepper)
+	apiSecret := strings.TrimSpace(in.APISecret)
+	if apiSecret == "" {
+		var err error
+		apiSecret, err = generateCredentialAPISecret()
+		if err != nil {
+			return nil, fmt.Errorf("generate credential secret: %w", err)
+		}
+	}
+	digest := HashSecretWithPepper(apiSecret, s.credentialPepper)
 	if digest == "" {
 		return nil, fmt.Errorf("failed to derive credential secret")
 	}
@@ -597,7 +608,9 @@ func (s *Service) CreateCredential(ctx context.Context, in CreateCredentialInput
 	_ = s.recordAudit(auditRecord{TenantID: stored.TenantID, UserID: stored.UserID, Action: "credential.created", ResourceType: "credential", ResourceID: stored.ID, ActorType: "admin"})
 	response := stored
 	response.APIKey = apiKey
+	response.APISecret = apiSecret
 	response.APIKeyHash = ""
+	response.SecretDigest = ""
 	return &response, nil
 }
 
@@ -785,6 +798,23 @@ func (s *Service) IssueToken(ctx context.Context, in IssueTokenInput) (*IssueTok
 	}
 	_ = s.recordAudit(auditRecord{TenantID: cred.TenantID, UserID: cred.UserID, Action: "auth.token_issued", ResourceType: "credential", ResourceID: cred.ID, ActorType: "credential"})
 	return &IssueTokenOutput{AccessToken: token, TokenType: "Bearer", ExpiresAt: exp, Principal: p}, nil
+}
+
+func (s *Service) generateUniqueCredentialAPIKey() (string, error) {
+	for i := 0; i < 8; i++ {
+		apiKey, err := generateCredentialAPIKey()
+		if err != nil {
+			return "", fmt.Errorf("generate credential api key: %w", err)
+		}
+		err = s.ensureCredentialAPIKeyAvailable(apiKey, "")
+		if err == nil {
+			return apiKey, nil
+		}
+		if !errors.Is(err, ErrAlreadyExists) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("generate credential api key: %w", ErrAlreadyExists)
 }
 
 func (s *Service) ensureCredentialAPIKeyAvailable(apiKey, currentCredentialID string) error {
@@ -3194,6 +3224,7 @@ func credentialExpired(cred Credential, now time.Time) bool {
 
 func sanitizeCredential(cred Credential) Credential {
 	cred.SecretDigest = ""
+	cred.APISecret = ""
 	cred.APIKeyHash = ""
 	cred.APIKey = maskedAPIKey(cred)
 	if cred.Status == "" {

@@ -518,3 +518,9 @@ That sequence improves both actual capability and integration confidence without
 - Tenant and user delete protection is now available.
 - Admin flows can mark critical resources as protected, inspect the flag through `delete-check`, and receive `409` on final delete attempts until protection is cleared.
 - This closes one of the lifecycle-safety gaps around accidental destructive operations.
+
+## Recent completion: server-generated credentials
+
+- Server-generated credential issuance is now available.
+- Admin callers can omit `api_key` and/or `api_secret` during credential creation.
+- Generated secrets are one-time reveal values and are not stored or returned by later read APIs.

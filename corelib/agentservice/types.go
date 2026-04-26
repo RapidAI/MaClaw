@@ -96,6 +96,7 @@ type Credential struct {
 	UserID       string           `json:"user_id"`
 	Name         string           `json:"name"`
 	APIKey       string           `json:"api_key,omitempty"`
+	APISecret    string           `json:"api_secret,omitempty"`
 	APIKeyPrefix string           `json:"api_key_prefix,omitempty"`
 	APIKeyHash   string           `json:"api_key_hash,omitempty"`
 	Status       CredentialStatus `json:"status"`
@@ -696,8 +697,8 @@ type CreateCredentialInput struct {
 	TenantID  string `json:"tenant_id"`
 	UserID    string `json:"user_id"`
 	Name      string `json:"name"`
-	APIKey    string `json:"api_key"`
-	APISecret string `json:"api_secret"`
+	APIKey    string `json:"api_key,omitempty"`
+	APISecret string `json:"api_secret,omitempty"`
 }
 
 type UpdateCredentialInput struct {
@@ -716,8 +717,8 @@ type RotateCredentialKeyInput struct {
 }
 
 type IssueTokenInput struct {
-	APIKey    string `json:"api_key"`
-	APISecret string `json:"api_secret"`
+	APIKey    string `json:"api_key,omitempty"`
+	APISecret string `json:"api_secret,omitempty"`
 }
 
 type IssueTokenOutput struct {

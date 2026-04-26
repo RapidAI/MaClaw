@@ -17,6 +17,7 @@ const DefaultLLMProviderCircuitBreakerThreshold = 3
 const DefaultLLMProviderCircuitBreakerCooldownMS = 30000
 const DefaultLLMProviderFailureBackoffBaseMS = 500
 const DefaultLLMProviderFailureBackoffMaxMS = 10000
+const DefaultLLMProviderUpstreamTimeoutSec = 900
 
 type LLMProvider struct {
 	ID                       string `json:"id"`
@@ -30,6 +31,7 @@ type LLMProvider struct {
 	MaxConcurrency           int    `json:"max_concurrency,omitempty"`
 	MaxQueueWaiters          int    `json:"max_queue_waiters,omitempty"`
 	QueueTimeoutMS           int    `json:"queue_timeout_ms,omitempty"`
+UpstreamTimeoutSec       int    `json:"upstream_timeout_sec,omitempty"`
 	CircuitBreakerThreshold  int    `json:"circuit_breaker_threshold,omitempty"`
 	CircuitBreakerCooldownMS int    `json:"circuit_breaker_cooldown_ms,omitempty"`
 	FailureBackoffBaseMS     int    `json:"failure_backoff_base_ms,omitempty"`
@@ -75,6 +77,9 @@ func normalizeLLMProviderRegistry(reg *LLMProviderRegistry) *LLMProviderRegistry
 		}
 		if reg.Providers[i].QueueTimeoutMS < 0 {
 			reg.Providers[i].QueueTimeoutMS = 0
+		}
+		if reg.Providers[i].UpstreamTimeoutSec <= 0 {
+			reg.Providers[i].UpstreamTimeoutSec = DefaultLLMProviderUpstreamTimeoutSec
 		}
 		if reg.Providers[i].CircuitBreakerThreshold <= 0 {
 			reg.Providers[i].CircuitBreakerThreshold = DefaultLLMProviderCircuitBreakerThreshold

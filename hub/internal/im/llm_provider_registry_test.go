@@ -40,9 +40,10 @@ func TestLLMProviderRegistryRoundTripNormalizesAgentTypeAndWireAPI(t *testing.T)
 			Protocol:        "Anthropic",
 			WireAPI:         "Responses-WS",
 			AgentType:       "  claude-code/2.0.0  ",
-			MaxConcurrency:  -3,
-			MaxQueueWaiters: -2,
-			QueueTimeoutMS:  -100,
+			MaxConcurrency:      -3,
+			MaxQueueWaiters:     -2,
+			QueueTimeoutMS:      -100,
+			UpstreamTimeoutSec: -100,
 		}},
 	}
 	if err := SaveLLMProviderRegistry(ctx, repo, reg); err != nil {
@@ -73,6 +74,9 @@ func TestLLMProviderRegistryRoundTripNormalizesAgentTypeAndWireAPI(t *testing.T)
 	}
 	if provider.QueueTimeoutMS != 0 {
 		t.Fatalf("queue_timeout_ms = %d, want 0", provider.QueueTimeoutMS)
+	}
+	if provider.UpstreamTimeoutSec != DefaultLLMProviderUpstreamTimeoutSec {
+		t.Fatalf("upstream_timeout_sec = %d, want %d", provider.UpstreamTimeoutSec, DefaultLLMProviderUpstreamTimeoutSec)
 	}
 	cfg := loaded.ToHubLLMConfig()
 	if cfg == nil {
@@ -130,6 +134,7 @@ func TestLLMProviderRegistryDefaultsUserLimitsAndResilience(t *testing.T) {
 			CircuitBreakerCooldownMS: -2,
 			FailureBackoffBaseMS:     -3,
 			FailureBackoffMaxMS:      -4,
+			UpstreamTimeoutSec:     -5,
 		}},
 	}
 	if err := SaveLLMProviderRegistry(ctx, repo, reg); err != nil {
@@ -146,6 +151,9 @@ func TestLLMProviderRegistryDefaultsUserLimitsAndResilience(t *testing.T) {
 		t.Fatalf("user_rate_limit_burst = %d, want %d", loaded.UserRateLimitBurst, DefaultLLMProviderUserRateLimitBurst)
 	}
 	provider := loaded.Providers[0]
+	if provider.UpstreamTimeoutSec != DefaultLLMProviderUpstreamTimeoutSec {
+		t.Fatalf("upstream_timeout_sec = %d, want %d", provider.UpstreamTimeoutSec, DefaultLLMProviderUpstreamTimeoutSec)
+	}
 	if provider.CircuitBreakerThreshold != DefaultLLMProviderCircuitBreakerThreshold {
 		t.Fatalf("circuit_breaker_threshold = %d, want %d", provider.CircuitBreakerThreshold, DefaultLLMProviderCircuitBreakerThreshold)
 	}

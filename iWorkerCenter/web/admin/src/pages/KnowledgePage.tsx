@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SectionCard } from '../components/cards/SectionCard';
 import { DataTable } from '../components/table/DataTable';
+import { InstitutionalizationStageRail, type InstitutionalizationStageCard } from '../components/assets/InstitutionalizationStageRail';
 import { listMemories, type Memory } from '../api/memories';
 import type { AssetNavigationTarget, CenterTab, OverviewNavigationTarget } from '../types';
 
@@ -10,17 +11,6 @@ type KnowledgePageProps = {
   onNavigationHandled?: () => void;
   onNavigateToOverview?: (target?: OverviewNavigationTarget | null) => void;
   onNavigateToTab: (tab: CenterTab, target?: AssetNavigationTarget) => void;
-};
-
-type AssetStageCard = {
-  id: 'knowledge' | 'packages' | 'workflows';
-  eyebrow: string;
-  title: string;
-  tone: 'ok' | 'info' | 'warn';
-  summary: string;
-  detail: string;
-  statLine: string[];
-  actionLabel: string;
 };
 
 export function KnowledgePage({ navigationTarget, onNavigationHandled, onNavigateToOverview, onNavigateToTab }: KnowledgePageProps) {
@@ -71,7 +61,7 @@ export function KnowledgePage({ navigationTarget, onNavigationHandled, onNavigat
   const roleLabel = focusedTarget?.role_label || focusedTarget?.role_code || 'Recovery deposition';
   const stageTarget = focusedTarget || undefined;
 
-  const stageCards = useMemo<AssetStageCard[]>(() => [
+  const stageCards = useMemo<InstitutionalizationStageCard[]>(() => [
     {
       id: 'knowledge',
       eyebrow: 'Stage 1',
@@ -126,35 +116,14 @@ export function KnowledgePage({ navigationTarget, onNavigationHandled, onNavigat
 
   return (
     <div className="center-page-stack">
-      <div className="asset-cockpit-grid">
-        {stageCards.map((card) => (
-          <section key={card.id} className={`card section-card asset-cockpit-card ${card.id === 'knowledge' ? 'asset-cockpit-card-active' : ''}`}>
-            <div className="asset-cockpit-head">
-              <div>
-                <div className="mini light">{card.eyebrow}</div>
-                <h3>{card.title}</h3>
-              </div>
-              <span className={`badge ${card.tone}`}>{card.id === 'knowledge' ? 'Current' : 'Next'}</span>
-            </div>
-            <strong>{card.summary}</strong>
-            <p>{card.detail}</p>
-            <div className="asset-cockpit-stats">
-              {card.statLine.map((item) => <span key={item}>{item}</span>)}
-            </div>
-            <div className="executive-action-row">
-              {card.id === 'knowledge' ? (
-                <button type="button" className="executive-link-button" onClick={() => onNavigateToOverview?.({ role_code: focusedTarget?.role_code, source: 'knowledge_review' })}>
-                  Return to overview
-                </button>
-              ) : (
-                <button type="button" className="executive-assign-button" onClick={() => onNavigateToTab(card.id, stageTarget)}>
-                  {card.actionLabel}
-                </button>
-              )}
-            </div>
-          </section>
-        ))}
-      </div>
+      <InstitutionalizationStageRail
+        activeStage="knowledge"
+        cards={stageCards}
+        navigationTarget={stageTarget}
+        overviewTarget={{ role_code: focusedTarget?.role_code, source: 'knowledge_review' }}
+        onNavigateToOverview={onNavigateToOverview}
+        onNavigateToTab={onNavigateToTab}
+      />
 
       <SectionCard title={t('nav.knowledge')} desc={loading ? t('common.loading') : `${rows.length}`}>
         {focusedTarget ? (

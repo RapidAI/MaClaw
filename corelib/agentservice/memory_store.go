@@ -569,6 +569,7 @@ func normalizeStoredCredential(v Credential, legacyLookupKey string) Credential 
 	if strings.TrimSpace(v.APIKeyHash) != "" {
 		v.APIKey = ""
 	}
+	v.APISecret = ""
 	v.TokenVersion = credentialTokenVersion(v)
 	return v
 }

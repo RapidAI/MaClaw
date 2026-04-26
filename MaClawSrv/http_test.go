@@ -1450,6 +1450,56 @@ func TestSystemEndpoints(t *testing.T) {
 	}
 }
 
+func TestAdminCanCreateGeneratedCredentialOneTimeReveal(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	body := bytes.NewBufferString(`{"name":"Generated API"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials", body)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create generated credential status = %d body = %s", w.Code, w.Body.String())
+	}
+	var created agentservice.Credential
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode generated credential: %v", err)
+	}
+	if !strings.HasPrefix(created.APIKey, "mck_") || !strings.HasPrefix(created.APISecret, "mcs_") {
+		t.Fatalf("expected generated key and secret once, got %#v", created)
+	}
+	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: created.APIKey, APISecret: created.APISecret}); err != nil {
+		t.Fatalf("generated credential should issue token: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials/"+created.ID, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get generated credential status = %d body = %s", w.Code, w.Body.String())
+	}
+	var fetched agentservice.Credential
+	if err := json.NewDecoder(w.Body).Decode(&fetched); err != nil {
+		t.Fatalf("decode fetched credential: %v", err)
+	}
+	if fetched.APISecret != "" || fetched.APIKey == created.APIKey || fetched.APIKeyHash != "" || fetched.SecretDigest != "" {
+		t.Fatalf("expected fetched credential to be sanitized: %#v", fetched)
+	}
+}
+
 func TestAdminCanListAndRevokeCredentials(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {

@@ -121,6 +121,9 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 			if p.QueueTimeoutMS < 0 {
 				p.QueueTimeoutMS = 0
 			}
+			if p.UpstreamTimeoutSec <= 0 {
+				p.UpstreamTimeoutSec = im.DefaultLLMProviderUpstreamTimeoutSec
+			}
 			if p.CircuitBreakerThreshold <= 0 {
 				p.CircuitBreakerThreshold = im.DefaultLLMProviderCircuitBreakerThreshold
 			}
@@ -1017,11 +1020,11 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			var detail string
 			switch statusCode {
 			case http.StatusUnauthorized:
-				detail = fmt.Sprintf("上游 LLM 服务商 %q 认证失败（API Key 无效或已过期），请联系管理员检查 Hub 后台的 Provider 配置", providerName)
+				detail = fmt.Sprintf("娑撳﹥鐖?LLM 閺堝秴濮熼崯?%q 鐠併倛鐦夋径杈Е閿涘湏PI Key 閺冪姵鏅ラ幋鏍у嚒鏉╁洦婀￠敍澶涚礉鐠囩柉浠堢化鑽ゎ吀閻炲棗鎲冲Λ鈧弻?Hub 閸氬骸褰撮惃?Provider 闁板秶鐤?, providerName)
 			case http.StatusForbidden:
-				detail = fmt.Sprintf("上游 LLM 服务商 %q 拒绝访问，请联系管理员检查 Hub 后台的 Provider 配置", providerName)
+				detail = fmt.Sprintf("娑撳﹥鐖?LLM 閺堝秴濮熼崯?%q 閹锋帞绮风拋鍧楁６閿涘矁顕懕鏃傞兇缁狅紕鎮婇崨妯活梾閺?Hub 閸氬骸褰撮惃?Provider 闁板秶鐤?, providerName)
 			case http.StatusTooManyRequests:
-				detail = fmt.Sprintf("上游 LLM 服务商 %q 请求频率超限，请稍后再试", providerName)
+				detail = fmt.Sprintf("娑撳﹥鐖?LLM 閺堝秴濮熼崯?%q 鐠囬攱鐪版０鎴犲芳鐡掑懘妾洪敍宀冾嚞缁嬪秴鎮楅崘宥堢槸", providerName)
 			}
 			if upstreamMsg != "" {
 				detail += " (" + upstreamMsg + ")"
@@ -1827,20 +1830,24 @@ func forwardLLMRequest(r *http.Request, p *im.LLMProvider, body map[string]any, 
 	}
 	defer release()
 	cfg := corelib.MaclawLLMConfig{
-		URL:       p.APIURL,
-		Key:       p.APIKey,
-		Model:     p.Model,
-		Protocol:  normalizeProviderProtocol(p.Protocol),
-		WireAPI:   normalizeProviderWireAPI(p.WireAPI),
-		AgentType: strings.TrimSpace(p.AgentType),
+		URL:        p.APIURL,
+		Key:        p.APIKey,
+		Model:      p.Model,
+		Protocol:   normalizeProviderProtocol(p.Protocol),
+		WireAPI:    normalizeProviderWireAPI(p.WireAPI),
+		AgentType:  strings.TrimSpace(p.AgentType),
+		TimeoutSec: p.UpstreamTimeoutSec,
 	}
 	fwd := make(map[string]interface{}, len(body))
 	for k, v := range body {
 		fwd[k] = v
 	}
-	return corelib.ForwardOpenAICompatRequest(r.Context(), cfg, fwd, http.DefaultClient, externalModel)
+	return corelib.ForwardOpenAICompatRequest(r.Context(), cfg, fwd, llmProviderUpstreamHTTPClient(cfg), externalModel)
 }
 
+func llmProviderUpstreamHTTPClient(cfg corelib.MaclawLLMConfig) *http.Client {
+	return &http.Client{Timeout: time.Duration(cfg.EffectiveTimeoutSec()) * time.Second}
+}
 func parseUsageStats(respBody []byte) corelib.TokenUsageStat {
 	var payload map[string]any
 	if err := json.Unmarshal(respBody, &payload); err != nil {

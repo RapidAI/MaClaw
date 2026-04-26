@@ -128,6 +128,21 @@ func TestForwardAuthorizedModelRequestOrdersProvidersByProviderScopedParams(t *t
 	}
 }
 
+
+func TestLLMProviderUpstreamHTTPClientUsesConfiguredTimeout(t *testing.T) {
+	client := llmProviderUpstreamHTTPClient(corelib.MaclawLLMConfig{TimeoutSec: 7})
+	if client == nil {
+		t.Fatal("client is nil")
+	}
+	if client.Timeout != 7*time.Second {
+		t.Fatalf("client.Timeout = %s, want 7s", client.Timeout)
+	}
+
+	defaultClient := llmProviderUpstreamHTTPClient(corelib.MaclawLLMConfig{})
+	if defaultClient.Timeout != time.Duration(corelib.DefaultLLMTimeoutSec)*time.Second {
+		t.Fatalf("default client.Timeout = %s, want %ds", defaultClient.Timeout, corelib.DefaultLLMTimeoutSec)
+	}
+}
 func TestParseUsageStatsIncludesPromptCache(t *testing.T) {
 	payload := []byte(`{"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":48},"cache_creation_input_tokens":12}}`)
 	usage := parseUsageStats(payload)

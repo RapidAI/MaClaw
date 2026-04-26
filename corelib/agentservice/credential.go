@@ -1,10 +1,28 @@
 package agentservice
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 )
+
+func randomURLToken(prefix string, bytesLen int) (string, error) {
+	buf := make([]byte, bytesLen)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return prefix + base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func generateCredentialAPIKey() (string, error) {
+	return randomURLToken("mck_", 24)
+}
+
+func generateCredentialAPISecret() (string, error) {
+	return randomURLToken("mcs_", 32)
+}
 
 func hashAPIKey(v string) string {
 	v = strings.TrimSpace(v)
