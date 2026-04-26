@@ -166,9 +166,10 @@ func DefaultDefinitions() []IntentDefinition {
 		{
 			Label:  LabelNonCoding,
 			Domain: "内容处理 (Content)",
-			TreeText: "用户要翻译、总结、整理、写文档、查天气等非编码任务。" +
-				"这是一步完成的内容处理任务，不需要多阶段工作流。" +
-				"关键信号：翻译、总结、摘要、整理、查天气、写邮件、截图。",
+			TreeText: "用户要翻译、总结、整理、写文档、查天气等非编码任务，" +
+				"或执行步骤明确的技术操作（逆向工程、模型转换、格式提取、数据迁移、环境部署等）。" +
+				"共同特征：产出物由输入内容或操作步骤决定，不需要多阶段设计决策。" +
+				"关键信号：翻译、总结、摘要、整理、查天气、写邮件、截图、提取、转换、迁移、部署。",
 			EmbedTexts: []string{
 				"翻译文档",
 				"搜索论文",
@@ -176,12 +177,15 @@ func DefaultDefinitions() []IntentDefinition {
 				"帮我整理资料",
 				"生成PDF报告",
 				"把这段话翻译成英文",
+				"提取模型权重并转换为ONNX格式",
+				"帮我把数据从MySQL迁移到PostgreSQL",
 				"summarize this article",
 				"translate this document",
 				"search for papers on AI",
 				"organize these notes",
 				"help me write a report",
 				"draft a project proposal document",
+				"extract weights from the DLC model and convert to ONNX",
 			},
 			ToolNames: []string{},
 		},
