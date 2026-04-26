@@ -8,7 +8,7 @@ import { createCollaboration, getCollaborationRoutingSettings, listCollaboration
 import type { CollaborationRoutingOverview } from '../api/collaboration';
 import { listColleagues } from '../api/colleagues';
 import type { Colleague } from '../api/colleagues';
-import { fetchDashboard, fetchExecutiveSkills, runExecutiveSkill } from '../api/dashboard';
+import { fetchDashboard, fetchExecutiveSkills, recordManagementDecision, runExecutiveSkill } from '../api/dashboard';
 import { listRoles } from '../api/roles';
 import type { Role } from '../api/roles';
 import { listCapabilities } from '../api/capabilities';
@@ -57,6 +57,12 @@ type RoleExecutionFeedback = {
   message: string;
 };
 
+type ManagementDecisionRecord = {
+  type: 'review' | 'deferred';
+  detail: string;
+  recordedAt: string;
+  displayTime: string;
+};
 type ExecutiveAuditCluster = {
   id: string;
   skillId: string;
@@ -84,6 +90,45 @@ const mergeTone = (current: 'ok' | 'info' | 'warn', next: 'ok' | 'info' | 'warn'
     return 'info';
   }
   return 'ok';
+};
+
+
+const summarizeManagementDecisionState = (auditLogs: AuditLog[]) => {
+  const latestByRole: Record<string, ManagementDecisionRecord> = {};
+
+  auditLogs
+    .filter((item) => item.work_type === 'management_decision')
+    .forEach((item) => {
+      const roleCode = extractAuditField(item.error_msg || '', 'role_code');
+      const detail = extractAuditField(item.error_msg || '', 'detail');
+      const decisionType = extractAuditField(item.error_msg || '', 'decision_type');
+      const displayTime = extractAuditField(item.error_msg || '', 'display_time') || item.created_at;
+      if (!roleCode || !detail || (decisionType !== 'review' && decisionType !== 'deferred')) {
+        return;
+      }
+      const record: ManagementDecisionRecord = {
+        type: decisionType,
+        detail,
+        recordedAt: item.created_at,
+        displayTime,
+      };
+      const current = latestByRole[roleCode];
+      if (!current || new Date(current.recordedAt).getTime() < new Date(record.recordedAt).getTime()) {
+        latestByRole[roleCode] = record;
+      }
+    });
+
+  return Object.entries(latestByRole).reduce((state, [roleCode, record]) => {
+    if (record.type === 'review') {
+      state.review[roleCode] = record;
+    } else {
+      state.deferred[roleCode] = record;
+    }
+    return state;
+  }, {
+    deferred: {} as Record<string, ManagementDecisionRecord>,
+    review: {} as Record<string, ManagementDecisionRecord>,
+  });
 };
 
 const decisionPriorityScore = (status: string) => {
@@ -223,11 +268,57 @@ const buildClusteredExecutiveHistory = (
   });
 };
 
+const pickLatestManagementDecision = (history: BoardHistoryItem[]) => history
+  .find((item) => item.id.startsWith('management-'));
+
+const historyRoleCode = (item: BoardHistoryItem | undefined) => {
+  if (!item) {
+    return '';
+  }
+  if (item.navigationTarget?.role_code) {
+    return item.navigationTarget.role_code;
+  }
+  const roleLine = item.detailLines?.find((line) => line.startsWith('Role: '));
+  return roleLine?.replace(/^Role:\s*/, '').trim() || '';
+};
+
+const managementDecisionType = (item: BoardHistoryItem | undefined) => {
+  if (!item) {
+    return '';
+  }
+  const typeLine = item.detailLines?.find((line) => line.startsWith('Decision type: '));
+  return typeLine?.replace(/^Decision type:\s*/, '').trim() || '';
+};
+
+const shouldPrioritizeManagementDecision = (
+  latestCluster: BoardHistoryItem | undefined,
+  latestManagement: BoardHistoryItem | undefined,
+) => {
+  if (!latestManagement) {
+    return false;
+  }
+  if (!latestCluster) {
+    return true;
+  }
+  return new Date(latestManagement.timestamp).getTime() >= new Date(latestCluster.timestamp).getTime();
+};
+
 const deriveDecisionBoardSummary = (
   dashboardSummary: string,
   history: BoardHistoryItem[],
 ) => {
   const latestCluster = pickPriorityDecisionCluster(history);
+  const latestManagement = pickLatestManagementDecision(history);
+  if (shouldPrioritizeManagementDecision(latestCluster, latestManagement)) {
+    const roleCode = historyRoleCode(latestManagement);
+    const roleLabel = roleCode ? roleCode.toUpperCase() : 'the escalated role';
+    switch (managementDecisionType(latestManagement)) {
+      case 'deferred':
+        return `Management has deferred direct intervention for ${roleLabel} until the next review window. The organization should keep running inside delegated policy while coordination risk is monitored closely.`;
+      default:
+        return `${roleLabel} is already under active management review. The next move is to clear blockers, adjust resources, or return the role to delegated execution.`;
+    }
+  }
   if (!latestCluster) {
     return dashboardSummary;
   }
@@ -251,6 +342,34 @@ const deriveDecisionBoardFocus = (
   history: BoardHistoryItem[],
 ) => {
   const latestCluster = pickPriorityDecisionCluster(history);
+  const latestManagement = pickLatestManagementDecision(history);
+  if (shouldPrioritizeManagementDecision(latestCluster, latestManagement)) {
+    const roleCode = historyRoleCode(latestManagement);
+    if (!roleCode) {
+      return dashboardFocus;
+    }
+    const roleLabel = roleCode.toUpperCase();
+    switch (managementDecisionType(latestManagement)) {
+      case 'deferred':
+        return {
+          title: `Review ${roleLabel} at next window`,
+          summary: `${roleLabel} remains inside organizational observation until the deferred review window.`,
+          description: 'Management explicitly deferred direct intervention. iWorkerCenter should keep the role inside delegated coordination, surface new evidence, and re-open escalation only if operating risk continues to rise.',
+          status: 'info',
+          role_code: roleCode,
+          role_label: roleLabel,
+        };
+      default:
+        return {
+          title: `Hold management attention on ${roleLabel}`,
+          summary: `${roleLabel} is already under active management review.`,
+          description: 'Management has already taken this exception into direct review. The priority is now blocker removal, resource adjustment, and deciding when the role can safely return to delegated execution.',
+          status: 'warn',
+          role_code: roleCode,
+          role_label: roleLabel,
+        };
+    }
+  }
   if (!latestCluster || !latestCluster.clusterRoleCode) {
     return dashboardFocus;
   }
@@ -642,6 +761,38 @@ const formatBoardTimestamp = (value: string) => {
   return date.toLocaleString();
 };
 
+const summarizeManagementDecisionHistory = (auditLogs: AuditLog[]): BoardHistoryItem[] => auditLogs
+  .filter((item) => item.work_type === 'management_decision')
+  .slice(0, 4)
+  .map((item) => {
+    const roleCode = extractAuditField(item.error_msg || '', 'role_code');
+    const decisionType = extractAuditField(item.error_msg || '', 'decision_type');
+    const detail = extractAuditField(item.error_msg || '', 'detail') || item.summary || 'Management intervention was recorded.';
+    const displayTime = extractAuditField(item.error_msg || '', 'display_time') || item.created_at;
+    const isDeferred = decisionType === 'deferred';
+    return {
+      id: `management-${item.id}`,
+      title: isDeferred
+        ? 'Management follow-up deferred' + (roleCode ? ` for ${roleCode.toUpperCase()}` : '')
+        : 'Management review opened' + (roleCode ? ` for ${roleCode.toUpperCase()}` : ''),
+      detail,
+      timestamp: item.created_at,
+      tone: isDeferred ? 'info' : 'warn',
+      detailLines: [
+        `Decision type: ${decisionType || 'review'}`,
+        `Role: ${roleCode || 'No direct role attached'}`,
+        `Recorded at: ${displayTime}`,
+      ],
+      navigationTarget: roleCode
+        ? {
+          role_code: roleCode,
+          source: 'organization_history',
+        }
+        : {
+          source: 'organization_history',
+        },
+    };
+  });
 const summarizeBoardHistory = (
   tasks: Array<{
     id: string;
@@ -690,8 +841,9 @@ const summarizeBoardHistory = (
     }));
 
   const executiveEvents = buildClusteredExecutiveHistory(auditLogs, tasks);
+  const managementDecisionEvents = summarizeManagementDecisionHistory(auditLogs);
 
-  return [...executiveEvents, ...routingEvents, ...taskEvents]
+  return [...executiveEvents, ...managementDecisionEvents, ...routingEvents, ...taskEvents]
     .sort((a, b) => {
       const aPriority = a.isCluster ? decisionPriorityScore(a.clusterExecutionStatus || '') : 5;
       const bPriority = b.isCluster ? decisionPriorityScore(b.clusterExecutionStatus || '') : 5;
@@ -945,6 +1097,8 @@ export function OverviewPage({
   const [transitioningActionKey, setTransitioningActionKey] = useState('');
   const [batchTransitionKey, setBatchTransitionKey] = useState('');
   const [roleExecutionFeedback, setRoleExecutionFeedback] = useState<Record<string, RoleExecutionFeedback>>({});
+  const [deferredManagementRoles, setDeferredManagementRoles] = useState<Record<string, ManagementDecisionRecord>>({});
+  const [activeManagementReviews, setActiveManagementReviews] = useState<Record<string, ManagementDecisionRecord>>({});
   const [selectedOwners, setSelectedOwners] = useState<Record<string, string>>({});
   const [updatedAt, setUpdatedAt] = useState('');
   const [boardSignals, setBoardSignals] = useState<BoardSignal[]>([]);
@@ -1001,6 +1155,9 @@ export function OverviewPage({
     setBoardHistory(dashboard?.board_history || summarizeBoardHistory(collabTasks, auditLogs));
     setBoardRoles(summarizeBoardRoles(collabTasks, roleList, cols, routingOverview));
     setBoardUpdatedAt(dashboard?.updated_at || new Date().toISOString());
+    const managementDecisionState = summarizeManagementDecisionState(auditLogs);
+    setDeferredManagementRoles(managementDecisionState.deferred);
+    setActiveManagementReviews(managementDecisionState.review);
     if (cols.length > 0) {
       setSelectedOwners((prev) => {
         const next = { ...prev };
@@ -1120,6 +1277,71 @@ export function OverviewPage({
       return scoreRole(right, rightSuggested) - scoreRole(left, leftSuggested);
     })
     .slice(0, 3), [boardRoles, pendingBatchTargets, acceptedBatchTargets, focusedOverviewRoleCode, roleExecutionFeedback]);
+  const managementRecoveryState = useMemo(() => {
+    const activeReviewEntry = Object.entries(activeManagementReviews)
+      .sort((left, right) => new Date(right[1].recordedAt).getTime() - new Date(left[1].recordedAt).getTime())[0];
+    if (activeReviewEntry) {
+      const [roleCode, record] = activeReviewEntry;
+      const feedback = roleExecutionFeedback[roleCode];
+      if (feedback) {
+        return {
+          phase: 'recovery_dispatched' as const,
+          tone: feedback.tone === 'warn' ? 'warn' as const : 'info' as const,
+          label: 'Recovery action dispatched',
+          roleCode,
+          summary: `${roleCode} has already received a recovery move after management review.`,
+          detail: `${feedback.message} Management can now stay at oversight level while execution evidence comes back into the organization.`,
+          nextStep: 'Keep watching for delivery evidence before returning the role fully to autonomous coordination.',
+        };
+      }
+      return {
+        phase: 'under_review' as const,
+        tone: 'warn' as const,
+        label: 'Management review in progress',
+        roleCode,
+        summary: `${roleCode} is currently under active management review.`,
+        detail: record.detail,
+        nextStep: 'The next step is to clear blockers, adjust resources, or issue a recovery handoff back into execution.',
+      };
+    }
+
+    const deferredEntry = Object.entries(deferredManagementRoles)
+      .sort((left, right) => new Date(right[1].recordedAt).getTime() - new Date(left[1].recordedAt).getTime())[0];
+    if (deferredEntry) {
+      const [roleCode, record] = deferredEntry;
+      return {
+        phase: 'deferred_monitoring' as const,
+        tone: 'info' as const,
+        label: 'Deferred until review window',
+        roleCode,
+        summary: `${roleCode} remains inside delegated observation until the next management review window.`,
+        detail: record.detail,
+        nextStep: 'iWorkerCenter should continue monitoring coordination signals and only re-escalate if the risk boundary rises again.',
+      };
+    }
+
+    const advancedEntry = Object.entries(roleExecutionFeedback)
+      .sort((left, right) => {
+        const leftFocused = left[0] === focusedOverviewRoleCode ? 1 : 0;
+        const rightFocused = right[0] === focusedOverviewRoleCode ? 1 : 0;
+        return rightFocused - leftFocused;
+      })[0];
+    if (advancedEntry) {
+      const [roleCode, feedback] = advancedEntry;
+      return {
+        phase: 'returning_to_autonomy' as const,
+        tone: feedback.tone === 'warn' ? 'info' as const : 'ok' as const,
+        label: 'Returning to autonomous execution',
+        roleCode,
+        summary: `${roleCode} has moved back into delegated execution after intervention.`,
+        detail: feedback.message,
+        nextStep: 'If delivery evidence remains healthy, the role can fall back out of management attention and return to normal organizational rhythm.',
+      };
+    }
+
+    return null;
+  }, [activeManagementReviews, deferredManagementRoles, roleExecutionFeedback, focusedOverviewRoleCode]);
+
   const boardSummaryDecision = useMemo(() => {
     if (topBoardRoles.length === 0) {
       return null;
@@ -1150,7 +1372,13 @@ export function OverviewPage({
       parts.push(`Review ${firstToDrillDown.roleItem.roleCode} first`);
     }
 
-    if (firstAdvanced) {
+    if (managementRecoveryState?.phase === 'recovery_dispatched') {
+      parts.push(`${managementRecoveryState.roleCode} is already back in execution after management intervention`);
+    } else if (managementRecoveryState?.phase === 'under_review') {
+      parts.push(`${managementRecoveryState.roleCode} is still under active management review`);
+    } else if (managementRecoveryState?.phase === 'deferred_monitoring') {
+      parts.push(`${managementRecoveryState.roleCode} is being observed until the next management review window`);
+    } else if (firstAdvanced) {
       parts.push(`${firstAdvanced.roleItem.roleCode} was just moved forward and should stay under management watch`);
     }
 
@@ -1167,7 +1395,7 @@ export function OverviewPage({
       summary: `Organization summary: ${parts.join(' | ')}.`,
       primary,
     };
-  }, [topBoardRoles, pendingBatchTargets, acceptedBatchTargets, roleExecutionFeedback]);
+  }, [topBoardRoles, pendingBatchTargets, acceptedBatchTargets, roleExecutionFeedback, managementRecoveryState]);
   const executionBoardSummary = boardSummaryDecision?.summary || 'Organization summary: No priority role is currently demanding immediate intervention.';
   const autonomousOperationStatus = useMemo(() => {
     const describedRoles = topBoardRoles.map((roleItem) => ({
@@ -1241,6 +1469,158 @@ export function OverviewPage({
     }
     return `${autonomousEscalationTarget.roleItem.roleCode} has crossed the normal operating boundary and now needs management review.`;
   }, [autonomousEscalationTarget]);
+  const autonomousManagementMove = useMemo(() => {
+    if (!autonomousEscalationTarget) {
+      return null;
+    }
+    if (autonomousEscalationTarget.roleItem.risk === 'critical') {
+      return {
+        tone: 'warn',
+        level: 'Immediate intervention',
+        label: 'Recommended management move: Intervene',
+        detail: `Restore operating coverage for ${autonomousEscalationTarget.roleItem.roleCode} before more execution risk accumulates.`,
+      };
+    }
+    if (autonomousEscalationTarget.pendingTarget) {
+      return {
+        tone: 'info',
+        level: 'Authorization needed',
+        label: 'Recommended management move: Authorize',
+        detail: `Confirm delegation for ${autonomousEscalationTarget.pendingTarget.title} so the role can keep moving within policy.`,
+      };
+    }
+    if (autonomousEscalationTarget.suggestedAction.action === 'open_communications') {
+      return {
+        tone: 'info',
+        level: 'Review only',
+        label: 'Recommended management move: Review',
+        detail: `Review blockers and unresolved coordination inside ${autonomousEscalationTarget.roleItem.roleCode} before changing goals or resources.`,
+      };
+    }
+    return {
+      tone: 'info',
+      level: 'Review only',
+      label: 'Recommended management move: Review',
+      detail: `Open ${autonomousEscalationTarget.roleItem.roleCode} and verify whether escalation is still required.`,
+    };
+  }, [autonomousEscalationTarget]);
+  const autonomousExpectedOutcome = useMemo(() => {
+    if (!autonomousEscalationTarget || !autonomousManagementMove) {
+      return '';
+    }
+    switch (autonomousManagementMove.level) {
+      case 'Immediate intervention':
+        return `${autonomousEscalationTarget.roleItem.roleCode} should return to healthy operating coverage and stop accumulating unmanaged execution risk.`;
+      case 'Authorization needed':
+        return `${autonomousEscalationTarget.roleItem.roleCode} should move the waiting handoff back into delegated execution without further escalation.`;
+      default:
+        return `${autonomousEscalationTarget.roleItem.roleCode} should either return to normal delegation or produce a clearer case for deeper intervention.`;
+    }
+  }, [autonomousEscalationTarget, autonomousManagementMove]);
+
+
+  const recentManagementDecisions = useMemo(() => {
+    const decisions = [
+      ...Object.entries(activeManagementReviews).map(([roleCode, record]) => ({
+        roleCode,
+        tone: 'warn' as const,
+        label: 'Taken into management review',
+        detail: record.detail,
+        displayTime: record.displayTime,
+        recordedAt: record.recordedAt,
+      })),
+      ...Object.entries(deferredManagementRoles).map(([roleCode, record]) => ({
+        roleCode,
+        tone: 'info' as const,
+        label: 'Deferred until next review',
+        detail: record.detail,
+        displayTime: record.displayTime,
+        recordedAt: record.recordedAt,
+      })),
+    ];
+
+    const targetRoleCode = autonomousEscalationTarget?.roleItem.roleCode || '';
+    return decisions
+      .sort((left, right) => {
+        if (left.roleCode === targetRoleCode && right.roleCode !== targetRoleCode) {
+          return -1;
+        }
+        if (right.roleCode === targetRoleCode && left.roleCode !== targetRoleCode) {
+          return 1;
+        }
+        return new Date(right.recordedAt).getTime() - new Date(left.recordedAt).getTime();
+      })
+      .slice(0, 3);
+  }, [autonomousEscalationTarget, activeManagementReviews, deferredManagementRoles]);
+
+
+  const handleAutonomousHandleNow = async () => {
+    if (!autonomousEscalationTarget) {
+      return;
+    }
+    const reviewStartedAt = new Date();
+    const reviewDisplayTime = reviewStartedAt.toLocaleString('zh-CN', {
+      hour12: false,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const roleCode = autonomousEscalationTarget.roleItem.roleCode;
+    const detail = `Taken into management review at ${reviewDisplayTime}. The role is now under active management attention.`;
+    try {
+      await recordManagementDecision({
+        role_code: roleCode,
+        decision_type: 'review',
+        detail,
+        display_time: reviewDisplayTime,
+      });
+      await loadOverviewData(true);
+      setFocusedOverviewRoleCode(roleCode);
+      onNavigateToCommunications({
+        role_code: roleCode,
+        source: 'autonomous_escalation',
+      });
+    } catch (error) {
+      setTaskMessage(error instanceof Error ? error.message : 'Failed to record the management review decision.');
+    }
+  };
+
+  const handleAutonomousDefer = async () => {
+    if (!autonomousEscalationTarget) {
+      return;
+    }
+    const deferredAt = new Date();
+    const nextReviewAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toLocaleString('zh-CN', {
+      hour12: false,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const deferredDisplayTime = deferredAt.toLocaleString('zh-CN', {
+      hour12: false,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const roleCode = autonomousEscalationTarget.roleItem.roleCode;
+    const detail = `Deferred until next review: ${nextReviewAt}. Revisit ${roleCode} if coordination risk continues to rise.`;
+    try {
+      await recordManagementDecision({
+        role_code: roleCode,
+        decision_type: 'deferred',
+        detail,
+        display_time: deferredDisplayTime,
+      });
+      await loadOverviewData(true);
+      setFocusedOverviewRoleCode(roleCode);
+      setTaskMessage(`Deferred management handling for ${roleCode}. The organization remains under observation until the next review window.`);
+    } catch (error) {
+      setTaskMessage(error instanceof Error ? error.message : 'Failed to record the deferred management decision.');
+    }
+  };
 
   const handleRunSkill = async (skill: ExecutiveSkill) => {
     try {
@@ -1500,27 +1880,58 @@ export function OverviewPage({
               {`Within delegated coordination: ${autonomousOperationStatus.delegatedCoordinationCount}`}
             </span>
           </div>
+          {managementRecoveryState ? (
+            <div className="item-row">
+              <span className={badgeClass(managementRecoveryState.tone)}>{managementRecoveryState.label}</span>
+              <p>{managementRecoveryState.summary}</p>
+              <p>{managementRecoveryState.detail}</p>
+              <p>{`Next step: ${managementRecoveryState.nextStep}`}</p>
+            </div>
+          ) : null}
           {autonomousEscalationTarget ? (
             <div className="item-row">
               <span className="badge warn">Why escalation</span>
               <p>{autonomousEscalationReason}</p>
+              {autonomousManagementMove ? <span className={badgeClass(autonomousManagementMove.tone)}>{autonomousManagementMove.level}</span> : null}
+              {autonomousManagementMove ? <span className={badgeClass(autonomousManagementMove.tone)}>{autonomousManagementMove.label}</span> : null}
+              {autonomousManagementMove ? <p>{autonomousManagementMove.detail}</p> : null}
+              {autonomousExpectedOutcome ? <p>{`Expected outcome if handled now: ${autonomousExpectedOutcome}`}</p> : null}
+              {activeManagementReviews[autonomousEscalationTarget.roleItem.roleCode]?.detail ? <span className="badge warn">Taken into management review</span> : null}
+              {activeManagementReviews[autonomousEscalationTarget.roleItem.roleCode]?.detail ? <p>{activeManagementReviews[autonomousEscalationTarget.roleItem.roleCode]?.detail}</p> : null}
+              {deferredManagementRoles[autonomousEscalationTarget.roleItem.roleCode]?.detail ? <span className="badge info">Deferred until next review</span> : null}
+              {deferredManagementRoles[autonomousEscalationTarget.roleItem.roleCode]?.detail ? <p>{deferredManagementRoles[autonomousEscalationTarget.roleItem.roleCode]?.detail}</p> : null}
               <div className="executive-action-row">
                 <button
                   type="button"
                   className="executive-assign-button"
-                onClick={() => {
-                  setFocusedOverviewRoleCode(autonomousEscalationTarget.roleItem.roleCode);
-                  onNavigateToCommunications({
-                    role_code: autonomousEscalationTarget.roleItem.roleCode,
-                    source: 'autonomous_escalation',
-                  });
-                }}
-              >
-                {`Escalations needing management: ${autonomousEscalationTarget.roleItem.roleCode}`}
-              </button>
+                  onClick={handleAutonomousHandleNow}
+                >
+                  Handle now: {autonomousEscalationTarget.roleItem.roleCode}
+                </button>
+                <button
+                  type="button"
+                  className="executive-link-button"
+                  onClick={handleAutonomousDefer}
+                >
+                  Defer for now
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
+
+          {recentManagementDecisions.length > 0 ? (
+            <div className="item-row">
+              <span className="badge info">Recent management decisions</span>
+              {recentManagementDecisions.map((item) => (
+                <div key={`${item.roleCode}-${item.label}`} className="item-row">
+                  <span className={badgeClass(item.tone)}>{`${item.roleCode} - ${item.label}`}</span>
+                  <p>{item.detail}</p>
+                  <p>{`Recorded at ${item.displayTime}`}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
         {dynamicBoardSummary ? (
           <div className="item-row">
             <strong>{t('overview.boardSummaryTitle', { defaultValue: 'Organization summary' })}</strong>
@@ -2103,6 +2514,23 @@ export function OverviewPage({
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

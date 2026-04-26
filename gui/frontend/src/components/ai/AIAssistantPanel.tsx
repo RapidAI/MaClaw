@@ -34,6 +34,7 @@ interface AIAssistantPanelActionProps {
     clearSelectedFile?: () => void;
     removeSelectedFile?: (index: number) => void;
     sendMessage: (text: string) => Promise<void>;
+    sendBtwMessage?: (query: string) => Promise<void>;
     sendMessageInBackground?: (text: string) => Promise<void>;
     clearHistory: () => Promise<void>;
     recordSubmittedPrompt?: (text: string) => void;
@@ -1143,6 +1144,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         clearSelectedFile,
         removeSelectedFile,
         sendMessage,
+        sendBtwMessage,
         clearHistory,
         recordSubmittedPrompt,
         setDraftInputValue,
@@ -1396,6 +1398,26 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
 
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
+
+        // /btw side query: bypass buffer queue and activeRound guard.
+        // This runs in an independent backend agent loop and can execute
+        // while the main agent loop is active (submitLocked=true).
+        if (text === '/btw' || text.startsWith('/btw ')) {
+            const btwQuery = text.startsWith('/btw ') ? text.slice(5).trim() : '';
+            // Clear input immediately for responsiveness.
+            recordSubmittedPrompt?.(text);
+            updateInputValue("");
+            if (inputRef.current) {
+                inputRef.current.style.height = "auto";
+            }
+            setPendingAttachments([]);
+            clearSelectedFile?.();
+            if (sendBtwMessage) {
+                await sendBtwMessage(btwQuery);
+            }
+            return;
+        }
+
         if (submitLocked) {
             // Queue mode: create BufferEntry
             if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) return;
@@ -1448,7 +1470,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             ? buildOutgoingMessageMulti(text, allFilePaths)
             : text;
         await sendMessage(outgoing);
-    }, [inputValue, selectedFilePaths, submitLocked, pendingAttachments, addEntry, updateInputValue, clearSelectedFile, recordSubmittedPrompt, sendMessage]);
+    }, [inputValue, selectedFilePaths, submitLocked, pendingAttachments, addEntry, updateInputValue, clearSelectedFile, recordSubmittedPrompt, sendMessage, sendBtwMessage]);
 
     const applyInputValue = useCallback((nextValue: string) => {
         updateInputValue(nextValue);

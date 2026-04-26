@@ -28,6 +28,10 @@ type MachineRepository interface {
 	UpdateStatus(ctx context.Context, machineID string, status string) error
 	UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error
 	UpdateAlias(ctx context.Context, machineID string, alias string) error
+	// ResetAllOnline sets status='offline' for every machine whose status
+	// is currently 'online'. Called once at Hub startup to clear stale
+	// status left behind by a previous unclean shutdown.
+	ResetAllOnline(ctx context.Context) (int64, error)
 }
 
 type Runtime struct {
@@ -93,6 +97,27 @@ func NewRuntime() *Runtime {
 
 func NewService(repo MachineRepository, runtime *Runtime) *Service {
 	return &Service{repo: repo, runtime: runtime}
+}
+
+// ResetStaleOnlineStatus resets all DB machines with status='online' to
+// 'offline'. Must be called once at Hub startup, before any WebSocket
+// connections are accepted. At startup the runtime is empty (no machine
+// is connected yet), so any 'online' status in the DB is stale — left
+// behind by a previous unclean shutdown (crash, kill -9, power loss).
+// Machines that are actually online will re-register via MarkOnline when
+// their WebSocket reconnects.
+func (s *Service) ResetStaleOnlineStatus(ctx context.Context) {
+	if s.repo == nil {
+		return
+	}
+	count, err := s.repo.ResetAllOnline(ctx)
+	if err != nil {
+		log.Printf("[device] ResetStaleOnlineStatus: failed: %v", err)
+		return
+	}
+	if count > 0 {
+		log.Printf("[device] ResetStaleOnlineStatus: reset %d stale 'online' machines to 'offline'", count)
+	}
 }
 
 func (s *Service) BindDesktop(machineID string, ctx *ws.ConnContext) {
@@ -576,6 +601,14 @@ func (s *Service) mergeMachineInfo(item *store.Machine) MachineRuntimeInfo {
 		}
 		log.Printf("[device] mergeMachineInfo: machine_id=%s -> ONLINE (conn found, ws valid)", item.ID)
 	} else {
+		// No active WebSocket connection — machine is offline regardless
+		// of what the DB status column says. This corrects "ghost online"
+		// entries left behind when UnbindDesktop was not called (e.g.
+		// process crash, network interruption without TCP close).
+		info.Online = false
+		if strings.EqualFold(info.Status, "online") {
+			info.Status = "offline"
+		}
 		log.Printf("[device] mergeMachineInfo: machine_id=%s -> OFFLINE (db_status=%s)", item.ID, item.Status)
 	}
 	return info

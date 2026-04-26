@@ -276,11 +276,12 @@ func newCodingToolGateConfig(userText string, loopKind LoopKind) codingToolGateC
 //
 // Classification priority:
 //  1. GateIntentClassifier (semantic, delegates to UIC when available)
-//  2. classifyTaskIntent (delegates to UIC when available, keyword fallback only when UIC is nil)
+//  2. UIC directly (when GIC not ready but UIC is available)
+//  3. Fail-closed safety net (classifiers unexpectedly nil)
 //
-// isBugFixOnly() keyword detection is only used when classifyTaskIntent falls
-// back to keyword rules (UIC unavailable). When UIC is available, bug-fix
-// detection is handled by the UIC's LabelBugFix classification.
+// Since initEarlyClassifier creates UIC synchronously at app startup,
+// path 2 (UIC direct) is always available from the first user message.
+// Path 3 is a safety net for test code or edge cases where no App exists.
 func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, gic *GateIntentClassifier, userID string) codingToolGateConfig {
 	// Background loop always bypasses the gate, regardless of classification.
 	if loopKind == LoopKindBackground {
@@ -289,22 +290,19 @@ func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, g
 		}
 	}
 
-	// Try semantic classification first when classifier is available and ready.
-	// When a classifier is available, the skip signal is derived from the
-	// classifier's result (GateIntentContinuation), NOT from keyword matching.
-	// containsSkipSignal is only used in degraded mode (no classifier).
-	if gic != nil && gic.Ready() {
+	// Try semantic classification first when classifier is available.
+	// GIC.Classify() delegates to UIC when available (which handles L1/L2/L3
+	// layer availability internally), so we don't need to check Ready() here.
+	if gic != nil {
 		result := gic.Classify(userText, userID)
 		skip := result.Intent == GateIntentContinuation
 		cfg := mapGateIntentToConfig(result, skip)
 		return cfg
 	}
 
-	// Fallback: GIC unavailable. Try UIC directly, then keyword fallback.
-	// This path is reached when GIC hasn't been initialized yet (early startup)
-	// or when embedding is unavailable (GIC.Ready() returns false).
+	// Fallback: GIC is nil (test code or edge case without App).
+	// Try UIC directly via the package-level variable.
 	if uic := unifiedClassifier; uic != nil {
-		// UIC available — use it directly for classification.
 		uicResult := uic.Classify(intent.MessageContext{Text: userText})
 		gateIntent, confidence, _, layer, reason := uicResult.ToGateIntent()
 		gateResult := GateIntentResult{
@@ -318,23 +316,18 @@ func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, g
 		return cfg
 	}
 
-	// Neither GIC nor UIC available — degraded mode.
-	// Use keyword-based skip signal detection as last resort.
-	skip := containsSkipSignal(userText)
-	bugfix := isBugFixOnly(userText)
-	cfg := codingToolGateConfig{
-		intent:     intentAmbiguous,
-		skipSignal: skip,
-		bugFix:     bugfix,
+	// Neither GIC nor UIC available — should not happen in normal operation
+	// because initEarlyClassifier creates UIC synchronously at app startup.
+	// This path is a safety net for edge cases (e.g., test code that creates
+	// an IMMessageHandler without an App).
+	//
+	// Fail-closed: activate the gate to block coding tools by default.
+	// The LLM still has non-coding tools (web_search, read_file, ssh, etc.).
+	return codingToolGateConfig{
+		active: true,
+		intent: intentAmbiguous,
+		reason: "gate active: fail-closed safety net (classifiers unexpectedly nil)",
 	}
-	if bugfix {
-		cfg.reason = "gate inactive: bug-fix detected (keyword fallback, UIC unavailable)"
-	} else if skip {
-		cfg.reason = "gate inactive: skip signal detected (keyword fallback, UIC unavailable)"
-	} else {
-		cfg.reason = "gate inactive: intent=ambiguous (degraded mode, UIC unavailable)"
-	}
-	return cfg
 }
 
 // applyCodingToolGate partitions tool calls into stripped (coding) and

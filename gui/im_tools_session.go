@@ -96,7 +96,7 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 		// it produces gate-specific categories (new_project, bug_fix,
 		// maintenance, non_coding, continuation) that map directly to
 		// allow/block decisions.
-		if gic := h.getGateIntentClassifier(); gic != nil && gic.Ready() {
+		if gic := h.getGateIntentClassifier(); gic != nil {
 			gResult := gic.Classify(h.lastUserText, h.lastUserID)
 			switch gResult.Intent {
 			case GateIntentNewProject, GateIntentBugFix, GateIntentMaintenance:

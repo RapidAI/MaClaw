@@ -83,6 +83,7 @@ type UserBinding struct {
 type RechargeCard struct {
 	ID              string     `json:"id"`
 	CodeHash        string     `json:"code_hash,omitempty"`
+	EncryptedCode   string     `json:"encrypted_code,omitempty"`
 	Label           string     `json:"label,omitempty"`
 	ServiceGroupIDs []string   `json:"service_group_ids,omitempty"`
 	DurationDays    int        `json:"duration_days"`
@@ -90,6 +91,12 @@ type RechargeCard struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	RedeemedByEmail string     `json:"redeemed_by_email,omitempty"`
 	RedeemedAt      *time.Time `json:"redeemed_at,omitempty"`
+}
+
+// PlainCode returns the decrypted card code, or empty string if unavailable
+// (legacy cards created before encrypted storage was added).
+func (c RechargeCard) PlainCode() string {
+	return DecryptCardCode(c.EncryptedCode)
 }
 
 type Grant struct {
@@ -204,6 +211,7 @@ func (r *Registry) Normalize() {
 	for i := range r.Cards {
 		r.Cards[i].ID = strings.TrimSpace(r.Cards[i].ID)
 		r.Cards[i].CodeHash = strings.TrimSpace(r.Cards[i].CodeHash)
+		r.Cards[i].EncryptedCode = strings.TrimSpace(r.Cards[i].EncryptedCode)
 		r.Cards[i].Label = strings.TrimSpace(r.Cards[i].Label)
 		r.Cards[i].ServiceGroupIDs = normalizeStringSlice(r.Cards[i].ServiceGroupIDs)
 		r.Cards[i].RedeemedByEmail = normalizeEmail(r.Cards[i].RedeemedByEmail)

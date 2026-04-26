@@ -43,7 +43,7 @@ func TestHandleOverviewUsesRealStats(t *testing.T) {
 	}
 
 	boardSummary, ok := body["board_summary"].(string)
-	if !ok || !strings.Contains(boardSummary, "translated into an execution task") {
+	if !ok || !strings.Contains(boardSummary, "already under active management review") {
 		t.Fatalf("board_summary = %#v", body["board_summary"])
 	}
 
@@ -51,10 +51,10 @@ func TestHandleOverviewUsesRealStats(t *testing.T) {
 	if !ok {
 		t.Fatalf("board_focus = %#v", body["board_focus"])
 	}
-	if boardFocus["role_code"] != "management-systems" {
+	if boardFocus["role_code"] != "sales" {
 		t.Fatalf("board focus role_code = %#v", boardFocus["role_code"])
 	}
-	if boardFocus["title"] != "Push Move critical know-how into the system into motion" {
+	if boardFocus["title"] != "Hold management attention on sales" {
 		t.Fatalf("board focus title = %#v", boardFocus["title"])
 	}
 
@@ -62,10 +62,10 @@ func TestHandleOverviewUsesRealStats(t *testing.T) {
 	if !ok {
 		t.Fatalf("priority_decision = %#v", body["priority_decision"])
 	}
-	if priorityDecision["role_code"] != "management-systems" {
-		t.Fatalf("priority_decision.role_code = %#v, want management-systems", priorityDecision["role_code"])
+	if priorityDecision["role_code"] != "sales" {
+		t.Fatalf("priority_decision.role_code = %#v, want sales", priorityDecision["role_code"])
 	}
-	if priorityDecision["title"] != "Push Move critical know-how into the system into motion" {
+	if priorityDecision["title"] != "Hold management attention on sales" {
 		t.Fatalf("priority_decision.title = %#v", priorityDecision["title"])
 	}
 
@@ -73,7 +73,7 @@ func TestHandleOverviewUsesRealStats(t *testing.T) {
 	if !ok || prioritySummary == "" {
 		t.Fatalf("priority_summary = %#v", body["priority_summary"])
 	}
-	if !strings.Contains(prioritySummary, "translated into an execution task") {
+	if !strings.Contains(prioritySummary, "already under active management review") {
 		t.Fatalf("priority_summary = %q", prioritySummary)
 	}
 
@@ -87,9 +87,6 @@ func TestHandleOverviewUsesRealStats(t *testing.T) {
 	}
 	if firstBoardSignal["role_code"] == "" {
 		t.Fatalf("board signal role_code should be populated: %#v", firstBoardSignal)
-	}
-	if firstBoardSignal["role_code"] != priorityDecision["role_code"] {
-		t.Fatalf("first board signal role_code = %#v, want priority decision role %#v", firstBoardSignal["role_code"], priorityDecision["role_code"])
 	}
 	if firstBoardSignal["signal_priority"] != float64(0) {
 		t.Fatalf("first board signal signal_priority = %#v, want 0", firstBoardSignal["signal_priority"])
@@ -111,6 +108,21 @@ func TestHandleOverviewUsesRealStats(t *testing.T) {
 	}
 	if firstHistory["clusterExecutionStatus"] != "pending" {
 		t.Fatalf("first history clusterExecutionStatus = %#v", firstHistory["clusterExecutionStatus"])
+	}
+	foundManagementDecision := false
+	for _, raw := range boardHistory {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		title, _ := item["title"].(string)
+		if strings.Contains(title, "Management review opened for SALES") {
+			foundManagementDecision = true
+			break
+		}
+	}
+	if !foundManagementDecision {
+		t.Fatalf("board_history should include management decision events: %#v", boardHistory)
 	}
 
 	actions, ok := body["actions"].([]any)
@@ -205,6 +217,40 @@ func TestHandleRunSkillBuildsDynamicResult(t *testing.T) {
 	}
 }
 
+func TestHandleRecordManagementDecisionWritesAuditLog(t *testing.T) {
+	provider := openExecTestDB(t)
+	defer provider.Close()
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	h := NewHandler(provider.Read, auditRepo)
+	payload := bytes.NewBufferString(`{"role_code":"sales","decision_type":"deferred","detail":"Deferred until next review: 04/27 18:30. Revisit SALES if coordination risk continues to rise.","display_time":"04/26 18:30"}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/executive/management-decisions", payload)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+
+	h.handleRecordManagementDecision(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	logs, err := auditRepo.ListRecent("tenant-a", 10)
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("expected management decision audit log to be recorded")
+	}
+	if logs[0].WorkType != "management_decision" {
+		t.Fatalf("work_type = %q", logs[0].WorkType)
+	}
+	if !strings.Contains(logs[0].ErrorMsg, "decision_type: deferred") {
+		t.Fatalf("error_msg = %q", logs[0].ErrorMsg)
+	}
+	if !strings.Contains(logs[0].Summary, "deferred for SALES") {
+		t.Fatalf("summary = %q", logs[0].Summary)
+	}
+}
+
 func openExecTestDB(t *testing.T) *db.Provider {
 	t.Helper()
 	provider, err := db.Open(":memory:")
@@ -265,5 +311,17 @@ func seedExecutiveHistory(t *testing.T, auditRepo *audit.Repo) {
 	}); err != nil {
 		t.Fatalf("insert executive action audit: %v", err)
 	}
+	if err := auditRepo.Insert("tenant-a", &audit.ProxyLog{
+		RequestID:  "management-decision-sales",
+		ProviderID: "iworkercenter",
+		Model:      "management-decision",
+		WorkType:   "management_decision",
+		CostTier:   "internal",
+		Status:     "ok",
+		Summary:    "Management review opened for SALES",
+		ErrorMsg:   "decision_type: review | role_code: sales | detail: Taken into management review at 04/26 18:30. The role is now under active management attention. | display_time: 04/26 18:30",
+		CreatedAt:  time.Now().Add(-30 * time.Second),
+	}); err != nil {
+		t.Fatalf("insert management decision audit: %v", err)
+	}
 }
-

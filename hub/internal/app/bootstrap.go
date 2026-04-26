@@ -71,6 +71,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	}
 	deviceRuntime := device.NewRuntime()
 	deviceService := device.NewService(st.Machines, deviceRuntime)
+	deviceService.ResetStaleOnlineStatus(context.Background())
 	sessionCache := session.NewCache()
 	sessionService := session.NewService(sessionCache, st.Sessions)
 	gateway := ws.NewGateway(identityService, deviceService, sessionService)

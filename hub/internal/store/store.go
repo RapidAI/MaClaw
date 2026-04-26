@@ -245,6 +245,10 @@ type MachineRepository interface {
 	UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error
 	UpdateTokenHash(ctx context.Context, machineID string, tokenHash string) error
 	UpdateAlias(ctx context.Context, machineID string, alias string) error
+	// ResetAllOnline sets status='offline' for every machine currently
+	// marked 'online'. Called at Hub startup to clear stale state from
+	// a previous unclean shutdown.
+	ResetAllOnline(ctx context.Context) (int64, error)
 }
 
 type ViewerTokenRepository interface {

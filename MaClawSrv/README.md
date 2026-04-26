@@ -26,6 +26,7 @@
 - Runtime config files containing user secrets are written with owner-only permissions.
 - Local bash requires `MACLAW_ENABLE_LOCAL_BASH=true` and should remain disabled in multi-tenant deployments unless an external OS/container sandbox exists.
 - `GET /health` only returns service status and does not expose filesystem paths.
+- `GET /readyz` verifies the configured data root is still accessible before returning `ready`.
 
 ## Data Layout
 
@@ -187,6 +188,11 @@ Query parameters:
 
 - `limit`: positive integer, default `100`, max `500`
 - `before`: cursor value
+- session list: `include_archived` must be `true` or `false`
+- message list: `role` accepts `user`, `assistant`, or `system`
+- run list: `status` accepts `running`, `succeeded`, `failed`, or `cancelled`
+- run list: `response_source` currently accepts `ask_user`
+- run list: `waiting_for_user` must be `true` or `false`
 
 Notes:
 

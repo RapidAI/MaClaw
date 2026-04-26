@@ -10,16 +10,18 @@ Strong areas today:
 
 - Admin lifecycle for tenant, user, and credential provisioning
 - Admin delete coverage for tenant and user resources
+- Tenant and user list filtering for core operator workflows
 - Credential lifecycle coverage for create, list, get, update, rotate-secret, and revoke
 - User authentication via API key and secret to bearer token exchange
 - Shared per-user config lifecycle with schema, get, update, validate, and test APIs
 - Runtime lifecycle for instances, sessions, messages, and runs
 - Run event streaming through SSE
+- Async job resources for heavier skill and MCP operations
 - Skill management through REST
 - MCP server management through REST
 - Usage, audit, alerts, dashboard, overview, and tenant-summary views
 - OpenAPI exposure through `/openapi.json`
-- Basic ops probes through `/health`, `/livez`, `/readyz`, and `/version`
+- Basic ops probes through `/health`, `/livez`, `/readyz`, `/version`, and `/metrics`
 
 That means the product is no longer in a scaffold state. The remaining work is mainly about completeness, consistency, and operability.
 
@@ -48,22 +50,7 @@ Still missing pieces:
 
 So credential management is much closer to a full control-plane API, but not fully finished yet.
 
-### 3. Admin search and filtering
-
-Tenant and user list APIs are paginated, but still weak for operator workflows.
-
-Useful missing filters:
-
-- Tenant `status`
-- Tenant `name`
-- User `status`
-- User `name`
-- User `email`
-- Cross-tenant user search
-
-These become important once the system has enough tenants and users that cursor-only browsing is no longer practical.
-
-### 4. Backup, export, and migration
+### 3. Backup, export, and migration
 
 The basic REST surface now covers:
 
@@ -78,28 +65,9 @@ Still missing:
 
 This is still a meaningful operations gap for enterprise adoption, but the baseline export/import path now exists.
 
-### 5. Async job model
+### 4. Service-level events and webhooks
 
-Some operations are already heavier than normal CRUD, including:
-
-- Skill install
-- Skill import
-- Skill upload
-- MCP start
-- MCP health-check
-
-Today they are modeled as direct request/response calls. A more production-grade design would introduce a job resource like:
-
-- `POST /api/v1/jobs`
-- `GET /api/v1/jobs/{jobId}`
-- `GET /api/v1/jobs/{jobId}/events`
-- `POST /api/v1/jobs/{jobId}/cancel`
-
-That would give better retry, progress, history, and timeout handling.
-
-### 6. Service-level events and webhooks
-
-Current eventing is limited to run SSE.
+Current eventing is limited to run SSE and user-polled async jobs.
 
 Still missing:
 
@@ -110,11 +78,17 @@ Still missing:
 
 If external systems need to automate around `MaClawSrv`, this is a likely next gap.
 
-### 7. Deployment and ops endpoints
+### 5. Deployment and ops signals
 
 The service now exposes `GET /health`, `GET /livez`, `GET /readyz`, `GET /version`, and `GET /metrics` for baseline production integration.
 
-### 8. Higher-level analytics
+Still worth improving:
+
+- Storage write-path checks in readiness
+- Optional downstream provider checks
+- Richer metrics for auth failures, rate limits, async jobs, and run outcomes
+
+### 6. Higher-level analytics
 
 Existing overview/dashboard data is useful, but still fairly basic.
 
@@ -146,6 +120,7 @@ Actual pagination support includes:
 - admin users
 - admin credentials
 - admin audit-events
+- jobs
 - MCP servers
 - skills
 - instances
@@ -153,7 +128,7 @@ Actual pagination support includes:
 - messages
 - runs
 
-Any docs that omit MCP or skill pagination become misleading for client SDK authors.
+Any docs that omit jobs, MCP, or skill pagination become misleading for client SDK authors.
 
 ### 3. OpenAPI should remain the source of truth
 
@@ -165,42 +140,36 @@ Recommended discipline:
 - mirror it in `openapi.go`
 - update prose docs last
 
-### 4. Heavier operations still look synchronous at the HTTP boundary
+### 4. Ops probes should keep gaining signal
 
-This is less a bug and more an interface maturity issue. Operations such as skill install or MCP health-check feel like future job resources, but today they still look like immediate synchronous actions.
+The probes now exist and `/readyz` confirms the configured data root is reachable, but production users will still expect deeper readiness semantics over time.
 
 ## Suggested Next Priorities
 
 ### Priority 1
 
-- Keep README and manuals aligned with actual routes
-- Add tenant/user filtering and search
-- Add metrics exposure
+- Keep README, manuals, and OpenAPI aligned with actual routes
+- Add richer restore policies, validation, and snapshot endpoints
+- Add stronger lifecycle policy for delete/retire operations
 
 ### Priority 2
 
-- Add richer restore policies, validation, and snapshot endpoints
-- Add stronger lifecycle policy for delete/retire operations
 - Add richer credential lifecycle semantics
+- Add webhook/event subscription model
+- Add richer admin analytics
 
 ### Priority 3
 
-- Add async job model
-- Add webhook/event subscription model
-- Add richer admin analytics
+- Add cross-tenant operator search and broader analytics slices
+- Add stronger readiness and dependency health signals
 
 ## Recommendation
 
 If the goal is to make `MaClawSrv` feel complete for external platform integration, the shortest path is:
 
-1. Normalize docs and OpenAPI consistency.
-2. Add search, filtering, and metrics.
-3. Add richer restore policy and snapshot orchestration.
-4. Introduce async jobs and webhook-style integration.
+1. Keep docs and OpenAPI exact.
+2. Strengthen restore, retire, and credential lifecycle policies.
+3. Add webhooks and broader analytics.
+4. Keep improving readiness and operability signals.
 
 That sequence improves both actual capability and integration confidence without forcing a large rewrite.
-
-
-
-
-

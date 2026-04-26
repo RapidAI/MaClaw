@@ -58,17 +58,18 @@ func TestAsyncJobManagerListUserJobs(t *testing.T) {
 	mgr.createUserJob("job.two", p1, func(ctx context.Context) (any, error) {
 		return map[string]string{"status": "two"}, nil
 	})
-	mgr.createUserJob("job.other", p2, func(ctx context.Context) (any, error) {
+	otherJob := mgr.createUserJob("job.other", p2, func(ctx context.Context) (any, error) {
 		return map[string]string{"status": "other"}, nil
 	})
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		items := mgr.listUserJobs(p1, "", "")
+		other, ok := mgr.getUserJob(otherJob.ID, p2)
 		if len(items) == 2 && items[0].UserID == p1.UserID && items[1].UserID == p1.UserID {
 			if !items[0].CreatedAt.Before(items[1].CreatedAt) && !items[0].CreatedAt.Equal(items[1].CreatedAt) {
 				t.Fatalf("jobs not sorted by created_at: %#v", items)
 			}
-			if items[0].Status == asyncJobStatusSucceeded && items[1].Status == asyncJobStatusSucceeded {
+			if ok && other.Status == asyncJobStatusSucceeded && items[0].Status == asyncJobStatusSucceeded && items[1].Status == asyncJobStatusSucceeded {
 				return
 			}
 		}
@@ -203,14 +204,15 @@ func TestAsyncJobManagerDeleteJobsWithFilters(t *testing.T) {
 	keepJob := mgr.createUserJob("mcp.start", p, func(ctx context.Context) (any, error) {
 		return map[string]string{"status": "keep"}, nil
 	})
-	mgr.createUserJob("skill.import", other, func(ctx context.Context) (any, error) {
+	otherJob := mgr.createUserJob("skill.import", other, func(ctx context.Context) (any, error) {
 		return map[string]string{"status": "other"}, nil
 	})
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		oldCurrent, oldOK := mgr.getUserJob(oldJob.ID, p)
 		keepCurrent, keepOK := mgr.getUserJob(keepJob.ID, p)
-		if oldOK && keepOK && oldCurrent.Status == asyncJobStatusSucceeded && keepCurrent.Status == asyncJobStatusSucceeded {
+		otherCurrent, otherOK := mgr.getUserJob(otherJob.ID, other)
+		if oldOK && keepOK && otherOK && oldCurrent.Status == asyncJobStatusSucceeded && keepCurrent.Status == asyncJobStatusSucceeded && otherCurrent.Status == asyncJobStatusSucceeded {
 			before := keepCurrent.CreatedAt
 			deleted := mgr.deleteUserJobs(p, "skill.import", asyncJobStatusSucceeded, &before)
 			if len(deleted) != 1 || deleted[0].ID != oldJob.ID {

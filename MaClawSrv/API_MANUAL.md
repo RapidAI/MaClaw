@@ -43,6 +43,7 @@ Transport guidance:
 - For remote deployment, configure TLS with `MACLAW_TLS_CERT_FILE` and `MACLAW_TLS_KEY_FILE`.
 - Do not send admin secrets, API secrets, or bearer tokens over insecure remote HTTP.
 - Machine-readable API discovery is available at `GET /openapi.json` and `GET /api/v1/openapi.json`.
+- `GET /readyz` is a readiness probe and returns `503` when the configured data root is unavailable.
 
 ## 3. Server environment variables
 
@@ -1123,6 +1124,8 @@ Supported query parameters:
 
 - `status`: `running`, `succeeded`, `failed`, `cancelled`
 - `session_id`
+- `response_source`: currently `ask_user` when filtering runs waiting on structured user input
+- `waiting_for_user`: `true` or `false`
 - `limit`
 - `before`
 

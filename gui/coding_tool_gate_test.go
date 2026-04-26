@@ -71,37 +71,41 @@ func TestCodingGate_AllowlistContainsAllDeliveryTools(t *testing.T) {
 	}
 }
 
-// 4.4 Test newCodingToolGateConfig without UIC returns inactive (degraded mode).
-// Without UIC, classifyTaskIntent returns ambiguous, so the gate cannot
-// confidently determine this is a coding task and stays inactive.
-func TestCodingGate_WithoutUIC_ReturnsInactive(t *testing.T) {
+// ---------------------------------------------------------------------------
+// Fail-closed design: without classifiers, gate defaults to active=true.
+// This is the correct safety behavior — coding tools are blocked until
+// the classifier can make an informed decision.
+// ---------------------------------------------------------------------------
+
+// 4.4 Test newCodingToolGateConfig without classifiers returns fail-closed (active=true).
+func TestCodingGate_WithoutClassifiers_FailClosed(t *testing.T) {
 	cfg := newCodingToolGateConfig("帮我写代码", LoopKindChat)
-	if cfg.active {
-		t.Errorf("without UIC, expected active=false (degraded mode), got true; reason=%s", cfg.reason)
-	}
-	if cfg.intent != intentAmbiguous {
-		t.Errorf("without UIC, expected intent=ambiguous, got %s", cfg.intent)
+	if !cfg.active {
+		t.Errorf("without classifiers, expected active=true (fail-closed), got false; reason=%s", cfg.reason)
 	}
 }
 
-// 4.5 Test newCodingToolGateConfig without UIC returns inactive for all intents.
-// Without UIC, all messages return ambiguous → gate inactive.
-func TestCodingGate_WithoutUIC_AllInactive(t *testing.T) {
+// 4.5 Test fail-closed applies to ALL messages when classifiers are unavailable.
+// This is by design: the gate cannot distinguish coding from non-coding
+// without a classifier, so it conservatively blocks coding tools for all.
+func TestCodingGate_WithoutClassifiers_FailClosedForAll(t *testing.T) {
 	cases := []string{
 		"帮我翻译这段话",
 		"ssh 到服务器看日志",
 		"部署到线上",
+		"开发一个贪吃蛇游戏",
 		"",
 	}
 	for _, text := range cases {
 		cfg := newCodingToolGateConfig(text, LoopKindChat)
-		if cfg.active {
-			t.Errorf("text=%q: without UIC, expected active=false, got true; reason=%s", text, cfg.reason)
+		if !cfg.active {
+			t.Errorf("text=%q: without classifiers, expected active=true (fail-closed), got false; reason=%s", text, cfg.reason)
 		}
 	}
 }
 
 // 4.6 Test newCodingToolGateConfig returns active=false for LoopKindBackground.
+// Background loops always bypass the gate, even in fail-closed mode.
 func TestCodingGate_InactiveForBackground(t *testing.T) {
 	cfg := newCodingToolGateConfig("帮我写代码", LoopKindBackground)
 	if cfg.active {
@@ -109,8 +113,10 @@ func TestCodingGate_InactiveForBackground(t *testing.T) {
 	}
 }
 
-// 4.7 Test newCodingToolGateConfig returns active=false when skip signal is present.
-func TestCodingGate_InactiveWithSkipSignal(t *testing.T) {
+// 4.7 Test skip signals are NOT honored in fail-closed mode.
+// Skip signal detection requires the classifier (GateIntentContinuation).
+// Without a classifier, the gate cannot verify the skip signal is legitimate.
+func TestCodingGate_SkipSignalIgnoredWithoutClassifier(t *testing.T) {
 	signals := []string{
 		"帮我写代码，直接做",
 		"写个爬虫，不用问了",
@@ -119,11 +125,8 @@ func TestCodingGate_InactiveWithSkipSignal(t *testing.T) {
 	}
 	for _, text := range signals {
 		cfg := newCodingToolGateConfig(text, LoopKindChat)
-		if cfg.active {
-			t.Errorf("text=%q: expected active=false with skip signal, got true; reason=%s", text, cfg.reason)
-		}
-		if !cfg.skipSignal {
-			t.Errorf("text=%q: expected skipSignal=true", text)
+		if !cfg.active {
+			t.Errorf("text=%q: without classifier, expected active=true (fail-closed), got false; reason=%s", text, cfg.reason)
 		}
 	}
 }
@@ -203,7 +206,8 @@ func TestCodingGate_OnlyCodingTools(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Bug-fix bypass tests — gate should NOT activate for bug-fix/debug tasks.
+// Bug-fix keyword detection tests — isBugFixOnly is still used by the
+// classifier path (GIC/UIC), not by the degraded mode.
 // ---------------------------------------------------------------------------
 
 // Test isBugFixOnly returns true for pure bug-fix messages.
@@ -258,8 +262,9 @@ func TestCodingGate_IsBugFixOnly_NoBugFixKeywords(t *testing.T) {
 	}
 }
 
-// Test gate is inactive for bug-fix tasks.
-func TestCodingGate_InactiveForBugFix(t *testing.T) {
+// Test fail-closed applies to bug-fix messages too when classifiers are unavailable.
+// Bug-fix detection requires the classifier (GateIntentBugFix).
+func TestCodingGate_BugFixNotDetectedWithoutClassifier(t *testing.T) {
 	cases := []string{
 		"有bug，一直显示加载中",
 		"修复加载错误",
@@ -268,20 +273,20 @@ func TestCodingGate_InactiveForBugFix(t *testing.T) {
 	}
 	for _, text := range cases {
 		cfg := newCodingToolGateConfig(text, LoopKindChat)
-		if cfg.active {
-			t.Errorf("text=%q: expected active=false for bug-fix task, got true; reason=%s", text, cfg.reason)
+		if !cfg.active {
+			t.Errorf("text=%q: without classifier, expected active=true (fail-closed), got false; reason=%s", text, cfg.reason)
 		}
-		if !cfg.bugFix {
-			t.Errorf("text=%q: expected bugFix=true", text)
+		// bugFix is NOT set in fail-closed mode — only the classifier can determine this.
+		if cfg.bugFix {
+			t.Errorf("text=%q: expected bugFix=false in fail-closed mode", text)
 		}
 	}
 }
 
-// Test gate without UIC stays inactive for mixed tasks (degraded mode).
-func TestCodingGate_WithoutUIC_MixedTaskInactive(t *testing.T) {
-	// Without UIC, classifyTaskIntent returns ambiguous regardless of keywords.
+// Test fail-closed applies to mixed tasks too when classifiers are unavailable.
+func TestCodingGate_WithoutClassifiers_MixedTaskFailClosed(t *testing.T) {
 	cfg := newCodingToolGateConfig("开发一个bug追踪系统", LoopKindChat)
-	if cfg.active {
-		t.Errorf("without UIC, expected active=false (degraded mode), got true; reason=%s", cfg.reason)
+	if !cfg.active {
+		t.Errorf("without classifiers, expected active=true (fail-closed), got false; reason=%s", cfg.reason)
 	}
 }

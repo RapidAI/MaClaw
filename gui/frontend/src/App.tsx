@@ -4064,6 +4064,7 @@ ${instruction}`;
                             clearSelectedFile: aiAssistant.clearSelectedFile,
                             removeSelectedFile: aiAssistant.removeSelectedFile,
                             sendMessage: aiAssistant.sendMessage,
+                            sendBtwMessage: aiAssistant.sendBtwMessage,
                             clearHistory: aiAssistant.clearHistory,
                             recordSubmittedPrompt: aiAssistant.recordSubmittedPrompt,
                             setDraftInputValue: aiAssistant.setDraftInputValue,

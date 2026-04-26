@@ -269,6 +269,13 @@
                 <option value="approval" data-i18n="enrollmentApproval"></option>
                 <option value="manual" data-i18n="enrollmentManual"></option>
               </select>
+              <label id="centerCorporateEmailDomainsLabel" for="centerCorporateEmailDomains" style="margin-top:10px"></label>
+              <textarea id="centerCorporateEmailDomains" rows="2" style="min-height:52px" placeholder=""></textarea>
+              <div class="item-meta" id="centerCorporateEmailDomainsHint" style="margin-top:4px"></div>
+              <label id="centerCorporateEmailDomainLabel" for="centerCorporateEmailDomain" style="margin-top:10px"></label>
+              <input id="centerCorporateEmailDomain" placeholder="">
+              <label style="margin-top:10px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="centerAcceptPublicSignup"> <span id="centerAcceptPublicSignupLabel"></span></label>
+              <div class="item-meta" id="centerAcceptPublicSignupHint" style="margin-top:4px"></div>
               <div id="centerRegisterActions" class="actions" style="margin-top:10px;gap:8px">
                 <button class="btn-secondary" style="height:34px;padding:0 12px;font-size:12px" onclick="saveCenterConfig()" data-i18n="saveAddress"></button>
                 <button id="registerNowButton" class="btn-primary" style="height:34px;padding:0 12px;font-size:12px" onclick="registerWithCenter()" data-i18n="registerNow"></button>

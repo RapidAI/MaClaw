@@ -31,7 +31,10 @@ func main() {
 		log.Fatalf("invalid security configuration: %v", err)
 	}
 
-	executor := buildCoreAgentExecutorFromEnv()
+	executor, err := buildCoreAgentExecutorFromEnv()
+	if err != nil {
+		log.Fatalf("invalid executor environment configuration: %v", err)
+	}
 	if err := validateLocalBashScope(executor); err != nil {
 		log.Fatalf("invalid local bash configuration: %v", err)
 	}
@@ -62,7 +65,11 @@ func main() {
 	}
 	tlsCertFile := os.Getenv("MACLAW_TLS_CERT_FILE")
 	tlsKeyFile := os.Getenv("MACLAW_TLS_KEY_FILE")
-	if err := validateTransportSecurity(addr, tlsCertFile, tlsKeyFile, getenvBool("MACLAW_ALLOW_INSECURE_HTTP", false)); err != nil {
+	allowInsecureHTTP, err := getenvBoolStrict("MACLAW_ALLOW_INSECURE_HTTP", false)
+	if err != nil {
+		log.Fatalf("invalid transport environment configuration: %v", err)
+	}
+	if err := validateTransportSecurity(addr, tlsCertFile, tlsKeyFile, allowInsecureHTTP); err != nil {
 		log.Fatalf("invalid transport configuration: %v", err)
 	}
 
@@ -131,29 +138,45 @@ func defaultDataRoot() string {
 	return filepath.Join(home, ".maclaw_srv")
 }
 
-func buildCoreAgentExecutorFromEnv() *agentservice.CoreAgentExecutor {
+func buildCoreAgentExecutorFromEnv() (*agentservice.CoreAgentExecutor, error) {
+	allowLocalBash, err := getenvBoolStrict("MACLAW_ENABLE_LOCAL_BASH", false)
+	if err != nil {
+		return nil, err
+	}
+	trustedSingleUser, err := getenvBoolStrict("MACLAW_LOCAL_BASH_TRUSTED_SINGLE_USER", false)
+	if err != nil {
+		return nil, err
+	}
+	allowDirectSSH, err := getenvBoolStrict("MACLAW_ENABLE_DIRECT_SSH", false)
+	if err != nil {
+		return nil, err
+	}
+	allowSSHFileTransfer, err := getenvBoolStrict("MACLAW_ENABLE_SSH_FILE_TRANSFER", false)
+	if err != nil {
+		return nil, err
+	}
 	return &agentservice.CoreAgentExecutor{
-		AllowLocalBash:             getenvBool("MACLAW_ENABLE_LOCAL_BASH", false),
-		LocalBashTrustedSingleUser: getenvBool("MACLAW_LOCAL_BASH_TRUSTED_SINGLE_USER", false),
+		AllowLocalBash:             allowLocalBash,
+		LocalBashTrustedSingleUser: trustedSingleUser,
 		LocalBashTenantID:          strings.TrimSpace(os.Getenv("MACLAW_LOCAL_BASH_TENANT_ID")),
 		LocalBashUserID:            strings.TrimSpace(os.Getenv("MACLAW_LOCAL_BASH_USER_ID")),
-		AllowDirectSSH:             getenvBool("MACLAW_ENABLE_DIRECT_SSH", false),
-		AllowSSHFileTransfer:       getenvBool("MACLAW_ENABLE_SSH_FILE_TRANSFER", false),
-	}
+		AllowDirectSSH:             allowDirectSSH,
+		AllowSSHFileTransfer:       allowSSHFileTransfer,
+	}, nil
 }
 
-func getenvBool(key string, fallback bool) bool {
+func getenvBoolStrict(key string, fallback bool) (bool, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return fallback
+		return fallback, nil
 	}
 	switch v {
 	case "1", "true", "TRUE", "True", "yes", "YES", "on", "ON":
-		return true
+		return true, nil
 	case "0", "false", "FALSE", "False", "no", "NO", "off", "OFF":
-		return false
+		return false, nil
 	default:
-		return fallback
+		return false, fmt.Errorf("%s must be a boolean", key)
 	}
 }
 

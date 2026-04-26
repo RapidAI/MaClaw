@@ -50,6 +50,45 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if _, ok := doc.Components.SecuritySchemes["bearerAuth"]; !ok {
 		t.Fatalf("expected bearerAuth security scheme")
 	}
+	runsPath, ok := doc.Paths["/api/v1/instances/{instanceId}/runs"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected runs path object")
+	}
+	getRunList, ok := runsPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET runs operation")
+	}
+	params, ok := getRunList["parameters"].([]any)
+	if !ok {
+		t.Fatalf("expected parameters array on run list operation")
+	}
+	foundStatusEnum := false
+	foundWaitingBool := false
+	for _, item := range params {
+		param, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := param["name"].(string)
+		schema, _ := param["schema"].(map[string]any)
+		switch name {
+		case "status":
+			enumValues, _ := schema["enum"].([]any)
+			if len(enumValues) == 4 {
+				foundStatusEnum = true
+			}
+		case "waiting_for_user":
+			if schema["type"] == "boolean" {
+				foundWaitingBool = true
+			}
+		}
+	}
+	if !foundStatusEnum {
+		t.Fatalf("expected enum schema for run status query parameter")
+	}
+	if !foundWaitingBool {
+		t.Fatalf("expected boolean schema for waiting_for_user query parameter")
+	}
 }
 
 type blockingExecutor struct {
@@ -541,6 +580,95 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatalf("unexpected metrics content type: %s", got)
 	}
 }
+func TestReadyEndpoint(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("readyz status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode readyz: %v", err)
+	}
+	if out["status"] != "ready" {
+		t.Fatalf("unexpected readyz payload: %#v", out)
+	}
+}
+
+func TestReadyEndpointReturnsUnavailableWhenDataRootMissing(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if err := os.RemoveAll(dataRoot); err != nil {
+		t.Fatalf("RemoveAll data root: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz missing data root status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode not ready payload: %v", err)
+	}
+	if out["status"] != "not_ready" {
+		t.Fatalf("unexpected not ready payload: %#v", out)
+	}
+}
+func TestSystemEndpoints(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	for _, path := range []string{"/health", "/livez"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body = %s", path, w.Code, w.Body.String())
+		}
+		var out map[string]string
+		if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		if out["status"] == "" {
+			t.Fatalf("missing status payload for %s: %#v", path, out)
+		}
+		if _, ok := out["data_root"]; ok {
+			t.Fatalf("%s should not expose data_root: %#v", path, out)
+		}
+		if _, ok := out["path"]; ok {
+			t.Fatalf("%s should not expose filesystem path: %#v", path, out)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/version", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("/version status = %d body = %s", w.Code, w.Body.String())
+	}
+	var version map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&version); err != nil {
+		t.Fatalf("decode /version: %v", err)
+	}
+	if version["version"] == "" {
+		t.Fatalf("unexpected version payload: %#v", version)
+	}
+}
+
 func TestAdminCanListAndRevokeCredentials(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -2351,5 +2479,245 @@ func TestRunEventsStreamPublishesRunningAndDoneSnapshots(t *testing.T) {
 	}
 	if err := <-resultCh; err != nil {
 		t.Fatalf("send request failed: %v", err)
+	}
+}
+
+func TestSkillMarketAccountEndpointReturnsValidationError(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(agentservice.Principal{TenantID: tenant.ID, UserID: user.ID})
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/skill-market/account", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("skill market account status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode skill market account error: %v", err)
+	}
+	if out["error"] != "email is required" {
+		t.Fatalf("unexpected error payload: %#v", out)
+	}
+}
+
+func TestListRunsRejectsInvalidStatus(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/runs?status=done", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListMessagesRejectsInvalidRole(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID+"/messages?role=tool", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListSessionsRejectsInvalidIncludeArchived(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/sessions?include_archived=maybe", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListRunsRejectsInvalidResponseSource(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/runs?response_source=assistant", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminListTenantsRejectsInvalidStatus(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants?status=paused", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminListUsersRejectsInvalidStatus(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users?status=paused", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateMCPServerRejectsInvalidAsyncFlag(t *testing.T) {
+	_, _, token, server := newMCPAuthenticatedServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers?async=maybe", strings.NewReader(`{"name":"demo","transport":"stdio","command":"demo"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestInstallSkillRejectsInvalidAsyncFlag(t *testing.T) {
+	_, _, token, server := newAsyncSkillTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/skills/install?async=maybe", strings.NewReader(`{"source":"github.com/demo/skill"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
 	}
 }

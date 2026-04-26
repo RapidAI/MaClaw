@@ -354,7 +354,7 @@ export function SetMemoryMaxBackups(arg1:number):Promise<void>;
 // Scheduled task management bindings
 export function ListScheduledTasks():Promise<Array<any>>;
 
-export function CreateScheduledTask(arg1:string, arg2:string, arg3:number, arg4:number, arg5:number, arg6:number, arg7:string, arg8:string):Promise<string>;
+export function CreateScheduledTask(arg1:string, arg2:string, arg3:number, arg4:number, arg5:number, arg6:number, arg7:number, arg8:string, arg9:string, arg10:string):Promise<string>;
 
 export function UpdateScheduledTask(arg1:string, arg2:any):Promise<void>;
 
@@ -480,6 +480,8 @@ export function IsAIAssistantReady():Promise<boolean>;
 export function GetAIAssistantInitStatus():Promise<string>;
 
 export function SendAIAssistantMessage(arg1:any):Promise<any>;
+
+export function SendBtwQuery(arg1:string, arg2:string):Promise<any>;
 
 export function ClearAIAssistantHistory():Promise<void>;
 

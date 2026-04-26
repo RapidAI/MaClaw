@@ -29,6 +29,7 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/executive/overview", h.handleOverview)
 	mux.HandleFunc("/admin/executive/skills", h.handleSkills)
 	mux.HandleFunc("/admin/executive/skills/run", h.handleRunSkill)
+	mux.HandleFunc("/admin/executive/management-decisions", h.handleRecordManagementDecision)
 }
 
 type metric struct {
@@ -77,7 +78,7 @@ type boardHistoryItem struct {
 	ID                     string                   `json:"id"`
 	Title                  string                   `json:"title"`
 	Detail                 string                   `json:"detail"`
-    ClusterTaskID          string                 `json:"clusterTaskId,omitempty"`
+	ClusterTaskID          string                   `json:"clusterTaskId,omitempty"`
 	Timestamp              string                   `json:"timestamp"`
 	Tone                   string                   `json:"tone"`
 	NavigationTarget       *historyNavigationTarget `json:"navigationTarget,omitempty"`
@@ -203,6 +204,73 @@ func (h *Handler) handleRunSkill(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, result)
 }
 
+func (h *Handler) handleRecordManagementDecision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+
+	var req struct {
+		RoleCode     string `json:"role_code"`
+		DecisionType string `json:"decision_type"`
+		Detail       string `json:"detail"`
+		DisplayTime  string `json:"display_time"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
+		return
+	}
+
+	req.RoleCode = strings.TrimSpace(req.RoleCode)
+	req.DecisionType = strings.TrimSpace(req.DecisionType)
+	req.Detail = strings.TrimSpace(req.Detail)
+	req.DisplayTime = strings.TrimSpace(req.DisplayTime)
+	if req.RoleCode == "" || req.Detail == "" || req.DisplayTime == "" {
+		response.BadRequest(w, "INVALID_MANAGEMENT_DECISION", "role_code, detail, and display_time are required")
+		return
+	}
+	if req.DecisionType != "review" && req.DecisionType != "deferred" {
+		response.BadRequest(w, "INVALID_MANAGEMENT_DECISION", "decision_type must be review or deferred")
+		return
+	}
+
+	if err := h.recordManagementDecisionAudit(r.Context(), req.RoleCode, req.DecisionType, req.Detail, req.DisplayTime); err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"ok": true})
+}
+
+func (h *Handler) recordManagementDecisionAudit(ctx context.Context, roleCode, decisionType, detail, displayTime string) error {
+	if h.audit == nil {
+		return nil
+	}
+	tenantID := tenant.TenantIDFromContext(ctx)
+	if tenantID == "" {
+		return nil
+	}
+	roleCode = strings.TrimSpace(roleCode)
+	decisionType = strings.TrimSpace(decisionType)
+	detail = strings.TrimSpace(detail)
+	displayTime = strings.TrimSpace(displayTime)
+	summary := fmt.Sprintf("Management review opened for %s", strings.ToUpper(roleCode))
+	if decisionType == "deferred" {
+		summary = fmt.Sprintf("Management follow-up deferred for %s", strings.ToUpper(roleCode))
+	}
+	return h.audit.Insert(tenantID, &audit.ProxyLog{
+		RequestID:   fmt.Sprintf("management-decision-%s-%d", roleCode, time.Now().UnixNano()),
+		ProviderID:  "iworkercenter",
+		Model:       "management-decision",
+		WorkType:    "management_decision",
+		CostTier:    "internal",
+		Status:      "ok",
+		LatencyMs:   0,
+		InputTokens: 0,
+		Summary:     summary,
+		ErrorMsg:    fmt.Sprintf("decision_type: %s | role_code: %s | detail: %s | display_time: %s", decisionType, roleCode, detail, displayTime),
+	})
+}
+
 func (h *Handler) recordSkillAudit(ctx context.Context, skillID string, result skillResult) {
 	if h.audit == nil {
 		return
@@ -275,8 +343,66 @@ func pickPriorityHistoryCluster(history []boardHistoryItem) *boardHistoryItem {
 	return nil
 }
 
+func pickLatestManagementDecision(history []boardHistoryItem) *boardHistoryItem {
+	for i := range history {
+		if strings.HasPrefix(history[i].ID, "management-") {
+			return &history[i]
+		}
+	}
+	return nil
+}
+
+func historyRoleCode(item *boardHistoryItem) string {
+	if item == nil {
+		return ""
+	}
+	if item.NavigationTarget != nil && strings.TrimSpace(item.NavigationTarget.RoleCode) != "" {
+		return strings.TrimSpace(item.NavigationTarget.RoleCode)
+	}
+	for _, line := range item.DetailLines {
+		if strings.HasPrefix(line, "Role: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "Role: "))
+		}
+	}
+	return ""
+}
+
+func managementDecisionType(item *boardHistoryItem) string {
+	if item == nil {
+		return ""
+	}
+	for _, line := range item.DetailLines {
+		if strings.HasPrefix(line, "Decision type: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "Decision type: "))
+		}
+	}
+	return ""
+}
+
+func shouldPrioritizeManagementDecision(cluster, management *boardHistoryItem) bool {
+	if management == nil {
+		return false
+	}
+	if cluster == nil {
+		return true
+	}
+	return management.Timestamp >= cluster.Timestamp
+}
+
 func deriveDecisionBoardSummary(base string, history []boardHistoryItem) string {
-	latest := pickPriorityHistoryCluster(history)
+	latestCluster := pickPriorityHistoryCluster(history)
+	latestManagement := pickLatestManagementDecision(history)
+	if shouldPrioritizeManagementDecision(latestCluster, latestManagement) {
+		roleCode := historyRoleCode(latestManagement)
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), "the escalated role")
+		switch managementDecisionType(latestManagement) {
+		case "deferred":
+			return fmt.Sprintf("Management has deferred direct intervention for %s until the next review window. The organization should keep running inside delegated policy while coordination risk is monitored closely.", roleLabel)
+		default:
+			return fmt.Sprintf("%s is already under active management review. The next move is to clear blockers, adjust resources, or return the role to delegated execution.", roleLabel)
+		}
+	}
+	latest := latestCluster
 	if latest == nil {
 		return base
 	}
@@ -297,7 +423,36 @@ func deriveDecisionBoardSummary(base string, history []boardHistoryItem) string 
 }
 
 func deriveDecisionBoardFocus(base boardFocus, history []boardHistoryItem) boardFocus {
-	latest := pickPriorityHistoryCluster(history)
+	latestCluster := pickPriorityHistoryCluster(history)
+	latestManagement := pickLatestManagementDecision(history)
+	if shouldPrioritizeManagementDecision(latestCluster, latestManagement) {
+		roleCode := historyRoleCode(latestManagement)
+		if roleCode == "" {
+			return base
+		}
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), roleCode)
+		switch managementDecisionType(latestManagement) {
+		case "deferred":
+			return newBoardFocus(
+				fmt.Sprintf("Review %s at next window", roleLabel),
+				fmt.Sprintf("%s remains inside organizational observation until the deferred review window.", roleLabel),
+				"Management explicitly deferred direct intervention. iWorkerCenter should keep the role inside delegated coordination, surface new evidence, and re-open escalation only if operating risk continues to rise.",
+				"info",
+				roleCode,
+				roleLabel,
+			)
+		default:
+			return newBoardFocus(
+				fmt.Sprintf("Hold management attention on %s", roleLabel),
+				fmt.Sprintf("%s is already under active management review.", roleLabel),
+				"Management has already taken this exception into direct review. The priority is now blocker removal, resource adjustment, and deciding when the role can safely return to delegated execution.",
+				"warn",
+				roleCode,
+				roleLabel,
+			)
+		}
+	}
+	latest := latestCluster
 	if latest == nil || strings.TrimSpace(latest.ClusterRoleCode) == "" {
 		return base
 	}
@@ -896,6 +1051,50 @@ func (h *Handler) loadHistoryTasks(ctx context.Context, logs []*audit.ProxyLog) 
 	return result, rows.Err()
 }
 
+func buildManagementDecisionHistory(logs []*audit.ProxyLog) []boardHistoryItem {
+	items := make([]boardHistoryItem, 0, 4)
+	for _, entry := range logs {
+		if entry == nil || entry.WorkType != "management_decision" {
+			continue
+		}
+		roleCode := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "role_code"))
+		decisionType := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "decision_type"))
+		detail := firstNonEmpty(strings.TrimSpace(extractAuditField(entry.ErrorMsg, "detail")), strings.TrimSpace(entry.Summary), "Management intervention was recorded.")
+		displayTime := firstNonEmpty(strings.TrimSpace(extractAuditField(entry.ErrorMsg, "display_time")), entry.CreatedAt.Format(time.RFC3339))
+		title := "Management review opened"
+		tone := "warn"
+		if decisionType == "deferred" {
+			title = "Management follow-up deferred"
+			tone = "info"
+		}
+		if roleCode != "" {
+			title = fmt.Sprintf("%s for %s", title, strings.ToUpper(roleCode))
+		}
+		item := boardHistoryItem{
+			ID:        fmt.Sprintf("management-%s", entry.ID),
+			Title:     title,
+			Detail:    detail,
+			Timestamp: entry.CreatedAt.Format(time.RFC3339),
+			Tone:      tone,
+			DetailLines: []string{
+				fmt.Sprintf("Decision type: %s", firstNonEmpty(decisionType, "review")),
+				fmt.Sprintf("Role: %s", firstNonEmpty(roleCode, "No direct role attached")),
+				fmt.Sprintf("Recorded at: %s", displayTime),
+			},
+		}
+		if roleCode != "" {
+			item.NavigationTarget = &historyNavigationTarget{
+				RoleCode: roleCode,
+				Source:   "organization_history",
+			}
+		}
+		items = append(items, item)
+		if len(items) >= 4 {
+			break
+		}
+	}
+	return items
+}
 func buildBoardHistoryFromAudit(logs []*audit.ProxyLog, tasksByID map[string]historyTaskSnapshot) []boardHistoryItem {
 	clusters := map[string]*executiveAuditCluster{}
 	for _, entry := range logs {
@@ -936,10 +1135,12 @@ func buildBoardHistoryFromAudit(logs []*audit.ProxyLog, tasksByID map[string]his
 			cluster.HasTask = true
 		}
 	}
-	items := make([]boardHistoryItem, 0, len(clusters))
+	managementItems := buildManagementDecisionHistory(logs)
+	items := make([]boardHistoryItem, 0, len(clusters)+len(managementItems))
 	for _, cluster := range clusters {
 		items = append(items, buildBoardHistoryCluster(*cluster, tasksByID[cluster.TaskID]))
 	}
+	items = append(items, managementItems...)
 	sort.Slice(items, func(i, j int) bool {
 		left := decisionStatusPriority(items[i].ClusterExecutionStatus)
 		right := decisionStatusPriority(items[j].ClusterExecutionStatus)

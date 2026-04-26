@@ -242,6 +242,26 @@ jobs:
             }
           }
 
+      - name: Build maclawsrv & srvdemo (default brand only)
+        if: matrix.brand == ''
+        shell: pwsh
+        run: |
+          $commit = git rev-parse --short HEAD
+          $builtAt = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+          $ldflags = "-s -w -X main.serviceVersion=$env:VERSION -X main.serviceCommit=$commit -X main.serviceBuiltAt=$builtAt"
+          # maclawsrv: pure Go server, CGO_ENABLED=0, cross-compile all arches
+          foreach ($arch in @('amd64','arm64')) {
+            $env:GOOS='windows'; $env:GOARCH=$arch; $env:CGO_ENABLED='0'
+            go build -ldflags $ldflags -o "dist/maclawsrv_${arch}.exe" ./MaClawSrv/
+          }
+          # srvdemo: Wails GUI app (pre-committed frontend, no npm build needed)
+          # amd64 with CGO (native WebView)
+          $env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='1'; $env:CC='gcc'
+          go build -tags "desktop,production" -ldflags "-s -w -H windowsgui" -o "dist/srvdemo_amd64.exe" ./srvdemo/
+          # arm64 without CGO (cross-compile, NoopEmbedder)
+          $env:GOARCH='arm64'; $env:CGO_ENABLED='0'
+          go build -tags "desktop,production" -ldflags "-s -w -H windowsgui" -o "dist/srvdemo_arm64.exe" ./srvdemo/
+
       - name: Install NSIS
         shell: pwsh
         run: |
@@ -317,6 +337,10 @@ jobs:
             dist/maclaw-tui_arm64.exe
             dist/maclaw-tool_amd64.exe
             dist/maclaw-tool_arm64.exe
+            dist/maclawsrv_amd64.exe
+            dist/maclawsrv_arm64.exe
+            dist/srvdemo_amd64.exe
+            dist/srvdemo_arm64.exe
 
 
   # ============================================================
@@ -417,6 +441,26 @@ jobs:
               CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
                 go build -ldflags "$LDFLAGS" -o "dist/maclaw-tool_${ARCH}_darwin" ./cmd/maclaw-tool/
             fi
+          done
+
+      - name: Build maclawsrv & srvdemo (default brand only, darwin)
+        if: matrix.brand == ''
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          LDFLAGS="-s -w -X main.serviceVersion=${VERSION} -X main.serviceCommit=${COMMIT} -X main.serviceBuiltAt=${BUILT_AT}"
+          # maclawsrv: pure Go server, CGO_ENABLED=0
+          for ARCH in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
+              go build -ldflags "$LDFLAGS" -o "dist/maclawsrv_${ARCH}_darwin" ./MaClawSrv/
+          done
+          # srvdemo: Wails GUI app (pre-committed frontend)
+          for ARCH in amd64 arm64; do
+            CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
+              GOOS=darwin GOARCH=$ARCH \
+              go build -tags "desktop,production" -ldflags "-s -w" -o "dist/srvdemo_${ARCH}_darwin" ./srvdemo/
           done
 
       - name: Generate .icns
@@ -522,6 +566,10 @@ jobs:
             dist/maclaw-tui_arm64_darwin
             dist/maclaw-tool_amd64_darwin
             dist/maclaw-tool_arm64_darwin
+            dist/maclawsrv_amd64_darwin
+            dist/maclawsrv_arm64_darwin
+            dist/srvdemo_amd64_darwin
+            dist/srvdemo_arm64_darwin
 
 
   # ============================================================
@@ -627,6 +675,21 @@ jobs:
             fi
           done
 
+      - name: Build maclawsrv & srvdemo (default brand only, linux)
+        if: matrix.brand == ''
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          LDFLAGS="-s -w -X main.serviceVersion=${VERSION} -X main.serviceCommit=${COMMIT} -X main.serviceBuiltAt=${BUILT_AT}"
+          # maclawsrv: pure Go server, CGO_ENABLED=0
+          for ARCH in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
+              go build -ldflags "$LDFLAGS" -o "dist/maclawsrv_${ARCH}_linux" ./MaClawSrv/
+          done
+          # srvdemo: Wails GUI app (pre-committed frontend), needs CGO for WebView
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+            go build -tags "${WEBKIT_TAGS}" -ldflags "-s -w" -o "dist/srvdemo_amd64_linux" ./srvdemo/
+
       - name: Create AppImage (amd64)
         run: |
           OUT_NAME="${BRAND_APP_NAME}"
@@ -728,6 +791,9 @@ jobs:
             dist/maclaw-tui_arm64_linux
             dist/maclaw-tool_amd64_linux
             dist/maclaw-tool_arm64_linux
+            dist/maclawsrv_amd64_linux
+            dist/maclawsrv_arm64_linux
+            dist/srvdemo_amd64_linux
 
   # ============================================================
   # Linux ARM64: GUI (arm64, CGO native) + AppImage
@@ -809,6 +875,13 @@ jobs:
           OUT_NAME="${BRAND_APP_NAME}"
           CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
             go build -tags "${WEBKIT_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64_linux" ./gui/
+
+      - name: Build srvdemo (default brand only, linux arm64)
+        if: matrix.brand == ''
+        run: |
+          # srvdemo: Wails GUI app (pre-committed frontend), needs CGO for WebView
+          CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+            go build -tags "${WEBKIT_TAGS}" -ldflags "-s -w" -o "dist/srvdemo_arm64_linux" ./srvdemo/
 
       - name: Create AppImage (arm64)
         run: |
@@ -897,6 +970,7 @@ jobs:
           name: linux-arm64-artifacts-${{ matrix.brand || 'default' }}
           path: |
             dist/${{ env.BRAND_APP_NAME }}-aarch64.AppImage
+            dist/srvdemo_arm64_linux
 
   # ============================================================
   # Release: collect all artifacts and create GitHub Release

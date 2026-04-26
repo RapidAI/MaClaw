@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
@@ -1826,6 +1826,83 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, [finalizeRound, setRoundState]);
 
+    // sendBtwMessage sends a /btw side query via a dedicated backend binding.
+    // Unlike sendMessage, this does NOT check activeRound.phase — it can run
+    // while the main agent loop is active. It does NOT affect activeRound state,
+    // so the main loop's streaming/progress continues uninterrupted.
+    //
+    // The result is appended as a pair of user+assistant messages to the chat.
+    // Streaming tokens arrive on "ai-btw-token" events (separate from the main
+    // "ai-assistant-token" channel).
+    const sendBtwMessage = useCallback(async (query: string) => {
+        const trimmedQuery = query.trim();
+        if (!trimmedQuery) {
+            // Show usage help as a local message — no backend call needed.
+            setMessages(prev => [...prev,
+                { id: nextId(), role: 'user' as const, content: '/btw', timestamp: Date.now() },
+                { id: nextId(), role: 'assistant' as const, content: '用法: /btw <查询内容>\n\n示例:\n  /btw 最新的 Go 1.23 有什么新特性\n  /btw React 19 的主要变化\n  /btw 这个项目用了什么框架', timestamp: Date.now() },
+            ]);
+            return;
+        }
+
+        const requestId = `btw-${Date.now()}`;
+        const userMsgId = nextId();
+        const assistantMsgId = nextId();
+
+        // Add user message and placeholder immediately.
+        const userMsg: ChatMessage = {
+            id: userMsgId,
+            role: 'user',
+            content: '/btw ' + trimmedQuery,
+            timestamp: Date.now(),
+        };
+        const placeholderMsg: ChatMessage = {
+            id: assistantMsgId,
+            role: 'assistant',
+            content: '',
+            requestId,
+            timestamp: Date.now(),
+        };
+        setMessages(prev => [...prev, userMsg, placeholderMsg]);
+
+        // Listen for streaming tokens on the /btw-specific channel.
+        const tokenHandler = (payload: unknown) => {
+            const event = typeof payload === 'string' ? JSON.parse(payload) : (payload as any);
+            if (event?.request_id !== requestId) return;
+            const delta = event?.text || '';
+            if (!delta) return;
+            setMessages(prev => prev.map(m =>
+                m.id === assistantMsgId ? { ...m, content: m.content + delta } : m
+            ));
+        };
+        const progressHandler = (payload: unknown) => {
+            const event = typeof payload === 'string' ? JSON.parse(payload) : (payload as any);
+            if (event?.request_id !== requestId) return;
+            // Progress is informational — could show in a status bar, but for
+            // simplicity we skip it. The streaming tokens provide real-time feedback.
+        };
+
+        EventsOn("ai-btw-token", tokenHandler);
+        EventsOn("ai-btw-progress", progressHandler);
+
+        try {
+            const response = await SendBtwQuery(trimmedQuery, requestId) as any;
+            const finalText = response?.text || response?.error || '查询失败';
+            // Replace placeholder content with the final result.
+            // If streaming already populated content, the final text is authoritative.
+            setMessages(prev => prev.map(m =>
+                m.id === assistantMsgId ? { ...m, content: finalText } : m
+            ));
+        } catch (err: any) {
+            setMessages(prev => prev.map(m =>
+                m.id === assistantMsgId ? { ...m, content: `❌ /btw 查询失败: ${err?.message || String(err)}` } : m
+            ));
+        } finally {
+            EventsOff("ai-btw-token");
+            EventsOff("ai-btw-progress");
+        }
+    }, []);
+
     const browseFile = useCallback(async () => {
         try {
             const selected = await SelectAIAssistantFiles();
@@ -1998,7 +2075,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, [resetActiveRound, setPendingTaskState]);
 
-    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
+    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

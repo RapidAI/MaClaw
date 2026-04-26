@@ -698,8 +698,8 @@ export function ListScheduledTasks() {
   return window['go']['main']['App']['ListScheduledTasks']();
 }
 
-export function CreateScheduledTask(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
-  return window['go']['main']['App']['CreateScheduledTask'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+export function CreateScheduledTask(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
+  return window['go']['main']['App']['CreateScheduledTask'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
 }
 
 export function UpdateScheduledTask(arg1, arg2) {
@@ -1073,6 +1073,10 @@ export function GetAIAssistantInitStatus() {
 
 export function SendAIAssistantMessage(arg1) {
   return window['go']['main']['App']['SendAIAssistantMessage'](arg1);
+}
+
+export function SendBtwQuery(arg1, arg2) {
+  return window['go']['main']['App']['SendBtwQuery'](arg1, arg2);
 }
 
 export function ClearAIAssistantHistory() {

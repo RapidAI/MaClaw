@@ -288,6 +288,50 @@ type TUIApp struct {
 	workflowAgentLoop  bool   // true when the agent loop runs on behalf of the workflow
 }
 
+// buildSystemPromptDeps constructs the SystemPromptDeps from TUIApp's config.
+// Used by tuiCallbacks (main agent loop). The /btw SubAgent builds its own
+// focused prompt via buildTuiBtwSystemPrompt instead.
+func (app *TUIApp) buildSystemPromptDeps() agent.SystemPromptDeps {
+	cfg := app.appConfig
+	roleName := cfg.MaclawRoleName
+	if roleName == "" {
+		roleName = brand.Current().DisplayName
+	}
+	roleDesc := cfg.MaclawRoleDescription
+	if roleDesc == "" {
+		roleDesc = "一个尽心尽责无所不能的软件开发管家"
+	}
+
+	deps := agent.SystemPromptDeps{
+		Config: agent.SystemPromptConfig{
+			RoleName:          roleName,
+			RoleDescription:   roleDesc,
+			IsProMode:         true,
+			Nickname:          cfg.RemoteNickname,
+			HasCodingSessions: false,
+		},
+		MemoryStore: app.memoryStore,
+	}
+
+	if len(cfg.SSHHosts) > 0 {
+		deps.SSHHostLister = func() []corelib.SSHHostEntry {
+			return cfg.SSHHosts
+		}
+	}
+
+	if app.steeringStore != nil {
+		deps.SteeringResolver = func(userMessage string, contextTokens int) []steering.File {
+			ctx := steering.ResolveContext{
+				UserMessage:            userMessage,
+				EffectiveContextTokens: contextTokens,
+			}
+			return app.steeringStore.Resolve(ctx)
+		}
+	}
+
+	return deps
+}
+
 // cancellable is implemented by agent loop callbacks that support cancellation.
 type cancellable interface {
 	Cancel()
@@ -526,14 +570,10 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 			}
 			responseText = "🔍 **/btw 查询结果**\n\n" + responseText
 
-			// Append only the final result to history (no intermediate steps).
-			// TUI is single-threaded (Bubble Tea event loop), so no race here.
-			history := app.history.Load("tui-user")
-			history = append(history,
-				agent.ConversationEntry{Role: "user", Content: "/btw " + btwQuery},
-				agent.ConversationEntry{Role: "assistant", Content: responseText},
-			)
-			app.history.Save("tui-user", history)
+			// NOTE: /btw results are NOT appended to the main conversation
+			// history. The result is displayed in the chat UI via ChatResponseMsg
+			// but does not become part of the LLM's context for future turns.
+			// This is by design — /btw is a side query, not part of the main task.
 
 			return views.ChatResponseMsg{Text: responseText}
 		}
@@ -891,45 +931,7 @@ func (c *tuiCallbacks) GetMaxIterations() int {
 }
 
 func (c *tuiCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
-	cfg := c.app.appConfig
-	roleName := cfg.MaclawRoleName
-	if roleName == "" {
-		roleName = brand.Current().DisplayName
-	}
-	roleDesc := cfg.MaclawRoleDescription
-	if roleDesc == "" {
-		roleDesc = "一个尽心尽责无所不能的软件开发管家"
-	}
-
-	deps := agent.SystemPromptDeps{
-		Config: agent.SystemPromptConfig{
-			RoleName:          roleName,
-			RoleDescription:   roleDesc,
-			IsProMode:         true,
-			Nickname:          cfg.RemoteNickname,
-			HasCodingSessions: false, // TUI has no external coding session tools
-		},
-		MemoryStore: c.app.memoryStore,
-	}
-
-	// SSH hosts from config.
-	if len(cfg.SSHHosts) > 0 {
-		deps.SSHHostLister = func() []corelib.SSHHostEntry {
-			return cfg.SSHHosts
-		}
-	}
-
-	// Steering resolver.
-	if c.app.steeringStore != nil {
-		deps.SteeringResolver = func(userMessage string, contextTokens int) []steering.File {
-			ctx := steering.ResolveContext{
-				UserMessage:            userMessage,
-				EffectiveContextTokens: contextTokens,
-			}
-			return c.app.steeringStore.Resolve(ctx)
-		}
-	}
-
+	deps := c.app.buildSystemPromptDeps()
 	prompt := agent.BuildSystemPrompt(deps, userText, isFirstTurn)
 
 	// Inject workflow phase prompt when the agent loop runs on behalf of
@@ -1048,7 +1050,80 @@ func (c *tuiBtwCallbacks) GetMaxIterations() int {
 }
 
 func (c *tuiBtwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
-	return buildTuiBtwSystemPrompt()
+	// Build a focused system prompt for /btw — identity + memory recall only.
+	// Does NOT call agent.BuildSystemPrompt (which injects coding workflow,
+	// memory management guide, and other multi-turn noise).
+	return buildTuiBtwSystemPrompt(c.app, userText)
+}
+
+func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
+	cfg := app.appConfig
+	roleName := cfg.MaclawRoleName
+	if roleName == "" {
+		roleName = brand.Current().DisplayName
+	}
+	roleDesc := cfg.MaclawRoleDescription
+	if roleDesc == "" {
+		roleDesc = "一个尽心尽责无所不能的软件开发管家"
+	}
+
+	var b strings.Builder
+
+	// Identity.
+	var selfIdentity string
+	if app.memoryStore != nil {
+		selfIdentity = app.memoryStore.SelfIdentitySummary(600)
+	}
+	if selfIdentity != "" {
+		fmt.Fprintf(&b, "你的自我认知（来自记忆）：%s\n你的底层系统名为 %s。\n", selfIdentity, roleName)
+	} else {
+		fmt.Fprintf(&b, "你是 %s，%s。\n", roleName, roleDesc)
+	}
+
+	// /btw mode.
+	b.WriteString(tuiBtwSuffix)
+
+	// User fact summary.
+	if app.memoryStore != nil {
+		if summary := app.memoryStore.UserFactSummary(400); summary != "" {
+			fmt.Fprintf(&b, "\n## 用户信息\n%s\n", summary)
+		}
+	}
+
+	// Proactive memory recall (read-only, no side effects).
+	if app.memoryStore != nil && userText != "" {
+		recalled := app.memoryStore.RecallDynamic(userText, "", "")
+		var relevant []memory.Entry
+		for _, e := range recalled {
+			cat := memory.MapToCanonical(e.Category)
+			if cat == memory.CategoryUserFact || cat == memory.CategorySelfIdentity {
+				continue
+			}
+			if e.Category == memory.CategorySessionCheckpoint || e.Category == memory.CategoryConversationSummary {
+				continue
+			}
+			relevant = append(relevant, e)
+		}
+		if len(relevant) > 8 {
+			relevant = relevant[:8]
+		}
+		if len(relevant) > 0 {
+			b.WriteString("\n## 相关记忆（自动召回）\n")
+			for _, e := range relevant {
+				text := e.Content
+				if e.CompactForm != "" {
+					text = e.CompactForm
+				}
+				runes := []rune(text)
+				if len(runes) > 200 {
+					text = string(runes[:200]) + "…"
+				}
+				fmt.Fprintf(&b, "- [%s] %s\n", e.Category, text)
+			}
+		}
+	}
+
+	return b.String()
 }
 
 func (c *tuiBtwCallbacks) BuildTools(userText string) []map[string]interface{} {
@@ -1066,6 +1141,14 @@ func (c *tuiBtwCallbacks) ExecuteTool(name, argsJSON string) string {
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("参数解析失败: %v", err)
+	}
+
+	// Mechanism-level enforcement: memory tool is recall-only in /btw.
+	if name == "memory" {
+		action, _ := args["action"].(string)
+		if action != "recall" {
+			return "错误: /btw 侧查询中 memory 工具仅支持 action=\"recall\"（只读查询）"
+		}
 	}
 
 	// Delegate to the shared tool registry.
@@ -1106,18 +1189,20 @@ func (c *tuiBtwCallbacks) ShouldStop() bool {
 	}
 }
 
-func buildTuiBtwSystemPrompt() string {
-	return "你是一个高效的信息查询助手。用户通过 /btw 命令发起了一个侧查询（side query），请快速、准确地回答。\n\n" +
-		"## 规则\n\n" +
-		"1. 优先使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容\n" +
-		"2. 如果问题涉及本地项目文件，使用 read_file 查看\n" +
-		"3. 如果问题涉及之前的对话或记忆，使用 memory(action=\"recall\", query=\"...\") 召回\n" +
-		"4. 回答要简洁、结构化，直接给出关键信息\n" +
-		"5. 引用网络来源时附上 URL\n" +
-		"6. 这是一个只读查询——不要修改任何文件\n" +
-		"7. memory 工具只允许 action=\"recall\"，不要使用 save/delete/list\n" +
-		"8. 尽量在 2-3 轮工具调用内完成查询\n"
-}
+const tuiBtwSuffix = `
+## /btw 侧查询模式（当前生效）
+
+你正在处理一个 /btw 侧查询。这是一个独立的单轮快速查询，不是主任务的一部分。
+
+规则：
+1. 优先使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容
+2. 如果问题涉及本地项目文件，使用 read_file 查看
+3. 如果问题涉及之前的对话或记忆，使用 memory(action="recall") 召回
+4. 回答要简洁、结构化，直接给出关键信息
+5. 引用网络来源时附上 URL
+6. 这是一个只读查询——不要修改任何文件
+7. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索
+`
 
 func buildTuiBtwToolDefinitions(app *TUIApp) []map[string]interface{} {
 	// Try to get definitions from the shared tool registry.

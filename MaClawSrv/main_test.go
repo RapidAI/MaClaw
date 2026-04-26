@@ -96,6 +96,25 @@ func TestDefaultDataRoot(t *testing.T) {
 		t.Fatalf("defaultDataRoot() with home env = %q", got)
 	}
 }
+func TestGetenvBoolStrict(t *testing.T) {
+	t.Setenv("MACLAW_BOOL_TEST", "true")
+	if got, err := getenvBoolStrict("MACLAW_BOOL_TEST", false); err != nil || !got {
+		t.Fatalf("expected true, got %v err=%v", got, err)
+	}
+	t.Setenv("MACLAW_BOOL_TEST", "FALSE")
+	if got, err := getenvBoolStrict("MACLAW_BOOL_TEST", true); err != nil || got {
+		t.Fatalf("expected false, got %v err=%v", got, err)
+	}
+	t.Setenv("MACLAW_BOOL_TEST", "")
+	if got, err := getenvBoolStrict("MACLAW_BOOL_TEST", true); err != nil || !got {
+		t.Fatalf("expected fallback true, got %v err=%v", got, err)
+	}
+	t.Setenv("MACLAW_BOOL_TEST", "maybe")
+	if _, err := getenvBoolStrict("MACLAW_BOOL_TEST", false); err == nil {
+		t.Fatalf("expected invalid boolean to be rejected")
+	}
+}
+
 func TestBuildCoreAgentExecutorFromEnv(t *testing.T) {
 	keys := []string{
 		"MACLAW_ENABLE_LOCAL_BASH",
@@ -126,7 +145,10 @@ func TestBuildCoreAgentExecutorFromEnv(t *testing.T) {
 	_ = os.Setenv("MACLAW_ENABLE_DIRECT_SSH", "true")
 	_ = os.Setenv("MACLAW_ENABLE_SSH_FILE_TRANSFER", "true")
 
-	executor := buildCoreAgentExecutorFromEnv()
+	executor, err := buildCoreAgentExecutorFromEnv()
+	if err != nil {
+		t.Fatalf("buildCoreAgentExecutorFromEnv: %v", err)
+	}
 	if executor == nil {
 		t.Fatalf("expected executor")
 	}
@@ -138,5 +160,19 @@ func TestBuildCoreAgentExecutorFromEnv(t *testing.T) {
 	}
 	if !executor.AllowDirectSSH || !executor.AllowSSHFileTransfer {
 		t.Fatalf("unexpected ssh flags: %#v", executor)
+	}
+}
+
+func TestBuildCoreAgentExecutorFromEnvRejectsInvalidBool(t *testing.T) {
+	t.Setenv("MACLAW_ENABLE_LOCAL_BASH", "sometimes")
+	if _, err := buildCoreAgentExecutorFromEnv(); err == nil {
+		t.Fatalf("expected invalid executor bool env to be rejected")
+	}
+}
+
+func TestValidateTransportSecurityBoolEnvParsing(t *testing.T) {
+	t.Setenv("MACLAW_ALLOW_INSECURE_HTTP", "later")
+	if _, err := getenvBoolStrict("MACLAW_ALLOW_INSECURE_HTTP", false); err == nil {
+		t.Fatalf("expected invalid transport bool env to be rejected")
 	}
 }

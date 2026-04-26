@@ -137,9 +137,10 @@ func (c *RemoteHubClient) loadConfig() error {
 }
 
 // persistViewerToken saves a viewer token received from the hub auth.ok
-// response into the local config. This runs in a goroutine so it doesn't
-// block the WebSocket connect path. Uses LoadConfig → merge → SaveConfig
-// to avoid overwriting concurrent config changes.
+// response into the local config. Called synchronously from connectLocked
+// so the token is available immediately after Connect() returns.
+// Uses LoadConfig → merge → SaveConfig to avoid overwriting concurrent
+// config changes.
 func (c *RemoteHubClient) persistViewerToken(token string) {
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
@@ -313,7 +314,11 @@ func (c *RemoteHubClient) connectLocked() error {
 			ViewerToken string `json:"viewer_token"`
 		}
 		if json.Unmarshal(authResp.Payload, &authPayload) == nil && authPayload.ViewerToken != "" {
-			go c.persistViewerToken(authPayload.ViewerToken)
+			// Persist synchronously so the token is available immediately
+			// after Connect() returns. Previously this was async (goroutine)
+			// which caused a race: callers reading config right after Connect()
+			// would see an empty RemoteViewerToken.
+			c.persistViewerToken(authPayload.ViewerToken)
 		}
 	}
 

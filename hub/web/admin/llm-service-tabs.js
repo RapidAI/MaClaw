@@ -212,6 +212,7 @@ const LLM_SERVICE_I18N = {
     cardHealthRoutes: 'Live Routes',
     cardHealthGroups: 'Service Groups',
     cardHealthActiveGrants: 'Active Redemptions',
+    cardCodeLabel: 'Code',
     cardIssueMissingGroups: 'Some referenced service groups no longer exist.',
     cardIssueNoLiveRoutes: 'Referenced groups exist, but none of them can currently route to a live provider.',
     cardIssueRedeemedNoActiveGrant: 'The card has been redeemed, but no active grant is currently attached.',
@@ -447,6 +448,7 @@ const LLM_SERVICE_I18N = {
     cardHealthRoutes: '\u6709\u6548\u8def\u7531',
     cardHealthGroups: '\u670d\u52a1\u7ec4',
     cardHealthActiveGrants: '\u6d3b\u8dc3\u5151\u6362',
+    cardCodeLabel: '\u5361\u53f7',
     cardIssueMissingGroups: '\u5b58\u5728\u5f15\u7528\u7684\u670d\u52a1\u7ec4\u5df2\u4e0d\u5b58\u5728\u3002',
     cardIssueNoLiveRoutes: '\u5f15\u7528\u7684\u670d\u52a1\u7ec4\u867d\u7136\u5b58\u5728\uff0c\u4f46\u5f53\u524d\u6ca1\u6709\u4efb\u4f55\u53ef\u8def\u7531\u5230 live provider \u7684\u6a21\u578b\u3002',
     cardIssueRedeemedNoActiveGrant: '\u8be5\u5361\u5df2\u88ab\u5151\u6362\uff0c\u4f46\u5f53\u524d\u6ca1\u6709\u5173\u8054\u7684\u751f\u6548 grant\u3002',
@@ -1089,6 +1091,24 @@ async function llmServiceCopyIssuedCodes() {
     showToast(lsx('copyCodesFailed', { error: err && err.message || llsX('unknownError') }), 'error');
   }
 }
+async function llmServiceCopyCardCode(code) {
+  try {
+    if (!code) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(code);
+    } else {
+      var area = document.createElement('textarea');
+      area.value = code;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      document.body.removeChild(area);
+    }
+    showToast(lsx('copyCodesDone'), 'success');
+  } catch (err) {
+    showToast(lsx('copyCodesFailed', { error: err && err.message || llsX('unknownError') }), 'error');
+  }
+}
 function renderLLMServiceIssuedCodes() {
   var root = document.getElementById('llmServiceIssuedCodes');
   var codes = llmServiceLastIssuedCodes || [];
@@ -1560,6 +1580,10 @@ function renderLLMServiceAdmin() {
         const issueLines = (cardHealth.issues || []).map(function(issue) { return '<span style="color:#c05621">' + escapeHtml(issue) + '</span>'; }).join('<span style="color:rgba(31,34,48,.16)"> | </span>');
         const unlockLabel = cardHealth.grantGroupCount > 0 && cardHealth.freeGroupCount > 0 ? lsx('cardUnlocksMixed') : (cardHealth.grantGroupCount > 0 ? lsx('cardUnlocksGrant') : lsx('cardUnlocksFree'));
         const selected = selectedCardSet.has(String(c && c.id || '').trim());
+        const cardCode = String(c.code || '').trim();
+        const cardCodeLine = cardCode
+          ? '<div style="margin-top:6px;display:flex;align-items:center;gap:6px"><span class="item-meta">' + escapeHtml(lsx('cardCodeLabel')) + ':</span><span class="mono" style="font-size:11px;letter-spacing:1px;user-select:all">' + escapeHtml(cardCode) + '</span><button type="button" class="btn-ghost" style="height:22px;font-size:10px;padding:0 6px" onclick="event.stopPropagation();llmServiceCopyCardCode(\'' + llmServiceJSArg(cardCode) + '\')">' + escapeHtml(lsx('copyCodes')) + '</button></div>'
+          : '';
         return '<div class="item" style="margin-bottom:6px;padding:0;overflow:hidden;border:1px solid var(--line)">'
           + '<div class="row" style="grid-template-columns:.52fr 1.1fr 1.2fr .8fr .78fr .92fr auto;gap:10px;padding:10px 12px;border:none;background:#fff">'
           + '<div style="display:flex;align-items:flex-start;justify-content:center"><input type="checkbox" ' + (selected ? 'checked' : '') + ' onchange="event.stopPropagation();llmServiceToggleCardSelection(\'' + llmServiceJSArg(c.id || '') + '\', this.checked)"></div>'
@@ -1578,6 +1602,7 @@ function renderLLMServiceAdmin() {
           + '<span>' + escapeHtml(lsx('cardUnlocks')) + ': ' + escapeHtml(unlockLabel) + '</span>'
           + (issueLines ? ('<span>' + issueLines + '</span>') : '')
           + '</div>'
+          + cardCodeLine
           + '</div>'
           + '</div>';
       }).join('');

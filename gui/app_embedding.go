@@ -28,6 +28,44 @@ const embeddingModelDefaultURL = "https://github.com/RapidAI/MaClaw/releases/dow
 // embeddingDownloadMu prevents concurrent model downloads.
 var embeddingDownloadMu sync.Mutex
 
+// initEarlyClassifier creates a UnifiedIntentClassifier with L1 keywords only
+// (no embedding, no LLM). This is called synchronously during app startup so
+// that intent classification is available from the very first user message.
+//
+// L2 (embedding) and L3 (LLM) are wired in later by activateEmbedderAsync
+// via SetEmbedder/SetLLMFunc on the same instance. The UIC's Classify()
+// method automatically uses whatever layers are available at call time:
+//   - Before embedding loads: L1 keyword only (instant, ~85% accuracy)
+//   - After embedding loads: L1 + L2 parallel fusion (~92% accuracy)
+//   - After LLM wired: L1 + L2 + L3 full fusion (~97% accuracy)
+//
+// This eliminates the "classifier not ready" degraded mode entirely.
+func (a *App) initEarlyClassifier() {
+	// Create UIC with noop embedder — L1 keywords are always available.
+	uic := intent.New(intent.Config{
+		Embedder:   embedding.NoopEmbedder{},
+		LLMTimeout: 8 * time.Second,
+	})
+	a.unifiedClassifier = uic
+
+	// Create GIC with nil embedder — Layer 1 keyword rules only.
+	gic := NewGateIntentClassifier(nil)
+	gic.SetLLMConfig(func() corelib.MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 5 * time.Second})
+	gic.SetUnifiedClassifier(uic)
+	a.gateIntentClassifier = gic
+
+	// Wire to all consumers so they see the classifier immediately.
+	if a.toolRouter != nil {
+		a.toolRouter.SetUnifiedClassifier(uic)
+	}
+	if a.capabilityGapDetector != nil {
+		a.capabilityGapDetector.SetUnifiedClassifier(uic)
+	}
+	setUnifiedClassifierForIM(uic)
+
+	log.Println("[classifier] early init complete: L1 keywords available, L2/L3 pending async wiring")
+}
+
 // embeddingModelsDir returns ~/.maclaw/models, creating it if needed.
 func embeddingModelsDir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -146,13 +184,12 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 				handler.toolBuilder.SetEmbedder(noop)
 			}
 		}
-		// Clear the GateIntentClassifier so it falls back to keyword-only
-		// classification when vector search is disabled.
-		a.gateIntentClassifier = nil
-		// Clear the UnifiedIntentClassifier so consumers fall back to
-		// their existing keyword-based logic.
-		a.unifiedClassifier = nil
-		setUnifiedClassifierForIM(nil)
+		// Do NOT clear a.gateIntentClassifier or a.unifiedClassifier.
+		// initEarlyClassifier created them with L1 keyword support which
+		// does not depend on embedding. Clearing them would leave the
+		// Coding Tool Gate with no classifier at all (fail-closed safety net).
+		// The UIC's Classify() already handles noop embedder gracefully:
+		// canEmb=false → skips L2, uses L1 (or L1+L3 if LLM is available).
 	}
 	return nil
 }
@@ -496,33 +533,35 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		log.Println("[embedding] IntentClassifier created and wired to tool router")
 	}
 
-	// Create and wire GateIntentClassifier (five-category gate classification).
-	gic := NewGateIntentClassifier(emb)
-	gic.SetLLMConfig(func() corelib.MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 5 * time.Second})
-	a.gateIntentClassifier = gic
-	log.Println("[embedding] GateIntentClassifier created and warming up anchors")
-
-	// Create and wire UnifiedIntentClassifier (shared three-layer pipeline).
-	uic := intent.New(intent.Config{
-		Embedder:   emb,
-		LLMTimeout: 8 * time.Second,
-	})
-	uic.SetLLMFunc(a.buildUICLLMFunc())
-	a.unifiedClassifier = uic
-
-	// Inject UIC into consumers.
-	if a.toolRouter != nil {
-		a.toolRouter.SetUnifiedClassifier(uic)
+	// Upgrade existing UIC with real embedder (enables Layer 2 + Layer 3).
+	// initEarlyClassifier created the UIC with a noop embedder (L1-only).
+	// Now we wire in the real embedder and LLM, upgrading it in-place.
+	// All consumers (including GIC, which delegates to UIC) already hold
+	// a reference to this UIC instance — no re-wiring needed.
+	if a.unifiedClassifier != nil {
+		a.unifiedClassifier.SetEmbedder(emb)
+		a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
+		log.Println("[embedding] UnifiedIntentClassifier upgraded: L2 embedding + L3 LLM now available")
+	} else {
+		// Fallback: initEarlyClassifier didn't run (shouldn't happen in production).
+		uic := intent.New(intent.Config{
+			Embedder:   emb,
+			LLMTimeout: 8 * time.Second,
+		})
+		uic.SetLLMFunc(a.buildUICLLMFunc())
+		a.unifiedClassifier = uic
+		setUnifiedClassifierForIM(uic)
+		if a.gateIntentClassifier != nil {
+			a.gateIntentClassifier.SetUnifiedClassifier(uic)
+		}
+		if a.toolRouter != nil {
+			a.toolRouter.SetUnifiedClassifier(uic)
+		}
+		if a.capabilityGapDetector != nil {
+			a.capabilityGapDetector.SetUnifiedClassifier(uic)
+		}
+		log.Println("[embedding] UnifiedIntentClassifier created fresh (early init missed)")
 	}
-	if gic != nil {
-		gic.SetUnifiedClassifier(uic)
-	}
-	if a.capabilityGapDetector != nil {
-		a.capabilityGapDetector.SetUnifiedClassifier(uic)
-	}
-	// Set package-level UIC for classifyTaskIntent delegation.
-	setUnifiedClassifierForIM(uic)
-	log.Println("[embedding] UnifiedIntentClassifier created and wired to consumers")
 
 	// Wire embedder into tool builder.
 	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {

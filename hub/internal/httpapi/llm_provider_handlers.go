@@ -316,9 +316,15 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 				continue
 			}
 			existingHashes[hash] = struct{}{}
+			enc, err := llmservice.EncryptCardCode(code)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "LLM_SERVICE_CARD_CREATE_FAILED", "encrypt card code: "+err.Error())
+				return
+			}
 			cards = append(cards, llmservice.RechargeCard{
 				ID:              llmservice.NewID("card"),
 				CodeHash:        hash,
+				EncryptedCode:   enc,
 				Label:           strings.TrimSpace(req.Label),
 				ServiceGroupIDs: serviceGroupIDs,
 				DurationDays:    days,
@@ -399,7 +405,7 @@ func ListLLMServiceCardsHandler(system store.SystemSettingsRepository) http.Hand
 		}
 		items := make([]map[string]any, 0, end-start)
 		for _, card := range cards[start:end] {
-			items = append(items, map[string]any{
+			item := map[string]any{
 				"id":                card.ID,
 				"label":             card.Label,
 				"service_group_ids": card.ServiceGroupIDs,
@@ -408,7 +414,13 @@ func ListLLMServiceCardsHandler(system store.SystemSettingsRepository) http.Hand
 				"created_at":        card.CreatedAt,
 				"redeemed_by_email": card.RedeemedByEmail,
 				"redeemed_at":       card.RedeemedAt,
-			})
+			}
+			// Return decrypted code for unused cards so admin can view/copy.
+			// Redeemed cards: code is no longer useful, still return for audit.
+			if code := card.PlainCode(); code != "" {
+				item["code"] = code
+			}
+			items = append(items, item)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"items":     items,
@@ -1204,6 +1216,8 @@ func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.Rechar
 			sb.WriteString(card.CreatedAt.Format(time.RFC3339))
 			sb.WriteByte(',')
 			sb.WriteString(strings.TrimSpace(card.RedeemedByEmail))
+			sb.WriteByte(',')
+			sb.WriteString(card.PlainCode())
 			sb.WriteByte('\n')
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -1214,7 +1228,7 @@ func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.Rechar
 	case "csv":
 		var buf bytes.Buffer
 		writer := csv.NewWriter(&buf)
-		_ = writer.Write([]string{"id", "status", "label", "service_group_ids", "credits", "duration_days", "created_at", "redeemed_by_email", "redeemed_at"})
+		_ = writer.Write([]string{"id", "code", "status", "label", "service_group_ids", "credits", "duration_days", "created_at", "redeemed_by_email", "redeemed_at"})
 		for _, card := range cards {
 			status := "unused"
 			redeemedAt := ""
@@ -1224,6 +1238,7 @@ func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.Rechar
 			}
 			_ = writer.Write([]string{
 				strings.TrimSpace(card.ID),
+				card.PlainCode(),
 				status,
 				strings.TrimSpace(card.Label),
 				strings.Join(card.ServiceGroupIDs, ","),
@@ -1289,6 +1304,12 @@ func llmServiceCardMatchesSearch(card llmservice.RechargeCard, search string) bo
 	fields := []string{card.Label, card.ID, card.RedeemedByEmail}
 	for _, field := range fields {
 		if strings.Contains(strings.ToLower(strings.TrimSpace(field)), search) {
+			return true
+		}
+	}
+	// Decrypt and check card code only if no cheaper field matched.
+	if code := card.PlainCode(); code != "" {
+		if strings.Contains(strings.ToLower(code), search) {
 			return true
 		}
 	}

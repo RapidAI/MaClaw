@@ -158,42 +158,64 @@ func TestCodingGateProperty2_TextContentPreservation(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Property 3: Gate inactivity for non-qualifying configurations
 // Feature: coding-workflow-gate, Property 3: Gate inactivity
-// Validates: Requirements 1.4, 1.5, 5.4, 7.1, 7.2, 7.3, 7.5
+// Validates: Requirements 1.4, 1.5, 7.1
+//
+// Without classifiers, only LoopKindBackground is guaranteed inactive.
+// All other scenarios are fail-closed (active=true) by design.
 // ---------------------------------------------------------------------------
 func TestCodingGateProperty3_GateInactivity(t *testing.T) {
-	// Generate configs that should be inactive: non-coding intent, skip signal, or background.
 	f := func(seed int64) bool {
 		rng := rand.New(rand.NewSource(seed))
 
-		// Pick a scenario that makes the gate inactive.
-		scenario := rng.Intn(3)
-		var userText string
-		var loopKind LoopKind
-
-		switch scenario {
-		case 0:
-			// Non-coding intent: use a non-coding phrase.
-			userText = "帮我翻译这段话"
-			loopKind = LoopKindChat
-		case 1:
-			// Skip signal present with coding intent.
-			userText = "帮我写一个 Python 脚本，直接做"
-			loopKind = LoopKindChat
-		case 2:
-			// Background loop with coding intent.
-			userText = "帮我写一个 Python 脚本"
-			loopKind = LoopKindBackground
+		// Generate random user text — any text with background loop should be inactive.
+		texts := []string{
+			"帮我翻译这段话",
+			"帮我写一个 Python 脚本",
+			"开发一个游戏",
+			"查天气",
+			"ssh 到服务器",
 		}
+		userText := texts[rng.Intn(len(texts))]
 
-		cfg := newCodingToolGateConfig(userText, loopKind)
+		cfg := newCodingToolGateConfig(userText, LoopKindBackground)
 		if cfg.active {
-			t.Logf("gate should be inactive for scenario=%d userText=%q loopKind=%d, but active=true reason=%s", scenario, userText, loopKind, cfg.reason)
+			t.Logf("gate should be inactive for background loop, userText=%q, but active=true reason=%s", userText, cfg.reason)
 			return false
 		}
 		return true
 	}
 	if err := quick.Check(f, quickConfig()); err != nil {
 		t.Errorf("Property 3 failed: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Property 3b: Fail-closed for all non-background loops without classifiers
+// Feature: coding-workflow-gate, Property 3b: Fail-closed default
+// Validates: fail-closed design — without classifiers, gate is always active
+// ---------------------------------------------------------------------------
+func TestCodingGateProperty3b_FailClosedWithoutClassifiers(t *testing.T) {
+	f := func(seed int64) bool {
+		rng := rand.New(rand.NewSource(seed))
+
+		texts := []string{
+			"帮我翻译这段话",
+			"帮我写一个 Python 脚本，直接做",
+			"开发一个游戏",
+			"查天气",
+			"有bug，修复一下",
+		}
+		userText := texts[rng.Intn(len(texts))]
+
+		cfg := newCodingToolGateConfig(userText, LoopKindChat)
+		if !cfg.active {
+			t.Logf("without classifiers, gate should be fail-closed (active=true) for userText=%q, but active=false reason=%s", userText, cfg.reason)
+			return false
+		}
+		return true
+	}
+	if err := quick.Check(f, quickConfig()); err != nil {
+		t.Errorf("Property 3b failed: %v", err)
 	}
 }
 

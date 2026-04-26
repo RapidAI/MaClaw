@@ -3,6 +3,15 @@
  * ASCII only.
  */
 (function(global) {
+  function formatPlatformLabel(platform) {
+    if (!platform) return '';
+    var p = String(platform).toLowerCase();
+    if (p === 'windows' || p === 'win32' || p === 'win') return 'Windows';
+    if (p === 'darwin' || p === 'mac' || p === 'macos') return 'macOS';
+    if (p === 'linux') return 'Linux';
+    return platform;
+  }
+
   function ensureMachinePagingState() {
     if (!Array.isArray(global.machineItemsCache)) global.machineItemsCache = [];
     if (!Number.isFinite(global.machinePage) || global.machinePage < 1) global.machinePage = 1;
@@ -52,7 +61,8 @@
     const startIndex = (global.machinePage - 1) * global.machinePageSize;
     const pageItems = global.machineItemsCache.slice(startIndex, startIndex + global.machinePageSize);
     root.innerHTML = header + pageItems.map(function(item) {
-      const state = item.status === 'online' ? tr('online') : item.status === 'offline' ? tr('offline') : (item.status || tr('unknown'));
+      const isOnline = !!item.online;
+      const state = isOnline ? tr('online') : tr('offline');
       const email = item.user_email || tr('na');
       const runtime = [
         formatPlatformLabel(item.platform),
@@ -64,7 +74,6 @@
         item.heartbeat_interval_sec ? (ml('interval') + ': ' + item.heartbeat_interval_sec + 's') : '',
         typeof item.active_sessions === 'number' ? (ml('activeSessions') + ': ' + item.active_sessions) : ''
       ].filter(Boolean);
-      const isOnline = item.online || item.status === 'online';
       const displayName = escapeHtml(item.alias || item.name || item.machine_id || tr('machine'));
       const aliasLine = item.alias ? '<div class="item-meta">' + escapeHtml(item.name || '') + '</div>' : '';
       const machineID = machineNameExpr(item.machine_id || '');

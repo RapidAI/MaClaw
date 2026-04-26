@@ -3808,8 +3808,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			"/help — 显示此帮助"}
 	}
 	// --- /btw side query: independent agent loop for quick lookups ---
-	// Runs in a clean context (no workflow, no 40+ tools) and appends only
-	// the final result to the main conversation history.
+	// Runs in a clean context (no workflow, no 40+ tools). Results are
+	// displayed in the chat UI but not appended to the main history.
+	// Desktop panel: reached via SendBtwQuery binding (bypasses buffer queue).
+	// IM channels: reached via this code path in handleIMMessageWithLoop.
 	if strings.HasPrefix(trimmed, "/btw ") || trimmed == "/btw" {
 		btwQuery := ""
 		if len(trimmed) > 5 {
@@ -4583,11 +4585,10 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 // handleBtwCommand runs a /btw side query in an independent agent loop.
 // The query runs with a minimal tool set (web_search, web_fetch, read_file,
 // memory) and does not pollute the main conversation with intermediate steps.
-// Only the final result is appended to the main history as a single message.
 //
 // Concurrency: /btw runs before chatLoopMu (by design — side queries should
-// not block on the main loop). History append uses memory.Append to avoid
-// the Load→modify→Save race with a concurrent main loop.
+// not block on the main loop). Results are NOT appended to the main history
+// to avoid racing with a concurrent main loop's Save.
 func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) *IMAgentResponse {
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
@@ -4609,16 +4610,27 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 		return &IMAgentResponse{Error: fmt.Sprintf("/btw 查询失败: %s", result.Error)}
 	}
 
-	// Append only the final result to the main conversation history.
-	// Intermediate tool calls (web_search, web_fetch, etc.) stay in the
-	// SubAgent's independent conversation and are discarded.
+	// NOTE: We intentionally do NOT append /btw results to the main
+	// conversation history. Reasons:
 	//
-	// Use memory.Append (atomic append) instead of Load→append→Save to
-	// avoid racing with a concurrent main agent loop's Save.
-	h.memory.Append(msg.UserID,
-		agent.ConversationEntry{Role: "user", Content: "/btw " + query},
-		agent.ConversationEntry{Role: "assistant", Content: result.Text},
-	)
+	// 1. If a main agent loop is running concurrently, its final Save()
+	//    does a full replacement of the history — any Append we do here
+	//    would be silently overwritten. Appending gives a false sense of
+	//    persistence.
+	//
+	// 2. The desktop frontend manages its own message list (setMessages)
+	//    and already displays the /btw result. The backend history is not
+	//    the source of truth for the desktop panel's UI.
+	//
+	// 3. For IM channels, the /btw result is returned as IMAgentResponse.Text
+	//    and delivered to the user. The next user message will trigger a
+	//    fresh Load() that doesn't include the /btw exchange — this is
+	//    acceptable because /btw is a side query, not part of the main task.
+	//
+	// If future requirements need /btw context in the main conversation,
+	// the correct approach is to inject it as a system message at the start
+	// of the next agent loop (similar to askUserContext), not to race with
+	// the concurrent Save.
 
 	log.Printf("[btw] completed query=%q iterations=%d tools=%d", truncateRunes(query, 50), result.Iterations, result.ToolCalls)
 

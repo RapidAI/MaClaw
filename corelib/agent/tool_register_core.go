@@ -208,10 +208,11 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "read_excel",
-		Description: "Read an Excel file.",
+		Description: "Read an Excel (XLSX/CSV) file. Returns cell data as JSON. Supports optional sheet selection and A1-notation range filtering.",
 		Properties: map[string]interface{}{
 			"file_path": map[string]string{"type": "string", "description": "Excel file path"},
-			"sheet":     map[string]string{"type": "string", "description": "Optional sheet name"},
+			"sheet":     map[string]string{"type": "string", "description": "Optional sheet name (defaults to first sheet)"},
+			"range":     map[string]string{"type": "string", "description": "Optional A1-notation cell range, e.g. A1:D10"},
 		},
 		Required: []string{"file_path"},
 		Handler:  func(args map[string]interface{}) string { return ToolReadExcel(args) },
@@ -219,11 +220,11 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "write_excel",
-		Description: "Write an Excel file.",
+		Description: "Write an XLSX file. Supports formulas (strings starting with =) and cell styles (bold, font_size, background_color, number_format).",
 		Properties: map[string]interface{}{
 			"file_path": map[string]string{"type": "string", "description": "Excel file path"},
 			"sheet":     map[string]string{"type": "string", "description": "Optional sheet name"},
-			"data":      map[string]string{"type": "array", "description": "Two-dimensional array data"},
+			"data":      map[string]string{"type": "object", "description": "Write data, format: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
 		},
 		Required: []string{"file_path", "data"},
 		Handler:  func(args map[string]interface{}) string { return ToolWriteExcel(args) },
@@ -231,7 +232,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "read_pptx",
-		Description: "Read a PowerPoint file.",
+		Description: "Read a PowerPoint (PPTX) file. Returns structured JSON with slides, shapes, text (with formatting), tables, charts, and speaker notes.",
 		Properties: map[string]interface{}{
 			"file_path": map[string]string{"type": "string", "description": "PPTX file path"},
 		},

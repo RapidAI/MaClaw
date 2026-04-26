@@ -217,6 +217,21 @@ export function useRemotePanel(params: UseRemotePanelParams) {
 
     const refreshRemotePanel = async () => {
         try {
+            // Always reload config from backend to pick up changes made by
+            // backend operations (enrollment persists RemoteViewerToken,
+            // hub connection refreshes it via auth.ok, etc.). Without this,
+            // the frontend config state becomes stale and any subsequent
+            // SaveConfig({ ...config, field: value }) call overwrites
+            // backend-persisted fields (like RemoteViewerToken) with empty
+            // values — the same race pattern as #11 SSO config overwrite.
+            try {
+                const freshConfig = await LoadConfig();
+                setConfig(freshConfig);
+            } catch {
+                // Config reload failure is non-critical; continue with
+                // stale state rather than blocking the entire panel refresh.
+            }
+
             const [activation, connection, sessions, smokeSnapshot] = await Promise.all([
                 GetRemoteActivationStatus(),
                 GetRemoteConnectionStatus(),

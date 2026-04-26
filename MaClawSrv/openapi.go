@@ -73,6 +73,7 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPost, Path: "/api/v1/jobs/{jobId}/cancel", Summary: "Cancel async job", Description: "Requests cancellation for a pending or running async job owned by the current tenant/user.", Tag: "jobs", Security: bearerSecurity()},
 	{Method: http.MethodDelete, Path: "/api/v1/jobs/{jobId}", Summary: "Delete async job", Description: "Deletes a completed, failed, or canceled async job owned by the current tenant/user.", Tag: "jobs", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/skill-uploads/{submissionId}", Summary: "Skill upload status", Tag: "skills", Security: bearerSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/skill-market/account", Summary: "Skill market account", Description: "Returns author account profile from the configured skill market by email and optional base_url.", Tag: "skills", Security: bearerSecurity(), QueryParams: []string{"email", "base_url"}},
 	{Method: http.MethodGet, Path: "/api/v1/skills/{skillName}", Summary: "Get skill", Tag: "skills", Security: bearerSecurity()},
 	{Method: http.MethodDelete, Path: "/api/v1/skills/{skillName}", Summary: "Delete skill", Tag: "skills", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/skills/{skillName}/export", Summary: "Export skill", Tag: "skills", Security: bearerSecurity()},
@@ -100,7 +101,7 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPost, Path: "/api/v1/instances/{instanceId}/sessions/{sessionId}/restore", Summary: "Restore session", Tag: "sessions", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/sessions/{sessionId}/messages", Summary: "List messages", Tag: "messages", Security: bearerSecurity(), QueryParams: []string{"role", "since", "until", "limit", "before"}},
 	{Method: http.MethodPost, Path: "/api/v1/instances/{instanceId}/sessions/{sessionId}/messages", Summary: "Post message", Tag: "messages", Security: bearerSecurity()},
-	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/runs", Summary: "List runs", Tag: "runs", Security: bearerSecurity(), QueryParams: []string{"status", "session_id", "response_source", "waiting_for_user", "limit", "before"}},
+	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/runs", Summary: "List runs", Description: "Lists runs for one instance. status accepts running, succeeded, failed, cancelled. response_source currently accepts ask_user when filtering waiting-for-user flows.", Tag: "runs", Security: bearerSecurity(), QueryParams: []string{"status", "session_id", "response_source", "waiting_for_user", "limit", "before"}},
 	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/runs/{runId}", Summary: "Get run", Tag: "runs", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/runs/{runId}/events", Summary: "Stream run events", Description: "Returns a server-sent events stream for run snapshots and terminal updates.", Tag: "runs", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/instances/{instanceId}/runs/{runId}/cancel", Summary: "Cancel run", Tag: "runs", Security: bearerSecurity()},
@@ -233,13 +234,62 @@ func buildOpenAPIParameters(path string, queryParams []string) []map[string]any 
 	}
 	for _, name := range queryParams {
 		params = append(params, map[string]any{
-			"name":     name,
-			"in":       "query",
-			"required": false,
-			"schema":   map[string]any{"type": "string"},
+			"name":        name,
+			"in":          "query",
+			"required":    false,
+			"schema":      openAPIQuerySchema(path, name),
+			"description": openAPIQueryDescription(path, name),
 		})
 	}
 	return params
+}
+
+func openAPIQuerySchema(path, name string) map[string]any {
+	switch name {
+	case "include_archived", "waiting_for_user", "include_messages", "include_runs", "include_audit", "include_secrets", "overwrite", "dry_run", "all":
+		return map[string]any{"type": "boolean"}
+	case "async":
+		return map[string]any{"type": "boolean"}
+	case "status":
+		switch path {
+		case "/api/v1/admin/tenants":
+			return map[string]any{"type": "string", "enum": []string{"active", "disabled"}}
+		case "/api/v1/admin/tenants/{tenantId}/users":
+			return map[string]any{"type": "string", "enum": []string{"active", "disabled"}}
+		case "/api/v1/jobs":
+			return map[string]any{"type": "string", "enum": []string{"pending", "running", "succeeded", "failed", "canceled"}}
+		case "/api/v1/instances/{instanceId}/runs":
+			return map[string]any{"type": "string", "enum": []string{"running", "succeeded", "failed", "cancelled"}}
+		}
+	case "role":
+		return map[string]any{"type": "string", "enum": []string{"user", "assistant", "system"}}
+	case "response_source":
+		return map[string]any{"type": "string", "enum": []string{"ask_user"}}
+	case "before", "since", "until":
+		if path != "/api/v1/skills" {
+			return map[string]any{"type": "string", "format": "date-time"}
+		}
+	case "limit":
+		return map[string]any{"type": "integer", "minimum": 1, "maximum": 500}
+	}
+	return map[string]any{"type": "string"}
+}
+
+func openAPIQueryDescription(path, name string) string {
+	switch name {
+	case "before":
+		if path == "/api/v1/skills" {
+			return "Case-insensitive skill-name cursor."
+		}
+		return "RFC3339 timestamp cursor."
+	case "status":
+		if path == "/api/v1/jobs" {
+			return "Bulk delete only accepts terminal statuses."
+		}
+	case "response_source":
+		return "Currently only ask_user is supported for filtering."
+	}
+	return ""
 }
 
 func operationID(method, path string) string {

@@ -472,3 +472,163 @@ func TestDeleteLLMServiceCardsBatchHandlerDeletesUnusedAndSkipsRedeemed(t *testi
 		t.Fatalf("unexpected audit action: %s", audit.logs[0].Action)
 	}
 }
+
+
+func TestCreateLLMServiceCardHandlerPersistsEncryptedCode(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"label":"Persist","service_group_ids":["coding-basic"],"duration_days":30,"credits":100,"count":2}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	CreateLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Parse response codes
+	var resp struct {
+		Cards []struct {
+			Code string `json:"code"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Cards) != 2 {
+		t.Fatalf("expected 2 cards, got %d", len(resp.Cards))
+	}
+
+	// Verify encrypted code is persisted and can be decrypted back
+	saved, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, card := range saved.Cards {
+		if card.EncryptedCode == "" {
+			t.Fatalf("card %d: EncryptedCode is empty", i)
+		}
+		plain := card.PlainCode()
+		if plain == "" {
+			t.Fatalf("card %d: PlainCode() returned empty", i)
+		}
+		if plain != llmservice.NormalizeCardCode(resp.Cards[i].Code) {
+			t.Fatalf("card %d: PlainCode() = %q, want %q", i, plain, resp.Cards[i].Code)
+		}
+	}
+}
+
+func TestListLLMServiceCardsHandlerReturnsCode(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a card first
+	createBody := []byte(`{"label":"ListTest","service_group_ids":["coding-basic"],"duration_days":30,"credits":100,"count":1}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	CreateLLMServiceCardHandler(system, nil).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d", createRec.Code)
+	}
+	var createResp struct {
+		Cards []struct {
+			Code string `json:"code"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createResp); err != nil {
+		t.Fatal(err)
+	}
+	expectedCode := createResp.Cards[0].Code
+
+	// List cards and verify code is returned
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/llm/service-cards?status=all", nil)
+	listRec := httptest.NewRecorder()
+	ListLLMServiceCardsHandler(system).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var listResp struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Code string `json:"code"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(listResp.Items))
+	}
+	if listResp.Items[0].Code != expectedCode {
+		t.Fatalf("list code = %q, want %q", listResp.Items[0].Code, expectedCode)
+	}
+}
+
+func TestExportLLMServiceCardsIncludesCode(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a card
+	createBody := []byte(`{"label":"ExportTest","service_group_ids":["coding-basic"],"duration_days":30,"credits":100,"count":1}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	CreateLLMServiceCardHandler(system, nil).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d", createRec.Code)
+	}
+	var createResp struct {
+		Cards []struct {
+			Code string `json:"code"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createResp); err != nil {
+		t.Fatal(err)
+	}
+	expectedCode := createResp.Cards[0].Code
+
+	// Export as CSV and verify code column is present
+	exportReq := httptest.NewRequest(http.MethodGet, "/api/admin/llm/service-cards/export?status=all&format=csv", nil)
+	exportRec := httptest.NewRecorder()
+	ExportLLMServiceCardsHandler(system).ServeHTTP(exportRec, exportReq)
+	if exportRec.Code != http.StatusOK {
+		t.Fatalf("export status = %d, body = %s", exportRec.Code, exportRec.Body.String())
+	}
+	csvBody, _ := io.ReadAll(exportRec.Body)
+	csvText := string(csvBody)
+	if !strings.Contains(csvText, expectedCode) {
+		t.Fatalf("export CSV does not contain card code %q:\n%s", expectedCode, csvText)
+	}
+	// Verify "code" is in the header
+	lines := strings.Split(csvText, "\n")
+	if len(lines) < 1 || !strings.Contains(lines[0], "code") {
+		t.Fatalf("export CSV header missing 'code' column: %s", lines[0])
+	}
+
+	// Export as TXT and verify code is present
+	exportTxtReq := httptest.NewRequest(http.MethodGet, "/api/admin/llm/service-cards/export?status=all&format=txt", nil)
+	exportTxtRec := httptest.NewRecorder()
+	ExportLLMServiceCardsHandler(system).ServeHTTP(exportTxtRec, exportTxtReq)
+	if exportTxtRec.Code != http.StatusOK {
+		t.Fatalf("export txt status = %d", exportTxtRec.Code)
+	}
+	txtBody, _ := io.ReadAll(exportTxtRec.Body)
+	txtText := string(txtBody)
+	if !strings.Contains(txtText, expectedCode) {
+		t.Fatalf("export TXT does not contain card code %q:\n%s", expectedCode, txtText)
+	}
+}

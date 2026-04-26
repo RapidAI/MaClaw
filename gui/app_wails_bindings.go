@@ -1244,6 +1244,55 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	return resp, nil
 }
 
+// SendBtwQuery handles a /btw side query from the desktop AI assistant panel.
+// Unlike SendAIAssistantMessage, this runs in a lightweight independent agent
+// loop and does NOT block or interfere with the main chat loop. It can be
+// called while a main agent loop is active (submitLocked=true on the frontend).
+//
+// The frontend calls this via a separate code path that bypasses the buffer
+// queue and the activeRound idle-phase guard.
+func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return &IMAgentResponse{Text: "用法: /btw <查询内容>\n\n示例:\n  /btw 最新的 Go 1.23 有什么新特性\n  /btw React 19 的主要变化\n  /btw 这个项目用了什么框架"}, nil
+	}
+
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return nil, fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+
+	if requestID == "" {
+		requestID = fmt.Sprintf("btw-%d", time.Now().UnixNano())
+	}
+
+	// Stream tokens and progress via dedicated /btw event channels so they
+	// don't interfere with the main chat's streaming events.
+	emitEvent := func(name, value string) {
+		payload, _ := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: value})
+		runtime.EventsEmit(a.ctx, name, string(payload))
+	}
+	onProgress := func(text string) {
+		emitEvent("ai-btw-progress", text)
+	}
+	onToken := func(delta string) {
+		emitEvent("ai-btw-token", delta)
+	}
+
+	msg := IMUserMessage{
+		UserID:   "desktop-user",
+		Platform: "desktop",
+		Text:     "/btw " + query,
+	}
+	resp := handler.handleBtwCommand(msg, query, onProgress, onToken)
+	if resp != nil {
+		resp.RequestID = requestID
+	}
+	return resp, nil
+}
+
 // ClearAIAssistantHistory clears the desktop AI assistant conversation memory (Wails binding).
 func (a *App) ClearAIAssistantHistory() error {
 	a.ensureInteractionInfra()

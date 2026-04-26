@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -215,6 +216,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/jobs/{jobId}/cancel", s.withPrincipal(s.handleCancelAsyncJob))
 	s.mux.HandleFunc("DELETE /api/v1/jobs/{jobId}", s.withPrincipal(s.handleDeleteAsyncJob))
 	s.mux.HandleFunc("GET /api/v1/skill-uploads/{submissionId}", s.withPrincipal(s.handleGetSkillUploadStatus))
+	s.mux.HandleFunc("GET /api/v1/skill-market/account", s.withPrincipal(s.handleGetSkillMarketAccount))
 	s.mux.HandleFunc("GET /api/v1/skills/{skillName}", s.withPrincipal(s.handleGetSkill))
 	s.mux.HandleFunc("DELETE /api/v1/skills/{skillName}", s.withPrincipal(s.handleDeleteSkill))
 	s.mux.HandleFunc("GET /api/v1/skills/{skillName}/export", s.withPrincipal(s.handleExportSkill))
@@ -255,6 +257,10 @@ func (s *HTTPServer) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 }
 func (s *HTTPServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	if _, err := os.Stat(s.svc.DataRoot()); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "error": "data root unavailable"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 func (s *HTTPServer) handleVersion(w http.ResponseWriter, r *http.Request) {
@@ -356,8 +362,13 @@ func (s *HTTPServer) handleGetAdminAlerts(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleListTenants(w http.ResponseWriter, r *http.Request) {
+	status, ok := parseTenantStatus(r.URL.Query().Get("status"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
+		return
+	}
 	out, err := s.svc.ListTenants(r.Context(), agentservice.ListTenantsInput{
-		Status: agentservice.TenantStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
+		Status: status,
 		Name:   strings.TrimSpace(r.URL.Query().Get("name")),
 	})
 	if err != nil {
@@ -498,8 +509,13 @@ func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 func (s *HTTPServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	status, ok := parseUserStatus(r.URL.Query().Get("status"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
+		return
+	}
 	out, err := s.svc.ListUsers(r.Context(), r.PathValue("tenantId"), agentservice.ListUsersAdminInput{
-		Status: agentservice.UserStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
+		Status: status,
 		Name:   strings.TrimSpace(r.URL.Query().Get("name")),
 		Email:  strings.TrimSpace(r.URL.Query().Get("email")),
 	})
@@ -743,7 +759,12 @@ func (s *HTTPServer) handleCreateMCPServer(w http.ResponseWriter, r *http.Reques
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if parseBoolQuery(r, "async") {
+	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if asyncMode {
 		job := s.jobs.createUserJob("mcp.create", p, func(ctx context.Context) (any, error) {
 			return s.svc.CreateMCPServer(ctx, p, in)
 		})
@@ -770,7 +791,12 @@ func (s *HTTPServer) handleUpdateMCPServer(w http.ResponseWriter, r *http.Reques
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if parseBoolQuery(r, "async") {
+	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if asyncMode {
 		job := s.jobs.createUserJob("mcp.update", p, func(ctx context.Context) (any, error) {
 			return s.svc.UpdateMCPServer(ctx, p, r.PathValue("serverId"), in)
 		})
@@ -792,7 +818,12 @@ func (s *HTTPServer) handleDeleteMCPServer(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 func (s *HTTPServer) handleStartMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if parseBoolQuery(r, "async") {
+	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if asyncMode {
 		job := s.jobs.createUserJob("mcp.start", p, func(ctx context.Context) (any, error) {
 			return s.svc.StartMCPServer(ctx, p, r.PathValue("serverId"))
 		})
@@ -807,7 +838,12 @@ func (s *HTTPServer) handleStartMCPServer(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleStopMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if parseBoolQuery(r, "async") {
+	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if asyncMode {
 		job := s.jobs.createUserJob("mcp.stop", p, func(ctx context.Context) (any, error) {
 			return s.svc.StopMCPServer(ctx, p, r.PathValue("serverId"))
 		})
@@ -822,7 +858,12 @@ func (s *HTTPServer) handleStopMCPServer(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleCheckMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if parseBoolQuery(r, "async") {
+	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if asyncMode {
 		job := s.jobs.createUserJob("mcp.health_check", p, func(ctx context.Context) (any, error) {
 			return s.svc.CheckMCPServer(ctx, p, r.PathValue("serverId"))
 		})
@@ -891,7 +932,12 @@ func (s *HTTPServer) handleInstallSkill(w http.ResponseWriter, r *http.Request, 
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if parseBoolQuery(r, "async") {
+	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if asyncMode {
 		job := s.jobs.createUserJob("skill.install", p, func(ctx context.Context) (any, error) {
 			out, err := s.svc.InstallSkill(ctx, p, in)
 			if err != nil {
@@ -914,7 +960,12 @@ func (s *HTTPServer) handleImportSkill(w http.ResponseWriter, r *http.Request, p
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if parseBoolQuery(r, "async") {
+	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if asyncMode {
 		job := s.jobs.createUserJob("skill.import", p, func(ctx context.Context) (any, error) {
 			out, err := s.svc.ImportSkillArchive(ctx, p, in)
 			if err != nil {
@@ -965,7 +1016,12 @@ func (s *HTTPServer) handleUploadSkill(w http.ResponseWriter, r *http.Request, p
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if parseBoolQuery(r, "async") {
+	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if asyncMode {
 		job := s.jobs.createUserJob("skill.upload", p, func(ctx context.Context) (any, error) {
 			return s.svc.UploadSkill(ctx, p, r.PathValue("skillName"), in)
 		})
@@ -1201,8 +1257,13 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": run, "message": msg})
 }
 func (s *HTTPServer) handleListSessions(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	includeArchived, err := parseOptionalBoolQuery(r, "include_archived")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	out, err := s.svc.ListSessions(r.Context(), p, r.PathValue("instanceId"), agentservice.ListSessionsInput{
-		IncludeArchived: parseBoolQuery(r, "include_archived"),
+		IncludeArchived: includeArchived != nil && *includeArchived,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -1282,8 +1343,13 @@ func (s *HTTPServer) handleListMessages(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	role, ok := parseMessageRole(r.URL.Query().Get("role"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid role"})
+		return
+	}
 	out, err := s.svc.ListMessages(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), agentservice.ListMessagesInput{
-		Role:  agentservice.MessageRole(strings.TrimSpace(r.URL.Query().Get("role"))),
+		Role:  role,
 		Since: since,
 		Until: until,
 	})
@@ -1452,24 +1518,26 @@ func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
 	_, _ = w.Write([]byte("\n\n"))
 	flusher.Flush()
 }
-func (s *HTTPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.CancelRun(r.Context(), p, r.PathValue("instanceId"), r.PathValue("runId"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
 func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	waitingForUser, err := parseOptionalBoolQuery(r, "waiting_for_user")
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	status, ok := parseRunStatus(r.URL.Query().Get("status"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
+		return
+	}
+	responseSource, ok := parseRunResponseSource(r.URL.Query().Get("response_source"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid response_source"})
+		return
+	}
 	out, err := s.svc.ListRuns(r.Context(), p, r.PathValue("instanceId"), agentservice.ListRunsInput{
-		Status:         agentservice.RunStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
+		Status:         status,
 		SessionID:      strings.TrimSpace(r.URL.Query().Get("session_id")),
-		ResponseSource: strings.TrimSpace(r.URL.Query().Get("response_source")),
+		ResponseSource: responseSource,
 		WaitingForUser: waitingForUser,
 	})
 	if err != nil {
@@ -1484,6 +1552,15 @@ func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request, p ag
 	items, meta := paginateRuns(out, page)
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
+func (s *HTTPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.CancelRun(r.Context(), p, r.PathValue("instanceId"), r.PathValue("runId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *HTTPServer) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provided := r.Header.Get("X-MaClaw-Admin-Secret")
@@ -1602,9 +1679,16 @@ const (
 	maxPageLimit     = 500
 )
 
-func parseBoolQuery(r *http.Request, key string) bool {
-	v, err := strconv.ParseBool(strings.TrimSpace(r.URL.Query().Get(key)))
-	return err == nil && v
+func parseRequiredBoolLikeQuery(r *http.Request, key string) (bool, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return false, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, errors.New(key + " must be a boolean")
+	}
+	return v, nil
 }
 
 func parseOptionalBoolQuery(r *http.Request, key string) (*bool, error) {
@@ -1647,6 +1731,75 @@ func parseAsyncJobStatus(raw string, terminalOnly bool) (asyncJobStatus, bool) {
 	}
 	switch status {
 	case asyncJobStatusPending, asyncJobStatusRunning, asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled:
+		return status, true
+	default:
+		return "", false
+	}
+}
+
+func parseRunStatus(raw string) (agentservice.RunStatus, bool) {
+	statusRaw := strings.TrimSpace(raw)
+	if statusRaw == "" {
+		return "", true
+	}
+	status := agentservice.RunStatus(statusRaw)
+	switch status {
+	case agentservice.RunStatusRunning, agentservice.RunStatusSucceeded, agentservice.RunStatusFailed, agentservice.RunStatusCancelled:
+		return status, true
+	default:
+		return "", false
+	}
+}
+
+func parseMessageRole(raw string) (agentservice.MessageRole, bool) {
+	roleRaw := strings.TrimSpace(raw)
+	if roleRaw == "" {
+		return "", true
+	}
+	role := agentservice.MessageRole(roleRaw)
+	switch role {
+	case agentservice.MessageRoleUser, agentservice.MessageRoleAssistant, agentservice.MessageRoleSystem:
+		return role, true
+	default:
+		return "", false
+	}
+}
+
+func parseRunResponseSource(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", true
+	}
+	switch value {
+	case "ask_user", "":
+		return value, true
+	default:
+		return "", false
+	}
+}
+
+func parseTenantStatus(raw string) (agentservice.TenantStatus, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", true
+	}
+	status := agentservice.TenantStatus(value)
+	switch status {
+	case agentservice.TenantStatusActive, agentservice.TenantStatusDisabled:
+		return status, true
+	default:
+		return "", false
+	}
+}
+
+func parseUserStatus(raw string) (agentservice.UserStatus, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", true
+	}
+	status := agentservice.UserStatus(value)
+	switch status {
+	case agentservice.UserStatusActive, agentservice.UserStatusDisabled:
 		return status, true
 	default:
 		return "", false

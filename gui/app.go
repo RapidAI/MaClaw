@@ -1201,6 +1201,14 @@ func (a *App) startup(ctx context.Context) {
 		go a.initWorkflowEngine()
 		// Initialize steering store (declarative rule injection from ~/.maclaw/steering/).
 		go a.initSteeringStore()
+
+		// Create UnifiedIntentClassifier synchronously with L1 keywords only.
+		// This ensures intent classification is available from the very first
+		// user message — L1 keyword rules need no embedding model or LLM.
+		// L2 (embedding) and L3 (LLM) are wired in later by activateEmbedderAsync
+		// via SetEmbedder/SetLLMFunc, upgrading the same instance in-place.
+		a.initEarlyClassifier()
+
 		return
 	}
 	a.setPowerOptimizationEnabled(false)

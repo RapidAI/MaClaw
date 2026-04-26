@@ -98,8 +98,10 @@ func New(cfg Config) *UnifiedIntentClassifier {
 
 	// Start background anchor warmup if embedder is real.
 	if !isNoop {
+		anchors := u.anchors       // snapshot for goroutine
+		embedder := cfg.Embedder   // snapshot for goroutine
 		go func() {
-			warmupAnchors(u.embedder, u.anchors)
+			warmupAnchors(embedder, anchors)
 			u.mu.Lock()
 			u.ready = true
 			u.mu.Unlock()
@@ -138,13 +140,16 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 		return *cached.(*ClassificationResult)
 	}
 
-	// Determine which layers are available.
-	isNoop := embedding.IsNoop(u.embedder)
+	// Snapshot mutable fields under lock to avoid racing with SetEmbedder/SetLLMFunc.
 	u.mu.RLock()
+	emb := u.embedder
+	anchors := u.anchors
 	hasLLM := u.llmFunc != nil
 	isReady := u.ready
 	u.mu.RUnlock()
 
+	// Determine which layers are available.
+	isNoop := embedding.IsNoop(emb)
 	canEmb := !isNoop && isReady
 	canTree := hasLLM
 
@@ -164,7 +169,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 
 	// Single-channel fallback: embedding only.
 	if canEmb {
-		l2Result, _ := classifyByEmbedding(u.embedder, u.anchors, msg.Text)
+		l2Result, _ := classifyByEmbedding(emb, anchors, msg.Text)
 		l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
 		u.cacheAndLog(msg.Text, &l2Result)
 		return l2Result
@@ -231,29 +236,55 @@ func (u *UnifiedIntentClassifier) SetLLMFunc(fn LLMClassifyFunc) {
 	u.llmFunc = fn
 }
 
+// SetEmbedder sets or replaces the Layer 2 embedder and triggers background
+// anchor warmup. This enables late wiring: the UIC can be created with a
+// noop embedder at startup (L1-only), then upgraded with a real embedder
+// when the embedding model finishes loading.
+func (u *UnifiedIntentClassifier) SetEmbedder(emb embedding.Embedder) {
+	if emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+
+	// Rebuild anchors from definitions with the new embedder.
+	defs := DefaultDefinitions()
+	newAnchors := BuildAnchorsFromDefinitions(defs)
+
+	u.mu.Lock()
+	u.embedder = emb
+	u.anchors = newAnchors
+	u.ready = false // reset until new anchors are warmed up
+	u.mu.Unlock()
+
+	go func() {
+		warmupAnchors(emb, newAnchors)
+		u.mu.Lock()
+		u.ready = true
+		u.mu.Unlock()
+		log.Println("[UnifiedIntentClassifier] SetEmbedder: anchor warmup complete, Layer 2 now available")
+	}()
+}
+
 // DiagnoseScores returns all Layer 2 scores for debugging.
 // No side effects, no caching.
 func (u *UnifiedIntentClassifier) DiagnoseScores(text string) map[IntentLabel]float64 {
 	scores := make(map[IntentLabel]float64)
 
-	if embedding.IsNoop(u.embedder) {
-		return scores
-	}
-
 	u.mu.RLock()
+	emb := u.embedder
+	anchors := u.anchors
 	isReady := u.ready
 	u.mu.RUnlock()
 
-	if !isReady {
+	if embedding.IsNoop(emb) || !isReady {
 		return scores
 	}
 
-	queryVec, err := u.embedder.Embed(text)
+	queryVec, err := emb.Embed(text)
 	if err != nil || queryVec == nil {
 		return scores
 	}
 
-	for _, anchor := range u.anchors {
+	for _, anchor := range anchors {
 		if len(anchor.Vecs) == 0 {
 			continue
 		}
@@ -294,7 +325,13 @@ func truncateText(text string, maxRunes int) string {
 // labelScore pairs for the fusion pipeline. This is the raw signal from
 // the embedding channel, without any confidence thresholding.
 func (u *UnifiedIntentClassifier) embeddingTopK(text string, topK int) []labelScore {
-	queryVec, err := u.embedder.Embed(text)
+	// Snapshot embedder and anchors under lock to avoid racing with SetEmbedder.
+	u.mu.RLock()
+	emb := u.embedder
+	anchors := u.anchors
+	u.mu.RUnlock()
+
+	queryVec, err := emb.Embed(text)
 	if err != nil || queryVec == nil {
 		return nil
 	}
@@ -305,7 +342,7 @@ func (u *UnifiedIntentClassifier) embeddingTopK(text string, topK int) []labelSc
 	}
 	var scores []scored
 
-	for _, anchor := range u.anchors {
+	for _, anchor := range anchors {
 		if len(anchor.Vecs) == 0 {
 			continue
 		}
