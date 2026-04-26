@@ -66,7 +66,7 @@
   }
   const startIndex = (llmProviderPage - 1) * llmProviderPageSize;
   const pageProviders = filteredProviders.slice(startIndex, startIndex + llmProviderPageSize);
-  const header = '<div class="row header" style="grid-template-columns:1.2fr 1.1fr .66fr .72fr .66fr .8fr .7fr .96fr;padding:8px 10px"><div>' + escapeHtml(lp('providerName')) + '</div><div>' + escapeHtml(lp('model')) + '</div><div>' + escapeHtml(lp('protocol')) + '</div><div>' + escapeHtml(lp('apiKey')) + '</div><div>' + escapeHtml(lp('maxConcurrency')) + '</div><div>' + escapeHtml(lp('usageTotal')) + '</div><div>' + escapeHtml(lpMetricLabel('cacheRate')) + '</div><div></div></div>';
+  const header = '<div class="row header" style="grid-template-columns:1.15fr 1.05fr .58fr .7fr .62fr .78fr .65fr 1.28fr;padding:8px 10px"><div>' + escapeHtml(lp('providerName')) + '</div><div>' + escapeHtml(lp('model')) + '</div><div>' + escapeHtml(lp('protocol')) + '</div><div>' + escapeHtml(lp('apiKey')) + '</div><div>' + escapeHtml(lp('maxConcurrency')) + '</div><div>' + escapeHtml(lp('usageTotal')) + '</div><div>' + escapeHtml(lpMetricLabel('cacheRate')) + '</div><div></div></div>';
   const rows = pageProviders.map(function(p) {
     const usage = lpUsage(p.usage);
     const isSelected = p.id === llmProviderSelectedId;
@@ -82,7 +82,7 @@
     const testColor = testState ? (testState.success ? 'var(--ok,#1f9d55)' : (testState.running ? 'var(--muted)' : 'var(--danger,#d64545)')) : 'var(--muted)';
     const testText = testState && testState.message ? escapeHtml(testState.message) : '-';
     return '<div class="item" data-provider-id="' + escapeHtml(p.id) + '" style="margin-bottom:6px;padding:0;overflow:hidden;border:' + (isSelected ? '1px solid rgba(47,128,237,.3)' : '1px solid var(--line)') + ';box-shadow:none;cursor:pointer" onclick="selectLLMProvider(this.dataset.providerId)">'
-      + '<div class="row" style="grid-template-columns:1.2fr 1.1fr .66fr .72fr .66fr .8fr .7fr .96fr;gap:8px;padding:9px 10px;border:none;background:' + (isSelected ? '#f8fbff' : '#fff') + '">'
+      + '<div class="row" style="grid-template-columns:1.15fr 1.05fr .58fr .7fr .62fr .78fr .65fr 1.28fr;gap:8px;padding:9px 10px;border:none;background:' + (isSelected ? '#f8fbff' : '#fff') + '">'
       + '<div style="min-width:0"><div style="display:flex;align-items:center;gap:5px;min-width:0"><div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.name || p.id) + '</div>' + defaultBadge + '</div><div class="item-meta mono" style="margin-top:2px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.id) + '</div></div>'
       + '<div style="min-width:0"><div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.model || '-') + '</div><div class="item-meta mono" style="margin-top:2px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.api_url || '-') + '</div></div>'
       + '<div><div class="mono" style="font-size:11px">' + escapeHtml(p.protocol || 'openai') + '</div><div class="item-meta" style="margin-top:2px;font-size:10px">' + escapeHtml(p.wire_api || 'chat') + '</div></div>'
@@ -90,9 +90,9 @@
       + '<div><div class="mono" style="font-size:11px">' + escapeHtml(concurrencyText) + '</div><div class="item-meta" style="margin-top:2px;font-size:10px">' + escapeHtml(lp('inFlight')) + ': ' + escapeHtml(String(Number(p.in_flight || 0))) + '</div></div>'
       + '<div><div class="mono" style="font-size:11px">' + escapeHtml(lpFormatInt(usage.total_tokens)) + '</div><div class="item-meta" style="margin-top:2px;font-size:10px">' + escapeHtml(lp('usageInput')) + ': ' + escapeHtml(lpFormatInt(usage.input_tokens)) + ' / ' + escapeHtml(lp('usageOutput')) + ': ' + escapeHtml(lpFormatInt(usage.output_tokens)) + '</div></div>'
       + '<div><div class="mono" style="font-size:11px;color:var(--ok,#1f9d55);font-weight:700">' + escapeHtml(lpRatePercent(usage.cached_requests, usage.requests)) + '</div><div class="item-meta" style="margin-top:2px;font-size:10px">' + escapeHtml(lpFormatInt(usage.cached_requests)) + ' / ' + escapeHtml(lpFormatInt(usage.requests)) + '</div></div>'
-      + '<div style="display:flex;justify-content:flex-end;gap:4px;flex-wrap:wrap"><button class="btn-secondary" style="height:26px;font-size:11px;padding:0 8px" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); testLLMProviderCard(this.dataset.providerId)"' + testButtonDisabled + '>' + escapeHtml(testButtonLabel) + '</button><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 8px" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); editLLMProvider(this.dataset.providerId)">' + escapeHtml(lp('edit')) + '</button><button class="btn-danger" style="height:26px;font-size:11px;padding:0 8px" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); removeLLMProviderById(this.dataset.providerId)">' + escapeHtml(lp('remove')) + '</button></div>'
+      + '<div style="display:flex;justify-content:flex-end;gap:6px;flex-wrap:nowrap;align-items:center"><button class="btn-secondary" style="height:24px;font-size:10px;padding:0 7px;white-space:nowrap" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); testLLMProviderCard(this.dataset.providerId)"' + testButtonDisabled + '>' + escapeHtml(testButtonLabel) + '</button><button class="btn-ghost" style="height:24px;font-size:10px;padding:0 7px;white-space:nowrap" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); editLLMProvider(this.dataset.providerId)">' + escapeHtml(lp('edit')) + '</button><button class="btn-danger" style="height:24px;font-size:10px;padding:0 7px;white-space:nowrap" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); removeLLMProviderById(this.dataset.providerId)">' + escapeHtml(lp('remove')) + '</button></div>'
       + '</div>'
-      + '<div style="padding:0 10px 8px;border-top:1px solid rgba(31,34,48,.05);background:' + (isSelected ? '#f8fbff' : '#fff') + '"><div class="item-meta" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:10px"><span class="mono">' + escapeHtml(lp('uaShort')) + ': ' + escapeHtml(p.agent_type || 'openclaw') + '</span><span>' + escapeHtml(lp('queueWaiters')) + ': ' + escapeHtml(String(Number(p.queue_waiters || 0))) + '</span><span>' + escapeHtml(lpMetricLabel('cacheReuseRate')) + ': <strong style="color:#4b82d8">' + escapeHtml(lpRatePercent(usage.cached_input_tokens, usage.input_tokens)) + '</strong></span><span>' + escapeHtml(lpMetricLabel('cacheRead')) + ': ' + escapeHtml(lpFormatInt(usage.cached_input_tokens)) + '</span><span>' + escapeHtml(lpMetricLabel('cacheWrite')) + ': ' + escapeHtml(lpFormatInt(usage.cache_write_tokens)) + '</span><span style="color:' + testColor + '">' + testText + '</span></div></div>'
+      + '<div style="padding:0 10px 8px;border-top:1px solid rgba(31,34,48,.05);background:' + (isSelected ? '#f8fbff' : '#fff') + '"><div class="item-meta llm-provider-meta-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:10px"><span class="mono">' + escapeHtml(lp('uaShort')) + ': ' + escapeHtml(p.agent_type || 'openclaw') + '</span><span>' + escapeHtml(lp('queueWaiters')) + ': ' + escapeHtml(String(Number(p.queue_waiters || 0))) + '</span><span>' + escapeHtml(lpMetricLabel('cacheReuseRate')) + ': <strong style="color:#4b82d8">' + escapeHtml(lpRatePercent(usage.cached_input_tokens, usage.input_tokens)) + '</strong></span><span>' + escapeHtml(lpMetricLabel('cacheRead')) + ': ' + escapeHtml(lpFormatInt(usage.cached_input_tokens)) + '</span><span>' + escapeHtml(lpMetricLabel('cacheWrite')) + ': ' + escapeHtml(lpFormatInt(usage.cache_write_tokens)) + '</span><span style="color:' + testColor + '">' + testText + '</span></div></div>'
       + '</div>';
   }).join('');
   root.innerHTML = actionsRow + searchRow + searchMeta + '<div class="table" style="gap:4px">' + header + rows + '</div>';
@@ -531,11 +531,15 @@ if (baseRenderLLMProvidersResilience) {
       if (!provider) return;
       var marker = card.querySelector('.llm-provider-resilience');
       if (!marker) {
-        marker = document.createElement('div');
-        marker.className = 'item-meta llm-provider-resilience';
-        marker.style.marginTop = '6px';
-        card.appendChild(marker);
+        marker = document.createElement('span');
+        marker.className = 'llm-provider-resilience';
       }
+      marker.style.display = 'inline-flex';
+      marker.style.alignItems = 'center';
+      marker.style.whiteSpace = 'nowrap';
+      var metaRow = card.querySelector('.llm-provider-meta-row');
+      if (metaRow && marker.parentElement !== metaRow) metaRow.appendChild(marker);
+      else if (!marker.parentElement) card.appendChild(marker);
       marker.textContent = lp('resilienceState') + ': ' + llmProviderResilienceSummary(provider);
     });
   };
@@ -1312,7 +1316,7 @@ function renderLLMProviderPromptCachePanel() {
         + '<div class="mono" style="font-size:11px">' + escapeHtml(statusText) + '</div>'
         + '<div class="mono" style="font-size:11px;color:#10aeca">' + escapeHtml(lpFormatInt(item.cached_input_tokens || 0)) + '</div>'
         + '<div class="mono" style="font-size:11px;color:#9b5de5">' + escapeHtml(lpFormatInt(item.cache_write_tokens || 0)) + '</div>'
-        + '<div style="display:flex;justify-content:flex-end"><button class="btn-secondary" type="button" style="height:28px;padding:0 10px" onclick="viewLLMProviderPromptCacheEntry(' + "'" + encodeURIComponent(detailId) + "'" + ')">' + escapeHtml(lp('cacheInspectView')) + '</button></div>'
+        + '<div style="display:flex;justify-content:flex-end"><button class="btn-secondary" type="button" style="height:24px;padding:0 8px;font-size:11px;line-height:1;white-space:nowrap" onclick="viewLLMProviderPromptCacheEntry(' + "'" + encodeURIComponent(detailId) + "'" + ')">' + escapeHtml(lp('cacheInspectView')) + '</button></div>'
         + '</div>';
     }).join('');
     listHTML = '<div class="table" style="gap:4px">' + header + rows + '</div>';
@@ -1615,11 +1619,15 @@ if (baseRenderLLMProvidersUpstreamTimeout) {
       if (!provider) return;
       var marker = card.querySelector('.llm-provider-upstream-timeout');
       if (!marker) {
-        marker = document.createElement('div');
-        marker.className = 'item-meta llm-provider-upstream-timeout';
-        marker.style.marginTop = '4px';
-        card.appendChild(marker);
+        marker = document.createElement('span');
+        marker.className = 'llm-provider-upstream-timeout';
       }
+      marker.style.display = 'inline-flex';
+      marker.style.alignItems = 'center';
+      marker.style.whiteSpace = 'nowrap';
+      var metaRow = card.querySelector('.llm-provider-meta-row');
+      if (metaRow && marker.parentElement !== metaRow) metaRow.appendChild(marker);
+      else if (!marker.parentElement) card.appendChild(marker);
       marker.textContent = lp('upstreamTimeoutBadge') + ': ' + String(llmProviderNormalizeUpstreamTimeoutSec(provider.upstream_timeout_sec)) + 's';
     });
   };

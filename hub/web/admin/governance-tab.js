@@ -128,15 +128,14 @@
       var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="padding:4px 8px;font-size:10px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '<span class="badge info" style="padding:4px 8px;font-size:10px">-</span>';
       var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" onclick="unbindBoundUser(this.dataset.email)">' + escapeHtml(gt('unbindUser')) + '</button>';
       return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
-        + '<div style="display:flex;flex-direction:column;gap:6px">'
-        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0">'
-        + '<div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1">' + escapeHtml(item.email) + '</div>'
-        + '<div style="display:flex;align-items:center;gap:4px;flex-shrink:0">'
+        + '<div style="display:flex;flex-direction:column;gap:8px;min-width:0">'
+        + '<div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">' + escapeHtml(item.email) + '</div>'
+        + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0">'
         + '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(formatStatus(item.enrollment_status || item.status || 'active')) + '</span>'
         + serviceBadge
-        + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '" style="justify-content:flex-end;font-size:11px"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' data-user-id="' + escapeHtml(String(item.id || '')) + '" onchange="toggleSmartRoute(this.dataset.userId, this.checked)"><span>AI</span></label>'
+        + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '" style="justify-content:flex-start;font-size:11px"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' data-user-id="' + escapeHtml(String(item.id || '')) + '" onchange="toggleSmartRoute(this.dataset.userId, this.checked)"><span>AI</span></label>'
         + unbindBtn
-        + '</div></div>'
+        + '</div>'
         + '<div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">' + escapeHtml(item.sn || tr('na')) + '</div>'
         + '</div></div>';
     }).join('');
