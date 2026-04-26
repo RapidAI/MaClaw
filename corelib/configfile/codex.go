@@ -69,7 +69,7 @@ func WriteCodexConfig(apiKey, baseURL, modelID, providerName, wireApi string) er
 // buildCodexConfigToml reads existing config.toml and incrementally updates
 // only the provider-specific fields, preserving MCP servers, profiles, etc.
 func buildCodexConfigToml(configPath, baseURL, modelID, providerName, wireApi string) (string, error) {
-	providerName = sanitizeTomlKey(providerName)
+	providerName = CodexProviderKey(providerName)
 	if providerName == "" {
 		providerName = "custom"
 	}
@@ -245,6 +245,19 @@ func generateFreshCodexToml(providerName, modelID, baseURL, wireApi string) stri
 
 func sanitizeTomlKey(s string) string {
 	return SanitizeID(s)
+}
+
+func CodexProviderKey(providerName string) string {
+	return normalizeCodexProviderKey(sanitizeTomlKey(providerName))
+}
+
+func normalizeCodexProviderKey(providerName string) string {
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "openai":
+		return "openai-compatible"
+	default:
+		return providerName
+	}
 }
 
 // ReadCodexAuth reads ~/.codex/auth.json for backfill.

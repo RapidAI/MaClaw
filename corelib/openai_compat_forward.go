@@ -26,6 +26,8 @@ func ForwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 		clean[k] = v
 	}
 	delete(clean, "stream_options")
+	delete(clean, "provider")
+	delete(clean, "model_provider")
 
 	wireAPI := strings.ToLower(strings.TrimSpace(cfg.WireAPI))
 	switch {

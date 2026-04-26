@@ -47,9 +47,10 @@
     + '<button class="btn-ghost" type="button" id="llmProvidersImportBtn" onclick="triggerLLMProvidersImport()">' + escapeHtml(lp('import')) + '</button>'
     + '<input id="llmProvidersImportInput" type="file" accept="application/json,.json" class="hidden" onchange="importLLMProvidersJSON(event)">'
     + '</div>';
-  const searchRow = '<div class="row" style="grid-template-columns:minmax(0,1.35fr) minmax(120px,.72fr) minmax(136px,.76fr) auto;gap:6px;margin-bottom:8px;padding:0;border:none;background:transparent">'
+  const searchRow = '<div class="row" style="grid-template-columns:minmax(0,1.35fr) minmax(120px,.72fr) auto minmax(136px,.76fr) auto;gap:8px;margin-bottom:8px;padding:0;border:none;background:transparent;align-items:center">'
     + '<input id="llmProviderSearchInput" value="' + escapeHtml(llmProviderFilter) + '" placeholder="' + escapeHtml(lp('searchPlaceholder')) + '" style="height:34px" oninput="setLLMProviderFilter(this.value)">'
     + '<select id="llmProviderProtocolFilter" style="height:34px" onchange="setLLMProviderProtocolFilter(this.value)"><option value="">' + escapeHtml(lp('allProtocols')) + '</option>' + protocolOptions + '</select>'
+    + '<button class="btn-primary" type="button" id="llmProviderCreateInlineBtn" style="height:34px;padding:0 14px;font-size:12px;white-space:nowrap" onclick="addLLMProvider()">' + escapeHtml(lp('add')) + '</button>'
     + '<select id="llmProviderKeyFilter" style="height:34px" onchange="setLLMProviderKeyFilter(this.value)"><option value="all"' + (llmProviderKeyFilter === 'all' ? ' selected' : '') + '>' + escapeHtml(lp('allKeyStates')) + '</option><option value="with_key"' + (llmProviderKeyFilter === 'with_key' ? ' selected' : '') + '>' + escapeHtml(lp('withKey')) + '</option><option value="without_key"' + (llmProviderKeyFilter === 'without_key' ? ' selected' : '') + '>' + escapeHtml(lp('withoutKey')) + '</option></select>'
     + '<button class="btn-ghost" style="height:34px;padding:0 10px;font-size:11px" onclick="window.__resetLLMProviderFilters && window.__resetLLMProviderFilters()">' + escapeHtml(lp('clearSearch')) + '</button>'
     + '</div>';
@@ -77,7 +78,12 @@
     const concurrencyText = concurrency > 0 ? String(concurrency) : lp('concurrencyUnlimited');
 
     const testState = llmProviderCardTestState[p.id] || null;
-    const testButtonLabel = testState && testState.running ? lp('testRunning') : lp('test');
+    const testButtonTitle = testState && testState.running ? lp('testRunning') : lp('test');
+    const testButtonText = testState && testState.running ? '...' : (isZh ? '\u6d4b' : 'T');
+    const editButtonTitle = lp('edit');
+    const editButtonText = isZh ? '\u6539' : 'E';
+    const removeButtonTitle = lp('remove');
+    const removeButtonText = isZh ? '\u5220' : 'D';
     const testButtonDisabled = testState && testState.running ? ' disabled' : '';
     const testColor = testState ? (testState.success ? 'var(--ok,#1f9d55)' : (testState.running ? 'var(--muted)' : 'var(--danger,#d64545)')) : 'var(--muted)';
     const testText = testState && testState.message ? escapeHtml(testState.message) : '-';
@@ -90,7 +96,7 @@
       + '<div><div class="mono" style="font-size:11px">' + escapeHtml(concurrencyText) + '</div><div class="item-meta" style="margin-top:2px;font-size:10px">' + escapeHtml(lp('inFlight')) + ': ' + escapeHtml(String(Number(p.in_flight || 0))) + '</div></div>'
       + '<div><div class="mono" style="font-size:11px">' + escapeHtml(lpFormatInt(usage.total_tokens)) + '</div><div class="item-meta" style="margin-top:2px;font-size:10px">' + escapeHtml(lp('usageInput')) + ': ' + escapeHtml(lpFormatInt(usage.input_tokens)) + ' / ' + escapeHtml(lp('usageOutput')) + ': ' + escapeHtml(lpFormatInt(usage.output_tokens)) + '</div></div>'
       + '<div><div class="mono" style="font-size:11px;color:var(--ok,#1f9d55);font-weight:700">' + escapeHtml(lpRatePercent(usage.cached_requests, usage.requests)) + '</div><div class="item-meta" style="margin-top:2px;font-size:10px">' + escapeHtml(lpFormatInt(usage.cached_requests)) + ' / ' + escapeHtml(lpFormatInt(usage.requests)) + '</div></div>'
-      + '<div style="display:flex;justify-content:flex-end;gap:6px;flex-wrap:nowrap;align-items:center"><button class="btn-secondary" style="height:24px;font-size:10px;padding:0 7px;white-space:nowrap" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); testLLMProviderCard(this.dataset.providerId)"' + testButtonDisabled + '>' + escapeHtml(testButtonLabel) + '</button><button class="btn-ghost" style="height:24px;font-size:10px;padding:0 7px;white-space:nowrap" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); editLLMProvider(this.dataset.providerId)">' + escapeHtml(lp('edit')) + '</button><button class="btn-danger" style="height:24px;font-size:10px;padding:0 7px;white-space:nowrap" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); removeLLMProviderById(this.dataset.providerId)">' + escapeHtml(lp('remove')) + '</button></div>'
+      + '<div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:nowrap;align-items:center;min-width:0"><button class="btn-secondary" title="' + escapeHtml(testButtonTitle) + '" aria-label="' + escapeHtml(testButtonTitle) + '" style="flex:0 0 34px;width:34px;min-width:0;height:24px;font-size:10px;padding:0;white-space:nowrap;overflow:hidden;text-align:center" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); testLLMProviderCard(this.dataset.providerId)"' + testButtonDisabled + '>' + escapeHtml(testButtonText) + '</button><button class="btn-ghost" title="' + escapeHtml(editButtonTitle) + '" aria-label="' + escapeHtml(editButtonTitle) + '" style="flex:0 0 34px;width:34px;min-width:0;height:24px;font-size:10px;padding:0;white-space:nowrap;overflow:hidden;text-align:center" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); editLLMProvider(this.dataset.providerId)">' + escapeHtml(editButtonText) + '</button><button class="btn-danger" title="' + escapeHtml(removeButtonTitle) + '" aria-label="' + escapeHtml(removeButtonTitle) + '" style="flex:0 0 34px;width:34px;min-width:0;height:24px;font-size:10px;padding:0;white-space:nowrap;overflow:hidden;text-align:center" data-provider-id="' + escapeHtml(p.id) + '" onclick="event.stopPropagation(); removeLLMProviderById(this.dataset.providerId)">' + escapeHtml(removeButtonText) + '</button></div>'
       + '</div>'
       + '<div style="padding:0 10px 8px;border-top:1px solid rgba(31,34,48,.05);background:' + (isSelected ? '#f8fbff' : '#fff') + '"><div class="item-meta llm-provider-meta-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:10px"><span class="mono">' + escapeHtml(lp('uaShort')) + ': ' + escapeHtml(p.agent_type || 'openclaw') + '</span><span>' + escapeHtml(lp('queueWaiters')) + ': ' + escapeHtml(String(Number(p.queue_waiters || 0))) + '</span><span>' + escapeHtml(lpMetricLabel('cacheReuseRate')) + ': <strong style="color:#4b82d8">' + escapeHtml(lpRatePercent(usage.cached_input_tokens, usage.input_tokens)) + '</strong></span><span>' + escapeHtml(lpMetricLabel('cacheRead')) + ': ' + escapeHtml(lpFormatInt(usage.cached_input_tokens)) + '</span><span>' + escapeHtml(lpMetricLabel('cacheWrite')) + ': ' + escapeHtml(lpFormatInt(usage.cache_write_tokens)) + '</span><span style="color:' + testColor + '">' + testText + '</span></div></div>'
       + '</div>';
@@ -524,7 +530,7 @@ if (baseRenderLLMProvidersResilience) {
     }
     var selected = lpById(llmProviderSelectedId);
     if (llmProviderDialogOpen()) llmProviderWriteResilienceForm(selected || {});
-    var cards = document.querySelectorAll('[data-provider-id]');
+    var cards = document.querySelectorAll('.item[data-provider-id]');
     cards.forEach(function(card) {
       var id = card.getAttribute('data-provider-id');
       var provider = lpById(id);
@@ -540,7 +546,7 @@ if (baseRenderLLMProvidersResilience) {
       var metaRow = card.querySelector('.llm-provider-meta-row');
       if (metaRow && marker.parentElement !== metaRow) metaRow.appendChild(marker);
       else if (!marker.parentElement) card.appendChild(marker);
-      marker.textContent = lp('resilienceState') + ': ' + llmProviderResilienceSummary(provider);
+      var resilienceText = (currentLang === 'zh' ? '\u5931\u8d25: ' : 'Fail: ') + String(provider.consecutive_failures || 0); if (provider.circuit_open) resilienceText += currentLang === 'zh' ? ' | \u7194\u65ad' : ' | Open'; else if (provider.backoff_until) resilienceText += currentLang === 'zh' ? ' | \u9000\u907f' : ' | Backoff'; marker.textContent = resilienceText;
     });
   };
 }
@@ -1612,7 +1618,7 @@ if (baseRenderLLMProvidersUpstreamTimeout) {
     baseRenderLLMProvidersUpstreamTimeout();
     var selected = lpById(llmProviderSelectedId);
     if (llmProviderDialogOpen()) llmProviderWriteUpstreamTimeoutSec(selected || { upstream_timeout_sec: 900 });
-    var cards = document.querySelectorAll('[data-provider-id]');
+    var cards = document.querySelectorAll('.item[data-provider-id]');
     cards.forEach(function(card) {
       var id = card.getAttribute('data-provider-id');
       var provider = lpById(id);
@@ -1628,7 +1634,7 @@ if (baseRenderLLMProvidersUpstreamTimeout) {
       var metaRow = card.querySelector('.llm-provider-meta-row');
       if (metaRow && marker.parentElement !== metaRow) metaRow.appendChild(marker);
       else if (!marker.parentElement) card.appendChild(marker);
-      marker.textContent = lp('upstreamTimeoutBadge') + ': ' + String(llmProviderNormalizeUpstreamTimeoutSec(provider.upstream_timeout_sec)) + 's';
+      marker.textContent = (currentLang === 'zh' ? '\u8d85\u65f6: ' : 'Timeout: ') + String(llmProviderNormalizeUpstreamTimeoutSec(provider.upstream_timeout_sec)) + 's';
     });
   };
 }

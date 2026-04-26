@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 )
 
 // CodexAdapter launches the OpenAI Codex CLI in non-interactive SDK mode
@@ -78,6 +81,12 @@ func (a *CodexAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 
 	if !isOriginal && spec.ModelID != "" {
 		args = append(args, "--model", spec.ModelID)
+	}
+	if !isOriginal {
+		providerKey := configfile.CodexProviderKey(spec.ModelName)
+		if strings.TrimSpace(providerKey) != "" {
+			args = append(args, "-c", fmt.Sprintf("model_provider=%q", providerKey))
+		}
 	}
 
 	if spec.ResumeSessionID != "" {

@@ -7,6 +7,27 @@ import (
 	"testing"
 )
 
+func TestWriteCodexConfigAvoidsOpenAIReservedProviderName(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	if err := WriteCodexConfig("sk-test", "http://127.0.0.1:20128/v1", "codex/gpt-5.4", "openai", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, `model_provider = "openai"`) || strings.Contains(content, "[model_providers.openai]") {
+		t.Fatalf("reserved openai provider key leaked into config.toml:\n%s", content)
+	}
+	if !strings.Contains(content, `model_provider = "openai-compatible"`) || !strings.Contains(content, "[model_providers.openai-compatible]") {
+		t.Fatalf("openai provider was not normalized safely:\n%s", content)
+	}
+}
+
 func TestClearCodexThirdPartySettings_ClearsAuthJSON(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

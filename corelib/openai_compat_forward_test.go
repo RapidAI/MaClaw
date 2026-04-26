@@ -1,6 +1,10 @@
 package corelib
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -26,6 +30,40 @@ func TestOpenAIChatCompletionsEndpoint(t *testing.T) {
 				t.Errorf("openAIChatCompletionsEndpoint(%q) = %q, want %q", tt.baseURL, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestForwardOpenAICompatRequestStripsClientProviderHints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if _, ok := body["provider"]; ok {
+			t.Fatalf("provider hint leaked upstream: %+v", body)
+		}
+		if _, ok := body["model_provider"]; ok {
+			t.Fatalf("model_provider hint leaked upstream: %+v", body)
+		}
+		if body["model"] != "upstream-model" {
+			t.Fatalf("model = %v, want upstream-model", body["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "chatcmpl-test", "object": "chat.completion", "model": "upstream-model", "choices": []any{}})
+	}))
+	defer server.Close()
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: server.URL, Model: "upstream-model"}, map[string]any{
+		"model":          "auto",
+		"provider":       "openai",
+		"model_provider": "openai",
+		"messages":       []any{},
+	}, server.Client(), "auto")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
 	}
 }
 

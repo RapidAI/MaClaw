@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 )
 
 // CodexEvent 表示 `codex exec --json` 的单个 JSONL 事件。
@@ -207,8 +208,8 @@ func BuildCodexConfigToml(m *corelib.ModelConfig) string {
 	case "阿里云":
 		providerName = "aliyun"
 	}
-	// Sanitize for use as TOML bare key
-	providerName = sanitizeTomlKey(providerName)
+	// Sanitize for use as TOML bare key and avoid Codex reserved provider names.
+	providerName = configfile.CodexProviderKey(providerName)
 
 	modelId := strings.TrimSpace(m.ModelId)
 	if modelId == "" {
