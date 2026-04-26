@@ -1,7 +1,13 @@
 build/bin
-dist/
+/dist/
 node_modules
-frontend/dist
+gui/frontend/dist
+iWorker/frontend/dist
+iWorker/dist/
+iWorkerCenter/frontend/dist/
+iWorkerCenter/web/admin/dist/
+iWorkerCloud/web/admin/dist/
+hub/web/dist/
 build/windows/installer/tmp
 .kode/
 .kiro/

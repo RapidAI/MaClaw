@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>srvdemo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">MaClawSrv Demo Console</p>
+          <h1>srvdemo</h1>
+          <p class="hero-copy">A Wails desktop demo that shows how to integrate with MaClawSrv through REST APIs, including auth, config, instances, Skill operations, and MCP management.</p>
+        </div>
+        <div class="hero-status">
+          <div>
+            <span class="status-label">Bridge</span>
+            <strong id="bridgeStatus">Unknown</strong>
+          </div>
+          <div>
+            <span class="status-label">Base URL</span>
+            <strong id="baseUrlView">-</strong>
+          </div>
+        </div>
+      </header>
+
+      <section id="operationBanner" class="operation-banner idle">
+        <div>
+          <span class="status-label">Last Operation</span>
+          <strong id="operationTitle">Idle</strong>
+        </div>
+        <p id="operationDetail">Authenticate first, then continue with Skills, MCP, and agent flows.</p>
+      </section>
+
+      <section class="card span-2 quick-guide-panel">
+        <div class="card-head">
+          <h2>Quick Guide</h2>
+        </div>
+        <div class="api-grid" id="quickGuideGrid">
+          <p class="capability-empty">The next-step hints will update automatically as you fill the form.</p>
+        </div>
+      </section>
+
+      <section class="card span-2 checklist-panel">
+        <div class="card-head">
+          <h2>Integration Checklist</h2>
+        </div>
+        <div class="api-grid" id="integrationChecklistGrid">
+          <p class="capability-empty">Readiness checks for auth, config, runtime, and common failures will appear here.</p>
+        </div>
+      </section>
+
+      <section class="card span-2 playbook-panel">
+        <div class="card-head">
+          <h2>Playbooks</h2>
+        </div>
+        <div class="api-grid" id="playbookGrid">
+          <p class="capability-empty">Bootstrap, config, and first-message REST snippets will appear here.</p>
+        </div>
+      </section>
+
+      <section class="card span-2 demo-flow-panel">
+        <div class="card-head">
+          <h2>Demo Flow</h2>
+        </div>
+        <div class="api-grid" id="demoFlowGrid">
+          <p class="capability-empty">The runnable integration flow will appear here after the page loads.</p>
+        </div>
+      </section>
+
+      <section class="card span-2 response-samples-panel">
+        <div class="card-head">
+          <h2>Response Samples</h2>
+        </div>
+        <div class="api-grid" id="responseSamplesGrid">
+          <p class="capability-empty">Success and error response examples will appear here after the page loads.</p>
+        </div>
+      </section>
+      <section class="card span-2 integration-pack-panel">
+        <div class="card-head">
+          <h2>Integration Pack</h2>
+          <div class="actions">
+            <button id="copyIntegrationPackBtn" class="ghost">Copy Markdown</button>
+          </div>
+        </div>
+        <textarea id="integrationPackEditor" class="editor short integration-pack-editor" spellcheck="false" readonly placeholder="A reusable Markdown integration pack will appear here."></textarea>
+      </section>
+
+
+      <main class="grid">
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>Connection</h2>
+            <div class="actions">
+              <button id="saveSettingsBtn" class="ghost">Save</button>
+              <button id="healthBtn" class="ghost">Health</button>
+              <button id="loginBtn">Login</button>
+              <button id="clearTokenBtn" class="ghost">Clear Token</button>
+            </div>
+          </div>
+          <div class="form-grid">
+            <label>
+              <span>Base URL</span>
+              <input id="baseUrl" placeholder="http://127.0.0.1:18080" />
+            </label>
+            <label>
+              <span>Timeout (sec)</span>
+              <input id="timeoutSec" type="number" min="1" value="60" />
+            </label>
+            <label class="span-2">
+              <span>Admin Secret</span>
+              <input id="adminSecret" type="password" placeholder="Required for admin APIs" />
+            </label>
+            <label>
+              <span>API Key</span>
+              <input id="apiKey" placeholder="ak-..." />
+            </label>
+            <label>
+              <span>API Secret</span>
+              <input id="apiSecret" type="password" placeholder="Your api_secret" />
+            </label>
+            <label class="span-2 inline-check">
+              <input id="skipTLSVerify" type="checkbox" />
+              <span>Skip TLS verification</span>
+            </label>
+            <label class="span-2">
+              <span>Access Token</span>
+              <textarea id="accessToken" rows="3" placeholder="Bearer token after login"></textarea>
+            </label>
+          </div>
+          <pre id="authOutput" class="output small"></pre>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Admin Bootstrap</h2>
+            <div class="actions">
+              <button id="provisionDemoBtn">Provision Demo</button>
+              <button id="listTenantsBtn" class="ghost">List Tenants</button>
+              <button id="createTenantBtn" class="ghost">Create Tenant</button>
+            </div>
+          </div>
+          <div class="form-grid compact">
+            <label>
+              <span>Tenant Name</span>
+              <input id="tenantName" placeholder="Demo Tenant" value="Demo Tenant" />
+            </label>
+            <label>
+              <span>Tenant ID</span>
+              <input id="tenantId" placeholder="tenant_xxx" />
+            </label>
+            <label>
+              <span>User Name</span>
+              <input id="userName" placeholder="Demo User" value="Demo User" />
+            </label>
+            <label>
+              <span>Credential Name</span>
+              <input id="userEmail" placeholder="demo@example.com" />
+            </label>
+            <label>
+              <span>User ID</span>
+              <input id="userId" placeholder="user_xxx" />
+            </label>
+            <label>
+              <span>Archive Name</span>
+              <input id="credentialName" placeholder="demo-credential" value="demo-credential" />
+            </label>
+            <label>
+              <span>New API Key (optional)</span>
+              <input id="newApiKey" placeholder="demo-api-key" />
+            </label>
+            <label>
+              <span>New API Secret (optional)</span>
+              <input id="newApiSecret" type="password" placeholder="demo-api-secret" />
+            </label>
+            <label>
+              <span>Tenant Page Limit</span>
+              <input id="adminTenantLimit" type="number" min="1" value="10" />
+            </label>
+            <label>
+              <span>Tenant Before</span>
+              <input id="adminTenantBefore" placeholder="2026-04-25T10:00:00Z" />
+            </label>
+            <label>
+              <span>User Page Limit</span>
+              <input id="adminUserLimit" type="number" min="1" value="10" />
+            </label>
+            <label>
+              <span>User Before</span>
+              <input id="adminUserBefore" placeholder="2026-04-25T10:00:00Z" />
+            </label>
+            <label>
+              <span>Credential Page Limit</span>
+              <input id="adminCredentialLimit" type="number" min="1" value="10" />
+            </label>
+            <label>
+              <span>Credential Before</span>
+              <input id="adminCredentialBefore" placeholder="2026-04-25T10:00:00Z" />
+            </label>
+            <label>
+              <span>Tenant Max Instances</span>
+              <input id="tenantMaxInstances" type="number" min="0" placeholder="leave blank to keep" />
+            </label>
+            <label>
+              <span>Tenant Max Sessions</span>
+              <input id="tenantMaxSessions" type="number" min="0" placeholder="leave blank to keep" />
+            </label>
+            <label>
+              <span>Tenant Max Messages</span>
+              <input id="tenantMaxMessages" type="number" min="0" placeholder="leave blank to keep" />
+            </label>
+            <label>
+              <span>Tenant Max Runs</span>
+              <input id="tenantMaxRuns" type="number" min="0" placeholder="leave blank to keep" />
+            </label>
+            <label>
+              <span>User Max Instances</span>
+              <input id="userMaxInstances" type="number" min="0" placeholder="leave blank to keep" />
+            </label>
+            <label>
+              <span>User Max Sessions</span>
+              <input id="userMaxSessions" type="number" min="0" placeholder="leave blank to keep" />
+            </label>
+            <label>
+              <span>User Max Messages</span>
+              <input id="userMaxMessages" type="number" min="0" placeholder="leave blank to keep" />
+            </label>
+            <label>
+              <span>User Max Runs</span>
+              <input id="userMaxRuns" type="number" min="0" placeholder="leave blank to keep" />
+            </label>
+          </div>
+          <div class="actions inline-actions">
+            <button id="updateTenantBtn" class="ghost">Update Tenant</button>
+            <button id="listUsersBtn" class="ghost">List Users</button>
+            <button id="createUserBtn" class="ghost">Create User</button>
+            <button id="updateUserBtn" class="ghost">Update User</button>
+            <button id="listCredentialsBtn" class="ghost">List Credentials</button>
+            <button id="createCredentialBtn">Create Credential</button>
+          </div>
+          <pre id="adminOutput" class="output"></pre>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Admin Registry</p>
+                <h3>Tenants</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="adminTenantGrid">
+              <p class="capability-empty">Load tenants to browse the admin tenant registry.</p>
+            </div>
+          </section>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Admin Registry</p>
+                <h3>Users</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="adminUserGrid">
+              <p class="capability-empty">Select a tenant, then load users to inspect tenant membership.</p>
+            </div>
+          </section>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Admin Registry</p>
+                <h3>Credentials</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="adminCredentialGrid">
+              <p class="capability-empty">Select a tenant and user, then load credentials to inspect access keys.</p>
+            </div>
+          </section>
+        </section>
+
+        <section class="card span-2 admin-insights-panel">
+          <div class="card-head">
+            <h2>Admin Insights</h2>
+            <div class="actions">
+              <button id="adminOverviewBtn" class="ghost">Overview</button>
+              <button id="adminDashboardBtn" class="ghost">Dashboard</button>
+              <button id="adminAlertsBtn" class="ghost">Alerts</button>
+              <button id="adminAuditBtn" class="ghost">Audit</button>
+              <button id="tenantSummaryBtn">Tenant Summary</button>
+            </div>
+          </div>
+          <div class="form-grid compact admin-filter-grid">
+            <label>
+              <span>Alert Tenant ID</span>
+              <input id="adminAlertTenantId" placeholder="tenant_xxx" />
+            </label>
+            <label>
+              <span>Alert User ID</span>
+              <input id="adminAlertUserId" placeholder="user_xxx" />
+            </label>
+            <label>
+              <span>Alert Kind</span>
+              <select id="adminAlertKind">
+                <option value="">all</option>
+                <option value="unready_instance">unready_instance</option>
+                <option value="waiting_run">waiting_run</option>
+                <option value="failed_run">failed_run</option>
+              </select>
+            </label>
+            <label>
+              <span>Alert Since</span>
+              <input id="adminAlertSince" placeholder="2026-04-25T10:00:00Z" />
+            </label>
+            <label>
+              <span>Alert Limit</span>
+              <input id="adminAlertLimit" type="number" min="1" value="10" />
+            </label>
+            <label>
+              <span>Audit Action</span>
+              <input id="adminAuditAction" placeholder="user.created" />
+            </label>
+            <label>
+              <span>Audit Resource Type</span>
+              <input id="adminAuditResourceType" placeholder="instance" />
+            </label>
+            <label>
+              <span>Audit Before</span>
+              <input id="adminAuditBefore" placeholder="2026-04-25T10:00:00Z" />
+            </label>
+            <label>
+              <span>Audit Limit</span>
+              <input id="adminAuditLimit" type="number" min="1" value="20" />
+            </label>
+          </div>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Admin Overview</p>
+                <h3>Service Summary</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="adminOverviewGrid">
+              <p class="capability-empty">Load admin overview to inspect total tenants, users, instances, runs, and audit events.</p>
+            </div>
+          </section>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Admin Dashboard</p>
+                <h3>Recent Trends</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="adminDashboardGrid">
+              <p class="capability-empty">Load dashboard to inspect recent audit events and 24h/7d activity buckets.</p>
+            </div>
+          </section>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Admin Alerts</p>
+                <h3>Operator Feed</h3>
+              </div>
+            </div>
+            <div class="api-grid" id="adminAlertsGrid">
+              <p class="capability-empty">Load alerts to inspect unready instances, waiting runs, and failed runs.</p>
+            </div>
+          </section>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Audit Events</p>
+                <h3>Operation Timeline</h3>
+              </div>
+            </div>
+            <div class="api-grid" id="adminAuditGrid">
+              <p class="capability-empty">Load audit events to inspect tenant, user, credential, config, instance, and run operations.</p>
+            </div>
+          </section>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Config</h2>
+            <div class="actions">
+              <button id="schemaBtn" class="ghost">Schema</button>
+              <button id="loadConfigBtn" class="ghost">Load</button>
+              <button id="validateConfigBtn" class="ghost">Validate</button>
+              <button id="testConfigBtn" class="ghost">Test</button>
+              <button id="saveConfigBtn">Save</button>
+            </div>
+          </div>
+          <textarea id="configEditor" class="editor" spellcheck="false" placeholder='{"maclaw_llm_url":"https://...","maclaw_llm_key":"sk-...","maclaw_llm_model":"gpt-5.4"}'></textarea>
+          <pre id="configOutput" class="output"></pre>
+        </section>
+
+        <section class="card">
+  <div class="card-head">
+    <h2>MCP Management</h2>
+    <div class="actions">
+      <button id="listMcpBtn" class="ghost">List MCP</button>
+      <button id="getMcpBtn" class="ghost">Get</button>
+      <button id="checkMcpBtn" class="ghost">Health</button>
+      <button id="startMcpBtn" class="ghost">Start</button>
+      <button id="stopMcpBtn" class="ghost">Stop</button>
+      <button id="deleteMcpBtn">Delete</button>
+      <button id="mcpFilesystemTemplateBtn" class="ghost">Filesystem</button>
+      <button id="mcpGitTemplateBtn" class="ghost">Git</button>
+      <button id="mcpSQLiteTemplateBtn" class="ghost">SQLite</button>
+      <button id="mcpRemoteTemplateBtn" class="ghost">Remote</button>
+    </div>
+  </div>
+  <div class="form-grid compact">
+    <label>
+      <span>Submission ID</span>
+      <input id="mcpServerId" placeholder="mcp_remote_xxx" />
+    </label>
+    <label>
+      <span>Kind</span>
+      <select id="mcpKind">
+        <option value="remote">remote</option>
+        <option value="local">local</option>
+      </select>
+    </label>
+    <label>
+      <span>Name</span>
+      <input id="mcpName" placeholder="Docs MCP" value="Docs MCP" />
+    </label>
+    <label class="mcp-remote-field">
+      <span>Instance Name</span>
+      <select id="mcpAuthType">
+        <option value="none">none</option>
+        <option value="bearer">bearer</option>
+        <option value="api_key">api_key</option>
+      </select>
+    </label>
+    <label class="span-2 mcp-remote-field">
+      <span>Endpoint URL</span>
+      <input id="mcpEndpointUrl" placeholder="https://mcp.example.com" />
+    </label>
+    <label class="span-2 mcp-remote-field">
+      <span>Auth Secret</span>
+      <input id="mcpAuthSecret" type="password" placeholder="Bearer Token ? API Key" />
+    </label>
+    <label class="span-2 mcp-local-field">
+      <span>Command</span>
+      <input id="mcpCommand" placeholder="npx" />
+    </label>
+    <label class="span-2 mcp-local-field">
+      <span>Message Title</span>
+      <input id="mcpArgs" placeholder="-y,@modelcontextprotocol/server-filesystem,D:\workprj\aicoder" />
+    </label>
+    <label class="span-2 mcp-remote-field">
+      <span>Headers JSON</span>
+      <textarea id="mcpHeaders" rows="3" placeholder='{"X-Custom-Key":"value"}'></textarea>
+    </label>
+    <label class="span-2 mcp-local-field">
+      <span>Headers JSON</span>
+      <textarea id="mcpEnv" rows="3" placeholder='{"NODE_ENV":"production"}'></textarea>
+    </label>
+    <label class="inline-check">
+      <input id="mcpDisabled" type="checkbox" />
+      <span>Disabled</span>
+    </label>
+    <label class="inline-check">
+      <input id="mcpAutoStart" type="checkbox" />
+      <span>Auto Start</span>
+    </label>
+  </div>
+  <div class="actions inline-actions">
+    <button id="createMcpBtn">Create MCP</button>
+    <button id="updateMcpBtn" class="ghost">Update MCP</button>
+    <button id="toolsMcpBtn" class="ghost">List Tools</button>
+  </div>
+  <section class="api-panel mcp-guide-panel">
+    <div class="capability-head">
+      <div>
+        <p class="eyebrow compact">MCP Guide</p>
+        <h3>Draft Overview</h3>
+      </div>
+    </div>
+    <div class="api-grid mcp-guide-grid" id="mcpGuideGrid">
+      <p class="capability-empty">Bootstrap, config, and first-message REST snippets will appear here.</p>
+    </div>
+  </section>
+  <section class="api-panel">
+    <div class="capability-head">
+      <div>
+        <p class="eyebrow compact">MCP Registry</p>
+        <h3>Saved Servers</h3>
+      </div>
+    </div>
+    <div class="api-grid" id="mcpListGrid">
+      <p class="capability-empty">Saved MCP servers for the current user will appear here.</p>
+    </div>
+  </section>
+  <section id="mcpToolsPanel" class="api-panel">
+    <div class="capability-head">
+      <div>
+        <p class="eyebrow compact">MCP Guide</p>
+        <h3>Discovered Tools</h3>
+      </div>
+    </div>
+    <div class="api-grid" id="mcpToolsGrid">
+      <p class="capability-empty">Select an MCP server to inspect its discovered tools.</p>
+    </div>
+  </section>
+  <section id="mcpExamplesPanel" class="api-panel">
+    <div class="capability-head">
+      <div>
+        <p class="eyebrow compact">MCP Registry</p>
+        <h3>REST Snippets</h3>
+      </div>
+    </div>
+    <div class="api-grid" id="mcpExamplesGrid">
+      <p class="capability-empty">REST examples for the current MCP draft will appear here.</p>
+    </div>
+  </section>
+  <pre id="mcpOutput" class="output"></pre>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Skill Management</h2>
+            <div class="actions">
+              <button id="listSkillsBtn" class="ghost">List</button>
+              <button id="getSkillBtn" class="ghost">Get</button>
+              <button id="searchSkillsBtn" class="ghost">Search</button>
+              <button id="skillGitHubTemplateBtn" class="ghost">GitHub</button>
+              <button id="skillZipTemplateBtn" class="ghost">Zip</button>
+              <button id="skillHubTemplateBtn" class="ghost">SkillHub</button>
+              <button id="skillMarketTemplateBtn" class="ghost">Market</button>
+              <button id="installSkillBtn" class="ghost">Install</button>
+              <button id="importSkillBtn" class="ghost">Import</button>
+              <button id="exportSkillBtn" class="ghost">Export</button>
+              <button id="validateSkillBtn" class="ghost">Validate</button>
+              <button id="improveSkillBtn" class="ghost">Improve</button>
+              <button id="deleteSkillBtn" class="ghost">Delete</button>
+              <button id="getSkillUploadStatusBtn" class="ghost">Upload Status</button>
+              <button id="getSkillAccountBtn" class="ghost">Market Account</button>
+              <button id="uploadSkillBtn">Upload</button>
+            </div>
+          </div>
+          <div class="form-grid compact">
+            <label>
+              <span>Skill Name</span>
+              <input id="skillName" placeholder="demo-skill" />
+            </label>
+            <label>
+              <span>Auth Type</span>
+              <input id="skillSearchQuery" placeholder="ssh deploy" value="ssh deploy" />
+            </label>
+            <label>
+              <span>Sources</span>
+              <input id="skillSources" placeholder="github,skillmarket" value="github,skillmarket" />
+            </label>
+            <label>
+              <span>Top N</span>
+              <input id="skillTopN" type="number" min="1" value="10" />
+            </label>
+            <label>
+              <span>SkillHub URL</span>
+              <input id="skillHubUrl" placeholder="https://hub.example.com" />
+            </label>
+            <label>
+              <span>SkillMarket URL</span>
+              <input id="skillMarketUrl" placeholder="https://market.example.com" />
+            </label>
+            <label>
+              <span>Market Email</span>
+              <input id="skillMarketEmail" placeholder="demo@example.com" />
+            </label>
+            <label>
+              <span>Install Source</span>
+              <input id="skillInstallSource" placeholder="github" value="github" />
+            </label>
+            <label>
+              <span>Repo Full Name</span>
+              <input id="skillRepoFullName" placeholder="owner/repo" />
+            </label>
+            <label>
+              <span>Repo URL</span>
+              <input id="skillRepoUrl" placeholder="https://github.com/owner/repo" />
+            </label>
+            <label>
+              <span>Raw URL</span>
+              <input id="skillRawUrl" placeholder="https://raw.githubusercontent.com/.../SKILL.md" />
+            </label>
+            <label>
+              <span>Skill File Path</span>
+              <input id="skillFilePath" placeholder="skills/demo/SKILL.md" />
+            </label>
+            <label>
+              <span>Branch</span>
+              <input id="skillBranch" placeholder="main" value="main" />
+            </label>
+            <label>
+              <span>Definition Type</span>
+              <input id="skillDefinitionType" placeholder="skill" />
+            </label>
+            <label>
+              <span>Skill ID</span>
+              <input id="skillID" placeholder="skill_xxx" />
+            </label>
+            <label>
+              <span>GitHub Token</span>
+              <input id="skillGitHubToken" type="password" placeholder="ghp_xxx" />
+            </label>
+            <label>
+              <span>Submission ID</span>
+              <input id="skillSubmissionId" placeholder="submission_xxx" />
+            </label>
+            <label>
+              <span>Archive Name</span>
+              <input id="skillArchiveName" placeholder="demo-skill.zip" />
+            </label>
+            <label class="inline-check">
+              <input id="includeInstalledSkills" type="checkbox" checked />
+              <span>Include installed skills</span>
+            </label>
+            <label class="inline-check">
+              <input id="skillOverwrite" type="checkbox" />
+              <span>Overwrite existing skill</span>
+            </label>
+            <label class="span-2">
+              <span>Zip base64</span>
+              <textarea id="skillZipBase64" rows="4" placeholder="Paste a base64-encoded exported skill archive"></textarea>
+            </label>
+          </div>
+          <section class="api-panel skill-guide-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Skill Guide</p>
+                <h3>Draft Overview</h3>
+              </div>
+            </div>
+            <div class="api-grid skill-guide-grid" id="skillGuideGrid">
+              <p class="capability-empty">The current skill draft summary will appear here.</p>
+            </div>
+          </section>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Installed Skills</p>
+                <h3>Search Results</h3>
+              </div>
+            </div>
+            <div class="api-grid" id="skillSearchGrid">
+              <p class="capability-empty">Search skill sources to populate this panel.</p>
+            </div>
+          </section>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Installed Skills</p>
+                <h3>Installed Skills</h3>
+              </div>
+            </div>
+            <div class="api-grid" id="skillListGrid">
+              <p class="capability-empty">Installed skills for the current user will appear here.</p>
+            </div>
+          </section>
+          <section class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Installed Skills</p>
+                <h3>REST Snippets</h3>
+              </div>
+            </div>
+            <div class="api-grid" id="skillExamplesGrid">
+              <p class="capability-empty">REST examples for the current skill form will appear here.</p>
+            </div>
+          </section>
+          <pre id="skillOutput" class="output"></pre>
+        </section>
+
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>Agent Runtime</h2>
+            <div class="actions">
+              <button id="quickStartBtn">Quick Start</button>
+              <button id="refreshConversationBtn" class="ghost">Refresh</button>
+              <button id="usageBtn" class="ghost">Usage</button>
+              <button id="listInstancesBtn" class="ghost">List Instances</button>
+              <button id="createInstanceBtn">Create Instance</button>
+            </div>
+          </div>
+          <div class="form-grid compact">
+            <label>
+              <span>Instance Name</span>
+              <input id="instanceName" placeholder="demo-instance" value="demo-instance" />
+            </label>
+            <label>
+              <span>Description</span>
+              <input id="instanceDesc" placeholder="demo description" value="demo description" />
+            </label>
+            <label>
+              <span>Metadata JSON</span>
+              <input id="instanceMetadata" placeholder='{"tier":"prod"}' />
+            </label>
+            <label>
+              <span>Instance ID</span>
+              <input id="instanceId" placeholder="inst_xxx" />
+            </label>
+            <label>
+              <span>Session ID</span>
+              <input id="sessionId" placeholder="sess_xxx" />
+            </label>
+            <label>
+              <span>Run ID</span>
+              <input id="runId" placeholder="run_xxx" />
+            </label>
+            <label>
+              <span>Message Role Filter</span>
+              <input id="messageRoleFilter" placeholder="assistant" />
+            </label>
+            <label>
+              <span>Message Since</span>
+              <input id="messageSinceFilter" placeholder="2026-04-24T10:02:00Z" />
+            </label>
+            <label>
+              <span>Message Until</span>
+              <input id="messageUntilFilter" placeholder="2026-04-24T10:10:00Z" />
+            </label>
+            <label>
+              <span>Run Status Filter</span>
+              <input id="runStatusFilter" placeholder="succeeded" />
+            </label>
+            <label>
+              <span>Run Source Filter</span>
+              <input id="runResponseSourceFilter" placeholder="ask_user" />
+            </label>
+            <label>
+              <span>Waiting For User</span>
+              <input id="runWaitingFilter" placeholder="true" />
+            </label>
+            <label class="span-2">
+              <span>Message Title</span>
+              <input id="messageTitle" placeholder="Demo session" value="Demo session" />
+            </label>
+          </div>
+          <div class="actions inline-actions">
+            <button id="getInstanceBtn" class="ghost">Get Instance</button>
+            <button id="updateInstanceBtn" class="ghost">Update Instance</button>
+            <button id="getSummaryBtn" class="ghost">Instance Summary</button>
+            <button id="getCapabilitiesBtn" class="ghost">Capabilities</button>
+            <button id="sessionsBtn" class="ghost">List Sessions</button>
+            <button id="getSessionBtn" class="ghost">Get Session</button>
+            <button id="archiveSessionBtn" class="ghost">Archive Session</button>
+            <button id="restoreSessionBtn" class="ghost">Restore Session</button>
+            <button id="messagesBtn" class="ghost">Messages</button>
+            <button id="runsBtn" class="ghost">Runs</button>
+            <button id="getRunBtn" class="ghost">Get Run</button>
+          </div>
+          <label class="inline-check runtime-toggle">
+            <input id="includeArchivedSessions" type="checkbox" />
+            <span>List archived sessions too</span>
+          </label>
+          <section id="capabilitySummary" class="capability-panel empty">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Capability Summary</p>
+                <h3>Saved Servers</h3>
+              </div>
+              <div class="policy-pills" id="capabilityPills"></div>
+            </div>
+            <div class="capability-grid" id="capabilityGrid">
+              <p class="capability-empty">Create an instance to inspect SSH policy, tool exposure, and bash availability.</p>
+            </div>
+          </section>
+          <section id="instanceRegistryPanel" class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Instances</p>
+                <h3>Instance Registry</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="instanceListGrid">
+              <p class="capability-empty">Load instances to inspect the current user runtime fleet.</p>
+            </div>
+          </section>
+          <section id="instanceDetailPanel" class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Selected Instance</p>
+                <h3>Detail Overview</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="instanceDetailGrid">
+              <p class="capability-empty">Select an instance to inspect readiness, workspace, and metadata.</p>
+            </div>
+          </section>
+          <section id="instanceSummaryPanel" class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Instance Summary</p>
+                <h3>Runtime Overview</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="instanceSummaryGrid">
+              <p class="capability-empty">Load instance summary to see session, run, and waiting-state counters.</p>
+            </div>
+          </section>
+          <section id="sessionListPanel" class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Sessions</p>
+                <h3>Conversation Sessions</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="sessionListGrid">
+              <p class="capability-empty">Load sessions to inspect archived and waiting conversations.</p>
+            </div>
+          </section>
+          <section id="runListPanel" class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Runs</p>
+                <h3>Execution Timeline</h3>
+              </div>
+            </div>
+            <div class="api-grid summary-grid" id="runListGrid">
+              <p class="capability-empty">Load runs to inspect status, source, and waiting-for-user state.</p>
+            </div>
+          </section>
+          <section id="messageTimelinePanel" class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">Messages</p>
+                <h3>Conversation Timeline</h3>
+              </div>
+              <div class="policy-pills" id="runtimeFilterPills"></div>
+            </div>
+            <div class="message-timeline" id="messageTimelineGrid">
+              <p class="capability-empty">Load messages to inspect role, content, and timeline order.</p>
+            </div>
+          </section>
+          <section id="apiExamples" class="api-panel">
+            <div class="capability-head">
+              <div>
+                <p class="eyebrow compact">API Examples</p>
+                <h3>Copy-ready Requests</h3>
+              </div>
+            </div>
+            <div class="api-grid" id="apiExamplesGrid">
+              <p class="capability-empty">Installed skills for the current user will appear here.</p>
+            </div>
+          </section>
+          <textarea id="messageInput" class="editor short" spellcheck="false" placeholder="Ask the agent something...">Please introduce your capabilities and available tools.</textarea>
+          <div class="actions inline-actions">
+            <button id="sendBtn">Send Message</button>
+          </div>
+          <pre id="instanceOutput" class="output"></pre>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
