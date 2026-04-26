@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiPut, apiDelete } from './client';
+﻿import { apiGet, apiPost, apiPut, apiDelete } from './client';
 
 export type CloudControlMode = 'cloud_managed' | 'self_managed' | 'hybrid';
 
@@ -55,7 +55,7 @@ export interface CenterProbeResponse {
   center: Center;
 }
 
-export interface OperationsSummary {
+export interface ManagementSummary {
   total_centers: number;
   pending_centers: number;
   active_licenses: number;
@@ -67,12 +67,12 @@ export interface OperationsSummary {
   unlicensed_centers: number;
 }
 
-export interface CenterOperation {
+export interface CenterManagement {
   center: Center;
   ready: boolean;
   issues: string[];
   recommended_actions: RecommendedAction[];
-  delivery_posture: string;
+  management_posture: string;
   commercial_status: string;
   connectivity: string;
 }
@@ -84,17 +84,17 @@ export interface RecommendedAction {
   priority: string;
 }
 
-export interface CenterOperationsReport {
-  summary: OperationsSummary;
-  items: CenterOperation[];
+export interface CenterManagementReport {
+  summary: ManagementSummary;
+  items: CenterManagement[];
 }
 
 export function listCenters(): Promise<Center[]> {
   return apiGet('/api/admin/centers');
 }
 
-export function getCenterOperations(): Promise<CenterOperationsReport> {
-  return apiGet('/api/admin/centers/operations');
+export function getCenterManagement(): Promise<CenterManagementReport> {
+  return apiGet('/api/admin/centers/management');
 }
 
 export function updateCenterIntegration(id: string, patch: CenterIntegrationPatch): Promise<Center> {
@@ -128,3 +128,5 @@ export function enableCenter(id: string): Promise<void> {
 export function deleteCenter(id: string): Promise<void> {
   return apiDelete(`/api/admin/centers/${id}`);
 }
+
+

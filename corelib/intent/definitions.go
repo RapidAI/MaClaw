@@ -234,6 +234,57 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{"office"},
 		},
 		{
+			Label:  LabelWorkflowTask,
+			Domain: "多阶段工作流 (Workflow)",
+			MayTriggerWorkflow: true,
+			WorkflowTypes: []string{
+				"product_design", "innovation", "business_plan", "testing",
+				"literature_review", "research_report", "experiment_design",
+				"grant_proposal", "paper_writing", "project_proposal",
+				"event_planning", "competitive_analysis",
+				"bid_response", "contract_review", "due_diligence",
+				"compliance_audit", "patent_analysis",
+			},
+			TreeText: "用户要启动一个需要多阶段设计决策的复杂项目。" +
+				"核心判据：产出物是否需要多阶段设计决策？同一输入能否产出截然不同的结果？" +
+				"是 → workflow_task。否 → non_coding。" +
+				"workflow_type 选择指引：" +
+				"product_design=产品设计/PRD, innovation=创新方案, business_plan=商业计划书/BP, " +
+				"testing=测试方案, literature_review=文献综述, research_report=研究报告/研报, " +
+				"experiment_design=实验方案, grant_proposal=基金申请, paper_writing=论文撰写, " +
+				"project_proposal=项目立项, event_planning=活动策划, " +
+				"competitive_analysis=竞品分析, bid_response=招投标, " +
+				"contract_review=合同审查, due_diligence=尽职调查(对公司做商业评估), " +
+				"compliance_audit=合规审计, patent_analysis=专利分析。",
+			EmbedTexts: []string{
+				"帮我做一份产品设计文档",
+				"写一份商业计划书",
+				"做一份竞品分析",
+				"帮我写一篇文献综述",
+				"帮我写一份研究报告",
+				"帮我写一篇论文",
+				"策划一个发布会活动",
+				"帮我做一个项目立项方案",
+				"对这家公司做个尽职调查",
+				"审查一下这个合同",
+				"分析一下这个专利的侵权风险",
+				"检查一下我们的数据合规情况",
+				"帮我分析这个招标文件准备投标",
+				"设计一个实验方案",
+				"写一份基金申请书",
+				"做一个创新方案",
+				"写一份测试方案",
+				"write a business plan",
+				"do a competitive analysis",
+				"review this contract for risks",
+				"conduct due diligence on this company",
+				"write a literature review paper",
+				"plan an event for product launch",
+				"design a testing strategy",
+			},
+			ToolNames: []string{"generate_pdf"},
+		},
+		{
 			Label:  LabelContinuation,
 			Domain: "特殊 (Special)",
 			TreeText: "用户用短语表示继续或开始之前讨论的任务。" +

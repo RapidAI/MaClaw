@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  getCenterOperations,
+  getCenterManagement,
   confirmTrial,
   confirmManual,
   disableCenter,
@@ -11,7 +11,7 @@ import {
   provisionTenant,
   probeCenter,
   type Center,
-  type CenterOperation,
+  type CenterManagement,
   type CenterIntegrationPatch,
   type ProvisionTenantRequest,
   type CloudControlMode,
@@ -67,7 +67,7 @@ function createTenantDraft(): TenantDraft {
 export function CentersPage() {
   const { t } = useTranslation();
   const [centers, setCenters] = useState<Center[]>([]);
-  const [operations, setOperations] = useState<Record<string, CenterOperation>>({});
+  const [management, setManagement] = useState<Record<string, CenterManagement>>({});
   const [drafts, setDrafts] = useState<Record<string, IntegrationDraft>>({});
   const [tenantDrafts, setTenantDrafts] = useState<Record<string, TenantDraft>>({});
   const [provisioning, setProvisioning] = useState<string | null>(null);
@@ -79,12 +79,12 @@ export function CentersPage() {
 
   const load = () => {
     setError('');
-    getCenterOperations()
+    getCenterManagement()
       .then(report => {
         const nextItems = report.items ?? [];
         const nextCenters = nextItems.map(item => item.center);
         setCenters(nextCenters);
-        setOperations(Object.fromEntries(nextItems.map(item => [item.center.id, item])));
+        setManagement(Object.fromEntries(nextItems.map(item => [item.center.id, item])));
         setDrafts(Object.fromEntries(nextCenters.map(center => [center.id, createDraft(center)])));
         setTenantDrafts(prev => Object.fromEntries(nextCenters.map(center => [center.id, prev[center.id] ?? createTenantDraft()])));
       })
@@ -192,19 +192,64 @@ export function CentersPage() {
     load();
   };
 
+  const handleRecommendedAction = async (center: Center, code: string) => {
+    switch (code) {
+      case 'activate_center':
+        await confirmTrial(center.id);
+        load();
+        return;
+      case 'configure_base_url':
+      case 'confirm_multi_tenant':
+        await handleSaveIntegration(center);
+        return;
+      case 'test_connection':
+        await handleProbeCenter(center);
+        return;
+      case 'issue_license':
+        await handleConfirmManual(center.id);
+        return;
+      default:
+        setError('Fill the required tenant form or use the action buttons below.');
+    }
+  };
+
+  const recommendedActionLabel = (code: string) => {
+    switch (code) {
+      case 'activate_center':
+        return 'Activate trial';
+      case 'configure_base_url':
+      case 'confirm_multi_tenant':
+        return 'Save integration';
+      case 'test_connection':
+        return 'Test now';
+      case 'issue_license':
+        return 'Issue license';
+      case 'ready_for_service_management':
+        return 'Review services';
+      default:
+        return 'Review';
+    }
+  };
+
+  const isRecommendedActionDisabled = (center: Center, code: string) => {
+    if (code === 'test_connection') return probing === center.id || !center.base_url;
+    if (code === 'configure_base_url' || code === 'confirm_multi_tenant') return saving === center.id;
+    return false;
+  };
+
   if (centers.length === 0) return <div className="hint">{t('centers.empty')}</div>;
 
   return (
     <div className="cloud-center-stack">
       <div className="hint">
-        iWorkerCloud does not recreate customer organizations. It directly manages connected multi-tenant iWorkerCenter deployments through their integration endpoint, authorization state, compute distribution, and skill-market entitlement.
+        iWorkerCloud is our iWorkerCenter management center. It manages connected multi-tenant iWorkerCenter instances for authorization, connectivity, compute distribution, upgrades, and skill entitlement, but it does not participate in customer company management, planning, or enterprise operations.
       </div>
       {error && <div className="hint danger">{error}</div>}
       <div className="list">
         {centers.map(center => {
           const draft = drafts[center.id] ?? createDraft(center);
           const tenantDraft = tenantDrafts[center.id] ?? createTenantDraft();
-          const operation = operations[center.id];
+          const managementItem = management[center.id];
           return (
             <div key={center.id} className="item cloud-center-card">
               <div className="item-head">
@@ -222,33 +267,40 @@ export function CentersPage() {
                 <span>{center.supports_multi_tenant ? 'Multi-tenant ready' : 'Single tenant / unknown'}</span>
                 <span>{controlModeLabels[center.cloud_control_mode ?? 'cloud_managed']}</span>
                 <span>Sync: {center.last_sync_status || 'not configured'}</span>
-                {operation && <span>Commercial: {operation.commercial_status}</span>}
-                {operation && <span>Connectivity: {operation.connectivity}</span>}
+                {managementItem && <span>Commercial: {managementItem.commercial_status}</span>}
+                {managementItem && <span>Connectivity: {managementItem.connectivity}</span>}
                 {center.created_at && <span>Registered: {new Date(center.created_at).toLocaleString()}</span>}
               </div>
 
-              {operation && <div className={`cloud-posture-panel ${operation.ready ? 'ready' : 'watch'}`}>
+              {managementItem && <div className={`cloud-posture-panel ${managementItem.ready ? 'ready' : 'watch'}`}>
                 <div>
-                  <label>Delivery posture</label>
-                  <strong>{postureLabels[operation.delivery_posture] ?? operation.delivery_posture}</strong>
-                  <span>{operation.ready ? 'This Center is ready for tenant delivery through Cloud.' : 'This Center needs operator attention before smooth tenant delivery.'}</span>
+                  <label>Management readiness</label>
+                  <strong>{postureLabels[managementItem.management_posture] ?? managementItem.management_posture}</strong>
+                  <span>{managementItem.ready ? 'This Center is ready for iWorkerCenter management services.' : 'This Center needs management-center setup before cloud services are enabled smoothly.'}</span>
                 </div>
                 <div className="cloud-issue-list">
-                  {operation.issues.length === 0
+                  {managementItem.issues.length === 0
                     ? <span className="ok">No blocking issues</span>
-                    : operation.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
+                    : managementItem.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
                 </div>
               </div>}
 
-              {operation && <div className="cloud-action-panel">
+              {managementItem && <div className="cloud-action-panel">
                 <div className="field-span-2">
-                  <label>Recommended operator actions</label>
+                  <label>Recommended service-control actions</label>
                 </div>
-                {(operation.recommended_actions ?? []).map(action => (
+                {(managementItem.recommended_actions ?? []).map(action => (
                   <div key={action.code} className={`cloud-action-card ${action.priority}`}>
                     <span>{action.priority}</span>
                     <strong>{action.label}</strong>
                     <p>{action.description}</p>
+                    <button
+                      className="btn-ghost cloud-action-button"
+                      disabled={isRecommendedActionDisabled(center, action.code)}
+                      onClick={() => handleRecommendedAction(center, action.code)}
+                    >
+                      {recommendedActionLabel(action.code)}
+                    </button>
                   </div>
                 ))}
               </div>}
@@ -304,8 +356,8 @@ export function CentersPage() {
 
               <div className="cloud-provision-panel">
                 <div className="field-span-2">
-                  <label>Provision customer tenant</label>
-                  <p>Cloud triggers tenant creation on the connected multi-tenant iWorkerCenter. The customer organization and runtime still live inside that Center.</p>
+                  <label>Provision customer tenant container</label>
+                  <p>Cloud may request tenant container creation on a connected multi-tenant iWorkerCenter for system management. Customer organization management and enterprise operations remain inside that iWorkerCenter, not in iWorkerCloud.</p>
                 </div>
                 <div>
                   <label>Company name</label>
@@ -368,3 +420,5 @@ export function CentersPage() {
     </div>
   );
 }
+
+

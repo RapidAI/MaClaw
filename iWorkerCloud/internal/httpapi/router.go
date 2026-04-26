@@ -35,7 +35,7 @@ func NewRouter(
 
 	// Centers (admin)
 	mux.HandleFunc("GET /api/admin/centers", RequireAdmin(ListCentersHandler(centerSvc)))
-	mux.HandleFunc("GET /api/admin/centers/operations", RequireAdmin(CenterOperationsHandler(centerSvc)))
+	mux.HandleFunc("GET /api/admin/centers/management", RequireAdmin(CenterManagementHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/centers/{id}/confirm-trial", RequireAdmin(ConfirmCenterTrialHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/centers/{id}/confirm", RequireAdmin(ConfirmCenterManualHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/centers/{id}/disable", RequireAdmin(DisableCenterHandler(centerSvc)))
@@ -80,7 +80,7 @@ func NewRouter(
 		mux.HandleFunc("GET /api/centers/{id}/compute-providers", computeHandler.CenterComputeProviders())
 	}
 
-	// Static web assets — React SPA built to web/admin/dist
+	// Static web assets 鈥?React SPA built to web/admin/dist
 	registerStaticRoutes(mux, "./web/admin/dist", "/admin")
 
 	// Root redirect

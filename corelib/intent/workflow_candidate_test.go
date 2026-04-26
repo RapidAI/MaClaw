@@ -48,8 +48,9 @@ func TestDefaultDefinitions_MayTriggerWorkflow_Consistency(t *testing.T) {
 
 	// Expected workflow-capable labels.
 	expectWorkflow := map[IntentLabel]bool{
-		LabelCoding: true,
-		LabelOffice: true,
+		LabelCoding:       true,
+		LabelOffice:       true,
+		LabelWorkflowTask: true,
 	}
 
 	for _, def := range defs {

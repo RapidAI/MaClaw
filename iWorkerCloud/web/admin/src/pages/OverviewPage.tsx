@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getCenterOperations, type CenterOperationsReport } from '../api/centers';
+import { getCenterManagement, type CenterManagementReport } from '../api/centers';
 
 type CloudStat = {
   label: string;
@@ -19,10 +19,10 @@ type CloudPillar = {
 
 export function OverviewPage() {
   const { t } = useTranslation();
-  const [report, setReport] = useState<CenterOperationsReport | null>(null);
+  const [report, setReport] = useState<CenterManagementReport | null>(null);
 
   useEffect(() => {
-    getCenterOperations().then(setReport).catch(() => setReport(null));
+    getCenterManagement().then(setReport).catch(() => setReport(null));
   }, []);
 
   const summary = report?.summary ?? {
@@ -55,11 +55,11 @@ export function OverviewPage() {
     },
   ], [summary, t]);
 
-  const operationStats = useMemo<CloudStat[]>(() => [
+  const managementStats = useMemo<CloudStat[]>(() => [
     {
       label: 'Ready centers',
       value: String(summary.ready_centers),
-      hint: 'Active, licensed, multi-tenant, reachable iWorkerCenter deployments.',
+      hint: 'Active, licensed, multi-tenant, reachable iWorkerCenter instances ready for iWorkerCenter management services.',
     },
     {
       label: 'Needs setup',
@@ -77,9 +77,9 @@ export function OverviewPage() {
       hint: 'Connected deployments declared ready for tenant-aware management.',
     },
     {
-      label: 'Tenants served',
+      label: 'Tenants tracked',
       value: String(summary.tenant_count),
-      hint: 'Customer tenants currently tracked through connected Centers.',
+      hint: 'Customer tenants tracked for licensing and platform service purposes only.',
     },
     {
       label: 'Unlicensed',
@@ -142,16 +142,16 @@ export function OverviewPage() {
       <section className="card cloud-ops-card">
         <div className="item-head">
           <div>
-            <span className="mini">Operations radar</span>
-            <h3>Center delivery posture</h3>
+            <span className="mini">Service control radar</span>
+            <h3>Center service readiness</h3>
           </div>
           <span className={`badge ${summary.probe_failures || summary.needs_setup || summary.unlicensed_centers ? 'warn' : 'ok'}`}>
             {summary.probe_failures || summary.needs_setup || summary.unlicensed_centers ? 'Watch' : 'Ready'}
           </span>
         </div>
-        <p>Cloud should know which connected iWorkerCenters are commercially authorized, reachable, multi-tenant capable, and ready for tenant delivery.</p>
+        <p>Cloud should know which connected iWorkerCenters are commercially authorized, reachable, multi-tenant capable, and ready for our iWorkerCenter management services. It does not participate in customer company management or enterprise operations.</p>
         <div className="cloud-ops-grid">
-          {operationStats.map(item => (
+          {managementStats.map(item => (
             <div key={item.label} className="cloud-ops-metric">
               <label>{item.label}</label>
               <strong>{item.value}</strong>
@@ -182,4 +182,5 @@ export function OverviewPage() {
     </div>
   );
 }
+
 

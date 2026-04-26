@@ -1,4 +1,4 @@
-{
+﻿{
   "app": {
     "title": "iWorkerCloud Admin",
     "loading": "Loading..."
@@ -12,7 +12,7 @@
     "settings": "Settings"
   },
   "subtitle": {
-    "overview": "Operate our vendor cloud control plane for compute distribution, skill market, licensing, and integration with multi-tenant iWorkerCenter deployments.",
+    "overview": "Manage connected iWorkerCenter instances for compute distribution, skill market, licensing, upgrades, and integration. iWorkerCloud is not an enterprise operations platform.",
     "centers": "Register, authorize, and manage connected multi-tenant iWorkerCenter deployments.",
     "licenses": "Manage commercial module authorization certificates.",
     "compute": "Distribute model capacity, provider routes, quota policy, and usage billing.",
@@ -21,10 +21,10 @@
   },
   "cloudOverview": {
     "title": "Vendor cloud control plane for iWorker",
-    "desc": "iWorkerCloud is our company cloud platform for selling and operating the iWorker system. It controls compute distribution, skill-market supply, commercial authorization, and cloud-side management integrations for multi-tenant iWorkerCenter deployments.",
-    "positionTitle": "Cloud controls the system business",
-    "positionDesc": "Customer execution and tenant organizations stay inside their own multi-tenant iWorkerCenter. iWorkerCloud governs what we sell, distribute, authorize, meter, and upgrade through that center integration.",
-    "statCenters": "Connected iWorkerCenter deployments that may each serve multiple customer tenants.",
+    "desc": "iWorkerCloud is the management center for connected iWorkerCenter instances. It manages compute distribution, skill-market supply, commercial authorization, upgrades, and integration; it does not run customer companies.",
+    "positionTitle": "Cloud manages iWorkerCenter services",
+    "positionDesc": "Customer company management and enterprise execution stay inside their own iWorkerCenter. iWorkerCloud only manages the system services we provide: compute, skills, authorization, upgrades, and integration.",
+    "statCenters": "Connected iWorkerCenter instances managed for system services.",
     "statPending": "iWorkerCenter deployments waiting for activation, commercial review, or trial approval.",
     "statLicenses": "Active paid or trial entitlements issued by our cloud platform.",
     "computeEyebrow": "Compute distribution",
@@ -43,8 +43,8 @@
     "marketPoint3": "Center entitlement",
     "tenantEyebrow": "Center integration",
     "tenantTitle": "Multi-tenant iWorkerCenter control",
-    "tenantSummary": "Cloud directly integrates with iWorkerCenter deployments that support multiple tenants, then manages authorization, commercial access, modules, and fleet health at the center boundary.",
-    "tenantDetail": "This is the SaaS operator view for our company: Cloud does not recreate tenant organizations. It controls the connected iWorkerCenter instances that already carry tenant isolation and execution.",
+    "tenantSummary": "Cloud integrates with multi-tenant iWorkerCenter instances, then manages authorization, commercial access, modules, upgrades, compute and skill services at the Center boundary.",
+    "tenantDetail": "This is the management-center view for our company: Cloud does not recreate tenant organizations and does not participate in enterprise operations. It manages connected iWorkerCenter instances and their system-service capabilities.",
     "tenantPoint1": "Center registration",
     "tenantPoint2": "Tenant-aware authorization",
     "tenantPoint3": "Deployment health",
@@ -79,8 +79,8 @@
     "items": {
       "executive": {
         "title": "Executive operating report skill",
-        "summary": "Turns center telemetry into CEO and board-level operating reports.",
-        "detail": "Cloud can distribute this as a premium skill, while the connected iWorkerCenter binds it to tenant-specific roles, KPIs, and decision boundaries."
+        "summary": "Packages optional executive reporting capability for iWorkerCenter customers.",
+        "detail": "Cloud can distribute this as a premium skill. The connected iWorkerCenter decides how the customer uses it inside its own governance boundaries."
       },
       "recovery": {
         "title": "Recovery institutionalization skill",
@@ -89,7 +89,7 @@
       },
       "compute": {
         "title": "Compute optimization skill",
-        "summary": "Analyzes center and tenant usage and recommends model routing, quota, and cost policy.",
+        "summary": "Analyzes Center-level system usage and recommends model routing, quota, and cost policy for platform management.",
         "detail": "This should sit close to Cloud's compute distribution layer and help our operators tune cost, latency, and product packaging."
       }
     }
@@ -185,3 +185,4 @@
     "typeAnalysis": "Analysis"
   }
 }
+

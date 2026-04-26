@@ -35,11 +35,11 @@ func ListCentersHandler(svc *centers.Service) http.HandlerFunc {
 	}
 }
 
-func CenterOperationsHandler(svc *centers.Service) http.HandlerFunc {
+func CenterManagementHandler(svc *centers.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		report, err := svc.Operations(r.Context())
+		report, err := svc.Management(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "OPERATIONS_FAILED", err.Error())
+			writeError(w, http.StatusInternalServerError, "MANAGEMENT_REPORT_FAILED", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, report)

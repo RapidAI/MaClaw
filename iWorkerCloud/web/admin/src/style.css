@@ -349,6 +349,14 @@ label { display: block; font-size: 12px; font-weight: 800; color: var(--muted); 
   line-height: 1.5;
 }
 
+.cloud-action-button {
+  justify-self: start;
+  height: 34px;
+  padding: 0 12px;
+  margin-top: 2px;
+  font-size: 12px;
+}
+
 .cloud-integration-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

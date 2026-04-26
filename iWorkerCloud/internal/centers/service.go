@@ -46,7 +46,7 @@ type RegisterResult struct {
 	Message  string `json:"message,omitempty"`
 }
 
-type OperationsSummary struct {
+type ManagementSummary struct {
 	TotalCenters       int `json:"total_centers"`
 	PendingCenters     int `json:"pending_centers"`
 	ActiveLicenses     int `json:"active_licenses"`
@@ -58,13 +58,13 @@ type OperationsSummary struct {
 	UnlicensedCenters  int `json:"unlicensed_centers"`
 }
 
-type CenterOperation struct {
+type CenterManagement struct {
 	Center             *store.Center       `json:"center"`
 	ActiveLicense      *store.License      `json:"active_license,omitempty"`
 	Ready              bool                `json:"ready"`
 	Issues             []string            `json:"issues"`
 	RecommendedActions []RecommendedAction `json:"recommended_actions"`
-	DeliveryPosture    string              `json:"delivery_posture"`
+	ManagementPosture  string              `json:"management_posture"`
 	CommercialStatus   string              `json:"commercial_status"`
 	Connectivity       string              `json:"connectivity"`
 }
@@ -76,9 +76,9 @@ type RecommendedAction struct {
 	Priority    string `json:"priority"`
 }
 
-type OperationsReport struct {
-	Summary OperationsSummary `json:"summary"`
-	Items   []CenterOperation `json:"items"`
+type ManagementReport struct {
+	Summary ManagementSummary  `json:"summary"`
+	Items   []CenterManagement `json:"items"`
 }
 
 type Service struct {
@@ -224,7 +224,7 @@ func (s *Service) List(ctx context.Context) ([]*store.Center, error) {
 	return s.centers.List(ctx)
 }
 
-func (s *Service) Operations(ctx context.Context) (*OperationsReport, error) {
+func (s *Service) Management(ctx context.Context) (*ManagementReport, error) {
 	centers, err := s.centers.List(ctx)
 	if err != nil {
 		return nil, err
@@ -245,15 +245,15 @@ func (s *Service) Operations(ctx context.Context) (*OperationsReport, error) {
 		}
 	}
 
-	report := &OperationsReport{
-		Summary: OperationsSummary{
+	report := &ManagementReport{
+		Summary: ManagementSummary{
 			TotalCenters:   len(centers),
 			ActiveLicenses: activeLicenses,
 		},
-		Items: make([]CenterOperation, 0, len(centers)),
+		Items: make([]CenterManagement, 0, len(centers)),
 	}
 	for _, center := range centers {
-		operation := buildCenterOperation(center, activeByCenter[center.ID])
+		managementItem := buildCenterManagement(center, activeByCenter[center.ID])
 		if center.Status == "pending" {
 			report.Summary.PendingCenters++
 		}
@@ -261,19 +261,19 @@ func (s *Service) Operations(ctx context.Context) (*OperationsReport, error) {
 			report.Summary.MultiTenantCenters++
 		}
 		report.Summary.TenantCount += center.TenantCount
-		if operation.Ready {
+		if managementItem.Ready {
 			report.Summary.ReadyCenters++
 		}
-		if containsIssue(operation.Issues, "missing_base_url") || containsIssue(operation.Issues, "multi_tenant_not_confirmed") {
+		if containsIssue(managementItem.Issues, "missing_base_url") || containsIssue(managementItem.Issues, "multi_tenant_not_confirmed") {
 			report.Summary.NeedsSetup++
 		}
-		if containsIssue(operation.Issues, "probe_failed") || containsIssue(operation.Issues, "probe_missing_base_url") {
+		if containsIssue(managementItem.Issues, "probe_failed") || containsIssue(managementItem.Issues, "probe_missing_base_url") {
 			report.Summary.ProbeFailures++
 		}
-		if containsIssue(operation.Issues, "no_active_license") {
+		if containsIssue(managementItem.Issues, "no_active_license") {
 			report.Summary.UnlicensedCenters++
 		}
-		report.Items = append(report.Items, operation)
+		report.Items = append(report.Items, managementItem)
 	}
 	return report, nil
 }
@@ -435,7 +435,7 @@ func hashSecret(raw string) string {
 	return hex.EncodeToString(h[:])
 }
 
-func buildCenterOperation(center *store.Center, activeLicense *store.License) CenterOperation {
+func buildCenterManagement(center *store.Center, activeLicense *store.License) CenterManagement {
 	issues := make([]string, 0)
 	if center.Status != "active" {
 		issues = append(issues, "center_not_active")
@@ -470,24 +470,24 @@ func buildCenterOperation(center *store.Center, activeLicense *store.License) Ce
 		commercialStatus = "licensed"
 	}
 
-	deliveryPosture := "watch"
+	ManagementPosture := "watch"
 	if ready {
-		deliveryPosture = "ready"
+		ManagementPosture = "ready"
 	} else if containsIssue(issues, "missing_base_url") || containsIssue(issues, "multi_tenant_not_confirmed") {
-		deliveryPosture = "needs_setup"
+		ManagementPosture = "needs_setup"
 	} else if containsIssue(issues, "probe_failed") || containsIssue(issues, "probe_missing_base_url") {
-		deliveryPosture = "connectivity_risk"
+		ManagementPosture = "connectivity_risk"
 	} else if containsIssue(issues, "no_active_license") {
-		deliveryPosture = "commercial_hold"
+		ManagementPosture = "commercial_hold"
 	}
 
-	return CenterOperation{
+	return CenterManagement{
 		Center:             center,
 		ActiveLicense:      activeLicense,
 		Ready:              ready,
 		Issues:             issues,
 		RecommendedActions: buildRecommendedActions(issues),
-		DeliveryPosture:    deliveryPosture,
+		ManagementPosture:  ManagementPosture,
 		CommercialStatus:   commercialStatus,
 		Connectivity:       connectivity,
 	}
@@ -496,9 +496,9 @@ func buildCenterOperation(center *store.Center, activeLicense *store.License) Ce
 func buildRecommendedActions(issues []string) []RecommendedAction {
 	if len(issues) == 0 {
 		return []RecommendedAction{{
-			Code:        "ready_for_delivery",
-			Label:       "Ready for tenant delivery",
-			Description: "This Center is active, licensed, reachable, and multi-tenant capable. You can provision customer tenants or assign cloud services.",
+			Code:        "ready_for_service_management",
+			Label:       "Ready for system service",
+			Description: "This Center is active, licensed, reachable, and multi-tenant capable. Cloud may manage iWorkerCenter services such as authorization, compute distribution, skill entitlement, upgrades, and connectivity.",
 			Priority:    "info",
 		}}
 	}
@@ -506,15 +506,15 @@ func buildRecommendedActions(issues []string) []RecommendedAction {
 	for _, issue := range issues {
 		switch issue {
 		case "center_not_active":
-			actions = append(actions, RecommendedAction{Code: "activate_center", Label: "Activate Center", Description: "Approve the Center and issue a trial or manual authorization before delivery.", Priority: "high"})
+			actions = append(actions, RecommendedAction{Code: "activate_center", Label: "Activate Center", Description: "Approve this iWorkerCenter instance and issue a trial or manual authorization before iWorkerCenter management services are enabled.", Priority: "high"})
 		case "missing_base_url":
-			actions = append(actions, RecommendedAction{Code: "configure_base_url", Label: "Configure Base URL", Description: "Set the reachable iWorkerCenter base URL so Cloud can manage tenant delivery and probes.", Priority: "high"})
+			actions = append(actions, RecommendedAction{Code: "configure_base_url", Label: "Configure Base URL", Description: "Set the reachable iWorkerCenter base URL so Cloud can perform licensing, connectivity probes, compute distribution, and skill entitlement.", Priority: "high"})
 		case "multi_tenant_not_confirmed":
-			actions = append(actions, RecommendedAction{Code: "confirm_multi_tenant", Label: "Confirm Multi-tenant Support", Description: "Mark this Center as multi-tenant capable only after tenant isolation and Cloud integration are verified.", Priority: "medium"})
+			actions = append(actions, RecommendedAction{Code: "confirm_multi_tenant", Label: "Confirm Multi-tenant Support", Description: "Mark this Center as multi-tenant capable only after tenant isolation and Cloud integration are verified. Customer enterprise operations remain inside iWorkerCenter.", Priority: "medium"})
 		case "probe_failed", "probe_missing_base_url":
 			actions = append(actions, RecommendedAction{Code: "test_connection", Label: "Test Connection", Description: "Run a connection probe after checking network, DNS, TLS, and the Center /healthz endpoint.", Priority: "high"})
 		case "no_active_license":
-			actions = append(actions, RecommendedAction{Code: "issue_license", Label: "Issue License", Description: "Create or renew the Center authorization so cloud-managed compute, skills, and tenant operations are commercially valid.", Priority: "high"})
+			actions = append(actions, RecommendedAction{Code: "issue_license", Label: "Issue License", Description: "Create or renew the Center authorization so iWorkerCenter compute distribution, skill entitlement, and platform access are commercially valid.", Priority: "high"})
 		}
 	}
 	return dedupeActions(actions)

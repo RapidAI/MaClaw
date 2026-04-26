@@ -17,6 +17,7 @@ const (
 	LabelContinuation     IntentLabel = "continuation"
 	LabelMaintenance      IntentLabel = "maintenance"
 	LabelOffice           IntentLabel = "office"
+	LabelWorkflowTask    IntentLabel = "workflow_task"
 	LabelAmbiguous        IntentLabel = "ambiguous"
 	LabelUnknown          IntentLabel = "unknown"
 )
@@ -34,6 +35,7 @@ func AllLabels() []IntentLabel {
 		LabelContinuation,
 		LabelMaintenance,
 		LabelOffice,
+		LabelWorkflowTask,
 		LabelAmbiguous,
 		LabelUnknown,
 	}

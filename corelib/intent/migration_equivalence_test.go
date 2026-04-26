@@ -19,8 +19,10 @@ func TestMigration_AnchorsEquivalence(t *testing.T) {
 	oldAnchors := defaultAnchors()
 	newAnchors := BuildAnchorsFromDefinitions(DefaultDefinitions())
 
-	if len(oldAnchors) != len(newAnchors) {
-		t.Fatalf("anchor count mismatch: old=%d, new=%d", len(oldAnchors), len(newAnchors))
+	// New definitions may have MORE anchors than old (new labels added post-migration).
+	// Verify all old anchors are preserved in new.
+	if len(newAnchors) < len(oldAnchors) {
+		t.Fatalf("anchor count regression: old=%d, new=%d (new should be >= old)", len(oldAnchors), len(newAnchors))
 	}
 
 	// Build maps for comparison.
@@ -92,6 +94,12 @@ func TestMigration_ToolAffinityEquivalence(t *testing.T) {
 		// Sort for comparison.
 		sort.Strings(oldTools)
 		sort.Strings(newTools)
+
+		// New definitions may have tools for labels that didn't exist in old
+		// (post-migration additions). Only check labels that exist in old.
+		if len(oldTools) == 0 && len(newTools) > 0 {
+			continue // new label with tools — not a migration regression
+		}
 
 		if len(oldTools) != len(newTools) {
 			t.Errorf("label %s tool count: old=%d, new=%d", label, len(oldTools), len(newTools))
