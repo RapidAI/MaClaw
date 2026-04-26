@@ -59,13 +59,21 @@ type OperationsSummary struct {
 }
 
 type CenterOperation struct {
-	Center           *store.Center  `json:"center"`
-	ActiveLicense    *store.License `json:"active_license,omitempty"`
-	Ready            bool           `json:"ready"`
-	Issues           []string       `json:"issues"`
-	DeliveryPosture  string         `json:"delivery_posture"`
-	CommercialStatus string         `json:"commercial_status"`
-	Connectivity     string         `json:"connectivity"`
+	Center             *store.Center       `json:"center"`
+	ActiveLicense      *store.License      `json:"active_license,omitempty"`
+	Ready              bool                `json:"ready"`
+	Issues             []string            `json:"issues"`
+	RecommendedActions []RecommendedAction `json:"recommended_actions"`
+	DeliveryPosture    string              `json:"delivery_posture"`
+	CommercialStatus   string              `json:"commercial_status"`
+	Connectivity       string              `json:"connectivity"`
+}
+
+type RecommendedAction struct {
+	Code        string `json:"code"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	Priority    string `json:"priority"`
 }
 
 type OperationsReport struct {
@@ -474,14 +482,55 @@ func buildCenterOperation(center *store.Center, activeLicense *store.License) Ce
 	}
 
 	return CenterOperation{
-		Center:           center,
-		ActiveLicense:    activeLicense,
-		Ready:            ready,
-		Issues:           issues,
-		DeliveryPosture:  deliveryPosture,
-		CommercialStatus: commercialStatus,
-		Connectivity:     connectivity,
+		Center:             center,
+		ActiveLicense:      activeLicense,
+		Ready:              ready,
+		Issues:             issues,
+		RecommendedActions: buildRecommendedActions(issues),
+		DeliveryPosture:    deliveryPosture,
+		CommercialStatus:   commercialStatus,
+		Connectivity:       connectivity,
 	}
+}
+
+func buildRecommendedActions(issues []string) []RecommendedAction {
+	if len(issues) == 0 {
+		return []RecommendedAction{{
+			Code:        "ready_for_delivery",
+			Label:       "Ready for tenant delivery",
+			Description: "This Center is active, licensed, reachable, and multi-tenant capable. You can provision customer tenants or assign cloud services.",
+			Priority:    "info",
+		}}
+	}
+	actions := make([]RecommendedAction, 0, len(issues))
+	for _, issue := range issues {
+		switch issue {
+		case "center_not_active":
+			actions = append(actions, RecommendedAction{Code: "activate_center", Label: "Activate Center", Description: "Approve the Center and issue a trial or manual authorization before delivery.", Priority: "high"})
+		case "missing_base_url":
+			actions = append(actions, RecommendedAction{Code: "configure_base_url", Label: "Configure Base URL", Description: "Set the reachable iWorkerCenter base URL so Cloud can manage tenant delivery and probes.", Priority: "high"})
+		case "multi_tenant_not_confirmed":
+			actions = append(actions, RecommendedAction{Code: "confirm_multi_tenant", Label: "Confirm Multi-tenant Support", Description: "Mark this Center as multi-tenant capable only after tenant isolation and Cloud integration are verified.", Priority: "medium"})
+		case "probe_failed", "probe_missing_base_url":
+			actions = append(actions, RecommendedAction{Code: "test_connection", Label: "Test Connection", Description: "Run a connection probe after checking network, DNS, TLS, and the Center /healthz endpoint.", Priority: "high"})
+		case "no_active_license":
+			actions = append(actions, RecommendedAction{Code: "issue_license", Label: "Issue License", Description: "Create or renew the Center authorization so cloud-managed compute, skills, and tenant operations are commercially valid.", Priority: "high"})
+		}
+	}
+	return dedupeActions(actions)
+}
+
+func dedupeActions(actions []RecommendedAction) []RecommendedAction {
+	seen := map[string]bool{}
+	out := make([]RecommendedAction, 0, len(actions))
+	for _, action := range actions {
+		if seen[action.Code] {
+			continue
+		}
+		seen[action.Code] = true
+		out = append(out, action)
+	}
+	return out
 }
 
 func isActiveLicense(lic *store.License, now time.Time) bool {

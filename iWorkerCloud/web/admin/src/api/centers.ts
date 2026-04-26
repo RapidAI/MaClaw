@@ -71,9 +71,17 @@ export interface CenterOperation {
   center: Center;
   ready: boolean;
   issues: string[];
+  recommended_actions: RecommendedAction[];
   delivery_posture: string;
   commercial_status: string;
   connectivity: string;
+}
+
+export interface RecommendedAction {
+  code: string;
+  label: string;
+  description: string;
+  priority: string;
 }
 
 export interface CenterOperationsReport {

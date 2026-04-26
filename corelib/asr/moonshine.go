@@ -1,9 +1,15 @@
-// corelib/asr/moonshine.go — Pure Go Moonshine ASR model (GGUF).
+// corelib/asr/moonshine.go — Pure Go Moonshine ASR model (GGUF, mmap-backed).
 //
 // Encoder-decoder transformer with RoPE, ported from RapidSpeech.cpp.
 // Architecture: Audio → Conv frontend → Encoder (LayerNorm + RoPE + GELU FFN)
 //            → Decoder (LayerNorm + RoPE + SwiGLU FFN + cross-attn)
 //            → Token logits → text
+//
+// Memory optimization: the GGUF file is memory-mapped. Tensors stored as Q8_0
+// in the GGUF are used via zero-copy (Q8Tensor.Data points into the mmap region).
+// F32 tensors are read from the mmap region and either kept as float32 (small
+// norm/bias/conv weights) or runtime-quantized to Q8_0 (large projection matrices).
+// Call Close() to release the mmap when the model is no longer needed.
 package asr
 
 import (
@@ -72,63 +78,91 @@ type weights struct {
 }
 
 // MoonshineModel is a pure Go Moonshine ASR model.
+// The GGUF file is memory-mapped; call Close() to release the mapping.
 type MoonshineModel struct {
 	hp    HParams
 	w     weights
 	vocab []string // indexed by token ID (contiguous)
+	mmap  *gguf.MmapFile // kept alive for mmap-backed Q8Tensor data
 	mu    sync.Mutex
 }
 
-// NewMoonshine loads a Moonshine model from a GGUF file.
+// NewMoonshine loads a Moonshine model from a GGUF file using memory mapping.
+// The mmap is kept alive for the lifetime of the model (Q8Tensor.Data may
+// point into the mmap region). Call Close() to release.
 func NewMoonshine(modelPath string) (*MoonshineModel, error) {
-	gf, err := gguf.Open(modelPath)
+	mf, err := gguf.OpenMmap(modelPath)
 	if err != nil {
-		return nil, fmt.Errorf("asr: open gguf: %w", err)
+		return nil, fmt.Errorf("asr: open mmap gguf: %w", err)
 	}
-	defer gf.Close()
 
 	hp := HParams{
-		EncoderDim:   gguf.GetMetaI32(gf.Meta, "moonshine.encoder_dim", 288),
-		EncoderDepth: gguf.GetMetaI32(gf.Meta, "moonshine.encoder_depth", 6),
-		EncoderHeads: gguf.GetMetaI32(gf.Meta, "moonshine.encoder_heads", 8),
-		DecoderDim:   gguf.GetMetaI32(gf.Meta, "moonshine.decoder_dim", 288),
-		DecoderDepth: gguf.GetMetaI32(gf.Meta, "moonshine.decoder_depth", 6),
-		DecoderHeads: gguf.GetMetaI32(gf.Meta, "moonshine.decoder_heads", 8),
-		VocabSize:    gguf.GetMetaI32(gf.Meta, "moonshine.vocab_size", 32768),
-		BOSID:        gguf.GetMetaI32(gf.Meta, "moonshine.bos_id", 1),
-		EOSID:        gguf.GetMetaI32(gf.Meta, "moonshine.eos_id", 2),
-		MaxSeqLen:    gguf.GetMetaI32(gf.Meta, "moonshine.max_seq_len", 448),
-		SampleRate:   gguf.GetMetaI32(gf.Meta, "moonshine.sample_rate", 16000),
-		RopeTheta:    gguf.GetMetaF32(gf.Meta, "moonshine.rope_theta", 10000.0),
-		PartialRot:   gguf.GetMetaF32(gf.Meta, "moonshine.partial_rotary_factor", 0.9),
+		EncoderDim:   gguf.GetMetaI32(mf.Meta, "moonshine.encoder_dim", 288),
+		EncoderDepth: gguf.GetMetaI32(mf.Meta, "moonshine.encoder_depth", 6),
+		EncoderHeads: gguf.GetMetaI32(mf.Meta, "moonshine.encoder_heads", 8),
+		DecoderDim:   gguf.GetMetaI32(mf.Meta, "moonshine.decoder_dim", 288),
+		DecoderDepth: gguf.GetMetaI32(mf.Meta, "moonshine.decoder_depth", 6),
+		DecoderHeads: gguf.GetMetaI32(mf.Meta, "moonshine.decoder_heads", 8),
+		VocabSize:    gguf.GetMetaI32(mf.Meta, "moonshine.vocab_size", 32768),
+		BOSID:        gguf.GetMetaI32(mf.Meta, "moonshine.bos_id", 1),
+		EOSID:        gguf.GetMetaI32(mf.Meta, "moonshine.eos_id", 2),
+		MaxSeqLen:    gguf.GetMetaI32(mf.Meta, "moonshine.max_seq_len", 448),
+		SampleRate:   gguf.GetMetaI32(mf.Meta, "moonshine.sample_rate", 16000),
+		RopeTheta:    gguf.GetMetaF32(mf.Meta, "moonshine.rope_theta", 10000.0),
+		PartialRot:   gguf.GetMetaF32(mf.Meta, "moonshine.partial_rotary_factor", 0.9),
 	}
 	hp.EncoderHDim = hp.EncoderDim / hp.EncoderHeads
 	hp.DecoderHDim = hp.DecoderDim / hp.DecoderHeads
 
-	m := &MoonshineModel{hp: hp}
-	if err := m.loadWeights(gf); err != nil {
+	m := &MoonshineModel{hp: hp, mmap: mf}
+	if err := m.loadWeights(mf); err != nil {
+		mf.CloseMmap()
 		return nil, err
 	}
-	m.loadVocab(gf)
+	m.loadVocab(mf)
 	return m, nil
 }
 
-func (m *MoonshineModel) loadWeights(gf *gguf.File) error {
-	get := func(name string) ([]float32, error) {
-		d, err := gf.ReadTensorF32("model." + name)
+// Close releases the mmap and all resources.
+func (m *MoonshineModel) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mmap != nil {
+		m.mmap.CloseMmap()
+		m.mmap = nil
+	}
+}
+
+func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
+	// getF32 reads a tensor as float32 from the mmap region.
+	getF32 := func(name string) ([]float32, error) {
+		d, err := mf.TensorF32("model." + name)
 		if err != nil {
-			return gf.ReadTensorF32(name)
+			return mf.TensorF32(name)
 		}
 		return d, nil
 	}
-	tryGet := func(name string) []float32 {
-		d, _ := get(name)
+	tryGetF32 := func(name string) []float32 {
+		d, _ := getF32(name)
 		return d
 	}
-	// getQ8 loads a weight matrix and quantizes it to Q8_0.
-	// rows and cols describe the matrix shape [rows, cols].
+	// getQ8 tries to load a weight matrix as Q8_0 zero-copy from mmap.
+	// If the tensor is stored as Q8_0 in the GGUF, returns a Q8Tensor
+	// pointing directly into the mmap region (zero allocation).
+	// If stored as F32, reads and runtime-quantizes to Q8_0 (heap allocation).
 	getQ8 := func(name string, rows, cols int) *tensor.Q8Tensor {
-		d, err := get(name)
+		// Try mmap zero-copy for Q8_0 tensors first.
+		for _, prefix := range []string{"model.", ""} {
+			raw, ti, err := mf.TensorRawBytes(prefix + name)
+			if err != nil {
+				continue
+			}
+			if ti.Type == gguf.TypeQ8_0 {
+				return &tensor.Q8Tensor{Data: raw, Rows: rows, Cols: cols}
+			}
+		}
+		// Fallback: read as F32 and runtime-quantize.
+		d, err := getF32(name)
 		if err != nil || len(d) == 0 {
 			return nil
 		}
@@ -138,17 +172,17 @@ func (m *MoonshineModel) loadWeights(gf *gguf.File) error {
 	w := &m.w
 	dim := m.hp.EncoderDim
 	var err error
-	w.conv1W, err = get("encoder.conv1.weight")
+	w.conv1W, err = getF32("encoder.conv1.weight")
 	if err != nil {
 		return fmt.Errorf("asr: %w", err)
 	}
-	w.conv1B = tryGet("encoder.conv1.bias")
-	w.conv2W, _ = get("encoder.conv2.weight")
-	w.conv2B = tryGet("encoder.conv2.bias")
-	w.conv3W, _ = get("encoder.conv3.weight")
-	w.conv3B = tryGet("encoder.conv3.bias")
-	w.gnormW = tryGet("encoder.groupnorm.weight")
-	w.gnormB = tryGet("encoder.groupnorm.bias")
+	w.conv1B = tryGetF32("encoder.conv1.bias")
+	w.conv2W, _ = getF32("encoder.conv2.weight")
+	w.conv2B = tryGetF32("encoder.conv2.bias")
+	w.conv3W, _ = getF32("encoder.conv3.weight")
+	w.conv3B = tryGetF32("encoder.conv3.bias")
+	w.gnormW = tryGetF32("encoder.groupnorm.weight")
+	w.gnormB = tryGetF32("encoder.groupnorm.bias")
 
 	w.encLayers = make([]encoderLayer, m.hp.EncoderDepth)
 	for i := range w.encLayers {
@@ -158,23 +192,23 @@ func (m *MoonshineModel) loadWeights(gf *gguf.File) error {
 		l.attnKW = getQ8(p+"self_attn.k_proj.weight", dim, dim)
 		l.attnVW = getQ8(p+"self_attn.v_proj.weight", dim, dim)
 		l.attnOutW = getQ8(p+"self_attn.o_proj.weight", dim, dim)
-		l.attnNormW, _ = get(p + "input_layernorm.weight")
+		l.attnNormW, _ = getF32(p + "input_layernorm.weight")
 		// Determine FFN dimensions from the weight size
-		ffUpF32, _ := get(p + "mlp.fc1.weight")
+		ffUpF32, _ := getF32(p + "mlp.fc1.weight")
 		if len(ffUpF32) == 0 {
 			continue // skip layer if weights missing
 		}
 		ffDim := len(ffUpF32) / dim
 		l.ffUpW = tensor.QuantizeToQ8(ffUpF32, ffDim, dim)
-		l.ffUpB = tryGet(p + "mlp.fc1.bias")
-		ffDownF32, _ := get(p + "mlp.fc2.weight")
+		l.ffUpB = tryGetF32(p + "mlp.fc1.bias")
+		ffDownF32, _ := getF32(p + "mlp.fc2.weight")
 		if len(ffDownF32) > 0 {
 			l.ffDownW = tensor.QuantizeToQ8(ffDownF32, dim, ffDim)
 		}
-		l.ffDownB = tryGet(p + "mlp.fc2.bias")
-		l.ffNormW, _ = get(p + "post_attention_layernorm.weight")
+		l.ffDownB = tryGetF32(p + "mlp.fc2.bias")
+		l.ffNormW, _ = getF32(p + "post_attention_layernorm.weight")
 	}
-	w.encFinalNormW, _ = get("encoder.layer_norm.weight")
+	w.encFinalNormW, _ = getF32("encoder.layer_norm.weight")
 
 	ddim := m.hp.DecoderDim
 	w.decLayers = make([]decoderLayer, m.hp.DecoderDepth)
@@ -185,36 +219,36 @@ func (m *MoonshineModel) loadWeights(gf *gguf.File) error {
 		l.selfKW = getQ8(p+"self_attn.k_proj.weight", ddim, ddim)
 		l.selfVW = getQ8(p+"self_attn.v_proj.weight", ddim, ddim)
 		l.selfOutW = getQ8(p+"self_attn.o_proj.weight", ddim, ddim)
-		l.selfNormW, _ = get(p + "input_layernorm.weight")
+		l.selfNormW, _ = getF32(p + "input_layernorm.weight")
 		l.crossQW = getQ8(p+"encoder_attn.q_proj.weight", ddim, ddim)
 		l.crossKW = getQ8(p+"encoder_attn.k_proj.weight", ddim, ddim)
 		l.crossVW = getQ8(p+"encoder_attn.v_proj.weight", ddim, ddim)
 		l.crossOutW = getQ8(p+"encoder_attn.o_proj.weight", ddim, ddim)
-		l.crossNormW, _ = get(p + "post_attention_layernorm.weight")
-		ffUpF32, _ := get(p + "mlp.fc1.weight")
+		l.crossNormW, _ = getF32(p + "post_attention_layernorm.weight")
+		ffUpF32, _ := getF32(p + "mlp.fc1.weight")
 		if len(ffUpF32) == 0 {
 			continue
 		}
 		ffDim2x := len(ffUpF32) / ddim
 		l.ffUpW = tensor.QuantizeToQ8(ffUpF32, ffDim2x, ddim)
-		l.ffUpB = tryGet(p + "mlp.fc1.bias")
-		ffDownF32, _ := get(p + "mlp.fc2.weight")
+		l.ffUpB = tryGetF32(p + "mlp.fc1.bias")
+		ffDownF32, _ := getF32(p + "mlp.fc2.weight")
 		intermediate := ffDim2x / 2
 		if len(ffDownF32) > 0 {
 			l.ffDownW = tensor.QuantizeToQ8(ffDownF32, ddim, intermediate)
 		}
-		l.ffDownB = tryGet(p + "mlp.fc2.bias")
-		l.ffNormW, _ = get(p + "final_layernorm.weight")
+		l.ffDownB = tryGetF32(p + "mlp.fc2.bias")
+		l.ffNormW, _ = getF32(p + "final_layernorm.weight")
 	}
-	w.decFinalNormW, _ = get("decoder.layer_norm.weight")
+	w.decFinalNormW, _ = getF32("decoder.layer_norm.weight")
 	if w.decFinalNormW == nil {
-		w.decFinalNormW = tryGet("decoder.norm.weight")
+		w.decFinalNormW = tryGetF32("decoder.norm.weight")
 	}
-	w.tokenEmb, err = get("decoder.embed_tokens.weight")
+	w.tokenEmb, err = getF32("decoder.embed_tokens.weight")
 	if err != nil {
 		return fmt.Errorf("asr: token embedding: %w", err)
 	}
-	lmHeadF32 := tryGet("lm_head.weight")
+	lmHeadF32 := tryGetF32("lm_head.weight")
 	if lmHeadF32 != nil {
 		w.lmHeadW = tensor.QuantizeToQ8(lmHeadF32, m.hp.VocabSize, ddim)
 	} else {
@@ -223,10 +257,10 @@ func (m *MoonshineModel) loadWeights(gf *gguf.File) error {
 	return nil
 }
 
-func (m *MoonshineModel) loadVocab(gf *gguf.File) {
-	tokens := gguf.GetMetaStrArr(gf.Meta, "tokenizer.ggml.tokens")
+func (m *MoonshineModel) loadVocab(mf *gguf.MmapFile) {
+	tokens := gguf.GetMetaStrArr(mf.Meta, "tokenizer.ggml.tokens")
 	if tokens == nil {
-		tokens = gguf.GetMetaStrArr(gf.Meta, "tokenizer.tokens")
+		tokens = gguf.GetMetaStrArr(mf.Meta, "tokenizer.tokens")
 	}
 	m.vocab = make([]string, len(tokens))
 	copy(m.vocab, tokens)

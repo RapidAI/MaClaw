@@ -75,6 +75,12 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 		return
 	}
 
+	// Diagnostic: trace when delta contains "Browser" to confirm filter receives it.
+	if strings.Contains(delta, "Browser") {
+		log.Printf("[stream-roleprefix] TRACE Write: delta contains Browser: halted=%v seenContent=%v len=%d delta=%q",
+			f.halted, f.seenContent, len(delta), rpfTruncateForLog(delta, 80))
+	}
+
 	// Process the delta character by character, splitting on newlines.
 	for len(delta) > 0 {
 		nlIdx := strings.IndexByte(delta, '\n')
@@ -97,6 +103,11 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 		}
 
 		// Check for role prefix outside code blocks.
+		// Diagnostic: log any line containing "Browser" to trace filter behavior.
+		if strings.Contains(line, "Browser") {
+			log.Printf("[stream-roleprefix] TRACE: line contains Browser: inCodeBlock=%v seenContent=%v regexMatch=%v line=%q",
+				f.inCodeBlock, f.seenContent, rolePrefixLineRe.MatchString(line), rpfTruncateForLog(line, 120))
+		}
 		if !f.inCodeBlock && rolePrefixLineRe.MatchString(line) {
 			if f.seenContent {
 				// Case 2: mid-text hallucination — halt and suppress
@@ -136,6 +147,11 @@ func (f *rolePrefixStreamFilter) Flush() {
 	}
 	remaining := f.lineBuf.String()
 	if remaining != "" {
+		// Diagnostic: trace any pending content containing "Browser".
+		if strings.Contains(remaining, "Browser") {
+			log.Printf("[stream-roleprefix] TRACE Flush: remaining contains Browser: inCodeBlock=%v seenContent=%v regexMatch=%v remaining=%q",
+				f.inCodeBlock, f.seenContent, rolePrefixLineRe.MatchString(remaining), rpfTruncateForLog(remaining, 120))
+		}
 		// Check the final incomplete line for role prefix.
 		if !f.inCodeBlock && rolePrefixLineRe.MatchString(remaining) {
 			if f.seenContent {

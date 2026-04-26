@@ -1,11 +1,12 @@
 // corelib/asr/manager.go — Lazy-load ASR model with auto-unload after idle.
+//
+// Delegates lifecycle management to modelmanager.Manager[*MoonshineModel].
 package asr
 
 import (
-	"fmt"
-	"log"
-	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
 )
 
 const defaultUnloadDelay = 5 * time.Minute
@@ -13,88 +14,43 @@ const defaultUnloadDelay = 5 * time.Minute
 // Manager provides lazy-loaded, auto-unloading ASR.
 // Call Transcribe/TranscribeWAV; model loads on first use, unloads after idle.
 type Manager struct {
-	modelPath   string
-	unloadDelay time.Duration
-	mu          sync.Mutex
-	model       *MoonshineModel
-	unloadTimer *time.Timer
+	mm *modelmanager.Manager[*MoonshineModel]
 }
 
 // NewManager creates an ASR manager. Model is NOT loaded until first use.
 func NewManager(modelPath string) *Manager {
-	return &Manager{modelPath: modelPath, unloadDelay: defaultUnloadDelay}
+	mm := modelmanager.New(modelmanager.Config[*MoonshineModel]{
+		Name:        "asr",
+		Load:        func() (*MoonshineModel, error) { return NewMoonshine(modelPath) },
+		Close:       func(m *MoonshineModel) { m.Close() },
+		UnloadDelay: defaultUnloadDelay,
+	})
+	return &Manager{mm: mm}
 }
 
 // SetUnloadDelay configures idle timeout before model is unloaded.
 func (mgr *Manager) SetUnloadDelay(d time.Duration) {
-	mgr.mu.Lock()
-	defer mgr.mu.Unlock()
-	mgr.unloadDelay = d
-}
-
-// ensure loads the model if not already loaded and prevents idle unload while in use.
-func (mgr *Manager) ensure() (*MoonshineModel, error) {
-	mgr.mu.Lock()
-	defer mgr.mu.Unlock()
-	if mgr.unloadTimer != nil {
-		mgr.unloadTimer.Stop()
-		mgr.unloadTimer = nil
-	}
-	if mgr.model == nil {
-		log.Printf("[asr] loading model from %s", mgr.modelPath)
-		t0 := time.Now()
-		m, err := NewMoonshine(mgr.modelPath)
-		if err != nil {
-			return nil, fmt.Errorf("asr: load model: %w", err)
-		}
-		mgr.model = m
-		log.Printf("[asr] model loaded in %v", time.Since(t0))
-	}
-	return mgr.model, nil
-}
-
-func (mgr *Manager) resetTimer() {
-	if mgr.unloadTimer != nil {
-		mgr.unloadTimer.Stop()
-	}
-	mgr.unloadTimer = time.AfterFunc(mgr.unloadDelay, func() {
-		mgr.Unload()
-	})
+	mgr.mm.SetUnloadDelay(d)
 }
 
 // Unload releases the model from memory.
 func (mgr *Manager) Unload() {
-	mgr.mu.Lock()
-	defer mgr.mu.Unlock()
-	if mgr.model != nil {
-		log.Printf("[asr] unloading model (idle timeout)")
-		mgr.model = nil // GC will reclaim the ~200MB weights
-	}
-	if mgr.unloadTimer != nil {
-		mgr.unloadTimer.Stop()
-		mgr.unloadTimer = nil
-	}
+	mgr.mm.Unload()
 }
 
 // Loaded returns true if the model is currently in memory.
 func (mgr *Manager) Loaded() bool {
-	mgr.mu.Lock()
-	defer mgr.mu.Unlock()
-	return mgr.model != nil
+	return mgr.mm.Loaded()
 }
 
 // Transcribe loads model on demand, transcribes PCM, schedules unload.
 func (mgr *Manager) Transcribe(pcm []float32) (string, error) {
-	m, err := mgr.ensure()
+	m, done, err := mgr.mm.Acquire()
 	if err != nil {
 		return "", err
 	}
-	result, err := m.Transcribe(pcm)
-	// Reset unload timer after transcription completes (not just at load time)
-	mgr.mu.Lock()
-	mgr.resetTimer()
-	mgr.mu.Unlock()
-	return result, err
+	defer done()
+	return m.Transcribe(pcm)
 }
 
 // TranscribeWAV loads model on demand, reads WAV, transcribes.

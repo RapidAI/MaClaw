@@ -3,27 +3,31 @@ package guiautomation
 import (
 	"fmt"
 	"os"
-	"sync"
+	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 	"github.com/RapidAI/CodeClaw/corelib/yolo"
 )
 
+const defaultYOLOUnloadDelay = 3 * time.Minute
+
 // YOLOScreenParser implements taskengine.ScreenParser using the pure Go
 // YOLOv8 inference engine. It detects interactable UI elements (buttons,
 // icons, inputs, etc.) from screenshots without any external dependency.
+//
+// The model is lazily loaded on first Parse() call and automatically
+// unloaded after an idle timeout (default 3 minutes) to free memory.
+// Subsequent Parse() calls after unload will reload the model transparently.
 type YOLOScreenParser struct {
-	mu         sync.Mutex
-	model      *yolo.Model
+	mm         *modelmanager.Manager[*yolo.Model]
 	modelPath  string
 	confThresh float32
 	iouThresh  float32
-	loaded     bool
-	loadErr    error
 }
 
 // NewYOLOScreenParser creates a YOLO-based screen parser.
-// The model is lazily loaded on first Parse() call.
+// The model is lazily loaded on first Parse() call and auto-unloaded after idle.
 // modelPath: path to the .yolow weight file.
 func NewYOLOScreenParser(modelPath string, confThresh, iouThresh float32) *YOLOScreenParser {
 	if confThresh <= 0 {
@@ -32,27 +36,43 @@ func NewYOLOScreenParser(modelPath string, confThresh, iouThresh float32) *YOLOS
 	if iouThresh <= 0 {
 		iouThresh = 0.5
 	}
+	mm := modelmanager.New(modelmanager.Config[*yolo.Model]{
+		Name:        "yolo",
+		Load:        func() (*yolo.Model, error) { return yolo.LoadModel(modelPath) },
+		Close:       nil, // no explicit cleanup — GC reclaims float32 weights
+		UnloadDelay: defaultYOLOUnloadDelay,
+	})
 	return &YOLOScreenParser{
+		mm:         mm,
 		modelPath:  modelPath,
 		confThresh: confThresh,
 		iouThresh:  iouThresh,
 	}
 }
 
-// Parse implements taskengine.ScreenParser.
-func (p *YOLOScreenParser) Parse(pngBase64 string) ([]taskengine.UIElement, error) {
-	p.mu.Lock()
-	if !p.loaded {
-		p.model, p.loadErr = yolo.LoadModel(p.modelPath)
-		p.loaded = true
-	}
-	model := p.model
-	loadErr := p.loadErr
-	p.mu.Unlock()
+// SetUnloadDelay configures idle timeout before the model is unloaded from memory.
+func (p *YOLOScreenParser) SetUnloadDelay(d time.Duration) {
+	p.mm.SetUnloadDelay(d)
+}
 
-	if loadErr != nil {
-		return nil, fmt.Errorf("YOLO model load: %w", loadErr)
+// Unload releases the model from memory. The model will be reloaded on next Parse().
+func (p *YOLOScreenParser) Unload() {
+	p.mm.Unload()
+}
+
+// Loaded returns true if the model is currently in memory.
+func (p *YOLOScreenParser) Loaded() bool {
+	return p.mm.Loaded()
+}
+
+// Parse implements taskengine.ScreenParser.
+// Loads the model on demand and schedules auto-unload after idle timeout.
+func (p *YOLOScreenParser) Parse(pngBase64 string) ([]taskengine.UIElement, error) {
+	model, done, err := p.mm.Acquire()
+	if err != nil {
+		return nil, err
 	}
+	defer done()
 
 	dets, err := model.Detect(pngBase64, p.confThresh, p.iouThresh)
 	if err != nil {
@@ -75,10 +95,8 @@ func (p *YOLOScreenParser) Parse(pngBase64 string) ([]taskengine.UIElement, erro
 
 // IsAvailable implements taskengine.ScreenParser.
 func (p *YOLOScreenParser) IsAvailable() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.loaded {
-		return p.loadErr == nil
+	if p.mm.Loaded() {
+		return true
 	}
 	_, err := os.Stat(p.modelPath)
 	return err == nil

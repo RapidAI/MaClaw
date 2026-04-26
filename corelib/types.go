@@ -131,6 +131,10 @@ type NLSkillStep struct {
 	Label     string                 `json:"label,omitempty"`     // step selector label for api_workflow mode
 	Capture   map[string]string      `json:"capture,omitempty"`   // output capture: varName → regex pattern (first submatch group)
 	Poll      *StepPollConfig        `json:"poll,omitempty"`      // poll config for async steps
+	// FallbackStep holds the original step before solidification promotion.
+	// When a promoted bash step fails, the Runner reverts to this step.
+	// See corelib/skill/solidify.go for the revert mechanism.
+	FallbackStep *NLSkillStep         `json:"fallback_step,omitempty"`
 }
 
 // NLSkillOperation describes a named operation within an api_workflow skill.
@@ -202,6 +206,10 @@ type NLSkillEntry struct {
 	// When absent, SynthesizeParams auto-generates it from command templates.
 	// All skills flow through the same BindParams path regardless of source.
 	Params []NLSkillParam `json:"params,omitempty"`
+
+	// SolidificationCandidates tracks craft_tool steps that are candidates
+	// for promotion to bash steps. See corelib/skill/solidify.go.
+	SolidificationCandidates []SolidificationCandidate `json:"solidification_candidates,omitempty"`
 }
 
 // NLSkillParam describes a single parameter in a skill's parameter schema.
@@ -215,6 +223,23 @@ type NLSkillParam struct {
 	Default     string   `json:"default,omitempty"`     // default value when not provided
 	Required    bool     `json:"required,omitempty"`    // must be provided for execution
 	Synthetic   bool     `json:"synthetic,omitempty"`   // true = auto-generated from template
+}
+
+// SolidificationCandidate tracks a craft_tool step's promotion progress
+// toward becoming a fixed bash step. See corelib/skill/solidify.go for the
+// three-stage pipeline (Record → Promote → Revert).
+type SolidificationCandidate struct {
+	StepIndex    int      `json:"step_index"`
+	ScriptPath   string   `json:"script_path"`
+	Language     string   `json:"language"`
+	ParamSlots   []string `json:"param_slots,omitempty"`
+	SuccessCount int      `json:"success_count"`
+	// Signature is the structural hash of the last recorded script.
+	// Consecutive successes only count toward promotion when all scripts
+	// share the same signature (same code structure, different parameters).
+	// A signature change resets the streak.
+	Signature    string   `json:"signature,omitempty"`
+	LastUsed     string   `json:"last_used,omitempty"`
 }
 
 // SkillRepairRecord stores a single self-repair attempt for audit trail.

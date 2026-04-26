@@ -246,6 +246,109 @@ label { display: block; font-size: 12px; font-weight: 800; color: var(--muted); 
   font-weight: 700;
 }
 
+.cloud-posture-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 280px) 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #f8fbff;
+}
+
+.cloud-posture-panel.ready {
+  border-color: rgba(31,143,106,.22);
+  background: rgba(31,143,106,.08);
+}
+
+.cloud-posture-panel.watch {
+  border-color: rgba(192,138,24,.24);
+  background: rgba(192,138,24,.08);
+}
+
+.cloud-posture-panel label {
+  margin: 0 0 4px;
+}
+
+.cloud-posture-panel strong {
+  display: block;
+  font-size: 18px;
+}
+
+.cloud-posture-panel span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.cloud-issue-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.cloud-issue-list span {
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.cloud-action-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: linear-gradient(135deg, rgba(255,255,255,.96), rgba(236,243,255,.9));
+}
+
+.cloud-action-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.cloud-action-card span {
+  justify-self: start;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(47,128,237,.12);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.cloud-action-card.high span {
+  background: rgba(199,90,74,.12);
+  color: var(--danger);
+}
+
+.cloud-action-card.medium span {
+  background: rgba(192,138,24,.14);
+  color: var(--warn);
+}
+
+.cloud-action-card strong {
+  color: var(--text);
+}
+
+.cloud-action-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .cloud-integration-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -279,6 +382,8 @@ label { display: block; font-size: 12px; font-weight: 800; color: var(--muted); 
 
 @media (max-width: 900px) {
   .cloud-market-grid,
+  .cloud-posture-panel,
+  .cloud-action-panel,
   .cloud-integration-panel,
   .cloud-provision-panel {
     grid-template-columns: 1fr;

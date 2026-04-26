@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  listCenters,
+  getCenterOperations,
   confirmTrial,
   confirmManual,
   disableCenter,
@@ -11,6 +11,7 @@ import {
   provisionTenant,
   probeCenter,
   type Center,
+  type CenterOperation,
   type CenterIntegrationPatch,
   type ProvisionTenantRequest,
   type CloudControlMode,
@@ -18,6 +19,23 @@ import {
 
 type IntegrationDraft = CenterIntegrationPatch;
 type TenantDraft = ProvisionTenantRequest;
+
+const postureLabels: Record<string, string> = {
+  ready: 'Ready',
+  needs_setup: 'Needs setup',
+  connectivity_risk: 'Connectivity risk',
+  commercial_hold: 'Commercial hold',
+  watch: 'Watch',
+};
+
+const issueLabels: Record<string, string> = {
+  center_not_active: 'Center not active',
+  missing_base_url: 'Missing base URL',
+  multi_tenant_not_confirmed: 'Multi-tenant not confirmed',
+  probe_failed: 'Probe failed',
+  probe_missing_base_url: 'Probe missing base URL',
+  no_active_license: 'No active license',
+};
 
 const controlModeLabels: Record<CloudControlMode, string> = {
   cloud_managed: 'Cloud managed',
@@ -49,6 +67,7 @@ function createTenantDraft(): TenantDraft {
 export function CentersPage() {
   const { t } = useTranslation();
   const [centers, setCenters] = useState<Center[]>([]);
+  const [operations, setOperations] = useState<Record<string, CenterOperation>>({});
   const [drafts, setDrafts] = useState<Record<string, IntegrationDraft>>({});
   const [tenantDrafts, setTenantDrafts] = useState<Record<string, TenantDraft>>({});
   const [provisioning, setProvisioning] = useState<string | null>(null);
@@ -60,10 +79,12 @@ export function CentersPage() {
 
   const load = () => {
     setError('');
-    listCenters()
-      .then(data => {
-        const nextCenters = data ?? [];
+    getCenterOperations()
+      .then(report => {
+        const nextItems = report.items ?? [];
+        const nextCenters = nextItems.map(item => item.center);
         setCenters(nextCenters);
+        setOperations(Object.fromEntries(nextItems.map(item => [item.center.id, item])));
         setDrafts(Object.fromEntries(nextCenters.map(center => [center.id, createDraft(center)])));
         setTenantDrafts(prev => Object.fromEntries(nextCenters.map(center => [center.id, prev[center.id] ?? createTenantDraft()])));
       })
@@ -99,6 +120,7 @@ export function CentersPage() {
       });
       setCenters(prev => prev.map(item => item.id === center.id ? updated : item));
       setDrafts(prev => ({ ...prev, [center.id]: createDraft(updated) }));
+      load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -156,6 +178,7 @@ export function CentersPage() {
         ...prev,
         [center.id]: `${response.probe.ok ? 'Reachable' : 'Unreachable'}: ${response.probe.message}`,
       }));
+      load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -181,6 +204,7 @@ export function CentersPage() {
         {centers.map(center => {
           const draft = drafts[center.id] ?? createDraft(center);
           const tenantDraft = tenantDrafts[center.id] ?? createTenantDraft();
+          const operation = operations[center.id];
           return (
             <div key={center.id} className="item cloud-center-card">
               <div className="item-head">
@@ -198,8 +222,36 @@ export function CentersPage() {
                 <span>{center.supports_multi_tenant ? 'Multi-tenant ready' : 'Single tenant / unknown'}</span>
                 <span>{controlModeLabels[center.cloud_control_mode ?? 'cloud_managed']}</span>
                 <span>Sync: {center.last_sync_status || 'not configured'}</span>
+                {operation && <span>Commercial: {operation.commercial_status}</span>}
+                {operation && <span>Connectivity: {operation.connectivity}</span>}
                 {center.created_at && <span>Registered: {new Date(center.created_at).toLocaleString()}</span>}
               </div>
+
+              {operation && <div className={`cloud-posture-panel ${operation.ready ? 'ready' : 'watch'}`}>
+                <div>
+                  <label>Delivery posture</label>
+                  <strong>{postureLabels[operation.delivery_posture] ?? operation.delivery_posture}</strong>
+                  <span>{operation.ready ? 'This Center is ready for tenant delivery through Cloud.' : 'This Center needs operator attention before smooth tenant delivery.'}</span>
+                </div>
+                <div className="cloud-issue-list">
+                  {operation.issues.length === 0
+                    ? <span className="ok">No blocking issues</span>
+                    : operation.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
+                </div>
+              </div>}
+
+              {operation && <div className="cloud-action-panel">
+                <div className="field-span-2">
+                  <label>Recommended operator actions</label>
+                </div>
+                {(operation.recommended_actions ?? []).map(action => (
+                  <div key={action.code} className={`cloud-action-card ${action.priority}`}>
+                    <span>{action.priority}</span>
+                    <strong>{action.label}</strong>
+                    <p>{action.description}</p>
+                  </div>
+                ))}
+              </div>}
 
               <div className="cloud-integration-panel">
                 <div className="field-span-2">

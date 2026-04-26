@@ -43,14 +43,14 @@
     return '<option value="' + escapeHtml(v) + '"' + (llmProviderProtocolFilter === v ? ' selected' : '') + '>' + escapeHtml(v) + '</option>';
   }).join('');
   const actionsRow = '<div class="actions" style="margin:0 0 8px 0;justify-content:flex-end">'
+    + '<button class="btn-primary" type="button" id="llmProviderCreateInlineBtn" style="height:34px;padding:0 14px;font-size:12px;white-space:nowrap" onclick="addLLMProvider()">' + escapeHtml(lp('add')) + '</button>'
     + '<button class="btn-ghost" type="button" id="llmProvidersExportBtn" onclick="exportLLMProvidersJSON()">' + escapeHtml(lp('export')) + '</button>'
     + '<button class="btn-ghost" type="button" id="llmProvidersImportBtn" onclick="triggerLLMProvidersImport()">' + escapeHtml(lp('import')) + '</button>'
     + '<input id="llmProvidersImportInput" type="file" accept="application/json,.json" class="hidden" onchange="importLLMProvidersJSON(event)">'
     + '</div>';
-  const searchRow = '<div class="row" style="grid-template-columns:minmax(0,1.35fr) minmax(120px,.72fr) auto minmax(136px,.76fr) auto;gap:8px;margin-bottom:8px;padding:0;border:none;background:transparent;align-items:center">'
+  const searchRow = '<div class="row" style="grid-template-columns:minmax(0,1.35fr) minmax(120px,.72fr) minmax(136px,.76fr) auto;gap:8px;margin-bottom:8px;padding:0;border:none;background:transparent;align-items:center">'
     + '<input id="llmProviderSearchInput" value="' + escapeHtml(llmProviderFilter) + '" placeholder="' + escapeHtml(lp('searchPlaceholder')) + '" style="height:34px" oninput="setLLMProviderFilter(this.value)">'
     + '<select id="llmProviderProtocolFilter" style="height:34px" onchange="setLLMProviderProtocolFilter(this.value)"><option value="">' + escapeHtml(lp('allProtocols')) + '</option>' + protocolOptions + '</select>'
-    + '<button class="btn-primary" type="button" id="llmProviderCreateInlineBtn" style="height:34px;padding:0 14px;font-size:12px;white-space:nowrap" onclick="addLLMProvider()">' + escapeHtml(lp('add')) + '</button>'
     + '<select id="llmProviderKeyFilter" style="height:34px" onchange="setLLMProviderKeyFilter(this.value)"><option value="all"' + (llmProviderKeyFilter === 'all' ? ' selected' : '') + '>' + escapeHtml(lp('allKeyStates')) + '</option><option value="with_key"' + (llmProviderKeyFilter === 'with_key' ? ' selected' : '') + '>' + escapeHtml(lp('withKey')) + '</option><option value="without_key"' + (llmProviderKeyFilter === 'without_key' ? ' selected' : '') + '>' + escapeHtml(lp('withoutKey')) + '</option></select>'
     + '<button class="btn-ghost" style="height:34px;padding:0 10px;font-size:11px" onclick="window.__resetLLMProviderFilters && window.__resetLLMProviderFilters()">' + escapeHtml(lp('clearSearch')) + '</button>'
     + '</div>';
