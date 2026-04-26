@@ -391,7 +391,7 @@ func (p *OpenAIProxy) forwardOpenAI(body map[string]interface{}) ([]byte, int, e
 	}
 
 	// Construct upstream URL
-	upstreamURL := strings.TrimRight(p.config.URL, "/") + "/v1/chat/completions"
+	upstreamURL := openAIChatCompletionsEndpoint(p.config.URL)
 
 	// Create HTTP request
 	req, err := http.NewRequest("POST", upstreamURL, bytes.NewReader(jsonBody))
@@ -631,7 +631,7 @@ func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int
 	}
 
 	// 3. Construct URL
-	upstreamURL := strings.TrimRight(p.config.URL, "/") + "/v1/responses"
+	upstreamURL := openAIResponsesEndpoint(p.config.URL)
 
 	// 4. Create POST request
 	req, err := http.NewRequest("POST", upstreamURL, bytes.NewReader(jsonBody))

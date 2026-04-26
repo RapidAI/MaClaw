@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -24,18 +26,21 @@ import (
 )
 
 type llmProviderRegistryResponse struct {
-	Enabled                bool     `json:"enabled"`
-	CurrentProviderID      string   `json:"current_provider_id"`
-	SmartRouteSingleDevice bool     `json:"smart_route_single_device"`
-	Providers              []any    `json:"providers"`
-	ExposeAPIBaseURL       string   `json:"expose_api_base_url"`
-	ExposeBaseURL          string   `json:"expose_base_url"`
-	ExposeModelsURL        string   `json:"expose_models_url"`
-	AvailableModels        []string `json:"available_models"`
-	AuthMode               string   `json:"auth_mode"`
-	AuthHint               string   `json:"auth_hint"`
-	Hints                  []string `json:"hints,omitempty"`
-	Warnings               []string `json:"warnings,omitempty"`
+	Enabled                  bool     `json:"enabled"`
+	CurrentProviderID        string   `json:"current_provider_id"`
+	SmartRouteSingleDevice   bool     `json:"smart_route_single_device"`
+	DownstreamMaxConcurrency int      `json:"downstream_max_concurrency"`
+	UserRateLimitPerMinute   int      `json:"user_rate_limit_per_minute"`
+	UserRateLimitBurst       int      `json:"user_rate_limit_burst"`
+	Providers                []any    `json:"providers"`
+	ExposeAPIBaseURL         string   `json:"expose_api_base_url"`
+	ExposeBaseURL            string   `json:"expose_base_url"`
+	ExposeModelsURL          string   `json:"expose_models_url"`
+	AvailableModels          []string `json:"available_models"`
+	AuthMode                 string   `json:"auth_mode"`
+	AuthHint                 string   `json:"auth_hint"`
+	Hints                    []string `json:"hints,omitempty"`
+	Warnings                 []string `json:"warnings,omitempty"`
 }
 
 type llmServiceAdminResponse struct {
@@ -64,6 +69,10 @@ type createLLMServiceCardRequest struct {
 
 type redeemLLMServiceCardRequest struct {
 	Code string `json:"code"`
+}
+
+type llmProviderTestKeyRequest struct {
+	Email string `json:"email"`
 }
 
 func GetLLMProvidersHandler(system store.SystemSettingsRepository) http.HandlerFunc {
@@ -106,6 +115,27 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 			if p.MaxConcurrency < 0 {
 				p.MaxConcurrency = 0
 			}
+			if p.MaxQueueWaiters < 0 {
+				p.MaxQueueWaiters = 0
+			}
+			if p.QueueTimeoutMS < 0 {
+				p.QueueTimeoutMS = 0
+			}
+			if p.CircuitBreakerThreshold <= 0 {
+				p.CircuitBreakerThreshold = im.DefaultLLMProviderCircuitBreakerThreshold
+			}
+			if p.CircuitBreakerCooldownMS <= 0 {
+				p.CircuitBreakerCooldownMS = im.DefaultLLMProviderCircuitBreakerCooldownMS
+			}
+			if p.FailureBackoffBaseMS <= 0 {
+				p.FailureBackoffBaseMS = im.DefaultLLMProviderFailureBackoffBaseMS
+			}
+			if p.FailureBackoffMaxMS <= 0 {
+				p.FailureBackoffMaxMS = im.DefaultLLMProviderFailureBackoffMaxMS
+			}
+			if p.FailureBackoffMaxMS < p.FailureBackoffBaseMS {
+				p.FailureBackoffMaxMS = p.FailureBackoffBaseMS
+			}
 			if p.ID == "" {
 				writeError(w, http.StatusBadRequest, "LLM_PROVIDER_ID_REQUIRED", "Provider id is required")
 				return
@@ -122,6 +152,27 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 		if req.TokenUsage == nil && oldReg != nil {
 			req.TokenUsage = oldReg.TokenUsage
 		}
+		if req.DownstreamMaxConcurrency <= 0 {
+			if oldReg != nil && oldReg.DownstreamMaxConcurrency > 0 {
+				req.DownstreamMaxConcurrency = oldReg.DownstreamMaxConcurrency
+			} else {
+				req.DownstreamMaxConcurrency = im.DefaultLLMProviderDownstreamMaxConcurrency
+			}
+		}
+		if req.UserRateLimitPerMinute <= 0 {
+			if oldReg != nil && oldReg.UserRateLimitPerMinute > 0 {
+				req.UserRateLimitPerMinute = oldReg.UserRateLimitPerMinute
+			} else {
+				req.UserRateLimitPerMinute = im.DefaultLLMProviderUserRateLimitPerMinute
+			}
+		}
+		if req.UserRateLimitBurst <= 0 {
+			if oldReg != nil && oldReg.UserRateLimitBurst > 0 {
+				req.UserRateLimitBurst = oldReg.UserRateLimitBurst
+			} else {
+				req.UserRateLimitBurst = im.DefaultLLMProviderUserRateLimitBurst
+			}
+		}
 		serviceReg, err := llmservice.LoadRegistry(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
@@ -135,6 +186,9 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_SAVE_FAILED", err.Error())
 			return
 		}
+		invalidateLLMRuntimeCaches(system)
+		applyLLMEndpointDownstreamConfig(&req)
+		applyLLMEndpointUserRateLimitConfig(&req)
 		_ = syncLegacyHubLLMConfig(r.Context(), system, &req)
 		writeJSON(w, http.StatusOK, registryResponse(r, &req, collectLLMServiceProviderReferenceIssues(serviceReg, &req)))
 	}
@@ -178,6 +232,53 @@ func TestLLMProviderHandler(system store.SystemSettingsRepository) http.HandlerF
 	}
 }
 
+func GenerateLLMProviderTestKeyHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if identity == nil {
+			writeError(w, http.StatusInternalServerError, "IDENTITY_SERVICE_UNAVAILABLE", "identity service unavailable")
+			return
+		}
+
+		var req llmProviderTestKeyRequest
+		if r.Body != nil {
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+				writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+				return
+			}
+		}
+
+		email := strings.TrimSpace(req.Email)
+		if email == "" {
+			admin := AdminFromContext(r.Context())
+			if admin != nil {
+				email = strings.TrimSpace(admin.Email)
+			}
+		}
+		if email == "" {
+			writeError(w, http.StatusBadRequest, "LLM_PROVIDER_TEST_KEY_EMAIL_REQUIRED", "email is required")
+			return
+		}
+
+		user, err := identity.AdminConfirmLoginByEmail(r.Context(), email)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_TEST_KEY_USER_FAILED", err.Error())
+			return
+		}
+		token, err := identity.IssueViewerTokenForUser(r.Context(), user.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_TEST_KEY_ISSUE_FAILED", err.Error())
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"email":           user.Email,
+			"access_token":    token,
+			"token_type":      "Bearer",
+			"auth_header":     "Bearer " + token,
+			"expires_in_days": 30,
+		})
+	}
+}
 func GetLLMServicesAdminHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reg, err := llmservice.LoadRegistry(r.Context(), system)
@@ -250,6 +351,7 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_SAVE_FAILED", err.Error())
 			return
 		}
+		invalidateLLMRuntimeCaches(system)
 		writeJSON(w, http.StatusOK, toLLMServiceAdminResponse(r, &req, nil))
 	}
 }
@@ -338,6 +440,7 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_CARD_CREATE_FAILED", err.Error())
 			return
 		}
+		invalidateLLMRuntimeCaches(system)
 		writeLLMServiceCardAdminAudit(r.Context(), audit, "llm.service_card.create", map[string]any{
 			"label":             strings.TrimSpace(req.Label),
 			"service_group_ids": append([]string(nil), serviceGroupIDs...),
@@ -518,17 +621,15 @@ func DeleteLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 			writeError(w, http.StatusNotFound, "LLM_SERVICE_CARD_NOT_FOUND", "service card not found")
 			return
 		}
-		if card.RedeemedAt != nil {
-			writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_REDEEMED", "redeemed service card cannot be deleted")
-			return
-		}
 		reg.Cards = append(reg.Cards[:idx], reg.Cards[idx+1:]...)
+		removedGrantIDs := removeLLMServiceGrantsByCardIDs(reg, []string{id})
 		if err := llmservice.SaveRegistry(r.Context(), system, reg); err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_CARD_DELETE_FAILED", err.Error())
 			return
 		}
-		writeLLMServiceCardAdminAudit(r.Context(), audit, "llm.service_card.delete", map[string]any{"card_id": id})
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+		invalidateLLMRuntimeCaches(system)
+		writeLLMServiceCardAdminAudit(r.Context(), audit, "llm.service_card.delete", map[string]any{"card_id": id, "deleted_grant_ids": removedGrantIDs})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "deleted_grant_ids": removedGrantIDs})
 	}
 }
 
@@ -560,10 +661,6 @@ func DeleteLLMServiceCardsBatchHandler(system store.SystemSettingsRepository, au
 				skipped = append(skipped, id)
 				continue
 			}
-			if card.RedeemedAt != nil {
-				skipped = append(skipped, id)
-				continue
-			}
 			removeSet[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
 			deleted = append(deleted, id)
 		}
@@ -575,19 +672,94 @@ func DeleteLLMServiceCardsBatchHandler(system store.SystemSettingsRepository, au
 			filtered = append(filtered, card)
 		}
 		reg.Cards = filtered
+		deletedGrantIDs := removeLLMServiceGrantsByCardIDs(reg, deleted)
 		if err := llmservice.SaveRegistry(r.Context(), system, reg); err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_CARD_DELETE_FAILED", err.Error())
 			return
 		}
+		invalidateLLMRuntimeCaches(system)
 		writeLLMServiceCardAdminAudit(r.Context(), audit, "llm.service_card.delete_batch", map[string]any{
-			"requested_ids": append([]string(nil), ids...),
-			"deleted_ids":   append([]string(nil), deleted...),
-			"skipped_ids":   append([]string(nil), skipped...),
+			"requested_ids":     append([]string(nil), ids...),
+			"deleted_ids":       append([]string(nil), deleted...),
+			"skipped_ids":       append([]string(nil), skipped...),
+			"deleted_grant_ids": append([]string(nil), deletedGrantIDs...),
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_ids": deleted, "skipped_ids": skipped})
 	}
 }
 
+func DeleteLLMServiceGrantHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GRANT_ID_REQUIRED", "id is required")
+			return
+		}
+		reg, err := llmservice.LoadRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
+			return
+		}
+		idx := findLLMServiceGrantIndex(reg, id)
+		if idx < 0 {
+			writeError(w, http.StatusNotFound, "LLM_SERVICE_GRANT_NOT_FOUND", "service grant not found")
+			return
+		}
+		reg.Grants = append(reg.Grants[:idx], reg.Grants[idx+1:]...)
+		if err := llmservice.SaveRegistry(r.Context(), system, reg); err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_GRANT_DELETE_FAILED", err.Error())
+			return
+		}
+		invalidateLLMRuntimeCaches(system)
+		writeLLMServiceCardAdminAudit(r.Context(), audit, "llm.service_grant.delete", map[string]any{"grant_id": id})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+	}
+}
+
+func findLLMServiceGrantIndex(reg *llmservice.Registry, id string) int {
+	if reg == nil {
+		return -1
+	}
+	needle := strings.ToLower(strings.TrimSpace(id))
+	if needle == "" {
+		return -1
+	}
+	for i := range reg.Grants {
+		if strings.ToLower(strings.TrimSpace(reg.Grants[i].ID)) == needle {
+			return i
+		}
+	}
+	return -1
+}
+
+func removeLLMServiceGrantsByCardIDs(reg *llmservice.Registry, cardIDs []string) []string {
+	if reg == nil || len(cardIDs) == 0 {
+		return nil
+	}
+	removeSet := map[string]struct{}{}
+	for _, id := range cardIDs {
+		clean := strings.ToLower(strings.TrimSpace(id))
+		if clean != "" {
+			removeSet[clean] = struct{}{}
+		}
+	}
+	if len(removeSet) == 0 {
+		return nil
+	}
+	filtered := reg.Grants[:0]
+	deleted := make([]string, 0)
+	for _, grant := range reg.Grants {
+		if _, ok := removeSet[strings.ToLower(strings.TrimSpace(grant.CardID))]; ok {
+			if cleanID := strings.TrimSpace(grant.ID); cleanID != "" {
+				deleted = append(deleted, cleanID)
+			}
+			continue
+		}
+		filtered = append(filtered, grant)
+	}
+	reg.Grants = filtered
+	return deleted
+}
 func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, err := authenticateViewerRequest(r, identity)
@@ -700,41 +872,120 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")
 			return
 		}
+		providerReg, err := loadCachedLLMProviderRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
+			return
+		}
+		if !acquireLLMEndpointDownstreamSlot(r.Context(), providerReg) {
+			writeError(w, http.StatusServiceUnavailable, "LLM_ENDPOINT_CONCURRENCY_FULL", "llm endpoint is busy, please retry shortly")
+			return
+		}
+		defer globalLLMEndpointDownstreamSemaphore.Release()
+		applyLLMEndpointUserRateLimitConfig(providerReg)
+		if !globalLLMEndpointUserLimiter.allow(principal.Email) {
+			writeError(w, http.StatusTooManyRequests, "LLM_ENDPOINT_USER_RATE_LIMITED", "user request rate exceeded, please retry shortly")
+			return
+		}
 		bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BODY", err.Error())
 			return
 		}
 		var body map[string]any
+		clientIP := llmEndpointClientIP(r)
+		requestBody := trimLLMEndpointAccessLogBody(string(bodyBytes))
+		logStatusCode := http.StatusOK
+		logErrorCode := ""
+		logRequestedModel := ""
+		logAuthorizedModel := ""
+		logProviderID := ""
+		logUsage := corelib.TokenUsageStat{}
+		defer func() {
+			metadata := map[string]any{}
+			if provider := providerReg.FindProvider(logProviderID); provider != nil {
+				metadata["upstream_api_url"] = strings.TrimSpace(provider.APIURL)
+				metadata["upstream_host"] = llmEndpointUpstreamHost(provider.APIURL)
+			}
+			enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{
+				Email:             principal.Email,
+				ClientIP:          clientIP,
+				RequestedModel:    logRequestedModel,
+				AuthorizedModel:   logAuthorizedModel,
+				ProviderID:        logProviderID,
+				StatusCode:        logStatusCode,
+				ErrorCode:         logErrorCode,
+				InputTokens:       logUsage.InputTokens,
+				OutputTokens:      logUsage.OutputTokens,
+				TotalTokens:       logUsage.TotalTokens,
+				CachedInputTokens: logUsage.CachedInputTokens,
+				CacheWriteTokens:  logUsage.CacheWriteTokens,
+				RequestBytes:      len(bodyBytes),
+				RequestBody:       requestBody,
+				CreatedAt:         time.Now().UTC(),
+				Metadata:          metadata,
+			})
+		}()
+		writeLoggedError := func(status int, code, message string) {
+			logStatusCode = status
+			logErrorCode = code
+			writeError(w, status, code, message)
+		}
 		if err := json.Unmarshal(bodyBytes, &body); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+			writeLoggedError(http.StatusBadRequest, "INVALID_JSON", err.Error())
 			return
 		}
-		status, models, providerReg, serviceReg, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
+		logRequestedModel = llmEndpointRequestedModel(body)
+		var (
+			status     *llmservice.ServiceStatus
+			models     []llmservice.AuthorizedModel
+			serviceReg *llmservice.Registry
+		)
+		status, models, providerReg, serviceReg, err = resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
+			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
 		billableModels, deniedByModel, deniedCode, deniedMessage := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.Email, body, models)
 		authorizedModel, requestedModel, err := resolveAuthorizedModel(body, billableModels)
 		selectedModelDebug := explainModelSelection(body, billableModels, authorizedModel)
+		logRequestedModel = strings.TrimSpace(requestedModel)
+		if authorizedModel != nil {
+			logAuthorizedModel = strings.TrimSpace(authorizedModel.Name)
+		}
 		if err != nil {
 			if denial, ok := deniedByModel[strings.ToLower(strings.TrimSpace(requestedModel))]; ok && requestedModel != "" && !strings.EqualFold(requestedModel, "auto") && !strings.EqualFold(requestedModel, "default") {
-				writeError(w, http.StatusForbidden, denial.Code, denial.Message)
+				writeLoggedError(http.StatusForbidden, denial.Code, denial.Message)
 				return
 			}
 			if len(models) > 0 && len(billableModels) == 0 && deniedCode != "" {
-				writeError(w, http.StatusForbidden, deniedCode, deniedMessage)
+				writeLoggedError(http.StatusForbidden, deniedCode, deniedMessage)
 				return
 			}
-			writeError(w, http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
+			writeLoggedError(http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
-		cacheCfg := LoadHubLLMPromptCacheConfig(r.Context(), system)
+		cacheCfg := loadCachedHubLLMPromptCacheConfig(r.Context(), system)
 		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cacheCfg)
 		respBody, statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, providerReg, authorizedModel, body, requestedModel, firstPromptCacheSource(promptCacheSources), cacheCfg)
+		logStatusCode = statusCode
+		logProviderID = strings.TrimSpace(usedProviderID)
+		logUsage = usageStat
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
+			if queueErr, ok := err.(*providerConcurrencyError); ok {
+				switch queueErr.Kind {
+				case providerConcurrencyQueueFull:
+					writeLoggedError(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error())
+				default:
+					writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error())
+				}
+				return
+			}
+			if resilienceErr, ok := err.(*providerResilienceError); ok {
+				writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error())
+				return
+			}
+			writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
 			return
 		}
 		if statusCode < 400 && usedProviderID != "" && !localCacheHit {
@@ -746,6 +997,43 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				}
 			}
 			enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+		}
+		if statusCode >= 400 {
+			bodySnippet := string(respBody)
+			if len(bodySnippet) > 500 {
+				bodySnippet = bodySnippet[:500] + "..."
+			}
+			log.Printf("[LLM-V1] upstream error: status=%d provider=%s model=%s requested=%s body=%s", statusCode, usedProviderID, authorizedModel.Name, requestedModel, bodySnippet)
+		}
+		// Wrap upstream 401/403/429 so the client can distinguish "Hub auth failed"
+		// from "upstream provider API key invalid". Without this, the client
+		// sees a raw 401 and tells the user their own credentials are wrong.
+		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
+			providerName := usedProviderID
+			if providerName == "" {
+				providerName = "unknown"
+			}
+			upstreamMsg := extractUpstreamErrorMessage(respBody)
+			var detail string
+			switch statusCode {
+			case http.StatusUnauthorized:
+				detail = fmt.Sprintf("上游 LLM 服务商 %q 认证失败（API Key 无效或已过期），请联系管理员检查 Hub 后台的 Provider 配置", providerName)
+			case http.StatusForbidden:
+				detail = fmt.Sprintf("上游 LLM 服务商 %q 拒绝访问，请联系管理员检查 Hub 后台的 Provider 配置", providerName)
+			case http.StatusTooManyRequests:
+				detail = fmt.Sprintf("上游 LLM 服务商 %q 请求频率超限，请稍后再试", providerName)
+			}
+			if upstreamMsg != "" {
+				detail += " (" + upstreamMsg + ")"
+			}
+			hubCode := "LLM_UPSTREAM_AUTH_FAILED"
+			hubStatus := http.StatusBadGateway
+			if statusCode == http.StatusTooManyRequests {
+				hubCode = "LLM_UPSTREAM_RATE_LIMITED"
+				hubStatus = http.StatusTooManyRequests
+			}
+			writeLoggedError(hubStatus, hubCode, detail)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if authorizedModel != nil {
@@ -775,6 +1063,65 @@ func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry,
 	return respBody, statusCode, providerID, serviceGroupIDs, err
 }
 
+type authorizedModelForwardResult struct {
+	respBody        []byte
+	statusCode      int
+	providerID      string
+	serviceGroupIDs []string
+	usageStat       corelib.TokenUsageStat
+	localCacheHit   bool
+}
+
+type authorizedModelRequestFlight struct {
+	done   chan struct{}
+	result authorizedModelForwardResult
+	err    error
+}
+
+type authorizedModelRequestFlightGroup struct {
+	mu    sync.Mutex
+	calls map[string]*authorizedModelRequestFlight
+}
+
+var globalAuthorizedModelRequestFlights authorizedModelRequestFlightGroup
+
+func (g *authorizedModelRequestFlightGroup) do(ctx context.Context, key string, waitTimeout time.Duration, fn func(context.Context) (authorizedModelForwardResult, error)) (authorizedModelForwardResult, error) {
+	g.mu.Lock()
+	if g.calls == nil {
+		g.calls = map[string]*authorizedModelRequestFlight{}
+	}
+	if call := g.calls[key]; call != nil {
+		globalLLMPromptCacheMetrics.singleflightSharedHits.Add(1)
+		globalLLMPromptCacheMetrics.singleflightSavedCalls.Add(1)
+		g.mu.Unlock()
+		waitCtx := ctx
+		var cancel context.CancelFunc
+		if waitTimeout > 0 {
+			waitCtx, cancel = context.WithTimeout(ctx, waitTimeout)
+			defer cancel()
+		}
+		select {
+		case <-waitCtx.Done():
+			return authorizedModelForwardResult{}, waitCtx.Err()
+		case <-call.done:
+			return call.result, call.err
+		}
+	}
+	call := &authorizedModelRequestFlight{done: make(chan struct{})}
+	g.calls[key] = call
+	g.mu.Unlock()
+
+	result, err := fn(ctx)
+	call.result = result
+	call.err = err
+	close(call.done)
+
+	g.mu.Lock()
+	delete(g.calls, key)
+	g.mu.Unlock()
+	return result, err
+}
+
 func forwardAuthorizedModelRequestWithCache(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string, promptCacheSource any, cacheCfg HubLLMPromptCacheConfig) ([]byte, int, string, []string, corelib.TokenUsageStat, bool, error) {
 	if model == nil {
 		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, fmt.Errorf("authorized model is required")
@@ -788,38 +1135,90 @@ func forwardAuthorizedModelRequestWithCache(r *http.Request, reg *im.LLMProvider
 	} else if ok {
 		return respBody, statusCode, providerID, serviceGroupIDs, usageStat, true, nil
 	}
+	cacheKey := ""
+	if promptCache != nil && llmPromptCacheable(body, cacheCfg) {
+		var err error
+		cacheKey, _, err = llmPromptCacheKey(model, body, externalModel, cacheCfg)
+		if err != nil {
+			return nil, 0, "", nil, corelib.TokenUsageStat{}, false, err
+		}
+	}
+	var result authorizedModelForwardResult
+	var err error
+	if cacheKey != "" {
+		result, err = globalAuthorizedModelRequestFlights.do(r.Context(), cacheKey, time.Duration(cacheCfg.SingleflightWaitTimeoutMS)*time.Millisecond, func(ctx context.Context) (authorizedModelForwardResult, error) {
+			return executeAuthorizedModelRequestWithCache(ctx, r, reg, model, body, externalModel, promptCache, cacheCfg)
+		})
+	} else {
+		result, err = executeAuthorizedModelRequestWithCache(r.Context(), r, reg, model, body, externalModel, promptCache, cacheCfg)
+	}
+	if err != nil {
+		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, err
+	}
+	return result.respBody, result.statusCode, result.providerID, result.serviceGroupIDs, result.usageStat, result.localCacheHit, nil
+}
+
+func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string, promptCache llmPromptCacheStore, cacheCfg HubLLMPromptCacheConfig) (authorizedModelForwardResult, error) {
+	if respBody, statusCode, providerID, serviceGroupIDs, usageStat, ok, err := getCachedAuthorizedModelResponse(ctx, promptCache, model, body, externalModel, cacheCfg); err != nil {
+		return authorizedModelForwardResult{}, err
+	} else if ok {
+		return authorizedModelForwardResult{respBody: respBody, statusCode: statusCode, providerID: providerID, serviceGroupIDs: serviceGroupIDs, usageStat: usageStat, localCacheHit: true}, nil
+	}
 	var lastErr error
 	var lastBody []byte
 	var lastStatus int
+	var lastProviderID string
+	request := r.Clone(ctx)
 	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
 			lastErr = fmt.Errorf("provider %q not configured", providerID)
 			continue
 		}
-		respBody, statusCode, err := forwardLLMRequest(r, provider, body, externalModel)
-		if err != nil {
-			lastErr = err
+		if gateErr := globalProviderResilience.beforeAttempt(provider); gateErr != nil {
+			lastErr = gateErr
 			continue
 		}
-		if statusCode >= 500 {
+		respBody, statusCode, err := forwardLLMRequest(request, provider, body, externalModel)
+		if shouldCountProviderFailure(statusCode, err) {
+			globalProviderResilience.recordFailure(provider)
+		} else {
+			globalProviderResilience.recordSuccess(provider.ID)
+		}
+		if err != nil {
+			lastErr = err
+			lastProviderID = provider.ID
+			continue
+		}
+		if statusCode >= 500 || statusCode == http.StatusNotFound || statusCode == http.StatusUnprocessableEntity ||
+			statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden ||
+			statusCode == http.StatusTooManyRequests {
 			lastBody = respBody
 			lastStatus = statusCode
+			lastProviderID = provider.ID
 			lastErr = fmt.Errorf("provider %q returned http %d", provider.ID, statusCode)
+			log.Printf("[LLM-V1] provider %q returned %d, trying next provider", provider.ID, statusCode)
 			continue
 		}
 		usageStat := parseUsageStats(respBody)
 		serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, provider.ID)
-		_ = putCachedAuthorizedModelResponse(r.Context(), promptCache, model, body, externalModel, respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, cacheCfg)
-		return respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, false, nil
+		_ = putCachedAuthorizedModelResponse(ctx, promptCache, model, body, externalModel, respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, cacheCfg)
+		return authorizedModelForwardResult{
+			respBody:        respBody,
+			statusCode:      statusCode,
+			providerID:      provider.ID,
+			serviceGroupIDs: serviceGroupIDs,
+			usageStat:       usageStat,
+			localCacheHit:   false,
+		}, nil
 	}
 	if lastBody != nil && lastStatus > 0 {
-		return lastBody, lastStatus, "", nil, corelib.TokenUsageStat{}, false, nil
+		return authorizedModelForwardResult{respBody: lastBody, statusCode: lastStatus, providerID: lastProviderID}, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
-	return nil, 0, "", nil, corelib.TokenUsageStat{}, false, lastErr
+	return authorizedModelForwardResult{}, lastErr
 }
 
 func firstPromptCacheSource(sources []any) llmPromptCacheStore {
@@ -841,21 +1240,32 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []s
 			usage = *stat
 		}
 		wireAPI := normalizeProviderWireAPI(p.WireAPI)
-		snapshot := globalProviderConcurrency.snapshot(p.ID, p.MaxConcurrency)
+		snapshot := globalProviderConcurrency.snapshot(p.ID, p.MaxConcurrency, p.MaxQueueWaiters, p.QueueTimeoutMS)
+		resilience := globalProviderResilience.snapshot(&p)
 		providers = append(providers, map[string]any{
-			"id":              p.ID,
-			"name":            p.Name,
-			"api_url":         p.APIURL,
-			"api_key":         "",
-			"has_api_key":     p.APIKey != "",
-			"model":           p.Model,
-			"protocol":        normalizeProviderProtocol(p.Protocol),
-			"wire_api":        wireAPI,
-			"agent_type":      strings.TrimSpace(p.AgentType),
-			"max_concurrency": p.MaxConcurrency,
-			"in_flight":       snapshot.InFlight,
-			"queue_waiters":   snapshot.QueueWaiters,
-			"usage":           usage,
+			"id":                          p.ID,
+			"name":                        p.Name,
+			"api_url":                     p.APIURL,
+			"api_key":                     "",
+			"has_api_key":                 p.APIKey != "",
+			"model":                       p.Model,
+			"protocol":                    normalizeProviderProtocol(p.Protocol),
+			"wire_api":                    wireAPI,
+			"agent_type":                  strings.TrimSpace(p.AgentType),
+			"max_concurrency":             p.MaxConcurrency,
+			"max_queue_waiters":           p.MaxQueueWaiters,
+			"queue_timeout_ms":            p.QueueTimeoutMS,
+			"circuit_breaker_threshold":   p.CircuitBreakerThreshold,
+			"circuit_breaker_cooldown_ms": p.CircuitBreakerCooldownMS,
+			"failure_backoff_base_ms":     p.FailureBackoffBaseMS,
+			"failure_backoff_max_ms":      p.FailureBackoffMaxMS,
+			"in_flight":                   snapshot.InFlight,
+			"queue_waiters":               snapshot.QueueWaiters,
+			"consecutive_failures":        resilience.ConsecutiveFailures,
+			"circuit_open":                resilience.CircuitOpen,
+			"circuit_open_until":          resilience.CircuitOpenUntil,
+			"backoff_until":               resilience.BackoffUntil,
+			"usage":                       usage,
 		})
 		if _, ok := seenModels[p.ID]; !ok && p.ID != "" {
 			availableModels = append(availableModels, p.ID)
@@ -877,18 +1287,21 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []s
 		mergedHints = append(mergedHints, "Warning: "+warning)
 	}
 	return llmProviderRegistryResponse{
-		Enabled:                reg.Enabled,
-		CurrentProviderID:      reg.CurrentProviderID,
-		SmartRouteSingleDevice: reg.SmartRouteSingleDevice,
-		Providers:              providers,
-		ExposeAPIBaseURL:       base,
-		ExposeBaseURL:          base + "/chat/completions",
-		ExposeModelsURL:        base + "/models",
-		AvailableModels:        availableModels,
-		AuthMode:               "viewer_bearer_token",
-		AuthHint:               "Use Authorization: Bearer <viewer access token>. Reuse the access_token returned by /api/auth/email-confirm or /api/auth/email-poll after email sign-in.",
-		Hints:                  mergedHints,
-		Warnings:               append([]string(nil), warnings...),
+		Enabled:                  reg.Enabled,
+		CurrentProviderID:        reg.CurrentProviderID,
+		SmartRouteSingleDevice:   reg.SmartRouteSingleDevice,
+		DownstreamMaxConcurrency: reg.DownstreamMaxConcurrency,
+		UserRateLimitPerMinute:   reg.UserRateLimitPerMinute,
+		UserRateLimitBurst:       reg.UserRateLimitBurst,
+		Providers:                providers,
+		ExposeAPIBaseURL:         base,
+		ExposeBaseURL:            base + "/chat/completions",
+		ExposeModelsURL:          base + "/models",
+		AvailableModels:          availableModels,
+		AuthMode:                 "viewer_bearer_token",
+		AuthHint:                 "Use Authorization: Bearer <viewer access token>. Reuse the access_token returned by /api/auth/email-confirm or /api/auth/email-poll after email sign-in.",
+		Hints:                    mergedHints,
+		Warnings:                 append([]string(nil), warnings...),
 	}
 }
 
@@ -1071,11 +1484,11 @@ func preserveCardHashes(next *llmservice.Registry, old *llmservice.Registry) {
 }
 
 func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, email string) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *im.LLMProviderRegistry, *llmservice.Registry, error) {
-	reg, err := llmservice.LoadRegistry(ctx, system)
+	reg, err := loadCachedLLMServiceRegistry(ctx, system)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+	providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -1408,7 +1821,7 @@ func forwardLLMRequest(r *http.Request, p *im.LLMProvider, body map[string]any, 
 	if p == nil {
 		return nil, 0, fmt.Errorf("provider is required")
 	}
-	release, err := globalProviderConcurrency.acquire(r.Context(), p.ID, p.MaxConcurrency)
+	release, err := globalProviderConcurrency.acquire(r.Context(), p.ID, p.MaxConcurrency, p.MaxQueueWaiters, p.QueueTimeoutMS)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1527,4 +1940,31 @@ func llmserviceHashCode(code string) string {
 	}
 	// Keep hashing local to the HTTP layer so admin callers never need to send raw hashes.
 	return llmservice.HashCode(code)
+}
+
+// extractUpstreamErrorMessage tries to extract a human-readable error message
+// from an upstream LLM provider's error response body. Returns empty string
+// if the body cannot be parsed. The result is truncated to 200 characters.
+func extractUpstreamErrorMessage(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var errBody struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &errBody); err != nil {
+		return ""
+	}
+	msg := strings.TrimSpace(errBody.Error.Message)
+	if msg == "" {
+		msg = strings.TrimSpace(errBody.Message)
+	}
+	if len(msg) > 200 {
+		msg = msg[:200] + "..."
+	}
+	return msg
 }

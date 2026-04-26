@@ -79,11 +79,19 @@ type ClassificationResult struct {
 	Reason           string        // human-readable explanation
 	CreationOriented bool          // true when the coding intent is creation-oriented (new project/feature)
 
-	// WorkflowType is the workflow template type determined by L3 tree reasoning.
+	// WorkflowType is the workflow template type determined by L3 tree reasoning
+	// or inferred from IntentDefinition in degraded mode.
 	// Non-empty when the intent maps to a multi-phase workflow (e.g., "coding",
 	// "presentation_design", "product_design"). Empty string means no workflow.
 	// This eliminates the need for a separate IUM LLM call to determine workflow type.
 	WorkflowType string
+
+	// Degraded is true when the classification was produced in degraded mode
+	// (one or both fusion channels failed). Consumers can use this to adjust
+	// confidence thresholds — e.g., the Coding Tool Gate lowers its activation
+	// threshold in degraded mode because embedding-only confidence is capped
+	// lower than dual-channel confidence.
+	Degraded bool
 }
 
 // MessageContext is the input to the classifier.

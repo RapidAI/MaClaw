@@ -139,20 +139,13 @@ func (c *RemoteHubClient) loadConfig() error {
 // persistViewerToken saves a viewer token received from the hub auth.ok
 // response into the local config. Called synchronously from connectLocked
 // so the token is available immediately after Connect() returns.
-// Uses LoadConfig → merge → SaveConfig to avoid overwriting concurrent
-// config changes.
+// Uses PatchConfig for atomic read-modify-write to avoid overwriting
+// concurrent config changes.
 func (c *RemoteHubClient) persistViewerToken(token string) {
-	cfg, err := c.app.LoadConfig()
-	if err != nil {
-		log.Printf("[hub-client] persistViewerToken: load config failed: %v", err)
-		return
-	}
-	if cfg.RemoteViewerToken == token {
-		return // already up to date
-	}
-	cfg.RemoteViewerToken = token
-	if err := c.app.SaveConfig(cfg); err != nil {
-		log.Printf("[hub-client] persistViewerToken: save config failed: %v", err)
+	if err := c.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteViewerToken = token
+	}); err != nil {
+		log.Printf("[hub-client] persistViewerToken: PatchConfig failed: %v", err)
 		return
 	}
 	log.Printf("[hub-client] viewer token persisted from auth.ok response")

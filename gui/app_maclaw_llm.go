@@ -27,6 +27,13 @@ const legacyZhipuProviderName = "智谱"
 const zhipuLobsterProviderName = "智谱龙虾"
 const zhipuCodingProviderName = "智谱编程"
 
+// obsoleteProviderNames lists provider names that have been permanently removed.
+// They are stripped from the persisted provider list on load.
+var obsoleteProviderNames = map[string]bool{
+	"免费":              true,
+	"MaClaw\u6a21\u578b\u670d\u52a1": true, // "MaClaw模型服务" — renamed to "MaClaw官方"
+}
+
 func normalizeLLMTimeoutSec(timeoutSec int) int {
 	if timeoutSec > 0 {
 		return timeoutSec
@@ -102,6 +109,17 @@ func (a *App) GetMaclawLLMProviders() struct {
 			defaultURL[d.Name] = d.URL
 		}
 	}
+	// Remove obsolete providers that have been permanently retired.
+	{
+		n := 0
+		for _, p := range providers {
+			if !obsoleteProviderNames[p.Name] {
+				providers[n] = p
+				n++
+			}
+		}
+		providers = providers[:n]
+	}
 	for i := range providers {
 		if providers[i].Name == legacyZhipuProviderName {
 			providers[i].Name = zhipuLobsterProviderName
@@ -176,6 +194,10 @@ func (a *App) GetMaclawLLMProviders() struct {
 	current := cfg.MaclawLLMCurrentProvider
 	if current == legacyZhipuProviderName {
 		current = zhipuLobsterProviderName
+	}
+	// Migrate renamed Hub service provider: "MaClaw模型服务" → "MaClaw官方"
+	if current == "MaClaw\u6a21\u578b\u670d\u52a1" {
+		current = hubServiceProviderName
 	}
 	// Migrate: if current provider no longer exists in the list (e.g. "免费"
 	// was removed), fall back to the first available provider.

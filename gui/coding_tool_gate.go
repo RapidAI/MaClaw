@@ -235,13 +235,23 @@ func mapGateIntentToConfig(result GateIntentResult, skip bool) codingToolGateCon
 
 	switch result.Intent {
 	case GateIntentNewProject:
-		if result.Confidence >= 0.70 {
+		// In degraded mode (one fusion channel failed), embedding-only confidence
+		// is capped at ~0.60-0.65 because the embedding space has overlapping
+		// clusters (e.g., coding vs ssh). The normal 0.70 threshold is unreachable.
+		// Lower to 0.55 so the gate still activates for clear coding tasks.
+		threshold := 0.70
+		if result.Degraded {
+			threshold = 0.55
+		}
+		if result.Confidence >= threshold {
 			cfg.active = true
 			cfg.intent = intentCoding
-			cfg.reason = fmt.Sprintf("gate active: semantic new_project (conf=%.2f, layer=%d)", result.Confidence, result.Layer)
+			cfg.reason = fmt.Sprintf("gate active: semantic new_project (conf=%.2f, layer=%d, degraded=%v, threshold=%.2f)",
+				result.Confidence, result.Layer, result.Degraded, threshold)
 		} else {
 			cfg.intent = intentUnknown
-			cfg.reason = fmt.Sprintf("gate inactive: new_project but low confidence (%.2f)", result.Confidence)
+			cfg.reason = fmt.Sprintf("gate inactive: new_project but low confidence (%.2f < %.2f, degraded=%v)",
+				result.Confidence, threshold, result.Degraded)
 		}
 	case GateIntentBugFix:
 		cfg.bugFix = true

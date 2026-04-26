@@ -10,65 +10,105 @@ import (
 )
 
 const LLMProviderRegistryKey = "llm_provider_registry"
+const DefaultLLMProviderDownstreamMaxConcurrency = 100
+const DefaultLLMProviderUserRateLimitPerMinute = 120
+const DefaultLLMProviderUserRateLimitBurst = 20
+const DefaultLLMProviderCircuitBreakerThreshold = 3
+const DefaultLLMProviderCircuitBreakerCooldownMS = 30000
+const DefaultLLMProviderFailureBackoffBaseMS = 500
+const DefaultLLMProviderFailureBackoffMaxMS = 10000
 
 type LLMProvider struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	APIURL         string `json:"api_url"`
-	APIKey         string `json:"api_key"`
-	Model          string `json:"model"`
-	Protocol       string `json:"protocol,omitempty"`
-	WireAPI        string `json:"wire_api,omitempty"`
-	AgentType      string `json:"agent_type,omitempty"`
-	MaxConcurrency int    `json:"max_concurrency,omitempty"`
+	ID                       string `json:"id"`
+	Name                     string `json:"name"`
+	APIURL                   string `json:"api_url"`
+	APIKey                   string `json:"api_key"`
+	Model                    string `json:"model"`
+	Protocol                 string `json:"protocol,omitempty"`
+	WireAPI                  string `json:"wire_api,omitempty"`
+	AgentType                string `json:"agent_type,omitempty"`
+	MaxConcurrency           int    `json:"max_concurrency,omitempty"`
+	MaxQueueWaiters          int    `json:"max_queue_waiters,omitempty"`
+	QueueTimeoutMS           int    `json:"queue_timeout_ms,omitempty"`
+	CircuitBreakerThreshold  int    `json:"circuit_breaker_threshold,omitempty"`
+	CircuitBreakerCooldownMS int    `json:"circuit_breaker_cooldown_ms,omitempty"`
+	FailureBackoffBaseMS     int    `json:"failure_backoff_base_ms,omitempty"`
+	FailureBackoffMaxMS      int    `json:"failure_backoff_max_ms,omitempty"`
 }
 
 type LLMProviderRegistry struct {
-	Enabled                bool                               `json:"enabled"`
-	CurrentProviderID      string                             `json:"current_provider_id"`
-	SmartRouteSingleDevice bool                               `json:"smart_route_single_device"`
-	Providers              []LLMProvider                      `json:"providers"`
-	TokenUsage             map[string]*corelib.TokenUsageStat `json:"token_usage,omitempty"`
+	Enabled                  bool                               `json:"enabled"`
+	CurrentProviderID        string                             `json:"current_provider_id"`
+	SmartRouteSingleDevice   bool                               `json:"smart_route_single_device"`
+	DownstreamMaxConcurrency int                                `json:"downstream_max_concurrency,omitempty"`
+	UserRateLimitPerMinute   int                                `json:"user_rate_limit_per_minute,omitempty"`
+	UserRateLimitBurst       int                                `json:"user_rate_limit_burst,omitempty"`
+	Providers                []LLMProvider                      `json:"providers"`
+	TokenUsage               map[string]*corelib.TokenUsageStat `json:"token_usage,omitempty"`
+}
+
+func normalizeLLMProviderRegistry(reg *LLMProviderRegistry) *LLMProviderRegistry {
+	if reg == nil {
+		reg = &LLMProviderRegistry{}
+	}
+	if reg.DownstreamMaxConcurrency <= 0 {
+		reg.DownstreamMaxConcurrency = DefaultLLMProviderDownstreamMaxConcurrency
+	}
+	if reg.UserRateLimitPerMinute <= 0 {
+		reg.UserRateLimitPerMinute = DefaultLLMProviderUserRateLimitPerMinute
+	}
+	if reg.UserRateLimitBurst <= 0 {
+		reg.UserRateLimitBurst = DefaultLLMProviderUserRateLimitBurst
+	}
+	if reg.TokenUsage == nil {
+		reg.TokenUsage = map[string]*corelib.TokenUsageStat{}
+	}
+	for i := range reg.Providers {
+		reg.Providers[i].Protocol = normalizeStoredProviderProtocol(reg.Providers[i].Protocol)
+		reg.Providers[i].WireAPI = normalizeStoredProviderWireAPI(reg.Providers[i].WireAPI)
+		reg.Providers[i].AgentType = normalizeStoredProviderAgentType(reg.Providers[i].AgentType)
+		if reg.Providers[i].MaxConcurrency < 0 {
+			reg.Providers[i].MaxConcurrency = 0
+		}
+		if reg.Providers[i].MaxQueueWaiters < 0 {
+			reg.Providers[i].MaxQueueWaiters = 0
+		}
+		if reg.Providers[i].QueueTimeoutMS < 0 {
+			reg.Providers[i].QueueTimeoutMS = 0
+		}
+		if reg.Providers[i].CircuitBreakerThreshold <= 0 {
+			reg.Providers[i].CircuitBreakerThreshold = DefaultLLMProviderCircuitBreakerThreshold
+		}
+		if reg.Providers[i].CircuitBreakerCooldownMS <= 0 {
+			reg.Providers[i].CircuitBreakerCooldownMS = DefaultLLMProviderCircuitBreakerCooldownMS
+		}
+		if reg.Providers[i].FailureBackoffBaseMS <= 0 {
+			reg.Providers[i].FailureBackoffBaseMS = DefaultLLMProviderFailureBackoffBaseMS
+		}
+		if reg.Providers[i].FailureBackoffMaxMS <= 0 {
+			reg.Providers[i].FailureBackoffMaxMS = DefaultLLMProviderFailureBackoffMaxMS
+		}
+		if reg.Providers[i].FailureBackoffMaxMS < reg.Providers[i].FailureBackoffBaseMS {
+			reg.Providers[i].FailureBackoffMaxMS = reg.Providers[i].FailureBackoffBaseMS
+		}
+	}
+	return reg
 }
 
 func LoadLLMProviderRegistry(ctx context.Context, system store.SystemSettingsRepository) (*LLMProviderRegistry, error) {
 	raw, err := system.Get(ctx, LLMProviderRegistryKey)
 	if err != nil || strings.TrimSpace(raw) == "" {
-		return &LLMProviderRegistry{}, nil
+		return normalizeLLMProviderRegistry(&LLMProviderRegistry{}), nil
 	}
 	var reg LLMProviderRegistry
 	if err := json.Unmarshal([]byte(raw), &reg); err != nil {
 		return nil, err
 	}
-	if reg.TokenUsage == nil {
-		reg.TokenUsage = map[string]*corelib.TokenUsageStat{}
-	}
-	for i := range reg.Providers {
-		reg.Providers[i].Protocol = normalizeStoredProviderProtocol(reg.Providers[i].Protocol)
-		reg.Providers[i].WireAPI = normalizeStoredProviderWireAPI(reg.Providers[i].WireAPI)
-		reg.Providers[i].AgentType = normalizeStoredProviderAgentType(reg.Providers[i].AgentType)
-		if reg.Providers[i].MaxConcurrency < 0 {
-			reg.Providers[i].MaxConcurrency = 0
-		}
-	}
-	return &reg, nil
+	return normalizeLLMProviderRegistry(&reg), nil
 }
 
 func SaveLLMProviderRegistry(ctx context.Context, system store.SystemSettingsRepository, reg *LLMProviderRegistry) error {
-	if reg == nil {
-		reg = &LLMProviderRegistry{}
-	}
-	if reg.TokenUsage == nil {
-		reg.TokenUsage = map[string]*corelib.TokenUsageStat{}
-	}
-	for i := range reg.Providers {
-		reg.Providers[i].Protocol = normalizeStoredProviderProtocol(reg.Providers[i].Protocol)
-		reg.Providers[i].WireAPI = normalizeStoredProviderWireAPI(reg.Providers[i].WireAPI)
-		reg.Providers[i].AgentType = normalizeStoredProviderAgentType(reg.Providers[i].AgentType)
-		if reg.Providers[i].MaxConcurrency < 0 {
-			reg.Providers[i].MaxConcurrency = 0
-		}
-	}
+	reg = normalizeLLMProviderRegistry(reg)
 	data, err := json.Marshal(reg)
 	if err != nil {
 		return err

@@ -111,6 +111,42 @@ describe('OnboardingWizard registration', () => {
         expect((screen.getByPlaceholderText('Enter service redeem code (optional)') as HTMLInputElement).value).toBe('');
     });
 
+    it('skips LLM step after successful redeem even when skip_llm_config is false', async () => {
+        // Backend may return skip_llm_config: false due to provider registry
+        // filtering, but the LLM provider is already configured in config.json
+        // by applyHubLLMServiceStatusToConfig. Step 3 should still be skipped.
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        RedeemHubLLMServiceMock.mockResolvedValue({ active: true, skip_llm_config: false });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'MYCODE' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(RedeemHubLLMServiceMock).toHaveBeenCalledWith('MYCODE');
+        });
+        // onLLMConfigured should be called even when skip_llm_config is false
+        expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+
+        // Navigate to step 2 (UI Mode)
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        // Step 2 auto-completes, click Next again — should skip step 3 and go to step 4
+        await waitFor(() => {
+            const nextBtn = screen.getByRole('button', { name: 'Next' });
+            expect(nextBtn).toBeTruthy();
+            expect((nextBtn as HTMLButtonElement).disabled).toBe(false);
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        // Should be on step 4 (WeChat), not step 3 (LLM)
+        await waitFor(() => {
+            expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
+        });
+    });
+
     it('marks registration done after activation succeeds', async () => {
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
         GetRemoteActivationStatusMock.mockResolvedValue({ activated: true });

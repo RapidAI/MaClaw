@@ -545,3 +545,181 @@ func TestLLMV1ChatCompletionsHandlerMissEnqueuesUsageAndCredits(t *testing.T) {
 		t.Fatalf("expected credits used to increase to 5, got %#v", serviceReg.Grants[0])
 	}
 }
+func TestLLMV1ChatCompletionsHandlerReturnsTooManyRequestsWhenProviderQueueFull(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "queue-full@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	providerID := "provider-queue-full"
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{providerID},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "queue-full@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	started := make(chan struct{}, 2)
+	releaseUpstream := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-releaseUpstream
+		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: providerID, APIURL: server.URL, Model: "test-model", MaxConcurrency: 1, MaxQueueWaiters: 1}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	makeReq := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+		req.Header.Set("Authorization", "Bearer "+viewerToken)
+		req.Header.Set("Content-Type", "application/json")
+		return req
+	}
+
+	rr1 := httptest.NewRecorder()
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr1, makeReq())
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first upstream request did not start")
+	}
+
+	rr2 := httptest.NewRecorder()
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr2, makeReq())
+	}()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		snap := globalProviderConcurrency.snapshot(providerID, 1, 1, 0)
+		if snap.QueueWaiters == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if snap := globalProviderConcurrency.snapshot(providerID, 1, 1, 0); snap.QueueWaiters != 1 {
+		t.Fatalf("expected one queued waiter, got %+v", snap)
+	}
+
+	rr3 := httptest.NewRecorder()
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr3, makeReq())
+	if rr3.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", rr3.Code, rr3.Body.String())
+	}
+	if !strings.Contains(rr3.Body.String(), "LLM_PROVIDER_QUEUE_FULL") {
+		t.Fatalf("expected queue full error, body = %s", rr3.Body.String())
+	}
+
+	close(releaseUpstream)
+	select {
+	case <-done1:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first request did not finish")
+	}
+	select {
+	case <-done2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second request did not finish")
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerReturnsServiceUnavailableWhenProviderQueueTimesOut(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "queue-timeout@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	providerID := "provider-queue-timeout"
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{providerID},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "queue-timeout@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	started := make(chan struct{}, 1)
+	releaseUpstream := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-releaseUpstream
+		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: providerID, APIURL: server.URL, Model: "test-model", MaxConcurrency: 1, MaxQueueWaiters: 2, QueueTimeoutMS: 50}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	makeReq := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+		req.Header.Set("Authorization", "Bearer "+viewerToken)
+		req.Header.Set("Content-Type", "application/json")
+		return req
+	}
+
+	rr1 := httptest.NewRecorder()
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr1, makeReq())
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first upstream request did not start")
+	}
+
+	rr2 := httptest.NewRecorder()
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr2, makeReq())
+	if rr2.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", rr2.Code, rr2.Body.String())
+	}
+	if !strings.Contains(rr2.Body.String(), "LLM_PROVIDER_QUEUE_TIMEOUT") {
+		t.Fatalf("expected queue timeout error, body = %s", rr2.Body.String())
+	}
+
+	close(releaseUpstream)
+	select {
+	case <-done1:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first request did not finish")
+	}
+}

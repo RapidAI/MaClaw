@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
@@ -193,6 +194,48 @@ func TestHubLLMStatusIncludesMemoryAndDiskCacheStatusFromRuntimeCache(t *testing
 	}
 }
 
+func TestHubLLMPromptCacheStatusIncludesRuntimeMetrics(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1024})
+	globalLLMPromptCacheMetrics.cacheableRequests.Store(7)
+	globalLLMPromptCacheMetrics.bypassStreaming.Store(3)
+	globalLLMPromptCacheMetrics.singleflightSharedHits.Store(2)
+	globalLLMPromptCacheMetrics.singleflightSavedCalls.Store(2)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_status", nil)
+	rr := httptest.NewRecorder()
+	HubLLMStatusHandler(func() string { return "healthy" }, settings, cache).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		PromptCache struct {
+			Runtime struct {
+				CacheableRequests      int64            `json:"cacheable_requests"`
+				BypassStreaming        int64            `json:"bypass_streaming"`
+				SingleflightSharedHits int64            `json:"singleflight_shared_hits"`
+				SingleflightSavedCalls int64            `json:"singleflight_saved_calls"`
+				BypassReasons          map[string]int64 `json:"bypass_reasons"`
+			} `json:"runtime"`
+		} `json:"prompt_cache"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.PromptCache.Runtime.CacheableRequests != 7 {
+		t.Fatalf("cacheable_requests = %d, want 7", body.PromptCache.Runtime.CacheableRequests)
+	}
+	if body.PromptCache.Runtime.BypassStreaming != 3 {
+		t.Fatalf("bypass_streaming = %d, want 3", body.PromptCache.Runtime.BypassStreaming)
+	}
+	if body.PromptCache.Runtime.SingleflightSharedHits != 2 || body.PromptCache.Runtime.SingleflightSavedCalls != 2 {
+		t.Fatalf("unexpected singleflight metrics: %+v", body.PromptCache.Runtime)
+	}
+	if body.PromptCache.Runtime.BypassReasons["streaming"] != 3 {
+		t.Fatalf("bypass_reasons = %#v", body.PromptCache.Runtime.BypassReasons)
+	}
+}
+
 func TestHubLLMPromptCacheConfigHandlersRoundTrip(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1024})
@@ -207,11 +250,11 @@ func TestHubLLMPromptCacheConfigHandlersRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(getRR.Body.Bytes(), &defaults); err != nil {
 		t.Fatalf("decode defaults: %v", err)
 	}
-	if !defaults.Enabled || defaults.TTLSeconds != 1800 || defaults.MemoryMaxEntries != 256 || defaults.DiskMaxBytes != 64<<20 {
+	if !defaults.Enabled || defaults.TTLSeconds != 1800 || defaults.MemoryMaxEntries != 256 || defaults.DiskMaxBytes != 64<<20 || !defaults.NormalizeDeterministicParams || !defaults.IgnoreModelField || !defaults.IgnoreUserField || !defaults.IgnoreMetadataField || defaults.SingleflightWaitTimeoutMS != 15000 {
 		t.Fatalf("unexpected defaults: %#v", defaults)
 	}
 
-	body := strings.NewReader(`{"enabled":false,"ttl_seconds":90,"memory_max_entries":12,"memory_max_bytes":2048,"disk_max_bytes":4096}`)
+	body := strings.NewReader(`{"enabled":false,"ttl_seconds":90,"memory_max_entries":12,"memory_max_bytes":2048,"disk_max_bytes":4096,"normalize_deterministic_params":false,"ignore_model_field":false,"ignore_user_field":false,"ignore_metadata_field":false,"singleflight_wait_timeout_ms":2200}`)
 	putReq := httptest.NewRequest(http.MethodPut, "/api/admin/hub_llm_prompt_cache_config", body)
 	putRR := httptest.NewRecorder()
 	UpdateHubLLMPromptCacheConfigHandler(settings, cache).ServeHTTP(putRR, putReq)
@@ -222,7 +265,7 @@ func TestHubLLMPromptCacheConfigHandlersRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(putRR.Body.Bytes(), &saved); err != nil {
 		t.Fatalf("decode saved: %v", err)
 	}
-	if saved.Enabled || saved.TTLSeconds != 90 || saved.MemoryMaxEntries != 12 || saved.MemoryMaxBytes != 2048 || saved.DiskMaxBytes != 4096 {
+	if saved.Enabled || saved.TTLSeconds != 90 || saved.MemoryMaxEntries != 12 || saved.MemoryMaxBytes != 2048 || saved.DiskMaxBytes != 4096 || saved.NormalizeDeterministicParams || saved.IgnoreModelField || saved.IgnoreUserField || saved.IgnoreMetadataField || saved.SingleflightWaitTimeoutMS != 2200 {
 		t.Fatalf("unexpected saved config: %#v", saved)
 	}
 
@@ -262,6 +305,77 @@ func TestClearHubLLMPromptCacheHandlerPurgesRuntimeCache(t *testing.T) {
 	}
 	if status.MemoryEntries != 0 || status.MemoryBytes != 0 {
 		t.Fatalf("cache not purged: %#v", status)
+	}
+}
+
+func TestGetHubLLMPromptCacheEntryHandlerReturnsStoredDetails(t *testing.T) {
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "cache-entry-detail.db"), WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 2, MaxReadIdleConns: 1, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	defer provider.Close()
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("migrations: %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	cache := llmcache.New(st.LLMPromptCache, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 4096})
+	cfg := defaultHubLLMPromptCacheConfig()
+	body := map[string]any{
+		"model": "gpt-4.1",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		"temperature": 0,
+		"user":        "alice@example.com",
+		"metadata":    map[string]any{"trace_id": "abc"},
+	}
+	model := &llmservice.AuthorizedModel{Name: "writer-auto", ProviderIDs: []string{"provider-a", "provider-b"}}
+	usage := corelib.TokenUsageStat{CachedInputTokens: 12, CacheWriteTokens: 6}
+	if err := putCachedAuthorizedModelResponse(context.Background(), cache, model, body, "gpt-4.1", []byte(`{"id":"resp_1"}`), http.StatusOK, "provider-a", []string{"sg-1", "sg-1"}, usage, cfg); err != nil {
+		t.Fatalf("put cached response: %v", err)
+	}
+	cacheKey, _, err := llmPromptCacheKey(model, body, "gpt-4.1", cfg)
+	if err != nil {
+		t.Fatalf("cache key: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_entry?cache_key="+cacheKey, nil)
+	rr := httptest.NewRecorder()
+	GetHubLLMPromptCacheEntryHandler(cache).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		CacheKey          string         `json:"cache_key"`
+		AuthorizedModel   string         `json:"authorized_model"`
+		RequestedModel    string         `json:"requested_model"`
+		OrderedProviders  []string       `json:"ordered_providers"`
+		NormalizedRequest map[string]any `json:"normalized_request"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.CacheKey != cacheKey {
+		t.Fatalf("cache_key = %q, want %q", resp.CacheKey, cacheKey)
+	}
+	if resp.AuthorizedModel != "writer-auto" || resp.RequestedModel != "gpt-4.1" {
+		t.Fatalf("unexpected model fields: %#v", resp)
+	}
+	if len(resp.OrderedProviders) != 2 || resp.OrderedProviders[0] != "provider-a" || resp.OrderedProviders[1] != "provider-b" {
+		t.Fatalf("unexpected ordered providers: %#v", resp.OrderedProviders)
+	}
+	if _, ok := resp.NormalizedRequest["model"]; ok {
+		t.Fatalf("normalized request should omit model: %#v", resp.NormalizedRequest)
+	}
+	if _, ok := resp.NormalizedRequest["user"]; ok {
+		t.Fatalf("normalized request should omit user: %#v", resp.NormalizedRequest)
+	}
+	if _, ok := resp.NormalizedRequest["metadata"]; ok {
+		t.Fatalf("normalized request should omit metadata: %#v", resp.NormalizedRequest)
+	}
+	messages, ok := resp.NormalizedRequest["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("normalized request messages = %#v", resp.NormalizedRequest["messages"])
 	}
 }
 

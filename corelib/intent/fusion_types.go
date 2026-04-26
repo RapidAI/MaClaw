@@ -76,6 +76,21 @@ type FusionConfig struct {
 	Delta                   float64 // score gap threshold for CLEAR vs AMBIGUOUS. Default 0.10.
 	LowThreshold            float64 // minimum top score for any match. Default 0.15.
 	WorkflowRejectThreshold float64 // min UIC confidence to fast-reject non-workflow intents. Default 0.70.
+
+	// WorkflowTypeMap maps IntentLabels to their known workflow types,
+	// derived from IntentDefinition.WorkflowTypes. When the L3 tree channel
+	// fails (timeout/error) and WorkflowType is empty, this map provides a
+	// degraded-mode fallback: if the winning label has exactly one known
+	// workflow type, it is used as the WorkflowType.
+	//
+	// This ensures that even in embedding-only degraded mode, a confident
+	// "coding" classification can still trigger the coding workflow — the
+	// mapping from LabelCoding → "coding" is declarative data, not LLM output.
+	//
+	// Labels with multiple WorkflowTypes (e.g., a hypothetical label mapping
+	// to both "product_design" and "innovation") are NOT auto-filled because
+	// the correct choice requires L3 semantic reasoning.
+	WorkflowTypeMap map[IntentLabel]string
 }
 
 // DefaultFusionConfig returns the default fusion parameters.
@@ -86,6 +101,28 @@ func DefaultFusionConfig() FusionConfig {
 		LowThreshold:            DefaultLowThreshold,
 		WorkflowRejectThreshold: DefaultWorkflowRejectThreshold,
 	}
+}
+
+// DefaultFusionConfigWithWorkflowTypes returns the default fusion parameters
+// with WorkflowTypeMap populated from IntentDefinitions. This is the
+// preferred constructor — it enables degraded-mode WorkflowType inference.
+func DefaultFusionConfigWithWorkflowTypes(defs []IntentDefinition) FusionConfig {
+	cfg := DefaultFusionConfig()
+	cfg.WorkflowTypeMap = BuildWorkflowTypeMap(defs)
+	return cfg
+}
+
+// BuildWorkflowTypeMap builds a label → workflow_type map from definitions.
+// Only labels with exactly one WorkflowType are included — labels with
+// multiple types require L3 semantic reasoning to disambiguate.
+func BuildWorkflowTypeMap(defs []IntentDefinition) map[IntentLabel]string {
+	m := make(map[IntentLabel]string)
+	for _, d := range defs {
+		if len(d.WorkflowTypes) == 1 {
+			m[d.Label] = d.WorkflowTypes[0]
+		}
+	}
+	return m
 }
 
 // WorkflowCandidateLabels returns the set of IntentLabels that may trigger

@@ -12,17 +12,29 @@ import (
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/workflow"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/idgen"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
 
 // Handler provides a lightweight executive console API for iWorkerCenter.
 type Handler struct {
-	read  *sql.DB
-	audit *audit.Repo
+	write       *sql.DB
+	read        *sql.DB
+	audit       *audit.Repo
+	workflowSvc *workflow.Service
 }
 
 func NewHandler(read *sql.DB, auditRepo *audit.Repo) *Handler {
 	return &Handler{read: read, audit: auditRepo}
+}
+
+func (h *Handler) SetWriteDB(write *sql.DB) {
+	h.write = write
+}
+
+func (h *Handler) SetWorkflowService(svc *workflow.Service) {
+	h.workflowSvc = svc
 }
 
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
@@ -30,6 +42,9 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/executive/skills", h.handleSkills)
 	mux.HandleFunc("/admin/executive/skills/run", h.handleRunSkill)
 	mux.HandleFunc("/admin/executive/management-decisions", h.handleRecordManagementDecision)
+	mux.HandleFunc("/admin/executive/autonomy-return", h.handleConfirmAutonomyReturn)
+	mux.HandleFunc("/admin/executive/deposition-drafts", h.handleGenerateDepositionDrafts)
+	mux.HandleFunc("/admin/executive/deposition-rollout/publish", h.handlePublishDepositionRollout)
 }
 
 type metric struct {
@@ -241,6 +256,108 @@ func (h *Handler) handleRecordManagementDecision(w http.ResponseWriter, r *http.
 	response.OK(w, map[string]any{"ok": true})
 }
 
+func (h *Handler) handleConfirmAutonomyReturn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+
+	var req struct {
+		RoleCode    string `json:"role_code"`
+		Detail      string `json:"detail"`
+		DisplayTime string `json:"display_time"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
+		return
+	}
+
+	req.RoleCode = strings.TrimSpace(req.RoleCode)
+	req.Detail = strings.TrimSpace(req.Detail)
+	req.DisplayTime = strings.TrimSpace(req.DisplayTime)
+	if req.RoleCode == "" || req.Detail == "" || req.DisplayTime == "" {
+		response.BadRequest(w, "INVALID_AUTONOMY_RETURN", "role_code, detail, and display_time are required")
+		return
+	}
+
+	if err := h.recordManagementAutonomyReturnAudit(r.Context(), req.RoleCode, req.Detail, req.DisplayTime); err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"ok": true})
+}
+
+func (h *Handler) handleGenerateDepositionDrafts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+	if h.write == nil {
+		response.Error(w, http.StatusServiceUnavailable, "WRITE_NOT_CONFIGURED", "executive draft generation is not configured")
+		return
+	}
+
+	var req struct {
+		RoleCode    string `json:"role_code"`
+		ActionTitle string `json:"action_title"`
+		Detail      string `json:"detail"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
+		return
+	}
+
+	req.RoleCode = strings.TrimSpace(req.RoleCode)
+	req.ActionTitle = strings.TrimSpace(req.ActionTitle)
+	req.Detail = strings.TrimSpace(req.Detail)
+	if req.RoleCode == "" || req.ActionTitle == "" || req.Detail == "" {
+		response.BadRequest(w, "INVALID_DEPOSITION_DRAFT", "role_code, action_title, and detail are required")
+		return
+	}
+
+	result, err := h.generateDepositionDrafts(r.Context(), req.RoleCode, req.ActionTitle, req.Detail)
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, result)
+}
+
+func (h *Handler) handlePublishDepositionRollout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+	if h.workflowSvc == nil {
+		response.Error(w, http.StatusServiceUnavailable, "WORKFLOW_NOT_CONFIGURED", "workflow rollout publishing is not configured")
+		return
+	}
+
+	var req struct {
+		RoleCode   string `json:"role_code"`
+		WorkflowID string `json:"workflow_id"`
+		Detail     string `json:"detail"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
+		return
+	}
+
+	req.RoleCode = strings.TrimSpace(req.RoleCode)
+	req.WorkflowID = strings.TrimSpace(req.WorkflowID)
+	req.Detail = strings.TrimSpace(req.Detail)
+	if req.RoleCode == "" || req.WorkflowID == "" || req.Detail == "" {
+		response.BadRequest(w, "INVALID_DEPOSITION_ROLLOUT", "role_code, workflow_id, and detail are required")
+		return
+	}
+
+	if err := h.publishDepositionRollout(r.Context(), req.RoleCode, req.WorkflowID, req.Detail); err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"ok": true})
+}
+
 func (h *Handler) recordManagementDecisionAudit(ctx context.Context, roleCode, decisionType, detail, displayTime string) error {
 	if h.audit == nil {
 		return nil
@@ -269,6 +386,206 @@ func (h *Handler) recordManagementDecisionAudit(ctx context.Context, roleCode, d
 		Summary:     summary,
 		ErrorMsg:    fmt.Sprintf("decision_type: %s | role_code: %s | detail: %s | display_time: %s", decisionType, roleCode, detail, displayTime),
 	})
+}
+
+func (h *Handler) recordManagementAutonomyReturnAudit(ctx context.Context, roleCode, detail, displayTime string) error {
+	if h.audit == nil {
+		return nil
+	}
+	tenantID := tenant.TenantIDFromContext(ctx)
+	if tenantID == "" {
+		return nil
+	}
+	roleCode = strings.TrimSpace(roleCode)
+	detail = strings.TrimSpace(detail)
+	displayTime = strings.TrimSpace(displayTime)
+	return h.audit.Insert(tenantID, &audit.ProxyLog{
+		RequestID:   fmt.Sprintf("management-autonomy-return-%s-%d", roleCode, time.Now().UnixNano()),
+		ProviderID:  "iworkercenter",
+		Model:       "management-autonomy-return",
+		WorkType:    "management_autonomy_return",
+		CostTier:    "internal",
+		Status:      "ok",
+		LatencyMs:   0,
+		InputTokens: 0,
+		Summary:     fmt.Sprintf("Return to autonomy confirmed for %s", strings.ToUpper(roleCode)),
+		ErrorMsg:    fmt.Sprintf("decision_type: autonomy_return | role_code: %s | detail: %s | display_time: %s", roleCode, detail, displayTime),
+	})
+}
+
+func (h *Handler) recordDepositionDraftAudit(ctx context.Context, roleCode, detail, memoryID, capabilityID, workflowID string) error {
+	if h.audit == nil {
+		return nil
+	}
+	tenantID := tenant.TenantIDFromContext(ctx)
+	if tenantID == "" {
+		return nil
+	}
+	return h.audit.Insert(tenantID, &audit.ProxyLog{
+		RequestID:   fmt.Sprintf("executive-deposition-draft-%s-%d", roleCode, time.Now().UnixNano()),
+		ProviderID:  "iworkercenter",
+		Model:       "executive-deposition-draft",
+		WorkType:    "executive_deposition_draft",
+		CostTier:    "internal",
+		Status:      "ok",
+		LatencyMs:   0,
+		InputTokens: 0,
+		Summary:     fmt.Sprintf("Deposition drafts generated for %s", strings.ToUpper(roleCode)),
+		ErrorMsg:    fmt.Sprintf("role_code: %s | detail: %s | memory_id: %s | capability_id: %s | workflow_id: %s", roleCode, detail, memoryID, capabilityID, workflowID),
+	})
+}
+
+func (h *Handler) recordStandardPublishedAudit(ctx context.Context, roleCode, workflowID, detail string) error {
+	if h.audit == nil {
+		return nil
+	}
+	tenantID := tenant.TenantIDFromContext(ctx)
+	if tenantID == "" {
+		return nil
+	}
+	return h.audit.Insert(tenantID, &audit.ProxyLog{
+		RequestID:   fmt.Sprintf("executive-standard-published-%s-%d", roleCode, time.Now().UnixNano()),
+		ProviderID:  "iworkercenter",
+		Model:       "executive-standard-published",
+		WorkType:    "executive_standard_published",
+		CostTier:    "internal",
+		Status:      "ok",
+		LatencyMs:   0,
+		InputTokens: 0,
+		Summary:     fmt.Sprintf("Recovery standard published for %s", strings.ToUpper(roleCode)),
+		ErrorMsg:    fmt.Sprintf("role_code: %s | workflow_id: %s | detail: %s", roleCode, workflowID, detail),
+	})
+}
+
+type depositionDraftResult struct {
+	MemoryID       string `json:"memory_id"`
+	CapabilityID   string `json:"capability_id"`
+	WorkflowID     string `json:"workflow_id,omitempty"`
+	MemoryTitle    string `json:"memory_title"`
+	CapabilityName string `json:"capability_name"`
+	WorkflowName   string `json:"workflow_name,omitempty"`
+}
+
+func (h *Handler) generateDepositionDrafts(ctx context.Context, roleCode, actionTitle, detail string) (depositionDraftResult, error) {
+	result := depositionDraftResult{}
+	tenantID := tenant.TenantIDFromContext(ctx)
+	if tenantID == "" {
+		return result, nil
+	}
+	roleCode = strings.TrimSpace(roleCode)
+	actionTitle = strings.TrimSpace(actionTitle)
+	detail = strings.TrimSpace(detail)
+	roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), roleCode)
+	now := time.Now().Format(time.RFC3339)
+
+	memoryTitle := fmt.Sprintf("%s recovery playbook", roleLabel)
+	memoryContent := fmt.Sprintf("Trigger: %s\n\nRecovery context: %s\n\nExpected institutional result: Turn this recovery path into reusable system memory so the same exception can be handled inside iWorkerCenter without fresh management intervention.", actionTitle, detail)
+	memoryID, err := h.ensureMemoryDraft(ctx, tenantID, memoryTitle, memoryContent, roleCode, now)
+	if err != nil {
+		return result, err
+	}
+
+	capabilityName := fmt.Sprintf("%s recovery handling", roleLabel)
+	capabilityDescription := fmt.Sprintf("Institutionalized recovery capability for %s. Source action: %s. %s", roleLabel, actionTitle, detail)
+	capabilityID, err := h.ensureCapabilityDraft(ctx, tenantID, capabilityName, capabilityDescription, now)
+	if err != nil {
+		return result, err
+	}
+
+	workflowName := fmt.Sprintf("%s recovery deposition loop", roleLabel)
+	workflowID := ""
+	if h.workflowSvc != nil {
+		workflowID, err = h.ensureWorkflowDraft(tenantID, workflowName, roleCode, detail)
+		if err != nil {
+			return result, err
+		}
+	}
+
+	if err := h.recordDepositionDraftAudit(ctx, roleCode, detail, memoryID, capabilityID, workflowID); err != nil {
+		return result, err
+	}
+	result = depositionDraftResult{
+		MemoryID:       memoryID,
+		CapabilityID:   capabilityID,
+		WorkflowID:     workflowID,
+		MemoryTitle:    memoryTitle,
+		CapabilityName: capabilityName,
+		WorkflowName:   workflowName,
+	}
+	return result, nil
+}
+
+func (h *Handler) ensureMemoryDraft(ctx context.Context, tenantID, title, content, scope, now string) (string, error) {
+	var existingID string
+	err := h.read.QueryRowContext(ctx, `SELECT id FROM shared_memories WHERE tenant_id=? AND title=? AND scope=? LIMIT 1`, tenantID, title, scope).Scan(&existingID)
+	if err == nil {
+		return existingID, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	id := idgen.New("mem")
+	_, err = h.write.ExecContext(ctx, `INSERT INTO shared_memories (id, tenant_id, title, content, level, scope, tags, version, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'role', ?, '[]', 1, 'active', ?, ?)`, id, tenantID, title, content, scope, now, now)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (h *Handler) ensureCapabilityDraft(ctx context.Context, tenantID, name, description, now string) (string, error) {
+	var existingID string
+	err := h.read.QueryRowContext(ctx, `SELECT id FROM capability_packages WHERE tenant_id=? AND name=? LIMIT 1`, tenantID, name).Scan(&existingID)
+	if err == nil {
+		return existingID, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	id := idgen.New("cap")
+	_, err = h.write.ExecContext(ctx, `INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'recovery', '1.0.0', 'executive', 'medium', 'active', ?, ?)`, id, tenantID, name, description, now, now)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (h *Handler) ensureWorkflowDraft(tenantID, name, roleCode, detail string) (string, error) {
+	defs, err := h.workflowSvc.ListDefinitions(tenantID)
+	if err != nil {
+		return "", err
+	}
+	for _, def := range defs {
+		if strings.EqualFold(strings.TrimSpace(def.Name), strings.TrimSpace(name)) {
+			return def.ID, nil
+		}
+	}
+	def, err := h.workflowSvc.CreateDefinition(tenantID, workflow.CreateDefinitionRequest{
+		Name:        name,
+		Description: fmt.Sprintf("Draft workflow generated from an autonomy-return recovery event. %s", detail),
+		TriggerType: "manual",
+		Steps: []workflow.CreateStepDefRequest{
+			{StepCode: "review_recovery_signal", StepName: "Review recovery evidence", StepType: "review", AssigneeMode: "by_role", AssigneeRoleCode: roleCode, RejectRule: "end_process"},
+			{StepCode: "deposit_operating_learning", StepName: "Deposit operating learning", StepType: "processing", AssigneeMode: "by_role", AssigneeRoleCode: "management-systems", RejectRule: "end_process"},
+			{StepCode: "refresh_exception_policy", StepName: "Refresh exception policy", StepType: "processing", AssigneeMode: "by_role", AssigneeRoleCode: "management-systems", RejectRule: "end_process"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return def.ID, nil
+}
+
+func (h *Handler) publishDepositionRollout(ctx context.Context, roleCode, workflowID, detail string) error {
+	tenantID := tenant.TenantIDFromContext(ctx)
+	if tenantID == "" {
+		return nil
+	}
+	if err := h.workflowSvc.PublishDefinition(tenantID, workflowID); err != nil {
+		return err
+	}
+	return h.recordStandardPublishedAudit(ctx, roleCode, workflowID, detail)
 }
 
 func (h *Handler) recordSkillAudit(ctx context.Context, skillID string, result skillResult) {
@@ -379,6 +696,44 @@ func managementDecisionType(item *boardHistoryItem) string {
 	return ""
 }
 
+func pickLatestCapabilityApproved(history []boardHistoryItem) *boardHistoryItem {
+	for i := range history {
+		if strings.HasPrefix(history[i].ID, "capability-") {
+			return &history[i]
+		}
+	}
+	return nil
+}
+func pickLatestStandardPublished(history []boardHistoryItem) *boardHistoryItem {
+	for i := range history {
+		if strings.HasPrefix(history[i].ID, "standard-") {
+			return &history[i]
+		}
+	}
+	return nil
+}
+
+func pickLatestDepositionDraft(history []boardHistoryItem) *boardHistoryItem {
+	for i := range history {
+		if strings.HasPrefix(history[i].ID, "deposition-") {
+			return &history[i]
+		}
+	}
+	return nil
+}
+
+func historyDetailField(item *boardHistoryItem, prefix string) string {
+	if item == nil {
+		return ""
+	}
+	for _, line := range item.DetailLines {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
 func shouldPrioritizeManagementDecision(cluster, management *boardHistoryItem) bool {
 	if management == nil {
 		return false
@@ -392,10 +747,24 @@ func shouldPrioritizeManagementDecision(cluster, management *boardHistoryItem) b
 func deriveDecisionBoardSummary(base string, history []boardHistoryItem) string {
 	latestCluster := pickPriorityHistoryCluster(history)
 	latestManagement := pickLatestManagementDecision(history)
+	latestCapability := pickLatestCapabilityApproved(history)
+	latestStandard := pickLatestStandardPublished(history)
+	if latestStandard != nil && (latestManagement == nil || latestStandard.Timestamp >= latestManagement.Timestamp) && (latestCluster == nil || latestStandard.Timestamp >= latestCluster.Timestamp) {
+		roleCode := historyRoleCode(latestStandard)
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), "the stabilized role")
+		return fmt.Sprintf("%s is now running under a freshly published recovery standard. The next move is to observe live exceptions under policy instead of reopening direct management intervention.", roleLabel)
+	}
+	if latestCapability != nil && (latestStandard == nil || latestCapability.Timestamp >= latestStandard.Timestamp) && (latestManagement == nil || managementDecisionType(latestManagement) == "autonomy_return" || latestCapability.Timestamp >= latestManagement.Timestamp) && (latestCluster == nil || latestCapability.Timestamp >= latestCluster.Timestamp) {
+		roleCode := historyRoleCode(latestCapability)
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), "the recovering role")
+		return fmt.Sprintf("%s has already been absorbed into an approved recovery capability package. The next move is to publish the workflow standard so future exceptions stay inside organizational policy.", roleLabel)
+	}
 	if shouldPrioritizeManagementDecision(latestCluster, latestManagement) {
 		roleCode := historyRoleCode(latestManagement)
 		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), "the escalated role")
 		switch managementDecisionType(latestManagement) {
+		case "autonomy_return":
+			return fmt.Sprintf("%s has been cleared to return to autonomous execution. iWorkerCenter should keep the operating logic in system assets and only re-open management review if fresh variance appears.", roleLabel)
 		case "deferred":
 			return fmt.Sprintf("Management has deferred direct intervention for %s until the next review window. The organization should keep running inside delegated policy while coordination risk is monitored closely.", roleLabel)
 		default:
@@ -425,6 +794,32 @@ func deriveDecisionBoardSummary(base string, history []boardHistoryItem) string 
 func deriveDecisionBoardFocus(base boardFocus, history []boardHistoryItem) boardFocus {
 	latestCluster := pickPriorityHistoryCluster(history)
 	latestManagement := pickLatestManagementDecision(history)
+	latestCapability := pickLatestCapabilityApproved(history)
+	latestStandard := pickLatestStandardPublished(history)
+	if latestStandard != nil && (latestManagement == nil || latestStandard.Timestamp >= latestManagement.Timestamp) && (latestCluster == nil || latestStandard.Timestamp >= latestCluster.Timestamp) {
+		roleCode := historyRoleCode(latestStandard)
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), roleCode)
+		return newBoardFocus(
+			fmt.Sprintf("Monitor %s under policy", roleLabel),
+			fmt.Sprintf("%s now has a published recovery standard inside the organization.", roleLabel),
+			"The organization has already published the new standard. The next priority is to observe whether fresh exceptions are now absorbed by policy, workflow, and memory without another management loop.",
+			"ok",
+			roleCode,
+			roleLabel,
+		)
+	}
+	if latestCapability != nil && (latestStandard == nil || latestCapability.Timestamp >= latestStandard.Timestamp) && (latestManagement == nil || managementDecisionType(latestManagement) == "autonomy_return" || latestCapability.Timestamp >= latestManagement.Timestamp) && (latestCluster == nil || latestCapability.Timestamp >= latestCluster.Timestamp) {
+		roleCode := historyRoleCode(latestCapability)
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), roleCode)
+		return newBoardFocus(
+			fmt.Sprintf("Publish %s workflow standard", roleLabel),
+			fmt.Sprintf("%s already has an approved recovery capability package.", roleLabel),
+			"The reusable capability package has already been accepted into the organization. The next priority is to publish the workflow definition so the recovery path becomes live organizational policy instead of review-only assets.",
+			"info",
+			roleCode,
+			roleLabel,
+		)
+	}
 	if shouldPrioritizeManagementDecision(latestCluster, latestManagement) {
 		roleCode := historyRoleCode(latestManagement)
 		if roleCode == "" {
@@ -432,6 +827,15 @@ func deriveDecisionBoardFocus(base boardFocus, history []boardHistoryItem) board
 		}
 		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), roleCode)
 		switch managementDecisionType(latestManagement) {
+		case "autonomy_return":
+			return newBoardFocus(
+				fmt.Sprintf("Keep %s in delegated execution", roleLabel),
+				fmt.Sprintf("%s has been confirmed back into autonomous coordination.", roleLabel),
+				"Management has closed the exception loop for this role. The next priority is to keep execution inside policy, preserve the learning in system assets, and only escalate again if new operating risk appears.",
+				"ok",
+				roleCode,
+				roleLabel,
+			)
 		case "deferred":
 			return newBoardFocus(
 				fmt.Sprintf("Review %s at next window", roleLabel),
@@ -507,7 +911,102 @@ func deriveDecisionBoardFocus(base boardFocus, history []boardHistoryItem) board
 	}
 }
 func deriveDecisionActions(base []action, history []boardHistoryItem) []action {
-	latest := pickPriorityHistoryCluster(history)
+	latestCluster := pickPriorityHistoryCluster(history)
+	latestManagement := pickLatestManagementDecision(history)
+	latestCapability := pickLatestCapabilityApproved(history)
+	latestStandard := pickLatestStandardPublished(history)
+	latestDeposition := pickLatestDepositionDraft(history)
+	if latestStandard != nil && (latestManagement == nil || latestStandard.Timestamp >= latestManagement.Timestamp) && (latestCluster == nil || latestStandard.Timestamp >= latestCluster.Timestamp) {
+		roleCode := strings.TrimSpace(historyRoleCode(latestStandard))
+		if roleCode == "" {
+			return base
+		}
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), roleCode)
+		priorityAction := newActionForRoleCode(
+			"Monitor new exceptions under published policy",
+			roleCode,
+			roleLabel,
+			"The recovery standard has already been published. Watch whether new exceptions now stay inside the organization's memory, workflow, and capability system without another executive recovery loop.",
+		)
+		result := []action{priorityAction}
+		for _, item := range base {
+			if item.Title == priorityAction.Title && item.OwnerRoleCode == priorityAction.OwnerRoleCode {
+				continue
+			}
+			result = append(result, item)
+		}
+		return result
+	}
+	if latestCapability != nil && (latestStandard == nil || latestCapability.Timestamp >= latestStandard.Timestamp) && (latestManagement == nil || managementDecisionType(latestManagement) == "autonomy_return" || latestCapability.Timestamp >= latestManagement.Timestamp) && (latestCluster == nil || latestCapability.Timestamp >= latestCluster.Timestamp) {
+		roleCode := strings.TrimSpace(historyRoleCode(latestCapability))
+		if roleCode == "" {
+			return base
+		}
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), roleCode)
+		priorityAction := newActionForRoleCode(
+			"Review deposition drafts for rollout",
+			roleCode,
+			roleLabel,
+			"The recovery capability package has already been approved. Review the remaining memory and workflow assets, then publish the workflow standard back into live organizational policy.",
+		)
+		result := []action{priorityAction}
+		for _, item := range base {
+			if item.Title == priorityAction.Title && item.OwnerRoleCode == priorityAction.OwnerRoleCode {
+				continue
+			}
+			result = append(result, item)
+		}
+		return result
+	}
+	if latestDeposition != nil && (latestStandard == nil || latestDeposition.Timestamp >= latestStandard.Timestamp) && (latestManagement == nil || latestDeposition.Timestamp >= latestManagement.Timestamp) && (latestCluster == nil || latestDeposition.Timestamp >= latestCluster.Timestamp) {
+		roleCode := strings.TrimSpace(historyRoleCode(latestDeposition))
+		if roleCode == "" {
+			return base
+		}
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), roleCode)
+		workflowID := historyDetailField(latestDeposition, "Workflow draft: ")
+		description := "Recovery drafts already exist. Review the memory, capability package, and workflow definition, then publish the workflow standard back into live organizational policy."
+		if workflowID != "" && workflowID != "not created" {
+			description = fmt.Sprintf("Recovery drafts already exist and workflow %s is ready for rollout review. Review the knowledge and package drafts, then publish the workflow standard back into live organizational policy.", workflowID)
+		}
+		priorityAction := newActionForRoleCode(
+			"Review deposition drafts for rollout",
+			roleCode,
+			roleLabel,
+			description,
+		)
+		result := []action{priorityAction}
+		for _, item := range base {
+			if item.Title == priorityAction.Title && item.OwnerRoleCode == priorityAction.OwnerRoleCode {
+				continue
+			}
+			result = append(result, item)
+		}
+		return result
+	}
+	if shouldPrioritizeManagementDecision(latestCluster, latestManagement) && managementDecisionType(latestManagement) == "autonomy_return" {
+		roleCode := strings.TrimSpace(historyRoleCode(latestManagement))
+		if roleCode == "" {
+			return base
+		}
+		roleLabel := firstNonEmpty(roleLabelForCode(roleCode), strings.ToUpper(roleCode), roleCode)
+		priorityAction := newActionForRoleCode(
+			"Deposit recovery learning into system assets",
+			roleCode,
+			roleLabel,
+			"The role has already been cleared to return to autonomous execution. The next move is to capture the recovery path as reusable memory, workflow logic, and operating policy so the same exception does not need fresh management attention next time.",
+		)
+		result := []action{priorityAction}
+		for _, item := range base {
+			if item.Title == priorityAction.Title && item.OwnerRoleCode == priorityAction.OwnerRoleCode {
+				continue
+			}
+			result = append(result, item)
+		}
+		return result
+	}
+
+	latest := latestCluster
 	if latest == nil || strings.TrimSpace(latest.ClusterRoleCode) == "" {
 		return base
 	}
@@ -1054,7 +1553,7 @@ func (h *Handler) loadHistoryTasks(ctx context.Context, logs []*audit.ProxyLog) 
 func buildManagementDecisionHistory(logs []*audit.ProxyLog) []boardHistoryItem {
 	items := make([]boardHistoryItem, 0, 4)
 	for _, entry := range logs {
-		if entry == nil || entry.WorkType != "management_decision" {
+		if entry == nil || (entry.WorkType != "management_decision" && entry.WorkType != "management_autonomy_return") {
 			continue
 		}
 		roleCode := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "role_code"))
@@ -1063,7 +1562,11 @@ func buildManagementDecisionHistory(logs []*audit.ProxyLog) []boardHistoryItem {
 		displayTime := firstNonEmpty(strings.TrimSpace(extractAuditField(entry.ErrorMsg, "display_time")), entry.CreatedAt.Format(time.RFC3339))
 		title := "Management review opened"
 		tone := "warn"
-		if decisionType == "deferred" {
+		if decisionType == "autonomy_return" || entry.WorkType == "management_autonomy_return" {
+			decisionType = "autonomy_return"
+			title = "Return to autonomy confirmed"
+			tone = "ok"
+		} else if decisionType == "deferred" {
 			title = "Management follow-up deferred"
 			tone = "info"
 		}
@@ -1092,6 +1595,161 @@ func buildManagementDecisionHistory(logs []*audit.ProxyLog) []boardHistoryItem {
 		if len(items) >= 4 {
 			break
 		}
+	}
+	return items
+}
+func buildDepositionDraftHistory(logs []*audit.ProxyLog) []boardHistoryItem {
+	items := make([]boardHistoryItem, 0, 4)
+	for _, entry := range logs {
+		if entry == nil || entry.WorkType != "executive_deposition_draft" {
+			continue
+		}
+		roleCode := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "role_code"))
+		detail := firstNonEmpty(strings.TrimSpace(extractAuditField(entry.ErrorMsg, "detail")), strings.TrimSpace(entry.Summary), "Recovery learning was converted into institutional drafts.")
+		memoryID := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "memory_id"))
+		capabilityID := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "capability_id"))
+		workflowID := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "workflow_id"))
+		item := boardHistoryItem{
+			ID:        fmt.Sprintf("deposition-%s", entry.ID),
+			Title:     firstNonEmpty(strings.TrimSpace(entry.Summary), "Deposition drafts generated"),
+			Detail:    detail,
+			Timestamp: entry.CreatedAt.Format(time.RFC3339),
+			Tone:      "ok",
+			DetailLines: []string{
+				fmt.Sprintf("Role: %s", firstNonEmpty(roleCode, "No direct role attached")),
+				fmt.Sprintf("Memory draft: %s", firstNonEmpty(memoryID, "not created")),
+				fmt.Sprintf("Capability draft: %s", firstNonEmpty(capabilityID, "not created")),
+				fmt.Sprintf("Workflow draft: %s", firstNonEmpty(workflowID, "not created")),
+			},
+		}
+		if roleCode != "" {
+			item.NavigationTarget = &historyNavigationTarget{RoleCode: roleCode, Source: "organization_history"}
+		}
+		items = append(items, item)
+		if len(items) >= 4 {
+			break
+		}
+	}
+	return items
+}
+
+func buildCapabilityApprovedHistory(logs []*audit.ProxyLog) []boardHistoryItem {
+	items := make([]boardHistoryItem, 0, 4)
+	for _, entry := range logs {
+		if entry == nil || entry.WorkType != "executive_capability_approved" {
+			continue
+		}
+		roleCode := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "role_code"))
+		capabilityID := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "capability_id"))
+		capabilityName := firstNonEmpty(strings.TrimSpace(extractAuditField(entry.ErrorMsg, "capability_name")), strings.TrimSpace(entry.Summary), "Recovery capability package")
+		item := boardHistoryItem{
+			ID:        fmt.Sprintf("capability-%s", entry.ID),
+			Title:     firstNonEmpty(strings.TrimSpace(entry.Summary), "Recovery capability package approved"),
+			Detail:    fmt.Sprintf("%s has been approved as a reusable organizational capability package.", capabilityName),
+			Timestamp: entry.CreatedAt.Format(time.RFC3339),
+			Tone:      "ok",
+			DetailLines: []string{
+				fmt.Sprintf("Role: %s", firstNonEmpty(roleCode, "No direct role attached")),
+				fmt.Sprintf("Capability package: %s", capabilityName),
+				fmt.Sprintf("Capability ID: %s", firstNonEmpty(capabilityID, "not available")),
+				"Rollout state: capability approved",
+			},
+		}
+		if roleCode != "" {
+			item.NavigationTarget = &historyNavigationTarget{RoleCode: roleCode, Source: "organization_history"}
+		}
+		items = append(items, item)
+		if len(items) >= 4 {
+			break
+		}
+	}
+	return items
+}
+func buildStandardPublishedHistory(logs []*audit.ProxyLog) []boardHistoryItem {
+	items := make([]boardHistoryItem, 0, 4)
+	for _, entry := range logs {
+		if entry == nil || entry.WorkType != "executive_standard_published" {
+			continue
+		}
+		roleCode := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "role_code"))
+		workflowID := strings.TrimSpace(extractAuditField(entry.ErrorMsg, "workflow_id"))
+		detail := firstNonEmpty(strings.TrimSpace(extractAuditField(entry.ErrorMsg, "detail")), strings.TrimSpace(entry.Summary), "A recovery standard was published into the organization.")
+		item := boardHistoryItem{
+			ID:        fmt.Sprintf("standard-%s", entry.ID),
+			Title:     firstNonEmpty(strings.TrimSpace(entry.Summary), "Recovery standard published"),
+			Detail:    detail,
+			Timestamp: entry.CreatedAt.Format(time.RFC3339),
+			Tone:      "ok",
+			DetailLines: []string{
+				fmt.Sprintf("Role: %s", firstNonEmpty(roleCode, "No direct role attached")),
+				fmt.Sprintf("Workflow draft: %s", firstNonEmpty(workflowID, "not created")),
+				"Rollout state: published",
+			},
+		}
+		if roleCode != "" {
+			item.NavigationTarget = &historyNavigationTarget{RoleCode: roleCode, Source: "organization_history"}
+		}
+		items = append(items, item)
+		if len(items) >= 4 {
+			break
+		}
+	}
+	return items
+}
+
+func buildManagementRecoveryHistory(managementItems, clusterItems []boardHistoryItem) []boardHistoryItem {
+	items := make([]boardHistoryItem, 0, len(managementItems))
+	for _, decision := range managementItems {
+		roleCode := historyRoleCode(&decision)
+		if roleCode == "" {
+			continue
+		}
+		if managementDecisionType(&decision) == "autonomy_return" {
+			continue
+		}
+		var related *boardHistoryItem
+		for i := range clusterItems {
+			if strings.TrimSpace(clusterItems[i].ClusterRoleCode) == roleCode {
+				related = &clusterItems[i]
+				break
+			}
+		}
+		if related == nil || strings.TrimSpace(related.ClusterExecutionStatus) == "" {
+			continue
+		}
+		title := fmt.Sprintf("Recovery action dispatched for %s", strings.ToUpper(roleCode))
+		detail := fmt.Sprintf("%s has been pushed back into organizational execution after management intervention.", firstNonEmpty(related.ClusterFocusTitle, related.ClusterSkillTitle, strings.ToUpper(roleCode)))
+		tone := "info"
+		nextStep := "Track whether the dispatched recovery task returns the role to stable delegated operation."
+		switch strings.TrimSpace(related.ClusterExecutionStatus) {
+		case "in_progress":
+			tone = "ok"
+			detail = fmt.Sprintf("%s is already in active recovery execution after management intervention.", firstNonEmpty(related.ClusterFocusTitle, related.ClusterSkillTitle, strings.ToUpper(roleCode)))
+		case "done", "completed":
+			title = fmt.Sprintf("Recovery completed for %s", strings.ToUpper(roleCode))
+			tone = "ok"
+			detail = fmt.Sprintf("%s has completed recovery execution and can now move back toward autonomous coordination.", firstNonEmpty(related.ClusterFocusTitle, related.ClusterSkillTitle, strings.ToUpper(roleCode)))
+			nextStep = "Verify the result is stable, then remove the role from active management attention and deposit the learning into the system."
+		case "rejected":
+			title = fmt.Sprintf("Recovery blocked for %s", strings.ToUpper(roleCode))
+			tone = "warn"
+			detail = fmt.Sprintf("%s failed to recover cleanly after management intervention and needs another decision loop.", firstNonEmpty(related.ClusterFocusTitle, related.ClusterSkillTitle, strings.ToUpper(roleCode)))
+			nextStep = "Management should review routing, ownership, and acceptance criteria before retrying the recovery path."
+		}
+		items = append(items, boardHistoryItem{
+			ID:        fmt.Sprintf("recovery-%s-%s", decision.ID, related.ID),
+			Title:     title,
+			Detail:    detail,
+			Timestamp: related.Timestamp,
+			Tone:      tone,
+			DetailLines: []string{
+				fmt.Sprintf("Management decision: %s", decision.Title),
+				fmt.Sprintf("Execution status: %s", firstNonEmpty(related.ClusterExecutionStatus, "unknown")),
+				fmt.Sprintf("Role: %s", roleCode),
+				fmt.Sprintf("Next step: %s", nextStep),
+			},
+			NavigationTarget: related.NavigationTarget,
+		})
 	}
 	return items
 }
@@ -1136,11 +1794,21 @@ func buildBoardHistoryFromAudit(logs []*audit.ProxyLog, tasksByID map[string]his
 		}
 	}
 	managementItems := buildManagementDecisionHistory(logs)
-	items := make([]boardHistoryItem, 0, len(clusters)+len(managementItems))
+	depositionItems := buildDepositionDraftHistory(logs)
+	capabilityItems := buildCapabilityApprovedHistory(logs)
+	standardItems := buildStandardPublishedHistory(logs)
+	clusterItems := make([]boardHistoryItem, 0, len(clusters))
 	for _, cluster := range clusters {
-		items = append(items, buildBoardHistoryCluster(*cluster, tasksByID[cluster.TaskID]))
+		clusterItems = append(clusterItems, buildBoardHistoryCluster(*cluster, tasksByID[cluster.TaskID]))
 	}
+	recoveryItems := buildManagementRecoveryHistory(managementItems, clusterItems)
+	items := make([]boardHistoryItem, 0, len(clusterItems)+len(managementItems)+len(recoveryItems)+len(depositionItems)+len(capabilityItems)+len(standardItems))
+	items = append(items, clusterItems...)
+	items = append(items, recoveryItems...)
 	items = append(items, managementItems...)
+	items = append(items, depositionItems...)
+	items = append(items, capabilityItems...)
+	items = append(items, standardItems...)
 	sort.Slice(items, func(i, j int) bool {
 		left := decisionStatusPriority(items[i].ClusterExecutionStatus)
 		right := decisionStatusPriority(items[j].ClusterExecutionStatus)

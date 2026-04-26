@@ -13,6 +13,7 @@ const HUB_LLM_I18N = {
     cacheSaved: 'Prompt cache config saved.',
     cacheSaveFailed: 'Save prompt cache config failed: {error}',
     cacheLoadFailed: 'Load prompt cache config failed: {error}',
+    cacheRefresh: 'Refresh Cache Data',
     cacheClear: 'Clear Cache',
     cacheCleared: 'Prompt cache cleared ({count} entries).',
     cacheClearFailed: 'Clear prompt cache failed: {error}',
@@ -36,6 +37,11 @@ const HUB_LLM_I18N = {
     cacheMemoryEntries: 'Memory entries',
     cacheMemoryMB: 'Memory budget (MB)',
     cacheDiskMB: 'Disk budget (MB)',
+    cacheNormalizeDeterministic: 'Normalize deterministic defaults',
+    cacheIgnoreModel: 'Ignore request model field',
+    cacheIgnoreUser: 'Ignore request user field',
+    cacheIgnoreMetadata: 'Ignore request metadata field',
+    cacheSingleflightTimeout: 'Singleflight wait timeout (ms)',
     cacheSave: 'Save Cache Settings',
     cacheSummary: 'Request cache {rate}% ({hits}/{requests}) | Token reuse {reuse}% | Memory {memUsed}/{memLimit} ({memPct}%) | Disk {diskUsed}/{diskLimit} ({diskPct}%) | Hits M/D {memHits}/{diskHits}',
     cacheSummaryEmpty: 'Prompt cache status will appear here after loading.',
@@ -61,10 +67,20 @@ const HUB_LLM_I18N = {
     cacheEntryCachedTokens: '{count} cached',
     cacheEntryLastAccess: 'Last access: {value}',
     cacheEntryExpires: 'Expires: {value}',
+    cacheEntryDetails: 'Details',
     cacheEntryDelete: 'Delete',
     cacheEntryDeleted: 'Cache entry deleted.',
     cacheEntryDeleteFailed: 'Delete cache entry failed: {error}',
     cacheEntryDeleteConfirm: 'Delete this cache entry?',
+    cacheEntryDetailTitle: 'Cache Entry Details',
+    cacheEntryDetailDesc: 'Inspect the normalized request and routing factors behind a cached response.',
+    cacheEntryDetailEmpty: 'Select a cache entry to inspect its normalized request and routing details.',
+    cacheEntryDetailLoadFailed: 'Load cache entry details failed: {error}',
+    cacheEntryDetailKey: 'Cache key',
+    cacheEntryDetailAuthorizedModel: 'Authorized model',
+    cacheEntryDetailRequestedModel: 'Requested model',
+    cacheEntryDetailProviders: 'Ordered providers',
+    cacheEntryDetailNormalizedRequest: 'Normalized request',
     cacheEntriesPage: 'Page {page}',
     cacheEntriesPagerMeta: 'Showing {shown} / {total}',
     cacheEntriesPrev: 'Previous',
@@ -75,7 +91,13 @@ const HUB_LLM_I18N = {
     cacheHitSplitEmpty: 'Hit source breakdown will appear after traffic arrives.',
     cacheHitMemory: 'Memory hits',
     cacheHitDisk: 'Disk hits',
-    cacheHitShare: '{label} {count} ({pct}%)'
+    cacheHitShare: '{label} {count} ({pct}%)',
+    cacheRuntimeTitle: 'Cache Runtime Signals',
+    cacheRuntimeEmpty: 'Runtime cache signals will appear after requests arrive.',
+    cacheRuntimeCacheable: 'Cacheable requests: {count}',
+    cacheRuntimeSingleflight: 'Singleflight shared waits: {shared} | Saved upstream calls: {saved}',
+    cacheRuntimeBypassTitle: 'Bypass reasons',
+    cacheRuntimeBypassItem: '{reason}: {count}'
   },
   zh: {
     apiKeyConfigured: '\u5df2\u914d\u7f6e\uff08\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8\uff09',
@@ -87,6 +109,7 @@ const HUB_LLM_I18N = {
     cacheSaved: '\u7f13\u5b58\u914d\u7f6e\u5df2\u4fdd\u5b58\u3002',
     cacheSaveFailed: '\u4fdd\u5b58\u7f13\u5b58\u914d\u7f6e\u5931\u8d25\uff1a{error}',
     cacheLoadFailed: '\u52a0\u8f7d\u7f13\u5b58\u914d\u7f6e\u5931\u8d25\uff1a{error}',
+    cacheRefresh: '\u5237\u65b0\u7f13\u5b58\u6570\u636e',
     cacheClear: '\u6e05\u7a7a\u7f13\u5b58',
     cacheCleared: '\u7f13\u5b58\u5df2\u6e05\u7a7a\uff08{count} \u6761\uff09\u3002',
     cacheClearFailed: '\u6e05\u7a7a\u7f13\u5b58\u5931\u8d25\uff1a{error}',
@@ -110,6 +133,11 @@ const HUB_LLM_I18N = {
     cacheMemoryEntries: '\u5185\u5b58\u6761\u76ee\u4e0a\u9650',
     cacheMemoryMB: '\u5185\u5b58\u9884\u7b97 (MB)',
     cacheDiskMB: '\u78c1\u76d8\u9884\u7b97 (MB)',
+    cacheNormalizeDeterministic: '\u5f52\u4e00\u5316\u786e\u5b9a\u6027\u9ed8\u8ba4\u53c2\u6570',
+    cacheIgnoreModel: '\u5ffd\u7565\u8bf7\u6c42\u4e2d\u7684 model \u5b57\u6bb5',
+    cacheIgnoreUser: '\u5ffd\u7565\u8bf7\u6c42\u4e2d\u7684 user \u5b57\u6bb5',
+    cacheIgnoreMetadata: '\u5ffd\u7565\u8bf7\u6c42\u4e2d\u7684 metadata \u5b57\u6bb5',
+    cacheSingleflightTimeout: 'Singleflight \u7b49\u5f85\u8d85\u65f6 (ms)',
     cacheSave: '\u4fdd\u5b58\u7f13\u5b58\u8bbe\u7f6e',
     cacheSummary: '\u8bf7\u6c42\u7f13\u5b58\u7387 {rate}% ({hits}/{requests}) | Token \u590d\u7528\u7387 {reuse}% | \u5185\u5b58 {memUsed}/{memLimit} ({memPct}%) | \u78c1\u76d8 {diskUsed}/{diskLimit} ({diskPct}%) | \u547d\u4e2d M/D {memHits}/{diskHits}',
     cacheSummaryEmpty: '\u52a0\u8f7d\u540e\u8fd9\u91cc\u4f1a\u663e\u793a prompt \u7f13\u5b58\u72b6\u6001\u3002',
@@ -135,10 +163,20 @@ const HUB_LLM_I18N = {
     cacheEntryCachedTokens: '\u7f13\u5b58 token {count}',
     cacheEntryLastAccess: '\u6700\u540e\u8bbf\u95ee\uff1a{value}',
     cacheEntryExpires: '\u8fc7\u671f\u65f6\u95f4\uff1a{value}',
+    cacheEntryDetails: '\u8be6\u60c5',
     cacheEntryDelete: '\u5220\u9664',
     cacheEntryDeleted: '\u7f13\u5b58\u6761\u76ee\u5df2\u5220\u9664\u3002',
     cacheEntryDeleteFailed: '\u5220\u9664\u7f13\u5b58\u6761\u76ee\u5931\u8d25\uff1a{error}',
     cacheEntryDeleteConfirm: '\u786e\u5b9a\u5220\u9664\u8fd9\u6761\u7f13\u5b58\u8bb0\u5f55\uff1f',
+    cacheEntryDetailTitle: '\u7f13\u5b58\u6761\u76ee\u8be6\u60c5',
+    cacheEntryDetailDesc: '\u67e5\u770b\u8fd9\u6761\u7f13\u5b58\u7684\u89c4\u8303\u5316\u8bf7\u6c42\u4e0e\u8def\u7531\u56e0\u7d20\u3002',
+    cacheEntryDetailEmpty: '\u8bf7\u5148\u9009\u62e9\u4e00\u6761\u7f13\u5b58\u8bb0\u5f55\uff0c\u67e5\u770b\u5b83\u7684\u89c4\u8303\u5316\u8bf7\u6c42\u4e0e\u547d\u4e2d\u4e0a\u4e0b\u6587\u3002',
+    cacheEntryDetailLoadFailed: '\u52a0\u8f7d\u7f13\u5b58\u6761\u76ee\u8be6\u60c5\u5931\u8d25\uff1a{error}',
+    cacheEntryDetailKey: '\u7f13\u5b58 Key',
+    cacheEntryDetailAuthorizedModel: '\u6388\u6743\u6a21\u578b',
+    cacheEntryDetailRequestedModel: '\u8bf7\u6c42\u6a21\u578b',
+    cacheEntryDetailProviders: '\u6392\u5e8f\u540e provider',
+    cacheEntryDetailNormalizedRequest: '\u89c4\u8303\u5316\u8bf7\u6c42',
     cacheEntriesPage: '\u7b2c {page} \u9875',
     cacheEntriesPagerMeta: '\u5df2\u663e\u793a {shown} / {total}',
     cacheEntriesPrev: '\u4e0a\u4e00\u9875',
@@ -149,13 +187,20 @@ const HUB_LLM_I18N = {
     cacheHitSplitEmpty: '\u6709\u7f13\u5b58\u6d41\u91cf\u540e\u8fd9\u91cc\u4f1a\u663e\u793a\u5185\u5b58\u548c\u78c1\u76d8\u547d\u4e2d\u62c6\u5206\u3002',
     cacheHitMemory: '\u5185\u5b58\u547d\u4e2d',
     cacheHitDisk: '\u78c1\u76d8\u547d\u4e2d',
-    cacheHitShare: '{label} {count} ({pct}%)'
+    cacheHitShare: '{label} {count} ({pct}%)',
+    cacheRuntimeTitle: '\u7f13\u5b58\u8fd0\u884c\u4fe1\u53f7',
+    cacheRuntimeEmpty: '\u6709\u8bf7\u6c42\u540e\u8fd9\u91cc\u4f1a\u663e\u793a\u7f13\u5b58\u547d\u4e2d\u4e0e\u7ed5\u5f00\u539f\u56e0\u3002',
+    cacheRuntimeCacheable: '\u53ef\u7f13\u5b58\u8bf7\u6c42\uff1a{count}',
+    cacheRuntimeSingleflight: 'Singleflight \u5171\u4eab\u7b49\u5f85\uff1a{shared} | \u8282\u7701\u4e0a\u6e38\u8c03\u7528\uff1a{saved}',
+    cacheRuntimeBypassTitle: '\u7ed5\u5f00\u7f13\u5b58\u539f\u56e0',
+    cacheRuntimeBypassItem: '{reason}\uff1a{count}'
   }
 };
 const hli = (key, vars = {}) => ((HUB_LLM_I18N[currentLang] || HUB_LLM_I18N.en)[key] || HUB_LLM_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 let hubLlmLastStatus = null;
 let hubLlmCacheEntriesFilters = { provider: '', model: '' };
 let hubLlmCacheEntriesPage = 1;
+let hubLlmSelectedCacheEntryKey = '';
 const HUB_LLM_CACHE_ENTRIES_LIMIT = 6;
 
 function formatHubBytes(bytes) {
@@ -233,9 +278,42 @@ function renderHubLlmCacheEntries(entries) {
     const expires = escapeHubHtml(hli('cacheEntryExpires', { value: item.expires_at || '-' }));
     const key = escapeHubHtml(item.cache_key || '-');
     const cached = escapeHubHtml(hli('cacheEntryCachedTokens', { count: String(item.cached_input_tokens || 0) }));
+    const detailsBtn = '<button class="btn-secondary" type="button" style="height:28px;padding:0 10px" onclick="viewHubLlmPromptCacheEntry(' + "'" + encodeURIComponent(item.cache_key || '') + "'" + ')">' + escapeHubHtml(hli('cacheEntryDetails')) + '</button>';
     const deleteBtn = '<button class="btn-danger" type="button" style="height:28px;padding:0 10px" onclick="deleteHubLlmPromptCacheEntry(' + "'" + encodeURIComponent(item.cache_key || '') + "'" + ')">' + escapeHubHtml(hli('cacheEntryDelete')) + '</button>';
-    return '<div class="item" style="margin-top:8px;padding:12px 14px"><div class="item-head"><div><div class="item-title">' + title + '</div><div class="item-meta">' + meta + '</div></div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="badge info">' + cached + '</span>' + deleteBtn + '</div></div><div class="item-meta mono" style="margin-top:8px">' + key + '</div><div class="grid2" style="margin-top:10px"><div class="item-meta">' + accessed + '</div><div class="item-meta">' + expires + '</div></div></div>';
+    return '<div class="item" style="margin-top:8px;padding:12px 14px"><div class="item-head"><div><div class="item-title">' + title + '</div><div class="item-meta">' + meta + '</div></div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="badge info">' + cached + '</span>' + detailsBtn + deleteBtn + '</div></div><div class="item-meta mono" style="margin-top:8px">' + key + '</div><div class="grid2" style="margin-top:10px"><div class="item-meta">' + accessed + '</div><div class="item-meta">' + expires + '</div></div></div>';
   }).join('');
+}
+
+function renderHubLlmCacheEntryDetail(data, errorMessage) {
+  const root = document.getElementById('hubLlmCacheEntryDetail');
+  const title = document.getElementById('hubLlmCacheEntryDetailTitle');
+  const desc = document.getElementById('hubLlmCacheEntryDetailDesc');
+  if (!root || !title || !desc) return;
+  title.textContent = hli('cacheEntryDetailTitle');
+  desc.textContent = hli('cacheEntryDetailDesc');
+  if (errorMessage) {
+    root.innerHTML = '<div class="hint">' + escapeHubHtml(errorMessage) + '</div>';
+    return;
+  }
+  if (!data) {
+    root.innerHTML = '<div class="hint">' + escapeHubHtml(hli('cacheEntryDetailEmpty')) + '</div>';
+    return;
+  }
+  const providers = Array.isArray(data.ordered_providers) && data.ordered_providers.length ? data.ordered_providers.join(', ') : '-';
+  const normalized = data.normalized_request == null ? '{}' : JSON.stringify(data.normalized_request, null, 2);
+  const meta = [
+    '<div class="item-meta"><strong>' + escapeHubHtml(hli('cacheEntryDetailKey')) + ':</strong> <span class="mono">' + escapeHubHtml(data.cache_key || '-') + '</span></div>',
+    '<div class="item-meta"><strong>' + escapeHubHtml(hli('cacheEntryDetailAuthorizedModel')) + ':</strong> ' + escapeHubHtml(data.authorized_model || '-') + '</div>',
+    '<div class="item-meta"><strong>' + escapeHubHtml(hli('cacheEntryDetailRequestedModel')) + ':</strong> ' + escapeHubHtml(data.requested_model || '-') + '</div>',
+    '<div class="item-meta"><strong>' + escapeHubHtml(hli('cacheEntryDetailProviders')) + ':</strong> ' + escapeHubHtml(providers) + '</div>'
+  ].join('');
+  root.innerHTML = '' +
+    '<div class="item" style="min-height:auto;padding:12px 14px">' +
+      '<div class="item-title" style="font-size:14px">' + escapeHubHtml((data.model || '-') + ' | ' + (data.kind || '-')) + '</div>' +
+      '<div style="margin-top:8px;display:grid;gap:6px">' + meta + '</div>' +
+      '<div class="item-meta" style="margin-top:10px"><strong>' + escapeHubHtml(hli('cacheEntryDetailNormalizedRequest')) + ':</strong></div>' +
+      '<pre class="mono" style="margin-top:8px;white-space:pre-wrap;word-break:break-word;background:rgba(31,34,48,.04);border:1px solid var(--line);border-radius:10px;padding:12px;max-height:320px;overflow:auto">' + escapeHubHtml(normalized) + '</pre>' +
+    '</div>';
 }
 
 async function loadHubLlmPromptCacheEntries() {
@@ -287,11 +365,34 @@ async function refreshHubLlmPromptCacheEntries() {
   await loadHubLlmPromptCacheEntries();
 }
 
+async function refreshHubLlmPromptCache() {
+  await Promise.all([
+    loadHubLlmStatus(),
+    loadHubLlmPromptCacheConfig(),
+    refreshHubLlmPromptCacheEntries()
+  ]);
+}
+
 async function changeHubLlmCacheEntriesPage(delta) {
   const nextPage = Math.max(1, hubLlmCacheEntriesPage + Number(delta || 0));
   if (nextPage === hubLlmCacheEntriesPage) return;
   hubLlmCacheEntriesPage = nextPage;
   await loadHubLlmPromptCacheEntries();
+}
+
+async function viewHubLlmPromptCacheEntry(cacheKey) {
+  const key = decodeURIComponent(String(cacheKey || ''));
+  if (!key) return;
+  hubLlmSelectedCacheEntryKey = key;
+  renderHubLlmCacheEntryDetail(null, null);
+  try {
+    const data = await api('/api/admin/hub_llm_prompt_cache_entry?cache_key=' + encodeURIComponent(key));
+    if (hubLlmSelectedCacheEntryKey !== key) return;
+    renderHubLlmCacheEntryDetail(data || {}, null);
+  } catch (err) {
+    if (hubLlmSelectedCacheEntryKey !== key) return;
+    renderHubLlmCacheEntryDetail(null, hli('cacheEntryDetailLoadFailed', { error: err.message }));
+  }
 }
 
 async function deleteHubLlmPromptCacheEntry(cacheKey) {
@@ -305,6 +406,10 @@ async function deleteHubLlmPromptCacheEntry(cacheKey) {
     const msg = hli('cacheEntryDeleted');
     setOutput(msg);
     showToast(msg, 'success');
+    if (hubLlmSelectedCacheEntryKey === key) {
+      hubLlmSelectedCacheEntryKey = '';
+      renderHubLlmCacheEntryDetail(null, null);
+    }
     await Promise.all([loadHubLlmStatus(), loadHubLlmPromptCacheEntries()]);
   } catch (err) {
     const msg = hli('cacheEntryDeleteFailed', { error: err.message });
@@ -358,6 +463,33 @@ function renderHubLlmCacheHitBreakdown(data) {
       '</div>' +
     '</div>';
 }
+function renderHubLlmCacheRuntime(data) {
+  const root = document.getElementById('hubLlmCacheRuntime');
+  const title = document.getElementById('hubLlmCacheRuntimeTitle');
+  if (!root || !title) return;
+  title.textContent = hli('cacheRuntimeTitle');
+  const runtime = data && data.prompt_cache && data.prompt_cache.runtime || {};
+  const cacheable = Number(runtime.cacheable_requests || 0);
+  const shared = Number(runtime.singleflight_shared_hits || 0);
+  const saved = Number(runtime.singleflight_saved_calls || 0);
+  const reasons = runtime.bypass_reasons || {};
+  const entries = Object.keys(reasons).sort(function(a, b) { return Number(reasons[b] || 0) - Number(reasons[a] || 0); });
+  if (cacheable <= 0 && shared <= 0 && saved <= 0 && !entries.length) {
+    root.innerHTML = '<div class="hint">' + escapeHubHtml(hli('cacheRuntimeEmpty')) + '</div>';
+    return;
+  }
+  const cards = [
+    '<div class="item" style="min-height:auto;padding:12px 14px"><div class="item-title" style="font-size:14px">' + escapeHubHtml(hli('cacheRuntimeCacheable', { count: String(cacheable) })) + '</div><div class="item-meta">' + escapeHubHtml(hli('cacheRuntimeSingleflight', { shared: String(shared), saved: String(saved) })) + '</div></div>'
+  ];
+  if (entries.length) {
+    const items = entries.map(function(key) {
+      return '<div class="item-meta">' + escapeHubHtml(hli('cacheRuntimeBypassItem', { reason: key, count: String(reasons[key] || 0) })) + '</div>';
+    }).join('');
+    cards.push('<div class="item" style="min-height:auto;padding:12px 14px"><div class="item-title" style="font-size:14px">' + escapeHubHtml(hli('cacheRuntimeBypassTitle')) + '</div><div style="margin-top:8px;display:grid;gap:4px">' + items + '</div></div>');
+  }
+  root.innerHTML = cards.join('');
+}
+
 function renderHubLlmCacheSummary(data) {
   const summary = document.getElementById('hubLlmCacheSummary');
   if (!summary) return;
@@ -402,6 +534,7 @@ function renderHubLlmStatus(data) {
   badge.className = 'badge ' + cls;
   renderHubLlmCacheSummary(data);
   renderHubLlmCacheHitBreakdown(data);
+  renderHubLlmCacheRuntime(data);
 }
 
 function fillHubLlmPromptCacheConfig(data) {
@@ -410,6 +543,11 @@ function fillHubLlmPromptCacheConfig(data) {
   document.getElementById('hubLlmPromptCacheMemoryEntries').value = Number(data.memory_max_entries || 256);
   document.getElementById('hubLlmPromptCacheMemoryMB').value = bytesToMB(data.memory_max_bytes || (8 << 20));
   document.getElementById('hubLlmPromptCacheDiskMB').value = bytesToMB(data.disk_max_bytes || (64 << 20));
+  document.getElementById('hubLlmPromptCacheNormalizeDeterministic').checked = data.normalize_deterministic_params !== false;
+  document.getElementById('hubLlmPromptCacheIgnoreModel').checked = data.ignore_model_field !== false;
+  document.getElementById('hubLlmPromptCacheIgnoreUser').checked = data.ignore_user_field !== false;
+  document.getElementById('hubLlmPromptCacheIgnoreMetadata').checked = data.ignore_metadata_field !== false;
+  document.getElementById('hubLlmPromptCacheSingleflightTimeoutMS').value = Number(data.singleflight_wait_timeout_ms || 15000);
 }
 
 function applyHubLlmRuntimeI18n() {
@@ -434,11 +572,20 @@ function applyHubLlmRuntimeI18n() {
   setText('hubLlmPromptCacheMemoryEntriesLabel', 'cacheMemoryEntries');
   setText('hubLlmPromptCacheMemoryMBLabel', 'cacheMemoryMB');
   setText('hubLlmPromptCacheDiskMBLabel', 'cacheDiskMB');
+  setText('hubLlmPromptCacheNormalizeDeterministicLabel', 'cacheNormalizeDeterministic');
+  setText('hubLlmPromptCacheIgnoreModelLabel', 'cacheIgnoreModel');
+  setText('hubLlmPromptCacheIgnoreUserLabel', 'cacheIgnoreUser');
+  setText('hubLlmPromptCacheIgnoreMetadataLabel', 'cacheIgnoreMetadata');
+  setText('hubLlmPromptCacheSingleflightTimeoutMSLabel', 'cacheSingleflightTimeout');
   setText('hubLlmPromptCacheSaveBtn', 'cacheSave');
+  setText('hubLlmPromptCacheRefreshBtn', 'cacheRefresh');
   setText('hubLlmPromptCacheClearBtn', 'cacheClear');
   setText('hubLlmCacheHitBreakdownTitle', 'cacheHitSplitTitle');
+  setText('hubLlmCacheRuntimeTitle', 'cacheRuntimeTitle');
   setText('hubLlmCacheEntriesTitle', 'cacheEntriesTitle');
   setText('hubLlmCacheEntriesDesc', 'cacheEntriesDesc');
+  setText('hubLlmCacheEntryDetailTitle', 'cacheEntryDetailTitle');
+  setText('hubLlmCacheEntryDetailDesc', 'cacheEntryDetailDesc');
   setText('hubLlmCacheEntriesProviderLabel', 'cacheEntriesProvider');
   setText('hubLlmCacheEntriesModelLabel', 'cacheEntriesModel');
   setText('hubLlmCacheEntriesRefreshBtn', 'cacheEntriesRefresh');
@@ -453,6 +600,7 @@ function applyHubLlmRuntimeI18n() {
     keyInput.placeholder = hasApiKey ? hli('apiKeyConfigured') : hli('apiKeyEnter');
   }
   renderHubLlmStatus(hubLlmLastStatus);
+  if (!hubLlmSelectedCacheEntryKey) renderHubLlmCacheEntryDetail(null, null);
 }
 
 async function loadHubLlmPromptCacheConfig() {
@@ -524,7 +672,12 @@ async function saveHubLlmPromptCacheConfig() {
       ttl_seconds: Math.max(1, Number(document.getElementById('hubLlmPromptCacheTTL').value || 0)),
       memory_max_entries: Math.max(1, Number(document.getElementById('hubLlmPromptCacheMemoryEntries').value || 0)),
       memory_max_bytes: mbToBytes(document.getElementById('hubLlmPromptCacheMemoryMB').value),
-      disk_max_bytes: mbToBytes(document.getElementById('hubLlmPromptCacheDiskMB').value)
+      disk_max_bytes: mbToBytes(document.getElementById('hubLlmPromptCacheDiskMB').value),
+      normalize_deterministic_params: document.getElementById('hubLlmPromptCacheNormalizeDeterministic').checked,
+      ignore_model_field: document.getElementById('hubLlmPromptCacheIgnoreModel').checked,
+      ignore_user_field: document.getElementById('hubLlmPromptCacheIgnoreUser').checked,
+      ignore_metadata_field: document.getElementById('hubLlmPromptCacheIgnoreMetadata').checked,
+      singleflight_wait_timeout_ms: Math.max(1, Number(document.getElementById('hubLlmPromptCacheSingleflightTimeoutMS').value || 0))
     };
     const data = await api('/api/admin/hub_llm_prompt_cache_config', { method: 'PUT', body: JSON.stringify(payload) });
     fillHubLlmPromptCacheConfig(data || {});

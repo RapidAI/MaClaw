@@ -265,7 +265,7 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 	}()
 	ctx := context.Background()
 	switch strings.TrimSpace(source) {
-	case "skillmarket":
+	case "skillmarket", "skillhub":
 		skill, err := downloadSkillJSONFromHubCenter(ctx, a, "/api/v1/skills/"+url.PathEscape(id)+"/download")
 		if err != nil {
 			return err

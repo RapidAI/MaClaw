@@ -13,6 +13,7 @@ import {
     SaveCodeGenModelChoice,
     GetHubLLMServiceStatus,
 } from "../../../wailsjs/go/main/App";
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
@@ -33,6 +34,7 @@ interface LLMProvider {
 }
 
 const NONE_PROVIDER = "__none__";
+const HUB_SERVICE_PROVIDER_NAME = "MaClaw\u5b98\u65b9"; // "MaClaw官方" — must match Go hubServiceProviderName
 const LLM_CONFIG_LOAD_TIMEOUT_MS = 5000;
 
 /** Known OpenAI-compatible providers for quick-fill in custom provider config. */
@@ -112,6 +114,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [dlgOpen, setDlgOpen] = useState(false);
     const [dlgProviders, setDlgProviders] = useState<LLMProvider[]>([]);
     const [dlgSelectedIdx, setDlgSelectedIdx] = useState<number | null>(null); // null = "None"
+    const [dlgHubSelected, setDlgHubSelected] = useState(false); // true when "MaClaw 官方" is selected in dialog
     const [dlgSaving, setDlgSaving] = useState(false);
     const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [dlgDirty, setDlgDirty] = useState(false);
@@ -217,6 +220,17 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     useEffect(() => { loadProviders(); }, [loadProviders]);
     useEffect(() => { loadHubServiceStatus(); }, [loadHubServiceStatus]);
 
+    // Reload providers and hub service status when the Hub LLM service changes
+    // (e.g. after a successful redemption in the HubServiceRedeemPanel tab).
+    useEffect(() => {
+        const handler = () => {
+            console.info("[LLMConfigPanel] hub-llm-service-changed event received, reloading");
+            loadProviders();
+        };
+        EventsOn("hub-llm-service-changed", handler);
+        return () => { EventsOff("hub-llm-service-changed"); };
+    }, [loadProviders]);
+
     const isNone = currentName === NONE_PROVIDER;
     const hasHubManagedService = !!hubServiceStatus?.active && !!hubServiceStatus?.skip_llm_config;
     const hubAvailableModels = (hubServiceStatus?.available_models || []).filter(Boolean);
@@ -226,14 +240,22 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const openDialog = useCallback(() => {
         const snapshot = providers.map(p => ({ ...p }));
         setDlgProviders(snapshot);
-        const idx = currentName === NONE_PROVIDER ? null : snapshot.findIndex(p => p.name === currentName);
-        setDlgSelectedIdx(idx === -1 ? null : idx);
+        // When the current provider is the Hub service, pre-select the dedicated Hub button
+        if (currentName === HUB_SERVICE_PROVIDER_NAME && hasHubManagedService) {
+            setDlgSelectedIdx(null);
+            setDlgHubSelected(true);
+        } else {
+            const idx = currentName === NONE_PROVIDER ? null : snapshot.findIndex(p => p.name === currentName);
+            const shouldSelectHub = (idx === null || idx === -1) && hasHubManagedService;
+            setDlgSelectedIdx(shouldSelectHub ? null : (idx === -1 ? null : idx));
+            setDlgHubSelected(shouldSelectHub);
+        }
         setDlgSaving(false);
         setDlgTestResult(null);
         setDlgDirty(false);
         setDlgTested(false);
         setDlgOpen(true);
-    }, [providers, currentName]);
+    }, [providers, currentName, hasHubManagedService]);
 
     const closeDialog = useCallback(async () => {
         if (oauthBusy) return;
@@ -272,7 +294,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         return () => { cancelled = true; };
     }, [dlgOpen, dlgAuthType]);
 
-    const dlgIsNone = dlgSelectedIdx === null;
+    const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
     const dlgProvider = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx] ?? null : null;
 
     const dlgUpdateField = useCallback((field: keyof LLMProvider, value: string) => {
@@ -293,10 +315,37 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
     const dlgSelectProvider = useCallback((idx: number | null) => {
         setDlgSelectedIdx(idx);
+        setDlgHubSelected(false);
         setDlgDirty(true);
         setDlgTestResult(null);
         setDlgTested(false);
     }, []);
+
+    const dlgSelectHubService = useCallback(() => {
+        setDlgSelectedIdx(null);
+        setDlgHubSelected(true);
+        setDlgDirty(false);
+        setDlgTestResult(null);
+        setDlgTested(false);
+    }, []);
+
+    /** Save Hub service as the current LLM provider (no test needed — Hub-managed). */
+    const dlgHandleSaveHubService = useCallback(async () => {
+        if (currentName === HUB_SERVICE_PROVIDER_NAME) return; // already active
+        setDlgSaving(true);
+        setDlgTestResult(null);
+        try {
+            await SaveMaclawLLMProviders(dlgProviders, HUB_SERVICE_PROVIDER_NAME);
+            setProviders(dlgProviders.map(p => ({ ...p })));
+            setCurrentName(HUB_SERVICE_PROVIDER_NAME);
+            onStatusChange?.(true, true);
+            setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
+            setTimeout(() => setDlgOpen(false), 800);
+        } catch (e) {
+            setDlgTestResult({ ok: false, msg: String(e) });
+        }
+        setDlgSaving(false);
+    }, [dlgProviders, currentName, t, onStatusChange]);
 
     const dlgQuickFill = useCallback((epName: string) => {
         const ep = KNOWN_OPENAI_ENDPOINTS.find(x => x.name === epName);
@@ -421,35 +470,6 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
     return (
         <div style={{ padding: "0 4px" }}>
-            {hasHubManagedService && (
-                <div style={{
-                    marginBottom: 16,
-                    padding: "12px 16px",
-                    borderRadius: 8,
-                    border: `1px solid ${colors.success}`,
-                    background: colors.successBg,
-                }}>
-                    <div style={{ fontSize: "0.82rem", fontWeight: 700, color: colors.success, marginBottom: 8 }}>
-                        {t("MaClaw Model Service", "MaClaw 模型服务")}
-                    </div>
-                    <div style={{ fontSize: "0.74rem", color: colors.textSecondary, lineHeight: 1.6 }}>
-                        {t(
-                            "This account already has Hub-managed MaClaw model service access. Tools can use the exposed OpenAI-compatible endpoint directly.",
-                            "当前账号已开通 Hub 托管的 MaClaw 模型服务，可直接使用对外暴露的 OpenAI 兼容接口。"
-                        )}
-                    </div>
-                    <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                        <div>
-                            <label style={labelStyle}>{t("Exposed API URL", "对外 API 地址")}</label>
-                            <div style={{ ...readonlyStyle, minHeight: 36, display: "flex", alignItems: "center" }}>{hubServiceStatus?.hub_llm_base_url || "-"}</div>
-                        </div>
-                        <div>
-                            <label style={labelStyle}>{t("Available Models", "可用模型名")}</label>
-                            <div style={{ fontSize: "0.8rem", color: colors.text }}>{hubAvailableModels.length ? hubAvailableModels.join(", ") : (hubServiceStatus?.default_model || "auto")}</div>
-                        </div>
-                    </div>
-                </div>
-            )}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                 <p style={{ fontSize: "0.72rem", color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
                     {t(
@@ -474,8 +494,10 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 <span style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
                     {t("Provider", "当前服务商")}
                 </span>
-                <span style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? colors.danger : colors.text }}>
-                    {isNone ? t("None", "未配置") : currentName}
+                <span style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubManagedService ? colors.success : colors.danger) : colors.text }}>
+                    {isNone
+                        ? (hasHubManagedService ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
+                        : currentName}
                 </span>
             </div>
 
@@ -556,7 +578,24 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                         <div style={{ marginBottom: 16 }}>
                             <label style={labelStyle}>{t("Select Provider", "选择服务商")}</label>
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                {/* Hub-managed MaClaw Official — shown first when available */}
+                                {hasHubManagedService && (
+                                    <button onClick={dlgSelectHubService} style={{
+                                        fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
+                                        background: dlgHubSelected ? colors.primary : colors.surface,
+                                        color: dlgHubSelected ? colors.onPrimary : colors.text,
+                                        border: `1px solid ${dlgHubSelected ? colors.primary : colors.success}`,
+                                        borderRadius: 4, transition: "all 0.15s",
+                                        display: "inline-flex", alignItems: "center", gap: 5,
+                                    }}>
+                                        <span style={{ fontSize: "0.7rem" }}>🌐</span>
+                                        {t("MaClaw Official", "MaClaw 官方")}
+                                    </button>
+                                )}
                                 {dlgProviders.map((p, i) => {
+                                    // Hide the Hub-managed provider from the regular list when
+                                    // it is already shown as the dedicated Hub service button above.
+                                    if (hasHubManagedService && p.name === HUB_SERVICE_PROVIDER_NAME) return null;
                                     const active = dlgSelectedIdx === i;
                                     const badge: Record<string, string> = { "OpenAI": "富家小子", "智谱龙虾": "聪明伶俐", "智谱编程": "写码飞快", "MiniMax": "憨厚老实", "讯飞星辰": "星辰大海" };
                                     const tag = badge[p.name];
@@ -604,6 +643,40 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 marginBottom: 16,
                             }}>
                                 ⚠️ {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
+                            </div>
+                        )}
+
+                        {/* Hub-managed MaClaw Official details */}
+                        {dlgHubSelected && hasHubManagedService && (
+                            <div style={{
+                                marginBottom: 16, padding: "14px", borderRadius: 6,
+                                border: `1px solid ${colors.success}`, background: colors.successBg,
+                            }}>
+                                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.success, marginBottom: 10 }}>
+                                    {t("MaClaw Official", "MaClaw 官方")}
+                                </div>
+                                <div style={{ fontSize: "0.74rem", color: colors.textSecondary, lineHeight: 1.6, marginBottom: 12 }}>
+                                    {t(
+                                        "This account has access to MaClaw official LLM service. You can use the OpenAI-compatible endpoint directly.",
+                                        "当前账号已开通 MaClaw 官方模型服务，可直接使用对外暴露的 OpenAI 兼容接口。"
+                                    )}
+                                </div>
+                                <div style={{ display: "grid", gap: 8 }}>
+                                    <div>
+                                        <label style={labelStyle}>{t("Exposed API URL", "对外 API 地址")}</label>
+                                        <div style={{ ...readonlyStyle, minHeight: 36, display: "flex", alignItems: "center" }}>{hubServiceStatus?.hub_llm_base_url || "-"}</div>
+                                    </div>
+                                    <div>
+                                        <label style={labelStyle}>{t("Available Models", "可用模型名")}</label>
+                                        <div style={{ fontSize: "0.8rem", color: colors.text }}>{hubAvailableModels.length ? hubAvailableModels.join(", ") : (hubServiceStatus?.default_model || "auto")}</div>
+                                    </div>
+                                </div>
+                                <div style={{ marginTop: 10, fontSize: "0.7rem", color: colors.textMuted, lineHeight: 1.5 }}>
+                                    {t(
+                                        "This service is managed by Hub. No additional configuration needed. You can also select another provider below to override.",
+                                        "此服务由 Hub 托管，无需额外配置。如需使用其他服务商，可在上方选择切换。"
+                                    )}
+                                </div>
                             </div>
                         )}
 
@@ -915,7 +988,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
                         {/* Footer */}
                         <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end", marginTop: 20 }}>
-                            {dlgDirty && <span style={{ fontSize: "0.68rem", color: colors.warning, marginRight: "auto" }}>{t("unsaved", "未保存")}</span>}
+                            {dlgDirty && !dlgHubSelected && <span style={{ fontSize: "0.68rem", color: colors.warning, marginRight: "auto" }}>{t("unsaved", "未保存")}</span>}
                             <button onClick={closeDialog} style={{
                                 fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
                                 background: colors.bg, color: colors.text,
@@ -923,13 +996,27 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             }}>
                                 {t("Cancel", "取消")}
                             </button>
-                            <button onClick={dlgHandleSave} disabled={dlgSaving || oauthBusy || (!dlgDirty && !dlgTested)} style={{
-                                fontSize: "0.76rem", padding: "6px 18px", cursor: (dlgDirty || dlgTested) ? "pointer" : "default",
-                                background: (dlgDirty || dlgTested) ? colors.primary : colors.bg, color: (dlgDirty || dlgTested) ? colors.onPrimary : colors.textMuted,
-                                border: "none", borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
-                            }}>
-                                {dlgSaving ? t("Testing & Saving...", "检测并保存中...") : dlgTested ? t("Save Changes", "保存修改") : t("Test & Save", "检测并保存")}
-                            </button>
+                            {dlgHubSelected ? (
+                                <button onClick={dlgHandleSaveHubService} disabled={dlgSaving || currentName === HUB_SERVICE_PROVIDER_NAME} style={{
+                                    fontSize: "0.76rem", padding: "6px 18px",
+                                    cursor: (dlgSaving || currentName === HUB_SERVICE_PROVIDER_NAME) ? "default" : "pointer",
+                                    background: currentName === HUB_SERVICE_PROVIDER_NAME ? colors.bg : colors.primary,
+                                    color: currentName === HUB_SERVICE_PROVIDER_NAME ? colors.textMuted : colors.onPrimary,
+                                    border: "none", borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
+                                }}>
+                                    {dlgSaving ? t("Saving...", "保存中...")
+                                        : currentName === HUB_SERVICE_PROVIDER_NAME ? t("Currently Active", "当前已启用")
+                                        : t("Use This Service", "使用此服务")}
+                                </button>
+                            ) : (
+                                <button onClick={dlgHandleSave} disabled={dlgSaving || oauthBusy || (!dlgDirty && !dlgTested)} style={{
+                                    fontSize: "0.76rem", padding: "6px 18px", cursor: (dlgDirty || dlgTested) ? "pointer" : "default",
+                                    background: (dlgDirty || dlgTested) ? colors.primary : colors.bg, color: (dlgDirty || dlgTested) ? colors.onPrimary : colors.textMuted,
+                                    border: "none", borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
+                                }}>
+                                    {dlgSaving ? t("Testing & Saving...", "检测并保存中...") : dlgTested ? t("Save Changes", "保存修改") : t("Test & Save", "检测并保存")}
+                                </button>
+                            )}
                         </div>
 
                         {/* Test result */}
@@ -941,9 +1028,11 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 border: `1px solid ${dlgTestResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
                                 color: dlgTestResult.ok ? colors.success : colors.danger,
                             }}>
-                                {dlgTestResult.ok
-                                    ? `✅ ${t("Connection OK, saved", "连接成功，已保存")}\n${dlgTestResult.msg}`
-                                    : `❌ ${t("Connection failed, not saved", "连接失败，未保存")}\n${dlgTestResult.msg}`}
+                                {dlgHubSelected
+                                    ? (dlgTestResult.ok ? `✅ ${dlgTestResult.msg}` : `❌ ${dlgTestResult.msg}`)
+                                    : (dlgTestResult.ok
+                                        ? `✅ ${t("Connection OK, saved", "连接成功，已保存")}\n${dlgTestResult.msg}`
+                                        : `❌ ${t("Connection failed, not saved", "连接失败，未保存")}\n${dlgTestResult.msg}`)}
                             </div>
                         )}
                     </div>

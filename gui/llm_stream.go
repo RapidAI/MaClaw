@@ -88,6 +88,15 @@ func classifyOpenAIHTTPError(statusCode int, body []byte) string {
 	_ = json.Unmarshal(body, &errBody)
 	code := errBody.Error.Code
 	typ := errBody.Error.Type
+	msg := errBody.Error.Message
+
+	// Hub wraps upstream provider auth failures as LLM_UPSTREAM_AUTH_FAILED
+	// and rate limits as LLM_UPSTREAM_RATE_LIMITED with descriptive Chinese
+	// messages. Surface them directly so the user (or admin) knows the
+	// problem is the upstream provider, not their own credentials.
+	if (code == "LLM_UPSTREAM_AUTH_FAILED" || code == "LLM_UPSTREAM_RATE_LIMITED") && msg != "" {
+		return msg
+	}
 
 	switch {
 	case code == "insufficient_quota" || typ == "insufficient_quota":
@@ -102,6 +111,12 @@ func classifyOpenAIHTTPError(statusCode int, body []byte) string {
 	case statusCode == http.StatusForbidden:
 		return "OpenAI 拒绝访问，账号可能被限制或无权使用该模型 (HTTP 403)"
 	case statusCode == http.StatusBadGateway:
+		// Hub wraps upstream provider errors with specific error codes.
+		if code == "LLM_UPSTREAM_AUTH_FAILED" || code == "LLM_UPSTREAM_FAILED" || code == "LLM_UPSTREAM_RATE_LIMITED" {
+			if msg != "" {
+				return msg
+			}
+		}
 		return "API 网关错误，上游服务不可用，请稍后再试 (HTTP 502)"
 	case statusCode == http.StatusServiceUnavailable:
 		return "API 服务暂时不可用，请稍后再试 (HTTP 503)"
@@ -521,6 +536,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		log.Printf("[LLM Stream] HTTP 404: endpoint=%s content_type=%q body=%s", endpoint, resp.Header.Get("Content-Type"), truncateLLMBody(body, 500))
 		return nil, fmt.Errorf("HTTP 404: %s (endpoint=%s, model=%s, protocol=%s)", truncateLLMBody(body, 200), endpoint, cfg.Model, cfg.Protocol)
 	}
 
@@ -528,6 +544,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	// 覆盖 4xx（客户端错误，404 已单独处理）和 5xx（网关/服务端错误）。
 	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		log.Printf("[LLM Stream] HTTP %d: endpoint=%s content_type=%q body=%s", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), truncateLLMBody(body, 500))
 		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body)
 		return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, cfg.Model)
 	}
@@ -551,7 +568,18 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	}
 
 	if !isSSE {
-		return parseNonStreamOpenAIResponse(resp)
+		// bodyReader includes the peeked bytes via MultiReader — we must
+		// read from it (not resp.Body) to get the complete response body.
+		body, _ := io.ReadAll(io.LimitReader(bodyReader, 256*1024))
+		parsed, parseErr := llm.ParseNonStreamOpenAIResponseBody(body)
+		if parseErr != nil {
+			snippet := string(body)
+			if len(snippet) > 500 {
+				snippet = snippet[:500] + "..."
+			}
+			log.Printf("[LLM Stream] non-SSE parse failed: content_type=%q body_len=%d err=%v body=%s", contentType, len(body), parseErr, snippet)
+		}
+		return parsed, parseErr
 	}
 
 	// filteredBuf accumulates the content that actually reaches onToken

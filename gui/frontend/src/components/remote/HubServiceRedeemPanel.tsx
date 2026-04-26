@@ -115,6 +115,42 @@ const chipStyle: React.CSSProperties = {
     color: colors.textSecondary,
 };
 
+const detailTableStyle: React.CSSProperties = {
+    width: "100%",
+    borderCollapse: "collapse",
+    fontSize: "0.8rem",
+};
+
+const detailThStyle: React.CSSProperties = {
+    textAlign: "left",
+    padding: "7px 10px",
+    color: colors.textMuted,
+    fontWeight: 600,
+    fontSize: "0.72rem",
+    whiteSpace: "nowrap",
+    borderBottom: `1px solid ${colors.border}`,
+    verticalAlign: "top",
+    width: "30%",
+};
+
+const detailTdStyle: React.CSSProperties = {
+    padding: "7px 10px",
+    color: colors.text,
+    borderBottom: `1px solid ${colors.border}`,
+    wordBreak: "break-word",
+    lineHeight: 1.6,
+};
+
+const detailTheadThStyle: React.CSSProperties = {
+    textAlign: "left",
+    padding: "6px 10px",
+    color: colors.textMuted,
+    fontWeight: 600,
+    fontSize: "0.72rem",
+    borderBottom: `2px solid ${colors.border}`,
+    whiteSpace: "nowrap",
+};
+
 function formatTime(value?: string, lang?: string): string {
     if (!value) return "-";
     const dt = new Date(value);
@@ -279,51 +315,76 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                 ) : null}
             </div>
 
-            {/* ── Card 3: Authorization details (collapsible-style, always visible) ── */}
+            {/* ── Card 3: Authorization details — table layout ── */}
             <div style={cardStyle}>
                 <h3 style={{ ...sectionTitleStyle, marginBottom: 12 }}>{t("Current Authorization Details", "当前授权详情")}</h3>
-                <div style={{ display: "grid", gap: 12 }}>
-                    <div>
-                        <div style={labelStyle}>{t("Exposed API URL", "对外 API 地址")}</div>
-                        <div style={valueStyle}>{status?.hub_llm_base_url || "-"}</div>
-                    </div>
-                    <div>
-                        <div style={labelStyle}>{t("Available Models", "可用模型列表")}</div>
-                        <div style={valueStyle}>{availableModels.length ? availableModels.join(", ") : "auto"}</div>
-                    </div>
-                    <div>
-                        <div style={labelStyle}>{t("Active Grants", "生效中的授权")}</div>
-                        <div style={{ display: "grid", gap: 8 }}>
-                            {(status?.active_grants || []).length ? (status?.active_grants || []).map((grant, index) => (
-                                <div key={`${grant.service_group_id}-${index}`} style={mutedCardStyle}>
-                                    <div style={{ ...valueStyle, fontWeight: 600 }}>{grant.service_group_id || "-"}</div>
-                                    <div style={{ ...valueStyle, color: colors.textSecondary }}>
-                                        {t("Source", "来源")}: {grant.source || "-"}
-                                    </div>
-                                    <div style={{ ...valueStyle, color: colors.textSecondary }}>
-                                        {t("Expires At", "到期时间")}: {formatTime(grant.expires_at, lang)}
-                                    </div>
-                                </div>
-                            )) : (
-                                <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No active grants", "暂无生效授权")}</div>
-                            )}
-                        </div>
-                    </div>
-                    <div>
-                        <div style={labelStyle}>{t("Authorized Models", "授权模型列表")}</div>
-                        <div style={{ display: "grid", gap: 8 }}>
-                            {(status?.authorized_models || []).length ? (status?.authorized_models || []).map((model) => (
-                                <div key={model.name} style={mutedCardStyle}>
-                                    <div style={{ ...valueStyle, fontWeight: 600 }}>{model.name}</div>
-                                    <div style={{ ...valueStyle, color: colors.textSecondary }}>
-                                        {t("Service Groups", "服务组")}: {(model.service_group_ids || []).join(", ") || "-"}
-                                    </div>
-                                </div>
-                            )) : (
-                                <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No model permissions yet", "当前还没有模型权限")}</div>
-                            )}
-                        </div>
-                    </div>
+                <table style={detailTableStyle}>
+                    <tbody>
+                        <tr>
+                            <td style={detailThStyle}>{t("Exposed API URL", "对外 API 地址")}</td>
+                            <td style={detailTdStyle}>{status?.hub_llm_base_url || "-"}</td>
+                        </tr>
+                        <tr>
+                            <td style={detailThStyle}>{t("Available Models", "可用模型列表")}</td>
+                            <td style={detailTdStyle}>{availableModels.length ? availableModels.join(", ") : "auto"}</td>
+                        </tr>
+                        <tr>
+                            <td style={detailThStyle}>{t("Nearest Expiry", "最近到期")}</td>
+                            <td style={detailTdStyle}>{formatTime(status?.nearest_expires_at, lang)}</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                {/* Active Grants table */}
+                <div style={{ marginTop: 16 }}>
+                    <div style={labelStyle}>{t("Active Grants", "生效中的授权")}</div>
+                    {(status?.active_grants || []).length ? (
+                        <table style={detailTableStyle}>
+                            <thead>
+                                <tr>
+                                    <th style={detailTheadThStyle}>{t("Service Group", "服务组")}</th>
+                                    <th style={detailTheadThStyle}>{t("Source", "来源")}</th>
+                                    <th style={detailTheadThStyle}>{t("Expires At", "到期时间")}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {(status?.active_grants || []).map((grant, index) => (
+                                    <tr key={`${grant.service_group_id}-${index}`}>
+                                        <td style={detailTdStyle}><span style={{ fontWeight: 600 }}>{grant.service_group_id || "-"}</span></td>
+                                        <td style={detailTdStyle}>{grant.source || "-"}</td>
+                                        <td style={detailTdStyle}>{formatTime(grant.expires_at, lang)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    ) : (
+                        <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No active grants", "暂无生效授权")}</div>
+                    )}
+                </div>
+
+                {/* Authorized Models table */}
+                <div style={{ marginTop: 16 }}>
+                    <div style={labelStyle}>{t("Authorized Models", "授权模型列表")}</div>
+                    {(status?.authorized_models || []).length ? (
+                        <table style={detailTableStyle}>
+                            <thead>
+                                <tr>
+                                    <th style={detailTheadThStyle}>{t("Model", "模型")}</th>
+                                    <th style={detailTheadThStyle}>{t("Service Groups", "服务组")}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {(status?.authorized_models || []).map((model) => (
+                                    <tr key={model.name}>
+                                        <td style={detailTdStyle}><span style={{ fontWeight: 600 }}>{model.name}</span></td>
+                                        <td style={detailTdStyle}>{(model.service_group_ids || []).join(", ") || "-"}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    ) : (
+                        <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No model permissions yet", "当前还没有模型权限")}</div>
+                    )}
                 </div>
             </div>
         </div>

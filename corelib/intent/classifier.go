@@ -14,7 +14,7 @@ import (
 type Config struct {
 	Embedder   embedding.Embedder
 	LLMFunc    LLMClassifyFunc   // optional, can be nil
-	LLMTimeout time.Duration     // 0 → default 8s
+	LLMTimeout time.Duration     // 0 → default 15s
 }
 
 // UnifiedIntentClassifier is the single entry point for all user-intent
@@ -62,7 +62,7 @@ type UnifiedIntentClassifier struct {
 func New(cfg Config) *UnifiedIntentClassifier {
 	timeout := cfg.LLMTimeout
 	if timeout == 0 {
-		timeout = 8 * time.Second
+		timeout = 15 * time.Second
 	}
 
 	// Build intent tree text from unified definitions for Layer 3 tree reasoning.
@@ -81,7 +81,7 @@ func New(cfg Config) *UnifiedIntentClassifier {
 		llmTimeout:         timeout,
 		treeText:           treeText,
 		llmPrompt:          buildLLMSystemPrompt(defs),
-		fusionCfg:          DefaultFusionConfig(),
+		fusionCfg:          DefaultFusionConfigWithWorkflowTypes(defs),
 		workflowCandidates: WorkflowCandidateLabels(defs),
 	}
 
@@ -519,12 +519,43 @@ func (u *UnifiedIntentClassifier) fusionToClassification(fr FusionResult) Classi
 		Confidence:   fr.Top.FinalScore,
 		Layer:        23, // indicates fusion of L2+L3
 		WorkflowType: fr.Top.WorkflowType,
+		Degraded:     fr.Degraded,
+	}
+
+	// --- Degraded-mode WorkflowType inference ---
+	// When the L3 tree channel fails (timeout/error), WorkflowType is empty
+	// because it's only populated by tree reasoning. But the IntentDefinition
+	// data already declares which labels map to which workflow types. If the
+	// winning label has exactly one known workflow type, we can infer it from
+	// the definition — no LLM needed.
+	//
+	// This is the key mechanism that prevents workflow bypass when LLMs are
+	// unavailable: embedding-only mode can still produce WorkflowType="coding"
+	// for a confident LabelCoding classification.
+	//
+	// Only applied when:
+	//   1. WorkflowType is empty (tree didn't provide it)
+	//   2. The tree channel was NOT active — i.e., it failed or was unavailable.
+	//      When the tree channel IS active and returned empty WorkflowType,
+	//      that's a deliberate decision (e.g., "修改函数返回值" is coding but
+	//      not creation-oriented). We must not override the tree's judgment.
+	//   3. Verdict is not LOW (we trust the label enough)
+	//   4. The label has exactly one known workflow type (unambiguous mapping)
+	if result.WorkflowType == "" && fr.Verdict != VerdictLow && !fr.Top.InTree {
+		if wfType, ok := u.fusionCfg.WorkflowTypeMap[result.Primary]; ok {
+			result.WorkflowType = wfType
+			log.Printf("[UnifiedIntentClassifier] WorkflowType inferred from definition: "+
+				"label=%s → workflow_type=%q (tree channel %s)",
+				result.Primary, wfType, degradedReason(fr))
+		}
 	}
 
 	// CreationOriented is determined by the fusion result itself, not L1 keywords.
 	// When the tree channel classifies as coding with workflow_type="coding",
 	// that's a creation-oriented task. Bug-fix and maintenance intents from
 	// the tree channel don't set CreationOriented.
+	//
+	// Also set when WorkflowType was inferred from definition (degraded mode).
 	if result.Primary == LabelCoding && result.WorkflowType == "coding" {
 		result.CreationOriented = true
 	}
@@ -557,6 +588,26 @@ func (u *UnifiedIntentClassifier) SetFusionConfig(cfg FusionConfig) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.fusionCfg = cfg
+}
+
+// degradedReason returns a human-readable description of why the fusion was degraded.
+func degradedReason(fr FusionResult) string {
+	if !fr.Degraded {
+		return "not degraded"
+	}
+	for _, ch := range []string{"embedding", "tree"} {
+		found := false
+		for _, active := range fr.ActiveChannels {
+			if active == ch {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ch + " failed"
+		}
+	}
+	return "degraded"
 }
 
 // GetFusionConfig returns the current fusion parameters. Thread-safe.

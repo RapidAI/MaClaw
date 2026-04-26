@@ -42,8 +42,8 @@ drawio-skill 的 SKILL.md 写了"先生成 XML 再调用 run.js 转换"，但 LL
 | 文件 | 修改 |
 |------|------|
 | `gui/im_system_prompt.go` | ✅ 已实现：`appendKnowledgeSkillSection` 同时处理 executable skill 的 SKILL.md + 名称匹配 |
-| `gui/app_nl_skills.go` | 待实现：`NLSkillDefinition` 新增 `Mode`/`HasDocumentation` 字段；`List()` 填充 |
-| `gui/skill_doc_inject_test.go` | 待实现：6 个测试覆盖所有分支 |
+| `gui/app_nl_skills.go` | ✅ 已实现：`NLSkillDefinition` 新增 `HasDocumentation` 字段；`List()` 填充 |
+| `gui/skill_doc_inject_test.go` | ✅ 已实现：6 个测试覆盖所有分支 |
 
 ### 验收标准
 

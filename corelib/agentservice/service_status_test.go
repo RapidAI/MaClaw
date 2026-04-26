@@ -50,6 +50,70 @@ func TestDisabledTenantCannotUseToken(t *testing.T) {
 	}
 }
 
+func TestSuspendedCredentialCannotIssueOrUseToken(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	cred, err := svc.CreateCredential(context.Background(), CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "suspend-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "suspend-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken before suspend: %v", err)
+	}
+	suspended := CredentialStatusSuspended
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, cred.ID, UpdateCredentialInput{Status: &suspended}); err != nil {
+		t.Fatalf("UpdateCredential suspend: %v", err)
+	}
+	if _, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "suspend-key", APISecret: "secret"}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("IssueToken after suspend error = %v, want ErrUnauthorized", err)
+	}
+	if _, err := svc.Authenticate(token.AccessToken); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Authenticate after suspend error = %v, want ErrUnauthorized", err)
+	}
+	items, err := svc.ListCredentials(context.Background(), tenant.ID, user.ID)
+	if err != nil {
+		t.Fatalf("ListCredentials: %v", err)
+	}
+	if len(items) != 1 || items[0].Status != CredentialStatusSuspended {
+		t.Fatalf("credentials after suspend = %#v", items)
+	}
+}
+func TestExpiredCredentialCannotIssueOrUseToken(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	cred, err := svc.CreateCredential(context.Background(), CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "expire-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "expire-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken before expire: %v", err)
+	}
+	expiredAt := time.Now().Add(-time.Minute)
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, cred.ID, UpdateCredentialInput{ExpiresAt: &expiredAt}); err != nil {
+		t.Fatalf("UpdateCredential expires_at: %v", err)
+	}
+	if _, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "expire-key", APISecret: "secret"}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("IssueToken after expire error = %v, want ErrUnauthorized", err)
+	}
+	if _, err := svc.Authenticate(token.AccessToken); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Authenticate after expire error = %v, want ErrUnauthorized", err)
+	}
+	items, err := svc.ListCredentials(context.Background(), tenant.ID, user.ID)
+	if err != nil {
+		t.Fatalf("ListCredentials: %v", err)
+	}
+	if len(items) != 1 || items[0].ExpiresAt == nil {
+		t.Fatalf("credentials after expire = %#v", items)
+	}
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, cred.ID, UpdateCredentialInput{ClearExpiresAt: true}); err != nil {
+		t.Fatalf("UpdateCredential clear expires_at: %v", err)
+	}
+	if _, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "expire-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("IssueToken after clear expire: %v", err)
+	}
+}
 func TestRevokedCredentialCannotIssueToken(t *testing.T) {
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)

@@ -140,15 +140,16 @@ type hubLLMCacheStorageStatus struct {
 }
 
 type hubLLMCacheStatus struct {
-	InputTokens       int64                    `json:"input_tokens"`
-	CachedInputTokens int64                    `json:"cached_input_tokens"`
-	CacheWriteTokens  int64                    `json:"cache_write_tokens"`
-	Requests          int64                    `json:"requests"`
-	CachedRequests    int64                    `json:"cached_requests"`
-	CacheRate         float64                  `json:"cache_rate"`
-	CacheReuseRate    float64                  `json:"cache_reuse_rate"`
-	Config            HubLLMPromptCacheConfig  `json:"config"`
-	LocalStorage      hubLLMCacheStorageStatus `json:"local_storage"`
+	InputTokens       int64                        `json:"input_tokens"`
+	CachedInputTokens int64                        `json:"cached_input_tokens"`
+	CacheWriteTokens  int64                        `json:"cache_write_tokens"`
+	Requests          int64                        `json:"requests"`
+	CachedRequests    int64                        `json:"cached_requests"`
+	CacheRate         float64                      `json:"cache_rate"`
+	CacheReuseRate    float64                      `json:"cache_reuse_rate"`
+	Config            HubLLMPromptCacheConfig      `json:"config"`
+	LocalStorage      hubLLMCacheStorageStatus     `json:"local_storage"`
+	Runtime           llmPromptCacheRuntimeMetrics `json:"runtime"`
 }
 
 func HubLLMStatusHandler(statusFn func() string, system store.SystemSettingsRepository, promptCacheSources ...any) http.HandlerFunc {
@@ -158,7 +159,7 @@ func HubLLMStatusHandler(statusFn func() string, system store.SystemSettingsRepo
 			status = statusFn()
 		}
 		promptCacheSource := firstPromptCacheStatusSource(promptCacheSources)
-		cfg := LoadHubLLMPromptCacheConfig(r.Context(), system)
+		cfg := loadCachedHubLLMPromptCacheConfig(r.Context(), system)
 		applyHubLLMPromptCacheRuntimeConfig(promptCacheSource, cfg)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":       status,
@@ -168,11 +169,11 @@ func HubLLMStatusHandler(statusFn func() string, system store.SystemSettingsRepo
 }
 
 func hubLLMPromptCacheStatus(r *http.Request, system store.SystemSettingsRepository, promptCacheSource any, cfg HubLLMPromptCacheConfig) hubLLMCacheStatus {
-	out := hubLLMCacheStatus{Config: cfg}
+	out := hubLLMCacheStatus{Config: cfg, Runtime: hubLLMPromptCacheRuntimeMetricsSnapshot()}
 	if system == nil {
 		return out
 	}
-	reg, err := im.LoadLLMProviderRegistry(r.Context(), system)
+	reg, err := loadCachedLLMProviderRegistry(r.Context(), system)
 	if err != nil || reg == nil {
 		return out
 	}

@@ -82,17 +82,17 @@ const LLM_SERVICE_I18N = {
     exportSelectedTxt: 'Selected TXT',
     exportSelectedCsv: 'Selected CSV',
     noCardSelected: 'Select at least one card first.',
-    deleteSelectedConfirm: 'Delete selected unused service cards?',
+    deleteSelectedConfirm: 'Delete selected service cards?',
     filterAll: 'All',
     filterUnused: 'Unused',
     filterRedeemed: 'Redeemed',
     deleteCard: 'Delete',
     deleteUnusedBatch: 'Delete Filtered Unused',
-    deleteCardDone: 'Unused service card deleted.',
+    deleteCardDone: 'Service card deleted.',
     deleteBatchDone: 'Filtered unused service cards deleted: {count}',
     deleteCardFailed: 'Delete service card failed: {error}',
     deleteBatchFailed: 'Batch delete failed: {error}',
-    deleteCardConfirm: 'Delete this unused service card?',
+    deleteCardConfirm: 'Delete this service card?',
     deleteBatchConfirm: 'Delete all unused service cards in the current filtered result?',
     cardSearch: 'Search',
     cardSearchPlaceholder: 'Search by label, card ID, or redeemed email',
@@ -220,6 +220,10 @@ const LLM_SERVICE_I18N = {
     grantGrantSource: 'Grant Source',
     grantSourceCard: 'Card',
     grantAccessType: 'Access Type',
+    deleteGrant: 'Delete',
+    deleteGrantConfirm: 'Delete this active grant?',
+    deleteGrantDone: 'Active grant deleted.',
+    deleteGrantFailed: 'Delete active grant failed: {error}',
     grantRouteMissingGroup: 'The referenced service group no longer exists.',
     grantRouteNoLiveModels: 'This grant currently has no live model routes.',
     billingRoutes: 'Route Access Gate',
@@ -332,17 +336,17 @@ const LLM_SERVICE_I18N = {
     exportSelectedTxt: '\u5bfc\u51fa\u5df2\u9009 TXT',
     exportSelectedCsv: '\u5bfc\u51fa\u5df2\u9009 CSV',
     noCardSelected: '\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u5f20\u5361\u3002',
-    deleteSelectedConfirm: '\u786e\u8ba4\u5220\u9664\u5df2\u9009\u7684\u672a\u5151\u6362\u670d\u52a1\u5361\uff1f',
+    deleteSelectedConfirm: '\u786e\u8ba4\u5220\u9664\u5df2\u9009\u670d\u52a1\u5361\uff1f',
     filterAll: '\u5168\u90e8',
     filterUnused: '\u672a\u5151\u6362',
     filterRedeemed: '\u5df2\u5151\u6362',
     deleteCard: '\u5220\u9664',
     deleteUnusedBatch: '\u5220\u9664\u7b5b\u9009\u672a\u5151\u6362',
-    deleteCardDone: '\u672a\u5151\u6362\u670d\u52a1\u5361\u5df2\u5220\u9664\u3002',
+    deleteCardDone: '\u670d\u52a1\u5361\u5df2\u5220\u9664\u3002',
     deleteBatchDone: '\u5df2\u5220\u9664 {count} \u5f20\u7b5b\u9009\u672a\u5151\u6362\u670d\u52a1\u5361\u3002',
     deleteCardFailed: '\u5220\u9664\u670d\u52a1\u5361\u5931\u8d25: {error}',
     deleteBatchFailed: '\u6279\u91cf\u5220\u9664\u5931\u8d25: {error}',
-    deleteCardConfirm: '\u786e\u8ba4\u5220\u9664\u8fd9\u5f20\u672a\u5151\u6362\u7684\u670d\u52a1\u5361\uff1f',
+    deleteCardConfirm: '\u786e\u8ba4\u5220\u9664\u8fd9\u5f20\u670d\u52a1\u5361\uff1f',
     deleteBatchConfirm: '\u786e\u8ba4\u5220\u9664\u5f53\u524d\u7b5b\u9009\u7ed3\u679c\u4e2d\u6240\u6709\u672a\u5151\u6362\u670d\u52a1\u5361\uff1f',
     cardSearch: '\u641c\u7d22',
     cardSearchPlaceholder: '\u6309\u6807\u7b7e\u3001\u5361 ID \u6216\u5151\u6362\u90ae\u7bb1\u641c\u7d22',
@@ -453,6 +457,13 @@ const LLM_SERVICE_I18N = {
     cardIssueNoLiveRoutes: '\u5f15\u7528\u7684\u670d\u52a1\u7ec4\u867d\u7136\u5b58\u5728\uff0c\u4f46\u5f53\u524d\u6ca1\u6709\u4efb\u4f55\u53ef\u8def\u7531\u5230 live provider \u7684\u6a21\u578b\u3002',
     cardIssueRedeemedNoActiveGrant: '\u8be5\u5361\u5df2\u88ab\u5151\u6362\uff0c\u4f46\u5f53\u524d\u6ca1\u6709\u5173\u8054\u7684\u751f\u6548 grant\u3002',
     grantRouteModels: '\u6388\u6743\u8def\u7531',
+    grantGrantSource: '\u6388\u6743\u6765\u6e90',
+    grantSourceCard: '\u5361\u7247',
+    grantAccessType: '\u6388\u6743\u65b9\u5f0f',
+    deleteGrant: '\u5220\u9664',
+    deleteGrantConfirm: '\u786e\u8ba4\u5220\u9664\u8be5\u751f\u6548\u6388\u6743\uff1f',
+    deleteGrantDone: '\u751f\u6548\u6388\u6743\u5df2\u5220\u9664\u3002',
+    deleteGrantFailed: '\u5220\u9664\u751f\u6548\u6388\u6743\u5931\u8d25: {error}',
     grantRouteMissingGroup: '\u5f15\u7528\u7684\u670d\u52a1\u7ec4\u5df2\u4e0d\u5b58\u5728\u3002',
     grantRouteNoLiveModels: '\u8be5 grant \u5f53\u524d\u6ca1\u6709\u53ef\u7528\u7684 live model route\u3002',
     billingRoutes: '\u8def\u7531\u51c6\u5165\u95e8',
@@ -498,7 +509,7 @@ let llmServiceSelectedCardIDs = [];
 let llmServiceSelectedCardMap = {};
 let llmServiceCardSearch = '';
 let llmServiceCardPage = 1;
-const llmServiceCardPageSize = 32;
+const llmServiceCardPageSize = 20;
 let llmServiceCardsPageData = { items: [], total: 0, page: 1, page_size: llmServiceCardPageSize };
 const llmServiceCapabilityOptions = ['document', 'reasoning', 'tools'];
 const llmServicePriorityOptions = [0, 10, 30, 50, 80, 100];
@@ -992,7 +1003,14 @@ function llmServiceClearSelectedCards() {
 }
 function llmServiceSelectedCards() {
   var set = llmServiceSelectedCardSet();
-  return Array.from(set).map(function(id) { return llmServiceSelectedCardMap[id]; }).filter(Boolean);
+  var pageMap = {};
+  ((llmServiceCardsPageData && llmServiceCardsPageData.items) || []).forEach(function(card) {
+    var id = String(card && card.id || '').trim();
+    if (id) pageMap[id] = card;
+  });
+  return Array.from(set).map(function(id) {
+    return llmServiceSelectedCardMap[id] || pageMap[id] || { id: id };
+  }).filter(Boolean);
 }
 async function llmServiceDownloadSelectedCards(kind) {
   var ids = Array.from(llmServiceSelectedCardSet());
@@ -1023,7 +1041,10 @@ async function llmServiceDownloadSelectedCards(kind) {
   }
 }
 async function llmServiceDeleteSelectedCards() {
-  var ids = llmServiceSelectedCards().filter(function(card) { return !(card && card.redeemed_at); }).map(function(card) { return String(card && card.id || '').trim(); }).filter(Boolean);
+  var ids = llmServiceSelectedCards().map(function(card) { return String(card && card.id || '').trim(); }).filter(Boolean);
+  if (!ids.length) {
+    ids = Array.from(llmServiceSelectedCardSet()).filter(Boolean);
+  }
   if (!ids.length) { showToast(lsx('noCardSelected'), 'info'); return; }
   if (!confirm(lsx('deleteSelectedConfirm'))) return;
   try {
@@ -1051,6 +1072,21 @@ async function llmServiceDeleteCard(id) {
     await loadLLMServiceAdmin();
   } catch (err) {
     var msg = lsx('deleteCardFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
+async function llmServiceDeleteGrant(id) {
+  id = String(id || '').trim();
+  if (!id) return;
+  if (!confirm(lsx('deleteGrantConfirm'))) return;
+  try {
+    await api('/api/admin/llm/service-grants/' + encodeURIComponent(id), { method: 'DELETE' });
+    setOutput(lsx('deleteGrantDone'));
+    showToast(lsx('deleteGrantDone'), 'success');
+    await loadLLMServiceAdmin();
+  } catch (err) {
+    var msg = lsx('deleteGrantFailed', { error: err.message });
     setOutput(msg);
     showToast(msg, 'error');
   }
@@ -1569,7 +1605,6 @@ function renderLLMServiceAdmin() {
     if (!pageItems.length) {
       cardsRoot.innerHTML = ui.hint(lsx('noRedeemCards'));
     } else {
-      var cardHeader = '<div class="row header" style="grid-template-columns:.52fr 1.1fr 1.2fr .8fr .78fr .92fr auto"><div></div><div>' + escapeHtml(lsx('label')) + '</div><div>' + escapeHtml(lsx('serviceGroups')) + '</div><div>' + escapeHtml(lsx('statusLabel')) + '</div><div>' + escapeHtml(lsx('days')) + '</div><div>' + escapeHtml(lsx('credits')) + '</div><div></div></div>';
       var cardRows = pageItems.map(function(c) {
         const cardHealth = llmServiceAnalyzeCard(c, llmServiceAdminCache);
         const healthTone = cardHealth.health === 'ready' ? 'ok' : (cardHealth.health === 'partial' ? 'info' : 'warn');
@@ -1582,20 +1617,26 @@ function renderLLMServiceAdmin() {
         const selected = selectedCardSet.has(String(c && c.id || '').trim());
         const cardCode = String(c.code || '').trim();
         const cardCodeLine = cardCode
-          ? '<div style="margin-top:6px;display:flex;align-items:center;gap:6px"><span class="item-meta">' + escapeHtml(lsx('cardCodeLabel')) + ':</span><span class="mono" style="font-size:11px;letter-spacing:1px;user-select:all">' + escapeHtml(cardCode) + '</span><button type="button" class="btn-ghost" style="height:22px;font-size:10px;padding:0 6px" onclick="event.stopPropagation();llmServiceCopyCardCode(\'' + llmServiceJSArg(cardCode) + '\')">' + escapeHtml(lsx('copyCodes')) + '</button></div>'
+          ? '<div style="margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="item-meta">' + escapeHtml(lsx('cardCodeLabel')) + ':</span><span class="mono" style="font-size:11px;letter-spacing:1px;user-select:all">' + escapeHtml(cardCode) + '</span><button type="button" class="btn-ghost" style="height:22px;font-size:10px;padding:0 6px" onclick="event.stopPropagation();llmServiceCopyCardCode(\'' + llmServiceJSArg(cardCode) + '\')">' + escapeHtml(lsx('copyCodes')) + '</button></div>'
           : '';
-        return '<div class="item" style="margin-bottom:6px;padding:0;overflow:hidden;border:1px solid var(--line)">'
-          + '<div class="row" style="grid-template-columns:.52fr 1.1fr 1.2fr .8fr .78fr .92fr auto;gap:10px;padding:10px 12px;border:none;background:#fff">'
-          + '<div style="display:flex;align-items:flex-start;justify-content:center"><input type="checkbox" ' + (selected ? 'checked' : '') + ' onchange="event.stopPropagation();llmServiceToggleCardSelection(\'' + llmServiceJSArg(c.id || '') + '\', this.checked)"></div>'
-          + '<div style="min-width:0"><div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(c.label || c.id || lsx('card')) + '</div><div class="item-meta mono" style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(String(c.id || '')) + '</div><div class="item-meta" style="margin-top:4px">' + escapeHtml(redemptionMeta || '-') + '</div></div>'
-          + '<div class="item-meta" style="min-width:0">' + llmServiceGroupLinks(c.service_group_ids || []) + '</div>'
-          + '<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:flex-start">' + ui.badge(healthLabel, healthTone) + ui.badge(redeemedLabel, redeemedTone) + '</div>'
-          + '<div class="item-meta mono">' + escapeHtml(String(c.duration_days || 0)) + '</div>'
-          + '<div class="item-meta mono">' + escapeHtml(String(c.credits || 0)) + '</div>'
-          + '<div style="display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap">' + (c.redeemed_at ? '' : '<button class="btn-danger" style="height:28px;font-size:11px;padding:0 10px" onclick="llmServiceDeleteCard(\'' + llmServiceJSArg(c.id || '') + '\')">' + escapeHtml(lsx('deleteCard')) + '</button>') + '</div>'
+        return '<div class="item" style="margin-bottom:0;padding:0;overflow:hidden;border:1px solid var(--line);border-radius:18px;background:#fff;min-width:0">'
+          + '<div style="display:grid;grid-template-columns:34px minmax(0,1.5fr) minmax(0,1fr);gap:12px;padding:12px 14px 10px;background:#fff;align-items:start">'
+          + '<div style="display:flex;align-items:flex-start;justify-content:center;padding-top:4px"><input type="checkbox" ' + (selected ? 'checked' : '') + ' onchange="event.stopPropagation();llmServiceToggleCardSelection(\'' + llmServiceJSArg(c.id || '') + '\', this.checked)"></div>'
+          + '<div style="min-width:0">'
+          + '<div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(c.label || c.id || lsx('card')) + '</div>'
+          + '<div class="item-meta mono" style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(String(c.id || '')) + '</div>'
+          + '<div class="item-meta" style="margin-top:6px;line-height:1.55;word-break:break-word">' + escapeHtml(redemptionMeta || '-') + '</div>'
+          + '<div class="item-meta" style="margin-top:10px;min-width:0">' + llmServiceGroupLinks(c.service_group_ids || []) + '</div>'
           + '</div>'
-          + '<div style="padding:0 12px 10px;border-top:1px solid rgba(31,34,48,.06);background:#fff">'
-          + '<div class="item-meta" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">'
+          + '<div style="display:grid;gap:8px;justify-items:end;min-width:0">'
+          + '<div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">' + ui.badge(healthLabel, healthTone) + ui.badge(redeemedLabel, redeemedTone) + '</div>'
+          + '<div class="item-meta mono" style="text-align:right">' + escapeHtml(lsx('days')) + ': ' + escapeHtml(String(c.duration_days || 0)) + '</div>'
+          + '<div class="item-meta mono" style="text-align:right">' + escapeHtml(lsx('credits')) + ': ' + escapeHtml(String(c.credits || 0)) + '</div>'
+          + '<div style="display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap;width:100%">' + (c.redeemed_at ? '' : '<button class="btn-danger" style="height:28px;font-size:11px;padding:0 10px" onclick="llmServiceDeleteCard(\'' + llmServiceJSArg(c.id || '') + '\')">' + escapeHtml(lsx('deleteCard')) + '</button>') + '</div>'
+          + '</div>'
+          + '</div>'
+          + '<div style="padding:0 14px 12px;border-top:1px solid rgba(31,34,48,.06);background:#fff">'
+          + '<div class="item-meta" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;line-height:1.55">'
           + '<span>' + escapeHtml(lsx('cardHealthGroups')) + ': ' + escapeHtml(String((cardHealth.groups || []).length)) + ' / ' + escapeHtml(String((c.service_group_ids || []).length)) + '</span>'
           + '<span>' + escapeHtml(lsx('cardHealthRoutes')) + ': ' + escapeHtml(String(cardHealth.liveRouteCount || 0)) + '</span>'
           + '<span>' + escapeHtml(lsx('cardHealthActiveGrants')) + ': ' + escapeHtml(String((cardHealth.activeGrants || []).length)) + '</span>'
@@ -1606,7 +1647,7 @@ function renderLLMServiceAdmin() {
           + '</div>'
           + '</div>';
       }).join('');
-      cardsRoot.innerHTML = '<div class="table" style="gap:6px">' + cardHeader + cardRows + '</div>';
+      cardsRoot.innerHTML = '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start">' + cardRows + '</div>';
     }
   }
   var cardsPager = document.getElementById('llmServiceCardsPager');
@@ -1631,7 +1672,7 @@ function renderLLMServiceAdmin() {
     if (!grants.length) {
       grantsRoot.innerHTML = ui.hint(lsx('noActiveGrants'));
     } else {
-      const grantHeader = '<div class="row header" style="grid-template-columns:1fr .9fr 1fr .9fr 1.2fr"><div>' + escapeHtml(lsx('email')) + '</div><div>' + escapeHtml(lsx('serviceGroups')) + '</div><div>' + escapeHtml(lsx('grantGrantSource')) + '</div><div>' + escapeHtml(lsx('credits')) + '</div><div>' + escapeHtml(lsx('grantRouteModels')) + '</div></div>';
+      const grantHeader = '<div class="row header" style="grid-template-columns:1fr .9fr 1fr .9fr 1.2fr auto"><div>' + escapeHtml(lsx('email')) + '</div><div>' + escapeHtml(lsx('serviceGroups')) + '</div><div>' + escapeHtml(lsx('grantGrantSource')) + '</div><div>' + escapeHtml(lsx('credits')) + '</div><div>' + escapeHtml(lsx('grantRouteModels')) + '</div><div></div></div>';
       const grantRows = grants.map(function(g) {
         const total = Number(g.credits_total || 0);
         const used = Number(g.credits_used || 0);
@@ -1643,15 +1684,17 @@ function renderLLMServiceAdmin() {
           ? (escapeHtml(lsx('grantSourceCard')) + ': <span class="mono">' + escapeHtml(sourceMeta.cardLabel) + '</span> <span class="item-meta mono">(' + escapeHtml(sourceMeta.cardID) + ')</span>')
           : (escapeHtml(lsx('grantSourceCard')) + ': ' + escapeHtml(sourceMeta.cardLabel));
         return '<div class="item" style="margin-bottom:6px;padding:0;overflow:hidden;border:1px solid var(--line)">'
-          + '<div class="row" style="grid-template-columns:1fr .9fr 1fr .9fr 1.2fr;gap:10px;padding:10px 12px;border:none;background:#fff">'
+          + '<div class="row" style="grid-template-columns:1fr .9fr 1fr .9fr 1.2fr auto;gap:10px;padding:10px 12px;border:none;background:#fff">'
           + '<div style="min-width:0"><div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(g.email || '') + '</div><div class="item-meta mono" style="margin-top:4px">' + escapeHtml(String(g.source || '')) + ' | ' + escapeHtml(String(g.expires_at || '')) + '</div><div style="margin-top:4px">' + ui.badge(active ? lsx('grantRouteHealthActive') : lsx('grantRouteHealthExpired'), active ? 'ok' : 'warn') + '</div></div>'
           + '<div class="item-meta">' + llmServiceGroupLinks([g.service_group_id]) + '</div>'
           + '<div class="item-meta" style="min-width:0"><div>' + cardLine + '</div><div style="margin-top:4px">' + escapeHtml(lsx('grantAccessType')) + ': ' + ui.badge(sourceMeta.accessLabel, sourceMeta.accessPolicy === 'grant_required' ? 'warn' : 'ok') + '</div></div>'
           + '<div class="item-meta mono">' + escapeHtml(creditsText) + '</div>'
           + '<div>' + llmServiceRenderGrantRoutes(g, llmServiceAdminCache, ui) + '</div>'
+          + '<div style="display:flex;justify-content:flex-end;align-items:flex-start"><button class="btn-danger" style="height:28px;font-size:11px;padding:0 10px" onclick="llmServiceDeleteGrant(\'' + llmServiceJSArg(g.id || '') + '\')">' + escapeHtml(lsx('deleteGrant')) + '</button></div>'
           + '</div>'
           + '</div>';
-      }).join('');      grantsRoot.innerHTML = '<div class="table" style="gap:6px">' + grantHeader + grantRows + '</div>';
+      }).join('');
+      grantsRoot.innerHTML = '<div class="table" style="gap:6px">' + grantHeader + grantRows + '</div>';
     }
   }
   const diagnoseRoot = document.getElementById('llmServiceDiagnoseResult');
@@ -2471,4 +2514,6 @@ function llsSetProviderExtra(i, providerID, v) { var m = llmServiceGroupDraft &&
 async function saveLLMServiceGroupDialog() { if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], group_bindings: [], user_bindings: [], cards: [], grants: [] }; var n = llsCloneGroup(llmServiceGroupDraft || llsEmptyGroup()); if (!n.id || !n.name) { showToast(lsx('groupIdNameRequired'), 'error'); return; } n.access_policy = llsNormalizeAccessPolicy(n.access_policy); if (isBuiltinLLMServiceGroup(n.id) || isBuiltinLLMServiceGroup(llmServiceSelectedGroupID)) { showToast(lsx('builtInDefaultReadOnly'), 'info'); return; } var routeNameSeen = {}; for (var i = 0; i < (n.models || []).length; i++) { n.models[i].name = String(n.models[i].name || '').trim() || 'auto'; if (!(n.models[i].provider_ids || []).length) { showToast(llsX('routeNeedsProvider'), 'error'); return; } var routeNameKey = String(n.models[i].name || '').trim().toLowerCase(); if (routeNameSeen[routeNameKey]) { showToast(llsX('duplicateRouteAlias', { name: n.models[i].name }), 'error'); return; } routeNameSeen[routeNameKey] = true; } var gs = llmServiceAdminCache.model_service_groups || [], si = gs.findIndex(function(g) { return g.id === llmServiceSelectedGroupID; }), di = gs.findIndex(function(g, idx) { return g.id === n.id && idx !== si; }); if (di >= 0) { showToast(lsx('duplicateGroupId', { id: n.id }), 'error'); return; } if (si >= 0) gs[si] = n; else gs.push(n); llmServiceAdminCache.model_service_groups = gs; llmServiceSelectedGroupID = n.id; closeLLMServiceGroupDialog(); renderLLMServiceAdmin(); await saveLLMServiceAdmin(); }
 
 var _renderLLMServiceAdmin=renderLLMServiceAdmin;renderLLMServiceAdmin=function(){ensureLLMServiceGroupModalUI();ensureLLMServiceProviderModalUI();_renderLLMServiceAdmin();syncLLMServiceLegacyEditor()};
+
+
 

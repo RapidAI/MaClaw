@@ -105,6 +105,8 @@ func Bootstrap() (*Center, error) {
 
 	// --- wire executive module ---
 	execHandler := executive.NewHandler(provider.Read, auditRepo)
+	execHandler.SetWriteDB(provider.Write)
+	execHandler.SetWorkflowService(wfSvc)
 
 	// --- wire security module ---
 	secRepo := security.NewRepo(provider.Write, provider.Read)

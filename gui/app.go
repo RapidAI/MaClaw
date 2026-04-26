@@ -4623,6 +4623,48 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	log.Printf("[config] SaveConfig:done total=%s", time.Since(start))
 	return nil
 }
+
+// PatchConfig performs an atomic read-modify-write on the config file.
+// The patchFn receives the current config and may modify any fields.
+// The entire operation (load → patch → save) runs under configMu, eliminating
+// the TOCTOU race window that exists when callers do LoadConfig → modify →
+// SaveConfig with the lock released in between.
+//
+// Use PatchConfig when updating a small number of fields (credentials, flags)
+// while other goroutines may be concurrently modifying the config. Use
+// SaveConfig when you hold a complete, authoritative config snapshot (e.g.
+// from the frontend settings panel) that needs the full sanitization and
+// API-key sync pipeline.
+//
+// Note: PatchConfig intentionally skips sanitizeCustomNames, syncAllProvider-
+// ApiKeys, and post-save side effects (refreshWorkstationMode, etc.) because
+// those are only relevant when the corresponding fields change. Callers that
+// modify model/API-key/workspace fields should use SaveConfig instead.
+func (a *App) PatchConfig(patchFn func(cfg *corelib.AppConfig)) error {
+	a.configMu.Lock()
+	cfg, err := a.loadConfigLocked()
+	if err != nil {
+		a.configMu.Unlock()
+		return err
+	}
+	patchFn(&cfg)
+	path, err := a.getConfigPath()
+	if err != nil {
+		a.configMu.Unlock()
+		return err
+	}
+	if err := a.saveToPath(path, cfg); err != nil {
+		a.invalidateConfigCacheLocked()
+		a.configMu.Unlock()
+		return err
+	}
+	a.configCache = cfg
+	a.configCacheValid = true
+	a.configMu.Unlock()
+	log.Printf("[config] PatchConfig:done")
+	return nil
+}
+
 func (a *App) saveToPath(path string, config corelib.AppConfig) error {
 	return configfile.AtomicWriteJSON(path, config)
 }

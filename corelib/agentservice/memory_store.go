@@ -306,6 +306,11 @@ func (s *MemoryStore) SaveCredential(v Credential) error {
 	if lookupKey == "" {
 		return ErrCredentialNotFound
 	}
+	for key, existing := range s.credentials {
+		if existing.ID == stored.ID {
+			delete(s.credentials, key)
+		}
+	}
 	s.credentials[lookupKey] = stored
 	return nil
 }

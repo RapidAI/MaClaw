@@ -5,18 +5,78 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
-	hubServiceProviderName  = "MaClaw\u6a21\u578b\u670d\u52a1"
+	hubServiceProviderName  = "MaClaw\u5b98\u65b9"
 	hubServiceAutoModel     = "auto"
 	hubServiceStatusTimeout = 2 * time.Second
 )
+
+// ensureViewerTokenMu serializes re-enroll attempts when multiple callers
+// discover a missing viewer token concurrently.
+var ensureViewerTokenMu sync.Mutex
+
+// ensureViewerToken checks whether the config has a RemoteViewerToken. If it
+// is missing but the registration credentials (RemoteEmail + RemoteHubURL) are
+// present, it performs a re-enroll to obtain a fresh viewer token.
+//
+// This is a **startup recovery** mechanism, not a workaround. It covers:
+//   - Users who registered with an older Hub/client that did not issue viewer
+//     tokens at enrollment time.
+//   - WebSocket connection failures after registration (the auth.ok path that
+//     normally delivers the viewer token never executed).
+//   - Any historical config corruption that lost the token.
+//
+// The re-enroll itself uses PatchConfig for atomic persistence, so the token
+// cannot be lost to a concurrent SaveConfig race.
+func (a *App) ensureViewerToken(cfg corelib.AppConfig) (corelib.AppConfig, error) {
+	if strings.TrimSpace(cfg.RemoteViewerToken) != "" {
+		return cfg, nil
+	}
+	if strings.TrimSpace(cfg.RemoteEmail) == "" || strings.TrimSpace(cfg.RemoteHubURL) == "" {
+		return cfg, fmt.Errorf("hub access token is missing")
+	}
+
+	ensureViewerTokenMu.Lock()
+	defer ensureViewerTokenMu.Unlock()
+
+	// Double-check after lock — another goroutine may have completed recovery.
+	freshCfg, err := a.LoadConfig()
+	if err != nil {
+		return cfg, fmt.Errorf("hub access token is missing")
+	}
+	if strings.TrimSpace(freshCfg.RemoteViewerToken) != "" {
+		return freshCfg, nil
+	}
+
+	log.Printf("[hub-llm-service] viewer token missing, re-enrolling email=%s", freshCfg.RemoteEmail)
+	result, err := a.ActivateRemote(freshCfg.RemoteEmail, "", "")
+	if err != nil {
+		log.Printf("[hub-llm-service] re-enroll failed: %v", err)
+		return cfg, fmt.Errorf("hub access token is missing (recovery failed: %v)", err)
+	}
+	if result.ViewerToken == "" {
+		log.Printf("[hub-llm-service] re-enroll succeeded but hub did not issue viewer token")
+		return cfg, fmt.Errorf("hub access token is missing (hub did not issue token)")
+	}
+
+	log.Printf("[hub-llm-service] viewer token recovered via re-enroll")
+	// ActivateRemote persisted via PatchConfig; reload to get the fresh copy.
+	updated, err := a.LoadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	return updated, nil
+}
 
 type HubLLMAuthorizedModel struct {
 	Name            string   `json:"name"`
@@ -55,6 +115,11 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 	if err != nil {
 		return HubLLMServiceStatus{}, err
 	}
+	// Auto-recover missing viewer token before querying status.
+	cfg, err = a.ensureViewerToken(cfg)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
 	status, err := a.fetchHubLLMServiceStatus(cfg)
 	if err != nil {
 		return HubLLMServiceStatus{}, err
@@ -86,8 +151,10 @@ func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 	if strings.TrimSpace(cfg.RemoteHubURL) == "" {
 		return HubLLMServiceStatus{}, fmt.Errorf("hub URL is not configured")
 	}
-	if strings.TrimSpace(cfg.RemoteViewerToken) == "" {
-		return HubLLMServiceStatus{}, fmt.Errorf("hub access token is missing")
+	// Auto-recover missing viewer token via re-enroll before giving up.
+	cfg, err = a.ensureViewerToken(cfg)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
 	}
 	payload, err := json.Marshal(map[string]string{"code": strings.TrimSpace(code)})
 	if err != nil {
@@ -129,6 +196,14 @@ func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 			return result.ServiceStatus, err
 		}
 	}
+	// Notify frontend that the Hub LLM service status has changed so that
+	// LLMConfigPanel (and any other listener) can reload its provider list
+	// and hub service status. Without this event, the LLM config dialog
+	// shows stale data when the user redeems from the "服务兑换" tab and
+	// then switches to the "LLM 配置" tab.
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "hub-llm-service-changed")
+	}
 	return result.ServiceStatus, nil
 }
 
@@ -140,10 +215,24 @@ func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 		cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{}
 	}
 	if strings.TrimSpace(cfg.RemoteViewerToken) == "" || strings.TrimSpace(cfg.RemoteHubURL) == "" {
-		if a.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{}) {
-			_ = a.SaveConfig(*cfg)
+		// Attempt auto-recovery of viewer token before giving up.
+		if strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) == "" {
+			recovered, err := a.ensureViewerToken(*cfg)
+			if err == nil && strings.TrimSpace(recovered.RemoteViewerToken) != "" {
+				*cfg = recovered
+				// Fall through to the normal status-fetch path below.
+			} else {
+				if a.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{}) {
+					_ = a.SaveConfig(*cfg)
+				}
+				return
+			}
+		} else {
+			if a.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{}) {
+				_ = a.SaveConfig(*cfg)
+			}
+			return
 		}
-		return
 	}
 	status, err := a.fetchHubLLMServiceStatusWithTimeout(*cfg, hubServiceStatusTimeout)
 	if err != nil {
@@ -170,8 +259,13 @@ func (a *App) fetchHubLLMServiceStatusWithTimeout(cfg corelib.AppConfig, timeout
 	if strings.TrimSpace(cfg.RemoteHubURL) == "" {
 		return HubLLMServiceStatus{}, fmt.Errorf("hub URL is not configured")
 	}
+	// Auto-recover missing viewer token via re-enroll.
 	if strings.TrimSpace(cfg.RemoteViewerToken) == "" {
-		return HubLLMServiceStatus{}, fmt.Errorf("hub access token is missing")
+		recovered, err := a.ensureViewerToken(cfg)
+		if err != nil {
+			return HubLLMServiceStatus{}, err
+		}
+		cfg = recovered
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

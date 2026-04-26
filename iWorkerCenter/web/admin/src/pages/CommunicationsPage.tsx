@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SectionCard } from "../components/cards/SectionCard";
 import {
@@ -51,6 +51,21 @@ type BoardBriefingItem = {
   tone: "ok" | "info" | "warn";
   summary: string;
   action: string;
+};
+
+type CockpitSection = "decision" | "execution" | "policy";
+
+type CockpitModeCard = {
+  id: string;
+  eyebrow: string;
+  title: string;
+  tone: "ok" | "info" | "warn";
+  summary: string;
+  detail: string;
+  statLine: string[];
+  focusSection: CockpitSection;
+  primaryActionLabel?: string;
+  onPrimaryAction?: () => void;
 };
 
 const statusClass = (status: string) => {
@@ -314,6 +329,10 @@ export function CommunicationsPage({
   const [lastRuntimeRefreshAt, setLastRuntimeRefreshAt] = useState("");
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [focusedRoleCode, setFocusedRoleCode] = useState('');
+  const [focusedCockpitSection, setFocusedCockpitSection] = useState<CockpitSection>('execution');
+  const executionSectionRef = useRef<HTMLDivElement | null>(null);
+  const decisionSectionRef = useRef<HTMLDivElement | null>(null);
+  const policySectionRef = useRef<HTMLDivElement | null>(null);
 
   const loadTasks = async (preferredTaskId?: string) => {
     const items = await listCollaborations();
@@ -797,6 +816,102 @@ export function CommunicationsPage({
 
   const recentRoutingActions = auditLogs.slice(0, 8);
 
+  const cockpitSectionClassName = (section: CockpitSection) =>
+    focusedCockpitSection === section ? "executive-section-highlight" : "";
+
+  const cockpitModeCards = useMemo<CockpitModeCard[]>(() => {
+    const topRole = topPriorityRoles[0];
+    return [
+      {
+        id: "decision-boundary",
+        eyebrow: "Decision layer",
+        title: topRole
+          ? `${topRole.role.name} needs board attention`
+          : criticalRoleCount > 0
+            ? "Board intervention is open"
+            : "No board intervention is queued",
+        tone: topRole ? (topRole.risk === "critical" ? "warn" : "info") : criticalRoleCount > 0 ? "warn" : "ok",
+        summary: topRole
+          ? `${topRole.role.name} sits at the top of the intervention queue, with ${topRole.openTaskCount} open task${topRole.openTaskCount === 1 ? "" : "s"} and recommended action ${roleActionLabel(topRole.recommendedAction)}.`
+          : criticalRoleCount > 0
+            ? `${criticalRoleCount} role${criticalRoleCount === 1 ? " is" : "s are"} in critical coverage risk and should be escalated through the board queue.`
+            : "The organization is not currently asking the board for a new stabilizing move.",
+        detail: "This layer is where leadership decides how to intervene when a role has crossed its normal delegation boundary. It is not the execution center.",
+        statLine: [
+          `${criticalRoleCount} critical role${criticalRoleCount === 1 ? "" : "s"}`,
+          `${watchRoleCount} watch role${watchRoleCount === 1 ? "" : "s"}`,
+          `${topPriorityRoles.length} queued intervention target${topPriorityRoles.length === 1 ? "" : "s"}`,
+        ],
+        focusSection: "decision",
+        primaryActionLabel: "Open decision queue",
+        onPrimaryAction: () => setFocusedCockpitSection("decision"),
+      },
+      {
+        id: "execution-cabin",
+        eyebrow: "Execution layer",
+        title: selectedTask
+          ? `${selectedTask.title} is the active execution lens`
+          : focusedRoleCode
+            ? `${focusedRoleCode} is the active execution lens`
+            : "Execution cabin is monitoring live handoffs",
+        tone: selectedTask
+          ? selectedTask.status === "rejected"
+            ? "warn"
+            : selectedTask.status === "pending" || selectedTask.status === "accepted"
+              ? "info"
+              : "ok"
+          : openTaskCount > 0 ? "info" : "ok",
+        summary: selectedTask
+          ? `${selectedTask.status} handoff is currently selected, and the execution cabin can follow events, transitions, and routing context around it.`
+          : `${openTaskCount} open collaboration task${openTaskCount === 1 ? " is" : "s are"} currently moving through the organization, with ${inProgressTaskCount} already in progress.`,
+        detail: "This layer belongs to the operating organization. iWorkers and human tools execute here while management stays at supervision height unless a fresh exception is raised.",
+        statLine: [
+          `${tasks.length} total collaboration task${tasks.length === 1 ? "" : "s"}`,
+          `${openTaskCount} live open handoff${openTaskCount === 1 ? "" : "s"}`,
+          `${inProgressTaskCount} task${inProgressTaskCount === 1 ? "" : "s"} in progress`,
+        ],
+        focusSection: "execution",
+        primaryActionLabel: "Open execution cabin",
+        onPrimaryAction: () => setFocusedCockpitSection("execution"),
+      },
+      {
+        id: "policy-runtime",
+        eyebrow: "Policy layer",
+        title: heartbeatTimeoutCount > 0
+          ? "Routing policy is actively compensating"
+          : "Routing policy is holding steady",
+        tone: heartbeatTimeoutCount > 0 ? "warn" : recentRoutingActions.length > 0 ? "info" : "ok",
+        summary: heartbeatTimeoutCount > 0
+          ? `${heartbeatTimeoutCount} runtime node${heartbeatTimeoutCount === 1 ? " has" : "s have"} fallen out of routing, so policy is now carrying failover responsibility.`
+          : `Default strategy ${routingSettings.default_strategy} is currently in force with a ${routingSettings.heartbeat_timeout_seconds}s heartbeat window.`,
+        detail: "This layer is where the center accumulates durable operating discipline: routing rules, heartbeat policy, seat state, and auditable intervention records.",
+        statLine: [
+          `${routingOverview.active_count} active seat${routingOverview.active_count === 1 ? "" : "s"}`,
+          `${routingOverview.standby_count} standby seat${routingOverview.standby_count === 1 ? "" : "s"}`,
+          `${recentRoutingActions.length} recent routing command${recentRoutingActions.length === 1 ? "" : "s"}`,
+        ],
+        focusSection: "policy",
+        primaryActionLabel: "Open policy controls",
+        onPrimaryAction: () => setFocusedCockpitSection("policy"),
+      },
+    ];
+  }, [
+    topPriorityRoles,
+    criticalRoleCount,
+    watchRoleCount,
+    selectedTask,
+    focusedRoleCode,
+    openTaskCount,
+    inProgressTaskCount,
+    tasks.length,
+    heartbeatTimeoutCount,
+    recentRoutingActions.length,
+    routingSettings.default_strategy,
+    routingSettings.heartbeat_timeout_seconds,
+    routingOverview.active_count,
+    routingOverview.standby_count,
+  ]);
+
   const summaryCards = [
     {
       label: "Active routing",
@@ -826,6 +941,7 @@ export function CommunicationsPage({
 
   return (
     <div className="center-page-stack">
+      <div ref={executionSectionRef} className={cockpitSectionClassName("execution")}>
       <div className="panel-grid communications-layout">
         <SectionCard
           title={t("nav.communications")}
@@ -942,6 +1058,46 @@ export function CommunicationsPage({
         </SectionCard>
       </div>
 
+      </div>
+      <div className="communications-operating-mode-grid">
+        {cockpitModeCards.map((card) => (
+          <section
+            key={card.id}
+            className={`card section-card communications-operating-mode-card communications-operating-mode-card-${card.tone} ${focusedCockpitSection === card.focusSection ? "communications-operating-mode-card-active" : ""}`}
+            onClick={() => setFocusedCockpitSection(card.focusSection)}
+          >
+            <div className="communications-operating-mode-head">
+              <div>
+                <div className="mini light">{card.eyebrow}</div>
+                <h3>{card.title}</h3>
+              </div>
+              <span className={`badge ${card.tone}`}>{card.tone === "warn" ? "Decision edge" : card.tone === "info" ? "Live transition" : "Stable"}</span>
+            </div>
+            <strong>{card.summary}</strong>
+            <p>{card.detail}</p>
+            <div className="communications-operating-mode-stats">
+              {card.statLine.map((stat) => (
+                <span key={stat}>{stat}</span>
+              ))}
+            </div>
+            {card.onPrimaryAction && card.primaryActionLabel ? (
+              <div className="executive-action-row">
+                <button
+                  type="button"
+                  className="executive-assign-button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    card.onPrimaryAction?.();
+                  }}
+                >
+                  {card.primaryActionLabel}
+                </button>
+              </div>
+            ) : null}
+          </section>
+        ))}
+      </div>
+
       <div className="item-row communications-context-row">
         <strong>Navigation context</strong>
         <p>Use this shortcut to return to the board view while preserving the current role context.</p>
@@ -988,6 +1144,7 @@ export function CommunicationsPage({
             </div>
           </div>
 
+          <div ref={decisionSectionRef} className={cockpitSectionClassName("decision")}>
           <div
             className={`item-row ${heartbeatTimeoutCount > 0 || criticalRoleCount > 0 ? "communications-alert-row" : ""}`}
           >
@@ -1116,7 +1273,8 @@ export function CommunicationsPage({
             </div>
           </div>
 
-          <div className="item-row">
+          <div className={cockpitSectionClassName("execution")}>
+            <div className="item-row">
             <strong>Role capacity watch</strong>
             <p>
               This board rolls individual employee states into role-level
@@ -1196,7 +1354,11 @@ export function CommunicationsPage({
             ))}
           </div>
 
-          <div className="item-row">
+            </div>
+          </div>
+
+          <div ref={policySectionRef} className={cockpitSectionClassName("policy")}>
+            <div className="item-row">
             <strong>Global policy</strong>
             <p>
               Default routing decides how the center dispatches work inside the
@@ -1422,6 +1584,7 @@ export function CommunicationsPage({
             </div>
           </div>
 
+          </div>
           {routingMessage ? (
             <div className="item-row">
               <strong>Routing</strong>

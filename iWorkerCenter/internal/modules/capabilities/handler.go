@@ -1,12 +1,15 @@
 package capabilities
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/idgen"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
@@ -39,6 +42,7 @@ type Handler struct {
 	write    *sql.DB
 	read     *sql.DB
 	importer *Importer
+	audit    *audit.Repo
 }
 
 // NewHandler creates a capabilities Handler.
@@ -49,6 +53,10 @@ func NewHandler(write, read *sql.DB) *Handler {
 // SetImporter attaches a hubcenter importer (optional).
 func (h *Handler) SetImporter(imp *Importer) {
 	h.importer = imp
+}
+
+func (h *Handler) SetAuditRepo(repo *audit.Repo) {
+	h.audit = repo
 }
 
 // RegisterAdminRoutes registers admin-facing routes.
@@ -164,7 +172,7 @@ func (h *Handler) listCapabilities(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) listActiveCapabilities(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenant.TenantIDFromContext(r.Context())
-	rows, err := h.read.Query("SELECT id, name, description, category, version, source, risk_level, status, created_at, updated_at FROM capability_packages WHERE status='active' AND tenant_id=? ORDER BY name", tenantID)
+	rows, err := h.read.Query("SELECT id, name, description, category, version, source, risk_level, status, created_at, updated_at FROM capability_packages WHERE status IN ('active','approved') AND tenant_id=? ORDER BY name", tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -179,7 +187,7 @@ func (h *Handler) listColleagueCapabilities(w http.ResponseWriter, r *http.Reque
 	rows, err := h.read.Query(`SELECT cp.id, cp.name, cp.description, cp.category, cp.version, cp.source, cp.risk_level, cp.status, cp.created_at, cp.updated_at
 		FROM capability_packages cp
 		JOIN colleague_capability_bindings ccb ON cp.id = ccb.capability_id
-		WHERE ccb.colleague_id = ? AND cp.status = 'active' AND ccb.tenant_id = ?
+		WHERE ccb.colleague_id = ? AND cp.status IN ('active','approved') AND ccb.tenant_id = ?
 		ORDER BY cp.name`, colleagueID, tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -396,17 +404,34 @@ func (h *Handler) handleImportFromHub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) approveCapability(w http.ResponseWriter, r *http.Request, id string) {
+	tenantID := tenant.TenantIDFromContext(r.Context())
+	capabilityName, currentStatus, err := h.lookupCapabilityApprovalContext(r.Context(), tenantID, id)
+	if err == sql.ErrNoRows {
+		response.NotFound(w, "NOT_FOUND", "capability not found")
+		return
+	}
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+
 	if h.importer == nil {
-		// Direct DB update if no importer
 		now := time.Now().Format(time.RFC3339)
-		tenantID := tenant.TenantIDFromContext(r.Context())
-		res, err := h.write.Exec(`UPDATE capability_packages SET status='active', updated_at=? WHERE id=? AND status='pending_review' AND tenant_id=?`, now, id, tenantID)
+		if currentStatus == "approved" {
+			response.OK(w, map[string]string{"status": "approved"})
+			return
+		}
+		res, err := h.write.Exec(`UPDATE capability_packages SET status='approved', updated_at=? WHERE id=? AND status IN ('pending_review','active') AND tenant_id=?`, now, id, tenantID)
 		if err != nil {
 			response.Internal(w, err.Error())
 			return
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			response.NotFound(w, "NOT_FOUND", "capability not found or not pending")
+			response.NotFound(w, "NOT_FOUND", "capability not found or not approvable")
+			return
+		}
+		if err := h.recordCapabilityApprovedAudit(r.Context(), tenantID, id, capabilityName); err != nil {
+			response.Internal(w, err.Error())
 			return
 		}
 		response.OK(w, map[string]string{"status": "approved"})
@@ -416,9 +441,40 @@ func (h *Handler) approveCapability(w http.ResponseWriter, r *http.Request, id s
 		response.BadRequest(w, "APPROVE_FAILED", err.Error())
 		return
 	}
+	_ = h.recordCapabilityApprovedAudit(r.Context(), tenantID, id, capabilityName)
 	response.OK(w, map[string]string{"status": "approved"})
 }
 
+func (h *Handler) lookupCapabilityApprovalContext(ctx context.Context, tenantID, id string) (string, string, error) {
+	var name string
+	var status string
+	err := h.read.QueryRowContext(ctx, `SELECT name, status FROM capability_packages WHERE id=? AND tenant_id=?`, id, tenantID).Scan(&name, &status)
+	return name, status, err
+}
+
+func capabilityRoleCodeFromName(name string) string {
+	trimmed := strings.TrimSpace(strings.TrimSuffix(strings.ToLower(name), " recovery handling"))
+	return strings.ReplaceAll(trimmed, " ", "-")
+}
+
+func (h *Handler) recordCapabilityApprovedAudit(ctx context.Context, tenantID, capabilityID, capabilityName string) error {
+	if h.audit == nil || tenantID == "" {
+		return nil
+	}
+	roleCode := capabilityRoleCodeFromName(capabilityName)
+	return h.audit.Insert(tenantID, &audit.ProxyLog{
+		RequestID:   fmt.Sprintf("executive-capability-approved-%s-%d", capabilityID, time.Now().UnixNano()),
+		ProviderID:  "iworkercenter",
+		Model:       "executive-capability-approved",
+		WorkType:    "executive_capability_approved",
+		CostTier:    "internal",
+		Status:      "ok",
+		LatencyMs:   0,
+		InputTokens: 0,
+		Summary:     fmt.Sprintf("Recovery capability package approved for %s", strings.ToUpper(roleCode)),
+		ErrorMsg:    fmt.Sprintf("role_code: %s | capability_id: %s | capability_name: %s", roleCode, capabilityID, capabilityName),
+	})
+}
 func (h *Handler) rejectCapability(w http.ResponseWriter, r *http.Request, id string) {
 	if h.importer == nil {
 		now := time.Now().Format(time.RFC3339)

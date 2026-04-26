@@ -2938,10 +2938,12 @@ function App() {
             return getUsageForProvider(usageMap, provider).total > 0;
         };
         const getPreferredProvider = (providerNames: string[], currentProviderName: string, usageMap: Record<string, SidebarTokenUsageStat>) => {
-            const providerWithUsage = providerNames.find((provider) => hasUsage(usageMap, provider));
-            if (currentProviderName && providerNames.includes(currentProviderName) && (hasUsage(usageMap, currentProviderName) || !providerWithUsage)) {
+            // Always prefer the explicitly selected current provider.
+            if (currentProviderName && providerNames.includes(currentProviderName)) {
                 return currentProviderName;
             }
+            // Fallback: pick the first provider that has usage data, or the first in the list.
+            const providerWithUsage = providerNames.find((provider) => hasUsage(usageMap, provider));
             return providerWithUsage || currentProviderName || providerNames[0] || '';
         };
         const refreshSidebarTokenUsage = async () => {

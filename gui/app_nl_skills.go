@@ -51,6 +51,7 @@ type NLSkillDefinition struct {
 	Content        string        `json:"content,omitempty"`        // Markdown content for knowledge-type skills
 	Publisher      string        `json:"publisher,omitempty"`      // Plugin namespace publisher
 	Mode           string        `json:"mode,omitempty"`           // "sequential" (default) | "interactive" | "api_workflow"
+	HasDocumentation bool       `json:"has_documentation"`        // true if SKILL.md exists in skill directory
 	SkillDir       string        `json:"-"`                        // skill directory path (internal use, not serialized to frontend)
 	Params         []corelib.NLSkillParam `json:"params,omitempty"`  // parameter schema (explicit or synthesized)
 	RequiredArgs   []string      `json:"required_args,omitempty"`   // required template variables
@@ -461,6 +462,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			Content:        s.Content,
 			Publisher:      s.Publisher,
 			Mode:           s.Mode,
+			HasDocumentation: s.SkillDir != "" && hasSkillDocFile(s.SkillDir),
 			SkillDir:       s.SkillDir,
 			Params:         s.Params,
 			RequiredArgs:   s.RequiredArgs,

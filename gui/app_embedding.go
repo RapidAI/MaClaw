@@ -44,7 +44,7 @@ func (a *App) initEarlyClassifier() {
 	// Create UIC with noop embedder — L1 keywords are always available.
 	uic := intent.New(intent.Config{
 		Embedder:   embedding.NoopEmbedder{},
-		LLMTimeout: 8 * time.Second,
+		LLMTimeout: 15 * time.Second,
 	})
 	a.unifiedClassifier = uic
 
@@ -546,7 +546,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		// Fallback: initEarlyClassifier didn't run (shouldn't happen in production).
 		uic := intent.New(intent.Config{
 			Embedder:   emb,
-			LLMTimeout: 8 * time.Second,
+			LLMTimeout: 15 * time.Second,
 		})
 		uic.SetLLMFunc(a.buildUICLLMFunc())
 		a.unifiedClassifier = uic
@@ -623,8 +623,13 @@ func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 			map[string]string{"role": "system", "content": systemPrompt},
 			map[string]string{"role": "user", "content": userText},
 		}
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 8*time.Second)
+		// Use 15s timeout to match the UIC LLMTimeout. Third-party API
+		// providers (e.g., api.rapidai.tech proxy) typically respond in
+		// 8-15s. The previous 8s timeout caused L3 tree channel to fail
+		// on nearly every call, leaving WorkflowType empty and preventing
+		// workflow startup.
+		client := &http.Client{Timeout: 20 * time.Second}
+		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 15*time.Second)
 		if err != nil {
 			return "", err
 		}

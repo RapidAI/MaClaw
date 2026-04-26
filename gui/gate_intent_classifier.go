@@ -108,6 +108,7 @@ type GateIntentResult struct {
 	Layer      int                    // 1=keyword, 2=embedding, 3=LLM
 	Reason     string                 // human-readable explanation
 	AllScores  map[GateIntent]float64 // diagnostic: scores for all five categories
+	Degraded   bool                   // true when UIC fusion was in degraded mode (one channel failed)
 }
 
 // ConversationContextProvider abstracts access to recent conversation history
@@ -224,6 +225,7 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 			Gap:        gap,
 			Layer:      layer,
 			Reason:     reason,
+			Degraded:   uicResult.Degraded,
 		}
 		log.Printf("[GateIntentClassifier] classify(%q): UIC delegation intent=%s conf=%.2f layer=%d",
 			text, result.Intent, result.Confidence, result.Layer)

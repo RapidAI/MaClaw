@@ -192,6 +192,7 @@ func flushProviderUsage(ctx context.Context, system store.SystemSettingsReposito
 	if err := im.SaveLLMProviderRegistry(ctx, system, reg); err != nil {
 		return err
 	}
+	invalidateLLMRuntimeCaches(system)
 	return syncLegacyHubLLMConfig(ctx, system, reg)
 }
 
@@ -199,7 +200,7 @@ func flushCreditCharges(ctx context.Context, system store.SystemSettingsReposito
 	if len(chargeMap) == 0 {
 		return nil
 	}
-	reg, err := llmservice.LoadRegistry(ctx, system)
+	reg, err := loadCachedLLMServiceRegistry(ctx, system)
 	if err != nil {
 		return err
 	}
@@ -216,7 +217,11 @@ func flushCreditCharges(ctx context.Context, system store.SystemSettingsReposito
 		}
 		llmservice.ApplyCreditUsageToRegistry(reg, charge.email, charge.serviceGroupIDs, charge.credits, now)
 	}
-	return llmservice.SaveRegistry(ctx, system, reg)
+	if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {
+		return err
+	}
+	invalidateLLMRuntimeCaches(system)
+	return nil
 }
 
 func normalizeUsageStringSlice(items []string) []string {

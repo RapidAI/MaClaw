@@ -372,11 +372,7 @@ func (c MaclawLLMConfig) EffectiveTimeoutSec() int {
 // it appends "/messages" directly; otherwise it appends "/v1/messages".
 // This avoids double "/v1" when the base URL is e.g. "https://host/api/v1".
 func AnthropicMessagesEndpoint(baseURL string) string {
-	trimmed := strings.TrimRight(baseURL, "/")
-	if strings.HasSuffix(trimmed, "/v1") {
-		return trimmed + "/messages"
-	}
-	return trimmed + "/v1/messages"
+	return appendV1Path(baseURL, "/messages")
 }
 
 // SetAnthropicAuthHeaders sets both x-api-key and Authorization Bearer headers

@@ -439,3 +439,39 @@ func TestAdminDiagnoseLLMServiceReturnsBillingRoutes(t *testing.T) {
 		t.Fatalf("expected credits_available=6, got %#v", route["credits_available"])
 	}
 }
+
+func TestAdminGenerateLLMProviderTestKey(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-key", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	services.handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["email"] != "admin@example.com" {
+		t.Fatalf("expected admin@example.com, got %#v", payload["email"])
+	}
+	if payload["token_type"] != "Bearer" {
+		t.Fatalf("expected Bearer token type, got %#v", payload["token_type"])
+	}
+	accessToken, _ := payload["access_token"].(string)
+	if strings.TrimSpace(accessToken) == "" {
+		t.Fatalf("expected access token, got %#v", payload["access_token"])
+	}
+	if payload["auth_header"] != "Bearer "+accessToken {
+		t.Fatalf("unexpected auth header: %#v", payload["auth_header"])
+	}
+	if payload["expires_in_days"] != float64(30) {
+		t.Fatalf("expected expires_in_days=30, got %#v", payload["expires_in_days"])
+	}
+}

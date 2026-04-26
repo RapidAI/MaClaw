@@ -162,40 +162,36 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		return RemoteActivationResult{}, err
 	}
 
-	// Persist credentials — reload config to avoid overwriting concurrent changes
-	// (e.g. user changed LLM settings in UI while enrollment was in progress).
-	// Only merge enrollment-specific fields into the fresh config.
+	// Persist credentials atomically via PatchConfig to eliminate the TOCTOU
+	// race between LoadConfig and SaveConfig. Only enrollment-specific fields
+	// are patched — other fields (LLM settings, UI preferences, etc.) that
+	// may have been modified concurrently are untouched.
 	persistStart := time.Now()
-	freshCfg, err := a.LoadConfig()
-	if err != nil {
-		// Fall back to the stale cfg if reload fails.
-		freshCfg = cfg
-	}
-	freshCfg.RemoteEmail = enrollResult.Email
-	freshCfg.RemoteSN = enrollResult.SN
-	freshCfg.RemoteUserID = enrollResult.UserID
-	freshCfg.RemoteMachineID = enrollResult.MachineID
-	freshCfg.RemoteMachineToken = enrollResult.MachineToken
-	freshCfg.RemoteHubURL = enrollResult.HubURL
-	freshCfg.RemoteEnabled = true // Mark remote as enabled for consistency with TUI
-	if enrollResult.ViewerToken != "" {
-		freshCfg.RemoteViewerToken = enrollResult.ViewerToken
-	}
-	if enrollResult.ClientID != "" && freshCfg.RemoteClientID == "" {
-		freshCfg.RemoteClientID = enrollResult.ClientID
-	}
-	if enrollResult.HubCenterURL != "" {
-		freshCfg.RemoteHubCenterURL = enrollResult.HubCenterURL
-	}
-	if len(enrollResult.DiscoveredURLs) > 0 {
-		freshCfg.RemoteHubCenterURLs = remote.NormalizeHubCenterURLs(enrollResult.DiscoveredURLs)
-	}
-	log.Printf("[onboarding] ActivateRemote save_config:start machine_id=%s email=%s", enrollResult.MachineID, enrollResult.Email)
-	if err := a.SaveConfig(freshCfg); err != nil {
-		log.Printf("[onboarding] ActivateRemote save_config:failed after=%s err=%v", time.Since(persistStart), err)
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteEmail = enrollResult.Email
+		cfg.RemoteSN = enrollResult.SN
+		cfg.RemoteUserID = enrollResult.UserID
+		cfg.RemoteMachineID = enrollResult.MachineID
+		cfg.RemoteMachineToken = enrollResult.MachineToken
+		cfg.RemoteHubURL = enrollResult.HubURL
+		cfg.RemoteEnabled = true
+		if enrollResult.ViewerToken != "" {
+			cfg.RemoteViewerToken = enrollResult.ViewerToken
+		}
+		if enrollResult.ClientID != "" && cfg.RemoteClientID == "" {
+			cfg.RemoteClientID = enrollResult.ClientID
+		}
+		if enrollResult.HubCenterURL != "" {
+			cfg.RemoteHubCenterURL = enrollResult.HubCenterURL
+		}
+		if len(enrollResult.DiscoveredURLs) > 0 {
+			cfg.RemoteHubCenterURLs = remote.NormalizeHubCenterURLs(enrollResult.DiscoveredURLs)
+		}
+	}); err != nil {
+		log.Printf("[onboarding] ActivateRemote PatchConfig:failed after=%s err=%v", time.Since(persistStart), err)
 		return RemoteActivationResult{}, err
 	}
-	log.Printf("[onboarding] ActivateRemote save_config=%s", time.Since(persistStart))
+	log.Printf("[onboarding] ActivateRemote PatchConfig=%s machine_id=%s email=%s", time.Since(persistStart), enrollResult.MachineID, enrollResult.Email)
 
 	// Convert to GUI result type.
 	result := RemoteActivationResult{
@@ -328,16 +324,13 @@ func (a *App) clearMachineCredentials() {
 		_ = a.remoteSessions.hubClient.Disconnect()
 	}
 
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return
-	}
-	cfg.RemoteSN = ""
-	cfg.RemoteUserID = ""
-	cfg.RemoteMachineID = ""
-	cfg.RemoteMachineToken = ""
-	cfg.RemoteViewerToken = ""
-	_ = a.SaveConfig(cfg)
+	_ = a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteSN = ""
+		cfg.RemoteUserID = ""
+		cfg.RemoteMachineID = ""
+		cfg.RemoteMachineToken = ""
+		cfg.RemoteViewerToken = ""
+	})
 
 	a.emitRemoteStateChanged()
 }
@@ -347,17 +340,14 @@ func (a *App) ClearRemoteActivation() error {
 		_ = a.remoteSessions.hubClient.Disconnect()
 	}
 
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.RemoteEmail = ""
-	cfg.RemoteSN = ""
-	cfg.RemoteUserID = ""
-	cfg.RemoteMachineID = ""
-	cfg.RemoteMachineToken = ""
-	cfg.RemoteViewerToken = ""
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteEmail = ""
+		cfg.RemoteSN = ""
+		cfg.RemoteUserID = ""
+		cfg.RemoteMachineID = ""
+		cfg.RemoteMachineToken = ""
+		cfg.RemoteViewerToken = ""
+	}); err != nil {
 		return err
 	}
 

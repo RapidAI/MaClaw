@@ -16,11 +16,16 @@ import (
 const hubLLMPromptCacheConfigKey = "hub_llm_prompt_cache_config"
 
 type HubLLMPromptCacheConfig struct {
-	Enabled          bool  `json:"enabled"`
-	TTLSeconds       int   `json:"ttl_seconds"`
-	MemoryMaxEntries int   `json:"memory_max_entries"`
-	MemoryMaxBytes   int64 `json:"memory_max_bytes"`
-	DiskMaxBytes     int64 `json:"disk_max_bytes"`
+	Enabled                      bool  `json:"enabled"`
+	TTLSeconds                   int   `json:"ttl_seconds"`
+	MemoryMaxEntries             int   `json:"memory_max_entries"`
+	MemoryMaxBytes               int64 `json:"memory_max_bytes"`
+	DiskMaxBytes                 int64 `json:"disk_max_bytes"`
+	NormalizeDeterministicParams bool  `json:"normalize_deterministic_params"`
+	IgnoreModelField             bool  `json:"ignore_model_field"`
+	IgnoreUserField              bool  `json:"ignore_user_field"`
+	IgnoreMetadataField          bool  `json:"ignore_metadata_field"`
+	SingleflightWaitTimeoutMS    int   `json:"singleflight_wait_timeout_ms"`
 }
 type hubLLMPromptCacheEntriesResponse struct {
 	Entries   []hubLLMPromptCacheEntryView `json:"entries"`
@@ -46,13 +51,36 @@ type hubLLMPromptCacheEntryView struct {
 	ExpiresAt         string `json:"expires_at,omitempty"`
 }
 
+type hubLLMPromptCacheEntryDetailResponse struct {
+	CacheKey          string          `json:"cache_key"`
+	ProviderID        string          `json:"provider_id"`
+	Model             string          `json:"model"`
+	Kind              string          `json:"kind"`
+	PayloadBytes      int64           `json:"payload_bytes"`
+	CachedInputTokens int64           `json:"cached_input_tokens"`
+	CacheWriteTokens  int64           `json:"cache_write_tokens"`
+	HitCount          int64           `json:"hit_count"`
+	CreatedAt         string          `json:"created_at,omitempty"`
+	AccessedAt        string          `json:"accessed_at,omitempty"`
+	ExpiresAt         string          `json:"expires_at,omitempty"`
+	AuthorizedModel   string          `json:"authorized_model,omitempty"`
+	RequestedModel    string          `json:"requested_model,omitempty"`
+	OrderedProviders  []string        `json:"ordered_providers,omitempty"`
+	NormalizedRequest json.RawMessage `json:"normalized_request,omitempty"`
+}
+
 func defaultHubLLMPromptCacheConfig() HubLLMPromptCacheConfig {
 	return HubLLMPromptCacheConfig{
-		Enabled:          true,
-		TTLSeconds:       1800,
-		MemoryMaxEntries: 256,
-		MemoryMaxBytes:   8 << 20,
-		DiskMaxBytes:     64 << 20,
+		Enabled:                      true,
+		TTLSeconds:                   1800,
+		MemoryMaxEntries:             256,
+		MemoryMaxBytes:               8 << 20,
+		DiskMaxBytes:                 64 << 20,
+		NormalizeDeterministicParams: true,
+		IgnoreModelField:             true,
+		IgnoreUserField:              true,
+		IgnoreMetadataField:          true,
+		SingleflightWaitTimeoutMS:    15000,
 	}
 }
 
@@ -69,6 +97,9 @@ func normalizeHubLLMPromptCacheConfig(cfg HubLLMPromptCacheConfig) HubLLMPromptC
 	}
 	if cfg.DiskMaxBytes <= 0 {
 		cfg.DiskMaxBytes = defaults.DiskMaxBytes
+	}
+	if cfg.SingleflightWaitTimeoutMS <= 0 {
+		cfg.SingleflightWaitTimeoutMS = defaults.SingleflightWaitTimeoutMS
 	}
 	return cfg
 }
@@ -100,6 +131,7 @@ func SaveHubLLMPromptCacheConfig(ctx context.Context, system store.SystemSetting
 	if err := system.Set(ctx, hubLLMPromptCacheConfigKey, string(data)); err != nil {
 		return cfg, err
 	}
+	invalidateLLMRuntimeCaches(system)
 	return cfg, nil
 }
 
@@ -111,7 +143,7 @@ func applyHubLLMPromptCacheRuntimeConfig(cacheSource any, cfg HubLLMPromptCacheC
 
 func GetHubLLMPromptCacheConfigHandler(system store.SystemSettingsRepository, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cfg := LoadHubLLMPromptCacheConfig(r.Context(), system)
+		cfg := loadCachedHubLLMPromptCacheConfig(r.Context(), system)
 		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cfg)
 		writeJSON(w, http.StatusOK, cfg)
 	}
@@ -154,6 +186,57 @@ func ClearHubLLMPromptCacheHandler(promptCacheSources ...any) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"purged": purged})
+	}
+}
+
+func GetHubLLMPromptCacheEntryHandler(promptCacheSource any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cacheKey := strings.TrimSpace(r.URL.Query().Get("cache_key"))
+		if cacheKey == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_CACHE_KEY", "cache_key is required")
+			return
+		}
+		repo, ok := promptCacheStatusRepository(promptCacheSource)
+		if !ok || repo == nil {
+			writeError(w, http.StatusNotFound, "HUB_LLM_PROMPT_CACHE_ENTRY_NOT_FOUND", "cache entry not found")
+			return
+		}
+		entry, err := repo.Get(r.Context(), cacheKey)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "HUB_LLM_PROMPT_CACHE_ENTRY_FAILED", err.Error())
+			return
+		}
+		if entry == nil {
+			writeError(w, http.StatusNotFound, "HUB_LLM_PROMPT_CACHE_ENTRY_NOT_FOUND", "cache entry not found")
+			return
+		}
+		resp := hubLLMPromptCacheEntryDetailResponse{
+			CacheKey:          entry.CacheKey,
+			ProviderID:        entry.ProviderID,
+			Model:             entry.Model,
+			Kind:              entry.Kind,
+			PayloadBytes:      entry.PayloadBytes,
+			CachedInputTokens: entry.CachedInputTokens,
+			CacheWriteTokens:  entry.CacheWriteTokens,
+			HitCount:          entry.HitCount,
+		}
+		if !entry.CreatedAt.IsZero() {
+			resp.CreatedAt = entry.CreatedAt.UTC().Format(time.RFC3339)
+		}
+		if !entry.AccessedAt.IsZero() {
+			resp.AccessedAt = entry.AccessedAt.UTC().Format(time.RFC3339)
+		}
+		if entry.ExpiresAt != nil && !entry.ExpiresAt.IsZero() {
+			resp.ExpiresAt = entry.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		var cached cachedAuthorizedModelResponse
+		if err := json.Unmarshal(entry.Payload, &cached); err == nil {
+			resp.AuthorizedModel = strings.TrimSpace(cached.AuthorizedModel)
+			resp.RequestedModel = strings.TrimSpace(cached.RequestedModel)
+			resp.OrderedProviders = append([]string(nil), cached.OrderedProviders...)
+			resp.NormalizedRequest = append([]byte(nil), cached.NormalizedRequest...)
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 

@@ -101,6 +101,19 @@ func TestCredentialDetailUpdateAndRotate(t *testing.T) {
 	if _, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "key-rotate", APISecret: "secret-new"}); err != nil {
 		t.Fatalf("IssueToken with new secret: %v", err)
 	}
+	rotatedKey, err := svc.RotateCredentialAPIKey(context.Background(), tenant.ID, user.ID, created.ID, RotateCredentialKeyInput{APIKey: "key-rotated"})
+	if err != nil {
+		t.Fatalf("RotateCredentialAPIKey: %v", err)
+	}
+	if rotatedKey.APIKey == "" || rotatedKey.APIKey == "key-rotated" || rotatedKey.SecretDigest != "" {
+		t.Fatalf("rotated key credential should be sanitized: %#v", rotatedKey)
+	}
+	if _, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "key-rotate", APISecret: "secret-new"}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("old key error = %v, want ErrUnauthorized", err)
+	}
+	if _, err := svc.IssueToken(context.Background(), IssueTokenInput{APIKey: "key-rotated", APISecret: "secret-new"}); err != nil {
+		t.Fatalf("IssueToken with rotated key: %v", err)
+	}
 }
 
 func testDeleteLLMConfig() corelib.AppConfig {

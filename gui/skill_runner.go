@@ -2698,6 +2698,21 @@ func loadSkillDocContent(skillDir string) string {
 	return ""
 }
 
+// hasSkillDocFile checks whether a SKILL.md (or equivalent) exists in the
+// skill directory without reading its content. Used by List() to populate
+// HasDocumentation efficiently — avoids file IO on every frontend refresh.
+func hasSkillDocFile(skillDir string) bool {
+	if skillDir == "" {
+		return false
+	}
+	for _, name := range []string{"SKILL.md", "skill.md", "README.md"} {
+		if _, err := os.Stat(filepath.Join(skillDir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // autoInstallSkillDependencies installs pip/npm packages declared in the skill's
 // requires field. Runs `pip install` and `npm install -g` as needed.
 // Returns an error if installation fails, but callers should treat this as

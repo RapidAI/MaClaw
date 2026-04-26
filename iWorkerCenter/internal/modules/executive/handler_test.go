@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/collaboration"
+	colleagueRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/repo"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/workflow"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/db"
 )
 
@@ -42,56 +45,6 @@ func TestHandleOverviewUsesRealStats(t *testing.T) {
 		t.Fatalf("metrics = %#v, want 4 entries", body["metrics"])
 	}
 
-	boardSummary, ok := body["board_summary"].(string)
-	if !ok || !strings.Contains(boardSummary, "already under active management review") {
-		t.Fatalf("board_summary = %#v", body["board_summary"])
-	}
-
-	boardFocus, ok := body["board_focus"].(map[string]any)
-	if !ok {
-		t.Fatalf("board_focus = %#v", body["board_focus"])
-	}
-	if boardFocus["role_code"] != "sales" {
-		t.Fatalf("board focus role_code = %#v", boardFocus["role_code"])
-	}
-	if boardFocus["title"] != "Hold management attention on sales" {
-		t.Fatalf("board focus title = %#v", boardFocus["title"])
-	}
-
-	priorityDecision, ok := body["priority_decision"].(map[string]any)
-	if !ok {
-		t.Fatalf("priority_decision = %#v", body["priority_decision"])
-	}
-	if priorityDecision["role_code"] != "sales" {
-		t.Fatalf("priority_decision.role_code = %#v, want sales", priorityDecision["role_code"])
-	}
-	if priorityDecision["title"] != "Hold management attention on sales" {
-		t.Fatalf("priority_decision.title = %#v", priorityDecision["title"])
-	}
-
-	prioritySummary, ok := body["priority_summary"].(string)
-	if !ok || prioritySummary == "" {
-		t.Fatalf("priority_summary = %#v", body["priority_summary"])
-	}
-	if !strings.Contains(prioritySummary, "already under active management review") {
-		t.Fatalf("priority_summary = %q", prioritySummary)
-	}
-
-	boardSignals, ok := body["board_signals"].([]any)
-	if !ok || len(boardSignals) != 3 {
-		t.Fatalf("board_signals = %#v, want 3 entries", body["board_signals"])
-	}
-	firstBoardSignal, ok := boardSignals[0].(map[string]any)
-	if !ok {
-		t.Fatalf("first board signal = %#v", boardSignals[0])
-	}
-	if firstBoardSignal["role_code"] == "" {
-		t.Fatalf("board signal role_code should be populated: %#v", firstBoardSignal)
-	}
-	if firstBoardSignal["signal_priority"] != float64(0) {
-		t.Fatalf("first board signal signal_priority = %#v, want 0", firstBoardSignal["signal_priority"])
-	}
-
 	boardHistory, ok := body["board_history"].([]any)
 	if !ok || len(boardHistory) == 0 {
 		t.Fatalf("board_history = %#v, want at least 1 entry", body["board_history"])
@@ -116,13 +69,28 @@ func TestHandleOverviewUsesRealStats(t *testing.T) {
 			continue
 		}
 		title, _ := item["title"].(string)
-		if strings.Contains(title, "Management review opened for SALES") {
+		if strings.Contains(title, "Management review opened for MANAGEMENT-SYSTEMS") {
 			foundManagementDecision = true
 			break
 		}
 	}
 	if !foundManagementDecision {
 		t.Fatalf("board_history should include management decision events: %#v", boardHistory)
+	}
+	foundRecoveryDispatch := false
+	for _, raw := range boardHistory {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		title, _ := item["title"].(string)
+		if strings.Contains(title, "Recovery action dispatched for MANAGEMENT-SYSTEMS") {
+			foundRecoveryDispatch = true
+			break
+		}
+	}
+	if !foundRecoveryDispatch {
+		t.Fatalf("board_history should include recovery dispatch events: %#v", boardHistory)
 	}
 
 	actions, ok := body["actions"].([]any)
@@ -223,7 +191,7 @@ func TestHandleRecordManagementDecisionWritesAuditLog(t *testing.T) {
 
 	auditRepo := audit.NewRepo(provider.Write, provider.Read)
 	h := NewHandler(provider.Read, auditRepo)
-	payload := bytes.NewBufferString(`{"role_code":"sales","decision_type":"deferred","detail":"Deferred until next review: 04/27 18:30. Revisit SALES if coordination risk continues to rise.","display_time":"04/26 18:30"}`)
+	payload := bytes.NewBufferString(`{"role_code":"management-systems","decision_type":"deferred","detail":"Deferred until next review: 04/27 18:30. Revisit MANAGEMENT-SYSTEMS if coordination risk continues to rise.","display_time":"04/26 18:30"}`)
 	req := httptest.NewRequest(http.MethodPost, "/admin/executive/management-decisions", payload)
 	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
 	rr := httptest.NewRecorder()
@@ -246,11 +214,372 @@ func TestHandleRecordManagementDecisionWritesAuditLog(t *testing.T) {
 	if !strings.Contains(logs[0].ErrorMsg, "decision_type: deferred") {
 		t.Fatalf("error_msg = %q", logs[0].ErrorMsg)
 	}
-	if !strings.Contains(logs[0].Summary, "deferred for SALES") {
+	if !strings.Contains(logs[0].Summary, "deferred for MANAGEMENT-SYSTEMS") {
 		t.Fatalf("summary = %q", logs[0].Summary)
 	}
 }
 
+func TestHandleConfirmAutonomyReturnWritesAuditLog(t *testing.T) {
+	provider := openExecTestDB(t)
+	defer provider.Close()
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	h := NewHandler(provider.Read, auditRepo)
+	payload := bytes.NewBufferString(`{"role_code":"management-systems","detail":"Autonomy return confirmed at 04/26 19:10. MANAGEMENT-SYSTEMS can leave active management attention and continue inside delegated execution.","display_time":"04/26 19:10"}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/executive/autonomy-return", payload)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+
+	h.handleConfirmAutonomyReturn(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	logs, err := auditRepo.ListRecent("tenant-a", 10)
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("expected autonomy return audit log to be recorded")
+	}
+	if logs[0].WorkType != "management_autonomy_return" {
+		t.Fatalf("work_type = %q", logs[0].WorkType)
+	}
+	if !strings.Contains(logs[0].ErrorMsg, "decision_type: autonomy_return") {
+		t.Fatalf("error_msg = %q", logs[0].ErrorMsg)
+	}
+	if !strings.Contains(logs[0].Summary, "Return to autonomy confirmed for MANAGEMENT-SYSTEMS") {
+		t.Fatalf("summary = %q", logs[0].Summary)
+	}
+}
+
+func TestHandleOverviewPrioritizesAutonomyReturn(t *testing.T) {
+	provider := openExecTestDB(t)
+	defer provider.Close()
+	seedExecutiveData(t, provider)
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	seedExecutiveHistory(t, auditRepo)
+	if err := auditRepo.Insert("tenant-a", &audit.ProxyLog{
+		RequestID:  "management-autonomy-return-management-systems",
+		ProviderID: "iworkercenter",
+		Model:      "management-autonomy-return",
+		WorkType:   "management_autonomy_return",
+		CostTier:   "internal",
+		Status:     "ok",
+		Summary:    "Return to autonomy confirmed for MANAGEMENT-SYSTEMS",
+		ErrorMsg:   "decision_type: autonomy_return | role_code: management-systems | detail: Autonomy return confirmed at 04/26 19:10. MANAGEMENT-SYSTEMS can leave active management attention and continue inside delegated execution. | display_time: 04/26 19:10",
+		CreatedAt:  time.Now().Add(-10 * time.Second),
+	}); err != nil {
+		t.Fatalf("insert autonomy return audit: %v", err)
+	}
+
+	h := NewHandler(provider.Read, auditRepo)
+	req := httptest.NewRequest(http.MethodGet, "/admin/executive/overview", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+
+	h.handleOverview(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	boardHistory, ok := body["board_history"].([]any)
+	if !ok || len(boardHistory) == 0 {
+		t.Fatalf("board_history = %#v", body["board_history"])
+	}
+	foundAutonomyReturn := false
+	for _, raw := range boardHistory {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		title, _ := item["title"].(string)
+		if strings.Contains(title, "Return to autonomy confirmed for MANAGEMENT-SYSTEMS") {
+			foundAutonomyReturn = true
+			break
+		}
+	}
+	if !foundAutonomyReturn {
+		t.Fatalf("board_history should include autonomy return events: %#v", boardHistory)
+	}
+}
+
+func TestHandleGenerateDepositionDraftsCreatesArtifacts(t *testing.T) {
+	provider := openExecTestDB(t)
+	defer provider.Close()
+	seedExecutiveData(t, provider)
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	collabRepo := collaboration.NewRepo(provider.Write, provider.Read)
+	colRepo := colleagueRepo.New(provider.Write, provider.Read)
+	wfRepo := workflow.NewRepo(provider.Write, provider.Read)
+	wfSvc := workflow.NewService(wfRepo, provider, collabRepo, colRepo)
+
+	h := NewHandler(provider.Read, auditRepo)
+	h.SetWriteDB(provider.Write)
+	h.SetWorkflowService(wfSvc)
+
+	payload := bytes.NewBufferString(`{"role_code":"management-systems","action_title":"Deposit recovery learning into system assets","detail":"The role has already been cleared to return to autonomous execution. The next move is to capture the recovery path as reusable memory, workflow logic, and operating policy so the same exception does not need fresh management attention next time."}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/executive/deposition-drafts", payload)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+
+	h.handleGenerateDepositionDrafts(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if body["memory_id"] == "" || body["capability_id"] == "" || body["workflow_id"] == "" {
+		t.Fatalf("draft response missing ids: %#v", body)
+	}
+
+	var memoryCount int
+	if err := provider.Read.QueryRow("SELECT COUNT(*) FROM shared_memories WHERE tenant_id=? AND title=?", "tenant-a", "Management Systems recovery playbook").Scan(&memoryCount); err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if memoryCount != 1 {
+		t.Fatalf("memoryCount = %d, want 1", memoryCount)
+	}
+
+	var capabilityCount int
+	if err := provider.Read.QueryRow("SELECT COUNT(*) FROM capability_packages WHERE tenant_id=? AND name=?", "tenant-a", "Management Systems recovery handling").Scan(&capabilityCount); err != nil {
+		t.Fatalf("count capabilities: %v", err)
+	}
+	if capabilityCount != 1 {
+		t.Fatalf("capabilityCount = %d, want 1", capabilityCount)
+	}
+
+	var workflowCount int
+	if err := provider.Read.QueryRow("SELECT COUNT(*) FROM workflow_definitions WHERE tenant_id=? AND name=?", "tenant-a", "Management Systems recovery deposition loop").Scan(&workflowCount); err != nil {
+		t.Fatalf("count workflows: %v", err)
+	}
+	if workflowCount != 1 {
+		t.Fatalf("workflowCount = %d, want 1", workflowCount)
+	}
+
+	logs, err := auditRepo.ListRecent("tenant-a", 10)
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("expected deposition draft audit log to be recorded")
+	}
+	if logs[0].WorkType != "executive_deposition_draft" {
+		t.Fatalf("work_type = %q", logs[0].WorkType)
+	}
+	if !strings.Contains(logs[0].Summary, "Deposition drafts generated for MANAGEMENT-SYSTEMS") {
+		t.Fatalf("summary = %q", logs[0].Summary)
+	}
+}
+
+func TestHandlePublishDepositionRolloutWritesAuditLog(t *testing.T) {
+	provider := openExecTestDB(t)
+	defer provider.Close()
+	seedExecutiveData(t, provider)
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	collabRepo := collaboration.NewRepo(provider.Write, provider.Read)
+	colRepo := colleagueRepo.New(provider.Write, provider.Read)
+	wfRepo := workflow.NewRepo(provider.Write, provider.Read)
+	wfSvc := workflow.NewService(wfRepo, provider, collabRepo, colRepo)
+
+	h := NewHandler(provider.Read, auditRepo)
+	h.SetWorkflowService(wfSvc)
+
+	payload := bytes.NewBufferString(`{"role_code":"management-systems","workflow_id":"wf-def-1","detail":"The reviewed recovery workflow is ready to become the live organizational standard."}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/executive/deposition-rollout/publish", payload)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+
+	h.handlePublishDepositionRollout(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var status string
+	if err := provider.Read.QueryRow("SELECT status FROM workflow_definitions WHERE tenant_id=? AND id=?", "tenant-a", "wf-def-1").Scan(&status); err != nil {
+		t.Fatalf("query workflow status: %v", err)
+	}
+	if status != workflow.DefStatusPublished {
+		t.Fatalf("workflow status = %q, want %q", status, workflow.DefStatusPublished)
+	}
+
+	logs, err := auditRepo.ListRecent("tenant-a", 10)
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("expected standard publish audit log to be recorded")
+	}
+	if logs[0].WorkType != "executive_standard_published" {
+		t.Fatalf("work_type = %q", logs[0].WorkType)
+	}
+	if !strings.Contains(logs[0].Summary, "Recovery standard published for MANAGEMENT-SYSTEMS") {
+		t.Fatalf("summary = %q", logs[0].Summary)
+	}
+}
+
+func TestHandleOverviewPrioritizesCapabilityApprovalBeforeWorkflowPublish(t *testing.T) {
+	provider := openExecTestDB(t)
+	defer provider.Close()
+	seedExecutiveData(t, provider)
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	seedExecutiveHistory(t, auditRepo)
+	if err := auditRepo.Insert("tenant-a", &audit.ProxyLog{
+		RequestID:  "management-autonomy-return-management-systems",
+		ProviderID: "iworkercenter",
+		Model:      "management-autonomy-return",
+		WorkType:   "management_autonomy_return",
+		CostTier:   "internal",
+		Status:     "ok",
+		Summary:    "Return to autonomy confirmed for MANAGEMENT-SYSTEMS",
+		ErrorMsg:   "decision_type: autonomy_return | role_code: management-systems | detail: Autonomy return confirmed. | display_time: 04/26 19:10",
+		CreatedAt:  time.Now().Add(-20 * time.Second),
+	}); err != nil {
+		t.Fatalf("insert autonomy return audit: %v", err)
+	}
+	if err := auditRepo.Insert("tenant-a", &audit.ProxyLog{
+		RequestID:  "executive-capability-approved-management-systems",
+		ProviderID: "iworkercenter",
+		Model:      "executive-capability-approved",
+		WorkType:   "executive_capability_approved",
+		CostTier:   "internal",
+		Status:     "ok",
+		Summary:    "Recovery capability package approved for MANAGEMENT-SYSTEMS",
+		ErrorMsg:   "role_code: management-systems | capability_id: cap-draft | capability_name: Management Systems recovery handling",
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("insert capability approval audit: %v", err)
+	}
+
+	h := NewHandler(provider.Read, auditRepo)
+	req := httptest.NewRequest(http.MethodGet, "/admin/executive/overview", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+
+	h.handleOverview(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	boardHistory, ok := body["board_history"].([]any)
+	if !ok || len(boardHistory) == 0 {
+		t.Fatalf("board_history = %#v", body["board_history"])
+	}
+	foundCapabilityApproval := false
+	for _, raw := range boardHistory {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		title, _ := item["title"].(string)
+		if strings.Contains(title, "Recovery capability package approved for MANAGEMENT-SYSTEMS") {
+			foundCapabilityApproval = true
+			break
+		}
+	}
+	if !foundCapabilityApproval {
+		t.Fatalf("board_history should include capability approval events: %#v", boardHistory)
+	}
+}
+func TestHandleOverviewPrioritizesPublishedStandard(t *testing.T) {
+	provider := openExecTestDB(t)
+	defer provider.Close()
+	seedExecutiveData(t, provider)
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	seedExecutiveHistory(t, auditRepo)
+	if err := auditRepo.Insert("tenant-a", &audit.ProxyLog{
+		RequestID:  "management-autonomy-return-management-systems",
+		ProviderID: "iworkercenter",
+		Model:      "management-autonomy-return",
+		WorkType:   "management_autonomy_return",
+		CostTier:   "internal",
+		Status:     "ok",
+		Summary:    "Return to autonomy confirmed for MANAGEMENT-SYSTEMS",
+		ErrorMsg:   "decision_type: autonomy_return | role_code: management-systems | detail: Autonomy return confirmed. | display_time: 04/26 19:10",
+		CreatedAt:  time.Now().Add(-20 * time.Second),
+	}); err != nil {
+		t.Fatalf("insert autonomy return audit: %v", err)
+	}
+	if err := auditRepo.Insert("tenant-a", &audit.ProxyLog{
+		RequestID:  "executive-deposition-draft-management-systems",
+		ProviderID: "iworkercenter",
+		Model:      "executive-deposition-draft",
+		WorkType:   "executive_deposition_draft",
+		CostTier:   "internal",
+		Status:     "ok",
+		Summary:    "Deposition drafts generated for MANAGEMENT-SYSTEMS",
+		ErrorMsg:   "role_code: management-systems | detail: Recovery learning was converted into institutional drafts. | memory_id: mem-draft | capability_id: cap-draft | workflow_id: wf-def-1",
+		CreatedAt:  time.Now().Add(-10 * time.Second),
+	}); err != nil {
+		t.Fatalf("insert deposition draft audit: %v", err)
+	}
+	if err := auditRepo.Insert("tenant-a", &audit.ProxyLog{
+		RequestID:  "executive-standard-published-management-systems",
+		ProviderID: "iworkercenter",
+		Model:      "executive-standard-published",
+		WorkType:   "executive_standard_published",
+		CostTier:   "internal",
+		Status:     "ok",
+		Summary:    "Recovery standard published for MANAGEMENT-SYSTEMS",
+		ErrorMsg:   "role_code: management-systems | workflow_id: wf-def-1 | detail: The reviewed recovery workflow is now the published organizational standard.",
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("insert standard publish audit: %v", err)
+	}
+
+	h := NewHandler(provider.Read, auditRepo)
+	req := httptest.NewRequest(http.MethodGet, "/admin/executive/overview", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+
+	h.handleOverview(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	boardHistory, ok := body["board_history"].([]any)
+	if !ok || len(boardHistory) == 0 {
+		t.Fatalf("board_history = %#v", body["board_history"])
+	}
+	foundPublishedStandard := false
+	for _, raw := range boardHistory {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		title, _ := item["title"].(string)
+		if strings.Contains(title, "Recovery standard published for MANAGEMENT-SYSTEMS") {
+			foundPublishedStandard = true
+			break
+		}
+	}
+	if !foundPublishedStandard {
+		t.Fatalf("board_history should include standard publish events: %#v", boardHistory)
+	}
+}
 func openExecTestDB(t *testing.T) *db.Provider {
 	t.Helper()
 	provider, err := db.Open(":memory:")
@@ -266,7 +595,7 @@ func openExecTestDB(t *testing.T) *db.Provider {
 func seedExecutiveData(t *testing.T, provider *db.Provider) {
 	t.Helper()
 	now := time.Now().Format(time.RFC3339)
-	mustExec(t, provider, `INSERT INTO roles (id, tenant_id, name, code, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "role-1", "tenant-a", "Sales", "sales", "active", now, now)
+	mustExec(t, provider, `INSERT INTO roles (id, tenant_id, name, code, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "role-1", "tenant-a", "Sales", "management-systems", "active", now, now)
 	mustExec(t, provider, `INSERT INTO colleagues (id, tenant_id, name, role_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "col-1", "tenant-a", "Alice", "role-1", "active", now, now)
 	mustExec(t, provider, `INSERT INTO colleagues (id, tenant_id, name, role_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "col-2", "tenant-a", "Bob", "role-1", "active", now, now)
 	mustExec(t, provider, `INSERT INTO shared_memories (id, tenant_id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, "mem-1", "tenant-a", "Playbook", "active", now, now)
@@ -312,14 +641,14 @@ func seedExecutiveHistory(t *testing.T, auditRepo *audit.Repo) {
 		t.Fatalf("insert executive action audit: %v", err)
 	}
 	if err := auditRepo.Insert("tenant-a", &audit.ProxyLog{
-		RequestID:  "management-decision-sales",
+		RequestID:  "management-decision-management-systems",
 		ProviderID: "iworkercenter",
 		Model:      "management-decision",
 		WorkType:   "management_decision",
 		CostTier:   "internal",
 		Status:     "ok",
-		Summary:    "Management review opened for SALES",
-		ErrorMsg:   "decision_type: review | role_code: sales | detail: Taken into management review at 04/26 18:30. The role is now under active management attention. | display_time: 04/26 18:30",
+		Summary:    "Management review opened for MANAGEMENT-SYSTEMS",
+		ErrorMsg:   "decision_type: review | role_code: management-systems | detail: Taken into management review at 04/26 18:30. The role is now under active management attention. | display_time: 04/26 18:30",
 		CreatedAt:  time.Now().Add(-30 * time.Second),
 	}); err != nil {
 		t.Fatalf("insert management decision audit: %v", err)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MetricCard } from '../components/cards/MetricCard';
 import { SectionCard } from '../components/cards/SectionCard';
@@ -8,12 +8,12 @@ import { createCollaboration, getCollaborationRoutingSettings, listCollaboration
 import type { CollaborationRoutingOverview } from '../api/collaboration';
 import { listColleagues } from '../api/colleagues';
 import type { Colleague } from '../api/colleagues';
-import { fetchDashboard, fetchExecutiveSkills, recordManagementDecision, runExecutiveSkill } from '../api/dashboard';
+import { confirmReturnToAutonomy, fetchDashboard, fetchExecutiveSkills, generateDepositionDrafts, publishDepositionRollout, recordManagementDecision, runExecutiveSkill } from '../api/dashboard';
 import { listRoles } from '../api/roles';
 import type { Role } from '../api/roles';
 import { listCapabilities } from '../api/capabilities';
 import { listMemories } from '../api/memories';
-import type { CommunicationsNavigationTarget, Metric, DashboardItem, ExecutiveAction, ExecutiveBoardFocus, ExecutiveBoardHistoryItem, ExecutiveBriefing, ExecutiveSkill, ExecutiveSkillResult, OverviewNavigationTarget } from '../types';
+import type { AssetNavigationTarget, CenterTab, CommunicationsNavigationTarget, Metric, DashboardItem, ExecutiveAction, ExecutiveBoardFocus, ExecutiveBoardHistoryItem, ExecutiveBriefing, ExecutiveSkill, ExecutiveSkillResult, OverviewNavigationTarget } from '../types';
 
 type BoardSignal = {
   title: string;
@@ -58,11 +58,26 @@ type RoleExecutionFeedback = {
 };
 
 type ManagementDecisionRecord = {
-  type: 'review' | 'deferred';
+  type: 'review' | 'deferred' | 'autonomy_return';
   detail: string;
   recordedAt: string;
   displayTime: string;
 };
+type OperatingModeCard = {
+  id: string;
+  eyebrow: string;
+  title: string;
+  tone: 'ok' | 'info' | 'warn';
+  summary: string;
+  detail: string;
+  statLine: string[];
+  primaryActionLabel?: string;
+  secondaryActionLabel?: string;
+  onPrimaryAction?: () => void;
+  onSecondaryAction?: () => void;
+  focusSection?: 'briefing' | 'coordination' | 'actions';
+};
+
 type ExecutiveAuditCluster = {
   id: string;
   skillId: string;
@@ -97,13 +112,13 @@ const summarizeManagementDecisionState = (auditLogs: AuditLog[]) => {
   const latestByRole: Record<string, ManagementDecisionRecord> = {};
 
   auditLogs
-    .filter((item) => item.work_type === 'management_decision')
+    .filter((item) => item.work_type === 'management_decision' || item.work_type === 'management_autonomy_return')
     .forEach((item) => {
       const roleCode = extractAuditField(item.error_msg || '', 'role_code');
       const detail = extractAuditField(item.error_msg || '', 'detail');
       const decisionType = extractAuditField(item.error_msg || '', 'decision_type');
       const displayTime = extractAuditField(item.error_msg || '', 'display_time') || item.created_at;
-      if (!roleCode || !detail || (decisionType !== 'review' && decisionType !== 'deferred')) {
+      if (!roleCode || !detail || (decisionType !== 'review' && decisionType !== 'deferred' && decisionType !== 'autonomy_return')) {
         return;
       }
       const record: ManagementDecisionRecord = {
@@ -121,7 +136,7 @@ const summarizeManagementDecisionState = (auditLogs: AuditLog[]) => {
   return Object.entries(latestByRole).reduce((state, [roleCode, record]) => {
     if (record.type === 'review') {
       state.review[roleCode] = record;
-    } else {
+    } else if (record.type === 'deferred') {
       state.deferred[roleCode] = record;
     }
     return state;
@@ -290,6 +305,55 @@ const managementDecisionType = (item: BoardHistoryItem | undefined) => {
   return typeLine?.replace(/^Decision type:\s*/, '').trim() || '';
 };
 
+const historyExecutionStatus = (item: BoardHistoryItem | undefined) => {
+  if (!item) {
+    return '';
+  }
+  const statusLine = item.detailLines?.find((line) => line.startsWith('Execution status: '));
+  return statusLine?.replace(/^Execution status:\s*/, '').trim() || item.clusterExecutionStatus || '';
+};
+
+const pickLatestAutonomyReturn = (history: BoardHistoryItem[]) => history
+  .find((item) => item.id.startsWith('management-') && managementDecisionType(item) === 'autonomy_return');
+
+const pickLatestStandardPublished = (history: BoardHistoryItem[]) => history
+  .find((item) => item.id.startsWith('standard-'));
+
+const pickLatestCapabilityApproved = (history: BoardHistoryItem[]) => history
+  .find((item) => item.id.startsWith('capability-'));
+
+const depositionDraftField = (item: BoardHistoryItem | undefined, prefix: string) => item?.detailLines?.find((line) => line.startsWith(prefix))?.replace(prefix, '').trim() || '';
+
+const assetNavigationTargetForTab = (
+  tab: 'knowledge' | 'packages' | 'workflows',
+  item: ExecutiveAction,
+  latestDraft: BoardHistoryItem | undefined,
+): AssetNavigationTarget => {
+  const roleCode = item.owner_role_code || historyRoleCode(latestDraft);
+  const roleLabel = item.owner_role_label || item.owner || roleCode.toUpperCase();
+  const draftName = tab === 'knowledge'
+    ? `${roleLabel} recovery playbook`
+    : tab === 'packages'
+      ? `${roleLabel} recovery handling`
+      : `${roleLabel} recovery deposition loop`;
+  const draftID = tab === 'knowledge'
+    ? depositionDraftField(latestDraft, 'Memory draft: ')
+    : tab === 'packages'
+      ? depositionDraftField(latestDraft, 'Capability draft: ')
+      : depositionDraftField(latestDraft, 'Workflow draft: ');
+  return {
+    role_code: roleCode,
+    role_label: roleLabel,
+    draft_id: draftID && draftID !== 'not created' ? draftID : undefined,
+    draft_name: draftName,
+    source: 'overview_recovery_deposition',
+  };
+};
+
+const latestDepositionDraftForRole = (history: BoardHistoryItem[], roleCode?: string) => history
+  .filter((item) => item.id.startsWith('deposition-') && (!roleCode || historyRoleCode(item) === roleCode))
+  .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())[0];
+
 const shouldPrioritizeManagementDecision = (
   latestCluster: BoardHistoryItem | undefined,
   latestManagement: BoardHistoryItem | undefined,
@@ -309,10 +373,18 @@ const deriveDecisionBoardSummary = (
 ) => {
   const latestCluster = pickPriorityDecisionCluster(history);
   const latestManagement = pickLatestManagementDecision(history);
+  const latestStandard = pickLatestStandardPublished(history);
+  if (latestStandard && (!latestManagement || new Date(latestStandard.timestamp).getTime() >= new Date(latestManagement.timestamp).getTime()) && (!latestCluster || new Date(latestStandard.timestamp).getTime() >= new Date(latestCluster.timestamp).getTime())) {
+    const roleCode = historyRoleCode(latestStandard);
+    const roleLabel = roleCode ? roleCode.toUpperCase() : 'the stabilized role';
+    return `${roleLabel} is now running under a freshly published recovery standard. The next move is to observe live exceptions under policy instead of reopening direct management intervention.`;
+  }
   if (shouldPrioritizeManagementDecision(latestCluster, latestManagement)) {
     const roleCode = historyRoleCode(latestManagement);
     const roleLabel = roleCode ? roleCode.toUpperCase() : 'the escalated role';
     switch (managementDecisionType(latestManagement)) {
+      case 'autonomy_return':
+        return `${roleLabel} has been cleared to return to autonomous execution. iWorkerCenter should keep the operating logic in system assets and only re-open management review if fresh variance appears.`;
       case 'deferred':
         return `Management has deferred direct intervention for ${roleLabel} until the next review window. The organization should keep running inside delegated policy while coordination risk is monitored closely.`;
       default:
@@ -343,6 +415,22 @@ const deriveDecisionBoardFocus = (
 ) => {
   const latestCluster = pickPriorityDecisionCluster(history);
   const latestManagement = pickLatestManagementDecision(history);
+  const latestStandard = pickLatestStandardPublished(history);
+  if (latestStandard && (!latestManagement || new Date(latestStandard.timestamp).getTime() >= new Date(latestManagement.timestamp).getTime()) && (!latestCluster || new Date(latestStandard.timestamp).getTime() >= new Date(latestCluster.timestamp).getTime())) {
+    const roleCode = historyRoleCode(latestStandard);
+    if (!roleCode) {
+      return dashboardFocus;
+    }
+    const roleLabel = roleCode.toUpperCase();
+    return {
+      title: `Monitor ${roleLabel} under policy`,
+      summary: `${roleLabel} now has a published recovery standard inside the organization.`,
+      description: 'The organization has already published the new standard. The next priority is to observe whether fresh exceptions are now absorbed by policy, workflow, and memory without another management loop.',
+      status: 'ok',
+      role_code: roleCode,
+      role_label: roleLabel,
+    };
+  }
   if (shouldPrioritizeManagementDecision(latestCluster, latestManagement)) {
     const roleCode = historyRoleCode(latestManagement);
     if (!roleCode) {
@@ -350,6 +438,15 @@ const deriveDecisionBoardFocus = (
     }
     const roleLabel = roleCode.toUpperCase();
     switch (managementDecisionType(latestManagement)) {
+      case 'autonomy_return':
+        return {
+          title: `Keep ${roleLabel} in delegated execution`,
+          summary: `${roleLabel} has been confirmed back into autonomous coordination.`,
+          description: 'Management has closed the exception loop for this role. The next priority is to keep execution inside policy, preserve the learning in system assets, and only escalate again if new operating risk appears.',
+          status: 'ok',
+          role_code: roleCode,
+          role_label: roleLabel,
+        };
       case 'deferred':
         return {
           title: `Review ${roleLabel} at next window`,
@@ -511,6 +608,9 @@ const actionCreateLabel = (item: ExecutiveAction, creating: boolean) => {
   }
   return creating ? 'Creating...' : 'Create Task';
 };
+
+const actionCanGenerateDepositionDraft = (item: ExecutiveAction) => item.title.startsWith('Deposit ');
+const actionIsDepositionReview = (item: ExecutiveAction) => item.title === 'Review deposition drafts for rollout';
 
 const actionMatchesSkillRecommendation = (item: ExecutiveAction, result: ExecutiveSkillResult | null) => {
   if (!result) {
@@ -682,6 +782,11 @@ const roleBoardSummaryClause = (
 };
 const normalizeValue = (value: string) => value.trim().toLowerCase().replace(/\s+/g, '-');
 
+const roleLabelFromCode = (roleCode: string, roles: Role[]) => {
+  const matchedRole = roles.find((role) => normalizeValue(role.code) === normalizeValue(roleCode));
+  return matchedRole?.name || roleCode.toUpperCase();
+};
+
 const findRoleForAction = (item: ExecutiveAction, roles: Role[]) => {
   const requestedCode = normalizeValue(item.owner_role_code || '');
   const requestedLabel = normalizeValue(item.owner_role_label || item.owner || '');
@@ -762,7 +867,7 @@ const formatBoardTimestamp = (value: string) => {
 };
 
 const summarizeManagementDecisionHistory = (auditLogs: AuditLog[]): BoardHistoryItem[] => auditLogs
-  .filter((item) => item.work_type === 'management_decision')
+  .filter((item) => item.work_type === 'management_decision' || item.work_type === 'management_autonomy_return')
   .slice(0, 4)
   .map((item) => {
     const roleCode = extractAuditField(item.error_msg || '', 'role_code');
@@ -770,14 +875,17 @@ const summarizeManagementDecisionHistory = (auditLogs: AuditLog[]): BoardHistory
     const detail = extractAuditField(item.error_msg || '', 'detail') || item.summary || 'Management intervention was recorded.';
     const displayTime = extractAuditField(item.error_msg || '', 'display_time') || item.created_at;
     const isDeferred = decisionType === 'deferred';
+    const isAutonomyReturn = decisionType === 'autonomy_return' || item.work_type === 'management_autonomy_return';
     return {
       id: `management-${item.id}`,
-      title: isDeferred
-        ? 'Management follow-up deferred' + (roleCode ? ` for ${roleCode.toUpperCase()}` : '')
-        : 'Management review opened' + (roleCode ? ` for ${roleCode.toUpperCase()}` : ''),
+      title: isAutonomyReturn
+        ? 'Return to autonomy confirmed' + (roleCode ? ` for ${roleCode.toUpperCase()}` : '')
+        : isDeferred
+          ? 'Management follow-up deferred' + (roleCode ? ` for ${roleCode.toUpperCase()}` : '')
+          : 'Management review opened' + (roleCode ? ` for ${roleCode.toUpperCase()}` : ''),
       detail,
       timestamp: item.created_at,
-      tone: isDeferred ? 'info' : 'warn',
+      tone: isAutonomyReturn ? 'ok' : isDeferred ? 'info' : 'warn',
       detailLines: [
         `Decision type: ${decisionType || 'review'}`,
         `Role: ${roleCode || 'No direct role attached'}`,
@@ -793,6 +901,57 @@ const summarizeManagementDecisionHistory = (auditLogs: AuditLog[]): BoardHistory
         },
     };
   });
+const summarizeManagementRecoveryHistory = (
+  managementDecisionEvents: BoardHistoryItem[],
+  executiveEvents: BoardHistoryItem[],
+): BoardHistoryItem[] => managementDecisionEvents.flatMap((decision) => {
+  const roleCode = historyRoleCode(decision);
+  if (!roleCode || managementDecisionType(decision) === 'autonomy_return') {
+    return [];
+  }
+  const related = executiveEvents.find((item) => item.clusterRoleCode === roleCode && item.clusterExecutionStatus);
+  if (!related) {
+    return [];
+  }
+  let title = `Recovery action dispatched for ${roleCode.toUpperCase()}`;
+  let tone: 'ok' | 'info' | 'warn' = 'info';
+  let detail = `${related.clusterFocusTitle || related.clusterSkillTitle || roleCode.toUpperCase()} has been pushed back into organizational execution after management intervention.`;
+  let nextStep = 'Track whether the dispatched recovery task returns the role to stable delegated operation.';
+  switch (related.clusterExecutionStatus) {
+    case 'in_progress':
+      tone = 'ok';
+      detail = `${related.clusterFocusTitle || related.clusterSkillTitle || roleCode.toUpperCase()} is already in active recovery execution after management intervention.`;
+      break;
+    case 'done':
+      title = `Recovery completed for ${roleCode.toUpperCase()}`;
+      tone = 'ok';
+      detail = `${related.clusterFocusTitle || related.clusterSkillTitle || roleCode.toUpperCase()} has completed recovery execution and can now move back toward autonomous coordination.`;
+      nextStep = 'Verify the result is stable, then remove the role from active management attention and deposit the learning into the system.';
+      break;
+    case 'rejected':
+      title = `Recovery blocked for ${roleCode.toUpperCase()}`;
+      tone = 'warn';
+      detail = `${related.clusterFocusTitle || related.clusterSkillTitle || roleCode.toUpperCase()} failed to recover cleanly after management intervention and needs another decision loop.`;
+      nextStep = 'Management should review routing, ownership, and acceptance criteria before retrying the recovery path.';
+      break;
+    default:
+      break;
+  }
+  return [{
+    id: `recovery-${decision.id}-${related.id}`,
+    title,
+    detail,
+    timestamp: related.timestamp,
+    tone,
+    detailLines: [
+      `Management decision: ${decision.title}`,
+      `Execution status: ${related.clusterExecutionStatus || "unknown"}`,
+      `Role: ${roleCode}`,
+      `Next step: ${nextStep}`,
+    ],
+    navigationTarget: related.navigationTarget,
+  }];
+});
 const summarizeBoardHistory = (
   tasks: Array<{
     id: string;
@@ -842,8 +1001,9 @@ const summarizeBoardHistory = (
 
   const executiveEvents = buildClusteredExecutiveHistory(auditLogs, tasks);
   const managementDecisionEvents = summarizeManagementDecisionHistory(auditLogs);
+  const managementRecoveryEvents = summarizeManagementRecoveryHistory(managementDecisionEvents, executiveEvents);
 
-  return [...executiveEvents, ...managementDecisionEvents, ...routingEvents, ...taskEvents]
+  return [...executiveEvents, ...managementRecoveryEvents, ...managementDecisionEvents, ...routingEvents, ...taskEvents]
     .sort((a, b) => {
       const aPriority = a.isCluster ? decisionPriorityScore(a.clusterExecutionStatus || '') : 5;
       const bPriority = b.isCluster ? decisionPriorityScore(b.clusterExecutionStatus || '') : 5;
@@ -1073,12 +1233,14 @@ type OverviewPageProps = {
   navigationTarget?: OverviewNavigationTarget | null;
   onNavigationHandled?: () => void;
   onNavigateToCommunications: (target: CommunicationsNavigationTarget) => void;
+  onNavigateToTab: (tab: CenterTab, target?: AssetNavigationTarget) => void;
 };
 
 export function OverviewPage({
   navigationTarget,
   onNavigationHandled,
   onNavigateToCommunications,
+  onNavigateToTab,
 }: OverviewPageProps) {
   const { t } = useTranslation();
   const [metrics, setMetrics] = useState<Metric[]>([]);
@@ -1095,6 +1257,8 @@ export function OverviewPage({
   const [taskMessage, setTaskMessage] = useState('');
   const [creatingActionKey, setCreatingActionKey] = useState('');
   const [transitioningActionKey, setTransitioningActionKey] = useState('');
+  const [depositionDraftKey, setDepositionDraftKey] = useState('');
+  const [publishingWorkflowKey, setPublishingWorkflowKey] = useState('');
   const [batchTransitionKey, setBatchTransitionKey] = useState('');
   const [roleExecutionFeedback, setRoleExecutionFeedback] = useState<Record<string, RoleExecutionFeedback>>({});
   const [deferredManagementRoles, setDeferredManagementRoles] = useState<Record<string, ManagementDecisionRecord>>({});
@@ -1112,6 +1276,10 @@ export function OverviewPage({
   const [refreshingBoard, setRefreshingBoard] = useState(false);
   const [focusedOverviewRoleCode, setFocusedOverviewRoleCode] = useState('');
   const [expandedHistoryId, setExpandedHistoryId] = useState('');
+  const [focusedOverviewSection, setFocusedOverviewSection] = useState<'briefing' | 'coordination' | 'actions' | ''>('');
+  const briefingSectionRef = useRef<HTMLDivElement | null>(null);
+  const coordinationSectionRef = useRef<HTMLDivElement | null>(null);
+  const actionsSectionRef = useRef<HTMLDivElement | null>(null);
 
   const loadOverviewData = async (refreshMode = false) => {
     if (refreshMode) {
@@ -1214,11 +1382,11 @@ export function OverviewPage({
 
   const defaultFromColleagueId = useMemo(() => colleagues[0]?.id || '', [colleagues]);
   const dynamicBoardSummary = useMemo(
-    () => prioritySummary || deriveDecisionBoardSummary(boardSummary, boardHistory),
+    () => deriveDecisionBoardSummary(prioritySummary || boardSummary, boardHistory),
     [prioritySummary, boardSummary, boardHistory],
   );
   const effectiveBoardFocus = useMemo(
-    () => resolveBoardFocus(priorityDecision || deriveDecisionBoardFocus(boardFocus, boardHistory), activeSkillResult),
+    () => resolveBoardFocus(deriveDecisionBoardFocus(priorityDecision || boardFocus, boardHistory), activeSkillResult),
     [priorityDecision, boardFocus, boardHistory, activeSkillResult],
   );
   const pendingBatchTargets = useMemo(
@@ -1320,6 +1488,49 @@ export function OverviewPage({
       };
     }
 
+    const latestAutonomyReturn = pickLatestAutonomyReturn(boardHistory);
+    const latestCapabilityApproved = pickLatestCapabilityApproved(boardHistory);
+    const latestStandard = pickLatestStandardPublished(boardHistory);
+
+    if (latestStandard) {
+      const roleCode = historyRoleCode(latestStandard);
+      return {
+        phase: 'policy_monitoring' as const,
+        tone: 'ok' as const,
+        label: 'Published standard is live',
+        roleCode,
+        summary: `${roleCode} is now running under an active published recovery standard.`,
+        detail: latestStandard.detail,
+        nextStep: 'Watch whether new exceptions are now absorbed by the published policy, workflow, and knowledge assets without another management loop.',
+      };
+    }
+
+    if (latestCapabilityApproved) {
+      const roleCode = historyRoleCode(latestCapabilityApproved);
+      return {
+        phase: 'workflow_rollout_pending' as const,
+        tone: 'info' as const,
+        label: 'Capability package approved',
+        roleCode,
+        summary: `${roleCode} has already been absorbed into an approved recovery capability package.`,
+        detail: latestCapabilityApproved.detail,
+        nextStep: 'Publish the workflow standard next so the approved capability becomes live organizational policy instead of a reviewed but not yet enforced asset.',
+      };
+    }
+
+    if (latestAutonomyReturn) {
+      const roleCode = historyRoleCode(latestAutonomyReturn);
+      return {
+        phase: 'institutionalizing' as const,
+        tone: 'ok' as const,
+        label: 'Institutionalize the recovery learning',
+        roleCode,
+        summary: `${roleCode} has already returned to autonomous execution.`,
+        detail: latestAutonomyReturn.detail,
+        nextStep: 'Convert the successful recovery path into reusable memories, workflow rules, and management skills so the next similar exception can stay inside the system.',
+      };
+    }
+
     const advancedEntry = Object.entries(roleExecutionFeedback)
       .sort((left, right) => {
         const leftFocused = left[0] === focusedOverviewRoleCode ? 1 : 0;
@@ -1340,7 +1551,7 @@ export function OverviewPage({
     }
 
     return null;
-  }, [activeManagementReviews, deferredManagementRoles, roleExecutionFeedback, focusedOverviewRoleCode]);
+  }, [activeManagementReviews, deferredManagementRoles, roleExecutionFeedback, focusedOverviewRoleCode, boardHistory]);
 
   const boardSummaryDecision = useMemo(() => {
     if (topBoardRoles.length === 0) {
@@ -1553,6 +1764,176 @@ export function OverviewPage({
       .slice(0, 3);
   }, [autonomousEscalationTarget, activeManagementReviews, deferredManagementRoles]);
 
+
+  const operatingModeCards = useMemo<OperatingModeCard[]>(() => {
+    const institutionalRoleCode = managementRecoveryState?.roleCode || effectiveBoardFocus?.role_code || '';
+    const institutionalRoleLabel = institutionalRoleCode ? roleLabelFromCode(institutionalRoleCode, roles) : 'the organization';
+    const inReviewCount = Object.keys(activeManagementReviews).length;
+    const deferredCount = Object.keys(deferredManagementRoles).length;
+    const depositionCount = boardHistory.filter((item) => item.id.startsWith('deposition-')).length;
+    const capabilityCount = boardHistory.filter((item) => item.id.startsWith('capability-')).length;
+    const standardCount = boardHistory.filter((item) => item.id.startsWith('standard-')).length;
+    const policyLive = managementRecoveryState?.phase === 'policy_monitoring';
+    const capabilityApproved = managementRecoveryState?.phase === 'workflow_rollout_pending';
+    const institutionalizing = managementRecoveryState?.phase === 'institutionalizing';
+
+    return [
+      {
+        id: 'delegated-ops',
+        eyebrow: 'Default operating mode',
+        title: autonomousOperationStatus.label,
+        tone: autonomousOperationStatus.tone as OperatingModeCard['tone'],
+        summary: autonomousOperationStatus.summary,
+        detail: 'iWorkerCenter stays as the organizational runtime. Management only crosses into action when the system has reached a real decision boundary that cannot be cleared by delegated execution.',
+        statLine: [
+          `${boardRoles.length} roles in live operating view`,
+          `${autonomousOperationStatus.delegatedCoordinationCount} delegated coordination path${autonomousOperationStatus.delegatedCoordinationCount === 1 ? '' : 's'} active`,
+          `${autonomousOperationStatus.managementReviewCount} role${autonomousOperationStatus.managementReviewCount === 1 ? '' : 's'} above normal delegation`,
+        ],
+        primaryActionLabel: autonomousEscalationTarget ? `Open ${autonomousEscalationTarget.roleItem.roleCode}` : topBoardRoles[0] ? `Open ${topBoardRoles[0].roleCode}` : undefined,
+        onPrimaryAction: autonomousEscalationTarget
+          ? () => {
+            setFocusedOverviewRoleCode(autonomousEscalationTarget.roleItem.roleCode);
+            onNavigateToCommunications({ role_code: autonomousEscalationTarget.roleItem.roleCode, source: 'operating_mode_delegated' });
+          }
+          : topBoardRoles[0]
+            ? () => {
+              setFocusedOverviewRoleCode(topBoardRoles[0].roleCode);
+              onNavigateToCommunications({ role_code: topBoardRoles[0].roleCode, source: 'operating_mode_delegated' });
+            }
+            : undefined,
+      },
+      {
+        id: 'management-boundary',
+        eyebrow: 'Decision boundary',
+        title: autonomousEscalationTarget
+          ? `Board decision needed for ${autonomousEscalationTarget.roleItem.roleCode}`
+          : inReviewCount > 0
+            ? 'Management exception loop is active'
+            : deferredCount > 0
+              ? 'Management has deferred fresh intervention'
+              : 'No board intervention is currently required',
+        tone: (autonomousEscalationTarget ? 'warn' : inReviewCount > 0 ? 'info' : deferredCount > 0 ? 'info' : 'ok') as OperatingModeCard['tone'],
+        summary: autonomousEscalationTarget
+          ? autonomousEscalationReason
+          : inReviewCount > 0
+            ? `${inReviewCount} role${inReviewCount === 1 ? '' : 's'} are still inside the management exception loop while execution evidence returns.`
+            : deferredCount > 0
+              ? `${deferredCount} role${deferredCount === 1 ? '' : 's'} are being observed until the next management review window.`
+              : 'The board can stay in monitoring posture while the organization keeps running through delegated roles and published rules.',
+        detail: autonomousEscalationTarget
+          ? 'This layer exists for decisions, not execution. Clear the exception boundary, allocate direction, and then push the work back down into the organization.'
+          : 'Use this layer only for exception handling, capital allocation, and policy choices. Routine execution should remain below, with iWorkers and human tools carrying the operating load.',
+        statLine: [
+          `${inReviewCount} active management review${inReviewCount === 1 ? '' : 's'}`,
+          `${deferredCount} deferred review window${deferredCount === 1 ? '' : 's'}`,
+          `${recentManagementDecisions.length} recent board-visible decision${recentManagementDecisions.length === 1 ? '' : 's'}`,
+        ],
+        primaryActionLabel: autonomousEscalationTarget ? 'Open decision workspace' : recentManagementDecisions[0] ? `Open ${recentManagementDecisions[0].roleCode}` : undefined,
+        onPrimaryAction: autonomousEscalationTarget
+          ? () => {
+            setFocusedOverviewRoleCode(autonomousEscalationTarget.roleItem.roleCode);
+            onNavigateToCommunications({ role_code: autonomousEscalationTarget.roleItem.roleCode, source: 'operating_mode_boundary' });
+          }
+          : recentManagementDecisions[0]
+            ? () => {
+              setFocusedOverviewRoleCode(recentManagementDecisions[0].roleCode);
+              onNavigateToCommunications({ role_code: recentManagementDecisions[0].roleCode, source: 'operating_mode_boundary' });
+            }
+            : undefined,
+      },
+      {
+        id: 'institutional-memory',
+        eyebrow: 'Institutionalization',
+        title: policyLive
+          ? `${institutionalRoleLabel} is now under policy`
+          : capabilityApproved
+            ? `${institutionalRoleLabel} is ready for workflow rollout`
+            : institutionalizing
+              ? `${institutionalRoleLabel} is ready to deposit learning`
+              : managementRecoveryState?.label || 'No recovery deposition is active',
+        tone: (policyLive ? 'ok' : capabilityApproved || institutionalizing ? 'info' : managementRecoveryState?.tone || 'ok') as OperatingModeCard['tone'],
+        summary: policyLive
+          ? `${institutionalRoleLabel} already has a live organizational standard, so the next job is observation rather than more direct intervention.`
+          : capabilityApproved
+            ? `${institutionalRoleLabel} already has an approved capability package. Publish the workflow standard so the capability becomes enforced organizational behavior.`
+            : institutionalizing
+              ? `${institutionalRoleLabel} has returned to autonomous execution. Its recovery path should now be converted into durable memory, capability, and workflow assets.`
+              : managementRecoveryState?.summary || 'The organization is currently not carrying an active recovery deposition sequence.',
+        detail: managementRecoveryState?.nextStep || 'This is where the company actually compounds durable capability so execution does not depend on any single worker body or individual human employee.',
+        statLine: [
+          `${depositionCount} draft deposition event${depositionCount === 1 ? '' : 's'}`,
+          `${capabilityCount} capability approval event${capabilityCount === 1 ? '' : 's'}`,
+          `${standardCount} workflow publication event${standardCount === 1 ? '' : 's'}`,
+        ],
+        focusSection: 'actions',
+        primaryActionLabel: institutionalRoleCode
+          ? policyLive
+            ? 'Open workflows'
+            : capabilityApproved
+              ? 'Open packages'
+              : 'Open knowledge'
+          : undefined,
+        secondaryActionLabel: institutionalRoleCode && (capabilityApproved || policyLive) ? 'Open workflows' : institutionalRoleCode && institutionalizing ? 'Open packages' : undefined,
+        onPrimaryAction: institutionalRoleCode
+          ? policyLive
+            ? () => onNavigateToTab('workflows', {
+              role_code: institutionalRoleCode,
+              role_label: institutionalRoleLabel,
+              draft_name: `${institutionalRoleLabel} recovery deposition loop`,
+              source: 'operating_mode_institutionalization',
+            })
+            : capabilityApproved
+              ? () => onNavigateToTab('packages', {
+                role_code: institutionalRoleCode,
+                role_label: institutionalRoleLabel,
+                draft_name: `${institutionalRoleLabel} recovery handling`,
+                source: 'operating_mode_institutionalization',
+              })
+              : () => onNavigateToTab('knowledge', {
+                role_code: institutionalRoleCode,
+                role_label: institutionalRoleLabel,
+                draft_name: `${institutionalRoleLabel} recovery playbook`,
+                source: 'operating_mode_institutionalization',
+              })
+          : undefined,
+        onSecondaryAction: institutionalRoleCode && (capabilityApproved || policyLive)
+          ? () => onNavigateToTab('workflows', {
+            role_code: institutionalRoleCode,
+            role_label: institutionalRoleLabel,
+            draft_name: `${institutionalRoleLabel} recovery deposition loop`,
+            source: 'operating_mode_institutionalization',
+          })
+          : institutionalRoleCode && institutionalizing
+            ? () => onNavigateToTab('packages', {
+              role_code: institutionalRoleCode,
+              role_label: institutionalRoleLabel,
+              draft_name: `${institutionalRoleLabel} recovery handling`,
+              source: 'operating_mode_institutionalization',
+            })
+            : undefined,
+      },
+    ];
+  }, [
+    managementRecoveryState,
+    effectiveBoardFocus,
+    roles,
+    activeManagementReviews,
+    deferredManagementRoles,
+    boardHistory,
+    autonomousOperationStatus,
+    boardRoles.length,
+    topBoardRoles,
+    autonomousEscalationTarget,
+    autonomousEscalationReason,
+    recentManagementDecisions,
+    onNavigateToCommunications,
+    onNavigateToTab,
+  ]);
+
+  const overviewSectionClassName = (section: 'briefing' | 'coordination' | 'actions') => focusedOverviewSection === section
+    ? 'executive-section-highlight'
+    : '';
 
   const handleAutonomousHandleNow = async () => {
     if (!autonomousEscalationTarget) {
@@ -1795,6 +2176,92 @@ export function OverviewPage({
     }
   };
 
+  const handleConfirmReturnToAutonomy = async (item: BoardHistoryItem) => {
+    const roleCode = historyRoleCode(item);
+    if (!roleCode) {
+      setTaskMessage('The recovery record is missing a role code, so autonomy confirmation cannot be captured here.');
+      return;
+    }
+
+    const displayTime = formatBoardTimestamp(item.timestamp);
+    const detail = `Autonomy return confirmed at ${displayTime}. ${roleCode.toUpperCase()} can leave active management attention and continue inside delegated execution.`;
+
+    try {
+      setTransitioningActionKey(`${item.id}-autonomy-return`);
+      setTaskMessage('');
+      setFocusedOverviewRoleCode(roleCode);
+      await confirmReturnToAutonomy({
+        role_code: roleCode,
+        detail,
+        display_time: displayTime,
+      });
+      setRoleExecutionFeedback((prev) => {
+        const next = { ...prev };
+        delete next[roleCode];
+        return next;
+      });
+      await loadOverviewData(true);
+      setTaskMessage(`Confirmed that ${roleCode} can return to autonomous coordination after recovery completion.`);
+    } catch (error) {
+      setTaskMessage(error instanceof Error ? error.message : 'Failed to confirm the return to autonomous execution.');
+    } finally {
+      setTransitioningActionKey('');
+    }
+  };
+  const handleGenerateDepositionDraft = async (item: ExecutiveAction) => {
+    const key = actionKey(item);
+    const roleCode = item.owner_role_code || historyRoleCode(latestDepositionDraftForRole(boardHistory, item.owner_role_code));
+    if (!roleCode) {
+      setTaskMessage('This deposition action is missing a role code, so draft generation cannot be started yet.');
+      return;
+    }
+
+    try {
+      setDepositionDraftKey(key);
+      setTaskMessage('');
+      setFocusedOverviewRoleCode(roleCode);
+      await generateDepositionDrafts({
+        role_code: roleCode,
+        action_title: item.title,
+        detail: item.description,
+      });
+      await loadOverviewData(true);
+      setTaskMessage(`Generated deposition drafts for ${roleCode}. The next step is to review the memory, package, and workflow drafts before rollout.`);
+    } catch (error) {
+      setTaskMessage(error instanceof Error ? error.message : 'Failed to generate deposition drafts.');
+    } finally {
+      setDepositionDraftKey('');
+    }
+  };
+
+  const handlePublishDepositionWorkflow = async (item: ExecutiveAction) => {
+    const key = actionKey(item);
+    const roleCode = item.owner_role_code;
+    const draft = latestDepositionDraftForRole(boardHistory, roleCode);
+    const workflowID = depositionDraftField(draft, 'Workflow draft: ');
+    if (!roleCode || !workflowID || workflowID === 'not created') {
+      setTaskMessage('No workflow draft is currently available to publish for this recovery standard.');
+      return;
+    }
+
+    try {
+      setPublishingWorkflowKey(key);
+      setTaskMessage('');
+      setFocusedOverviewRoleCode(roleCode);
+      await publishDepositionRollout({
+        role_code: roleCode,
+        workflow_id: workflowID,
+        detail: item.description,
+      });
+      await loadOverviewData(true);
+      setTaskMessage(`Published the recovery workflow standard for ${roleCode}. The organization can now monitor new exceptions under policy.`);
+    } catch (error) {
+      setTaskMessage(error instanceof Error ? error.message : 'Failed to publish the workflow draft.');
+    } finally {
+      setPublishingWorkflowKey('');
+    }
+  };
+
   const handleBoardSummaryPrimaryAction = async () => {
     const primary = boardSummaryDecision?.primary;
     if (!primary) {
@@ -1863,6 +2330,44 @@ export function OverviewPage({
         ))}
       </div>
 
+      <div className="executive-operating-mode-grid">
+        {operatingModeCards.map((card) => (
+          <section
+            key={card.id}
+            className={`card section-card executive-operating-mode-card executive-operating-mode-card-${card.tone} ${focusedOverviewSection === card.focusSection ? 'executive-operating-mode-card-active' : ''}`}
+            onClick={() => card.focusSection ? setFocusedOverviewSection(card.focusSection) : undefined}
+          >
+            <div className="executive-operating-mode-head">
+              <div>
+                <div className="mini light">{card.eyebrow}</div>
+                <h3>{card.title}</h3>
+              </div>
+              <span className={badgeClass(card.tone)}>{card.tone === 'warn' ? 'Decision edge' : card.tone === 'info' ? 'Transition' : 'Stable'}</span>
+            </div>
+            <strong>{card.summary}</strong>
+            <p>{card.detail}</p>
+            <div className="executive-operating-mode-stats">
+              {card.statLine.map((stat) => (
+                <span key={stat}>{stat}</span>
+              ))}
+            </div>
+            {(card.onPrimaryAction || card.onSecondaryAction) ? (
+              <div className="executive-action-row">
+                {card.onPrimaryAction && card.primaryActionLabel ? (
+                  <button type="button" className="executive-assign-button" onClick={(event) => { event.stopPropagation(); card.onPrimaryAction?.(); }}>
+                    {card.primaryActionLabel}
+                  </button>
+                ) : null}
+                {card.onSecondaryAction && card.secondaryActionLabel ? (
+                  <button type="button" className="executive-link-button" onClick={(event) => { event.stopPropagation(); card.onSecondaryAction?.(); }}>
+                    {card.secondaryActionLabel}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        ))}
+      </div>
       <SectionCard
         title={t('overview.boardTitle', { defaultValue: 'Organization briefing' })}
         desc={t('overview.boardDesc', { defaultValue: 'A live operating brief that rolls routing health, task pressure, and recent organization intervention history into one management view.' })}
@@ -2072,13 +2577,15 @@ export function OverviewPage({
         >
           <div className="executive-history-list">
             {boardHistory.length > 0 ? boardHistory.map((item) => {
-              const historyTransitionOptions = item.isCluster ? taskTransitionOptions(item.clusterExecutionStatus) : [];
+              const historyStatus = historyExecutionStatus(item);
+              const isRecoveryItem = item.id.startsWith('recovery-');
+              const historyTransitionOptions = (item.isCluster || isRecoveryItem) ? taskTransitionOptions(historyStatus) : [];
               return (
                 <div key={item.id} className="executive-history-item">
                   <span className={badgeClass(item.tone)}>{formatBoardTimestamp(item.timestamp)}</span>
                   <strong>{item.title}</strong>
                   <p>{item.detail}</p>
-                  {item.isCluster && item.detailLines?.length ? (
+                  {item.detailLines?.length ? (
                     <div className="executive-action-row">
                       <button
                         type="button"
@@ -2089,7 +2596,7 @@ export function OverviewPage({
                       </button>
                     </div>
                   ) : null}
-                  {item.isCluster && expandedHistoryId === item.id && item.detailLines?.length ? (
+                  {expandedHistoryId === item.id && item.detailLines?.length ? (
                     <div className="executive-history-chain">
                       {item.detailLines.map((line) => (
                         <span key={`${item.id}-${line}`}>{line}</span>
@@ -2105,7 +2612,7 @@ export function OverviewPage({
                       Open role workspace
                     </button>
                   ) : null}
-                  {item.isCluster && item.navigationTarget?.task_id && historyTransitionOptions.length > 0 ? (
+                  {(item.isCluster || isRecoveryItem) && item.navigationTarget?.task_id && historyTransitionOptions.length > 0 ? (
                     <div className="executive-action-row">
                       {historyTransitionOptions.map((transitionAction) => {
                         const busyKey = `${item.id}-${transitionAction}`;
@@ -2121,6 +2628,18 @@ export function OverviewPage({
                           </button>
                         );
                       })}
+                    </div>
+                  ) : null}
+                  {isRecoveryItem && historyStatus === 'done' ? (
+                    <div className="executive-action-row">
+                      <button
+                        type="button"
+                        className="executive-link-button"
+                        disabled={transitioningActionKey === `${item.id}-autonomy-return`}
+                        onClick={() => void handleConfirmReturnToAutonomy(item)}
+                      >
+                        {transitioningActionKey === `${item.id}-autonomy-return` ? 'Updating...' : 'Confirm return to autonomy'}
+                      </button>
                     </div>
                   ) : null}
                 </div>
@@ -2308,6 +2827,12 @@ export function OverviewPage({
               const selectedOwnerId = selectedOwners[key] || getSuggestedOwnerId(item, colleagues, roles) || defaultFromColleagueId;
               const routeDescription = describeRoute(item, colleagues, roles, selectedOwnerId);
               const transitionOptions = actionTransitionOptions(item);
+              const latestDraft = latestDepositionDraftForRole(boardHistory, item.owner_role_code);
+              const workflowDraftID = depositionDraftField(latestDraft, 'Workflow draft: ');
+              const canGenerateDepositionDraft = actionCanGenerateDepositionDraft(item);
+              const isDepositionReview = actionIsDepositionReview(item);
+              const hasDepositionDraft = Boolean(latestDraft);
+              const canPublishWorkflowDraft = (isDepositionReview || canGenerateDepositionDraft) && workflowDraftID !== '' && workflowDraftID !== 'not created';
               return (
                 <div key={key} className="item-row">
                   <strong>{item.title}</strong>
@@ -2323,23 +2848,99 @@ export function OverviewPage({
                     >
                       {actionOpenLabel(item)}
                     </button>
-                    <select
-                      value={selectedOwnerId}
-                      disabled={actionHasLiveTask(item)}
-                      onChange={(event) => setSelectedOwners((prev) => ({ ...prev, [key]: event.target.value }))}
-                    >
-                      {colleagues.map((colleague) => (
-                        <option key={colleague.id} value={colleague.id}>{colleague.name}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="executive-assign-button"
-                      disabled={creatingActionKey === key || colleagues.length === 0 || actionHasLiveTask(item)}
-                      onClick={() => void handleCreateTask(item)}
-                    >
-                      {actionCreateLabel(item, creatingActionKey === key)}
-                    </button>
+                    {canGenerateDepositionDraft ? (
+                      <>
+                        <button
+                          type="button"
+                          className="executive-assign-button"
+                          disabled={depositionDraftKey === key}
+                          onClick={() => void handleGenerateDepositionDraft(item)}
+                        >
+                          {depositionDraftKey === key ? 'Generating...' : 'Generate draft set'}
+                        </button>
+                        <button
+                          type="button"
+                          className="executive-link-button"
+                          onClick={() => onNavigateToTab('knowledge', assetNavigationTargetForTab('knowledge', item, latestDraft))}
+                        >
+                          Open knowledge
+                        </button>
+                        <button
+                          type="button"
+                          className="executive-link-button"
+                          onClick={() => onNavigateToTab('packages', assetNavigationTargetForTab('packages', item, latestDraft))}
+                        >
+                          Open packages
+                        </button>
+                        <button
+                          type="button"
+                          className="executive-link-button"
+                          onClick={() => onNavigateToTab('workflows', assetNavigationTargetForTab('workflows', item, latestDraft))}
+                        >
+                          Open workflows
+                        </button>
+                        <button
+                          type="button"
+                          className="executive-assign-button"
+                          disabled={!hasDepositionDraft || !canPublishWorkflowDraft || publishingWorkflowKey === key}
+                          onClick={() => void handlePublishDepositionWorkflow(item)}
+                        >
+                          {publishingWorkflowKey === key ? 'Publishing...' : 'Publish workflow draft'}
+                        </button>
+                      </>
+                    ) : isDepositionReview ? (
+                      <>
+                        <button
+                          type="button"
+                          className="executive-link-button"
+                          onClick={() => onNavigateToTab('knowledge', assetNavigationTargetForTab('knowledge', item, latestDraft))}
+                        >
+                          Open knowledge
+                        </button>
+                        <button
+                          type="button"
+                          className="executive-link-button"
+                          onClick={() => onNavigateToTab('packages', assetNavigationTargetForTab('packages', item, latestDraft))}
+                        >
+                          Open packages
+                        </button>
+                        <button
+                          type="button"
+                          className="executive-link-button"
+                          onClick={() => onNavigateToTab('workflows', assetNavigationTargetForTab('workflows', item, latestDraft))}
+                        >
+                          Open workflows
+                        </button>
+                        <button
+                          type="button"
+                          className="executive-assign-button"
+                          disabled={!canPublishWorkflowDraft || publishingWorkflowKey === key}
+                          onClick={() => void handlePublishDepositionWorkflow(item)}
+                        >
+                          {publishingWorkflowKey === key ? 'Publishing...' : 'Publish workflow draft'}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <select
+                          value={selectedOwnerId}
+                          disabled={actionHasLiveTask(item)}
+                          onChange={(event) => setSelectedOwners((prev) => ({ ...prev, [key]: event.target.value }))}
+                        >
+                          {colleagues.map((colleague) => (
+                            <option key={colleague.id} value={colleague.id}>{colleague.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="executive-assign-button"
+                          disabled={creatingActionKey === key || colleagues.length === 0 || actionHasLiveTask(item)}
+                          onClick={() => void handleCreateTask(item)}
+                        >
+                          {actionCreateLabel(item, creatingActionKey === key)}
+                        </button>
+                      </>
+                    )}
                   </div>
                   {actionCanTransitionDirectly(item) && transitionOptions.length > 0 ? (
                     <div className="executive-action-row">
@@ -2514,6 +3115,30 @@ export function OverviewPage({
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

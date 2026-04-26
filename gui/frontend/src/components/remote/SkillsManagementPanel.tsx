@@ -404,9 +404,19 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             await InstallMixedSkill(skill.source, skill.id, skill.install_ref || "");
             await loadData();
             await checkUpdates();
+            showToast(localizeText(
+                `Skill "${skill.name}" installed successfully`,
+                `技能「${skill.name}」安装成功`,
+                `技能「${skill.name}」安裝成功`,
+            ));
             if (hubSearchQuery.trim()) {
                 const refreshed = await SearchMixedSkills(hubSearchQuery.trim());
                 setHubResults(Array.isArray(refreshed) ? refreshed : []);
+            }
+            // Refresh recommendations so the installed state updates
+            if (!hubSearched) {
+                const recs = await GetHubRecommendations();
+                setHubRecommendations(Array.isArray(recs) ? recs : []);
             }
         } catch (err) {
             setHubError(localizeHubError(String(err)));
@@ -417,7 +427,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 return next;
             });
         }
-    }, [loadData, checkUpdates, hubSearchQuery, localizeHubError]);
+    }, [loadData, checkUpdates, hubSearchQuery, hubSearched, localizeHubError, showToast, localizeText]);
 
     const handleUpdate = useCallback(async (skillName: string) => {
         setUpdatingSkills((prev) => new Set(prev).add(skillName));
@@ -425,6 +435,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             await UpdateHubSkill(skillName);
             await loadData();
             await checkUpdates();
+            showToast(localizeText(
+                `Skill "${skillName}" updated successfully`,
+                `技能「${skillName}」更新成功`,
+                `技能「${skillName}」更新成功`,
+            ));
         } catch (err) {
             setHubError(localizeHubError(String(err)));
         } finally {
@@ -434,7 +449,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 return next;
             });
         }
-    }, [loadData, checkUpdates]);
+    }, [loadData, checkUpdates, localizeHubError, showToast, localizeText]);
 
     const stepsToYaml = (steps: NLSkillStep[]): string => {
         if (!steps || steps.length === 0) return "";
@@ -993,6 +1008,27 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         >
                             {hubSearching ? localizeText("Searching...", "搜索中...", "搜尋中...") : localizeText("Search", "搜索", "搜尋")}
                         </button>
+                        {hubSearched && (
+                            <button
+                                className="btn-secondary"
+                                style={{ fontSize: "0.78rem", padding: "4px 12px", flexShrink: 0 }}
+                                onClick={async () => {
+                                    setHubSearchQuery("");
+                                    setHubResults([]);
+                                    setHubSearched(false);
+                                    setHubError("");
+                                    // Always refresh recommendations to pick up installed state changes
+                                    setHubRecsLoading(true);
+                                    try {
+                                        const recs = await GetHubRecommendations();
+                                        setHubRecommendations(Array.isArray(recs) ? recs : []);
+                                    } catch { /* ignore */ }
+                                    finally { setHubRecsLoading(false); }
+                                }}
+                            >
+                                {localizeText("Recommended", "推荐", "推薦")}
+                            </button>
+                        )}
                     </div>
 
                     {/* Hub error */}

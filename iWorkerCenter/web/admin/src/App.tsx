@@ -19,7 +19,7 @@ import { SecurityPage } from './pages/SecurityPage';
 import { SetupTenantPage } from './pages/SetupTenantPage';
 import { UsagePage } from './pages/UsagePage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
-import type { CenterTab, CommunicationsNavigationTarget, OverviewNavigationTarget } from './types';
+import type { AssetNavigationTarget, CenterTab, CommunicationsNavigationTarget, OverviewNavigationTarget } from './types';
 
 export default function App() {
   const { t } = useTranslation();
@@ -29,6 +29,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<CenterTab>('overview');
   const [communicationsTarget, setCommunicationsTarget] = useState<CommunicationsNavigationTarget | null>(null);
   const [overviewTarget, setOverviewTarget] = useState<OverviewNavigationTarget | null>(null);
+  const [knowledgeTarget, setKnowledgeTarget] = useState<AssetNavigationTarget | null>(null);
+  const [packagesTarget, setPackagesTarget] = useState<AssetNavigationTarget | null>(null);
+  const [workflowsTarget, setWorkflowsTarget] = useState<AssetNavigationTarget | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -41,7 +44,6 @@ export default function App() {
     }).finally(() => setChecking(false));
   }, []);
 
-  // useMemo MUST be called before any conditional returns (React hooks rules)
   const handleNavigateToCommunications = (target: CommunicationsNavigationTarget) => {
     setCommunicationsTarget(target);
     setActiveTab('communications');
@@ -52,16 +54,37 @@ export default function App() {
     setActiveTab('overview');
   };
 
+  const handleNavigateBackToOverview = (target?: AssetNavigationTarget | null) => {
+    setOverviewTarget(target ? {
+      role_code: target.role_code,
+      source: target.source || 'asset_review',
+    } : null);
+    setActiveTab('overview');
+  };
+
+  const handleNavigateToTab = (tab: CenterTab, target?: AssetNavigationTarget) => {
+    if (tab === 'knowledge') {
+      setKnowledgeTarget(target || null);
+    }
+    if (tab === 'packages') {
+      setPackagesTarget(target || null);
+    }
+    if (tab === 'workflows') {
+      setWorkflowsTarget(target || null);
+    }
+    setActiveTab(tab);
+  };
+
   const content = useMemo(() => {
     switch (activeTab) {
       case 'employees': return <EmployeesPage />;
       case 'models': return <ModelRoutingPage />;
       case 'compute': return <ComputePowerPage />;
-      case 'overview': return <OverviewPage navigationTarget={overviewTarget} onNavigationHandled={() => setOverviewTarget(null)} onNavigateToCommunications={handleNavigateToCommunications} />;
+      case 'overview': return <OverviewPage navigationTarget={overviewTarget} onNavigationHandled={() => setOverviewTarget(null)} onNavigateToCommunications={handleNavigateToCommunications} onNavigateToTab={handleNavigateToTab} />;
       case 'communications': return <CommunicationsPage navigationTarget={communicationsTarget} onNavigationHandled={() => setCommunicationsTarget(null)} onNavigateToOverview={handleNavigateToOverview} />;
-      case 'workflows': return <WorkflowsPage />;
-      case 'knowledge': return <KnowledgePage />;
-      case 'packages': return <PackagesPage />;
+      case 'workflows': return <WorkflowsPage navigationTarget={workflowsTarget} onNavigationHandled={() => setWorkflowsTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} />;
+      case 'knowledge': return <KnowledgePage navigationTarget={knowledgeTarget} onNavigationHandled={() => setKnowledgeTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} />;
+      case 'packages': return <PackagesPage navigationTarget={packagesTarget} onNavigationHandled={() => setPackagesTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} />;
       case 'security': return <SecurityPage />;
       case 'delivery': return <DeliveryPage />;
       case 'usage': return <UsagePage />;
@@ -70,7 +93,7 @@ export default function App() {
       case 'settings': return <AccountSettingsPage />;
       default: return null;
     }
-  }, [activeTab, communicationsTarget, overviewTarget]);
+  }, [activeTab, communicationsTarget, overviewTarget, knowledgeTarget, packagesTarget, workflowsTarget]);
 
   if (checking) {
     return (

@@ -25,6 +25,14 @@ export interface OverviewNavigationTarget {
   source?: string;
 }
 
+export interface AssetNavigationTarget {
+  role_code?: string;
+  role_label?: string;
+  draft_id?: string;
+  draft_name?: string;
+  source?: string;
+}
+
 export interface Metric {
   label: string;
   value: string;
@@ -123,6 +131,7 @@ export interface CenterSettings {
   work_type_tier?: Record<string, string>;
   role_provider_boost?: Record<string, string[]>;
 }
+
 
 
 

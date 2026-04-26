@@ -71,6 +71,22 @@ func TestAdminCredentialDetailUpdateRotateAndDeleteUserTenant(t *testing.T) {
 		t.Fatalf("new credential secret should work: %v", err)
 	}
 
+	body = bytes.NewBufferString(`{"api_key":"key-http-rotated"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials/"+cred.ID+"/rotate-key", body)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("rotate credential key status = %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: "key-http", APISecret: "secret-new"}); err == nil {
+		t.Fatalf("old credential key should be rejected after rotate")
+	}
+	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: "key-http-rotated", APISecret: "secret-new"}); err != nil {
+		t.Fatalf("rotated credential key should work: %v", err)
+	}
+
 	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID, nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w = httptest.NewRecorder()

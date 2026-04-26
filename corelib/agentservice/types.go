@@ -24,8 +24,9 @@ const (
 type CredentialStatus string
 
 const (
-	CredentialStatusActive  CredentialStatus = "active"
-	CredentialStatusRevoked CredentialStatus = "revoked"
+	CredentialStatusActive    CredentialStatus = "active"
+	CredentialStatusSuspended CredentialStatus = "suspended"
+	CredentialStatusRevoked   CredentialStatus = "revoked"
 )
 
 type InstanceStatus string
@@ -94,6 +95,7 @@ type Credential struct {
 	APIKeyPrefix string           `json:"api_key_prefix,omitempty"`
 	APIKeyHash   string           `json:"api_key_hash,omitempty"`
 	Status       CredentialStatus `json:"status"`
+	ExpiresAt    *time.Time       `json:"expires_at,omitempty"`
 	TokenVersion int              `json:"token_version,omitempty"`
 	SecretDigest string           `json:"-"`
 	CreatedAt    time.Time        `json:"created_at"`
@@ -385,6 +387,61 @@ type AdminDashboard struct {
 	GeneratedAt       time.Time         `json:"generated_at"`
 }
 
+type AdminInsightsInput struct {
+	InactiveForDays int `json:"inactive_for_days,omitempty"`
+	Limit           int `json:"limit,omitempty"`
+}
+
+type AdminTenantInsight struct {
+	TenantID       string       `json:"tenant_id"`
+	Name           string       `json:"name"`
+	Status         TenantStatus `json:"status"`
+	Users          int          `json:"users"`
+	ActiveUsers    int          `json:"active_users"`
+	Instances      int          `json:"instances"`
+	Messages       int          `json:"messages"`
+	Runs           int          `json:"runs"`
+	ActivityScore  int          `json:"activity_score"`
+	LastActivityAt *time.Time   `json:"last_activity_at,omitempty"`
+}
+
+type AdminInactiveUserInsight struct {
+	TenantID       string     `json:"tenant_id"`
+	UserID         string     `json:"user_id"`
+	Name           string     `json:"name"`
+	Email          string     `json:"email,omitempty"`
+	Status         UserStatus `json:"status"`
+	Instances      int        `json:"instances"`
+	Messages       int        `json:"messages"`
+	Runs           int        `json:"runs"`
+	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
+	InactiveDays   int        `json:"inactive_days"`
+	Reason         string     `json:"reason"`
+}
+
+type AdminQuotaPressureInsight struct {
+	Scope          string     `json:"scope"`
+	Metric         string     `json:"metric"`
+	TenantID       string     `json:"tenant_id"`
+	TenantName     string     `json:"tenant_name,omitempty"`
+	UserID         string     `json:"user_id,omitempty"`
+	UserName       string     `json:"user_name,omitempty"`
+	Limit          int        `json:"limit"`
+	Used           int        `json:"used"`
+	Remaining      *int       `json:"remaining,omitempty"`
+	PressureRatio  float64    `json:"pressure_ratio"`
+	Status         string     `json:"status"`
+	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
+}
+
+type AdminInsights struct {
+	GeneratedAt    time.Time                   `json:"generated_at"`
+	InactiveCutoff time.Time                   `json:"inactive_cutoff"`
+	TopTenants     []AdminTenantInsight        `json:"top_tenants,omitempty"`
+	InactiveUsers  []AdminInactiveUserInsight  `json:"inactive_users,omitempty"`
+	QuotaPressure  []AdminQuotaPressureInsight `json:"quota_pressure,omitempty"`
+}
+
 type AdminAlertItem struct {
 	Kind            string     `json:"kind"`
 	Severity        string     `json:"severity"`
@@ -433,6 +490,7 @@ type ExportedCredential struct {
 	APIKeyPrefix string           `json:"api_key_prefix,omitempty"`
 	APIKeyHash   string           `json:"api_key_hash,omitempty"`
 	Status       CredentialStatus `json:"status"`
+	ExpiresAt    *time.Time       `json:"expires_at,omitempty"`
 	TokenVersion int              `json:"token_version,omitempty"`
 	SecretDigest string           `json:"secret_digest,omitempty"`
 	CreatedAt    time.Time        `json:"created_at"`
@@ -538,6 +596,13 @@ type ListUsersAdminInput struct {
 	Email  string     `json:"email,omitempty"`
 }
 
+type ListAllUsersAdminInput struct {
+	TenantID string     `json:"tenant_id,omitempty"`
+	Status   UserStatus `json:"status,omitempty"`
+	Name     string     `json:"name,omitempty"`
+	Email    string     `json:"email,omitempty"`
+}
+
 type CreateUserInput struct {
 	TenantID string `json:"tenant_id"`
 	Name     string `json:"name"`
@@ -572,12 +637,18 @@ type CreateCredentialInput struct {
 }
 
 type UpdateCredentialInput struct {
-	Name   *string           `json:"name,omitempty"`
-	Status *CredentialStatus `json:"status,omitempty"`
+	Name           *string           `json:"name,omitempty"`
+	Status         *CredentialStatus `json:"status,omitempty"`
+	ExpiresAt      *time.Time        `json:"expires_at,omitempty"`
+	ClearExpiresAt bool              `json:"clear_expires_at,omitempty"`
 }
 
 type RotateCredentialSecretInput struct {
 	APISecret string `json:"api_secret"`
+}
+
+type RotateCredentialKeyInput struct {
+	APIKey string `json:"api_key"`
 }
 
 type IssueTokenInput struct {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -28,6 +29,20 @@ type importStateEnvelope struct {
 	Data      agentservice.ExportServiceStateOutput `json:"data"`
 	Overwrite bool                                  `json:"overwrite,omitempty"`
 	DryRun    bool                                  `json:"dry_run,omitempty"`
+}
+
+type readinessCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Path   string `json:"path,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+type readinessReport struct {
+	Status      string           `json:"status"`
+	GeneratedAt time.Time        `json:"generated_at"`
+	DataRoot    string           `json:"data_root,omitempty"`
+	Checks      []readinessCheck `json:"checks"`
 }
 
 type HTTPServer struct {
@@ -166,8 +181,10 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPI)
+	s.mux.HandleFunc("GET /api/v1/admin/system/readiness", s.withAdmin(s.handleGetAdminReadiness))
 	s.mux.HandleFunc("GET /api/v1/admin/overview", s.withAdmin(s.handleGetAdminOverview))
 	s.mux.HandleFunc("GET /api/v1/admin/dashboard", s.withAdmin(s.handleGetAdminDashboard))
+	s.mux.HandleFunc("GET /api/v1/admin/insights", s.withAdmin(s.handleGetAdminInsights))
 	s.mux.HandleFunc("GET /api/v1/admin/alerts", s.withAdmin(s.handleGetAdminAlerts))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants", s.withAdmin(s.handleListTenants))
 	s.mux.HandleFunc("GET /api/v1/admin/audit-events", s.withAdmin(s.handleListAuditEvents))
@@ -178,6 +195,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/summary", s.withAdmin(s.handleGetTenantSummary))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleUpdateTenant))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleDeleteTenant))
+	s.mux.HandleFunc("GET /api/v1/admin/users", s.withAdmin(s.handleListAllUsers))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleListUsers))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleCreateUser))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleGetUser))
@@ -188,6 +206,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleGetCredential))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleUpdateCredential))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-secret", s.withAdmin(s.handleRotateCredentialSecret))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-key", s.withAdmin(s.handleRotateCredentialKey))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleRevokeCredential))
 	s.mux.HandleFunc("POST /api/v1/auth/token", s.handleIssueToken)
 	s.mux.HandleFunc("GET /api/v1/me", s.withPrincipal(s.handleGetMe))
@@ -257,11 +276,116 @@ func (s *HTTPServer) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 }
 func (s *HTTPServer) handleReady(w http.ResponseWriter, r *http.Request) {
-	if _, err := os.Stat(s.svc.DataRoot()); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "error": "data root unavailable"})
+	report := buildReadinessReport(s.svc.DataRoot(), s.jobs.filePath)
+	if report.Status != "ready" {
+		errMsg := "service not ready"
+		for _, check := range report.Checks {
+			if check.Status != "pass" && check.Error != "" {
+				errMsg = check.Error
+				break
+			}
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": report.Status, "error": errMsg})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": report.Status})
+}
+
+func (s *HTTPServer) handleGetAdminReadiness(w http.ResponseWriter, r *http.Request) {
+	report := buildReadinessReport(s.svc.DataRoot(), s.jobs.filePath)
+	status := http.StatusOK
+	if report.Status != "ready" {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, report)
+}
+
+func buildReadinessReport(dataRoot, jobsFilePath string) readinessReport {
+	report := readinessReport{
+		Status:      "ready",
+		GeneratedAt: time.Now().UTC(),
+		DataRoot:    dataRoot,
+		Checks: []readinessCheck{
+			checkPathExists("data_root_exists", dataRoot),
+			checkPathDirectory("data_root_is_dir", dataRoot),
+			checkDirectoryWritable("data_root_writable", dataRoot),
+			checkDirectoryWritable("state_dir_writable", filepath.Join(dataRoot, "state")),
+		},
+	}
+	if stringsTrim(jobsFilePath) != "" {
+		report.Checks = append(report.Checks, checkDirectoryWritable("jobs_store_parent_writable", filepath.Dir(jobsFilePath)))
+	}
+	for _, check := range report.Checks {
+		if check.Status != "pass" {
+			report.Status = "not_ready"
+			break
+		}
+	}
+	return report
+}
+
+func checkReadyDataRoot(dataRoot string) error {
+	report := buildReadinessReport(dataRoot, filepath.Join(dataRoot, "state", "jobs.json"))
+	for _, check := range report.Checks {
+		if check.Name == "data_root_exists" && check.Status != "pass" {
+			return errors.New("data root unavailable")
+		}
+		if check.Name == "data_root_is_dir" && check.Status != "pass" {
+			return errors.New("data root is not a directory")
+		}
+		if check.Name == "data_root_writable" && check.Status != "pass" {
+			return errors.New("data root is not writable")
+		}
+	}
+	return nil
+}
+
+func checkPathExists(name, target string) readinessCheck {
+	check := readinessCheck{Name: name, Status: "pass", Path: target}
+	if _, err := os.Stat(target); err != nil {
+		check.Status = "fail"
+		check.Error = "data root unavailable"
+	}
+	return check
+}
+
+func checkPathDirectory(name, target string) readinessCheck {
+	check := readinessCheck{Name: name, Status: "pass", Path: target}
+	info, err := os.Stat(target)
+	if err != nil {
+		check.Status = "fail"
+		check.Error = "data root unavailable"
+		return check
+	}
+	if !info.IsDir() {
+		check.Status = "fail"
+		check.Error = "data root is not a directory"
+	}
+	return check
+}
+
+func checkDirectoryWritable(name, target string) readinessCheck {
+	check := readinessCheck{Name: name, Status: "pass", Path: target}
+	if stringsTrim(target) == "" {
+		check.Status = "fail"
+		check.Error = "directory path is empty"
+		return check
+	}
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		check.Status = "fail"
+		check.Error = "directory is not writable"
+		return check
+	}
+	f, err := os.CreateTemp(target, ".readyz-*")
+	if err != nil {
+		check.Status = "fail"
+		check.Error = "directory is not writable"
+		return check
+	}
+	nameOnDisk := f.Name()
+	_ = f.Close()
+	_ = os.Remove(nameOnDisk)
+	return check
 }
 func (s *HTTPServer) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"version": serviceVersion, "commit": serviceCommit, "built_at": serviceBuiltAt})
@@ -274,6 +398,42 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
 		return
 	}
+	authFailed, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "auth.token_failed"})
+	if err != nil {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		return
+	}
+	rateLimited, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "auth.token_rate_limited"})
+	if err != nil {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		return
+	}
+	runSucceeded, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "run.succeeded"})
+	if err != nil {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		return
+	}
+	runFailed, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "run.failed"})
+	if err != nil {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		return
+	}
+	alerts, err := s.svc.GetAdminAlerts(r.Context(), agentservice.AdminAlertsInput{})
+	if err != nil {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		return
+	}
+	jobCounts := s.jobs.snapshotCounts()
 	var b strings.Builder
 	b.WriteString("# HELP maclaw_metrics_up Whether metrics collection succeeded\n")
 	b.WriteString("# TYPE maclaw_metrics_up gauge\n")
@@ -306,7 +466,43 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("# TYPE maclaw_audit_events_total gauge\n")
 	b.WriteString("maclaw_audit_events_total ")
 	b.WriteString(strconv.FormatInt(int64(overview.AuditEvents), 10))
-	b.WriteString("\n")
+	b.WriteString("\n# HELP maclaw_auth_token_failed_total Number of failed token exchanges recorded in audit events\n")
+	b.WriteString("# TYPE maclaw_auth_token_failed_total counter\n")
+	b.WriteString("maclaw_auth_token_failed_total ")
+	b.WriteString(strconv.FormatInt(int64(len(authFailed)), 10))
+	b.WriteString("\n# HELP maclaw_auth_token_rate_limited_total Number of rate-limited token exchanges recorded in audit events\n")
+	b.WriteString("# TYPE maclaw_auth_token_rate_limited_total counter\n")
+	b.WriteString("maclaw_auth_token_rate_limited_total ")
+	b.WriteString(strconv.FormatInt(int64(len(rateLimited)), 10))
+	b.WriteString("\n# HELP maclaw_instances_unready_total Number of instances currently not ready\n")
+	b.WriteString("# TYPE maclaw_instances_unready_total gauge\n")
+	b.WriteString("maclaw_instances_unready_total ")
+	b.WriteString(strconv.FormatInt(int64(len(alerts.UnreadyInstances)), 10))
+	b.WriteString("\n# HELP maclaw_runs_waiting_for_user_total Number of runs currently waiting for user input\n")
+	b.WriteString("# TYPE maclaw_runs_waiting_for_user_total gauge\n")
+	b.WriteString("maclaw_runs_waiting_for_user_total ")
+	b.WriteString(strconv.FormatInt(int64(len(alerts.WaitingRuns)), 10))
+	b.WriteString("\n# HELP maclaw_runs_failed_total Number of runs currently surfaced as failed alerts\n")
+	b.WriteString("# TYPE maclaw_runs_failed_total gauge\n")
+	b.WriteString("maclaw_runs_failed_total ")
+	b.WriteString(strconv.FormatInt(int64(len(alerts.FailedRuns)), 10))
+	b.WriteString("\n# HELP maclaw_run_succeeded_events_total Number of succeeded run audit events\n")
+	b.WriteString("# TYPE maclaw_run_succeeded_events_total counter\n")
+	b.WriteString("maclaw_run_succeeded_events_total ")
+	b.WriteString(strconv.FormatInt(int64(len(runSucceeded)), 10))
+	b.WriteString("\n# HELP maclaw_run_failed_events_total Number of failed run audit events\n")
+	b.WriteString("# TYPE maclaw_run_failed_events_total counter\n")
+	b.WriteString("maclaw_run_failed_events_total ")
+	b.WriteString(strconv.FormatInt(int64(len(runFailed)), 10))
+	b.WriteString("\n# HELP maclaw_async_jobs_total Number of async jobs by lifecycle status\n")
+	b.WriteString("# TYPE maclaw_async_jobs_total gauge\n")
+	for _, status := range []asyncJobStatus{asyncJobStatusPending, asyncJobStatusRunning, asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled} {
+		b.WriteString("maclaw_async_jobs_total{status=\"")
+		b.WriteString(string(status))
+		b.WriteString("\"} ")
+		b.WriteString(strconv.FormatInt(int64(jobCounts[status]), 10))
+		b.WriteString("\n")
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(b.String()))
@@ -321,6 +517,32 @@ func (s *HTTPServer) handleGetAdminOverview(w http.ResponseWriter, r *http.Reque
 }
 func (s *HTTPServer) handleGetAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetAdminDashboard(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleGetAdminInsights(w http.ResponseWriter, r *http.Request) {
+	limit := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
+			return
+		}
+		limit = parsed
+	}
+	inactiveForDays := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("inactive_for_days")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid inactive_for_days"})
+			return
+		}
+		inactiveForDays = parsed
+	}
+	out, err := s.svc.GetAdminInsights(r.Context(), agentservice.AdminInsightsInput{InactiveForDays: inactiveForDays, Limit: limit})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -508,6 +730,31 @@ func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
+func (s *HTTPServer) handleListAllUsers(w http.ResponseWriter, r *http.Request) {
+	status, ok := parseUserStatus(r.URL.Query().Get("status"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
+		return
+	}
+	out, err := s.svc.ListAllUsers(r.Context(), agentservice.ListAllUsersAdminInput{
+		TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id")),
+		Status:   status,
+		Name:     strings.TrimSpace(r.URL.Query().Get("name")),
+		Email:    strings.TrimSpace(r.URL.Query().Get("email")),
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	items, meta := paginateUsers(out, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
+}
+
 func (s *HTTPServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	status, ok := parseUserStatus(r.URL.Query().Get("status"))
 	if !ok {
@@ -625,6 +872,18 @@ func (s *HTTPServer) handleRotateCredentialSecret(w http.ResponseWriter, r *http
 		return
 	}
 	out, err := s.svc.RotateCredentialSecret(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleRotateCredentialKey(w http.ResponseWriter, r *http.Request) {
+	var in agentservice.RotateCredentialKeyInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.RotateCredentialAPIKey(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
 	if err != nil {
 		writeError(w, err)
 		return

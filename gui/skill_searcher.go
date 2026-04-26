@@ -182,7 +182,7 @@ func localSearchPenalty(name, installedName string, skillMap map[string]*corelib
 
 func sourcePriority(source string) int {
 	switch source {
-	case "skillmarket":
+	case "skillmarket", "skillhub":
 		return 0
 	case "clawhub":
 		return 1
@@ -195,7 +195,7 @@ func sourcePriority(source string) int {
 
 func mixedSourceLabel(source string) string {
 	switch source {
-	case "skillmarket":
+	case "skillmarket", "skillhub":
 		return "SkillMarket"
 	case "clawhub":
 		return "ClawHub"
@@ -287,7 +287,7 @@ func (s *SkillSearcher) enrichInstalledState(results []MixedSkillSearchResult) {
 
 func mixedResultMatchesSkill(result MixedSkillSearchResult, skill corelib.NLSkillEntry) bool {
 	switch result.Source {
-	case "skillmarket":
+	case "skillmarket", "skillhub":
 		return skill.Source == "hub" && skill.HubSkillID == result.ID
 	case "clawhub":
 		return skill.Source == "clawhub" && strings.EqualFold(skill.Name, result.Name)

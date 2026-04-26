@@ -283,6 +283,46 @@ func (s *Service) ListUsers(ctx context.Context, tenantID string, in ListUsersAd
 	return filtered, nil
 }
 
+func (s *Service) ListAllUsers(ctx context.Context, in ListAllUsersAdminInput) ([]User, error) {
+	_ = ctx
+	tenantID := strings.TrimSpace(in.TenantID)
+	if tenantID != "" {
+		return s.ListUsers(ctx, tenantID, ListUsersAdminInput{Status: in.Status, Name: in.Name, Email: in.Email})
+	}
+	tenants, err := s.store.ListTenants()
+	if err != nil {
+		return nil, err
+	}
+	all := make([]User, 0)
+	for _, tenant := range tenants {
+		users, err := s.store.ListUsers(tenant.ID)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, users...)
+	}
+	status := strings.TrimSpace(string(in.Status))
+	name := strings.ToLower(strings.TrimSpace(in.Name))
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+	if status == "" && name == "" && email == "" {
+		return all, nil
+	}
+	filtered := make([]User, 0, len(all))
+	for _, item := range all {
+		if status != "" && string(item.Status) != status {
+			continue
+		}
+		if name != "" && !strings.Contains(strings.ToLower(item.Name), name) {
+			continue
+		}
+		if email != "" && !strings.Contains(strings.ToLower(item.Email), email) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
+}
+
 func (s *Service) GetUser(ctx context.Context, tenantID, userID string) (*User, error) {
 	_ = ctx
 	u, err := s.store.GetUser(tenantID, userID)
@@ -372,6 +412,9 @@ func (s *Service) CreateCredential(ctx context.Context, in CreateCredentialInput
 	}
 	now := s.now()
 	apiKey := strings.TrimSpace(in.APIKey)
+	if err := s.ensureCredentialAPIKeyAvailable(apiKey, ""); err != nil {
+		return nil, err
+	}
 	digest := HashSecretWithPepper(in.APISecret, s.credentialPepper)
 	if digest == "" {
 		return nil, fmt.Errorf("failed to derive credential secret")
@@ -461,6 +504,12 @@ func (s *Service) UpdateCredential(ctx context.Context, tenantID, userID, creden
 		}
 		cred.Status = *in.Status
 	}
+	if in.ClearExpiresAt {
+		cred.ExpiresAt = nil
+	} else if in.ExpiresAt != nil {
+		expiresAt := in.ExpiresAt.UTC()
+		cred.ExpiresAt = &expiresAt
+	}
 	cred.UpdatedAt = s.now()
 	if err := s.store.SaveCredential(cred); err != nil {
 		return nil, err
@@ -501,6 +550,37 @@ func (s *Service) RotateCredentialSecret(ctx context.Context, tenantID, userID, 
 	return &cred, nil
 }
 
+func (s *Service) RotateCredentialAPIKey(ctx context.Context, tenantID, userID, credentialID string, in RotateCredentialKeyInput) (*Credential, error) {
+	_ = ctx
+	if _, err := s.store.GetTenant(tenantID); err != nil {
+		return nil, err
+	}
+	if _, err := s.store.GetUser(tenantID, userID); err != nil {
+		return nil, err
+	}
+	apiKey := strings.TrimSpace(in.APIKey)
+	if apiKey == "" {
+		return nil, fmt.Errorf("api_key is required")
+	}
+	cred, err := s.store.GetCredential(tenantID, userID, credentialID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureCredentialAPIKeyAvailable(apiKey, cred.ID); err != nil {
+		return nil, err
+	}
+	cred.APIKey = ""
+	cred.APIKeyPrefix = deriveAPIKeyPrefix(apiKey)
+	cred.APIKeyHash = hashAPIKey(apiKey)
+	cred.TokenVersion = credentialTokenVersion(cred) + 1
+	cred.UpdatedAt = s.now()
+	if err := s.store.SaveCredential(cred); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: cred.TenantID, UserID: cred.UserID, Action: "credential.key_rotated", ResourceType: "credential", ResourceID: cred.ID, ActorType: "admin"})
+	cred = sanitizeCredential(cred)
+	return &cred, nil
+}
 func (s *Service) RevokeCredential(ctx context.Context, tenantID, userID, credentialID string) (*Credential, error) {
 	_ = ctx
 	if _, err := s.store.GetTenant(tenantID); err != nil {
@@ -533,6 +613,9 @@ func (s *Service) IssueToken(ctx context.Context, in IssueTokenInput) (*IssueTok
 	if credentialStatus(cred) != CredentialStatusActive {
 		return nil, ErrUnauthorized
 	}
+	if credentialExpired(cred, s.now()) {
+		return nil, ErrUnauthorized
+	}
 	if err := s.ensurePrincipalActive(cred.TenantID, cred.UserID); err != nil {
 		return nil, err
 	}
@@ -545,6 +628,23 @@ func (s *Service) IssueToken(ctx context.Context, in IssueTokenInput) (*IssueTok
 	return &IssueTokenOutput{AccessToken: token, TokenType: "Bearer", ExpiresAt: exp, Principal: p}, nil
 }
 
+func (s *Service) ensureCredentialAPIKeyAvailable(apiKey, currentCredentialID string) error {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return fmt.Errorf("api_key is required")
+	}
+	cred, err := s.store.GetCredentialByAPIKey(apiKey)
+	if err == nil {
+		if strings.TrimSpace(currentCredentialID) != "" && cred.ID == currentCredentialID {
+			return nil
+		}
+		return fmt.Errorf("api_key already exists")
+	}
+	if !errors.Is(err, ErrCredentialNotFound) {
+		return err
+	}
+	return nil
+}
 func (s *Service) RecordTokenAuthFailure(ctx context.Context, apiKey, remoteIP, reason string) error {
 	_ = ctx
 	return s.recordTokenAuthEvent(strings.TrimSpace(apiKey), strings.TrimSpace(remoteIP), strings.TrimSpace(reason), "auth.token_failed")
@@ -583,6 +683,9 @@ func (s *Service) Authenticate(accessToken string) (*Principal, error) {
 	if strings.TrimSpace(credentialID) != "" {
 		cred, credErr := s.store.GetCredential(p.TenantID, p.UserID, credentialID)
 		if credErr != nil || credentialStatus(cred) != CredentialStatusActive {
+			return nil, ErrUnauthorized
+		}
+		if credentialExpired(cred, s.now()) {
 			return nil, ErrUnauthorized
 		}
 		if credentialVersion > 0 && credentialTokenVersion(cred) != credentialVersion {
@@ -1754,6 +1857,151 @@ func (s *Service) GetAdminDashboard(ctx context.Context) (*AdminDashboard, error
 	}, nil
 }
 
+func (s *Service) GetAdminInsights(ctx context.Context, in AdminInsightsInput) (*AdminInsights, error) {
+	_ = ctx
+	now := s.now().UTC()
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	inactiveForDays := in.InactiveForDays
+	if inactiveForDays <= 0 {
+		inactiveForDays = 30
+	}
+	cutoff := now.Add(-time.Duration(inactiveForDays) * 24 * time.Hour)
+	insights := &AdminInsights{GeneratedAt: now, InactiveCutoff: cutoff}
+	tenants, err := s.store.ListTenants()
+	if err != nil {
+		return nil, err
+	}
+	for _, tenant := range tenants {
+		summary, err := s.GetTenantSummary(ctx, tenant.ID)
+		if err != nil {
+			return nil, err
+		}
+		insights.TopTenants = append(insights.TopTenants, AdminTenantInsight{
+			TenantID:       summary.TenantID,
+			Name:           summary.Name,
+			Status:         summary.Status,
+			Users:          summary.Users,
+			ActiveUsers:    summary.ActiveUsers,
+			Instances:      summary.Instances,
+			Messages:       summary.Messages,
+			Runs:           summary.Runs,
+			ActivityScore:  summary.Messages + summary.Runs,
+			LastActivityAt: summary.LastActivityAt,
+		})
+		appendQuotaPressureInsights(&insights.QuotaPressure, "tenant", summary.TenantID, summary.Name, "", "", summary.QuotaUsage, summary.LastActivityAt)
+		for _, user := range summary.UserSummaries {
+			inactiveReason, inactiveDays, inactive := classifyInactiveUser(user, cutoff, now)
+			if inactive {
+				insights.InactiveUsers = append(insights.InactiveUsers, AdminInactiveUserInsight{
+					TenantID:       summary.TenantID,
+					UserID:         user.UserID,
+					Name:           user.Name,
+					Email:          user.Email,
+					Status:         user.Status,
+					Instances:      user.Instances,
+					Messages:       user.Messages,
+					Runs:           user.Runs,
+					LastActivityAt: user.LastActivityAt,
+					InactiveDays:   inactiveDays,
+					Reason:         inactiveReason,
+				})
+			}
+			appendQuotaPressureInsights(&insights.QuotaPressure, "user", summary.TenantID, summary.Name, user.UserID, user.Name, user.QuotaUsage, user.LastActivityAt)
+		}
+	}
+	sort.Slice(insights.TopTenants, func(i, j int) bool {
+		if insights.TopTenants[i].ActivityScore == insights.TopTenants[j].ActivityScore {
+			if insights.TopTenants[i].Runs == insights.TopTenants[j].Runs {
+				return insights.TopTenants[i].Messages > insights.TopTenants[j].Messages
+			}
+			return insights.TopTenants[i].Runs > insights.TopTenants[j].Runs
+		}
+		return insights.TopTenants[i].ActivityScore > insights.TopTenants[j].ActivityScore
+	})
+	sort.Slice(insights.InactiveUsers, func(i, j int) bool {
+		if insights.InactiveUsers[i].InactiveDays == insights.InactiveUsers[j].InactiveDays {
+			return insights.InactiveUsers[i].UserID < insights.InactiveUsers[j].UserID
+		}
+		return insights.InactiveUsers[i].InactiveDays > insights.InactiveUsers[j].InactiveDays
+	})
+	sort.Slice(insights.QuotaPressure, func(i, j int) bool {
+		if insights.QuotaPressure[i].PressureRatio == insights.QuotaPressure[j].PressureRatio {
+			return insights.QuotaPressure[i].Used > insights.QuotaPressure[j].Used
+		}
+		return insights.QuotaPressure[i].PressureRatio > insights.QuotaPressure[j].PressureRatio
+	})
+	if len(insights.TopTenants) > limit {
+		insights.TopTenants = insights.TopTenants[:limit]
+	}
+	if len(insights.InactiveUsers) > limit {
+		insights.InactiveUsers = insights.InactiveUsers[:limit]
+	}
+	if len(insights.QuotaPressure) > limit {
+		insights.QuotaPressure = insights.QuotaPressure[:limit]
+	}
+	return insights, nil
+}
+
+func classifyInactiveUser(user TenantUserSummary, cutoff, now time.Time) (string, int, bool) {
+	if user.LastActivityAt == nil {
+		return "no recorded activity", 0, true
+	}
+	if user.LastActivityAt.Before(cutoff) {
+		inactiveDays := int(now.Sub(*user.LastActivityAt).Hours() / 24)
+		if inactiveDays < 0 {
+			inactiveDays = 0
+		}
+		return "last activity is older than the inactivity cutoff", inactiveDays, true
+	}
+	return "", 0, false
+}
+
+func appendQuotaPressureInsights(items *[]AdminQuotaPressureInsight, scope, tenantID, tenantName, userID, userName string, usage QuotaUsageSnapshot, lastActivityAt *time.Time) {
+	appendQuotaPressureMetric(items, scope, "instances", tenantID, tenantName, userID, userName, usage.Instances, lastActivityAt)
+	appendQuotaPressureMetric(items, scope, "sessions", tenantID, tenantName, userID, userName, usage.Sessions, lastActivityAt)
+	appendQuotaPressureMetric(items, scope, "messages", tenantID, tenantName, userID, userName, usage.Messages, lastActivityAt)
+	appendQuotaPressureMetric(items, scope, "runs", tenantID, tenantName, userID, userName, usage.Runs, lastActivityAt)
+}
+
+func appendQuotaPressureMetric(items *[]AdminQuotaPressureInsight, scope, metric, tenantID, tenantName, userID, userName string, usage QuotaUsageItem, lastActivityAt *time.Time) {
+	if usage.Unlimited || usage.Limit <= 0 {
+		return
+	}
+	ratio := 0.0
+	if usage.Limit > 0 {
+		ratio = float64(usage.Used) / float64(usage.Limit)
+	}
+	if ratio < 0.8 {
+		return
+	}
+	status := "high"
+	if ratio >= 1.0 {
+		status = "exceeded"
+	} else if ratio >= 0.9 {
+		status = "critical"
+	}
+	*items = append(*items, AdminQuotaPressureInsight{
+		Scope:          scope,
+		Metric:         metric,
+		TenantID:       tenantID,
+		TenantName:     tenantName,
+		UserID:         userID,
+		UserName:       userName,
+		Limit:          usage.Limit,
+		Used:           usage.Used,
+		Remaining:      usage.Remaining,
+		PressureRatio:  ratio,
+		Status:         status,
+		LastActivityAt: lastActivityAt,
+	})
+}
+
 func (s *Service) GetAdminAlerts(ctx context.Context, in AdminAlertsInput) (*AdminAlerts, error) {
 	_ = ctx
 	alerts := &AdminAlerts{GeneratedAt: s.now().UTC()}
@@ -2010,6 +2258,7 @@ func exportCredential(cred Credential, includeSecrets bool) ExportedCredential {
 		APIKeyPrefix: cred.APIKeyPrefix,
 		APIKeyHash:   cred.APIKeyHash,
 		Status:       credentialStatus(cred),
+		ExpiresAt:    cred.ExpiresAt,
 		TokenVersion: credentialTokenVersion(cred),
 		CreatedAt:    cred.CreatedAt,
 		UpdatedAt:    cred.UpdatedAt,
@@ -2282,6 +2531,7 @@ func importCredential(tenantID, userID string, in ExportedCredential) (Credentia
 		APIKeyPrefix: strings.TrimSpace(in.APIKeyPrefix),
 		APIKeyHash:   strings.TrimSpace(in.APIKeyHash),
 		Status:       in.Status,
+		ExpiresAt:    in.ExpiresAt,
 		TokenVersion: in.TokenVersion,
 		SecretDigest: strings.TrimSpace(in.SecretDigest),
 		CreatedAt:    in.CreatedAt,
@@ -2737,7 +2987,7 @@ func validUserStatus(status UserStatus) bool {
 }
 
 func validCredentialStatus(status CredentialStatus) bool {
-	return status == CredentialStatusActive || status == CredentialStatusRevoked
+	return status == CredentialStatusActive || status == CredentialStatusSuspended || status == CredentialStatusRevoked
 }
 
 func credentialStatus(cred Credential) CredentialStatus {
@@ -2745,6 +2995,13 @@ func credentialStatus(cred Credential) CredentialStatus {
 		return CredentialStatusActive
 	}
 	return cred.Status
+}
+
+func credentialExpired(cred Credential, now time.Time) bool {
+	if cred.ExpiresAt == nil {
+		return false
+	}
+	return !cred.ExpiresAt.After(now)
 }
 
 func sanitizeCredential(cred Credential) Credential {

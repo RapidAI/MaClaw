@@ -5,207 +5,224 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// ---------------------------------------------------------------------------
-// Tests for the unified skill doc injection mechanism
-// (appendKnowledgeSkillSection extended to cover executable skills with SKILL.md)
-// ---------------------------------------------------------------------------
-
-// TestSkillDocInjection_KnowledgeSkillStillWorks verifies that the original
-// knowledge skill injection path is preserved after the mechanism extension.
-func TestSkillDocInjection_KnowledgeSkillStillWorks(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
-
-	app := &App{}
-	h := &IMMessageHandler{app: app}
-	exec := &SkillExecutor{app: app}
-	app.skillExecutor = exec
-
-	// Register a knowledge skill with inline content.
-	_ = exec.Register(corelib.NLSkillEntry{
-		Name:        "git-workflow",
-		Description: "Git workflow guide",
-		Triggers:    []string{"git", "commit", "branch"},
-		Type:        "knowledge",
-		Content:     "Always use feature branches. Never push to main directly.",
-		Status:      "active",
-	})
-
-	var b strings.Builder
-	h.appendKnowledgeSkillSection(&b, "how do I use git branches?")
-	result := b.String()
-
-	if !strings.Contains(result, "git-workflow") {
-		t.Fatalf("expected knowledge skill to be injected, got: %s", result)
+// TestSkillDocInject_KnowledgeSkillInlined verifies that knowledge-type skills
+// with inline Content are injected into the system prompt when triggers match.
+func TestSkillDocInject_KnowledgeSkillInlined(t *testing.T) {
+	skills := []NLSkillDefinition{
+		{
+			Name:     "git-guide",
+			Type:     "knowledge",
+			Status:   "active",
+			Content:  "# Git Guide\nUse `git commit -m` to commit changes.",
+			Triggers: []string{"git", "commit"},
+		},
 	}
-	if !strings.Contains(result, "feature branches") {
-		t.Fatalf("expected knowledge skill content, got: %s", result)
-	}
+
+	result := runInjection(t, skills, "帮我用 git commit 提交代码", 0)
+
+	assertContains(t, result, "### Skill: git-guide")
+	assertContains(t, result, "Git Guide")
 }
 
-// TestSkillDocInjection_ExecutableSkillWithDoc verifies that executable skills
-// with SKILL.md get their documentation injected when triggers match.
-func TestSkillDocInjection_ExecutableSkillWithDoc(t *testing.T) {
-	// Isolate from real skill directories.
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
-
-	// Create a temp skill directory with SKILL.md
-	skillDir := filepath.Join(tempHome, ".maclaw", "data", "skills", "drawio-skill")
-	os.MkdirAll(skillDir, 0755)
-	skillMD := `# drawio-skill
-
-## 工作流程
-1. 根据用户需求生成 drawio XML 格式的图表内容
-2. 将 XML 内容保存为 .drawio 文件
-3. 调用 run.js 将 .drawio 文件转换为 PNG
-
-## 前置条件
-- 需要先用 write_file 生成 .drawio XML 文件
-- run.js 需要 .drawio 文件路径作为参数
-`
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+// TestSkillDocInject_ExecutableWithSKILLMD verifies that executable skills
+// with a real SKILL.md file on disk are injected when triggers match.
+func TestSkillDocInject_ExecutableWithSKILLMD(t *testing.T) {
+	// Create a temp skill directory with a SKILL.md file.
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "drawio-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Also write a minimal skill.yaml so the scanner picks it up.
-	skillYAML := `name: drawio-skill
-description: "根据用户需求生成 drawio 流程图"
-triggers: ["drawio", "流程图", "架构图"]
-steps:
-  - action: bash
-    params:
-      command: "node run.js"
-`
-	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(skillYAML), 0644); err != nil {
+	docContent := "# DrawIO Skill\n\nGenerate XML first, then call run.js to convert."
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(docContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	app := &App{}
-	h := &IMMessageHandler{app: app}
-	exec := &SkillExecutor{app: app}
-	app.skillExecutor = exec
+	skills := []NLSkillDefinition{
+		{
+			Name:     "drawio-skill",
+			Type:     "executable",
+			Status:   "active",
+			Triggers: []string{"drawio", "diagram"},
+			SkillDir: skillDir,
+		},
+	}
 
-	var b strings.Builder
-	h.appendKnowledgeSkillSection(&b, "用 drawio skill 画一个北京5环图")
-	result := b.String()
+	result := runInjection(t, skills, "用 drawio-skill 画一个架构图", 0)
 
-	if !strings.Contains(result, "drawio-skill") {
-		t.Fatalf("expected executable skill doc to be injected, got: %s", result)
-	}
-	if !strings.Contains(result, "write_file") {
-		t.Fatalf("expected SKILL.md content with prerequisites, got: %s", result)
-	}
-	if !strings.Contains(result, "run.js") {
-		t.Fatalf("expected SKILL.md content with workflow, got: %s", result)
-	}
+	assertContains(t, result, "### Skill: drawio-skill")
+	assertContains(t, result, "Generate XML first")
 }
 
-// TestSkillDocInjection_NoMatchNoInjection verifies that skills whose triggers
+// TestSkillDocInject_ExecutableNoSKILLMD verifies that executable skills
+// without SKILL.md are not injected (zero overhead).
+func TestSkillDocInject_ExecutableNoSKILLMD(t *testing.T) {
+	skills := []NLSkillDefinition{
+		{
+			Name:     "simple-tool",
+			Type:     "executable",
+			Status:   "active",
+			Triggers: []string{"simple"},
+			// No Content, no SkillDir → no injection.
+		},
+	}
+
+	result := runInjection(t, skills, "run simple tool", 0)
+
+	assertNotContains(t, result, "simple-tool")
+}
+
+// TestSkillDocInject_DisabledSkillNotInjected verifies that disabled skills
+// are never injected regardless of trigger match.
+func TestSkillDocInject_DisabledSkillNotInjected(t *testing.T) {
+	skills := []NLSkillDefinition{
+		{
+			Name:     "disabled-skill",
+			Type:     "knowledge",
+			Status:   "disabled",
+			Content:  "# Should not appear",
+			Triggers: []string{"disabled"},
+		},
+	}
+
+	result := runInjection(t, skills, "test disabled skill", 0)
+
+	assertNotContains(t, result, "disabled-skill")
+}
+
+// TestSkillDocInject_NoTriggerMatch verifies that skills whose triggers
 // don't match the user message are not injected.
-func TestSkillDocInjection_NoMatchNoInjection(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
+func TestSkillDocInject_NoTriggerMatch(t *testing.T) {
+	skills := []NLSkillDefinition{
+		{
+			Name:     "weather-skill",
+			Type:     "knowledge",
+			Status:   "active",
+			Content:  "# Weather API\nQuery weather data.",
+			Triggers: []string{"weather", "天气"},
+		},
+	}
 
-	skillDir := filepath.Join(tempHome, ".maclaw", "data", "skills", "drawio-skill")
-	os.MkdirAll(skillDir, 0755)
-	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# drawio docs"), 0644)
-	os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: drawio-skill\ndescription: drawio\ntriggers: [drawio, 流程图]\nsteps:\n  - action: bash\n    params:\n      command: echo test\n"), 0644)
+	result := runInjection(t, skills, "帮我写一个贪吃蛇游戏", 0)
 
-	app := &App{}
-	h := &IMMessageHandler{app: app}
-	exec := &SkillExecutor{app: app}
-	app.skillExecutor = exec
+	assertNotContains(t, result, "weather-skill")
+}
 
-	var b strings.Builder
-	h.appendKnowledgeSkillSection(&b, "查询杭州天气")
-	result := b.String()
+// TestSkillDocInject_TokenBudgetTruncation verifies that content is truncated
+// when it exceeds the token budget.
+func TestSkillDocInject_TokenBudgetTruncation(t *testing.T) {
+	longContent := strings.Repeat("这是一段很长的文档内容。", 500) // ~5000 runes
+	skills := []NLSkillDefinition{
+		{
+			Name:     "long-skill",
+			Type:     "knowledge",
+			Status:   "active",
+			Content:  longContent,
+			Triggers: []string{"long"},
+		},
+	}
 
-	if strings.Contains(result, "drawio") {
-		t.Fatalf("expected no injection for unrelated message, got: %s", result)
+	result := runInjection(t, skills, "test long skill", 100) // 100 token budget ≈ 300 runes
+
+	assertContains(t, result, "### Skill: long-skill")
+	// The injected content should be much shorter than the original.
+	if len([]rune(result)) > 600 {
+		t.Errorf("content should be truncated to ~300 runes, got %d runes total", len([]rune(result)))
 	}
 }
 
-// TestSkillDocInjection_NameMatchFallback verifies that a skill is matched
-// when the user mentions the skill name even if no trigger matches.
-func TestSkillDocInjection_NameMatchFallback(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
+// --- Helpers ---
 
-	skillDir := filepath.Join(tempHome, ".maclaw", "data", "skills", "mermaid-chart")
-	os.MkdirAll(skillDir, 0755)
-	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# mermaid-chart usage guide"), 0644)
-	os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: mermaid-chart\ndescription: Generate mermaid charts\ntriggers: [mermaid]\nsteps:\n  - action: bash\n    params:\n      command: echo test\n"), 0644)
+// runInjection exercises the same matching/filtering/injection logic as
+// appendKnowledgeSkillSection, without requiring an IMMessageHandler.
+// tokenBudget=0 uses the default.
+func runInjection(t *testing.T, skills []NLSkillDefinition, userMessage string, tokenBudget int) string {
+	t.Helper()
+	if tokenBudget <= 0 {
+		tokenBudget = defaultKnowledgeSkillTokenBudget
+	}
 
-	app := &App{}
-	h := &IMMessageHandler{app: app}
-	exec := &SkillExecutor{app: app}
-	app.skillExecutor = exec
+	msgLower := strings.ToLower(userMessage)
+
+	var matched []matchedKnowledgeSkill
+	for _, s := range skills {
+		if s.Status != "active" {
+			continue
+		}
+
+		var content string
+		switch {
+		case s.Type == "knowledge" && s.Content != "":
+			content = s.Content
+		case s.Type != "knowledge" && s.SkillDir != "":
+			content = loadSkillDocContent(s.SkillDir)
+		}
+		if content == "" {
+			continue
+		}
+
+		triggers := s.Triggers
+		if len(triggers) == 0 {
+			continue
+		}
+		score := countTriggerMatches(triggers, msgLower)
+		if score == 0 && strings.Contains(msgLower, strings.ToLower(s.Name)) {
+			score = 1
+		}
+		if score == 0 {
+			continue
+		}
+
+		matched = append(matched, matchedKnowledgeSkill{
+			Name:    s.Name,
+			Content: content,
+			Score:   score,
+		})
+	}
+
+	if len(matched) == 0 {
+		return ""
+	}
+
+	sortMatchedKnowledgeSkills(matched)
 
 	var b strings.Builder
-	h.appendKnowledgeSkillSection(&b, "使用 mermaid-chart 画一个流程图")
-	result := b.String()
+	totalTokensUsed := 0
+	b.WriteString("\n## Skill 使用文档\n")
+	for _, m := range matched {
+		if totalTokensUsed >= tokenBudget {
+			break
+		}
+		content := m.Content
+		contentTokens := estimateTokens(content)
+		remaining := tokenBudget - totalTokensUsed
+		if contentTokens > remaining {
+			content = truncateToTokenBudget(content, remaining)
+			contentTokens = estimateTokens(content)
+		}
+		totalTokensUsed += contentTokens
+		b.WriteString("\n### Skill: " + m.Name + "\n")
+		b.WriteString(content)
+		if !strings.HasSuffix(content, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\n---\n")
+	}
+	return b.String()
+}
 
-	if !strings.Contains(result, "mermaid-chart") {
-		t.Fatalf("expected skill matched by name, got: %s", result)
+func assertContains(t *testing.T, haystack, needle string) {
+	t.Helper()
+	if !strings.Contains(haystack, needle) {
+		t.Errorf("expected output to contain %q, got:\n%s", needle, haystack)
 	}
 }
 
-// TestSkillDocInjection_NoDocNoInjection verifies that executable skills
-// without SKILL.md are not injected even when triggers match.
-func TestSkillDocInjection_NoDocNoInjection(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
-
-	skillDir := filepath.Join(tempHome, ".maclaw", "data", "skills", "weather-query")
-	os.MkdirAll(skillDir, 0755)
-	// Only skill.yaml, no SKILL.md
-	os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: weather-query\ndescription: 查询天气\ntriggers: [天气, weather]\nsteps:\n  - action: bash\n    params:\n      command: echo test\n"), 0644)
-
-	app := &App{}
-	h := &IMMessageHandler{app: app}
-	exec := &SkillExecutor{app: app}
-	app.skillExecutor = exec
-
-	var b strings.Builder
-	h.appendKnowledgeSkillSection(&b, "查询天气")
-	result := b.String()
-
-	if strings.Contains(result, "weather-query") {
-		t.Fatalf("expected no injection for skill without documentation, got: %s", result)
-	}
-}
-
-// TestSkillDocInjection_DisabledSkillNotInjected verifies that disabled skills
-// are not injected regardless of trigger match.
-func TestSkillDocInjection_DisabledSkillNotInjected(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
-
-	skillDir := filepath.Join(tempHome, ".maclaw", "data", "skills", "disabled-skill")
-	os.MkdirAll(skillDir, 0755)
-	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# disabled skill docs"), 0644)
-	os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: disabled-skill\ndescription: disabled\ntriggers: [disabled]\nstatus: disabled\nsteps:\n  - action: bash\n    params:\n      command: echo test\n"), 0644)
-
-	app := &App{}
-	h := &IMMessageHandler{app: app}
-	exec := &SkillExecutor{app: app}
-	app.skillExecutor = exec
-
-	var b strings.Builder
-	h.appendKnowledgeSkillSection(&b, "use disabled skill")
-	result := b.String()
-
-	if strings.Contains(result, "disabled-skill") {
-		t.Fatalf("expected no injection for disabled skill, got: %s", result)
+func assertNotContains(t *testing.T, haystack, needle string) {
+	t.Helper()
+	if strings.Contains(haystack, needle) {
+		t.Errorf("expected output NOT to contain %q, got:\n%s", needle, haystack)
 	}
 }

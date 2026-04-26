@@ -271,6 +271,16 @@ func (m *asyncJobManager) pruneLocked(now time.Time) {
 	}
 }
 
+func (m *asyncJobManager) snapshotCounts() map[asyncJobStatus]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked(time.Now().UTC())
+	counts := map[asyncJobStatus]int{}
+	for _, job := range m.jobs {
+		counts[job.Status]++
+	}
+	return counts
+}
 func (m *asyncJobManager) loadFromDisk() {
 	if stringsTrim(m.filePath) == "" {
 		return

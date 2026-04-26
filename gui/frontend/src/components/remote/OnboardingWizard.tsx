@@ -200,7 +200,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
             setLlmDone(true);
             setLlmResult({
                 ok: true,
-                msg: t("???? MaClaw ???????????? LLM ?????", "MaClaw model service is authorized. The LLM binding step has been skipped automatically."),
+                msg: t("MaClaw 官方模型服务已授权，LLM 配置步骤已自动跳过", "MaClaw model service is authorized. The LLM binding step has been skipped automatically."),
             });
             onLLMConfigured();
         }
@@ -243,6 +243,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
         }
     }, [isTigerclaw, llmDone, step]);
 
+    // Track llmDone via ref so the hub-connect polling callback can read
+    // the latest value without being a dependency (avoids re-subscribing
+    // the interval every time llmDone changes).
+    const llmDoneRef = useRef(llmDone);
+    useEffect(() => { llmDoneRef.current = llmDone; }, [llmDone]);
+
     useEffect(() => {
         if (!regDone || !hubConnecting) return;
         let cancelled = false;
@@ -251,10 +257,24 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                 const status = await GetRemoteConnectionStatus();
                 if (!cancelled && status?.connected) {
                     setHubConnecting(false);
-                    setRegResult({
-                        ok: true,
-                        msg: t("注册成功，Hub 已连接，可直接继续下一步", "Registration successful. Hub connected — you can continue."),
+                    // Preserve any existing redeem success/warning appended
+                    // after the base message (delimited by newline).
+                    setRegResult(prev => {
+                        const baseMsg = t("注册成功，Hub 已连接，可直接继续下一步", "Registration successful. Hub connected — you can continue.");
+                        if (prev?.ok && prev.msg && prev.msg.includes('\n')) {
+                            const suffix = prev.msg.substring(prev.msg.indexOf('\n'));
+                            return { ok: true, msg: baseMsg + suffix };
+                        }
+                        return { ok: true, msg: baseMsg };
                     });
+                    // Re-check hub LLM service status after hub connects —
+                    // catches the case where mount-time check failed (no
+                    // viewer token yet) but redeem already succeeded.
+                    if (!llmDoneRef.current) {
+                        GetHubLLMServiceStatus().then(svcStatus => {
+                            if (!cancelled) applyHubServiceStatus(svcStatus);
+                        }).catch(() => {});
+                    }
                 }
             } catch {
                 // Ignore transient polling errors.
@@ -266,7 +286,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
             cancelled = true;
             clearInterval(id);
         };
-    }, [regDone, hubConnecting, t]);
+    }, [regDone, hubConnecting, t, applyHubServiceStatus]);
 
     // Stop WeChat polling when leaving the WeChat step or unmounting
     const wxStep = isTigerclaw ? 3 : 4;
@@ -480,20 +500,29 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
         try {
             const result = await ActivateRemote(regEmail.trim(), invCode.trim(), "");
             if (result?.vip_flag) setVipFlag(true);
-            let redeemWarning = "";
+            let redeemNote = "";
             if (trimmedRedeemCode) {
                 try {
                     const serviceStatus = await RedeemHubLLMService(trimmedRedeemCode) as HubLLMServiceStatus;
-                    applyHubServiceStatus(serviceStatus);
+                    const skippedByStatus = applyHubServiceStatus(serviceStatus);
                     setRedeemCode("");
+                    // Backend's applyHubLLMServiceStatusToConfig has already
+                    // configured the hub LLM provider in config.json. Even if
+                    // skip_llm_config is false (e.g. provider registry filtering),
+                    // the LLM is ready — skip step 3.
+                    if (!skippedByStatus) {
+                        setLlmDone(true);
+                        onLLMConfigured();
+                    }
+                    redeemNote = `\n${t("✅ 服务兑换码已激活，LLM 配置步骤已自动跳过", "✅ Service code redeemed. LLM configuration step skipped automatically.", "✅ 服務兌換碼已啟用，LLM 配置步驟已自動跳過")}`;
                 } catch (redeemError) {
-                    redeemWarning = `\n${t("服务兑换码兑换失败，请稍后在服务状态中重试：", "Service redeem code failed. You can retry later in service status: ", "服務兌換碼兌換失敗，請稍後在服務狀態中重試：")}${String(redeemError)}`;
+                    redeemNote = `\n${t("服务兑换码兑换失败，请稍后在服务状态中重试：", "Service redeem code failed. You can retry later in service status: ", "服務兌換碼兌換失敗，請稍後在服務狀態中重試：")}${String(redeemError)}`;
                 }
             }
             setHubConnecting(true);
             setRegResult({
                 ok: true,
-                msg: `${t("注册成功，正在后台连接 Hub，可直接继续下一步", "Registration successful. Connecting to Hub in the background - you can continue.", "註冊成功，正在後台連線 Hub，可直接繼續下一步")}${redeemWarning}`,
+                msg: `${t("注册成功，正在后台连接 Hub，可直接继续下一步", "Registration successful. Connecting to Hub in the background - you can continue.", "註冊成功，正在後台連線 Hub，可直接繼續下一步")}${redeemNote}`,
             });
             setRegDone(true);
             onRegistered();
@@ -1328,7 +1357,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                         }}>
                             <div>
                                 <span style={{ color: colors.textSecondary }}>{t("邮箱", "Email")}:</span>{" "}
-                                <span style={{ fontWeight: 600 }}>{regEmail}</span>
+                                <span style={{ fontWeight: 600, color: colors.text }}>{regEmail}</span>
                             </div>
                         </div>
                         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>

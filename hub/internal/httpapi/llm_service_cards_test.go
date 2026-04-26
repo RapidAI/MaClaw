@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,11 +17,12 @@ import (
 )
 
 type testLLMServiceSystemSettings struct {
-	data map[string]string
+	data      map[string]string
+	getCounts map[string]*atomic.Int32
 }
 
 func newTestLLMServiceSystemSettings() *testLLMServiceSystemSettings {
-	return &testLLMServiceSystemSettings{data: map[string]string{}}
+	return &testLLMServiceSystemSettings{data: map[string]string{}, getCounts: map[string]*atomic.Int32{}}
 }
 
 func (s *testLLMServiceSystemSettings) Set(_ context.Context, key, valueJSON string) error {
@@ -29,7 +31,29 @@ func (s *testLLMServiceSystemSettings) Set(_ context.Context, key, valueJSON str
 }
 
 func (s *testLLMServiceSystemSettings) Get(_ context.Context, key string) (string, error) {
+	s.counterForKey(key).Add(1)
 	return s.data[key], nil
+}
+
+func (s *testLLMServiceSystemSettings) GetCount(key string) int {
+	return int(s.counterForKey(key).Load())
+}
+
+func (s *testLLMServiceSystemSettings) ResetGetCounts() {
+	for _, counter := range s.getCounts {
+		if counter != nil {
+			counter.Store(0)
+		}
+	}
+}
+
+func (s *testLLMServiceSystemSettings) counterForKey(key string) *atomic.Int32 {
+	counter := s.getCounts[key]
+	if counter == nil {
+		counter = &atomic.Int32{}
+		s.getCounts[key] = counter
+	}
+	return counter
 }
 
 type testAdminAuditRepo struct {
@@ -393,7 +417,7 @@ func TestUpdateLLMServicesAdminHandlerPreservesCardsWhenOmitted(t *testing.T) {
 		t.Fatalf("expected coding-basic group to update, got %#v", saved.ModelServiceGroups)
 	}
 }
-func TestDeleteLLMServiceCardHandlerDeletesUnusedOnly(t *testing.T) {
+func TestDeleteLLMServiceCardHandlerDeletesCardsAndLinkedGrants(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()
 	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
@@ -402,6 +426,7 @@ func TestDeleteLLMServiceCardHandlerDeletesUnusedOnly(t *testing.T) {
 			{ID: "card-unused", Label: "Unused", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
 			{ID: "card-used", Label: "Used", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now, RedeemedByEmail: "user@example.com", RedeemedAt: &now},
 		},
+		Grants: []llmservice.Grant{{ID: "grant-used", Email: "user@example.com", ServiceGroupID: "coding-basic", Source: "card", CardID: "card-used", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreatedAt: now, CreditsTotal: 100}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -425,12 +450,22 @@ func TestDeleteLLMServiceCardHandlerDeletesUnusedOnly(t *testing.T) {
 	req.SetPathValue("id", "card-used")
 	rec = httptest.NewRecorder()
 	DeleteLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("delete redeemed status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	saved, err = llmservice.LoadRegistry(context.Background(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card, _ := saved.FindCardByID("card-used"); card != nil {
+		t.Fatal("expected redeemed card to be deleted")
+	}
+	if len(saved.Grants) != 0 {
+		t.Fatalf("expected linked grant to be deleted, got %d", len(saved.Grants))
 	}
 }
 
-func TestDeleteLLMServiceCardsBatchHandlerDeletesUnusedAndSkipsRedeemed(t *testing.T) {
+func TestDeleteLLMServiceCardsBatchHandlerDeletesSelectedCardsAndLinkedGrants(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()
 	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
@@ -440,6 +475,7 @@ func TestDeleteLLMServiceCardsBatchHandlerDeletesUnusedAndSkipsRedeemed(t *testi
 			{ID: "card-unused-b", Label: "Unused B", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
 			{ID: "card-used", Label: "Used", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now, RedeemedByEmail: "user@example.com", RedeemedAt: &now},
 		},
+		Grants: []llmservice.Grant{{ID: "grant-used", Email: "user@example.com", ServiceGroupID: "coding-basic", Source: "card", CardID: "card-used", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreatedAt: now, CreditsTotal: 100}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -462,8 +498,11 @@ func TestDeleteLLMServiceCardsBatchHandlerDeletesUnusedAndSkipsRedeemed(t *testi
 	if card, _ := saved.FindCardByID("card-unused-b"); card == nil {
 		t.Fatal("expected card-unused-b to remain")
 	}
-	if card, _ := saved.FindCardByID("card-used"); card == nil {
-		t.Fatal("expected redeemed card to remain")
+	if card, _ := saved.FindCardByID("card-used"); card != nil {
+		t.Fatal("expected redeemed card to be deleted")
+	}
+	if len(saved.Grants) != 0 {
+		t.Fatalf("expected linked grants to be deleted, got %d", len(saved.Grants))
 	}
 	if len(audit.logs) != 1 {
 		t.Fatalf("expected 1 audit log, got %d", len(audit.logs))
@@ -473,7 +512,31 @@ func TestDeleteLLMServiceCardsBatchHandlerDeletesUnusedAndSkipsRedeemed(t *testi
 	}
 }
 
+func TestDeleteLLMServiceGrantHandlerDeletesGrant(t *testing.T) {
+	now := time.Now().UTC()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Grants:             []llmservice.Grant{{ID: "grant-1", Email: "user@example.com", ServiceGroupID: "coding-basic", Source: "card", CardID: "card-used", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreatedAt: now, CreditsTotal: 100}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/llm/service-grants/grant-1", nil)
+	req.SetPathValue("id", "grant-1")
+	rec := httptest.NewRecorder()
+	DeleteLLMServiceGrantHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete grant status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	saved, err := llmservice.LoadRegistry(context.Background(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 0 {
+		t.Fatalf("expected grant to be deleted, got %d", len(saved.Grants))
+	}
+}
 func TestCreateLLMServiceCardHandlerPersistsEncryptedCode(t *testing.T) {
 	ctx := context.Background()
 	system := newTestLLMServiceSystemSettings()

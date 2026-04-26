@@ -347,98 +347,111 @@ export function ScheduledTasksPanel({ lang }: Props) {
             {/* Create / Edit dialog */}
             {dlgOpen && (
                 <div style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }} onClick={() => setDlgOpen(false)}>
-                    <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", width: 440, maxWidth: "90vw", boxShadow: "0 8px 30px rgba(0,0,0,0.12)" }}>
-                        <h4 style={{ fontSize: "0.82rem", margin: "0 0 14px", color: colors.text }}>
-                            {editTask ? t("Edit Scheduled Task", "编辑定时任务") : t("New Scheduled Task", "新建定时任务")}
-                        </h4>
-
-                        <div style={{ marginBottom: 10 }}>
-                            <label style={labelStyle}>{t("Task Name", "任务名称")}</label>
-                            <input value={fName} onChange={e => setFName(e.target.value)} placeholder={t("e.g. Daily code review", "如：每日代码审查")} style={inputStyle} />
+                    <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{
+                        background: colors.surface, borderRadius: radius.lg, width: 440, maxWidth: "90vw",
+                        maxHeight: "85vh", boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
+                        display: "flex", flexDirection: "column",
+                    }}>
+                        {/* Dialog header — fixed */}
+                        <div style={{ padding: "14px 18px 8px", flexShrink: 0 }}>
+                            <h4 style={{ fontSize: "0.8rem", margin: 0, color: colors.text }}>
+                                {editTask ? t("Edit Scheduled Task", "编辑定时任务") : t("New Scheduled Task", "新建定时任务")}
+                            </h4>
                         </div>
 
-                        <div style={{ marginBottom: 10 }}>
-                            <label style={labelStyle}>{t("Action (sent to Agent at trigger time)", "执行内容（到时发给 Agent 执行）")}</label>
-                            <textarea value={fAction} onChange={e => setFAction(e.target.value)} rows={3}
-                                placeholder={t("e.g. Run tests for /home/dev/myapp and report failures", "如：检查项目 /home/dev/myapp 的测试是否通过，如果失败发送报告")}
-                                style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} />
-                        </div>
+                        {/* Dialog body — scrollable */}
+                        <div style={{ flex: 1, overflowY: "auto", padding: "0 18px", minHeight: 0 }}>
+                            {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.74rem", marginBottom: 6 }}>{error}</div>}
 
-                        {/* Schedule mode toggle */}
-                        <div style={{ marginBottom: 10 }}>
-                            <label style={labelStyle}>{t("Schedule Mode", "调度模式")}</label>
-                            <div style={{ display: "flex", gap: 0, borderRadius: 4, overflow: "hidden", border: `1px solid ${colors.border}` }}>
-                                <button type="button" onClick={() => setFScheduleMode("fixed")} style={{
-                                    flex: 1, padding: "6px 0", fontSize: "0.76rem", cursor: "pointer", border: "none",
-                                    background: fScheduleMode === "fixed" ? colors.primary : colors.surface,
-                                    color: fScheduleMode === "fixed" ? "#fff" : colors.text,
-                                    fontWeight: fScheduleMode === "fixed" ? 600 : 400,
-                                }}>
-                                    {t("Fixed Time", "固定时间")}
-                                </button>
-                                <button type="button" onClick={() => setFScheduleMode("interval")} style={{
-                                    flex: 1, padding: "6px 0", fontSize: "0.76rem", cursor: "pointer", border: "none",
-                                    borderLeft: `1px solid ${colors.border}`,
-                                    background: fScheduleMode === "interval" ? colors.primary : colors.surface,
-                                    color: fScheduleMode === "interval" ? "#fff" : colors.text,
-                                    fontWeight: fScheduleMode === "interval" ? 600 : 400,
-                                }}>
-                                    {t("Repeat Interval", "间隔重复")}
-                                </button>
+                            <div style={{ marginBottom: 6 }}>
+                                <label style={labelStyle}>{t("Task Name", "任务名称")}</label>
+                                <input value={fName} onChange={e => setFName(e.target.value)} placeholder={t("e.g. Daily code review", "如：每日代码审查")} style={inputStyle} />
                             </div>
-                        </div>
 
-                        {fScheduleMode === "interval" ? (
-                            <>
-                                {/* Interval mode: every N minutes */}
-                                <div style={{ marginBottom: 10 }}>
-                                    <label style={labelStyle}>{t("Repeat every (minutes)", "重复间隔（分钟）")}</label>
-                                    <input type="number" min={1} value={fIntervalMin || ""} onChange={e => setFIntervalMin(Number(e.target.value))}
-                                        placeholder={t("e.g. 60 = every hour, 1440 = every day", "如：60=每小时，1440=每天")}
-                                        style={inputStyle} />
+                            <div style={{ marginBottom: 6 }}>
+                                <label style={labelStyle}>{t("Action", "执行内容")}</label>
+                                <textarea value={fAction} onChange={e => setFAction(e.target.value)} rows={2}
+                                    placeholder={t("e.g. Run tests and report failures", "如：检查测试是否通过，失败则发送报告")}
+                                    style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} />
+                            </div>
+
+                            {/* Schedule mode + Task type — same row */}
+                            <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                                <div style={{ flex: 1 }}>
+                                    <label style={labelStyle}>{t("Mode", "模式")}</label>
+                                    <div style={{ display: "flex", gap: 0, borderRadius: 4, overflow: "hidden", border: `1px solid ${colors.border}` }}>
+                                        <button type="button" onClick={() => setFScheduleMode("fixed")} style={{
+                                            flex: 1, padding: "5px 0", fontSize: "0.72rem", cursor: "pointer", border: "none",
+                                            background: fScheduleMode === "fixed" ? colors.primary : colors.surface,
+                                            color: fScheduleMode === "fixed" ? "#fff" : colors.text,
+                                            fontWeight: fScheduleMode === "fixed" ? 600 : 400,
+                                        }}>
+                                            {t("Fixed", "固定")}
+                                        </button>
+                                        <button type="button" onClick={() => setFScheduleMode("interval")} style={{
+                                            flex: 1, padding: "5px 0", fontSize: "0.72rem", cursor: "pointer", border: "none",
+                                            borderLeft: `1px solid ${colors.border}`,
+                                            background: fScheduleMode === "interval" ? colors.primary : colors.surface,
+                                            color: fScheduleMode === "interval" ? "#fff" : colors.text,
+                                            fontWeight: fScheduleMode === "interval" ? 600 : 400,
+                                        }}>
+                                            {t("Interval", "间隔")}
+                                        </button>
+                                    </div>
+                                </div>
+                                <div style={{ flex: 1 }}>
+                                    <label style={labelStyle}>{t("Type", "类型")}</label>
+                                    <select value={fTaskType} onChange={e => setFTaskType(e.target.value)} style={{ ...inputStyle, padding: "5px 8px" }}>
+                                        <option value="reminder">{t("Reminder (skip)", "提醒（错过跳过）")}</option>
+                                        <option value="process">{t("Process (catch up)", "处理（错过补做）")}</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            {fScheduleMode === "interval" ? (
+                                <>
+                                    <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                                        <div style={{ flex: 2 }}>
+                                            <label style={labelStyle}>{t("Every (min)", "间隔（分钟）")}</label>
+                                            <input type="number" min={1} value={fIntervalMin || ""} onChange={e => setFIntervalMin(Number(e.target.value))}
+                                                placeholder="60" style={inputStyle} />
+                                        </div>
+                                        <div style={{ flex: 1 }}>
+                                            <label style={labelStyle}>{t("Hour", "时")}</label>
+                                            <input type="number" min={0} max={23} value={fHour} onChange={e => setFHour(Number(e.target.value))} style={inputStyle} />
+                                        </div>
+                                        <div style={{ flex: 1 }}>
+                                            <label style={labelStyle}>{t("Min", "分")}</label>
+                                            <input type="number" min={0} max={59} value={fMinute} onChange={e => setFMinute(Number(e.target.value))} style={inputStyle} />
+                                        </div>
+                                    </div>
                                     {fIntervalMin > 0 && (
-                                        <div style={{ fontSize: "0.7rem", color: colors.textMuted, marginTop: 2 }}>
-                                            ≈ {formatInterval(fIntervalMin, lang)}
+                                        <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: -4, marginBottom: 6 }}>
+                                            ≈ {t("every", "每")}{formatInterval(fIntervalMin, lang)}{t(`, first at ${String(fHour).padStart(2,"0")}:${String(fMinute).padStart(2,"0")}`, `，首次 ${String(fHour).padStart(2,"0")}:${String(fMinute).padStart(2,"0")}`)}
                                         </div>
                                     )}
-                                </div>
-                                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                                </>
+                            ) : (
+                                <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
                                     <div style={{ flex: 1 }}>
-                                        <label style={labelStyle}>{t("First run hour", "首次执行小时")} (0-23)</label>
+                                        <label style={labelStyle}>{t("Hour", "时")} (0-23)</label>
                                         <input type="number" min={0} max={23} value={fHour} onChange={e => setFHour(Number(e.target.value))} style={inputStyle} />
                                     </div>
                                     <div style={{ flex: 1 }}>
-                                        <label style={labelStyle}>{t("First run minute", "首次执行分钟")} (0-59)</label>
+                                        <label style={labelStyle}>{t("Min", "分")} (0-59)</label>
                                         <input type="number" min={0} max={59} value={fMinute} onChange={e => setFMinute(Number(e.target.value))} style={inputStyle} />
                                     </div>
-                                </div>
-                            </>
-                        ) : (
-                            <>
-                                {/* Fixed time mode */}
-                                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                                     <div style={{ flex: 1 }}>
-                                        <label style={labelStyle}>{t("Hour", "小时")} (0-23)</label>
-                                        <input type="number" min={0} max={23} value={fHour} onChange={e => setFHour(Number(e.target.value))} style={inputStyle} />
-                                    </div>
-                                    <div style={{ flex: 1 }}>
-                                        <label style={labelStyle}>{t("Minute", "分钟")} (0-59)</label>
-                                        <input type="number" min={0} max={59} value={fMinute} onChange={e => setFMinute(Number(e.target.value))} style={inputStyle} />
-                                    </div>
-                                </div>
-
-                                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                                    <div style={{ flex: 1 }}>
-                                        <label style={labelStyle}>{t("Day of Week", "星期")}</label>
+                                        <label style={labelStyle}>{t("Weekday", "星期")}</label>
                                         <select value={fDow} onChange={e => setFDow(Number(e.target.value))} style={{ ...inputStyle }}>
-                                            <option value={-1}>{t("Every day", "每天")}</option>
+                                            <option value={-1}>{t("All", "每天")}</option>
                                             {getWeekdays(lang).map((d, i) => (
                                                 <option key={i} value={i}>{d}</option>
                                             ))}
                                         </select>
                                     </div>
                                     <div style={{ flex: 1 }}>
-                                        <label style={labelStyle}>{t("Day of Month", "每月几号")}</label>
+                                        <label style={labelStyle}>{t("Date", "几号")}</label>
                                         <select value={fDom} onChange={e => setFDom(Number(e.target.value))} style={{ ...inputStyle }}>
                                             <option value={-1}>{t("Any", "不限")}</option>
                                             {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
@@ -447,30 +460,23 @@ export function ScheduledTasksPanel({ lang }: Props) {
                                         </select>
                                     </div>
                                 </div>
-                            </>
-                        )}
+                            )}
 
-                        {/* Task type */}
-                        <div style={{ marginBottom: 10 }}>
-                            <label style={labelStyle}>{t("Task Type", "任务类型")}</label>
-                            <select value={fTaskType} onChange={e => setFTaskType(e.target.value)} style={{ ...inputStyle }}>
-                                <option value="reminder">{t("Reminder (skip if missed)", "提醒型（错过则跳过）")}</option>
-                                <option value="process">{t("Process (catch up if missed)", "处理型（错过则补做）")}</option>
-                            </select>
-                        </div>
-
-                        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                            <div style={{ flex: 1 }}>
-                                <label style={labelStyle}>{t("Start Date (optional)", "开始日期（可选）")}</label>
-                                <input type="date" value={fStartDate} onChange={e => setFStartDate(e.target.value)} style={inputStyle} />
-                            </div>
-                            <div style={{ flex: 1 }}>
-                                <label style={labelStyle}>{t("End Date (optional)", "结束日期（可选）")}</label>
-                                <input type="date" value={fEndDate} onChange={e => setFEndDate(e.target.value)} style={inputStyle} />
+                            {/* Start date + End date */}
+                            <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                                <div style={{ flex: 1 }}>
+                                    <label style={labelStyle}>{t("Start", "开始日期")}</label>
+                                    <input type="date" value={fStartDate} onChange={e => setFStartDate(e.target.value)} style={inputStyle} />
+                                </div>
+                                <div style={{ flex: 1 }}>
+                                    <label style={labelStyle}>{t("End", "结束日期")}</label>
+                                    <input type="date" value={fEndDate} onChange={e => setFEndDate(e.target.value)} style={inputStyle} />
+                                </div>
                             </div>
                         </div>
 
-                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                        {/* Dialog footer — fixed */}
+                        <div style={{ padding: "10px 18px 14px", flexShrink: 0, display: "flex", justifyContent: "flex-end", gap: 8, borderTop: `1px solid ${colors.border}` }}>
                             <button onClick={() => setDlgOpen(false)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, color: colors.text, cursor: "pointer" }}>
                                 {t("Cancel", "取消")}
                             </button>

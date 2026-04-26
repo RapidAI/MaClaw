@@ -277,13 +277,17 @@ func RunGridSearch(cases []CalibrationCase, defs []IntentDefinition,
 - `corelib/intent/classifier_fusion_test.go`：7 个融合路径测试
 - `corelib/intent/definitions_test.go`：4 个 round-trip 等价性测试
 
-### Phase 3: 工作流意图融合（待实施）
+### Phase 3: 工作流意图融合 ✅ 已完成（实现方式与原设计不同）
+
+**实际实现**：没有新增 `LabelWorkflow` 标签。而是通过 `IntentDefinition.MayTriggerWorkflow` + `WorkflowTypes` 字段让现有标签（LabelCoding、LabelOffice）携带工作流元数据。`ClassificationResult.WorkflowType` 字段在融合阶段填充（L3 tree 提供或 degraded mode 从定义推断）。`handleNeedsUnderstanding` 使用 UIC 预检快速拒绝非工作流意图。8 个测试覆盖所有路径。
 
 **文件变更**：
-- `corelib/intent/types.go`：新增 `LabelWorkflow`
-- `corelib/intent/definitions.go`：新增 workflow IntentDefinition
-- `corelib/workflow/quick_filter.go`：消费 UIC 缓存结果
-- `gui/im_message_handler_workflow.go`：使用 UIC 的 WorkflowHint 加速工作流启动
+- `corelib/intent/fusion_types.go`：`IntentDefinition.MayTriggerWorkflow` + `WorkflowTypes` + `WorkflowCandidateLabels()` + `BuildWorkflowTypeMap()`
+- `corelib/intent/types.go`：`ClassificationResult.WorkflowType` 字段
+- `corelib/intent/classifier.go`：`fusionToClassification()` 推断 WorkflowType + `IsWorkflowCandidate()` + `GetWorkflowRejectThreshold()`
+- `gui/im_message_handler_workflow.go`：`handleNeedsUnderstanding` UIC 预检
+- `corelib/intent/workflow_type_fallback_test.go`：8 个测试
+- `corelib/intent/workflow_candidate_test.go`：候选标签测试
 
 ### Phase 4: 校准工具 ✅ 已完成
 
