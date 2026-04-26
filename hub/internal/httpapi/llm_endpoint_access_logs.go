@@ -402,6 +402,7 @@ type llmEndpointAccessLogFilter struct {
 	ClientIP     string
 	Email        string
 	Query        string
+	CachedOnly   bool
 	StartAt      time.Time
 	EndAt        time.Time
 }
@@ -419,13 +420,23 @@ func parseLLMEndpointAccessLogFilterTime(raw string) time.Time {
 	return time.Time{}
 }
 
+func parseLLMEndpointAccessLogBool(raw string) bool {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func filterLLMEndpointAccessLogs(entries []llmEndpointAccessLogEntry, filter llmEndpointAccessLogFilter) []llmEndpointAccessLogEntry {
 	providerID := strings.ToLower(strings.TrimSpace(filter.ProviderID))
 	upstreamHost := strings.ToLower(strings.TrimSpace(filter.UpstreamHost))
 	clientIP := strings.ToLower(strings.TrimSpace(filter.ClientIP))
 	email := strings.ToLower(strings.TrimSpace(filter.Email))
 	query := strings.ToLower(strings.TrimSpace(filter.Query))
-	if providerID == "" && upstreamHost == "" && clientIP == "" && email == "" && query == "" && filter.StartAt.IsZero() && filter.EndAt.IsZero() {
+	if providerID == "" && upstreamHost == "" && clientIP == "" && email == "" && query == "" && !filter.CachedOnly && filter.StartAt.IsZero() && filter.EndAt.IsZero() {
 		return append([]llmEndpointAccessLogEntry(nil), entries...)
 	}
 	filtered := make([]llmEndpointAccessLogEntry, 0, len(entries))
@@ -446,6 +457,9 @@ func filterLLMEndpointAccessLogs(entries []llmEndpointAccessLogEntry, filter llm
 			continue
 		}
 		if email != "" && !strings.Contains(strings.ToLower(strings.TrimSpace(item.Email)), email) {
+			continue
+		}
+		if filter.CachedOnly && item.CachedInputTokens <= 0 && item.CacheWriteTokens <= 0 {
 			continue
 		}
 		if query != "" {
@@ -513,6 +527,7 @@ func GetLLMEndpointAccessLogsHandler(system store.SystemSettingsRepository) http
 			ClientIP:     r.URL.Query().Get("client_ip"),
 			Email:        r.URL.Query().Get("email"),
 			Query:        r.URL.Query().Get("q"),
+			CachedOnly:   parseLLMEndpointAccessLogBool(r.URL.Query().Get("cached_only")),
 			StartAt:      parseLLMEndpointAccessLogFilterTime(r.URL.Query().Get("start_at")),
 			EndAt:        parseLLMEndpointAccessLogFilterTime(r.URL.Query().Get("end_at")),
 		})

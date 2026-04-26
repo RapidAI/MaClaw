@@ -281,6 +281,17 @@ const riskPriorityWeight = (risk: RoleRiskLevel) => {
   }
 };
 
+const preferredCockpitSectionFromSource = (source?: string): CockpitSection => {
+  const normalized = (source || "").toLowerCase();
+  if (normalized.includes("policy") || normalized.includes("institution") || normalized.includes("routing")) {
+    return "policy";
+  }
+  if (normalized.includes("decision") || normalized.includes("briefing") || normalized.includes("board")) {
+    return "decision";
+  }
+  return "execution";
+};
+
 const parseRoutingAuditDetail = (value: string) => {
   if (!value) {
     return { before: "", after: "", raw: "" };
@@ -329,6 +340,7 @@ export function CommunicationsPage({
   const [lastRuntimeRefreshAt, setLastRuntimeRefreshAt] = useState("");
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [focusedRoleCode, setFocusedRoleCode] = useState('');
+  const [focusedPriorityRoleCode, setFocusedPriorityRoleCode] = useState('');
   const [focusedCockpitSection, setFocusedCockpitSection] = useState<CockpitSection>('execution');
   const executionSectionRef = useRef<HTMLDivElement | null>(null);
   const decisionSectionRef = useRef<HTMLDivElement | null>(null);
@@ -409,6 +421,7 @@ export function CommunicationsPage({
 
     if (preferredTask) {
       setSelectedTaskId(preferredTask.id);
+      setFocusedCockpitSection(preferredCockpitSectionFromSource(navigationTarget.source));
       if (navigationTarget.task_id && preferredTask.id === navigationTarget.task_id) {
         setMessage("Focused from overview on the selected collaboration task.");
       } else if (navigationTarget.role_code) {
@@ -422,6 +435,7 @@ export function CommunicationsPage({
 
     if (navigationTarget.role_code) {
       setFocusedRoleCode(navigationTarget.role_code);
+      setFocusedPriorityRoleCode(navigationTarget.role_code);
       setRoutingMessage(
         `Focused from ${navigationTarget.source || "overview"} on role ${navigationTarget.role_code}.`,
       );
@@ -438,6 +452,36 @@ export function CommunicationsPage({
 
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!selectedTaskId) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      document.querySelector<HTMLElement>(`[data-task-id="${selectedTaskId}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [selectedTaskId]);
+
+  useEffect(() => {
+    if (!focusedRoleCode) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      document.querySelector<HTMLElement>(`[data-role-code="${focusedRoleCode}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [focusedRoleCode, focusedCockpitSection]);
+
+  useEffect(() => {
+    if (!focusedPriorityRoleCode) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      document.querySelector<HTMLElement>(`[data-priority-role-code="${focusedPriorityRoleCode}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [focusedPriorityRoleCode, focusedCockpitSection]);
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId) || null,
@@ -476,6 +520,7 @@ export function CommunicationsPage({
       setRoutingMessage("");
       await saveCollaborationRoutingSettings(routingSettings);
       await loadRouting();
+      setFocusedCockpitSection("policy");
       setRoutingMessage("Routing strategy saved.");
     } catch (error) {
       setRoutingMessage(
@@ -493,6 +538,7 @@ export function CommunicationsPage({
       setRefreshingRuntime(true);
       setRoutingMessage("");
       await loadRouting();
+      setFocusedCockpitSection("policy");
       setRoutingMessage("Runtime view refreshed.");
     } catch (error) {
       setRoutingMessage(
@@ -758,6 +804,9 @@ export function CommunicationsPage({
         actor_id: "board_console",
       });
       await loadRouting();
+      setFocusedCockpitSection("execution");
+      setFocusedRoleCode(summary.role.code);
+      setFocusedPriorityRoleCode(summary.role.code);
       if (action === "promote_standby") {
         setRoutingMessage(
           `Standby promotion executed for ${summary.role.name}.`,
@@ -800,6 +849,8 @@ export function CommunicationsPage({
         });
       }
       await loadRouting();
+      setFocusedCockpitSection("decision");
+      setFocusedPriorityRoleCode(topPriorityRoles[0]?.role.code || "");
       setRoutingMessage(
         `Executed ${topPriorityRoles.length} prioritized board action${topPriorityRoles.length > 1 ? "s" : ""}.`,
       );
@@ -952,7 +1003,8 @@ export function CommunicationsPage({
               <button
                 key={task.id}
                 type="button"
-                className={`communication-task-card ${task.id === selectedTaskId ? "active" : ""}`}
+                data-task-id={task.id}
+                className={`communication-task-card ${task.id === selectedTaskId ? "active" : ""} ${selectedTask?.id === task.id ? "communication-task-card-focused" : ""}`}
                 onClick={() => setSelectedTaskId(task.id)}
               >
                 <div className="communication-task-head">
@@ -1228,7 +1280,8 @@ export function CommunicationsPage({
                 topPriorityRoles.map((item, index) => (
                   <div
                     key={item.role.id}
-                    className="communications-priority-item"
+                    data-priority-role-code={item.role.code}
+                    className={`communications-priority-item ${focusedPriorityRoleCode === item.role.code ? "communications-priority-item-focused" : ""}`}
                   >
                     <strong>
                       {index + 1}. {item.role.name}
@@ -1287,6 +1340,7 @@ export function CommunicationsPage({
             {roleHealthSummaries.map((summary) => (
               <div
                 key={summary.role.id}
+                data-role-code={summary.role.code}
                 className={`communications-role-card communications-role-card-${summary.risk} ${focusedRoleCode === summary.role.code ? "communications-role-card-focused" : ""}`}
               >
                 <div className="communications-role-head">

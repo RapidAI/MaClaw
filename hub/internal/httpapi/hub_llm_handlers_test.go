@@ -424,6 +424,7 @@ func TestGetHubLLMPromptCacheEntriesHandlerReturnsRecentEntries(t *testing.T) {
 	entries := []*store.LLMPromptCacheEntry{
 		{CacheKey: "a", ProviderID: "provider-a", Model: "auto", Kind: "chat_completion_response", InputHash: "a", Payload: []byte("{}"), PayloadBytes: 2, HitCount: 1, CreatedAt: now, AccessedAt: now},
 		{CacheKey: "b", ProviderID: "provider-a", Model: "auto", Kind: "chat_completion_response", InputHash: "b", Payload: []byte("{}"), PayloadBytes: 2, HitCount: 2, CreatedAt: now.Add(1 * time.Minute), AccessedAt: now.Add(1 * time.Minute)},
+		{CacheKey: "legacy", ProviderID: "", Model: "auto", Kind: "chat_completion_response", InputHash: "legacy", Payload: []byte("{}"), PayloadBytes: 2, HitCount: 4, CreatedAt: now.Add(90 * time.Second), AccessedAt: now.Add(90 * time.Second)},
 		{CacheKey: "c", ProviderID: "provider-b", Model: "gpt-4.1", Kind: "chat_completion_response", InputHash: "c", Payload: []byte("{}"), PayloadBytes: 2, HitCount: 3, CreatedAt: now.Add(2 * time.Minute), AccessedAt: now.Add(2 * time.Minute)},
 	}
 	for _, entry := range entries {
@@ -453,7 +454,7 @@ func TestGetHubLLMPromptCacheEntriesHandlerReturnsRecentEntries(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(body.Entries) != 1 || body.Entries[0].CacheKey != "c" || body.Entries[0].HitCount != 3 || body.Entries[0].Model != "gpt-4.1" || body.Page != 1 || body.Limit != 1 || body.Total != 3 || !body.HasMore || len(body.Providers) != 2 || len(body.Models) != 2 {
+	if len(body.Entries) != 1 || body.Entries[0].CacheKey != "c" || body.Entries[0].HitCount != 3 || body.Entries[0].Model != "gpt-4.1" || body.Page != 1 || body.Limit != 1 || body.Total != 4 || !body.HasMore || len(body.Providers) != 2 || len(body.Models) != 2 {
 		t.Fatalf("unexpected entries: %#v %#v", body.Entries, body)
 	}
 
@@ -475,15 +476,18 @@ func TestGetHubLLMPromptCacheEntriesHandlerReturnsRecentEntries(t *testing.T) {
 	if err := json.Unmarshal(filteredRR.Body.Bytes(), &filteredBody); err != nil {
 		t.Fatalf("decode filtered: %v", err)
 	}
-	if len(filteredBody.Entries) != 2 {
-		t.Fatalf("filtered entries len = %d, want 2", len(filteredBody.Entries))
+	if len(filteredBody.Entries) != 3 {
+		t.Fatalf("filtered entries len = %d, want 3", len(filteredBody.Entries))
 	}
 	if len(filteredBody.Providers) != 2 || len(filteredBody.Models) != 1 || filteredBody.Models[0] != "auto" {
 		t.Fatalf("unexpected filter metadata: %#v", filteredBody)
 	}
 	for _, entry := range filteredBody.Entries {
-		if entry.ProviderID != "provider-a" || entry.Model != "auto" {
-			t.Fatalf("unexpected filtered entry: %#v", filteredBody.Entries)
+		if entry.ProviderID != "" && entry.ProviderID != "provider-a" {
+			t.Fatalf("unexpected filtered entry provider: %#v", filteredBody.Entries)
+		}
+		if entry.Model != "auto" {
+			t.Fatalf("unexpected filtered entry model: %#v", filteredBody.Entries)
 		}
 	}
 
@@ -507,7 +511,7 @@ func TestGetHubLLMPromptCacheEntriesHandlerReturnsRecentEntries(t *testing.T) {
 	if err := json.Unmarshal(pagedRR.Body.Bytes(), &pagedBody); err != nil {
 		t.Fatalf("decode paged: %v", err)
 	}
-	if len(pagedBody.Entries) != 1 || pagedBody.Entries[0].CacheKey != "a" || pagedBody.Page != 2 || pagedBody.Limit != 1 || pagedBody.Total != 2 || pagedBody.HasMore || len(pagedBody.Providers) != 2 || len(pagedBody.Models) != 1 {
+	if len(pagedBody.Entries) != 1 || pagedBody.Entries[0].CacheKey != "b" || pagedBody.Page != 2 || pagedBody.Limit != 1 || pagedBody.Total != 3 || !pagedBody.HasMore || len(pagedBody.Providers) != 2 || len(pagedBody.Models) != 1 {
 		t.Fatalf("unexpected paged entries: %#v %#v", pagedBody.Entries, pagedBody)
 	}
 }

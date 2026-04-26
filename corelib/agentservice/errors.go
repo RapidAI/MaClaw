@@ -15,6 +15,7 @@ var (
 	ErrInstanceBusy       = errors.New("instance has running runs")
 	ErrUserBusy           = errors.New("user has running runs")
 	ErrTenantBusy         = errors.New("tenant has running runs")
+	ErrDeleteProtected    = errors.New("resource is delete-protected")
 	ErrSessionBusy        = errors.New("session has running runs")
 	ErrSessionArchived    = errors.New("session is archived")
 	ErrCredentialNotFound = errors.New("credential not found")

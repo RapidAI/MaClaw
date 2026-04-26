@@ -481,6 +481,419 @@ func TestGetAdminOverview(t *testing.T) {
 	}
 }
 
+func TestTenantDeleteCheckReportsCountsAndBlockers(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "check-key", APISecret: "check-secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_delete_check", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now}); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	if err := store.SaveRun(agentservice.Run{ID: "run_delete_check", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusRunning, StartedAt: now}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/delete-check", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tenant delete-check status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out agentservice.TenantDeleteCheck
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode tenant delete-check: %v", err)
+	}
+	if out.CanDelete {
+		t.Fatalf("expected tenant delete-check to be blocked: %#v", out)
+	}
+	if out.Users != 1 || out.Credentials != 1 || out.Instances != 1 || out.Sessions != 1 || out.Messages != 1 || out.Runs != 1 {
+		t.Fatalf("unexpected tenant delete counts: %#v", out)
+	}
+	if len(out.Blockers) != 1 || out.Blockers[0].RunID != "run_delete_check" {
+		t.Fatalf("unexpected tenant blockers: %#v", out.Blockers)
+	}
+}
+
+func TestUserDeleteCheckAllowsIdleUser(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "idle-check-key", APISecret: "idle-check-secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_user_delete_check", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now}); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	completed := now.Add(time.Minute)
+	if err := store.SaveRun(agentservice.Run{ID: "run_user_delete_check", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now, CompletedAt: &completed}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/delete-check", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("user delete-check status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out agentservice.UserDeleteCheck
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode user delete-check: %v", err)
+	}
+	if !out.CanDelete || len(out.Blockers) != 0 {
+		t.Fatalf("expected user delete-check to allow deletion: %#v", out)
+	}
+	if out.Credentials != 1 || out.Instances != 1 || out.Sessions != 1 || out.Messages != 1 || out.Runs != 1 {
+		t.Fatalf("unexpected user delete counts: %#v", out)
+	}
+}
+
+func TestTenantRetirePlanReturnsDeleteCheckAndScopedExport(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_retire_plan", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now}); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	completed := now.Add(time.Minute)
+	if err := store.SaveRun(agentservice.Run{ID: "run_retire_plan", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now, CompletedAt: &completed}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/retire-plan?include_audit=false", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tenant retire-plan status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out agentservice.TenantRetirePlan
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode tenant retire-plan: %v", err)
+	}
+	if out.DeleteCheck.TenantID != tenant.ID || out.Export.Scope != "tenant" || out.Export.TenantID != tenant.ID {
+		t.Fatalf("unexpected tenant retire-plan payload: %#v", out)
+	}
+	if out.Export.IncludeAudit {
+		t.Fatalf("expected include_audit=false to be respected: %#v", out.Export)
+	}
+	if len(out.Export.Users) != 1 || out.Export.Users[0].User.ID != user.ID {
+		t.Fatalf("unexpected tenant retire export users: %#v", out.Export.Users)
+	}
+}
+
+func TestUserRetirePlanReturnsScopedExport(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user1, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User1"})
+	if err != nil {
+		t.Fatalf("CreateUser1: %v", err)
+	}
+	user2, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User2"})
+	if err != nil {
+		t.Fatalf("CreateUser2: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user1.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.SaveMessage(agentservice.Message{ID: "msg_user_retire_plan", TenantID: tenant.ID, UserID: user1.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now}); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user1.ID+"/retire-plan?include_messages=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("user retire-plan status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out agentservice.UserRetirePlan
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode user retire-plan: %v", err)
+	}
+	if out.DeleteCheck.UserID != user1.ID || out.Export.Scope != "user" || out.Export.UserID != user1.ID {
+		t.Fatalf("unexpected user retire-plan payload: %#v", out)
+	}
+	if len(out.Export.Users) != 1 || out.Export.Users[0].User.ID != user1.ID {
+		t.Fatalf("expected only target user in export: %#v", out.Export.Users)
+	}
+	if len(out.Export.Users) == 1 && out.Export.Users[0].User.ID == user2.ID {
+		t.Fatalf("unexpected second user in retire export: %#v", out.Export.Users)
+	}
+}
+
+func TestDeleteTenantRequiresExplicitConfirmation(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetTenant(context.Background(), tenant.ID); err != nil {
+		t.Fatalf("tenant should still exist: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"?confirm=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after confirm, got %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetTenant(context.Background(), tenant.ID); err == nil {
+		t.Fatalf("expected tenant deleted after confirm")
+	}
+}
+
+func TestDeleteUserRequiresExplicitConfirmation(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetUser(context.Background(), tenant.ID, user.ID); err != nil {
+		t.Fatalf("user should still exist: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"?confirm=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after confirm, got %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetUser(context.Background(), tenant.ID, user.ID); err == nil {
+		t.Fatalf("expected user deleted after confirm")
+	}
+}
+
+func TestProtectedTenantDeleteCheckAndDeleteBlocked(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant", DeleteProtected: true, DeleteProtectionReason: "managed by platform"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/delete-check", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tenant protected delete-check status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out agentservice.TenantDeleteCheck
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode tenant protected delete-check: %v", err)
+	}
+	if out.CanDelete || !out.DeleteProtected || out.DeleteProtectionReason != "managed by platform" {
+		t.Fatalf("unexpected protected tenant delete-check: %#v", out)
+	}
+	if len(out.Blockers) == 0 || out.Blockers[0].Kind != "delete_protected" {
+		t.Fatalf("expected delete_protected blocker: %#v", out.Blockers)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"?confirm=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for protected tenant delete, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProtectedUserBlocksUserAndTenantDelete(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User", DeleteProtected: true, DeleteProtectionReason: "billing owner"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/delete-check", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("protected user delete-check status = %d body = %s", w.Code, w.Body.String())
+	}
+	var userCheck agentservice.UserDeleteCheck
+	if err := json.NewDecoder(w.Body).Decode(&userCheck); err != nil {
+		t.Fatalf("decode protected user delete-check: %v", err)
+	}
+	if userCheck.CanDelete || !userCheck.DeleteProtected || userCheck.DeleteProtectionReason != "billing owner" {
+		t.Fatalf("unexpected protected user delete-check: %#v", userCheck)
+	}
+	if len(userCheck.Blockers) == 0 || userCheck.Blockers[0].Kind != "delete_protected" {
+		t.Fatalf("expected delete_protected user blocker: %#v", userCheck.Blockers)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/delete-check", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tenant delete-check with protected user status = %d body = %s", w.Code, w.Body.String())
+	}
+	var tenantCheck agentservice.TenantDeleteCheck
+	if err := json.NewDecoder(w.Body).Decode(&tenantCheck); err != nil {
+		t.Fatalf("decode tenant delete-check with protected user: %v", err)
+	}
+	if tenantCheck.CanDelete {
+		t.Fatalf("expected tenant delete-check to be blocked by protected user: %#v", tenantCheck)
+	}
+	found := false
+	for _, blocker := range tenantCheck.Blockers {
+		if blocker.Kind == "delete_protected" && blocker.UserID == user.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected protected user blocker in tenant delete-check: %#v", tenantCheck.Blockers)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"?confirm=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for protected user delete, got %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"?confirm=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for tenant delete blocked by protected user, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAdminCanListTenantsAndUsers(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {

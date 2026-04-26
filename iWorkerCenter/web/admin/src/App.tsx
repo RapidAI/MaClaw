@@ -82,9 +82,9 @@ export default function App() {
       case 'compute': return <ComputePowerPage />;
       case 'overview': return <OverviewPage navigationTarget={overviewTarget} onNavigationHandled={() => setOverviewTarget(null)} onNavigateToCommunications={handleNavigateToCommunications} onNavigateToTab={handleNavigateToTab} />;
       case 'communications': return <CommunicationsPage navigationTarget={communicationsTarget} onNavigationHandled={() => setCommunicationsTarget(null)} onNavigateToOverview={handleNavigateToOverview} />;
-      case 'workflows': return <WorkflowsPage navigationTarget={workflowsTarget} onNavigationHandled={() => setWorkflowsTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} />;
-      case 'knowledge': return <KnowledgePage navigationTarget={knowledgeTarget} onNavigationHandled={() => setKnowledgeTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} />;
-      case 'packages': return <PackagesPage navigationTarget={packagesTarget} onNavigationHandled={() => setPackagesTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} />;
+      case 'workflows': return <WorkflowsPage navigationTarget={workflowsTarget} onNavigationHandled={() => setWorkflowsTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} onNavigateToTab={handleNavigateToTab} />;
+      case 'knowledge': return <KnowledgePage navigationTarget={knowledgeTarget} onNavigationHandled={() => setKnowledgeTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} onNavigateToTab={handleNavigateToTab} />;
+      case 'packages': return <PackagesPage navigationTarget={packagesTarget} onNavigationHandled={() => setPackagesTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} onNavigateToTab={handleNavigateToTab} />;
       case 'security': return <SecurityPage />;
       case 'delivery': return <DeliveryPage />;
       case 'usage': return <UsagePage />;

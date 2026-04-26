@@ -1344,3 +1344,69 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+.communication-task-card-focused {
+  border-color: rgba(239, 106, 124, 0.24);
+  box-shadow: 0 0 0 2px rgba(239, 106, 124, 0.12), 0 18px 34px rgba(31, 34, 48, 0.08);
+}
+
+.communications-priority-item-focused {
+  border-color: rgba(239, 106, 124, 0.22);
+  box-shadow: 0 0 0 2px rgba(239, 106, 124, 0.1), 0 16px 30px rgba(31, 34, 48, 0.08);
+  background: linear-gradient(145deg, rgba(255, 238, 241, 0.98) 0%, rgba(255, 247, 244, 0.96) 100%);
+}
+
+.asset-cockpit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.asset-cockpit-card {
+  display: grid;
+  gap: 14px;
+}
+
+.asset-cockpit-card-active {
+  border-color: rgba(239, 106, 124, 0.24);
+  box-shadow: 0 0 0 2px rgba(239, 106, 124, 0.12), 0 20px 38px rgba(31, 34, 48, 0.1);
+}
+
+.asset-cockpit-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.asset-cockpit-head h3 {
+  margin: 10px 0 0;
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.asset-cockpit-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.asset-cockpit-stats span {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(31, 34, 48, 0.05);
+  border: 1px solid rgba(31, 34, 48, 0.06);
+  color: rgba(31, 34, 48, 0.68);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.asset-review-row {
+  margin-bottom: 16px;
+}
+
+@media (max-width: 1100px) {
+  .asset-cockpit-grid {
+    grid-template-columns: 1fr;
+  }
+}

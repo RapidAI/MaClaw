@@ -110,7 +110,15 @@ func (s *Service) CreateTenant(ctx context.Context, in CreateTenantInput) (*Tena
 		return nil, fmt.Errorf("name is required")
 	}
 	now := s.now()
-	t := Tenant{ID: NewID("tenant"), Name: name, Status: TenantStatusActive, CreatedAt: now, UpdatedAt: now}
+	t := Tenant{
+		ID:                     NewID("tenant"),
+		Name:                   name,
+		Status:                 TenantStatusActive,
+		DeleteProtected:        in.DeleteProtected,
+		DeleteProtectionReason: strings.TrimSpace(in.DeleteProtectionReason),
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	}
 	if err := s.store.SaveTenant(t); err != nil {
 		return nil, err
 	}
@@ -173,6 +181,15 @@ func (s *Service) UpdateTenant(ctx context.Context, tenantID string, in UpdateTe
 		}
 		t.Status = *in.Status
 	}
+	if in.DeleteProtected != nil {
+		t.DeleteProtected = *in.DeleteProtected
+		if !t.DeleteProtected {
+			t.DeleteProtectionReason = ""
+		}
+	}
+	if in.DeleteProtectionReason != nil {
+		t.DeleteProtectionReason = strings.TrimSpace(*in.DeleteProtectionReason)
+	}
 	if err := applyQuotaUpdate(&t.Quota, in.MaxInstances, in.MaxSessions, in.MaxMessages, in.MaxRuns); err != nil {
 		return nil, err
 	}
@@ -185,28 +202,15 @@ func (s *Service) UpdateTenant(ctx context.Context, tenantID string, in UpdateTe
 }
 
 func (s *Service) DeleteTenant(ctx context.Context, tenantID string) error {
-	_ = ctx
-	if _, err := s.store.GetTenant(tenantID); err != nil {
-		return err
-	}
-	users, err := s.store.ListUsers(tenantID)
+	check, err := s.GetTenantDeleteCheck(ctx, tenantID)
 	if err != nil {
 		return err
 	}
-	for _, user := range users {
-		instances, instErr := s.store.ListInstances(tenantID, user.ID)
-		if instErr != nil {
-			return instErr
+	if !check.CanDelete {
+		if check.DeleteProtected || hasDeleteProtectionBlocker(check.Blockers) {
+			return ErrDeleteProtected
 		}
-		for _, inst := range instances {
-			busy, busyErr := s.hasRunningRuns(tenantID, user.ID, inst.ID, "")
-			if busyErr != nil {
-				return busyErr
-			}
-			if busy {
-				return ErrTenantBusy
-			}
-		}
+		return ErrTenantBusy
 	}
 	if err := s.store.DeleteTenant(tenantID); err != nil {
 		return err
@@ -216,6 +220,63 @@ func (s *Service) DeleteTenant(ctx context.Context, tenantID string) error {
 	}
 	_ = s.recordAudit(auditRecord{TenantID: tenantID, Action: "tenant.deleted", ResourceType: "tenant", ResourceID: tenantID, ActorType: "admin"})
 	return nil
+}
+
+func (s *Service) GetTenantDeleteCheck(ctx context.Context, tenantID string) (*TenantDeleteCheck, error) {
+	_ = ctx
+	if _, err := s.store.GetTenant(tenantID); err != nil {
+		return nil, err
+	}
+	users, err := s.store.ListUsers(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	check := &TenantDeleteCheck{
+		TenantID:               tenantID,
+		CanDelete:              true,
+		DeleteProtected:        false,
+		DeleteProtectionReason: "",
+		GeneratedAt:            s.now().UTC(),
+	}
+	tenant, err := s.store.GetTenant(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if tenant.DeleteProtected {
+		check.CanDelete = false
+		check.DeleteProtected = true
+		check.DeleteProtectionReason = tenant.DeleteProtectionReason
+		check.Blockers = append(check.Blockers, DeleteBlocker{Kind: "delete_protected", TenantID: tenantID, Reason: deleteProtectionReason("tenant", tenant.DeleteProtectionReason)})
+	}
+	for _, user := range users {
+		check.Users++
+		credentials, err := s.store.ListCredentials(tenantID, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		check.Credentials += len(credentials)
+		usage, err := s.buildUsageSummary(tenantID, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		check.Instances += usage.Instances
+		check.Sessions += usage.Sessions
+		check.Messages += usage.Messages
+		check.Runs += usage.Runs
+		if user.DeleteProtected {
+			check.CanDelete = false
+			check.Blockers = append(check.Blockers, DeleteBlocker{Kind: "delete_protected", TenantID: tenantID, UserID: user.ID, Reason: deleteProtectionReason("user", user.DeleteProtectionReason)})
+		}
+		blockers, err := s.collectRunningRunBlockers(tenantID, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(blockers) > 0 {
+			check.CanDelete = false
+			check.Blockers = append(check.Blockers, blockers...)
+		}
+	}
+	return check, nil
 }
 
 func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, error) {
@@ -228,7 +289,17 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, er
 		return nil, fmt.Errorf("name is required")
 	}
 	now := s.now()
-	u := User{ID: NewID("user"), TenantID: in.TenantID, Name: name, Email: strings.TrimSpace(in.Email), Status: UserStatusActive, CreatedAt: now, UpdatedAt: now}
+	u := User{
+		ID:                     NewID("user"),
+		TenantID:               in.TenantID,
+		Name:                   name,
+		Email:                  strings.TrimSpace(in.Email),
+		Status:                 UserStatusActive,
+		DeleteProtected:        in.DeleteProtected,
+		DeleteProtectionReason: strings.TrimSpace(in.DeleteProtectionReason),
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	}
 	if err := s.store.SaveUser(u); err != nil {
 		return nil, err
 	}
@@ -357,6 +428,15 @@ func (s *Service) UpdateUser(ctx context.Context, tenantID, userID string, in Up
 		}
 		u.Status = *in.Status
 	}
+	if in.DeleteProtected != nil {
+		u.DeleteProtected = *in.DeleteProtected
+		if !u.DeleteProtected {
+			u.DeleteProtectionReason = ""
+		}
+	}
+	if in.DeleteProtectionReason != nil {
+		u.DeleteProtectionReason = strings.TrimSpace(*in.DeleteProtectionReason)
+	}
 	if err := applyQuotaUpdate(&u.Quota, in.MaxInstances, in.MaxSessions, in.MaxMessages, in.MaxRuns); err != nil {
 		return nil, err
 	}
@@ -369,25 +449,15 @@ func (s *Service) UpdateUser(ctx context.Context, tenantID, userID string, in Up
 }
 
 func (s *Service) DeleteUser(ctx context.Context, tenantID, userID string) error {
-	_ = ctx
-	if _, err := s.store.GetTenant(tenantID); err != nil {
-		return err
-	}
-	if _, err := s.store.GetUser(tenantID, userID); err != nil {
-		return err
-	}
-	instances, err := s.store.ListInstances(tenantID, userID)
+	check, err := s.GetUserDeleteCheck(ctx, tenantID, userID)
 	if err != nil {
 		return err
 	}
-	for _, inst := range instances {
-		busy, busyErr := s.hasRunningRuns(tenantID, userID, inst.ID, "")
-		if busyErr != nil {
-			return busyErr
+	if !check.CanDelete {
+		if check.DeleteProtected || hasDeleteProtectionBlocker(check.Blockers) {
+			return ErrDeleteProtected
 		}
-		if busy {
-			return ErrUserBusy
-		}
+		return ErrUserBusy
 	}
 	if err := s.store.DeleteUser(tenantID, userID); err != nil {
 		return err
@@ -397,6 +467,95 @@ func (s *Service) DeleteUser(ctx context.Context, tenantID, userID string) error
 	}
 	_ = s.recordAudit(auditRecord{TenantID: tenantID, UserID: userID, Action: "user.deleted", ResourceType: "user", ResourceID: userID, ActorType: "admin"})
 	return nil
+}
+
+func (s *Service) GetUserDeleteCheck(ctx context.Context, tenantID, userID string) (*UserDeleteCheck, error) {
+	_ = ctx
+	if _, err := s.store.GetTenant(tenantID); err != nil {
+		return nil, err
+	}
+	if _, err := s.store.GetUser(tenantID, userID); err != nil {
+		return nil, err
+	}
+	credentials, err := s.store.ListCredentials(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	usage, err := s.buildUsageSummary(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	blockers, err := s.collectRunningRunBlockers(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.store.GetUser(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user.DeleteProtected {
+		blockers = append([]DeleteBlocker{{Kind: "delete_protected", TenantID: tenantID, UserID: userID, Reason: deleteProtectionReason("user", user.DeleteProtectionReason)}}, blockers...)
+	}
+	check := &UserDeleteCheck{
+		TenantID:               tenantID,
+		UserID:                 userID,
+		CanDelete:              len(blockers) == 0,
+		DeleteProtected:        user.DeleteProtected,
+		DeleteProtectionReason: user.DeleteProtectionReason,
+		Credentials:            len(credentials),
+		Instances:              usage.Instances,
+		Sessions:               usage.Sessions,
+		Messages:               usage.Messages,
+		Runs:                   usage.Runs,
+		Blockers:               blockers,
+		GeneratedAt:            s.now().UTC(),
+	}
+	return check, nil
+}
+
+func (s *Service) GetTenantRetirePlan(ctx context.Context, tenantID string, in ExportServiceStateInput) (*TenantRetirePlan, error) {
+	check, err := s.GetTenantDeleteCheck(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	in.TenantID = tenantID
+	in.UserID = ""
+	exported, err := s.ExportServiceState(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	return &TenantRetirePlan{DeleteCheck: *check, Export: *exported, GeneratedAt: s.now().UTC()}, nil
+}
+
+func hasDeleteProtectionBlocker(blockers []DeleteBlocker) bool {
+	for _, blocker := range blockers {
+		if blocker.Kind == "delete_protected" {
+			return true
+		}
+	}
+	return false
+}
+
+func deleteProtectionReason(scope, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return scope + " is delete-protected"
+	}
+	return scope + " is delete-protected: " + reason
+}
+
+func (s *Service) GetUserRetirePlan(ctx context.Context, tenantID, userID string, in ExportServiceStateInput) (*UserRetirePlan, error) {
+	check, err := s.GetUserDeleteCheck(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	in.TenantID = tenantID
+	in.UserID = userID
+	exported, err := s.ExportServiceState(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	return &UserRetirePlan{DeleteCheck: *check, Export: *exported, GeneratedAt: s.now().UTC()}, nil
 }
 
 func (s *Service) CreateCredential(ctx context.Context, in CreateCredentialInput) (*Credential, error) {
@@ -2803,6 +2962,35 @@ func (s *Service) hasRunningRuns(tenantID, userID, instanceID, sessionID string)
 		}
 	}
 	return false, nil
+}
+
+func (s *Service) collectRunningRunBlockers(tenantID, userID string) ([]DeleteBlocker, error) {
+	instances, err := s.store.ListInstances(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	blockers := make([]DeleteBlocker, 0)
+	for _, inst := range instances {
+		runs, err := s.store.ListRuns(tenantID, userID, inst.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, run := range runs {
+			if run.Status != RunStatusRunning {
+				continue
+			}
+			blockers = append(blockers, DeleteBlocker{
+				Kind:       "running_run",
+				TenantID:   tenantID,
+				UserID:     userID,
+				InstanceID: inst.ID,
+				SessionID:  run.SessionID,
+				RunID:      run.ID,
+				Reason:     "instance has a running run",
+			})
+		}
+	}
+	return blockers, nil
 }
 
 func (s *Service) enrichSessions(items []Session) ([]Session, error) {

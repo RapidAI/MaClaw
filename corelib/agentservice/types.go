@@ -67,23 +67,27 @@ type TenantQuota struct {
 }
 
 type Tenant struct {
-	ID        string       `json:"id"`
-	Name      string       `json:"name"`
-	Status    TenantStatus `json:"status"`
-	Quota     TenantQuota  `json:"quota,omitempty"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	ID                     string       `json:"id"`
+	Name                   string       `json:"name"`
+	Status                 TenantStatus `json:"status"`
+	Quota                  TenantQuota  `json:"quota,omitempty"`
+	DeleteProtected        bool         `json:"delete_protected,omitempty"`
+	DeleteProtectionReason string       `json:"delete_protection_reason,omitempty"`
+	CreatedAt              time.Time    `json:"created_at"`
+	UpdatedAt              time.Time    `json:"updated_at"`
 }
 
 type User struct {
-	ID        string      `json:"id"`
-	TenantID  string      `json:"tenant_id"`
-	Name      string      `json:"name"`
-	Email     string      `json:"email,omitempty"`
-	Status    UserStatus  `json:"status"`
-	Quota     TenantQuota `json:"quota,omitempty"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	ID                     string      `json:"id"`
+	TenantID               string      `json:"tenant_id"`
+	Name                   string      `json:"name"`
+	Email                  string      `json:"email,omitempty"`
+	Status                 UserStatus  `json:"status"`
+	Quota                  TenantQuota `json:"quota,omitempty"`
+	DeleteProtected        bool        `json:"delete_protected,omitempty"`
+	DeleteProtectionReason string      `json:"delete_protection_reason,omitempty"`
+	CreatedAt              time.Time   `json:"created_at"`
+	UpdatedAt              time.Time   `json:"updated_at"`
 }
 
 type Credential struct {
@@ -442,6 +446,58 @@ type AdminInsights struct {
 	QuotaPressure  []AdminQuotaPressureInsight `json:"quota_pressure,omitempty"`
 }
 
+type DeleteBlocker struct {
+	Kind       string `json:"kind"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
+	InstanceID string `json:"instance_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
+	Reason     string `json:"reason"`
+}
+
+type TenantDeleteCheck struct {
+	TenantID               string          `json:"tenant_id"`
+	CanDelete              bool            `json:"can_delete"`
+	DeleteProtected        bool            `json:"delete_protected,omitempty"`
+	DeleteProtectionReason string          `json:"delete_protection_reason,omitempty"`
+	Users                  int             `json:"users"`
+	Credentials            int             `json:"credentials"`
+	Instances              int             `json:"instances"`
+	Sessions               int             `json:"sessions"`
+	Messages               int             `json:"messages"`
+	Runs                   int             `json:"runs"`
+	Blockers               []DeleteBlocker `json:"blockers,omitempty"`
+	GeneratedAt            time.Time       `json:"generated_at"`
+}
+
+type UserDeleteCheck struct {
+	TenantID               string          `json:"tenant_id"`
+	UserID                 string          `json:"user_id"`
+	CanDelete              bool            `json:"can_delete"`
+	DeleteProtected        bool            `json:"delete_protected,omitempty"`
+	DeleteProtectionReason string          `json:"delete_protection_reason,omitempty"`
+	Credentials            int             `json:"credentials"`
+	Instances              int             `json:"instances"`
+	Sessions               int             `json:"sessions"`
+	Messages               int             `json:"messages"`
+	Runs                   int             `json:"runs"`
+	Blockers               []DeleteBlocker `json:"blockers,omitempty"`
+	GeneratedAt            time.Time       `json:"generated_at"`
+}
+
+type TenantRetirePlan struct {
+	DeleteCheck TenantDeleteCheck        `json:"delete_check"`
+	Export      ExportServiceStateOutput `json:"export"`
+	GeneratedAt time.Time                `json:"generated_at"`
+}
+
+type UserRetirePlan struct {
+	DeleteCheck UserDeleteCheck          `json:"delete_check"`
+	Export      ExportServiceStateOutput `json:"export"`
+	GeneratedAt time.Time                `json:"generated_at"`
+}
+
 type AdminAlertItem struct {
 	Kind            string     `json:"kind"`
 	Severity        string     `json:"severity"`
@@ -582,7 +638,9 @@ type InstanceSummary struct {
 }
 
 type CreateTenantInput struct {
-	Name string `json:"name"`
+	Name                   string `json:"name"`
+	DeleteProtected        bool   `json:"delete_protected,omitempty"`
+	DeleteProtectionReason string `json:"delete_protection_reason,omitempty"`
 }
 
 type ListTenantsInput struct {
@@ -604,28 +662,34 @@ type ListAllUsersAdminInput struct {
 }
 
 type CreateUserInput struct {
-	TenantID string `json:"tenant_id"`
-	Name     string `json:"name"`
-	Email    string `json:"email,omitempty"`
+	TenantID               string `json:"tenant_id"`
+	Name                   string `json:"name"`
+	Email                  string `json:"email,omitempty"`
+	DeleteProtected        bool   `json:"delete_protected,omitempty"`
+	DeleteProtectionReason string `json:"delete_protection_reason,omitempty"`
 }
 
 type UpdateTenantInput struct {
-	Name         *string       `json:"name,omitempty"`
-	Status       *TenantStatus `json:"status,omitempty"`
-	MaxInstances *int          `json:"max_instances,omitempty"`
-	MaxSessions  *int          `json:"max_sessions,omitempty"`
-	MaxMessages  *int          `json:"max_messages,omitempty"`
-	MaxRuns      *int          `json:"max_runs,omitempty"`
+	Name                   *string       `json:"name,omitempty"`
+	Status                 *TenantStatus `json:"status,omitempty"`
+	DeleteProtected        *bool         `json:"delete_protected,omitempty"`
+	DeleteProtectionReason *string       `json:"delete_protection_reason,omitempty"`
+	MaxInstances           *int          `json:"max_instances,omitempty"`
+	MaxSessions            *int          `json:"max_sessions,omitempty"`
+	MaxMessages            *int          `json:"max_messages,omitempty"`
+	MaxRuns                *int          `json:"max_runs,omitempty"`
 }
 
 type UpdateUserInput struct {
-	Name         *string     `json:"name,omitempty"`
-	Email        *string     `json:"email,omitempty"`
-	Status       *UserStatus `json:"status,omitempty"`
-	MaxInstances *int        `json:"max_instances,omitempty"`
-	MaxSessions  *int        `json:"max_sessions,omitempty"`
-	MaxMessages  *int        `json:"max_messages,omitempty"`
-	MaxRuns      *int        `json:"max_runs,omitempty"`
+	Name                   *string     `json:"name,omitempty"`
+	Email                  *string     `json:"email,omitempty"`
+	Status                 *UserStatus `json:"status,omitempty"`
+	DeleteProtected        *bool       `json:"delete_protected,omitempty"`
+	DeleteProtectionReason *string     `json:"delete_protection_reason,omitempty"`
+	MaxInstances           *int        `json:"max_instances,omitempty"`
+	MaxSessions            *int        `json:"max_sessions,omitempty"`
+	MaxMessages            *int        `json:"max_messages,omitempty"`
+	MaxRuns                *int        `json:"max_runs,omitempty"`
 }
 
 type CreateCredentialInput struct {

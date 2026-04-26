@@ -1798,7 +1798,7 @@ function addLLMServiceGroupBinding() {
   renderLLMServiceAdmin();
 }
 function removeLLMServiceGroupBinding(idx) { if (!llmServiceAdminCache) return; llmServiceAdminCache.group_bindings.splice(idx, 1); renderLLMServiceAdmin(); }
-function addLLMServiceUserBinding() {
+async function addLLMServiceUserBinding() {
   if (!llmServiceAdminCache) return;
   const emailEl = document.getElementById('llmServiceUserEmail');
   const serviceEl = document.getElementById('llmServiceUserServiceGroups');
@@ -1814,8 +1814,9 @@ function addLLMServiceUserBinding() {
   if (emailEl) emailEl.value = '';
   if (serviceEl) serviceEl.value = '';
   renderLLMServiceAdmin();
+  await saveLLMServiceAdmin();
 }
-function removeLLMServiceUserBinding(idx) { if (!llmServiceAdminCache) return; llmServiceAdminCache.user_bindings.splice(idx, 1); renderLLMServiceAdmin(); }
+async function removeLLMServiceUserBinding(idx) { if (!llmServiceAdminCache) return; llmServiceAdminCache.user_bindings.splice(idx, 1); renderLLMServiceAdmin(); await saveLLMServiceAdmin(); }
 function llmServiceAdminSavePayload() {
   var payload = Object.assign({}, llmServiceAdminCache || {});
   delete payload.cards;
@@ -2514,6 +2515,3 @@ function llsSetProviderExtra(i, providerID, v) { var m = llmServiceGroupDraft &&
 async function saveLLMServiceGroupDialog() { if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], group_bindings: [], user_bindings: [], cards: [], grants: [] }; var n = llsCloneGroup(llmServiceGroupDraft || llsEmptyGroup()); if (!n.id || !n.name) { showToast(lsx('groupIdNameRequired'), 'error'); return; } n.access_policy = llsNormalizeAccessPolicy(n.access_policy); if (isBuiltinLLMServiceGroup(n.id) || isBuiltinLLMServiceGroup(llmServiceSelectedGroupID)) { showToast(lsx('builtInDefaultReadOnly'), 'info'); return; } var routeNameSeen = {}; for (var i = 0; i < (n.models || []).length; i++) { n.models[i].name = String(n.models[i].name || '').trim() || 'auto'; if (!(n.models[i].provider_ids || []).length) { showToast(llsX('routeNeedsProvider'), 'error'); return; } var routeNameKey = String(n.models[i].name || '').trim().toLowerCase(); if (routeNameSeen[routeNameKey]) { showToast(llsX('duplicateRouteAlias', { name: n.models[i].name }), 'error'); return; } routeNameSeen[routeNameKey] = true; } var gs = llmServiceAdminCache.model_service_groups || [], si = gs.findIndex(function(g) { return g.id === llmServiceSelectedGroupID; }), di = gs.findIndex(function(g, idx) { return g.id === n.id && idx !== si; }); if (di >= 0) { showToast(lsx('duplicateGroupId', { id: n.id }), 'error'); return; } if (si >= 0) gs[si] = n; else gs.push(n); llmServiceAdminCache.model_service_groups = gs; llmServiceSelectedGroupID = n.id; closeLLMServiceGroupDialog(); renderLLMServiceAdmin(); await saveLLMServiceAdmin(); }
 
 var _renderLLMServiceAdmin=renderLLMServiceAdmin;renderLLMServiceAdmin=function(){ensureLLMServiceGroupModalUI();ensureLLMServiceProviderModalUI();_renderLLMServiceAdmin();syncLLMServiceLegacyEditor()};
-
-
-

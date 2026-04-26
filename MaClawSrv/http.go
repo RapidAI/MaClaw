@@ -190,15 +190,19 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/audit-events", s.withAdmin(s.handleListAuditEvents))
 	s.mux.HandleFunc("GET /api/v1/admin/export", s.withAdmin(s.handleExportServiceState))
 	s.mux.HandleFunc("POST /api/v1/admin/import", s.withAdmin(s.handleImportServiceState))
+	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/retire-plan", s.withAdmin(s.handleGetTenantRetirePlan))
+	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/retire-plan", s.withAdmin(s.handleGetUserRetirePlan))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants", s.withAdmin(s.handleCreateTenant))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleGetTenant))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/summary", s.withAdmin(s.handleGetTenantSummary))
+	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/delete-check", s.withAdmin(s.handleGetTenantDeleteCheck))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleUpdateTenant))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleDeleteTenant))
 	s.mux.HandleFunc("GET /api/v1/admin/users", s.withAdmin(s.handleListAllUsers))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleListUsers))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleCreateUser))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleGetUser))
+	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/delete-check", s.withAdmin(s.handleGetUserDeleteCheck))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleUpdateUser))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleDeleteUser))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", s.withAdmin(s.handleListCredentials))
@@ -683,6 +687,34 @@ func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Req
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+
+func (s *HTTPServer) handleGetTenantRetirePlan(w http.ResponseWriter, r *http.Request) {
+	in, err := parseExportServiceStateInput(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	out, err := s.svc.GetTenantRetirePlan(r.Context(), r.PathValue("tenantId"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleGetUserRetirePlan(w http.ResponseWriter, r *http.Request) {
+	in, err := parseExportServiceStateInput(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	out, err := s.svc.GetUserRetirePlan(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 func (s *HTTPServer) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 	var in agentservice.CreateTenantInput
 	if !decodeJSON(w, r, &in) {
@@ -711,6 +743,14 @@ func (s *HTTPServer) handleGetTenantSummary(w http.ResponseWriter, r *http.Reque
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func (s *HTTPServer) handleGetTenantDeleteCheck(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetTenantDeleteCheck(r.Context(), r.PathValue("tenantId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 func (s *HTTPServer) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 	var in agentservice.UpdateTenantInput
 	if !decodeJSON(w, r, &in) {
@@ -724,6 +764,10 @@ func (s *HTTPServer) handleUpdateTenant(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
+	if err := requireDeleteConfirmation(r); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := s.svc.DeleteTenant(r.Context(), r.PathValue("tenantId")); err != nil {
 		writeError(w, err)
 		return
@@ -799,6 +843,14 @@ func (s *HTTPServer) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func (s *HTTPServer) handleGetUserDeleteCheck(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetUserDeleteCheck(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 func (s *HTTPServer) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var in agentservice.UpdateUserInput
 	if !decodeJSON(w, r, &in) {
@@ -812,6 +864,10 @@ func (s *HTTPServer) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if err := requireDeleteConfirmation(r); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := s.svc.DeleteUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId")); err != nil {
 		writeError(w, err)
 		return
@@ -1865,6 +1921,31 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	}
 	return true
 }
+func parseExportServiceStateInput(r *http.Request) (agentservice.ExportServiceStateInput, error) {
+	includeMessages, err := parseOptionalBoolQuery(r, "include_messages")
+	if err != nil {
+		return agentservice.ExportServiceStateInput{}, err
+	}
+	includeRuns, err := parseOptionalBoolQuery(r, "include_runs")
+	if err != nil {
+		return agentservice.ExportServiceStateInput{}, err
+	}
+	includeAudit, err := parseOptionalBoolQuery(r, "include_audit")
+	if err != nil {
+		return agentservice.ExportServiceStateInput{}, err
+	}
+	includeSecrets, err := parseOptionalBoolQuery(r, "include_secrets")
+	if err != nil {
+		return agentservice.ExportServiceStateInput{}, err
+	}
+	return agentservice.ExportServiceStateInput{
+		IncludeMessages: includeMessages == nil || *includeMessages,
+		IncludeRuns:     includeRuns == nil || *includeRuns,
+		IncludeAudit:    includeAudit == nil || *includeAudit,
+		IncludeSecrets:  includeSecrets != nil && *includeSecrets,
+	}, nil
+}
+
 func decodeImportStateRequest(w http.ResponseWriter, r *http.Request) (*agentservice.ImportServiceStateRequest, bool) {
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
@@ -1948,6 +2029,21 @@ func parseRequiredBoolLikeQuery(r *http.Request, key string) (bool, error) {
 		return false, errors.New(key + " must be a boolean")
 	}
 	return v, nil
+}
+
+func requireDeleteConfirmation(r *http.Request) error {
+	raw := strings.TrimSpace(r.URL.Query().Get("confirm"))
+	if raw == "" {
+		return errors.New("confirm=true is required for delete operations")
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return errors.New("confirm must be a boolean")
+	}
+	if !v {
+		return errors.New("confirm=true is required for delete operations")
+	}
+	return nil
 }
 
 func parseOptionalBoolQuery(r *http.Request, key string) (*bool, error) {
@@ -2384,7 +2480,7 @@ func writeError(w http.ResponseWriter, err error) {
 		code = http.StatusForbidden
 	case errors.Is(err, agentservice.ErrTenantNotFound), errors.Is(err, agentservice.ErrUserNotFound), errors.Is(err, agentservice.ErrCredentialNotFound), errors.Is(err, agentservice.ErrUserConfigNotFound), errors.Is(err, agentservice.ErrInstanceNotFound), errors.Is(err, agentservice.ErrSessionNotFound), errors.Is(err, agentservice.ErrRunNotFound):
 		code = http.StatusNotFound
-	case errors.Is(err, agentservice.ErrRunNotRunning), errors.Is(err, agentservice.ErrInstanceBusy), errors.Is(err, agentservice.ErrUserBusy), errors.Is(err, agentservice.ErrTenantBusy), errors.Is(err, agentservice.ErrSessionBusy), errors.Is(err, agentservice.ErrSessionArchived), errors.Is(err, agentservice.ErrAlreadyExists):
+	case errors.Is(err, agentservice.ErrRunNotRunning), errors.Is(err, agentservice.ErrInstanceBusy), errors.Is(err, agentservice.ErrUserBusy), errors.Is(err, agentservice.ErrTenantBusy), errors.Is(err, agentservice.ErrDeleteProtected), errors.Is(err, agentservice.ErrSessionBusy), errors.Is(err, agentservice.ErrSessionArchived), errors.Is(err, agentservice.ErrAlreadyExists):
 		code = http.StatusConflict
 	case errors.Is(err, agentservice.ErrQuotaExceeded):
 		code = http.StatusTooManyRequests

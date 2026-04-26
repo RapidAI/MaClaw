@@ -87,7 +87,7 @@ func TestAdminCredentialDetailUpdateRotateAndDeleteUserTenant(t *testing.T) {
 		t.Fatalf("rotated credential key should work: %v", err)
 	}
 
-	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID, nil)
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"?confirm=true", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -109,7 +109,7 @@ func TestAdminCredentialDetailUpdateRotateAndDeleteUserTenant(t *testing.T) {
 		t.Fatalf("CreateInstance other: %v", err)
 	}
 
-	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID, nil)
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"?confirm=true", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)

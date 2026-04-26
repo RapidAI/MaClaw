@@ -32,14 +32,16 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPost, Path: "/api/v1/admin/tenants", Summary: "Create tenant", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}", Summary: "Get tenant", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/summary", Summary: "Get tenant summary", Description: "Returns aggregate tenant usage plus per-user rollups for control-plane dashboards.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/delete-check", Summary: "Tenant delete precheck", Description: "Returns the impact summary and blockers before deleting a tenant.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPatch, Path: "/api/v1/admin/tenants/{tenantId}", Summary: "Update tenant", Tag: "admin", Security: adminSecurity()},
-	{Method: http.MethodDelete, Path: "/api/v1/admin/tenants/{tenantId}", Summary: "Delete tenant", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodDelete, Path: "/api/v1/admin/tenants/{tenantId}", Summary: "Delete tenant", Description: "Deletes a tenant after confirm=true is explicitly provided.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"confirm"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/users", Summary: "List users across tenants", Description: "Returns users across all tenants or within one tenant when tenant_id is provided.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "status", "name", "email", "limit", "before"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/users", Summary: "List users", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"status", "name", "email", "limit", "before"}},
 	{Method: http.MethodPost, Path: "/api/v1/admin/tenants/{tenantId}/users", Summary: "Create user", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}", Summary: "Get user", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/delete-check", Summary: "User delete precheck", Description: "Returns the impact summary and blockers before deleting a user.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPatch, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}", Summary: "Update user", Tag: "admin", Security: adminSecurity()},
-	{Method: http.MethodDelete, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}", Summary: "Delete user", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodDelete, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}", Summary: "Delete user", Description: "Deletes a user after confirm=true is explicitly provided.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"confirm"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", Summary: "List credentials", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"limit", "before"}},
 	{Method: http.MethodPost, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", Summary: "Create credential", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", Summary: "Get credential", Tag: "admin", Security: adminSecurity()},
@@ -50,6 +52,8 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/admin/audit-events", Summary: "List audit events", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "action", "resource_type", "limit", "before"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/export", Summary: "Export service state", Description: "Exports service, tenant, or user state for backup, migration, or inspection. Sensitive values are omitted unless include_secrets=true.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "include_messages", "include_runs", "include_audit", "include_secrets"}},
 	{Method: http.MethodPost, Path: "/api/v1/admin/import", Summary: "Import service state", Description: "Imports previously exported service, tenant, or user state. Imported instance paths are remapped into the current data root, and dry_run mode returns conflicts, warnings, and per-resource plan actions without mutating state.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"overwrite", "dry_run"}},
+	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/retire-plan", Summary: "Tenant retire plan", Description: "Returns tenant delete precheck plus a scoped export payload for export-before-delete flows.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"include_messages", "include_runs", "include_audit", "include_secrets"}},
+	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/retire-plan", Summary: "User retire plan", Description: "Returns user delete precheck plus a scoped export payload for export-before-delete flows.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"include_messages", "include_runs", "include_audit", "include_secrets"}},
 	{Method: http.MethodPost, Path: "/api/v1/auth/token", Summary: "Issue bearer token", Description: "Exchanges tenant user API key and secret for a bearer token.", Tag: "auth"},
 	{Method: http.MethodGet, Path: "/api/v1/me", Summary: "Current principal", Tag: "auth", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/config/schema", Summary: "Config schema", Tag: "config", Security: bearerSecurity()},
@@ -250,7 +254,7 @@ func buildOpenAPIParameters(path string, queryParams []string) []map[string]any 
 
 func openAPIQuerySchema(path, name string) map[string]any {
 	switch name {
-	case "include_archived", "waiting_for_user", "include_messages", "include_runs", "include_audit", "include_secrets", "overwrite", "dry_run", "all":
+	case "include_archived", "waiting_for_user", "include_messages", "include_runs", "include_audit", "include_secrets", "overwrite", "dry_run", "all", "confirm":
 		return map[string]any{"type": "boolean"}
 	case "async":
 		return map[string]any{"type": "boolean"}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MetricCard } from '../components/cards/MetricCard';
 import { SectionCard } from '../components/cards/SectionCard';
@@ -76,6 +76,21 @@ type OperatingModeCard = {
   onPrimaryAction?: () => void;
   onSecondaryAction?: () => void;
   focusSection?: 'briefing' | 'coordination' | 'actions';
+};
+
+type InstitutionalizationProgressState = {
+  phase: 'memory_review' | 'package_approval' | 'workflow_publish' | 'policy_monitoring' | 'inactive';
+  tone: 'ok' | 'info' | 'warn';
+  title: string;
+  summary: string;
+  detail: string;
+  roleCode?: string;
+  roleLabel?: string;
+  statLine: string[];
+  primaryActionLabel?: string;
+  secondaryActionLabel?: string;
+  onPrimaryAction?: () => void;
+  onSecondaryAction?: () => void;
 };
 
 type ExecutiveAuditCluster = {
@@ -347,6 +362,32 @@ const assetNavigationTargetForTab = (
     draft_id: draftID && draftID !== 'not created' ? draftID : undefined,
     draft_name: draftName,
     source: 'overview_recovery_deposition',
+  };
+};
+
+const assetNavigationTargetForRole = (
+  tab: 'knowledge' | 'packages' | 'workflows',
+  roleCode: string,
+  roleLabel: string,
+  latestDraft: BoardHistoryItem | undefined,
+  source: string,
+): AssetNavigationTarget => {
+  const draftName = tab === 'knowledge'
+    ? `${roleLabel} recovery playbook`
+    : tab === 'packages'
+      ? `${roleLabel} recovery handling`
+      : `${roleLabel} recovery deposition loop`;
+  const draftID = tab === 'knowledge'
+    ? depositionDraftField(latestDraft, 'Memory draft: ')
+    : tab === 'packages'
+      ? depositionDraftField(latestDraft, 'Capability draft: ')
+      : depositionDraftField(latestDraft, 'Workflow draft: ');
+  return {
+    role_code: roleCode,
+    role_label: roleLabel,
+    draft_id: draftID && draftID !== 'not created' ? draftID : undefined,
+    draft_name: draftName,
+    source,
   };
 };
 
@@ -1553,6 +1594,132 @@ export function OverviewPage({
     return null;
   }, [activeManagementReviews, deferredManagementRoles, roleExecutionFeedback, focusedOverviewRoleCode, boardHistory]);
 
+  const institutionalizationProgressState = useMemo<InstitutionalizationProgressState>(() => {
+    const roleCode = managementRecoveryState?.roleCode || effectiveBoardFocus?.role_code || '';
+    const roleLabel = roleCode ? roleLabelFromCode(roleCode, roles) : 'the organization';
+    const latestDraft = roleCode ? latestDepositionDraftForRole(boardHistory, roleCode) : undefined;
+    const memoryDraftID = depositionDraftField(latestDraft, 'Memory draft: ');
+    const capabilityDraftID = depositionDraftField(latestDraft, 'Capability draft: ');
+    const workflowDraftID = depositionDraftField(latestDraft, 'Workflow draft: ');
+    const memoryReady = Boolean(memoryDraftID && memoryDraftID !== 'not created');
+    const capabilityReady = Boolean(capabilityDraftID && capabilityDraftID !== 'not created');
+    const workflowReady = Boolean(workflowDraftID && workflowDraftID !== 'not created');
+
+    if (!roleCode) {
+      return {
+        phase: 'inactive',
+        tone: 'ok',
+        title: 'No active institutionalization loop',
+        summary: 'The organization is not currently carrying a recovery case that needs to be deposited into memory, package, or workflow assets.',
+        detail: 'When an iWorker or human-supported recovery path proves itself in live execution, iWorkerCenter should convert that result into durable organizational assets here.',
+        statLine: [
+          'Memory review waiting for next recovered case',
+          'Package approval opens after memory is captured',
+          'Workflow publish opens after package is approved',
+        ],
+      };
+    }
+
+    if (managementRecoveryState?.phase === 'policy_monitoring') {
+      return {
+        phase: 'policy_monitoring',
+        tone: 'ok',
+        title: `${roleLabel} is in policy monitoring`,
+        summary: `${roleLabel} already has a published workflow standard, so the organization should now observe whether future variance is absorbed without another management exception loop.`,
+        detail: 'This is the final institutional stage: the company has already converted recovery learning into live organizational policy and now validates that the operating system, not individual memory, carries continuity.',
+        roleCode,
+        roleLabel,
+        statLine: [
+          workflowReady ? 'Workflow draft already published into live policy' : 'Policy is live for this recovered role',
+          capabilityReady ? 'Capability package exists beneath the published policy' : 'Capability package was approved before policy rollout',
+          'Watch exceptions instead of reopening direct management control',
+        ],
+        primaryActionLabel: 'Open workflows',
+        secondaryActionLabel: 'Open knowledge',
+        onPrimaryAction: () => onNavigateToTab('workflows', assetNavigationTargetForRole('workflows', roleCode, roleLabel, latestDraft, 'overview_institutionalization_progress')),
+        onSecondaryAction: () => onNavigateToTab('knowledge', assetNavigationTargetForRole('knowledge', roleCode, roleLabel, latestDraft, 'overview_institutionalization_progress')),
+      };
+    }
+
+    if (managementRecoveryState?.phase === 'workflow_rollout_pending') {
+      return {
+        phase: 'workflow_publish',
+        tone: 'info',
+        title: `${roleLabel} is waiting for workflow publish`,
+        summary: `${roleLabel} has already passed package approval. The remaining step is to publish the workflow standard so the approved capability becomes enforced organizational behavior.`,
+        detail: 'At this stage, the organization has validated the capability package but has not yet pushed it into the live operating policy layer. Until publish happens, the learning is reviewed but not fully institutionalized.',
+        roleCode,
+        roleLabel,
+        statLine: [
+          memoryReady ? 'Memory draft is already captured' : 'Memory layer should already be captured before this stage',
+          capabilityReady ? 'Capability package draft is ready for rollout' : 'Capability approval was recorded from board history',
+          workflowReady ? 'Workflow draft is available to publish' : 'Workflow publication should be prepared next',
+        ],
+        primaryActionLabel: 'Open workflows',
+        secondaryActionLabel: 'Open packages',
+        onPrimaryAction: () => onNavigateToTab('workflows', assetNavigationTargetForRole('workflows', roleCode, roleLabel, latestDraft, 'overview_institutionalization_progress')),
+        onSecondaryAction: () => onNavigateToTab('packages', assetNavigationTargetForRole('packages', roleCode, roleLabel, latestDraft, 'overview_institutionalization_progress')),
+      };
+    }
+
+    if (managementRecoveryState?.phase === 'institutionalizing') {
+      return {
+        phase: 'memory_review',
+        tone: 'info',
+        title: `${roleLabel} is in memory review`,
+        summary: `${roleLabel} has returned to autonomous execution. The organization should now capture the recovery path into reviewed memory so the next similar case starts from system knowledge instead of human recollection.`,
+        detail: 'This is the first institutional step after recovery closes: deposit what worked, define the handling pattern, and create the base material that later becomes a capability package and a published workflow.',
+        roleCode,
+        roleLabel,
+        statLine: [
+          memoryReady ? 'Memory draft is already available for review' : 'Memory draft should be reviewed first',
+          capabilityReady ? 'Capability draft can be prepared from approved memory' : 'Package approval follows memory review',
+          workflowReady ? 'Workflow draft exists but should not skip review sequence' : 'Workflow publish comes after package approval',
+        ],
+        primaryActionLabel: 'Open knowledge',
+        secondaryActionLabel: 'Open packages',
+        onPrimaryAction: () => onNavigateToTab('knowledge', assetNavigationTargetForRole('knowledge', roleCode, roleLabel, latestDraft, 'overview_institutionalization_progress')),
+        onSecondaryAction: () => onNavigateToTab('packages', assetNavigationTargetForRole('packages', roleCode, roleLabel, latestDraft, 'overview_institutionalization_progress')),
+      };
+    }
+
+    if (managementRecoveryState?.phase === 'returning_to_autonomy') {
+      return {
+        phase: 'memory_review',
+        tone: 'info',
+        title: `${roleLabel} is approaching memory review`,
+        summary: `${roleLabel} is still stabilizing after intervention. If execution remains healthy, this recovery path should be turned into reviewed memory next.`,
+        detail: 'The organization should not freeze the lesson too early, but it also should not let a validated recovery disappear into individual worker experience. Watch for stable evidence, then start knowledge review.',
+        roleCode,
+        roleLabel,
+        statLine: [
+          'Recovery is back inside delegated execution',
+          memoryReady ? 'A memory draft already exists for review' : 'Prepare memory review once recovery stabilizes',
+          'Package and workflow layers should wait for confirmed repeatability',
+        ],
+        primaryActionLabel: 'Open knowledge',
+        onPrimaryAction: () => onNavigateToTab('knowledge', assetNavigationTargetForRole('knowledge', roleCode, roleLabel, latestDraft, 'overview_institutionalization_progress')),
+      };
+    }
+
+    return {
+      phase: 'inactive',
+      tone: managementRecoveryState?.tone || 'ok',
+      title: managementRecoveryState?.label || 'Institutionalization not started',
+      summary: managementRecoveryState?.summary || 'The organization is still handling the exception itself, so asset deposition has not started yet.',
+      detail: managementRecoveryState?.nextStep || 'Institutionalization begins only after the organization has enough operating evidence to convert the case into durable system assets.',
+      roleCode,
+      roleLabel,
+      statLine: [
+        'Memory review starts after recovery is proven',
+        'Package approval formalizes reusable capability',
+        'Workflow publish turns approved capability into live policy',
+      ],
+      primaryActionLabel: 'Open communications',
+      onPrimaryAction: () => onNavigateToCommunications({ role_code: roleCode, source: 'overview_institutionalization_progress' }),
+    };
+  }, [managementRecoveryState, effectiveBoardFocus, roles, boardHistory, onNavigateToTab, onNavigateToCommunications]);
+
   const boardSummaryDecision = useMemo(() => {
     if (topBoardRoles.length === 0) {
       return null;
@@ -1766,16 +1933,11 @@ export function OverviewPage({
 
 
   const operatingModeCards = useMemo<OperatingModeCard[]>(() => {
-    const institutionalRoleCode = managementRecoveryState?.roleCode || effectiveBoardFocus?.role_code || '';
-    const institutionalRoleLabel = institutionalRoleCode ? roleLabelFromCode(institutionalRoleCode, roles) : 'the organization';
     const inReviewCount = Object.keys(activeManagementReviews).length;
     const deferredCount = Object.keys(deferredManagementRoles).length;
     const depositionCount = boardHistory.filter((item) => item.id.startsWith('deposition-')).length;
     const capabilityCount = boardHistory.filter((item) => item.id.startsWith('capability-')).length;
     const standardCount = boardHistory.filter((item) => item.id.startsWith('standard-')).length;
-    const policyLive = managementRecoveryState?.phase === 'policy_monitoring';
-    const capabilityApproved = managementRecoveryState?.phase === 'workflow_rollout_pending';
-    const institutionalizing = managementRecoveryState?.phase === 'institutionalizing';
 
     return [
       {
@@ -1845,77 +2007,26 @@ export function OverviewPage({
       {
         id: 'institutional-memory',
         eyebrow: 'Institutionalization',
-        title: policyLive
-          ? `${institutionalRoleLabel} is now under policy`
-          : capabilityApproved
-            ? `${institutionalRoleLabel} is ready for workflow rollout`
-            : institutionalizing
-              ? `${institutionalRoleLabel} is ready to deposit learning`
-              : managementRecoveryState?.label || 'No recovery deposition is active',
-        tone: (policyLive ? 'ok' : capabilityApproved || institutionalizing ? 'info' : managementRecoveryState?.tone || 'ok') as OperatingModeCard['tone'],
-        summary: policyLive
-          ? `${institutionalRoleLabel} already has a live organizational standard, so the next job is observation rather than more direct intervention.`
-          : capabilityApproved
-            ? `${institutionalRoleLabel} already has an approved capability package. Publish the workflow standard so the capability becomes enforced organizational behavior.`
-            : institutionalizing
-              ? `${institutionalRoleLabel} has returned to autonomous execution. Its recovery path should now be converted into durable memory, capability, and workflow assets.`
-              : managementRecoveryState?.summary || 'The organization is currently not carrying an active recovery deposition sequence.',
-        detail: managementRecoveryState?.nextStep || 'This is where the company actually compounds durable capability so execution does not depend on any single worker body or individual human employee.',
+        title: institutionalizationProgressState.title,
+        tone: institutionalizationProgressState.tone,
+        summary: institutionalizationProgressState.summary,
+        detail: institutionalizationProgressState.detail,
         statLine: [
+          `Current stage: ${institutionalizationProgressState.phase.replace('_', ' ')}`,
           `${depositionCount} draft deposition event${depositionCount === 1 ? '' : 's'}`,
           `${capabilityCount} capability approval event${capabilityCount === 1 ? '' : 's'}`,
           `${standardCount} workflow publication event${standardCount === 1 ? '' : 's'}`,
         ],
         focusSection: 'actions',
-        primaryActionLabel: institutionalRoleCode
-          ? policyLive
-            ? 'Open workflows'
-            : capabilityApproved
-              ? 'Open packages'
-              : 'Open knowledge'
-          : undefined,
-        secondaryActionLabel: institutionalRoleCode && (capabilityApproved || policyLive) ? 'Open workflows' : institutionalRoleCode && institutionalizing ? 'Open packages' : undefined,
-        onPrimaryAction: institutionalRoleCode
-          ? policyLive
-            ? () => onNavigateToTab('workflows', {
-              role_code: institutionalRoleCode,
-              role_label: institutionalRoleLabel,
-              draft_name: `${institutionalRoleLabel} recovery deposition loop`,
-              source: 'operating_mode_institutionalization',
-            })
-            : capabilityApproved
-              ? () => onNavigateToTab('packages', {
-                role_code: institutionalRoleCode,
-                role_label: institutionalRoleLabel,
-                draft_name: `${institutionalRoleLabel} recovery handling`,
-                source: 'operating_mode_institutionalization',
-              })
-              : () => onNavigateToTab('knowledge', {
-                role_code: institutionalRoleCode,
-                role_label: institutionalRoleLabel,
-                draft_name: `${institutionalRoleLabel} recovery playbook`,
-                source: 'operating_mode_institutionalization',
-              })
-          : undefined,
-        onSecondaryAction: institutionalRoleCode && (capabilityApproved || policyLive)
-          ? () => onNavigateToTab('workflows', {
-            role_code: institutionalRoleCode,
-            role_label: institutionalRoleLabel,
-            draft_name: `${institutionalRoleLabel} recovery deposition loop`,
-            source: 'operating_mode_institutionalization',
-          })
-          : institutionalRoleCode && institutionalizing
-            ? () => onNavigateToTab('packages', {
-              role_code: institutionalRoleCode,
-              role_label: institutionalRoleLabel,
-              draft_name: `${institutionalRoleLabel} recovery handling`,
-              source: 'operating_mode_institutionalization',
-            })
-            : undefined,
+        primaryActionLabel: institutionalizationProgressState.primaryActionLabel,
+        secondaryActionLabel: institutionalizationProgressState.secondaryActionLabel,
+        onPrimaryAction: institutionalizationProgressState.onPrimaryAction,
+        onSecondaryAction: institutionalizationProgressState.onSecondaryAction,
       },
     ];
   }, [
     managementRecoveryState,
+    institutionalizationProgressState,
     effectiveBoardFocus,
     roles,
     activeManagementReviews,
@@ -2423,6 +2534,39 @@ export function OverviewPage({
               </div>
             </div>
           ) : null}
+          <div className="item-row">
+            <strong>Institutionalization stage</strong>
+            <span className={badgeClass(institutionalizationProgressState.tone)}>{institutionalizationProgressState.title}</span>
+            <p>{institutionalizationProgressState.summary}</p>
+            <p>{institutionalizationProgressState.detail}</p>
+            <div className="executive-action-row">
+              {institutionalizationProgressState.statLine.map((stat) => (
+                <span key={stat} className="badge info">{stat}</span>
+              ))}
+            </div>
+            {(institutionalizationProgressState.onPrimaryAction || institutionalizationProgressState.onSecondaryAction) ? (
+              <div className="executive-action-row">
+                {institutionalizationProgressState.onPrimaryAction && institutionalizationProgressState.primaryActionLabel ? (
+                  <button
+                    type="button"
+                    className="executive-assign-button"
+                    onClick={() => institutionalizationProgressState.onPrimaryAction?.()}
+                  >
+                    {institutionalizationProgressState.primaryActionLabel}
+                  </button>
+                ) : null}
+                {institutionalizationProgressState.onSecondaryAction && institutionalizationProgressState.secondaryActionLabel ? (
+                  <button
+                    type="button"
+                    className="executive-link-button"
+                    onClick={() => institutionalizationProgressState.onSecondaryAction?.()}
+                  >
+                    {institutionalizationProgressState.secondaryActionLabel}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
 
           {recentManagementDecisions.length > 0 ? (

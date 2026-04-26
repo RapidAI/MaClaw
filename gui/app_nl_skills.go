@@ -462,7 +462,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			Content:        s.Content,
 			Publisher:      s.Publisher,
 			Mode:           s.Mode,
-			HasDocumentation: s.SkillDir != "" && hasSkillDocFile(s.SkillDir),
+			HasDocumentation: (s.Type == "knowledge" && s.Content != "") || (s.SkillDir != "" && hasSkillDocFile(s.SkillDir)),
 			SkillDir:       s.SkillDir,
 			Params:         s.Params,
 			RequiredArgs:   s.RequiredArgs,

@@ -953,7 +953,7 @@
 
       <!-- Tab: LLM Providers -->
       <section id="tab-llmproviders" class="panel card">
-        <div class="head"><div><h3 id="llmProvidersTabTitle" data-i18n="llmProvidersTabTitle"></h3><div class="desc" id="llmProvidersTabSubtitle" data-i18n="llmProvidersTabSubtitle"></div></div><div class="actions"><button class="btn-ghost" type="button" onclick="saveLLMProviderGlobals()" id="llmProvidersSaveBtn"></button><button class="btn-primary" onclick="addLLMProvider()" id="llmProviderCreateBtn"></button></div></div>
+        <div class="head"><div><h3 id="llmProvidersTabTitle" data-i18n="llmProvidersTabTitle"></h3><div class="desc" id="llmProvidersTabSubtitle" data-i18n="llmProvidersTabSubtitle"></div></div><div class="actions"><button class="btn-primary" onclick="addLLMProvider()" id="llmProviderCreateBtn"></button></div></div>
         <div class="grid2">
           <div class="item" style="padding:12px 14px">
             <div class="item-head"><div><div class="item-title" id="llmProvidersExposeTitle"></div><div class="item-meta" id="llmProvidersExposeDesc"></div></div><span class="badge info" id="llmProviderSelectionBadge"></span></div>
@@ -984,7 +984,7 @@
               <div><label id="llmProvidersUserRateLimitPerMinuteLabel"></label><input id="llmProvidersUserRateLimitPerMinute" type="number" min="1" step="1" value="120"></div>
               <div><label id="llmProvidersUserRateLimitBurstLabel"></label><input id="llmProvidersUserRateLimitBurst" type="number" min="1" step="1" value="20"></div>
             </div>
-            <div id="llmProvidersUserRateLimitHint" class="hint" style="margin-top:10px"></div>
+            <div id="llmProvidersUserRateLimitHint" class="hint" style="margin-top:10px"></div><div class="actions" style="margin-top:10px;justify-content:flex-end"><button class="btn-primary" type="button" onclick="saveLLMProviderGlobals()" id="llmProvidersSaveBtn"></button></div>
           </div>
           <div class="item" style="padding:12px 14px">
             <div class="item-head"><div><div class="item-title" id="llmProvidersAccessLogTitle"></div><div class="item-meta" id="llmProvidersAccessLogDesc"></div></div><span class="badge info" id="llmProvidersAccessLogBadge">-</span></div>

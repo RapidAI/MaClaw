@@ -179,6 +179,39 @@ func TestGetLLMEndpointAccessLogsHandlerSupportsFiltering(t *testing.T) {
 	}
 }
 
+func TestGetLLMEndpointAccessLogsHandlerSupportsCachedOnlyFiltering(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	globalLLMEndpointAccessLogAccumulator.mu.Lock()
+	savedPending := globalLLMEndpointAccessLogAccumulator.pending
+	globalLLMEndpointAccessLogAccumulator.pending = map[store.SystemSettingsRepository]*llmEndpointAccessLogStore{}
+	globalLLMEndpointAccessLogAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMEndpointAccessLogAccumulator.mu.Lock()
+		globalLLMEndpointAccessLogAccumulator.pending = savedPending
+		globalLLMEndpointAccessLogAccumulator.mu.Unlock()
+	}()
+
+	enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{Email: "a@example.com", ClientIP: "10.0.0.1", ProviderID: "provider-a", StatusCode: http.StatusOK, CachedInputTokens: 128, RequestBody: `{"model":"auto"}`})
+	enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{Email: "b@example.com", ClientIP: "10.0.0.2", ProviderID: "provider-a", StatusCode: http.StatusOK, RequestBody: `{"model":"auto"}`})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/access-logs?limit=10&provider=provider-a&cached_only=1", nil)
+	rec := httptest.NewRecorder()
+	GetLLMEndpointAccessLogsHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp llmEndpointAccessLogResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Logs) != 1 {
+		t.Fatalf("unexpected cached_only result: total=%d logs=%d", resp.Total, len(resp.Logs))
+	}
+	if resp.Logs[0].CachedInputTokens != 128 {
+		t.Fatalf("unexpected cached log: %+v", resp.Logs[0])
+	}
+}
+
 func TestGetLLMEndpointAccessLogsHandlerSupportsTimeRangeFiltering(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
 	globalLLMEndpointAccessLogAccumulator.mu.Lock()

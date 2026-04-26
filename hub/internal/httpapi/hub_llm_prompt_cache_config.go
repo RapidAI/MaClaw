@@ -296,12 +296,13 @@ func GetHubLLMPromptCacheEntriesHandler(promptCacheSource any) http.HandlerFunc 
 			if item.ProviderID != "" {
 				providerSet[item.ProviderID] = struct{}{}
 			}
-			if providerFilter == "" || strings.EqualFold(item.ProviderID, providerFilter) {
+			providerMatches := providerFilter == "" || item.ProviderID == "" || strings.EqualFold(item.ProviderID, providerFilter)
+			if providerMatches {
 				if item.Model != "" {
 					modelSet[item.Model] = struct{}{}
 				}
 			}
-			if providerFilter != "" && !strings.EqualFold(item.ProviderID, providerFilter) {
+			if !providerMatches {
 				continue
 			}
 			if modelFilter != "" && !strings.EqualFold(item.Model, modelFilter) {
