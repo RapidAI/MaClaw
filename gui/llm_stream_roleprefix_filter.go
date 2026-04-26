@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"log"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -49,10 +50,20 @@ type rolePrefixStreamFilter struct {
 }
 
 // rolePrefixLineRe matches a role prefix at the start of a line.
-// Same pattern as rolePrefixRe in im_conversation_trim.go but without
-// the (?m) flag since we check individual lines. Also matches fullwidth
-// colon (：U+FF1A) which Chinese LLMs sometimes produce.
-var rolePrefixLineRe = regexp.MustCompile(`^[ \t]*(Browser|Tool)(?::[ \t]?|：)`)
+// Allows optional leading whitespace, Markdown block-level markers
+// (>, -, *, digits), and an optional space before the colon.
+// Also matches fullwidth colon (：U+FF1A) which Chinese LLMs sometimes produce.
+//
+// Matched variants (all confirmed from production hallucinations):
+//   - "Browser: ..."          (plain)
+//   - "  Browser: ..."        (indented)
+//   - "> Browser: ..."        (blockquote)
+//   - "- Browser: ..."        (unordered list)
+//   - "* Browser: ..."        (unordered list)
+//   - "1. Browser: ..."       (ordered list)
+//   - "Browser : ..."         (space before colon)
+//   - "Browser：..."          (fullwidth colon)
+var rolePrefixLineRe = regexp.MustCompile(`^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)`)
 
 func newRolePrefixStreamFilter(downstream llm.TokenCallback) *rolePrefixStreamFilter {
 	return &rolePrefixStreamFilter{downstream: downstream}
@@ -92,6 +103,7 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 				// this line and everything after it.
 				f.halted = true
 				f.suppressedRunes += utf8.RuneCountInString(line) + utf8.RuneCountInString(delta)
+				log.Printf("[stream-roleprefix] Case 2 halt: seenContent=true line=%q suppressed=%d", rpfTruncateForLog(line, 80), f.suppressedRunes)
 				return
 			}
 			// Case 1: role prefix at the very start of output — strip
@@ -102,6 +114,7 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 			loc := rolePrefixLineRe.FindStringIndex(line)
 			if loc != nil {
 				stripped := line[loc[1]:]
+				log.Printf("[stream-roleprefix] Case 1 strip: prefix=%q stripped=%q", line[:loc[1]], rpfTruncateForLog(stripped, 80))
 				if strings.TrimSpace(stripped) != "" {
 					f.downstream(stripped)
 					f.seenContent = true
@@ -109,7 +122,6 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 			}
 			continue
 		}
-
 		// Emit the line.
 		f.downstream(line)
 		if strings.TrimSpace(line) != "" {
@@ -130,6 +142,7 @@ func (f *rolePrefixStreamFilter) Flush() {
 				// Case 2: mid-text — halt and suppress.
 				f.halted = true
 				f.suppressedRunes += utf8.RuneCountInString(remaining)
+				log.Printf("[stream-roleprefix] Flush Case 2 halt: line=%q suppressed=%d", rpfTruncateForLog(remaining, 80), f.suppressedRunes)
 				f.lineBuf.Reset()
 				return
 			}
@@ -137,6 +150,7 @@ func (f *rolePrefixStreamFilter) Flush() {
 			loc := rolePrefixLineRe.FindStringIndex(remaining)
 			if loc != nil {
 				stripped := remaining[loc[1]:]
+				log.Printf("[stream-roleprefix] Flush Case 1 strip: prefix=%q stripped=%q", remaining[:loc[1]], rpfTruncateForLog(stripped, 80))
 				if strings.TrimSpace(stripped) != "" {
 					f.downstream(stripped)
 				}
@@ -157,4 +171,13 @@ func (f *rolePrefixStreamFilter) Halted() bool {
 // SuppressedRunes returns the count of runes suppressed after detection.
 func (f *rolePrefixStreamFilter) SuppressedRunes() int {
 	return f.suppressedRunes
+}
+
+// rpfTruncateForLog truncates a string for log output, preserving rune boundaries.
+func rpfTruncateForLog(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return strings.TrimSpace(s)
+	}
+	return strings.TrimSpace(string(runes[:maxRunes])) + "..."
 }

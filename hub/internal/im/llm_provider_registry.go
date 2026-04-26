@@ -31,7 +31,7 @@ type LLMProvider struct {
 	MaxConcurrency           int    `json:"max_concurrency,omitempty"`
 	MaxQueueWaiters          int    `json:"max_queue_waiters,omitempty"`
 	QueueTimeoutMS           int    `json:"queue_timeout_ms,omitempty"`
-UpstreamTimeoutSec       int    `json:"upstream_timeout_sec,omitempty"`
+	UpstreamTimeoutSec       int    `json:"upstream_timeout_sec,omitempty"`
 	CircuitBreakerThreshold  int    `json:"circuit_breaker_threshold,omitempty"`
 	CircuitBreakerCooldownMS int    `json:"circuit_breaker_cooldown_ms,omitempty"`
 	FailureBackoffBaseMS     int    `json:"failure_backoff_base_ms,omitempty"`

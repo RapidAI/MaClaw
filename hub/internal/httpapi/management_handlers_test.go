@@ -86,6 +86,33 @@ func TestListUsersHandlerReturnsBoundUsers(t *testing.T) {
 	}
 }
 
+func TestDeleteBoundUserHandlerRemovesUser(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+	token := issueHubAdminToken(t, router)
+
+	bindResp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/users/manual-bind", map[string]any{
+		"email": "delete-bound@example.com",
+	}, token)
+	if bindResp.Code != http.StatusOK {
+		t.Fatalf("expected bind 200, got %d body=%s", bindResp.Code, bindResp.Body.String())
+	}
+
+	deleteResp := doHubAdminJSONRequest(t, router, http.MethodDelete, "/api/admin/users?email=delete-bound@example.com", nil, token)
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", deleteResp.Code, deleteResp.Body.String())
+	}
+	if body := deleteResp.Body.String(); !containsAll(body, `"ok":true`, `"email":"delete-bound@example.com"`) {
+		t.Fatalf("unexpected delete body=%s", body)
+	}
+
+	listResp := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/admin/users", nil, token)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected list 200, got %d body=%s", listResp.Code, listResp.Body.String())
+	}
+	if strings.Contains(listResp.Body.String(), "delete-bound@example.com") {
+		t.Fatalf("expected deleted user to be absent, body=%s", listResp.Body.String())
+	}
+}
 func TestBlockedEmailHandlersPersistEntries(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	token := issueHubAdminToken(t, router)

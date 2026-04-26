@@ -1,7 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { quickTasks as defaultQuickTasks } from '../mock/tasks';
 import type { HistoryTaskItem } from '../types';
-import { IconSearch, IconChevronRight } from '../components/layout/SidebarIcons';
 
 type Props = {
   draft: string;
@@ -14,23 +13,38 @@ type Props = {
   onOpenRecentTask: (task: HistoryTaskItem) => void;
 };
 
-type WorkMode = 'code' | 'office';
+type WorkMode = 'voice' | 'text';
 
 const skillChips = [
-  { icon: '📄', label: '文档处理' },
-  { icon: '🎬', label: '视频生成' },
-  { icon: '🔍', label: '深度研究' },
-  { icon: '💰', label: '金融服务' },
-  { icon: '📊', label: '数据分析' },
-  { icon: '📈', label: '数据可视化' },
-  { icon: '📑', label: '幻灯片' },
-  { icon: '📁', label: '产品管理' },
+  'Talk to my iWorker',
+  'Summarize what changed',
+  'Ask the organization',
+  'Prepare handoff evidence',
+  'Draft a customer reply',
+  'Check policy memory',
 ];
 
-export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, onDraftChange, onPickTask, onOpenNewTask }: Props) {
-  const [workMode, setWorkMode] = useState<WorkMode>('office');
+const statusCards = [
+  {
+    label: 'Body node',
+    value: 'Local container',
+    detail: 'This computer runs the visible body and tool access for the digital worker.',
+  },
+  {
+    label: 'Memory owner',
+    value: 'Center synced',
+    detail: 'Durable memory belongs to iWorkerCenter; local cache only accelerates access.',
+  },
+  {
+    label: 'Human role',
+    value: 'Callable skill',
+    detail: 'People remain part of the organization, but execution continuity sits in the AI system.',
+  },
+];
+
+export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask }: Props) {
+  const [workMode, setWorkMode] = useState<WorkMode>('voice');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
-  const chipScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const welcomeLoader = (window as Window & {
@@ -57,201 +71,92 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   }, []);
 
   const handleSubmit = () => {
-    if (draft.trim()) {
+    if (draft.trim() || selectedTask) {
       onOpenNewTask();
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
       handleSubmit();
     }
   };
 
+  const taskChips = workMode === 'voice' ? skillChips : quickTasks;
+
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      height: '100%', padding: '40px 24px 24px', overflow: 'auto',
-      background: '#f9fafb',
-    }}>
-      {/* Mascot / Logo area */}
-      <div style={{ marginBottom: '20px', opacity: 0.85 }}>
-        <div style={{
-          width: '80px', height: '80px', borderRadius: '20px',
-          background: '#f3f4f6', border: '1px solid #e5e7eb',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: '36px', margin: '0 auto',
-        }}>
-          🤖
+    <div className="iw-home-shell">
+      <section className="iw-command-surface">
+        <div className="iw-command-head">
+          <div>
+            <span className="iw-kicker">iWorker body</span>
+            <h2>Speak to the digital employee, not the computer.</h2>
+            <p>
+              This desktop is the local body and tool container. Memory, policy, and reusable ability are synced back to iWorkerCenter so the company keeps running even when a body or person changes.
+            </p>
+          </div>
+          <div className="iw-body-badge">
+            <strong>{selectedColleagueName || 'Auto matched iWorker'}</strong>
+            <span>{selectedTask || 'Ready for IM or voice instruction'}</span>
+          </div>
         </div>
-      </div>
 
-      {/* Slogan */}
-      <h2 style={{ fontSize: '22px', fontWeight: 700, color: '#111827', margin: '0 0 6px', textAlign: 'center' }}>
-        Claw Your Ideas Into Reality
-      </h2>
-      <p style={{ fontSize: '13px', color: '#9ca3af', margin: '0 0 24px', textAlign: 'center' }}>
-        Triggered Anywhere, Completed Locally
-      </p>
+        <div className="iw-mode-switch" role="tablist" aria-label="Interaction mode">
+          <button type="button" className={workMode === 'voice' ? 'is-active' : ''} onClick={() => setWorkMode('voice')}>Voice / IM</button>
+          <button type="button" className={workMode === 'text' ? 'is-active' : ''} onClick={() => setWorkMode('text')}>Structured task</button>
+        </div>
 
-      {/* Mode toggle tabs */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: '0',
-        marginBottom: '20px',
-        background: '#f3f4f6', borderRadius: '8px', padding: '3px',
-        border: '1px solid #e5e7eb',
-      }}>
-        <span style={{ fontSize: '13px', color: '#6b7280', padding: '0 10px', fontWeight: 500 }}>开始</span>
-        <button
-          type="button"
-          onClick={() => setWorkMode('code')}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            padding: '6px 14px', borderRadius: '6px', border: 'none',
-            background: workMode === 'code' ? '#ffffff' : 'transparent',
-            color: workMode === 'code' ? '#111827' : '#6b7280',
-            fontWeight: 600, fontSize: '13px', cursor: 'pointer',
-            boxShadow: workMode === 'code' ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
-          }}
-        >
-          <span style={{ fontSize: '14px' }}>{'<>'}</span> 代码开发
-        </button>
-        <button
-          type="button"
-          onClick={() => setWorkMode('office')}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            padding: '6px 14px', borderRadius: '6px', border: 'none',
-            background: workMode === 'office' ? '#1f2937' : 'transparent',
-            color: workMode === 'office' ? '#ffffff' : '#6b7280',
-            fontWeight: 600, fontSize: '13px', cursor: 'pointer',
-            boxShadow: workMode === 'office' ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
-          }}
-        >
-          <span style={{ fontSize: '14px' }}>💬</span> 日常办公
-        </button>
-        <span style={{ fontSize: '13px', color: '#6b7280', padding: '0 10px', fontWeight: 500 }}>任务</span>
-      </div>
-
-      {/* Skill category chips — horizontal scrollable */}
-      <div style={{ position: 'relative', width: '100%', maxWidth: '640px', marginBottom: '24px' }}>
-        <div
-          ref={chipScrollRef}
-          style={{
-            display: 'flex', gap: '8px', overflowX: 'auto', padding: '2px 4px',
-            scrollbarWidth: 'none', msOverflowStyle: 'none',
-          }}
-        >
-          {(workMode === 'office' ? skillChips : quickTasks.map((t) => ({ icon: '⚡', label: t }))).map((chip) => (
-            <button
-              key={chip.label}
-              type="button"
-              onClick={() => onPickTask(chip.label)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: '5px',
-                padding: '6px 12px', borderRadius: '16px',
-                border: '1px solid #e5e7eb', background: '#ffffff',
-                color: '#374151', fontSize: '12px', fontWeight: 500,
-                whiteSpace: 'nowrap', cursor: 'pointer', flexShrink: 0,
-                transition: 'border-color 0.15s, background 0.15s',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#d1d5db'; e.currentTarget.style.background = '#f9fafb'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#e5e7eb'; e.currentTarget.style.background = '#ffffff'; }}
-            >
-              <span>{chip.icon}</span> {chip.label}
-            </button>
+        <div className="iw-chip-row">
+          {taskChips.map((task) => (
+            <button key={task} type="button" onClick={() => onPickTask(task)}>{task}</button>
           ))}
         </div>
-        {/* Scroll hint arrow */}
-        <div style={{
-          position: 'absolute', right: 0, top: 0, bottom: 0, width: '32px',
-          background: 'linear-gradient(90deg, transparent, #f9fafb)',
-          display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
-          pointerEvents: 'none',
-        }}>
-          <span style={{ color: '#9ca3af', pointerEvents: 'auto', cursor: 'pointer' }}
-            onClick={() => chipScrollRef.current?.scrollBy({ left: 120, behavior: 'smooth' })}
-          >
-            <IconChevronRight style={{ width: '16px', height: '16px' }} />
-          </span>
-        </div>
-      </div>
 
-      {/* Input area */}
-      <div style={{
-        width: '100%', maxWidth: '640px',
-        background: '#ffffff', borderRadius: '12px',
-        border: '1px solid #e5e7eb',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-        overflow: 'hidden',
-      }}>
-        {/* Toolbar icons */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: '8px',
-          padding: '8px 12px 0',
-          color: '#9ca3af', fontSize: '14px',
-        }}>
-          <span style={{ cursor: 'pointer' }} title="链接">🔗</span>
-          <span style={{ cursor: 'pointer' }} title="附件">📎</span>
-        </div>
-
-        {/* Text input */}
-        <textarea
-          value={draft}
-          onChange={(e) => onDraftChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="输入问题..."
-          rows={3}
-          style={{
-            width: '100%', border: 'none', outline: 'none', resize: 'none',
-            padding: '8px 12px 12px', fontSize: '14px', lineHeight: '1.6',
-            color: '#1f2937', background: 'transparent',
-            fontFamily: 'inherit',
-          }}
-        />
-
-        {/* Bottom bar */}
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '6px 12px 8px', borderTop: '1px solid #f3f4f6',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <button type="button" style={{
-              display: 'flex', alignItems: 'center', gap: '4px',
-              padding: '4px 10px', borderRadius: '6px',
-              border: '1px solid #e5e7eb', background: '#f9fafb',
-              color: '#374151', fontSize: '12px', fontWeight: 600, cursor: 'pointer',
-            }}>
-              📦 Craft <span style={{ fontSize: '10px', color: '#9ca3af' }}>▾</span>
-            </button>
-            <button type="button" style={{
-              display: 'flex', alignItems: 'center', gap: '4px',
-              padding: '4px 10px', borderRadius: '6px',
-              border: 'none', background: 'transparent',
-              color: '#6b7280', fontSize: '12px', fontWeight: 500, cursor: 'pointer',
-            }}>
-              ✂️ Skills
-            </button>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <button type="button" style={{
-              display: 'flex', alignItems: 'center', gap: '4px',
-              padding: '4px 10px', borderRadius: '6px',
-              border: 'none', background: 'transparent',
-              color: '#9ca3af', fontSize: '12px', cursor: 'pointer',
-            }}>
-              📁 选择文件夹 <span style={{ fontSize: '10px' }}>▾</span>
-            </button>
-            <span style={{ color: '#d1d5db', fontSize: '16px' }}>⚠️</span>
+        <div className="iw-composer-card">
+          <textarea
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Say what you need. Example: ask Operations iWorker to summarize today's delivery exception and prepare evidence for the center."
+            rows={4}
+          />
+          <div className="iw-composer-footer">
+            <div>
+              <strong>{workMode === 'voice' ? 'Conversation first' : 'Task first'}</strong>
+              <span>{workMode === 'voice' ? 'The iWorker can clarify intent before creating work.' : 'The iWorker will enter the structured task editor.'}</span>
+            </div>
+            <button type="button" onClick={handleSubmit}>Open task workspace</button>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Footer hint */}
-      <p style={{ fontSize: '11px', color: '#d1d5db', marginTop: '12px', textAlign: 'center' }}>
-        内容由 AI 生成，请核实重要信息。
-      </p>
+      <aside className="iw-body-panel">
+        <div className="iw-panel-section">
+          <h3>Operating role</h3>
+          <div className="iw-status-list">
+            {statusCards.map((item) => (
+              <div key={item.label} className="iw-status-card">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <p>{item.detail}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="iw-panel-section">
+          <h3>Recent work</h3>
+          <div className="iw-recent-list">
+            {recentTasks.slice(0, 4).map((task) => (
+              <button key={task.id} type="button" onClick={() => onOpenRecentTask(task)}>
+                <strong>{task.title}</strong>
+                <span>{task.owner} ? {task.status}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </aside>
     </div>
   );
 }

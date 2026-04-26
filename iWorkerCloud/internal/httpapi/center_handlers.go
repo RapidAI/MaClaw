@@ -2,15 +2,17 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/centers"
+	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/store"
 )
 
 func RegisterCenterHandler(svc *centers.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req centers.RegisterRequest
 		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "请求格式错误")
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
 		result, err := svc.Register(r.Context(), req)
@@ -33,6 +35,17 @@ func ListCentersHandler(svc *centers.Service) http.HandlerFunc {
 	}
 }
 
+func CenterOperationsHandler(svc *centers.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		report, err := svc.Operations(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "OPERATIONS_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	}
+}
+
 func ConfirmCenterTrialHandler(svc *centers.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -52,7 +65,7 @@ func ConfirmCenterManualHandler(svc *centers.Service) http.HandlerFunc {
 			Days    int      `json:"days"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "请求格式错误")
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
 		if len(req.Modules) == 0 {
@@ -63,6 +76,50 @@ func ConfirmCenterManualHandler(svc *centers.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func UpdateCenterIntegrationHandler(svc *centers.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		var req struct {
+			BaseURL             string `json:"base_url"`
+			SupportsMultiTenant bool   `json:"supports_multi_tenant"`
+			TenantCount         int    `json:"tenant_count"`
+			CloudControlMode    string `json:"cloud_control_mode"`
+			LastSyncStatus      string `json:"last_sync_status"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+			return
+		}
+		center, err := svc.UpdateIntegration(r.Context(), id, store.Center{
+			BaseURL:             req.BaseURL,
+			SupportsMultiTenant: req.SupportsMultiTenant,
+			TenantCount:         req.TenantCount,
+			CloudControlMode:    req.CloudControlMode,
+			LastSyncStatus:      req.LastSyncStatus,
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "UPDATE_INTEGRATION_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, center)
+	}
+}
+
+func ProbeCenterHandler(svc *centers.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		result, center, err := svc.Probe(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "PROBE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"probe":  result,
+			"center": center,
+		})
 	}
 }
 
@@ -106,7 +163,7 @@ func HeartbeatHandler(svc *centers.Service) http.HandlerFunc {
 			Secret string `json:"secret"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "请求格式错误")
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
 		if err := svc.Heartbeat(r.Context(), id, req.Secret); err != nil {
@@ -123,7 +180,7 @@ func ProvisionTenantHandler(svc *centers.Service) http.HandlerFunc {
 		centerID := r.PathValue("id")
 		center, err := svc.Get(r.Context(), centerID)
 		if err != nil || center == nil {
-			writeError(w, http.StatusNotFound, "CENTER_NOT_FOUND", "找不到该中心")
+			writeError(w, http.StatusNotFound, "CENTER_NOT_FOUND", "center not found")
 			return
 		}
 
@@ -136,16 +193,15 @@ func ProvisionTenantHandler(svc *centers.Service) http.HandlerFunc {
 			AdminPassword string `json:"admin_password"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "请求格式错误")
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
-
-		// The center's BaseURL is stored as AdminEmail for now — we need the actual base_url.
-		// For the provision flow, the admin must provide the center's base URL or we derive it.
-		// Since centers table doesn't have base_url yet, we'll use a header or query param.
-		baseURL := r.URL.Query().Get("base_url")
+		baseURL := strings.TrimSpace(center.BaseURL)
+		if override := strings.TrimSpace(r.URL.Query().Get("base_url")); override != "" {
+			baseURL = override
+		}
 		if baseURL == "" {
-			writeError(w, http.StatusBadRequest, "MISSING_BASE_URL", "请提供 base_url 参数")
+			writeError(w, http.StatusBadRequest, "MISSING_BASE_URL", "center base_url is not configured")
 			return
 		}
 
@@ -156,6 +212,14 @@ func ProvisionTenantHandler(svc *centers.Service) http.HandlerFunc {
 			writeError(w, http.StatusBadGateway, "PROVISION_FAILED", err.Error())
 			return
 		}
+
+		_, _ = svc.UpdateIntegration(r.Context(), centerID, store.Center{
+			BaseURL:             center.BaseURL,
+			SupportsMultiTenant: center.SupportsMultiTenant,
+			TenantCount:         center.TenantCount + 1,
+			CloudControlMode:    center.CloudControlMode,
+			LastSyncStatus:      "tenant_provisioned",
+		})
 		writeJSON(w, http.StatusOK, result)
 	}
 }

@@ -2207,3 +2207,266 @@ textarea {
     padding-right: 0;
   }
 }
+
+.iw-home-shell {
+  min-height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 330px;
+  gap: 12px;
+  padding: 12px;
+  background: #eef1f5;
+}
+
+.iw-command-surface,
+.iw-body-panel {
+  border: 1px solid #d7dee7;
+  background: #f8fafc;
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.iw-command-surface {
+  display: grid;
+  align-content: center;
+  gap: 16px;
+  padding: 28px;
+}
+
+.iw-command-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 20px;
+  align-items: start;
+}
+
+.iw-command-head h2 {
+  margin: 8px 0 8px;
+  color: #111827;
+  font-size: 32px;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.iw-command-head p {
+  margin: 0;
+  max-width: 720px;
+  color: #5f6b7d;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.iw-kicker {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 9px;
+  border-radius: 6px;
+  background: #e7ebf1;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.iw-body-badge {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 8px;
+  border: 1px solid #dbe3ec;
+  background: #ffffff;
+}
+
+.iw-body-badge strong {
+  color: #111827;
+  font-size: 14px;
+}
+
+.iw-body-badge span,
+.iw-composer-footer span,
+.iw-status-card p,
+.iw-recent-list span {
+  color: #66758a;
+  font-size: 12px;
+}
+
+.iw-mode-switch {
+  display: inline-flex;
+  width: fit-content;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid #d7dee7;
+  background: #edf1f5;
+}
+
+.iw-mode-switch button,
+.iw-chip-row button,
+.iw-composer-footer button,
+.iw-recent-list button {
+  border-radius: 7px;
+  font-weight: 700;
+}
+
+.iw-mode-switch button {
+  height: 32px;
+  padding: 0 12px;
+  background: transparent;
+  color: #516174;
+}
+
+.iw-mode-switch button.is-active {
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid #d3dce7;
+}
+
+.iw-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.iw-chip-row button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #dbe3ec;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+}
+
+.iw-chip-row button:hover,
+.iw-recent-list button:hover {
+  border-color: #bcc8d6;
+  background: #fbfcfe;
+}
+
+.iw-composer-card {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid #cfd9e4;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.iw-composer-card textarea {
+  min-height: 150px;
+  border: none;
+  border-radius: 0;
+  resize: vertical;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.iw-composer-card textarea:focus {
+  outline: none;
+}
+
+.iw-composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-top: 1px solid #e5eaf0;
+  background: #fbfcfd;
+}
+
+.iw-composer-footer div {
+  display: grid;
+  gap: 2px;
+}
+
+.iw-composer-footer strong {
+  color: #111827;
+  font-size: 13px;
+}
+
+.iw-composer-footer button {
+  height: 34px;
+  padding: 0 13px;
+  background: #111827;
+  color: #ffffff;
+}
+
+.iw-body-panel {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 0;
+  overflow: auto;
+}
+
+.iw-panel-section {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.iw-panel-section + .iw-panel-section {
+  border-top: 1px solid #e1e7ee;
+}
+
+.iw-panel-section h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 14px;
+}
+
+.iw-status-list,
+.iw-recent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.iw-status-card,
+.iw-recent-list button {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #dbe3ec;
+  background: #ffffff;
+}
+
+.iw-status-card span {
+  color: #6b7482;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.iw-status-card strong,
+.iw-recent-list strong {
+  color: #111827;
+  font-size: 13px;
+}
+
+.iw-recent-list button {
+  width: 100%;
+  text-align: left;
+}
+
+@media (max-width: 1180px) {
+  .iw-home-shell,
+  .iw-command-head {
+    grid-template-columns: 1fr;
+  }
+
+  .iw-command-surface {
+    align-content: start;
+    padding: 18px;
+  }
+
+  .iw-command-head h2 {
+    font-size: 26px;
+  }
+
+  .iw-composer-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

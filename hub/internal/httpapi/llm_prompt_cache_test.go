@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -53,8 +54,8 @@ func TestLLMPromptCacheableRequiresDeterministicRequestShape(t *testing.T) {
 	if llmPromptCacheable(map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}, "n": 2}, cfg) {
 		t.Fatal("expected multi-choice request to bypass cache")
 	}
-	if llmPromptCacheable(map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": true}, cfg) {
-		t.Fatal("expected streaming request to bypass cache")
+	if !llmPromptCacheable(map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": true}, cfg) {
+		t.Fatal("expected streaming request to be cacheable because Hub forwards upstream as non-streaming JSON")
 	}
 }
 
@@ -87,6 +88,81 @@ func TestLLMPromptCacheKeyNormalizesEquivalentRequestFields(t *testing.T) {
 	}
 }
 
+func TestLLMPromptCacheKeyCollapsesStreamingAndModelAliases(t *testing.T) {
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{"provider-a"}}
+	bodyA := map[string]any{
+		"model":             "gpt-5-codex",
+		"messages":          []any{map[string]any{"role": "user", "content": "repeat this"}},
+		"stream":            true,
+		"stream_options":    map[string]any{"include_usage": true},
+		"prompt_cache_key":  "client-generated-key",
+		"service_tier":      "auto",
+		"safety_identifier": "user-123",
+		"store":             false,
+		"temperature":       0,
+	}
+	bodyB := map[string]any{
+		"model":       "auto",
+		"messages":    []any{map[string]any{"role": "user", "content": "repeat this"}},
+		"temperature": 0,
+	}
+	keyA, _, err := llmPromptCacheKey(model, bodyA, "gpt-5-codex", defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("keyA error: %v", err)
+	}
+	keyB, _, err := llmPromptCacheKey(model, bodyB, "auto", defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("keyB error: %v", err)
+	}
+	if keyA != keyB {
+		t.Fatalf("expected streaming/model alias requests to share cache key: %q vs %q", keyA, keyB)
+	}
+}
+
+func TestLLMPromptCacheKeyCollapsesOpenAIDefaultNoise(t *testing.T) {
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{"provider-a"}}
+	bodyA := map[string]any{
+		"messages":            []any{map[string]any{"role": "user", "content": "repeat this"}},
+		"tools":               []any{},
+		"tool_choice":         "auto",
+		"parallel_tool_calls": true,
+		"logprobs":            false,
+		"top_logprobs":        0,
+		"response_format":     map[string]any{"type": "text"},
+		"modalities":          []any{"text"},
+	}
+	bodyB := map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "repeat this"}},
+	}
+	keyA, _, err := llmPromptCacheKey(model, bodyA, "auto", defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("keyA error: %v", err)
+	}
+	keyB, _, err := llmPromptCacheKey(model, bodyB, "auto", defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("keyB error: %v", err)
+	}
+	if keyA != keyB {
+		t.Fatalf("expected default OpenAI noise fields to share cache key: %q vs %q", keyA, keyB)
+	}
+}
+
+func TestLLMPromptCacheKeyPreservesOutputChangingFields(t *testing.T) {
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{"provider-a"}}
+	base := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "repeat this"}}}
+	jsonFormat := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "repeat this"}}, "response_format": map[string]any{"type": "json_object"}}
+	keyA, _, err := llmPromptCacheKey(model, base, "auto", defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("base key error: %v", err)
+	}
+	keyB, _, err := llmPromptCacheKey(model, jsonFormat, "auto", defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("json key error: %v", err)
+	}
+	if keyA == keyB {
+		t.Fatalf("expected response_format json_object to affect cache key: %q", keyA)
+	}
+}
 func TestLLMPromptCacheKeyRespectsConfigurableIgnoreFlags(t *testing.T) {
 	cfgA := defaultHubLLMPromptCacheConfig()
 	cfgB := defaultHubLLMPromptCacheConfig()
@@ -159,7 +235,7 @@ func TestForwardAuthorizedModelRequestWithCacheCoalescesConcurrentMisses(t *test
 
 	reg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}
 	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{"provider-a"}}
-	body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "repeat this"}}}
+	body := map[string]any{"model": "gpt-5-codex", "messages": []any{map[string]any{"role": "user", "content": "repeat this"}}, "stream": true, "stream_options": map[string]any{"include_usage": true}, "prompt_cache_key": "codex-cache-key", "service_tier": "auto", "store": false}
 	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1 << 20})
 
 	type result struct {
@@ -171,7 +247,7 @@ func TestForwardAuthorizedModelRequestWithCacheCoalescesConcurrentMisses(t *test
 	results := make(chan result, 2)
 	call := func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
-		_, statusCode, providerID, _, _, cacheHit, err := forwardAuthorizedModelRequestWithCache(req, reg, model, body, "auto", cache, defaultHubLLMPromptCacheConfig())
+		_, statusCode, providerID, _, _, cacheHit, err := forwardAuthorizedModelRequestWithCache(req, reg, model, body, "gpt-5-codex", cache, defaultHubLLMPromptCacheConfig())
 		results <- result{statusCode: statusCode, providerID: providerID, cacheHit: cacheHit, err: err}
 	}
 	go call()
@@ -190,12 +266,16 @@ func TestForwardAuthorizedModelRequestWithCacheCoalescesConcurrentMisses(t *test
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
-	_, _, _, _, _, cacheHit, err := forwardAuthorizedModelRequestWithCache(req, reg, model, body, "auto", cache, defaultHubLLMPromptCacheConfig())
+	aliasBody := map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "repeat this"}}}
+	respBody, _, _, _, _, cacheHit, err := forwardAuthorizedModelRequestWithCache(req, reg, model, aliasBody, "auto", cache, defaultHubLLMPromptCacheConfig())
 	if err != nil {
 		t.Fatalf("follow-up call error = %v", err)
 	}
 	if !cacheHit {
 		t.Fatal("expected follow-up call to be served from cache")
+	}
+	if !strings.Contains(string(respBody), `"model":"auto"`) {
+		t.Fatalf("expected cached response model to be rewritten for current request, body=%s", string(respBody))
 	}
 	if upstreamHits.Load() != 1 {
 		t.Fatalf("expected no extra upstream calls after cache warmup, hits=%d", upstreamHits.Load())

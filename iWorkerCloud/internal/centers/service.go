@@ -22,17 +22,21 @@ import (
 )
 
 var (
-	ErrNotFound    = errors.New("center not found")
-	ErrDisabled    = errors.New("center disabled")
+	ErrNotFound     = errors.New("center not found")
+	ErrDisabled     = errors.New("center disabled")
 	ErrUnauthorized = errors.New("unauthorized")
 )
 
 type RegisterRequest struct {
-	CompanyName string `json:"company_name"`
-	AdminEmail  string `json:"admin_email"`
-	AdminPhone  string `json:"admin_phone"`
-	Address     string `json:"address"`
-	LegalPerson string `json:"legal_person"`
+	CompanyName         string `json:"company_name"`
+	AdminEmail          string `json:"admin_email"`
+	AdminPhone          string `json:"admin_phone"`
+	Address             string `json:"address"`
+	LegalPerson         string `json:"legal_person"`
+	BaseURL             string `json:"base_url"`
+	SupportsMultiTenant bool   `json:"supports_multi_tenant"`
+	TenantCount         int    `json:"tenant_count"`
+	CloudControlMode    string `json:"cloud_control_mode"`
 }
 
 type RegisterResult struct {
@@ -40,6 +44,33 @@ type RegisterResult struct {
 	Secret   string `json:"secret"`
 	Status   string `json:"status"`
 	Message  string `json:"message,omitempty"`
+}
+
+type OperationsSummary struct {
+	TotalCenters       int `json:"total_centers"`
+	PendingCenters     int `json:"pending_centers"`
+	ActiveLicenses     int `json:"active_licenses"`
+	ReadyCenters       int `json:"ready_centers"`
+	NeedsSetup         int `json:"needs_setup"`
+	ProbeFailures      int `json:"probe_failures"`
+	MultiTenantCenters int `json:"multi_tenant_centers"`
+	TenantCount        int `json:"tenant_count"`
+	UnlicensedCenters  int `json:"unlicensed_centers"`
+}
+
+type CenterOperation struct {
+	Center           *store.Center  `json:"center"`
+	ActiveLicense    *store.License `json:"active_license,omitempty"`
+	Ready            bool           `json:"ready"`
+	Issues           []string       `json:"issues"`
+	DeliveryPosture  string         `json:"delivery_posture"`
+	CommercialStatus string         `json:"commercial_status"`
+	Connectivity     string         `json:"connectivity"`
+}
+
+type OperationsReport struct {
+	Summary OperationsSummary `json:"summary"`
+	Items   []CenterOperation `json:"items"`
 }
 
 type Service struct {
@@ -72,16 +103,21 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 
 	id := fmt.Sprintf("ctr_%d", now.UnixNano())
 	c := &store.Center{
-		ID:          id,
-		CompanyName: strings.TrimSpace(req.CompanyName),
-		AdminEmail:  strings.TrimSpace(req.AdminEmail),
-		AdminPhone:  strings.TrimSpace(req.AdminPhone),
-		Address:     strings.TrimSpace(req.Address),
-		LegalPerson: strings.TrimSpace(req.LegalPerson),
-		Status:      "pending",
-		SecretHash:  hashSecret(rawSecret),
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:                  id,
+		CompanyName:         strings.TrimSpace(req.CompanyName),
+		AdminEmail:          strings.TrimSpace(req.AdminEmail),
+		AdminPhone:          strings.TrimSpace(req.AdminPhone),
+		Address:             strings.TrimSpace(req.Address),
+		LegalPerson:         strings.TrimSpace(req.LegalPerson),
+		BaseURL:             strings.TrimSpace(req.BaseURL),
+		SupportsMultiTenant: req.SupportsMultiTenant,
+		TenantCount:         req.TenantCount,
+		CloudControlMode:    normalizeControlMode(req.CloudControlMode),
+		LastSyncStatus:      "registered",
+		Status:              "pending",
+		SecretHash:          hashSecret(rawSecret),
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 
 	if err := s.centers.Create(ctx, c); err != nil {
@@ -92,7 +128,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 		CenterID: id,
 		Secret:   rawSecret,
 		Status:   "pending",
-		Message:  "注册成功，等待管理员审核。",
+		Message:  "registration succeeded, waiting for admin approval",
 	}, nil
 }
 
@@ -112,6 +148,28 @@ func (s *Service) ConfirmManual(ctx context.Context, centerID string, modules []
 	}
 	_, err := s.licenseSvc.IssueManual(ctx, centerID, modules, days)
 	return err
+}
+
+// UpdateIntegration updates how Cloud connects to a multi-tenant iWorkerCenter deployment.
+func (s *Service) UpdateIntegration(ctx context.Context, centerID string, patch store.Center) (*store.Center, error) {
+	current, err := s.centers.GetByID(ctx, centerID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	current.BaseURL = strings.TrimSpace(patch.BaseURL)
+	current.SupportsMultiTenant = patch.SupportsMultiTenant
+	if patch.TenantCount >= 0 {
+		current.TenantCount = patch.TenantCount
+	}
+	current.CloudControlMode = normalizeControlMode(patch.CloudControlMode)
+	current.LastSyncStatus = strings.TrimSpace(patch.LastSyncStatus)
+	if current.LastSyncStatus == "" {
+		current.LastSyncStatus = "configured"
+	}
+	if err := s.centers.UpdateIntegration(ctx, current); err != nil {
+		return nil, err
+	}
+	return s.centers.GetByID(ctx, centerID)
 }
 
 // Disable disables a center.
@@ -158,6 +216,60 @@ func (s *Service) List(ctx context.Context) ([]*store.Center, error) {
 	return s.centers.List(ctx)
 }
 
+func (s *Service) Operations(ctx context.Context) (*OperationsReport, error) {
+	centers, err := s.centers.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	licenses, err := s.licenseSvc.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	activeByCenter := map[string]*store.License{}
+	activeLicenses := 0
+	now := time.Now()
+	for _, lic := range licenses {
+		if isActiveLicense(lic, now) {
+			activeLicenses++
+			if current, ok := activeByCenter[lic.CenterID]; !ok || lic.CreatedAt.After(current.CreatedAt) {
+				activeByCenter[lic.CenterID] = lic
+			}
+		}
+	}
+
+	report := &OperationsReport{
+		Summary: OperationsSummary{
+			TotalCenters:   len(centers),
+			ActiveLicenses: activeLicenses,
+		},
+		Items: make([]CenterOperation, 0, len(centers)),
+	}
+	for _, center := range centers {
+		operation := buildCenterOperation(center, activeByCenter[center.ID])
+		if center.Status == "pending" {
+			report.Summary.PendingCenters++
+		}
+		if center.SupportsMultiTenant {
+			report.Summary.MultiTenantCenters++
+		}
+		report.Summary.TenantCount += center.TenantCount
+		if operation.Ready {
+			report.Summary.ReadyCenters++
+		}
+		if containsIssue(operation.Issues, "missing_base_url") || containsIssue(operation.Issues, "multi_tenant_not_confirmed") {
+			report.Summary.NeedsSetup++
+		}
+		if containsIssue(operation.Issues, "probe_failed") || containsIssue(operation.Issues, "probe_missing_base_url") {
+			report.Summary.ProbeFailures++
+		}
+		if containsIssue(operation.Issues, "no_active_license") {
+			report.Summary.UnlicensedCenters++
+		}
+		report.Items = append(report.Items, operation)
+	}
+	return report, nil
+}
+
 // Get returns a center by ID.
 func (s *Service) Get(ctx context.Context, id string) (*store.Center, error) {
 	return s.centers.GetByID(ctx, id)
@@ -186,6 +298,53 @@ type ProvisionResult struct {
 	TenantID string `json:"tenant_id"`
 	Status   string `json:"status"`
 	Message  string `json:"message"`
+}
+
+// ProbeResult describes a cloud-side connectivity check to a Center.
+type ProbeResult struct {
+	OK         bool   `json:"ok"`
+	StatusCode int    `json:"status_code"`
+	Message    string `json:"message"`
+	BaseURL    string `json:"base_url"`
+}
+
+// Probe checks whether the configured iWorkerCenter endpoint is reachable.
+func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *store.Center, error) {
+	center, err := s.centers.GetByID(ctx, centerID)
+	if err != nil {
+		return nil, nil, ErrNotFound
+	}
+	baseURL := strings.TrimSpace(center.BaseURL)
+	if baseURL == "" {
+		center.LastSyncStatus = "probe_missing_base_url"
+		_ = s.centers.UpdateIntegration(ctx, center)
+		return &ProbeResult{OK: false, Message: "center base_url is not configured"}, center, nil
+	}
+
+	url := strings.TrimRight(baseURL, "/") + "/healthz"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		center.LastSyncStatus = "probe_failed"
+		_ = s.centers.UpdateIntegration(ctx, center)
+		return &ProbeResult{OK: false, Message: err.Error(), BaseURL: baseURL}, center, nil
+	}
+	defer resp.Body.Close()
+
+	result := &ProbeResult{OK: resp.StatusCode >= 200 && resp.StatusCode < 300, StatusCode: resp.StatusCode, BaseURL: baseURL}
+	if result.OK {
+		result.Message = "center health endpoint reachable"
+		center.LastSyncStatus = "probe_ok"
+	} else {
+		result.Message = fmt.Sprintf("center health endpoint returned %d", resp.StatusCode)
+		center.LastSyncStatus = "probe_failed"
+	}
+	_ = s.centers.UpdateIntegration(ctx, center)
+	updated, _ := s.centers.GetByID(ctx, centerID)
+	return result, updated, nil
 }
 
 // ProvisionRemote sends a signed provision request to an iWorkerCenter.
@@ -266,4 +425,87 @@ func randomToken() (string, error) {
 func hashSecret(raw string) string {
 	h := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(h[:])
+}
+
+func buildCenterOperation(center *store.Center, activeLicense *store.License) CenterOperation {
+	issues := make([]string, 0)
+	if center.Status != "active" {
+		issues = append(issues, "center_not_active")
+	}
+	if strings.TrimSpace(center.BaseURL) == "" {
+		issues = append(issues, "missing_base_url")
+	}
+	if !center.SupportsMultiTenant {
+		issues = append(issues, "multi_tenant_not_confirmed")
+	}
+	switch center.LastSyncStatus {
+	case "probe_failed", "probe_missing_base_url":
+		issues = append(issues, center.LastSyncStatus)
+	}
+	if activeLicense == nil {
+		issues = append(issues, "no_active_license")
+	}
+
+	ready := len(issues) == 0
+	connectivity := "unknown"
+	switch center.LastSyncStatus {
+	case "probe_ok", "tenant_provisioned":
+		connectivity = "reachable"
+	case "probe_failed", "probe_missing_base_url":
+		connectivity = "failed"
+	case "registered", "configured":
+		connectivity = "not_probed"
+	}
+
+	commercialStatus := "unlicensed"
+	if activeLicense != nil {
+		commercialStatus = "licensed"
+	}
+
+	deliveryPosture := "watch"
+	if ready {
+		deliveryPosture = "ready"
+	} else if containsIssue(issues, "missing_base_url") || containsIssue(issues, "multi_tenant_not_confirmed") {
+		deliveryPosture = "needs_setup"
+	} else if containsIssue(issues, "probe_failed") || containsIssue(issues, "probe_missing_base_url") {
+		deliveryPosture = "connectivity_risk"
+	} else if containsIssue(issues, "no_active_license") {
+		deliveryPosture = "commercial_hold"
+	}
+
+	return CenterOperation{
+		Center:           center,
+		ActiveLicense:    activeLicense,
+		Ready:            ready,
+		Issues:           issues,
+		DeliveryPosture:  deliveryPosture,
+		CommercialStatus: commercialStatus,
+		Connectivity:     connectivity,
+	}
+}
+
+func isActiveLicense(lic *store.License, now time.Time) bool {
+	if lic == nil || lic.RevokedAt != nil {
+		return false
+	}
+	return lic.IsLongTerm || lic.ExpiresAt.After(now)
+}
+
+func containsIssue(issues []string, target string) bool {
+	for _, issue := range issues {
+		if issue == target {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeControlMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	switch mode {
+	case "cloud_managed", "self_managed", "hybrid":
+		return mode
+	default:
+		return "cloud_managed"
+	}
 }

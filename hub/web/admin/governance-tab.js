@@ -40,6 +40,10 @@
     contentAuditConfigSaved: { zh: '\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5df2\u4fdd\u5b58', en: 'Content audit config saved' },
     saveContentAuditConfigFailed: { zh: '\u4fdd\u5b58\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ', en: 'Save content audit config failed: ' },
     smartRouteAllEnabled: { zh: '\u5df2\u5f00\u542f\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route enabled for all users' },
+    unbindUser: { zh: '\u5220\u9664\u7ed1\u5b9a', en: 'Remove Binding' },
+    unbindConfirm: { zh: '\u786e\u8ba4\u5220\u9664 {email} \u7684 Hub \u7ed1\u5b9a\u5417\uff1f\u8fd9\u4f1a\u540c\u65f6\u6e05\u7406\u8be5\u7528\u6237\u7684\u673a\u5668\u548c IM \u7ed1\u5b9a\u3002', en: 'Remove Hub binding for {email}? This also clears the user machines and IM bindings.' },
+    unbindSuccess: { zh: '\u5df2\u5220\u9664 {email} \u7684 Hub \u7ed1\u5b9a', en: 'Removed Hub binding for {email}' },
+    unbindFailed: { zh: '\u5220\u9664\u7ed1\u5b9a\u5931\u8d25: {error}', en: 'Remove binding failed: {error}' },
     smartRouteAllDisabled: { zh: '\u5df2\u5173\u95ed\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route disabled for all users' }
   };
 
@@ -121,8 +125,8 @@
     const rows = pageItems.map(function(item) {
       var smartRoute = item.smart_route;
       var toggleId = 'sr_' + item.id;
-      var userIdValue = String(item.id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
       var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="padding:4px 8px;font-size:10px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '<span class="badge info" style="padding:4px 8px;font-size:10px">-</span>';
+      var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" onclick="unbindBoundUser(this.dataset.email)">' + escapeHtml(gt('unbindUser')) + '</button>';
       return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
         + '<div style="display:flex;flex-direction:column;gap:6px">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0">'
@@ -131,6 +135,7 @@
         + '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(formatStatus(item.enrollment_status || item.status || 'active')) + '</span>'
         + serviceBadge
         + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '" style="justify-content:flex-end;font-size:11px"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' data-user-id="' + escapeHtml(String(item.id || '')) + '" onchange="toggleSmartRoute(this.dataset.userId, this.checked)"><span>AI</span></label>'
+        + unbindBtn
         + '</div></div>'
         + '<div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">' + escapeHtml(item.sn || tr('na')) + '</div>'
         + '</div></div>';
@@ -169,6 +174,23 @@
     }
   };
 
+  global.unbindBoundUser = async function unbindBoundUser(email) {
+    email = String(email || '').trim();
+    if (!email) return;
+    if (!confirm(gt('unbindConfirm').replace('{email}', email))) return;
+    try {
+      const data = await api('/api/admin/users?email=' + encodeURIComponent(email), { method: 'DELETE' });
+      const removedEmail = data.email || email;
+      const msg = gt('unbindSuccess').replace('{email}', removedEmail);
+      setOutput(msg);
+      showToast(msg, 'success');
+      await Promise.all([global.loadBoundUsers(), global.loadMachines()]);
+    } catch (err) {
+      const msg = gt('unbindFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
   global.loadBoundUsers = async function loadBoundUsers() {
     try {
       const data = await api('/api/admin/users');

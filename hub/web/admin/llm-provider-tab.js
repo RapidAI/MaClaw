@@ -1503,3 +1503,135 @@ window.clearLLMProviderPromptCacheFilters = clearLLMProviderPromptCacheFilters;
 renderLLMProviderPromptCachePanel();
 renderLLMProviderPromptCacheDetailDialog();
 
+
+Object.assign(LLM_PROVIDER_I18N.en, {
+  upstreamTimeoutSec: 'Upstream Timeout (sec)',
+  upstreamTimeoutHint: 'Default 900. Increase for long reasoning or slow providers.',
+  upstreamTimeoutBadge: 'Upstream timeout'
+});
+Object.assign(LLM_PROVIDER_I18N.zh, {
+  upstreamTimeoutSec: '\u4e0a\u6e38\u8d85\u65f6\uff08\u79d2\uff09',
+  upstreamTimeoutHint: '\u9ed8\u8ba4 900\u3002\u957f\u63a8\u7406\u6216\u6162\u901f\u4e0a\u6e38\u53ef\u8c03\u5927\u3002',
+  upstreamTimeoutBadge: '\u4e0a\u6e38\u8d85\u65f6'
+});
+function llmProviderNormalizeUpstreamTimeoutSec(value) {
+  value = Number(value || 0);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 900;
+}
+function llmProviderEnsureUpstreamTimeoutField() {
+  if (document.getElementById('llmProviderUpstreamTimeoutSec')) return;
+  var queue = document.getElementById('llmProviderQueueTimeoutMs');
+  if (!queue || !queue.parentElement) return;
+  var field = document.createElement('div');
+  field.className = queue.parentElement.className || '';
+  field.innerHTML = '<label id="llmProviderUpstreamTimeoutSecLabel" for="llmProviderUpstreamTimeoutSec"></label><input id="llmProviderUpstreamTimeoutSec" type="number" min="1" step="1" value="900"><div class="hint" id="llmProviderUpstreamTimeoutSecHint"></div>';
+  if (queue.parentElement.nextSibling) queue.parentElement.parentElement.insertBefore(field, queue.parentElement.nextSibling);
+  else queue.parentElement.parentElement.appendChild(field);
+}
+function llmProviderReadUpstreamTimeoutSec() {
+  var el = document.getElementById('llmProviderUpstreamTimeoutSec');
+  return llmProviderNormalizeUpstreamTimeoutSec(el && el.value || 900);
+}
+function llmProviderWriteUpstreamTimeoutSec(provider) {
+  llmProviderEnsureUpstreamTimeoutField();
+  _s('llmProviderUpstreamTimeoutSec', 'value', String(llmProviderNormalizeUpstreamTimeoutSec(provider && provider.upstream_timeout_sec || 900)));
+}
+const baseEnsureLLMProviderModalUIUpstreamTimeout = typeof ensureLLMProviderModalUI === 'function' ? ensureLLMProviderModalUI : null;
+if (baseEnsureLLMProviderModalUIUpstreamTimeout) {
+  ensureLLMProviderModalUI = function() {
+    baseEnsureLLMProviderModalUIUpstreamTimeout();
+    llmProviderEnsureUpstreamTimeoutField();
+  };
+}
+const baseLpCloneUpstreamTimeout = typeof lpClone === 'function' ? lpClone : null;
+if (baseLpCloneUpstreamTimeout) {
+  lpClone = function(provider) {
+    var next = baseLpCloneUpstreamTimeout(provider);
+    next.upstream_timeout_sec = llmProviderNormalizeUpstreamTimeoutSec(provider && provider.upstream_timeout_sec || 900);
+    return next;
+  };
+}
+const baseReadSelectedLLMProviderFormUpstreamTimeout = typeof readSelectedLLMProviderForm === 'function' ? readSelectedLLMProviderForm : null;
+if (baseReadSelectedLLMProviderFormUpstreamTimeout) {
+  readSelectedLLMProviderForm = function() {
+    var next = baseReadSelectedLLMProviderFormUpstreamTimeout();
+    next.upstream_timeout_sec = llmProviderReadUpstreamTimeoutSec();
+    return next;
+  };
+}
+const baseClearLLMProviderFormUpstreamTimeout = typeof clearLLMProviderForm === 'function' ? clearLLMProviderForm : null;
+if (baseClearLLMProviderFormUpstreamTimeout) {
+  clearLLMProviderForm = function() {
+    baseClearLLMProviderFormUpstreamTimeout();
+    llmProviderWriteUpstreamTimeoutSec({ upstream_timeout_sec: 900 });
+  };
+}
+const baseOpenLLMProviderDialogUpstreamTimeout = typeof openLLMProviderDialog === 'function' ? openLLMProviderDialog : null;
+if (baseOpenLLMProviderDialogUpstreamTimeout) {
+  openLLMProviderDialog = function(mode) {
+    baseOpenLLMProviderDialogUpstreamTimeout(mode);
+    llmProviderWriteUpstreamTimeoutSec(mode === 'edit' ? lpById(llmProviderSelectedId) : { upstream_timeout_sec: 900 });
+  };
+}
+const baseBuildLLMProviderPayloadUpstreamTimeout = typeof buildLLMProviderPayload === 'function' ? buildLLMProviderPayload : null;
+if (baseBuildLLMProviderPayloadUpstreamTimeout) {
+  buildLLMProviderPayload = function() {
+    var payload = baseBuildLLMProviderPayloadUpstreamTimeout();
+    var providers = llmProviderRegistryCache && llmProviderRegistryCache.providers || [];
+    var byID = {};
+    providers.forEach(function(p) { if (p && p.id) byID[p.id] = p; });
+    payload.providers = (payload.providers || []).map(function(p, idx) {
+      var cached = byID[p.id] || providers[idx] || {};
+      p.upstream_timeout_sec = llmProviderNormalizeUpstreamTimeoutSec(cached.upstream_timeout_sec || p.upstream_timeout_sec || 900);
+      return p;
+    });
+    return payload;
+  };
+}
+const baseLLMProviderImportedPayloadUpstreamTimeout = typeof llmProviderImportedPayload === 'function' ? llmProviderImportedPayload : null;
+if (baseLLMProviderImportedPayloadUpstreamTimeout) {
+  llmProviderImportedPayload = function(raw) {
+    var imported = baseLLMProviderImportedPayloadUpstreamTimeout(raw);
+    var source = {};
+    (raw && raw.providers || []).forEach(function(p) { if (p && p.id) source[lpNormalizeId(p.id)] = p; });
+    imported.providers = (imported.providers || []).map(function(p) {
+      var original = source[p.id] || {};
+      p.upstream_timeout_sec = llmProviderNormalizeUpstreamTimeoutSec(original.upstream_timeout_sec || p.upstream_timeout_sec || 900);
+      return p;
+    });
+    return imported;
+  };
+}
+const baseRenderLLMProvidersUpstreamTimeout = typeof renderLLMProviders === 'function' ? renderLLMProviders : null;
+if (baseRenderLLMProvidersUpstreamTimeout) {
+  renderLLMProviders = function() {
+    baseRenderLLMProvidersUpstreamTimeout();
+    var selected = lpById(llmProviderSelectedId);
+    if (llmProviderDialogOpen()) llmProviderWriteUpstreamTimeoutSec(selected || { upstream_timeout_sec: 900 });
+    var cards = document.querySelectorAll('[data-provider-id]');
+    cards.forEach(function(card) {
+      var id = card.getAttribute('data-provider-id');
+      var provider = lpById(id);
+      if (!provider) return;
+      var marker = card.querySelector('.llm-provider-upstream-timeout');
+      if (!marker) {
+        marker = document.createElement('div');
+        marker.className = 'item-meta llm-provider-upstream-timeout';
+        marker.style.marginTop = '4px';
+        card.appendChild(marker);
+      }
+      marker.textContent = lp('upstreamTimeoutBadge') + ': ' + String(llmProviderNormalizeUpstreamTimeoutSec(provider.upstream_timeout_sec)) + 's';
+    });
+  };
+}
+const baseApplyLLMProvidersI18nUpstreamTimeout = typeof applyLLMProvidersI18n === 'function' ? applyLLMProvidersI18n : null;
+if (baseApplyLLMProvidersI18nUpstreamTimeout) {
+  applyLLMProvidersI18n = function() {
+    baseApplyLLMProvidersI18nUpstreamTimeout();
+    llmProviderEnsureUpstreamTimeoutField();
+    _s('llmProviderUpstreamTimeoutSecLabel', 'textContent', lp('upstreamTimeoutSec'));
+    _s('llmProviderUpstreamTimeoutSecHint', 'textContent', lp('upstreamTimeoutHint'));
+  };
+  ensureLLMProviderModalUI();
+  applyLLMProvidersI18n();
+}

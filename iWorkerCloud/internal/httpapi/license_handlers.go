@@ -35,11 +35,11 @@ func IssueLicenseHandler(svc *license.Service) http.HandlerFunc {
 			Days     int      `json:"days"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "请求格式错误")
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
 		if req.CenterID == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "center_id 不能为空")
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "center_id is required")
 			return
 		}
 		if len(req.Modules) == 0 {
@@ -82,7 +82,7 @@ func GetActiveLicenseHandler(svc *license.Service) http.HandlerFunc {
 		centerID := r.PathValue("id")
 		lic, err := svc.GetActive(r.Context(), centerID)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "NOT_FOUND", "无有效授权")
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "no active license")
 			return
 		}
 		writeJSON(w, http.StatusOK, lic)

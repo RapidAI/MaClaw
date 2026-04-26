@@ -507,8 +507,10 @@ func InferFileDeliveryMessage(fileName string) string {
 // hallucination patterns. "Assistant:"/"System:"/"User:" are intentionally
 // excluded because they appear too often in legitimate LLM output (e.g.
 // explaining chat roles, quoting API docs).
+// Allows optional leading whitespace, Markdown block-level markers (>, -, *, digits),
+// and an optional space before the colon.
 // Also matches fullwidth colon (：U+FF1A) which Chinese LLMs sometimes produce.
-var rolePrefixRe = regexp.MustCompile(`(?m)^[ \t]*(Browser|Tool)(?::[ \t]?|：)`)
+var rolePrefixRe = regexp.MustCompile(`(?m)^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)`)
 
 // StripRolePrefixHallucination removes hallucinated role-prefix lines from
 // LLM output. Two cases:

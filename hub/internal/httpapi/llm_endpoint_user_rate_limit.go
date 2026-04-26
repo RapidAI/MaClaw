@@ -4,16 +4,23 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 )
 
+const llmEndpointUserLimiterShardCount = 64
+
 type llmEndpointUserLimiter struct {
-	mu        sync.Mutex
-	perMinute int
-	burst     int
-	states    map[string]*llmEndpointUserBucket
+	perMinute atomic.Int64
+	burst     atomic.Int64
+	shards    [llmEndpointUserLimiterShardCount]llmEndpointUserLimiterShard
+}
+
+type llmEndpointUserLimiterShard struct {
+	mu     sync.Mutex
+	states map[string]*llmEndpointUserBucket
 }
 
 type llmEndpointUserBucket struct {
@@ -29,11 +36,13 @@ type llmEndpointUserLimitSnapshot struct {
 var globalLLMEndpointUserLimiter = newLLMEndpointUserLimiter()
 
 func newLLMEndpointUserLimiter() *llmEndpointUserLimiter {
-	return &llmEndpointUserLimiter{
-		perMinute: im.DefaultLLMProviderUserRateLimitPerMinute,
-		burst:     im.DefaultLLMProviderUserRateLimitBurst,
-		states:    map[string]*llmEndpointUserBucket{},
+	l := &llmEndpointUserLimiter{}
+	l.perMinute.Store(int64(im.DefaultLLMProviderUserRateLimitPerMinute))
+	l.burst.Store(int64(im.DefaultLLMProviderUserRateLimitBurst))
+	for i := range l.shards {
+		l.shards[i].states = map[string]*llmEndpointUserBucket{}
 	}
+	return l
 }
 
 func applyLLMEndpointUserRateLimitConfig(reg *im.LLMProviderRegistry) {
@@ -51,13 +60,8 @@ func (l *llmEndpointUserLimiter) applyRegistry(reg *im.LLMProviderRegistry) {
 			burst = reg.UserRateLimitBurst
 		}
 	}
-	l.mu.Lock()
-	l.perMinute = perMinute
-	l.burst = burst
-	if l.states == nil {
-		l.states = map[string]*llmEndpointUserBucket{}
-	}
-	l.mu.Unlock()
+	l.perMinute.Store(int64(perMinute))
+	l.burst.Store(int64(burst))
 }
 
 func (l *llmEndpointUserLimiter) allow(email string) bool {
@@ -65,26 +69,29 @@ func (l *llmEndpointUserLimiter) allow(email string) bool {
 	if email == "" {
 		return true
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.burst <= 0 || l.perMinute <= 0 {
+	burst := int(l.burst.Load())
+	perMinute := int(l.perMinute.Load())
+	if burst <= 0 || perMinute <= 0 {
 		return true
 	}
-	if l.states == nil {
-		l.states = map[string]*llmEndpointUserBucket{}
+	shard := l.shard(email)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if shard.states == nil {
+		shard.states = map[string]*llmEndpointUserBucket{}
 	}
 	now := time.Now()
-	state := l.states[email]
+	state := shard.states[email]
 	if state == nil {
-		state = &llmEndpointUserBucket{tokens: float64(l.burst), last: now}
-		l.states[email] = state
+		state = &llmEndpointUserBucket{tokens: float64(burst), last: now}
+		shard.states[email] = state
 	}
 	if state.last.IsZero() {
 		state.last = now
 	}
 	elapsed := now.Sub(state.last).Seconds()
 	if elapsed > 0 {
-		state.tokens = math.Min(float64(l.burst), state.tokens+elapsed*(float64(l.perMinute)/60.0))
+		state.tokens = math.Min(float64(burst), state.tokens+elapsed*(float64(perMinute)/60.0))
 		state.last = now
 	}
 	if state.tokens < 1 {
@@ -94,16 +101,25 @@ func (l *llmEndpointUserLimiter) allow(email string) bool {
 	return true
 }
 
+func (l *llmEndpointUserLimiter) shard(email string) *llmEndpointUserLimiterShard {
+	var h uint32 = 2166136261
+	for i := 0; i < len(email); i++ {
+		h ^= uint32(email[i])
+		h *= 16777619
+	}
+	return &l.shards[int(h%llmEndpointUserLimiterShardCount)]
+}
+
 func (l *llmEndpointUserLimiter) snapshot() llmEndpointUserLimitSnapshot {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return llmEndpointUserLimitSnapshot{PerMinute: l.perMinute, Burst: l.burst}
+	return llmEndpointUserLimitSnapshot{PerMinute: int(l.perMinute.Load()), Burst: int(l.burst.Load())}
 }
 
 func (l *llmEndpointUserLimiter) reset() {
-	l.mu.Lock()
-	l.perMinute = im.DefaultLLMProviderUserRateLimitPerMinute
-	l.burst = im.DefaultLLMProviderUserRateLimitBurst
-	l.states = map[string]*llmEndpointUserBucket{}
-	l.mu.Unlock()
+	l.perMinute.Store(int64(im.DefaultLLMProviderUserRateLimitPerMinute))
+	l.burst.Store(int64(im.DefaultLLMProviderUserRateLimitBurst))
+	for i := range l.shards {
+		l.shards[i].mu.Lock()
+		l.shards[i].states = map[string]*llmEndpointUserBucket{}
+		l.shards[i].mu.Unlock()
+	}
 }

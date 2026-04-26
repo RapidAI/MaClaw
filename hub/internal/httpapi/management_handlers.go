@@ -9,6 +9,9 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
+	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -21,6 +24,10 @@ type ManualBindRequest struct {
 type LookupUserRequest struct {
 	Email  string `json:"email"`
 	Mobile string `json:"mobile"`
+}
+
+type DeleteBoundUserRequest struct {
+	Email string `json:"email"`
 }
 
 type BlockEmailRequest struct {
@@ -133,6 +140,69 @@ func ManualBindHandler(identity *auth.IdentityService) http.HandlerFunc {
 	}
 }
 
+func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		email := strings.TrimSpace(r.URL.Query().Get("email"))
+		if email == "" && r.Body != nil {
+			var req DeleteBoundUserRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+				email = strings.TrimSpace(req.Email)
+			}
+		}
+		if email == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
+			return
+		}
+		if identity == nil || identity.UsersRepo() == nil {
+			writeError(w, http.StatusInternalServerError, "USER_DELETE_UNAVAILABLE", "User repository is unavailable")
+			return
+		}
+
+		user, err := identity.LookupUserByEmail(r.Context(), email)
+		if err != nil {
+			if err == auth.ErrInvalidEmail {
+				writeError(w, http.StatusBadRequest, "INVALID_EMAIL", err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "LOOKUP_USER_FAILED", err.Error())
+			return
+		}
+		if user == nil {
+			writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "User not found")
+			return
+		}
+
+		var deletedMachines int64
+		if deviceSvc != nil {
+			deletedMachines, err = deviceSvc.ForceDeleteMachinesByUser(r.Context(), user.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "DELETE_USER_MACHINES_FAILED", err.Error())
+				return
+			}
+		}
+		var deletedCodes int64
+		if invitationSvc != nil {
+			deletedCodes, err = invitationSvc.DeleteCodeByEmail(r.Context(), user.Email)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "DELETE_USER_INVITES_FAILED", err.Error())
+				return
+			}
+		}
+		if feishuNotifier != nil {
+			feishuNotifier.RemoveOpenID(user.Email)
+		}
+		for _, cleaner := range imCleaners {
+			if cleaner != nil {
+				cleaner.RemoveBindingByEmail(user.Email)
+			}
+		}
+		if err := identity.UsersRepo().DeleteByEmail(r.Context(), user.Email); err != nil {
+			writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "email": user.Email, "deleted_machines": deletedMachines, "deleted_invitation_codes": deletedCodes})
+	}
+}
 func ListBlockedEmailsHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		items, err := identity.ListBlockedEmails(r.Context())

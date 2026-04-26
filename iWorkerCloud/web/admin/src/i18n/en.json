@@ -1,28 +1,146 @@
 {
-  "app": { "title": "iWorkerCloud Admin", "loading": "Loading..." },
-  "nav": { "overview": "Overview", "centers": "Centers", "licenses": "Licenses", "compute": "Compute Power", "settings": "Settings" },
+  "app": {
+    "title": "iWorkerCloud Admin",
+    "loading": "Loading..."
+  },
+  "nav": {
+    "overview": "Overview",
+    "centers": "Centers",
+    "licenses": "Licenses",
+    "compute": "Compute Power",
+    "skills": "Skill Market",
+    "settings": "Settings"
+  },
   "subtitle": {
-    "overview": "View iWorkerCenter registration and license overview.",
-    "centers": "Review, enable, disable registered iWorkerCenters.",
-    "licenses": "Manage module authorization certificates.",
-    "compute": "Manage LLM providers, compute permissions and usage stats.",
+    "overview": "Operate our vendor cloud control plane for compute distribution, skill market, licensing, and integration with multi-tenant iWorkerCenter deployments.",
+    "centers": "Register, authorize, and manage connected multi-tenant iWorkerCenter deployments.",
+    "licenses": "Manage commercial module authorization certificates.",
+    "compute": "Distribute model capacity, provider routes, quota policy, and usage billing.",
+    "skills": "Package, publish, authorize, and roll out top-level iWorker skills.",
     "settings": "Change admin password."
   },
-  "login": { "title": "Admin Login", "username": "Username", "password": "Password", "submit": "Sign In", "error": "Login failed" },
-  "setup": { "title": "Initial Setup", "description": "First time use. Please set up an admin account." },
+  "cloudOverview": {
+    "title": "Vendor cloud control plane for iWorker",
+    "desc": "iWorkerCloud is our company cloud platform for selling and operating the iWorker system. It controls compute distribution, skill-market supply, commercial authorization, and cloud-side management integrations for multi-tenant iWorkerCenter deployments.",
+    "positionTitle": "Cloud controls the system business",
+    "positionDesc": "Customer execution and tenant organizations stay inside their own multi-tenant iWorkerCenter. iWorkerCloud governs what we sell, distribute, authorize, meter, and upgrade through that center integration.",
+    "statCenters": "Connected iWorkerCenter deployments that may each serve multiple customer tenants.",
+    "statPending": "iWorkerCenter deployments waiting for activation, commercial review, or trial approval.",
+    "statLicenses": "Active paid or trial entitlements issued by our cloud platform.",
+    "computeEyebrow": "Compute distribution",
+    "computeTitle": "Provider routing and capacity sales",
+    "computeSummary": "Borrowing the Hub-style provider coordination idea, Cloud owns the commercial compute pool and distributes capacity through connected iWorkerCenters.",
+    "computeDetail": "Providers, model routes, quota, pricing, and usage metering are controlled here. A multi-tenant iWorkerCenter consumes cloud-managed capacity or receives permission to self-manage routes.",
+    "computePoint1": "Provider pool",
+    "computePoint2": "Center and tenant quota",
+    "computePoint3": "Usage billing",
+    "marketEyebrow": "Skill Market",
+    "marketTitle": "Top-level skills for many companies",
+    "marketSummary": "Our best reusable iWorker skills should be packaged once, sold or authorized through Cloud, then distributed to connected multi-tenant iWorkerCenters.",
+    "marketDetail": "Cloud governs skill listing, version rollout, entitlement, and retirement. The iWorkerCenter receives the skill and maps it into its own tenants, roles, workflows, and policy layer.",
+    "marketPoint1": "Skill catalog",
+    "marketPoint2": "Version rollout",
+    "marketPoint3": "Center entitlement",
+    "tenantEyebrow": "Center integration",
+    "tenantTitle": "Multi-tenant iWorkerCenter control",
+    "tenantSummary": "Cloud directly integrates with iWorkerCenter deployments that support multiple tenants, then manages authorization, commercial access, modules, and fleet health at the center boundary.",
+    "tenantDetail": "This is the SaaS operator view for our company: Cloud does not recreate tenant organizations. It controls the connected iWorkerCenter instances that already carry tenant isolation and execution.",
+    "tenantPoint1": "Center registration",
+    "tenantPoint2": "Tenant-aware authorization",
+    "tenantPoint3": "Deployment health",
+    "watch": "Watch",
+    "scale": "Scale",
+    "ready": "Ready"
+  },
+  "skills": {
+    "title": "Top-level iWorker Skill Market",
+    "desc": "Package elite skills once, authorize them by center or tenant policy, and roll them out through connected multi-tenant iWorkerCenters without confusing Cloud with customer execution.",
+    "positionTitle": "Market, not organization",
+    "positionDesc": "Cloud sells and distributes skills. The connected iWorkerCenter decides how the skill enters each tenant organization, role, workflow, policy, and audit trail.",
+    "stage": {
+      "draft": "Draft",
+      "listed": "Listed",
+      "controlled": "Controlled"
+    },
+    "badge": {
+      "draft": "Design",
+      "listed": "Market",
+      "controlled": "Governed"
+    },
+    "tagBoard": "Board reporting",
+    "tagReport": "Operating brief",
+    "tagDecision": "Decision support",
+    "tagWorkflow": "Workflow",
+    "tagMemory": "Memory",
+    "tagRollout": "Rollout",
+    "tagCompute": "Compute",
+    "tagQuota": "Quota",
+    "tagCost": "Cost",
+    "items": {
+      "executive": {
+        "title": "Executive operating report skill",
+        "summary": "Turns center telemetry into CEO and board-level operating reports.",
+        "detail": "Cloud can distribute this as a premium skill, while the connected iWorkerCenter binds it to tenant-specific roles, KPIs, and decision boundaries."
+      },
+      "recovery": {
+        "title": "Recovery institutionalization skill",
+        "summary": "Converts recovered exceptions into memory, package, workflow, and policy-monitoring assets.",
+        "detail": "This skill helps customers compound organizational capability instead of leaving recovery knowledge in one worker body or human memory."
+      },
+      "compute": {
+        "title": "Compute optimization skill",
+        "summary": "Analyzes center and tenant usage and recommends model routing, quota, and cost policy.",
+        "detail": "This should sit close to Cloud's compute distribution layer and help our operators tune cost, latency, and product packaging."
+      }
+    }
+  },
+  "login": {
+    "title": "Admin Login",
+    "username": "Username",
+    "password": "Password",
+    "submit": "Sign In",
+    "error": "Login failed"
+  },
+  "setup": {
+    "title": "Initial Setup",
+    "description": "First time use. Please set up an admin account."
+  },
   "centers": {
-    "pending": "Pending", "active": "Active", "disabled": "Disabled",
-    "confirmTrial": "Confirm Trial (30 days)", "confirmManual": "Manual Authorize",
-    "disable": "Disable", "enable": "Enable", "delete": "Delete",
+    "pending": "Pending",
+    "active": "Active",
+    "disabled": "Disabled",
+    "confirmTrial": "Confirm Trial (30 days)",
+    "confirmManual": "Manual Authorize",
+    "disable": "Disable",
+    "enable": "Enable",
+    "delete": "Delete",
     "empty": "No registered iWorkerCenters."
   },
   "licenses": {
-    "issue": "Issue License", "revoke": "Revoke", "viewCert": "View Certificate",
-    "longTerm": "Long-term", "valid": "Valid", "revoked": "Revoked",
+    "issue": "Issue License",
+    "revoke": "Revoke",
+    "viewCert": "View Certificate",
+    "longTerm": "Long-term",
+    "valid": "Valid",
+    "revoked": "Revoked",
     "empty": "No licenses.",
-    "centerId": "Center ID", "days": "Days", "modules": "Modules"
+    "centerId": "Center ID",
+    "days": "Days",
+    "modules": "Modules"
   },
-  "common": { "save": "Save", "cancel": "Cancel", "confirm": "Confirm", "refresh": "Refresh", "loading": "Loading...", "noData": "No data", "success": "Success", "error": "Error", "logout": "Logout", "edit": "Edit", "delete": "Delete" },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "refresh": "Refresh",
+    "loading": "Loading...",
+    "noData": "No data",
+    "success": "Success",
+    "error": "Error",
+    "logout": "Logout",
+    "edit": "Edit",
+    "delete": "Delete"
+  },
   "compute": {
     "providers": "LLM Providers",
     "centerPermissions": "Center Compute Permissions",

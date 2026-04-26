@@ -35,10 +35,13 @@ func NewRouter(
 
 	// Centers (admin)
 	mux.HandleFunc("GET /api/admin/centers", RequireAdmin(ListCentersHandler(centerSvc)))
+	mux.HandleFunc("GET /api/admin/centers/operations", RequireAdmin(CenterOperationsHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/centers/{id}/confirm-trial", RequireAdmin(ConfirmCenterTrialHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/centers/{id}/confirm", RequireAdmin(ConfirmCenterManualHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/centers/{id}/disable", RequireAdmin(DisableCenterHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/centers/{id}/enable", RequireAdmin(EnableCenterHandler(centerSvc)))
+	mux.HandleFunc("PUT /api/admin/centers/{id}/integration", RequireAdmin(UpdateCenterIntegrationHandler(centerSvc)))
+	mux.HandleFunc("POST /api/admin/centers/{id}/probe", RequireAdmin(ProbeCenterHandler(centerSvc)))
 	mux.HandleFunc("DELETE /api/admin/centers/{id}", RequireAdmin(DeleteCenterHandler(centerSvc)))
 
 	// Provision tenant on a remote center (admin)

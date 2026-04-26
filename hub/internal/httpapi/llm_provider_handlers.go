@@ -897,7 +897,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		}
 		var body map[string]any
 		clientIP := llmEndpointClientIP(r)
-		requestBody := trimLLMEndpointAccessLogBody(string(bodyBytes))
+		requestBody := trimLLMEndpointAccessLogBodyBytes(bodyBytes)
 		logStatusCode := http.StatusOK
 		logErrorCode := ""
 		logRequestedModel := ""
@@ -944,7 +944,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			models     []llmservice.AuthorizedModel
 			serviceReg *llmservice.Registry
 		)
-		status, models, providerReg, serviceReg, err = resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
+		status, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(r.Context(), r, system, securitySvc, principal.Email, providerReg)
 		if err != nil {
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1020,11 +1020,11 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			var detail string
 			switch statusCode {
 			case http.StatusUnauthorized:
-				detail = fmt.Sprintf("娑撳﹥鐖?LLM 閺堝秴濮熼崯?%q 鐠併倛鐦夋径杈Е閿涘湏PI Key 閺冪姵鏅ラ幋鏍у嚒鏉╁洦婀￠敍澶涚礉鐠囩柉浠堢化鑽ゎ吀閻炲棗鎲冲Λ鈧弻?Hub 閸氬骸褰撮惃?Provider 闁板秶鐤?, providerName)
+				detail = fmt.Sprintf("upstream LLM provider %q rejected the configured API key", providerName)
 			case http.StatusForbidden:
-				detail = fmt.Sprintf("娑撳﹥鐖?LLM 閺堝秴濮熼崯?%q 閹锋帞绮风拋鍧楁６閿涘矁顕懕鏃傞兇缁狅紕鎮婇崨妯活梾閺?Hub 閸氬骸褰撮惃?Provider 闁板秶鐤?, providerName)
+				detail = fmt.Sprintf("upstream LLM provider %q denied access for the configured API key or model", providerName)
 			case http.StatusTooManyRequests:
-				detail = fmt.Sprintf("娑撳﹥鐖?LLM 閺堝秴濮熼崯?%q 鐠囬攱鐪版０鎴犲芳鐡掑懘妾洪敍宀冾嚞缁嬪秴鎮楅崘宥堢槸", providerName)
+				detail = fmt.Sprintf("upstream LLM provider %q is rate limited", providerName)
 			}
 			if upstreamMsg != "" {
 				detail += " (" + upstreamMsg + ")"
@@ -1487,20 +1487,34 @@ func preserveCardHashes(next *llmservice.Registry, old *llmservice.Registry) {
 }
 
 func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, email string) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *im.LLMProviderRegistry, *llmservice.Registry, error) {
-	reg, err := loadCachedLLMServiceRegistry(ctx, system)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
 	providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	status, models, err := llmservice.ResolveStatusFromRegistry(ctx, reg, securitySvc, email, externalLLMBaseURL(r))
+	status, models, serviceReg, err := resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, email, providerReg)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	return status, models, providerReg, serviceReg, nil
+}
+
+func resolveAuthorizedModelsWithProviderRegistry(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, email string, providerReg *im.LLMProviderRegistry) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *llmservice.Registry, error) {
+	reg, err := loadCachedLLMServiceRegistry(ctx, system)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if providerReg == nil {
+		providerReg, err = loadCachedLLMProviderRegistry(ctx, system)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	status, models, err := llmservice.ResolveStatusFromRegistry(ctx, reg, securitySvc, email, externalLLMBaseURL(r))
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	status, models = filterAuthorizedModelsByProviderRegistry(status, models, providerReg)
-	return status, models, providerReg, reg, nil
+	return status, models, reg, nil
 }
 
 type llmBillingDenial struct {
@@ -1791,21 +1805,11 @@ func normalizeStringSlice(items []string) []string {
 	return out
 }
 func normalizeProviderProtocol(v string) string {
-	v = strings.ToLower(strings.TrimSpace(v))
-	if v == "anthropic" {
-		return "anthropic"
-	}
-	return "openai"
+	return corelib.NormalizeLLMProviderProtocol(v)
 }
 
 func normalizeProviderWireAPI(v string) string {
-	v = strings.ToLower(strings.TrimSpace(v))
-	switch v {
-	case "responses", "responses-ws":
-		return v
-	default:
-		return "chat"
-	}
+	return corelib.NormalizeLLMProviderWireAPI(v)
 }
 
 func syncLegacyHubLLMConfig(ctx context.Context, system store.SystemSettingsRepository, reg *im.LLMProviderRegistry) error {
@@ -1829,25 +1833,38 @@ func forwardLLMRequest(r *http.Request, p *im.LLMProvider, body map[string]any, 
 		return nil, 0, err
 	}
 	defer release()
-	cfg := corelib.MaclawLLMConfig{
-		URL:        p.APIURL,
-		Key:        p.APIKey,
-		Model:      p.Model,
-		Protocol:   normalizeProviderProtocol(p.Protocol),
-		WireAPI:    normalizeProviderWireAPI(p.WireAPI),
-		AgentType:  strings.TrimSpace(p.AgentType),
-		TimeoutSec: p.UpstreamTimeoutSec,
-	}
-	fwd := make(map[string]interface{}, len(body))
-	for k, v := range body {
-		fwd[k] = v
-	}
-	return corelib.ForwardOpenAICompatRequest(r.Context(), cfg, fwd, llmProviderUpstreamHTTPClient(cfg), externalModel)
+	provider := toCoreLLMEndpointProvider(p)
+	return corelib.ForwardLLMEndpointProviderRequest(r.Context(), provider, body, llmProviderUpstreamHTTPClient(provider.MaclawLLMConfig()), externalModel)
 }
 
 func llmProviderUpstreamHTTPClient(cfg corelib.MaclawLLMConfig) *http.Client {
-	return &http.Client{Timeout: time.Duration(cfg.EffectiveTimeoutSec()) * time.Second}
+	return corelib.NewLLMEndpointHTTPClient(cfg)
 }
+
+func toCoreLLMEndpointProvider(p *im.LLMProvider) corelib.LLMEndpointProvider {
+	if p == nil {
+		return corelib.LLMEndpointProvider{}
+	}
+	return corelib.LLMEndpointProvider{
+		ID:                       p.ID,
+		Name:                     p.Name,
+		APIURL:                   p.APIURL,
+		APIKey:                   p.APIKey,
+		Model:                    p.Model,
+		Protocol:                 p.Protocol,
+		WireAPI:                  p.WireAPI,
+		AgentType:                p.AgentType,
+		UpstreamTimeoutSec:       p.UpstreamTimeoutSec,
+		MaxConcurrency:           p.MaxConcurrency,
+		MaxQueueWaiters:          p.MaxQueueWaiters,
+		QueueTimeoutMS:           p.QueueTimeoutMS,
+		CircuitBreakerThreshold:  p.CircuitBreakerThreshold,
+		CircuitBreakerCooldownMS: p.CircuitBreakerCooldownMS,
+		FailureBackoffBaseMS:     p.FailureBackoffBaseMS,
+		FailureBackoffMaxMS:      p.FailureBackoffMaxMS,
+	}
+}
+
 func parseUsageStats(respBody []byte) corelib.TokenUsageStat {
 	var payload map[string]any
 	if err := json.Unmarshal(respBody, &payload); err != nil {

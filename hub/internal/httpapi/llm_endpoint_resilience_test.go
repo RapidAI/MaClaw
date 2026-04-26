@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -168,11 +167,7 @@ func TestForwardAuthorizedModelRequestWithCacheProviderCircuitBreakerAndRecovery
 	}
 
 	providerAShouldFail.Store(false)
-	state := globalProviderResilience.stateForProvider(reg.FindProvider("provider-a"))
-	globalProviderResilience.mu.Lock()
-	state.circuitOpenUntil = time.Now().Add(-time.Second)
-	state.backoffUntil = time.Now().Add(-time.Second)
-	globalProviderResilience.mu.Unlock()
+	globalProviderResilience.reset()
 
 	respBody, statusCode, providerID, _, _, _, err = forwardAuthorizedModelRequestWithCache(req, reg, model, body, "auto", nil, defaultHubLLMPromptCacheConfig())
 	if err != nil {

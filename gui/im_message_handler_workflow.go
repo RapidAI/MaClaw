@@ -44,6 +44,37 @@ func (h *IMMessageHandler) getTaskOrchestratorReadOnly(userID string) *TaskExecu
 	return h.taskOrchestratorRegistry.Get(userID)
 }
 
+// extractOriginalRequest returns the best available representation of the
+// user's original task request from the workflow state. Returns "" if the
+// current text already IS the original request (no substitution needed).
+//
+// Priority:
+//  1. Goals[0] — UIC direct path stores the raw user text here
+//  2. Summary — IUM LLM generates a structured summary of the intent
+//  3. "" — text is already the original request (UIC direct, no IUM)
+func extractOriginalRequest(state *workflow.WorkflowState, currentText string) string {
+	if state == nil {
+		return ""
+	}
+	// Try Goals[0] first — it's the raw user text in the UIC direct path.
+	if len(state.Intent.Goals) > 0 && state.Intent.Goals[0] != "" {
+		candidate := state.Intent.Goals[0]
+		if candidate != currentText {
+			return candidate
+		}
+	}
+	// Try Summary — IUM LLM generates a structured summary.
+	if state.Intent.Summary != "" && state.Intent.Summary != currentText {
+		// Skip UIC-generated summaries like "UIC fusion: non_coding (conf=0.92)"
+		// — these are internal labels, not user-facing task descriptions.
+		if !strings.HasPrefix(state.Intent.Summary, "UIC fusion:") {
+			return state.Intent.Summary
+		}
+	}
+	// currentText is already the original request.
+	return ""
+}
+
 // handlePostStartWorkflow is the single post-StartWorkflow handler for all
 // GUI-side workflow start paths (UIC, IUM, keyword fallback). It:
 //  1. Emits suggest_maximize for the desktop panel
@@ -86,6 +117,25 @@ func (h *IMMessageHandler) handlePostStartWorkflow(
 	if cb := engine.GetCallbacks(); cb != nil {
 		_ = cb.SendTextToUser(userID, overview)
 	}
+
+	// ── Stash the original task request ──
+	//
+	// When a workflow starts via multi-round IUM, `text` is the IUM
+	// completion message (e.g. "没有其它信息了"), not the original task
+	// request (e.g. "根据 readme.md 做 PPT"). The original request is
+	// preserved in state.Intent — either in Goals[0] (UIC direct path
+	// stores the raw user text) or in Summary (IUM LLM generates a
+	// structured summary of the user's intent).
+	//
+	// The agent loop's userText must carry task semantics so the LLM
+	// knows what to produce. We stash the best available source here;
+	// runAgentLoop consumes it via LoadAndDelete when workflowAgentLoop=true.
+	if originalRequest := extractOriginalRequest(state, text); originalRequest != "" {
+		h.workflowOriginalRequest.Store(userID, originalRequest)
+		log.Printf("[WorkflowInterception] stashed original request for user=%s: %q (current text=%q)",
+			userID, truncateRunes(originalRequest, 80), truncateRunes(text, 30))
+	}
+
 	log.Printf("[WorkflowInterception] StartWorkflow succeeded, re-routing to handleActiveWorkflow for user=%s type=%s phase=%s",
 		userID, state.Type, state.CurrentPhase)
 	return h.handleActiveWorkflow(engine, userID, text)
@@ -402,6 +452,43 @@ When in doubt between "confirm" and "other", prefer "confirm" — the conversati
 // advanceAndRespond advances the workflow to the next phase and returns
 // the transition message as an IMAgentResponse.
 func (h *IMMessageHandler) advanceAndRespond(engine *workflow.WorkflowEngine, userID string) *IMAgentResponse {
+	// ── Pre-advance validation ──
+	//
+	// Before advancing, verify that the current phase has a valid output.
+	// This catches the case where the LLM produced unrelated content that
+	// was rejected by SavePhaseOutput's minimum quality gate (or was never
+	// captured at all), but the user still said "confirm".
+	//
+	// Instead of advancing to an empty next phase, re-trigger the current
+	// phase's agent loop to generate the deliverable.
+	ws := engine.GetActiveWorkflow(userID)
+	if ws != nil {
+		output := ws.PhaseOutputs[ws.CurrentPhase]
+		if len([]rune(output)) < 100 {
+			// The phase has no valid output — don't advance.
+			tmpl := engine.GetRegistry().Match(ws.Type)
+			if tmpl != nil && ws.PhaseIndex < len(tmpl.Phases) {
+				phase := &tmpl.Phases[ws.PhaseIndex]
+				phasePrompt := workflow.BuildPhaseSystemPrompt(ws, phase, engine.GetRegistry())
+				h.stashedPhasePrompt.Store(userID, phasePrompt)
+				h.workflowAgentLoopMarker.Store(userID, true)
+
+				// Re-stash the original task request so the agent loop uses
+				// it as userText instead of the confirm message ("开工").
+				if orig := extractOriginalRequest(ws, ""); orig != "" {
+					h.workflowOriginalRequest.Store(userID, orig)
+				}
+
+				log.Printf("[workflow-confirm] phase %s has no valid output (len=%d), re-triggering agent loop for user=%s",
+					ws.CurrentPhase, len([]rune(output)), userID)
+				if cb := engine.GetCallbacks(); cb != nil {
+					_ = cb.SendTextToUser(userID, fmt.Sprintf("📋 当前阶段（%s）的文档尚未生成，正在重新生成...", phase.Name))
+				}
+				return nil // fall through to agent loop with phase prompt
+			}
+		}
+	}
+
 	advResp, advErr := engine.AdvancePhase(userID)
 	if advErr != nil {
 		log.Printf("[workflow-confirm] AdvancePhase error: user=%s err=%v", userID, advErr)
@@ -418,6 +505,15 @@ func (h *IMMessageHandler) advanceAndRespond(engine *workflow.WorkflowEngine, us
 			h.stashedPhasePrompt.Store(userID, advResp.PhasePrompt)
 		}
 		h.workflowAgentLoopMarker.Store(userID, true)
+
+		// Stash the original task request so the next phase's agent loop
+		// uses it as userText instead of the confirm message ("开工"/"确认").
+		if ws := engine.GetActiveWorkflow(userID); ws != nil {
+			if orig := extractOriginalRequest(ws, ""); orig != "" {
+				h.workflowOriginalRequest.Store(userID, orig)
+			}
+		}
+
 		// Send the transition text before the agent loop runs.
 		if advResp.Text != "" {
 			if cb := engine.GetCallbacks(); cb != nil {

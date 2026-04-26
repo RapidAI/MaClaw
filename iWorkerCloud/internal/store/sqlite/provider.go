@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -90,8 +91,8 @@ func applyPragmas(conn *sql.DB) error {
 		"PRAGMA busy_timeout = 5000;",
 		"PRAGMA synchronous = NORMAL;",
 		"PRAGMA temp_store = MEMORY;",
-		"PRAGMA cache_size = -8000;",       // 8 MB page cache per connection
-		"PRAGMA mmap_size = 268435456;",    // 256 MB memory-mapped I/O
+		"PRAGMA cache_size = -8000;",        // 8 MB page cache per connection
+		"PRAGMA mmap_size = 268435456;",     // 256 MB memory-mapped I/O
 		"PRAGMA wal_autocheckpoint = 1000;", // checkpoint every 1000 pages
 	}
 	for _, stmt := range stmts {
@@ -103,8 +104,15 @@ func applyPragmas(conn *sql.DB) error {
 }
 
 func RunMigrations(db *sql.DB) error {
-	_, err := db.Exec(schema)
-	return err
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	for _, stmt := range centerIntegrationMigrations {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	return nil
 }
 
 const schema = `
@@ -122,6 +130,11 @@ CREATE TABLE IF NOT EXISTS centers (
 	admin_phone TEXT NOT NULL DEFAULT '',
 	address TEXT NOT NULL DEFAULT '',
 	legal_person TEXT NOT NULL DEFAULT '',
+	base_url TEXT NOT NULL DEFAULT '',
+	supports_multi_tenant INTEGER NOT NULL DEFAULT 0,
+	tenant_count INTEGER NOT NULL DEFAULT 0,
+	cloud_control_mode TEXT NOT NULL DEFAULT 'cloud_managed',
+	last_sync_status TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT 'pending',
 	secret_hash TEXT NOT NULL DEFAULT '',
 	last_heartbeat TEXT NOT NULL DEFAULT '',
@@ -147,3 +160,11 @@ CREATE TABLE IF NOT EXISTS system_settings (
 	value TEXT NOT NULL DEFAULT ''
 );
 `
+
+var centerIntegrationMigrations = []string{
+	`ALTER TABLE centers ADD COLUMN base_url TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE centers ADD COLUMN supports_multi_tenant INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE centers ADD COLUMN tenant_count INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE centers ADD COLUMN cloud_control_mode TEXT NOT NULL DEFAULT 'cloud_managed'`,
+	`ALTER TABLE centers ADD COLUMN last_sync_status TEXT NOT NULL DEFAULT ''`,
+}

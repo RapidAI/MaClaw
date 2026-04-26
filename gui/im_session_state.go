@@ -32,6 +32,7 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	h.workflowAgentLoopMarker.Delete(userID)
 	h.workflowPendingConfirmOther.Delete(userID)
 	h.stashedPhasePrompt.Delete(userID)
+	h.workflowOriginalRequest.Delete(userID)
 
 	// Task execution orchestrator: deactivate to prevent stale orchestrator
 	// state from routing the next message to SubAgent after a session reset.

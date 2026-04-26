@@ -87,10 +87,10 @@ func llmPromptCacheDecision(body map[string]any, cfg HubLLMPromptCacheConfig) (s
 	if len(body) == 0 {
 		return "empty_body", false
 	}
-	stream, _ := body["stream"].(bool)
-	if stream {
-		return "streaming", false
-	}
+	// The Hub forwarding layer always sends upstream requests as non-streaming
+	// JSON, then returns that JSON to the client. Treat client-side stream:true as
+	// a transport preference so Codex/omniroute style callers can still reuse the
+	// same deterministic prompt cache entry.
 	if n, ok := promptCacheIntValue(body["n"]); ok && n > 1 {
 		return "multi_choice", false
 	}
@@ -177,9 +177,13 @@ func llmPromptCacheKey(model *llmservice.AuthorizedModel, body map[string]any, e
 	if err != nil {
 		return "", "", err
 	}
+	requestedModel := strings.ToLower(strings.TrimSpace(externalModel))
+	if cfg.IgnoreModelField {
+		requestedModel = ""
+	}
 	fingerprint := map[string]any{
 		"authorized_model": strings.ToLower(strings.TrimSpace(model.Name)),
-		"requested_model":  strings.ToLower(strings.TrimSpace(externalModel)),
+		"requested_model":  requestedModel,
 		"body":             json.RawMessage(canonicalBody),
 	}
 	payload, err := json.Marshal(fingerprint)
@@ -210,7 +214,8 @@ func getCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheS
 	if cached.StatusCode <= 0 || len(cached.Body) == 0 {
 		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, nil
 	}
-	return append([]byte(nil), cached.Body...), cached.StatusCode, strings.TrimSpace(cached.ProviderID), normalizeCacheServiceGroupIDs(cached.ServiceGroupIDs), cached.Usage, true, nil
+	respBody := corelib.OverrideOpenAIResponseModel(append([]byte(nil), cached.Body...), strings.TrimSpace(externalModel))
+	return respBody, cached.StatusCode, strings.TrimSpace(cached.ProviderID), normalizeCacheServiceGroupIDs(cached.ServiceGroupIDs), cached.Usage, true, nil
 }
 
 func putCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheStore, model *llmservice.AuthorizedModel, body map[string]any, externalModel string, respBody []byte, statusCode int, providerID string, serviceGroupIDs []string, usage corelib.TokenUsageStat, cfg HubLLMPromptCacheConfig) error {
@@ -316,9 +321,13 @@ func normalizePromptCacheBody(body map[string]any, cfg HubLLMPromptCacheConfig) 
 	if cfg.IgnoreMetadataField {
 		delete(normalized, "metadata")
 	}
-	if stream, _ := normalized["stream"].(bool); !stream {
-		delete(normalized, "stream")
-		delete(normalized, "stream_options")
+	delete(normalized, "stream")
+	delete(normalized, "stream_options")
+	delete(normalized, "prompt_cache_key")
+	delete(normalized, "safety_identifier")
+	delete(normalized, "service_tier")
+	if store, ok := normalized["store"].(bool); ok && !store {
+		delete(normalized, "store")
 	}
 	if cfg.NormalizeDeterministicParams {
 		if value, ok := promptCacheFloatValue(normalized["temperature"]); ok && value == 0 {
@@ -343,8 +352,25 @@ func normalizePromptCacheBody(body map[string]any, cfg HubLLMPromptCacheConfig) 
 	if tools, ok := normalized["tools"].([]any); ok && len(tools) == 0 {
 		delete(normalized, "tools")
 	}
-	if _, hasTools := normalized["tools"]; !hasTools {
+	_, hasTools := normalized["tools"]
+	if !hasTools {
 		delete(normalized, "tool_choice")
+		delete(normalized, "parallel_tool_calls")
+	} else if strings.EqualFold(strings.TrimSpace(promptCacheStringValue(normalized["tool_choice"])), "auto") {
+		delete(normalized, "tool_choice")
+	}
+	if value, ok := normalized["parallel_tool_calls"].(bool); ok && value {
+		delete(normalized, "parallel_tool_calls")
+	}
+	if value, ok := normalized["logprobs"].(bool); ok && !value {
+		delete(normalized, "logprobs")
+		delete(normalized, "top_logprobs")
+	}
+	if isDefaultPromptCacheResponseFormat(normalized["response_format"]) {
+		delete(normalized, "response_format")
+	}
+	if isDefaultPromptCacheModalities(normalized["modalities"]) {
+		delete(normalized, "modalities")
 	}
 	return normalized
 }
@@ -378,6 +404,32 @@ func normalizePromptCacheValue(value any) any {
 	}
 }
 
+func promptCacheStringValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	default:
+		return ""
+	}
+}
+
+func isDefaultPromptCacheResponseFormat(value any) bool {
+	m, ok := value.(map[string]any)
+	if !ok || len(m) != 1 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(promptCacheStringValue(m["type"])), "text")
+}
+
+func isDefaultPromptCacheModalities(value any) bool {
+	items, ok := value.([]any)
+	if !ok || len(items) != 1 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(promptCacheStringValue(items[0])), "text")
+}
 func promptCacheFloatValue(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:

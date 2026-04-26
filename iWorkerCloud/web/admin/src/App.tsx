@@ -9,10 +9,11 @@ import { CentersPage } from './pages/CentersPage';
 import { LicensesPage } from './pages/LicensesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ComputePowerPage } from './pages/ComputePowerPage';
+import { SkillMarketPage } from './pages/SkillMarketPage';
 import { LanguageSwitcher } from './components/LanguageSwitcher';
 
-type Tab = 'overview' | 'centers' | 'licenses' | 'compute' | 'settings';
-const tabs: Tab[] = ['overview', 'centers', 'licenses', 'compute', 'settings'];
+type Tab = 'overview' | 'centers' | 'licenses' | 'compute' | 'skills' | 'settings';
+const tabs: Tab[] = ['overview', 'centers', 'licenses', 'compute', 'skills', 'settings'];
 
 export default function App() {
   const { t } = useTranslation();
@@ -35,6 +36,7 @@ export default function App() {
       case 'centers': return <CentersPage />;
       case 'licenses': return <LicensesPage />;
       case 'compute': return <ComputePowerPage />;
+      case 'skills': return <SkillMarketPage />;
       case 'settings': return <SettingsPage />;
     }
   })();

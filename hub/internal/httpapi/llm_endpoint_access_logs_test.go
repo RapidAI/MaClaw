@@ -51,6 +51,27 @@ func TestGetLLMEndpointAccessLogsHandlerMergesPendingEntries(t *testing.T) {
 	}
 }
 
+func TestPruneLLMEndpointAccessLogsKeepsLatestEntries(t *testing.T) {
+	logs := newLLMEndpointAccessLogStore()
+	for i := 0; i < llmEndpointAccessLogsKeepEntries+5; i++ {
+		logs.add(llmEndpointAccessLogEntry{
+			Email:      "user@example.com",
+			ClientIP:   "10.0.0.1",
+			StatusCode: http.StatusOK,
+			CreatedAt:  time.Unix(int64(i), 0).UTC(),
+		})
+	}
+	if len(logs.Entries) != llmEndpointAccessLogsKeepEntries {
+		t.Fatalf("entries len = %d, want %d", len(logs.Entries), llmEndpointAccessLogsKeepEntries)
+	}
+	if got := logs.Entries[0].CreatedAt; !got.Equal(time.Unix(5, 0).UTC()) {
+		t.Fatalf("oldest kept entry = %s, want unix 5", got)
+	}
+	if got := logs.Entries[len(logs.Entries)-1].CreatedAt; !got.Equal(time.Unix(int64(llmEndpointAccessLogsKeepEntries+4), 0).UTC()) {
+		t.Fatalf("newest kept entry = %s", got)
+	}
+}
+
 func TestLLMV1ChatCompletionsHandlerWritesAccessLog(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "access-log@example.com")

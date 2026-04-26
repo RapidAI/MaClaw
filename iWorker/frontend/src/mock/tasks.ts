@@ -1,30 +1,37 @@
 import type { TaskItem } from '../types';
 
-export const quickTasks = ['写通知', '会议纪要', '周报总结', '整理表格', '异常上报', '生产日报'];
+export const quickTasks = [
+  'Customer follow-up brief',
+  'Meeting decision summary',
+  'Weekly operating report',
+  'Data table cleanup',
+  'Exception explanation',
+  'Production daily report',
+];
 
 export const recentTasks: TaskItem[] = [
   {
     id: 'task-101',
-    title: '整理今日生产异常',
-    owner: '老陈',
-    status: '处理中',
-    updatedAt: '今天 15:20',
-    description: '汇总产线异常并生成汇报摘要',
+    title: 'Summarize production exception',
+    owner: 'Operations iWorker',
+    status: 'In progress',
+    updatedAt: 'Today 15:20',
+    description: 'Collect production-line variance and produce an operating brief.',
   },
   {
     id: 'task-102',
-    title: '周会纪要整理',
-    owner: '小迪',
-    status: '已完成',
-    updatedAt: '今天 11:40',
-    description: '提炼会议结论和待办事项',
+    title: 'Prepare weekly meeting minutes',
+    owner: 'Office iWorker',
+    status: 'Done',
+    updatedAt: 'Today 11:40',
+    description: 'Extract decisions, blockers, and follow-up owners from the meeting record.',
   },
   {
     id: 'task-103',
-    title: '质检问题归类',
-    owner: '小周',
-    status: '待确认',
-    updatedAt: '昨天 18:05',
-    description: '按原因和影响范围整理质量问题',
+    title: 'Classify quality issues',
+    owner: 'Quality iWorker',
+    status: 'Waiting review',
+    updatedAt: 'Yesterday 18:05',
+    description: 'Group quality issues by root cause and business impact.',
   },
 ];

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -219,7 +220,12 @@ func pruneLLMEndpointAccessLogs(store *llmEndpointAccessLogStore) {
 		return
 	}
 	if len(store.Entries) > llmEndpointAccessLogsKeepEntries {
-		store.Entries = append([]llmEndpointAccessLogEntry(nil), store.Entries[len(store.Entries)-llmEndpointAccessLogsKeepEntries:]...)
+		overflow := len(store.Entries) - llmEndpointAccessLogsKeepEntries
+		copy(store.Entries, store.Entries[overflow:])
+		for i := llmEndpointAccessLogsKeepEntries; i < len(store.Entries); i++ {
+			store.Entries[i] = llmEndpointAccessLogEntry{}
+		}
+		store.Entries = store.Entries[:llmEndpointAccessLogsKeepEntries]
 	}
 }
 
@@ -326,11 +332,15 @@ func buildLLMEndpointAccessLogSummary(logs *llmEndpointAccessLogStore) llmEndpoi
 }
 
 func trimLLMEndpointAccessLogBody(body string) string {
-	body = strings.TrimSpace(body)
+	return trimLLMEndpointAccessLogBodyBytes([]byte(body))
+}
+
+func trimLLMEndpointAccessLogBodyBytes(body []byte) string {
+	body = bytes.TrimSpace(body)
 	if len(body) <= llmEndpointAccessLogsBodyLimit {
-		return body
+		return string(body)
 	}
-	return body[:llmEndpointAccessLogsBodyLimit] + "\n...[truncated]"
+	return string(body[:llmEndpointAccessLogsBodyLimit]) + "\n...[truncated]"
 }
 
 func llmEndpointClientIP(r *http.Request) string {

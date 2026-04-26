@@ -17,16 +17,16 @@ type Props = {
 };
 
 const primaryItems: NavItem[] = [
-  { id: 'home', label: '新建任务', icon: <IconNewTask /> },
-  { id: 'new-task', label: 'Claw', icon: <IconClaw /> },
-  { id: 'colleagues', label: '同事', icon: <IconExpert /> },
-  { id: 'history', label: '工具', icon: <IconSkills /> },
+  { id: 'home', label: 'Talk', icon: <IconNewTask /> },
+  { id: 'new-task', label: 'Task', icon: <IconClaw /> },
+  { id: 'colleagues', label: 'Partners', icon: <IconExpert /> },
+  { id: 'history', label: 'Tools', icon: <IconSkills /> },
 ];
 
 export function SideNav({ activeTab, roleName, roleDescription, recentTasks = [], onChange }: Props) {
   const [searchQuery, setSearchQuery] = useState('');
   const visibleTasks = recentTasks
-    .filter((task) => !searchQuery || task.title.includes(searchQuery) || task.description?.includes(searchQuery))
+    .filter((task) => !searchQuery || task.title.toLowerCase().includes(searchQuery.toLowerCase()) || task.description?.toLowerCase().includes(searchQuery.toLowerCase()))
     .slice(0, 8);
 
   return (
@@ -37,7 +37,7 @@ export function SideNav({ activeTab, roleName, roleDescription, recentTasks = []
             <span className="dw-nav-icon" style={{ width: '28px', height: '28px', borderRadius: '8px', fontSize: '14px', background: '#1f2937', color: '#fff' }} aria-hidden="true">i</span>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
               <h1 style={{ fontSize: '14px' }}>iWorker</h1>
-              <span style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 400 }}>v0.1</span>
+              <span style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 400 }}>body node</span>
             </div>
           </div>
         </div>
@@ -53,7 +53,7 @@ export function SideNav({ activeTab, roleName, roleDescription, recentTasks = []
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索任务"
+              placeholder="Search tasks"
               spellCheck={false}
               style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: '12px', color: '#1f2937', width: '100%', padding: 0 }}
             />
@@ -67,7 +67,7 @@ export function SideNav({ activeTab, roleName, roleDescription, recentTasks = []
               border: '1px solid #dde4ec', background: '#f3f5f8',
               color: '#6b7280', cursor: 'pointer', flexShrink: 0,
             }}
-            aria-label="打开设置"
+            aria-label="Open settings"
           >
             <IconFilter />
           </button>
@@ -94,7 +94,7 @@ export function SideNav({ activeTab, roleName, roleDescription, recentTasks = []
         </nav>
 
         <div style={{ padding: '10px 10px 4px', fontSize: '11px', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.04em' }}>
-          最近任务
+          RECENT WORK
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 6px', minHeight: 0 }}>
           {visibleTasks.map((task) => (
@@ -122,14 +122,14 @@ export function SideNav({ activeTab, roleName, roleDescription, recentTasks = []
             type="button"
             className={`dw-side-settings-entry${activeTab === 'settings' ? ' is-active' : ''}`}
             onClick={() => onChange('settings')}
-            aria-label="打开配置中心"
+            aria-label="Open settings"
             style={{ borderRadius: '6px', padding: '6px 8px' }}
           >
             <span className="dw-nav-icon dw-nav-icon-small" style={{ borderRadius: '6px' }} aria-hidden="true">
               <IconSettings />
             </span>
             <span className="dw-nav-copy dw-nav-copy-compact">
-              <span>配置中心</span>
+              <span>Settings</span>
             </span>
           </button>
 
@@ -146,7 +146,7 @@ export function SideNav({ activeTab, roleName, roleDescription, recentTasks = []
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: '12px', fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{roleName}</div>
-              <div style={{ fontSize: '10px', color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{roleDescription.slice(0, 20)}</div>
+              <div style={{ fontSize: '10px', color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{roleDescription.slice(0, 24)}</div>
             </div>
             <span style={{ color: '#9ca3af', cursor: 'pointer', display: 'flex' }} onClick={() => onChange('settings')}>
               <IconChevronRight />

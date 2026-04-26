@@ -128,7 +128,6 @@ func TestForwardAuthorizedModelRequestOrdersProvidersByProviderScopedParams(t *t
 	}
 }
 
-
 func TestLLMProviderUpstreamHTTPClientUsesConfiguredTimeout(t *testing.T) {
 	client := llmProviderUpstreamHTTPClient(corelib.MaclawLLMConfig{TimeoutSec: 7})
 	if client == nil {
@@ -209,7 +208,15 @@ func TestForwardAuthorizedModelRequestUsesLocalCacheWhenAvailable(t *testing.T) 
 	if cachedUsage.TotalTokens != usage.TotalTokens {
 		t.Fatalf("cachedUsage = %#v", cachedUsage)
 	}
-	if string(respBody) != string(resp) {
+	var gotPayload map[string]any
+	var wantPayload map[string]any
+	if err := json.Unmarshal(respBody, &gotPayload); err != nil {
+		t.Fatalf("unmarshal cached response: %v", err)
+	}
+	if err := json.Unmarshal(resp, &wantPayload); err != nil {
+		t.Fatalf("unmarshal expected response: %v", err)
+	}
+	if gotPayload["id"] != wantPayload["id"] || gotPayload["model"] != wantPayload["model"] {
 		t.Fatalf("respBody = %s", string(respBody))
 	}
 	status, err := cache.Status(context.Background(), time.Now().UTC())

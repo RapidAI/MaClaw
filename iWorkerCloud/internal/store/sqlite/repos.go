@@ -31,22 +31,23 @@ type CenterRepo struct{ w, r *sql.DB }
 
 func (repo *CenterRepo) Create(ctx context.Context, c *store.Center) error {
 	_, err := repo.w.ExecContext(ctx,
-		`INSERT INTO centers (id, company_name, admin_email, admin_phone, address, legal_person, status, secret_hash, last_heartbeat, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO centers (id, company_name, admin_email, admin_phone, address, legal_person, base_url, supports_multi_tenant, tenant_count, cloud_control_mode, last_sync_status, status, secret_hash, last_heartbeat, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.CompanyName, c.AdminEmail, c.AdminPhone, c.Address, c.LegalPerson,
+		c.BaseURL, boolToInt(c.SupportsMultiTenant), c.TenantCount, normalizeRepoControlMode(c.CloudControlMode), c.LastSyncStatus,
 		c.Status, c.SecretHash, c.LastHeartbeat.Format(time.RFC3339), c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339))
 	return err
 }
 
 func (repo *CenterRepo) GetByID(ctx context.Context, id string) (*store.Center, error) {
 	row := repo.r.QueryRowContext(ctx,
-		`SELECT id, company_name, admin_email, admin_phone, address, legal_person, status, secret_hash, last_heartbeat, created_at, updated_at FROM centers WHERE id=?`, id)
+		`SELECT id, company_name, admin_email, admin_phone, address, legal_person, base_url, supports_multi_tenant, tenant_count, cloud_control_mode, last_sync_status, status, secret_hash, last_heartbeat, created_at, updated_at FROM centers WHERE id=?`, id)
 	return scanCenter(row)
 }
 
 func (repo *CenterRepo) List(ctx context.Context) ([]*store.Center, error) {
 	rows, err := repo.r.QueryContext(ctx,
-		`SELECT id, company_name, admin_email, admin_phone, address, legal_person, status, secret_hash, last_heartbeat, created_at, updated_at FROM centers ORDER BY created_at DESC`)
+		`SELECT id, company_name, admin_email, admin_phone, address, legal_person, base_url, supports_multi_tenant, tenant_count, cloud_control_mode, last_sync_status, status, secret_hash, last_heartbeat, created_at, updated_at FROM centers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +76,13 @@ func (repo *CenterRepo) UpdateHeartbeat(ctx context.Context, id string) error {
 	return err
 }
 
+func (repo *CenterRepo) UpdateIntegration(ctx context.Context, c *store.Center) error {
+	_, err := repo.w.ExecContext(ctx,
+		`UPDATE centers SET base_url=?, supports_multi_tenant=?, tenant_count=?, cloud_control_mode=?, last_sync_status=?, updated_at=? WHERE id=?`,
+		c.BaseURL, boolToInt(c.SupportsMultiTenant), c.TenantCount, normalizeRepoControlMode(c.CloudControlMode), c.LastSyncStatus, time.Now().Format(time.RFC3339), c.ID)
+	return err
+}
+
 func (repo *CenterRepo) Delete(ctx context.Context, id string) error {
 	_, err := repo.w.ExecContext(ctx, `DELETE FROM centers WHERE id=?`, id)
 	return err
@@ -83,8 +91,13 @@ func (repo *CenterRepo) Delete(ctx context.Context, id string) error {
 func scanCenter(row *sql.Row) (*store.Center, error) {
 	var c store.Center
 	var hb, ca, ua string
-	if err := row.Scan(&c.ID, &c.CompanyName, &c.AdminEmail, &c.AdminPhone, &c.Address, &c.LegalPerson, &c.Status, &c.SecretHash, &hb, &ca, &ua); err != nil {
+	var supportsMultiTenant int
+	if err := row.Scan(&c.ID, &c.CompanyName, &c.AdminEmail, &c.AdminPhone, &c.Address, &c.LegalPerson, &c.BaseURL, &supportsMultiTenant, &c.TenantCount, &c.CloudControlMode, &c.LastSyncStatus, &c.Status, &c.SecretHash, &hb, &ca, &ua); err != nil {
 		return nil, err
+	}
+	c.SupportsMultiTenant = supportsMultiTenant == 1
+	if c.CloudControlMode == "" {
+		c.CloudControlMode = "cloud_managed"
 	}
 	c.LastHeartbeat, _ = time.Parse(time.RFC3339, hb)
 	c.CreatedAt, _ = time.Parse(time.RFC3339, ca)
@@ -95,8 +108,13 @@ func scanCenter(row *sql.Row) (*store.Center, error) {
 func scanCenterRows(rows *sql.Rows) (*store.Center, error) {
 	var c store.Center
 	var hb, ca, ua string
-	if err := rows.Scan(&c.ID, &c.CompanyName, &c.AdminEmail, &c.AdminPhone, &c.Address, &c.LegalPerson, &c.Status, &c.SecretHash, &hb, &ca, &ua); err != nil {
+	var supportsMultiTenant int
+	if err := rows.Scan(&c.ID, &c.CompanyName, &c.AdminEmail, &c.AdminPhone, &c.Address, &c.LegalPerson, &c.BaseURL, &supportsMultiTenant, &c.TenantCount, &c.CloudControlMode, &c.LastSyncStatus, &c.Status, &c.SecretHash, &hb, &ca, &ua); err != nil {
 		return nil, err
+	}
+	c.SupportsMultiTenant = supportsMultiTenant == 1
+	if c.CloudControlMode == "" {
+		c.CloudControlMode = "cloud_managed"
 	}
 	c.LastHeartbeat, _ = time.Parse(time.RFC3339, hb)
 	c.CreatedAt, _ = time.Parse(time.RFC3339, ca)
@@ -265,4 +283,20 @@ func (repo *SystemRepo) Set(ctx context.Context, key, value string) error {
 	_, err := repo.w.ExecContext(ctx,
 		`INSERT INTO system_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	return err
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func normalizeRepoControlMode(mode string) string {
+	switch mode {
+	case "cloud_managed", "self_managed", "hybrid":
+		return mode
+	default:
+		return "cloud_managed"
+	}
 }

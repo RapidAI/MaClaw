@@ -631,6 +631,23 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 		return ""
 	}
 
+	// ── Minimum quality gate ──
+	//
+	// Reject content that is clearly not a phase deliverable. This catches
+	// cases where the LLM ignored the phase prompt and produced unrelated
+	// output (e.g., answering a previous task's question instead of
+	// generating the phase document).
+	//
+	// The gate checks structural properties that ANY phase deliverable
+	// should have — it does not use phase-specific keywords (which would
+	// be a workaround that breaks when templates change).
+	if !passesMinimumQualityGate(content) {
+		log.Printf("[WorkflowEngine] SavePhaseOutput rejected: content does not pass minimum quality gate for phase=%s user=%s len=%d lines=%d",
+			phaseID, userID, len([]rune(content)), strings.Count(content, "\n")+1)
+		e.mu.Unlock()
+		return ""
+	}
+
 	ws.PhaseOutputs[phaseID] = content
 	ws.UpdatedAt = time.Now()
 
@@ -688,6 +705,39 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 	}
 
 	return phaseID
+}
+
+// passesMinimumQualityGate performs a lightweight structural check to reject
+// content that is clearly not a valid phase deliverable. Returns true if the
+// content should be stored, false if it should be rejected.
+//
+// This is NOT a comprehensive quality check — it only catches obvious
+// failures like a single short sentence that the LLM produced when it
+// ignored the phase prompt. The detailed quality assessment is handled
+// by RunQualityGate (checklist-based).
+//
+// The check is phase-type-agnostic: it does not use phase-specific keywords
+// (which would be a workaround that breaks when templates change). It only
+// checks structural properties that ANY phase deliverable should have.
+func passesMinimumQualityGate(content string) bool {
+	runes := []rune(content)
+
+	// Gate 1: Minimum length. Any meaningful phase document should be at
+	// least 100 runes. A single sentence like "已记录 ✅ ..." (76 bytes)
+	// or "开工做什么呢伯伯？" (98 bytes) is not a phase deliverable.
+	if len(runes) < 100 {
+		return false
+	}
+
+	// Gate 2: Structural complexity. A phase deliverable should have some
+	// structure — multiple lines, headers, or list items. A single paragraph
+	// (fewer than 3 lines) is almost certainly not a phase document.
+	lineCount := strings.Count(content, "\n") + 1
+	if lineCount < 3 {
+		return false
+	}
+
+	return true
 }
 
 // ---------------------------------------------------------------------------

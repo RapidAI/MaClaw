@@ -2114,6 +2114,15 @@ type IMMessageHandler struct {
 	// instead of rebuilding a generic one. Keyed by userID.
 	stashedPhasePrompt sync.Map
 
+	// workflowOriginalRequest holds the user's original task request text
+	// when a workflow starts via multi-round IUM. The message that triggers
+	// StartWorkflow is the IUM completion message (e.g. "没有其它信息了"),
+	// not the original request (e.g. "根据 readme.md 做 PPT"). Without
+	// this stash, the agent loop's userText would be the IUM completion
+	// message, which carries no task semantics and causes the LLM to drift.
+	// Consumed (LoadAndDelete) by runAgentLoop to replace msg.Text.
+	workflowOriginalRequest sync.Map
+
 	// workflowAgentLoopMarker is set by handleActiveWorkflow when the
 	// workflow engine returns RunAgentLoop=true. Consumed (LoadAndDelete)
 	// by handleIMMessageWithLoop to enable phase prompt injection and
@@ -4278,6 +4287,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 	history := h.memory.Load(msg.UserID)
 	history = h.compactHistory(history, httpClient)
+
 	var systemPrompt string
 	if h.memoryStore != nil {
 		systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0)
@@ -4305,6 +4315,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		// Not a workflow agent loop — clean up any stashed prompt to prevent
 		// it from leaking into a future message.
 		h.stashedPhasePrompt.Delete(msg.UserID)
+		h.workflowOriginalRequest.Delete(msg.UserID)
 	}
 
 	// Inject ask_user response context so the LLM knows the user is
@@ -4500,7 +4511,22 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return resp
 	}
 
-	resp := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, onToken, onNewRound, onStreamDone, msg.MinIterations, msg.Platform)
+	// ── Workflow original request substitution ──
+	//
+	// When a workflow starts via multi-round IUM, msg.Text is the IUM
+	// completion message (e.g. "没有其它信息了"), not the original task
+	// request. The original request was stashed by handlePostStartWorkflow.
+	// Replace msg.Text so the LLM sees the actual task as the user message.
+	agentLoopUserText := msg.Text
+	if workflowAgentLoop {
+		if orig, ok := h.workflowOriginalRequest.LoadAndDelete(msg.UserID); ok {
+			agentLoopUserText = orig.(string)
+			log.Printf("[WorkflowInterception] using original request as userText for agent loop: %q (msg.Text was %q)",
+				truncateRunes(agentLoopUserText, 80), truncateRunes(msg.Text, 30))
+		}
+	}
+
+	resp := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, agentLoopUserText, msg.Attachments, onProgress, onToken, onNewRound, onStreamDone, msg.MinIterations, msg.Platform)
 	if resp == nil {
 		resp = &IMAgentResponse{}
 	}
@@ -6340,12 +6366,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 			}
 			engineGateActive := needsConfirmFromEngine
-			if engineGateActive && h.getWorkflowEngine() != nil {
-				if !h.getWorkflowEngine().HasPhaseOutput(userID) {
-					engineGateActive = false
-					log.Printf("[agent-loop] NeedsConfirm gate: first execution (hasOutput=false), allowing loop to continue (iter=%d)", iteration)
-				}
-			}
+			// NOTE: No HasPhaseOutput check here. The gate relies on
+			// isSubstantivePhaseDocument() to distinguish "LLM hasn't
+			// produced the deliverable yet" (short preamble, gate skips)
+			// from "LLM has produced the deliverable" (substantive text,
+			// gate fires). HasPhaseOutput is a post-loop persistence flag
+			// that is always false during the first execution of a phase,
+			// which would permanently disable the gate within a single
+			// agent loop — creating a blind spot where the LLM can
+			// self-confirm and proceed without user confirmation.
 			if platform == "desktop" && (engineGateActive || needsConfirmFromSteering) {
 				log.Printf("[agent-loop] NeedsConfirm check: engine=%v steering=%v iteration=%d msgLen=%d steeringDetector=%v user=%s",
 					needsConfirmFromEngine, needsConfirmFromSteering, iteration, len(strings.TrimSpace(stripThinkingTags(msgContent))), steeringDetector != nil, userID)
@@ -7289,17 +7318,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					gateConfig.intent, gateConfig.active, gateConfig.bugFix, gateConfig.reason)
 			}
 		}
-		// Engine-State-Aware Gate: when the engine path sets needsConfirmToolBranch=true,
-		// additionally check HasPhaseOutput. On first execution (hasOutput=false), skip
-		// the engine gate so the agent loop continues generating the full phase document.
-		// The steering-driven path (gateConfig.active without engine workflow) is unchanged.
-		if needsConfirmToolBranch && h.getWorkflowEngine() != nil &&
-			h.getWorkflowEngine().GetActiveWorkflow(userID) != nil {
-			if !h.getWorkflowEngine().HasPhaseOutput(userID) {
-				needsConfirmToolBranch = false
-				log.Printf("[agent-loop] NeedsConfirm tool branch: first execution (hasOutput=false), skipping engine gate (iter=%d)", iteration)
-			}
-		}
+		// NOTE: No HasPhaseOutput check here. Same reasoning as the no-tool
+		// branch — the gate relies on isSubstantivePhaseDocument() to
+		// distinguish preamble from deliverable. HasPhaseOutput is a
+		// post-loop persistence flag that creates a blind spot during
+		// first execution.
+
 		// When handlePendingConfirm classified the message as "other"
 		// (unrelated to the workflow), skip the NeedsConfirm gate so
 		// the unrelated tool output is not captured as a phase document.

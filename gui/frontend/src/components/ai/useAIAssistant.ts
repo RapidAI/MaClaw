@@ -974,6 +974,83 @@ const SPECIAL_RESPONSE_SOURCES: ReadonlySet<string> = new Set([
     'ask_user', 'cancel', 'file_delivery', 'screenshot',
 ]);
 
+// rolePrefixPattern matches hallucinated role prefixes (e.g. "Browser: ..." or
+// "Tool: ...") at the start of a line, with optional Markdown block-level markers.
+// This is the frontend equivalent of the Go-side rolePrefixRe / rolePrefixLineRe.
+const rolePrefixPattern = /^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)/m;
+
+/**
+ * Strip hallucinated role prefixes from LLM output text.
+ * Frontend safety net — catches anything the backend streaming filter missed.
+ *
+ * Case 1: Prefix at the start of text → strip prefix, keep content after it.
+ * Case 2: Prefix in the middle → remove the Browser: line only, keep the rest.
+ *         Unlike the backend stripRolePrefixHallucination (which truncates at
+ *         the prefix — correct for single-LLM-call output where content after
+ *         is a duplicate), this frontend version operates on streamedContent
+ *         which accumulates across multiple agent loop iterations. Content
+ *         after Browser: is from subsequent iterations, not a duplicate.
+ *
+ * Code blocks (``` fenced) are excluded to avoid false positives.
+ */
+function stripRolePrefixFrontend(text: string): string {
+    if (!text) return text;
+    // Fast path: no known prefix keyword present.
+    if (!text.includes('Browser') && !text.includes('Tool')) return text;
+    if (!text.includes(':') && !text.includes('\uff1a')) return text;
+
+    // Split into code-block-aware segments.
+    const parts: Array<{ text: string; isCode: boolean }> = [];
+    let rest = text;
+    while (rest.length > 0) {
+        const idx = rest.indexOf('```');
+        if (idx < 0) {
+            parts.push({ text: rest, isCode: false });
+            break;
+        }
+        if (idx > 0) {
+            parts.push({ text: rest.slice(0, idx), isCode: false });
+        }
+        const closeIdx = rest.indexOf('```', idx + 3);
+        if (closeIdx < 0) {
+            parts.push({ text: rest.slice(idx), isCode: true });
+            break;
+        }
+        const end = closeIdx + 3;
+        parts.push({ text: rest.slice(idx, end), isCode: true });
+        rest = rest.slice(end);
+    }
+
+    // Scan non-code segments for role prefix.
+    let absOffset = 0;
+    for (const part of parts) {
+        if (!part.isCode) {
+            const match = rolePrefixPattern.exec(part.text);
+            if (match && match.index !== undefined) {
+                const matchAbsStart = absOffset + match.index;
+                const prefixEnd = matchAbsStart + match[0].length;
+                const before = text.slice(0, matchAbsStart).trimEnd();
+                if (!before) {
+                    // Case 1: prefix at start — strip it, keep everything after.
+                    return text.slice(prefixEnd).trimStart();
+                }
+                // Case 2: prefix in middle — remove the Browser: line only.
+                // Find the end of the line containing the prefix.
+                let lineEnd = text.indexOf('\n', prefixEnd);
+                if (lineEnd < 0) {
+                    // Browser: line is the last line — just keep content before.
+                    return before;
+                }
+                // Splice out the Browser: line, keep before + after.
+                const after = text.slice(lineEnd + 1);
+                return before + '\n' + after;
+            }
+        }
+        absOffset += part.text.length;
+    }
+    return text;
+}
+
 export function resolveFinalRoundContent(message: ChatMessage, response: any): string {
     const finalText = typeof response?.text === 'string' ? response.text : '';
     const streamedContent = message.content || '';
@@ -995,7 +1072,10 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     if (streamedContent && finalText && finalTextLen > 0
         && streamedContent.length >= finalTextLen * 2
         && (!responseSource || responseSource === 'agent_loop')) {
-        return streamedContent;
+        // Apply role prefix stripping — streamedContent bypasses backend
+        // post-processing (stripRolePrefixHallucination) because it comes
+        // from the streaming token path, not from resp.Text.
+        return stripRolePrefixFrontend(streamedContent);
     }
 
     // --- Layer 3: endsWith fallback ---
@@ -1004,7 +1084,7 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     // streamed content.
     if (streamedContent && finalText && streamedContent.length > finalText.length) {
         if (streamedContent.endsWith(finalText)) {
-            return streamedContent;
+            return stripRolePrefixFrontend(streamedContent);
         }
     }
 
@@ -1013,13 +1093,13 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
         return finalText;
     }
     if (hasVisibleTerminalPayload(response)) {
-        return streamedContent;
+        return stripRolePrefixFrontend(streamedContent);
     }
     if (isFailedTerminalTraceStatus(response?.trace_status)) {
         return buildEmptyTerminalFallback(response);
     }
     if (streamedContent) {
-        return streamedContent;
+        return stripRolePrefixFrontend(streamedContent);
     }
     return buildEmptyTerminalFallback(response);
 }

@@ -31,7 +31,7 @@
   }
 
   function actionButton(label, className, onclick) {
-    return '<button class="' + className + '" style="height:27px;font-size:11px;padding:0 8px" onclick="' + onclick + '">' + label + '</button>';
+    return '<button class="' + escapeHtml(className || '') + '" style="height:27px;font-size:11px;padding:0 8px" onclick="' + escapeHtml(onclick || '') + '">' + escapeHtml(label || '') + '</button>';
   }
 
   function machineNameExpr(value) {
