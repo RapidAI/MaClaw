@@ -462,6 +462,95 @@ func buildEmptyResultRecoverPromptWithTasks(pendingTaskHint string) string {
 	return base
 }
 
+// pruneStaleNoToolTurns removes the most recent consecutive no-tool-call
+// assistant messages and any system messages injected between them (recover
+// prompts, no-tool nudges) from the conversation. This prevents the positive
+// feedback loop where stale turns inflate context, push useful history out
+// of the token window, and cause the LLM to produce even more stale turns.
+//
+// The function scans backwards from the end of the conversation, removing
+// assistant messages that have no tool_calls and system messages that look
+// like recover/nudge injections. It stops at the first message that is:
+// - a user message
+// - an assistant message with tool_calls
+// - a tool result message
+// - the system prompt (index 0)
+//
+// This ensures the LLM sees: original context + user request + one fresh
+// recover prompt, instead of: original context + N failed attempts + N
+// recover prompts.
+func pruneStaleNoToolTurns(conversation []interface{}) []interface{} {
+	if len(conversation) <= 2 {
+		return conversation
+	}
+
+	// Scan backwards to find the cut point.
+	cutFrom := len(conversation)
+loop:
+	for i := len(conversation) - 1; i > 0; i-- {
+		role := msgRole(conversation[i])
+		switch role {
+		case "assistant":
+			if msgHasToolCalls(conversation[i]) {
+				break loop // productive turn — stop
+			}
+			cutFrom = i // stale turn — mark for removal
+		case "system":
+			if isRecoverOrNudgeSystemMessage(msgContent(conversation[i])) {
+				cutFrom = i // recover/nudge injection — mark for removal
+			} else {
+				break loop // non-recover system message — stop
+			}
+		default:
+			break loop // user, tool, or other — stop
+		}
+	}
+
+	if cutFrom >= len(conversation) {
+		return conversation // nothing to prune
+	}
+
+	pruned := len(conversation) - cutFrom
+	if pruned > 0 {
+		log.Printf("[prune-stale-turns] removed %d stale no-tool-call messages from conversation (len %d → %d)",
+			pruned, len(conversation), cutFrom)
+	}
+	return conversation[:cutFrom]
+}
+
+// msgContent extracts the "content" string from a conversation message
+// regardless of whether it's map[string]string or map[string]interface{}.
+func msgContent(m interface{}) string {
+	switch v := m.(type) {
+	case map[string]interface{}:
+		s, _ := v["content"].(string)
+		return s
+	case map[string]string:
+		return v["content"]
+	}
+	return ""
+}
+
+// isRecoverOrNudgeSystemMessage checks if a system message content looks like
+// a recover prompt or no-tool nudge injection. These are the messages that
+// accumulate during no-tool-stall loops and should be pruned.
+func isRecoverOrNudgeSystemMessage(content string) bool {
+	if content == "" {
+		return false
+	}
+	// Recover phase markers.
+	if strings.Contains(content, "[Recover 阶段]") || strings.Contains(content, "[/Recover 阶段]") {
+		return true
+	}
+	// No-tool action prompts.
+	if strings.Contains(content, "[执行要求]") || strings.Contains(content, "[/执行要求]") {
+		return true
+	}
+	// Goal anchor and progress tracker injections from previous iterations
+	// are not pruned — they carry useful context.
+	return false
+}
+
 // pendingBackgroundTaskHint checks both SSH and local background task managers
 // for running tasks that were submitted after loopStart and returns a hint
 // string for the Recover prompt. The loopStart filter prevents stale tasks
@@ -5932,6 +6021,22 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			trialState.pendingNote = ""
 		}
 		if phase.Stage == agentStageRecover && strings.TrimSpace(phase.RecoverPrompt) != "" {
+			// --- Prune stale no-tool-call turns before injecting Recover prompt ---
+			// When the LLM repeatedly returns text without tool calls, each
+			// stale turn (assistant text + any system recover prompts) stays
+			// in the conversation, inflating context and pushing useful history
+			// out of the token window. This creates a positive feedback loop:
+			// more stale turns → less useful context → LLM more confused →
+			// more stale turns.
+			//
+			// Fix: remove the most recent consecutive no-tool-call assistant
+			// messages and any system messages that were injected between them
+			// (recover prompts, no-tool nudges). This keeps the conversation
+			// clean so the LLM sees the original task context + one fresh
+			// recover prompt, not a trail of failed attempts.
+			if phase.ConsecutiveNoTool >= 2 || phase.ConsecutiveEmptyResponses >= 1 {
+				conversation = pruneStaleNoToolTurns(conversation)
+			}
 			conversation = append(conversation, map[string]string{
 				"role":    "system",
 				"content": phase.RecoverPrompt,
