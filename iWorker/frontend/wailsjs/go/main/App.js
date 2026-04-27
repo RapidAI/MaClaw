@@ -6,6 +6,10 @@ export function CheckCenterHealth() {
   return window['go']['main']['App']['CheckCenterHealth']();
 }
 
+export function FetchWorkerMemoryStats() {
+  return window['go']['main']['App']['FetchWorkerMemoryStats']();
+}
+
 export function GetAppInfo() {
   return window['go']['main']['App']['GetAppInfo']();
 }
@@ -22,12 +26,20 @@ export function LoadTaskHistory() {
   return window['go']['main']['App']['LoadTaskHistory']();
 }
 
+export function RecallWorkerMemories(arg1) {
+  return window['go']['main']['App']['RecallWorkerMemories'](arg1);
+}
+
 export function SaveDiWorkerSettings(arg1) {
   return window['go']['main']['App']['SaveDiWorkerSettings'](arg1);
 }
 
 export function SaveTaskHistory(arg1) {
   return window['go']['main']['App']['SaveTaskHistory'](arg1);
+}
+
+export function SaveWorkerMemory(arg1) {
+  return window['go']['main']['App']['SaveWorkerMemory'](arg1);
 }
 
 export function SubmitTask(arg1) {

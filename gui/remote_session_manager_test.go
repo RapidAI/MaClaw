@@ -11,13 +11,19 @@ import (
 	"time"
 )
 
+func TestRemoteSDKBusyIdleTimeoutIsConservative(t *testing.T) {
+	if remoteSDKBusyIdleTimeout < 10*time.Minute {
+		t.Fatalf("remoteSDKBusyIdleTimeout = %s, want at least 10m", remoteSDKBusyIdleTimeout)
+	}
+}
+
 type fakeProviderAdapter struct {
 	cmd      CommandSpec
 	buildErr error
 	lastSpec LaunchSpec
 }
 
-func (f *fakeProviderAdapter) ProviderName() string { return "claude" }
+func (f *fakeProviderAdapter) ProviderName() string         { return "claude" }
 func (f *fakeProviderAdapter) ExecutionMode() ExecutionMode { return ExecModeSDK }
 func (f *fakeProviderAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	f.lastSpec = spec
@@ -232,8 +238,8 @@ func TestRemoteSessionManagerWriteInputAnswersPendingQuestion(t *testing.T) {
 		Exec:        handle,
 		Status:      SessionWaitingInput,
 		Summary: SessionSummary{
-			Status:         string(SessionWaitingInput),
-			WaitingForUser: true,
+			Status:          string(SessionWaitingInput),
+			WaitingForUser:  true,
 			PendingQuestion: &PendingQuestionView{Question: "Choose one"},
 		},
 		PendingUserQuestion: &PendingToolUse{
@@ -323,13 +329,13 @@ func TestRemoteSessionManagerWriteInputKeepsPendingQuestionOnResponderError(t *t
 	handle.respondErr = fmt.Errorf("submit failed")
 	pending := &PendingToolUse{ToolUseID: "call_2", ToolName: "AskUserQuestion", Question: &PendingQuestionView{Question: "Still waiting"}}
 	session := &RemoteSession{
-		ID:                 "sess_pending_error",
-		Tool:               "claude",
-		Title:              "pending error",
-		ProjectPath:        `D:\\workprj\\demo`,
-		Exec:               handle,
-		Status:             SessionWaitingInput,
-		Summary:            SessionSummary{Status: string(SessionWaitingInput), WaitingForUser: true, PendingQuestion: &PendingQuestionView{Question: "Still waiting"}},
+		ID:                  "sess_pending_error",
+		Tool:                "claude",
+		Title:               "pending error",
+		ProjectPath:         `D:\\workprj\\demo`,
+		Exec:                handle,
+		Status:              SessionWaitingInput,
+		Summary:             SessionSummary{Status: string(SessionWaitingInput), WaitingForUser: true, PendingQuestion: &PendingQuestionView{Question: "Still waiting"}},
 		PendingUserQuestion: pending,
 	}
 	manager.sessions[session.ID] = session
@@ -904,7 +910,7 @@ func TestBuildRecoverableSessionPayload(t *testing.T) {
 	}
 }
 
-	func TestBuildResumeContextCapturesCodexThreadID(t *testing.T) {
+func TestBuildResumeContextCapturesCodexThreadID(t *testing.T) {
 	handle := &CodexSDKExecutionHandle{threadID: "thread_456"}
 	session := &RemoteSession{
 		ProjectPath: "D:/workprj/demo",

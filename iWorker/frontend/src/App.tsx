@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCenterHealth, LoadDiWorkerSettings, LoadTaskHistory, SaveDiWorkerSettings, SaveTaskHistory, SubmitTask } from '../wailsjs/go/main/App';
+import { CheckCenterHealth, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, SaveDiWorkerSettings, SaveTaskHistory, SubmitTask } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { colleagues } from './mock/colleagues';
 import { SideNav } from './components/layout/SideNav';
@@ -9,7 +9,7 @@ import { NewTaskPage } from './pages/NewTaskPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskHistoryPage } from './pages/TaskHistoryPage';
 import { recentTasks as mockRecentTasks } from './mock/tasks';
-import type { CenterHealthStatus, DiWorkerSettings, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, TaskAttachment, UpstreamProvider } from './types';
+import type { CenterHealthStatus, DiWorkerSettings, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, TaskAttachment, UpstreamProvider, WorkerMemoryStats } from './types';
 
 const pageMeta: Record<DiWorkerTab, { title: string; subtitle: string }> = {
   home: { title: '新建任务', subtitle: '输入任务内容，快速开始处理。' },
@@ -39,6 +39,9 @@ const defaultSettings: DiWorkerSettings = {
     host: '127.0.0.1',
     port: 9377,
     baseUrl: 'http://127.0.0.1:9377',
+    tenantId: 'default',
+    departmentId: 'default',
+    workerId: 'local-iworker',
     timeoutSec: 60,
   },
   routing: {
@@ -129,6 +132,9 @@ const fromWailsSettings = (item: main.DiWorkerSettings | null | undefined): DiWo
     host: item?.center?.host || defaultSettings.center.host,
     port: item?.center?.port || defaultSettings.center.port,
     baseUrl: item?.center?.base_url || defaultSettings.center.baseUrl,
+    tenantId: item?.center?.tenant_id || defaultSettings.center.tenantId,
+    departmentId: item?.center?.department_id || defaultSettings.center.departmentId,
+    workerId: item?.center?.worker_id || defaultSettings.center.workerId,
     timeoutSec: item?.center?.timeout_sec || defaultSettings.center.timeoutSec,
   },
   routing: {
@@ -157,6 +163,15 @@ const fromWailsSettings = (item: main.DiWorkerSettings | null | undefined): DiWo
     : defaultSettings.providers,
 });
 
+const fromWailsMemoryStats = (item: main.WorkerMemoryStats | null | undefined): WorkerMemoryStats => ({
+  tenantId: item?.tenant_id || '',
+  departmentId: item?.department_id || '',
+  workerId: item?.worker_id || '',
+  total: item?.total || 0,
+  byScope: item?.by_scope || {},
+  byCategory: item?.by_category || {},
+  visibleScopes: item?.visible_scopes || [],
+});
 const fromWailsCenterHealth = (
   item: main.CenterHealthStatus | null | undefined,
   source: CenterHealthStatus['source'],
@@ -181,6 +196,9 @@ const toWailsSettings = (item: DiWorkerSettings): main.DiWorkerSettings => new m
     host: item.center.host,
     port: item.center.port,
     base_url: item.center.baseUrl,
+    tenant_id: item.center.tenantId,
+    department_id: item.center.departmentId,
+    worker_id: item.center.workerId,
     timeout_sec: item.center.timeoutSec,
   }),
   routing: new main.RoutingPolicy({
@@ -282,6 +300,9 @@ export default function App() {
   const [centerHealthChecking, setCenterHealthChecking] = useState(false);
   const [centerHealthStatus, setCenterHealthStatus] = useState<CenterHealthStatus | null>(null);
   const [centerHealthError, setCenterHealthError] = useState('');
+  const [workerMemoryStats, setWorkerMemoryStats] = useState<WorkerMemoryStats | null>(null);
+  const [workerMemoryStatsLoading, setWorkerMemoryStatsLoading] = useState(false);
+  const [workerMemoryStatsError, setWorkerMemoryStatsError] = useState('');
 
   useEffect(() => {
     if (!hasWailsBridge()) {
@@ -482,6 +503,25 @@ export default function App() {
     }
   };
 
+  const handleRefreshWorkerMemoryStats = async () => {
+    setWorkerMemoryStatsError('');
+    if (!hasWailsBridge()) {
+      setWorkerMemoryStats(null);
+      setWorkerMemoryStatsError('Wails bridge is not connected.');
+      return;
+    }
+    setWorkerMemoryStatsLoading(true);
+    try {
+      const stats = await FetchWorkerMemoryStats();
+      setWorkerMemoryStats(fromWailsMemoryStats(stats as main.WorkerMemoryStats));
+    } catch (error) {
+      setWorkerMemoryStats(null);
+      setWorkerMemoryStatsError(error instanceof Error ? error.message : 'Failed to load memory stats');
+    } finally {
+      setWorkerMemoryStatsLoading(false);
+    }
+  };
+
   const handleSaveSettings = async () => {
     setSettingsError('');
     setSettingsSaveMessage('');
@@ -498,6 +538,7 @@ export default function App() {
         const status = await CheckCenterHealth();
         setCenterHealthError('');
         setCenterHealthStatus(fromWailsCenterHealth(status as main.CenterHealthStatus, 'auto-after-save'));
+        void handleRefreshWorkerMemoryStats();
       } catch (error) {
         setCenterHealthStatus(null);
         setCenterHealthError(error instanceof Error ? error.message : '中心连接检测失败');
@@ -520,6 +561,7 @@ export default function App() {
     try {
       const status = await CheckCenterHealth();
       setCenterHealthStatus(fromWailsCenterHealth(status as main.CenterHealthStatus, 'manual'));
+      void handleRefreshWorkerMemoryStats();
     } catch (error) {
       setCenterHealthError(error instanceof Error ? error.message : '中心连接检测失败');
     } finally {
@@ -594,12 +636,19 @@ export default function App() {
             healthChecking={centerHealthChecking}
             healthStatus={centerHealthStatus}
             healthError={centerHealthError}
+            memoryStats={workerMemoryStats}
+            memoryStatsLoading={workerMemoryStatsLoading}
+            memoryStatsError={workerMemoryStatsError}
+            onRefreshMemoryStats={handleRefreshWorkerMemoryStats}
             onRoleNameChange={(value) => updateSettings((current) => ({ ...current, roleProfile: { ...current.roleProfile, name: value } }))}
             onRoleDescriptionChange={(value) => updateSettings((current) => ({ ...current, roleProfile: { ...current.roleProfile, description: value } }))}
             onCenterEnabledChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, enabled: value } }))}
             onCenterHostChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, host: value } }))}
             onCenterPortChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, port: Number(value) || 0 } }))}
             onCenterBaseUrlChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, baseUrl: value } }))}
+            onCenterTenantIdChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, tenantId: value } }))}
+            onCenterDepartmentIdChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, departmentId: value } }))}
+            onCenterWorkerIdChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, workerId: value } }))}
             onCenterTimeoutChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, timeoutSec: Number(value) || 0 } }))}
             onRoutingModeChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, mode: value } }))}
             onRoutingDefaultProviderChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, defaultProvider: value } }))}
@@ -614,7 +663,7 @@ export default function App() {
       default:
         return <HomePage draft={draft} selectedTask={selectedTask} selectedColleagueName={selectedColleagueName} recentTasks={historyTasks} onDraftChange={setDraft} onPickTask={handlePickTask} onOpenNewTask={handleOpenNewTask} onOpenRecentTask={handleOpenHistoryTask} />;
     }
-  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
+  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
 
   const meta = pageMeta[activeTab];
   const status = statusCopy[activeTab];
@@ -654,6 +703,3 @@ export default function App() {
     </div>
   );
 }
-
-
-

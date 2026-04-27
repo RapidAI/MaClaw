@@ -32,7 +32,11 @@ const (
 	guiFuncCallClose = "<|FunctionCallEnd|>"
 	guiToolCallOpen  = "<tool_call>"
 	guiToolCallClose = "</tool_call>"
-	guiSSEIdleTimeout = 90 * time.Second
+	// Keep the stream watchdog conservative: remote LLM gateways can stay
+	// silent for minutes during long reasoning/tool-planning phases while the
+	// upstream request is still healthy. A short 90s idle window caused false
+	// "upstream is slow" failures for otherwise usable providers.
+	guiSSEIdleTimeout        = 4 * time.Minute
 	guiMaxToolArgumentsBytes = 180 * 1024
 )
 
@@ -538,9 +542,9 @@ func (h *IMMessageHandler) doLLMRequestStream(
 // ---------------------------------------------------------------------------
 
 type openAIStreamDelta struct {
-	Content          string                   `json:"content,omitempty"`
-	ReasoningContent string                   `json:"reasoning_content,omitempty"`
-	ToolCalls        []openAIStreamToolDelta  `json:"tool_calls,omitempty"`
+	Content          string                  `json:"content,omitempty"`
+	ReasoningContent string                  `json:"reasoning_content,omitempty"`
+	ToolCalls        []openAIStreamToolDelta `json:"tool_calls,omitempty"`
 }
 
 type openAIStreamToolDelta struct {
@@ -663,10 +667,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	tf := newThinkFilter(fcf.Callback())
 	var contentBuf strings.Builder
 	type toolAccum struct {
-		id       string
-		typ      string
-		name     strings.Builder
-		args     strings.Builder
+		id   string
+		typ  string
+		name strings.Builder
+		args strings.Builder
 	}
 	toolAccums := make(map[int]*toolAccum)
 	var reasoningBuf strings.Builder
@@ -752,9 +756,15 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 				acc = &toolAccum{}
 				toolAccums[tc.Index] = acc
 			}
-			if tc.ID != "" { acc.id = tc.ID }
-			if tc.Type != "" { acc.typ = tc.Type }
-			if tc.Function.Name != "" { acc.name.WriteString(tc.Function.Name) }
+			if tc.ID != "" {
+				acc.id = tc.ID
+			}
+			if tc.Type != "" {
+				acc.typ = tc.Type
+			}
+			if tc.Function.Name != "" {
+				acc.name.WriteString(tc.Function.Name)
+			}
 			if tc.Function.Arguments != "" {
 				acc.args.WriteString(tc.Function.Arguments)
 				if acc.args.Len() > guiMaxToolArgumentsBytes {
@@ -818,12 +828,19 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	}
 	if len(toolAccums) > 0 {
 		maxIdx := 0
-		for idx := range toolAccums { if idx > maxIdx { maxIdx = idx } }
+		for idx := range toolAccums {
+			if idx > maxIdx {
+				maxIdx = idx
+			}
+		}
 		for i := 0; i <= maxIdx; i++ {
 			if acc, ok := toolAccums[i]; ok {
 				msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
-					ID:   acc.id, Type: acc.typ,
-					Function: struct { Name string `json:"name"`; Arguments string `json:"arguments"` }{
+					ID: acc.id, Type: acc.typ,
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{
 						Name: acc.name.String(), Arguments: acc.args.String(),
 					},
 				})
@@ -835,7 +852,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 			for _, xc := range xmlCalls {
 				msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
 					ID: xc.ID, Type: xc.Type,
-					Function: struct { Name string `json:"name"`; Arguments string `json:"arguments"` }{
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{
 						Name: xc.Function.Name, Arguments: xc.Function.Arguments,
 					},
 				})
@@ -844,7 +864,9 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		}
 	}
 
-	if finishReason == "" { finishReason = "stop" }
+	if finishReason == "" {
+		finishReason = "stop"
+	}
 
 	// Detect and filter truncated tool calls caused by output token limit.
 	finishReason = filterTruncatedToolCalls(&msg, finishReason)
@@ -997,13 +1019,13 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 				Input map[string]interface{} `json:"input,omitempty"`
 			} `json:"content_block,omitempty"`
 			Delta struct {
-				Type         string `json:"type"`
-				Text         string `json:"text,omitempty"`
-				PartialJSON  string `json:"partial_json,omitempty"`
-				StopReason   string `json:"stop_reason,omitempty"`
+				Type        string `json:"type"`
+				Text        string `json:"text,omitempty"`
+				PartialJSON string `json:"partial_json,omitempty"`
+				StopReason  string `json:"stop_reason,omitempty"`
 			} `json:"delta,omitempty"`
 			Message struct {
-				StopReason string    `json:"stop_reason,omitempty"`
+				StopReason string `json:"stop_reason,omitempty"`
 				Usage      *struct {
 					InputTokens  int `json:"input_tokens"`
 					OutputTokens int `json:"output_tokens"`

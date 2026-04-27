@@ -4,15 +4,21 @@ import {main} from '../models';
 
 export function CheckCenterHealth():Promise<main.CenterHealthStatus>;
 
+export function FetchWorkerMemoryStats():Promise<main.WorkerMemoryStats>;
+
 export function GetAppInfo():Promise<main.AppInfo>;
 
 export function GetWelcomeData():Promise<main.WelcomeData>;
 
 export function LoadDiWorkerSettings():Promise<main.DiWorkerSettings>;
 
+export function RecallWorkerMemories(arg1:string):Promise<Array<main.WorkerMemoryEntry>>;
+
 export function LoadTaskHistory():Promise<Array<main.HistoryTaskItem>>;
 
 export function SaveDiWorkerSettings(arg1:main.DiWorkerSettings):Promise<void>;
+
+export function SaveWorkerMemory(arg1:main.SaveWorkerMemoryRequest):Promise<main.WorkerMemoryEntry>;
 
 export function SaveTaskHistory(arg1:Array<main.HistoryTaskItem>):Promise<void>;
 

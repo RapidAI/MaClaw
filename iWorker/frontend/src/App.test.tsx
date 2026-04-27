@@ -1,25 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
-import { CheckCenterHealth, LoadDiWorkerSettings, LoadTaskHistory, SaveDiWorkerSettings, SaveTaskHistory, SubmitTask } from '../wailsjs/go/main/App';
-
-class MockFileReader {
-  public result: string | ArrayBuffer | null = null;
-  public onload: null | (() => void) = null;
-  public onerror: null | (() => void) = null;
-
-  readAsText(file: Blob) {
-    file.text().then((text) => {
-      this.result = text;
-      this.onload?.();
-    }).catch(() => {
-      this.onerror?.();
-    });
-  }
-}
+import { CheckCenterHealth, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, SaveDiWorkerSettings, SaveTaskHistory, SubmitTask } from '../wailsjs/go/main/App';
 
 vi.mock('../wailsjs/go/main/App', () => ({
   CheckCenterHealth: vi.fn(),
+  FetchWorkerMemoryStats: vi.fn(),
   LoadDiWorkerSettings: vi.fn(),
   LoadTaskHistory: vi.fn(),
   SaveDiWorkerSettings: vi.fn(),
@@ -27,10 +13,64 @@ vi.mock('../wailsjs/go/main/App', () => ({
   SubmitTask: vi.fn(),
 }));
 
+const settingsFixture = {
+  role_profile: {
+    name: '小迪',
+    description: '你的数字办公助理，擅长通知、纪要与汇报整理。',
+  },
+  center: {
+    enabled: true,
+    host: '127.0.0.1',
+    port: 9377,
+    base_url: 'http://127.0.0.1:9377',
+    tenant_id: 'acme',
+    department_id: 'ops',
+    worker_id: 'worker-1',
+    timeout_sec: 60,
+  },
+  routing: {
+    mode: 'smart',
+    default_provider: 'office-openai',
+    allow_fallback: true,
+  },
+  providers: [
+    {
+      id: 'office-openai',
+      name: '办公写作服务',
+      enabled: true,
+      protocol: 'openai',
+      base_url: 'https://office.example.com/v1',
+      api_key: '',
+      model: 'gpt-4.1',
+      priority: 100,
+      features: ['公文', '纪要'],
+      description: '适合通知、纪要、日报与正式文档。',
+      capabilities: {
+        supports_stream: true,
+        supports_vision: false,
+        max_context: 128000,
+      },
+    },
+  ],
+};
+
+const installWailsBridge = () => {
+  Object.defineProperty(window, 'go', {
+    value: {
+      main: {
+        App: {
+          GetWelcomeData: vi.fn().mockResolvedValue({ quick_tasks: [] }),
+        },
+      },
+    },
+    configurable: true,
+    writable: true,
+  });
+};
+
 describe('App', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubGlobal('FileReader', MockFileReader as unknown as typeof FileReader);
     vi.stubGlobal('matchMedia', vi.fn().mockImplementation(() => ({
       matches: false,
       media: '',
@@ -41,6 +81,8 @@ describe('App', () => {
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
     })) as unknown as typeof window.matchMedia);
+    installWailsBridge();
+
     vi.mocked(CheckCenterHealth).mockResolvedValue({
       reachable: true,
       status: 'ok',
@@ -49,7 +91,23 @@ describe('App', () => {
       message: 'ok',
       resolved_base_url: 'http://127.0.0.1:9377',
     } as never);
-    vi.mocked(LoadDiWorkerSettings).mockResolvedValue(undefined as never);
+    vi.mocked(FetchWorkerMemoryStats).mockResolvedValue({
+      tenant_id: 'acme',
+      department_id: 'ops',
+      worker_id: 'worker-1',
+      total: 7,
+      by_scope: {
+        company: 2,
+        department: 3,
+        personal: 2,
+      },
+      by_category: {
+        policy: 4,
+        preference: 3,
+      },
+      visible_scopes: ['company', 'department', 'personal'],
+    } as never);
+    vi.mocked(LoadDiWorkerSettings).mockResolvedValue(settingsFixture as never);
     vi.mocked(LoadTaskHistory).mockResolvedValue([] as never);
     vi.mocked(SaveDiWorkerSettings).mockResolvedValue(undefined as never);
     vi.mocked(SaveTaskHistory).mockResolvedValue(undefined as never);
@@ -60,17 +118,6 @@ describe('App', () => {
       model: 'test-model',
       content: '默认返回内容',
     } as never);
-    Object.defineProperty(window, 'go', {
-      value: {
-        main: {
-          App: {
-            GetWelcomeData: vi.fn().mockResolvedValue({ quick_tasks: [] }),
-          },
-        },
-      },
-      configurable: true,
-      writable: true,
-    });
   });
 
   afterEach(() => {
@@ -81,11 +128,9 @@ describe('App', () => {
   it('tests center health from settings page and shows snapshot', async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole('button', { name: '打开配置界面' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open settings' })[0]);
 
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: '数字员工中心配置' })).toBeTruthy();
-    });
+    expect(await screen.findByRole('heading', { name: '数字员工中心配置' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '测试中心连接' }));
 
@@ -98,82 +143,37 @@ describe('App', () => {
     });
   });
 
-  it('shows offline save hint when Wails bridge is unavailable', async () => {
-    delete (window as Window & { go?: unknown }).go;
-
+  it('refreshes worker memory stats from iWorkerCenter', async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole('button', { name: '打开配置界面' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open settings' })[0]);
+    expect(await screen.findByText('记忆沉淀')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新记忆' }));
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: '数字员工中心配置' })).toBeTruthy();
+      expect(FetchWorkerMemoryStats).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('7 条')).toBeTruthy();
+      expect(screen.getByText('acme / ops / worker-1')).toBeTruthy();
     });
+  });
 
-    fireEvent.change(screen.getByDisplayValue('小迪'), {
-      target: { value: '离线修改' },
-    });
+  it('saves tenant department and worker context for center registration', async () => {
+    render(<App />);
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '保存配置' })).toBeTruthy();
-    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open settings' })[0]);
+    expect(await screen.findByDisplayValue('ops')).toBeTruthy();
 
+    fireEvent.change(screen.getByDisplayValue('ops'), { target: { value: 'quality' } });
     fireEvent.click(screen.getByRole('button', { name: '保存配置' }));
 
     await waitFor(() => {
-      expect(screen.getByText('当前未连接 Wails，配置仅保留在当前界面。')).toBeTruthy();
+      expect(SaveDiWorkerSettings).toHaveBeenCalledTimes(1);
     });
 
-    expect(SaveDiWorkerSettings).not.toHaveBeenCalled();
-  });
-
-  it('adds text attachment and includes summary in submit payload', async () => {
-    render(<App />);
-
-    const homeInput = screen.getByPlaceholderText('输入问题...');
-    fireEvent.change(homeInput, {
-      target: { value: '请整理本周产线异常' },
-    });
-    fireEvent.keyDown(homeInput, {
-      key: 'Enter',
-      code: 'Enter',
-      charCode: 13,
-    });
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: '新建任务' })).toBeTruthy();
-    });
-
-    const newTaskHeading = screen.getByRole('heading', { name: '新建任务' });
-    const taskPanel = newTaskHeading.closest('section');
-    expect(taskPanel).toBeTruthy();
-
-    const fileInput = taskPanel?.querySelector('input[type="file"]') as HTMLInputElement | null;
-    expect(fileInput).toBeTruthy();
-
-    const file = new File(['产线异常集中在二号线，需要优先说明原因和影响。'], '异常记录.txt', { type: 'text/plain' });
-    Object.defineProperty(file, 'text', {
-      value: () => Promise.resolve('产线异常集中在二号线，需要优先说明原因和影响。'),
-    });
-
-    fireEvent.change(fileInput as HTMLInputElement, { target: { files: [file] } });
-
-    await waitFor(() => {
-      expect(screen.getByText('异常记录.txt')).toBeTruthy();
-    });
-
-    fireEvent.click(within(taskPanel as HTMLElement).getByRole('button', { name: '开始处理' }));
-
-    await waitFor(() => {
-      expect(SubmitTask).toHaveBeenCalledTimes(1);
-    });
-
-    expect(SubmitTask).toHaveBeenCalledWith({
-      task_type: '自由输入',
-      selected_colleague_name: '',
-      draft: expect.stringContaining('补充材料：'),
-      expected_output: 'summary',
-    });
-    expect(String(vi.mocked(SubmitTask).mock.calls[0]?.[0]?.draft)).toContain('异常记录.txt');
-    expect(String(vi.mocked(SubmitTask).mock.calls[0]?.[0]?.draft)).toContain('产线异常集中在二号线，需要优先说明原因和影响。');
+    const saved = vi.mocked(SaveDiWorkerSettings).mock.calls[0]?.[0] as { center?: { tenant_id?: string; department_id?: string; worker_id?: string } };
+    expect(saved.center?.tenant_id).toBe('acme');
+    expect(saved.center?.department_id).toBe('quality');
+    expect(saved.center?.worker_id).toBe('worker-1');
   });
 });

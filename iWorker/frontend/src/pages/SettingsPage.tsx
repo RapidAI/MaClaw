@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { CenterHealthStatus, DiWorkerSettings, UpstreamProvider } from '../types';
+import type { CenterHealthStatus, DiWorkerSettings, UpstreamProvider, WorkerMemoryStats } from '../types';
 
 type Props = {
   settings: DiWorkerSettings;
@@ -11,12 +11,18 @@ type Props = {
   healthChecking: boolean;
   healthStatus: CenterHealthStatus | null;
   healthError: string;
+  memoryStats: WorkerMemoryStats | null;
+  memoryStatsLoading: boolean;
+  memoryStatsError: string;
   onRoleNameChange: (value: string) => void;
   onRoleDescriptionChange: (value: string) => void;
   onCenterEnabledChange: (value: boolean) => void;
   onCenterHostChange: (value: string) => void;
   onCenterPortChange: (value: string) => void;
   onCenterBaseUrlChange: (value: string) => void;
+  onCenterTenantIdChange: (value: string) => void;
+  onCenterDepartmentIdChange: (value: string) => void;
+  onCenterWorkerIdChange: (value: string) => void;
   onCenterTimeoutChange: (value: string) => void;
   onRoutingModeChange: (value: DiWorkerSettings['routing']['mode']) => void;
   onRoutingDefaultProviderChange: (value: string) => void;
@@ -24,6 +30,7 @@ type Props = {
   onProviderChange: (providerId: string, patch: Partial<UpstreamProvider>) => void;
   onProviderFeaturesChange: (providerId: string, value: string) => void;
   onCheckCenterHealth: () => void;
+  onRefreshMemoryStats: () => void;
   onSave: () => void;
 };
 
@@ -61,12 +68,18 @@ export function SettingsPage({
   healthChecking,
   healthStatus,
   healthError,
+  memoryStats,
+  memoryStatsLoading,
+  memoryStatsError,
   onRoleNameChange,
   onRoleDescriptionChange,
   onCenterEnabledChange,
   onCenterHostChange,
   onCenterPortChange,
   onCenterBaseUrlChange,
+  onCenterTenantIdChange,
+  onCenterDepartmentIdChange,
+  onCenterWorkerIdChange,
   onCenterTimeoutChange,
   onRoutingModeChange,
   onRoutingDefaultProviderChange,
@@ -74,6 +87,7 @@ export function SettingsPage({
   onProviderChange,
   onProviderFeaturesChange,
   onCheckCenterHealth,
+  onRefreshMemoryStats,
   onSave,
 }: Props) {
   const [expandedProviderId, setExpandedProviderId] = useState<string | null>(null);
@@ -146,6 +160,18 @@ export function SettingsPage({
                     <label>
                       Base URL
                       <input value={settings.center.baseUrl} onChange={(event) => onCenterBaseUrlChange(event.target.value)} placeholder="http://127.0.0.1:9377" />
+                    </label>
+                    <label>
+                      Tenant ID
+                      <input value={settings.center.tenantId} onChange={(event) => onCenterTenantIdChange(event.target.value)} placeholder="default" />
+                    </label>
+                    <label>
+                      Department ID
+                      <input value={settings.center.departmentId} onChange={(event) => onCenterDepartmentIdChange(event.target.value)} placeholder="default" />
+                    </label>
+                    <label>
+                      Worker ID
+                      <input value={settings.center.workerId} onChange={(event) => onCenterWorkerIdChange(event.target.value)} placeholder="local-iworker" />
                     </label>
                     <label className="dw-settings-field-span-2">
                       超时（秒）
@@ -306,6 +332,37 @@ export function SettingsPage({
           </div>
 
           <aside className="dw-task-side dw-settings-side">
+            <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
+              <div className="dw-settings-summary-head">
+                <div>
+                  <label>记忆沉淀</label>
+                  <strong>{memoryStats ? `${memoryStats.total} 条` : '未加载'}</strong>
+                </div>
+                <button type="button" className="secondary" onClick={onRefreshMemoryStats} disabled={loading || memoryStatsLoading || !settings.center.enabled}>
+                  {memoryStatsLoading ? '刷新中...' : '刷新记忆'}
+                </button>
+              </div>
+              <p>记忆源存放在注册的 iWorkerCenter，本地只作为访问缓存。</p>
+              <div className="dw-settings-kv-list">
+                <div className="dw-settings-kv-item">
+                  <span>公司记忆</span>
+                  <strong>{memoryStats?.byScope.company ?? 0}</strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>部门记忆</span>
+                  <strong>{memoryStats?.byScope.department ?? 0}</strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>个人记忆</span>
+                  <strong>{memoryStats?.byScope.personal ?? 0}</strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>当前上下文</span>
+                  <strong>{`${settings.center.tenantId || '-'} / ${settings.center.departmentId || '-'} / ${settings.center.workerId || '-'}`}</strong>
+                </div>
+              </div>
+              {memoryStatsError ? <p>{memoryStatsError}</p> : null}
+            </div>
             <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
               <div className="dw-settings-summary-head">
                 <div>

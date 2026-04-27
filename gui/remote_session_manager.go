@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"encoding/base64"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"log"
 	"path/filepath"
 	"strings"
@@ -15,7 +15,13 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
-const maxRecentImportantEvents = 5
+const (
+	maxRecentImportantEvents = 5
+	// SDK turns can legitimately stay busy for several minutes while the model
+	// reasons or waits on an upstream proxy. Keep this as a safety net against
+	// lost result messages, not a short-path latency alarm.
+	remoteSDKBusyIdleTimeout = 10 * time.Minute
+)
 
 type RemoteSessionManager struct {
 	app               *App
@@ -1238,7 +1244,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 	// Claude Code finishes a task but the result message is lost or never
 	// sent (e.g. API timeout, interrupted turn). Without this, the session
 	// stays busy forever and blocks all user interaction.
-	busyIdleTimeout := 90 * time.Second
+	busyIdleTimeout := remoteSDKBusyIdleTimeout
 	busyIdleTimer := time.NewTimer(busyIdleTimeout)
 	busyIdleTimer.Stop() // start stopped; armed when entering busy state
 	defer busyIdleTimer.Stop()

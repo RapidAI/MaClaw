@@ -3,7 +3,14 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestGuiSSEIdleTimeoutIsConservative(t *testing.T) {
+	if guiSSEIdleTimeout < 4*time.Minute {
+		t.Fatalf("guiSSEIdleTimeout = %s, want at least 4m", guiSSEIdleTimeout)
+	}
+}
 
 func TestThinkFilter_BasicBlock(t *testing.T) {
 	var out strings.Builder
@@ -132,7 +139,6 @@ func TestThinkFilter_FalseAlarmPartialTag(t *testing.T) {
 		t.Errorf("expected %q, got %q", "a < b", got)
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // funcCallFilter tests

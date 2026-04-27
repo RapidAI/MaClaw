@@ -21,6 +21,9 @@ export type CenterConfig = {
   host: string;
   port: number;
   baseUrl: string;
+  tenantId: string;
+  departmentId: string;
+  workerId: string;
   timeoutSec: number;
 };
 
@@ -35,6 +38,16 @@ export type CenterHealthStatus = {
   source: 'manual' | 'auto-after-save';
 };
 
+
+export type WorkerMemoryStats = {
+  tenantId: string;
+  departmentId: string;
+  workerId: string;
+  total: number;
+  byScope: Record<string, number>;
+  byCategory: Record<string, number>;
+  visibleScopes: string[];
+};
 export type RoutingPolicy = {
   mode: 'smart' | 'priority' | 'manual';
   defaultProvider: string;
@@ -110,6 +123,3 @@ export type HistoryTaskItem = TaskItem & {
   result?: string;
   model?: string;
 };
-
-
-

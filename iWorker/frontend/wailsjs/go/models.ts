@@ -1,13 +1,13 @@
 export namespace main {
-	
+
 	export class AppInfo {
 	    name: string;
 	    tagline: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AppInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -19,18 +19,24 @@ export namespace main {
 	    host: string;
 	    port: number;
 	    base_url: string;
+	    tenant_id: string;
+	    department_id: string;
+	    worker_id: string;
 	    timeout_sec: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CenterConfig(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.host = source["host"];
 	        this.port = source["port"];
 	        this.base_url = source["base_url"];
+	        this.tenant_id = source["tenant_id"];
+	        this.department_id = source["department_id"];
+	        this.worker_id = source["worker_id"];
 	        this.timeout_sec = source["timeout_sec"];
 	    }
 	}
@@ -41,11 +47,11 @@ export namespace main {
 	    config_path: string;
 	    message: string;
 	    resolved_base_url: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CenterHealthStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.reachable = source["reachable"];
@@ -63,11 +69,11 @@ export namespace main {
 	    description: string;
 	    strengths: string[];
 	    tasks: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Colleague(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -82,11 +88,11 @@ export namespace main {
 	    supports_stream: boolean;
 	    supports_vision: boolean;
 	    max_context: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ProviderCapabilities(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.supports_stream = source["supports_stream"];
@@ -106,11 +112,11 @@ export namespace main {
 	    features: string[];
 	    description: string;
 	    capabilities: ProviderCapabilities;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UpstreamProvider(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -125,7 +131,7 @@ export namespace main {
 	        this.description = source["description"];
 	        this.capabilities = this.convertValues(source["capabilities"], ProviderCapabilities);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -148,11 +154,11 @@ export namespace main {
 	    mode: string;
 	    default_provider: string;
 	    allow_fallback: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RoutingPolicy(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.mode = source["mode"];
@@ -163,11 +169,11 @@ export namespace main {
 	export class RoleProfile {
 	    name: string;
 	    description: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RoleProfile(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -179,11 +185,11 @@ export namespace main {
 	    center: CenterConfig;
 	    routing: RoutingPolicy;
 	    providers: UpstreamProvider[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DiWorkerSettings(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.role_profile = this.convertValues(source["role_profile"], RoleProfile);
@@ -191,7 +197,7 @@ export namespace main {
 	        this.routing = this.convertValues(source["routing"], RoutingPolicy);
 	        this.providers = this.convertValues(source["providers"], UpstreamProvider);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -210,6 +216,83 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class WorkerMemoryEntry {
+	    id: string;
+	    tenant_id: string;
+	    department_id?: string;
+	    worker_id?: string;
+	    scope: string;
+	    content: string;
+	    category: string;
+	    tags: string[];
+	    source_type?: string;
+	    created_at: string;
+	    updated_at: string;
+
+	    static createFrom(source: any = {}) {
+	        return new WorkerMemoryEntry(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.tenant_id = source["tenant_id"];
+	        this.department_id = source["department_id"];
+	        this.worker_id = source["worker_id"];
+	        this.scope = source["scope"];
+	        this.content = source["content"];
+	        this.category = source["category"];
+	        this.tags = source["tags"];
+	        this.source_type = source["source_type"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	    }
+	}
+	export class WorkerMemoryStats {
+	    tenant_id: string;
+	    department_id?: string;
+	    worker_id?: string;
+	    total: number;
+	    by_scope: {[key: string]: number};
+	    by_category: {[key: string]: number};
+	    visible_scopes: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new WorkerMemoryStats(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tenant_id = source["tenant_id"];
+	        this.department_id = source["department_id"];
+	        this.worker_id = source["worker_id"];
+	        this.total = source["total"];
+	        this.by_scope = source["by_scope"];
+	        this.by_category = source["by_category"];
+	        this.visible_scopes = source["visible_scopes"];
+	    }
+	}
+	export class SaveWorkerMemoryRequest {
+	    scope: string;
+	    content: string;
+	    category: string;
+	    tags: string[];
+	    source_type: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SaveWorkerMemoryRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.scope = source["scope"];
+	        this.content = source["content"];
+	        this.category = source["category"];
+	        this.tags = source["tags"];
+	        this.source_type = source["source_type"];
+	    }
+	}
+
 	export class HistoryTaskItem {
 	    id: string;
 	    title: string;
@@ -221,11 +304,11 @@ export namespace main {
 	    expected_output?: string;
 	    result?: string;
 	    model?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new HistoryTaskItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -240,19 +323,19 @@ export namespace main {
 	        this.model = source["model"];
 	    }
 	}
-	
-	
-	
+
+
+
 	export class SubmitTaskRequest {
 	    task_type: string;
 	    selected_colleague_name: string;
 	    draft: string;
 	    expected_output: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SubmitTaskRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.task_type = source["task_type"];
@@ -267,11 +350,11 @@ export namespace main {
 	    expected_output: string;
 	    model: string;
 	    content: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SubmitTaskResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.task_type = source["task_type"];
@@ -288,11 +371,11 @@ export namespace main {
 	    status: string;
 	    updated_at: string;
 	    description: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TaskItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -303,18 +386,18 @@ export namespace main {
 	        this.description = source["description"];
 	    }
 	}
-	
+
 	export class WelcomeData {
 	    greeting: string;
 	    hint: string;
 	    colleagues: Colleague[];
 	    quick_tasks: string[];
 	    recent_tasks: TaskItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new WelcomeData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.greeting = source["greeting"];
@@ -323,7 +406,7 @@ export namespace main {
 	        this.quick_tasks = source["quick_tasks"];
 	        this.recent_tasks = this.convertValues(source["recent_tasks"], TaskItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -344,4 +427,3 @@ export namespace main {
 	}
 
 }
-
