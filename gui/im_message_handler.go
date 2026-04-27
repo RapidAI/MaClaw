@@ -120,6 +120,12 @@ type IMAgentResponse struct {
 	LLMRetryCount                       int                           `json:"-"`
 	LLMIdleTimeoutCount                 int                           `json:"-"`
 	LLMIdleTimeoutAfterToken            bool                          `json:"-"`
+
+	// Corrections provides one-click override options for the user when the
+	// scheduler's automatic interrupt decision may not match their intent.
+	// Populated only for interrupt responses (Merge/Queue). The Hub frontend
+	// renders these as clickable buttons; IM gateways format them as text.
+	Corrections                         []progress.CorrectionOption   `json:"corrections,omitempty"`
 }
 
 const stalledNoToolRecoverThreshold = 2
@@ -444,8 +450,75 @@ func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID str
 	return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，请立即调用真实工具完成交付；若目标是文档，优先选择当前可用的文档/文件交付工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
 }
 
-func buildEmptyResultRecoverPrompt() string {
-	return "[Recover 阶段]\n检测到上一轮没有返回任何可展示结果，当前进入 Recover 阶段。不要空结束，也不要只重复解释。请立即二选一：1) 直接给出可展示结果；2) 明确说明失败原因和当前状态。若还需要继续执行，必须立即调用真实工具。\n[/Recover 阶段]"
+// buildEmptyResultRecoverPromptWithTasks builds the empty-response Recover
+// prompt. When pendingTaskHint is non-empty it is appended to guide the LLM
+// toward checking active background tasks instead of stalling.
+func buildEmptyResultRecoverPromptWithTasks(pendingTaskHint string) string {
+	base := "[Recover 阶段]\n检测到上一轮没有返回任何可展示结果，当前进入 Recover 阶段。不要空结束，也不要只重复解释。请立即二选一：1) 直接给出可展示结果；2) 明确说明失败原因和当前状态。若还需要继续执行，必须立即调用真实工具。"
+	if pendingTaskHint != "" {
+		base += "\n" + pendingTaskHint
+	}
+	base += "\n[/Recover 阶段]"
+	return base
+}
+
+// pendingBackgroundTaskHint checks both SSH and local background task managers
+// for running tasks that were submitted after loopStart and returns a hint
+// string for the Recover prompt. The loopStart filter prevents stale tasks
+// from a previous conversation from misleading the current loop.
+// Returns "" if no relevant tasks are active.
+func (h *IMMessageHandler) pendingBackgroundTaskHint(loopStart time.Time) string {
+	var hints []string
+
+	// Check SSH background tasks.
+	if h.bgTaskMgr != nil {
+		for _, t := range h.bgTaskMgr.ListTasks() {
+			// SSHBackgroundTask fields are accessed without per-task lock,
+			// consistent with sshListTasks and other existing callers.
+			if t.StartedAt.Before(loopStart) {
+				continue // belongs to a previous conversation
+			}
+			if t.Status == "running" || t.Status == "pending" {
+				cmd := t.Command
+				if len([]rune(cmd)) > 80 {
+					cmd = truncateRunes(cmd, 80) + "..."
+				}
+				elapsed := time.Since(t.StartedAt).Round(time.Second).String()
+				hints = append(hints, fmt.Sprintf(
+					"- SSH 后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 ssh(action=\"check_task\", task_id=\"%s\") 查看进度",
+					t.TaskID, elapsed, cmd, t.TaskID))
+			}
+		}
+	}
+
+	// Check local background tasks.
+	if h.localBgTaskMgr != nil {
+		for _, t := range h.localBgTaskMgr.List() {
+			t.Lock()
+			status := t.Status
+			taskID := t.TaskID
+			cmd := t.Command
+			startedAt := t.StartedAt
+			t.Unlock()
+			if startedAt.Before(loopStart) {
+				continue // belongs to a previous conversation
+			}
+			if status == "running" {
+				if len([]rune(cmd)) > 80 {
+					cmd = truncateRunes(cmd, 80) + "..."
+				}
+				elapsed := time.Since(startedAt).Round(time.Second).String()
+				hints = append(hints, fmt.Sprintf(
+					"- 本地后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 async_wait(action=\"check\", task_id=\"%s\") 查看进度",
+					taskID, elapsed, cmd, taskID))
+			}
+		}
+	}
+
+	if len(hints) == 0 {
+		return ""
+	}
+	return "⚠️ 检测到以下后台任务仍在运行，请优先检查其状态：\n" + strings.Join(hints, "\n")
 }
 
 // cancelledExitResponse saves accumulated history and returns a clean
@@ -4387,15 +4460,27 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		// that fires earlier, but this is the authoritative check.
 		if h.interruptHandler != nil && msg.Text != "" && h.currentLoopCtx != nil {
 			result := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
+			if result.PendingConfirm {
+				// Scheduler uncertain — return confirmation with corrections.
+				// Desktop panel renders buttons; gateway-level handlers have
+				// their own PendingConfirm + fallback timer logic.
+				return &IMAgentResponse{
+					Text:        result.Reply,
+					Corrections: result.Corrections,
+				}
+			}
 			if result.Handled {
 				// Fully handled (Replace/Merge/StatusQuery) — the message's
 				// purpose was to control the running loop, not to start a new task.
-				return &IMAgentResponse{Text: result.Reply}
+				return &IMAgentResponse{
+					Text:        result.Reply,
+					Corrections: result.Corrections,
+				}
 			}
-			// Queued (Insert/Enqueue) — fall through to Lock. The message
-			// will be processed normally after the current loop finishes.
-			// Desktop panel doesn't need instant feedback here because the
-			// user can see the buffer queue UI.
+			// Queued — fall through to Lock. The message will be processed
+			// normally after the current loop finishes. Desktop panel doesn't
+			// need instant feedback here because the user can see the buffer
+			// queue UI.
 		}
 		h.chatLoopMu.Lock()
 		defer h.chatLoopMu.Unlock()
@@ -6549,6 +6634,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if emptyVisibleResult {
 				phase.ConsecutiveEmptyResponses++
 
+				// Compute background task hint once for both hard-exit and
+				// recover paths below.
+				taskHint := h.pendingBackgroundTaskHint(ctx.StartedAt)
+
 				// Hard exit: if the model has returned empty content too many
 				// times in a row, or total recover injections exceeded the cap,
 				// stop the loop. Continuing only inflates context and worsens
@@ -6563,13 +6652,21 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if fallbackText == "" {
 						fallbackText = "抱歉，模型多次返回空响应，无法继续处理。请尝试简化请求或重新发送。"
 					}
+					// If there are pending background tasks, append a hint so the
+					// user knows they can check on them manually.
+					if taskHint != "" {
+						fallbackText += "\n\n" + taskHint + "\n你可以发送「检查后台任务」来查看进度。"
+					}
 					finalResp := &IMAgentResponse{Text: fallbackText, HardExit: true}
 					attachLLMTelemetry(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
 					return finalResp
 				}
 
-				enterRecoverPhase(&phase, "empty_final_response", buildEmptyResultRecoverPrompt())
+				enterRecoverPhase(&phase, "empty_final_response", buildEmptyResultRecoverPromptWithTasks(taskHint))
+				if taskHint != "" {
+					log.Printf("[agent-loop] empty-response recover: injected pending background task hint")
+				}
 				continue
 			}
 			// Reset consecutive empty counter on non-empty response.

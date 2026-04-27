@@ -346,8 +346,12 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	spec.SessionID = sessionID
 	spec.LaunchSource = normalizeRemoteLaunchSource(spec.LaunchSource)
 
+	log.Printf("[session-lifecycle] ▶ Creating session %s: tool=%s, project=%q, source=%s, model=%s, time=%s",
+		sessionID, spec.Tool, spec.ProjectPath, spec.LaunchSource, spec.ModelID, now.Format(time.RFC3339))
+
 	workspace, err := m.workspacePreparer.Prepare(sessionID, spec)
 	if err != nil {
+		log.Printf("[session-lifecycle] ✖ Session %s workspace preparation failed: %v", sessionID, err)
 		session := m.newFailedSession(sessionID, spec, nil, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
@@ -361,8 +365,11 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		}
 	}()
 
+	log.Printf("[session-lifecycle] session=%s: workspace ready, path=%q", sessionID, workspace.ProjectPath)
+
 	provider, err := m.providerFactory(spec.Tool)
 	if err != nil {
+		log.Printf("[session-lifecycle] ✖ Session %s provider factory failed for tool=%s: %v", sessionID, spec.Tool, err)
 		session := m.newFailedSession(sessionID, spec, nil, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
@@ -395,14 +402,17 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		}
 	}
 
+	log.Printf("[session-lifecycle] session=%s: building command for tool=%s", sessionID, spec.Tool)
 	cmd, err := provider.BuildCommand(spec)
 	if err != nil {
+		log.Printf("[session-lifecycle] ✖ Session %s BuildCommand failed: %v", sessionID, err)
 		configRestore() // restore immediately on failure
 		session := m.newFailedSession(sessionID, spec, provider, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
 		return session, err
 	}
+	log.Printf("[session-lifecycle] session=%s: command built, binary=%q, args=%v", sessionID, cmd.Command, cmd.Args)
 
 	// Choose execution strategy based on provider mode.
 	// executionFactory can be overridden in tests to inject a fake strategy.
@@ -424,14 +434,17 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		strategy = executionStrategyForMode(provider.ExecutionMode())
 	}
 
+	log.Printf("[session-lifecycle] session=%s: starting execution strategy", sessionID)
 	execHandle, err := strategy.Start(cmd)
 	if err != nil {
+		log.Printf("[session-lifecycle] ✖ Session %s execution start failed: %v", sessionID, err)
 		configRestore()
 		session := m.newFailedSession(sessionID, spec, provider, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
 		return session, err
 	}
+	log.Printf("[session-lifecycle] session=%s: process started, pid=%d", sessionID, execHandle.PID())
 
 	session := &RemoteSession{
 		ID:             sessionID,
@@ -529,6 +542,10 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		go m.runOutputLoop(session)
 	}
 	go m.runExitLoop(session)
+
+	elapsed := time.Since(now)
+	log.Printf("[session-lifecycle] ✔ Session %s created successfully: tool=%s, pid=%d, project=%q, elapsed=%s",
+		sessionID, spec.Tool, execHandle.PID(), originalProjectPath, elapsed)
 
 	return session, nil
 }
@@ -2231,6 +2248,16 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 		return
 	}
 	now := time.Now()
+	sessionDuration := now.Sub(s.CreatedAt)
+
+	log.Printf("[session-lifecycle] ◼ Session %s exiting: tool=%s, pid=%d, duration=%s, created_at=%s, exit_time=%s",
+		s.ID, s.Tool, s.PID, sessionDuration, s.CreatedAt.Format(time.RFC3339), now.Format(time.RFC3339))
+	if exit.Code != nil {
+		log.Printf("[session-lifecycle] session=%s: exit_code=%d", s.ID, *exit.Code)
+	}
+	if exit.Err != nil {
+		log.Printf("[session-lifecycle] session=%s: exit_error=%v", s.ID, exit.Err)
+	}
 
 	s.mu.Lock()
 	s.UpdatedAt = now
@@ -2470,6 +2497,9 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	if m.app != nil && m.app.codeEventEmitter != nil {
 		m.app.codeEventEmitter.EmitSessionEnd(s.ID)
 	}
+
+	log.Printf("[session-lifecycle] ◼ Session %s cleanup complete: tool=%s, final_status=%s, output_lines=%d, duration=%s",
+		s.ID, s.Tool, exitStatus, len(traceTailLines), sessionDuration)
 
 	m.app.refreshPowerOptimizationState()
 	m.app.emitRemoteStateChanged()

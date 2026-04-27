@@ -10,12 +10,12 @@ type ScheduleAction int
 const (
 	// ActionMerge injects the message into the current agent loop as supplementary context.
 	ActionMerge ScheduleAction = iota
-	// ActionInsert pauses the current task, processes the new message, then resumes.
-	ActionInsert
+	// ActionQueue queues the message for processing after the current task completes.
+	// This replaces the former ActionInsert and ActionEnqueue which had identical
+	// runtime behavior (Handled=false, Queued=true).
+	ActionQueue
 	// ActionReplace abandons the current task and processes the new message.
 	ActionReplace
-	// ActionEnqueue queues the message for processing after the current task completes.
-	ActionEnqueue
 	// ActionStatusQuery returns current progress without interrupting the task.
 	ActionStatusQuery
 )
@@ -25,12 +25,10 @@ func (a ScheduleAction) String() string {
 	switch a {
 	case ActionMerge:
 		return "merge"
-	case ActionInsert:
-		return "insert"
+	case ActionQueue:
+		return "queue"
 	case ActionReplace:
 		return "replace"
-	case ActionEnqueue:
-		return "enqueue"
 	case ActionStatusQuery:
 		return "status_query"
 	default:
@@ -73,9 +71,9 @@ const (
 //
 //	                    High relevance + Same domain   Low relevance + Diff domain   Low relevance + No clear intent
 //	Negation            Replace                        Replace                        Replace
-//	Non-neg + Short     Merge                          Enqueue                        StatusQuery
-//	Non-neg + Medium    Merge                          Insert                         Insert
-//	Non-neg + Long      Merge                          Insert                         Insert
+//	Non-neg + Short     Merge                          Queue                          StatusQuery
+//	Non-neg + Medium    Merge                          Queue                          Queue
+//	Non-neg + Long      Merge                          Queue                          Queue
 //
 // When relevance is unavailable (-1), the scheduler falls back to
 // domain match + structure only, which is a graceful degradation.
@@ -148,9 +146,9 @@ func Schedule(input ScheduleInput) ScheduleDecision {
 				Reason:     "same domain + short/medium → likely supplement",
 			}
 		}
-		// Long + same domain + no relevance data → ambiguous, enqueue to be safe.
+		// Long + same domain + no relevance data → ambiguous, queue to be safe.
 		return ScheduleDecision{
-			Action:     ActionEnqueue,
+			Action:     ActionQueue,
 			Confidence: 0.45,
 			Reason:     "same domain + long + no relevance → ambiguous",
 		}
@@ -166,19 +164,19 @@ func Schedule(input ScheduleInput) ScheduleDecision {
 				Reason:     "short + low relevance → status query",
 			}
 		}
-		// Medium or long + low relevance → new task, insert it.
+		// Medium or long + low relevance → new task, queue it.
 		return ScheduleDecision{
-			Action:     ActionInsert,
+			Action:     ActionQueue,
 			Confidence: confidenceFromSignals(relLow, false, s),
 			Reason:     "low relevance + different domain → new task",
 		}
 	}
 
-	// Fallback: middle-ground relevance, no strong signals → enqueue.
+	// Fallback: middle-ground relevance, no strong signals → queue.
 	return ScheduleDecision{
-		Action:     ActionEnqueue,
+		Action:     ActionQueue,
 		Confidence: 0.40,
-		Reason:     "ambiguous signals → enqueue for safety",
+		Reason:     "ambiguous signals → queue for safety",
 	}
 }
 
