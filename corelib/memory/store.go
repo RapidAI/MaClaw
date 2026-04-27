@@ -480,7 +480,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 
 	// Self-identity memories are always recalled first; highest priority.
 	for _, e := range selfIdentity {
-		tokens := len(e.Content) / 4
+		tokens := EstimateTextTokens(e.Content)
 		tokenBudget -= tokens
 		result = append(result, e)
 	}
@@ -491,7 +491,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 		if len(result) >= maxEntries {
 			break
 		}
-		tokens := len(e.Content) / 4
+		tokens := EstimateTextTokens(e.Content)
 		if userFactUsed+tokens > userFactBudgetCap {
 			continue
 		}
@@ -508,7 +508,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 		if len(result) >= maxEntries {
 			break
 		}
-		tokens := len(sc.entry.Content) / 4
+		tokens := EstimateTextTokens(sc.entry.Content)
 		if tokens > tokenBudget {
 			continue
 		}
@@ -957,9 +957,16 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 		entryByID[s.entries[i].ID] = &s.entries[i]
 	}
 
-	// Find the best seed score among seeds that link to each expanded neighbor.
-	// Use the maximum seed score as the base for the derived score.
-	// expandedWeight already includes the 0.5 decay factor from graph.expand().
+	// Find the actual seed that links to each expanded neighbor and use
+	// that seed's score as the base for the derived score. This prevents
+	// low-relevance seeds from inheriting high scores from unrelated seeds.
+	//
+	// Pre-compute seed neighbor sets to avoid repeated graph lookups.
+	seedNeighbors := make(map[string]map[string]float64, len(seedIDs))
+	for _, sid := range seedIDs {
+		seedNeighbors[sid] = s.graph.neighborsOf(sid)
+	}
+
 	for neighborID, expandWeight := range expanded {
 		if existing[neighborID] {
 			continue
@@ -969,14 +976,27 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 			continue
 		}
 
-		// Derive score: best seed score * expanded weight (edge_strength * 0.5).
-		bestSeed := 0.0
+		// Derive score: find the best score among seeds that actually link
+		// to this neighbor (not the global best seed).
+		bestLinkedSeedScore := 0.0
 		for _, sid := range seedIDs {
-			if sc, ok := seedScores[sid]; ok && sc > bestSeed {
-				bestSeed = sc
+			if _, linked := seedNeighbors[sid][neighborID]; linked {
+				if sc := seedScores[sid]; sc > bestLinkedSeedScore {
+					bestLinkedSeedScore = sc
+				}
 			}
 		}
-		derivedScore := bestSeed * expandWeight
+		// Fallback: if no direct link found (shouldn't happen), use minimum seed score.
+		if bestLinkedSeedScore == 0 {
+			for _, sid := range seedIDs {
+				if sc, ok := seedScores[sid]; ok {
+					if bestLinkedSeedScore == 0 || sc < bestLinkedSeedScore {
+						bestLinkedSeedScore = sc
+					}
+				}
+			}
+		}
+		derivedScore := bestLinkedSeedScore * expandWeight
 
 		candidates = append(candidates, recallScored{entry: *e, score: derivedScore})
 		existing[neighborID] = true
@@ -1111,7 +1131,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		if len(result) >= maxEntries {
 			break
 		}
-		tokens := len(sc.entry.Content) / 4
+		tokens := EstimateTextTokens(sc.entry.Content)
 		if tokens > tokenBudget {
 			continue
 		}

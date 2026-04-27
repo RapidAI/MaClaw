@@ -91,10 +91,19 @@ func EstimateToolsTokens(tools []map[string]interface{}) int {
 	return EstimateBytesToTokens(data)
 }
 
+// EstimateTextTokens delegates to corelib.EstimateTextTokens.
+// Kept as a package-level alias for backward compatibility with callers
+// that import corelib/agent.
+func EstimateTextTokens(text string) int {
+	return corelib.EstimateTextTokens(text)
+}
+
 // EstimateBytesToTokens converts JSON bytes to an approximate token count.
-// CJK characters are 3 bytes in UTF-8 but typically 1-2 tokens; ASCII is
-// roughly 4 bytes per token. We use a blended ratio of ~2.5 bytes/token
-// which is more accurate for mixed CJK/ASCII content than the old /3.
+// For JSON data, we use a byte-based heuristic rather than character-based
+// because JSON structural overhead ({, ", :, etc.) is all ASCII bytes that
+// don't represent actual content tokens. The blended ratio of ~2.5 bytes/token
+// accounts for mixed CJK (3 bytes/char, ~1.5 tokens) and ASCII (1 byte/char,
+// ~0.25 tokens) content within JSON envelopes.
 func EstimateBytesToTokens(data []byte) int {
 	return (len(data)*10 + 24) / 25 // equivalent to len/2.5, rounded up
 }
@@ -377,15 +386,35 @@ func MakeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(s
 
 func TrimHistory(entries []ConversationEntry) []ConversationEntry {
 	if len(entries) <= MaxConversationTurns {
-		return entries
+		// Within turn limit — check token budget.
+		if EstimateConversationEntryTokens(entries) <= MaxMemoryTokenEstimate {
+			return entries
+		}
+		// Over token budget but within turn limit — skip turn-based trim,
+		// go straight to token-level trimming below.
 	}
-	trimmed := entries[len(entries)-MaxConversationTurns:]
+
+	// Turn-based trim: keep the most recent MaxConversationTurns entries.
+	trimmed := entries
+	if len(entries) > MaxConversationTurns {
+		trimmed = entries[len(entries)-MaxConversationTurns:]
+	}
 	// Ensure we don't start with orphaned "tool" messages that lack a
 	// preceding assistant message with tool_calls — the LLM API rejects
 	// such sequences with "Messages with role 'tool' must be a response
 	// to a preceding message with 'tool_calls'".
 	for len(trimmed) > 0 && trimmed[0].Role == "tool" {
 		trimmed = trimmed[1:]
+	}
+	// Token-level secondary validation: if the turn-trimmed result still
+	// exceeds the token budget (e.g. turns with large tool outputs), drop
+	// additional oldest entries until we fit.
+	for len(trimmed) > 2 && EstimateConversationEntryTokens(trimmed) > MaxMemoryTokenEstimate {
+		// Drop the oldest entry, but skip orphaned tool messages.
+		trimmed = trimmed[1:]
+		for len(trimmed) > 0 && trimmed[0].Role == "tool" {
+			trimmed = trimmed[1:]
+		}
 	}
 	return trimmed
 }

@@ -1,6 +1,10 @@
 package memory
 
-import "time"
+import (
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+)
 
 // Category represents the category of a memory entry.
 type Category string
@@ -338,4 +342,14 @@ type HealthReport struct {
 	OldestEntry      string         `json:"oldest_entry,omitempty"` // RFC3339
 	NewestEntry      string         `json:"newest_entry,omitempty"` // RFC3339
 	VersionedEntries int            `json:"versioned_entries"`      // entries with version history
+}
+
+// ---------------------------------------------------------------------------
+// Token estimation (CJK-aware)
+// ---------------------------------------------------------------------------
+
+// EstimateTextTokens delegates to corelib.EstimateTextTokens.
+// Package-level alias so callers within memory/ use a consistent function name.
+func EstimateTextTokens(text string) int {
+	return corelib.EstimateTextTokens(text)
 }

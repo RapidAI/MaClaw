@@ -3,6 +3,8 @@ package context
 import (
 	"fmt"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // Message represents a single message in a conversation history.
@@ -214,47 +216,8 @@ func (c *Compressor) fallbackTruncate(allMessages []Message, protectedMessages [
 	}, nil
 }
 
-// EstimateTokens estimates the token count of a text string using
-// character-based heuristics: 4 chars/token for ASCII, 1.5 chars/token for CJK.
-// Formula: ceil(asciiChars/4) + ceil(cjkChars/1.5)
+// EstimateTokens estimates the token count of a text string.
+// Delegates to corelib.EstimateTextTokens for consistent estimation.
 func EstimateTokens(text string) int {
-	var asciiChars, cjkChars int
-	for _, r := range text {
-		if isCJK(r) {
-			cjkChars++
-		} else {
-			asciiChars++
-		}
-	}
-	// Integer ceiling division: (n + d - 1) / d
-	asciiTokens := (asciiChars + 3) / 4
-	// For CJK: ceil(cjkChars / 1.5) = ceil(cjkChars * 2 / 3) = (cjkChars*2 + 2) / 3
-	cjkTokens := (cjkChars*2 + 2) / 3
-	return asciiTokens + cjkTokens
-}
-
-// isCJK returns true if the rune is a CJK character.
-// Covers: CJK Unified Ideographs, CJK Extension A, CJK Compatibility Ideographs,
-// CJK Radicals Supplement, CJK Symbols and Punctuation, Hiragana, Katakana, Hangul Syllables.
-func isCJK(r rune) bool {
-	switch {
-	case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified Ideographs
-		return true
-	case r >= 0x3400 && r <= 0x4DBF: // CJK Extension A
-		return true
-	case r >= 0xF900 && r <= 0xFAFF: // CJK Compatibility Ideographs
-		return true
-	case r >= 0x2E80 && r <= 0x2EFF: // CJK Radicals Supplement
-		return true
-	case r >= 0x3000 && r <= 0x303F: // CJK Symbols and Punctuation
-		return true
-	case r >= 0x3040 && r <= 0x309F: // Hiragana
-		return true
-	case r >= 0x30A0 && r <= 0x30FF: // Katakana
-		return true
-	case r >= 0xAC00 && r <= 0xD7AF: // Hangul Syllables
-		return true
-	default:
-		return false
-	}
+	return corelib.EstimateTextTokens(text)
 }

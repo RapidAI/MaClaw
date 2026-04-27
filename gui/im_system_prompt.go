@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -1072,28 +1073,23 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 	b.WriteString("\n")
 }
 
-// estimateTokens returns a rough token count for the given text.
-// Uses rune count (not byte count) for accurate CJK estimation.
-// Approximation: 1 token ≈ 2 runes for CJK-heavy text, ≈ 4 chars for Latin.
-// We use a middle-ground of 1 token ≈ 3 runes which works reasonably for
-// mixed Chinese/English content typical in this codebase.
+// estimateTokens delegates to corelib.EstimateTextTokens.
 func estimateTokens(s string) int {
-	n := len([]rune(s))
-	if n == 0 {
-		return 0
-	}
-	return (n + 2) / 3 // ceiling division by 3
+	return corelib.EstimateTextTokens(s)
 }
 
 // truncateToTokenBudget truncates content to fit within the given token budget,
 // cutting at a smart boundary (paragraph break "\n\n", or sentence-ending
 // punctuation followed by whitespace/newline). Appends "[truncated]" notice.
 // Uses rune-safe operations to avoid splitting multi-byte UTF-8 characters.
+// Uses conservative rune budget (1.5 runes/token) to ensure the truncated
+// result never exceeds the token budget under CJK-aware estimation.
 // (Requirement 1.8)
 func truncateToTokenBudget(content string, tokenBudget int) string {
 	// Convert to runes for safe truncation of multi-byte characters.
 	runes := []rune(content)
-	maxRunes := tokenBudget * 3 // inverse of estimateTokens: 1 token ≈ 3 runes
+	// Conservative: assume worst case (all CJK, ~1.5 chars/token).
+	maxRunes := tokenBudget * 3 / 2
 	if maxRunes <= 0 {
 		return "[truncated]"
 	}

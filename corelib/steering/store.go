@@ -316,9 +316,13 @@ func matchesContextKeywords(keywords []string, msgLower string) bool {
 
 // truncateSmart truncates content to fit within the given token budget,
 // cutting at a smart boundary (paragraph or line break).
+// Uses a conservative rune budget of 1.5 runes/token (worst case for CJK
+// where 1 char ≈ 0.67 tokens) to ensure the truncated result never exceeds
+// the budget under CJK-aware estimation.
 func truncateSmart(content string, tokenBudget int) string {
 	runes := []rune(content)
-	maxRunes := tokenBudget * 3 // inverse of estimateTokens
+	// Conservative: CJK worst case is ~1.5 chars/token.
+	maxRunes := tokenBudget * 3 / 2
 	if maxRunes <= 0 {
 		return "[truncated]"
 	}

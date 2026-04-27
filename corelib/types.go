@@ -518,3 +518,54 @@ type Skill struct {
 	Value       string `json:"value"`
 	Installed   bool   `json:"installed"`
 }
+
+// ---------------------------------------------------------------------------
+// Token estimation (CJK-aware) — single source of truth
+// ---------------------------------------------------------------------------
+
+// EstimateTextTokens estimates the token count of a text string using
+// character-based heuristics: ~4 chars/token for ASCII, ~1.5 chars/token
+// for CJK. This is the single source of truth for token estimation across
+// the entire codebase. All packages MUST call this function instead of
+// implementing their own estimation.
+func EstimateTextTokens(text string) int {
+	var asciiChars, cjkChars int
+	for _, r := range text {
+		if IsCJKRune(r) {
+			cjkChars++
+		} else {
+			asciiChars++
+		}
+	}
+	// Integer ceiling division: (n + d - 1) / d
+	asciiTokens := (asciiChars + 3) / 4
+	// For CJK: ceil(cjkChars / 1.5) = (cjkChars*2 + 2) / 3
+	cjkTokens := (cjkChars*2 + 2) / 3
+	return asciiTokens + cjkTokens
+}
+
+// IsCJKRune returns true if the rune is a CJK character.
+// Covers: CJK Unified Ideographs, Extension A, Compatibility Ideographs,
+// Radicals Supplement, Symbols/Punctuation, Hiragana, Katakana, Hangul.
+func IsCJKRune(r rune) bool {
+	switch {
+	case r >= 0x4E00 && r <= 0x9FFF:
+		return true
+	case r >= 0x3400 && r <= 0x4DBF:
+		return true
+	case r >= 0xF900 && r <= 0xFAFF:
+		return true
+	case r >= 0x2E80 && r <= 0x2EFF:
+		return true
+	case r >= 0x3000 && r <= 0x303F:
+		return true
+	case r >= 0x3040 && r <= 0x309F:
+		return true
+	case r >= 0x30A0 && r <= 0x30FF:
+		return true
+	case r >= 0xAC00 && r <= 0xD7AF:
+		return true
+	default:
+		return false
+	}
+}

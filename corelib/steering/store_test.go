@@ -322,11 +322,11 @@ func TestEstimateTokens(t *testing.T) {
 		expected int
 	}{
 		{"", 0},
-		{"abc", 1},
-		{"你好世界", 2},                     // 4 runes → ceil(4/3) = 2
-		{strings.Repeat("a", 9), 3},       // 9 runes → 3
-		{strings.Repeat("你", 9), 3},       // 9 runes → 3
-		{strings.Repeat("hello ", 100), 200}, // 600 runes → 200
+		{"abc", 1},                           // 3 ASCII → ceil(3/4) = 1
+		{"你好世界", 3},                       // 4 CJK → ceil(4/1.5) = ceil(8/3) = 3
+		{strings.Repeat("a", 9), 3},          // 9 ASCII → ceil(9/4) = 3
+		{strings.Repeat("你", 9), 6},          // 9 CJK → ceil(9/1.5) = ceil(18/3) = 6
+		{strings.Repeat("hello ", 100), 150}, // 600 ASCII → ceil(600/4) = 150
 	}
 	for _, tt := range tests {
 		got := estimateTokens(tt.input)
