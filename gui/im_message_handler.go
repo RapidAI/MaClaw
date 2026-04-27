@@ -5987,6 +5987,27 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		conversation = trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, makeSummarizer(cfg, httpClient))
 
+		// --- Prune stale no-tool-call turns before injecting new system messages ---
+		// When the LLM repeatedly returns text without tool calls, each
+		// stale turn (assistant text + any system recover prompts) stays
+		// in the conversation, inflating context and pushing useful history
+		// out of the token window. This creates a positive feedback loop:
+		// more stale turns → less useful context → LLM more confused →
+		// more stale turns.
+		//
+		// Fix: remove the most recent consecutive no-tool-call assistant
+		// messages and any system messages that were injected between them
+		// (recover prompts, no-tool nudges). This keeps the conversation
+		// clean so the LLM sees the original task context + one fresh
+		// recover prompt, not a trail of failed attempts.
+		//
+		// Must run BEFORE GoalAnchor/ProgressTracker injection — otherwise
+		// those non-recover system messages block the backward scan and
+		// prevent pruning of stale turns that precede them.
+		if phase.Stage == agentStageRecover && (phase.ConsecutiveNoTool >= 2 || phase.ConsecutiveEmptyResponses >= 1) {
+			conversation = pruneStaleNoToolTurns(conversation)
+		}
+
 		// --- Harness: inject GoalAnchor content ---
 		systemMessagesStart := len(conversation)
 		if loopGoalAnchor != nil && loopGoalAnchor.ShouldAnchor(iteration) {
@@ -6021,22 +6042,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			trialState.pendingNote = ""
 		}
 		if phase.Stage == agentStageRecover && strings.TrimSpace(phase.RecoverPrompt) != "" {
-			// --- Prune stale no-tool-call turns before injecting Recover prompt ---
-			// When the LLM repeatedly returns text without tool calls, each
-			// stale turn (assistant text + any system recover prompts) stays
-			// in the conversation, inflating context and pushing useful history
-			// out of the token window. This creates a positive feedback loop:
-			// more stale turns → less useful context → LLM more confused →
-			// more stale turns.
-			//
-			// Fix: remove the most recent consecutive no-tool-call assistant
-			// messages and any system messages that were injected between them
-			// (recover prompts, no-tool nudges). This keeps the conversation
-			// clean so the LLM sees the original task context + one fresh
-			// recover prompt, not a trail of failed attempts.
-			if phase.ConsecutiveNoTool >= 2 || phase.ConsecutiveEmptyResponses >= 1 {
-				conversation = pruneStaleNoToolTurns(conversation)
-			}
 			conversation = append(conversation, map[string]string{
 				"role":    "system",
 				"content": phase.RecoverPrompt,
