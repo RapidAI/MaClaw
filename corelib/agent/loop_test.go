@@ -324,9 +324,9 @@ func TestRunLoop_ConsecutiveEmptyResponses_HardExit(t *testing.T) {
 	if !result.HardExit {
 		t.Fatal("expected HardExit=true for consecutive empty responses")
 	}
-	// Should exit after 3 consecutive empty responses (maxConsecutiveEmpty).
-	if result.Iterations > 4 {
-		t.Fatalf("expected <=4 iterations for hard exit, got %d", result.Iterations)
+	// Should exit after 5 consecutive empty responses (maxConsecutiveEmpty).
+	if result.Iterations > 6 {
+		t.Fatalf("expected <=6 iterations for hard exit, got %d", result.Iterations)
 	}
 }
 
@@ -479,4 +479,264 @@ type changingResultCallbacks struct {
 func (c *changingResultCallbacks) ExecuteTool(name, args string) string {
 	*c.pollCount++
 	return fmt.Sprintf("status: running (%d seconds)", *c.pollCount*5)
+}
+
+func TestRunLoop_EmptyResponseAfterToolTimeout_Recovers(t *testing.T) {
+	// Simulates the exact scenario from the bug: tool returns timeout error,
+	// then LLM returns empty response, but the recovery prompt helps it resume.
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		switch {
+		case callCount == 1:
+			// First call: LLM calls bash with a long-running command.
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "Let me run the command.",
+							"tool_calls": []map[string]interface{}{
+								{
+									"id":   "call_1",
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      "bash",
+										"arguments": `{"command":"sleep 120","timeout":125}`,
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		case callCount == 2:
+			// Second call: LLM returns empty response (the bug).
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message":       map[string]interface{}{"role": "assistant", "content": ""},
+						"finish_reason": "stop",
+					},
+				},
+			}
+		case callCount == 3:
+			// Third call: after recovery prompt, LLM resumes with a tool call.
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "The command timed out. Let me check the status.",
+							"tool_calls": []map[string]interface{}{
+								{
+									"id":   "call_2",
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      "bash",
+										"arguments": `{"command":"ps aux | grep sleep"}`,
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		default:
+			// Final call: LLM provides final answer.
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message":       map[string]interface{}{"role": "assistant", "content": "The operation completed successfully."},
+						"finish_reason": "stop",
+					},
+				},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	toolCallCount := 0
+	cb := &timeoutToolCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config: corelib.MaclawLLMConfig{
+				URL:   server.URL,
+				Model: "test",
+				Key:   "test-key",
+			},
+			maxIter:   10,
+			sysPrompt: "You are a helpful assistant.",
+		},
+		toolCallCount: &toolCallCount,
+	}
+
+	result := RunLoop(cb, "run a long command on the server", nil, nil)
+
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.HardExit {
+		t.Fatal("should NOT hard exit — recovery prompt should help LLM resume")
+	}
+	if !strings.Contains(result.Text, "completed successfully") {
+		t.Fatalf("unexpected text: %q", result.Text)
+	}
+	if result.ToolCalls != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", result.ToolCalls)
+	}
+}
+
+// timeoutToolCallbacks simulates a tool that returns a timeout error on first call.
+type timeoutToolCallbacks struct {
+	*mockCallbacks
+	toolCallCount *int
+}
+
+func (c *timeoutToolCallbacks) ExecuteTool(name, args string) string {
+	*c.toolCallCount++
+	c.mockCallbacks.toolCalls = append(c.mockCallbacks.toolCalls, name)
+	if *c.toolCallCount == 1 {
+		return "\n[错误] 命令超时（120 秒）"
+	}
+	return "process running"
+}
+
+func TestBuildEmptyResponseRecovery_Timeout(t *testing.T) {
+	outcome := classifyToolResult("[错误] 命令超时（120 秒）")
+	if outcome.kind != toolOutcomeTimeout {
+		t.Fatalf("expected toolOutcomeTimeout, got %d", outcome.kind)
+	}
+
+	prompt := buildEmptyResponseRecovery(1, "bash", outcome, "backup docker containers")
+	if !strings.Contains(prompt, "超时") {
+		t.Fatal("recovery prompt should mention timeout")
+	}
+	if !strings.Contains(prompt, "bash") {
+		t.Fatal("recovery prompt should mention the tool name")
+	}
+	if !strings.Contains(prompt, "不要放弃") {
+		t.Fatal("recovery prompt should encourage continuation")
+	}
+}
+
+func TestBuildEmptyResponseRecovery_Error(t *testing.T) {
+	outcome := classifyToolResult("Error: connection refused")
+	if outcome.kind != toolOutcomeError {
+		t.Fatalf("expected toolOutcomeError, got %d", outcome.kind)
+	}
+
+	prompt := buildEmptyResponseRecovery(1, "ssh", outcome, "deploy to server")
+	if !strings.Contains(prompt, "错误") || !strings.Contains(prompt, "ssh") {
+		t.Fatal("recovery prompt should mention error and tool name")
+	}
+}
+
+func TestBuildEmptyResponseRecovery_NoFalsePositiveError(t *testing.T) {
+	// Normal output that contains "error" as a substring should NOT trigger
+	// the error branch — classifyToolResult checks structured prefixes only.
+	outcome := classifyToolResult("cat /var/log/error_log\nsome normal output")
+	if outcome.kind != toolOutcomeOK {
+		t.Fatalf("expected toolOutcomeOK for normal output, got %d", outcome.kind)
+	}
+
+	prompt := buildEmptyResponseRecovery(1, "bash", outcome, "check logs")
+	if strings.Contains(prompt, "返回了错误") {
+		t.Fatal("should not detect 'error' in normal output as an error condition")
+	}
+	if !strings.Contains(prompt, "请根据其结果继续") {
+		t.Fatal("should use generic continuation prompt for normal output")
+	}
+}
+
+func TestBuildEmptyResponseRecovery_Escalation(t *testing.T) {
+	okOutcome := classifyToolResult("ok")
+	emptyOutcome := toolOutcome{kind: toolOutcomeOK}
+
+	// First empty: mild prompt.
+	prompt1 := buildEmptyResponseRecovery(1, "", emptyOutcome, "test goal")
+	if strings.Contains(prompt1, "警告") {
+		t.Fatal("first empty should not contain warning")
+	}
+
+	// Third empty: escalated prompt with goal reminder.
+	prompt3 := buildEmptyResponseRecovery(3, "bash", okOutcome, "test goal")
+	if !strings.Contains(prompt3, "警告") {
+		t.Fatal("third empty should contain warning")
+	}
+	if !strings.Contains(prompt3, "test goal") {
+		t.Fatal("third empty should include user goal")
+	}
+}
+
+func TestTruncateRunesSuffix(t *testing.T) {
+	// ASCII: take last 5 chars.
+	if got := truncateRunesSuffix("hello world", 5); got != "world" {
+		t.Fatalf("expected 'world', got %q", got)
+	}
+	// Chinese: should not break multi-byte characters.
+	if got := truncateRunesSuffix("你好世界测试", 3); got != "界测试" {
+		t.Fatalf("expected '界测试', got %q", got)
+	}
+	// Short string: return as-is.
+	if got := truncateRunesSuffix("hi", 10); got != "hi" {
+		t.Fatalf("expected 'hi', got %q", got)
+	}
+}
+
+func TestTruncateRunesPrefix(t *testing.T) {
+	// ASCII: take first 5 chars + "...".
+	if got := truncateRunesPrefix("hello world", 5); got != "hello..." {
+		t.Fatalf("expected 'hello...', got %q", got)
+	}
+	// Chinese: should not break multi-byte characters.
+	if got := truncateRunesPrefix("你好世界测试", 3); got != "你好世..." {
+		t.Fatalf("expected '你好世...', got %q", got)
+	}
+	// Short string: return as-is.
+	if got := truncateRunesPrefix("hi", 10); got != "hi" {
+		t.Fatalf("expected 'hi', got %q", got)
+	}
+}
+
+func TestClassifyToolResult(t *testing.T) {
+	tests := []struct {
+		name   string
+		result string
+		want   toolOutcomeKind
+	}{
+		// Timeout cases — our tools produce these exact markers.
+		{"bash timeout", "\n[错误] 命令超时（120 秒）", toolOutcomeTimeout},
+		{"bash timeout with output", "partial output\n[错误] 命令超时（30 秒）", toolOutcomeTimeout},
+
+		// Error cases — structured prefixes from our tool code.
+		{"bash exit code", "\n[错误] 退出码: 1", toolOutcomeError},
+		{"bash start failed", "[错误] 命令启动失败: exec: not found", toolOutcomeError},
+		{"unknown tool", "未知工具: foobar", toolOutcomeError},
+		{"tool panic", "工具执行异常: runtime error", toolOutcomeError},
+		{"parse failed", "参数解析失败: unexpected end of JSON", toolOutcomeError},
+		{"chinese error prefix", "错误: something went wrong", toolOutcomeError},
+		{"english error prefix", "Error: connection refused", toolOutcomeError},
+		{"mid-result error", "some output\n[错误] 后台任务启动失败: no space", toolOutcomeError},
+
+		// OK cases — normal output should not be misclassified.
+		{"normal output", "hello world", toolOutcomeOK},
+		{"output with error substring", "cat /var/log/error_log\nsome data", toolOutcomeOK},
+		{"output with Error in middle", "the Error was handled gracefully", toolOutcomeOK},
+		{"empty result", "", toolOutcomeOK},
+		{"json output", `{"status":"ok","errors":0}`, toolOutcomeOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyToolResult(tt.result)
+			if got.kind != tt.want {
+				t.Errorf("classifyToolResult(%q) = %d, want %d", tt.result, got.kind, tt.want)
+			}
+		})
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -80,18 +81,23 @@ func (p *WindowsPTYSession) Start(cmd CommandSpec) (int, error) {
 		conpty.ConPtyEnv(env),
 	)
 	if err != nil {
+		log.Printf("[conpty-lifecycle] ✖ ConPTY start failed: cmd=%q, cwd=%q, error=%v", cmd.Command, cmd.Cwd, err)
 		return 0, fmt.Errorf("start conpty: %w", err)
 	}
 
 	proc, err := os.FindProcess(pty.Pid())
 	if err != nil {
 		_ = pty.Close()
+		log.Printf("[conpty-lifecycle] ✖ FindProcess failed: pid=%d, error=%v", pty.Pid(), err)
 		return 0, fmt.Errorf("find process: %w", err)
 	}
 
 	p.conpty = pty
 	p.proc = proc
 	p.started = true
+
+	log.Printf("[conpty-lifecycle] ✔ ConPTY process started: pid=%d, cmd=%q, cwd=%q, size=%dx%d, env_count=%d",
+		pty.Pid(), cmd.Command, cmd.Cwd, width, height, len(env))
 
 	p.startReadLoopLocked(pty)
 	p.startWaitLoopLocked(pty)
@@ -208,6 +214,12 @@ func (p *WindowsPTYSession) startWaitLoopLocked(pty *conpty.ConPty) {
 		if err == nil {
 			code := int(exitCode)
 			codePtr = &code
+		}
+
+		if err != nil {
+			log.Printf("[conpty-lifecycle] ◼ ConPTY process exited with error: pid=%d, error=%v", pty.Pid(), err)
+		} else {
+			log.Printf("[conpty-lifecycle] ◼ ConPTY process exited: pid=%d, exit_code=%d", pty.Pid(), exitCode)
 		}
 
 		p.exitCh <- PTYExit{

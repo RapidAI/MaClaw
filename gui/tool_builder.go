@@ -3,7 +3,6 @@ package main
 import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"strings"
 )
 
 // DynamicToolBuilder builds LLM tool definitions dynamically from the ToolRegistry.
@@ -75,13 +74,9 @@ func guiRegistryToCorelib(guiReg *ToolRegistry) *tool.Registry {
 		return reg
 	}
 	for _, gt := range guiReg.List() {
-		description := gt.Description
-		if strings.TrimSpace(description) == "" {
-			description = gt.Name
-		}
 		reg.Register(tool.RegisteredTool{
 			Name:        gt.Name,
-			Description: description,
+			Description: gt.Description,
 			Category:    tool.Category(gt.Category),
 			Tags:        gt.Tags,
 			Priority:    gt.Priority,

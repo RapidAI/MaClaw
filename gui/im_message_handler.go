@@ -61,6 +61,7 @@ type IMUserMessage = agent.UserMessage
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
 	Text                                string                        `json:"text"`
+	ClearUI                             bool                          `json:"clear_ui,omitempty"`
 	Fields                              []IMResponseField             `json:"fields,omitempty"`
 	Actions                             []IMResponseAction            `json:"actions,omitempty"`
 	Confirmation                        *IMResponseConfirmation       `json:"confirmation,omitempty"`
@@ -120,6 +121,12 @@ type IMAgentResponse struct {
 	LLMRetryCount                       int                           `json:"-"`
 	LLMIdleTimeoutCount                 int                           `json:"-"`
 	LLMIdleTimeoutAfterToken            bool                          `json:"-"`
+
+	// Corrections provides one-click override options for the user when the
+	// scheduler's automatic interrupt decision may not match their intent.
+	// Populated only for interrupt responses (Merge/Queue). The Hub frontend
+	// renders these as clickable buttons; IM gateways format them as text.
+	Corrections                         []progress.CorrectionOption   `json:"corrections,omitempty"`
 }
 
 const stalledNoToolRecoverThreshold = 2
@@ -444,8 +451,164 @@ func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID str
 	return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，请立即调用真实工具完成交付；若目标是文档，优先选择当前可用的文档/文件交付工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
 }
 
-func buildEmptyResultRecoverPrompt() string {
-	return "[Recover 阶段]\n检测到上一轮没有返回任何可展示结果，当前进入 Recover 阶段。不要空结束，也不要只重复解释。请立即二选一：1) 直接给出可展示结果；2) 明确说明失败原因和当前状态。若还需要继续执行，必须立即调用真实工具。\n[/Recover 阶段]"
+// buildEmptyResultRecoverPromptWithTasks builds the empty-response Recover
+// prompt. When pendingTaskHint is non-empty it is appended to guide the LLM
+// toward checking active background tasks instead of stalling.
+func buildEmptyResultRecoverPromptWithTasks(pendingTaskHint string) string {
+	base := "[Recover 阶段]\n检测到上一轮没有返回任何可展示结果，当前进入 Recover 阶段。不要空结束，也不要只重复解释。请立即二选一：1) 直接给出可展示结果；2) 明确说明失败原因和当前状态。若还需要继续执行，必须立即调用真实工具。"
+	if pendingTaskHint != "" {
+		base += "\n" + pendingTaskHint
+	}
+	base += "\n[/Recover 阶段]"
+	return base
+}
+
+// pruneStaleNoToolTurns removes the most recent consecutive no-tool-call
+// assistant messages and any system messages injected between them (recover
+// prompts, no-tool nudges) from the conversation. This prevents the positive
+// feedback loop where stale turns inflate context, push useful history out
+// of the token window, and cause the LLM to produce even more stale turns.
+//
+// The function scans backwards from the end of the conversation, removing
+// assistant messages that have no tool_calls and system messages that look
+// like recover/nudge injections. It stops at the first message that is:
+// - a user message
+// - an assistant message with tool_calls
+// - a tool result message
+// - the system prompt (index 0)
+//
+// This ensures the LLM sees: original context + user request + one fresh
+// recover prompt, instead of: original context + N failed attempts + N
+// recover prompts.
+func pruneStaleNoToolTurns(conversation []interface{}) []interface{} {
+	if len(conversation) <= 2 {
+		return conversation
+	}
+
+	// Scan backwards to find the cut point.
+	cutFrom := len(conversation)
+loop:
+	for i := len(conversation) - 1; i > 0; i-- {
+		role := msgRole(conversation[i])
+		switch role {
+		case "assistant":
+			if msgHasToolCalls(conversation[i]) {
+				break loop // productive turn — stop
+			}
+			cutFrom = i // stale turn — mark for removal
+		case "system":
+			if isRecoverOrNudgeSystemMessage(msgContent(conversation[i])) {
+				cutFrom = i // recover/nudge injection — mark for removal
+			} else {
+				break loop // non-recover system message — stop
+			}
+		default:
+			break loop // user, tool, or other — stop
+		}
+	}
+
+	if cutFrom >= len(conversation) {
+		return conversation // nothing to prune
+	}
+
+	pruned := len(conversation) - cutFrom
+	if pruned > 0 {
+		log.Printf("[prune-stale-turns] removed %d stale no-tool-call messages from conversation (len %d → %d)",
+			pruned, len(conversation), cutFrom)
+	}
+	return conversation[:cutFrom]
+}
+
+// msgContent extracts the "content" string from a conversation message
+// regardless of whether it's map[string]string or map[string]interface{}.
+func msgContent(m interface{}) string {
+	switch v := m.(type) {
+	case map[string]interface{}:
+		s, _ := v["content"].(string)
+		return s
+	case map[string]string:
+		return v["content"]
+	}
+	return ""
+}
+
+// isRecoverOrNudgeSystemMessage checks if a system message content looks like
+// a recover prompt or no-tool nudge injection. These are the messages that
+// accumulate during no-tool-stall loops and should be pruned.
+func isRecoverOrNudgeSystemMessage(content string) bool {
+	if content == "" {
+		return false
+	}
+	// Recover phase markers.
+	if strings.Contains(content, "[Recover 阶段]") || strings.Contains(content, "[/Recover 阶段]") {
+		return true
+	}
+	// No-tool action prompts.
+	if strings.Contains(content, "[执行要求]") || strings.Contains(content, "[/执行要求]") {
+		return true
+	}
+	// Goal anchor and progress tracker injections from previous iterations
+	// are not pruned — they carry useful context.
+	return false
+}
+
+// pendingBackgroundTaskHint checks both SSH and local background task managers
+// for running tasks that were submitted after loopStart and returns a hint
+// string for the Recover prompt. The loopStart filter prevents stale tasks
+// from a previous conversation from misleading the current loop.
+// Returns "" if no relevant tasks are active.
+func (h *IMMessageHandler) pendingBackgroundTaskHint(loopStart time.Time) string {
+	var hints []string
+
+	// Check SSH background tasks.
+	if h.bgTaskMgr != nil {
+		for _, t := range h.bgTaskMgr.ListTasks() {
+			// SSHBackgroundTask fields are accessed without per-task lock,
+			// consistent with sshListTasks and other existing callers.
+			if t.StartedAt.Before(loopStart) {
+				continue // belongs to a previous conversation
+			}
+			if t.Status == "running" || t.Status == "pending" {
+				cmd := t.Command
+				if len([]rune(cmd)) > 80 {
+					cmd = truncateRunes(cmd, 80) + "..."
+				}
+				elapsed := time.Since(t.StartedAt).Round(time.Second).String()
+				hints = append(hints, fmt.Sprintf(
+					"- SSH 后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 ssh(action=\"check_task\", task_id=\"%s\") 查看进度",
+					t.TaskID, elapsed, cmd, t.TaskID))
+			}
+		}
+	}
+
+	// Check local background tasks.
+	if h.localBgTaskMgr != nil {
+		for _, t := range h.localBgTaskMgr.List() {
+			t.Lock()
+			status := t.Status
+			taskID := t.TaskID
+			cmd := t.Command
+			startedAt := t.StartedAt
+			t.Unlock()
+			if startedAt.Before(loopStart) {
+				continue // belongs to a previous conversation
+			}
+			if status == "running" {
+				if len([]rune(cmd)) > 80 {
+					cmd = truncateRunes(cmd, 80) + "..."
+				}
+				elapsed := time.Since(startedAt).Round(time.Second).String()
+				hints = append(hints, fmt.Sprintf(
+					"- 本地后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 async_wait(action=\"check\", task_id=\"%s\") 查看进度",
+					taskID, elapsed, cmd, taskID))
+			}
+		}
+	}
+
+	if len(hints) == 0 {
+		return ""
+	}
+	return "⚠️ 检测到以下后台任务仍在运行，请优先检查其状态：\n" + strings.Join(hints, "\n")
 }
 
 // cancelledExitResponse saves accumulated history and returns a clean
@@ -2195,6 +2358,16 @@ type IMMessageHandler struct {
 	// Lazily initialized on first use via ensureNudgeTracker().
 	nudgeTracker *nudge.NudgeTracker
 
+	// taskContextManager is the unified decision point for task switching.
+	// It determines whether a new message continues the current task,
+	// starts a new task, or recalls a past task — replacing the scattered
+	// logic across looksLikeFreshTaskRequest, TopicSwitchDetector, and
+	// shouldAutoClearIncompleteTaskContext.
+	taskContextManager *agent.TaskContextManager
+
+	// taskArchive stores completed/abandoned tasks for potential recall.
+	taskArchive *agent.TaskArchive
+
 	// steeringContextFiles accumulates file paths from tool calls
 	// (read_file, write_file, edit_file, etc.) during the current
 	// conversation. Used by fileMatch steering resolution.
@@ -3768,7 +3941,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.flushEvidenceOnSessionEnd(msg.UserID)
 		// Clean up workflow and understanding state.
 		h.cancelWorkflowForUser(msg.UserID)
-		resp := &IMAgentResponse{Text: "对话已重置。"}
+		resp := &IMAgentResponse{Text: "对话已重置。", ClearUI: true}
 		if h.currentLoopCtx != nil {
 			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, "")
 		}
@@ -4029,6 +4202,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	if decision.StartNewTask {
+		// Archive current task before clearing.
+		if len(EntriesBeforeClear) >= 2 {
+			h.archiveCurrentTask(msg.UserID, EntriesBeforeClear, "abandoned")
+		}
 		h.memory.ClearConversationAndDismissSlot(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)
 		EntriesBeforeClear = nil
@@ -4038,31 +4215,74 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if h.memory.BindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
 			unfinishedSlot = h.memory.ActiveUnfinishedSlot(msg.UserID)
 		}
-	} else {
-		if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, EntriesBeforeClear) {
-			h.memory.ClearConversationAndDismissSlot(msg.UserID)
-			h.clearPerUserSessionState(msg.UserID)
-			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
-			EntriesBeforeClear = nil
-			unfinishedSlot = nil
-			freshTask = true
-		}
 	}
 
 	// --- Pending ask_user response detection ---
-	// If the previous assistant message was an ask_user question, the current
-	// user message is a response to that question (not a new request).
-	// Consume the pending state and build context for the system prompt.
+	// Detected BEFORE the unified task context decision so it can be used
+	// as an input signal (ask_user response = always continue).
 	var askUserContext string
+	hasPendingAskUser = false
 	if raw, ok := h.pendingAskUser.LoadAndDelete(msg.UserID); ok {
 		pending := raw.(*pendingAskUserState)
 		// Expire after 30 minutes to avoid stale state.
 		if time.Since(pending.Timestamp) < 30*time.Minute {
+			hasPendingAskUser = true
 			askUserContext = fmt.Sprintf(
 				"【上下文提示】用户正在回答你之前提出的确认问题，而非发起新请求。\n你的问题：%s\n用户回答：%s\n请基于当前任务上下文理解用户意图，将其视为补充或修改意见。",
 				pending.Question, trimmed,
 			)
 			log.Printf("[AskUser] consumed pending ask_user for user %s, question=%q, answer=%q", msg.UserID, truncateRunes(pending.Question, 50), truncateRunes(trimmed, 50))
+		}
+	}
+
+	// --- Unified task context decision ---
+	// Replaces the scattered logic across shouldAutoClearIncompleteTaskContext,
+	// TopicSwitchDetector, and the confirmation gate's fresh-task detection.
+	// One LLM call (when needed) determines: continue / new / recall.
+	if !freshTask && !msg.IsBackground && decision.ResumeSlotID == "" {
+		tcDecision := h.resolveTaskContext(
+			msg.UserID, trimmed, EntriesBeforeClear,
+			hasPendingAskUser, false, false,
+		)
+		switch tcDecision.Action {
+		case agent.TaskNew:
+			// Archive current task before clearing.
+			if len(EntriesBeforeClear) >= 2 {
+				h.archiveCurrentTask(msg.UserID, EntriesBeforeClear, "switched")
+			}
+			h.memory.ClearConversationAndDismissSlot(msg.UserID)
+			h.clearPerUserSessionState(msg.UserID)
+			// Clear stale confirmation from the old task.
+			if h.confirmationStore != nil {
+				h.confirmationStore.clear(msg.UserID)
+			}
+			freshTask = true
+			// Clear ask_user context — it belongs to the old task.
+			askUserContext = ""
+			log.Printf("[TaskContext] new task for user %s: %s", msg.UserID, tcDecision.Reason)
+		case agent.TaskRecall:
+			// Archive current task, then restore the recalled one.
+			if len(EntriesBeforeClear) >= 2 {
+				h.archiveCurrentTask(msg.UserID, EntriesBeforeClear, "switched")
+			}
+			// Clear stale confirmation from the old task.
+			if h.confirmationStore != nil {
+				h.confirmationStore.clear(msg.UserID)
+			}
+			if h.restoreRecalledTask(msg.UserID, tcDecision.RecallTaskID) {
+				askUserContext = ""
+				unfinishedSlot = nil // recalled task replaces the old context
+				log.Printf("[TaskContext] recalled task %s for user %s", tcDecision.RecallTaskID, msg.UserID)
+			} else {
+				// Recall failed — treat as new task.
+				h.memory.ClearConversationAndDismissSlot(msg.UserID)
+				h.clearPerUserSessionState(msg.UserID)
+				freshTask = true
+				log.Printf("[TaskContext] recall failed for user %s, treating as new task", msg.UserID)
+			}
+		case agent.TaskContinue:
+			// Nothing to do — keep current conversation history.
+			log.Printf("[TaskContext] continue for user %s: %s", msg.UserID, tcDecision.Reason)
 		}
 	}
 
@@ -4088,26 +4308,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	// --- Automatic topic switch detection ---
-	// For interactive (non-background) messages, detect if the user has
-	// switched topics and auto-clear stale conversation context.
-	// Skip detection when the user is responding to an ask_user question.
-	if !msg.IsBackground && h.topicDetector != nil && len(EntriesBeforeClear) > 0 && !hasIncompleteTaskMarker(EntriesBeforeClear) && decision.ResumeSlotID == "" && !decision.StartNewTask && askUserContext == "" {
-		if h.topicDetector.detect(trimmed, msg.UserID, h.memory) == TopicNew {
-			// Archive a one-line summary before clearing.
-			if h.memoryStore != nil {
-				entries := h.memory.Load(msg.UserID)
-				if summary := buildQuickSummary(entries); summary != "" {
-					_ = h.memoryStore.Save(memory.Entry{
-						Content:  summary,
-						Category: "conversation_summary",
-					})
-				}
-			}
-			h.memory.Clear(msg.UserID)
-			h.clearPerUserSessionState(msg.UserID)
-			log.Printf("[TopicDetector] auto-cleared context for user %s", msg.UserID)
-		}
-	}
+	// NOTE: Topic detection is now handled by the unified TaskContextManager
+	// above. The legacy TopicSwitchDetector is kept as a fallback for
+	// background messages and edge cases not covered by the TCM.
+	// For interactive messages, the TCM's decision takes precedence.
 
 	// --- Background routing: delegate to BackgroundLoopManager ---
 	if msg.IsBackground && h.bgManager != nil && providedLoopCtx == nil {
@@ -4258,7 +4462,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			}
 		}
 	}
-	if shouldRequireExecutionConfirmation(msg, pending) {
+	// --- Execution confirmation gate ---
+	// Only require confirmation for genuinely new tasks (freshTask == true).
+	// When the TaskContextManager decided "continue", the message is a
+	// follow-up within the current conversation — not a fresh task.
+	if freshTask && shouldRequireExecutionConfirmation(msg, pending) {
 		intent := h.classifyTaskIntentForExecution(trimmed, msg.Attachments, httpClient)
 		if shouldRequireExecutionConfirmationForIntent(msg, pending, intent) {
 			// Attempt LLM-based task understanding for a structured summary.
@@ -4387,15 +4595,27 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		// that fires earlier, but this is the authoritative check.
 		if h.interruptHandler != nil && msg.Text != "" && h.currentLoopCtx != nil {
 			result := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
+			if result.PendingConfirm {
+				// Scheduler uncertain — return confirmation with corrections.
+				// Desktop panel renders buttons; gateway-level handlers have
+				// their own PendingConfirm + fallback timer logic.
+				return &IMAgentResponse{
+					Text:        result.Reply,
+					Corrections: result.Corrections,
+				}
+			}
 			if result.Handled {
 				// Fully handled (Replace/Merge/StatusQuery) — the message's
 				// purpose was to control the running loop, not to start a new task.
-				return &IMAgentResponse{Text: result.Reply}
+				return &IMAgentResponse{
+					Text:        result.Reply,
+					Corrections: result.Corrections,
+				}
 			}
-			// Queued (Insert/Enqueue) — fall through to Lock. The message
-			// will be processed normally after the current loop finishes.
-			// Desktop panel doesn't need instant feedback here because the
-			// user can see the buffer queue UI.
+			// Queued — fall through to Lock. The message will be processed
+			// normally after the current loop finishes. Desktop panel doesn't
+			// need instant feedback here because the user can see the buffer
+			// queue UI.
 		}
 		h.chatLoopMu.Lock()
 		defer h.chatLoopMu.Unlock()
@@ -4617,7 +4837,7 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 		b.WriteString(fmt.Sprintf("\n⚠️ %d 个会话终止失败，可能需要手动处理。", failCount))
 	}
 	b.WriteString("\n对话已重置，后续消息将正常对话。")
-	return &IMAgentResponse{Text: b.String()}
+	return &IMAgentResponse{Text: b.String(), ClearUI: true}
 }
 
 // handleBtwCommand runs a /btw side query in an independent agent loop.
@@ -5813,6 +6033,27 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		conversation = trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, makeSummarizer(cfg, httpClient))
 
+		// --- Prune stale no-tool-call turns before injecting new system messages ---
+		// When the LLM repeatedly returns text without tool calls, each
+		// stale turn (assistant text + any system recover prompts) stays
+		// in the conversation, inflating context and pushing useful history
+		// out of the token window. This creates a positive feedback loop:
+		// more stale turns → less useful context → LLM more confused →
+		// more stale turns.
+		//
+		// Fix: remove the most recent consecutive no-tool-call assistant
+		// messages and any system messages that were injected between them
+		// (recover prompts, no-tool nudges). This keeps the conversation
+		// clean so the LLM sees the original task context + one fresh
+		// recover prompt, not a trail of failed attempts.
+		//
+		// Must run BEFORE GoalAnchor/ProgressTracker injection — otherwise
+		// those non-recover system messages block the backward scan and
+		// prevent pruning of stale turns that precede them.
+		if phase.Stage == agentStageRecover && (phase.ConsecutiveNoTool >= 2 || phase.ConsecutiveEmptyResponses >= 1) {
+			conversation = pruneStaleNoToolTurns(conversation)
+		}
+
 		// --- Harness: inject GoalAnchor content ---
 		systemMessagesStart := len(conversation)
 		if loopGoalAnchor != nil && loopGoalAnchor.ShouldAnchor(iteration) {
@@ -6549,6 +6790,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if emptyVisibleResult {
 				phase.ConsecutiveEmptyResponses++
 
+				// Compute background task hint once for both hard-exit and
+				// recover paths below.
+				taskHint := h.pendingBackgroundTaskHint(ctx.StartedAt)
+
 				// Hard exit: if the model has returned empty content too many
 				// times in a row, or total recover injections exceeded the cap,
 				// stop the loop. Continuing only inflates context and worsens
@@ -6563,13 +6808,21 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if fallbackText == "" {
 						fallbackText = "抱歉，模型多次返回空响应，无法继续处理。请尝试简化请求或重新发送。"
 					}
+					// If there are pending background tasks, append a hint so the
+					// user knows they can check on them manually.
+					if taskHint != "" {
+						fallbackText += "\n\n" + taskHint + "\n你可以发送「检查后台任务」来查看进度。"
+					}
 					finalResp := &IMAgentResponse{Text: fallbackText, HardExit: true}
 					attachLLMTelemetry(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
 					return finalResp
 				}
 
-				enterRecoverPhase(&phase, "empty_final_response", buildEmptyResultRecoverPrompt())
+				enterRecoverPhase(&phase, "empty_final_response", buildEmptyResultRecoverPromptWithTasks(taskHint))
+				if taskHint != "" {
+					log.Printf("[agent-loop] empty-response recover: injected pending background task hint")
+				}
 				continue
 			}
 			// Reset consecutive empty counter on non-empty response.

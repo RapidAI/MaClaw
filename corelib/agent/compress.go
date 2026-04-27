@@ -21,6 +21,8 @@ import (
 // AutoCompressConversation checks if the conversation should be auto-compressed
 // before an LLM call. If compression is needed, it compresses the conversation
 // in-place and returns the compressed version. Otherwise returns the original.
+// If LLM-based compression fails, falls back to truncation-based compression
+// to ensure the conversation stays within the context window.
 func AutoCompressConversation(
 	conversation []interface{},
 	cfg corelib.MaclawLLMConfig,
@@ -47,8 +49,13 @@ func AutoCompressConversation(
 
 	result, err := compressor.Compress(messages)
 	if err != nil {
-		log.Printf("[auto-compress] compression failed, skipping: %v", err)
-		return conversation
+		log.Printf("[auto-compress] compression failed, falling back to truncation: %v", err)
+		// Fallback: use TrimConversation to enforce the token budget.
+		// This ensures the conversation doesn't exceed the context window
+		// even when LLM-based summarization is unavailable.
+		// EffectiveContextTokens() already reserves 20% for output,
+		// so pass it directly as the token limit.
+		return TrimConversation(conversation, cfg.EffectiveContextTokens(), 0, nil)
 	}
 
 	log.Printf("[auto-compress] %s", result.MarkerText)

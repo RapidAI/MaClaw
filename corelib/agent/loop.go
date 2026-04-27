@@ -136,8 +136,10 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 
 	totalToolCalls := 0
 	consecutiveEmpty := 0
-	const maxConsecutiveEmpty = 3
+	const maxConsecutiveEmpty = 5
 	var lastNonEmptyContent string
+	var lastToolName string       // track last tool name for empty-response recovery
+	var lastToolOutcome toolOutcome // structured outcome of last tool execution
 
 	// Drift detection: track recent tool calls to detect loops.
 	type toolCallRecord struct {
@@ -183,7 +185,12 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 		// Track consecutive empty responses for hard exit.
 		if strings.TrimSpace(content) == "" && len(choice.Message.ToolCalls) == 0 {
 			consecutiveEmpty++
-			log.Printf("[agent-loop] empty response #%d (iteration=%d)", consecutiveEmpty, iteration)
+			logSnippet := strings.ReplaceAll(lastToolOutcome.snippet, "\n", "\\n")
+			if len(logSnippet) > 120 {
+				logSnippet = logSnippet[:120] + "…"
+			}
+			log.Printf("[agent-loop] empty response #%d (iteration=%d, lastTool=%s, outcome=%d, snippet=%s)",
+				consecutiveEmpty, iteration, lastToolName, lastToolOutcome.kind, logSnippet)
 			if consecutiveEmpty >= maxConsecutiveEmpty {
 				log.Printf("[agent-loop] hard exit: %d consecutive empty responses", consecutiveEmpty)
 				// Return the last non-empty content as a fallback.
@@ -194,6 +201,16 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 					HardExit:   true,
 				}
 			}
+
+			// Brief pause before retry to avoid rapid-fire empty requests.
+			time.Sleep(time.Duration(consecutiveEmpty) * time.Second)
+			if cb.ShouldStop() {
+				return LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls}
+			}
+
+			// Build a context-aware recovery prompt.
+			recoverPrompt := buildEmptyResponseRecovery(consecutiveEmpty, lastToolName, lastToolOutcome, userText)
+
 			// Inject a recover prompt to nudge the LLM.
 			conversation = append(conversation, map[string]interface{}{
 				"role":    "assistant",
@@ -201,7 +218,7 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 			})
 			conversation = append(conversation, map[string]interface{}{
 				"role":    "user",
-				"content": "[系统] 你的上一条回复为空。请直接回答用户的问题，或说明你需要什么信息。",
+				"content": recoverPrompt,
 			})
 			continue
 		}
@@ -243,6 +260,10 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 			result := cb.ExecuteTool(tc.Function.Name, tc.Function.Arguments)
 			cb.OnToolResult(tc.Function.Name)
 
+			// Track last tool for empty-response recovery context.
+			lastToolName = tc.Function.Name
+			lastToolOutcome = classifyToolResult(result)
+
 			if askReq, ok := ParseAskUserResult(result); ok {
 				return LoopResult{
 					Text:       FormatAskUserForDisplay(askReq),
@@ -253,10 +274,7 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 			}
 
 			// Determine success for outcome tracking.
-			toolSuccess := !strings.HasPrefix(result, "未知工具") &&
-				!strings.HasPrefix(result, "工具执行异常") &&
-				!strings.HasPrefix(result, "错误:") &&
-				!strings.HasPrefix(result, "Error:")
+			toolSuccess := lastToolOutcome.kind == toolOutcomeOK
 			h.OnToolExecuted(tc.Function.Name, tc.Function.Arguments, result, toolSuccess)
 
 			// Drift detection: track this call and check for repetition.
@@ -327,6 +345,132 @@ func doLLMRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfig, con
 		return llm.DoAnthropicRequest(ctx, cfg, conversation, tools, httpClient)
 	}
 	return llm.DoOpenAIRequest(ctx, cfg, conversation, tools, httpClient)
+}
+
+// buildEmptyResponseRecovery constructs a context-aware recovery prompt when
+// the LLM returns an empty response (no content, no tool calls). The prompt
+// includes information about the last tool execution to help the LLM resume
+// its task, especially after tool timeouts or errors.
+func buildEmptyResponseRecovery(emptyCount int, lastToolName string, outcome toolOutcome, userGoal string) string {
+	var sb strings.Builder
+
+	// Escalating urgency based on consecutive empty count.
+	if emptyCount <= 2 {
+		sb.WriteString("[系统] 你的上一条回复为空。")
+	} else {
+		sb.WriteString(fmt.Sprintf("[系统] 警告：你已经连续 %d 次返回空回复。你必须立即回复内容或调用工具，否则任务将被终止。", emptyCount))
+	}
+
+	// Include last tool context if available.
+	// The outcome kind is determined structurally by classifyToolResult,
+	// not by keyword matching on arbitrary output.
+	if lastToolName != "" {
+		switch outcome.kind {
+		case toolOutcomeTimeout:
+			sb.WriteString(fmt.Sprintf("\n上一个工具 %s 执行超时。请不要放弃——你应该：", lastToolName))
+			sb.WriteString("\n1. 检查操作是否仍在后台运行（如适用）")
+			sb.WriteString("\n2. 尝试用更短的超时或不同的方式重试")
+			sb.WriteString("\n3. 如果无法继续，向用户说明当前进度和遇到的问题")
+		case toolOutcomeError:
+			sb.WriteString(fmt.Sprintf("\n上一个工具 %s 返回了错误。请分析错误原因并尝试其他方法继续完成任务。", lastToolName))
+		default:
+			sb.WriteString(fmt.Sprintf("\n上一个工具调用是 %s。请根据其结果继续执行任务。", lastToolName))
+		}
+	}
+
+	// Remind the LLM of the original goal on later retries.
+	if emptyCount >= 2 && userGoal != "" {
+		goalSnippet := truncateRunesPrefix(userGoal, 200)
+		sb.WriteString(fmt.Sprintf("\n\n用户的原始目标：%s", goalSnippet))
+		sb.WriteString("\n请继续完成这个任务，或者告诉用户当前的进展和遇到的问题。")
+	}
+
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// toolOutcome — structured classification of tool execution results.
+//
+// All classification logic lives in classifyToolResult, which inspects the
+// well-known prefixes produced by our own tool implementations (e.g.
+// "[错误] 命令超时", "工具执行异常"). This is NOT keyword matching on
+// arbitrary LLM output — these are structured markers we control.
+// ---------------------------------------------------------------------------
+
+type toolOutcomeKind int
+
+const (
+	toolOutcomeOK      toolOutcomeKind = iota // tool executed successfully
+	toolOutcomeTimeout                        // tool hit a deadline / timeout
+	toolOutcomeError                          // tool returned a known error
+)
+
+type toolOutcome struct {
+	kind    toolOutcomeKind
+	snippet string // last ~300 runes of the result for logging
+}
+
+// classifyToolResult inspects the tool result string and returns a structured
+// outcome. The markers checked here are produced by our own tool code:
+//
+//   - "[错误] 命令超时"  → tools_local.go, im_tools_local.go
+//   - "[错误] 退出码"    → tools_local.go, im_tools_local.go
+//   - "[错误] 命令启动失败" → tools_local.go, im_tools_local.go
+//   - "[错误] ..."       → im_tool_async_wait.go
+//   - "工具执行异常"     → im_tool_execution.go (panic recovery)
+//   - "未知工具"         → im_tool_execution.go, subagent callbacks
+//   - "参数解析失败"     → im_tool_execution.go, tui callbacks
+//   - "错误:"           → various tool handlers
+//   - "Error:"          → various tool handlers
+func classifyToolResult(result string) toolOutcome {
+	snippet := truncateRunesSuffix(result, 300)
+
+	// Timeout: our bash/ssh tools append "[错误] 命令超时（N 秒）".
+	if strings.Contains(result, "[错误] 命令超时") {
+		return toolOutcome{kind: toolOutcomeTimeout, snippet: snippet}
+	}
+
+	// Structured error markers from our tool implementations.
+	errorPrefixes := []string{
+		"[错误]",        // tools_local, im_tools_local, im_tool_async_wait
+		"工具执行异常",  // im_tool_execution.go panic recovery
+		"未知工具",      // im_tool_execution.go, subagent callbacks
+		"参数解析失败",  // im_tool_execution.go, tui callbacks
+		"错误:",         // various tool handlers
+		"Error:",        // various tool handlers
+	}
+	trimmed := strings.TrimSpace(result)
+	for _, prefix := range errorPrefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			return toolOutcome{kind: toolOutcomeError, snippet: snippet}
+		}
+	}
+	// Also check for [错误] appearing mid-result (e.g. bash output + error).
+	if strings.Contains(result, "\n[错误]") {
+		return toolOutcome{kind: toolOutcomeError, snippet: snippet}
+	}
+
+	return toolOutcome{kind: toolOutcomeOK, snippet: snippet}
+}
+
+// truncateRunesSuffix returns the last n runes of s (UTF-8 safe).
+// If s has fewer than n runes, returns s unchanged.
+func truncateRunesSuffix(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[len(runes)-n:])
+}
+
+// truncateRunesPrefix returns the first n runes of s with "..." appended (UTF-8 safe).
+// If s has fewer than n runes, returns s unchanged.
+func truncateRunesPrefix(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "..."
 }
 
 // doLLMRequestWithToolsStream sends a streaming LLM request, calling onToken

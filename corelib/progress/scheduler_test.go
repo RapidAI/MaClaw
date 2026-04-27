@@ -70,22 +70,22 @@ func TestSchedule_DecisionMatrix(t *testing.T) {
 			expected: ActionStatusQuery,
 		},
 		{
-			name: "low relevance + diff domain + medium → Insert",
+			name: "low relevance + diff domain + medium → Queue",
 			input: ScheduleInput{
 				Relevance:   0.15,
 				DomainMatch: false,
 				Structure:   StructureSignal{Length: 15, IsMedium: true},
 			},
-			expected: ActionInsert,
+			expected: ActionQueue,
 		},
 		{
-			name: "low relevance + diff domain + long → Insert",
+			name: "low relevance + diff domain + long → Queue",
 			input: ScheduleInput{
 				Relevance:   0.05,
 				DomainMatch: false,
 				Structure:   StructureSignal{Length: 50, IsLong: true},
 			},
-			expected: ActionInsert,
+			expected: ActionQueue,
 		},
 
 		// --- Embedding unavailable (relevance = -1) ---
@@ -99,13 +99,13 @@ func TestSchedule_DecisionMatrix(t *testing.T) {
 			expected: ActionMerge,
 		},
 		{
-			name: "no embedding + diff domain + medium → Insert",
+			name: "no embedding + diff domain + medium → Queue",
 			input: ScheduleInput{
 				Relevance:   -1,
 				DomainMatch: false,
 				Structure:   StructureSignal{Length: 15, IsMedium: true},
 			},
-			expected: ActionInsert,
+			expected: ActionQueue,
 		},
 	}
 
@@ -151,7 +151,7 @@ func TestSchedule_RealWorldScenarios(t *testing.T) {
 			newMessage:  "帮我查下杭州天气",
 			relevance:   0.08,
 			domainMatch: false,
-			expected:    ActionInsert,
+			expected:    ActionQueue,
 		},
 		{
 			name:        "status query: ?",

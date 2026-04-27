@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // ContextCompressor summarizes middle conversation turns when the context
@@ -48,12 +50,12 @@ func ShouldCompress(messageCount int, estimatedTokens int, contextWindow int, th
 }
 
 // EstimateTokens provides a rough token count for a conversation.
-// Uses the heuristic of ~4 chars per token for mixed CJK/English.
+// Delegates to corelib.EstimateTextTokens for consistent CJK-aware estimation.
 func EstimateTokens(messages []map[string]interface{}) int {
 	total := 0
 	for _, m := range messages {
 		if content, ok := m["content"].(string); ok {
-			total += len(content) / 4
+			total += corelib.EstimateTextTokens(content)
 		}
 	}
 	return total
@@ -127,7 +129,7 @@ Keep it under 300 words. Return ONLY the summary, no commentary.`},
 	result := &ContextCompressResult{
 		OriginalCount:   len(messages),
 		CompressedCount: len(compressed),
-		SummaryTokens:   len(summary) / 4,
+		SummaryTokens:   corelib.EstimateTextTokens(summary),
 	}
 
 	log.Printf("[ContextCompressor] compressed %d → %d messages (summary ~%d tokens)",

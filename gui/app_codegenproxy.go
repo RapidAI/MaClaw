@@ -29,8 +29,12 @@ func (a *App) StartCodeGenProxy(upstreamURL, apiKey string) (string, error) {
 	if codegenProxyServer != nil {
 		// Update upstream config on the running server
 		codegenProxyServer.SetUpstream(upstreamURL, apiKey)
+		log.Printf("[codegen-proxy] upstream updated on running proxy: url=%s", upstreamURL)
 		return "already running (upstream updated)", nil
 	}
+
+	log.Printf("[codegen-proxy] ▶ Starting CodeGen proxy: addr=%s, upstream=%s, time=%s",
+		codegenProxyAddr, upstreamURL, time.Now().Format(time.RFC3339))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	srv := codegenproxy.NewServer(codegenProxyAddr)
@@ -44,18 +48,26 @@ func (a *App) StartCodeGenProxy(upstreamURL, apiKey string) (string, error) {
 		codegenProxyServer = nil
 		codegenProxyCancel = nil
 		codegenProxyMu.Unlock()
+		if err != nil {
+			log.Printf("[codegen-proxy] ◼ proxy server exited with error: %v", err)
+		} else {
+			log.Printf("[codegen-proxy] ◼ proxy server exited normally")
+		}
 	}()
 
 	select {
 	case err := <-startErr:
 		cancel()
 		if err != nil {
+			log.Printf("[codegen-proxy] ✖ startup failed: %v", err)
 			return "", fmt.Errorf("CodeGen 代理启动失败: %w", err)
 		}
+		log.Printf("[codegen-proxy] ✖ server exited unexpectedly during startup")
 		return "", fmt.Errorf("CodeGen 代理启动失败: 服务器意外退出")
 	case <-time.After(300 * time.Millisecond):
 		codegenProxyServer = srv
 		codegenProxyCancel = cancel
+		log.Printf("[codegen-proxy] ✔ proxy started successfully on %s", codegenProxyAddr)
 		return "started on " + codegenProxyAddr, nil
 	}
 }
@@ -65,6 +77,8 @@ func (a *App) StopCodeGenProxy() string {
 	codegenProxyMu.Lock()
 	defer codegenProxyMu.Unlock()
 
+	log.Printf("[codegen-proxy] ◼ Stopping CodeGen proxy, time=%s", time.Now().Format(time.RFC3339))
+
 	if codegenProxyCancel != nil {
 		codegenProxyCancel()
 		codegenProxyCancel = nil
@@ -73,6 +87,7 @@ func (a *App) StopCodeGenProxy() string {
 		codegenProxyServer.Stop()
 		codegenProxyServer = nil
 	}
+	log.Printf("[codegen-proxy] ◼ CodeGen proxy stopped")
 	return "stopped"
 }
 

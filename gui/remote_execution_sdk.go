@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,22 +57,32 @@ func NewSDKExecutionStrategy() *SDKExecutionStrategy {
 }
 
 func (s *SDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
+	log.Printf("[sdk-lifecycle] ▶ Starting SDK process: cmd=%q, args=%v, cwd=%q", cmd.Command, cmd.Args, cmd.Cwd)
+
 	execPath, err := resolveExecutablePath(cmd.Command)
 	if err != nil {
+		log.Printf("[sdk-lifecycle] ✖ Executable not found: cmd=%q, error=%v", cmd.Command, err)
 		return nil, fmt.Errorf("sdk: %w", err)
 	}
+	log.Printf("[sdk-lifecycle] resolved executable: %s", execPath)
 
 	args := append([]string{}, cmd.Args...)
 	c := buildExecCmd(execPath, args, cmd.Cwd, cmd.Env)
 
 	pipes, err := createProcessPipes(c)
 	if err != nil {
+		log.Printf("[sdk-lifecycle] ✖ Pipe creation failed: %v", err)
 		return nil, fmt.Errorf("sdk: %w", err)
 	}
 
 	if err := c.Start(); err != nil {
+		log.Printf("[sdk-lifecycle] ✖ Process start failed: cmd=%s, args=%v, cwd=%s, error=%v",
+			execPath, args, cmd.Cwd, err)
 		return nil, fmt.Errorf("sdk: start: %w", err)
 	}
+
+	log.Printf("[sdk-lifecycle] ✔ SDK process started: pid=%d, cmd=%s, cwd=%s", c.Process.Pid, execPath, cmd.Cwd)
+	logLaunchEnv("sdk-lifecycle", cmd.Env)
 
 	sdkDiag("process started: pid=%d, cmd=%s, args=%v, cwd=%s",
 		c.Process.Pid, cmd.Command, cmd.Args, cmd.Cwd)
@@ -543,8 +554,28 @@ func (h *SDKExecutionHandle) waitProcess() {
 	defer close(h.exitCh)
 
 	err := h.cmd.Wait()
+
+	var exitCode int = -1
+	var codePtr *int
+	if h.cmd.ProcessState != nil {
+		exitCode = h.cmd.ProcessState.ExitCode()
+		codePtr = &exitCode
+	}
+
+	// Log detailed exit information for debugging unexpected exits.
+	ps := h.cmd.ProcessState
+	if ps != nil {
+		log.Printf("[sdk-lifecycle] ◼ SDK process exited: pid=%d, exit_code=%d, user_time=%s, sys_time=%s",
+			h.pid, exitCode, ps.UserTime(), ps.SystemTime())
+	} else {
+		log.Printf("[sdk-lifecycle] ◼ SDK process exited: pid=%d, no ProcessState available", h.pid)
+	}
+	if err != nil {
+		log.Printf("[sdk-lifecycle] process exit error: pid=%d, error=%v", h.pid, err)
+	}
+
 	sdkDiag("process exited: pid=%d, err=%v, exitCode=%d",
-		h.pid, err, h.cmd.ProcessState.ExitCode())
+		h.pid, err, exitCode)
 
 	// Wait for readStdout and readStderr goroutines to finish so that
 	// all output (including error messages on stderr) is captured before
@@ -552,12 +583,6 @@ func (h *SDKExecutionHandle) waitProcess() {
 	// (e.g. exit code 1 due to missing config) may lose their error
 	// output, making it impossible for the user to diagnose the failure.
 	h.readerRC.Wait()
-
-	var codePtr *int
-	if h.cmd.ProcessState != nil {
-		code := h.cmd.ProcessState.ExitCode()
-		codePtr = &code
-	}
 
 	// Distinguish between a real execution error (e.g. signal, crash)
 	// and a normal non-zero exit code.  Go's exec package returns an

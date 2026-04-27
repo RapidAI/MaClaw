@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentnet"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
@@ -21,6 +22,7 @@ func SetLogDetailEnabled(enabled bool) {
 	logDetailEnabled.Store(enabled)
 	tool.SetLogDetailEnabled(enabled)
 	weixin.SetLogDetailEnabled(enabled)
+	agentnet.SetLogDetailEnabled(enabled)
 }
 
 // IsLogDetailEnabled reports whether detailed logs may be written.

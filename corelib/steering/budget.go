@@ -1,5 +1,7 @@
 package steering
 
+import "github.com/RapidAI/CodeClaw/corelib"
+
 // Token budget constants for steering injection.
 //
 // Budget rationale (based on default 110K context window):
@@ -64,13 +66,7 @@ func effectiveBudget(effectiveContextTokens int) int {
 	return budget
 }
 
-// estimateTokens returns a rough token count for the given text.
-// Uses rune count: 1 token ≈ 3 runes (middle-ground for mixed CJK/Latin).
-// Consistent with gui/im_system_prompt.go estimateTokens.
+// estimateTokens delegates to corelib.EstimateTextTokens.
 func estimateTokens(s string) int {
-	n := len([]rune(s))
-	if n == 0 {
-		return 0
-	}
-	return (n + 2) / 3
+	return corelib.EstimateTextTokens(s)
 }

@@ -32,6 +32,8 @@ interface AIAssistantSendResult {
     Error?: string;
     deferred?: boolean;
     Deferred?: boolean;
+    clear_ui?: boolean;
+    ClearUI?: boolean;
     confirmed_resume?: boolean;
     ConfirmedResume?: boolean;
     fields?: any;
@@ -714,6 +716,7 @@ function normalizeSendResponse(response: AIAssistantSendResult | null | undefine
         trace_event_count: typeof raw.trace_event_count === 'number' ? raw.trace_event_count : (typeof raw.TraceEventCount === 'number' ? raw.TraceEventCount : undefined),
         evidence_count: typeof raw.evidence_count === 'number' ? raw.evidence_count : (typeof raw.EvidenceCount === 'number' ? raw.EvidenceCount : undefined),
         deferred: typeof raw.deferred === 'boolean' ? raw.deferred : (typeof raw.Deferred === 'boolean' ? raw.Deferred : false),
+        clear_ui: typeof raw.clear_ui === 'boolean' ? raw.clear_ui : (typeof raw.ClearUI === 'boolean' ? raw.ClearUI : false),
         confirmed_resume: typeof raw.confirmed_resume === 'boolean' ? raw.confirmed_resume : (typeof raw.ConfirmedResume === 'boolean' ? raw.ConfirmedResume : false),
         trial_reflect_summary: typeof raw.trial_reflect_summary === 'string' ? raw.trial_reflect_summary : (typeof raw.TrialReflectSummary === 'string' ? raw.TrialReflectSummary : ''),
         trial_reflect_status: typeof raw.trial_reflect_status === 'string' ? raw.trial_reflect_status : (typeof raw.TrialReflectStatus === 'string' ? raw.TrialReflectStatus : ''),
@@ -1163,6 +1166,18 @@ function removeRoundMessage(messages: ChatMessage[], assistantMessageId: string 
 }
 
 function resolveSendResult(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences, errorText?: string): ChatMessage[] {
+    if (!errorText && response?.clear_ui) {
+        // Backend signaled a conversation reset (/new, /reset, /clear).
+        // Clear all existing messages and show only the reset confirmation.
+        const resetText = response.text || response.error || '';
+        if (!resetText) return [];
+        return [{
+            id: nextId(),
+            role: 'assistant' as const,
+            content: resetText,
+            timestamp: Date.now(),
+        }];
+    }
     return errorText
         ? replaceRoundWithError(messages, assistantMessageId, requestId, errorText)
         : response?.error
@@ -1857,6 +1872,18 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 });
             }
             setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
+            if (response.clear_ui) {
+                // Backend signaled conversation reset — clear transient UI state
+                // and immediately flush persistence to avoid stale debounced writes.
+                if (persistTimerRef.current) {
+                    clearTimeout(persistTimerRef.current);
+                    persistTimerRef.current = null;
+                }
+                lastPersistedPayloadRef.current = null;
+                localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
+                progressTailRef.current = null;
+                setProgressMessages([]);
+            }
             if (response.deferred) {
                 setPendingTaskState(await resolvePendingAITask(effectiveRequestId, response) ?? { requestId: effectiveRequestId, jobID: response.job_id || undefined, runID: response.run_id || undefined });
             } else {

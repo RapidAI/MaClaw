@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"strings"
 	"sync"
@@ -26,23 +27,33 @@ func NewCodexSDKExecutionStrategy() *CodexSDKExecutionStrategy {
 }
 
 func (s *CodexSDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
+	log.Printf("[codex-lifecycle] ▶ Starting Codex SDK process: cmd=%q, args=%v, cwd=%q", cmd.Command, cmd.Args, cmd.Cwd)
+
 	execPath, err := resolveExecutablePath(cmd.Command)
 	if err != nil {
+		log.Printf("[codex-lifecycle] ✖ Executable not found: cmd=%q, error=%v", cmd.Command, err)
 		return nil, fmt.Errorf("codex-sdk: %w", err)
 	}
+	log.Printf("[codex-lifecycle] resolved executable: %s", execPath)
 
 	args := append([]string{}, cmd.Args...)
 	c := buildExecCmd(execPath, args, cmd.Cwd, cmd.Env)
 
 	pipes, err := createProcessPipes(c)
 	if err != nil {
+		log.Printf("[codex-lifecycle] ✖ Pipe creation failed: %v", err)
 		return nil, fmt.Errorf("codex-sdk: %w", err)
 	}
 
 	if err := c.Start(); err != nil {
+		log.Printf("[codex-lifecycle] ✖ Process start failed: cmd=%s, args=%v, cwd=%s, error=%v",
+			execPath, args, cmd.Cwd, err)
 		return nil, fmt.Errorf("codex-sdk: start failed: cmd=%s args=%v cwd=%s: %w",
 			execPath, args, cmd.Cwd, err)
 	}
+
+	log.Printf("[codex-lifecycle] ✔ Codex SDK process started: pid=%d, cmd=%s, cwd=%s", c.Process.Pid, execPath, cmd.Cwd)
+	logLaunchEnv("codex-lifecycle", cmd.Env)
 
 	rc := NewReaderCoordinator(128)
 	handle := &CodexSDKExecutionHandle{
@@ -257,6 +268,22 @@ func (h *CodexSDKExecutionHandle) waitProcess() {
 	if h.cmd.ProcessState != nil {
 		code := h.cmd.ProcessState.ExitCode()
 		codePtr = &code
+	}
+
+	// Log detailed exit information for debugging unexpected exits.
+	exitCode := -1
+	if codePtr != nil {
+		exitCode = *codePtr
+	}
+	ps := h.cmd.ProcessState
+	if ps != nil {
+		log.Printf("[codex-lifecycle] ◼ Codex process exited: pid=%d, exit_code=%d, elapsed=%s, user_time=%s, sys_time=%s",
+			h.pid, exitCode, elapsed.Round(time.Millisecond), ps.UserTime(), ps.SystemTime())
+	} else {
+		log.Printf("[codex-lifecycle] ◼ Codex process exited: pid=%d, elapsed=%s, no ProcessState", h.pid, elapsed.Round(time.Millisecond))
+	}
+	if err != nil {
+		log.Printf("[codex-lifecycle] process exit error: pid=%d, error=%v", h.pid, err)
 	}
 
 	// If the process exited very quickly (< 5s), it likely failed to start

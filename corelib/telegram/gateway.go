@@ -299,14 +299,26 @@ func (g *Gateway) pollLoop(ctx context.Context) {
 					if g.interruptHandler != nil && incoming.Text != "" {
 						result := g.interruptHandler.TryInterrupt(userKey, incoming.Text)
 						if result.Handled {
+							replyText := result.Reply
+							if len(result.Corrections) > 0 && replyText != "" {
+								replyText = progress.FormatCorrectionsText(replyText, result.Corrections)
+							}
+							if replyText != "" {
+								_ = g.SendText(context.Background(), OutgoingText{
+									ChatID: m.Chat.ID,
+									Text:   replyText,
+								})
+							}
 							return // Cancel/Merge/StatusQuery — fully handled
 						}
 						if result.Queued && result.Reply != "" {
-							// Insert/Enqueue — send instant feedback, then
-							// fall through to Lock (message queues normally).
+							replyText := result.Reply
+							if len(result.Corrections) > 0 {
+								replyText = progress.FormatCorrectionsText(replyText, result.Corrections)
+							}
 							_ = g.SendText(context.Background(), OutgoingText{
 								ChatID: m.Chat.ID,
-								Text:   result.Reply,
+								Text:   replyText,
 							})
 						}
 					}

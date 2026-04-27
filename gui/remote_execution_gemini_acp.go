@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"strings"
 	"sync"
@@ -30,22 +31,32 @@ func NewGeminiACPExecutionStrategy() *GeminiACPExecutionStrategy {
 }
 
 func (s *GeminiACPExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
+	log.Printf("[gemini-lifecycle] ▶ Starting Gemini ACP process: cmd=%q, args=%v, cwd=%q", cmd.Command, cmd.Args, cmd.Cwd)
+
 	execPath, err := resolveExecutablePath(cmd.Command)
 	if err != nil {
+		log.Printf("[gemini-lifecycle] ✖ Executable not found: cmd=%q, error=%v", cmd.Command, err)
 		return nil, fmt.Errorf("gemini-acp: %w", err)
 	}
+	log.Printf("[gemini-lifecycle] resolved executable: %s", execPath)
 
 	args := append([]string{}, cmd.Args...)
 	c := buildExecCmd(execPath, args, cmd.Cwd, cmd.Env)
 
 	pipes, err := createProcessPipes(c)
 	if err != nil {
+		log.Printf("[gemini-lifecycle] ✖ Pipe creation failed: %v", err)
 		return nil, fmt.Errorf("gemini-acp: %w", err)
 	}
 
 	if err := c.Start(); err != nil {
+		log.Printf("[gemini-lifecycle] ✖ Process start failed: cmd=%s, args=%v, cwd=%s, error=%v",
+			execPath, args, cmd.Cwd, err)
 		return nil, fmt.Errorf("gemini-acp: start: %w", err)
 	}
+
+	log.Printf("[gemini-lifecycle] ✔ Gemini ACP process started: pid=%d, cmd=%s, cwd=%s", c.Process.Pid, execPath, cmd.Cwd)
+	logLaunchEnv("gemini-lifecycle", cmd.Env)
 
 	rc := NewReaderCoordinator(128)
 	handle := &GeminiACPExecutionHandle{
@@ -68,14 +79,19 @@ func (s *GeminiACPExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, er
 	go handle.waitProcess()
 
 	// Perform ACP handshake: initialize + session/new
+	log.Printf("[gemini-lifecycle] performing ACP handshake: initialize...")
 	if err := handle.acpInitialize(); err != nil {
+		log.Printf("[gemini-lifecycle] ✖ ACP initialize failed: pid=%d, error=%v", c.Process.Pid, err)
 		_ = c.Process.Kill()
 		return nil, fmt.Errorf("gemini-acp: initialize failed: %w", err)
 	}
+	log.Printf("[gemini-lifecycle] ACP initialize OK, creating session...")
 	if err := handle.acpNewSession(); err != nil {
+		log.Printf("[gemini-lifecycle] ✖ ACP session/new failed: pid=%d, error=%v", c.Process.Pid, err)
 		_ = c.Process.Kill()
 		return nil, fmt.Errorf("gemini-acp: session/new failed: %w", err)
 	}
+	log.Printf("[gemini-lifecycle] ✔ ACP handshake complete: session=%s, pid=%d", handle.SessionID(), handle.pid)
 
 	handle.outputCh <- []byte(fmt.Sprintf("[gemini-acp] session=%s pid=%d\n", handle.SessionID(), handle.pid))
 
@@ -704,6 +720,22 @@ func (h *GeminiACPExecutionHandle) waitProcess() {
 	if h.cmd.ProcessState != nil {
 		code := h.cmd.ProcessState.ExitCode()
 		codePtr = &code
+	}
+
+	// Log detailed exit information for debugging unexpected exits.
+	exitCode := -1
+	if codePtr != nil {
+		exitCode = *codePtr
+	}
+	ps := h.cmd.ProcessState
+	if ps != nil {
+		log.Printf("[gemini-lifecycle] ◼ Gemini ACP process exited: pid=%d, exit_code=%d, user_time=%s, sys_time=%s",
+			h.pid, exitCode, ps.UserTime(), ps.SystemTime())
+	} else {
+		log.Printf("[gemini-lifecycle] ◼ Gemini ACP process exited: pid=%d, no ProcessState", h.pid)
+	}
+	if err != nil {
+		log.Printf("[gemini-lifecycle] process exit error: pid=%d, error=%v", h.pid, err)
 	}
 
 	h.exitCh <- PTYExit{

@@ -381,6 +381,14 @@ type Gateway struct {
 	// the message is processed immediately (cancel/merge/status) without
 	// waiting for the lock. If handled=false, the message is queued normally.
 	interruptHandler progress.InterruptHandler
+
+	// correctionStore tracks pending correction options so numbered replies
+	// (e.g. "1" for "改为打断") can be resolved to the correct action.
+	correctionStore *progress.CorrectionStore
+
+	// lastCorrectionID stores the most recent correction ID per user so
+	// short numbered replies can be matched to the right correction set.
+	lastCorrectionID sync.Map // map[userID]string
 }
 
 // NewGateway creates a new WeChat gateway.
@@ -392,6 +400,7 @@ func NewGateway(config Config, handler MessageHandler) *Gateway {
 		ctxTokens:        newContextTokenCache(),
 		userLocks:        make(map[string]*sync.Mutex),
 		queueNoticeTimes: make(map[string]time.Time),
+		correctionStore:  progress.NewCorrectionStore(),
 	}
 }
 
@@ -404,6 +413,131 @@ func (g *Gateway) SetStatusCallback(cb StatusCallback) {
 // messages during active agent loops.
 func (g *Gateway) SetInterruptHandler(ih progress.InterruptHandler) {
 	g.interruptHandler = ih
+}
+
+// handleCorrectionReply checks if the incoming text is a numbered correction
+// reply (e.g. "1" or "2") matching a pending correction set. If so, it
+// executes the correction and sends the result. Returns true if handled.
+//
+// When the correction resolves to Queue or Replace, the original message is
+// re-dispatched through the normal handler path so it gets processed as a
+// task (Queue waits for the lock; Replace runs after cancellation).
+func (g *Gateway) handleCorrectionReply(userID, text, ctxToken string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+
+	// Parse single-digit number.
+	if len(text) != 1 || text[0] < '1' || text[0] > '9' {
+		return false
+	}
+	idx := int(text[0]-'0') - 1 // 0-based
+
+	// Look up the last correction ID for this user.
+	corrIDVal, ok := g.lastCorrectionID.Load(userID)
+	if !ok {
+		return false
+	}
+	corrID, _ := corrIDVal.(string)
+
+	// Atomic consume — no separate Lookup to avoid TOCTOU races.
+	cUserID, msgText, originalAction, chosen, found := g.correctionStore.Consume(corrID, idx)
+	if !found {
+		return false
+	}
+	g.lastCorrectionID.Delete(userID)
+	_ = cUserID // same as userID
+
+	// Parse the chosen action string back to ScheduleAction.
+	chosenAction, validAction := progress.ActionFromString(chosen.Action)
+	if !validAction {
+		log.Printf("[weixin/gw] invalid correction action: %q", chosen.Action)
+		return false
+	}
+
+	// Execute the correction via the interrupt handler.
+	ih, ok := g.interruptHandler.(interface {
+		HandleCorrection(userID, messageText string, originalAction, correctionAction progress.ScheduleAction) progress.InterruptResult
+	})
+	if !ok {
+		return false
+	}
+
+	result := ih.HandleCorrection(userID, msgText, originalAction, chosenAction)
+
+	if result.Reply != "" {
+		if ctxToken == "" {
+			ctxToken = g.ctxTokens.Get(userID)
+		}
+		if ctxToken != "" {
+			_ = g.SendText(context.Background(), OutgoingText{
+				ToUserID:     userID,
+				Text:         result.Reply,
+				ContextToken: ctxToken,
+			})
+		}
+	}
+
+	// If the correction is Queue or Replace, the original message needs to
+	// be re-dispatched through the normal handler. For Queue, it waits for
+	// the current task to finish (lock serialization). For Replace, the
+	// current task was just cancelled, so the lock should be available soon.
+	if chosenAction == progress.ActionQueue || chosenAction == progress.ActionReplace {
+		reIncoming := IncomingMessage{
+			FromUserID:   userID,
+			Text:         msgText,
+			ContextToken: ctxToken,
+			Timestamp:    time.Now(),
+		}
+		g.handlerWg.Add(1)
+		go func() {
+			defer g.handlerWg.Done()
+			ul := g.userLock(userID)
+			ul.Lock()
+			defer ul.Unlock()
+			g.handler(reIncoming)
+		}()
+	}
+
+	log.Printf("[weixin/gw] correction handled: user=%s original=%s correction=%s reply=%q",
+		userID, originalAction, chosenAction, result.Reply)
+	return true
+}
+
+// scheduleCorrectionFallback starts a timer that re-dispatches the held
+// message as a normal queued task if the user doesn't respond to the
+// confirmation within the TTL. This prevents message loss when the user
+// ignores the correction prompt.
+//
+// The goroutine checks g.running after the sleep to avoid re-dispatching
+// after the gateway has been stopped.
+func (g *Gateway) scheduleCorrectionFallback(corrID, userID string, msg IncomingMessage, ttl time.Duration) {
+	go func() {
+		time.Sleep(ttl)
+		// Check if gateway is still running.
+		g.mu.Lock()
+		running := g.running
+		g.mu.Unlock()
+		if !running {
+			return
+		}
+		// Try to remove — if still present, user didn't respond.
+		if !g.correctionStore.Remove(corrID) {
+			return // Already consumed by user or invalidated.
+		}
+		// Re-dispatch as normal queued message.
+		g.lastCorrectionID.Delete(userID)
+		log.Printf("[weixin/gw] correction TTL expired for user=%s, re-dispatching as queued message", userID)
+		g.handlerWg.Add(1)
+		go func() {
+			defer g.handlerWg.Done()
+			ul := g.userLock(userID)
+			ul.Lock()
+			defer ul.Unlock()
+			g.handler(msg)
+		}()
+	}()
 }
 
 // Start launches the long-polling loop in the background.
@@ -693,13 +827,34 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 		if !locked {
 			wl.Log("gw.dispatch", "---", fromUserID, "QUEUED lock busy, waiting for previous msg")
 
+			// Check if this is a numbered correction reply (e.g. "1", "2").
+			if g.correctionStore != nil && incoming.Text != "" {
+				if handled := g.handleCorrectionReply(fromUserID, incoming.Text, incoming.ContextToken); handled {
+					return
+				}
+			}
+
 			// Try interrupt handler first — it can cancel/merge/query the
 			// running agent loop without waiting for the lock.
 			if g.interruptHandler != nil && incoming.Text != "" {
 				result := g.interruptHandler.TryInterrupt(fromUserID, incoming.Text)
-				if result.Handled || result.Queued {
-					wl.Log("gw.dispatch", "---", fromUserID, "INTERRUPT action=%s handled=%v queued=%v reply=%q", result.Action, result.Handled, result.Queued, result.Reply)
-					if result.Reply != "" {
+				if result.PendingConfirm {
+					// Scheduler is uncertain — hold the message and ask user.
+					// Store in CorrectionStore; if TTL expires without user
+					// action, re-dispatch as a normal queued message.
+					wl.Log("gw.dispatch", "---", fromUserID, "PENDING_CONFIRM action=%s reply=%q", result.Action, result.Reply)
+					replyText := result.Reply
+					if len(result.Corrections) > 0 && replyText != "" {
+						replyText = progress.FormatCorrectionsText(replyText, result.Corrections)
+					}
+					if g.correctionStore != nil {
+						corrID := g.correctionStore.Store(fromUserID, incoming.Text, result.Action, result.Corrections)
+						g.lastCorrectionID.Store(fromUserID, corrID)
+						// Schedule fallback: if user doesn't respond within
+						// TTL, re-dispatch the message as a normal task.
+						g.scheduleCorrectionFallback(corrID, fromUserID, incoming, time.Duration(progress.DefaultCorrectionTTL)*time.Second)
+					}
+					if replyText != "" {
 						ctxToken := incoming.ContextToken
 						if ctxToken == "" {
 							ctxToken = g.ctxTokens.Get(fromUserID)
@@ -707,7 +862,34 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 						if ctxToken != "" {
 							_ = g.SendText(context.Background(), OutgoingText{
 								ToUserID:     fromUserID,
-								Text:         result.Reply,
+								Text:         replyText,
+								ContextToken: ctxToken,
+							})
+						}
+					}
+					return // Message held — not consumed, not queued.
+				}
+				if result.Handled || result.Queued {
+					wl.Log("gw.dispatch", "---", fromUserID, "INTERRUPT action=%s handled=%v queued=%v reply=%q", result.Action, result.Handled, result.Queued, result.Reply)
+					replyText := result.Reply
+					// Append correction options as numbered text links for WeChat.
+					if len(result.Corrections) > 0 && replyText != "" {
+						replyText = progress.FormatCorrectionsText(replyText, result.Corrections)
+						// Store corrections so numbered replies can be resolved.
+						if g.correctionStore != nil {
+							corrID := g.correctionStore.Store(fromUserID, incoming.Text, result.Action, result.Corrections)
+							g.lastCorrectionID.Store(fromUserID, corrID)
+						}
+					}
+					if replyText != "" {
+						ctxToken := incoming.ContextToken
+						if ctxToken == "" {
+							ctxToken = g.ctxTokens.Get(fromUserID)
+						}
+						if ctxToken != "" {
+							_ = g.SendText(context.Background(), OutgoingText{
+								ToUserID:     fromUserID,
+								Text:         replyText,
 								ContextToken: ctxToken,
 							})
 						}
@@ -716,10 +898,10 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 						// Fully handled (Replace/Merge/StatusQuery) — don't queue.
 						return
 					}
-					// Queued (Insert/Enqueue) — reply was sent as instant
-					// feedback, but the message continues to the normal
-					// queuing path below. It will be processed after the
-					// current loop releases the per-user lock.
+					// Queued — reply was sent as instant feedback, but the
+					// message continues to the normal queuing path below.
+					// It will be processed after the current loop releases
+					// the per-user lock.
 				}
 			}
 

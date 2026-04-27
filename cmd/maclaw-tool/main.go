@@ -44,6 +44,7 @@ type CLISessionView struct {
 
 // Connect dials the Hub WebSocket endpoint and sends an auth message.
 func (c *HubCLIClient) Connect() error {
+	log.Printf("[maclaw-tool] connecting to Hub: %s", c.hubURL)
 	// Build WebSocket URL: ws://{hub_url}/ws/cli?token={token}
 	wsURL := strings.Replace(c.hubURL, "http://", "ws://", 1)
 	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
@@ -175,6 +176,7 @@ func sessionList(client *HubCLIClient) error {
 
 // sessionStart creates a new session via the Hub API.
 func sessionStart(client *HubCLIClient, tool, project, template string) error {
+	log.Printf("[maclaw-tool] session start: tool=%s, project=%q, template=%q", tool, project, template)
 	payload := map[string]string{}
 	if tool != "" {
 		payload["tool"] = tool
@@ -226,12 +228,14 @@ func sessionStart(client *HubCLIClient, tool, project, template string) error {
 	}
 
 	fmt.Printf("Session created: %s (status: %s)\n", result.SessionID, result.Status)
+	log.Printf("[maclaw-tool] session created: id=%s, status=%s", result.SessionID, result.Status)
 	return nil
 }
 
 // sessionAttach attaches to a running session, streaming output and accepting input.
 // Ctrl+C gracefully disconnects without killing the session.
 func sessionAttach(client *HubCLIClient, sessionID string) error {
+	log.Printf("[maclaw-tool] attaching to session %s", sessionID)
 	// Send attach request
 	req := CLIEnvelope{
 		Type:      "cli.attach_session",
@@ -303,8 +307,10 @@ func sessionAttach(client *HubCLIClient, sessionID string) error {
 	// Wait for Ctrl+C or read loop to finish
 	select {
 	case <-sigCh:
+		log.Printf("[maclaw-tool] detaching from session %s (Ctrl+C)", sessionID)
 		fmt.Println("\nDetaching from session (session continues running)...")
 	case <-doneCh:
+		log.Printf("[maclaw-tool] session %s connection closed", sessionID)
 		fmt.Println("Session connection closed.")
 	}
 
@@ -338,6 +344,7 @@ func sessionKill(client *HubCLIClient, sessionID string) error {
 	}
 
 	fmt.Printf("Session %s terminated.\n", sessionID)
+	log.Printf("[maclaw-tool] session %s terminated", sessionID)
 	return nil
 }
 
@@ -418,10 +425,18 @@ func main() {
 		token:  *token,
 	}
 
+	log.Printf("[maclaw-tool] ▶ Starting: version=%s, hub=%s, command=%s %s, time=%s",
+		version, *hubURL, command, action, time.Now().Format(time.RFC3339))
+
 	if err := client.Connect(); err != nil {
-		log.Fatalf("Connection failed: %v\nCheck Hub URL (%s) and token.", err, *hubURL)
+		log.Fatalf("[maclaw-tool] ✖ Connection failed: %v\nCheck Hub URL (%s) and token.", err, *hubURL)
 	}
-	defer client.Close()
+	defer func() {
+		client.Close()
+		log.Printf("[maclaw-tool] ◼ Disconnected from Hub, time=%s", time.Now().Format(time.RFC3339))
+	}()
+
+	log.Printf("[maclaw-tool] ✔ Connected to Hub at %s", *hubURL)
 
 	var err error
 	switch action {
@@ -454,6 +469,7 @@ func main() {
 	}
 
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		log.Fatalf("[maclaw-tool] ✖ Error: %v", err)
 	}
+	log.Printf("[maclaw-tool] ✔ Command completed: %s %s", command, action)
 }

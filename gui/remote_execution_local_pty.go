@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+)
 
 type LocalPTYExecutionStrategy struct {
 	newPTY func() PTYSession
@@ -20,10 +23,16 @@ func (s *LocalPTYExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, err
 		return nil, fmt.Errorf("local pty session is not available")
 	}
 
+	log.Printf("[pty-lifecycle] ▶ Starting PTY process: cmd=%q, args=%v, cwd=%q, cols=%d, rows=%d",
+		cmd.Command, cmd.Args, cmd.Cwd, cmd.Cols, cmd.Rows)
+
 	pid, err := pty.Start(cmd)
 	if err != nil {
+		log.Printf("[pty-lifecycle] ✖ PTY start failed: cmd=%q, error=%v", cmd.Command, err)
 		return nil, err
 	}
+
+	log.Printf("[pty-lifecycle] ✔ PTY process started: pid=%d, cmd=%q", pid, cmd.Command)
 
 	return &PTYExecutionHandle{
 		pid: pid,

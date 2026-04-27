@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -314,7 +315,9 @@ func (c *Client) EnsureDaemon() error {
 }
 
 func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct int, msg string)) error {
+	logDetail("[agentnet-lifecycle] ▶ EnsureDaemon: checking if daemon is already running...")
 	if c.ping() {
+		logDetail("[agentnet-lifecycle] daemon already reachable via ping")
 		c.mu.Lock()
 		c.running = true
 		c.mu.Unlock()
@@ -322,17 +325,21 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 	}
 
 	if c.isDaemonAlive() {
+		logDetail("[agentnet-lifecycle] daemon process alive (PID file), marking as running")
 		c.mu.Lock()
 		c.running = true
 		c.mu.Unlock()
 		return nil
 	}
 
+	logDetail("[agentnet-lifecycle] daemon not running, acquiring startup lock...")
 	lockFile, lockErr := acquireDaemonLock()
 	if lockErr != nil {
+		logDetail("[agentnet-lifecycle] another process holds the startup lock, waiting up to 20s...")
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			if c.ping() {
+				logDetail("[agentnet-lifecycle] daemon became reachable while waiting for lock")
 				c.mu.Lock()
 				c.running = true
 				c.mu.Unlock()
@@ -340,9 +347,11 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 			}
 			time.Sleep(1 * time.Second)
 		}
+		log.Printf("[agentnet-lifecycle] ✖ timed out waiting for another process to start daemon")
 		return fmt.Errorf("another process is starting agentnet daemon but it did not become reachable")
 	}
 	defer lockFile.Close()
+	logDetail("[agentnet-lifecycle] startup lock acquired")
 
 	if c.ping() {
 		c.mu.Lock()
@@ -358,10 +367,13 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 	}
 	if bin == "" {
 		c.mu.Unlock()
+		logDetail("[agentnet-lifecycle] binary not found locally, downloading...")
 		downloaded, err := Download(emitProgress)
 		if err != nil {
+			log.Printf("[agentnet-lifecycle] ✖ download failed: %v", err)
 			return err
 		}
+		logDetail("[agentnet-lifecycle] binary downloaded to %s", downloaded)
 		c.mu.Lock()
 		if c.ping() {
 			c.running = true
@@ -369,6 +381,8 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 			return nil
 		}
 		bin = downloaded
+	} else {
+		logDetail("[agentnet-lifecycle] using binary: %s", bin)
 	}
 	c.binPath = bin
 	c.mu.Unlock()
@@ -440,6 +454,7 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 		}
 	}
 
+	logDetail("[agentnet-lifecycle] starting daemon: %s start", bin)
 	c.mu.Lock()
 	cmd := exec.Command(bin, "start")
 	cmd.Stdout = nil
@@ -447,19 +462,23 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 	hideCommandWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		c.mu.Unlock()
+		log.Printf("[agentnet-lifecycle] ✖ failed to start daemon: %v", err)
 		return fmt.Errorf("failed to start agentnet daemon: %w", err)
 	}
 	c.daemon = cmd
 	if cmd.Process != nil {
 		writePIDFile(cmd.Process.Pid)
+		logDetail("[agentnet-lifecycle] daemon process started, pid=%d", cmd.Process.Pid)
 	}
 	c.mu.Unlock()
 
 	go func() { _ = cmd.Wait() }()
 
+	logDetail("[agentnet-lifecycle] waiting for daemon to become reachable (timeout 15s)...")
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if c.ping() {
+			logDetail("[agentnet-lifecycle] ✔ daemon is reachable on %s", c.baseURL)
 			c.mu.Lock()
 			c.running = true
 			c.mu.Unlock()
@@ -467,10 +486,12 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+	log.Printf("[agentnet-lifecycle] ✖ daemon started but not responding after 15s on %s", c.baseURL)
 	return fmt.Errorf("agentnet daemon started but not responding on %s", c.baseURL)
 }
 
 func (c *Client) StopDaemon() {
+	logDetail("[agentnet-lifecycle] ◼ StopDaemon: shutting down daemon...")
 	c.StopAutoUpdate()
 	c.mu.Lock()
 	bin := c.binPath
@@ -483,21 +504,30 @@ func (c *Client) StopDaemon() {
 	c.mu.Unlock()
 
 	if bin != "" {
+		logDetail("[agentnet-lifecycle] sending stop command via: %s stop", bin)
 		cmd := exec.Command(bin, "stop")
 		hideCommandWindow(cmd)
 		done := make(chan error, 1)
 		go func() { done <- cmd.Run() }()
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil {
+				log.Printf("[agentnet-lifecycle] stop command returned error: %v", err)
+			} else {
+				logDetail("[agentnet-lifecycle] stop command completed successfully")
+			}
 		case <-time.After(5 * time.Second):
+			log.Printf("[agentnet-lifecycle] stop command timed out after 5s, killing process")
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
 			}
 		}
 	} else if daemon != nil && daemon.Process != nil {
+		logDetail("[agentnet-lifecycle] no binary path, killing daemon process directly")
 		_ = daemon.Process.Kill()
 	}
 	removePIDFile()
+	logDetail("[agentnet-lifecycle] ◼ StopDaemon: complete")
 }
 
 func (c *Client) IsRunning() bool {

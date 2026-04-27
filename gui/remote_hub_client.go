@@ -1033,9 +1033,27 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 		// without waiting for the lock.
 		if handler.interruptHandler != nil && payload.Text != "" && handler.currentLoopCtx != nil {
 			result := handler.interruptHandler.TryInterrupt(payload.UserID, payload.Text)
+			if result.PendingConfirm {
+				// Scheduler uncertain — send confirmation with corrections.
+				// Hub frontend renders buttons; user clicks one to resolve.
+				// TODO: Hub-side correction store + fallback timer.
+				if result.Reply != "" {
+					resp := &IMAgentResponse{
+						Text:        result.Reply,
+						Corrections: result.Corrections,
+					}
+					if err := c.sendIMAgentResponse(requestID, resp); err != nil {
+						c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
+					}
+				}
+				return // Message held — not consumed, not queued.
+			}
 			if result.Handled {
 				if result.Reply != "" {
-					resp := &IMAgentResponse{Text: result.Reply}
+					resp := &IMAgentResponse{
+						Text:        result.Reply,
+						Corrections: result.Corrections,
+					}
 					if err := c.sendIMAgentResponse(requestID, resp); err != nil {
 						c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
 					}
@@ -1043,10 +1061,13 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 				return // Fully handled — message was a control signal, not a new task.
 			}
 			if result.Queued && result.Reply != "" {
-				// Insert/Enqueue — send instant feedback, then fall through
+				// Queue — send instant feedback, then fall through
 				// to HandleIMMessageWithProgress (which will block on chatLoopMu
 				// until the current loop finishes, then process normally).
-				resp := &IMAgentResponse{Text: result.Reply}
+				resp := &IMAgentResponse{
+					Text:        result.Reply,
+					Corrections: result.Corrections,
+				}
 				if err := c.sendIMAgentResponse(requestID, resp); err != nil {
 					c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
 				}

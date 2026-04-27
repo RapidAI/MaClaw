@@ -513,18 +513,23 @@ func (m *tuiModel) handleSlashCommand(text string) {
 
 	case text == "/help":
 		help := `可用命令:
-  /new      清除对话历史，开始新对话
-  /btw      侧查询（不打断当前任务上下文）
-  /model    显示当前 LLM 模型信息
-  /memory   查看记忆库摘要
-  /help     显示此帮助
+
+对话管理:
+  /new /clear   清除对话历史，开始新对话
+  /btw <查询>   侧查询（不打断当前任务上下文）
+
+信息查看:
+  /model        显示当前 LLM 模型信息
+  /memory       查看记忆库摘要
+
+/help           显示此帮助
 
 快捷键:
-  Esc       取消正在执行的请求 / 退出输入框
-  i         聚焦输入框
-  c         清除对话（非输入状态）
-  ↑↓/jk    滚动消息
-  g/G       跳到顶部/底部`
+  Esc           取消正在执行的请求 / 退出输入框
+  i             聚焦输入框
+  c             清除对话（非输入状态）
+  ↑↓/jk        滚动消息
+  g/G           跳到顶部/底部`
 		m.root.Chat.AppendSystemMessage(help)
 
 	default:

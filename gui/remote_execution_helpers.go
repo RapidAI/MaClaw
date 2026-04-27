@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +34,44 @@ func resolveExecutablePath(execPath string) (string, error) {
 		return "", fmt.Errorf("command is a directory: %s", execPath)
 	}
 	return execPath, nil
+}
+
+// logLaunchEnv logs key environment variables for debugging coding tool
+// launch issues. API keys and tokens are masked for security.
+func logLaunchEnv(prefix string, env map[string]string) {
+	diagKeys := []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+		"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"OPENAI_API_KEY", "OPENAI_BASE_URL",
+		"GEMINI_API_KEY",
+		"PATH",
+	}
+	var parts []string
+	for _, k := range diagKeys {
+		v, ok := env[k]
+		if !ok || v == "" {
+			continue
+		}
+		// Mask sensitive values
+		lk := strings.ToLower(k)
+		if strings.Contains(lk, "key") || strings.Contains(lk, "token") || strings.Contains(lk, "secret") {
+			if len(v) > 8 {
+				v = v[:4] + "..." + v[len(v)-4:]
+			} else {
+				v = "***"
+			}
+		}
+		// Truncate PATH to avoid log noise
+		if k == "PATH" {
+			entries := strings.Split(v, string(os.PathListSeparator))
+			v = fmt.Sprintf("(%d entries)", len(entries))
+		}
+		parts = append(parts, k+"="+v)
+	}
+	if len(parts) > 0 {
+		log.Printf("[%s] env: %s", prefix, strings.Join(parts, ", "))
+	}
 }
 
 // buildExecCmd creates an *exec.Cmd with the standard configuration used

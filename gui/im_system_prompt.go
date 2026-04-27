@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -536,10 +537,11 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 
 	b.WriteString("\n## 对话管理\n")
 	if isProMode {
-		b.WriteString("- /new 或 /reset 重置对话 | /exit 或 /quit 终止所有会话 | /sessions 查看状态 | /help 帮助\n")
+		b.WriteString("- /new /reset /clear 重置对话 | /compress 压缩历史 | /cancel 取消任务 | /btw 侧查询\n")
+		b.WriteString("- /sessions /status 查看状态 | /exit /quit 终止所有会话 | /help 帮助\n")
 		b.WriteString("- 用户表达退出意图时，提醒发送 /exit\n")
 	} else {
-		b.WriteString("- /new 或 /reset 重置对话 | /help 帮助\n")
+		b.WriteString("- /new /reset /clear 重置对话 | /help 帮助\n")
 	}
 	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
 
@@ -1072,28 +1074,23 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 	b.WriteString("\n")
 }
 
-// estimateTokens returns a rough token count for the given text.
-// Uses rune count (not byte count) for accurate CJK estimation.
-// Approximation: 1 token ≈ 2 runes for CJK-heavy text, ≈ 4 chars for Latin.
-// We use a middle-ground of 1 token ≈ 3 runes which works reasonably for
-// mixed Chinese/English content typical in this codebase.
+// estimateTokens delegates to corelib.EstimateTextTokens.
 func estimateTokens(s string) int {
-	n := len([]rune(s))
-	if n == 0 {
-		return 0
-	}
-	return (n + 2) / 3 // ceiling division by 3
+	return corelib.EstimateTextTokens(s)
 }
 
 // truncateToTokenBudget truncates content to fit within the given token budget,
 // cutting at a smart boundary (paragraph break "\n\n", or sentence-ending
 // punctuation followed by whitespace/newline). Appends "[truncated]" notice.
 // Uses rune-safe operations to avoid splitting multi-byte UTF-8 characters.
+// Uses conservative rune budget (1.5 runes/token) to ensure the truncated
+// result never exceeds the token budget under CJK-aware estimation.
 // (Requirement 1.8)
 func truncateToTokenBudget(content string, tokenBudget int) string {
 	// Convert to runes for safe truncation of multi-byte characters.
 	runes := []rune(content)
-	maxRunes := tokenBudget * 3 // inverse of estimateTokens: 1 token ≈ 3 runes
+	// Conservative: assume worst case (all CJK, ~1.5 chars/token).
+	maxRunes := tokenBudget * 3 / 2
 	if maxRunes <= 0 {
 		return "[truncated]"
 	}

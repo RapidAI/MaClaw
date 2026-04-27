@@ -570,14 +570,26 @@ func (g *Gateway) handleC2CMessage(data json.RawMessage) {
 				if g.interruptHandler != nil && incoming.Text != "" {
 					result := g.interruptHandler.TryInterrupt(openID, incoming.Text)
 					if result.Handled {
+						replyText := result.Reply
+						if len(result.Corrections) > 0 && replyText != "" {
+							replyText = progress.FormatCorrectionsText(replyText, result.Corrections)
+						}
+						if replyText != "" {
+							_ = g.SendText(context.Background(), OutgoingText{
+								OpenID: openID,
+								Text:   replyText,
+							})
+						}
 						return // Cancel/Merge/StatusQuery — fully handled
 					}
 					if result.Queued && result.Reply != "" {
-						// Insert/Enqueue — send instant feedback, then
-						// fall through to Lock (message queues normally).
+						replyText := result.Reply
+						if len(result.Corrections) > 0 {
+							replyText = progress.FormatCorrectionsText(replyText, result.Corrections)
+						}
 						_ = g.SendText(context.Background(), OutgoingText{
 							OpenID: openID,
-							Text:   result.Reply,
+							Text:   replyText,
 						})
 					}
 				}

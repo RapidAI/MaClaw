@@ -21,7 +21,7 @@ func TestDynamicToolBuilder_Build_UnderThreshold(t *testing.T) {
 	r := NewToolRegistry()
 	for i := 0; i < 15; i++ {
 		r.Register(RegisteredTool{
-			Name: "tool_" + string(rune('a'+i)), Category: ToolCategoryBuiltin, Status: RegToolAvailable,
+			Name: "tool_" + string(rune('a'+i)), Description: "a tool", Category: ToolCategoryBuiltin, Status: RegToolAvailable,
 		})
 	}
 	b := NewDynamicToolBuilder(r)
@@ -36,7 +36,7 @@ func TestDynamicToolBuilder_Build_OverThreshold_FiltersNonBuiltin(t *testing.T) 
 	// 10 builtin tools
 	for i := 0; i < 10; i++ {
 		r.Register(RegisteredTool{
-			Name: "builtin_" + string(rune('a'+i)), Category: ToolCategoryBuiltin, Status: RegToolAvailable,
+			Name: "builtin_" + string(rune('a'+i)), Description: "builtin tool", Category: ToolCategoryBuiltin, Status: RegToolAvailable,
 		})
 	}
 	// 15 MCP tools
@@ -62,19 +62,19 @@ func TestDynamicToolBuilder_Build_GroupActivation(t *testing.T) {
 	// 10 builtin
 	for i := 0; i < 10; i++ {
 		r.Register(RegisteredTool{
-			Name: "builtin_" + string(rune('a'+i)), Category: ToolCategoryBuiltin, Status: RegToolAvailable,
+			Name: "builtin_" + string(rune('a'+i)), Description: "builtin tool", Category: ToolCategoryBuiltin, Status: RegToolAvailable,
 		})
 	}
 	// 15 non-builtin, 3 with "git" tag
 	for i := 0; i < 12; i++ {
 		r.Register(RegisteredTool{
-			Name: "other_" + string(rune('a'+i)), Category: ToolCategoryMCP, Status: RegToolAvailable,
+			Name: "other_" + string(rune('a'+i)), Description: "other tool", Category: ToolCategoryMCP, Status: RegToolAvailable,
 			Tags: []string{"other"},
 		})
 	}
-	r.Register(RegisteredTool{Name: "git_status", Category: ToolCategoryNonCode, Status: RegToolAvailable, Tags: []string{"git", "vcs"}})
-	r.Register(RegisteredTool{Name: "git_diff", Category: ToolCategoryNonCode, Status: RegToolAvailable, Tags: []string{"git", "vcs"}})
-	r.Register(RegisteredTool{Name: "git_commit", Category: ToolCategoryNonCode, Status: RegToolAvailable, Tags: []string{"git", "vcs"}})
+	r.Register(RegisteredTool{Name: "git_status", Description: "show git status", Category: ToolCategoryNonCode, Status: RegToolAvailable, Tags: []string{"git", "vcs"}})
+	r.Register(RegisteredTool{Name: "git_diff", Description: "show git diff", Category: ToolCategoryNonCode, Status: RegToolAvailable, Tags: []string{"git", "vcs"}})
+	r.Register(RegisteredTool{Name: "git_commit", Description: "git commit", Category: ToolCategoryNonCode, Status: RegToolAvailable, Tags: []string{"git", "vcs"}})
 
 	b := NewDynamicToolBuilder(r)
 	defs := b.Build("使用 git 工具查看状态")

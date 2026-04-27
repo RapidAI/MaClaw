@@ -14,8 +14,8 @@ import (
 // cancel mechanism.
 //
 // Three-signal scheduling: relevance (embedding cosine) + domain match
-// (L1 keyword) + structure (negation/length). All five ScheduleActions
-// have execution paths: Replace, Merge, StatusQuery, Insert, Enqueue.
+// (L1 keyword) + structure (negation/length). All four ScheduleActions
+// have execution paths: Replace, Merge, StatusQuery, Queue.
 type imInterruptHandler struct {
 	handler *IMMessageHandler
 
@@ -124,6 +124,23 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 
 	switch decision.Action {
 	case progress.ActionReplace:
+		// Low-confidence Replace (e.g. negation detected but could be a
+		// modification like "帮我把那个订单取消了") — don't execute immediately.
+		// Return PendingConfirm so the gateway holds the message and asks
+		// the user to pick an action. If the user doesn't respond before
+		// TTL, the gateway re-dispatches as a normal queued message.
+		if decision.Confidence < 0.70 {
+			return progress.InterruptResult{
+				PendingConfirm: true,
+				Action:         progress.ActionReplace,
+				Reply:          "⚠️ 检测到可能要停止当前任务，确认吗？",
+				Corrections: []progress.CorrectionOption{
+					progress.NewCorrectionOption("确认打断", progress.ActionReplace),
+					progress.NewCorrectionOption("补充当前任务", progress.ActionMerge),
+					progress.NewCorrectionOption("排队等候", progress.ActionQueue),
+				},
+			}
+		}
 		taskText, err := ih.handler.CancelCurrentSession()
 		if err != nil {
 			log.Printf("[interrupt] CancelCurrentSession error: %v", err)
@@ -153,6 +170,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			Handled: true,
 			Action:  progress.ActionStatusQuery,
 			Reply:   reply,
+			// StatusQuery is read-only — no corrections needed.
 		}
 
 	case progress.ActionMerge:
@@ -168,25 +186,25 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			Handled: true,
 			Action:  progress.ActionMerge,
 			Reply:   "👌 收到，已纳入当前任务。",
+			Corrections: []progress.CorrectionOption{
+				progress.NewCorrectionOption("改为打断", progress.ActionReplace),
+				progress.NewCorrectionOption("改为排队", progress.ActionQueue),
+			},
 		}
 
-	case progress.ActionInsert:
+	case progress.ActionQueue:
 		// Don't consume the message — let it queue normally in the gateway.
 		// The gateway will process it after the current loop releases the lock.
 		// Queued=true tells the gateway to send Reply as instant feedback.
+		//
+		// No corrections: the message is already in the gateway's lock queue
+		// and will be processed when the current task finishes. Offering
+		// corrections here would risk double-processing (once via correction,
+		// once via the queue).
 		return progress.InterruptResult{
 			Handled: false,
 			Queued:  true,
-			Action:  progress.ActionInsert,
-			Reply:   "📋 收到，当前任务完成后立即处理。",
-		}
-
-	case progress.ActionEnqueue:
-		// Same as Insert — message queues normally, user gets instant feedback.
-		return progress.InterruptResult{
-			Handled: false,
-			Queued:  true,
-			Action:  progress.ActionEnqueue,
+			Action:  progress.ActionQueue,
 			Reply:   "📋 收到，当前任务完成后处理。",
 		}
 
@@ -226,5 +244,90 @@ func isCodingFamily(intent string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// HandleCorrection executes a user-initiated correction of a previous
+// scheduling decision. This is called when the user clicks a correction
+// button (e.g. "改为打断" after a Merge decision).
+//
+// Parameters:
+//   - userID: the user who clicked the correction
+//   - messageText: the original message that was scheduled
+//   - originalAction: the action that was originally taken
+//   - correctionAction: the action the user wants instead
+//
+// Returns an InterruptResult describing what was done.
+func (ih *imInterruptHandler) HandleCorrection(
+	userID string,
+	messageText string,
+	originalAction progress.ScheduleAction,
+	correctionAction progress.ScheduleAction,
+) progress.InterruptResult {
+	log.Printf("[correction] user=%s original=%s correction=%s msg=%q",
+		userID, originalAction, correctionAction, truncateForLog(messageText, 30))
+
+	switch correctionAction {
+	case progress.ActionReplace:
+		// User wants to interrupt — cancel the current task.
+		// If the original was Merge, try to retract the pending injection.
+		// If already consumed, the message was processed — cancellation still
+		// proceeds (user explicitly asked to interrupt).
+		if originalAction == progress.ActionMerge {
+			ih.handler.pendingInjection.LoadAndDelete(userID) // best-effort retract
+		}
+		taskText, err := ih.handler.CancelCurrentSession()
+		if err != nil {
+			log.Printf("[correction] CancelCurrentSession error: %v", err)
+			return progress.InterruptResult{Reply: "⚠️ 打断失败: " + err.Error()}
+		}
+		reply := "⏹️ 已改为打断"
+		if taskText != "" {
+			reply += "，已停止任务「" + truncateForLog(taskText, 20) + "」。"
+		} else {
+			reply += "。"
+		}
+		return progress.InterruptResult{
+			Handled: true,
+			Action:  progress.ActionReplace,
+			Reply:   reply,
+		}
+
+	case progress.ActionQueue:
+		// User wants to queue instead of merge — remove the pending injection
+		// and let the message go through normal queuing.
+		if originalAction == progress.ActionMerge {
+			// Try to delete the injection. If it was already consumed by the
+			// agent loop, the message has already been processed — don't
+			// re-dispatch (that would cause double processing).
+			if _, loaded := ih.handler.pendingInjection.LoadAndDelete(userID); !loaded {
+				return progress.InterruptResult{
+					Handled: true,
+					Action:  progress.ActionQueue,
+					Reply:   "⚠️ 消息已被当前任务处理，无法改为排队。",
+				}
+			}
+		}
+		return progress.InterruptResult{
+			Handled: false,
+			Queued:  true,
+			Action:  progress.ActionQueue,
+			Reply:   "📋 已改为排队，当前任务完成后处理。",
+		}
+
+	case progress.ActionMerge:
+		// User wants to inject into current task instead of queuing.
+		injection := "[用户补充] " + messageText
+		ih.handler.pendingInjection.Store(userID, injection)
+		return progress.InterruptResult{
+			Handled: true,
+			Action:  progress.ActionMerge,
+			Reply:   "👌 已改为注入当前任务。",
+		}
+
+	default:
+		return progress.InterruptResult{
+			Reply: "⚠️ 不支持的纠正操作。",
+		}
 	}
 }

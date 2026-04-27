@@ -90,9 +90,9 @@ func estimateToolsTokens(tools []map[string]interface{}) int {
 }
 
 // estimateBytesToTokens converts JSON bytes to an approximate token count.
-// CJK characters are 3 bytes in UTF-8 but typically 1-2 tokens; ASCII is
-// roughly 4 bytes per token. We use a blended ratio of ~2.5 bytes/token
-// which is more accurate for mixed CJK/ASCII content than the old /3.
+// For JSON data, uses a byte-based heuristic (~2.5 bytes/token) rather than
+// character-based, because JSON structural overhead ({, ", :) inflates the
+// ASCII char count beyond what represents actual content tokens.
 func estimateBytesToTokens(data []byte) int {
 	return (len(data)*10 + 24) / 25 // equivalent to len/2.5, rounded up
 }
