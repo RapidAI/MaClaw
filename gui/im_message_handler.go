@@ -61,6 +61,7 @@ type IMUserMessage = agent.UserMessage
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
 	Text                                string                        `json:"text"`
+	ClearUI                             bool                          `json:"clear_ui,omitempty"`
 	Fields                              []IMResponseField             `json:"fields,omitempty"`
 	Actions                             []IMResponseAction            `json:"actions,omitempty"`
 	Confirmation                        *IMResponseConfirmation       `json:"confirmation,omitempty"`
@@ -2357,6 +2358,16 @@ type IMMessageHandler struct {
 	// Lazily initialized on first use via ensureNudgeTracker().
 	nudgeTracker *nudge.NudgeTracker
 
+	// taskContextManager is the unified decision point for task switching.
+	// It determines whether a new message continues the current task,
+	// starts a new task, or recalls a past task — replacing the scattered
+	// logic across looksLikeFreshTaskRequest, TopicSwitchDetector, and
+	// shouldAutoClearIncompleteTaskContext.
+	taskContextManager *agent.TaskContextManager
+
+	// taskArchive stores completed/abandoned tasks for potential recall.
+	taskArchive *agent.TaskArchive
+
 	// steeringContextFiles accumulates file paths from tool calls
 	// (read_file, write_file, edit_file, etc.) during the current
 	// conversation. Used by fileMatch steering resolution.
@@ -3930,7 +3941,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.flushEvidenceOnSessionEnd(msg.UserID)
 		// Clean up workflow and understanding state.
 		h.cancelWorkflowForUser(msg.UserID)
-		resp := &IMAgentResponse{Text: "对话已重置。"}
+		resp := &IMAgentResponse{Text: "对话已重置。", ClearUI: true}
 		if h.currentLoopCtx != nil {
 			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, "")
 		}
@@ -4191,6 +4202,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	if decision.StartNewTask {
+		// Archive current task before clearing.
+		if len(EntriesBeforeClear) >= 2 {
+			h.archiveCurrentTask(msg.UserID, EntriesBeforeClear, "abandoned")
+		}
 		h.memory.ClearConversationAndDismissSlot(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)
 		EntriesBeforeClear = nil
@@ -4200,31 +4215,74 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if h.memory.BindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
 			unfinishedSlot = h.memory.ActiveUnfinishedSlot(msg.UserID)
 		}
-	} else {
-		if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, EntriesBeforeClear) {
-			h.memory.ClearConversationAndDismissSlot(msg.UserID)
-			h.clearPerUserSessionState(msg.UserID)
-			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
-			EntriesBeforeClear = nil
-			unfinishedSlot = nil
-			freshTask = true
-		}
 	}
 
 	// --- Pending ask_user response detection ---
-	// If the previous assistant message was an ask_user question, the current
-	// user message is a response to that question (not a new request).
-	// Consume the pending state and build context for the system prompt.
+	// Detected BEFORE the unified task context decision so it can be used
+	// as an input signal (ask_user response = always continue).
 	var askUserContext string
+	hasPendingAskUser = false
 	if raw, ok := h.pendingAskUser.LoadAndDelete(msg.UserID); ok {
 		pending := raw.(*pendingAskUserState)
 		// Expire after 30 minutes to avoid stale state.
 		if time.Since(pending.Timestamp) < 30*time.Minute {
+			hasPendingAskUser = true
 			askUserContext = fmt.Sprintf(
 				"【上下文提示】用户正在回答你之前提出的确认问题，而非发起新请求。\n你的问题：%s\n用户回答：%s\n请基于当前任务上下文理解用户意图，将其视为补充或修改意见。",
 				pending.Question, trimmed,
 			)
 			log.Printf("[AskUser] consumed pending ask_user for user %s, question=%q, answer=%q", msg.UserID, truncateRunes(pending.Question, 50), truncateRunes(trimmed, 50))
+		}
+	}
+
+	// --- Unified task context decision ---
+	// Replaces the scattered logic across shouldAutoClearIncompleteTaskContext,
+	// TopicSwitchDetector, and the confirmation gate's fresh-task detection.
+	// One LLM call (when needed) determines: continue / new / recall.
+	if !freshTask && !msg.IsBackground && decision.ResumeSlotID == "" {
+		tcDecision := h.resolveTaskContext(
+			msg.UserID, trimmed, EntriesBeforeClear,
+			hasPendingAskUser, false, false,
+		)
+		switch tcDecision.Action {
+		case agent.TaskNew:
+			// Archive current task before clearing.
+			if len(EntriesBeforeClear) >= 2 {
+				h.archiveCurrentTask(msg.UserID, EntriesBeforeClear, "switched")
+			}
+			h.memory.ClearConversationAndDismissSlot(msg.UserID)
+			h.clearPerUserSessionState(msg.UserID)
+			// Clear stale confirmation from the old task.
+			if h.confirmationStore != nil {
+				h.confirmationStore.clear(msg.UserID)
+			}
+			freshTask = true
+			// Clear ask_user context — it belongs to the old task.
+			askUserContext = ""
+			log.Printf("[TaskContext] new task for user %s: %s", msg.UserID, tcDecision.Reason)
+		case agent.TaskRecall:
+			// Archive current task, then restore the recalled one.
+			if len(EntriesBeforeClear) >= 2 {
+				h.archiveCurrentTask(msg.UserID, EntriesBeforeClear, "switched")
+			}
+			// Clear stale confirmation from the old task.
+			if h.confirmationStore != nil {
+				h.confirmationStore.clear(msg.UserID)
+			}
+			if h.restoreRecalledTask(msg.UserID, tcDecision.RecallTaskID) {
+				askUserContext = ""
+				unfinishedSlot = nil // recalled task replaces the old context
+				log.Printf("[TaskContext] recalled task %s for user %s", tcDecision.RecallTaskID, msg.UserID)
+			} else {
+				// Recall failed — treat as new task.
+				h.memory.ClearConversationAndDismissSlot(msg.UserID)
+				h.clearPerUserSessionState(msg.UserID)
+				freshTask = true
+				log.Printf("[TaskContext] recall failed for user %s, treating as new task", msg.UserID)
+			}
+		case agent.TaskContinue:
+			// Nothing to do — keep current conversation history.
+			log.Printf("[TaskContext] continue for user %s: %s", msg.UserID, tcDecision.Reason)
 		}
 	}
 
@@ -4250,26 +4308,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	// --- Automatic topic switch detection ---
-	// For interactive (non-background) messages, detect if the user has
-	// switched topics and auto-clear stale conversation context.
-	// Skip detection when the user is responding to an ask_user question.
-	if !msg.IsBackground && h.topicDetector != nil && len(EntriesBeforeClear) > 0 && !hasIncompleteTaskMarker(EntriesBeforeClear) && decision.ResumeSlotID == "" && !decision.StartNewTask && askUserContext == "" {
-		if h.topicDetector.detect(trimmed, msg.UserID, h.memory) == TopicNew {
-			// Archive a one-line summary before clearing.
-			if h.memoryStore != nil {
-				entries := h.memory.Load(msg.UserID)
-				if summary := buildQuickSummary(entries); summary != "" {
-					_ = h.memoryStore.Save(memory.Entry{
-						Content:  summary,
-						Category: "conversation_summary",
-					})
-				}
-			}
-			h.memory.Clear(msg.UserID)
-			h.clearPerUserSessionState(msg.UserID)
-			log.Printf("[TopicDetector] auto-cleared context for user %s", msg.UserID)
-		}
-	}
+	// NOTE: Topic detection is now handled by the unified TaskContextManager
+	// above. The legacy TopicSwitchDetector is kept as a fallback for
+	// background messages and edge cases not covered by the TCM.
+	// For interactive messages, the TCM's decision takes precedence.
 
 	// --- Background routing: delegate to BackgroundLoopManager ---
 	if msg.IsBackground && h.bgManager != nil && providedLoopCtx == nil {
@@ -4420,7 +4462,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			}
 		}
 	}
-	if shouldRequireExecutionConfirmation(msg, pending) {
+	// --- Execution confirmation gate ---
+	// Only require confirmation for genuinely new tasks (freshTask == true).
+	// When the TaskContextManager decided "continue", the message is a
+	// follow-up within the current conversation — not a fresh task.
+	if freshTask && shouldRequireExecutionConfirmation(msg, pending) {
 		intent := h.classifyTaskIntentForExecution(trimmed, msg.Attachments, httpClient)
 		if shouldRequireExecutionConfirmationForIntent(msg, pending, intent) {
 			// Attempt LLM-based task understanding for a structured summary.
@@ -4791,7 +4837,7 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 		b.WriteString(fmt.Sprintf("\n⚠️ %d 个会话终止失败，可能需要手动处理。", failCount))
 	}
 	b.WriteString("\n对话已重置，后续消息将正常对话。")
-	return &IMAgentResponse{Text: b.String()}
+	return &IMAgentResponse{Text: b.String(), ClearUI: true}
 }
 
 // handleBtwCommand runs a /btw side query in an independent agent loop.
