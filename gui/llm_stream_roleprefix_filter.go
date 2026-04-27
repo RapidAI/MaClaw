@@ -20,50 +20,41 @@ import (
 //
 //  1. Prefix at the start of output (seenContent=false): strip the
 //     "Browser: " prefix token and emit only the content after it.
-//     This handles both single-iteration Case 1 and multi-iteration
-//     scenarios where a new LLM request starts with a role prefix.
 //  2. Prefix after content has been emitted (seenContent=true): halt
-//     and suppress this line and all subsequent tokens. The content
-//     after a mid-text role prefix is almost always a duplicate.
+//     and suppress this line and all subsequent tokens.
 //
-// Code blocks (``` fenced) are tracked to avoid false positives on
-// lines like "Browser: connected" inside code samples.
+// Additionally, the line buffer is scanned for embedded \n boundaries
+// that weren't split by the delta chunking. This handles the case where
+// a single delta contains "...content\nBrowser: hallucination" — the \n
+// is inside the delta but the outer loop hasn't split on it yet.
+//
+// Code blocks (``` fenced) are tracked to avoid false positives.
 type rolePrefixStreamFilter struct {
 	downstream llm.TokenCallback
 
-	// lineBuf accumulates the current line being built from tokens.
-	lineBuf strings.Builder
-
-	// halted is set when a role prefix is detected.
-	halted bool
-
-	// suppressedRunes counts runes suppressed after halt.
+	lineBuf     strings.Builder
+	halted      bool
 	suppressedRunes int
-
-	// inCodeBlock tracks whether we're inside a ``` fenced block.
 	inCodeBlock bool
-
-	// seenContent tracks whether any non-whitespace content has been
-	// emitted before the current line. Used to distinguish Case 1
-	// (prefix at start → strip prefix) from Case 2 (mid-text → halt).
 	seenContent bool
 }
 
 // rolePrefixLineRe matches a role prefix at the start of a line.
 // Allows optional leading whitespace, Markdown block-level markers
 // (>, -, *, digits), and an optional space before the colon.
-// Also matches fullwidth colon (：U+FF1A) which Chinese LLMs sometimes produce.
-//
-// Matched variants (all confirmed from production hallucinations):
-//   - "Browser: ..."          (plain)
-//   - "  Browser: ..."        (indented)
-//   - "> Browser: ..."        (blockquote)
-//   - "- Browser: ..."        (unordered list)
-//   - "* Browser: ..."        (unordered list)
-//   - "1. Browser: ..."       (ordered list)
-//   - "Browser : ..."         (space before colon)
-//   - "Browser：..."          (fullwidth colon)
+// Also matches fullwidth colon (：U+FF1A).
 var rolePrefixLineRe = regexp.MustCompile(`^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)`)
+
+// midLineRolePrefixRe matches a role prefix that appears after a \n
+// inside the line buffer. This catches the case where a single streaming
+// delta contains "...content\nBrowser: hallucination" and the outer
+// newline-splitting loop hasn't processed the inner \n yet.
+var midLineRolePrefixRe = regexp.MustCompile(`\n[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)`)
+
+// rpfMidLineCheckThreshold: only run the mid-line regex scan when the
+// line buffer exceeds this many bytes. Avoids per-token regex overhead
+// during normal streaming (typical token is 1-10 bytes).
+const rpfMidLineCheckThreshold = 40
 
 func newRolePrefixStreamFilter(downstream llm.TokenCallback) *rolePrefixStreamFilter {
 	return &rolePrefixStreamFilter{downstream: downstream}
@@ -75,18 +66,21 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 		return
 	}
 
-	// Diagnostic: trace when delta contains "Browser" to confirm filter receives it.
 	if strings.Contains(delta, "Browser") {
 		log.Printf("[stream-roleprefix] TRACE Write: delta contains Browser: halted=%v seenContent=%v len=%d delta=%q",
 			f.halted, f.seenContent, len(delta), rpfTruncateForLog(delta, 80))
 	}
 
-	// Process the delta character by character, splitting on newlines.
 	for len(delta) > 0 {
 		nlIdx := strings.IndexByte(delta, '\n')
 		if nlIdx < 0 {
-			// No newline in remaining delta — accumulate in line buffer.
 			f.lineBuf.WriteString(delta)
+
+			// Mid-line scan: only when we have seen content and the
+			// buffer is long enough to plausibly contain a prefix.
+			if f.seenContent && f.lineBuf.Len() > rpfMidLineCheckThreshold {
+				f.checkMidLinePrefix()
+			}
 			break
 		}
 
@@ -102,26 +96,18 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 			f.inCodeBlock = !f.inCodeBlock
 		}
 
-		// Check for role prefix outside code blocks.
-		// Diagnostic: log any line containing "Browser" to trace filter behavior.
 		if strings.Contains(line, "Browser") {
 			log.Printf("[stream-roleprefix] TRACE: line contains Browser: inCodeBlock=%v seenContent=%v regexMatch=%v line=%q",
 				f.inCodeBlock, f.seenContent, rolePrefixLineRe.MatchString(line), rpfTruncateForLog(line, 120))
 		}
+
 		if !f.inCodeBlock && rolePrefixLineRe.MatchString(line) {
 			if f.seenContent {
-				// Case 2: mid-text hallucination — halt and suppress
-				// this line and everything after it.
 				f.halted = true
 				f.suppressedRunes += utf8.RuneCountInString(line) + utf8.RuneCountInString(delta)
 				log.Printf("[stream-roleprefix] Case 2 halt: seenContent=true line=%q suppressed=%d", rpfTruncateForLog(line, 80), f.suppressedRunes)
 				return
 			}
-			// Case 1: role prefix at the very start of output — strip
-			// the prefix token but keep the content after it. This
-			// handles the scenario where a new agent loop iteration
-			// starts with "Browser: ..." — the prefix is removed
-			// inline so it never reaches the frontend.
 			loc := rolePrefixLineRe.FindStringIndex(line)
 			if loc != nil {
 				stripped := line[loc[1]:]
@@ -133,7 +119,7 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 			}
 			continue
 		}
-		// Emit the line.
+
 		f.downstream(line)
 		if strings.TrimSpace(line) != "" {
 			f.seenContent = true
@@ -146,50 +132,82 @@ func (f *rolePrefixStreamFilter) Flush() {
 		return
 	}
 	remaining := f.lineBuf.String()
-	if remaining != "" {
-		// Diagnostic: trace any pending content containing "Browser".
-		if strings.Contains(remaining, "Browser") {
-			log.Printf("[stream-roleprefix] TRACE Flush: remaining contains Browser: inCodeBlock=%v seenContent=%v regexMatch=%v remaining=%q",
-				f.inCodeBlock, f.seenContent, rolePrefixLineRe.MatchString(remaining), rpfTruncateForLog(remaining, 120))
-		}
-		// Check the final incomplete line for role prefix.
-		if !f.inCodeBlock && rolePrefixLineRe.MatchString(remaining) {
-			if f.seenContent {
-				// Case 2: mid-text — halt and suppress.
-				f.halted = true
-				f.suppressedRunes += utf8.RuneCountInString(remaining)
-				log.Printf("[stream-roleprefix] Flush Case 2 halt: line=%q suppressed=%d", rpfTruncateForLog(remaining, 80), f.suppressedRunes)
-				f.lineBuf.Reset()
-				return
-			}
-			// Case 1: prefix at start — strip prefix, keep content.
-			loc := rolePrefixLineRe.FindStringIndex(remaining)
-			if loc != nil {
-				stripped := remaining[loc[1]:]
-				log.Printf("[stream-roleprefix] Flush Case 1 strip: prefix=%q stripped=%q", remaining[:loc[1]], rpfTruncateForLog(stripped, 80))
-				if strings.TrimSpace(stripped) != "" {
-					f.downstream(stripped)
-				}
-			}
+	if remaining == "" {
+		return
+	}
+
+	if strings.Contains(remaining, "Browser") {
+		log.Printf("[stream-roleprefix] TRACE Flush: remaining contains Browser: inCodeBlock=%v seenContent=%v regexMatch=%v remaining=%q",
+			f.inCodeBlock, f.seenContent, rolePrefixLineRe.MatchString(remaining), rpfTruncateForLog(remaining, 120))
+	}
+
+	if !f.inCodeBlock && rolePrefixLineRe.MatchString(remaining) {
+		if f.seenContent {
+			f.halted = true
+			f.suppressedRunes += utf8.RuneCountInString(remaining)
+			log.Printf("[stream-roleprefix] Flush Case 2 halt: line=%q suppressed=%d", rpfTruncateForLog(remaining, 80), f.suppressedRunes)
 			f.lineBuf.Reset()
 			return
 		}
-		f.downstream(remaining)
+		loc := rolePrefixLineRe.FindStringIndex(remaining)
+		if loc != nil {
+			stripped := remaining[loc[1]:]
+			log.Printf("[stream-roleprefix] Flush Case 1 strip: prefix=%q stripped=%q", remaining[:loc[1]], rpfTruncateForLog(stripped, 80))
+			if strings.TrimSpace(stripped) != "" {
+				f.downstream(stripped)
+			}
+		}
 		f.lineBuf.Reset()
+		return
 	}
+
+	// Final mid-line check: scan remaining for embedded \n + prefix.
+	if !f.inCodeBlock && f.seenContent && len(remaining) > rpfMidLineCheckThreshold {
+		if !strings.Contains(remaining, "Browser") && !strings.Contains(remaining, "Tool") {
+			// Fast path: no prefix keyword.
+		} else if loc := midLineRolePrefixRe.FindStringIndex(remaining); loc != nil {
+			before := remaining[:loc[0]]
+			if strings.TrimSpace(before) != "" {
+				f.downstream(before)
+			}
+			f.halted = true
+			f.suppressedRunes += utf8.RuneCountInString(remaining[loc[0]:])
+			log.Printf("[stream-roleprefix] Flush mid-line halt: prefix at offset %d", loc[0])
+			f.lineBuf.Reset()
+			return
+		}
+	}
+
+	f.downstream(remaining)
+	f.lineBuf.Reset()
 }
 
-// Halted returns true if a role prefix hallucination was detected.
-func (f *rolePrefixStreamFilter) Halted() bool {
-	return f.halted
+func (f *rolePrefixStreamFilter) Halted() bool        { return f.halted }
+func (f *rolePrefixStreamFilter) SuppressedRunes() int { return f.suppressedRunes }
+
+// checkMidLinePrefix scans the line buffer for a \n followed by a role
+// prefix pattern. This handles the case where a streaming delta contains
+// an embedded newline that the outer split loop hasn't processed.
+// If found, emit content before the \n and halt.
+func (f *rolePrefixStreamFilter) checkMidLinePrefix() {
+	buf := f.lineBuf.String()
+	if !strings.Contains(buf, "Browser") && !strings.Contains(buf, "Tool") {
+		return
+	}
+	loc := midLineRolePrefixRe.FindStringIndex(buf)
+	if loc == nil {
+		return
+	}
+	before := buf[:loc[0]]
+	if strings.TrimSpace(before) != "" {
+		f.downstream(before)
+	}
+	f.halted = true
+	f.suppressedRunes += utf8.RuneCountInString(buf[loc[0]:])
+	f.lineBuf.Reset()
+	log.Printf("[stream-roleprefix] checkMidLinePrefix halt: prefix found at offset %d in lineBuf", loc[0])
 }
 
-// SuppressedRunes returns the count of runes suppressed after detection.
-func (f *rolePrefixStreamFilter) SuppressedRunes() int {
-	return f.suppressedRunes
-}
-
-// rpfTruncateForLog truncates a string for log output, preserving rune boundaries.
 func rpfTruncateForLog(s string, maxRunes int) string {
 	runes := []rune(s)
 	if len(runes) <= maxRunes {

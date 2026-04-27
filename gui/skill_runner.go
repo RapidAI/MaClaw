@@ -806,112 +806,15 @@ func buildArgsExample(keys []string) string {
 }
 
 func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir string, params []corelib.NLSkillParam) (corelib.NLSkillStep, error) {
-	// Phase 1: Parameter binding — alias resolution, defaults, required validation.
-	// When params are available (explicit or synthesized), BindParams normalizes
-	// the vars map so that canonical param names are used for substitution.
-	// This is the single path that closes the LLM↔Skill parameter name gap.
-	bindVars := vars
-	if len(params) > 0 {
-		bindResult := cskill.BindParams(params, vars)
-		for _, w := range bindResult.Warnings {
-			log.Printf("[skill-runner] param bind warning: %s", w)
-		}
-		if bindResult.HasErrors() {
-			return step, fmt.Errorf("参数绑定失败: %s", bindResult.ErrorString())
-		}
-		// Use resolved vars (canonical names) for template substitution.
-		// Merge back any vars that weren't consumed by params (e.g., captured
-		// vars from previous steps that aren't in the schema).
-		bindVars = make(map[string]string, len(bindResult.ResolvedVars)+len(vars))
-		for k, v := range vars {
-			bindVars[k] = v
-		}
-		for k, v := range bindResult.ResolvedVars {
-			bindVars[k] = v // canonical names override aliases
-		}
-
-		// Phase 1b: CLI args appending (only for explicit schema with CLIFlag).
-		if len(bindResult.CLIArgs) > 0 {
-			if cmd, ok := step.Params["command"].(string); ok && cmd != "" {
-				// Filter out CLI args whose param name is already referenced
-				// as a placeholder in the command template (avoid double-apply).
-				filtered := filterConsumedCLIArgs(bindResult.CLIArgs, params, cmd)
-				if len(filtered) > 0 {
-					cp := make(map[string]interface{}, len(step.Params))
-					for k, v := range step.Params {
-						cp[k] = v
-					}
-					// Quote values for shell safety. CLI args are [flag, value, flag, value, ...].
-					// Flags don't need quoting; values do.
-					var quotedParts []string
-					for i := 0; i < len(filtered); i += 2 {
-						quotedParts = append(quotedParts, filtered[i]) // flag
-						if i+1 < len(filtered) {
-							quotedParts = append(quotedParts, quoteSkillInputForShell(filtered[i+1])) // value
-						}
-					}
-					cp["command"] = cmd + " " + strings.Join(quotedParts, " ")
-					step.Params = cp
-				}
-			}
-		}
+	// Delegate to the shared corelib ResolveStep, passing the GUI's
+	// platform-aware quoteSkillInputForShell as the quoting function.
+	// This ensures alias resolution, CLI args, craft_tool injection,
+	// and working_dir resolution all use the single shared code path.
+	result, err := cskill.ResolveStep(step, vars, skillDir, params, quoteSkillInputForShell)
+	if err != nil {
+		return step, err
 	}
-
-	// Phase 2: Template substitution (existing logic, handles shell quoting).
-	resolved := step
-	if resolvedParams, ok := resolveSkillValue(step.Params, bindVars).(map[string]interface{}); ok {
-		resolved.Params = resolvedParams
-	} else if step.Params != nil {
-		resolved.Params = map[string]interface{}{}
-	}
-	if resolved.Action == "craft_tool" && len(bindVars) != 0 {
-		if resolved.Params == nil {
-			resolved.Params = map[string]interface{}{}
-		}
-		for _, key := range []string{"input", "output", "topic"} {
-			if strings.TrimSpace(stringVal(resolved.Params, key)) != "" {
-				continue
-			}
-			if value := strings.TrimSpace(bindVars[key]); value != "" {
-				resolved.Params[key] = value
-			}
-		}
-	}
-	if workDir, _ := resolved.Params["working_dir"].(string); workDir != "" && !filepath.IsAbs(workDir) && skillDir != "" {
-		resolved.Params["working_dir"] = filepath.Clean(filepath.Join(skillDir, workDir))
-	}
-	return resolved, nil
-}
-
-// filterConsumedCLIArgs removes CLI flag+value pairs from cliArgs when the
-// corresponding param name is already referenced as a placeholder in the
-// command template. This prevents double-application: if a param has both
-// a CLIFlag and a template placeholder, the template substitution handles it.
-func filterConsumedCLIArgs(cliArgs []string, params []corelib.NLSkillParam, originalCmd string) []string {
-	consumedFlags := make(map[string]bool)
-	for _, p := range params {
-		if p.CLIFlag != "" && commandReferencesParam(originalCmd, p.Name) {
-			consumedFlags[p.CLIFlag] = true
-		}
-	}
-	if len(consumedFlags) == 0 {
-		return cliArgs
-	}
-	var filtered []string
-	for i := 0; i < len(cliArgs); i += 2 {
-		if i+1 < len(cliArgs) && !consumedFlags[cliArgs[i]] {
-			filtered = append(filtered, cliArgs[i], cliArgs[i+1])
-		}
-	}
-	return filtered
-}
-
-// commandReferencesParam checks if a command string contains a placeholder
-// reference to the given param name ({{name}}, ${name}, or {name}).
-func commandReferencesParam(cmd, paramName string) bool {
-	return strings.Contains(cmd, "{{"+paramName+"}}") ||
-		strings.Contains(cmd, "${"+paramName+"}") ||
-		strings.Contains(cmd, "{"+paramName+"}")
+	return result.Step, nil
 }
 
 func resolveSkillValue(value interface{}, vars map[string]string) interface{} {

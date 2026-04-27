@@ -358,17 +358,6 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 		vars[k] = v
 	}
 
-	// Parameter binding via BindParams — called once before the step loop.
-	// BindParams resolves aliases (e.g., "file" → "input") and fills defaults.
-	// Must happen before the loop so captured variables from step N are not
-	// overwritten by BindParams defaults in step N+1.
-	if len(skillParams) > 0 {
-		bindResult := skill.BindParams(skillParams, vars)
-		for k, v := range bindResult.ResolvedVars {
-			vars[k] = v
-		}
-	}
-
 	var results []string
 	ok := true
 	for i, step := range entry.Steps {
@@ -381,15 +370,18 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 			}
 		}
 
-		// Variable substitution in command.
-		if cmd, _ := step.Params["command"].(string); cmd != "" {
-			cp := make(map[string]interface{}, len(step.Params))
-			for k, v := range step.Params {
-				cp[k] = v
+		// Resolve step: parameter binding + template substitution + CLI args + working_dir.
+		// Uses the shared corelib/skill.ResolveStep for full parameter contract support.
+		resolveResult, resolveErr := skill.ResolveStep(step, vars, entry.SkillDir, skillParams, nil)
+		if resolveErr != nil {
+			results = append(results, fmt.Sprintf("[Step %d/%d] ✗ %s", i+1, len(entry.Steps), resolveErr.Error()))
+			ok = false
+			if step.OnError != "continue" {
+				break
 			}
-			cp["command"] = substituteAllVars(cmd, vars)
-			step.Params = cp
+			continue
 		}
+		step = resolveResult.Step
 
 		out, err := execStep(step, entry.SkillDir)
 
@@ -455,17 +447,6 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 		b.WriteString("✗ 执行失败")
 	}
 	return b.String()
-}
-
-// substituteAllVars replaces {{key}}, ${key}, and {key} placeholders in cmd
-// with values from vars. Aligned with GUI resolveSkillValue behavior.
-func substituteAllVars(cmd string, vars map[string]string) string {
-	for k, v := range vars {
-		cmd = strings.ReplaceAll(cmd, "{{"+k+"}}", v)
-		cmd = strings.ReplaceAll(cmd, "${"+k+"}", v)
-		cmd = strings.ReplaceAll(cmd, "{"+k+"}", v)
-	}
-	return cmd
 }
 
 func skillStatus(args map[string]interface{}) string {

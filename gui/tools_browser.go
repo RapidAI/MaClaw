@@ -28,15 +28,35 @@ func (a *replayActivityAdapter) ClearReplay() {
 	a.store.Clear("browser_replay")
 }
 
-// registerBrowserTools registers browser automation tools (CDP-based) into the gui ToolRegistry.
-// The tool definitions live in corelib/browser/tools.go (single source of truth).
-// This function bridges them into the gui-local ToolRegistry.
+// registerBrowserTools registers browser automation tools into the gui ToolRegistry.
+//
+// Architecture (root-cause fix for Browser: hallucination — #79):
+//
+// The 22 core browser actions (session_start, navigate, click, type, observe, etc.)
+// are registered as individual tools in the registry (for handler dispatch), but
+// only ONE merged "browser" tool definition is visible to the LLM. This reduces
+// LLM context token density from ~4500 tokens (30 definitions × ~150 tokens) to
+// ~500 tokens (1 definition), eliminating the root cause of "Browser:" role-prefix
+// hallucinations.
+//
+// Root cause: LLM training data contains multi-agent dialogue formats where
+// "Browser" is a high-frequency agent role name. When 30 tool definitions all
+// prefixed with "browser_" appear in context, the token density activates this
+// training pattern, causing the model to switch from assistant to "Browser agent"
+// role. Other tools (ssh, bash) don't trigger this because they have 1 definition
+// each and aren't agent role names in training data.
+//
+// The merged tool uses dispatchMergedBrowser() (in tools_browser_merged.go) to
+// route browser(action="navigate", ...) to the individual browser_navigate handler.
 func registerBrowserTools(registry *ToolRegistry, app *App) {
-	// Register into a temporary corelib registry.
+	// --- Step 1: Register all individual browser tools into the registry ---
+	// These are registered with Status=RegToolAvailable so their handlers are
+	// available for dispatch, but they will NOT be included in the LLM tool
+	// definitions because the merged "browser" tool replaces them.
 	coreReg := tool.NewRegistry()
 	browser.RegisterTools(coreReg)
 
-	// Create OCR provider (RapidOCR → LLM Vision fallback)
+	// Create OCR provider
 	ocrSidecar := browser.NewRapidOCRSidecar(func(msg string) {
 		log.Printf("[browser-ocr] %s", msg)
 	})
@@ -50,29 +70,26 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 		log.Printf("[browser-task] %s", msg)
 	})
 
-	// Register task supervisor tools
 	browser.RegisterTaskTools(coreReg, supervisor, nil)
-
-	// Register OCR tool
 	browser.RegisterOCRTool(coreReg, compositeOCR, sessionFn)
 
-	// Register recorder + replayer tools
 	recorder := browser.NewBrowserRecorder(sessionFn, func(msg string) {
 		log.Printf("[browser-record] %s", msg)
 	})
 	replayer := browser.NewFlowReplayer(supervisor, compositeOCR, nil)
-	// Note: loopMgr/activityStore/statusC are nil here. Async replay is wired
-	// at a higher level (app.go) when the gui BackgroundLoopManager is available.
-	// The corelib browser package uses corelib/agent types, not gui-local types.
 	browser.RegisterRecorderTools(coreReg, recorder, replayer, nil, nil, nil, func(msg string) {
 		log.Printf("[browser-replay] %s", msg)
 	})
 
-	// Bridge all corelib browser tools into the gui registry.
+	// Bridge individual tools into gui registry (handlers only, for dispatch).
+	// Description is set to empty so BuildAll() skips them — only the merged
+	// "browser" tool definition is visible to the LLM.
 	for _, ct := range coreReg.ListAvailable() {
+		toolName := ct.Name // capture for closure
+		handler := ct.Handler // capture for closure
 		gt := RegisteredTool{
-			Name:        ct.Name,
-			Description: ct.Description,
+			Name:        toolName,
+			Description: "", // Empty: excluded from LLM tool definitions by BuildAll()
 			Category:    ToolCategory(ct.Category),
 			Tags:        ct.Tags,
 			Priority:    ct.Priority,
@@ -81,11 +98,10 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 			Required:    ct.Required,
 			Source:      ct.Source,
 		}
-		if ct.Handler != nil {
-			h := ct.Handler
+		if handler != nil {
 			gt.Handler = func(args map[string]interface{}) string {
-				result := h(args)
-				if app != nil && app.browserSessions != nil && strings.HasPrefix(ct.Name, "browser_session_") {
+				result := handler(args)
+				if app != nil && app.browserSessions != nil && strings.HasPrefix(toolName, "browser_session_") {
 					app.browserSessions.syncFromCore()
 					app.emitRemoteStateChanged()
 				}
@@ -94,4 +110,31 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 		}
 		registry.Register(gt)
 	}
+
+	// --- Step 2: Register the merged "browser" tool ---
+	// This is the ONLY browser tool definition visible to the LLM.
+	// It dispatches to individual handlers via dispatchMergedBrowser().
+	registry.Register(RegisteredTool{
+		Name:        MergedBrowserToolName,
+		Description: mergedBrowserToolDescription,
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"browser", "web", "automation", "浏览器", "网页", "自动化"},
+		Priority:    6,
+		Status:      RegToolAvailable,
+		InputSchema: mergedBrowserInputSchema,
+		Required:    []string{"action"},
+		Source:      "builtin:browser:merged",
+		Handler: func(args map[string]interface{}) string {
+			result := dispatchMergedBrowser(registry, args)
+			// Sync browser session state after session management actions.
+			if app != nil && app.browserSessions != nil {
+				action, _ := args["action"].(string)
+				if strings.HasPrefix(action, "session_") || action == "connect" || action == "close" {
+					app.browserSessions.syncFromCore()
+					app.emitRemoteStateChanged()
+				}
+			}
+			return result
+		},
+	})
 }

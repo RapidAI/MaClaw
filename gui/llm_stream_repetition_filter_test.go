@@ -258,32 +258,29 @@ func TestSentenceBoundary(t *testing.T) {
 }
 
 func TestDetectRepetition_PatternLength1(t *testing.T) {
-	f := &repetitionFilter{}
 	s := "这是一个足够长的句子，用来测试重复检测过滤器的行为是否正确"
-	f.recentSentences = []string{s, s}
-	if !f.detectRepetition() {
+	window := []string{s, s}
+	if !detectRepetition(window, repMaxPatternLen) {
 		t.Fatal("expected repetition detected for pattern length 1")
 	}
 }
 
 func TestDetectRepetition_PatternLength2(t *testing.T) {
-	f := &repetitionFilter{}
 	a := "第一个足够长的句子，包含了很多内容来确保超过最小长度限制"
 	b := "第二个足够长的句子，也包含了很多内容来确保超过最小限制"
-	f.recentSentences = []string{a, b, a, b}
-	if !f.detectRepetition() {
+	window := []string{a, b, a, b}
+	if !detectRepetition(window, repMaxPatternLen) {
 		t.Fatal("expected repetition detected for pattern length 2")
 	}
 }
 
 func TestDetectRepetition_NoRepetition(t *testing.T) {
-	f := &repetitionFilter{}
-	f.recentSentences = []string{
+	window := []string{
 		"第一个足够长的句子，包含了很多内容来确保超过最小长度限制",
 		"第二个足够长的句子，也包含了很多内容来确保超过最小限制",
 		"第三个足够长的句子，同样包含了很多内容来确保能被检测到",
 	}
-	if f.detectRepetition() {
+	if detectRepetition(window, repMaxPatternLen) {
 		t.Fatal("expected no repetition for different sentences")
 	}
 }

@@ -87,6 +87,11 @@ func NewSkillExecutor(app *App, mcpRegistry *MCPRegistry, manager *RemoteSession
 // Config-based skills usually take precedence over file-based ones with the
 // same name, except that stale config entries without executable steps are
 // hydrated from an executable file-backed definition when available.
+//
+// Identity key: skill directory path (stable, not affected by Name changes,
+// Hub publisher prefixes, or SKILL.md frontmatter overrides). Falls back to
+// Name matching for config entries without SkillDir (e.g., learned/crafted
+// skills that don't have a directory).
 func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	cfg, err := e.app.LoadConfig()
 	if err != nil {
@@ -94,19 +99,39 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	}
 	skills := append([]corelib.NLSkillEntry(nil), cfg.NLSkills...)
 
-	known := make(map[string]int, len(skills))
+	// Build two indexes: primary by directory path (stable), fallback by Name.
+	knownByDir := make(map[string]int, len(skills))
+	knownByName := make(map[string]int, len(skills))
 	for i, s := range skills {
-		known[s.Name] = i
+		if s.SkillDir != "" {
+			knownByDir[filepath.Clean(s.SkillDir)] = i
+		}
+		knownByName[s.Name] = i
 	}
 
-	primaryDir, _ := skill.PrimarySkillsDir()
 	fileSkills := e.scanSkillYAMLFiles()
 	for _, fs := range fileSkills {
-		if idx, ok := known[fs.Name]; ok {
+		// Primary: match by directory path (stable identity).
+		// Fallback: match by Name (backward compat for config entries without SkillDir).
+		idx := -1
+		if fs.SkillDir != "" {
+			if i, ok := knownByDir[filepath.Clean(fs.SkillDir)]; ok {
+				idx = i
+			}
+		}
+		if idx < 0 {
+			if i, ok := knownByName[fs.Name]; ok {
+				idx = i
+			}
+		}
+
+		if idx >= 0 {
 			configSkill := &skills[idx]
-			if shouldHydrateSkillFromFile(*configSkill, fs, primaryDir) {
+			if len(fs.Steps) > 0 {
+				// On-disk skill.yaml is the source of truth for steps.
 				configSkill.Steps = fs.Steps
 				configSkill.SkillDir = fs.SkillDir
+				configSkill.Params = fs.Params
 				if len(configSkill.Triggers) == 0 {
 					configSkill.Triggers = fs.Triggers
 				}
@@ -122,19 +147,25 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 			continue
 		}
 		skills = append(skills, fs)
-		known[fs.Name] = len(skills) - 1
+		// Update both indexes for dedup of subsequent file skills.
+		newIdx := len(skills) - 1
+		if fs.SkillDir != "" {
+			knownByDir[filepath.Clean(fs.SkillDir)] = newIdx
+		}
+		knownByName[fs.Name] = newIdx
 	}
 
 	return skills
 }
 
-// shouldHydrateSkillFromFile decides whether a config-based skill's steps
-// should be replaced with the on-disk file version during loadSkills() merge.
+// shouldHydrateSkillFromFile is a predicate that decides whether a config-based
+// skill's steps should be replaced with the on-disk file version.
 // The on-disk skill.yaml is the source of truth for steps whenever the file
 // has valid steps and names match.
 //
-// The primaryDir parameter is retained for call-site compatibility but is
-// no longer used after the stale-cache fix (see skill-edit-stale-cache spec).
+// Note: loadSkills now uses directory-path-based identity matching instead of
+// calling this function directly. This function is retained for property-based
+// test validation of the hydration predicate.
 func shouldHydrateSkillFromFile(configSkill, fileSkill corelib.NLSkillEntry, _ string) bool {
 	if fileSkill.Name == "" || configSkill.Name != fileSkill.Name || len(fileSkill.Steps) == 0 {
 		return false
@@ -157,7 +188,7 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []corelib.NLSkillEntry {
 // File-based skills (source == "file") are saved as stats-only stubs so that
 // usage statistics survive across restarts. The full definition (steps,
 // triggers, description, etc.) is always loaded from the YAML file at runtime
-// via loadSkills → scanSkillYAMLFiles → shouldHydrateSkillFromFile.
+// via loadSkills → scanSkillYAMLFiles (directory-path identity matching).
 func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	cfg, err := e.app.LoadConfig()
 	if err != nil {

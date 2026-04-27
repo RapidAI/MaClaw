@@ -11,51 +11,41 @@ import (
 // block of sentences, this filter stops forwarding the repeated content
 // to the downstream callback (typically the frontend onToken handler).
 //
-// Detection strategy:
-//   - Accumulate recent output in a sliding window of completed sentences.
-//   - After each sentence boundary (。！？!?\n), check whether the
-//     recent sentence sequence contains a repeating pattern.
-//   - A "pattern" is 1-4 consecutive sentences that repeat as a block.
-//     For example: [A, B, A, B] is a pattern of length 2 repeating twice.
-//   - If a pattern repeats repMaxConsecutive times, suppress further
-//     output and set a "halted" flag.
-//   - The halted flag can be read by the caller (e.g. the SSE loop)
-//     to early-terminate the stream if desired.
+// Detection strategy �?two layers:
 //
-// The filter is intentionally conservative: it only triggers on exact
-// block repetition (after whitespace normalization), avoiding false
-// positives on legitimate repeated phrases like list items or code.
+// Layer 1 (sentence-based):
+//   - Split pending buffer on sentence boundaries (。！�??).
+//   - Track normalized sentences in a sliding window.
+//   - Detect repeating patterns of 1-4 sentences.
+//
+// Layer 2 (paragraph-based):
+//   - Split pending buffer on paragraph boundaries (\n\n).
+//   - Track normalized paragraphs in a sliding window.
+//   - Detect repeating patterns of 1-3 paragraphs.
+//   - This catches structured content (Markdown tables, lists) that
+//     doesn't use sentence-ending punctuation but repeats as blocks.
+//
+// Both layers share the same pending buffer. On each Write(), the buffer
+// is scanned for the earliest boundary (sentence or paragraph). Content
+// up to that boundary is emitted and tracked by the corresponding layer.
+//
+// If either layer detects repetition reaching repMaxConsecutive times,
+// suppress further output and set a "halted" flag.
 
 const (
-	// repWindowMaxSentences is the maximum number of sentences to keep
-	// in the sliding window for pattern detection.
-	repWindowMaxSentences = 20
-
-	// repMinSentenceRunes is the minimum sentence length (in runes) to
-	// consider for repetition detection. Very short sentences like "好的"
-	// are common and legitimate.
-	repMinSentenceRunes = 15
-
-	// repMaxConsecutive is the number of times a pattern must repeat
-	// before the filter starts suppressing. 2 means: the pattern appears
-	// twice (original + one repetition) → halt on the third occurrence.
-	repMaxConsecutive = 2
-
-	// repMaxPatternLen is the maximum number of sentences in a repeating
-	// pattern. Covers cases like [A,B,C,D, A,B,C,D, ...].
-	repMaxPatternLen = 4
-
-	// repWindowMaxRunes caps the pending buffer for the long-text
-	// fallback check (no sentence boundaries).
-	repWindowMaxRunes = 2000
+	repWindowMaxSentences    = 20
+	repMinSentenceRunes      = 15
+	repMaxConsecutive        = 2
+	repMaxPatternLen         = 4
+	repWindowMaxRunes        = 2000
+	repWindowMaxParagraphs   = 12
+	repMinParagraphRunes     = 30
+	repMaxParagraphPatternLen = 3
 )
 
-// sentenceBoundary returns true if the rune is a sentence-ending punctuation.
-// Newlines are intentionally excluded: code blocks and Markdown lists contain
-// many newlines that would cause false-positive repetition detection.
 func sentenceBoundary(r rune) bool {
 	switch r {
-	case '。', '！', '？', '!', '?':
+	case '\u3002', '\uff01', '\uff1f', '!', '?':
 		return true
 	}
 	return false
@@ -64,18 +54,16 @@ func sentenceBoundary(r rune) bool {
 type repetitionFilter struct {
 	downstream llm.TokenCallback
 
-	// pending accumulates tokens until a sentence boundary is found.
+	// pending accumulates tokens until a boundary is found.
 	pending strings.Builder
 
-	// recentSentences stores the normalized text of recently completed
-	// sentences for pattern detection.
+	// Layer 1: sentence-level tracking.
 	recentSentences []string
 
-	// halted is set to true when repetition is detected and suppression
-	// has begun. Once halted, all further tokens are silently dropped.
-	halted bool
+	// Layer 2: paragraph-level tracking.
+	recentParagraphs []string
 
-	// suppressedRunes counts how many runes were suppressed.
+	halted          bool
 	suppressedRunes int
 }
 
@@ -91,64 +79,116 @@ func (f *repetitionFilter) Write(delta string) {
 
 	f.pending.WriteString(delta)
 
-	// Process completed sentences from the pending buffer.
+	// Drain the pending buffer by splitting on the earliest boundary.
 	for {
 		text := f.pending.String()
 		if text == "" {
 			break
 		}
 
-		// Find the first sentence boundary.
-		boundaryIdx := -1
-		for i, r := range text {
-			if sentenceBoundary(r) {
-				boundaryIdx = i + utf8.RuneLen(r)
-				break
-			}
-		}
+		sentIdx := f.findSentenceBoundary(text)
+		paraIdx := findParagraphBreak(text)
 
-		if boundaryIdx < 0 {
-			// No complete sentence yet. Check if pending is suspiciously
-			// long without boundaries (e.g. the LLM is repeating a phrase
-			// without punctuation).
+		if sentIdx < 0 && paraIdx < 0 {
+			// No boundary. Fallback for very long content without any boundary.
 			if utf8.RuneCountInString(text) > repWindowMaxRunes/2 {
 				f.checkLongPendingRepetition(text)
 			}
 			break
 		}
 
-		sentence := text[:boundaryIdx]
-		remainder := text[boundaryIdx:]
-
-		f.pending.Reset()
-		f.pending.WriteString(remainder)
-
-		normalized := normalizeSentence(sentence)
-
-		// Always emit the sentence first (we detect repetition after
-		// accumulating enough sentences, and halt on the next write).
-		f.downstream(sentence)
-
-		// Only track sentences long enough to be meaningful.
-		if utf8.RuneCountInString(normalized) < repMinSentenceRunes {
-			continue
+		// Use whichever boundary comes first.
+		if sentIdx >= 0 && (paraIdx < 0 || sentIdx <= paraIdx) {
+			f.drainSentence(text, sentIdx)
+		} else {
+			f.drainParagraph(text, paraIdx)
 		}
 
-		f.recentSentences = append(f.recentSentences, normalized)
-
-		// Trim window.
-		if len(f.recentSentences) > repWindowMaxSentences {
-			excess := len(f.recentSentences) - repWindowMaxSentences
-			f.recentSentences = f.recentSentences[excess:]
-		}
-
-		// Check for repeating patterns.
-		if f.detectRepetition() {
-			f.halted = true
-			f.suppressedRunes += utf8.RuneCountInString(remainder)
-			f.pending.Reset()
+		if f.halted {
+			// Suppress whatever remains in pending.
+			rem := f.pending.String()
+			if rem != "" {
+				f.suppressedRunes += utf8.RuneCountInString(rem)
+				f.pending.Reset()
+			}
 			return
 		}
+	}
+}
+
+// findSentenceBoundary returns the byte index just past the first sentence
+// boundary rune, or -1 if none found.
+func (f *repetitionFilter) findSentenceBoundary(text string) int {
+	for i, r := range text {
+		if sentenceBoundary(r) {
+			return i + utf8.RuneLen(r)
+		}
+	}
+	return -1
+}
+
+// drainSentence emits text up to sentEnd, tracks it in Layer 1, and
+// updates pending.
+func (f *repetitionFilter) drainSentence(text string, sentEnd int) {
+	sentence := text[:sentEnd]
+	remainder := text[sentEnd:]
+	f.pending.Reset()
+	f.pending.WriteString(remainder)
+
+	// Emit first, detect after (same as original design).
+	f.downstream(sentence)
+
+	normalized := normalizeSentence(sentence)
+	if utf8.RuneCountInString(normalized) < repMinSentenceRunes {
+		return
+	}
+
+	f.recentSentences = append(f.recentSentences, normalized)
+	if len(f.recentSentences) > repWindowMaxSentences {
+		f.recentSentences = f.recentSentences[len(f.recentSentences)-repWindowMaxSentences:]
+	}
+
+	if detectRepetition(f.recentSentences, repMaxPatternLen) {
+		f.halted = true
+	}
+}
+
+// drainParagraph emits text up to (and including) the paragraph break,
+// tracks the paragraph content in Layer 2, and updates pending.
+func (f *repetitionFilter) drainParagraph(text string, breakStart int) {
+	// Find the end of the break: skip all \n, \r, spaces, tabs.
+	breakEnd := breakStart
+	for breakEnd < len(text) {
+		r, sz := utf8.DecodeRuneInString(text[breakEnd:])
+		if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
+			breakEnd += sz
+		} else {
+			break
+		}
+	}
+
+	emitPart := text[:breakEnd]
+	remainder := text[breakEnd:]
+	f.pending.Reset()
+	f.pending.WriteString(remainder)
+
+	// Emit the content including the break whitespace.
+	f.downstream(emitPart)
+
+	// Track the paragraph (content before the break, not the break itself).
+	paraText := text[:breakStart]
+	normalized := normalizeSentence(paraText)
+	if utf8.RuneCountInString(normalized) < repMinParagraphRunes {
+		return
+	}
+
+	f.recentParagraphs = append(f.recentParagraphs, normalized)
+	if len(f.recentParagraphs) > repWindowMaxParagraphs {
+		f.recentParagraphs = f.recentParagraphs[len(f.recentParagraphs)-repWindowMaxParagraphs:]
+	}
+
+	if detectRepetition(f.recentParagraphs, repMaxParagraphPatternLen) {
+		f.halted = true
 	}
 }
 
@@ -157,45 +197,42 @@ func (f *repetitionFilter) Flush() {
 		return
 	}
 	remaining := f.pending.String()
-	if remaining != "" {
-		f.downstream(remaining)
-		f.pending.Reset()
+	if remaining == "" {
+		return
+	}
+	f.downstream(remaining)
+	f.pending.Reset()
+
+	// Treat end-of-stream as a paragraph boundary: track the final chunk.
+	normalized := normalizeSentence(remaining)
+	if utf8.RuneCountInString(normalized) >= repMinParagraphRunes {
+		f.recentParagraphs = append(f.recentParagraphs, normalized)
+		if detectRepetition(f.recentParagraphs, repMaxParagraphPatternLen) {
+			f.halted = true
+		}
 	}
 }
 
-// Halted returns true if the filter detected repetition and stopped output.
-func (f *repetitionFilter) Halted() bool {
-	return f.halted
-}
+func (f *repetitionFilter) Halted() bool          { return f.halted }
+func (f *repetitionFilter) SuppressedRunes() int   { return f.suppressedRunes }
 
-// SuppressedRunes returns the number of runes that were suppressed.
-func (f *repetitionFilter) SuppressedRunes() int {
-	return f.suppressedRunes
-}
-
-// detectRepetition checks if the recent sentence window contains a
-// repeating pattern of length 1..repMaxPatternLen.
-//
-// For pattern length P, we need at least P * repMaxConsecutive sentences.
-// We check if the last P*repMaxConsecutive sentences form repMaxConsecutive
-// identical blocks of P sentences each.
-func (f *repetitionFilter) detectRepetition() bool {
-	n := len(f.recentSentences)
-	for patLen := 1; patLen <= repMaxPatternLen; patLen++ {
+// detectRepetition checks if the tail of `window` contains a repeating
+// pattern of length 1..maxPatLen. Shared by both Layer 1 and Layer 2.
+// Pure function �?does not access filter state.
+func detectRepetition(window []string, maxPatLen int) bool {
+	n := len(window)
+	for patLen := 1; patLen <= maxPatLen; patLen++ {
 		needed := patLen * repMaxConsecutive
 		if n < needed {
 			continue
 		}
-		// Extract the last `needed` sentences.
-		window := f.recentSentences[n-needed:]
-		// The pattern is the first `patLen` sentences.
-		pattern := window[:patLen]
-		// Check if all subsequent blocks match.
+		tail := window[n-needed:]
+		pattern := tail[:patLen]
 		allMatch := true
 		for block := 1; block < repMaxConsecutive; block++ {
-			offset := block * patLen
+			off := block * patLen
 			for i := 0; i < patLen; i++ {
-				if window[offset+i] != pattern[i] {
+				if tail[off+i] != pattern[i] {
 					allMatch = false
 					break
 				}
@@ -212,19 +249,16 @@ func (f *repetitionFilter) detectRepetition() bool {
 }
 
 // checkLongPendingRepetition handles the case where the LLM repeats a
-// long phrase without sentence-ending punctuation. It checks if the
-// pending buffer contains the same substring repeated.
+// long phrase without any boundary (no sentence punctuation, no \n\n).
 func (f *repetitionFilter) checkLongPendingRepetition(text string) {
 	runes := []rune(text)
 	n := len(runes)
-	// Try pattern lengths from n/4 to n/2.
 	for patLen := n / 4; patLen <= n/2; patLen++ {
 		pattern := string(runes[:patLen])
 		normalized := normalizeSentence(pattern)
 		if utf8.RuneCountInString(normalized) < repMinSentenceRunes {
 			continue
 		}
-		// Check if the pattern repeats at least twice.
 		count := 0
 		for offset := 0; offset+patLen <= n; offset += patLen {
 			chunk := string(runes[offset : offset+patLen])
@@ -235,7 +269,6 @@ func (f *repetitionFilter) checkLongPendingRepetition(text string) {
 			}
 		}
 		if count >= repMaxConsecutive {
-			// Emit only the first occurrence, halt the rest.
 			f.downstream(pattern)
 			f.halted = true
 			f.suppressedRunes += n - patLen
@@ -245,11 +278,40 @@ func (f *repetitionFilter) checkLongPendingRepetition(text string) {
 	}
 }
 
+// findParagraphBreak finds the byte index of the first \n\n (or \n
+// followed by optional horizontal whitespace and another \n).
+// Returns -1 if not found.
+func findParagraphBreak(text string) int {
+	// Fast path: no newline at all.
+	firstNL := strings.IndexByte(text, '\n')
+	if firstNL < 0 || firstNL >= len(text)-1 {
+		return -1
+	}
+	for i := firstNL; i < len(text)-1; {
+		r, sz := utf8.DecodeRuneInString(text[i:])
+		if r == '\n' {
+			j := i + sz
+			for j < len(text) {
+				r2, sz2 := utf8.DecodeRuneInString(text[j:])
+				if r2 == ' ' || r2 == '\t' || r2 == '\r' {
+					j += sz2
+					continue
+				}
+				if r2 == '\n' {
+					return i
+				}
+				break
+			}
+		}
+		i += sz
+	}
+	return -1
+}
+
 // normalizeSentence strips leading/trailing whitespace and collapses
 // internal whitespace for comparison purposes.
 func normalizeSentence(s string) string {
 	s = strings.TrimSpace(s)
-	// Collapse all whitespace sequences to a single space.
 	var b strings.Builder
 	prevSpace := false
 	for _, r := range s {

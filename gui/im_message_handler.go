@@ -2794,13 +2794,22 @@ func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}
 
 	sendStatus(fmt.Sprintf("📦 找到 Skill: %s — %s (来源: %s)", best.Name, best.Description, best.Status))
 
-	return h.installAndExecuteSkill(ctx, best, query, sendStatus)
+	// Read platform/userID from the active loop context (valid during agent loop).
+	platform := ""
+	if h.currentLoopCtx != nil {
+		platform = h.currentLoopCtx.Platform
+	}
+	return h.installAndExecuteSkill(ctx, best, query, platform, h.lastUserID, sendStatus)
 }
 
 // installAndExecuteSkill handles the download, security review, registration,
 // and execution of a found skill. Shared by both active (tool call) and
 // passive (capability gap) paths.
-func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *SkillSearchResult, query string, sendStatus func(string)) string {
+//
+// platform and userID are passed explicitly for the same reason as
+// registerAndExecuteSkill — async callers must capture these before
+// the agent loop's defer clears currentLoopCtx.
+func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *SkillSearchResult, query, platform, userID string, sendStatus func(string)) string {
 	// GitHub result → import via a stable install ref when available.
 	if best.Status == "github" {
 		var imported *corelib.NLSkillEntry
@@ -2822,21 +2831,19 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 			}
 		}
 		imported.Source = "auto_github"
-		return h.registerAndExecuteSkill(ctx, imported, best.Name, "auto_github", sendStatus)
+		return h.registerAndExecuteSkill(ctx, imported, best.Name, "auto_github", platform, userID, sendStatus)
 	}
 
 	// SkillMarket or ClawHub result → download and register locally.
 	sendStatus(fmt.Sprintf("⬇️ 正在安装: %s ...", best.Name))
 
 	if best.Status == "clawhub" {
-		// ClawHub skills are SKILL.md-based knowledge guides, not step-based
-		// automation. Download the SKILL.md content and register as a local skill.
 		skill, dlErr := downloadClawHubSkill(ctx, best.ID)
 		if dlErr != nil {
 			return fmt.Sprintf("🔎 找到 ClawHub Skill「%s」但下载失败: %v", best.Name, dlErr)
 		}
 		skill.Source = "auto_clawhub"
-		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", sendStatus)
+		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", platform, userID, sendStatus)
 	}
 
 	// SkillMarket result: download through the HubCenter failover pool.
@@ -2845,7 +2852,7 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 		return fmt.Sprintf("Found skill %s but download failed: %v", best.Name, dlErr)
 	}
 	skill.Source = "auto_hub"
-	return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_hub", sendStatus)
+	return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_hub", platform, userID, sendStatus)
 }
 
 // downloadClawHubSkill fetches a skill from the ClawHub mirror and converts
@@ -2989,8 +2996,13 @@ func extractSkillFiles(skillName string, files map[string]string) {
 }
 
 // registerAndExecuteSkill registers a skill locally, runs security review,
+// registerAndExecuteSkill registers a skill locally, runs security review,
 // executes it, and returns the result string.
-func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *corelib.NLSkillEntry, displayName, source string, sendStatus func(string)) string {
+//
+// platform and userID are passed explicitly (not read from h.currentLoopCtx)
+// because this function may be called from async goroutines where
+// currentLoopCtx has already been cleared by the agent loop's defer.
+func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *corelib.NLSkillEntry, displayName, source string, platform, userID string, sendStatus func(string)) string {
 	if h.getSkillExecutor() == nil {
 		return fmt.Sprintf("找到 Skill「%s」但 SkillExecutor 未初始化", displayName)
 	}
@@ -3000,14 +3012,8 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		sendStatus("🔒 正在进行安全审查...")
 		assessment := h.getRiskAssessor().AssessSkill(skill, skill.TrustLevel)
 		if assessment.Level == security.RiskCritical {
-			// Determine the platform for the confirmation channel.
-			platform := ""
-			if h.currentLoopCtx != nil {
-				platform = h.currentLoopCtx.Platform
-			}
-
 			confirmed := h.confirmCriticalRiskSkill(
-				ctx, displayName, source, assessment.Factors, platform, h.lastUserID,
+				ctx, displayName, source, assessment.Factors, platform, userID,
 			)
 
 			if !confirmed {
@@ -3785,7 +3791,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			if confirmID != "" {
 				lower := strings.TrimSpace(strings.ToLower(trimmed))
 				confirmed := lower == "确认安装" || lower == "确认" || lower == "1"
-				h.ResolveCriticalConfirm(confirmID, confirmed)
+				h.ResolveCriticalConfirm(confirmID, confirmed) //nolint:errcheck // IM path: error logged internally
 				if confirmed {
 					return &IMAgentResponse{Text: "✅ 已确认安装该 Critical 风险 Skill。"}
 				}
@@ -3882,6 +3888,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// and promote to an UnfinishedTaskSlot so the existing resume machinery
 	// handles it — no keyword matching needed, works regardless of what the
 	// user's next message says.
+	//
+	// No filtering needed: The marker is set lazily — only after the agent
+	// loop produces valuable intermediate state (first tool call executed
+	// and committed to history). Simple commands (clear, hi, ok) that get
+	// a quick LLM text response never set the marker. If the marker exists,
+	// the task was substantial enough to have produced tool-call level work
+	// before being interrupted.
 	if unfinishedSlot == nil && !msg.IsBackground {
 		if interruptedTask := h.memory.ConsumeInFlightTask(msg.UserID); interruptedTask != "" {
 			slotID := fmt.Sprintf("interrupted-%d", time.Now().UnixMilli())
@@ -4002,11 +4015,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Check if handlePendingConfirm classified this message as "other"
 	// (unrelated to the active workflow). If so, the agent loop should
 	// skip workflow-engine-specific gates (NeedsConfirm phase capture,
-	// doc_only tool filtering) to prevent unrelated LLM output from
-	// being captured as a workflow phase document.
-	//
-	// NOTE: This does NOT bypass the Coding Tool Gate — when the message
-	// is a new coding task, gateConfig.active controls that independently.
+	// doc_only tool filtering) and bypass the Coding Tool Gate when the
+	// gate activation is from the fail-closed safety net (intent=ambiguous).
+	// When the message IS a new coding task (intent=coding), the coding
+	// gate still enforces the three-phase flow.
 	_, skipNeedsConfirmGate := h.workflowPendingConfirmOther.LoadAndDelete(msg.UserID)
 
 	// Also skip workflow gates when the attachment bypass was triggered —
@@ -5398,15 +5410,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// definitions during the three-phase coding workflow, which wastes context
 	// tokens and causes hallucinated "Browser:" role prefixes in output.
 	//
-	// NOTE: We do NOT skip this filter when SkipNeedsConfirmGate is set.
-	// SkipNeedsConfirmGate means handlePendingConfirm classified the message
-	// as "other" (unrelated to the active workflow), but gateConfig.active is
-	// independently computed from the message's coding intent. When the
-	// "unrelated" message is itself a new coding task (e.g. "开发超级玛利游戏"
-	// during an active PPT workflow), gateConfig.active=true and the gate
-	// must strip coding tools to enforce the three-phase flow.
-	// Non-coding "other" messages (e.g. "查天气") have gateConfig.active=false,
-	// so the gate naturally does not fire and the full tool set is preserved.
+	// Skip when SkipNeedsConfirmGate is set AND the gate activation is from
+	// the fail-closed safety net (intent=ambiguous), not from a genuine coding
+	// classification (intent=coding). handlePendingConfirm used an LLM to
+	// classify the message as "other" — this is a stronger signal than the
+	// fail-closed safety net which activates when classifiers are unavailable.
+	// When the GateIntentClassifier has high confidence that this IS a coding
+	// task (intent=coding), the gate must fire to enforce the three-phase flow
+	// even if handlePendingConfirm said "other" (consistent with #73).
 	//
 	// Also skip when the TaskExecutionOrchestrator is active — the orchestrator
 	// manages tool availability itself (direct mode keeps bash/write_file/edit_file,
@@ -5422,7 +5433,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		o := h.taskOrchestratorRegistry.Get(userID) // read-only: don't create empty entries
 		return o != nil && o.IsActive()
 	}
-	if gateConfig.active && !orchestratorActive() {
+	// skipCodingGate: bypass the Coding Tool Gate when handlePendingConfirm
+	// classified the message as "other" AND the gate activation is NOT from
+	// a confident coding classification. This handles the case where the
+	// fail-closed safety net (classifiers unavailable → active=true,
+	// intent=ambiguous) incorrectly blocks non-coding messages.
+	skipCodingGate := ctx.SkipNeedsConfirmGate && gateConfig.intent != intentCoding
+	if skipCodingGate && gateConfig.active {
+		log.Printf("[coding-gate] bypassed: SkipNeedsConfirmGate=true intent=%v (not coding)", gateConfig.intent)
+	}
+	if gateConfig.active && !skipCodingGate && !orchestratorActive() {
 		filtered := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
 			name := tool.ExtractToolName(t)
@@ -5532,22 +5552,39 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	const codingIterBudgetHard = 65  // force return
 	codingIterCount := 0             // consecutive iterations with coding tools
 
-	// --- In-flight task marker ---
-	// Mark that an agent loop is now executing. If the process is killed
-	// before the loop completes, this marker persists on disk and tells
-	// the next app session that the previous task was interrupted.
-	h.memory.SetInFlightTask(userID, truncateRunes(userText, 200))
-	if err := h.memory.FlushNow(); err != nil {
-		log.Printf("[InFlightTask] flush failed: %v", err)
+	// --- In-flight task marker (lazy activation) ---
+	// The marker is NOT set at loop entry. It is set lazily — only after
+	// the loop produces valuable intermediate state (first tool call
+	// executed and committed to history). This is the mechanism-level fix
+	// for the false-positive problem: simple commands like "clear", "hi",
+	// "ok" get a quick LLM text response and exit without ever setting
+	// the marker. Only loops that produce intermediate state worth
+	// recovering (tool calls, multi-iteration work) get marked.
+	//
+	// The boolean flag is checked by a deferred cleanup that clears the
+	// marker on every exit path. If the marker was never set, the cleanup
+	// is a no-op.
+	inFlightMarkerSet := false
+	setInFlightMarkerOnce := func() {
+		if inFlightMarkerSet {
+			return
+		}
+		inFlightMarkerSet = true
+		h.memory.SetInFlightTask(userID, truncateRunes(userText, 200))
+		if err := h.memory.FlushNow(); err != nil {
+			log.Printf("[InFlightTask] flush failed: %v", err)
+		}
 	}
 	// Ensure the marker is cleared on every exit path (normal, cancel,
 	// panic, max-rounds, drift, etc.). The defer runs after the named
 	// return in runAgentLoop, so it covers all paths.
 	defer func() {
-		h.memory.ClearInFlightTask(userID)
-		// Best-effort flush; if it fails the marker will be cleared on
-		// the next successful persist cycle.
-		_ = h.memory.FlushNow()
+		if inFlightMarkerSet {
+			h.memory.ClearInFlightTask(userID)
+			// Best-effort flush; if it fails the marker will be cleared on
+			// the next successful persist cycle.
+			_ = h.memory.FlushNow()
+		}
 	}()
 
 	// effectiveTokenLimit is the calibrated context token budget for
@@ -5821,7 +5858,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				tools = baseTools
 				directModeToolsFiltered = false // reset: baseTools includes session tools
 				// Re-apply coding gate definition filter after restoring baseTools.
-				if gateConfig.active && !orchestratorActive() {
+				if gateConfig.active && !skipCodingGate && !orchestratorActive() {
 					gateFiltered := make([]map[string]interface{}, 0, len(tools))
 					for _, t := range tools {
 						name := tool.ExtractToolName(t)
@@ -6125,7 +6162,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// Previously this only fired on iteration == 0, so the LLM could
 		// output the requirements doc on iteration 1 and then immediately
 		// call create_session on iteration 2+ without any enforcement.
-		if gateConfig.active && !orchestratorActive() && len(choice.Message.ToolCalls) > 0 {
+		if gateConfig.active && !skipCodingGate && !orchestratorActive() && len(choice.Message.ToolCalls) > 0 {
 			gateResult := applyCodingToolGate(choice.Message.ToolCalls)
 			if gateResult.applied {
 				// Log stripped and preserved tool names.
@@ -6584,9 +6621,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// not "I can't do this" signals.
 			skipCapabilityGap := iteration >= 3 || len(trimmedVisibleContent) > 500
 			if !skipCapabilityGap && h.capabilityGapDetector != nil && h.capabilityGapDetector.Detect(msgContent) {
-				// Capture values for the goroutine closure.
+				// Capture values for the goroutine closure BEFORE the agent
+				// loop's defer clears currentLoopCtx and lastUserID.
 				capturedUserText := userText
 				capturedUserID := userID
+				capturedPlatform := ""
+				if h.currentLoopCtx != nil {
+					capturedPlatform = h.currentLoopCtx.Platform
+				}
 				go func() {
 					goCtx, goCancel := context.WithTimeout(context.Background(), 60*time.Second)
 					defer goCancel()
@@ -6597,7 +6639,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						return
 					}
 					log.Printf("[skill-auto-async] found skill: %s (%s)", best.Name, best.Status)
-					installResult := h.installAndExecuteSkill(goCtx, best, capturedUserText,
+					installResult := h.installAndExecuteSkill(goCtx, best, capturedUserText, capturedPlatform, capturedUserID,
 						func(status string) {
 							log.Printf("[skill-auto-async] %s", status)
 						})
@@ -6936,23 +6978,53 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				Role: "tool", Content: truncated, ToolCallID: tc.ID,
 			})
 
-			// --- Detect consecutive JSON truncation failures for write_file ---
+			// --- Lazy in-flight marker activation ---
+			// A tool call has been executed and its result committed to
+			// history. This is valuable intermediate state worth recovering
+			// if the process is killed. Activate the marker now.
+			setInFlightMarkerOnce()
+
+			// --- Truncate oversized arguments in conversation after tool failure ---
+			// When a tool call fails (e.g. "缺少 path 参数") and the arguments
+			// were very large (>2000 chars), the raw arguments JSON stays in the
+			// assistant message's tool_calls entry in conversation history. This
+			// bloats context with useless failed content. Truncate the arguments
+			// in-place to prevent context inflation.
+			if isToolCallFailure(truncated) && len(tc.Function.Arguments) > 2000 {
+				truncateToolCallArgsInConversation(conversation, tc.ID, tc.Function.Arguments)
+				log.Printf("[agent-loop] truncated oversized args (%d chars) for failed tool call %s/%s",
+					len(tc.Function.Arguments), tc.Function.Name, tc.ID)
+			}
+
+			// --- Detect consecutive write_file failures (JSON truncation or missing params) ---
 			// When the model generates content too long for a single JSON argument,
-			// the output gets truncated and parsing fails. After 2 consecutive
-			// failures, inject a system message guiding the model to chunk writes.
-			if strings.Contains(truncated, "参数解析失败") && strings.Contains(truncated, "unexpected end of JSON input") {
+			// the output gets truncated and parsing fails, or required params are
+			// omitted. After 2 consecutive failures, inject a system message guiding
+			// the model to chunk writes. Also matches the hint injected by
+			// filterTruncatedToolCalls (which removes the truncated tool call
+			// before it reaches executeTool, so the hint appears in msg.Content
+			// of the no-tool branch — but the counter here catches the case where
+			// the tool call survived filtering and failed at execution).
+			isWriteFileFailure := tc.Function.Name == "write_file" && (strings.Contains(truncated, "参数解析失败") ||
+				strings.Contains(truncated, "缺少 path 参数") ||
+				strings.Contains(truncated, "缺少 content 参数") ||
+				strings.Contains(truncated, "unexpected end of JSON input"))
+			if isWriteFileFailure {
 				consecutiveJSONTruncations++
 				if consecutiveJSONTruncations >= 2 {
-					jsonHint := "[系统提示] 连续 " + fmt.Sprintf("%d", consecutiveJSONTruncations) + " 次 write_file 因内容过长导致 JSON 截断失败。" +
-						"请将文件内容拆分为多次写入：第一次用 write_file 写入前半部分（不超过 5000 字符），后续用 write_file(mode=\"append\") 逐块追加。" +
-						"或者改用 bash 工具通过 Python 脚本写入大文件。"
+					jsonHint := "[系统提示] 连续 " + fmt.Sprintf("%d", consecutiveJSONTruncations) + " 次 write_file 调用失败。" +
+						"常见原因：内容过长导致 JSON 参数被截断或必需字段（path）被遗漏。" +
+						"请将文件内容拆分为多次写入：第一次用 write_file(path=\"文件路径\", content=\"前半部分\") 写入前半部分（不超过 5000 字符），后续用 write_file(path=\"文件路径\", mode=\"append\", content=\"后半部分\") 逐块追加。" +
+						"⚠️ 每次调用必须包含 path 参数。"
 					conversation = append(conversation, map[string]string{
 						"role":    "system",
 						"content": jsonHint,
 					})
-					log.Printf("[agent-loop] injected JSON truncation hint after %d consecutive failures", consecutiveJSONTruncations)
+					log.Printf("[agent-loop] injected write_file failure hint after %d consecutive failures", consecutiveJSONTruncations)
 				}
 			} else {
+				// Reset on any successful tool call (not just write_file).
+				// A successful intervening call means the model recovered.
 				consecutiveJSONTruncations = 0
 			}
 
@@ -7519,6 +7591,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				history = append(history, agent.ConversationEntry{
 					Role: "tool", Content: truncated, ToolCallID: tc.ID,
 				})
+
+				// --- Lazy in-flight marker activation (bonus round) ---
+				setInFlightMarkerOnce()
 			}
 		}
 

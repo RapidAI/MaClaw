@@ -16,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func estimateConversationEntryTokens(entries []agent.ConversationEntry) int {
@@ -921,3 +922,81 @@ func stripCodeBlocks(s string) string {
 // ---------------------------------------------------------------------------
 // IMMessageHandler
 // ---------------------------------------------------------------------------
+
+// isToolCallFailure checks if a tool result indicates a failure.
+// Used to decide whether to truncate oversized arguments in conversation.
+// Only checks prefixes — all tool error messages start with the error indicator.
+func isToolCallFailure(result string) bool {
+	failurePrefixes := []string{
+		"缺少 ",
+		"参数解析失败",
+		"工具执行异常",
+		"写入失败",
+		"读取失败",
+		"编辑失败",
+		"文件不存在",
+		"未知工具",
+	}
+	for _, p := range failurePrefixes {
+		if strings.HasPrefix(result, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// truncateToolCallArgsInConversation finds the assistant message containing
+// the given tool call ID and truncates its arguments to a short summary.
+// This prevents failed tool calls with oversized arguments (e.g. 13K chars
+// of write_file content) from bloating the conversation context.
+//
+// The function walks backward through conversation to find the most recent
+// assistant message with matching tool_calls, then replaces the Arguments
+// string in-place with a truncated version.
+func truncateToolCallArgsInConversation(conversation []interface{}, toolCallID, originalArgs string) {
+	const maxArgsSummaryRunes = 200
+
+	// Build a rune-safe truncated summary of the arguments
+	summary := originalArgs
+	runes := []rune(summary)
+	if len(runes) > maxArgsSummaryRunes {
+		summary = string(runes[:maxArgsSummaryRunes]) + fmt.Sprintf("... [截断，原始 %d 字符]", len(runes))
+	}
+
+	// Walk backward to find the assistant message with this tool call
+	for i := len(conversation) - 1; i >= 0; i-- {
+		msg, ok := conversation[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if msgRole(msg) != "assistant" {
+			continue
+		}
+		toolCalls, ok := msg["tool_calls"]
+		if !ok || toolCalls == nil {
+			continue
+		}
+
+		// tool_calls can be []llm.ToolCall or []interface{}
+		switch tcs := toolCalls.(type) {
+		case []llm.ToolCall:
+			for j := range tcs {
+				if tcs[j].ID == toolCallID {
+					tcs[j].Function.Arguments = summary
+					return
+				}
+			}
+		case []interface{}:
+			for _, tc := range tcs {
+				if tcMap, ok := tc.(map[string]interface{}); ok {
+					if tcMap["id"] == toolCallID {
+						if fn, ok := tcMap["function"].(map[string]interface{}); ok {
+							fn["arguments"] = summary
+						}
+						return
+					}
+				}
+			}
+		}
+	}
+}

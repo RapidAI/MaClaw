@@ -36,10 +36,22 @@ var dangerousFormatPatterns = []string{"format c:", "format d:", "format e:", "f
 
 // safeToolCategories are skill action/tool names that are inherently safe
 // utility operations and should not be escalated to critical risk.
+//
+// DESIGN RULE: Only include terms that are unambiguously safe. Avoid generic
+// verbs (search, fetch, query) that could appear in destructive skill names.
 var safeToolCategories = []string{
+	// Document conversion / formatting
 	"pdf", "qr", "qrcode", "pptx", "ppt", "image", "screenshot",
 	"generator", "converter", "formatter", "markdown",
 	"csv", "json", "xml", "yaml", "html", "any2pdf", "md-to-pdf",
+	// Academic / news data sources (read-only by nature)
+	"paper", "papers", "digest", "daily", "news", "feed", "rss",
+	"arxiv", "scholar", "hugging-face", "huggingface",
+	// Read-only information services
+	"weather", "stock", "price", "calendar", "clock", "timer",
+	"translate", "reader",
+	// Output-only generation (no system access)
+	"password", "uuid",
 }
 
 // systemDirPrefixes are path prefixes considered system directories.

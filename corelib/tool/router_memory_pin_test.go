@@ -20,18 +20,12 @@ func TestMatchConditionalTools_MemoryBrowserNotPinned(t *testing.T) {
 	memoryText := "服务器资源：Chrome 浏览器进程 PID 917323 CPU 39.6%，node 进程 CPU 2.6%"
 	matched := MatchConditionalTools(memoryText)
 
-	// Browser tools should NOT be in the matched set — "浏览器" in server
+	// Browser tool should NOT be in the matched set — "浏览器" in server
 	// process output is not a signal that the user wants browser automation.
-	browserTools := []string{
-		"browser_session_start", "browser_observe", "browser_navigate",
-		"browser_click", "browser_screenshot",
-	}
-	for _, name := range browserTools {
-		if matched[name] {
-			t.Errorf("MatchConditionalTools(%q) should NOT include browser tool %q; "+
-				"memory mentioning '浏览器' in server process list is a false positive",
-				memoryText, name)
-		}
+	if matched["browser"] {
+		t.Errorf("MatchConditionalTools(%q) should NOT include browser tool %q; "+
+			"memory mentioning '浏览器' in server process list is a false positive",
+			memoryText, "browser")
 	}
 }
 
@@ -56,8 +50,8 @@ func TestMatchConditionalTools_WeakBrowserKeywordsNotPinned(t *testing.T) {
 	memoryText := "用户要开发打飞机游戏，页面上直接打开即玩"
 	matched := MatchConditionalTools(memoryText)
 
-	if matched["browser_navigate"] {
-		t.Errorf("MatchConditionalTools(%q) should NOT include browser_navigate; "+
+	if matched["browser"] {
+		t.Errorf("MatchConditionalTools(%q) should NOT include browser tool; "+
 			"weak browser keywords in game description are false positives",
 			memoryText)
 	}
@@ -84,10 +78,7 @@ func TestRoute_SemanticIntentEnhancement_NoBrowserActivation(t *testing.T) {
 		tools = append(tools, makeToolDef(name, "core "+name))
 	}
 	tools = append(tools,
-		makeToolDef("browser_session_start", "启动浏览器会话"),
-		makeToolDef("browser_observe", "观察当前页面内容"),
-		makeToolDef("browser_navigate", "导航到指定URL"),
-		makeToolDef("browser_click", "点击页面元素"),
+		makeToolDef("browser", "浏览器自动化工具"),
 	)
 	// Pad with extra tools so BM25 scoring has candidates.
 	for i := 0; i < 20; i++ {
@@ -105,11 +96,9 @@ func TestRoute_SemanticIntentEnhancement_NoBrowserActivation(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate", "browser_click"} {
-		if resultNames[name] {
-			t.Errorf("Route(%q) should NOT include browser tool %q; "+
-				"no browser keywords and semantic intent enhancement excluded IntentBrowser", "查看服务器资源", name)
-		}
+	if resultNames["browser"] {
+		t.Errorf("Route(%q) should NOT include browser tool %q; "+
+			"no browser keywords and semantic intent enhancement excluded IntentBrowser", "查看服务器资源", "browser")
 	}
 
 	// SSH should be activated (keyword "服务器" matches).

@@ -28,18 +28,13 @@ func TestCodingGate_BlocklistContainsAllCodingTools(t *testing.T) {
 		"create_session", "bash", "write_file", "edit_file", "edit_lines",
 		"craft_tool", "send_and_observe", "control_session",
 	}
-	// Browser automation tools.
+	// Browser automation tools — unified "browser" tool replaces individual
+	// browser_* tools. Remaining individual tools are task/record/ocr/gui.
 	browserTools := []string{
-		"browser_session_start", "browser_session_stop", "browser_observe",
-		"browser_navigate", "browser_click", "browser_type",
-		"browser_wait", "browser_back", "browser_refresh", "browser_extract",
-		"browser_connect", "browser_screenshot", "browser_get_text",
-		"browser_get_html", "browser_eval", "browser_scroll",
-		"browser_select", "browser_list_pages", "browser_switch_page",
-		"browser_close", "browser_click_at", "browser_set_files",
-		"browser_info", "browser_ocr",
+		"browser",
 		"browser_task_run", "browser_task_replay", "browser_task_verify", "browser_task_status",
 		"browser_record_start", "browser_record_stop", "browser_list_flows",
+		"browser_ocr",
 		"gui_record_start", "gui_record_stop",
 		"gui_observe", "gui_verify",
 	}

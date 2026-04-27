@@ -63,18 +63,12 @@ var codingToolBlocklist = map[string]bool{
 	"craft_tool":       true,
 	"send_and_observe": true,
 	"control_session":  true,
-	// Browser automation tools — stripped during coding workflow phases to
-	// prevent LLM confusion from 25+ browser tool definitions in context.
-	"browser_session_start": true, "browser_session_stop": true, "browser_observe": true,
-	"browser_navigate": true, "browser_click": true, "browser_type": true,
-	"browser_wait": true, "browser_back": true, "browser_refresh": true, "browser_extract": true,
-	"browser_connect": true, "browser_screenshot": true, "browser_get_text": true,
-	"browser_get_html": true, "browser_eval": true, "browser_scroll": true,
-	"browser_select": true, "browser_list_pages": true, "browser_switch_page": true,
-	"browser_close": true, "browser_click_at": true, "browser_set_files": true,
-	"browser_info": true, "browser_ocr": true,
+	// Browser automation tools — the unified "browser" tool replaces 22
+	// individual browser_* tools. Block it plus the remaining individual tools.
+	"browser": true,
 	"browser_task_run": true, "browser_task_replay": true, "browser_task_verify": true, "browser_task_status": true,
 	"browser_record_start": true, "browser_record_stop": true, "browser_list_flows": true,
+	"browser_ocr": true,
 	"gui_record_start": true, "gui_record_stop": true,
 	"gui_observe": true, "gui_verify": true,
 }

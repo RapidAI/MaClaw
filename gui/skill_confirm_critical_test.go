@@ -25,25 +25,37 @@ func TestConfirmCriticalRisk_FailClosedEmptyPlatform(t *testing.T) {
 
 // TestConfirmCriticalRisk_TimeoutReturnsFalse verifies that when no response
 // is sent on the channel, the function returns false after the timeout.
-// Instead of waiting 120s, we test the channel mechanism directly with a
-// short timer.
+// We test the channel-close mechanism directly with a short timer to avoid
+// waiting 120s.
 func TestConfirmCriticalRisk_TimeoutReturnsFalse(t *testing.T) {
 	t.Parallel()
 	h := &IMMessageHandler{app: &App{}}
 
-	// Directly test the channel + timeout mechanism:
-	// Create a response channel and store it, then select with a short timeout.
-	respCh := make(chan criticalRiskConfirmResponse, 1)
+	// Create a pending entry (same type as confirmCriticalRiskSkill uses).
+	entry := &pendingCriticalConfirmEntry{
+		Ch: make(chan criticalRiskConfirmResponse, 1),
+	}
 	confirmID := "test_timeout_1"
-	h.pendingCriticalConfirm.Store(confirmID, respCh)
-	defer h.pendingCriticalConfirm.Delete(confirmID)
+	h.pendingCriticalConfirm.Store(confirmID, entry)
 
-	// Nobody sends on respCh — simulate timeout with a short duration.
+	// Simulate cleanup goroutine closing the channel after a short delay.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		if entry.tryResolve() {
+			h.pendingCriticalConfirm.Delete(confirmID)
+			close(entry.Ch)
+		}
+	}()
+
+	// Read from channel — should get ok=false (closed).
 	select {
-	case resp := <-respCh:
-		t.Fatalf("unexpected response: %+v", resp)
-	case <-time.After(50 * time.Millisecond):
-		// Timeout reached — this is the expected path (mirrors the 120s timeout).
+	case _, ok := <-entry.Ch:
+		if ok {
+			t.Fatal("expected channel close (ok=false), got a value")
+		}
+		// ok=false — timeout path, correct.
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for channel close")
 	}
 }
 
@@ -72,16 +84,12 @@ func TestConfirmCriticalRisk_ContextCancellation(t *testing.T) {
 }
 
 // TestConfirmCriticalRisk_DesktopChannelAdaptation verifies that calling with
-// platform="desktop" emits a Wails event (via h.app.emitEvent) and stores a
-// pending confirmation channel.
+// platform="desktop" stores a pending confirmation entry.
 func TestConfirmCriticalRisk_DesktopChannelAdaptation(t *testing.T) {
 	t.Parallel()
 	h := &IMMessageHandler{app: &App{}}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var confirmIDFound string
-
-	// Run confirmCriticalRiskSkill in a goroutine; it will block on the channel.
 	done := make(chan bool, 1)
 	go func() {
 		result := h.confirmCriticalRiskSkill(
@@ -92,32 +100,28 @@ func TestConfirmCriticalRisk_DesktopChannelAdaptation(t *testing.T) {
 		done <- result
 	}()
 
-	// Give the goroutine time to store the pending confirmation.
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify a pending confirmation was stored (desktop path).
+	var confirmIDFound string
 	h.pendingCriticalConfirm.Range(func(key, value interface{}) bool {
 		confirmIDFound = key.(string)
-		return false // stop after first
+		return false
 	})
 	if confirmIDFound == "" {
 		t.Fatal("expected a pending confirmation to be stored for desktop platform")
 	}
 
-	// Clean up: cancel context to unblock.
 	cancel()
 	<-done
 }
 
 // TestConfirmCriticalRisk_IMChannelAdaptation verifies that calling with an
-// IM platform (e.g. "feishu") stores a pending confirmation channel.
+// IM platform stores a pending confirmation entry.
 func TestConfirmCriticalRisk_IMChannelAdaptation(t *testing.T) {
 	t.Parallel()
 	h := &IMMessageHandler{app: &App{}}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var confirmIDFound string
-
 	done := make(chan bool, 1)
 	go func() {
 		result := h.confirmCriticalRiskSkill(
@@ -128,10 +132,9 @@ func TestConfirmCriticalRisk_IMChannelAdaptation(t *testing.T) {
 		done <- result
 	}()
 
-	// Give the goroutine time to store the pending confirmation.
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify a pending confirmation was stored (IM path).
+	var confirmIDFound string
 	h.pendingCriticalConfirm.Range(func(key, value interface{}) bool {
 		confirmIDFound = key.(string)
 		return false
@@ -162,10 +165,8 @@ func TestConfirmCriticalRisk_ConfirmResponse(t *testing.T) {
 		done <- result
 	}()
 
-	// Wait for the pending confirmation to be stored.
 	time.Sleep(50 * time.Millisecond)
 
-	// Find the confirmID and resolve it with confirmed=true.
 	var confirmID string
 	h.pendingCriticalConfirm.Range(func(key, value interface{}) bool {
 		confirmID = key.(string)
@@ -175,7 +176,9 @@ func TestConfirmCriticalRisk_ConfirmResponse(t *testing.T) {
 		t.Fatal("no pending confirmation found")
 	}
 
-	h.ResolveCriticalConfirm(confirmID, true)
+	if err := h.ResolveCriticalConfirm(confirmID, true); err != nil {
+		t.Fatalf("ResolveCriticalConfirm returned error: %v", err)
+	}
 
 	result := <-done
 	if !result {
@@ -201,10 +204,8 @@ func TestConfirmCriticalRisk_RejectResponse(t *testing.T) {
 		done <- result
 	}()
 
-	// Wait for the pending confirmation to be stored.
 	time.Sleep(50 * time.Millisecond)
 
-	// Find the confirmID and resolve it with confirmed=false.
 	var confirmID string
 	h.pendingCriticalConfirm.Range(func(key, value interface{}) bool {
 		confirmID = key.(string)
@@ -214,7 +215,9 @@ func TestConfirmCriticalRisk_RejectResponse(t *testing.T) {
 		t.Fatal("no pending confirmation found")
 	}
 
-	h.ResolveCriticalConfirm(confirmID, false)
+	if err := h.ResolveCriticalConfirm(confirmID, false); err != nil {
+		t.Fatalf("ResolveCriticalConfirm returned error: %v", err)
+	}
 
 	result := <-done
 	if result {
@@ -223,14 +226,19 @@ func TestConfirmCriticalRisk_RejectResponse(t *testing.T) {
 }
 
 // TestResolveCriticalConfirm_UnknownID verifies that calling
-// ResolveCriticalConfirm with a non-existent ID does not panic.
+// ResolveCriticalConfirm with a non-existent ID returns an error.
 func TestResolveCriticalConfirm_UnknownID(t *testing.T) {
 	t.Parallel()
 	h := &IMMessageHandler{app: &App{}}
 
-	// Should not panic — just logs and returns.
-	h.ResolveCriticalConfirm("nonexistent-id", true)
-	h.ResolveCriticalConfirm("nonexistent-id", false)
+	err := h.ResolveCriticalConfirm("nonexistent-id", true)
+	if err == nil {
+		t.Fatal("expected error for unknown confirmID, got nil")
+	}
+	err = h.ResolveCriticalConfirm("nonexistent-id", false)
+	if err == nil {
+		t.Fatal("expected error for unknown confirmID, got nil")
+	}
 }
 
 // TestConfirmCriticalRisk_NilAppDesktop verifies fail-closed when app is nil
@@ -267,41 +275,62 @@ func TestConfirmCriticalRisk_NilAppIM(t *testing.T) {
 
 // TestConfirmCriticalRisk_ConcurrentConfirmations verifies that multiple
 // concurrent confirmations with different IDs don't interfere.
-// We test the channel mechanism directly to avoid timing issues with
-// confirmID generation (Windows timer resolution).
 func TestConfirmCriticalRisk_ConcurrentConfirmations(t *testing.T) {
 	t.Parallel()
 	h := &IMMessageHandler{app: &App{}}
 
-	// Manually create 3 pending confirmations with known IDs.
+	// Create 3 pending entries with known IDs.
 	ids := []string{"crit_concurrent_1", "crit_concurrent_2", "crit_concurrent_3"}
-	channels := make([]chan criticalRiskConfirmResponse, 3)
+	entries := make([]*pendingCriticalConfirmEntry, 3)
 	for i, id := range ids {
-		ch := make(chan criticalRiskConfirmResponse, 1)
-		channels[i] = ch
-		h.pendingCriticalConfirm.Store(id, ch)
+		entry := &pendingCriticalConfirmEntry{
+			Ch: make(chan criticalRiskConfirmResponse, 1),
+		}
+		entries[i] = entry
+		h.pendingCriticalConfirm.Store(id, entry)
 	}
 
 	// Resolve: first=true, second=false, third=true.
 	expected := []bool{true, false, true}
 	for i, id := range ids {
-		h.ResolveCriticalConfirm(id, expected[i])
-	}
-
-	// Verify each channel received the correct response.
-	for i, ch := range channels {
-		select {
-		case resp := <-ch:
-			if resp.Confirmed != expected[i] {
-				t.Errorf("channel %d: expected confirmed=%v, got %v", i, expected[i], resp.Confirmed)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("timeout waiting for channel %d", i)
+		if err := h.ResolveCriticalConfirm(id, expected[i]); err != nil {
+			t.Fatalf("ResolveCriticalConfirm(%s) returned error: %v", id, err)
 		}
 	}
 
-	// Clean up.
-	for _, id := range ids {
-		h.pendingCriticalConfirm.Delete(id)
+	// Verify each channel received the correct response.
+	for i, entry := range entries {
+		select {
+		case resp := <-entry.Ch:
+			if resp.Confirmed != expected[i] {
+				t.Errorf("entry %d: expected confirmed=%v, got %v", i, expected[i], resp.Confirmed)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timeout waiting for entry %d", i)
+		}
+	}
+}
+
+// TestResolveCriticalConfirm_DoubleResolve verifies that resolving the same
+// confirmID twice returns an error on the second call (CAS prevents double-send).
+func TestResolveCriticalConfirm_DoubleResolve(t *testing.T) {
+	t.Parallel()
+	h := &IMMessageHandler{app: &App{}}
+
+	entry := &pendingCriticalConfirmEntry{
+		Ch: make(chan criticalRiskConfirmResponse, 1),
+	}
+	confirmID := "test_double_resolve"
+	h.pendingCriticalConfirm.Store(confirmID, entry)
+
+	// First resolve should succeed.
+	if err := h.ResolveCriticalConfirm(confirmID, true); err != nil {
+		t.Fatalf("first resolve returned error: %v", err)
+	}
+
+	// Second resolve should fail — entry was deleted by the first resolve.
+	err := h.ResolveCriticalConfirm(confirmID, true)
+	if err == nil {
+		t.Fatal("expected error on second resolve, got nil")
 	}
 }

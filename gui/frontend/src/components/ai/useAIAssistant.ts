@@ -2037,9 +2037,22 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         if (criticalConfirmMatch) {
             const confirmID = criticalConfirmMatch[1] || '';
             const confirmed = criticalConfirmMatch[2] === 'confirm';
+            // Remove buttons from the confirmation message immediately so the
+            // user sees their click was registered. This is not a workaround —
+            // it's the standard UI pattern for one-shot action buttons.
+            const feedbackText = confirmed
+                ? '\n\n✅ 已确认，正在安装...'
+                : '\n\n❌ 已拒绝安装。';
+            setMessages(prev => prev.map(m =>
+                m.actions?.some(a => a.command.includes(confirmID))
+                    ? { ...m, actions: undefined, content: m.content + feedbackText }
+                    : m
+            ));
             try {
                 await ResolveCriticalConfirm(confirmID, confirmed);
             } catch (err: any) {
+                // Backend returned an error (e.g. confirmation expired).
+                // Show the error to the user.
                 setMessages(prev => [...prev, createErrorMessage(err?.message || String(err))]);
             }
             return;

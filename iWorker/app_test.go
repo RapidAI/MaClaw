@@ -112,11 +112,14 @@ func TestSaveDiWorkerSettingsRoundTrip(t *testing.T) {
 			Description: "负责数据清洗、汇总和分析输出。",
 		},
 		Center: CenterConfig{
-			Enabled:    true,
-			Host:       "10.0.0.8",
-			Port:       9377,
-			BaseURL:    "http://10.0.0.8:9377",
-			TimeoutSec: 45,
+			Enabled:      true,
+			Host:         "10.0.0.8",
+			Port:         9377,
+			BaseURL:      "http://10.0.0.8:9377",
+			TenantID:     "default",
+			DepartmentID: "default",
+			WorkerID:     "local-iworker",
+			TimeoutSec:   45,
 		},
 		Routing: RoutingPolicy{
 			Mode:            "priority",
@@ -469,5 +472,122 @@ func TestCheckCenterHealthReturnsUnreachableState(t *testing.T) {
 	}
 	if strings.TrimSpace(status.Message) == "" {
 		t.Fatalf("Message should not be empty")
+	}
+}
+
+func TestSaveWorkerMemoryPersistsToCenterBeforeCache(t *testing.T) {
+	home := setTestHome(t)
+	var received struct {
+		WorkerID string   `json:"worker_id"`
+		Content  string   `json:"content"`
+		Tags     []string `json:"tags"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/iworker/memories" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"mem-1","worker_id":"worker-a","content":"Remember customer Alpha","category":"project_knowledge","tags":["alpha"],"source_type":"iworker"}`))
+	}))
+	defer server.Close()
+
+	saved, err := saveWorkerMemory(server.URL, "tenant-a", "sales", "worker-a", SaveWorkerMemoryRequest{
+		Content:  "Remember customer Alpha",
+		Category: "project_knowledge",
+		Tags:     []string{"alpha"},
+	}, 5)
+	if err != nil {
+		t.Fatalf("saveWorkerMemory returned error: %v", err)
+	}
+	if saved.ID != "mem-1" || received.WorkerID != "worker-a" {
+		t.Fatalf("saved=%+v received=%+v", saved, received)
+	}
+	cachePath := filepath.Join(home, ".iworker", "cache", "memories", "tenant-a__sales__worker-a.json")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("cache not written after center success: %v", err)
+	}
+	if !strings.Contains(string(data), "Remember customer Alpha") {
+		t.Fatalf("cache data = %s", string(data))
+	}
+}
+
+func TestSaveWorkerMemoryDoesNotCacheWhenCenterFails(t *testing.T) {
+	home := setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"down"}`))
+	}))
+	defer server.Close()
+
+	_, err := saveWorkerMemory(server.URL, "tenant-a", "sales", "worker-a", SaveWorkerMemoryRequest{Content: "must stay remote first"}, 5)
+	if err == nil {
+		t.Fatalf("saveWorkerMemory returned nil error")
+	}
+	cachePath := filepath.Join(home, ".iworker", "cache", "memories", "tenant-a__sales__worker-a.json")
+	if _, statErr := os.Stat(cachePath); !os.IsNotExist(statErr) {
+		t.Fatalf("cache should not exist after failed center save, statErr=%v", statErr)
+	}
+}
+
+func TestFetchWorkerMemoriesUsesTenantDepartmentCache(t *testing.T) {
+	setTestHome(t)
+	if err := writeWorkerMemoryCache("tenant-a", "sales", "worker-a", []WorkerMemoryEntry{{
+		ID:       "mem-sales",
+		TenantID: "tenant-a",
+		Scope:    "personal",
+		WorkerID: "worker-a",
+		Content:  "sales cache",
+	}}); err != nil {
+		t.Fatalf("write sales cache: %v", err)
+	}
+	if err := writeWorkerMemoryCache("tenant-b", "sales", "worker-a", []WorkerMemoryEntry{{
+		ID:       "mem-other-tenant",
+		TenantID: "tenant-b",
+		Scope:    "personal",
+		WorkerID: "worker-a",
+		Content:  "other tenant cache",
+	}}); err != nil {
+		t.Fatalf("write other tenant cache: %v", err)
+	}
+
+	memories := fetchWorkerMemories("http://127.0.0.1:1", "tenant-a", "sales", "worker-a", "anything", 10, 1)
+	if len(memories) != 1 {
+		t.Fatalf("memories len = %d, want 1", len(memories))
+	}
+	if memories[0].ID != "mem-sales" || strings.Contains(memories[0].Content, "other tenant") {
+		t.Fatalf("unexpected cache memory: %+v", memories[0])
+	}
+}
+
+func TestFetchWorkerMemoryStatsUsesCenterContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/iworker/memory-stats" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("tenant_id"); got != "tenant-a" {
+			t.Fatalf("tenant_id = %q, want tenant-a", got)
+		}
+		if got := r.URL.Query().Get("department_id"); got != "sales" {
+			t.Fatalf("department_id = %q, want sales", got)
+		}
+		if got := r.URL.Query().Get("worker_id"); got != "worker-a" {
+			t.Fatalf("worker_id = %q, want worker-a", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tenant_id":"tenant-a","department_id":"sales","worker_id":"worker-a","total":3,"by_scope":{"company":1,"department":1,"personal":1},"by_category":{"project_knowledge":3},"visible_scopes":["company","department","personal"]}`))
+	}))
+	defer server.Close()
+
+	stats, err := fetchWorkerMemoryStats(server.URL, "tenant-a", "sales", "worker-a", 5)
+	if err != nil {
+		t.Fatalf("fetchWorkerMemoryStats returned error: %v", err)
+	}
+	if stats.Total != 3 || stats.ByScope["company"] != 1 || stats.ByScope["department"] != 1 || stats.ByScope["personal"] != 1 {
+		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }

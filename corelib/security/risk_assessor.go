@@ -47,7 +47,7 @@ var threatPatternCategories = []ThreatCategory{
 			{Pattern: `;\s*(rm|wget|curl|bash|sh|python|perl|nc)`, IsRegex: true},  // command chaining
 			{Pattern: `\|\s*(bash|sh|python|perl)`, IsRegex: true},                 // pipe to shell
 			{Pattern: `\$\(.*\)`, IsRegex: true},                                   // command substitution
-			{Pattern: "`.+`", IsRegex: true},                                        // backtick substitution
+			{Pattern: "`[^`]*\\b(rm|wget|curl|bash|sh|python|perl|nc|cat|echo|eval|exec|whoami|id|uname)\\b[^`]*`", IsRegex: true}, // backtick command substitution (word-boundary match, not Markdown inline code)
 			{Pattern: `>\s*/dev/tcp/`, IsRegex: true},                               // bash TCP redirect
 			{Pattern: `eval\s*\(`, IsRegex: true},                                  // eval injection
 			{Pattern: `exec\s*\(`, IsRegex: true},                                  // exec injection
@@ -280,10 +280,24 @@ var dangerousFormatPatterns = []string{"format c:", "format d:", "format e:", "f
 
 // safeToolCategories are skill action/tool names that are inherently safe
 // utility operations and should not be escalated to critical risk.
+// Includes: document conversion, data visualization, data fetching/reading,
+// password generation, and other read-only or utility operations.
+//
+// DESIGN RULE: Only include terms that are unambiguously safe. Avoid generic
+// verbs (search, fetch, query) that could appear in destructive skill names.
 var safeToolCategories = []string{
+	// Document conversion / formatting
 	"pdf", "qr", "qrcode", "pptx", "ppt", "image", "screenshot",
 	"generator", "converter", "formatter", "markdown",
 	"csv", "json", "xml", "yaml", "html", "any2pdf", "md-to-pdf",
+	// Academic / news data sources (read-only by nature)
+	"paper", "papers", "digest", "daily", "news", "feed", "rss",
+	"arxiv", "scholar", "hugging-face", "huggingface",
+	// Read-only information services
+	"weather", "stock", "price", "calendar", "clock", "timer",
+	"translate", "reader",
+	// Output-only generation (no system access)
+	"password", "uuid",
 }
 
 var systemDirPrefixes = []string{

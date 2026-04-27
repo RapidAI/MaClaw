@@ -117,21 +117,17 @@ var browserPageKeywords = []string{"页面", "网页", "网站", "url", "page", 
 var browserActionKeywords = []string{"访问", "导航", "点击", "观察", "打开", "输入", "填写"}
 
 // allBrowserToolNames is the complete list of browser automation tools used
-// by both the strong and weak conditional keep rules. Extracted as a variable
-// to avoid maintaining two identical lists.
+// by both the strong and weak conditional keep rules. The core 22 browser
+// actions are merged into a single "browser" tool (see unified_tool.go).
+// Task/recorder/OCR/GUI tools remain as individual tools.
 var allBrowserToolNames = []string{
-	// Browser agent session tools.
-	"browser_session_start", "browser_session_stop", "browser_observe",
-	"browser_navigate", "browser_click", "browser_type",
-	"browser_wait", "browser_back", "browser_refresh", "browser_extract",
-	"browser_connect", "browser_screenshot", "browser_get_text",
-	"browser_get_html", "browser_eval", "browser_scroll",
-	"browser_select", "browser_list_pages", "browser_switch_page",
-	"browser_close", "browser_click_at", "browser_set_files",
-	"browser_info", "browser_ocr",
-	// Browser task/record/replay tools.
+	// Unified browser tool (replaces 22 individual browser_* tools).
+	"browser",
+	// Browser task/record/replay tools (low-frequency, kept individual).
 	"browser_task_run", "browser_task_replay", "browser_task_verify", "browser_task_status",
 	"browser_record_start", "browser_record_stop", "browser_list_flows",
+	// OCR tool.
+	"browser_ocr",
 	// GUI automation recording tools.
 	"gui_record_start", "gui_record_stop",
 }
@@ -304,15 +300,12 @@ var BuiltinToolNames = map[string]bool{
 	"query_audit_log":          true,
 	"session_search":           true,
 	"office":                   true,
-	// Browser automation tools (browser agent session + legacy CDP helpers).
-	"browser_session_start": true, "browser_session_stop": true, "browser_observe": true,
-	"browser_navigate": true, "browser_click": true, "browser_type": true,
-	"browser_wait": true, "browser_back": true, "browser_refresh": true, "browser_extract": true,
-	"browser_connect": true, "browser_screenshot": true, "browser_get_text": true,
-	"browser_get_html": true, "browser_eval": true, "browser_scroll": true,
-	"browser_select": true, "browser_list_pages": true, "browser_switch_page": true,
-	"browser_close": true, "browser_click_at": true, "browser_set_files": true,
-	"browser_info": true,
+	// Browser automation: unified "browser" tool + individual task/recorder tools.
+	"browser":              true,
+	"browser_task_run":     true, "browser_task_replay": true,
+	"browser_task_verify":  true, "browser_task_status": true,
+	"browser_record_start": true, "browser_record_stop": true, "browser_list_flows": true,
+	"browser_ocr":          true,
 }
 
 func init() {

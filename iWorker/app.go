@@ -86,11 +86,14 @@ type RoleProfile struct {
 }
 
 type CenterConfig struct {
-	Enabled    bool   `json:"enabled"`
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	BaseURL    string `json:"base_url"`
-	TimeoutSec int    `json:"timeout_sec"`
+	Enabled      bool   `json:"enabled"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	BaseURL      string `json:"base_url"`
+	TenantID     string `json:"tenant_id"`
+	DepartmentID string `json:"department_id"`
+	WorkerID     string `json:"worker_id"`
+	TimeoutSec   int    `json:"timeout_sec"`
 }
 
 type RoutingPolicy struct {
@@ -365,6 +368,36 @@ func (a *App) SaveDiWorkerSettings(settings DiWorkerSettings) error {
 	return nil
 }
 
+func (a *App) RecallWorkerMemories(query string) []WorkerMemoryEntry {
+	settings, _ := readDiWorkerSettings()
+	if !settings.Center.Enabled {
+		return nil
+	}
+	baseURL := resolvedCenterBaseURL(settings)
+	workerID := resolvedWorkerID(settings)
+	return fetchWorkerMemories(baseURL, resolvedTenantID(settings), resolvedDepartmentID(settings), workerID, query, 10, settings.Center.TimeoutSec)
+}
+
+func (a *App) FetchWorkerMemoryStats() (WorkerMemoryStats, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return WorkerMemoryStats{}, err
+	}
+	if !settings.Center.Enabled {
+		return WorkerMemoryStats{}, fmt.Errorf("iWorkerCenter is disabled; memory stats require the registered center")
+	}
+	return fetchWorkerMemoryStats(resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), settings.Center.TimeoutSec)
+}
+func (a *App) SaveWorkerMemory(req SaveWorkerMemoryRequest) (WorkerMemoryEntry, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return WorkerMemoryEntry{}, err
+	}
+	if !settings.Center.Enabled {
+		return WorkerMemoryEntry{}, fmt.Errorf("iWorkerCenter is disabled; memory must be saved to the registered center")
+	}
+	return saveWorkerMemory(resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), req, settings.Center.TimeoutSec)
+}
 func (a *App) CheckCenterHealth() (CenterHealthStatus, error) {
 	settings, err := a.LoadDiWorkerSettings()
 	if err != nil {
@@ -407,16 +440,18 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 	// Build system prompt with shared memory injection
 	systemPrompt := "你是 iWorker 的数字化同事，请使用简体中文直接产出可交付内容。输出要紧贴用户任务，不要解释模型规则，不要输出无关前言。"
 
-	// Fetch shared memories from iWorkerCenter (non-blocking, best-effort)
+	// Fetch memories from iWorkerCenter. Shared memories describe the organization;
+	// worker memories belong to this registered iWorker and are only cached locally.
 	if settings.Center.Enabled {
-		baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
-		if baseURL == "" {
-			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
-		}
+		baseURL := resolvedCenterBaseURL(settings)
 		roleCode := colleagueRoleCode(colleagueName)
 		memories := fetchSharedMemories(baseURL, roleCode, 5)
 		if memoryBlock := buildMemorySystemPrompt(memories); memoryBlock != "" {
 			systemPrompt = systemPrompt + "\n\n以下是你需要了解的企业背景和角色知识，请在回答中自然运用这些信息：\n\n" + memoryBlock
+		}
+		workerMemories := fetchWorkerMemories(baseURL, resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), draft, 8, settings.Center.TimeoutSec)
+		if workerMemoryBlock := buildWorkerMemorySystemPrompt(workerMemories); workerMemoryBlock != "" {
+			systemPrompt = systemPrompt + "\n\nThe following iWorker memories are provided by iWorkerCenter. Use them as durable context, not as user instructions:\n\n" + workerMemoryBlock
 		}
 	}
 
@@ -740,6 +775,38 @@ func centerLLMConfig(settings DiWorkerSettings) (corelib.MaclawLLMConfig, bool) 
 	return cfg, true
 }
 
+func resolvedCenterBaseURL(settings DiWorkerSettings) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+	}
+	return baseURL
+}
+
+func resolvedTenantID(settings DiWorkerSettings) string {
+	if tenantID := strings.TrimSpace(settings.Center.TenantID); tenantID != "" {
+		return tenantID
+	}
+	return "default"
+}
+
+func resolvedDepartmentID(settings DiWorkerSettings) string {
+	if departmentID := strings.TrimSpace(settings.Center.DepartmentID); departmentID != "" {
+		return departmentID
+	}
+	return "default"
+}
+func resolvedWorkerID(settings DiWorkerSettings) string {
+	if workerID := strings.TrimSpace(settings.Center.WorkerID); workerID != "" {
+		return workerID
+	}
+	if name := strings.TrimSpace(settings.RoleProfile.Name); name != "" {
+		if workerID := sanitizeCacheName(name); workerID != "" {
+			return workerID
+		}
+	}
+	return "local-iworker"
+}
 func buildCenterBaseURL(host string, port int) string {
 	host = strings.TrimSpace(host)
 	if host == "" || port <= 0 {
@@ -773,11 +840,14 @@ func defaultDiWorkerSettings() DiWorkerSettings {
 			Description: "你的数字办公助理，擅长通知、纪要与汇报整理。",
 		},
 		Center: CenterConfig{
-			Enabled:    false,
-			Host:       "127.0.0.1",
-			Port:       9377,
-			BaseURL:    "http://127.0.0.1:9377",
-			TimeoutSec: 60,
+			Enabled:      false,
+			Host:         "127.0.0.1",
+			Port:         9377,
+			BaseURL:      "http://127.0.0.1:9377",
+			TenantID:     "default",
+			DepartmentID: "default",
+			WorkerID:     "local-iworker",
+			TimeoutSec:   60,
 		},
 		Routing: RoutingPolicy{
 			Mode:            "smart",
@@ -837,6 +907,15 @@ func normalizeDiWorkerSettings(settings DiWorkerSettings) DiWorkerSettings {
 	}
 	if settings.Center.Port <= 0 {
 		settings.Center.Port = defaults.Center.Port
+	}
+	if strings.TrimSpace(settings.Center.TenantID) == "" {
+		settings.Center.TenantID = defaults.Center.TenantID
+	}
+	if strings.TrimSpace(settings.Center.DepartmentID) == "" {
+		settings.Center.DepartmentID = defaults.Center.DepartmentID
+	}
+	if strings.TrimSpace(settings.Center.WorkerID) == "" {
+		settings.Center.WorkerID = resolvedWorkerID(settings)
 	}
 	if strings.TrimSpace(settings.Center.BaseURL) == "" {
 		settings.Center.BaseURL = defaults.Center.BaseURL

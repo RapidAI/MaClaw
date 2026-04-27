@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/adminauth"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/capabilities"
@@ -31,6 +32,7 @@ import (
 	roleService "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/service"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/security"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/workermemory"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/workflow"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/db"
 	"gopkg.in/yaml.v3"
@@ -47,6 +49,7 @@ type Center struct {
 	Deduplicator    *experience.Deduplicator
 	Auth            *adminauth.Handler
 	TenantService   *tenant.TenantService
+	WorkerMemory    *corememory.Store
 }
 
 // Bootstrap initializes the database, runs migrations, wires all modules,
@@ -79,6 +82,14 @@ func Bootstrap() (*Center, error) {
 
 	// --- wire memories module ---
 	memHandler := memories.NewHandler(provider.Write, provider.Read)
+
+	// --- wire iWorker-owned memory module ---
+	workerMemoryStore, err := corememory.NewStore(defaultWorkerMemoryStorePath())
+	if err != nil {
+		_ = provider.Close()
+		return nil, fmt.Errorf("init worker memory store: %w", err)
+	}
+	workerMemHandler := workermemory.NewHandler(workerMemoryStore)
 
 	// --- wire capabilities module ---
 	capHandler := capabilities.NewHandler(provider.Write, provider.Read)
@@ -182,6 +193,7 @@ func Bootstrap() (*Center, error) {
 	colHandler.RegisterClientRoutes(mux)
 	memHandler.RegisterAdminRoutes(mux)
 	memHandler.RegisterClientRoutes(mux)
+	workerMemHandler.RegisterClientRoutes(mux)
 	capHandler.RegisterAdminRoutes(mux)
 	capHandler.RegisterClientRoutes(mux)
 	collabHandler.RegisterAdminRoutes(mux)
@@ -230,11 +242,15 @@ func Bootstrap() (*Center, error) {
 		Deduplicator:    dedup,
 		Auth:            authHandler,
 		TenantService:   tenantSvc,
+		WorkerMemory:    workerMemoryStore,
 	}, nil
 }
 
 // Close releases all resources.
 func (c *Center) Close() {
+	if c.WorkerMemory != nil {
+		_ = c.WorkerMemory.Flush()
+	}
 	if c.DB != nil {
 		_ = c.DB.Close()
 	}
@@ -337,6 +353,14 @@ func wireCompute(cloudCfg tenant.CloudConfig, tenantSvc *tenant.TenantService) (
 }
 
 // defaultLocalStorePath returns the path for the local compute providers JSON file.
+func defaultWorkerMemoryStorePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "iworker_memory.json"
+	}
+	return filepath.Join(home, ".iworkercenter", "iworker_memory.json")
+}
+
 func defaultLocalStorePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {

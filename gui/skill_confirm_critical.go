@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -14,27 +15,45 @@ type criticalRiskConfirmResponse struct {
 	Confirmed bool
 }
 
+// pendingCriticalConfirmEntry holds the state for a single pending confirmation.
+//
+// LIFECYCLE: The entry is owned by a dedicated cleanup goroutine that fires
+// after confirmTimeout. This decouples the confirmation lifecycle from the
+// caller's context/goroutine — the key design invariant.
+//
+// Three actors interact with the entry:
+//   - confirmCriticalRiskSkill (creator): stores entry, blocks on Ch
+//   - ResolveCriticalConfirm (user click): sends response on Ch, deletes entry
+//   - cleanup goroutine (timeout): closes Ch, deletes entry
+//
+// The resolved flag (atomic CAS) ensures exactly one actor wins the race
+// to operate on the channel. The loser returns early without touching Ch.
+type pendingCriticalConfirmEntry struct {
+	Ch       chan criticalRiskConfirmResponse
+	resolved int32 // 0 = pending, 1 = resolved; atomic CAS guards channel ops
+}
+
+// tryResolve atomically transitions the entry from pending to resolved.
+// Returns true if this caller won the race (and should operate on Ch).
+// Returns false if another actor already resolved the entry.
+func (e *pendingCriticalConfirmEntry) tryResolve() bool {
+	return atomic.CompareAndSwapInt32(&e.resolved, 0, 1)
+}
+
+const confirmTimeout = 120 * time.Second
+
 // buildCriticalRiskPrompt formats a confirmation prompt for a Critical-risk
-// skill installation. The returned string contains a warning header with the
-// skill name and source, the risk factors as bullet points, and a
-// confirmation question.
+// skill installation.
 func buildCriticalRiskPrompt(skillName, source string, factors []string) string {
 	var sb strings.Builder
-
-	// Warning header
 	fmt.Fprintf(&sb, "⚠️ 安全警告: Skill「%s」来自 %s 被评估为 Critical 风险。\n", skillName, source)
-
-	// Risk factors
 	if len(factors) > 0 {
 		sb.WriteString("\n风险因素:\n")
 		for _, f := range factors {
 			fmt.Fprintf(&sb, "  • %s\n", f)
 		}
 	}
-
-	// Confirmation question
 	sb.WriteString("\n确认安装此 Skill？\n")
-
 	return sb.String()
 }
 
@@ -42,22 +61,16 @@ func buildCriticalRiskPrompt(skillName, source string, factors []string) string 
 // when a skill is assessed as RiskCritical. Returns true if the user confirms,
 // false on rejection, timeout, or any error condition (fail-closed).
 //
-// Parameters:
+// LIFECYCLE DESIGN:
+// The confirmation channel's lifetime is decoupled from the caller's context.
+// A single cleanup goroutine owns the timeout: after confirmTimeout it closes
+// the channel and removes the entry. The caller's context cancellation causes
+// this function to return false, but does NOT remove the channel — the user
+// can still click the button within the confirmTimeout window.
 //
-//	ctx       - parent context; cancellation returns false
-//	skillName - display name of the skill
-//	source    - origin (hub URL, GitHub repo URL, "clawhub", etc.)
-//	factors   - risk factors from RiskAssessment.Factors
-//	platform  - "desktop" or IM platform identifier (feishu/wechat/qq/telegram)
-//	userID    - user identity; used together with platform to key IM pending
-//	            confirmations so that concurrent users on the same platform
-//	            do not overwrite each other's confirmation state.
-//
-// Behavior:
-//   - Desktop: emits a Wails event with confirm/reject buttons, blocks on channel
-//   - IM: builds an AskUserRequest with confirm input_type, blocks on channel
-//   - Timeout: 120 seconds, defaults to reject
-//   - Nil/empty platform: returns false (fail-closed)
+// CONCURRENCY: Two actors race to resolve the entry — the cleanup goroutine
+// (timeout) and ResolveCriticalConfirm (user click). atomic CAS on
+// entry.resolved ensures exactly one wins. The loser never touches the channel.
 func (h *IMMessageHandler) confirmCriticalRiskSkill(
 	ctx context.Context,
 	skillName, source string,
@@ -65,29 +78,35 @@ func (h *IMMessageHandler) confirmCriticalRiskSkill(
 	platform string,
 	userID string,
 ) bool {
-	// Fail-closed: empty platform means no channel to confirm through.
 	if platform == "" {
 		log.Printf("[critical-confirm] fail-closed: empty platform for skill %q", skillName)
 		return false
 	}
 
-	// Generate a unique confirmation ID.
 	confirmID := fmt.Sprintf("crit_%d", time.Now().UnixNano())
-
-	// Build the prompt text.
 	promptText := buildCriticalRiskPrompt(skillName, source, factors)
 
-	// Create a buffered response channel (buffer 1 so the sender never blocks).
-	respCh := make(chan criticalRiskConfirmResponse, 1)
+	entry := &pendingCriticalConfirmEntry{
+		Ch: make(chan criticalRiskConfirmResponse, 1),
+	}
+	h.pendingCriticalConfirm.Store(confirmID, entry)
 
-	// Store the channel so ResolveCriticalConfirm can find it.
-	h.pendingCriticalConfirm.Store(confirmID, respCh)
-	defer h.pendingCriticalConfirm.Delete(confirmID)
+	// Single cleanup goroutine — the sole timeout owner.
+	// After confirmTimeout it tries to win the resolve race. If it wins,
+	// it closes the channel (unblocking the select below) and removes the entry.
+	// If ResolveCriticalConfirm already won, this is a no-op.
+	go func() {
+		time.Sleep(confirmTimeout)
+		if entry.tryResolve() {
+			h.pendingCriticalConfirm.Delete(confirmID)
+			close(entry.Ch)
+			log.Printf("[critical-confirm] cleanup: confirmID=%s expired after %v", confirmID, confirmTimeout)
+		}
+	}()
 
-	// Dispatch based on platform.
+	// Dispatch confirmation UI.
 	switch {
 	case platform == "desktop":
-		// Desktop path: emit a Wails event with confirmation payload.
 		if h.app != nil {
 			payload := map[string]interface{}{
 				"confirm_id": confirmID,
@@ -105,23 +124,14 @@ func (h *IMMessageHandler) confirmCriticalRiskSkill(
 		}
 
 	default:
-		// IM path: send the confirmation question as a proactive message through
-		// the hub so the IM user sees it, and store the confirm ID so we can
-		// intercept the user's response in handleIMMessageWithLoop.
 		displayText := FormatAskUserForDisplay(&AskUserRequest{
 			Question:  promptText,
 			Options:   []string{"确认安装", "拒绝安装"},
 			InputType: "confirm",
 		})
 		if h.app != nil {
-			// Store the pending IM confirmation so handleIMMessageWithLoop can
-			// match the user's reply ("确认安装" / "拒绝安装") to this confirm ID.
-			// Key by platform:userID to avoid race conditions when two users on
-			// the same IM platform trigger critical-risk installs simultaneously.
 			imConfirmKey := platform + ":" + userID
 			h.pendingCriticalConfirmIM.Store(imConfirmKey, confirmID)
-
-			// Send the question to the IM user via the hub's proactive message channel.
 			hubClient := h.app.hubClient()
 			if hubClient != nil {
 				if err := hubClient.SendIMProactiveMessage(displayText); err != nil {
@@ -135,34 +145,50 @@ func (h *IMMessageHandler) confirmCriticalRiskSkill(
 		}
 	}
 
-	// Block until response, timeout, or context cancellation.
+	// Block until: user responds, channel closed (timeout), or caller cancelled.
 	select {
-	case resp := <-respCh:
+	case resp, ok := <-entry.Ch:
+		if !ok {
+			// Channel closed by cleanup goroutine — timeout.
+			log.Printf("[critical-confirm] timeout confirm_id=%s skill=%q", confirmID, skillName)
+			return false
+		}
 		log.Printf("[critical-confirm] received response confirm_id=%s confirmed=%v", confirmID, resp.Confirmed)
 		return resp.Confirmed
-	case <-time.After(120 * time.Second):
-		log.Printf("[critical-confirm] timeout (120s) confirm_id=%s skill=%q — defaulting to reject", confirmID, skillName)
-		return false
+
 	case <-ctx.Done():
-		log.Printf("[critical-confirm] context cancelled confirm_id=%s skill=%q — defaulting to reject", confirmID, skillName)
+		// Caller's context cancelled — return false but do NOT clean up.
+		// The cleanup goroutine owns the entry's lifetime.
+		log.Printf("[critical-confirm] context cancelled confirm_id=%s skill=%q — channel stays alive for user", confirmID, skillName)
 		return false
 	}
 }
 
 // ResolveCriticalConfirm is called by the frontend or IM gateway when the user
-// responds to a critical-risk confirmation prompt. It sends the user's answer
-// on the response channel associated with the given confirmID.
-func (h *IMMessageHandler) ResolveCriticalConfirm(confirmID string, confirmed bool) {
+// responds to a critical-risk confirmation prompt.
+// Returns an error if the confirmation has expired or was already resolved.
+func (h *IMMessageHandler) ResolveCriticalConfirm(confirmID string, confirmed bool) error {
 	v, ok := h.pendingCriticalConfirm.Load(confirmID)
 	if !ok {
 		log.Printf("[critical-confirm] resolve: confirmID=%s not found (expired or already resolved)", confirmID)
-		return
+		return fmt.Errorf("确认已过期或已处理，请重新安装")
 	}
-	ch, ok := v.(chan criticalRiskConfirmResponse)
+	entry, ok := v.(*pendingCriticalConfirmEntry)
 	if !ok {
-		log.Printf("[critical-confirm] resolve: confirmID=%s has unexpected channel type", confirmID)
-		return
+		log.Printf("[critical-confirm] resolve: confirmID=%s has unexpected entry type", confirmID)
+		return fmt.Errorf("内部错误：确认状态异常")
 	}
-	ch <- criticalRiskConfirmResponse{Confirmed: confirmed}
+
+	// Try to win the resolve race against the cleanup goroutine.
+	if !entry.tryResolve() {
+		// Cleanup goroutine already won — the channel is closed or being closed.
+		log.Printf("[critical-confirm] resolve: confirmID=%s already resolved (timeout race)", confirmID)
+		return fmt.Errorf("确认已超时，请重新安装")
+	}
+
+	// We won the race — safe to send on the channel (it's not closed).
+	h.pendingCriticalConfirm.Delete(confirmID)
+	entry.Ch <- criticalRiskConfirmResponse{Confirmed: confirmed}
 	log.Printf("[critical-confirm] resolve: confirmID=%s confirmed=%v", confirmID, confirmed)
+	return nil
 }

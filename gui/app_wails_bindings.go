@@ -1358,18 +1358,18 @@ func (a *App) CancelAIAssistantSession() (string, error) {
 
 // ResolveCriticalConfirm is called by the desktop frontend when the user
 // responds to a critical-risk skill installation confirmation prompt.
-func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) {
+// Returns an error if the confirmation has expired or the handler is unavailable,
+// so the frontend can show appropriate feedback.
+func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) error {
 	hubClient := a.hubClient()
 	if hubClient == nil {
-		log.Printf("[ResolveCriticalConfirm] hubClient is nil, ignoring confirmID=%s", confirmID)
-		return
+		return fmt.Errorf("AI assistant not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
 	if handler == nil {
-		log.Printf("[ResolveCriticalConfirm] handler is nil, ignoring confirmID=%s", confirmID)
-		return
+		return fmt.Errorf("message handler not available")
 	}
-	handler.ResolveCriticalConfirm(confirmID, confirmed)
+	return handler.ResolveCriticalConfirm(confirmID, confirmed)
 }
 
 // ---------------------------------------------------------------------------

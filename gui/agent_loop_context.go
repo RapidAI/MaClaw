@@ -87,11 +87,11 @@ type LoopContext struct {
 	// capture, doc_only tool filtering) to prevent unrelated LLM output from
 	// being captured as a phase document.
 	//
-	// This flag does NOT bypass the Coding Tool Gate. When the message is a
-	// new coding task (gateConfig.active=true), the coding gate enforces the
-	// three-phase flow independently of this flag. The two signals are
-	// orthogonal: SkipNeedsConfirmGate controls workflow-engine behavior,
-	// gateConfig.active controls coding-intent behavior.
+	// This flag also bypasses the Coding Tool Gate when the gate activation
+	// is from the fail-closed safety net (intent=ambiguous), not from a
+	// genuine coding classification (intent=coding). When the message IS a
+	// new coding task (intent=coding), the coding gate enforces the
+	// three-phase flow regardless of this flag.
 	SkipNeedsConfirmGate bool
 
 	// IsAskUserResponse is true when the current message is a response to a

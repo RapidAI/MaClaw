@@ -212,9 +212,7 @@ func TestRouter_BM25_ConditionalKeep_BrowserWorkflow(t *testing.T) {
 		tools = append(tools, makeToolDef(name, "core "+name))
 	}
 	tools = append(tools,
-		makeToolDef("browser_session_start", "启动浏览器会话"),
-		makeToolDef("browser_observe", "观察当前页面内容"),
-		makeToolDef("browser_navigate", "导航到指定URL"),
+		makeToolDef("browser", "浏览器自动化工具"),
 		makeToolDef("ssh", "通过 SSH 连接服务器"),
 		makeToolDef("web_search", "搜索网页"),
 	)
@@ -228,15 +226,13 @@ func TestRouter_BM25_ConditionalKeep_BrowserWorkflow(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	// Browser tools should be kept for browser intent.
-	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate"} {
-		if !resultNames[name] {
-			names := make([]string, len(result))
-			for i, r := range result {
-				names[i] = ExtractToolName(r)
-			}
-			t.Errorf("browser tool %q should be in result, got: %v", name, names)
+	// Browser tool should be kept for browser intent.
+	if !resultNames["browser"] {
+		names := make([]string, len(result))
+		for i, r := range result {
+			names[i] = ExtractToolName(r)
 		}
+		t.Errorf("browser tool should be in result, got: %v", names)
 	}
 
 	// ssh and web_search should NOT be in result.
@@ -262,7 +258,7 @@ func TestRouter_BM25_ConditionalKeep_NoFalseTriggers(t *testing.T) {
 		makeToolDef("send_file", "发送文件"),
 		makeToolDef("open", "打开文件"),
 		makeToolDef("craft_tool", "生成内容"),
-		makeToolDef("browser_session_start", "启动浏览器"),
+		makeToolDef("browser", "浏览器自动化工具"),
 	)
 	for i := 0; i < 20; i++ {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
@@ -276,7 +272,7 @@ func TestRouter_BM25_ConditionalKeep_NoFalseTriggers(t *testing.T) {
 	}
 
 	// All conditional tools should be absent.
-	for _, name := range []string{"ssh", "web_search", "send_file", "open", "craft_tool", "browser_session_start"} {
+	for _, name := range []string{"ssh", "web_search", "send_file", "open", "craft_tool", "browser"} {
 		if resultNames[name] {
 			names := make([]string, len(result))
 			for i, r := range result {
@@ -308,10 +304,7 @@ func TestRouter_BrowserSemanticConfirm_RejectsFalsePositive(t *testing.T) {
 		tools = append(tools, makeToolDef(name, "core "+name))
 	}
 	tools = append(tools,
-		makeToolDef("browser_session_start", "启动浏览器会话"),
-		makeToolDef("browser_observe", "观察当前页面内容"),
-		makeToolDef("browser_navigate", "导航到指定URL"),
-		makeToolDef("browser_click", "点击页面元素"),
+		makeToolDef("browser", "浏览器自动化工具"),
 	)
 	for i := 0; i < 20; i++ {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
@@ -326,14 +319,12 @@ func TestRouter_BrowserSemanticConfirm_RejectsFalsePositive(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate", "browser_click"} {
-		if resultNames[name] {
-			names := make([]string, len(result))
-			for i, r := range result {
-				names[i] = ExtractToolName(r)
-			}
-			t.Errorf("browser tool %q should NOT be in result for coding intent (game dev), got: %v", name, names)
+	if resultNames["browser"] {
+		names := make([]string, len(result))
+		for i, r := range result {
+			names[i] = ExtractToolName(r)
 		}
+		t.Errorf("browser tool should NOT be in result for coding intent (game dev), got: %v", names)
 	}
 }
 
@@ -355,9 +346,7 @@ func TestRouter_BrowserSemanticConfirm_AcceptsTruePositive(t *testing.T) {
 		tools = append(tools, makeToolDef(name, "core "+name))
 	}
 	tools = append(tools,
-		makeToolDef("browser_session_start", "启动浏览器会话"),
-		makeToolDef("browser_observe", "观察当前页面内容"),
-		makeToolDef("browser_navigate", "导航到指定URL"),
+		makeToolDef("browser", "浏览器自动化工具"),
 	)
 	for i := 0; i < 20; i++ {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
@@ -370,14 +359,12 @@ func TestRouter_BrowserSemanticConfirm_AcceptsTruePositive(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate"} {
-		if !resultNames[name] {
-			names := make([]string, len(result))
-			for i, r := range result {
-				names[i] = ExtractToolName(r)
-			}
-			t.Errorf("browser tool %q should be in result for genuine browser intent, got: %v", name, names)
+	if !resultNames["browser"] {
+		names := make([]string, len(result))
+		for i, r := range result {
+			names[i] = ExtractToolName(r)
 		}
+		t.Errorf("browser tool should be in result for genuine browser intent, got: %v", names)
 	}
 }
 
@@ -393,8 +380,7 @@ func TestRouter_BrowserSemanticConfirm_FallbackWithoutClassifier(t *testing.T) {
 		tools = append(tools, makeToolDef(name, "core "+name))
 	}
 	tools = append(tools,
-		makeToolDef("browser_session_start", "启动浏览器会话"),
-		makeToolDef("browser_observe", "观察当前页面内容"),
+		makeToolDef("browser", "浏览器自动化工具"),
 	)
 	for i := 0; i < 20; i++ {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
@@ -407,12 +393,12 @@ func TestRouter_BrowserSemanticConfirm_FallbackWithoutClassifier(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	if !resultNames["browser_session_start"] {
+	if !resultNames["browser"] {
 		names := make([]string, len(result))
 		for i, r := range result {
 			names[i] = ExtractToolName(r)
 		}
-		t.Errorf("browser_session_start should be in result when no classifier (fallback), got: %v", names)
+		t.Errorf("browser should be in result when no classifier (fallback), got: %v", names)
 	}
 }
 
