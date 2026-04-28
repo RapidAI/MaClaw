@@ -2472,6 +2472,12 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is *pendingCapabilityGapResult.
 	pendingCapabilityGap sync.Map
 
+	// pendingContextCompression stores a compression request from the
+	// compress_context tool. Applied by the agent loop after the tool
+	// result is appended to conversation.
+	// Keyed by userID, value is *contextCompressionRequest.
+	pendingContextCompression sync.Map
+
 	// compactionCount tracks how many times conversation compaction has
 	// occurred for each user in the current session. Used to warn users
 	// when quality may degrade due to repeated compaction (Codex CLI
@@ -4380,6 +4386,45 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 
+	// ── Serialization boundary ──
+	//
+	// chatLoopMu serializes all shared per-user state mutations below:
+	// workflow interception (IUM sessions, blocking LLM calls),
+	// resolveTaskContext (history clearing), confirmation gate, prompt building.
+	//
+	// The interrupt handler runs BEFORE the lock — it handles merge/replace/queue
+	// without waiting for the running loop to finish.
+	//
+	// Background messages use bgManager.SpawnOrQueue for serialization and
+	// must NOT acquire chatLoopMu (would block behind interactive loops).
+	if providedLoopCtx == nil && !msg.IsBackground {
+		if h.interruptHandler != nil && msg.Text != "" && h.currentLoopCtx != nil {
+			result := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
+			if result.PendingConfirm {
+				return &IMAgentResponse{
+					Text:        result.Reply,
+					Corrections: result.Corrections,
+				}
+			}
+			if result.Handled {
+				return &IMAgentResponse{
+					Text:        result.Reply,
+					Corrections: result.Corrections,
+				}
+			}
+			// Not handled — fall through to Lock. The message will be processed
+			// normally after the current loop finishes.
+		}
+		h.chatLoopMu.Lock()
+		defer h.chatLoopMu.Unlock()
+
+		// Reload after lock: pre-lock snapshot may be stale if the previous
+		// loop saved new entries while we waited.
+		EntriesBeforeClear = h.memory.Load(msg.UserID)
+		unfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)
+		decision = resolveExplicitTaskSlotDecision(msg, unfinishedSlot)
+	}
+
 	// --- Workflow engine interception ---
 	// Route messages through the workflow engine before the main agent loop.
 	// This handles active workflows, intent understanding, and complex task detection.
@@ -4824,41 +4869,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// routing decisions (e.g. Skill preference) that assume a fresh task.
 	loopCtx.IsAskUserResponse = askUserContext != ""
 
-	// Serialize chat loops: cancel any lingering previous loop and wait for
-	// it to release the mutex before starting a new one.
-	if providedLoopCtx == nil {
-		// Interrupt check: if another loop is already running and this message
-		// is a cancel/merge/status signal, handle it without waiting for the lock.
-		// This is the unified interrupt point — works for all channels (local
-		// gateways, Hub mode, desktop). Gateway-level interrupt is an optimization
-		// that fires earlier, but this is the authoritative check.
-		if h.interruptHandler != nil && msg.Text != "" && h.currentLoopCtx != nil {
-			result := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
-			if result.PendingConfirm {
-				// Scheduler uncertain — return confirmation with corrections.
-				// Desktop panel renders buttons; gateway-level handlers have
-				// their own PendingConfirm + fallback timer logic.
-				return &IMAgentResponse{
-					Text:        result.Reply,
-					Corrections: result.Corrections,
-				}
-			}
-			if result.Handled {
-				// Fully handled (Replace/Merge/StatusQuery) — the message's
-				// purpose was to control the running loop, not to start a new task.
-				return &IMAgentResponse{
-					Text:        result.Reply,
-					Corrections: result.Corrections,
-				}
-			}
-			// Queued — fall through to Lock. The message will be processed
-			// normally after the current loop finishes. Desktop panel doesn't
-			// need instant feedback here because the user can see the buffer
-			// queue UI.
-		}
-		h.chatLoopMu.Lock()
-		defer h.chatLoopMu.Unlock()
-	}
+	// NOTE: chatLoopMu is already held — acquired at the serialization
+	// boundary above (before workflow interception). The interrupt handler
+	// also ran there. No need to re-acquire.
 
 	// --- SubAgent interception for coding execution ---
 	//
@@ -6156,6 +6169,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Best-effort flush; if it fails the marker will be cleared on
 			// the next successful persist cycle.
 			_ = h.memory.FlushNow()
+		}
+	}()
+
+	// lastCompressionSummary tracks the most recent compress_context summary
+	// in this loop. Persisted to memory as task_artifact on loop exit (not
+	// on every call) to avoid polluting memory with stale intermediate
+	// checkpoints. Only the final summary matters.
+	var lastCompressionSummary string
+	defer func() {
+		if lastCompressionSummary != "" && h.memoryStore != nil {
+			persistLastCompressionSummary(h.memoryStore, lastCompressionSummary)
 		}
 	}()
 
@@ -8280,6 +8304,22 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			} else if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) {
 				// isSubstantivePhaseDocument was false — short preamble after tool execution, let the loop continue.
 				log.Printf("[workflow-gate] NeedsConfirm (tool branch): skipping non-substantive preamble (len=%d), allowing loop to continue", len([]rune(trimmedAfterTools)))
+			}
+		}
+
+		// --- Apply pending context compression ---
+		// Compress only `history` (the persistence source of truth).
+		// `conversation` is NOT directly modified — trimConversation at the
+		// start of the next iteration will naturally trim it based on the
+		// token budget. This avoids the dual-array desync problem:
+		// conversation contains injected system messages (GoalAnchor,
+		// ProgressTracker, etc.) that history doesn't have, so index-based
+		// compression on both would produce inconsistent boundaries.
+		if req, ok := h.pendingContextCompression.LoadAndDelete(userID); ok {
+			if ccReq, ok := req.(*contextCompressionRequest); ok {
+				history = applyHistoryCompression(history, ccReq)
+				lastCompressionSummary = ccReq.Summary
+				log.Printf("[compress_context] applied history compression for user=%s summary_len=%d", userID, len(ccReq.Summary))
 			}
 		}
 	}

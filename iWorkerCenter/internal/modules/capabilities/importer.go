@@ -1,7 +1,9 @@
 package capabilities
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -110,6 +112,21 @@ func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPacka
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&skill); err != nil {
 		return nil, fmt.Errorf("decode cloud skill: %w", err)
 	}
+	packageStatus := "metadata_only"
+	var packageFormat string
+	var packageSHA string
+	var packageSize int64
+	var packageContent string
+	if pkg, err := imp.DownloadPackage(skillID); err == nil {
+		packageStatus = "package_cached"
+		packageFormat = pkg.Format
+		packageSHA = pkg.SHA256
+		packageSize = pkg.Size
+		packageContent = pkg.ContentBase64
+	} else {
+		packageStatus = "package_unavailable"
+		log.Printf("[importer] cloud skill %q package unavailable: %v", skillID, err)
+	}
 
 	source := "iworkercloud:" + skillID
 	var existingID string
@@ -128,9 +145,9 @@ func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPacka
 	version := firstNonEmpty(skill.Version, "1.0.0")
 	category := firstNonEmpty(skill.Category, "general")
 
-	_, err = imp.write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?)`,
-		id, tenantID, skill.Name, skill.Description, category, version, source, riskLevel, now, now)
+	_, err = imp.write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, package_content, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?)`,
+		id, tenantID, skill.Name, skill.Description, category, version, source, riskLevel, packageStatus, packageFormat, packageSHA, packageSize, packageContent, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("insert capability: %w", err)
 	}
@@ -139,8 +156,63 @@ func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPacka
 	return &CapabilityPackage{
 		ID: id, Name: skill.Name, Description: skill.Description,
 		Category: category, Version: version, Source: source,
-		RiskLevel: riskLevel, Status: "pending_review", CreatedAt: now, UpdatedAt: now,
+		RiskLevel: riskLevel, Status: "pending_review", PackageStatus: packageStatus,
+		PackageFormat: packageFormat, PackageSHA256: packageSHA, PackageSize: packageSize,
+		CreatedAt: now, UpdatedAt: now,
 	}, nil
+}
+
+func (imp *Importer) DownloadPackage(skillID string) (*marketschema.PackageDownload, error) {
+	if err := imp.ensureConfigured(); err != nil {
+		return nil, err
+	}
+	skillID = strings.TrimSpace(skillID)
+	if skillID == "" {
+		return nil, fmt.Errorf("skill_id is required")
+	}
+	endpoint := fmt.Sprintf("%s/api/centers/%s/skills/%s/package", imp.cloudURL, url.PathEscape(imp.centerID), url.PathEscape(skillID))
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Center-Secret", imp.centerSecret)
+	resp, err := imp.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download cloud skill package: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("cloud skill package returned %d: %s", resp.StatusCode, string(body))
+	}
+	var pkg marketschema.PackageDownload
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&pkg); err != nil {
+		return nil, fmt.Errorf("decode cloud skill package: %w", err)
+	}
+	if err := validatePackageDownload(&pkg); err != nil {
+		return nil, err
+	}
+	return &pkg, nil
+}
+
+func validatePackageDownload(pkg *marketschema.PackageDownload) error {
+	if pkg == nil || strings.TrimSpace(pkg.ContentBase64) == "" {
+		return fmt.Errorf("empty skill package")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(pkg.ContentBase64)
+	if err != nil {
+		return fmt.Errorf("invalid skill package content: %w", err)
+	}
+	if pkg.Size > 0 && int64(len(decoded)) != pkg.Size {
+		return fmt.Errorf("skill package size mismatch")
+	}
+	if pkg.SHA256 != "" {
+		sum := sha256.Sum256(decoded)
+		if fmt.Sprintf("%x", sum[:]) != strings.ToLower(pkg.SHA256) {
+			return fmt.Errorf("skill package sha256 mismatch")
+		}
+	}
+	return nil
 }
 
 // ApproveCapability changes status from pending_review to active for one tenant.

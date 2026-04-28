@@ -310,28 +310,28 @@ type SkillRepo struct{ w, r *sql.DB }
 
 func (repo *SkillRepo) Create(ctx context.Context, s *store.Skill) error {
 	_, err := repo.w.ExecContext(ctx,
-		`INSERT INTO skill_market_skills (id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, s.Name, s.Description, s.Category, s.Version, s.Tags, s.RiskLevel, normalizeSkillStatus(s.Status), s.Price, s.Author, s.AvgRating, s.DownloadCount, s.CreatedAt.Format(time.RFC3339), s.UpdatedAt.Format(time.RFC3339))
+		`INSERT INTO skill_market_skills (id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, package_format, package_content, package_sha256, package_size, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.Name, s.Description, s.Category, s.Version, s.Tags, s.RiskLevel, normalizeSkillStatus(s.Status), s.Price, s.Author, s.AvgRating, s.DownloadCount, s.PackageFormat, s.PackageContent, s.PackageSHA256, s.PackageSize, s.CreatedAt.Format(time.RFC3339), s.UpdatedAt.Format(time.RFC3339))
 	return err
 }
 
 func (repo *SkillRepo) Update(ctx context.Context, s *store.Skill) error {
 	_, err := repo.w.ExecContext(ctx,
-		`UPDATE skill_market_skills SET name=?, description=?, category=?, version=?, tags=?, risk_level=?, status=?, price=?, author=?, avg_rating=?, download_count=?, updated_at=? WHERE id=?`,
-		s.Name, s.Description, s.Category, s.Version, s.Tags, s.RiskLevel, normalizeSkillStatus(s.Status), s.Price, s.Author, s.AvgRating, s.DownloadCount, time.Now().Format(time.RFC3339), s.ID)
+		`UPDATE skill_market_skills SET name=?, description=?, category=?, version=?, tags=?, risk_level=?, status=?, price=?, author=?, avg_rating=?, download_count=?, package_format=?, package_content=?, package_sha256=?, package_size=?, updated_at=? WHERE id=?`,
+		s.Name, s.Description, s.Category, s.Version, s.Tags, s.RiskLevel, normalizeSkillStatus(s.Status), s.Price, s.Author, s.AvgRating, s.DownloadCount, s.PackageFormat, s.PackageContent, s.PackageSHA256, s.PackageSize, time.Now().Format(time.RFC3339), s.ID)
 	return err
 }
 
 func (repo *SkillRepo) GetByID(ctx context.Context, id string) (*store.Skill, error) {
 	row := repo.r.QueryRowContext(ctx,
-		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at FROM skill_market_skills WHERE id=?`, id)
+		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, package_format, package_content, package_sha256, package_size, created_at, updated_at FROM skill_market_skills WHERE id=?`, id)
 	return scanSkill(row)
 }
 
 func (repo *SkillRepo) List(ctx context.Context) ([]*store.Skill, error) {
 	rows, err := repo.r.QueryContext(ctx,
-		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at FROM skill_market_skills ORDER BY category, name`)
+		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, package_format, package_content, package_sha256, package_size, created_at, updated_at FROM skill_market_skills ORDER BY category, name`)
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +343,7 @@ func (repo *SkillRepo) SearchActive(ctx context.Context, query string) ([]*store
 	query = strings.TrimSpace(query)
 	if query == "" {
 		rows, err := repo.r.QueryContext(ctx,
-			`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at FROM skill_market_skills WHERE status='active' ORDER BY download_count DESC, category, name`)
+			`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, package_format, package_content, package_sha256, package_size, created_at, updated_at FROM skill_market_skills WHERE status='active' ORDER BY download_count DESC, category, name`)
 		if err != nil {
 			return nil, err
 		}
@@ -352,7 +352,7 @@ func (repo *SkillRepo) SearchActive(ctx context.Context, query string) ([]*store
 	}
 	like := "%" + query + "%"
 	rows, err := repo.r.QueryContext(ctx,
-		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at
+		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, package_format, package_content, package_sha256, package_size, created_at, updated_at
 		 FROM skill_market_skills
 		 WHERE status='active' AND (id LIKE ? OR name LIKE ? OR description LIKE ? OR category LIKE ? OR tags LIKE ?)
 		 ORDER BY download_count DESC, category, name`, like, like, like, like, like)
@@ -381,7 +381,7 @@ type skillScannable interface {
 func scanSkill(row skillScannable) (*store.Skill, error) {
 	var s store.Skill
 	var ca, ua string
-	if err := row.Scan(&s.ID, &s.Name, &s.Description, &s.Category, &s.Version, &s.Tags, &s.RiskLevel, &s.Status, &s.Price, &s.Author, &s.AvgRating, &s.DownloadCount, &ca, &ua); err != nil {
+	if err := row.Scan(&s.ID, &s.Name, &s.Description, &s.Category, &s.Version, &s.Tags, &s.RiskLevel, &s.Status, &s.Price, &s.Author, &s.AvgRating, &s.DownloadCount, &s.PackageFormat, &s.PackageContent, &s.PackageSHA256, &s.PackageSize, &ca, &ua); err != nil {
 		return nil, err
 	}
 	s.CreatedAt, _ = time.Parse(time.RFC3339, ca)

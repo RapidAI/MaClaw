@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ func TestSkillMarketAdminCRUD(t *testing.T) {
 	mux.HandleFunc("PUT /api/admin/skills/{skill_id}", h.UpdateAdminSkill())
 	mux.HandleFunc("DELETE /api/admin/skills/{skill_id}", h.DeleteAdminSkill())
 
-	create := httptest.NewRequest(http.MethodPost, "/api/admin/skills", strings.NewReader(`{"id":"skill-admin","name":"Admin Skill","tags":["admin"],"status":"active","price":19,"author":"ops team"}`))
+	create := httptest.NewRequest(http.MethodPost, "/api/admin/skills", strings.NewReader(`{"id":"skill-admin","name":"Admin Skill","tags":["admin"],"status":"active","price":19,"author":"ops team","package_format":"skill.md","package_content_base64":"IyBBZG1pbiBTa2lsbAo="}`))
 	createRes := httptest.NewRecorder()
 	mux.ServeHTTP(createRes, create)
 	if createRes.Code != http.StatusCreated {
@@ -102,6 +103,7 @@ func TestSkillMarketSearchWithEntitlement(t *testing.T) {
 	h := NewSkillMarketHandler(centerAuth, licSvc, newTestSkillMarketService(t))
 	mux.HandleFunc("GET /api/centers/{id}/skills/search", h.SearchCenterSkills())
 	mux.HandleFunc("GET /api/centers/{id}/skills/{skill_id}", h.GetCenterSkill())
+	mux.HandleFunc("GET /api/centers/{id}/skills/{skill_id}/package", h.DownloadCenterSkillPackage())
 
 	search := httptest.NewRequest(http.MethodGet, "/api/centers/ctr_1/skills/search?q=goal", nil)
 	search.Header.Set("X-Center-Secret", "center-secret")
@@ -129,6 +131,24 @@ func TestSkillMarketSearchWithEntitlement(t *testing.T) {
 	mux.ServeHTTP(getRes, get)
 	if getRes.Code != http.StatusOK {
 		t.Fatalf("get status = %d body=%s", getRes.Code, getRes.Body.String())
+	}
+
+	pkgReq := httptest.NewRequest(http.MethodGet, "/api/centers/ctr_1/skills/goal-recovery-loop/package", nil)
+	pkgReq.Header.Set("X-Center-Secret", "center-secret")
+	pkgRes := httptest.NewRecorder()
+	mux.ServeHTTP(pkgRes, pkgReq)
+	if pkgRes.Code != http.StatusOK {
+		t.Fatalf("package status = %d body=%s", pkgRes.Code, pkgRes.Body.String())
+	}
+	var pkg struct {
+		ContentBase64 string `json:"content_base64"`
+		SHA256        string `json:"sha256"`
+	}
+	if err := json.NewDecoder(pkgRes.Body).Decode(&pkg); err != nil {
+		t.Fatalf("decode package: %v", err)
+	}
+	if pkg.ContentBase64 == "" || pkg.SHA256 == "" {
+		t.Fatalf("package = %+v", pkg)
 	}
 }
 
@@ -183,6 +203,12 @@ func newTestSkillMarketService(t *testing.T) *skillmarket.Service {
 }
 
 func (m *memorySkillRepo) Create(_ context.Context, s *store.Skill) error {
+	if s.PackageContent == "" {
+		s.PackageContent = base64.StdEncoding.EncodeToString([]byte("# " + s.Name + "\n"))
+		s.PackageFormat = "skill.md"
+		s.PackageSize = int64(len("# " + s.Name + "\n"))
+		s.PackageSHA256 = "test-sha"
+	}
 	copy := *s
 	m.items[s.ID] = &copy
 	return nil

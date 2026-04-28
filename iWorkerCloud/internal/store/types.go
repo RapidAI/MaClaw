@@ -37,20 +37,24 @@ type License struct {
 
 // Skill represents a cloud skill market package managed by iWorkerCloud.
 type Skill struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Description   string    `json:"description"`
-	Category      string    `json:"category"`
-	Version       string    `json:"version"`
-	Tags          string    `json:"tags"`
-	RiskLevel     string    `json:"risk_level"`
-	Status        string    `json:"status"`
-	Price         int64     `json:"price"`
-	Author        string    `json:"author"`
-	AvgRating     float64   `json:"avg_rating"`
-	DownloadCount int       `json:"download_count"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Description    string    `json:"description"`
+	Category       string    `json:"category"`
+	Version        string    `json:"version"`
+	Tags           string    `json:"tags"`
+	RiskLevel      string    `json:"risk_level"`
+	Status         string    `json:"status"`
+	Price          int64     `json:"price"`
+	Author         string    `json:"author"`
+	AvgRating      float64   `json:"avg_rating"`
+	DownloadCount  int       `json:"download_count"`
+	PackageFormat  string    `json:"package_format"`
+	PackageContent string    `json:"-"`
+	PackageSHA256  string    `json:"package_sha256"`
+	PackageSize    int64     `json:"package_size"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // Admin represents a cloud admin account.

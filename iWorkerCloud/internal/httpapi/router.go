@@ -67,6 +67,7 @@ func NewRouter(
 		mux.HandleFunc("DELETE /api/admin/skills/{skill_id}", RequireAdmin(skillMarketHandler.DeleteAdminSkill()))
 		mux.HandleFunc("GET /api/centers/{id}/skills/search", skillMarketHandler.SearchCenterSkills())
 		mux.HandleFunc("GET /api/centers/{id}/skills/{skill_id}", skillMarketHandler.GetCenterSkill())
+		mux.HandleFunc("GET /api/centers/{id}/skills/{skill_id}/package", skillMarketHandler.DownloadCenterSkillPackage())
 	}
 
 	// Compute power management (admin)

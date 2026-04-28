@@ -241,15 +241,26 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 	stepID, action := parts[0], parts[1]
 
 	var body struct {
-		ActorID string `json:"actor_id"`
-		Result  string `json:"result"`
-		Note    string `json:"note"`
+		ActorID             string `json:"actor_id"`
+		Result              string `json:"result"`
+		Note                string `json:"note"`
+		CapabilityID        string `json:"capability_id"`
+		CapabilityStatus    string `json:"capability_status"`
+		CapabilityError     string `json:"capability_error"`
+		CapabilityLatencyMs int64  `json:"capability_latency_ms"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
 	switch action {
 	case "complete":
-		if err := h.svc.CompleteStep(tid, stepID, body.ActorID, body.Result); err != nil {
+		if err := h.svc.CompleteStepWithInput(tid, stepID, CompleteStepInput{
+			ActorID:             body.ActorID,
+			Result:              body.Result,
+			CapabilityID:        body.CapabilityID,
+			CapabilityStatus:    body.CapabilityStatus,
+			CapabilityError:     body.CapabilityError,
+			CapabilityLatencyMs: body.CapabilityLatencyMs,
+		}); err != nil {
 			response.BadRequest(w, "COMPLETE_FAILED", err.Error())
 			return
 		}

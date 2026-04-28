@@ -108,6 +108,22 @@ func (h *SkillMarketHandler) GetCenterSkill() http.HandlerFunc {
 	}
 }
 
+func (h *SkillMarketHandler) DownloadCenterSkillPackage() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		centerID := r.PathValue("id")
+		if _, ok := h.authorize(w, r, centerID); !ok {
+			return
+		}
+
+		pkg, err := h.skills.DownloadPackage(r.Context(), r.PathValue("skill_id"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, "PACKAGE_NOT_FOUND", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, pkg)
+	}
+}
+
 func (h *SkillMarketHandler) authorize(w http.ResponseWriter, r *http.Request, centerID string) (*store.Center, bool) {
 	center, ok := authenticateCenterRequest(w, r, h.centerAuth, centerID)
 	if !ok {
@@ -171,6 +187,9 @@ func convertSkill(item *store.Skill, includeAdminFields bool) marketschema.Skill
 		AvgRating:     item.AvgRating,
 		DownloadCount: item.DownloadCount,
 		Downloads:     item.DownloadCount,
+		PackageFormat: item.PackageFormat,
+		PackageSHA256: item.PackageSHA256,
+		PackageSize:   item.PackageSize,
 	}
 	if includeAdminFields {
 		result.CreatedAt = marketschema.FormatTime(item.CreatedAt)

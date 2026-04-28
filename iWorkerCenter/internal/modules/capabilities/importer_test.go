@@ -1,7 +1,10 @@
 package capabilities
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,20 +50,34 @@ func TestImporterImportFromCloudWritesTenantScopedCapability(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/centers/center-1/skills/skill-1" {
+		switch r.URL.Path {
+		case "/api/centers/center-1/skills/skill-1":
+			if got := r.Header.Get("X-Center-Secret"); got != "secret-abc" {
+				t.Fatalf("X-Center-Secret = %q, want secret-abc", got)
+			}
+			_ = json.NewEncoder(w).Encode(CloudSkill{
+				ID:          "skill-1",
+				Name:        "Skill One",
+				Description: "A cloud skill",
+				Category:    "ops",
+				Version:     "1.2.3",
+				RiskLevel:   "medium",
+			})
+		case "/api/centers/center-1/skills/skill-1/package":
+			payload := []byte("# Skill One\n")
+			sum := sha256.Sum256(payload)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"skill_id":        "skill-1",
+				"version":         "1.2.3",
+				"format":          "skill.md",
+				"sha256":          fmt.Sprintf("%x", sum[:]),
+				"size":            len(payload),
+				"content_base64":  base64.StdEncoding.EncodeToString(payload),
+				"source_contract": "corelib/skillmarket.PackageDownload.v1",
+			})
+		default:
 			t.Fatalf("path = %q", r.URL.Path)
 		}
-		if got := r.Header.Get("X-Center-Secret"); got != "secret-abc" {
-			t.Fatalf("X-Center-Secret = %q, want secret-abc", got)
-		}
-		_ = json.NewEncoder(w).Encode(CloudSkill{
-			ID:          "skill-1",
-			Name:        "Skill One",
-			Description: "A cloud skill",
-			Category:    "ops",
-			Version:     "1.2.3",
-			RiskLevel:   "medium",
-		})
 	}))
 	defer srv.Close()
 
@@ -69,16 +86,16 @@ func TestImporterImportFromCloudWritesTenantScopedCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportFromCloud() error: %v", err)
 	}
-	if capability.Status != "pending_review" || capability.Source != "iworkercloud:skill-1" {
+	if capability.Status != "pending_review" || capability.Source != "iworkercloud:skill-1" || capability.PackageStatus != "package_cached" {
 		t.Fatalf("capability = %+v", capability)
 	}
 
-	var tenantID, source, status string
-	if err := provider.Read.QueryRow(`SELECT tenant_id, source, status FROM capability_packages WHERE id=?`, capability.ID).Scan(&tenantID, &source, &status); err != nil {
+	var tenantID, source, status, packageStatus, packageContent string
+	if err := provider.Read.QueryRow(`SELECT tenant_id, source, status, package_status, package_content FROM capability_packages WHERE id=?`, capability.ID).Scan(&tenantID, &source, &status, &packageStatus, &packageContent); err != nil {
 		t.Fatalf("query capability: %v", err)
 	}
-	if tenantID != "tenant-a" || source != "iworkercloud:skill-1" || status != "pending_review" {
-		t.Fatalf("tenant/source/status = %q/%q/%q", tenantID, source, status)
+	if tenantID != "tenant-a" || source != "iworkercloud:skill-1" || status != "pending_review" || packageStatus != "package_cached" || packageContent == "" {
+		t.Fatalf("tenant/source/status/package = %q/%q/%q/%q", tenantID, source, status, packageStatus)
 	}
 }
 

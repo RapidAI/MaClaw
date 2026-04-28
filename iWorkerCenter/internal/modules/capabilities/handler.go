@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,16 +18,20 @@ import (
 
 // CapabilityPackage represents a skill / "会做的事".
 type CapabilityPackage struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Category    string `json:"category"`
-	Version     string `json:"version"`
-	Source      string `json:"source"`
-	RiskLevel   string `json:"risk_level"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Category      string `json:"category"`
+	Version       string `json:"version"`
+	Source        string `json:"source"`
+	RiskLevel     string `json:"risk_level"`
+	Status        string `json:"status"`
+	PackageStatus string `json:"package_status,omitempty"`
+	PackageFormat string `json:"package_format,omitempty"`
+	PackageSHA256 string `json:"package_sha256,omitempty"`
+	PackageSize   int64  `json:"package_size,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 // Binding represents a colleague-capability binding.
@@ -35,6 +40,12 @@ type Binding struct {
 	ColleagueID  string `json:"colleague_id"`
 	CapabilityID string `json:"capability_id"`
 	BoundAt      string `json:"bound_at"`
+}
+
+const capabilitySelectSQL = `SELECT id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, created_at, updated_at FROM capability_packages`
+
+type capabilityScannable interface {
+	Scan(dest ...any) error
 }
 
 type cloudCredentialResolver interface {
@@ -97,6 +108,7 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 // RegisterClientRoutes registers client-facing routes (for DiWorker).
 func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/client/capabilities", h.handleClientCapabilities)
+	mux.HandleFunc("/client/capabilities/", h.handleClientCapabilities)
 }
 
 func (h *Handler) handleAdminCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -162,6 +174,28 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// /admin/capabilities/{id}/usage
+	if strings.HasSuffix(path, "/usage") {
+		id = strings.TrimSuffix(id, "/usage")
+		if r.Method == http.MethodGet {
+			h.listCapabilityUsage(w, r, id)
+			return
+		}
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+
+	// /admin/capabilities/{id}/install
+	if strings.HasSuffix(path, "/install") {
+		id = strings.TrimSuffix(id, "/install")
+		if r.Method == http.MethodPost {
+			h.installCapability(w, r, id)
+			return
+		}
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		h.getCapability(w, r, id)
@@ -177,6 +211,15 @@ func (h *Handler) handleClientCapabilities(w http.ResponseWriter, r *http.Reques
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/client/capabilities/") && strings.HasSuffix(r.URL.Path, "/runtime-entry") {
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/client/capabilities/"), "/runtime-entry")
+		h.getClientRuntimeEntry(w, r, strings.Trim(id, "/"))
+		return
+	}
+	if r.URL.Query().Get("runtime") == "1" || r.URL.Query().Get("runtime") == "true" {
+		h.listClientRuntimeEntries(w, r)
+		return
+	}
 	colleagueID := r.URL.Query().Get("colleague_id")
 	if colleagueID != "" {
 		h.listColleagueCapabilities(w, r, colleagueID)
@@ -187,7 +230,7 @@ func (h *Handler) handleClientCapabilities(w http.ResponseWriter, r *http.Reques
 
 func (h *Handler) listCapabilities(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenant.RequestTenantID(r)
-	rows, err := h.read.Query("SELECT id, name, description, category, version, source, risk_level, status, created_at, updated_at FROM capability_packages WHERE tenant_id=? ORDER BY name", tenantID)
+	rows, err := h.read.Query(capabilitySelectSQL+" WHERE tenant_id=? ORDER BY name", tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -199,7 +242,7 @@ func (h *Handler) listCapabilities(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) listActiveCapabilities(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenant.RequestTenantID(r)
-	rows, err := h.read.Query("SELECT id, name, description, category, version, source, risk_level, status, created_at, updated_at FROM capability_packages WHERE status IN ('active','approved') AND tenant_id=? ORDER BY name", tenantID)
+	rows, err := h.read.Query(capabilitySelectSQL+" WHERE status IN ('active','approved') AND tenant_id=? ORDER BY name", tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -211,7 +254,7 @@ func (h *Handler) listActiveCapabilities(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) listColleagueCapabilities(w http.ResponseWriter, r *http.Request, colleagueID string) {
 	tenantID := tenant.RequestTenantID(r)
-	rows, err := h.read.Query(`SELECT cp.id, cp.name, cp.description, cp.category, cp.version, cp.source, cp.risk_level, cp.status, cp.created_at, cp.updated_at
+	rows, err := h.read.Query(`SELECT cp.id, cp.name, cp.description, cp.category, cp.version, cp.source, cp.risk_level, cp.status, cp.package_status, cp.package_format, cp.package_sha256, cp.package_size, cp.created_at, cp.updated_at
 		FROM capability_packages cp
 		JOIN colleague_capability_bindings ccb ON cp.id = ccb.capability_id
 		WHERE ccb.colleague_id = ? AND cp.status IN ('active','approved') AND ccb.tenant_id = ?
@@ -279,9 +322,9 @@ func (h *Handler) createCapability(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getCapability(w http.ResponseWriter, r *http.Request, id string) {
 	tenantID := tenant.RequestTenantID(r)
-	row := h.read.QueryRow("SELECT id, name, description, category, version, source, risk_level, status, created_at, updated_at FROM capability_packages WHERE id=? AND tenant_id=?", id, tenantID)
+	row := h.read.QueryRow(capabilitySelectSQL+" WHERE id=? AND tenant_id=?", id, tenantID)
 	var cp CapabilityPackage
-	if err := row.Scan(&cp.ID, &cp.Name, &cp.Description, &cp.Category, &cp.Version, &cp.Source, &cp.RiskLevel, &cp.Status, &cp.CreatedAt, &cp.UpdatedAt); err != nil {
+	if err := scanCapabilityRow(row, &cp); err != nil {
 		response.NotFound(w, "NOT_FOUND", "capability not found")
 		return
 	}
@@ -363,7 +406,7 @@ func scanCapabilities(rows *sql.Rows) []CapabilityPackage {
 	var result []CapabilityPackage
 	for rows.Next() {
 		var cp CapabilityPackage
-		if err := rows.Scan(&cp.ID, &cp.Name, &cp.Description, &cp.Category, &cp.Version, &cp.Source, &cp.RiskLevel, &cp.Status, &cp.CreatedAt, &cp.UpdatedAt); err != nil {
+		if err := scanCapabilityRow(rows, &cp); err != nil {
 			continue
 		}
 		result = append(result, cp)
@@ -372,6 +415,10 @@ func scanCapabilities(rows *sql.Rows) []CapabilityPackage {
 		result = []CapabilityPackage{}
 	}
 	return result
+}
+
+func scanCapabilityRow(row capabilityScannable, cp *CapabilityPackage) error {
+	return row.Scan(&cp.ID, &cp.Name, &cp.Description, &cp.Category, &cp.Version, &cp.Source, &cp.RiskLevel, &cp.Status, &cp.PackageStatus, &cp.PackageFormat, &cp.PackageSHA256, &cp.PackageSize, &cp.CreatedAt, &cp.UpdatedAt)
 }
 
 func extractID(path, prefix string) string {
@@ -430,6 +477,61 @@ func (h *Handler) handleImportFromCloud(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	response.Created(w, cap)
+}
+
+func (h *Handler) listCapabilityUsage(w http.ResponseWriter, r *http.Request, id string) {
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	items, err := h.listCapabilityUsageEvents(r.Context(), tenant.RequestTenantID(r), id, limit)
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"usage_events": items})
+}
+
+func (h *Handler) installCapability(w http.ResponseWriter, r *http.Request, id string) {
+	installed, err := h.installCapabilityPackage(r.Context(), tenant.RequestTenantID(r), id)
+	if err == sql.ErrNoRows {
+		response.NotFound(w, "NOT_FOUND", "capability not found")
+		return
+	}
+	if err != nil {
+		response.BadRequest(w, "INSTALL_FAILED", err.Error())
+		return
+	}
+	response.OK(w, installed)
+}
+
+func (h *Handler) getClientRuntimeEntry(w http.ResponseWriter, r *http.Request, id string) {
+	if strings.TrimSpace(id) == "" {
+		response.BadRequest(w, "MISSING_ID", "capability id is required")
+		return
+	}
+	entry, err := h.runtimeEntryForCapability(r.Context(), tenant.RequestTenantID(r), id)
+	if err == sql.ErrNoRows {
+		response.NotFound(w, "NOT_INSTALLED", "capability runtime entry not installed")
+		return
+	}
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, entry)
+}
+
+func (h *Handler) listClientRuntimeEntries(w http.ResponseWriter, r *http.Request) {
+	colleagueID := r.URL.Query().Get("colleague_id")
+	items, err := h.runtimeEntriesForColleague(r.Context(), tenant.RequestTenantID(r), colleagueID)
+	if err != nil {
+		response.BadRequest(w, "RUNTIME_SKILLS_FAILED", err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"runtime_entries": items})
 }
 
 func (h *Handler) approveCapability(w http.ResponseWriter, r *http.Request, id string) {

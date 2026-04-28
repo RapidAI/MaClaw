@@ -54,6 +54,7 @@ var CoreToolNames = map[string]bool{
 	"discover_tool": true,
 	"task":          true,
 	"async_wait":    true,
+	"compress_context": true,
 }
 
 type conditionalKeepRule struct {

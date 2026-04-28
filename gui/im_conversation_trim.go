@@ -862,9 +862,20 @@ func truncateToolResult(s string) string {
 // webFetchMaxToolResult allows web_fetch to return up to 32KB to the LLM,
 // since its content is already windowed inside the handler and carries
 // continuation metadata that must survive truncation.
+//
+// Beyond simple size truncation, this function also applies semantic
+// compression inspired by GenericAgent's context information density
+// maximization principle: deduplicate repeated lines (common in compiler
+// warnings and log output), and collapse long homogeneous blocks (e.g.
+// 200 lines of "PASS" test output) into a summary line.
 const webFetchMaxToolResult = 32768
 
 func truncateToolResultForTool(toolName, s string) string {
+	// Phase 1: semantic compression — deduplicate repeated lines and
+	// collapse homogeneous blocks BEFORE size truncation. This reduces
+	// the effective size so more unique information survives the budget.
+	s = compressToolResultSemantic(toolName, s)
+
 	// web_fetch gets a higher budget — content is already windowed in handler
 	limit := maxToolResultLen
 	if toolName == "web_fetch" {
@@ -895,6 +906,144 @@ func truncateToolResultForTool(toolName, s string) string {
 		tailLen := budget - headLen
 		return s[:headLen] + sep + s[len(s)-tailLen:]
 	}
+}
+
+// compressToolResultSemantic applies content-aware compression to tool
+// results before size truncation. Two mechanisms:
+//
+// 1. Line deduplication: consecutive identical or near-identical lines
+//    (common in compiler warnings, npm install output, test results)
+//    are collapsed into "... (重复 N 行) ...".
+//
+// 2. Homogeneous block collapse: when >10 consecutive lines match the
+//    same pattern (e.g. all start with "PASS", "ok", "  ✓"), keep the
+//    first 3 + last 2 and insert a summary.
+//
+// This is inspired by GenericAgent's _clean_content which shrinks code
+// blocks >6 lines to 5 lines + count. The principle: maximize information
+// density by removing redundant content before the budget truncation
+// removes unique content.
+func compressToolResultSemantic(toolName string, s string) string {
+	// Content-based activation: compress any tool result that is large
+	// enough and has enough lines to benefit from deduplication. This
+	// avoids maintaining a hardcoded tool name whitelist — new tools
+	// (MCP tools, future code_run equivalents) automatically get
+	// compression when their output is verbose and repetitive.
+	_ = toolName // reserved for future per-tool strategy tuning
+
+	if len(s) < 500 {
+		return s
+	}
+
+	lines := strings.Split(s, "\n")
+	if len(lines) < 10 {
+		return s
+	}
+
+	var result []string
+	compressed := false
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+
+		// --- Deduplication: collapse consecutive identical lines ---
+		j := i + 1
+		for j < len(lines) && lines[j] == line {
+			j++
+		}
+		dupCount := j - i
+		if dupCount >= 3 {
+			result = append(result, line)
+			result = append(result, fmt.Sprintf("... (重复 %d 行) ...", dupCount-1))
+			i = j
+			compressed = true
+			continue
+		}
+
+		// --- Homogeneous block collapse: structurally repetitive lines ---
+		// Collapse blocks where lines share a common prefix AND have similar
+		// lengths (low variance = same format, only a counter/name changes).
+		// This avoids collapsing blocks like import statements where each
+		// line has genuinely different content despite sharing a prefix.
+		prefix := extractLinePrefix(line)
+		if prefix != "" && len(prefix) >= 2 {
+			k := i + 1
+			for k < len(lines) && strings.HasPrefix(lines[k], prefix) {
+				k++
+			}
+			blockLen := k - i
+			if blockLen > 10 {
+				// Check structural repetitiveness: compute length variance.
+				// If max-min length difference is <30% of average, the lines
+				// are structurally similar (same format, different values).
+				totalLen := 0
+				minLen := len(lines[i])
+				maxLen := len(lines[i])
+				for x := i; x < k; x++ {
+					l := len(lines[x])
+					totalLen += l
+					if l < minLen {
+						minLen = l
+					}
+					if l > maxLen {
+						maxLen = l
+					}
+				}
+				avgLen := totalLen / blockLen
+				lengthVariance := maxLen - minLen
+				isStructurallyRepetitive := avgLen > 0 && lengthVariance*100/avgLen < 30
+
+				if isStructurallyRepetitive {
+					for x := i; x < i+3; x++ {
+						result = append(result, lines[x])
+					}
+					result = append(result, fmt.Sprintf("... (省略 %d 行相似内容，前缀 %q) ...", blockLen-5, prefix))
+					for x := k - 2; x < k; x++ {
+						result = append(result, lines[x])
+					}
+					i = k
+					compressed = true
+					continue
+				}
+			}
+		}
+
+		result = append(result, line)
+		i++
+	}
+
+	if !compressed {
+		return s // no compression happened — return original to avoid alloc
+	}
+	return strings.Join(result, "\n")
+}
+
+// extractLinePrefix returns the leading "tag" of a line — the portion
+// before the first space or colon, if it looks like a repeated prefix.
+// Returns "" if no useful prefix is detected.
+func extractLinePrefix(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < 3 {
+		return ""
+	}
+	// If the line starts with whitespace, it's likely indented content
+	// (not a tag-prefixed line). Skip to avoid false positives on
+	// indented code or bullet points.
+	if line != "" && (line[0] == ' ' || line[0] == '\t') {
+		return ""
+	}
+	// Common patterns: "PASS ", "FAIL ", "warning: ", "error: ", "ok  "
+	for _, delim := range []string{": ", " "} {
+		idx := strings.Index(trimmed, delim)
+		if idx > 0 && idx <= 20 {
+			return trimmed[:idx+len(delim)]
+		}
+	}
+	// Tab delimiter
+	if idx := strings.Index(trimmed, "\t"); idx > 0 && idx <= 20 {
+		return trimmed[:idx+1]
+	}
+	return ""
 }
 
 func truncateWebFetchToolResult(s string, limit int) string {

@@ -25,6 +25,9 @@ type Skill struct {
 	UpdatedAt     string   `json:"updated_at,omitempty"`
 	Category      string   `json:"category,omitempty"`
 	RiskLevel     string   `json:"risk_level,omitempty"`
+	PackageFormat string   `json:"package_format,omitempty"`
+	PackageSHA256 string   `json:"package_sha256,omitempty"`
+	PackageSize   int64    `json:"package_size,omitempty"`
 }
 
 type SearchResponse struct {
@@ -36,16 +39,29 @@ type CatalogResponse struct {
 }
 
 type SkillInput struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Category    string   `json:"category"`
-	Version     string   `json:"version"`
-	Tags        []string `json:"tags"`
-	RiskLevel   string   `json:"risk_level"`
-	Status      string   `json:"status"`
-	Price       int64    `json:"price,omitempty"`
-	Author      string   `json:"author,omitempty"`
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	Description          string   `json:"description"`
+	Category             string   `json:"category"`
+	Version              string   `json:"version"`
+	Tags                 []string `json:"tags"`
+	RiskLevel            string   `json:"risk_level"`
+	Status               string   `json:"status"`
+	Price                int64    `json:"price,omitempty"`
+	Author               string   `json:"author,omitempty"`
+	PackageFormat        string   `json:"package_format,omitempty"`
+	PackageContentBase64 string   `json:"package_content_base64,omitempty"`
+}
+
+type PackageDownload struct {
+	SkillID        string `json:"skill_id"`
+	Version        string `json:"version"`
+	Format         string `json:"format"`
+	SHA256         string `json:"sha256"`
+	Size           int64  `json:"size"`
+	ContentBase64  string `json:"content_base64"`
+	ContentType    string `json:"content_type,omitempty"`
+	SourceContract string `json:"source_contract,omitempty"`
 }
 
 func NormalizeStatus(status string) string {

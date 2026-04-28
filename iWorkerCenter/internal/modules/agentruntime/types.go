@@ -1,6 +1,10 @@
 package agentruntime
 
-import "time"
+import (
+	"time"
+
+	corel "github.com/RapidAI/CodeClaw/corelib"
+)
 
 type Instance struct {
 	TenantID            string    `json:"tenant_id"`
@@ -35,5 +39,16 @@ type HeartbeatRequest struct {
 }
 
 type HeartbeatResult struct {
-	Instance Instance `json:"instance"`
+	Instance          Instance       `json:"instance"`
+	RuntimeSkills     []RuntimeSkill `json:"runtime_skills,omitempty"`
+	RuntimeSkillError string         `json:"runtime_skill_error,omitempty"`
+}
+
+type RuntimeSkill struct {
+	CapabilityID string             `json:"capability_id"`
+	Name         string             `json:"name"`
+	Source       string             `json:"source"`
+	Version      string             `json:"version"`
+	RiskLevel    string             `json:"risk_level"`
+	Entry        corel.NLSkillEntry `json:"entry"`
 }

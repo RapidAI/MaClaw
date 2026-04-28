@@ -1,7 +1,9 @@
 package agentruntime
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -36,6 +38,43 @@ func newTestRepo(t *testing.T) *Repo {
 		t.Fatalf("create table: %v", err)
 	}
 	return NewRepo(db, db)
+}
+
+func TestHeartbeatIncludesRuntimeSkillsWhenProviderConfigured(t *testing.T) {
+	svc := NewService(newTestRepo(t))
+	svc.SetRuntimeSkillProvider(fakeRuntimeSkillProvider{skills: []RuntimeSkill{{CapabilityID: "cap-1", Name: "Skill One"}}})
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+
+	result, err := svc.Heartbeat("tenant-a", HeartbeatRequest{WorkerID: "worker-a", InstanceID: "worker-a:executor", Role: "executor"}, now)
+	if err != nil {
+		t.Fatalf("Heartbeat returned error: %v", err)
+	}
+	if len(result.RuntimeSkills) != 1 || result.RuntimeSkills[0].CapabilityID != "cap-1" {
+		t.Fatalf("runtime skills = %+v", result.RuntimeSkills)
+	}
+}
+
+func TestHeartbeatKeepsAliveWhenRuntimeSkillProviderFails(t *testing.T) {
+	svc := NewService(newTestRepo(t))
+	svc.SetRuntimeSkillProvider(fakeRuntimeSkillProvider{err: fmt.Errorf("skill db unavailable")})
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+
+	result, err := svc.Heartbeat("tenant-a", HeartbeatRequest{WorkerID: "worker-a", InstanceID: "worker-a:executor", Role: "executor"}, now)
+	if err != nil {
+		t.Fatalf("Heartbeat returned error: %v", err)
+	}
+	if result.RuntimeSkillError == "" || result.Instance.WorkerID != "worker-a" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+type fakeRuntimeSkillProvider struct {
+	skills []RuntimeSkill
+	err    error
+}
+
+func (f fakeRuntimeSkillProvider) RuntimeSkillsForWorker(context.Context, string, string) ([]RuntimeSkill, error) {
+	return f.skills, f.err
 }
 
 func TestHeartbeatUpsertsInstance(t *testing.T) {

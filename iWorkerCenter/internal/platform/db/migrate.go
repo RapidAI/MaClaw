@@ -464,6 +464,38 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_iworker_agent_instances_worker ON iworker_agent_instances(tenant_id, worker_id);
 	CREATE INDEX IF NOT EXISTS idx_iworker_agent_instances_role ON iworker_agent_instances(tenant_id, role);
 	CREATE INDEX IF NOT EXISTS idx_iworker_agent_instances_heartbeat ON iworker_agent_instances(tenant_id, last_heartbeat_at);`,
+
+	// 33: capability package artifact cache from iWorkerCloud / SkillMarket
+	`ALTER TABLE capability_packages ADD COLUMN package_status TEXT NOT NULL DEFAULT 'metadata_only';
+	ALTER TABLE capability_packages ADD COLUMN package_format TEXT NOT NULL DEFAULT '';
+	ALTER TABLE capability_packages ADD COLUMN package_sha256 TEXT NOT NULL DEFAULT '';
+	ALTER TABLE capability_packages ADD COLUMN package_size INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE capability_packages ADD COLUMN package_content TEXT NOT NULL DEFAULT '';
+	CREATE INDEX IF NOT EXISTS idx_capability_packages_package_status ON capability_packages(tenant_id, package_status);`,
+
+	// 34: installed runtime entry generated from cached skill package
+	`ALTER TABLE capability_packages ADD COLUMN installed_entry_json TEXT NOT NULL DEFAULT '';
+	ALTER TABLE capability_packages ADD COLUMN installed_at TEXT NOT NULL DEFAULT '';
+	ALTER TABLE capability_packages ADD COLUMN install_error TEXT NOT NULL DEFAULT '';`,
+
+	// 35: capability usage feedback from workflow/iWorker execution
+	`CREATE TABLE IF NOT EXISTS capability_usage_events (
+		tenant_id                 TEXT NOT NULL,
+		id                        TEXT NOT NULL,
+		capability_id             TEXT NOT NULL,
+		colleague_id              TEXT NOT NULL DEFAULT '',
+		workflow_instance_id      TEXT NOT NULL DEFAULT '',
+		workflow_step_instance_id TEXT NOT NULL DEFAULT '',
+		status                    TEXT NOT NULL DEFAULT 'success',
+		result_summary            TEXT NOT NULL DEFAULT '',
+		error_message             TEXT NOT NULL DEFAULT '',
+		latency_ms                INTEGER NOT NULL DEFAULT 0,
+		created_at                TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (tenant_id, id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_cap_usage_capability ON capability_usage_events(tenant_id, capability_id, created_at);
+	CREATE INDEX IF NOT EXISTS idx_cap_usage_colleague ON capability_usage_events(tenant_id, colleague_id, created_at);
+	CREATE INDEX IF NOT EXISTS idx_cap_usage_step ON capability_usage_events(tenant_id, workflow_step_instance_id);`,
 }
 
 // Migrate applies all pending migrations inside a transaction.

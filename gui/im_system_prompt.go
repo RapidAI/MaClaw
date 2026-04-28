@@ -78,7 +78,17 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 - ⚠️ 先查记忆再问用户：当用户提到服务器、环境、配置等信息时，先检查下方「用户记忆」和「相关记忆（自动召回）」section 中是否已有相关信息，有则直接使用，不要向用户索要已经记住的信息。
 - ⚠️ 遇阻不停：当多步骤任务中某个子任务被阻塞（如需要用户扫码登录、等待审批等），不要停下来只报告状态。先继续执行其他不依赖该阻塞步骤的子任务，在最终回复中一并说明阻塞情况。只有当所有可执行的子任务都完成或都被阻塞时，才停下来向用户报告。具体做法：在同一轮回复中，用工具调用继续推进其他子任务，同时在文本中简要说明哪个步骤需要用户介入。
 - ⚠️ 短消息上下文延续：当用户发送简短消息（如"开工"、"好"、"继续"、"可以"等）时，必须结合对话历史理解其含义。如果你在上一条消息中要求用户确认或说某个词来继续，用户的短回复就是对你上一条消息的回应——直接按之前讨论的任务继续执行，不要当作新对话的开始。绝不要回复"请告诉我今天要做什么"之类的通用问候。
+
+## 上下文管理（长程任务优化）
+- 当你完成一个子任务或阶段性工作后（如完成了文件创建、完成了一轮测试、完成了数据收集），主动调用 compress_context 工具压缩之前的详细工具调用历史为一段摘要。
+- 摘要应包含：已完成的工作、创建/修改的文件列表、关键决策和结论、下一步计划。
+- 这能释放 context 空间，让后续推理更高效。建议在以下时机调用：
+  - 完成一个独立子任务后（如"文件结构已创建完毕"）
+  - 连续执行了 10+ 轮工具调用后
+  - 切换到不同类型的工作时（如从代码编写切换到测试）
+- 不要在每次工具调用后都压缩——只在关键检查点使用。
 `)
+
 
 	if isProMode {
 		// Pro mode: full coding workflow with session management.
@@ -804,6 +814,20 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 		relevant = relevant[:maxProactiveRecall]
 	}
 
+	// --- Memory Index Layer (inspired by GenericAgent L1) ---
+	// Always inject the store-level index, even when proactive recall
+	// returned zero entries. The index tells the LLM what categories of
+	// knowledge exist in the memory store, enabling targeted recall via
+	// memory(action=recall, category="..."). Without this, the LLM has
+	// no way to know that memories exist when BM25 scores are too low
+	// for the current message to trigger proactive recall.
+	index := h.buildMemoryIndex()
+	if index != "" {
+		b.WriteString("\n[记忆索引] ")
+		b.WriteString(index)
+		b.WriteString("\n")
+	}
+
 	if len(relevant) > 0 {
 		b.WriteString("\n相关记忆（自动召回）:\n")
 		for _, e := range relevant {
@@ -817,7 +841,7 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 			}
 			b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
 		}
-		log.Printf("[proactive_recall] injected %d entries into system prompt", len(relevant))
+		log.Printf("[proactive_recall] injected %d entries (with index) into system prompt", len(relevant))
 		b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。即使你在之前的对话中说过「没找到」或「记忆库为空」，现在已经找到了，请直接使用以上信息，不要重复之前的错误判断。）\n")
 
 		// Active project bridge: when recalled memories contain project-level
@@ -873,6 +897,56 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 			}
 		}
 	}
+}
+
+// buildMemoryIndex creates a compact one-line index of the FULL memory store,
+// grouped by category with key tags. This is a true index layer (inspired by
+// GenericAgent's L1 Insight Index): it reflects the entire memory contents,
+// not just what was recalled for the current query. The LLM can see "偏好: 5条"
+// even if proactive recall only returned project_knowledge entries, and decide
+// whether to call memory(action=recall, category="preference") for more.
+//
+// Example output:
+//
+//	"项目: 3条(C++游戏, SSH服务器) | 偏好: 2条 | 任务产出: 1条(需求文档)"
+func (h *IMMessageHandler) buildMemoryIndex() string {
+	if h.memoryStore == nil {
+		return ""
+	}
+
+	stats := h.memoryStore.CategoryStats()
+	if len(stats) == 0 {
+		return ""
+	}
+
+	categoryLabel := func(cat corememory.Category) string {
+		switch cat {
+		case corememory.CategoryProjectKnowledge:
+			return "项目"
+		case corememory.CategoryPreference:
+			return "偏好"
+		case corememory.CategoryInstruction:
+			return "指令"
+		case corememory.CategoryTaskArtifact:
+			return "任务产出"
+		case corememory.CategoryProfile:
+			return "档案"
+		case corememory.CategoryUserFact:
+			return "用户信息"
+		default:
+			return string(cat)
+		}
+	}
+
+	var parts []string
+	for _, st := range stats {
+		part := fmt.Sprintf("%s: %d条", categoryLabel(st.Category), st.Count)
+		if len(st.Tags) > 0 {
+			part += "(" + strings.Join(st.Tags, ", ") + ")"
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, " | ")
 }
 
 // RefreshMemorySnapshot regenerates the cached memory snapshot for the given

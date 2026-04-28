@@ -391,6 +391,15 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolMemory(args) })
 
+	// --- Active context compression (inspired by GenericAgent's working checkpoint) ---
+	reg("compress_context", "主动压缩当前对话上下文。完成子任务后调用，将详细工具调用历史替换为摘要，释放 context 空间。",
+		ToolCategoryBuiltin, []string{"context", "compress", "checkpoint", "summary"},
+		map[string]interface{}{
+			"summary":       map[string]string{"type": "string", "description": "当前工作状态摘要（已完成的工作、文件列表、关键决策、下一步计划）"},
+			"preserve_last": map[string]string{"type": "integer", "description": "保留最近 N 条对话条目不压缩（可选，默认 4）"},
+		}, []string{"summary"},
+		func(args map[string]interface{}) string { return h.toolCompressContext(args) })
+
 	// --- Merged tool: manage_template (create/list/launch) ---
 	reg("manage_template", "会话模板管理（action: create/list/launch）。create 创建模板，list 列出所有模板，launch 使用模板启动会话。",
 		ToolCategoryBuiltin, []string{"template", "create", "list", "launch"},

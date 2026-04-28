@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -25,6 +26,71 @@ func setupTestDB(t *testing.T) *db.Provider {
 	}
 	t.Cleanup(func() { _ = provider.Close() })
 	return provider
+}
+
+func TestResolveAssignee_PrefersCapabilityResolver(t *testing.T) {
+	p := setupTestDB(t)
+	svc := newTestService(t, p)
+	seedRolesAndColleagues(t, p)
+	svc.SetCapabilityAssigneeResolver(fakeCapabilityResolver{selected: "col-xiaodi", ok: true})
+
+	assignee, err := svc.resolveAssignee(testTenantID, &StepDefinition{StepCode: "finance_check", StepName: "Finance check", StepType: "processing", AssigneeRoleCode: "quality"})
+	if err != nil {
+		t.Fatalf("resolve assignee: %v", err)
+	}
+	if assignee != "col-xiaodi" {
+		t.Fatalf("assignee = %q, want col-xiaodi", assignee)
+	}
+}
+
+func TestResolveAssignee_FallsBackToRoleWhenCapabilityMisses(t *testing.T) {
+	p := setupTestDB(t)
+	svc := newTestService(t, p)
+	seedRolesAndColleagues(t, p)
+	svc.SetCapabilityAssigneeResolver(fakeCapabilityResolver{ok: false})
+
+	assignee, err := svc.resolveAssignee(testTenantID, &StepDefinition{StepCode: "issue", StepName: "Issue analysis", AssigneeRoleCode: "quality"})
+	if err != nil {
+		t.Fatalf("resolve assignee: %v", err)
+	}
+	if assignee != "col-xiaozhou" {
+		t.Fatalf("assignee = %q, want col-xiaozhou", assignee)
+	}
+}
+
+type fakeCapabilityResolver struct {
+	selected string
+	ok       bool
+	err      error
+}
+
+func (f fakeCapabilityResolver) SelectWorkerForTask(context.Context, string, string, string) (string, bool, error) {
+	return f.selected, f.ok, f.err
+}
+
+type fakeCapabilityUsageRecorder struct {
+	capabilityID           string
+	colleagueID            string
+	workflowInstanceID     string
+	workflowStepInstanceID string
+	status                 string
+	resultSummary          string
+	errorMessage           string
+	latencyMs              int64
+	called                 bool
+}
+
+func (f *fakeCapabilityUsageRecorder) RecordCapabilityUsage(_ context.Context, _, capabilityID, colleagueID, workflowInstanceID, workflowStepInstanceID, status, resultSummary, errorMessage string, latencyMs int64) error {
+	f.called = true
+	f.capabilityID = capabilityID
+	f.colleagueID = colleagueID
+	f.workflowInstanceID = workflowInstanceID
+	f.workflowStepInstanceID = workflowStepInstanceID
+	f.status = status
+	f.resultSummary = resultSummary
+	f.errorMessage = errorMessage
+	f.latencyMs = latencyMs
+	return nil
 }
 
 func seedRolesAndColleagues(t *testing.T, p *db.Provider) {
@@ -222,6 +288,50 @@ func TestWorkflowLifecycle_FullRun(t *testing.T) {
 	events, _ := svc.ListEvents(testTenantID, inst.ID)
 	if len(events) < 4 {
 		t.Errorf("expected at least 4 events, got %d", len(events))
+	}
+}
+
+func TestCompleteStepRecordsCapabilityUsageFeedback(t *testing.T) {
+	p := setupTestDB(t)
+	seedRolesAndColleagues(t, p)
+	svc := newTestService(t, p)
+	recorder := &fakeCapabilityUsageRecorder{}
+	svc.SetCapabilityUsageRecorder(recorder)
+
+	def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
+		Name:  "Capability feedback",
+		Steps: []CreateStepDefRequest{{StepName: "Revenue check", AssigneeRoleCode: "quality"}},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.PublishDefinition(testTenantID, def.ID); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	inst, err := svc.StartInstance(testTenantID, StartInstanceRequest{DefinitionID: def.ID, InitiatorID: "col-xiaozhou"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	steps, _ := svc.ListStepInstances(testTenantID, inst.ID)
+
+	err = svc.CompleteStepWithInput(testTenantID, steps[0].ID, CompleteStepInput{
+		ActorID:             "col-xiaozhou",
+		Result:              "forecast ready",
+		CapabilityID:        "cap-revenue",
+		CapabilityStatus:    "ok",
+		CapabilityLatencyMs: 1234,
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if !recorder.called {
+		t.Fatalf("expected capability usage recorder to be called")
+	}
+	if recorder.capabilityID != "cap-revenue" || recorder.colleagueID != "col-xiaozhou" || recorder.status != "success" || recorder.resultSummary != "forecast ready" || recorder.latencyMs != 1234 {
+		t.Fatalf("unexpected recorder payload: %+v", recorder)
+	}
+	if recorder.workflowInstanceID != inst.ID || recorder.workflowStepInstanceID != steps[0].ID {
+		t.Fatalf("workflow refs = %q/%q, want %q/%q", recorder.workflowInstanceID, recorder.workflowStepInstanceID, inst.ID, steps[0].ID)
 	}
 }
 

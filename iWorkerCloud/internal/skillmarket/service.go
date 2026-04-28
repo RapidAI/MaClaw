@@ -2,6 +2,8 @@ package skillmarket
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -56,6 +58,26 @@ func (s *Service) GetActive(ctx context.Context, id string) (*store.Skill, error
 	return skill, nil
 }
 
+func (s *Service) DownloadPackage(ctx context.Context, id string) (*marketschema.PackageDownload, error) {
+	skill, err := s.GetActive(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(skill.PackageContent) == "" {
+		return nil, fmt.Errorf("skill package is not available")
+	}
+	return &marketschema.PackageDownload{
+		SkillID:        skill.ID,
+		Version:        skill.Version,
+		Format:         marketschema.FirstNonEmpty(skill.PackageFormat, "skill.md"),
+		SHA256:         skill.PackageSHA256,
+		Size:           skill.PackageSize,
+		ContentBase64:  skill.PackageContent,
+		ContentType:    "application/json",
+		SourceContract: "corelib/skillmarket.PackageDownload.v1",
+	}, nil
+}
+
 func (s *Service) Create(ctx context.Context, input SkillInput) (*store.Skill, error) {
 	skill, err := buildSkill(input, true)
 	if err != nil {
@@ -101,19 +123,43 @@ func buildSkill(input SkillInput, create bool) (*store.Skill, error) {
 	if !create {
 		createdAt = time.Time{}
 	}
+	packageFormat := strings.TrimSpace(input.PackageFormat)
+	packageContent := strings.TrimSpace(input.PackageContentBase64)
+	var packageSHA string
+	var packageSize int64
+	if packageContent != "" {
+		decoded, err := base64.StdEncoding.DecodeString(packageContent)
+		if err != nil {
+			return nil, fmt.Errorf("package_content_base64 is invalid: %w", err)
+		}
+		if len(decoded) == 0 {
+			return nil, fmt.Errorf("package_content_base64 is empty")
+		}
+		if packageFormat == "" {
+			packageFormat = "skill.md"
+		}
+		sum := sha256.Sum256(decoded)
+		packageSHA = fmt.Sprintf("%x", sum[:])
+		packageSize = int64(len(decoded))
+	}
+
 	return &store.Skill{
-		ID:          id,
-		Name:        name,
-		Description: strings.TrimSpace(input.Description),
-		Category:    marketschema.FirstNonEmpty(input.Category, "general"),
-		Version:     marketschema.FirstNonEmpty(input.Version, "1.0.0"),
-		Tags:        string(tagsJSON),
-		RiskLevel:   marketschema.FirstNonEmpty(input.RiskLevel, "low"),
-		Status:      marketschema.NormalizeStatus(input.Status),
-		Price:       input.Price,
-		Author:      strings.TrimSpace(input.Author),
-		CreatedAt:   createdAt,
-		UpdatedAt:   now,
+		ID:             id,
+		Name:           name,
+		Description:    strings.TrimSpace(input.Description),
+		Category:       marketschema.FirstNonEmpty(input.Category, "general"),
+		Version:        marketschema.FirstNonEmpty(input.Version, "1.0.0"),
+		Tags:           string(tagsJSON),
+		RiskLevel:      marketschema.FirstNonEmpty(input.RiskLevel, "low"),
+		Status:         marketschema.NormalizeStatus(input.Status),
+		Price:          input.Price,
+		Author:         strings.TrimSpace(input.Author),
+		PackageFormat:  packageFormat,
+		PackageContent: packageContent,
+		PackageSHA256:  packageSHA,
+		PackageSize:    packageSize,
+		CreatedAt:      createdAt,
+		UpdatedAt:      now,
 	}, nil
 }
 

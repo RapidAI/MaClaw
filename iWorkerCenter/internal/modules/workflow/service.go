@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -20,6 +21,8 @@ type Service struct {
 	collabRepo   *collaboration.Repo
 	colleagueRp  *colleagueRepo.ColleagueRepo
 	expExtractor *experience.Extractor // optional, may be nil
+	capResolver  CapabilityAssigneeResolver
+	capRecorder  CapabilityUsageRecorder
 }
 
 // NewService creates a Service.
@@ -30,6 +33,37 @@ func NewService(repo *Repo, dbProvider *db.Provider, collabRepo *collaboration.R
 // SetExperienceExtractor sets the optional experience extractor for auto-learning.
 func (s *Service) SetExperienceExtractor(ext *experience.Extractor) {
 	s.expExtractor = ext
+}
+
+type CapabilityAssigneeResolver interface {
+	SelectWorkerForTask(ctx context.Context, tenantID, roleCode, taskText string) (string, bool, error)
+}
+
+func (s *Service) SetCapabilityAssigneeResolver(resolver CapabilityAssigneeResolver) {
+	if s != nil {
+		s.capResolver = resolver
+	}
+}
+
+// CapabilityUsageRecorder receives best-effort execution feedback from workflow runtime.
+type CapabilityUsageRecorder interface {
+	RecordCapabilityUsage(ctx context.Context, tenantID, capabilityID, colleagueID, workflowInstanceID, workflowStepInstanceID, status, resultSummary, errorMessage string, latencyMs int64) error
+}
+
+func (s *Service) SetCapabilityUsageRecorder(recorder CapabilityUsageRecorder) {
+	if s != nil {
+		s.capRecorder = recorder
+	}
+}
+
+// CompleteStepInput carries a runtime completion result plus optional capability feedback.
+type CompleteStepInput struct {
+	ActorID             string
+	Result              string
+	CapabilityID        string
+	CapabilityStatus    string
+	CapabilityError     string
+	CapabilityLatencyMs int64
 }
 
 // --- Definition management ---
@@ -242,6 +276,13 @@ func (s *Service) StartInstance(tenantID string, req StartInstanceRequest) (*Ins
 
 // CompleteStep marks a step as completed and advances to the next step atomically.
 func (s *Service) CompleteStep(tenantID string, stepInstanceID, actorID, result string) error {
+	return s.CompleteStepWithInput(tenantID, stepInstanceID, CompleteStepInput{ActorID: actorID, Result: result})
+}
+
+// CompleteStepWithInput marks a step completed and records optional capability execution feedback.
+func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, input CompleteStepInput) error {
+	actorID := strings.TrimSpace(input.ActorID)
+	result := input.Result
 	stepInst, err := s.repo.GetStepInstance(tenantID, stepInstanceID)
 	if err != nil {
 		return fmt.Errorf("step instance not found: %w", err)
@@ -372,6 +413,11 @@ func (s *Service) CompleteStep(tenantID string, stepInstanceID, actorID, result 
 		return err
 	}
 
+	if s.capRecorder != nil && strings.TrimSpace(input.CapabilityID) != "" {
+		status := normalizeCapabilityUsageStatus(input.CapabilityStatus, input.CapabilityError)
+		_ = s.capRecorder.RecordCapabilityUsage(context.Background(), tenantID, strings.TrimSpace(input.CapabilityID), actorID, inst.ID, stepInst.ID, status, result, input.CapabilityError, input.CapabilityLatencyMs)
+	}
+
 	// Trigger experience extraction asynchronously (best-effort, after commit)
 	if s.expExtractor != nil && result != "" {
 		go s.expExtractor.Extract(tenantID, experience.ExtractionInput{
@@ -463,6 +509,14 @@ func (s *Service) resolveAssignee(tenantID string, stepDef *StepDefinition) (str
 	if stepDef.AssigneeMode == "fixed_colleague" && stepDef.AssigneeColleagueID != "" {
 		return stepDef.AssigneeColleagueID, nil
 	}
+	if s.capResolver != nil {
+		taskText := strings.Join([]string{stepDef.StepName, stepDef.StepCode, stepDef.StepType, stepDef.AssigneeRoleCode}, " ")
+		if selected, ok, err := s.capResolver.SelectWorkerForTask(context.Background(), tenantID, stepDef.AssigneeRoleCode, taskText); err != nil {
+			return "", err
+		} else if ok {
+			return selected, nil
+		}
+	}
 	if stepDef.AssigneeRoleCode != "" {
 		selected, _, err := collaboration.ResolveRoleAssignee(s.collabRepo, s.colleagueRp, tenantID, stepDef.AssigneeRoleCode)
 		if err == nil && selected != nil {
@@ -470,6 +524,20 @@ func (s *Service) resolveAssignee(tenantID string, stepDef *StepDefinition) (str
 		}
 	}
 	return "", fmt.Errorf("no assignee found for step %s (role=%s)", stepDef.StepCode, stepDef.AssigneeRoleCode)
+}
+
+func normalizeCapabilityUsageStatus(status string, errText string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "success", "succeeded", "ok", "completed":
+		return "success"
+	case "failure", "failed", "error":
+		return "failure"
+	}
+	if strings.TrimSpace(errText) != "" {
+		return "failure"
+	}
+	return "success"
 }
 
 func defaultStr(val, def string) string {

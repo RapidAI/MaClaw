@@ -351,6 +351,74 @@ func (s *Store) List(category Category, keyword string) []Entry {
 	return result
 }
 
+// CategoryStat holds the count and representative tags for a memory category.
+type CategoryStat struct {
+	Category Category
+	Count    int
+	Tags     []string // up to 3 representative tags
+}
+
+// CategoryStats returns a summary of all entries grouped by canonical category.
+// This is a store-level index — it reflects the full memory contents, not just
+// what was recalled for a specific query. Used by the memory index layer to
+// give the LLM a "table of contents" of available knowledge.
+func (s *Store) CategoryStats() []CategoryStat {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type info struct {
+		count int
+		tags  []string
+	}
+	catMap := make(map[Category]*info)
+	var order []Category
+
+	for _, e := range s.entries {
+		canonical := MapToCanonical(e.Category)
+		// Skip internal categories that aren't useful for the LLM.
+		if canonical == CategorySelfIdentity || canonical == CategorySessionCheckpoint || canonical == CategoryConversationSummary {
+			continue
+		}
+		ci, exists := catMap[canonical]
+		if !exists {
+			ci = &info{}
+			catMap[canonical] = ci
+			order = append(order, canonical)
+		}
+		ci.count++
+		if len(ci.tags) < 3 {
+			for _, t := range e.Tags {
+				if len(t) > 1 && len(t) < 20 {
+					dup := false
+					for _, existing := range ci.tags {
+						if existing == t {
+							dup = true
+							break
+						}
+					}
+					if !dup {
+						ci.tags = append(ci.tags, t)
+						if len(ci.tags) >= 3 {
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	result := make([]CategoryStat, 0, len(order))
+	for _, cat := range order {
+		ci := catMap[cat]
+		result = append(result, CategoryStat{
+			Category: cat,
+			Count:    ci.count,
+			Tags:     ci.tags,
+		})
+	}
+	return result
+}
+
 // Search returns entries filtered by category and keyword with a limit.
 func (s *Store) Search(category Category, keyword string, limit int) []Entry {
 	s.mu.RLock()

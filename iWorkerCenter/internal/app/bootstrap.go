@@ -118,11 +118,14 @@ func Bootstrap() (*Center, error) {
 	// --- wire iWorker multi-agent runtime module ---
 	agentRuntimeRepo := agentruntime.NewRepo(provider.Write, provider.Read)
 	agentRuntimeSvc := agentruntime.NewService(agentRuntimeRepo)
+	agentRuntimeSvc.SetRuntimeSkillProvider(capHandler)
 	agentRuntimeHandler := agentruntime.NewHandler(agentRuntimeSvc)
 
 	// --- wire workflow module (depends on collaboration + colleagues) ---
 	wfRepo := workflow.NewRepo(provider.Write, provider.Read)
 	wfSvc := workflow.NewService(wfRepo, provider, collabRepo, colRepo)
+	wfSvc.SetCapabilityAssigneeResolver(capHandler)
+	wfSvc.SetCapabilityUsageRecorder(capHandler)
 	wfHandler := workflow.NewHandler(wfSvc)
 
 	// --- wire delivery module ---

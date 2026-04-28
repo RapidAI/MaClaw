@@ -169,6 +169,10 @@ CREATE TABLE IF NOT EXISTS skill_market_skills (
 	author TEXT NOT NULL DEFAULT '',
 	avg_rating REAL NOT NULL DEFAULT 0,
 	download_count INTEGER NOT NULL DEFAULT 0,
+	package_format TEXT NOT NULL DEFAULT '',
+	package_content TEXT NOT NULL DEFAULT '',
+	package_sha256 TEXT NOT NULL DEFAULT '',
+	package_size INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL DEFAULT (datetime('now')),
 	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -190,4 +194,8 @@ var centerIntegrationMigrations = []string{
 	`ALTER TABLE skill_market_skills ADD COLUMN author TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE skill_market_skills ADD COLUMN avg_rating REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE skill_market_skills ADD COLUMN download_count INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE skill_market_skills ADD COLUMN package_format TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE skill_market_skills ADD COLUMN package_content TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE skill_market_skills ADD COLUMN package_sha256 TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE skill_market_skills ADD COLUMN package_size INTEGER NOT NULL DEFAULT 0`,
 }

@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -9,10 +10,21 @@ import (
 const DefaultOfflineAfter = 90 * time.Second
 
 type Service struct {
-	repo *Repo
+	repo                 *Repo
+	runtimeSkillProvider RuntimeSkillProvider
 }
 
 func NewService(repo *Repo) *Service { return &Service{repo: repo} }
+
+type RuntimeSkillProvider interface {
+	RuntimeSkillsForWorker(ctx context.Context, tenantID, workerID string) ([]RuntimeSkill, error)
+}
+
+func (s *Service) SetRuntimeSkillProvider(provider RuntimeSkillProvider) {
+	if s != nil {
+		s.runtimeSkillProvider = provider
+	}
+}
 
 func (s *Service) Heartbeat(tenantID string, req HeartbeatRequest, now time.Time) (HeartbeatResult, error) {
 	if s == nil || s.repo == nil {
@@ -44,7 +56,16 @@ func (s *Service) Heartbeat(tenantID string, req HeartbeatRequest, now time.Time
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
-	return HeartbeatResult{Instance: applyHealth(item, now, DefaultOfflineAfter)}, nil
+	result := HeartbeatResult{Instance: applyHealth(item, now, DefaultOfflineAfter)}
+	if s.runtimeSkillProvider != nil {
+		skills, err := s.runtimeSkillProvider.RuntimeSkillsForWorker(context.Background(), tenantID, item.WorkerID)
+		if err != nil {
+			result.RuntimeSkillError = err.Error()
+		} else {
+			result.RuntimeSkills = skills
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) List(tenantID, workerID string) ([]Instance, error) {
