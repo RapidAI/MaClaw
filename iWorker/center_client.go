@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -121,7 +124,6 @@ func centerColleagueToLocal(c CenterColleague) Colleague {
 	}
 }
 
-
 // CenterCapability represents a capability package fetched from iWorkerCenter.
 type CenterCapability struct {
 	ID          string `json:"id"`
@@ -168,7 +170,6 @@ func fetchCenterCapabilities(centerBaseURL string, colleagueID string, timeoutSe
 	}
 	return result.Capabilities
 }
-
 
 // CenterCollabTask represents a collaboration task fetched from iWorkerCenter.
 type CenterCollabTask struct {
@@ -265,7 +266,6 @@ func fetchCenterWorkflowInstances(centerBaseURL string, timeoutSec int) []Center
 	return result.Instances
 }
 
-
 // CenterRecommendation represents a colleague recommendation from iWorkerCenter.
 type CenterRecommendation struct {
 	ColleagueID string  `json:"colleague_id"`
@@ -313,4 +313,150 @@ func fetchRecommendations(centerBaseURL string, taskDesc string, topN int, timeo
 		return nil
 	}
 	return result.Recommendations
+}
+
+// CenterGoalPush represents a GoalWatch push fetched from iWorkerCenter.
+type CenterGoalPush struct {
+	EventID       string `json:"event_id,omitempty"`
+	TaskID        string `json:"task_id"`
+	Title         string `json:"title"`
+	ToColleagueID string `json:"to_colleague_id"`
+	ToRoleCode    string `json:"to_role_code"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason"`
+	AgeSeconds    int64  `json:"age_seconds"`
+	CreatedAt     string `json:"created_at"`
+}
+
+type CenterGoalPushAckRequest struct {
+	EventID     string `json:"event_id"`
+	ColleagueID string `json:"colleague_id"`
+	Status      string `json:"status"`
+	Note        string `json:"note"`
+}
+
+type CenterGoalPushAckResult struct {
+	EventID    string `json:"event_id"`
+	TaskID     string `json:"task_id"`
+	AckEventID string `json:"ack_event_id"`
+	Status     string `json:"status"`
+	Note       string `json:"note,omitempty"`
+	CreatedAt  string `json:"created_at"`
+}
+
+func fetchCenterGoalPushes(centerBaseURL, tenantID, colleagueID string, limit int, timeoutSec int) ([]CenterGoalPush, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	colleagueID = strings.TrimSpace(colleagueID)
+	if centerBaseURL == "" {
+		return nil, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if colleagueID == "" {
+		return nil, fmt.Errorf("colleague_id is required")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+
+	values := url.Values{}
+	values.Set("colleague_id", colleagueID)
+	values.Set("limit", fmt.Sprintf("%d", limit))
+	endpoint := centerBaseURL + "/client/goalwatch/pushes?" + values.Encode()
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	setCenterTenantHeader(req, tenantID)
+
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("iWorkerCenter goalwatch pushes failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Pushes []CenterGoalPush `json:"pushes"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	if result.Pushes == nil {
+		result.Pushes = []CenterGoalPush{}
+	}
+	return result.Pushes, nil
+}
+
+func ackCenterGoalPush(centerBaseURL, tenantID string, reqBody CenterGoalPushAckRequest, timeoutSec int) (CenterGoalPushAckResult, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	reqBody.EventID = strings.TrimSpace(reqBody.EventID)
+	reqBody.ColleagueID = strings.TrimSpace(reqBody.ColleagueID)
+	reqBody.Status = strings.TrimSpace(reqBody.Status)
+	if centerBaseURL == "" {
+		return CenterGoalPushAckResult{}, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if reqBody.EventID == "" {
+		return CenterGoalPushAckResult{}, fmt.Errorf("event_id is required")
+	}
+	if reqBody.ColleagueID == "" {
+		return CenterGoalPushAckResult{}, fmt.Errorf("colleague_id is required")
+	}
+	if reqBody.Status == "" {
+		reqBody.Status = "accepted"
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"colleague_id": reqBody.ColleagueID,
+		"status":       reqBody.Status,
+		"note":         strings.TrimSpace(reqBody.Note),
+	})
+	if err != nil {
+		return CenterGoalPushAckResult{}, err
+	}
+	endpoint := centerBaseURL + "/client/goalwatch/pushes/" + url.PathEscape(reqBody.EventID) + "/ack"
+	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return CenterGoalPushAckResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	setCenterTenantHeader(httpReq, tenantID)
+
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return CenterGoalPushAckResult{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return CenterGoalPushAckResult{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return CenterGoalPushAckResult{}, fmt.Errorf("iWorkerCenter goalwatch ack failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result CenterGoalPushAckResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return CenterGoalPushAckResult{}, err
+	}
+	return result, nil
+}
+
+func setCenterTenantHeader(req *http.Request, tenantID string) {
+	if req == nil {
+		return
+	}
+	if tenantID = strings.TrimSpace(tenantID); tenantID != "" {
+		req.Header.Set("X-Tenant-ID", tenantID)
+	}
 }

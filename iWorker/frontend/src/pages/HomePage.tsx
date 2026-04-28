@@ -1,16 +1,22 @@
 import { useEffect, useState } from 'react';
 import { quickTasks as defaultQuickTasks } from '../mock/tasks';
-import type { HistoryTaskItem } from '../types';
+import type { CenterGoalPush, HistoryTaskItem } from '../types';
 
 type Props = {
   draft: string;
   selectedTask: string;
   selectedColleagueName: string;
   recentTasks: HistoryTaskItem[];
+  goalPushes: CenterGoalPush[];
+  goalPushLoading: boolean;
+  goalPushError: string;
+  goalPushAckingId: string;
   onDraftChange: (value: string) => void;
   onPickTask: (task: string, colleagueName?: string) => void;
   onOpenNewTask: () => void;
   onOpenRecentTask: (task: HistoryTaskItem) => void;
+  onRefreshGoalPushes: () => void | Promise<void>;
+  onAckGoalPush: (eventId: string, status: 'resumed' | 'blocked') => void | Promise<void>;
 };
 
 type WorkMode = 'voice' | 'text';
@@ -42,7 +48,7 @@ const statusCards = [
   },
 ];
 
-export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask }: Props) {
+export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask, onRefreshGoalPushes, onAckGoalPush }: Props) {
   const [workMode, setWorkMode] = useState<WorkMode>('voice');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
 
@@ -141,6 +147,32 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
                 <strong>{item.value}</strong>
                 <p>{item.detail}</p>
               </div>
+            ))}
+          </div>
+        </div>
+
+
+        <div className="iw-panel-section">
+          <div className="iw-section-title-row">
+            <h3>GoalWatch pushes</h3>
+            <button type="button" onClick={() => { void onRefreshGoalPushes(); }} disabled={goalPushLoading}>{goalPushLoading ? 'Syncing' : 'Refresh'}</button>
+          </div>
+          {goalPushError ? <p className="iw-panel-error">{goalPushError}</p> : null}
+          <div className="iw-goal-list">
+            {goalPushes.length === 0 ? (
+              <div className="iw-goal-empty">No stalled task push. The watcher is quiet.</div>
+            ) : goalPushes.slice(0, 4).map((push) => (
+              <article key={push.eventId || push.taskId} className="iw-goal-card">
+                <span>{push.reason || 'goal_push'} ? {Math.max(1, Math.round(push.ageSeconds / 60))}m</span>
+                <strong>{push.title || push.taskId}</strong>
+                <p>{push.status} ? {push.toRoleCode || push.toColleagueId || 'assigned iWorker'}</p>
+                {push.eventId ? (
+                  <div className="iw-goal-actions">
+                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>Resumed</button>
+                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'blocked'); }}>Blocked</button>
+                  </div>
+                ) : null}
+              </article>
             ))}
           </div>
         </div>

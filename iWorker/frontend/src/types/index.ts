@@ -145,3 +145,16 @@ export type HistoryTaskItem = TaskItem & {
   result?: string;
   model?: string;
 };
+
+
+export type CenterGoalPush = {
+  eventId?: string;
+  taskId: string;
+  title: string;
+  toColleagueId: string;
+  toRoleCode: string;
+  status: string;
+  reason: string;
+  ageSeconds: number;
+  createdAt: string;
+};

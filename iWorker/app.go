@@ -1035,6 +1035,37 @@ func currentProviderConfig(cfgFile maclawConfigFile) (corelib.MaclawLLMConfig, b
 	return corelib.MaclawLLMConfig{}, false
 }
 
+// FetchGoalPushes returns pending GoalWatch pushes for the registered iWorker.
+func (a *App) FetchGoalPushes(limit int) ([]CenterGoalPush, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return nil, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
+	if !settings.Center.Enabled {
+		return nil, fmt.Errorf("iWorkerCenter is disabled; goal pushes require the registered center")
+	}
+	return fetchCenterGoalPushes(resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedWorkerID(settings), limit, settings.Center.TimeoutSec)
+}
+
+// AckGoalPush acknowledges a GoalWatch push on behalf of the registered iWorker.
+func (a *App) AckGoalPush(eventID, status, note string) (CenterGoalPushAckResult, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return CenterGoalPushAckResult{}, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
+	if !settings.Center.Enabled {
+		return CenterGoalPushAckResult{}, fmt.Errorf("iWorkerCenter is disabled; goal push ack requires the registered center")
+	}
+	return ackCenterGoalPush(resolvedCenterBaseURL(settings), resolvedTenantID(settings), CenterGoalPushAckRequest{
+		EventID:     eventID,
+		ColleagueID: resolvedWorkerID(settings),
+		Status:      status,
+		Note:        note,
+	}, settings.Center.TimeoutSec)
+}
+
 // --- Collaboration Wails bindings ---
 
 // FetchCollaborations returns collaboration tasks from iWorkerCenter.

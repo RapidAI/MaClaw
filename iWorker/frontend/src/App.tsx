@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCenterHealth, DeleteWorkerMemory, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
+import { AckGoalPush, CheckCenterHealth, DeleteWorkerMemory, FetchGoalPushes, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { colleagues } from './mock/colleagues';
 import { SideNav } from './components/layout/SideNav';
@@ -9,7 +9,7 @@ import { NewTaskPage } from './pages/NewTaskPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskHistoryPage } from './pages/TaskHistoryPage';
 import { recentTasks as mockRecentTasks } from './mock/tasks';
-import type { CenterHealthStatus, DiWorkerSettings, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
+import type { CenterGoalPush, CenterHealthStatus, DiWorkerSettings, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
 
 const pageMeta: Record<DiWorkerTab, { title: string; subtitle: string }> = {
   home: { title: '新建任务', subtitle: '输入任务内容，快速开始处理。' },
@@ -186,6 +186,18 @@ const fromWailsMemoryEntry = (item: main.WorkerMemoryEntry): WorkerMemoryEntry =
   createdAt: item.created_at,
   updatedAt: item.updated_at,
 });
+const fromWailsGoalPush = (item: main.CenterGoalPush): CenterGoalPush => ({
+  eventId: item.event_id,
+  taskId: item.task_id,
+  title: item.title,
+  toColleagueId: item.to_colleague_id,
+  toRoleCode: item.to_role_code,
+  status: item.status,
+  reason: item.reason,
+  ageSeconds: item.age_seconds || 0,
+  createdAt: item.created_at,
+});
+
 const fromWailsCenterHealth = (
   item: main.CenterHealthStatus | null | undefined,
   source: CenterHealthStatus['source'],
@@ -330,6 +342,10 @@ export default function App() {
   const [workerMemoryRecallError, setWorkerMemoryRecallError] = useState('');
   const [workerMemoryDeletingId, setWorkerMemoryDeletingId] = useState('');
   const [workerMemoryDeleteError, setWorkerMemoryDeleteError] = useState('');
+  const [goalPushes, setGoalPushes] = useState<CenterGoalPush[]>([]);
+  const [goalPushLoading, setGoalPushLoading] = useState(false);
+  const [goalPushError, setGoalPushError] = useState('');
+  const [goalPushAckingId, setGoalPushAckingId] = useState('');
 
   useEffect(() => {
     if (!hasWailsBridge()) {
@@ -360,6 +376,52 @@ export default function App() {
         setSettingsLoading(false);
       });
   }, []);
+
+  const refreshGoalPushes = async () => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setGoalPushes([]);
+      setGoalPushError('');
+      return;
+    }
+    setGoalPushLoading(true);
+    setGoalPushError('');
+    try {
+      const pushes = await FetchGoalPushes(20);
+      setGoalPushes((pushes || []).map(fromWailsGoalPush));
+    } catch (error) {
+      setGoalPushError(error instanceof Error ? error.message : 'Failed to fetch GoalWatch pushes.');
+    } finally {
+      setGoalPushLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setGoalPushes([]);
+      return;
+    }
+    void refreshGoalPushes();
+    const timer = window.setInterval(() => {
+      void refreshGoalPushes();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.baseUrl]);
+
+  const handleAckGoalPush = async (eventId: string, status: 'resumed' | 'blocked') => {
+    if (!eventId || !hasWailsBridge()) {
+      return;
+    }
+    setGoalPushAckingId(eventId);
+    setGoalPushError('');
+    try {
+      await AckGoalPush(eventId, status, status === 'resumed' ? 'interaction agent confirmed resume' : 'interaction agent reported blocked');
+      setGoalPushes((items) => items.filter((item) => item.eventId !== eventId));
+    } catch (error) {
+      setGoalPushError(error instanceof Error ? error.message : 'Failed to acknowledge GoalWatch push.');
+    } finally {
+      setGoalPushAckingId('');
+    }
+  };
 
   const persistHistoryTasks = async (items: HistoryTaskItem[]) => {
     if (!hasWailsBridge()) {
@@ -790,9 +852,9 @@ export default function App() {
         );
       case 'home':
       default:
-        return <HomePage draft={draft} selectedTask={selectedTask} selectedColleagueName={selectedColleagueName} recentTasks={historyTasks} onDraftChange={setDraft} onPickTask={handlePickTask} onOpenNewTask={handleOpenNewTask} onOpenRecentTask={handleOpenHistoryTask} />;
+        return <HomePage draft={draft} selectedTask={selectedTask} selectedColleagueName={selectedColleagueName} recentTasks={historyTasks} goalPushes={goalPushes} goalPushLoading={goalPushLoading} goalPushError={goalPushError} goalPushAckingId={goalPushAckingId} onRefreshGoalPushes={refreshGoalPushes} onAckGoalPush={handleAckGoalPush} onDraftChange={setDraft} onPickTask={handlePickTask} onOpenNewTask={handleOpenNewTask} onOpenRecentTask={handleOpenHistoryTask} />;
     }
-  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
+  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
 
   const meta = pageMeta[activeTab];
   const status = statusCopy[activeTab];

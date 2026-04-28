@@ -1,5 +1,125 @@
 export namespace main {
 
+	export class AgentInstance {
+	    id: string;
+	    worker_id: string;
+	    role: string;
+	    status: string;
+	    capabilities: string[];
+	    started_at: string;
+	    last_heartbeat_at: string;
+
+	    static createFrom(source: any = {}) {
+	        return new AgentInstance(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.worker_id = source["worker_id"];
+	        this.role = source["role"];
+	        this.status = source["status"];
+	        this.capabilities = source["capabilities"];
+	        this.started_at = source["started_at"];
+	        this.last_heartbeat_at = source["last_heartbeat_at"];
+	    }
+	}
+	export class AgentRuntimeSnapshot {
+	    worker_id: string;
+	    tenant_id: string;
+	    org_unit_id: string;
+	    center_registered: boolean;
+	    memory_authority: string;
+	    local_memory_behavior: string;
+	    parallel_model: string;
+	    instances: AgentInstance[];
+
+	    static createFrom(source: any = {}) {
+	        return new AgentRuntimeSnapshot(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.worker_id = source["worker_id"];
+	        this.tenant_id = source["tenant_id"];
+	        this.org_unit_id = source["org_unit_id"];
+	        this.center_registered = source["center_registered"];
+	        this.memory_authority = source["memory_authority"];
+	        this.local_memory_behavior = source["local_memory_behavior"];
+	        this.parallel_model = source["parallel_model"];
+	        this.instances = this.convertValues(source["instances"], AgentInstance);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CenterGoalPush {
+	    event_id?: string;
+	    task_id: string;
+	    title: string;
+	    to_colleague_id: string;
+	    to_role_code: string;
+	    status: string;
+	    reason: string;
+	    age_seconds: number;
+	    created_at: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterGoalPush(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.event_id = source["event_id"];
+	        this.task_id = source["task_id"];
+	        this.title = source["title"];
+	        this.to_colleague_id = source["to_colleague_id"];
+	        this.to_role_code = source["to_role_code"];
+	        this.status = source["status"];
+	        this.reason = source["reason"];
+	        this.age_seconds = source["age_seconds"];
+	        this.created_at = source["created_at"];
+	    }
+	}
+	export class CenterGoalPushAckResult {
+	    event_id: string;
+	    task_id: string;
+	    ack_event_id: string;
+	    status: string;
+	    note?: string;
+	    created_at: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterGoalPushAckResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.event_id = source["event_id"];
+	        this.task_id = source["task_id"];
+	        this.ack_event_id = source["ack_event_id"];
+	        this.status = source["status"];
+	        this.note = source["note"];
+	        this.created_at = source["created_at"];
+	    }
+	}
+
+
 	export class AppInfo {
 	    name: string;
 	    tagline: string;
