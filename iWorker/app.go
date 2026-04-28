@@ -398,6 +398,17 @@ func (a *App) SaveWorkerMemory(req SaveWorkerMemoryRequest) (WorkerMemoryEntry, 
 	}
 	return saveWorkerMemory(resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), req, settings.Center.TimeoutSec)
 }
+
+func (a *App) DeleteWorkerMemory(memoryID string) error {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return err
+	}
+	if !settings.Center.Enabled {
+		return fmt.Errorf("iWorkerCenter is disabled; memory must be deleted from the registered center")
+	}
+	return deleteWorkerMemory(resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), memoryID, settings.Center.TimeoutSec)
+}
 func (a *App) CheckCenterHealth() (CenterHealthStatus, error) {
 	settings, err := a.LoadDiWorkerSettings()
 	if err != nil {

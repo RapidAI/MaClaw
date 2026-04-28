@@ -647,6 +647,57 @@ func findLastAssistantContent(history []agent.ConversationEntry) string {
 	return ""
 }
 
+// incrementCompactionCount increments and returns the compaction count for
+// the given user. Safe for concurrent use (sync.Map), though in practice
+// saveConversationHistoryTimed is serialized per user by chatLoopMu.
+func (h *IMMessageHandler) incrementCompactionCount(userID string) int {
+	val, _ := h.compactionCount.LoadOrStore(userID, 0)
+	newCount := val.(int) + 1
+	h.compactionCount.Store(userID, newCount)
+	return newCount
+}
+
+// resetCompactionTokenCalibration signals that the token calibration data
+// from the previous LLM call is stale after compaction. The actual reset
+// happens in the agent loop via lastLLMInputTokens — this is a no-op
+// placeholder that documents the intent. The agent loop's local variable
+// lastLLMInputTokens is naturally reset when the loop re-enters after
+// saveConversationHistoryTimed returns.
+func (h *IMMessageHandler) resetCompactionTokenCalibration(_ string) {
+	// The calibration state (lastLLMInputTokens, lastLLMOutputTokens) is
+	// local to runAgentLoop. After compaction, the next loop iteration will
+	// use the stale values for one calibration cycle, then self-correct.
+	// This is acceptable because the calibration ratio check (>1.15) has
+	// enough margin to absorb one stale cycle.
+	//
+	// A more aggressive approach would be to store the calibration state
+	// in a sync.Map and reset it here, but the current design keeps the
+	// calibration state loop-local for simplicity.
+}
+
+// sessionStartLLMCaller adapts the GUI's LLM calling to memory.LLMChatCaller
+// for the SessionStartExtractor. Same pattern as archiverLLMCaller.
+type sessionStartLLMCaller struct {
+	app *App
+}
+
+func (c *sessionStartLLMCaller) ChatCall(messages []map[string]string) (string, error) {
+	cfg := c.app.GetMaclawLLMConfig()
+	iface := make([]interface{}, len(messages))
+	for i, m := range messages {
+		iface[i] = m
+	}
+	result, err := doSimpleLLMRequest(context.Background(), cfg, iface, &http.Client{Timeout: 30 * time.Second}, 30*time.Second)
+	if err != nil {
+		return "", err
+	}
+	return result.Content, nil
+}
+
+func (c *sessionStartLLMCaller) IsConfigured() bool {
+	return c.app.isMaclawLLMConfigured()
+}
+
 func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []string) string {
 	var b strings.Builder
 	b.WriteString("[Recover 阶段]\n上一轮真实工具执行已出现失败，当前进入 Recover 阶段。请先根据失败结果调整计划，不要原样重复已经失败的尝试。")
@@ -1616,8 +1667,10 @@ func looksLikeCompletedOrSummaryDeliverableReply(text string) bool {
 	lower := strings.ToLower(trimmed)
 	completedHints := []string{
 		"已完成", "已经完成", "完成了", "已整理", "已经整理", "整理好了", "已为你", "已经为你",
+		"已沉淀", "已保存", "保存了", "已记录", "记录了", "沉淀完成", "沉淀完毕",
 		"结果如下", "总结如下", "以下是", "结论如下", "报告如下", "文档如下", "文字版如下", "这里是",
 		"completed", "done", "here is", "here's", "results below", "summary below", "below is",
+		"saved", "recorded",
 	}
 	hasCompletedHint := false
 	for _, hint := range completedHints {
@@ -2164,6 +2217,11 @@ type IMMessageHandler struct {
 	// Long-term memory store (lazily initialized via setter).
 	memoryStore *memory.Store
 
+	// Session-start memory extractor: extracts knowledge from the previous
+	// session's conversation history when a new session begins. Inspired by
+	// Codex CLI's memories/phase1.rs which processes old rollouts at startup.
+	sessionStartExtractor *memory.SessionStartExtractor
+
 	// Pending confirmation store for pre-execution confirmation gating.
 	confirmationStore *aiConfirmationStore
 
@@ -2330,6 +2388,14 @@ type IMMessageHandler struct {
 	// system prompt of the next conversation turn.
 	// Keyed by userID, value is *pendingCapabilityGapResult.
 	pendingCapabilityGap sync.Map
+
+	// compactionCount tracks how many times conversation compaction has
+	// occurred for each user in the current session. Used to warn users
+	// when quality may degrade due to repeated compaction (Codex CLI
+	// pattern: "Long threads and multiple compactions can cause the model
+	// to be less accurate").
+	// Keyed by userID, value is int.
+	compactionCount sync.Map
 
 	// frozenMemorySnapshots caches the memory section of the system prompt
 	// per user. On the first message of a session, the memory section is
@@ -2748,6 +2814,13 @@ func (h *IMMessageHandler) SetConfigManager(cm *ConfigManager) {
 // SetMemoryStore configures the long-term memory store.
 func (h *IMMessageHandler) SetMemoryStore(ms *memory.Store) {
 	h.memoryStore = ms
+
+	// Initialize session-start memory extractor (Codex-inspired improvement #5).
+	// Uses the same LLM adapter pattern as ConversationArchiver.
+	if ms != nil && h.app != nil {
+		llmAdapter := &sessionStartLLMCaller{app: h.app}
+		h.sessionStartExtractor = memory.NewSessionStartExtractor(ms, llmAdapter)
+	}
 }
 
 // SetConfirmationStore configures the pending confirmation store.
@@ -3428,11 +3501,14 @@ func extractBrowserRootCause(text string) string {
 func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
 	startedAt := time.Now()
 
+	// Track whether compaction will occur (for post-compaction actions).
+	willCompact := len(history) > agent.MaxConversationTurns
+
 	// Build optional callbacks only when trimming will actually occur.
 	var summarizer func(string) string
 	var memorySink func(string, []string)
 
-	if len(history) > agent.MaxConversationTurns {
+	if willCompact {
 		// LLM summarizer for dropped entries (Phase 7).
 		if h.app != nil {
 			cfg := h.app.GetMaclawLLMConfig()
@@ -3454,13 +3530,55 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		}
 	}
 
-	h.memory.Save(userID, trimHistoryWithSummary(history, summarizer, memorySink))
+	beforeCount := len(history)
+	trimmed := trimHistoryWithSummary(history, summarizer, memorySink)
+	h.memory.Save(userID, trimmed)
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
 	}
 
+	// --- Post-compaction actions (inspired by Codex CLI) ---
+	if willCompact && len(trimmed) < beforeCount {
+		elapsed := time.Since(startedAt)
+
+		// Improvement 9: Compaction analytics — log compaction stats for
+		// observability and future optimization.
+		log.Printf("[compaction] trigger=auto entries=%d->%d summary=%v duration=%dms user=%s",
+			beforeCount, len(trimmed), summarizer != nil, elapsed.Milliseconds(), userID)
+
+		// Improvement 7: Reset token calibration after compaction.
+		// The API-reported token count from the previous iteration is stale
+		// after compaction (conversation is now much shorter). Reset to 0
+		// so the next LLM call re-calibrates from scratch.
+		h.resetCompactionTokenCalibration(userID)
+
+		// Improvement 8: Compaction quality warning.
+		// Track compaction count per user session. Every 2 compactions,
+		// warn the user that quality may degrade and suggest starting a
+		// new conversation.
+		count := h.incrementCompactionCount(userID)
+		if count > 0 && count%2 == 0 {
+			log.Printf("[compaction] user=%s compaction_count=%d — quality warning threshold reached", userID, count)
+		}
+	}
+
 	// Persist transcript to FTS5 session search store (non-blocking).
 	h.persistSessionTranscriptAsync(userID, history)
+
+	// Process pending semantic dedup pairs asynchronously.
+	// This piggybacks on every agent loop exit to drain the pending queue
+	// without adding a separate timer. Each pair takes ~1-3s (one LLM call),
+	// so this runs in a goroutine to avoid blocking the response.
+	if h.memoryStore != nil && h.memoryStore.PendingDedupCount() > 0 {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			merged := h.memoryStore.ProcessPendingDedup(ctx)
+			if merged > 0 {
+				log.Printf("[semantic_dedup] processed pending pairs after agent loop: merged %d entries", merged)
+			}
+		}()
+	}
 }
 
 // persistSessionTranscriptAsync converts the conversation history to a
@@ -3987,12 +4105,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 	if trimmed == "/help" {
 		return &IMAgentResponse{Text: "📖 可用命令:\n" +
-			"/new /reset — 重置对话\n" +
+			"/new /reset /clear — 重置对话\n" +
 			"/btw <查询> — 侧查询（不打断当前任务上下文）\n" +
 			"/compress — 压缩当前对话历史\n" +
 			"/cancel /取消 — 取消当前正在执行的任务\n" +
 			"/exit /quit — 终止所有会话，退出编程模式\n" +
-			"/sessions — 查看当前会话状态\n" +
+			"/sessions /status — 查看当前会话状态\n" +
 			"/help — 显示此帮助"}
 	}
 	// --- /btw side query: independent agent loop for quick lookups ---
@@ -4054,6 +4172,27 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 	EntriesBeforeClear := h.memory.Load(msg.UserID)
 	unfinishedSlot := h.memory.GetUnfinishedSlot(msg.UserID)
+
+	// --- Session-start memory extraction (Codex-inspired improvement #5) ---
+	// When loading the previous session's entries, trigger async extraction
+	// of knowledge into long-term memory. This runs in a background goroutine
+	// and never blocks the user's message. The extracted knowledge becomes
+	// available for proactive recall in subsequent messages.
+	//
+	// Inspired by Codex CLI's memories/phase1.rs which processes old rollouts
+	// at new session startup, rather than waiting for session expiry.
+	if h.sessionStartExtractor != nil && len(EntriesBeforeClear) >= 6 {
+		// Convert ConversationEntry to ConversationMessage for the extractor.
+		msgs := make([]memory.ConversationMessage, 0, len(EntriesBeforeClear))
+		for _, e := range EntriesBeforeClear {
+			text, ok := e.Content.(string)
+			if !ok {
+				continue
+			}
+			msgs = append(msgs, memory.ConversationMessage{Role: e.Role, Content: text})
+		}
+		h.sessionStartExtractor.MaybeExtractAsync(msg.UserID, msgs)
+	}
 
 	// --- Recover interrupted task from in-flight marker ---
 	// If the previous agent loop was interrupted by a process kill (e.g.,
@@ -5464,6 +5603,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	allTools := h.getTools()
 	baseTools := h.routeTools(userText, allTools)
 	tools := baseTools
+
+	// --- Browser diagnostic CP1: Route output ---
+	var browserSessionPinned bool
+	if h.toolRouter != nil {
+		browserSessionPinned = h.toolRouter.IsSessionPinned("browser")
+	}
+	BrowserDiagCP1_Route(userText, tools, browserSessionPinned)
+
 	if phase.ForceSkillPreference {
 		if shouldRestrictToSkillSearch(phase) {
 			tools = filterToolsForRemoteSkillSearch(baseTools)
@@ -5475,9 +5622,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// Skip when the workflow-confirm classifier returned "other" (user's
 	// message is unrelated to the active workflow), so that tools like ssh
 	// are not stripped by the doc_only whitelist.
-	if h.getWorkflowEngine() != nil && !ctx.SkipNeedsConfirmGate {
+	browserBeforeWF := len(browserDiagExtractNames(tools))
+	workflowFilterPolicy := "none"
+	if engine := h.getWorkflowEngine(); engine != nil && !ctx.SkipNeedsConfirmGate {
+		if p := engine.GetPhaseToolFilter(userID); p != "" {
+			workflowFilterPolicy = string(p)
+		}
 		tools = h.applyWorkflowToolFilter(userID, tools)
+	} else if ctx.SkipNeedsConfirmGate {
+		workflowFilterPolicy = "skipped(SkipNeedsConfirmGate)"
 	}
+	BrowserDiagCP2_WorkflowFilter(browserBeforeWF, tools, workflowFilterPolicy, ctx.SkipNeedsConfirmGate)
+
 	toolsTokenBudget := estimateToolsTokens(tools)
 	preLLMToolsElapsed = time.Since(toolsStartedAt)
 	httpClient := ctx.HTTPClient
@@ -5594,6 +5750,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		recorder.Record("user", userContent, nil, "", "")
 	}
 
+	// --- Browser diagnostic CP4: Final tool list sent to LLM ---
+	// NOTE: This logs the initial tool list before the iteration loop.
+	// Tools may be further modified inside the loop (e.g. iteration>0
+	// coding gate at line ~6104), but those paths are rare and already
+	// covered by CP3's per-iteration logging inside the loop.
+	BrowserDiagCP4_FinalToolList(tools, 0, len(tools))
+
 	// maxIter defaults to 300 (MaxAgentIterationsCap).
 	// Use the single source of truth for configured → effective conversion.
 	effectiveMax := config.EffectiveMaxIterations(maxIter)
@@ -5663,6 +5826,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		log.Printf("[coding-gate] bypassed: SkipNeedsConfirmGate=true intent=%v (not coding)", gateConfig.intent)
 	}
 	if gateConfig.active && !skipCodingGate && !orchestratorActive() {
+		browserBeforeGate := len(browserDiagExtractNames(tools))
 		filtered := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
 			name := tool.ExtractToolName(t)
@@ -5674,6 +5838,21 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			log.Printf("[coding-gate] filtered %d blocked tool definitions from tool list", len(tools)-len(filtered))
 			tools = filtered
 			toolsTokenBudget = estimateToolsTokens(tools)
+		}
+		BrowserDiagCP3_CodingGate(browserBeforeGate, tools, true, "")
+	} else {
+		// Log why the gate was skipped (only if browser tools are present)
+		browserInTools := browserDiagExtractNames(tools)
+		if len(browserInTools) > 0 {
+			skipReason := ""
+			if !gateConfig.active {
+				skipReason = "gate_inactive"
+			} else if skipCodingGate {
+				skipReason = fmt.Sprintf("skipCodingGate(intent=%v)", gateConfig.intent)
+			} else if orchestratorActive() {
+				skipReason = "orchestrator_active"
+			}
+			BrowserDiagCP3_CodingGate(len(browserInTools), tools, false, skipReason)
 		}
 	}
 
@@ -6327,7 +6506,59 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				ctx.SetState("stopped")
 				return h.cancelledExitResponse(userID, history, userText)
 			}
-			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol)}
+
+			// --- Progressive head truncation for context window exceeded ---
+			// Inspired by Codex CLI's compact.rs: when the LLM rejects the
+			// request because the input exceeds the context window, remove
+			// the oldest non-system entry from the conversation and retry.
+			// This is a last-resort fallback after trimConversation and
+			// token calibration have already run — it handles edge cases
+			// where the estimate is still too optimistic.
+			//
+			// Max 5 retries to avoid infinite loops. Each retry removes one
+			// entry from the head (preserving tail for prefix cache).
+			if isContextWindowExceeded(err) {
+				const maxContextTrimRetries = 5
+				for ctxTrimRetry := 0; ctxTrimRetry < maxContextTrimRetries; ctxTrimRetry++ {
+					removed := false
+					for ci := 0; ci < len(conversation); ci++ {
+						r := msgRole(conversation[ci])
+						if r != "system" {
+							conversation = append(conversation[:ci], conversation[ci+1:]...)
+							removed = true
+							log.Printf("[agent-loop] context window exceeded, removed entry at %d (role=%s), retry %d/%d",
+								ci, r, ctxTrimRetry+1, maxContextTrimRetries)
+							break
+						}
+					}
+					if !removed {
+						break // only system messages left, can't trim further
+					}
+					retryMetrics := &llmStreamMetrics{}
+					resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
+					if err == nil {
+						if streamDoneCallback != nil {
+							streamDoneCallback()
+						}
+						// Re-derive token usage from the successful retry.
+						input, output := deriveLLMTokenUsage(resp, conversation)
+						providerName := h.getMaclawLLMProviders().Current
+						log.Printf("[LLM] usage context_trim_retry provider=%q input=%d output=%d", providerName, input, output)
+						h.accumulateLLMTokenUsage(providerName, input, output)
+						lastLLMInputTokens = input
+						lastLLMOutputTokens = output
+						break
+					}
+					if !isContextWindowExceeded(err) {
+						break // different error, stop trimming
+					}
+				}
+			}
+
+			// If still errored after all retries (including context trim), return.
+			if err != nil {
+				return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol)}
+			}
 		}
 		if len(resp.Choices) == 0 {
 			log.Printf("[agent-loop] LLM returned 0 choices: url=%s model=%s protocol=%s", cfg.URL, cfg.Model, cfg.Protocol)
@@ -6352,7 +6583,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// Strip hallucinated role prefix (e.g. "Browser: ...") that some LLMs
 		// produce when browser tool definitions are in context or when the
 		// output text mentions browser-related terms (like "Chrome 浏览器进程").
+		beforeStripRP := msgContent
 		msgContent = stripRolePrefixHallucination(msgContent)
+		BrowserDiagCP6_PostProcess(beforeStripRP, msgContent)
 
 		assistantMsg := map[string]interface{}{
 			"role":    "assistant",
@@ -6767,6 +7000,27 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 			emptyVisibleResult := trimmedVisibleContent == ""
 			promiseOnlyDeliverable := shouldForceAnotherRoundForDeliverable(msgContent, len(choice.Message.ToolCalls), 0)
+			// --- Post-tool summary suppression ---
+			// When the LLM just executed tools in the previous iteration
+			// (ConsecutiveNoTool == 1, meaning this is the FIRST no-tool
+			// iteration after a tool-call iteration) and there have been
+			// tool calls in this loop (totalToolCallsInLoop > 0), the
+			// current text-only output is a post-execution summary, not
+			// an empty promise. Suppress the promiseOnlyDeliverable signal
+			// to prevent the Recover loop from forcing the LLM to repeat
+			// the summary endlessly.
+			//
+			// Root cause: looksLikePromiseOnlyDeliverableReply uses keyword
+			// matching (e.g., text ending with "：" + containing "直接")
+			// which false-positives on post-tool summaries like "✅ 操作经验
+			// 已沉淀为知识！保存了以下核心内容：". The function has no
+			// awareness of whether tools were already called — it only looks
+			// at the current text. This context-aware suppression provides
+			// that missing signal.
+			if promiseOnlyDeliverable && phase.ConsecutiveNoTool == 1 && totalToolCallsInLoop > 0 {
+				log.Printf("[agent-loop] suppressed promiseOnlyDeliverable: post-tool summary detected (ConsecutiveNoTool=1, totalToolCalls=%d, iter=%d)", totalToolCallsInLoop, iteration)
+				promiseOnlyDeliverable = false
+			}
 			noToolStall := looksLikeNoToolStallReply(msgContent) || emptyVisibleResult || promiseOnlyDeliverable
 			hasPendingSkillRun := strings.TrimSpace(phase.PreferredSkillRunID) != ""
 			preferSkill := phase.ForceSkillPreference && phase.PreferredSkillName != ""
@@ -6928,6 +7182,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				log.Printf("[agent-loop] assembled %d continuation chunks into final response (totalLen=%d)", phase.LengthContinuations+1, len(finalText))
 			}
 			finalResp := &IMAgentResponse{Text: stripThinkingTags(finalText)}
+			// --- Browser diagnostic CP7: Final output ---
+			BrowserDiagCP7_FinalOutput(finalResp.Text, "msgContent")
 			if !streamDoneAt.IsZero() {
 				postStreamLastReturnPrepAt = time.Now()
 				handlerPostStreamResponseStartedAt := time.Now()

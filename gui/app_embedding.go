@@ -517,6 +517,12 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	// Wire embedder into memory store (triggers backfillEmbeddings in background).
 	if a.memoryStore != nil {
 		a.memoryStore.SetEmbedder(emb)
+
+		// Wire LLM for async semantic dedup (Stage 2: LLM precise judgment).
+		// Reuses the same archiverLLMCaller adapter used by KnowledgeExtractor.
+		if a.isMaclawLLMConfigured() {
+			a.memoryStore.SetLLMDedup(&archiverLLMCaller{app: a})
+		}
 	}
 
 	// Wire embedder into tool router (enables hybrid retrieval).

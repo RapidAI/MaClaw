@@ -2,6 +2,7 @@ package memory
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,8 +37,9 @@ func genRole() *rapid.Generator[string] {
 // Feature: memory-claude-style-upgrade, Property 2: Conversation filter retains only user and assistant messages
 // **Validates: Requirements 2.1**
 //
-// For any conversation history with mixed roles, filterMessages keeps only
-// user/assistant messages and preserves their original order.
+// For any conversation history with mixed roles, filterMessages keeps
+// user, assistant, and tool messages (tool results truncated) while
+// filtering out system and developer messages. Order is preserved.
 func TestProperty_ConversationFilter(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		// Generate a random conversation with mixed roles.
@@ -53,17 +55,20 @@ func TestProperty_ConversationFilter(t *testing.T) {
 		ke := &KnowledgeExtractor{}
 		filtered := ke.filterMessages(messages)
 
-		// Property 1: All filtered messages have role "user" or "assistant".
+		// Property 1: All filtered messages have an allowed role.
+		allowedRoles := map[string]bool{"user": true, "assistant": true, "tool": true}
 		for i, m := range filtered {
-			if m.Role != "user" && m.Role != "assistant" {
+			if !allowedRoles[m.Role] {
 				rt.Fatalf("filtered[%d] has unexpected role %q", i, m.Role)
 			}
 		}
 
 		// Property 2: Order is preserved — filtered is a subsequence of messages.
+		// Tool content may be truncated, so check that original starts with filtered.
 		j := 0
 		for i := 0; i < len(messages) && j < len(filtered); i++ {
-			if messages[i].Role == filtered[j].Role && messages[i].Content == filtered[j].Content {
+			if messages[i].Role == filtered[j].Role &&
+				(messages[i].Content == filtered[j].Content || strings.HasPrefix(messages[i].Content, filtered[j].Content)) {
 				j++
 			}
 		}
@@ -71,10 +76,22 @@ func TestProperty_ConversationFilter(t *testing.T) {
 			rt.Fatalf("filtered messages are not a subsequence of original messages")
 		}
 
-		// Property 3: Count matches expected.
+		// Property 3: system and developer messages are excluded.
+		for _, m := range filtered {
+			if m.Role == "system" || m.Role == "developer" {
+				rt.Fatalf("system/developer message leaked through filter: role=%q", m.Role)
+			}
+		}
+
+		// Property 4: Count matches expected (user + assistant + tool).
 		expected := 0
 		for _, m := range messages {
-			if m.Role == "user" || m.Role == "assistant" {
+			switch m.Role {
+			case "user":
+				if !isMemoryExcludedUserContent(m.Content) {
+					expected++
+				}
+			case "assistant", "tool":
 				expected++
 			}
 		}

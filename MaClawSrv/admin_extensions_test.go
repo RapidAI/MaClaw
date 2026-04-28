@@ -87,6 +87,52 @@ func TestAdminCredentialDetailUpdateRotateAndDeleteUserTenant(t *testing.T) {
 		t.Fatalf("rotated credential key should work: %v", err)
 	}
 
+	body = bytes.NewBufferString(`{}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials/"+cred.ID+"/rotate-secret", body)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("generated rotate credential secret status = %d body = %s", w.Code, w.Body.String())
+	}
+	var generatedSecret agentservice.Credential
+	if err := json.NewDecoder(w.Body).Decode(&generatedSecret); err != nil {
+		t.Fatalf("decode generated secret rotation: %v", err)
+	}
+	if generatedSecret.APISecret == "" || generatedSecret.APIKeyHash != "" || generatedSecret.SecretDigest != "" {
+		t.Fatalf("expected one-time generated secret response: %#v", generatedSecret)
+	}
+	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: "key-http-rotated", APISecret: "secret-new"}); err == nil {
+		t.Fatalf("previous rotated secret should be rejected after generated rotate")
+	}
+	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: "key-http-rotated", APISecret: generatedSecret.APISecret}); err != nil {
+		t.Fatalf("generated rotated secret should work: %v", err)
+	}
+
+	body = bytes.NewBufferString(`{}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials/"+cred.ID+"/rotate-key", body)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("generated rotate credential key status = %d body = %s", w.Code, w.Body.String())
+	}
+	var generatedKey agentservice.Credential
+	if err := json.NewDecoder(w.Body).Decode(&generatedKey); err != nil {
+		t.Fatalf("decode generated key rotation: %v", err)
+	}
+	if generatedKey.APIKey == "" || generatedKey.APIKey == "key-http-rotated" || generatedKey.APIKeyHash != "" || generatedKey.SecretDigest != "" {
+		t.Fatalf("expected one-time generated key response: %#v", generatedKey)
+	}
+	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: "key-http-rotated", APISecret: generatedSecret.APISecret}); err == nil {
+		t.Fatalf("previous rotated key should be rejected after generated rotate")
+	}
+	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: generatedKey.APIKey, APISecret: generatedSecret.APISecret}); err != nil {
+		t.Fatalf("generated rotated key should work: %v", err)
+	}
+
 	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"?confirm=true", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w = httptest.NewRecorder()

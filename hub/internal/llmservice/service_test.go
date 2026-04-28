@@ -100,6 +100,134 @@ func TestGrantDefaultServiceForNewUser(t *testing.T) {
 	if duration < 7*24*time.Hour-time.Minute || duration > 7*24*time.Hour+time.Minute {
 		t.Fatalf("unexpected duration: %s", duration)
 	}
+	if grant.CreditsTotal != 300 {
+		t.Fatalf("expected initial 30%% credits grant 300, got %v", grant.CreditsTotal)
+	}
+}
+
+func TestGrantEmailConfirmedBenefitUsesRegistrationWindow(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:   "coding-basic",
+			Name: "Coding Basic",
+			Models: []ModelServiceModel{{
+				Name:        "gpt-5",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		DefaultNewUserServiceGroups: []string{"coding-basic"},
+		DefaultNewUserDurationDays:  7,
+		DefaultNewUserCredits:       1000,
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantDefaultServiceForNewUser(ctx, system, "newuser@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := before.Grants[0]
+
+	if err := GrantEmailConfirmedBenefitForUser(ctx, system, "newuser@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 2 {
+		t.Fatalf("expected 2 grants, got %d", len(saved.Grants))
+	}
+	confirmed := saved.Grants[1]
+	if confirmed.Source != "new_user_email_confirmed" {
+		t.Fatalf("unexpected source: %q", confirmed.Source)
+	}
+	if confirmed.CreditsTotal != 700 {
+		t.Fatalf("expected email-confirmed 70%% credits grant 700, got %v", confirmed.CreditsTotal)
+	}
+	if !confirmed.StartsAt.Equal(initial.StartsAt) || !confirmed.ExpiresAt.Equal(initial.ExpiresAt) {
+		t.Fatalf("confirmed grant should use registration window: initial=%s..%s confirmed=%s..%s", initial.StartsAt, initial.ExpiresAt, confirmed.StartsAt, confirmed.ExpiresAt)
+	}
+}
+
+func TestGrantEmailConfirmedBenefitRequiresRegistrationWindow(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:   "coding-basic",
+			Name: "Coding Basic",
+			Models: []ModelServiceModel{{
+				Name:        "gpt-5",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		DefaultNewUserServiceGroups: []string{"coding-basic"},
+		DefaultNewUserDurationDays:  7,
+		DefaultNewUserCredits:       1000,
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := GrantEmailConfirmedBenefitForUser(ctx, system, "newuser@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 0 {
+		t.Fatalf("expected no confirmed grant without registration grant, got %d", len(saved.Grants))
+	}
+}
+
+func TestGrantEmailConfirmedBenefitDoesNotExtendExpiredRegistrationWindow(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:   "coding-basic",
+			Name: "Coding Basic",
+			Models: []ModelServiceModel{{
+				Name:        "gpt-5",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		DefaultNewUserServiceGroups: []string{"coding-basic"},
+		DefaultNewUserDurationDays:  7,
+		DefaultNewUserCredits:       1000,
+		Grants: []Grant{{
+			ID:             "grant_initial",
+			Email:          "newuser@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "new_user_default",
+			StartsAt:       now.Add(-8 * 24 * time.Hour),
+			ExpiresAt:      now.Add(-24 * time.Hour),
+			CreatedAt:      now.Add(-8 * 24 * time.Hour),
+			CreditsTotal:   300,
+		}},
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := GrantEmailConfirmedBenefitForUser(ctx, system, "newuser@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 1 {
+		t.Fatalf("expected no confirmed grant after registration benefit expired, got %d grants", len(saved.Grants))
+	}
 }
 
 func TestGrantDefaultServiceForNewUserIsIdempotent(t *testing.T) {

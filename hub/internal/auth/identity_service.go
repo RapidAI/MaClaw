@@ -265,6 +265,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 			if err != nil {
 				return nil, err
 			}
+			_, _ = s.createLoginTokenAndNotify(ctx, email)
 		}
 	}
 
@@ -505,6 +506,9 @@ func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string
 		return "", nil, err
 	}
 	if err := s.loginTok.Consume(ctx, loginToken.ID, now); err != nil {
+		return "", nil, err
+	}
+	if err := s.grantEmailConfirmedBenefitForUser(ctx, user.Email); err != nil {
 		return "", nil, err
 	}
 
@@ -806,6 +810,13 @@ func (s *IdentityService) ensureDefaultLLMServiceForUser(ctx context.Context, em
 	return llmservice.GrantDefaultServiceForNewUser(ctx, s.settings, email)
 }
 
+func (s *IdentityService) grantEmailConfirmedBenefitForUser(ctx context.Context, email string) error {
+	if s == nil || s.settings == nil {
+		return nil
+	}
+	return llmservice.GrantEmailConfirmedBenefitForUser(ctx, s.settings, email)
+}
+
 // ListPendingEnrollments returns all enrollment requests with status "pending".
 func (s *IdentityService) ListPendingEnrollments(ctx context.Context) ([]*store.UserEnrollment, error) {
 	return s.enrollments.ListPending(ctx)
@@ -1104,5 +1115,3 @@ func (s *IdentityService) resolvePublicBaseURL() string {
 	}
 	return strings.TrimRight(payload.Value, "/")
 }
-
-

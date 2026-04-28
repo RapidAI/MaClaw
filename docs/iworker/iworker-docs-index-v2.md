@@ -1,12 +1,15 @@
 # iWorker 文档索引
 
-本目录中，以下 3 份文档为当前 `iWorker` 体系的正式主文档。
+本目录中，以下 6 份文档为当前 `iWorker` 体系的正式主文档。
 
 ## 建议阅读顺序
 
 1. `iworker-ai-native-organization-whitepaper-v2.md`
 2. `iworkercenter-executive-architecture-v2.md`
 3. `iworkercenter-executive-skills-v2.md`
+4. `iworker-ai-native-virtual-organization-v1.md`
+5. `iworkercenter-goal-watch-and-push-v1.md`
+6. `iworker-multi-agent-runtime-v1.md`
 
 ## 文档定位
 
@@ -22,11 +25,20 @@
 
 面向产品设计、售前方案与行业咨询团队，解释老板们最常见的经营问题，如何被系统化为可调用、可编排、可追踪的 `Executive Skills`。
 
+### 4. iWorker AI Native 虚拟组织架构
+
+面向产品、研发和售前团队，明确 AI Native 运营中没有传统中层管理层，部门/中层只作为虚拟组织单元、能力域、权限域、记忆域、流程域和指标域存在。
+
+### 5. iWorkerCenter 目标守护与 Push 机制
+
+面向产品和研发团队，解释为什么 iWorkerCenter 必须具备定时目标检测、停滞识别和 push 推动能力，以防止 LLM 中断、工具失败或协作停滞导致任务悄悄死亡。
+
 ## 当前统一口径
 
 - `iWorker` 是数字员工前台，是任务承接与协同工作界面。
 - `iWorkerCenter` 是 AI Native 组织中枢，是企业能力沉淀、组织编排与经营驾驶舱。
 - 人类员工是 AI Native 组织中的必要组成部分，但更接近一种高价值的 `tool` / `skill` / `judgement node`。
 - 企业真正沉淀的不是对某个关键人的依赖，而是沉淀在 `iWorkerCenter` 中的知识、流程、角色、权限、策略与经营机制。
+- 中层/部门不应成为真实控制层，而应虚拟化为能力域、记忆域、权限域、流程域和指标域。
+- iWorkerCenter 需要目标守护与 push 机制，定期发现停滞任务并推动 iWorker 继续朝目标执行。
 - 人才可以持续更新，组织能力不能因为人员流动而消失。
-

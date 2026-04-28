@@ -10,6 +10,7 @@ import {
     DeleteMemoryBackup,
     SetAutoCompress,
     GetAutoCompressStatus,
+    IsMemoryCompressing,
     GetMemoryMaxBackups,
     SetMemoryMaxBackups,
     ListSessionHistory,
@@ -18,6 +19,7 @@ import {
     DeleteSession,
     GetSessionCount,
 } from "../../../wailsjs/go/main/App";
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors, radius } from "./styles";
 
 interface MemoryEntry {
@@ -600,6 +602,37 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
 
     useEffect(() => { loadBackups(); loadStatus(); loadMaxBackups(); }, [loadBackups, loadStatus, loadMaxBackups]);
 
+    // On mount, check if a compression is already in progress (e.g. after tab switch).
+    useEffect(() => {
+        IsMemoryCompressing().then(running => {
+            if (running) setCompressing(true);
+        }).catch(() => { /* ignore */ });
+    }, []);
+
+    // Listen for the backend "memory:compressed" event — the single source of
+    // truth for "compression finished". Both manual (CompressMemories) and auto
+    // (runOnce) paths emit this event. All post-completion UI updates happen here.
+    useEffect(() => {
+        const handler = async (result: any) => {
+            // A compression round finished, but another may still be in flight
+            // (manual + auto overlap). Query the backend for the true state.
+            try {
+                const stillRunning = await IsMemoryCompressing();
+                setCompressing(stillRunning);
+            } catch {
+                setCompressing(false);
+            }
+            if (result && typeof result === "object") {
+                setCompressResult(result as CompressResult);
+            }
+            loadBackups();
+            loadStatus();
+            onDataChanged();
+        };
+        EventsOn("memory:compressed", handler);
+        return () => { EventsOff("memory:compressed"); };
+    }, [loadBackups, loadStatus, onDataChanged]);
+
     // Clean up delayed refresh timer on unmount.
     const autoRefreshTimer = useRef<ReturnType<typeof setTimeout>>();
     useEffect(() => () => clearTimeout(autoRefreshTimer.current), []);
@@ -623,19 +656,13 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
 
     const handleCompress = async () => {
         setCompressing(true); setError(""); setCompressResult(null);
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const timeout = new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error(t("Compress timed out, please retry later", "压缩超时，请稍后重试"))), 6 * 60 * 1000);
-        });
         try {
-            const result = await Promise.race([CompressMemories(), timeout]);
-            setCompressResult(result as CompressResult);
-            loadBackups();
-            onDataChanged();
+            // Post-completion UI update (setCompressing(false), setCompressResult,
+            // loadBackups, etc.) is handled by the "memory:compressed" event handler.
+            // Go-side has a 5-minute context timeout; no client-side timeout needed.
+            await CompressMemories();
         } catch (e) {
             setError(String(e));
-        } finally {
-            clearTimeout(timer);
             setCompressing(false);
         }
     };

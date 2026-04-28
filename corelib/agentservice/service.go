@@ -602,6 +602,10 @@ func (s *Service) CreateCredential(ctx context.Context, in CreateCredentialInput
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
+	if in.ExpiresAt != nil {
+		expiresAt := in.ExpiresAt.UTC()
+		stored.ExpiresAt = &expiresAt
+	}
 	if err := s.store.SaveCredential(stored); err != nil {
 		return nil, err
 	}
@@ -700,8 +704,14 @@ func (s *Service) RotateCredentialSecret(ctx context.Context, tenantID, userID, 
 		return nil, err
 	}
 	apiSecret := strings.TrimSpace(in.APISecret)
+	generatedSecret := false
 	if apiSecret == "" {
-		return nil, fmt.Errorf("api_secret is required")
+		var err error
+		apiSecret, err = generateCredentialAPISecret()
+		if err != nil {
+			return nil, fmt.Errorf("generate credential secret: %w", err)
+		}
+		generatedSecret = true
 	}
 	cred, err := s.store.GetCredential(tenantID, userID, credentialID)
 	if err != nil {
@@ -718,8 +728,11 @@ func (s *Service) RotateCredentialSecret(ctx context.Context, tenantID, userID, 
 		return nil, err
 	}
 	_ = s.recordAudit(auditRecord{TenantID: cred.TenantID, UserID: cred.UserID, Action: "credential.secret_rotated", ResourceType: "credential", ResourceID: cred.ID, ActorType: "admin"})
-	cred = sanitizeCredential(cred)
-	return &cred, nil
+	response := sanitizeCredential(cred)
+	if generatedSecret {
+		response.APISecret = apiSecret
+	}
+	return &response, nil
 }
 
 func (s *Service) RotateCredentialAPIKey(ctx context.Context, tenantID, userID, credentialID string, in RotateCredentialKeyInput) (*Credential, error) {
@@ -731,8 +744,14 @@ func (s *Service) RotateCredentialAPIKey(ctx context.Context, tenantID, userID, 
 		return nil, err
 	}
 	apiKey := strings.TrimSpace(in.APIKey)
+	generatedKey := false
 	if apiKey == "" {
-		return nil, fmt.Errorf("api_key is required")
+		var err error
+		apiKey, err = s.generateUniqueCredentialAPIKey()
+		if err != nil {
+			return nil, err
+		}
+		generatedKey = true
 	}
 	cred, err := s.store.GetCredential(tenantID, userID, credentialID)
 	if err != nil {
@@ -750,8 +769,11 @@ func (s *Service) RotateCredentialAPIKey(ctx context.Context, tenantID, userID, 
 		return nil, err
 	}
 	_ = s.recordAudit(auditRecord{TenantID: cred.TenantID, UserID: cred.UserID, Action: "credential.key_rotated", ResourceType: "credential", ResourceID: cred.ID, ActorType: "admin"})
-	cred = sanitizeCredential(cred)
-	return &cred, nil
+	response := sanitizeCredential(cred)
+	if generatedKey {
+		response.APIKey = apiKey
+	}
+	return &response, nil
 }
 func (s *Service) RevokeCredential(ctx context.Context, tenantID, userID, credentialID string) (*Credential, error) {
 	_ = ctx
@@ -1903,10 +1925,17 @@ func (s *Service) GetAdminOverview(ctx context.Context) (*AdminOverview, error) 
 			} else {
 				overview.ActiveUsers++
 			}
+
 			usage, err := s.buildUsageSummary(tenant.ID, user.ID)
 			if err != nil {
 				return nil, err
 			}
+			overview.Credentials += usage.Credentials
+			overview.ActiveCredentials += usage.ActiveCredentials
+			overview.SuspendedCredentials += usage.SuspendedCredentials
+			overview.RevokedCredentials += usage.RevokedCredentials
+			overview.ExpiredCredentials += usage.ExpiredCredentials
+			overview.ExpiringCredentials += usage.ExpiringCredentials
 			overview.Instances += usage.Instances
 			overview.ReadyInstances += usage.ReadyInstances
 			overview.StoppedInstances += usage.StoppedInstances
@@ -2193,7 +2222,16 @@ func appendQuotaPressureMetric(items *[]AdminQuotaPressureInsight, scope, metric
 
 func (s *Service) GetAdminAlerts(ctx context.Context, in AdminAlertsInput) (*AdminAlerts, error) {
 	_ = ctx
-	alerts := &AdminAlerts{GeneratedAt: s.now().UTC()}
+	now := s.now().UTC()
+	alerts := &AdminAlerts{GeneratedAt: now}
+	expiryWindowDays := in.CredentialExpiryWindowDays
+	if expiryWindowDays <= 0 {
+		expiryWindowDays = 7
+	}
+	if expiryWindowDays > 365 {
+		expiryWindowDays = 365
+	}
+	credentialExpiryCutoff := now.Add(time.Duration(expiryWindowDays) * 24 * time.Hour)
 	tenants, err := s.store.ListTenants()
 	if err != nil {
 		return nil, err
@@ -2210,6 +2248,50 @@ func (s *Service) GetAdminAlerts(ctx context.Context, in AdminAlertsInput) (*Adm
 		for _, user := range users {
 			if strings.TrimSpace(in.UserID) != "" && user.ID != strings.TrimSpace(in.UserID) {
 				continue
+			}
+			credentials, err := s.store.ListCredentials(tenant.ID, user.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, cred := range credentials {
+				if cred.ExpiresAt == nil {
+					continue
+				}
+				expiresAt := cred.ExpiresAt.UTC()
+				if in.Since != nil && expiresAt.Before(*in.Since) {
+					continue
+				}
+				alertKind := ""
+				severity := "medium"
+				title := "Credential expiring"
+				reason := "credential expires soon"
+				if !expiresAt.After(now) {
+					alertKind = "credential_expired"
+					severity = "high"
+					title = "Credential expired"
+					reason = "credential has expired"
+				} else if !expiresAt.After(credentialExpiryCutoff) {
+					alertKind = "credential_expiring"
+				} else {
+					continue
+				}
+				if kind != "" && kind != alertKind {
+					continue
+				}
+				sanitized := sanitizeCredential(cred)
+				alerts.CredentialAlerts = append(alerts.CredentialAlerts, sanitized)
+				occurredAt := expiresAt
+				alerts.Items = append(alerts.Items, AdminAlertItem{
+					Kind:            alertKind,
+					Severity:        severity,
+					Title:           title,
+					SuggestedAction: "Rotate the credential or extend expires_at before clients lose access.",
+					TenantID:        cred.TenantID,
+					UserID:          cred.UserID,
+					CredentialID:    cred.ID,
+					OccurredAt:      &occurredAt,
+					Reason:          reason,
+				})
 			}
 			instances, err := s.store.ListInstances(tenant.ID, user.ID)
 			if err != nil {
@@ -2289,6 +2371,15 @@ func (s *Service) GetAdminAlerts(ctx context.Context, in AdminAlertsInput) (*Adm
 	})
 	sort.Slice(alerts.WaitingRuns, func(i, j int) bool { return alerts.WaitingRuns[i].StartedAt.After(alerts.WaitingRuns[j].StartedAt) })
 	sort.Slice(alerts.FailedRuns, func(i, j int) bool { return alerts.FailedRuns[i].StartedAt.After(alerts.FailedRuns[j].StartedAt) })
+	sort.Slice(alerts.CredentialAlerts, func(i, j int) bool {
+		if alerts.CredentialAlerts[i].ExpiresAt == nil {
+			return false
+		}
+		if alerts.CredentialAlerts[j].ExpiresAt == nil {
+			return true
+		}
+		return alerts.CredentialAlerts[i].ExpiresAt.Before(*alerts.CredentialAlerts[j].ExpiresAt)
+	})
 	sort.Slice(alerts.Items, func(i, j int) bool {
 		if alerts.Items[i].OccurredAt == nil {
 			return false
@@ -2802,26 +2893,38 @@ func (s *Service) GetTenantSummary(ctx context.Context, tenantID string) (*Tenan
 		}
 		effectiveQuota := mergeQuota(tenant.Quota, user.Quota)
 		userSummary := TenantUserSummary{
-			UserID:            user.ID,
-			Name:              user.Name,
-			Email:             user.Email,
-			Status:            user.Status,
-			DataDir:           usage.DataDir,
-			Quota:             user.Quota,
-			EffectiveQuota:    effectiveQuota,
-			QuotaUsage:        buildQuotaUsageSnapshot(effectiveQuota, usage),
-			Instances:         usage.Instances,
-			ReadyInstances:    usage.ReadyInstances,
-			StoppedInstances:  usage.StoppedInstances,
-			Sessions:          usage.Sessions,
-			Messages:          usage.Messages,
-			UserMessages:      usage.UserMessages,
-			AssistantMessages: usage.AssistantMessages,
-			Runs:              usage.Runs,
-			RunsByStatus:      usage.RunsByStatus,
-			LastActivityAt:    usage.LastActivityAt,
+			UserID:               user.ID,
+			Name:                 user.Name,
+			Email:                user.Email,
+			Status:               user.Status,
+			DataDir:              usage.DataDir,
+			Quota:                user.Quota,
+			EffectiveQuota:       effectiveQuota,
+			QuotaUsage:           buildQuotaUsageSnapshot(effectiveQuota, usage),
+			Instances:            usage.Instances,
+			ReadyInstances:       usage.ReadyInstances,
+			StoppedInstances:     usage.StoppedInstances,
+			Sessions:             usage.Sessions,
+			Messages:             usage.Messages,
+			UserMessages:         usage.UserMessages,
+			AssistantMessages:    usage.AssistantMessages,
+			Runs:                 usage.Runs,
+			RunsByStatus:         usage.RunsByStatus,
+			Credentials:          usage.Credentials,
+			ActiveCredentials:    usage.ActiveCredentials,
+			SuspendedCredentials: usage.SuspendedCredentials,
+			RevokedCredentials:   usage.RevokedCredentials,
+			ExpiredCredentials:   usage.ExpiredCredentials,
+			ExpiringCredentials:  usage.ExpiringCredentials,
+			LastActivityAt:       usage.LastActivityAt,
 		}
 		summary.UserSummaries = append(summary.UserSummaries, userSummary)
+		summary.Credentials += userSummary.Credentials
+		summary.ActiveCredentials += userSummary.ActiveCredentials
+		summary.SuspendedCredentials += userSummary.SuspendedCredentials
+		summary.RevokedCredentials += userSummary.RevokedCredentials
+		summary.ExpiredCredentials += userSummary.ExpiredCredentials
+		summary.ExpiringCredentials += userSummary.ExpiringCredentials
 		summary.Instances += usage.Instances
 		summary.ReadyInstances += usage.ReadyInstances
 		summary.StoppedInstances += usage.StoppedInstances
@@ -2862,6 +2965,31 @@ func (s *Service) buildUsageSummary(tenantID, userID string) (*UsageSummary, err
 		Quota:        effectiveQuota,
 		Instances:    len(instances),
 		RunsByStatus: map[RunStatus]int{},
+	}
+	now := s.now().UTC()
+	credentialExpiryCutoff := now.Add(7 * 24 * time.Hour)
+	credentials, err := s.store.ListCredentials(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, cred := range credentials {
+		summary.Credentials++
+		switch credentialStatus(cred) {
+		case CredentialStatusSuspended:
+			summary.SuspendedCredentials++
+		case CredentialStatusRevoked:
+			summary.RevokedCredentials++
+		default:
+			summary.ActiveCredentials++
+		}
+		if cred.ExpiresAt != nil {
+			expiresAt := cred.ExpiresAt.UTC()
+			if !expiresAt.After(now) {
+				summary.ExpiredCredentials++
+			} else if !expiresAt.After(credentialExpiryCutoff) {
+				summary.ExpiringCredentials++
+			}
+		}
 	}
 	for _, inst := range instances {
 		inst = s.withInstanceReadiness(inst)

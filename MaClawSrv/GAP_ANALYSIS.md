@@ -136,10 +136,10 @@ Still missing pieces:
 
 
 
-- Richer expiration policy such as warning windows, auto-rotation, or expiry notifications beyond the current expires_at support
+- Auto-rotation policy beyond current expires_at support and expiry alerts
 
 
-- More explicit server-generated secret issuance and one-time reveal workflows
+- Server-generated secret issuance and one-time reveal workflows are now available
 
 
 
@@ -524,3 +524,40 @@ That sequence improves both actual capability and integration confidence without
 - Server-generated credential issuance is now available.
 - Admin callers can omit `api_key` and/or `api_secret` during credential creation.
 - Generated secrets are one-time reveal values and are not stored or returned by later read APIs.
+
+## Recent completion: credential expiry alerts
+
+- Credential expiry alerts are now available through admin alerts.
+- Operators can filter `kind=credential_expiring` or `kind=credential_expired` and tune the lookahead window with `credential_expiry_window_days`.
+- Alert credential payloads remain sanitized.
+
+## Recent completion: server-generated credential rotation
+
+- Server-generated credential rotation is now available.
+- Admin callers can omit `api_secret` on secret rotation or `api_key` on key rotation.
+- Generated plaintext values are one-time reveal values returned only in the rotation response.
+
+## Recent completion: credential overview counters
+
+- Admin overview now includes credential lifecycle counters.
+- Dashboard consumers can show total, active, suspended, revoked, expired, and expiring credential counts without separately scanning all users.
+
+## Recent completion: tenant summary credential counters
+
+- Tenant summary now exposes credential lifecycle counters at the tenant level and per-user level.
+- Admin consoles can display total, active, suspended, revoked, expired, and expiring credential counts without separately listing credentials for every user.
+
+## Recent completion: credential metrics
+
+- `/metrics` now exposes credential total, status, expired, and expiring gauges.
+- Operators can alert on credential lifecycle risk from Prometheus without polling admin JSON endpoints.
+
+## Recent completion: usage summary credential counters
+
+- Authenticated users can now see their own aggregate credential lifecycle counters in `/api/v1/usage/summary`.
+- The endpoint remains safe-by-default because it exposes counts only, not credential material.
+
+## Recent completion: credential create expiry
+
+- Credential creation now accepts `expires_at` directly.
+- Admin callers can create generated credentials with expiry in one request instead of issuing an unrestricted credential and patching it afterward.

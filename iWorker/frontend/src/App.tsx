@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCenterHealth, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, SaveDiWorkerSettings, SaveTaskHistory, SubmitTask } from '../wailsjs/go/main/App';
+import { CheckCenterHealth, DeleteWorkerMemory, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { colleagues } from './mock/colleagues';
 import { SideNav } from './components/layout/SideNav';
@@ -9,7 +9,7 @@ import { NewTaskPage } from './pages/NewTaskPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskHistoryPage } from './pages/TaskHistoryPage';
 import { recentTasks as mockRecentTasks } from './mock/tasks';
-import type { CenterHealthStatus, DiWorkerSettings, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, TaskAttachment, UpstreamProvider, WorkerMemoryStats } from './types';
+import type { CenterHealthStatus, DiWorkerSettings, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
 
 const pageMeta: Record<DiWorkerTab, { title: string; subtitle: string }> = {
   home: { title: '新建任务', subtitle: '输入任务内容，快速开始处理。' },
@@ -172,6 +172,20 @@ const fromWailsMemoryStats = (item: main.WorkerMemoryStats | null | undefined): 
   byCategory: item?.by_category || {},
   visibleScopes: item?.visible_scopes || [],
 });
+
+const fromWailsMemoryEntry = (item: main.WorkerMemoryEntry): WorkerMemoryEntry => ({
+  id: item.id,
+  tenantId: item.tenant_id,
+  departmentId: item.department_id,
+  workerId: item.worker_id,
+  scope: item.scope,
+  content: item.content,
+  category: item.category,
+  tags: item.tags || [],
+  sourceType: item.source_type,
+  createdAt: item.created_at,
+  updatedAt: item.updated_at,
+});
 const fromWailsCenterHealth = (
   item: main.CenterHealthStatus | null | undefined,
   source: CenterHealthStatus['source'],
@@ -303,6 +317,19 @@ export default function App() {
   const [workerMemoryStats, setWorkerMemoryStats] = useState<WorkerMemoryStats | null>(null);
   const [workerMemoryStatsLoading, setWorkerMemoryStatsLoading] = useState(false);
   const [workerMemoryStatsError, setWorkerMemoryStatsError] = useState('');
+  const [workerMemoryDraftScope, setWorkerMemoryDraftScope] = useState('personal');
+  const [workerMemoryDraftContent, setWorkerMemoryDraftContent] = useState('');
+  const [workerMemoryDraftCategory, setWorkerMemoryDraftCategory] = useState('note');
+  const [workerMemoryDraftTags, setWorkerMemoryDraftTags] = useState('');
+  const [workerMemorySaving, setWorkerMemorySaving] = useState(false);
+  const [workerMemorySaveMessage, setWorkerMemorySaveMessage] = useState('');
+  const [workerMemorySaveError, setWorkerMemorySaveError] = useState('');
+  const [workerMemoryRecallQuery, setWorkerMemoryRecallQuery] = useState('');
+  const [workerMemoryRecallItems, setWorkerMemoryRecallItems] = useState<WorkerMemoryEntry[]>([]);
+  const [workerMemoryRecallLoading, setWorkerMemoryRecallLoading] = useState(false);
+  const [workerMemoryRecallError, setWorkerMemoryRecallError] = useState('');
+  const [workerMemoryDeletingId, setWorkerMemoryDeletingId] = useState('');
+  const [workerMemoryDeleteError, setWorkerMemoryDeleteError] = useState('');
 
   useEffect(() => {
     if (!hasWailsBridge()) {
@@ -522,6 +549,87 @@ export default function App() {
     }
   };
 
+
+  const handleSaveWorkerMemory = async () => {
+    setWorkerMemorySaveMessage('');
+    setWorkerMemorySaveError('');
+    const content = workerMemoryDraftContent.trim();
+    if (!content) {
+      setWorkerMemorySaveError('Memory content is required.');
+      return;
+    }
+    if (!hasWailsBridge()) {
+      setWorkerMemorySaveError('Wails bridge is not connected.');
+      return;
+    }
+    const payload: SaveWorkerMemoryRequest = {
+      scope: workerMemoryDraftScope,
+      content,
+      category: workerMemoryDraftCategory.trim() || 'note',
+      tags: workerMemoryDraftTags.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
+      sourceType: 'iworker-gui',
+    };
+    setWorkerMemorySaving(true);
+    try {
+      await SaveWorkerMemory(new main.SaveWorkerMemoryRequest({
+        scope: payload.scope,
+        content: payload.content,
+        category: payload.category,
+        tags: payload.tags,
+        source_type: payload.sourceType,
+      }) as never);
+      setWorkerMemoryDraftContent('');
+      setWorkerMemorySaveMessage('Memory saved to iWorkerCenter.');
+      void handleRefreshWorkerMemoryStats();
+      void handleRecallWorkerMemories();
+    } catch (error) {
+      setWorkerMemorySaveError(error instanceof Error ? error.message : 'Failed to save memory.');
+    } finally {
+      setWorkerMemorySaving(false);
+    }
+  };
+
+  const handleRecallWorkerMemories = async () => {
+    setWorkerMemoryRecallError('');
+    if (!hasWailsBridge()) {
+      setWorkerMemoryRecallItems([]);
+      setWorkerMemoryRecallError('Wails bridge is not connected.');
+      return;
+    }
+    setWorkerMemoryRecallLoading(true);
+    try {
+      const memories = await RecallWorkerMemories(workerMemoryRecallQuery.trim());
+      setWorkerMemoryRecallItems(Array.isArray(memories) ? memories.map((item) => fromWailsMemoryEntry(item as main.WorkerMemoryEntry)) : []);
+    } catch (error) {
+      setWorkerMemoryRecallItems([]);
+      setWorkerMemoryRecallError(error instanceof Error ? error.message : 'Failed to recall memories.');
+    } finally {
+      setWorkerMemoryRecallLoading(false);
+    }
+  };
+
+  const handleDeleteWorkerMemory = async (memoryId: string) => {
+    const id = memoryId.trim();
+    setWorkerMemoryDeleteError('');
+    if (!id) {
+      setWorkerMemoryDeleteError('Memory id is required.');
+      return;
+    }
+    if (!hasWailsBridge()) {
+      setWorkerMemoryDeleteError('Wails bridge is not connected.');
+      return;
+    }
+    setWorkerMemoryDeletingId(id);
+    try {
+      await DeleteWorkerMemory(id);
+      setWorkerMemoryRecallItems((current) => current.filter((item) => item.id !== id));
+      void handleRefreshWorkerMemoryStats();
+    } catch (error) {
+      setWorkerMemoryDeleteError(error instanceof Error ? error.message : 'Failed to delete memory.');
+    } finally {
+      setWorkerMemoryDeletingId('');
+    }
+  };
   const handleSaveSettings = async () => {
     setSettingsError('');
     setSettingsSaveMessage('');
@@ -640,6 +748,27 @@ export default function App() {
             memoryStatsLoading={workerMemoryStatsLoading}
             memoryStatsError={workerMemoryStatsError}
             onRefreshMemoryStats={handleRefreshWorkerMemoryStats}
+            memoryDraftScope={workerMemoryDraftScope}
+            memoryDraftContent={workerMemoryDraftContent}
+            memoryDraftCategory={workerMemoryDraftCategory}
+            memoryDraftTags={workerMemoryDraftTags}
+            memorySaving={workerMemorySaving}
+            memorySaveMessage={workerMemorySaveMessage}
+            memorySaveError={workerMemorySaveError}
+            onMemoryDraftScopeChange={setWorkerMemoryDraftScope}
+            onMemoryDraftContentChange={setWorkerMemoryDraftContent}
+            onMemoryDraftCategoryChange={setWorkerMemoryDraftCategory}
+            onMemoryDraftTagsChange={setWorkerMemoryDraftTags}
+            onSaveWorkerMemory={handleSaveWorkerMemory}
+            memoryRecallQuery={workerMemoryRecallQuery}
+            memoryRecallItems={workerMemoryRecallItems}
+            memoryRecallLoading={workerMemoryRecallLoading}
+            memoryRecallError={workerMemoryRecallError}
+            onMemoryRecallQueryChange={setWorkerMemoryRecallQuery}
+            onRecallWorkerMemories={handleRecallWorkerMemories}
+            memoryDeletingId={workerMemoryDeletingId}
+            memoryDeleteError={workerMemoryDeleteError}
+            onDeleteWorkerMemory={handleDeleteWorkerMemory}
             onRoleNameChange={(value) => updateSettings((current) => ({ ...current, roleProfile: { ...current.roleProfile, name: value } }))}
             onRoleDescriptionChange={(value) => updateSettings((current) => ({ ...current, roleProfile: { ...current.roleProfile, description: value } }))}
             onCenterEnabledChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, enabled: value } }))}
@@ -663,7 +792,7 @@ export default function App() {
       default:
         return <HomePage draft={draft} selectedTask={selectedTask} selectedColleagueName={selectedColleagueName} recentTasks={historyTasks} onDraftChange={setDraft} onPickTask={handlePickTask} onOpenNewTask={handleOpenNewTask} onOpenRecentTask={handleOpenHistoryTask} />;
     }
-  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
+  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
 
   const meta = pageMeta[activeTab];
   const status = statusCopy[activeTab];

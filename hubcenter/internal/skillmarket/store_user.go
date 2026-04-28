@@ -31,7 +31,7 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*SkillMarketU
 		SELECT id, email, status, verify_method, credits, settled_credits,
 			pending_settlement, debt, voucher_count, voucher_expires_at,
 			created_at, updated_at, verified_at
-		FROM sm_users WHERE email = ?`, email))
+		FROM sm_users WHERE email = ? COLLATE NOCASE ORDER BY created_at ASC LIMIT 1`, normalizeEmail(email)))
 }
 
 func (s *Store) GetUserByID(ctx context.Context, id string) (*SkillMarketUser, error) {

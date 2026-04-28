@@ -11,6 +11,7 @@ import (
 	"time"
 
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
+	a2amodule "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/a2a"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/adminauth"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/capabilities"
@@ -23,6 +24,7 @@ import (
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/diworkerauth"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/executive"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/experience"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/goalwatch"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/imconfig"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/memories"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/modelrouting"
@@ -50,6 +52,9 @@ type Center struct {
 	Auth            *adminauth.Handler
 	TenantService   *tenant.TenantService
 	WorkerMemory    *corememory.Store
+	A2A             *a2amodule.Service
+	GoalWatch       *goalwatch.Service
+	GoalMonitor     *goalwatch.Monitor
 }
 
 // Bootstrap initializes the database, runs migrations, wires all modules,
@@ -103,6 +108,11 @@ func Bootstrap() (*Center, error) {
 	collabSvc := collaboration.NewService(collabRepo, colRepo)
 	collabHandler := collaboration.NewHandler(collabSvc, auditRepo)
 
+	// --- wire a2a collaboration protocol module ---
+	a2aRepo := a2amodule.NewRepo(provider.Write, provider.Read)
+	a2aSvc := a2amodule.NewService(a2aRepo)
+	a2aHandler := a2amodule.NewHandler(a2aSvc)
+
 	// --- wire workflow module (depends on collaboration + colleagues) ---
 	wfRepo := workflow.NewRepo(provider.Write, provider.Read)
 	wfSvc := workflow.NewService(wfRepo, provider, collabRepo, colRepo)
@@ -155,6 +165,12 @@ func Bootstrap() (*Center, error) {
 	tenantSvc := tenant.NewTenantService(tenantRepo, nonceRepo, provider.Write, provider.Write, cloudClient, pubKeyCache)
 	tenantHandler := tenant.NewHandler(tenantSvc)
 
+	// --- wire goal watchdog / push module ---
+	goalWatchSvc := goalwatch.NewService(collabRepo, goalwatch.Config{})
+	goalWatchHandler := goalwatch.NewHandler(goalWatchSvc)
+	goalMonitor := goalwatch.NewMonitor(goalWatchSvc, tenantSvc)
+	goalMonitor.Start()
+
 	// Start nonce cleanup goroutine
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
@@ -198,6 +214,10 @@ func Bootstrap() (*Center, error) {
 	capHandler.RegisterClientRoutes(mux)
 	collabHandler.RegisterAdminRoutes(mux)
 	collabHandler.RegisterClientRoutes(mux)
+	goalWatchHandler.RegisterAdminRoutes(mux)
+	goalWatchHandler.RegisterRuntimeRoutes(mux)
+	goalWatchHandler.RegisterClientRoutes(mux)
+	a2aHandler.RegisterRuntimeRoutes(mux)
 	wfHandler.RegisterAdminRoutes(mux)
 	wfHandler.RegisterRuntimeRoutes(mux)
 	wfHandler.RegisterClientRoutes(mux)
@@ -243,11 +263,17 @@ func Bootstrap() (*Center, error) {
 		Auth:            authHandler,
 		TenantService:   tenantSvc,
 		WorkerMemory:    workerMemoryStore,
+		A2A:             a2aSvc,
+		GoalWatch:       goalWatchSvc,
+		GoalMonitor:     goalMonitor,
 	}, nil
 }
 
 // Close releases all resources.
 func (c *Center) Close() {
+	if c.GoalMonitor != nil {
+		c.GoalMonitor.Stop()
+	}
 	if c.WorkerMemory != nil {
 		_ = c.WorkerMemory.Flush()
 	}

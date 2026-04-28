@@ -95,15 +95,18 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 			return
 		}
 
-		update := &hubs.HeartbeatHubUpdate{
-			BaseURL:               req.BaseURL,
-			Host:                  req.Host,
-			Port:                  req.Port,
-			Visibility:            req.Visibility,
-			EnrollmentMode:        req.EnrollmentMode,
-			CorporateEmailDomain:  req.CorporateEmailDomain,
-			CorporateEmailDomains: req.CorporateEmailDomains,
-			AcceptPublicSignup:    req.AcceptPublicSignup,
+		var update *hubs.HeartbeatHubUpdate
+		if heartbeatHasRegistrationUpdate(req) {
+			update = &hubs.HeartbeatHubUpdate{
+				BaseURL:               req.BaseURL,
+				Host:                  req.Host,
+				Port:                  req.Port,
+				Visibility:            req.Visibility,
+				EnrollmentMode:        req.EnrollmentMode,
+				CorporateEmailDomain:  req.CorporateEmailDomain,
+				CorporateEmailDomains: req.CorporateEmailDomains,
+				AcceptPublicSignup:    req.AcceptPublicSignup,
+			}
 		}
 		if err := service.HeartbeatHubWithSecret(r.Context(), hubID, req.HubSecret, req.InvitationCodeRequired, update); err != nil {
 			if errors.Is(err, hubs.ErrHubNotReadyOnNode) {
@@ -131,6 +134,17 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "online"})
 	}
+}
+
+func heartbeatHasRegistrationUpdate(req HubHeartbeatRequest) bool {
+	return strings.TrimSpace(req.BaseURL) != "" ||
+		strings.TrimSpace(req.Host) != "" ||
+		req.Port != 0 ||
+		strings.TrimSpace(req.Visibility) != "" ||
+		strings.TrimSpace(req.EnrollmentMode) != "" ||
+		strings.TrimSpace(req.CorporateEmailDomain) != "" ||
+		len(req.CorporateEmailDomains) > 0 ||
+		req.AcceptPublicSignup != nil
 }
 
 func HubUserLinkSyncHandler(service *hubs.Service) http.HandlerFunc {
@@ -263,6 +277,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/hubs/{id}/enable", RequireAdmin(adminService, EnableHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/confirm", RequireAdmin(adminService, ConfirmHubHandler(hubService)))
 	mux.HandleFunc("DELETE /api/admin/hubs/{id}", RequireAdmin(adminService, DeleteHubHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/users/migrate", RequireAdmin(adminService, MigrateHubUserHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/blocked-emails", RequireAdmin(adminService, ListBlockedEmailsHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/blocked-emails", RequireAdmin(adminService, AddBlockedEmailHandler(hubService)))
 	mux.HandleFunc("DELETE /api/admin/blocked-emails/{email}", RequireAdmin(adminService, RemoveBlockedEmailHandler(hubService)))
@@ -346,6 +361,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/auth/lookup", gossipRateLimitMiddleware(authLookupRL, smHandlers.SendLookupVerification))
 		mux.HandleFunc("GET /api/v1/auth/verify-identity", smHandlers.VerifyIdentity)
 		mux.HandleFunc("GET /api/v1/auth/session", smHandlers.ValidateSession)
+		mux.HandleFunc("GET /api/v1/auth/me", smHandlers.CurrentUser)
+		mux.HandleFunc("POST /api/v1/auth/change-password", smHandlers.ChangePassword)
 		mux.HandleFunc("POST /api/v1/auth/resend-activation", gossipRateLimitMiddleware(authLookupRL, smHandlers.ResendActivation))
 		mux.HandleFunc("POST /api/v1/auth/forgot-password", gossipRateLimitMiddleware(authLookupRL, smHandlers.SendPasswordReset))
 		mux.HandleFunc("POST /api/v1/auth/reset-password", smHandlers.ResetPassword)

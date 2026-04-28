@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
+	"golang.org/x/text/width"
 )
 
 var ErrIPBlocked = errors.New("ip blocked")
@@ -174,9 +175,12 @@ func (s *Service) ResolveByEmailFromIP(ctx context.Context, email string, client
 }
 
 func (s *Service) ResolveAdminByEmail(ctx context.Context, email string) (*ResolveResult, error) {
-	email = strings.TrimSpace(strings.ToLower(email))
+	email = normalizeEmailPattern(email)
 	if email == "" {
 		return &ResolveResult{Email: email, Mode: "none", Message: "Email is required"}, nil
+	}
+	if isEmailPattern(email) {
+		return s.ResolveAdminByEmailPattern(ctx, email)
 	}
 	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, true)
 	if err != nil {
@@ -186,6 +190,21 @@ func (s *Service) ResolveAdminByEmail(ctx context.Context, email string) (*Resol
 		return &ResolveResult{Email: email, Mode: "none", Message: "No available hubs found"}, nil
 	}
 	return snap.resolveAdminEmail(email), nil
+}
+
+func (s *Service) ResolveAdminByEmailPattern(ctx context.Context, pattern string) (*ResolveResult, error) {
+	pattern = normalizeEmailPattern(pattern)
+	if pattern == "" {
+		return &ResolveResult{Email: pattern, Mode: "none", Message: "Email pattern is required"}, nil
+	}
+	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, true)
+	if err != nil {
+		return nil, err
+	}
+	if snap == nil {
+		return &ResolveResult{Email: pattern, Mode: "none", Message: "No available hubs found"}, nil
+	}
+	return snap.resolveAdminEmailPattern(pattern), nil
 }
 
 func (s *Service) ResolveByDomain(ctx context.Context, domain string) (*ResolveResult, error) {
@@ -274,11 +293,52 @@ func visibilityPriority(v string) int {
 }
 
 func extractEmailDomain(email string) string {
-	_, domain, ok := strings.Cut(strings.TrimSpace(strings.ToLower(email)), "@")
+	_, domain, ok := strings.Cut(normalizeEmailPattern(email), "@")
 	if !ok {
 		return ""
 	}
 	return normalizeCorporateEmailDomain(domain)
+}
+
+func normalizeEmailPattern(pattern string) string {
+	pattern = strings.TrimSpace(strings.ToLower(width.Narrow.String(pattern)))
+	pattern = strings.ReplaceAll(pattern, "＊", "*")
+	if strings.HasPrefix(pattern, "@") {
+		pattern = "*" + pattern
+	}
+	return pattern
+}
+
+func isEmailPattern(email string) bool {
+	return strings.Contains(normalizeEmailPattern(email), "*")
+}
+
+func wildcardEmailMatch(pattern, email string) bool {
+	pattern = normalizeEmailPattern(pattern)
+	email = normalizeEmailPattern(email)
+	if pattern == "" || email == "" {
+		return false
+	}
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == email
+	}
+	if parts[0] != "" && !strings.HasPrefix(email, parts[0]) {
+		return false
+	}
+	pos := len(parts[0])
+	for _, part := range parts[1 : len(parts)-1] {
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(email[pos:], part)
+		if idx < 0 {
+			return false
+		}
+		pos += idx + len(part)
+	}
+	last := parts[len(parts)-1]
+	return last == "" || strings.HasSuffix(email[pos:], last)
 }
 
 func normalizeCorporateEmailDomain(domain string) string {

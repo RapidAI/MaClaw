@@ -9164,3 +9164,64 @@ Behavior:
 Server-generated credentials: omit `api_key` and/or `api_secret` when creating a credential.
 
 `POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials` returns generated values only once in the create response. Store the returned `api_secret` on the client side if the caller needs to use that credential later; subsequent credential reads return only masked key information.
+
+## Credential expiry alerts
+
+Credential expiry alerts: `GET /api/v1/admin/alerts` includes credentials that are expired or expiring soon.
+
+Useful filters:
+- `kind=credential_expiring` returns credentials whose `expires_at` is within the configured lookahead window.
+- `kind=credential_expired` returns credentials whose `expires_at` has already passed.
+- `credential_expiry_window_days` changes the lookahead window for expiring credentials. Default: `7`. Maximum: `365`.
+
+Credential alert entries are sanitized; they do not return `api_secret`, `secret_digest`, or `api_key_hash`.
+
+## Server-generated credential rotation
+
+Server-generated credential rotation: omit `api_secret` on `rotate-secret` or `api_key` on `rotate-key`.
+
+The generated plaintext value is returned only once in the rotation response. Later credential reads return masked key information and never return the plaintext secret.
+
+## Admin overview credential counters
+
+Admin overview credential counters: overview responses include credential status and expiry-risk totals.
+
+Fields include `credentials`, `active_credentials`, `suspended_credentials`, `revoked_credentials`, `expired_credentials`, and `expiring_credentials`. The `expiring_credentials` count uses the default 7-day lookahead window.
+
+## Tenant summary credential counters
+
+`GET /api/v1/admin/tenants/{tenantId}/summary` returns credential lifecycle counters on the top-level tenant summary and on each `user_summaries[]` entry.
+
+Fields include `credentials`, `active_credentials`, `suspended_credentials`, `revoked_credentials`, `expired_credentials`, and `expiring_credentials`. The `expiring_credentials` count uses the default 7-day credential expiry lookahead.
+
+## Credential metrics
+
+`GET /metrics` includes Prometheus credential lifecycle gauges:
+
+- `maclaw_credentials_total`
+- `maclaw_credentials_by_status{status="active"}`
+- `maclaw_credentials_by_status{status="suspended"}`
+- `maclaw_credentials_by_status{status="revoked"}`
+- `maclaw_credentials_expired_total`
+- `maclaw_credentials_expiring_total`
+
+## Usage summary credential counters
+
+`GET /api/v1/usage/summary` includes credential lifecycle counters for the authenticated tenant/user. The response includes `credentials`, `active_credentials`, `suspended_credentials`, `revoked_credentials`, `expired_credentials`, and `expiring_credentials`.
+
+These are aggregate counters only; the endpoint does not reveal credential secrets, key hashes, or plaintext API keys.
+
+## Credential create expires_at
+
+`POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials` accepts optional `expires_at` in RFC3339/RFC3339Nano format.
+
+Example:
+
+```json
+{
+  "name": "CI runner",
+  "expires_at": "2026-05-01T00:00:00Z"
+}
+```
+
+When `api_key` or `api_secret` is omitted, the service still generates and returns the plaintext values only once in the create response.

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -24,6 +25,14 @@ type ToggleHubRequest struct {
 
 type UpdateHubVisibilityRequest struct {
 	Visibility string `json:"visibility"`
+}
+
+type MigrateHubUserRequest struct {
+	Mode      string `json:"mode"`
+	Email     string `json:"email"`
+	Domain    string `json:"domain"`
+	FromHubID string `json:"from_hub_id"`
+	ToHubID   string `json:"to_hub_id"`
 }
 
 func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
@@ -122,6 +131,51 @@ func DeleteHubHandler(service *hubs.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "unregistered"})
+	}
+}
+
+func MigrateHubUserHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req MigrateHubUserRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		mode := strings.ToLower(strings.TrimSpace(req.Mode))
+		if mode == "" {
+			if strings.TrimSpace(req.Email) != "" {
+				mode = "email"
+			} else if strings.TrimSpace(req.Domain) != "" {
+				mode = "domain"
+			}
+		}
+
+		var (
+			result *hubs.MigrationResult
+			err    error
+		)
+		switch mode {
+		case "email", "user":
+			result, err = service.MigrateUser(r.Context(), hubs.MigrateUserRequest{Email: req.Email, FromHubID: req.FromHubID, ToHubID: req.ToHubID})
+		case "domain":
+			result, err = service.MigrateDomain(r.Context(), hubs.MigrateDomainRequest{Domain: req.Domain, FromHubID: req.FromHubID, ToHubID: req.ToHubID})
+		default:
+			writeError(w, http.StatusBadRequest, "INVALID_MIGRATION_MODE", "Migration mode must be email or domain")
+			return
+		}
+		if err != nil {
+			if errors.Is(err, hubs.ErrHubNotFound) {
+				writeError(w, http.StatusNotFound, "TARGET_HUB_NOT_FOUND", err.Error())
+				return
+			}
+			if errors.Is(err, hubs.ErrHubDisabled) {
+				writeError(w, http.StatusLocked, "TARGET_HUB_DISABLED", "Target hub has been disabled")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "MIGRATE_USER_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "migration": result})
 	}
 }
 

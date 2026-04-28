@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // ConversationMessage represents a single message in a conversation history.
@@ -83,14 +85,53 @@ func NewKnowledgeExtractor(store *Store, llm LLMChatCaller) *KnowledgeExtractor 
 }
 
 // filterMessages keeps only user and assistant messages, preserving order.
+// System and developer messages are excluded because they contain framework
+// instructions (system prompts, steering rules, recover prompts) that are
+// not user knowledge. Tool messages with overly long output are truncated
+// to reduce noise in the extraction prompt.
+//
+// Inspired by Codex CLI's sanitize_response_item_for_memories which filters
+// out developer role messages and memory-excluded contextual fragments.
 func (ke *KnowledgeExtractor) filterMessages(messages []ConversationMessage) []ConversationMessage {
 	var filtered []ConversationMessage
 	for _, m := range messages {
-		if m.Role == "user" || m.Role == "assistant" {
+		switch m.Role {
+		case "system", "developer":
+			// Skip framework instructions — not user knowledge.
+			continue
+		case "user":
+			// Skip compaction recovery prompts and system notifications
+			// that were injected as user-role messages.
+			if isMemoryExcludedUserContent(m.Content) {
+				continue
+			}
 			filtered = append(filtered, m)
+		case "tool":
+			// Truncate overly long tool results to reduce noise.
+			// The extraction LLM doesn't need full file contents or
+			// command outputs — it needs the gist.
+			if len([]rune(m.Content)) > 2000 {
+				runes := []rune(m.Content)
+				m.Content = string(runes[:500]) + "\n[...tool output truncated for memory extraction...]"
+			}
+			filtered = append(filtered, m)
+		default:
+			// Only pass through known roles (assistant). Unknown roles
+			// (function, etc.) are filtered out.
+			if m.Role == "assistant" {
+				filtered = append(filtered, m)
+			}
 		}
 	}
 	return filtered
+}
+
+// isMemoryExcludedUserContent returns true for user-role messages that are
+// actually system-injected content (compaction recovery prompts, system
+// notifications, etc.) and should not be extracted as user knowledge.
+// Delegates to the shared SyntheticUserMessagePrefixes list in corelib.
+func isMemoryExcludedUserContent(content string) bool {
+	return corelib.IsSyntheticUserContent(content)
 }
 
 // preCompress uses the LLM to compress a long conversation (>20 turns)

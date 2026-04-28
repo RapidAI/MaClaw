@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
+	"golang.org/x/text/width"
 )
 
 var ErrHubUnauthorized = errors.New("hub unauthorized")
@@ -23,9 +24,11 @@ var ErrHubDisabled = errors.New("hub disabled")
 var ErrEmailBlocked = errors.New("email blocked")
 var ErrIPBlocked = errors.New("ip blocked")
 var ErrInvalidConfirmationToken = errors.New("invalid confirmation token")
+var ErrHubNotFound = errors.New("hub not found")
 
 const hubConfirmationPrefix = "hub_registration_confirm:"
 const systemKeyPublicBaseURL = "server_public_base_url"
+const adminDomainRoutePrefix = "hdr_admin_"
 
 type confirmationTokenRecord struct {
 	TokenHash string `json:"token_hash"`
@@ -52,6 +55,18 @@ type syncRecorder interface {
 
 type routeSnapshotRefresher interface {
 	Rebuild(ctx context.Context) error
+}
+
+type transactionalUserMigrator interface {
+	MigrateEmailToHub(ctx context.Context, email, fromHubID string, link *store.HubUserLink) ([]*store.HubUserLink, *store.HubUserLink, error)
+}
+
+type transactionalUserPatternMigrator interface {
+	MigrateEmailPatternToHub(ctx context.Context, pattern, fromHubID, toHubID string, now time.Time) ([]*store.HubUserLink, []*store.HubUserLink, error)
+}
+
+type transactionalDomainMigrator interface {
+	MigrateDomainToHub(ctx context.Context, domain, fromHubID string, route *store.HubDomainRoute) ([]*store.HubDomainRoute, error)
 }
 
 type BlockedEmailRepository interface {
@@ -100,6 +115,27 @@ type HeartbeatHubUpdate struct {
 	CorporateEmailDomain  string
 	CorporateEmailDomains []string
 	AcceptPublicSignup    *bool
+}
+
+type MigrateUserRequest struct {
+	Email     string `json:"email"`
+	FromHubID string `json:"from_hub_id,omitempty"`
+	ToHubID   string `json:"to_hub_id"`
+}
+
+type MigrateDomainRequest struct {
+	Domain    string `json:"domain"`
+	FromHubID string `json:"from_hub_id,omitempty"`
+	ToHubID   string `json:"to_hub_id"`
+}
+
+type MigrationResult struct {
+	Mode        string   `json:"mode"`
+	Email       string   `json:"email,omitempty"`
+	Domain      string   `json:"domain,omitempty"`
+	ToHubID     string   `json:"to_hub_id"`
+	RemovedIDs  []string `json:"removed_ids,omitempty"`
+	UpsertedIDs []string `json:"upserted_ids,omitempty"`
 }
 
 type Service struct {
@@ -452,6 +488,158 @@ func (s *Service) ListHubs(ctx context.Context) ([]*store.HubInstance, error) {
 	return s.hubs.ListAll(ctx)
 }
 
+func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*MigrationResult, error) {
+	email := normalizeEmailPattern(req.Email)
+	toHubID := strings.TrimSpace(req.ToHubID)
+	fromHubID := strings.TrimSpace(req.FromHubID)
+	if email == "" || toHubID == "" {
+		return nil, errors.New("email and target hub id are required")
+	}
+	if !isValidEmailMigrationPattern(email) {
+		return nil, errors.New("email must be an address, @domain, or wildcard pattern like ma*@qianxin.com")
+	}
+	if err := s.ensureTargetHub(ctx, toHubID); err != nil {
+		return nil, err
+	}
+	if s.links == nil {
+		return &MigrationResult{Mode: "email", Email: email, ToHubID: toHubID}, nil
+	}
+	if isEmailMigrationPattern(email) {
+		return s.migrateUserPattern(ctx, email, fromHubID, toHubID)
+	}
+
+	now := time.Now()
+	link := &store.HubUserLink{ID: primaryUserLinkID(toHubID, email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
+	var removedLinks []*store.HubUserLink
+	var upsertedLink *store.HubUserLink
+	if migrator, ok := s.links.(transactionalUserMigrator); ok {
+		var err error
+		removedLinks, upsertedLink, err = migrator.MigrateEmailToHub(ctx, email, fromHubID, link)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, errors.New("transactional user migration is not supported by this store")
+	}
+	removed := make([]string, 0, len(removedLinks))
+	for _, item := range removedLinks {
+		if item != nil {
+			removed = append(removed, item.ID)
+		}
+	}
+	if s.sync != nil {
+		for _, item := range removedLinks {
+			if item != nil {
+				s.sync.DeleteHubUserLink(ctx, item.ID)
+			}
+		}
+		if upsertedLink != nil {
+			s.sync.AppendHubUserLink(ctx, upsertedLink)
+		}
+	}
+	upserted := []string{}
+	if upsertedLink != nil {
+		upserted = append(upserted, upsertedLink.ID)
+	}
+	s.refreshRoutes(ctx)
+	return &MigrationResult{Mode: "email", Email: email, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: upserted}, nil
+}
+
+func (s *Service) migrateUserPattern(ctx context.Context, pattern, fromHubID, toHubID string) (*MigrationResult, error) {
+	migrator, ok := s.links.(transactionalUserPatternMigrator)
+	if !ok {
+		return nil, errors.New("transactional user pattern migration is not supported by this store")
+	}
+	removedLinks, upsertedLinks, err := migrator.MigrateEmailPatternToHub(ctx, pattern, fromHubID, toHubID, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	removed := make([]string, 0, len(removedLinks))
+	for _, item := range removedLinks {
+		if item != nil {
+			removed = append(removed, item.ID)
+		}
+	}
+	upserted := make([]string, 0, len(upsertedLinks))
+	for _, item := range upsertedLinks {
+		if item != nil {
+			upserted = append(upserted, item.ID)
+		}
+	}
+	if s.sync != nil {
+		for _, item := range removedLinks {
+			if item != nil {
+				s.sync.DeleteHubUserLink(ctx, item.ID)
+			}
+		}
+		for _, item := range upsertedLinks {
+			if item != nil {
+				s.sync.AppendHubUserLink(ctx, item)
+			}
+		}
+	}
+	s.refreshRoutes(ctx)
+	return &MigrationResult{Mode: "email", Email: pattern, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: upserted}, nil
+}
+
+func (s *Service) MigrateDomain(ctx context.Context, req MigrateDomainRequest) (*MigrationResult, error) {
+	domain := normalizeCorporateEmailDomain(req.Domain)
+	toHubID := strings.TrimSpace(req.ToHubID)
+	fromHubID := strings.TrimSpace(req.FromHubID)
+	if domain == "" || toHubID == "" {
+		return nil, errors.New("domain and target hub id are required")
+	}
+	if err := s.ensureTargetHub(ctx, toHubID); err != nil {
+		return nil, err
+	}
+	if s.routes == nil {
+		return &MigrationResult{Mode: "domain", Domain: domain, ToHubID: toHubID}, nil
+	}
+	adminRouteID := adminDomainRouteID(domain)
+	now := time.Now()
+	route := &store.HubDomainRoute{ID: adminRouteID, HubID: toHubID, Domain: domain, Enabled: true, Priority: 0, CreatedAt: now, UpdatedAt: now}
+	var removedRoutes []*store.HubDomainRoute
+	if migrator, ok := s.routes.(transactionalDomainMigrator); ok {
+		var err error
+		removedRoutes, err = migrator.MigrateDomainToHub(ctx, domain, fromHubID, route)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, errors.New("transactional domain migration is not supported by this store")
+	}
+	removed := make([]string, 0, len(removedRoutes))
+	for _, item := range removedRoutes {
+		if item != nil {
+			removed = append(removed, item.ID)
+		}
+	}
+	if s.sync != nil {
+		for _, item := range removedRoutes {
+			if item != nil {
+				s.sync.DeleteHubDomainRoute(ctx, item.ID)
+			}
+		}
+		s.sync.AppendHubDomainRoute(ctx, route)
+	}
+	s.refreshRoutes(ctx)
+	return &MigrationResult{Mode: "domain", Domain: domain, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: []string{route.ID}}, nil
+}
+
+func (s *Service) ensureTargetHub(ctx context.Context, hubID string) error {
+	hub, err := s.hubs.GetByID(ctx, strings.TrimSpace(hubID))
+	if err != nil {
+		return err
+	}
+	if hub == nil {
+		return ErrHubNotFound
+	}
+	if hub.IsDisabled || hub.Status == "disabled" {
+		return ErrHubDisabled
+	}
+	return nil
+}
+
 func (s *Service) UpdateVisibility(ctx context.Context, hubID, visibility string) error {
 	if strings.TrimSpace(hubID) == "" {
 		return errors.New("hub id is required")
@@ -762,6 +950,14 @@ func (s *Service) syncDomainRoutes(ctx context.Context, hub *store.HubInstance, 
 	if s.routes == nil || hub == nil {
 		return nil
 	}
+	preservedAdminRoutes := make([]*store.HubDomainRoute, 0)
+	if existing, err := s.routes.ListAll(ctx); err == nil {
+		for _, route := range existing {
+			if route != nil && route.HubID == hub.ID && strings.HasPrefix(strings.TrimSpace(route.ID), adminDomainRoutePrefix) {
+				preservedAdminRoutes = append(preservedAdminRoutes, route)
+			}
+		}
+	}
 	domains = normalizeCorporateEmailDomains(domains)
 	if len(domains) == 0 {
 		legacy := normalizeCorporateEmailDomain(hub.CorporateEmailDomain)
@@ -779,6 +975,15 @@ func (s *Service) syncDomainRoutes(ctx context.Context, hub *store.HubInstance, 
 	}
 	for idx, domain := range domains {
 		route := &store.HubDomainRoute{ID: domainRouteID(hub.ID, idx), HubID: hub.ID, Domain: domain, Enabled: true, Priority: 100 + idx, CreatedAt: now, UpdatedAt: now}
+		if err := s.routes.Upsert(ctx, route); err != nil {
+			return err
+		}
+		if s.sync != nil {
+			s.sync.AppendHubDomainRoute(ctx, route)
+		}
+	}
+	for _, route := range preservedAdminRoutes {
+		route.UpdatedAt = now
 		if err := s.routes.Upsert(ctx, route); err != nil {
 			return err
 		}
@@ -863,7 +1068,28 @@ func mustJSON(v any) string {
 }
 
 func normalizeEmail(email string) string {
-	return strings.TrimSpace(strings.ToLower(email))
+	return strings.TrimSpace(strings.ToLower(width.Narrow.String(email)))
+}
+
+func normalizeEmailPattern(pattern string) string {
+	pattern = normalizeEmail(pattern)
+	pattern = strings.ReplaceAll(pattern, "＊", "*")
+	if strings.HasPrefix(pattern, "@") {
+		pattern = "*" + pattern
+	}
+	return pattern
+}
+
+func isEmailMigrationPattern(email string) bool {
+	return strings.Contains(email, "*")
+}
+
+func isValidEmailMigrationPattern(pattern string) bool {
+	local, domain, ok := strings.Cut(normalizeEmailPattern(pattern), "@")
+	if !ok || local == "" || domain == "" || strings.Contains(domain, "*") || !strings.Contains(domain, ".") {
+		return false
+	}
+	return !strings.ContainsAny(local, " \t\r\n@") && !strings.ContainsAny(domain, " \t\r\n@")
 }
 
 func defaultIfEmpty(v, fallback string) string {
@@ -936,6 +1162,10 @@ func primaryUserLinkID(hubID, email string) string {
 
 func domainRouteID(hubID string, index int) string {
 	return fmt.Sprintf("hdr_%s_%d", strings.TrimSpace(hubID), index)
+}
+
+func adminDomainRouteID(domain string) string {
+	return adminDomainRoutePrefix + hashToken(normalizeCorporateEmailDomain(domain))[:20]
 }
 
 func isPublicSignupVisibility(v string) bool {

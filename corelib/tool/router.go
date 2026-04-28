@@ -699,6 +699,20 @@ func ShouldPinConditionalTool(name string) bool {
 	return allConditionalKeepTools[name] && !noPinConditionalTools[name]
 }
 
+// isBrowserDiagTool returns true if the tool name is a browser-related tool
+// for diagnostic logging purposes. Uses the same source of truth as
+// allBrowserToolNames to avoid maintaining a separate list.
+func isBrowserDiagTool(name string) bool {
+	// allBrowserToolNames is the canonical list. Also check gui_observe/gui_verify
+	// which are in codingToolBlocklist but not in allBrowserToolNames.
+	for _, n := range allBrowserToolNames {
+		if n == name {
+			return true
+		}
+	}
+	return name == "gui_observe" || name == "gui_verify"
+}
+
 // MatchConditionalTools returns the set of conditional tool names that match
 // the given text. This is used to pin tools based on recalled memory content
 // (e.g. when memory mentions "服务器" or "SSH", the ssh tool should be pinned).
@@ -948,6 +962,32 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	for name := range condKeep {
 		if ShouldPinConditionalTool(name) && !noEagerPinTools[name] {
 			r.ActivateSessionTool(name)
+		}
+	}
+
+	// --- Browser diagnostic: log how browser tools entered condKeep ---
+	{
+		var browserInKeep []string
+		var browserInSession []string
+		for name := range condKeep {
+			if isBrowserDiagTool(name) {
+				browserInKeep = append(browserInKeep, name)
+			}
+		}
+		for name := range r.sessionTools {
+			if isBrowserDiagTool(name) {
+				browserInSession = append(browserInSession, name)
+			}
+		}
+		if len(browserInKeep) > 0 || len(browserInSession) > 0 {
+			source := "unknown"
+			if r.unifiedClassifier != nil {
+				source = "UIC"
+			} else {
+				source = "keyword_rules"
+			}
+			log.Printf("[browser-diag] Route_condKeep: source=%s browserInKeep=%v browserInSession=%v",
+				source, browserInKeep, browserInSession)
 		}
 	}
 

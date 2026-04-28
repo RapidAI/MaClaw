@@ -27,6 +27,7 @@ var (
 	ErrTokenExpired       = errors.New("token expired or invalid")
 	ErrPasswordRequired   = errors.New("password is required")
 	ErrEmailRequired      = errors.New("email is required")
+	ErrCurrentPassword    = errors.New("current password is incorrect")
 )
 
 // PublicBaseURLProvider resolves the hubcenter external base URL from system settings.
@@ -65,7 +66,7 @@ func (a *AuthService) resolveBaseURL(ctx context.Context) string {
 // Register creates a new account with password and sends activation email.
 // Returns the created user (status=unverified).
 func (a *AuthService) Register(ctx context.Context, email, password string) (*SkillMarketUser, error) {
-	email = strings.TrimSpace(email)
+	email = normalizeEmail(email)
 	if email == "" {
 		return nil, ErrEmailRequired
 	}
@@ -82,6 +83,9 @@ func (a *AuthService) Register(ctx context.Context, email, password string) (*Sk
 		// If already exists and has password, reject
 		hash, _ := a.store.GetPasswordHash(ctx, existing.ID)
 		if hash != "" {
+			if existing.Status != "verified" {
+				return existing, a.sendActivationEmail(ctx, existing.ID, existing.Email)
+			}
 			return nil, fmt.Errorf("account already exists")
 		}
 		// Existing unverified account without password — set password and send activation
@@ -92,7 +96,9 @@ func (a *AuthService) Register(ctx context.Context, email, password string) (*Sk
 		if err := a.store.SetPasswordHash(ctx, existing.ID, string(hashed)); err != nil {
 			return nil, err
 		}
-		_ = a.sendActivationEmail(ctx, existing.ID, email)
+		if err := a.sendActivationEmail(ctx, existing.ID, existing.Email); err != nil {
+			return nil, err
+		}
 		return existing, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
@@ -122,7 +128,9 @@ func (a *AuthService) Register(ctx context.Context, email, password string) (*Sk
 		return nil, err
 	}
 
-	_ = a.sendActivationEmail(ctx, user.ID, email)
+	if err := a.sendActivationEmail(ctx, user.ID, email); err != nil {
+		return nil, err
+	}
 	return user, nil
 }
 
@@ -153,7 +161,7 @@ func (a *AuthService) Activate(ctx context.Context, token string) (*Session, err
 
 // Login authenticates with email + password, returns session.
 func (a *AuthService) Login(ctx context.Context, email, password string) (*Session, error) {
-	email = strings.TrimSpace(email)
+	email = normalizeEmail(email)
 	if email == "" {
 		return nil, ErrEmailRequired
 	}
@@ -182,7 +190,7 @@ func (a *AuthService) Login(ctx context.Context, email, password string) (*Sessi
 // - unverified user → resend activation email
 // - unknown email → send a registration invitation (no account created)
 func (a *AuthService) SendIdentityVerification(ctx context.Context, email string) error {
-	email = strings.TrimSpace(email)
+	email = normalizeEmail(email)
 	if email == "" {
 		return ErrEmailRequired
 	}
@@ -269,7 +277,7 @@ func (a *AuthService) Logout(ctx context.Context, token string) error {
 
 // ResendActivation resends activation email for an unverified account.
 func (a *AuthService) ResendActivation(ctx context.Context, email string) error {
-	email = strings.TrimSpace(email)
+	email = normalizeEmail(email)
 	user, err := a.store.GetUserByEmail(ctx, email)
 	if err != nil {
 		return ErrNotFound
@@ -282,7 +290,7 @@ func (a *AuthService) ResendActivation(ctx context.Context, email string) error 
 
 // SendPasswordReset sends a password reset email. Returns nil even if user not found (anti-enumeration).
 func (a *AuthService) SendPasswordReset(ctx context.Context, email string) error {
-	email = strings.TrimSpace(email)
+	email = normalizeEmail(email)
 	if email == "" {
 		return ErrEmailRequired
 	}
@@ -312,6 +320,41 @@ func (a *AuthService) SendPasswordReset(ctx context.Context, email string) error
 		link,
 	)
 	return a.mailer.Send(ctx, []string{email}, subject, body)
+}
+
+// CurrentUser returns the authenticated SkillMarket user for a session token.
+func (a *AuthService) CurrentUser(ctx context.Context, sessionToken string) (*SkillMarketUser, error) {
+	sess, err := a.ValidateSession(ctx, sessionToken)
+	if err != nil {
+		return nil, err
+	}
+	return a.store.GetUserByID(ctx, sess.UserID)
+}
+
+// ChangePassword verifies the current password and stores a new password.
+func (a *AuthService) ChangePassword(ctx context.Context, sessionToken, currentPassword, newPassword string) error {
+	sess, err := a.ValidateSession(ctx, sessionToken)
+	if err != nil {
+		return err
+	}
+	if len(newPassword) < 6 {
+		return ErrPasswordRequired
+	}
+	if len(newPassword) > 72 {
+		return fmt.Errorf("password too long (max 72 characters)")
+	}
+	hash, err := a.store.GetPasswordHash(ctx, sess.UserID)
+	if err != nil || hash == "" {
+		return ErrInvalidCredentials
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(currentPassword)); err != nil {
+		return ErrCurrentPassword
+	}
+	hashed, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcryptCost)
+	if err != nil {
+		return err
+	}
+	return a.store.SetPasswordHash(ctx, sess.UserID, string(hashed))
 }
 
 // ResetPassword validates the reset token and sets a new password, returning a session.
@@ -390,4 +433,8 @@ func generateToken() string {
 	var buf [32]byte
 	_, _ = rand.Read(buf[:])
 	return hex.EncodeToString(buf[:])
+}
+
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
 }

@@ -14,7 +14,10 @@ import (
 )
 
 const (
-	ScopeCompany    = "company"
+	ScopeCompany = "company"
+	// ScopeDepartment is a virtual organization-unit memory scope.
+	// In AI native operations it does not imply a human middle-management layer;
+	// it is a capability/domain boundary for recall, permissions, and routing.
 	ScopeDepartment = "department"
 	ScopePersonal   = "personal"
 )
@@ -50,6 +53,7 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 	allowed := ctx.allowedOwnerIDs()
 	stats := MemoryStats{
 		TenantID:      ctx.TenantID,
+		OrgUnitID:     ctx.DepartmentID,
 		DepartmentID:  ctx.DepartmentID,
 		WorkerID:      ctx.WorkerID,
 		ByScope:       map[string]int{ScopeCompany: 0, ScopeDepartment: 0, ScopePersonal: 0},
@@ -192,7 +196,7 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := requestMemoryContext(r)
 	ctx.TenantID = firstNonEmpty(req.TenantID, ctx.TenantID)
-	ctx.DepartmentID = firstNonEmpty(req.DepartmentID, ctx.DepartmentID)
+	ctx.DepartmentID = firstNonEmpty(req.OrgUnitID, req.DepartmentID, ctx.DepartmentID)
 	ctx.WorkerID = firstNonEmpty(req.WorkerID, ctx.WorkerID)
 	scope := normalizeScope(req.Scope)
 	if scope == "" {
@@ -248,6 +252,7 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 type saveRequest struct {
 	ID           string   `json:"id"`
 	TenantID     string   `json:"tenant_id"`
+	OrgUnitID    string   `json:"org_unit_id"`
 	DepartmentID string   `json:"department_id"`
 	WorkerID     string   `json:"worker_id"`
 	Scope        string   `json:"scope"`
@@ -260,6 +265,7 @@ type saveRequest struct {
 // MemoryStats summarizes the memory footprint visible to one iWorker context.
 type MemoryStats struct {
 	TenantID      string         `json:"tenant_id"`
+	OrgUnitID     string         `json:"org_unit_id,omitempty"`
 	DepartmentID  string         `json:"department_id,omitempty"`
 	WorkerID      string         `json:"worker_id,omitempty"`
 	Total         int            `json:"total"`
@@ -272,6 +278,7 @@ type MemoryStats struct {
 type MemoryDTO struct {
 	ID           string   `json:"id"`
 	TenantID     string   `json:"tenant_id"`
+	OrgUnitID    string   `json:"org_unit_id,omitempty"`
 	DepartmentID string   `json:"department_id,omitempty"`
 	WorkerID     string   `json:"worker_id,omitempty"`
 	Scope        string   `json:"scope"`
@@ -295,6 +302,7 @@ func toDTO(entry corememory.Entry) (MemoryDTO, bool) {
 	return MemoryDTO{
 		ID:           entry.ID,
 		TenantID:     owner.TenantID,
+		OrgUnitID:    owner.DepartmentID,
 		DepartmentID: owner.DepartmentID,
 		WorkerID:     owner.WorkerID,
 		Scope:        owner.Scope,
@@ -322,7 +330,7 @@ func requestMemoryContext(r *http.Request) memoryContext {
 	q := r.URL.Query()
 	return memoryContext{
 		TenantID:     firstNonEmpty(q.Get("tenant_id"), tenant.TenantIDFromContext(r.Context()), "default"),
-		DepartmentID: strings.TrimSpace(q.Get("department_id")),
+		DepartmentID: strings.TrimSpace(firstNonEmpty(q.Get("org_unit_id"), q.Get("department_id"))),
 		WorkerID:     strings.TrimSpace(q.Get("worker_id")),
 	}
 }
@@ -346,7 +354,7 @@ func (c memoryContext) validateForScope(scope string) *validationError {
 		return nil
 	case ScopeDepartment:
 		if strings.TrimSpace(c.DepartmentID) == "" {
-			return &validationError{code: "MISSING_DEPARTMENT_ID", message: "department_id is required for department memory"}
+			return &validationError{code: "MISSING_ORG_UNIT_ID", message: "org_unit_id is required for virtual organization-unit memory"}
 		}
 		return nil
 	case ScopePersonal:
@@ -426,7 +434,7 @@ func normalizeScope(scope string) string {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
 	case "", ScopePersonal, "worker", "user":
 		return ScopePersonal
-	case ScopeDepartment, "dept", "team":
+	case ScopeDepartment, "dept", "team", "org_unit", "unit", "domain", "capability_domain":
 		return ScopeDepartment
 	case ScopeCompany, "enterprise", "tenant", "org", "organization":
 		return ScopeCompany

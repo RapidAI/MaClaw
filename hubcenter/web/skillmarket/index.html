@@ -3,23 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SkillMarket</title>
+  <title>MaClaw SkillMarket</title>
   <style>
     :root{--bg:#f6f8fc;--card:#fff;--text:#172033;--muted:#667085;--line:#dbe3ef;--primary:#2563eb;--primary-strong:#1d4ed8;--warn:#f59e0b;--ok:#16a34a;--danger:#dc2626;--shadow:0 12px 34px rgba(23,32,51,.08);--radius:16px}
     *{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#fbfdff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-    .wrap{max-width:1120px;margin:0 auto;padding:28px 18px 36px}header{text-align:center;position:relative;margin-bottom:20px}header h1{margin:0 0 8px;font-size:32px}header p{margin:0;color:var(--muted);font-size:14px}.user-link{position:absolute;right:0;top:6px;color:var(--primary);text-decoration:none;font-size:13px}
+    .wrap{max-width:1120px;margin:0 auto;padding:28px 18px 36px}header{text-align:center;position:relative;margin-bottom:20px}.brand{display:inline-flex;align-items:center;justify-content:center;gap:12px;margin-bottom:8px}.brand-logo{width:54px;height:54px;object-fit:contain}.brand h1{margin:0;font-size:32px}header p{margin:0;color:var(--muted);font-size:14px}.user-link{position:absolute;right:0;top:6px;color:var(--primary);text-decoration:none;font-size:13px}.lang-switch{position:absolute;left:0;top:0;display:flex;gap:4px;border:1px solid var(--line);border-radius:10px;background:#fff;padding:3px}.lang-switch button{border:0;background:transparent;color:var(--muted);height:28px;padding:0 9px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer}.lang-switch button.active{background:var(--primary);color:#fff}
     .tabs{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:18px}.tab{height:40px;padding:0 16px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--muted);font:inherit;cursor:pointer}.tab.active{background:linear-gradient(135deg,var(--primary),var(--primary-strong));border-color:transparent;color:#fff}
     .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:18px}.toolbar input{flex:1;height:44px;padding:0 14px;border:1px solid var(--line);border-radius:12px;font:inherit;background:#fff}.toolbar button{height:44px;padding:0 18px;border:0;border-radius:12px;background:linear-gradient(135deg,var(--primary),var(--primary-strong));color:#fff;font:inherit;font-weight:700;cursor:pointer}
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}.card{padding:18px;border:1px solid var(--line);border-radius:var(--radius);background:var(--card);box-shadow:var(--shadow);cursor:pointer;display:flex;flex-direction:column;gap:10px}.card-name{font-size:16px;font-weight:800}.card-desc{font-size:13px;color:var(--muted);line-height:1.65;min-height:42px}.card-tags{display:flex;gap:6px;flex-wrap:wrap}.tag{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;background:#eff6ff;color:var(--primary)}.card-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
     .state{text-align:center;padding:44px 18px;border:1px dashed var(--line);border-radius:var(--radius);background:rgba(255,255,255,.74);color:var(--muted)}
     .overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.44);padding:20px;align-items:center;justify-content:center}.overlay.active{display:flex}.detail{width:min(620px,100%);max-height:85vh;overflow:auto;padding:22px;border-radius:20px;background:#fff;box-shadow:0 28px 60px rgba(15,23,42,.24)}.detail-close{float:right;border:0;background:none;color:var(--muted);font-size:22px;cursor:pointer}.detail h2{margin:0 0 12px;font-size:24px}.detail-row{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0;color:var(--muted);font-size:13px}.rating-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.rating-row button{width:42px;height:42px;border:1px solid var(--line);border-radius:999px;background:#fff;font:inherit;cursor:pointer}.rating-row button.selected,.rating-row button:hover{background:var(--primary);border-color:var(--primary);color:#fff}
-    @media (max-width:720px){header h1{font-size:28px}.user-link{position:static;display:inline-block;margin-top:8px}.toolbar{flex-direction:column}.toolbar input,.toolbar button{width:100%}}
+    @media (max-width:720px){.brand{gap:8px}.brand-logo{width:42px;height:42px}.brand h1{font-size:27px}.user-link{position:static;display:inline-block;margin-top:8px}.lang-switch{position:static;justify-content:center;margin:0 auto 12px;width:max-content}.toolbar{flex-direction:column}.toolbar input,.toolbar button{width:100%}}
   </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1 id="pageTitle">SkillMarket</h1>
+    <div class="lang-switch" aria-label="Language">
+      <button type="button" id="langZh" onclick="setLanguage('zh')">中文</button>
+      <button type="button" id="langEn" onclick="setLanguage('en')">EN</button>
+    </div>
+    <div class="brand">
+      <img class="brand-logo" src="/skillmarket/maclaw-logo.png" alt="MaClaw logo">
+      <h1 id="pageTitle">MaClaw SkillMarket</h1>
+    </div>
     <p id="subtitle"></p>
     <a class="user-link" href="/skillmarket/user" id="userLink"></a>
   </header>
@@ -68,10 +75,10 @@
 </div>
 
 <script>
-const LANG=(navigator.language||'en').toLowerCase().startsWith('zh')?'zh':'en';
+let LANG=localStorage.getItem('sm_lang')||((navigator.language||'en').toLowerCase().startsWith('zh')?'zh':'en');
 document.getElementById('html-root').lang=LANG==='zh'?'zh-CN':'en';
 const I18N={
-  title:{zh:'\u6280\u80fd\u5e02\u573a',en:'SkillMarket'},subtitle:{zh:'\u53d1\u73b0\u4f18\u8d28\u6280\u80fd\uff0c\u641c\u7d22\u3001\u6d4f\u89c8\u5e76\u8bc4\u5206\u3002',en:'Discover quality skills, search, browse, and rate them.'},userLink:{zh:'用户中心',en:'User Center'},
+  title:{zh:'MaClaw SkillMarket',en:'MaClaw SkillMarket'},subtitle:{zh:'\u53d1\u73b0\u4f18\u8d28\u6280\u80fd\uff0c\u641c\u7d22\u3001\u6d4f\u89c8\u5e76\u8bc4\u5206\u3002',en:'Discover quality skills, search, browse, and rate them.'},userLink:{zh:'用户中心',en:'User Center'},
   tabSearch:{zh:'搜索',en:'Search'},tabRating:{zh:'评分排行',en:'Top Rated'},tabDownloads:{zh:'下载排行',en:'Most Downloaded'},tabNewest:{zh:'最新上架',en:'Newest'},
   searchPlaceholder:{zh:'\u641c\u7d22\u6280\u80fd\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e',en:'Search skill name, description, tags'},search:{zh:'搜索',en:'Search'},
   emptySearch:{zh:'暂无搜索结果',en:'No results found.'},emptyTop:{zh:'暂无数据',en:'No data.'},loading:{zh:'加载中...',en:'Loading...'},
@@ -80,11 +87,13 @@ const I18N={
   statusPending:{zh:'待审核',en:'Pending Review'},statusPublished:{zh:'已上架',en:'Published'},statusRejected:{zh:'已拒绝',en:'Rejected'},statusWithdrawn:{zh:'已下架',en:'Withdrawn'},statusDraft:{zh:'草稿',en:'Draft'},statusActive:{zh:'有效',en:'Active'},statusInactive:{zh:'未启用',en:'Inactive'},statusUnknown:{zh:'未知',en:'Unknown'}
 };
 function t(key){return (I18N[key]&&I18N[key][LANG])||key}
+function setLanguage(lang){LANG=lang==='en'?'en':'zh';localStorage.setItem('sm_lang',LANG);document.getElementById('html-root').lang=LANG==='zh'?'zh-CN':'en';applyI18n();refreshCurrentView();}
 function text(key,vars){var s=t(key);return String(s).replace(/\{(\w+)\}/g,function(_,n){return vars&&vars[n]!=null?vars[n]:''})}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(ch){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];});}
 function fmtDate(v){if(!v)return '-';try{var d=new Date(v);if(isNaN(d))return String(v);return d.toLocaleDateString(LANG==='zh'?'zh-CN':'en-US',{year:'numeric',month:'2-digit',day:'2-digit'});}catch(_){return String(v);}}
 function statusText(v){var raw=String(v||'').toLowerCase();var map={pending_review:'statusPending',pending:'statusPending',published:'statusPublished',approved:'statusPublished',rejected:'statusRejected',withdrawn:'statusWithdrawn',draft:'statusDraft',active:'statusActive',inactive:'statusInactive'};return t(map[raw]||'statusUnknown')}
-function applyI18n(){document.title=t('title');pageTitle.textContent=t('title');subtitle.textContent=t('subtitle');userLink.textContent=t('userLink');tabSearch.textContent=t('tabSearch');tabRating.textContent=t('tabRating');tabDownloads.textContent=t('tabDownloads');tabNewest.textContent=t('tabNewest');searchInput.placeholder=t('searchPlaceholder');searchBtn.textContent=t('search');searchEmpty.textContent=t('emptySearch');ratingEmpty.textContent=t('emptyTop');downloadsEmpty.textContent=t('emptyTop');newestEmpty.textContent=t('emptyTop');rateLabel.textContent=t('rateLabel');}
+function applyI18n(){document.title=t('title');pageTitle.textContent=t('title');subtitle.textContent=t('subtitle');userLink.textContent=t('userLink');tabSearch.textContent=t('tabSearch');tabRating.textContent=t('tabRating');tabDownloads.textContent=t('tabDownloads');tabNewest.textContent=t('tabNewest');searchInput.placeholder=t('searchPlaceholder');searchBtn.textContent=t('search');searchEmpty.textContent=t('emptySearch');ratingEmpty.textContent=t('emptyTop');downloadsEmpty.textContent=t('emptyTop');newestEmpty.textContent=t('emptyTop');rateLabel.textContent=t('rateLabel');langZh.classList.toggle('active',LANG==='zh');langEn.classList.toggle('active',LANG==='en');}
+function refreshCurrentView(){var active=document.querySelector('.tab.active');var view=active&&active.dataset.view;if(view==='top-rating')loadTop('rating');else if(view==='top-downloads')loadTop('downloads');else if(view==='top-newest')loadTop('newest');else doSearch();}
 function renderCards(containerId,emptyId,items){var c=document.getElementById(containerId),e=document.getElementById(emptyId);c.innerHTML='';if(!items.length){e.style.display='';return;}e.style.display='none';items.forEach(function(s){var tags=(s.tags||[]).map(function(tag){return '<span class="tag">'+esc(tag)+'</span>';}).join('');var price=s.price?String(s.price)+' '+t('credits'):t('priceFree');var date=s.created_at?fmtDate(s.created_at):'';var card=document.createElement('div');card.className='card';card.innerHTML='<div class="card-name">'+esc(s.name||'-')+(s.version?' <span style="font-size:12px;color:var(--muted);font-weight:500">v'+esc(s.version)+'</span>':'')+'</div>'+'<div class="card-desc">'+esc(s.description||'')+'</div>'+'<div class="card-tags">'+tags+'</div>'+'<div class="card-meta"><span>'+t('rating')+': '+Number(s.avg_rating||0).toFixed(1)+'</span><span>'+t('downloads')+': '+Number(s.download_count||0)+'</span><span>'+price+'</span>'+(date?'<span>'+date+'</span>':'')+'</div>';card.onclick=function(){showDetail(s)};c.appendChild(card);});}
 function showLoading(containerId,emptyId){document.getElementById(containerId).innerHTML='';var e=document.getElementById(emptyId);e.style.display='';e.textContent=t('loading');}
 async function doSearch(){showLoading('searchResults','searchEmpty');try{const r=await fetch('/api/v1/skillmarket/search?q='+encodeURIComponent(searchInput.value.trim())+'&top_n=30');if(!r.ok)throw new Error(await r.text());const data=await r.json();const list=data.results||data||[];renderCards('searchResults','searchEmpty',Array.isArray(list)?list:[]);}catch(_){searchEmpty.style.display='';searchEmpty.textContent=t('network');}}

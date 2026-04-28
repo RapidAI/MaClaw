@@ -55,9 +55,13 @@ func TestTrimHistory_TwoTierPreservesTurnBoundaries(t *testing.T) {
 
 	result := trimHistory(entries)
 
-	// Should be within budget.
-	if len(result) > agent.MaxConversationTurns+5 {
-		t.Errorf("result too large: %d entries (max %d)", len(result), agent.MaxConversationTurns+5)
+	// Should be within budget. The three-tier compaction produces:
+	// tier-1 (turn boundaries) + tier-user (preserved user messages, max 5)
+	// + separator (1) + recent window. Total may exceed MaxConversationTurns
+	// by the tier-1 count + tier-user count + 1 separator.
+	maxExpected := agent.MaxConversationTurns + 10 // tier-1 + tier-user + separator
+	if len(result) > maxExpected {
+		t.Errorf("result too large: %d entries (max %d)", len(result), maxExpected)
 	}
 
 	// The structural invariant: first user message and first assistant

@@ -295,85 +295,109 @@ type QuotaUsageSnapshot struct {
 }
 
 type UsageSummary struct {
-	TenantID          string             `json:"tenant_id"`
-	UserID            string             `json:"user_id"`
-	DataDir           string             `json:"data_dir"`
-	Quota             TenantQuota        `json:"quota,omitempty"`
-	QuotaUsage        QuotaUsageSnapshot `json:"quota_usage"`
-	Instances         int                `json:"instances"`
-	ReadyInstances    int                `json:"ready_instances"`
-	StoppedInstances  int                `json:"stopped_instances"`
-	Sessions          int                `json:"sessions"`
-	Messages          int                `json:"messages"`
-	UserMessages      int                `json:"user_messages"`
-	AssistantMessages int                `json:"assistant_messages"`
-	Runs              int                `json:"runs"`
-	RunsByStatus      map[RunStatus]int  `json:"runs_by_status"`
-	LastActivityAt    *time.Time         `json:"last_activity_at,omitempty"`
+	TenantID             string             `json:"tenant_id"`
+	UserID               string             `json:"user_id"`
+	DataDir              string             `json:"data_dir"`
+	Quota                TenantQuota        `json:"quota,omitempty"`
+	QuotaUsage           QuotaUsageSnapshot `json:"quota_usage"`
+	Instances            int                `json:"instances"`
+	ReadyInstances       int                `json:"ready_instances"`
+	StoppedInstances     int                `json:"stopped_instances"`
+	Sessions             int                `json:"sessions"`
+	Messages             int                `json:"messages"`
+	UserMessages         int                `json:"user_messages"`
+	AssistantMessages    int                `json:"assistant_messages"`
+	Runs                 int                `json:"runs"`
+	RunsByStatus         map[RunStatus]int  `json:"runs_by_status"`
+	Credentials          int                `json:"credentials"`
+	ActiveCredentials    int                `json:"active_credentials"`
+	SuspendedCredentials int                `json:"suspended_credentials"`
+	RevokedCredentials   int                `json:"revoked_credentials"`
+	ExpiredCredentials   int                `json:"expired_credentials"`
+	ExpiringCredentials  int                `json:"expiring_credentials"`
+	LastActivityAt       *time.Time         `json:"last_activity_at,omitempty"`
 }
 
 type TenantUserSummary struct {
-	UserID            string             `json:"user_id"`
-	Name              string             `json:"name"`
-	Email             string             `json:"email,omitempty"`
-	Status            UserStatus         `json:"status"`
-	DataDir           string             `json:"data_dir"`
-	Quota             TenantQuota        `json:"quota,omitempty"`
-	EffectiveQuota    TenantQuota        `json:"effective_quota,omitempty"`
-	QuotaUsage        QuotaUsageSnapshot `json:"quota_usage"`
-	Instances         int                `json:"instances"`
-	ReadyInstances    int                `json:"ready_instances"`
-	StoppedInstances  int                `json:"stopped_instances"`
-	Sessions          int                `json:"sessions"`
-	Messages          int                `json:"messages"`
-	UserMessages      int                `json:"user_messages"`
-	AssistantMessages int                `json:"assistant_messages"`
-	Runs              int                `json:"runs"`
-	RunsByStatus      map[RunStatus]int  `json:"runs_by_status"`
-	LastActivityAt    *time.Time         `json:"last_activity_at,omitempty"`
+	UserID               string             `json:"user_id"`
+	Name                 string             `json:"name"`
+	Email                string             `json:"email,omitempty"`
+	Status               UserStatus         `json:"status"`
+	DataDir              string             `json:"data_dir"`
+	Quota                TenantQuota        `json:"quota,omitempty"`
+	EffectiveQuota       TenantQuota        `json:"effective_quota,omitempty"`
+	QuotaUsage           QuotaUsageSnapshot `json:"quota_usage"`
+	Instances            int                `json:"instances"`
+	ReadyInstances       int                `json:"ready_instances"`
+	StoppedInstances     int                `json:"stopped_instances"`
+	Sessions             int                `json:"sessions"`
+	Messages             int                `json:"messages"`
+	UserMessages         int                `json:"user_messages"`
+	AssistantMessages    int                `json:"assistant_messages"`
+	Runs                 int                `json:"runs"`
+	RunsByStatus         map[RunStatus]int  `json:"runs_by_status"`
+	Credentials          int                `json:"credentials"`
+	ActiveCredentials    int                `json:"active_credentials"`
+	SuspendedCredentials int                `json:"suspended_credentials"`
+	RevokedCredentials   int                `json:"revoked_credentials"`
+	ExpiredCredentials   int                `json:"expired_credentials"`
+	ExpiringCredentials  int                `json:"expiring_credentials"`
+	LastActivityAt       *time.Time         `json:"last_activity_at,omitempty"`
 }
 
 type TenantSummary struct {
-	TenantID          string              `json:"tenant_id"`
-	Name              string              `json:"name"`
-	Status            TenantStatus        `json:"status"`
-	Quota             TenantQuota         `json:"quota,omitempty"`
-	QuotaUsage        QuotaUsageSnapshot  `json:"quota_usage"`
-	Users             int                 `json:"users"`
-	ActiveUsers       int                 `json:"active_users"`
-	DisabledUsers     int                 `json:"disabled_users"`
-	Instances         int                 `json:"instances"`
-	ReadyInstances    int                 `json:"ready_instances"`
-	StoppedInstances  int                 `json:"stopped_instances"`
-	Sessions          int                 `json:"sessions"`
-	Messages          int                 `json:"messages"`
-	UserMessages      int                 `json:"user_messages"`
-	AssistantMessages int                 `json:"assistant_messages"`
-	Runs              int                 `json:"runs"`
-	RunsByStatus      map[RunStatus]int   `json:"runs_by_status"`
-	LastActivityAt    *time.Time          `json:"last_activity_at,omitempty"`
-	UserSummaries     []TenantUserSummary `json:"user_summaries,omitempty"`
+	TenantID             string              `json:"tenant_id"`
+	Name                 string              `json:"name"`
+	Status               TenantStatus        `json:"status"`
+	Quota                TenantQuota         `json:"quota,omitempty"`
+	QuotaUsage           QuotaUsageSnapshot  `json:"quota_usage"`
+	Users                int                 `json:"users"`
+	ActiveUsers          int                 `json:"active_users"`
+	DisabledUsers        int                 `json:"disabled_users"`
+	Instances            int                 `json:"instances"`
+	ReadyInstances       int                 `json:"ready_instances"`
+	StoppedInstances     int                 `json:"stopped_instances"`
+	Sessions             int                 `json:"sessions"`
+	Messages             int                 `json:"messages"`
+	UserMessages         int                 `json:"user_messages"`
+	AssistantMessages    int                 `json:"assistant_messages"`
+	Runs                 int                 `json:"runs"`
+	RunsByStatus         map[RunStatus]int   `json:"runs_by_status"`
+	Credentials          int                 `json:"credentials"`
+	ActiveCredentials    int                 `json:"active_credentials"`
+	SuspendedCredentials int                 `json:"suspended_credentials"`
+	RevokedCredentials   int                 `json:"revoked_credentials"`
+	ExpiredCredentials   int                 `json:"expired_credentials"`
+	ExpiringCredentials  int                 `json:"expiring_credentials"`
+	LastActivityAt       *time.Time          `json:"last_activity_at,omitempty"`
+	UserSummaries        []TenantUserSummary `json:"user_summaries,omitempty"`
 }
 
 type AdminOverview struct {
-	Tenants           int               `json:"tenants"`
-	ActiveTenants     int               `json:"active_tenants"`
-	DisabledTenants   int               `json:"disabled_tenants"`
-	Users             int               `json:"users"`
-	ActiveUsers       int               `json:"active_users"`
-	DisabledUsers     int               `json:"disabled_users"`
-	Instances         int               `json:"instances"`
-	ReadyInstances    int               `json:"ready_instances"`
-	StoppedInstances  int               `json:"stopped_instances"`
-	Sessions          int               `json:"sessions"`
-	Messages          int               `json:"messages"`
-	UserMessages      int               `json:"user_messages"`
-	AssistantMessages int               `json:"assistant_messages"`
-	Runs              int               `json:"runs"`
-	RunsByStatus      map[RunStatus]int `json:"runs_by_status"`
-	AuditEvents       int               `json:"audit_events"`
-	LastActivityAt    *time.Time        `json:"last_activity_at,omitempty"`
-	LastAuditAt       *time.Time        `json:"last_audit_at,omitempty"`
+	Tenants              int               `json:"tenants"`
+	ActiveTenants        int               `json:"active_tenants"`
+	DisabledTenants      int               `json:"disabled_tenants"`
+	Users                int               `json:"users"`
+	ActiveUsers          int               `json:"active_users"`
+	DisabledUsers        int               `json:"disabled_users"`
+	Credentials          int               `json:"credentials"`
+	ActiveCredentials    int               `json:"active_credentials"`
+	SuspendedCredentials int               `json:"suspended_credentials"`
+	RevokedCredentials   int               `json:"revoked_credentials"`
+	ExpiredCredentials   int               `json:"expired_credentials"`
+	ExpiringCredentials  int               `json:"expiring_credentials"`
+	Instances            int               `json:"instances"`
+	ReadyInstances       int               `json:"ready_instances"`
+	StoppedInstances     int               `json:"stopped_instances"`
+	Sessions             int               `json:"sessions"`
+	Messages             int               `json:"messages"`
+	UserMessages         int               `json:"user_messages"`
+	AssistantMessages    int               `json:"assistant_messages"`
+	Runs                 int               `json:"runs"`
+	RunsByStatus         map[RunStatus]int `json:"runs_by_status"`
+	AuditEvents          int               `json:"audit_events"`
+	LastActivityAt       *time.Time        `json:"last_activity_at,omitempty"`
+	LastAuditAt          *time.Time        `json:"last_audit_at,omitempty"`
 }
 
 type AdminTrendPoint struct {
@@ -509,16 +533,18 @@ type AdminAlertItem struct {
 	InstanceID      string     `json:"instance_id,omitempty"`
 	SessionID       string     `json:"session_id,omitempty"`
 	RunID           string     `json:"run_id,omitempty"`
+	CredentialID    string     `json:"credential_id,omitempty"`
 	OccurredAt      *time.Time `json:"occurred_at,omitempty"`
 	Reason          string     `json:"reason,omitempty"`
 }
 
 type AdminAlertsInput struct {
-	TenantID string     `json:"tenant_id,omitempty"`
-	UserID   string     `json:"user_id,omitempty"`
-	Kind     string     `json:"kind,omitempty"`
-	Since    *time.Time `json:"since,omitempty"`
-	Limit    int        `json:"limit,omitempty"`
+	TenantID                   string     `json:"tenant_id,omitempty"`
+	UserID                     string     `json:"user_id,omitempty"`
+	Kind                       string     `json:"kind,omitempty"`
+	Since                      *time.Time `json:"since,omitempty"`
+	Limit                      int        `json:"limit,omitempty"`
+	CredentialExpiryWindowDays int        `json:"credential_expiry_window_days,omitempty"`
 }
 
 type AdminAlerts struct {
@@ -526,6 +552,7 @@ type AdminAlerts struct {
 	UnreadyInstances []Instance       `json:"unready_instances,omitempty"`
 	WaitingRuns      []Run            `json:"waiting_runs,omitempty"`
 	FailedRuns       []Run            `json:"failed_runs,omitempty"`
+	CredentialAlerts []Credential     `json:"credential_alerts,omitempty"`
 	GeneratedAt      time.Time        `json:"generated_at"`
 }
 
@@ -694,11 +721,12 @@ type UpdateUserInput struct {
 }
 
 type CreateCredentialInput struct {
-	TenantID  string `json:"tenant_id"`
-	UserID    string `json:"user_id"`
-	Name      string `json:"name"`
-	APIKey    string `json:"api_key,omitempty"`
-	APISecret string `json:"api_secret,omitempty"`
+	TenantID  string     `json:"tenant_id"`
+	UserID    string     `json:"user_id"`
+	Name      string     `json:"name"`
+	APIKey    string     `json:"api_key,omitempty"`
+	APISecret string     `json:"api_secret,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type UpdateCredentialInput struct {
@@ -709,11 +737,11 @@ type UpdateCredentialInput struct {
 }
 
 type RotateCredentialSecretInput struct {
-	APISecret string `json:"api_secret"`
+	APISecret string `json:"api_secret,omitempty"`
 }
 
 type RotateCredentialKeyInput struct {
-	APIKey string `json:"api_key"`
+	APIKey string `json:"api_key,omitempty"`
 }
 
 type IssueTokenInput struct {

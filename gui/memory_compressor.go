@@ -51,6 +51,12 @@ type MemoryCompressor struct {
 	lastRun    time.Time
 	lastResult *memory.CompressResult
 	lastError  string
+
+	// compressCount tracks the number of in-flight Compress() calls.
+	// Protected by mu. Incremented at Compress() entry, decremented at exit.
+	// IsCompressing() returns compressCount > 0.
+	// An atomic counter (not a bool) because manual and auto compress can overlap.
+	compressCount int
 }
 
 // NewMemoryCompressor creates a MemoryCompressor.
@@ -74,6 +80,15 @@ func (mc *MemoryCompressor) Compress(ctx context.Context) (*memory.CompressResul
 	if mc.store == nil {
 		return nil, fmt.Errorf("memory store is nil")
 	}
+
+	mc.mu.Lock()
+	mc.compressCount++
+	mc.mu.Unlock()
+	defer func() {
+		mc.mu.Lock()
+		mc.compressCount--
+		mc.mu.Unlock()
+	}()
 
 	// 1. Create a backup before any modification.
 	backupName, err := mc.createBackup()
@@ -326,6 +341,12 @@ func (mc *MemoryCompressor) isDuplicate(a, b memory.Entry) bool {
 
 // isDuplicateLower is the inner dedup check using pre-computed lowercase content.
 func (mc *MemoryCompressor) isDuplicateLower(a, b memory.Entry, ca, cb string) bool {
+	// Multi-tenant isolation: different users' entries are never duplicates.
+	// Empty OwnerID (shared) can match with any user.
+	if a.OwnerID != "" && b.OwnerID != "" && a.OwnerID != b.OwnerID {
+		return false
+	}
+
 	// Exact match.
 	if ca == cb {
 		return true
@@ -333,7 +354,9 @@ func (mc *MemoryCompressor) isDuplicateLower(a, b memory.Entry, ca, cb string) b
 
 	// Substring match within the same category — only when both sides are
 	// long enough to avoid aggressive false positives.
-	if a.Category == b.Category {
+	// Use canonical category mapping so Claude-style categories dedup against
+	// their legacy equivalents (e.g. "project" ↔ "project_knowledge").
+	if memory.MapToCanonical(a.Category) == memory.MapToCanonical(b.Category) {
 		runeA, runeB := len([]rune(ca)), len([]rune(cb))
 		shorter := runeA
 		if runeB < shorter {
@@ -395,21 +418,31 @@ const mergeBatchSize = 25
 func (mc *MemoryCompressor) mergeSemanticDuplicates(ctx context.Context) (int, error) {
 	totalMerged := 0
 
-	// Collect categories present in the store.
+	// Multi-tenant isolation: group by (Category, OwnerID) to ensure
+	// different users' entries are never merged.
+	type catOwnerKey struct {
+		Category memory.Category
+		OwnerID  string
+	}
+
 	mc.store.RLock()
-	catSet := make(map[memory.Category]bool)
+	groupSet := make(map[catOwnerKey]bool)
 	for _, e := range mc.store.Entries() {
-		catSet[e.Category] = true
+		groupSet[catOwnerKey{Category: memory.MapToCanonical(e.Category), OwnerID: e.OwnerID}] = true
 	}
 	mc.store.RUnlock()
 
-	for cat := range catSet {
-		// Re-snapshot entries for this category each iteration so we see
+	for key := range groupSet {
+		// Never merge protected categories (e.g. self_identity).
+		if key.Category.IsProtected() {
+			continue
+		}
+		// Re-snapshot entries for this category+owner each iteration so we see
 		// the latest state after previous batches may have mutated the store.
 		mc.store.RLock()
 		var entries []memory.Entry
 		for _, e := range mc.store.Entries() {
-			if e.Category == cat && !e.Pinned {
+			if memory.MapToCanonical(e.Category) == key.Category && e.OwnerID == key.OwnerID && !e.Pinned {
 				entries = append(entries, e)
 			}
 		}
@@ -636,6 +669,13 @@ func (mc *MemoryCompressor) IsRunning() bool {
 	return mc.running
 }
 
+// IsCompressing returns whether a compression operation is currently in progress.
+func (mc *MemoryCompressor) IsCompressing() bool {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	return mc.compressCount > 0
+}
+
 // Status returns the current service status.
 func (mc *MemoryCompressor) Status() MemoryCompressorStatus {
 	mc.mu.Lock()
@@ -761,23 +801,32 @@ func (mc *MemoryCompressor) createBackup() (string, error) {
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
 	}
+
+	// Prune old backups beyond the retention limit immediately after creation,
+	// so the backup directory never grows beyond limit+1 files regardless of
+	// whether the user opens the backup list UI.
+	// Error is best-effort — backup was already created successfully.
+	mc.pruneOldBackups() //nolint:errcheck
+
 	return name, nil
 }
 
-// defaultMaxBackups is the default number of backup files to keep.
-const defaultMaxBackups = 20
-
-func (mc *MemoryCompressor) ListBackups() ([]MemoryBackupInfo, error) {
+// pruneOldBackups removes the oldest backup files that exceed the retention
+// limit and returns the surviving files sorted newest-first by modTime.
+// Returns (nil, nil) when the directory does not exist (no backups yet).
+// Callers that need the file list (e.g. ListBackups) can consume the return
+// value instead of doing a second ReadDir.
+func (mc *MemoryCompressor) pruneOldBackups() ([]backupFileInfo, error) {
 	dir := mc.backupDir()
-	entries, err := os.ReadDir(dir)
+	dirEntries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	var backups []MemoryBackupInfo
-	for _, de := range entries {
+	var files []backupFileInfo
+	for _, de := range dirEntries {
 		if de.IsDir() || !strings.HasSuffix(de.Name(), ".json") {
 			continue
 		}
@@ -785,46 +834,79 @@ func (mc *MemoryCompressor) ListBackups() ([]MemoryBackupInfo, error) {
 		if err != nil {
 			continue
 		}
-		count := mc.countEntriesInFile(filepath.Join(dir, de.Name()))
+		files = append(files, backupFileInfo{name: de.Name(), modTime: info.ModTime(), size: info.Size()})
+	}
+	// Sort newest first.
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+	limit := mc.getMaxBackups()
+	if len(files) > limit {
+		for _, old := range files[limit:] {
+			_ = os.Remove(filepath.Join(dir, old.name))
+		}
+		files = files[:limit]
+	}
+	return files, nil
+}
+
+// backupFileInfo holds the metadata from a single ReadDir + Info call,
+// shared between pruneOldBackups and ListBackups to avoid double scanning.
+type backupFileInfo struct {
+	name    string
+	modTime time.Time
+	size    int64
+}
+
+// defaultMaxBackups is the default number of backup files to keep.
+const defaultMaxBackups = 20
+
+func (mc *MemoryCompressor) ListBackups() ([]MemoryBackupInfo, error) {
+	// pruneOldBackups scans the directory, prunes excess files, and returns
+	// the surviving files sorted newest-first. We reuse that list directly
+	// instead of doing a second ReadDir.
+	files, err := mc.pruneOldBackups()
+	if err != nil {
+		return nil, err
+	}
+
+	dir := mc.backupDir()
+	backups := make([]MemoryBackupInfo, 0, len(files))
+	for _, f := range files {
+		count := mc.countEntriesInFile(filepath.Join(dir, f.name))
 		backups = append(backups, MemoryBackupInfo{
-			Name:       de.Name(),
-			CreatedAt:  info.ModTime().Format(time.RFC3339),
-			SizeBytes:  info.Size(),
+			Name:       f.name,
+			CreatedAt:  f.modTime.Format(time.RFC3339),
+			SizeBytes:  f.size,
 			EntryCount: count,
 		})
 	}
-	sort.Slice(backups, func(i, j int) bool {
-		return backups[i].CreatedAt > backups[j].CreatedAt
-	})
-
-	// Auto-prune oldest backups beyond the limit.
-	limit := mc.getMaxBackups()
-	if len(backups) > limit {
-		for _, old := range backups[limit:] {
-			_ = os.Remove(filepath.Join(dir, old.Name))
-		}
-		backups = backups[:limit]
-	}
-
 	return backups, nil
 }
 
 // getMaxBackups returns the effective max backups limit.
 func (mc *MemoryCompressor) getMaxBackups() int {
-	if mc.maxBackups > 0 {
-		return mc.maxBackups
+	mc.mu.Lock()
+	n := mc.maxBackups
+	mc.mu.Unlock()
+	if n > 0 {
+		return n
 	}
 	return defaultMaxBackups
 }
 
 const minBackups = 8
 
-// SetMaxBackups updates the backup retention limit.
+// SetMaxBackups updates the backup retention limit and immediately prunes
+// any excess backup files.
 func (mc *MemoryCompressor) SetMaxBackups(n int) {
 	if n < minBackups {
 		n = minBackups
 	}
+	mc.mu.Lock()
 	mc.maxBackups = n
+	mc.mu.Unlock()
+	mc.pruneOldBackups() //nolint:errcheck
 }
 
 func (mc *MemoryCompressor) RestoreBackup(backupName string) error {

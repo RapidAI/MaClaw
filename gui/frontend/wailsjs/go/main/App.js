@@ -645,6 +645,10 @@ export function GetAutoCompressStatus() {
   return window['go']['main']['App']['GetAutoCompressStatus']();
 }
 
+export function IsMemoryCompressing() {
+  return window['go']['main']['App']['IsMemoryCompressing']();
+}
+
 export function GetMemoryHealth() {
   return window['go']['main']['App']['GetMemoryHealth']();
 }

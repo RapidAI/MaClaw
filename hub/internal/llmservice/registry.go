@@ -19,6 +19,7 @@ const (
 	DefaultModelServiceGroupID   = "default"
 	DefaultModelServiceGroupName = "Default (No Model Access)"
 	DefaultTokensPerCredit       = 10000
+	DefaultNewUserCredits        = 1000
 	CardCodeLength               = 20
 
 	AccessPolicyFree          = "free"
@@ -40,6 +41,7 @@ type Registry struct {
 	Grants                      []Grant             `json:"grants,omitempty"`
 	DefaultNewUserServiceGroups []string            `json:"default_new_user_service_groups,omitempty"`
 	DefaultNewUserDurationDays  int                 `json:"default_new_user_duration_days,omitempty"`
+	DefaultNewUserCredits       float64             `json:"default_new_user_credits,omitempty"`
 	TokensPerCredit             int                 `json:"tokens_per_credit,omitempty"`
 }
 
@@ -242,6 +244,9 @@ func (r *Registry) Normalize() {
 	if r.DefaultNewUserDurationDays < 0 {
 		r.DefaultNewUserDurationDays = 0
 	}
+	if r.DefaultNewUserCredits < 0 {
+		r.DefaultNewUserCredits = 0
+	}
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit
 	}
@@ -256,6 +261,9 @@ func (r *Registry) ensureDefaultNewUserSettings() {
 	}
 	if r.DefaultNewUserDurationDays <= 0 {
 		r.DefaultNewUserDurationDays = 30
+	}
+	if r.DefaultNewUserCredits == 0 {
+		r.DefaultNewUserCredits = DefaultNewUserCredits
 	}
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit

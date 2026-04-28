@@ -48,6 +48,28 @@ export type WorkerMemoryStats = {
   byCategory: Record<string, number>;
   visibleScopes: string[];
 };
+
+export type WorkerMemoryEntry = {
+  id: string;
+  tenantId: string;
+  departmentId?: string;
+  workerId?: string;
+  scope: string;
+  content: string;
+  category: string;
+  tags: string[];
+  sourceType?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SaveWorkerMemoryRequest = {
+  scope: string;
+  content: string;
+  category: string;
+  tags: string[];
+  sourceType: string;
+};
 export type RoutingPolicy = {
   mode: 'smart' | 'priority' | 'manual';
   defaultProvider: string;

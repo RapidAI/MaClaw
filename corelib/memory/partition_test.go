@@ -55,15 +55,12 @@ func TestPartition_MigrationFromLegacy(t *testing.T) {
 	// Disable partitions to simulate legacy behavior.
 	s1.partMgr = nil
 	for i := 0; i < 110; i++ {
-		cat := CategoryProjectKnowledge
-		if i%3 == 0 {
-			cat = CategoryUserFact
-		} else if i%3 == 1 {
-			cat = CategoryConversationSummary
-		}
+		// Use ConversationSummary for all entries to avoid semantic dedup
+		// merging template-similar entries during Save. ConversationSummary
+		// is excluded from semantic dedup.
 		_ = s1.Save(Entry{
 			Content:  fmt.Sprintf("legacy entry number %d with enough content to be unique and meaningful", i),
-			Category: cat,
+			Category: CategoryConversationSummary,
 		})
 	}
 	if err := s1.Flush(); err != nil {
@@ -99,11 +96,8 @@ func TestPartition_MigrationFromLegacy(t *testing.T) {
 	}
 
 	// Verify partition files exist.
-	if _, err := os.Stat(filepath.Join(dir, "part_user.json")); os.IsNotExist(err) {
-		t.Error("expected part_user.json after migration")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "part_project.json")); os.IsNotExist(err) {
-		t.Error("expected part_project.json after migration")
+	if _, err := os.Stat(filepath.Join(dir, "part_episodic.json")); os.IsNotExist(err) {
+		t.Error("expected part_episodic.json after migration")
 	}
 }
 
@@ -123,6 +117,11 @@ func TestPartition_ReloadFromPartitions(t *testing.T) {
 			cat = CategoryPreference
 		} else if i%5 == 1 {
 			cat = CategoryTaskArtifact
+		}
+		// Use CategoryConversationSummary for most entries — it's excluded
+		// from semantic dedup, so entries won't be merged during Save.
+		if cat == CategoryProjectKnowledge {
+			cat = CategoryConversationSummary
 		}
 		_ = s1.Save(Entry{
 			Content:  fmt.Sprintf("entry %d with unique content for reload test verification", i),

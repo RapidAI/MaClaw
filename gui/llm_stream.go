@@ -814,9 +814,23 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	// was inside <think> tags or was entirely tool calls).
 	// Apply stripXMLToolCalls to filteredBuf too — the stream filter chain
 	// does not handle XML-formatted tool calls from free proxy models.
-	if filtered := filteredBuf.String(); filtered != "" {
-		content = stripXMLToolCalls(filtered)
+	filteredStr := filteredBuf.String()
+	if filteredStr != "" {
+		content = stripXMLToolCalls(filteredStr)
 	}
+
+	// --- Browser diagnostic CP5: Stream filter results ---
+	// Use rpf.Halted() as proxy for "raw content had Browser: prefix" to
+	// avoid calling contentBuf.String() (which copies the entire buffer).
+	// If rpf halted, it definitely found a Browser: prefix in the raw stream.
+	// If rpf didn't halt but filteredBuf has Browser:, that's a filter bug.
+	BrowserDiagCP5_StreamFilter(
+		rpf.Halted(), rpf.SuppressedRunes(),
+		repf.Halted(), repf.SuppressedRunes(),
+		rpf.Halted(),
+		browserDiagHasBrowserPrefix(filteredStr),
+		filteredStr,
+	)
 	reasoning := reasoningBuf.String()
 	if content == "" && reasoning != "" {
 		content = stripXMLToolCalls(stripFunctionCalls(stripThinkTags(reasoning)))
@@ -1136,6 +1150,16 @@ anthDone:
 		log.Printf("[LLM Stream Anthropic] role prefix filter halted: suppressed %d runes", rpfAnth.SuppressedRunes())
 	}
 
+	// --- Browser diagnostic CP5 (Anthropic path) ---
+	filteredStrAnth := filteredBufAnth.String()
+	BrowserDiagCP5_StreamFilter(
+		rpfAnth.Halted(), rpfAnth.SuppressedRunes(),
+		repfAnth.Halted(), repfAnth.SuppressedRunes(),
+		rpfAnth.Halted(),
+		browserDiagHasBrowserPrefix(filteredStrAnth),
+		filteredStrAnth,
+	)
+
 	// Assemble llm.Response
 	msg := llm.Message{Role: "assistant"}
 	var textParts []string
@@ -1169,8 +1193,8 @@ anthDone:
 		}
 	}
 	msg.Content = stripFunctionCalls(stripThinkTags(strings.Join(textParts, "\n")))
-	if filtered := filteredBufAnth.String(); filtered != "" {
-		msg.Content = stripXMLToolCalls(filtered)
+	if filteredStrAnth != "" {
+		msg.Content = stripXMLToolCalls(filteredStrAnth)
 	}
 
 	finishReason := "stop"

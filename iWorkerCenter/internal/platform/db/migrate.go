@@ -421,6 +421,27 @@ var migrations = []string{
 		expires_at TEXT NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_nonces_expires ON provision_nonces(expires_at);`,
+
+	// 31: a2a_sessions - persisted iWorker-to-iWorker deliberation sessions
+	`CREATE TABLE IF NOT EXISTS a2a_sessions (
+		tenant_id          TEXT NOT NULL,
+		id                 TEXT NOT NULL,
+		org_unit_id        TEXT NOT NULL DEFAULT '',
+		topic              TEXT NOT NULL,
+		status             TEXT NOT NULL DEFAULT 'open',
+		decision_policy    TEXT NOT NULL DEFAULT 'majority',
+		participant_count  INTEGER NOT NULL DEFAULT 0,
+		message_count      INTEGER NOT NULL DEFAULT 0,
+		proposal_count     INTEGER NOT NULL DEFAULT 0,
+		review_count       INTEGER NOT NULL DEFAULT 0,
+		payload_json       TEXT NOT NULL DEFAULT '{}',
+		created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (tenant_id, id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_a2a_sessions_tenant_status ON a2a_sessions(tenant_id, status);
+	CREATE INDEX IF NOT EXISTS idx_a2a_sessions_tenant_org_unit ON a2a_sessions(tenant_id, org_unit_id);
+	CREATE INDEX IF NOT EXISTS idx_a2a_sessions_tenant_updated ON a2a_sessions(tenant_id, updated_at);`,
 }
 
 // Migrate applies all pending migrations inside a transaction.

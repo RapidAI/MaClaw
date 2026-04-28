@@ -591,3 +591,44 @@ func TestFetchWorkerMemoryStatsUsesCenterContext(t *testing.T) {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }
+
+func TestDeleteWorkerMemorySendsCenterContextAndClearsCache(t *testing.T) {
+	setTestHome(t)
+
+	var gotMethod, gotPath, gotTenant, gotDepartment, gotWorker string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotTenant = r.URL.Query().Get("tenant_id")
+		gotDepartment = r.URL.Query().Get("department_id")
+		gotWorker = r.URL.Query().Get("worker_id")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"deleted"}`))
+	}))
+	defer server.Close()
+
+	if err := writeWorkerMemoryCache("acme", "ops", "worker-1", []WorkerMemoryEntry{
+		{ID: "mem-1", Scope: "personal", Content: "remove me"},
+		{ID: "mem-2", Scope: "personal", Content: "keep me"},
+	}); err != nil {
+		t.Fatalf("writeWorkerMemoryCache returned error: %v", err)
+	}
+
+	if err := deleteWorkerMemory(server.URL, "acme", "ops", "worker-1", "mem-1", 5); err != nil {
+		t.Fatalf("deleteWorkerMemory returned error: %v", err)
+	}
+
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method = %q, want DELETE", gotMethod)
+	}
+	if gotPath != "/client/iworker/memories/mem-1" {
+		t.Fatalf("path = %q, want memory delete path", gotPath)
+	}
+	if gotTenant != "acme" || gotDepartment != "ops" || gotWorker != "worker-1" {
+		t.Fatalf("context = %q/%q/%q, want acme/ops/worker-1", gotTenant, gotDepartment, gotWorker)
+	}
+	cached := readWorkerMemoryCache("acme", "ops", "worker-1")
+	if len(cached) != 1 || cached[0].ID != "mem-2" {
+		t.Fatalf("cache = %+v, want only mem-2", cached)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
@@ -116,6 +117,228 @@ func TestSyncHubUserLinkReplacesPreviousUserBinding(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].HubID != hubB.ID {
 		t.Fatalf("expected only hub_b binding, got %+v", items)
+	}
+}
+
+func TestMigrateUserMakesTargetHubDefault(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	svc.SetRouteSnapshotRefresher(entrySvc)
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: primaryUserLinkID("hub_a", "user@example.com"), HubID: "hub_a", Email: "user@example.com", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed user link: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "target-existing-user-link", HubID: "hub_b", Email: "user@example.com", IsDefault: false, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed target user link: %v", err)
+	}
+
+	result, err := svc.MigrateUser(ctx, MigrateUserRequest{Email: "USER@example.com", ToHubID: "hub_b"})
+	if err != nil {
+		t.Fatalf("MigrateUser: %v", err)
+	}
+	if result.Email != "user@example.com" || result.ToHubID != "hub_b" || len(result.UpsertedIDs) != 0 {
+		t.Fatalf("unexpected migration result: %+v", result)
+	}
+	resolved, err := entrySvc.ResolveByEmail(ctx, "user@example.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if resolved.DefaultHubID != "hub_b" {
+		t.Fatalf("expected hub_b default after migration, got %+v", resolved)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	foundExistingTarget := false
+	for _, link := range links {
+		if link.HubID == "hub_a" {
+			t.Fatalf("expected source hub link to be removed, got %+v", links)
+		}
+		if link.ID == "target-existing-user-link" && link.HubID == "hub_b" {
+			foundExistingTarget = true
+		}
+	}
+	if !foundExistingTarget {
+		t.Fatalf("expected existing target hub link to be preserved, got %+v", links)
+	}
+}
+
+func TestMigrateUserPatternMovesMatchingUsers(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_target", OwnerEmail: "owner-target@example.com", Name: "Hub Target", BaseURL: "https://target.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	for _, item := range []struct{ hubID, email string }{
+		{"hub_a", "mark@qianxin.com"},
+		{"hub_b", "mary@qianxin.com"},
+		{"hub_target", "max@qianxin.com"},
+		{"hub_a", "tom@qianxin.com"},
+		{"hub_b", "mary@other.com"},
+	} {
+		isDefault := item.email != "max@qianxin.com"
+		if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: primaryUserLinkID(item.hubID, item.email), HubID: item.hubID, Email: item.email, IsDefault: isDefault, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatalf("seed user link: %v", err)
+		}
+	}
+
+	result, err := svc.MigrateUser(ctx, MigrateUserRequest{Email: "ｍａ＊＠ｑｉａｎｘｉｎ．ｃｏｍ", ToHubID: "hub_target"})
+	if err != nil {
+		t.Fatalf("MigrateUser pattern: %v", err)
+	}
+	if result.Email != "ma*@qianxin.com" || len(result.UpsertedIDs) != 2 || len(result.RemovedIDs) != 2 {
+		t.Fatalf("unexpected pattern migration result: %+v", result)
+	}
+	for _, email := range []string{"mark@qianxin.com", "mary@qianxin.com"} {
+		links, err := st.HubUserLinks.ListByEmail(ctx, email)
+		if err != nil {
+			t.Fatalf("ListByEmail %s: %v", email, err)
+		}
+		for _, link := range links {
+			if link.HubID != "hub_target" {
+				t.Fatalf("expected %s only on target hub, got %+v", email, links)
+			}
+		}
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "tom@qianxin.com")
+	if err != nil {
+		t.Fatalf("ListByEmail tom: %v", err)
+	}
+	if len(links) != 1 || links[0].HubID != "hub_a" {
+		t.Fatalf("expected non-matching user untouched, got %+v", links)
+	}
+	links, err = st.HubUserLinks.ListByEmail(ctx, "max@qianxin.com")
+	if err != nil {
+		t.Fatalf("ListByEmail max: %v", err)
+	}
+	if len(links) != 1 || links[0].HubID != "hub_target" || links[0].IsDefault {
+		t.Fatalf("expected existing target user untouched, got %+v", links)
+	}
+}
+
+func TestMigrateUserPatternWithSourceHubOnlyMovesThatSource(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_target", OwnerEmail: "owner-target@example.com", Name: "Hub Target", BaseURL: "https://target.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	for _, item := range []struct{ hubID, email string }{
+		{"hub_a", "mark@qianxin.com"},
+		{"hub_b", "mary@qianxin.com"},
+	} {
+		if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: primaryUserLinkID(item.hubID, item.email), HubID: item.hubID, Email: item.email, IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatalf("seed user link: %v", err)
+		}
+	}
+
+	result, err := svc.MigrateUser(ctx, MigrateUserRequest{Email: "*@qianxin.com", FromHubID: "hub_a", ToHubID: "hub_target"})
+	if err != nil {
+		t.Fatalf("MigrateUser pattern with source: %v", err)
+	}
+	if len(result.UpsertedIDs) != 1 || len(result.RemovedIDs) != 1 {
+		t.Fatalf("unexpected source-scoped migration result: %+v", result)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "mary@qianxin.com")
+	if err != nil {
+		t.Fatalf("ListByEmail mary: %v", err)
+	}
+	if len(links) != 1 || links[0].HubID != "hub_b" {
+		t.Fatalf("expected non-source matched user untouched, got %+v", links)
+	}
+}
+
+func TestMigrateDomainMakesTargetHubDefault(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	svc.SetRouteSnapshotRefresher(entrySvc)
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", CorporateEmailDomain: "example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: domainRouteID("hub_a", 0), HubID: "hub_a", Domain: "example.com", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed domain route: %v", err)
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "target-existing-domain-route", HubID: "hub_b", Domain: "example.com", Enabled: true, Priority: 50, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed target domain route: %v", err)
+	}
+
+	result, err := svc.MigrateDomain(ctx, MigrateDomainRequest{Domain: "@EXAMPLE.com", ToHubID: "hub_b"})
+	if err != nil {
+		t.Fatalf("MigrateDomain: %v", err)
+	}
+	if result.Domain != "example.com" || result.ToHubID != "hub_b" || len(result.UpsertedIDs) != 1 {
+		t.Fatalf("unexpected migration result: %+v", result)
+	}
+	resolved, err := entrySvc.ResolveByEmail(ctx, "new-user@example.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if resolved.DefaultHubID != "hub_b" {
+		t.Fatalf("expected hub_b default after domain migration, got %+v", resolved)
+	}
+	if len(resolved.Hubs) != 1 || resolved.Hubs[0].HubID != "hub_b" {
+		t.Fatalf("expected domain migration to return only target hub, got %+v", resolved)
+	}
+	routes, err := st.HubDomainRoutes.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("ListAll routes: %v", err)
+	}
+	foundExistingTarget := false
+	for _, route := range routes {
+		if route.Domain != "example.com" {
+			continue
+		}
+		if route.HubID == "hub_a" {
+			t.Fatalf("expected source hub route to be removed, got %+v", routes)
+		}
+		if route.ID == "target-existing-domain-route" && route.HubID == "hub_b" {
+			foundExistingTarget = true
+		}
+	}
+	if !foundExistingTarget {
+		t.Fatalf("expected existing target hub route to be preserved, got %+v", routes)
 	}
 }
 

@@ -312,7 +312,10 @@ func isDuplicateLower(a, b Entry, ca, cb string) bool {
 	if ca == cb {
 		return true
 	}
-	if a.Category == b.Category {
+	// Use canonical category mapping so Claude-style categories dedup against
+	// their legacy equivalents (e.g. "project" ↔ "project_knowledge",
+	// "feedback" ↔ "instruction", "user" ↔ "user_fact").
+	if MapToCanonical(a.Category) == MapToCanonical(b.Category) {
 		runeA, runeB := len([]rune(ca)), len([]rune(cb))
 		shorter := runeA
 		if runeB < shorter {
@@ -366,12 +369,13 @@ type catOwnerKey struct {
 func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) {
 	totalMerged := 0
 
-	// 多租户隔离：按 (Category, OwnerID) 二元组分组，而非仅按 Category
-	// 这确保不同用户的记忆永远不会被合并
+	// 多租户隔离：按 (CanonicalCategory, OwnerID) 二元组分组
+	// 使用 MapToCanonical 确保 Claude-style 类别与 legacy 类别合并到同一组
+	// （如 "project" 和 "project_knowledge" 在同一组中做语义去重）
 	mc.store.mu.RLock()
 	groupSet := make(map[catOwnerKey]bool)
 	for _, e := range mc.store.entries {
-		groupSet[catOwnerKey{Category: e.Category, OwnerID: e.OwnerID}] = true
+		groupSet[catOwnerKey{Category: MapToCanonical(e.Category), OwnerID: e.OwnerID}] = true
 	}
 	mc.store.mu.RUnlock()
 
@@ -383,7 +387,7 @@ func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) 
 		mc.store.mu.RLock()
 		var entries []Entry
 		for _, e := range mc.store.entries {
-			if e.Category == key.Category && e.OwnerID == key.OwnerID && !e.Pinned {
+			if MapToCanonical(e.Category) == key.Category && e.OwnerID == key.OwnerID && !e.Pinned {
 				entries = append(entries, e)
 			}
 		}
@@ -911,23 +915,30 @@ func (mc *Compressor) createBackup() (string, error) {
 	if err := fileutil.AtomicWriteFile(dst, data, 0o644); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
 	}
+
+	// Prune old backups beyond the retention limit immediately after creation,
+	// so the backup directory never grows beyond limit+1 files regardless of
+	// whether the user opens the backup list UI.
+	// Error is best-effort — backup was already created successfully.
+	mc.pruneOldBackups() //nolint:errcheck
+
 	return name, nil
 }
 
-const defaultMaxBackups = 20
-
-// ListBackups returns available backup snapshots.
-func (mc *Compressor) ListBackups() ([]BackupInfo, error) {
+// pruneOldBackups removes the oldest backup files that exceed the retention
+// limit and returns the surviving files sorted newest-first by modTime.
+// Returns (nil, nil) when the directory does not exist (no backups yet).
+func (mc *Compressor) pruneOldBackups() ([]backupFileInfo, error) {
 	dir := mc.backupDir()
-	entries, err := os.ReadDir(dir)
+	dirEntries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	var backups []BackupInfo
-	for _, de := range entries {
+	var files []backupFileInfo
+	for _, de := range dirEntries {
 		if de.IsDir() || !strings.HasSuffix(de.Name(), ".json") {
 			continue
 		}
@@ -935,42 +946,75 @@ func (mc *Compressor) ListBackups() ([]BackupInfo, error) {
 		if err != nil {
 			continue
 		}
-		count := mc.countEntriesInFile(filepath.Join(dir, de.Name()))
+		files = append(files, backupFileInfo{name: de.Name(), modTime: info.ModTime(), size: info.Size()})
+	}
+	// Sort newest first.
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+	limit := mc.getMaxBackups()
+	if len(files) > limit {
+		for _, old := range files[limit:] {
+			_ = os.Remove(filepath.Join(dir, old.name))
+		}
+		files = files[:limit]
+	}
+	return files, nil
+}
+
+// backupFileInfo holds the metadata from a single ReadDir + Info call,
+// shared between pruneOldBackups and ListBackups to avoid double scanning.
+type backupFileInfo struct {
+	name    string
+	modTime time.Time
+	size    int64
+}
+
+const defaultMaxBackups = 20
+
+// ListBackups returns available backup snapshots.
+func (mc *Compressor) ListBackups() ([]BackupInfo, error) {
+	// pruneOldBackups scans the directory, prunes excess files, and returns
+	// the surviving files sorted newest-first. Reuse that list directly.
+	files, err := mc.pruneOldBackups()
+	if err != nil {
+		return nil, err
+	}
+
+	dir := mc.backupDir()
+	backups := make([]BackupInfo, 0, len(files))
+	for _, f := range files {
+		count := mc.countEntriesInFile(filepath.Join(dir, f.name))
 		backups = append(backups, BackupInfo{
-			Name:       de.Name(),
-			CreatedAt:  info.ModTime().Format(time.RFC3339),
-			SizeBytes:  info.Size(),
+			Name:       f.name,
+			CreatedAt:  f.modTime.Format(time.RFC3339),
+			SizeBytes:  f.size,
 			EntryCount: count,
 		})
 	}
-	sort.Slice(backups, func(i, j int) bool {
-		return backups[i].CreatedAt > backups[j].CreatedAt
-	})
-
-	limit := mc.getMaxBackups()
-	if len(backups) > limit {
-		for _, old := range backups[limit:] {
-			_ = os.Remove(filepath.Join(dir, old.Name))
-		}
-		backups = backups[:limit]
-	}
-
 	return backups, nil
 }
 
 func (mc *Compressor) getMaxBackups() int {
-	if mc.maxBackups > 0 {
-		return mc.maxBackups
+	mc.mu.Lock()
+	n := mc.maxBackups
+	mc.mu.Unlock()
+	if n > 0 {
+		return n
 	}
 	return defaultMaxBackups
 }
 
-// SetMaxBackups updates the backup retention limit.
+// SetMaxBackups updates the backup retention limit and immediately prunes
+// any excess backup files.
 func (mc *Compressor) SetMaxBackups(n int) {
 	if n < 8 {
 		n = 8
 	}
+	mc.mu.Lock()
 	mc.maxBackups = n
+	mc.mu.Unlock()
+	mc.pruneOldBackups() //nolint:errcheck
 }
 
 // RestoreBackup restores a backup by name.

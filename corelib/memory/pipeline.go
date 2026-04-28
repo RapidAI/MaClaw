@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -68,7 +69,15 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		p.store.signalSave()
 	}
 
-	// Step 1: Compress (dedup + LLM compress).
+	// Step 1: Process pending semantic dedup pairs (embedding recall → LLM judgment).
+	if ctx.Err() == nil {
+		merged := p.store.ProcessPendingDedup(ctx)
+		if merged > 0 {
+			log.Printf("[pipeline] semantic dedup merged %d entries", merged)
+		}
+	}
+
+	// Step 2: Compress (dedup + LLM compress).
 	if p.compressor != nil && ctx.Err() == nil {
 		cr, err := p.compressor.Compress(ctx)
 		if err == nil {

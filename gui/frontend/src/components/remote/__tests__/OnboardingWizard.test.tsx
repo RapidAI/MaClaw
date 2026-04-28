@@ -168,6 +168,106 @@ describe('OnboardingWizard registration', () => {
         expect(GetRemoteActivationStatusMock).not.toHaveBeenCalled();
     });
 
+    it('defaults to free trial and skips the LLM configuration step', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        // Simulate Hub connecting and LLM service being provisioned.
+        GetRemoteConnectionStatusMock.mockResolvedValue({ connected: true });
+        GetHubLLMServiceStatusMock.mockResolvedValue({ active: true, skip_llm_config: true });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        expect(screen.getByText('Free trial')).toBeTruthy();
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        expect(screen.getByText(/remaining bonus credits/)).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/Registration successful/)).toBeTruthy();
+        });
+
+        // Wait for Hub connection polling to verify the free trial service.
+        await waitFor(() => {
+            expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        await waitFor(() => {
+            expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(false);
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
+        });
+    });
+
+    it('shows the LLM configuration step when free trial is unchecked', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+            ],
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.click(screen.getByLabelText(/Free trial/));
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/Registration successful/)).toBeTruthy();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        await waitFor(() => {
+            expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(false);
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        expect(await screen.findByText(/Pick a provider/)).toBeTruthy();
+    });
+
+    it('falls back to LLM config step when free trial service is not provisioned', async () => {
+        vi.useFakeTimers();
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: false });
+        // Hub connects but LLM service is NOT active (no providers configured).
+        GetRemoteConnectionStatusMock.mockResolvedValue({ connected: true });
+        GetHubLLMServiceStatusMock.mockResolvedValue({ active: false, skip_llm_config: false });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+            ],
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        expect(screen.getByText('Free trial')).toBeTruthy();
+        await act(async () => {
+            fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        });
+
+        // Let registration resolve
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(200);
+        });
+
+        // After 15s timeout, freeTrial should be unchecked and warning shown.
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(15000);
+        });
+
+        // The timeout warning should be visible.
+        expect(screen.getByText(/not ready/i)).toBeTruthy();
+    }, 20000);
+
     it('accepts backend success when returned machine credentials exist', async () => {
         ActivateRemoteMock.mockResolvedValue({ machine_id: 'mid-1', machine_token: 'tok-1' });
         GetRemoteActivationStatusMock.mockResolvedValue({ activated: false });
@@ -298,6 +398,7 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
+        fireEvent.click(screen.getByLabelText(/Free trial/));
         fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
         fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
@@ -349,6 +450,7 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
+        fireEvent.click(screen.getByLabelText(/Free trial/));
         fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
         fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));

@@ -327,6 +327,8 @@ export function SetAutoCompress(arg1:boolean):Promise<void>;
 
 export function GetAutoCompressStatus():Promise<any>;
 
+export function IsMemoryCompressing():Promise<boolean>;
+
 export function GetMemoryHealth():Promise<any>;
 
 export function ListArchiveMemories(arg1:string, arg2:string):Promise<Array<any>>;

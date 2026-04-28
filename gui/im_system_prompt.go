@@ -537,11 +537,11 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 
 	b.WriteString("\n## 对话管理\n")
 	if isProMode {
-		b.WriteString("- /new /reset /clear 重置对话 | /compress 压缩历史 | /cancel 取消任务 | /btw 侧查询\n")
+		b.WriteString("- /new /reset /clear 重置对话 | /compress 压缩历史 | /cancel /取消 取消任务 | /btw 侧查询\n")
 		b.WriteString("- /sessions /status 查看状态 | /exit /quit 终止所有会话 | /help 帮助\n")
 		b.WriteString("- 用户表达退出意图时，提醒发送 /exit\n")
 	} else {
-		b.WriteString("- /new /reset /clear 重置对话 | /help 帮助\n")
+		b.WriteString("- /new /reset /clear 重置对话 | /cancel /取消 取消任务 | /compress 压缩历史 | /btw 侧查询 | /help 帮助\n")
 	}
 	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
 
@@ -835,6 +835,9 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 				if tool.ShouldPinConditionalTool(name) {
 					h.toolRouter.ActivateSessionTool(name)
 					log.Printf("[MemoryPin] pinned conditional tool %q from recalled memory content", name)
+					if browserDiagToolNames[name] {
+						log.Printf("[browser-diag] Route_SessionPin: ⚠️ browser tool %q session-pinned via memory-driven-pin", name)
+					}
 				}
 			}
 		}

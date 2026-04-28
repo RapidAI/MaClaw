@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
-import { CheckCenterHealth, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, SaveDiWorkerSettings, SaveTaskHistory, SubmitTask } from '../wailsjs/go/main/App';
+import { CheckCenterHealth, DeleteWorkerMemory, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 
 vi.mock('../wailsjs/go/main/App', () => ({
   CheckCenterHealth: vi.fn(),
+  DeleteWorkerMemory: vi.fn(),
   FetchWorkerMemoryStats: vi.fn(),
   LoadDiWorkerSettings: vi.fn(),
   LoadTaskHistory: vi.fn(),
+  RecallWorkerMemories: vi.fn(),
   SaveDiWorkerSettings: vi.fn(),
   SaveTaskHistory: vi.fn(),
+  SaveWorkerMemory: vi.fn(),
   SubmitTask: vi.fn(),
 }));
 
@@ -83,6 +86,7 @@ describe('App', () => {
     })) as unknown as typeof window.matchMedia);
     installWailsBridge();
 
+    vi.mocked(DeleteWorkerMemory).mockResolvedValue(undefined as never);
     vi.mocked(CheckCenterHealth).mockResolvedValue({
       reachable: true,
       status: 'ok',
@@ -109,8 +113,35 @@ describe('App', () => {
     } as never);
     vi.mocked(LoadDiWorkerSettings).mockResolvedValue(settingsFixture as never);
     vi.mocked(LoadTaskHistory).mockResolvedValue([] as never);
-    vi.mocked(SaveDiWorkerSettings).mockResolvedValue(undefined as never);
+    vi.mocked(RecallWorkerMemories).mockResolvedValue([
+      {
+        id: 'mem-1',
+        tenant_id: 'acme',
+        department_id: 'ops',
+        worker_id: 'worker-1',
+        scope: 'department',
+        content: 'Escalate red orders before 10am.',
+        category: 'policy',
+        tags: ['handoff', 'sla'],
+        source_type: 'iworker-gui',
+        created_at: '2026-04-28T00:00:00Z',
+        updated_at: '2026-04-28T00:00:00Z',
+      },
+    ] as never);    vi.mocked(SaveDiWorkerSettings).mockResolvedValue(undefined as never);
     vi.mocked(SaveTaskHistory).mockResolvedValue(undefined as never);
+    vi.mocked(SaveWorkerMemory).mockResolvedValue({
+      id: 'mem-1',
+      tenant_id: 'acme',
+      department_id: 'ops',
+      worker_id: 'worker-1',
+      scope: 'department',
+      content: 'Escalate red orders before 10am.',
+      category: 'policy',
+      tags: ['handoff', 'sla'],
+      source_type: 'iworker-gui',
+      created_at: '2026-04-28T00:00:00Z',
+      updated_at: '2026-04-28T00:00:00Z',
+    } as never);
     vi.mocked(SubmitTask).mockResolvedValue({
       task_type: '自由输入',
       colleague_name: '自动匹配同事',
@@ -175,5 +206,64 @@ describe('App', () => {
     expect(saved.center?.tenant_id).toBe('acme');
     expect(saved.center?.department_id).toBe('quality');
     expect(saved.center?.worker_id).toBe('worker-1');
+  });
+  it('saves worker memory to the registered iWorkerCenter', async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open settings' })[0]);
+    expect(await screen.findByText('Memory Capture')).toBeTruthy();
+
+    fireEvent.change(screen.getByDisplayValue('Personal memory'), { target: { value: 'department' } });
+    fireEvent.change(screen.getByPlaceholderText('note'), { target: { value: 'policy' } });
+    fireEvent.change(screen.getByPlaceholderText('policy, preference'), { target: { value: 'handoff, sla' } });
+    fireEvent.change(screen.getByPlaceholderText('Write a reusable fact, rule, preference, or handoff note.'), {
+      target: { value: 'Escalate red orders before 10am.' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save memory' }));
+
+    await waitFor(() => {
+      expect(SaveWorkerMemory).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Memory saved to iWorkerCenter.')).toBeTruthy();
+    });
+
+    const saved = vi.mocked(SaveWorkerMemory).mock.calls[0]?.[0] as { scope?: string; content?: string; category?: string; tags?: string[]; source_type?: string };
+    expect(saved.scope).toBe('department');
+    expect(saved.content).toBe('Escalate red orders before 10am.');
+    expect(saved.category).toBe('policy');
+    expect(saved.tags).toEqual(['handoff', 'sla']);
+    expect(saved.source_type).toBe('iworker-gui');
+    expect(FetchWorkerMemoryStats).toHaveBeenCalledTimes(1);
+  });
+  it('recalls visible worker memories from iWorkerCenter', async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open settings' })[0]);
+    expect(await screen.findByText('Memory Browser')).toBeTruthy();
+
+    fireEvent.change(screen.getByPlaceholderText('Search registered center memory'), { target: { value: 'red orders' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Recall memories' }));
+
+    await waitFor(() => {
+      expect(RecallWorkerMemories).toHaveBeenCalledWith('red orders');
+      expect(screen.getByText('Escalate red orders before 10am.')).toBeTruthy();
+      expect(screen.getByText('department / policy')).toBeTruthy();
+    });
+  });
+  it('deletes recalled worker memory from iWorkerCenter', async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open settings' })[0]);
+    expect(await screen.findByText('Memory Browser')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recall memories' }));
+    expect(await screen.findByText('Escalate red orders before 10am.')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+
+    await waitFor(() => {
+      expect(DeleteWorkerMemory).toHaveBeenCalledWith('mem-1');
+      expect(screen.queryByText('Escalate red orders before 10am.')).toBeNull();
+    });
   });
 });

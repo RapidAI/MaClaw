@@ -114,6 +114,10 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     const [showConfirm, setShowConfirm] = useState(false);
     const [vipFlag, setVipFlag] = useState(false);
     const [redeemCode, setRedeemCode] = useState("");
+    const [freeTrial, setFreeTrial] = useState(true);
+    // Whether the free trial LLM service has been verified as active on the Hub.
+    // Starts false; set to true only after GetHubLLMServiceStatus confirms Active=true.
+    const [freeTrialVerified, setFreeTrialVerified] = useState(false);
     const [regResult, setRegResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
     // ── SSO（TigerClaw Step 1）+ 注册状态（共用）──
@@ -181,6 +185,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
 
     // Navigation guards
     const getPrevStep = useCallback((currentStep: number) => {
+        // Skip step 3 (LLM config) only when LLM is actually configured —
+        // either via verified free trial or manual configuration.
         if (!isTigerclaw && llmDone && currentStep === 4) return 2;
         return Math.max(1, currentStep - 1);
     }, [isTigerclaw, llmDone]);
@@ -233,21 +239,58 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     useEffect(() => {
         if (isTigerclaw) return;
         GetHubLLMServiceStatus().then(status => {
-            applyHubServiceStatus(status);
+            const applied = applyHubServiceStatus(status);
+            if (applied) setFreeTrialVerified(true);
         }).catch(() => {});
     }, [applyHubServiceStatus, isTigerclaw]);
+
+    // When free trial is verified by the Hub and the checkbox is still checked,
+    // auto-set llmDone so the user can proceed past step 3.
+    useEffect(() => {
+        if (!isTigerclaw && freeTrial && freeTrialVerified && !llmDone) {
+            setLlmDone(true);
+            onLLMConfigured();
+        }
+    }, [isTigerclaw, freeTrial, freeTrialVerified, llmDone, onLLMConfigured]);
+
+    // Timeout fallback: if free trial verification doesn't complete within 15s
+    // after registration, uncheck freeTrial so the user sees the LLM config step.
+    // This handles the case where the Hub didn't provision the grant (no providers,
+    // no service groups, etc.).
+    // Note: the guard refs ensure the timeout callback reads the latest state,
+    // avoiding a stale-closure race where the timer fires after verification
+    // has already succeeded.
+    const freeTrialVerifiedRef = useRef(freeTrialVerified);
+    useEffect(() => { freeTrialVerifiedRef.current = freeTrialVerified; }, [freeTrialVerified]);
+    const llmDoneRef = useRef(llmDone);
+    useEffect(() => { llmDoneRef.current = llmDone; }, [llmDone]);
+
+    useEffect(() => {
+        if (!regDone || !freeTrial || freeTrialVerified || llmDone || isTigerclaw) return;
+        const timer = setTimeout(() => {
+            // Read latest state via refs to avoid stale-closure race.
+            if (freeTrialVerifiedRef.current || llmDoneRef.current) return;
+            setFreeTrial(false);
+            setRegResult(prev => {
+                if (!prev?.ok) return prev;
+                return {
+                    ok: true,
+                    msg: prev.msg + "\n" + t(
+                        "⚠️ 免费试用服务暂未就绪，请手动配置 LLM",
+                        "⚠️ Free trial service not ready. Please configure LLM manually.",
+                        "⚠️ 免費試用服務暫未就緒，請手動配置 LLM",
+                    ),
+                };
+            });
+        }, 15000);
+        return () => clearTimeout(timer);
+    }, [regDone, freeTrial, freeTrialVerified, llmDone, isTigerclaw, t]);
 
     useEffect(() => {
         if (!isTigerclaw && llmDone && step === 3) {
             setStep(4);
         }
     }, [isTigerclaw, llmDone, step]);
-
-    // Track llmDone via ref so the hub-connect polling callback can read
-    // the latest value without being a dependency (avoids re-subscribing
-    // the interval every time llmDone changes).
-    const llmDoneRef = useRef(llmDone);
-    useEffect(() => { llmDoneRef.current = llmDone; }, [llmDone]);
 
     useEffect(() => {
         if (!regDone || !hubConnecting) return;
@@ -267,14 +310,21 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                         }
                         return { ok: true, msg: baseMsg };
                     });
-                    // Re-check hub LLM service status after hub connects —
-                    // catches the case where mount-time check failed (no
-                    // viewer token yet) but redeem already succeeded.
-                    if (!llmDoneRef.current) {
-                        GetHubLLMServiceStatus().then(svcStatus => {
-                            if (!cancelled) applyHubServiceStatus(svcStatus);
-                        }).catch(() => {});
-                    }
+                    // Re-check hub LLM service status after hub connects.
+                    // For free trial: this is the authoritative path that verifies
+                    // the Hub actually provisioned the LLM service grant and sets
+                    // llmDone. For redeem code: catches the case where mount-time
+                    // check failed (no viewer token yet) but redeem already succeeded.
+                    // Always check — even if llmDone is already true from a redeem
+                    // code path — to ensure config.json has the Hub LLM provider.
+                    GetHubLLMServiceStatus().then(svcStatus => {
+                        if (!cancelled) {
+                            const applied = applyHubServiceStatus(svcStatus);
+                            if (applied) {
+                                setFreeTrialVerified(true);
+                            }
+                        }
+                    }).catch(() => {});
                 }
             } catch {
                 // Ignore transient polling errors.
@@ -500,6 +550,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
         try {
             const result = await ActivateRemote(regEmail.trim(), invCode.trim(), "");
             if (result?.vip_flag) setVipFlag(true);
+            // Free trial: do NOT optimistically set llmDone here.
+            // The Hub connection polling will verify the LLM service status
+            // and set llmDone only after confirming Active=true.
+            // This prevents the user from completing onboarding without a
+            // working LLM service when the Hub hasn't provisioned the grant
+            // (e.g. no DefaultNewUserServiceGroups, no Models, no Providers).
             let redeemNote = "";
             if (trimmedRedeemCode) {
                 try {
@@ -907,6 +963,29 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     {invError && <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: 4 }}>{invError}</div>}
                                 </div>
                             )}
+                            <label style={{
+                                display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 10,
+                                padding: "8px 10px", borderRadius: 8, border: `1px solid ${colors.border}`,
+                                background: freeTrial ? "var(--theme-info-bg)" : colors.surfaceMuted,
+                                cursor: "pointer", fontSize: "0.76rem", color: colors.text,
+                            }}>
+                                <input type="checkbox" checked={freeTrial} onChange={e => {
+                                    const checked = e.target.checked;
+                                    setFreeTrial(checked);
+                                    if (!checked) {
+                                        setLlmDone(false);
+                                    } else if (freeTrialVerified) {
+                                        // Re-checking: the Hub already confirmed the free trial is active.
+                                        setLlmDone(true);
+                                        onLLMConfigured();
+                                    }
+                                }} style={{ marginTop: 2 }} />
+                                <span style={{ lineHeight: 1.45 }}>
+                                    <strong>{t("免费试用", "Free trial", "免費試用")}</strong>
+                                    <br />
+                                    <span style={{ color: colors.textMuted }}>{t("使用 Hub 发放的新用户福利，跳过 LLM 配置。", "Use the Hub new-user benefit and skip LLM setup.", "使用 Hub 發放的新用戶福利，跳過 LLM 配置。")}</span>
+                                </span>
+                            </label>
                             <div style={{ marginBottom: 10 }}>
                                 <label style={labelStyle}>
                                     {t("服务兑换码", "Service redeem code", "服務兌換碼")} {" "}
@@ -939,6 +1018,16 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     {regResult.ok && (
                                         <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, fontSize: "0.68rem", color: hubConnecting ? colors.primary : colors.success }}>
                                             <HubStatusBadge connecting={hubConnecting} t={hubT} />
+                                        </div>
+                                    )}
+                                    {regResult.ok && regDone && freeTrial && !llmDone && (
+                                        <div style={{ marginTop: 4, fontSize: "0.68rem", color: colors.primary }}>
+                                            ⏳ {t("正在验证免费试用服务...", "Verifying free trial service...", "正在驗證免費試用服務...")}
+                                        </div>
+                                    )}
+                                    {regResult.ok && regDone && freeTrial && freeTrialVerified && llmDone && (
+                                        <div style={{ marginTop: 4, fontSize: "0.68rem", color: colors.success }}>
+                                            ✅ {t("免费试用已激活，LLM 配置已自动完成", "Free trial activated. LLM configured automatically.", "免費試用已啟用，LLM 配置已自動完成")}
                                         </div>
                                     )}
                                 </div>
@@ -1351,6 +1440,17 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                             {t("请确认邮箱正确无误。填写错误会导致注册失败，且需要管理员手动处理。",
                                 "Please confirm the email below is correct. Errors require admin intervention.")}
                         </div>
+                        {freeTrial && (
+                            <div style={{
+                                fontSize: 13, color: colors.warning, lineHeight: 1.5, marginBottom: 8,
+                                padding: "8px 10px", borderRadius: 8,
+                                background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.25)",
+                            }}>
+                                {t("只有填写正确邮箱并完成邮件确认后，才可以获得剩余赠送 credits。",
+                                    "Only a correct email address and email confirmation can unlock the remaining bonus credits.",
+                                    "只有填寫正確信箱並完成郵件確認後，才可以獲得剩餘贈送 credits。")}
+                            </div>
+                        )}
                         <div style={{
                             padding: 14, margin: "12px 0", borderRadius: 10,
                             background: "var(--theme-info-bg)", fontSize: "0.88rem", lineHeight: 1.8,

@@ -144,6 +144,10 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 	}
 	if cfg.MemoryStore != nil {
 		h.memoryStore = cfg.MemoryStore
+		// Note: sessionStartExtractor is NOT initialized here because
+		// h.app is nil in standalone/TUI mode. The extractor requires
+		// an LLM caller backed by App's config. TUI can add its own
+		// initialization when it has an LLMChatCaller available.
 	}
 
 	// Store standalone config for accessor methods.

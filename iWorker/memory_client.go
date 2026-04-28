@@ -316,6 +316,52 @@ func saveWorkerMemory(centerBaseURL, tenantID, departmentID, workerID string, re
 	return saved, nil
 }
 
+func deleteWorkerMemory(centerBaseURL, tenantID, departmentID, workerID, memoryID string, timeoutSec int) error {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	tenantID = firstNonEmptyString(strings.TrimSpace(tenantID), "default")
+	departmentID = strings.TrimSpace(departmentID)
+	workerID = strings.TrimSpace(workerID)
+	memoryID = strings.TrimSpace(memoryID)
+	if centerBaseURL == "" {
+		return fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if workerID == "" {
+		return fmt.Errorf("worker_id is required")
+	}
+	if memoryID == "" {
+		return fmt.Errorf("memory id is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	values := url.Values{}
+	values.Set("tenant_id", tenantID)
+	if departmentID != "" {
+		values.Set("department_id", departmentID)
+	}
+	values.Set("worker_id", workerID)
+	endpoint := centerBaseURL + "/client/iworker/memories/" + url.PathEscape(memoryID) + "?" + values.Encode()
+	req, err := http.NewRequest(http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("iWorkerCenter memory delete failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	cached := removeWorkerMemoryCache(readWorkerMemoryCache(tenantID, departmentID, workerID), memoryID)
+	_ = writeWorkerMemoryCache(tenantID, departmentID, workerID, cached)
+	return nil
+}
 func buildWorkerMemorySystemPrompt(memories []WorkerMemoryEntry) string {
 	if len(memories) == 0 {
 		return ""
@@ -406,6 +452,19 @@ func upsertWorkerMemoryCache(items []WorkerMemoryEntry, saved WorkerMemoryEntry)
 	return append([]WorkerMemoryEntry{saved}, items...)
 }
 
+func removeWorkerMemoryCache(items []WorkerMemoryEntry, memoryID string) []WorkerMemoryEntry {
+	memoryID = strings.TrimSpace(memoryID)
+	if memoryID == "" || len(items) == 0 {
+		return items
+	}
+	filtered := items[:0]
+	for _, item := range items {
+		if item.ID != memoryID {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
 func sanitizeCacheName(v string) string {
 	v = strings.TrimSpace(v)
 	var b strings.Builder

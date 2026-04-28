@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SkillMarket</title>
+  <title>MaClaw SkillMarket</title>
   <style>
     :root{--bg:#f8fafc;--card:#fff;--text:#1a202c;--muted:#64748b;--primary:#2563eb;--primary-light:#eff6ff;--border:#e2e8f0;--danger:#dc2626;--success:#16a34a;--warn:#f59e0b;--radius:10px;--shadow:0 1px 3px rgba(0,0,0,.08)}
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.6;font-size:14px}
     .container{max-width:1100px;margin:0 auto;padding:20px}
-    header{text-align:center;padding:24px 0 16px}
+    header{text-align:center;padding:24px 0 16px;position:relative}
     header h1{font-size:24px}
     header p{color:var(--muted);font-size:13px}
     .tabs{display:flex;gap:4px;border-bottom:2px solid var(--border);margin-bottom:20px}
@@ -54,15 +54,27 @@
     .toast-item.error{background:var(--danger)}
     .toast-item.success{background:var(--success)}
     .toast-item.warning{background:var(--warn);color:#1a202c}
+    .lang-switch{position:absolute;right:0;top:18px;display:flex;gap:4px;border:1px solid var(--border);border-radius:8px;background:#fff;padding:3px}
+    .lang-switch button{border:0;background:transparent;color:var(--muted);height:26px;padding:0 8px;border-radius:6px;font:inherit;font-size:12px;cursor:pointer}
+    .lang-switch button.active{background:var(--primary);color:#fff}
+    .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px}
+    .detail-item{border:1px solid var(--border);border-radius:8px;padding:10px;background:#fff}
+    .detail-item .lbl{font-size:11px;color:var(--muted);margin-bottom:3px}
+    .detail-item .val{font-size:13px;word-break:break-all}
+    @media (max-width:720px){.lang-switch{position:static;justify-content:center;margin:10px auto 0;width:max-content}.form-row{align-items:stretch;flex-direction:column}.form-row label{min-width:0}.form-row input,.form-row button{width:100%}.captcha-box{flex-wrap:wrap}}
   </style>
 </head>
 <body>
 <div id="toastStack" class="toast-stack"></div>
 <div class="container">
   <header>
-    <h1 data-i18n="title">SkillMarket</h1>
+    <h1 data-i18n="title">MaClaw SkillMarket</h1>
     <p data-i18n="subtitle">Account / Skills</p>
     <p style="margin-top:6px"><a href="/skillmarket" style="font-size:13px;color:var(--primary);text-decoration:none" data-i18n="nav.browse"><- Back to Skill Browse</a></p>
+    <div class="lang-switch" aria-label="Language">
+      <button type="button" id="lang-zh" onclick="setLanguage('zh')">中文</button>
+      <button type="button" id="lang-en" onclick="setLanguage('en')">EN</button>
+    </div>
   </header>
 
   <!-- Auth Section (shown when not logged in) -->
@@ -217,6 +229,34 @@
           <div class="stat"><div class="val" id="s-voucher">0</div><div class="lbl" data-i18n="account.voucher">Vouchers</div></div>
           <div class="stat"><div class="val" id="s-status">-</div><div class="lbl" data-i18n="account.status">Status</div></div>
         </div>
+        <div class="detail-grid">
+          <div class="detail-item"><div class="lbl" data-i18n="account.email">Email</div><div class="val" id="d-email">-</div></div>
+          <div class="detail-item"><div class="lbl" data-i18n="account.userid">User ID</div><div class="val" id="d-userid">-</div></div>
+          <div class="detail-item"><div class="lbl" data-i18n="account.verifyMethod">Verify Method</div><div class="val" id="d-verify">-</div></div>
+          <div class="detail-item"><div class="lbl" data-i18n="account.voucherExpires">Voucher Expires</div><div class="val" id="d-voucher-exp">-</div></div>
+          <div class="detail-item"><div class="lbl" data-i18n="account.createdAt">Created At</div><div class="val" id="d-created">-</div></div>
+          <div class="detail-item"><div class="lbl" data-i18n="account.verifiedAt">Verified At</div><div class="val" id="d-verified">-</div></div>
+        </div>
+      </div>
+      <div id="security-section" class="card">
+        <h3 data-i18n="security.title">Security</h3>
+        <div class="form-row">
+          <label data-i18n="security.current">Current Password</label>
+          <input id="current-password" type="password" data-i18n-placeholder="security.current.placeholder" placeholder="Current password">
+        </div>
+        <div class="form-row">
+          <label data-i18n="security.new">New Password</label>
+          <input id="new-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters">
+        </div>
+        <div class="form-row">
+          <label data-i18n="security.confirm">Confirm</label>
+          <input id="new-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again">
+        </div>
+        <div class="form-row">
+          <label></label>
+          <button class="btn btn-primary" onclick="changePassword()" data-i18n="security.change">Change Password</button>
+        </div>
+        <div id="security-msg"></div>
       </div>
       <div id="tier-info" class="card" style="display:none">
         <h3 data-i18n="tier.title">Reputation Tier</h3>
@@ -287,11 +327,11 @@ function showToast(message, type) {
 }
 
 // i18n
-const LANG = (navigator.language || 'zh').startsWith('zh') ? 'zh' : 'en';
+let LANG = localStorage.getItem('sm_lang') || ((navigator.language || 'zh').startsWith('zh') ? 'zh' : 'en');
 document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
 
 const I18N = {
-  'title':              { zh: '\u6280\u80fd\u5e02\u573a\u7528\u6237\u4e2d\u5fc3', en: 'SkillMarket' },
+  'title':              { zh: 'MaClaw SkillMarket \u7528\u6237\u4e2d\u5fc3', en: 'MaClaw SkillMarket' },
   'subtitle':           { zh: '\u8d26\u6237\u7ba1\u7406 / \u6280\u80fd\u7ba1\u7406', en: 'Account / Skills' },
   'auth.email':         { zh: '\u90ae\u7bb1', en: 'Email' },
   'auth.email.placeholder': { zh: 'you@example.com', en: 'your@email.com' },
@@ -326,6 +366,12 @@ const I18N = {
   'tab.account':        { zh: '\u8d26\u6237', en: 'Account' },
   'tab.myskills':       { zh: '\u6211\u7684\u6280\u80fd', en: 'My Skills' },
   'account.title':      { zh: '\u8d26\u6237\u4fe1\u606f', en: 'Account Info' },
+  'account.email':      { zh: '\u90ae\u7bb1', en: 'Email' },
+  'account.userid':     { zh: '\u7528\u6237 ID', en: 'User ID' },
+  'account.verifyMethod': { zh: '\u9a8c\u8bc1\u65b9\u5f0f', en: 'Verify Method' },
+  'account.voucherExpires': { zh: '\u4f53\u9a8c\u5238\u5230\u671f', en: 'Voucher Expires' },
+  'account.createdAt':  { zh: '\u521b\u5efa\u65f6\u95f4', en: 'Created At' },
+  'account.verifiedAt': { zh: '\u9a8c\u8bc1\u65f6\u95f4', en: 'Verified At' },
   'account.credits':    { zh: '\u79ef\u5206\u4f59\u989d', en: 'Credits' },
   'account.settled':    { zh: '\u5df2\u7ed3\u7b97\u6536\u76ca', en: 'Settled' },
   'account.pending':    { zh: '\u5f85\u7ed3\u7b97\u6536\u76ca', en: 'Pending' },
@@ -336,6 +382,13 @@ const I18N = {
   'tier.published':     { zh: '\u5df2\u53d1\u5e03', en: 'Published' },
   'tier.avgrating':     { zh: '\u5e73\u5747\u5206', en: 'Avg Rating' },
   'tier.downloads':     { zh: '\u603b\u4e0b\u8f7d', en: 'Downloads' },
+  'security.title':     { zh: '\u8d26\u6237\u5b89\u5168', en: 'Security' },
+  'security.current':   { zh: '\u5f53\u524d\u5bc6\u7801', en: 'Current Password' },
+  'security.current.placeholder': { zh: '\u8f93\u5165\u5f53\u524d\u5bc6\u7801', en: 'Current password' },
+  'security.new':       { zh: '\u65b0\u5bc6\u7801', en: 'New Password' },
+  'security.confirm':   { zh: '\u786e\u8ba4\u65b0\u5bc6\u7801', en: 'Confirm' },
+  'security.change':    { zh: '\u4fee\u6539\u5bc6\u7801', en: 'Change Password' },
+  'msg.password.changed': { zh: '\u5bc6\u7801\u5df2\u4fee\u6539', en: 'Password changed.' },
   'credits.title':      { zh: '\u5145\u503c\u4e0e\u63d0\u73b0', en: 'Top Up / Withdraw' },
   'credits.amount':     { zh: '\u91d1\u989d', en: 'Amount' },
   'credits.topup':      { zh: '\u5145\u503c', en: 'Top Up' },
@@ -406,9 +459,26 @@ const ERROR_MESSAGES = {
   'password is required':     { zh: '\u5bc6\u7801\u81f3\u5c116\u4f4d', en: 'Password must be at least 6 characters.' },
   'email is required':        { zh: '\u8bf7\u8f93\u5165\u90ae\u7bb1', en: 'Email is required.' },
   'rate limited':             { zh: '\u64cd\u4f5c\u8fc7\u4e8e\u9891\u7e41\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5', en: 'Too many requests. Please try again later.' },
+  'current password is incorrect': { zh: '\u5f53\u524d\u5bc6\u7801\u4e0d\u6b63\u786e', en: 'Current password is incorrect.' },
+  'mail delivery is not configured': { zh: '\u90ae\u4ef6\u53d1\u9001\u672a\u914d\u7f6e\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458', en: 'Mail delivery is not configured. Please contact the administrator.' },
 };
 function t(key) { return (I18N[key] && I18N[key][LANG]) || key; }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function setLanguage(lang) {
+  LANG = lang === 'en' ? 'en' : 'zh';
+  localStorage.setItem('sm_lang', LANG);
+  document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
+  applyI18n();
+  if (currentEmail) loadAccountData();
+}
+
+function fmtDate(v) {
+  if (!v) return '-';
+  const d = new Date(v);
+  if (isNaN(d.getTime()) || d.getFullYear() <= 1) return '-';
+  return d.toLocaleString(LANG === 'zh' ? 'zh-CN' : 'en-US');
+}
 
 function statusText(raw) {
   const value = String(raw || '').trim().toLowerCase();
@@ -527,6 +597,25 @@ async function doForgotPassword() {
   } catch(e) { showMsg('forgot-msg', parseApiError(e), true); refreshCaptcha('forgot'); }
 }
 
+async function changePassword() {
+  const current = document.getElementById('current-password').value;
+  const pw = document.getElementById('new-password').value;
+  const pw2 = document.getElementById('new-password2').value;
+  if (pw.length < 6) { showMsg('security-msg', t('err.password.short'), true); return; }
+  if (pw !== pw2) { showMsg('security-msg', t('err.password.match'), true); return; }
+  try {
+    const r = await fetch(API + '/api/v1/auth/change-password', {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({current_password: current, new_password: pw})
+    });
+    if (!r.ok) throw await readErrorBody(r);
+    document.getElementById('current-password').value = '';
+    document.getElementById('new-password').value = '';
+    document.getElementById('new-password2').value = '';
+    showMsg('security-msg', t('msg.password.changed'), false);
+  } catch(e) { showMsg('security-msg', parseApiError(e), true); }
+}
+
 let resetToken = '';
 async function doResetPassword() {
   const pw = document.getElementById('reset-password').value;
@@ -634,7 +723,7 @@ async function restoreSession() {
 async function loadAccountData() {
   if (!currentEmail) return;
   try {
-    const r = await fetch(API + '/api/v1/account/' + encodeURIComponent(currentEmail), { headers: authHeaders() });
+    const r = await fetch(API + '/api/v1/auth/me', { headers: authHeaders() });
     if (!r.ok) return;
     const d = await r.json();
     currentUserID = d.id;
@@ -651,6 +740,12 @@ function showAccountInfo(d) {
   document.getElementById('s-pending').textContent = d.pending_settlement || 0;
   document.getElementById('s-voucher').textContent = d.voucher_count || 0;
   document.getElementById('s-status').textContent = statusText(d.status) || '-';
+  document.getElementById('d-email').textContent = d.email || '-';
+  document.getElementById('d-userid').textContent = d.id || '-';
+  document.getElementById('d-verify').textContent = d.verify_method || '-';
+  document.getElementById('d-voucher-exp').textContent = fmtDate(d.voucher_expires_at);
+  document.getElementById('d-created').textContent = fmtDate(d.created_at);
+  document.getElementById('d-verified').textContent = fmtDate(d.verified_at);
 }
 
 async function loadTier(email) {
@@ -826,6 +921,9 @@ document.querySelectorAll('.tab').forEach(tab => {
 // Apply i18n strings
 function applyI18n() {
   document.title = t('title');
+  const zh = document.getElementById('lang-zh');
+  const en = document.getElementById('lang-en');
+  if (zh && en) { zh.classList.toggle('active', LANG === 'zh'); en.classList.toggle('active', LANG === 'en'); }
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.getAttribute('data-i18n');
     if (I18N[key]) el.textContent = I18N[key][LANG];
@@ -852,6 +950,7 @@ async function init() {
   document.getElementById('lookup-captcha-a').addEventListener('keydown', e => { if (e.key === 'Enter') doLookup(); });
   document.getElementById('forgot-captcha-a').addEventListener('keydown', e => { if (e.key === 'Enter') doForgotPassword(); });
   document.getElementById('reset-password2').addEventListener('keydown', e => { if (e.key === 'Enter') doResetPassword(); });
+  document.getElementById('new-password2').addEventListener('keydown', e => { if (e.key === 'Enter') changePassword(); });
   await checkURLTokens();
   if (!sessionToken) {
     updateUIState();
@@ -864,5 +963,3 @@ init();
 </script>
 </body>
 </html>
-
-

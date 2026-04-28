@@ -153,6 +153,49 @@ func (h *SkillMarketHandlers) ValidateSession(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// CurrentUser handles GET /api/v1/auth/me.
+func (h *SkillMarketHandlers) CurrentUser(w http.ResponseWriter, r *http.Request) {
+	token := extractSessionToken(r)
+	if token == "" {
+		smError(w, http.StatusUnauthorized, "session token required")
+		return
+	}
+	user, err := h.authSvc.CurrentUser(r.Context(), token)
+	if err != nil {
+		smError(w, http.StatusUnauthorized, "session expired or invalid")
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
+}
+
+// ChangePassword handles POST /api/v1/auth/change-password.
+func (h *SkillMarketHandlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	token := extractSessionToken(r)
+	if token == "" {
+		smError(w, http.StatusUnauthorized, "session token required")
+		return
+	}
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		smError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if err := h.authSvc.ChangePassword(r.Context(), token, req.CurrentPassword, req.NewPassword); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, skillmarket.ErrTokenExpired) {
+			status = http.StatusUnauthorized
+		} else if errors.Is(err, skillmarket.ErrCurrentPassword) || errors.Is(err, skillmarket.ErrInvalidCredentials) {
+			status = http.StatusForbidden
+		}
+		smError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password_changed"})
+}
+
 // ResendActivation handles POST /api/v1/auth/resend-activation.
 func (h *SkillMarketHandlers) ResendActivation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -178,7 +221,14 @@ func (h *SkillMarketHandlers) SendPasswordReset(w http.ResponseWriter, r *http.R
 		smError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	_ = h.authSvc.SendPasswordReset(r.Context(), strings.TrimSpace(req.Email))
+	if err := h.authSvc.SendPasswordReset(r.Context(), strings.TrimSpace(req.Email)); err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(strings.ToLower(err.Error()), "mail delivery") {
+			status = http.StatusServiceUnavailable
+		}
+		smError(w, status, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset_email_sent"})
 }
 

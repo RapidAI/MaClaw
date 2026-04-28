@@ -450,6 +450,26 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("# TYPE maclaw_users_total gauge\n")
 	b.WriteString("maclaw_users_total ")
 	b.WriteString(strconv.FormatInt(int64(overview.Users), 10))
+	b.WriteString("\n# HELP maclaw_credentials_total Number of credentials\n")
+	b.WriteString("# TYPE maclaw_credentials_total gauge\n")
+	b.WriteString("maclaw_credentials_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.Credentials), 10))
+	b.WriteString("\n# HELP maclaw_credentials_by_status Number of credentials by lifecycle status\n")
+	b.WriteString("# TYPE maclaw_credentials_by_status gauge\n")
+	b.WriteString("maclaw_credentials_by_status{status=\"active\"} ")
+	b.WriteString(strconv.FormatInt(int64(overview.ActiveCredentials), 10))
+	b.WriteString("\nmaclaw_credentials_by_status{status=\"suspended\"} ")
+	b.WriteString(strconv.FormatInt(int64(overview.SuspendedCredentials), 10))
+	b.WriteString("\nmaclaw_credentials_by_status{status=\"revoked\"} ")
+	b.WriteString(strconv.FormatInt(int64(overview.RevokedCredentials), 10))
+	b.WriteString("\n# HELP maclaw_credentials_expired_total Number of credentials whose expires_at has passed\n")
+	b.WriteString("# TYPE maclaw_credentials_expired_total gauge\n")
+	b.WriteString("maclaw_credentials_expired_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.ExpiredCredentials), 10))
+	b.WriteString("\n# HELP maclaw_credentials_expiring_total Number of credentials expiring within the default lookahead window\n")
+	b.WriteString("# TYPE maclaw_credentials_expiring_total gauge\n")
+	b.WriteString("maclaw_credentials_expiring_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.ExpiringCredentials), 10))
 	b.WriteString("\n# HELP maclaw_instances_total Number of instances\n")
 	b.WriteString("# TYPE maclaw_instances_total gauge\n")
 	b.WriteString("maclaw_instances_total ")
@@ -574,12 +594,23 @@ func (s *HTTPServer) handleGetAdminAlerts(w http.ResponseWriter, r *http.Request
 		}
 		limit = parsed
 	}
+	expiryWindowDays := 0
+	expiryWindowRaw := strings.TrimSpace(r.URL.Query().Get("credential_expiry_window_days"))
+	if expiryWindowRaw != "" {
+		parsed, err := strconv.Atoi(expiryWindowRaw)
+		if err != nil || parsed < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid credential_expiry_window_days"})
+			return
+		}
+		expiryWindowDays = parsed
+	}
 	out, err := s.svc.GetAdminAlerts(r.Context(), agentservice.AdminAlertsInput{
-		TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id")),
-		UserID:   strings.TrimSpace(r.URL.Query().Get("user_id")),
-		Kind:     strings.TrimSpace(r.URL.Query().Get("kind")),
-		Since:    since,
-		Limit:    limit,
+		TenantID:                   strings.TrimSpace(r.URL.Query().Get("tenant_id")),
+		UserID:                     strings.TrimSpace(r.URL.Query().Get("user_id")),
+		Kind:                       strings.TrimSpace(r.URL.Query().Get("kind")),
+		Since:                      since,
+		Limit:                      limit,
+		CredentialExpiryWindowDays: expiryWindowDays,
 	})
 	if err != nil {
 		writeError(w, err)

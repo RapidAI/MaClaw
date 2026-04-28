@@ -71,6 +71,11 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsConversationAndTools(t *testing.T)
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provide a GateIntentClassifier so the Coding Tool Gate doesn't
+	// fail-closed and strip the "bash" tool from the tool list.
+	// With nil embedder, Layer 1 keyword rules classify "run trajectory"
+	// as unknown → gate inactive → bash tool preserved.
+	app.gateIntentClassifier = NewGateIntentClassifier(nil)
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.SetTrajectoryRecorderFactory(app.buildTrajectoryRecorderFactory())

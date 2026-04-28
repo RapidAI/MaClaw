@@ -97,6 +97,20 @@ func TestUserRepository_CRUD(t *testing.T) {
 	}
 }
 
+func TestUserRepository_GetUserByEmailCaseInsensitive(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	u := createTestUser(t, store, "MixedCase@Example.com", 100)
+
+	got, err := store.GetUserByEmail(ctx, "mixedcase@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != u.ID {
+		t.Fatalf("GetUserByEmail returned id %s, want %s", got.ID, u.ID)
+	}
+}
+
 func TestCreditsRepository_Transactions(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

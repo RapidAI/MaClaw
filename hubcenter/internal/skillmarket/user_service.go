@@ -27,6 +27,7 @@ func NewUserService(store *Store, mailer *mail.Service) *UserService {
 // EnsureAccount 延迟创建：email 不存在则创建 unverified 账户并赠送体验券。
 // 已存在则直接返回。
 func (s *UserService) EnsureAccount(ctx context.Context, email string) (*SkillMarketUser, error) {
+	email = normalizeEmail(email)
 	u, err := s.store.GetUserByEmail(ctx, email)
 	if err == nil {
 		return u, nil
@@ -59,6 +60,7 @@ func (s *UserService) EnsureAccount(ctx context.Context, email string) (*SkillMa
 // VerifyAccount 将账户升级为 verified。
 // 如果 email 已有 unverified 账户，直接接管（方案 A）。
 func (s *UserService) VerifyAccount(ctx context.Context, email, method string) (*SkillMarketUser, error) {
+	email = normalizeEmail(email)
 	u, err := s.store.GetUserByEmail(ctx, email)
 	if err != nil {
 		return nil, err
@@ -77,6 +79,7 @@ func (s *UserService) VerifyAccount(ctx context.Context, email, method string) (
 
 // GetAccount 获取账户信息。
 func (s *UserService) GetAccount(ctx context.Context, email string) (*SkillMarketUser, error) {
+	email = normalizeEmail(email)
 	return s.store.GetUserByEmail(ctx, email)
 }
 

@@ -37,6 +37,13 @@ type Store struct {
 	tmt      *TemporalTree
 	gating   *RecallGating
 	partMgr  *partitionManager // category-based partitioned persistence
+
+	// --- Async semantic dedup ---
+	// pendingDedup holds (newEntryID, candidateEntryID) pairs that need
+	// LLM-based precise dedup judgment. Written by SaveWithContext (under
+	// s.mu.Lock), consumed by ProcessPendingDedup (acquires its own lock).
+	pendingDedup []pendingDedupPair
+	llmDedup     LLMChatCaller // set via SetLLMDedup; nil = async dedup disabled
 }
 
 // NewStore creates a Store that persists to the given path.
@@ -122,6 +129,12 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		return fmt.Errorf("memory_store: rejected: %w", err)
 	}
 
+	// Redact sensitive information (API keys, passwords, tokens, private keys)
+	// before persisting to long-term memory. This prevents secrets from being
+	// recalled and injected into future LLM prompts.
+	// Inspired by Codex CLI's redact_secrets() applied at every memory write path.
+	entry.Content = redactSecretsInMemory(entry.Content)
+
 	// Enrich tags from conversation context: extract entities from contextHint
 	// that are not already present in the entry's content-derived tags.
 	if contextHint != "" {
@@ -132,6 +145,25 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	}
 
 	hash := computeContentHash(entry.Content)
+
+	// --- Embedding computation (outside lock) ---
+	// Compute embedding before acquiring the write lock. The embedder takes
+	// 2-10ms for model inference; doing this under s.mu.Lock would block all
+	// concurrent reads (RecallDynamic, List, Search).
+	//
+	// Read s.embedder under RLock to avoid a data race with SetEmbedder.
+	// Then use the local copy for the actual Embed() call (no lock held).
+	if len(entry.Embedding) == 0 {
+		s.mu.RLock()
+		emb := s.embedder
+		s.mu.RUnlock()
+		if emb != nil {
+			vec, err := emb.Embed(entry.Content)
+			if err == nil && len(vec) > 0 {
+				entry.Embedding = vec
+			}
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -187,9 +219,21 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		return nil
 	}
 
+	// Assign ID early so it's available for pending dedup tracking.
 	if entry.ID == "" {
 		entry.ID = generateID()
 	}
+
+	// --- Embedding semantic candidate recall (under lock, <1ms) ---
+	// The embedding was computed above (outside the lock). Here we only
+	// query the vector index for candidates — this is a fast dot-product
+	// scan over the in-memory index, not a model inference call.
+	if len(entry.Embedding) > 0 {
+		if candidate := s.findSemanticDupCandidate(entry.Embedding, entry.Category, entry.OwnerID); candidate != nil {
+			s.enqueuePendingDedup(entry.ID, *candidate)
+		}
+	}
+
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = now
 	}

@@ -260,13 +260,18 @@ func nextGrantStart(reg *Registry, email, serviceGroupID string, now time.Time) 
 }
 
 func hasGrantWithSource(reg *Registry, email, serviceGroupID, source string) bool {
+	return findGrantWithSource(reg, email, serviceGroupID, source) != nil
+}
+
+func findGrantWithSource(reg *Registry, email, serviceGroupID, source string) *Grant {
 	if reg == nil {
-		return false
+		return nil
 	}
 	email = normalizeEmail(email)
 	serviceGroupID = strings.TrimSpace(serviceGroupID)
 	source = strings.TrimSpace(source)
-	for _, grant := range reg.Grants {
+	for i := range reg.Grants {
+		grant := &reg.Grants[i]
 		if normalizeEmail(grant.Email) != email {
 			continue
 		}
@@ -276,9 +281,9 @@ func hasGrantWithSource(reg *Registry, email, serviceGroupID, source string) boo
 		if !strings.EqualFold(strings.TrimSpace(grant.Source), source) {
 			continue
 		}
-		return true
+		return grant
 	}
-	return false
+	return nil
 }
 
 func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc *security.SecurityService, email string, now time.Time) ([]string, []Grant, error) {
@@ -581,9 +586,20 @@ func firstNonEmpty(values ...string) string {
 }
 
 func GrantDefaultServiceForNewUser(ctx context.Context, system SystemSettingsRepository, email string) error {
+	return grantNewUserBenefit(ctx, system, email, "new_user_default", 0.30, false)
+}
+
+func GrantEmailConfirmedBenefitForUser(ctx context.Context, system SystemSettingsRepository, email string) error {
+	return grantNewUserBenefit(ctx, system, email, "new_user_email_confirmed", 0.70, true)
+}
+
+func grantNewUserBenefit(ctx context.Context, system SystemSettingsRepository, email, source string, ratio float64, useRegistrationWindow bool) error {
 	email = normalizeEmail(email)
 	if email == "" {
 		return fmt.Errorf("email is required")
+	}
+	if ratio <= 0 {
+		return nil
 	}
 	reg, err := LoadRegistry(ctx, system)
 	if err != nil {
@@ -593,29 +609,52 @@ func GrantDefaultServiceForNewUser(ctx context.Context, system SystemSettingsRep
 	if len(serviceGroupIDs) == 0 {
 		return nil
 	}
+	validServiceGroupIDs := make([]string, 0, len(serviceGroupIDs))
+	for _, serviceGroupID := range serviceGroupIDs {
+		if reg.FindModelServiceGroup(serviceGroupID) != nil {
+			validServiceGroupIDs = append(validServiceGroupIDs, serviceGroupID)
+		}
+	}
+	if len(validServiceGroupIDs) == 0 {
+		return nil
+	}
 	days := reg.DefaultNewUserDurationDays
 	if days <= 0 {
 		days = 30
 	}
+	credits := reg.DefaultNewUserCredits
+	if credits <= 0 {
+		credits = DefaultNewUserCredits
+	}
+	creditsPerGroup := roundCredits((credits * ratio) / float64(len(validServiceGroupIDs)))
 	now := time.Now().UTC()
 	created := false
-	for _, serviceGroupID := range serviceGroupIDs {
-		if reg.FindModelServiceGroup(serviceGroupID) == nil {
-			continue
-		}
-		if hasGrantWithSource(reg, email, serviceGroupID, "new_user_default") {
+	for _, serviceGroupID := range validServiceGroupIDs {
+		if hasGrantWithSource(reg, email, serviceGroupID, source) {
 			continue
 		}
 		startsAt := nextGrantStart(reg, email, serviceGroupID, now)
 		expiresAt := startsAt.Add(time.Duration(days) * 24 * time.Hour)
+		if useRegistrationWindow {
+			base := findGrantWithSource(reg, email, serviceGroupID, "new_user_default")
+			if base == nil {
+				continue
+			}
+			startsAt = base.StartsAt
+			expiresAt = base.ExpiresAt
+			if !now.Before(expiresAt) {
+				continue
+			}
+		}
 		reg.Grants = append(reg.Grants, Grant{
 			ID:             NewID("grant"),
 			Email:          email,
 			ServiceGroupID: serviceGroupID,
-			Source:         "new_user_default",
+			Source:         source,
 			StartsAt:       startsAt,
 			ExpiresAt:      expiresAt,
 			CreatedAt:      now,
+			CreditsTotal:   creditsPerGroup,
 		})
 		created = true
 	}

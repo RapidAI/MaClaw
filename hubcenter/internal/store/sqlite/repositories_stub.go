@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
@@ -637,6 +639,168 @@ func (r *hubUserLinkRepo) DeleteByHubID(ctx context.Context, hubID string) error
 	return err
 }
 
+func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubID string, link *store.HubUserLink) ([]*store.HubUserLink, *store.HubUserLink, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, hub_id, email, is_default, created_at, updated_at
+		FROM hub_user_links
+		WHERE email = ?
+		ORDER BY is_default DESC, updated_at DESC
+	`, email)
+	if err != nil {
+		return nil, nil, err
+	}
+	var remove []*store.HubUserLink
+	targetExists := false
+	for rows.Next() {
+		item, scanErr := scanHubUserLink(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return nil, nil, scanErr
+		}
+		if item == nil || strings.HasPrefix(strings.TrimSpace(item.ID), "hul_owner_") {
+			continue
+		}
+		if strings.TrimSpace(item.HubID) == strings.TrimSpace(link.HubID) {
+			targetExists = true
+			continue
+		}
+		if strings.TrimSpace(item.ID) == strings.TrimSpace(link.ID) {
+			continue
+		}
+		if strings.TrimSpace(fromHubID) != "" && strings.TrimSpace(item.HubID) != strings.TrimSpace(fromHubID) {
+			continue
+		}
+		remove = append(remove, item)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	var upserted *store.HubUserLink
+	if !targetExists {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				hub_id = excluded.hub_id,
+				email = excluded.email,
+				is_default = excluded.is_default,
+				created_at = excluded.created_at,
+				updated_at = excluded.updated_at
+		`, link.ID, link.HubID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
+			return nil, nil, err
+		}
+		upserted = link
+	}
+	for _, item := range remove {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hub_user_links WHERE id = ?`, item.ID); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	committed = true
+	return remove, upserted, nil
+}
+
+func (r *hubUserLinkRepo) MigrateEmailPatternToHub(ctx context.Context, pattern, fromHubID, toHubID string, now time.Time) ([]*store.HubUserLink, []*store.HubUserLink, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, hub_id, email, is_default, created_at, updated_at
+		FROM hub_user_links
+		ORDER BY email ASC, is_default DESC, updated_at DESC
+	`)
+	if err != nil {
+		return nil, nil, err
+	}
+	var remove []*store.HubUserLink
+	matchedEmails := map[string]struct{}{}
+	targetEmails := map[string]struct{}{}
+	for rows.Next() {
+		item, scanErr := scanHubUserLink(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return nil, nil, scanErr
+		}
+		if item == nil || strings.HasPrefix(strings.TrimSpace(item.ID), "hul_owner_") || !emailWildcardMatch(pattern, item.Email) {
+			continue
+		}
+		if strings.TrimSpace(item.HubID) == strings.TrimSpace(toHubID) {
+			targetEmails[normalizeStoreEmail(item.Email)] = struct{}{}
+			if strings.TrimSpace(fromHubID) == "" {
+				matchedEmails[normalizeStoreEmail(item.Email)] = struct{}{}
+			}
+			continue
+		}
+		if strings.TrimSpace(fromHubID) != "" && strings.TrimSpace(item.HubID) != strings.TrimSpace(fromHubID) {
+			continue
+		}
+		matchedEmails[normalizeStoreEmail(item.Email)] = struct{}{}
+		remove = append(remove, item)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	upserted := make([]*store.HubUserLink, 0, len(matchedEmails))
+	for email := range matchedEmails {
+		if _, exists := targetEmails[email]; exists {
+			continue
+		}
+		link := &store.HubUserLink{ID: primaryStoreUserLinkID(toHubID, email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				hub_id = excluded.hub_id,
+				email = excluded.email,
+				is_default = excluded.is_default,
+				updated_at = excluded.updated_at
+		`, link.ID, link.HubID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
+			return nil, nil, err
+		}
+		upserted = append(upserted, link)
+	}
+	for _, item := range remove {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hub_user_links WHERE id = ?`, item.ID); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	committed = true
+	return remove, upserted, nil
+}
+
 func (r *hubDomainRouteRepo) Upsert(ctx context.Context, route *store.HubDomainRoute) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO hub_domain_routes (id, hub_id, domain, enabled, priority, created_at, updated_at)
@@ -696,6 +860,77 @@ func (r *hubDomainRouteRepo) DeleteByHubID(ctx context.Context, hubID string) er
 		WHERE hub_id = ?
 	`, hubID)
 	return err
+}
+
+func (r *hubDomainRouteRepo) MigrateDomainToHub(ctx context.Context, domain, fromHubID string, route *store.HubDomainRoute) ([]*store.HubDomainRoute, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, hub_id, domain, enabled, priority, created_at, updated_at
+		FROM hub_domain_routes
+		WHERE domain = ?
+		ORDER BY priority ASC, updated_at DESC, id ASC
+	`, domain)
+	if err != nil {
+		return nil, err
+	}
+	var remove []*store.HubDomainRoute
+	for rows.Next() {
+		item, scanErr := scanHubDomainRoute(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return nil, scanErr
+		}
+		if item == nil || strings.TrimSpace(item.ID) == strings.TrimSpace(route.ID) {
+			continue
+		}
+		if strings.TrimSpace(item.HubID) == strings.TrimSpace(route.HubID) {
+			continue
+		}
+		if strings.TrimSpace(fromHubID) != "" && strings.TrimSpace(item.HubID) != strings.TrimSpace(fromHubID) {
+			continue
+		}
+		remove = append(remove, item)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO hub_domain_routes (id, hub_id, domain, enabled, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			hub_id = excluded.hub_id,
+			domain = excluded.domain,
+			enabled = excluded.enabled,
+			priority = excluded.priority,
+			created_at = excluded.created_at,
+			updated_at = excluded.updated_at
+	`, route.ID, route.HubID, route.Domain, boolToInt(route.Enabled), route.Priority, route.CreatedAt.Format(time.RFC3339), route.UpdatedAt.Format(time.RFC3339)); err != nil {
+		return nil, err
+	}
+	for _, item := range remove {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hub_domain_routes WHERE id = ?`, item.ID); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	committed = true
+	return remove, nil
 }
 
 func (r *blockedEmailRepo) GetByEmail(ctx context.Context, email string) (*store.BlockedEmail, error) {
@@ -835,6 +1070,43 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func normalizeStoreEmail(email string) string {
+	return strings.TrimSpace(strings.ToLower(email))
+}
+
+func primaryStoreUserLinkID(hubID, email string) string {
+	sum := sha256.Sum256([]byte(normalizeStoreEmail(email)))
+	return "hul_user_" + strings.TrimSpace(hubID) + "_" + hex.EncodeToString(sum[:])[:16]
+}
+
+func emailWildcardMatch(pattern, email string) bool {
+	pattern = normalizeStoreEmail(pattern)
+	email = normalizeStoreEmail(email)
+	if strings.HasPrefix(pattern, "@") {
+		pattern = "*" + pattern
+	}
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == email
+	}
+	if parts[0] != "" && !strings.HasPrefix(email, parts[0]) {
+		return false
+	}
+	pos := len(parts[0])
+	for _, part := range parts[1 : len(parts)-1] {
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(email[pos:], part)
+		if idx < 0 {
+			return false
+		}
+		pos += idx + len(part)
+	}
+	last := parts[len(parts)-1]
+	return last == "" || strings.HasSuffix(email[pos:], last)
 }
 
 func timePtrString(v *time.Time) any {

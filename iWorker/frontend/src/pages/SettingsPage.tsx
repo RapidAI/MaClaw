@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { CenterHealthStatus, DiWorkerSettings, UpstreamProvider, WorkerMemoryStats } from '../types';
+import type { CenterHealthStatus, DiWorkerSettings, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from '../types';
 
 type Props = {
   settings: DiWorkerSettings;
@@ -14,6 +14,19 @@ type Props = {
   memoryStats: WorkerMemoryStats | null;
   memoryStatsLoading: boolean;
   memoryStatsError: string;
+  memoryDraftScope: string;
+  memoryDraftContent: string;
+  memoryDraftCategory: string;
+  memoryDraftTags: string;
+  memorySaving: boolean;
+  memorySaveMessage: string;
+  memorySaveError: string;
+  memoryRecallQuery: string;
+  memoryRecallItems: WorkerMemoryEntry[];
+  memoryRecallLoading: boolean;
+  memoryRecallError: string;
+  memoryDeletingId: string;
+  memoryDeleteError: string;
   onRoleNameChange: (value: string) => void;
   onRoleDescriptionChange: (value: string) => void;
   onCenterEnabledChange: (value: boolean) => void;
@@ -31,6 +44,14 @@ type Props = {
   onProviderFeaturesChange: (providerId: string, value: string) => void;
   onCheckCenterHealth: () => void;
   onRefreshMemoryStats: () => void;
+  onMemoryDraftScopeChange: (value: string) => void;
+  onMemoryDraftContentChange: (value: string) => void;
+  onMemoryDraftCategoryChange: (value: string) => void;
+  onMemoryDraftTagsChange: (value: string) => void;
+  onSaveWorkerMemory: () => void;
+  onMemoryRecallQueryChange: (value: string) => void;
+  onRecallWorkerMemories: () => void;
+  onDeleteWorkerMemory: (memoryId: string) => void;
   onSave: () => void;
 };
 
@@ -71,6 +92,19 @@ export function SettingsPage({
   memoryStats,
   memoryStatsLoading,
   memoryStatsError,
+  memoryDraftScope,
+  memoryDraftContent,
+  memoryDraftCategory,
+  memoryDraftTags,
+  memorySaving,
+  memorySaveMessage,
+  memorySaveError,
+  memoryRecallQuery,
+  memoryRecallItems,
+  memoryRecallLoading,
+  memoryRecallError,
+  memoryDeletingId,
+  memoryDeleteError,
   onRoleNameChange,
   onRoleDescriptionChange,
   onCenterEnabledChange,
@@ -88,6 +122,14 @@ export function SettingsPage({
   onProviderFeaturesChange,
   onCheckCenterHealth,
   onRefreshMemoryStats,
+  onMemoryDraftScopeChange,
+  onMemoryDraftContentChange,
+  onMemoryDraftCategoryChange,
+  onMemoryDraftTagsChange,
+  onSaveWorkerMemory,
+  onMemoryRecallQueryChange,
+  onRecallWorkerMemories,
+  onDeleteWorkerMemory,
   onSave,
 }: Props) {
   const [expandedProviderId, setExpandedProviderId] = useState<string | null>(null);
@@ -362,7 +404,55 @@ export function SettingsPage({
                 </div>
               </div>
               {memoryStatsError ? <p>{memoryStatsError}</p> : null}
-            </div>
+              <div className="dw-settings-save-row">
+                <label>
+                  Memory Capture
+                  <select value={memoryDraftScope} onChange={(event) => onMemoryDraftScopeChange(event.target.value)} disabled={!settings.center.enabled || memorySaving}>
+                    <option value="personal">Personal memory</option>
+                    <option value="department">Department memory</option>
+                    <option value="company">Company memory</option>
+                  </select>
+                </label>
+                <label>
+                  Category
+                  <input value={memoryDraftCategory} onChange={(event) => onMemoryDraftCategoryChange(event.target.value)} placeholder="note" disabled={!settings.center.enabled || memorySaving} />
+                </label>
+                <label>
+                  Tags
+                  <input value={memoryDraftTags} onChange={(event) => onMemoryDraftTagsChange(event.target.value)} placeholder="policy, preference" disabled={!settings.center.enabled || memorySaving} />
+                </label>
+                <label>
+                  Content
+                  <textarea value={memoryDraftContent} onChange={(event) => onMemoryDraftContentChange(event.target.value)} placeholder="Write a reusable fact, rule, preference, or handoff note." disabled={!settings.center.enabled || memorySaving} rows={4} />
+                </label>
+                <button type="button" className="primary" onClick={onSaveWorkerMemory} disabled={!settings.center.enabled || memorySaving || !memoryDraftContent.trim()}>
+                  {memorySaving ? 'Saving memory...' : 'Save memory'}
+                </button>
+                <p>{memorySaveMessage || memorySaveError || 'Saved memories are canonical in iWorkerCenter; this computer keeps cache only.'}</p>
+              </div>
+              <div className="dw-settings-save-row">
+                <label>
+                  Memory Browser
+                  <input value={memoryRecallQuery} onChange={(event) => onMemoryRecallQueryChange(event.target.value)} placeholder="Search registered center memory" disabled={!settings.center.enabled || memoryRecallLoading} />
+                </label>
+                <button type="button" className="secondary" onClick={onRecallWorkerMemories} disabled={!settings.center.enabled || memoryRecallLoading}>
+                  {memoryRecallLoading ? 'Recalling...' : 'Recall memories'}
+                </button>
+                {memoryRecallError ? <p>{memoryRecallError}</p> : null}
+                {memoryDeleteError ? <p>{memoryDeleteError}</p> : null}
+                {memoryRecallItems.length > 0 ? (
+                  <div className="dw-settings-kv-list">
+                    {memoryRecallItems.map((item) => (
+                      <div key={item.id || `${item.scope}-${item.content}`} className="dw-settings-kv-item">
+                        <span>{`${item.scope || 'memory'} / ${item.category || 'note'}`}</span>
+                        <strong>{item.content}</strong>
+                        <button type="button" className="secondary" onClick={() => onDeleteWorkerMemory(item.id)} disabled={!item.id || memoryDeletingId === item.id}>
+                          {memoryDeletingId === item.id ? 'Forgetting...' : 'Forget'}
+                        </button>                      </div>
+                    ))}
+                  </div>
+                ) : <p>No recalled memories yet.</p>}
+              </div>            </div>
             <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
               <div className="dw-settings-summary-head">
                 <div>

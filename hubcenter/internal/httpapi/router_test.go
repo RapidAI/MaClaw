@@ -896,6 +896,9 @@ func TestHubCenterAdminPageIncludesFailureLogsUI(t *testing.T) {
 	for _, want := range []string{
 		`data-tab="failurelogs"`,
 		`id="tab-failurelogs"`,
+		`data-tab="usermgmt"`,
+		`section.id='tab-usermgmt'`,
+		`/api/admin/users/migrate`,
 		`loadFailureLogs`,
 		`/api/admin/failure-logs`,
 		`routingDiagnosticsTitle`,
@@ -958,5 +961,132 @@ func TestAdminRouteQueryByDomainReturnsOnlyExactMatches(t *testing.T) {
 	}
 	if len(result.Hubs) != 1 || result.Hubs[0].CorporateEmailDomain != "qianxin.com" {
 		t.Fatalf("expected exact domain route only, got %+v", result.Hubs)
+	}
+}
+
+func TestAdminUserMigrationHandlerMovesEmailRoute(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	hubA := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-a@example.com",
+		"name":            "Hub A",
+		"base_url":        "https://a.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	hubB := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-b@example.com",
+		"name":            "Hub B",
+		"base_url":        "https://b.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+
+	linkResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubA["hub_id"].(string)+"/user-links/sync", map[string]any{
+		"hub_secret": hubA["hub_secret"],
+		"email":      "moved@example.com",
+		"is_default": true,
+	}, "")
+	if linkResp.Code != http.StatusOK {
+		t.Fatalf("sync link status=%d body=%s", linkResp.Code, linkResp.Body.String())
+	}
+
+	migrateResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/users/migrate", map[string]any{
+		"mode":        "email",
+		"email":       "moved@example.com",
+		"from_hub_id": hubA["hub_id"],
+		"to_hub_id":   hubB["hub_id"],
+	}, token)
+	if migrateResp.Code != http.StatusOK {
+		t.Fatalf("migrate status=%d body=%s", migrateResp.Code, migrateResp.Body.String())
+	}
+
+	resolveResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{"email": "moved@example.com"}, "")
+	if resolveResp.Code != http.StatusOK {
+		t.Fatalf("resolve status=%d body=%s", resolveResp.Code, resolveResp.Body.String())
+	}
+	var resolved entry.ResolveResult
+	if err := json.Unmarshal(resolveResp.Body.Bytes(), &resolved); err != nil {
+		t.Fatalf("decode resolve: %v", err)
+	}
+	if resolved.DefaultHubID != hubB["hub_id"] {
+		t.Fatalf("expected target hub %v, got %+v", hubB["hub_id"], resolved)
+	}
+}
+
+func TestAdminUserMigrationHandlerMovesScatteredEmailRoutesWithoutSourceHub(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	hubA := registerConfirmAndHeartbeatHub(t, svc, map[string]any{"owner_email": "owner-a@example.com", "name": "Hub A", "base_url": "https://a.example.com", "visibility": "shared", "enrollment_mode": "approval"})
+	hubB := registerConfirmAndHeartbeatHub(t, svc, map[string]any{"owner_email": "owner-b@example.com", "name": "Hub B", "base_url": "https://b.example.com", "visibility": "shared", "enrollment_mode": "approval"})
+	hubC := registerConfirmAndHeartbeatHub(t, svc, map[string]any{"owner_email": "owner-c@example.com", "name": "Hub C", "base_url": "https://c.example.com", "visibility": "shared", "enrollment_mode": "approval"})
+
+	for i, hub := range []map[string]any{hubA, hubB} {
+		resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hub["hub_id"].(string)+"/user-links/sync", map[string]any{
+			"hub_secret": hub["hub_secret"],
+			"email":      "scattered@example.com",
+			"is_default": i == 0,
+		}, "")
+		if resp.Code != http.StatusOK {
+			t.Fatalf("sync link status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	}
+
+	migrateResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/users/migrate", map[string]any{
+		"mode":      "email",
+		"email":     "scattered@example.com",
+		"to_hub_id": hubC["hub_id"],
+	}, token)
+	if migrateResp.Code != http.StatusOK {
+		t.Fatalf("migrate status=%d body=%s", migrateResp.Code, migrateResp.Body.String())
+	}
+
+	links, err := svc.store.HubUserLinks.ListByEmail(context.Background(), "scattered@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	for _, link := range links {
+		if link.HubID == hubA["hub_id"] || link.HubID == hubB["hub_id"] {
+			t.Fatalf("expected scattered source links removed, got %+v", links)
+		}
+	}
+}
+
+func TestAdminRouteQuerySupportsWildcardEmailPattern(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	hubA := registerConfirmAndHeartbeatHub(t, svc, map[string]any{"owner_email": "owner-a@example.com", "name": "Hub A", "base_url": "https://a.example.com", "visibility": "shared", "enrollment_mode": "approval"})
+	hubB := registerConfirmAndHeartbeatHub(t, svc, map[string]any{"owner_email": "owner-b@example.com", "name": "Hub B", "base_url": "https://b.example.com", "visibility": "shared", "enrollment_mode": "approval"})
+
+	for i, seed := range []struct {
+		hub   map[string]any
+		email string
+	}{{hubA, "mark@qianxin.com"}, {hubB, "mary@qianxin.com"}, {hubB, "tom@qianxin.com"}} {
+		resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+seed.hub["hub_id"].(string)+"/user-links/sync", map[string]any{
+			"hub_secret": seed.hub["hub_secret"],
+			"email":      seed.email,
+			"is_default": i == 0,
+		}, "")
+		if resp.Code != http.StatusOK {
+			t.Fatalf("sync link status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	}
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/query", map[string]any{
+		"query":      "ｍａ＊＠ｑｉａｎｘｉｎ．ｃｏｍ",
+		"query_type": "email",
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("query status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var result entry.ResolveResult
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode query: %v", err)
+	}
+	if len(result.Hubs) != 2 {
+		t.Fatalf("expected two matched hubs for wildcard query, got %+v", result)
 	}
 }

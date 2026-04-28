@@ -48,11 +48,12 @@ const LLM_SERVICE_I18N = {
     addGroup: 'Add / Update Group',
     saveAll: 'Save Service Config',
     issueCard: 'Issue Service Exchange Card',
-    systemDefaults: 'New User Defaults',
-    systemDesc: 'Grant model-service groups automatically when a new email user is created.',
-    systemHint: 'Choose the default LLM service group for new users. The built-in default group is Default (No Model Access) and is used as the fallback when no group is selected.',
-    newUserGroups: 'Default Service Group',
+    systemDefaults: 'New User Benefits',
+    systemDesc: 'Grant credits and bind a model-service group automatically for new users.',
+    systemHint: 'New users receive 30% of the configured credits after registration, and the remaining 70% after email confirmation. The built-in default group is Default (No Model Access) and is used as the fallback when no group is selected.',
+    newUserGroups: 'Default LLM Service Group',
     newUserDays: 'Validity (Days)',
+    newUserCredits: 'Benefit Credits',
     saveDefaults: 'Save Defaults',
     tokensPerCredit: 'Tokens per Credit',
     credits: 'Credits',
@@ -302,11 +303,12 @@ const LLM_SERVICE_I18N = {
     addGroup: '\u65b0\u5efa / \u66f4\u65b0\u670d\u52a1\u7ec4',
     saveAll: '\u4fdd\u5b58\u670d\u52a1\u914d\u7f6e',
     issueCard: '\u53d1\u884c\u670d\u52a1\u5151\u6362\u5361',
-    systemDefaults: '\u65b0\u7528\u6237\u9ed8\u8ba4\u6388\u6743',
-    systemDesc: '\u65b0\u90ae\u7bb1\u7528\u6237\u521b\u5efa\u65f6\u81ea\u52a8\u6388\u4e88\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
-    systemHint: '\u4e3a\u65b0\u7528\u6237\u4ece\u5217\u8868\u4e2d\u9009\u62e9\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u3002\u5982\u679c\u672a\u9009\u62e9\uff0c\u5c06\u56de\u9000\u5230\u5185\u7f6e Default\uff08\u65e0\u6a21\u578b\u6743\u9650\uff09\u3002',
-    newUserGroups: '\u9ed8\u8ba4\u670d\u52a1\u7ec4',
+    systemDefaults: '\u65b0\u7528\u6237\u798f\u5229',
+    systemDesc: '\u4e3a\u65b0\u7528\u6237\u81ea\u52a8\u53d1\u653e credits \u5e76\u7ed1\u5b9a\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
+    systemHint: '\u65b0\u7528\u6237\u6ce8\u518c\u540e\u5148\u53d1\u653e\u914d\u7f6e credits \u7684 30%\uff0c\u90ae\u4ef6\u786e\u8ba4\u540e\u518d\u53d1\u653e\u5269\u4f59 70%\u3002\u5982\u679c\u672a\u9009\u62e9\u670d\u52a1\u7ec4\uff0c\u5c06\u56de\u9000\u5230\u5185\u7f6e Default\uff08\u65e0\u6a21\u578b\u6743\u9650\uff09\u3002',
+    newUserGroups: '\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4',
     newUserDays: '\u6709\u6548\u671f\uff08\u5929\uff09',
+    newUserCredits: '\u798f\u5229 Credits',
     saveDefaults: '\u4fdd\u5b58\u9ed8\u8ba4\u503c',
     tokensPerCredit: '\u6bcf Credit \u5bf9\u5e94 Token \u6570',
     credits: '\u79ef\u5206',
@@ -511,6 +513,7 @@ let llmServiceCardSearch = '';
 let llmServiceCardPage = 1;
 const llmServiceCardPageSize = 20;
 let llmServiceCardsPageData = { items: [], total: 0, page: 1, page_size: llmServiceCardPageSize };
+let llmServiceSystemSettingsLoading = false;
 const llmServiceCapabilityOptions = ['document', 'reasoning', 'tools'];
 const llmServicePriorityOptions = [0, 10, 30, 50, 80, 100];
 const llmServiceResolutionOptions = [0, 1, 2, 3];
@@ -1919,7 +1922,7 @@ function ensureLLMServiceSystemUI() {
     '<div class="grid2">' +
     '<div><label id="llmServiceSystemGroupsLabel"></label><select id="llmServiceSystemGroups" style="width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel, #fff);font:inherit;min-height:42px"></select></div>' +
     '<div><label id="llmServiceSystemDaysLabel"></label><input id="llmServiceSystemDays" type="number" min="1" value="30"></div>' +
-    '</div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceSystemTokensLabel"></label><input id="llmServiceSystemTokensPerCredit" type="number" min="1" value="10000"></div><div></div></div><div class="hint" id="llmServiceSystemHint" style="margin-top:10px"></div>';
+    '</div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceSystemCreditsLabel"></label><input id="llmServiceSystemCredits" type="number" min="1" step="1" value="1000"></div><div><label id="llmServiceSystemTokensLabel"></label><input id="llmServiceSystemTokensPerCredit" type="number" min="1" value="10000"></div></div><div class="hint" id="llmServiceSystemHint" style="margin-top:10px"></div>';
   tab.appendChild(host);
   applyLLMServiceSystemI18n();
 }
@@ -1928,18 +1931,32 @@ function applyLLMServiceSystemI18n() {
   _s('llmServiceSystemDesc', 'textContent', lsx('systemDesc'));
   _s('llmServiceSystemGroupsLabel', 'textContent', lsx('newUserGroups'));
   _s('llmServiceSystemDaysLabel', 'textContent', lsx('newUserDays'));
+  _s('llmServiceSystemCreditsLabel', 'textContent', lsx('newUserCredits'));
   _s('llmServiceSystemSaveBtn', 'textContent', lsx('saveDefaults'));
   _s('llmServiceSystemTokensLabel', 'textContent', lsx('tokensPerCredit'));
   _s('llmServiceSystemHint', 'textContent', lsx('systemHint'));
 }
 function renderLLMServiceSystemSettings() {
   applyLLMServiceSystemI18n();
-  if (!llmServiceAdminCache) return;
+  if (!llmServiceAdminCache) {
+    ensureLLMServiceSystemSettingsLoaded();
+    return;
+  }
   renderLLMServiceSystemGroupOptions();
   _s('llmServiceSystemGroups', 'value', String((llmServiceAdminCache.default_new_user_service_groups || [])[0] || BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID));
   _s('llmServiceSystemDays', 'value', String(llmServiceAdminCache.default_new_user_duration_days || 30));
+  _s('llmServiceSystemCredits', 'value', String(llmServiceAdminCache.default_new_user_credits || 1000));
   _s('llmServiceSystemTokensPerCredit', 'value', String(llmServiceAdminCache.tokens_per_credit || 10000));
   refreshLLMServiceGroupSelectors();
+}
+function ensureLLMServiceSystemSettingsLoaded() {
+  ensureLLMServiceSystemUI();
+  if (llmServiceAdminCache || llmServiceSystemSettingsLoading) return;
+  if (typeof token === 'function' && !token()) return;
+  llmServiceSystemSettingsLoading = true;
+  loadLLMServiceAdmin().finally(function() {
+    llmServiceSystemSettingsLoading = false;
+  });
 }
 async function saveLLMServiceSystemSettings() {
   ensureLLMServiceSystemUI();
@@ -1948,6 +1965,8 @@ async function saveLLMServiceSystemSettings() {
   llmServiceAdminCache.default_new_user_service_groups = selectedSystemGroup ? [selectedSystemGroup] : [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID];
   llmServiceAdminCache.default_new_user_duration_days = Number(document.getElementById('llmServiceSystemDays').value || 30);
   if (!(llmServiceAdminCache.default_new_user_duration_days > 0)) llmServiceAdminCache.default_new_user_duration_days = 30;
+  llmServiceAdminCache.default_new_user_credits = Number(document.getElementById('llmServiceSystemCredits').value || 1000);
+  if (!(llmServiceAdminCache.default_new_user_credits > 0)) llmServiceAdminCache.default_new_user_credits = 1000;
   llmServiceAdminCache.tokens_per_credit = Number(document.getElementById('llmServiceSystemTokensPerCredit').value || 10000);
   if (!(llmServiceAdminCache.tokens_per_credit > 0)) llmServiceAdminCache.tokens_per_credit = 10000;
   if (llmServiceWarnUnknownServiceGroups(llmServiceAdminCache.default_new_user_service_groups || [])) return;
@@ -2018,6 +2037,10 @@ function registerLLMServiceTabs() {
     title: function() { return lsx('serviceCardsTabTitle'); },
     subtitle: function() { return lsx('serviceCardsTabSubtitle'); },
     onOpen: function() { ensureLLMServiceCardsTab(); applyLLMServiceTabI18n(); loadLLMServiceAdmin(); }
+  });
+  window.AdminTabRegistry.registerTab({
+    id: 'system',
+    onOpen: function() { ensureLLMServiceSystemUI(); applyLLMServiceSystemI18n(); ensureLLMServiceSystemSettingsLoaded(); }
   });
 }
 if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange === 'function') {

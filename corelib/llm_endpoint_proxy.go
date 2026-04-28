@@ -2,7 +2,10 @@ package corelib
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -32,19 +35,23 @@ type LLMEndpointForwardResult struct {
 	Body       []byte
 	StatusCode int
 	ProviderID string
+	Attempts   int
 }
 
 type LLMEndpointProxy struct {
 	Concurrency *LLMProviderConcurrencyController
 	Resilience  *LLMProviderResilienceController
 	Client      func(MaclawLLMConfig) *http.Client
+
+	clientCacheMu sync.Mutex
+	clientCache   map[int]*http.Client
 }
 
 func NewLLMEndpointProxy() *LLMEndpointProxy {
 	return &LLMEndpointProxy{
 		Concurrency: NewLLMProviderConcurrencyController(),
 		Resilience:  NewLLMProviderResilienceController(),
-		Client:      NewLLMEndpointHTTPClient,
+		clientCache: map[int]*http.Client{},
 	}
 }
 
@@ -71,15 +78,15 @@ func (p *LLMEndpointProxy) ForwardProviderRequest(ctx context.Context, provider 
 	defer release()
 
 	cfg := provider.MaclawLLMConfig()
-	clientFactory := p.Client
-	if clientFactory == nil {
-		clientFactory = NewLLMEndpointHTTPClient
+	client := p.cachedHTTPClient(cfg)
+	if p.Client != nil {
+		client = p.Client(cfg)
 	}
 	fwd := make(map[string]any, len(body))
 	for k, v := range body {
 		fwd[k] = v
 	}
-	respBody, statusCode, err := ForwardOpenAICompatRequest(ctx, cfg, fwd, clientFactory(cfg), responseModel)
+	respBody, statusCode, attempts, err := ForwardOpenAICompatRequestWithRetry(ctx, cfg, fwd, client, responseModel)
 	if p.Resilience != nil {
 		if ShouldCountLLMProviderFailure(statusCode, err) {
 			p.Resilience.RecordFailure(provider)
@@ -88,9 +95,9 @@ func (p *LLMEndpointProxy) ForwardProviderRequest(ctx context.Context, provider 
 		}
 	}
 	if err != nil {
-		return LLMEndpointForwardResult{StatusCode: statusCode, ProviderID: provider.ID}, err
+		return LLMEndpointForwardResult{StatusCode: statusCode, ProviderID: provider.ID, Attempts: attempts}, err
 	}
-	return LLMEndpointForwardResult{Body: respBody, StatusCode: statusCode, ProviderID: provider.ID}, nil
+	return LLMEndpointForwardResult{Body: respBody, StatusCode: statusCode, ProviderID: provider.ID, Attempts: attempts}, nil
 }
 
 func ForwardLLMEndpointProviderRequest(ctx context.Context, provider LLMEndpointProvider, body map[string]any, client *http.Client, responseModel string) ([]byte, int, error) {
@@ -102,7 +109,65 @@ func ForwardLLMEndpointProviderRequest(ctx context.Context, provider LLMEndpoint
 	for k, v := range body {
 		fwd[k] = v
 	}
-	return ForwardOpenAICompatRequest(ctx, cfg, fwd, client, responseModel)
+	respBody, statusCode, _, err := ForwardOpenAICompatRequestWithRetry(ctx, cfg, fwd, client, responseModel)
+	return respBody, statusCode, err
+}
+
+func ForwardOpenAICompatRequestWithRetry(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client, responseModel string) ([]byte, int, int, error) {
+	const maxAttempts = 3
+	retryCtx := ctx
+	cancel := func() {}
+	if _, ok := ctx.Deadline(); !ok {
+		retryCtx, cancel = context.WithTimeout(ctx, time.Duration(cfg.EffectiveTimeoutSec())*time.Second)
+	}
+	defer cancel()
+
+	var lastBody []byte
+	var lastStatus int
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptBody := make(map[string]interface{}, len(body))
+		for k, v := range body {
+			attemptBody[k] = v
+		}
+		respBody, statusCode, err := ForwardOpenAICompatRequest(retryCtx, cfg, attemptBody, client, responseModel)
+		lastBody, lastStatus, lastErr = respBody, statusCode, err
+		if !ShouldRetryLLMUpstream(statusCode, err) || retryCtx.Err() != nil || attempt == maxAttempts {
+			return respBody, statusCode, attempt, err
+		}
+		select {
+		case <-retryCtx.Done():
+			return lastBody, lastStatus, attempt, retryCtx.Err()
+		case <-time.After(time.Duration(attempt*attempt) * 150 * time.Millisecond):
+		}
+	}
+	return lastBody, lastStatus, maxAttempts, lastErr
+}
+
+func ShouldRetryLLMUpstream(statusCode int, err error) bool {
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return false
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) {
+			return true
+		}
+		msg := strings.ToLower(err.Error())
+		return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+			strings.Contains(msg, "read response body") ||
+			strings.Contains(msg, "connection reset") ||
+			strings.Contains(msg, "connection refused") ||
+			strings.Contains(msg, "server closed idle") ||
+			strings.Contains(msg, "unexpected eof") ||
+			strings.Contains(msg, "timeout")
+	}
+	switch statusCode {
+	case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p LLMEndpointProvider) MaclawLLMConfig() MaclawLLMConfig {
@@ -118,7 +183,75 @@ func (p LLMEndpointProvider) MaclawLLMConfig() MaclawLLMConfig {
 }
 
 func NewLLMEndpointHTTPClient(cfg MaclawLLMConfig) *http.Client {
-	return &http.Client{Timeout: time.Duration(cfg.EffectiveTimeoutSec()) * time.Second}
+	return NewLLMEndpointHTTPClientWithTimeout(cfg.EffectiveTimeoutSec())
+}
+
+func NewLLMEndpointHTTPClientWithTimeout(timeoutSec int) *http.Client {
+	if timeoutSec <= 0 {
+		timeoutSec = DefaultLLMTimeoutSec
+	}
+	totalTimeout := time.Duration(timeoutSec) * time.Second
+	connectTimeout := boundedSubTimeout(totalTimeout, 5*time.Second, 30*time.Second)
+	tlsTimeout := boundedSubTimeout(totalTimeout, 10*time.Second, 30*time.Second)
+	responseHeaderTimeout := totalTimeout
+	return &http.Client{
+		Timeout: totalTimeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   connectTimeout,
+				KeepAlive: 60 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          512,
+			MaxIdleConnsPerHost:   256,
+			MaxConnsPerHost:       512,
+			IdleConnTimeout:       120 * time.Second,
+			TLSHandshakeTimeout:   tlsTimeout,
+			ResponseHeaderTimeout: responseHeaderTimeout,
+			ExpectContinueTimeout: 3 * time.Second,
+		},
+	}
+}
+
+func (p *LLMEndpointProxy) cachedHTTPClient(cfg MaclawLLMConfig) *http.Client {
+	if p == nil {
+		return NewLLMEndpointHTTPClient(cfg)
+	}
+	timeoutSec := cfg.EffectiveTimeoutSec()
+	p.clientCacheMu.Lock()
+	defer p.clientCacheMu.Unlock()
+	if p.clientCache == nil {
+		p.clientCache = map[int]*http.Client{}
+	}
+	client := p.clientCache[timeoutSec]
+	if client == nil {
+		client = NewLLMEndpointHTTPClientWithTimeout(timeoutSec)
+		p.clientCache[timeoutSec] = client
+	}
+	return client
+}
+
+func boundedSubTimeout(total time.Duration, floor time.Duration, ceiling time.Duration) time.Duration {
+	if total <= 0 {
+		return floor
+	}
+	value := minDuration(ceiling, maxDuration(floor, total/12))
+	return minDuration(total, value)
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func NormalizeLLMProviderProtocol(v string) string {

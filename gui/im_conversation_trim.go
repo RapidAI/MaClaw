@@ -371,12 +371,56 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 	return result
 }
 
+// compactionHandoffPrompt is the structured prompt for LLM-based conversation
+// compaction. Inspired by Codex CLI's "CONTEXT CHECKPOINT COMPACTION" design:
+// the summarizer writes a handoff document for the next LLM, not meeting minutes.
+//
+// Four required sections ensure stable, structured output regardless of
+// conversation content or language.
+const compactionHandoffPrompt = `你正在执行上下文检查点压缩（Context Checkpoint Compaction）。
+为将要继续此任务的另一个 LLM 生成一份交接摘要。
+
+必须包含以下四个部分:
+1. **当前进度**: 已完成的工作和已做的关键决策
+2. **重要上下文**: 约束条件、用户偏好、技术选型等
+3. **待完成工作**: 明确的下一步行动
+4. **关键数据**: 继续工作所需的文件路径、变量名、配置值等
+
+要求:
+- 简洁、结构化，使用 Markdown 列表
+- 直接引用关键短语而非转述（防止语义漂移）
+- 不要包含工具调用的原始输出（文件内容、命令输出等）
+- 聚焦于帮助下一个 LLM 无缝继续工作
+
+以下是需要压缩的对话内容:
+`
+
+// compactionRecoveryPrefix is prepended to the LLM-generated summary when
+// injecting it back into the conversation history. It tells the resuming LLM
+// three critical things:
+//  1. Someone already did part of the work
+//  2. The tool state (filesystem, code) reflects that completed work
+//  3. Do not repeat what was already done
+//
+// This is the MacLaw equivalent of Codex CLI's summary_prefix.md.
+const compactionRecoveryPrefix = `[上下文恢复] 之前的对话因长度限制被压缩为以下交接摘要。
+
+另一个语言模型已经开始处理此任务并产出了以下工作摘要。你可以访问该模型使用过的工具的当前状态（文件系统、代码等反映了已完成的工作）。请基于已完成的工作继续，避免重复已做过的事情。
+
+以下是之前模型产出的交接摘要:
+
+`
+
 // makeSummarizer returns a summarizer callback that uses doSimpleLLMRequest
-// to condense dropped conversation history into a short summary.
+// to condense dropped conversation history into a structured handoff summary.
+//
+// The prompt uses the "Context Checkpoint Compaction" pattern from Codex CLI:
+// instead of generic "please summarize", it asks for a structured handoff
+// document with 4 sections (progress, context, TODOs, critical data).
 func makeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(string) string {
 	return func(text string) string {
 		msgs := []interface{}{
-			map[string]string{"role": "user", "content": "请简洁总结以下对话历史，保留关键事实、决策和待办事项：\n\n" + text},
+			map[string]string{"role": "user", "content": compactionHandoffPrompt + text},
 		}
 		result, err := doSimpleLLMRequest(context.Background(), cfg, msgs, httpClient, 30*time.Second)
 		if err != nil || result.Content == "" {
@@ -390,30 +434,41 @@ func trimHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {
 	return trimHistoryWithSummary(entries, nil, nil)
 }
 
-// trimHistoryWithSummary performs two-tier trimming with optional LLM
-// summarization of dropped entries and optional memory sinking of
-// substantial assistant messages that would otherwise be lost.
+// trimHistoryWithSummary performs structured conversation compaction with
+// three preservation tiers, inspired by Codex CLI's compaction architecture:
+//
+//  1. Turn boundaries (tier-1): first user msg + first assistant response per turn
+//  2. User messages (tier-user): ALL user messages from dropped region, preserved
+//     verbatim with a token budget (Codex insight: user intent must never be lost)
+//  3. Recent window: most recent entries kept in full
+//
+// Between tier-1+tier-user and the recent window, a separator is inserted:
+//   - With summarizer: a structured handoff summary with recovery prompt
+//     (tells the LLM "another model already did this work, continue from here")
+//   - Without summarizer: static placeholder
 //
 // summarizer: if non-nil, called with the text of dropped entries to produce
-// a compressed summary (replaces the static "[...已省略...]" placeholder).
-// Returns empty string on failure — caller falls back to static placeholder.
+// a compressed handoff summary. Returns empty string on failure — caller falls
+// back to static placeholder.
 //
 // memorySink: if non-nil, substantial assistant messages (>500 runes) that
-// are being dropped (not in tier-1, not in recent window) are saved to
-// long-term memory as task_artifact entries before being discarded.
+// are being dropped are saved to long-term memory as task_artifact entries.
 func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(string) string, memorySink func(string, []string)) []agent.ConversationEntry {
 	if len(entries) <= agent.MaxConversationTurns {
 		return entries
 	}
 
-	// --- Two-tier trimming ---
+	// --- Three-tier compaction ---
 	//
-	// Mechanism: split entries into two tiers based on a structural
-	// invariant — "turn boundaries" (first user msg + first assistant
-	// response of each conversational turn). These carry task-level
-	// semantics; everything else is execution detail.
+	// Tier 1: Turn boundaries — structural invariant (first user + first
+	//         assistant per conversational turn). Task-level semantics.
+	// Tier U: User messages — all user messages from the dropped region,
+	//         preserved verbatim. Codex CLI's key insight: user intent
+	//         (constraints, preferences, corrections) must survive compaction.
+	// Tier R: Recent window — most recent entries in full.
 
 	const maxTier1 = 10
+	const maxPreservedUserTokens = 8000 // Codex uses 20K; conservative for smaller contexts
 
 	tier1Indices := extractTurnBoundaryIndices(entries, maxTier1)
 
@@ -469,13 +524,26 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 		return trimmed
 	}
 
-	// Build result: outside tier-1 entries + separator + recent window.
-	result := make([]agent.ConversationEntry, 0, len(outsideSet)+1+recentCount)
+	// --- Collect preserved user messages from the dropped region ---
+	// Codex CLI's collect_user_messages + build_compacted_history pattern:
+	// iterate from most recent dropped entry backwards, preserving user
+	// messages verbatim until the token budget is exhausted.
+	//
+	// Budget is capped to ensure total output stays within MaxConversationTurns
+	// + a small margin. Each preserved user message takes one slot.
+	maxPreservedUserSlots := agent.MaxConversationTurns / 8 // max 5 extra slots
+	preservedUserMsgs := collectPreservedUserMessages(entries, recentStart, outsideSet, maxPreservedUserTokens, maxPreservedUserSlots)
+
+	// Build result: outside tier-1 entries + preserved user msgs + separator + recent window.
+	result := make([]agent.ConversationEntry, 0, len(outsideSet)+len(preservedUserMsgs)+1+recentCount)
 	for i := 0; i < recentStart; i++ {
 		if outsideSet[i] {
 			result = append(result, entries[i])
 		}
 	}
+
+	// Append preserved user messages (between tier-1 and separator).
+	result = append(result, preservedUserMsgs...)
 
 	// Sink substantial assistant messages that are being dropped to long-term
 	// memory (Phase 1 supplement: catches non-workflow documents like analysis
@@ -501,13 +569,25 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 		}
 	}
 
-	// Build separator: LLM summary of dropped entries, or static placeholder.
+	// Build separator: structured handoff summary with recovery prompt,
+	// or static placeholder when no summarizer is available.
+	//
+	// The summary input excludes user messages — those are already preserved
+	// verbatim in preservedUserMsgs (tier-user). The summary focuses on
+	// what was *done* (assistant reasoning, tool results), not what was
+	// *requested* (user messages). This avoids duplication: user intent
+	// appears once as verbatim messages, assistant work appears once as summary.
 	separator := "[...中间的工具调用和执行细节已省略...]"
 	if summarizer != nil {
 		var droppedText strings.Builder
 		for i := 0; i < recentStart; i++ {
 			if outsideSet[i] {
 				continue // tier-1, already preserved
+			}
+			// Skip user messages — they're preserved verbatim in tier-user.
+			// The summary should capture assistant/tool content only.
+			if entries[i].Role == "user" {
+				continue
 			}
 			text, ok := entries[i].Content.(string)
 			if !ok || text == "" {
@@ -521,7 +601,9 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 		}
 		if droppedText.Len() > 100 {
 			if summary := summarizer(droppedText.String()); summary != "" {
-				separator = "[对话摘要] " + summary
+				// Use recovery prefix (Codex's summary_prefix pattern) so the
+				// resuming LLM knows this is compacted context, not a fresh start.
+				separator = compactionRecoveryPrefix + summary
 			}
 		}
 	}
@@ -539,6 +621,70 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 	return result
 }
 
+// collectPreservedUserMessages extracts user messages from the dropped region
+// (indices 0..recentStart-1, excluding tier-1 entries) and returns them in
+// chronological order, respecting a token budget.
+//
+// This implements Codex CLI's core compaction insight: user messages carry
+// intent (constraints, preferences, corrections) that must survive compaction.
+// The LLM summary captures what was *done*; user messages capture what was
+// *requested*. Both are needed for seamless continuation.
+//
+// Messages are collected from most recent to oldest (recency bias), then
+// reversed to chronological order. Overly long messages are truncated.
+func collectPreservedUserMessages(entries []agent.ConversationEntry, recentStart int, outsideSet map[int]bool, maxTokens int, maxSlots int) []agent.ConversationEntry {
+	var collected []agent.ConversationEntry
+	remaining := maxTokens
+
+	for i := recentStart - 1; i >= 0; i-- {
+		if len(collected) >= maxSlots {
+			break // slot budget exhausted
+		}
+		if outsideSet[i] {
+			continue // already in tier-1
+		}
+		if entries[i].Role != "user" {
+			continue
+		}
+		text, ok := entries[i].Content.(string)
+		if !ok || text == "" {
+			continue
+		}
+
+		tokens := len(text) / 3 // rough estimate: ~3 bytes per token for mixed CJK+code
+		if tokens <= 0 {
+			tokens = 1
+		}
+
+		if tokens <= remaining {
+			collected = append(collected, entries[i])
+			remaining -= tokens
+		} else if remaining > 200 {
+			// Truncate overly long message but still preserve it.
+			runes := []rune(text)
+			// Approximate: remaining tokens * 3 bytes / ~3 bytes per rune ≈ remaining runes
+			cutoff := remaining
+			if cutoff > len(runes) {
+				cutoff = len(runes)
+			}
+			truncated := string(runes[:cutoff])
+			collected = append(collected, agent.ConversationEntry{
+				Role:    "user",
+				Content: truncated + "\n[...消息被截断...]",
+			})
+			break
+		} else {
+			break // budget exhausted
+		}
+	}
+
+	// Reverse to chronological order.
+	for i, j := 0, len(collected)-1; i < j; i, j = i+1, j-1 {
+		collected[i], collected[j] = collected[j], collected[i]
+	}
+	return collected
+}
+
 // extractTurnBoundaryIndices returns indices of "turn boundary" entries:
 // the first user message and the first assistant response of each
 // conversational turn. This is a structural invariant that doesn't depend
@@ -547,31 +693,81 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 // A "turn" starts when a user message appears after a non-user role
 // (or at the beginning). The first assistant message after that user
 // message completes the turn boundary pair.
+//
+// Fork-turn awareness (inspired by Codex CLI's fork_turn_positions_in_rollout):
+// System-injected user messages (SubAgent context, recover prompts, steering
+// injections) are deprioritized — real user turns fill the budget first,
+// then synthetic turns fill remaining slots. This ensures user intent is
+// preserved over framework-generated context during compaction.
 func extractTurnBoundaryIndices(entries []agent.ConversationEntry, maxCount int) []int {
-	var indices []int
+	var realTurns []int     // user-initiated turn boundaries
+	var syntheticTurns []int // system-injected turn boundaries
 	prevRole := ""
+	lastUserWasSynthetic := false // tracks whether the most recent user msg was synthetic
 	for i, e := range entries {
-		if len(indices) >= maxCount {
-			break
-		}
 		switch e.Role {
 		case "user":
 			if prevRole != "user" {
-				indices = append(indices, i)
+				if isSyntheticUserMessage(e) {
+					syntheticTurns = append(syntheticTurns, i)
+					lastUserWasSynthetic = true
+				} else {
+					realTurns = append(realTurns, i)
+					lastUserWasSynthetic = false
+				}
 			}
 		case "assistant":
+			// The first assistant message after a user message completes the
+			// turn boundary pair. prevRole tracks through all entry types
+			// (tool, system) so user→tool→assistant is correctly handled.
+			// We use lastUserWasSynthetic to associate the assistant with
+			// the correct turn type.
 			if prevRole == "user" {
-				indices = append(indices, i)
+				if lastUserWasSynthetic {
+					syntheticTurns = append(syntheticTurns, i)
+				} else {
+					realTurns = append(realTurns, i)
+				}
 			}
 		}
-		// Track role transitions through ALL entry types (including tool,
-		// system) so that sequences like user→tool→assistant correctly
-		// identify the assistant as a turn boundary.
 		if e.Role != "" {
 			prevRole = e.Role
 		}
 	}
-	return indices
+
+	// Merge: real turns first, then synthetic turns, up to maxCount.
+	result := make([]int, 0, maxCount)
+	for _, idx := range realTurns {
+		if len(result) >= maxCount {
+			break
+		}
+		result = append(result, idx)
+	}
+	for _, idx := range syntheticTurns {
+		if len(result) >= maxCount {
+			break
+		}
+		result = append(result, idx)
+	}
+
+	// Sort by index to maintain chronological order.
+	sort.Ints(result)
+	return result
+}
+
+// isSyntheticUserMessage returns true for user-role messages that were
+// injected by the framework rather than typed by the actual user.
+// These include SubAgent context, recover prompts, system notifications,
+// and other framework-generated messages.
+//
+// This is the MacLaw equivalent of Codex CLI's distinction between
+// "real user messages" and "trigger_turn" messages in fork-turn boundaries.
+func isSyntheticUserMessage(e agent.ConversationEntry) bool {
+	text, ok := e.Content.(string)
+	if !ok || text == "" {
+		return false
+	}
+	return corelib.IsSyntheticUserContent(text)
 }
 
 // extractTurnBoundaryTexts returns the text content of turn-boundary entries.

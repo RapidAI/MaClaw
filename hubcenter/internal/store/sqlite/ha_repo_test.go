@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -9,7 +10,8 @@ import (
 )
 
 func TestHASyncOpRepoListAfterSeqWithoutLimitReturnsAllRows(t *testing.T) {
-	provider, err := NewProvider(Config{DSN: "file::memory:?cache=shared", WAL: false})
+	dbPath := filepath.Join(t.TempDir(), "ha-repo-test.db")
+	provider, err := NewProvider(Config{DSN: dbPath, WAL: false})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
@@ -17,7 +19,7 @@ func TestHASyncOpRepoListAfterSeqWithoutLimitReturnsAllRows(t *testing.T) {
 	if err := RunMigrations(provider.Write); err != nil {
 		t.Fatalf("RunMigrations() error = %v", err)
 	}
-	repo := &haSyncOpRepo{db: provider.Write, readDB: provider.Read, batch: newWriteBatcher(provider.Write, 0, 1)}
+	repo := &haSyncOpRepo{db: provider.Write, readDB: provider.Read, batch: newWriteBatcher(provider.Write, Config{BatchFlushMS: 1, BatchMaxSize: 1})}
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
 		err := repo.Append(ctx, &store.HASyncOp{

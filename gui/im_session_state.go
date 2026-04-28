@@ -23,6 +23,9 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	h.pendingAskUser.Delete(userID)
 	h.pendingCapabilityGap.Delete(userID)
 
+	// Compaction tracking state.
+	h.compactionCount.Delete(userID)
+
 	// Drift detection state.
 	h.sessionDriftReplanCount.Delete(userID)
 	h.sessionDriftTool.Delete(userID)

@@ -151,6 +151,43 @@ func TestWorkerMemoryRecallsCompanyDepartmentAndPersonalScopes(t *testing.T) {
 	}
 }
 
+func TestWorkerMemoryOrgUnitAliasIsVirtualDepartmentScope(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatalf("NewStore returned error: %v", err)
+	}
+	h := NewHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterClientRoutes(mux)
+
+	dto := postMemory(t, mux, map[string]any{
+		"tenant_id":   "tenant-a",
+		"org_unit_id": "quality-domain",
+		"scope":       "org_unit",
+		"content":     "Quality capability domain reviews Alpha defects every Friday.",
+		"category":    "project_knowledge",
+	})
+	if dto.OrgUnitID != "quality-domain" || dto.DepartmentID != "quality-domain" || dto.Scope != ScopeDepartment {
+		t.Fatalf("unexpected virtual org-unit dto: %+v", dto)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/client/iworker/memories?tenant_id=tenant-a&org_unit_id=quality-domain&worker_id=worker-a&query=Alpha&limit=10", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Memories []MemoryDTO `json:"memories"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(resp.Memories) != 1 || resp.Memories[0].OrgUnitID != "quality-domain" {
+		t.Fatalf("unexpected org-unit recall: %+v", resp.Memories)
+	}
+}
+
 func TestWorkerMemoryStatsCountsVisibleScopes(t *testing.T) {
 	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memory.json"))
 	if err != nil {

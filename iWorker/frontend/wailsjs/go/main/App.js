@@ -6,6 +6,10 @@ export function CheckCenterHealth() {
   return window['go']['main']['App']['CheckCenterHealth']();
 }
 
+
+export function DeleteWorkerMemory(arg1) {
+  return window['go']['main']['App']['DeleteWorkerMemory'](arg1);
+}
 export function FetchWorkerMemoryStats() {
   return window['go']['main']['App']['FetchWorkerMemoryStats']();
 }

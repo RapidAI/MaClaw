@@ -542,7 +542,11 @@ func (a *App) CompressMemories() (*memory.CompressResult, error) {
 	mc := a.getOrCreateCompressor()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	return mc.Compress(ctx)
+	result, err := mc.Compress(ctx)
+	// Emit event so the frontend refreshes even if the component was
+	// unmounted and remounted (tab switch) during compression.
+	a.emitEvent("memory:compressed", result)
+	return result, err
 }
 
 // ListMemoryBackups returns all available memory backup snapshots (Wails binding).
@@ -604,6 +608,14 @@ func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
 		return MemoryCompressorStatus{}
 	}
 	return a.memoryCompressor.Status()
+}
+
+// IsMemoryCompressing returns whether a compression operation is currently in progress (Wails binding).
+func (a *App) IsMemoryCompressing() bool {
+	if a.memoryCompressor == nil {
+		return false
+	}
+	return a.memoryCompressor.IsCompressing()
 }
 
 // GetMemoryHealth returns an aggregated health report of the memory system (Wails binding).

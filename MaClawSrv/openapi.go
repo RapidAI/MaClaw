@@ -7,27 +7,29 @@ import (
 )
 
 type openAPIRoute struct {
-	Method      string
-	Path        string
-	Summary     string
-	Description string
-	Tag         string
-	Security    []map[string][]string
-	QueryParams []string
+	Method          string
+	Path            string
+	Summary         string
+	Description     string
+	Tag             string
+	Security        []map[string][]string
+	QueryParams     []string
+	ResponseContent string
 }
 
 var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/health", Summary: "Service health", Description: "Returns a basic health status for load balancers and uptime checks.", Tag: "system"},
 	{Method: http.MethodGet, Path: "/livez", Summary: "Liveness probe", Description: "Returns process liveness for container orchestration and uptime checks.", Tag: "system"},
 	{Method: http.MethodGet, Path: "/readyz", Summary: "Readiness probe", Description: "Returns service readiness for load balancers and container orchestration.", Tag: "system"},
-	{Method: http.MethodGet, Path: "/version", Summary: "Service version", Description: "Returns build and version metadata for the current MaClawSrv binary.", Tag: "system"}, {Method: http.MethodGet, Path: "/metrics", Summary: "Prometheus metrics", Description: "Returns Prometheus text metrics for service-wide counters.", Tag: "system"},
+	{Method: http.MethodGet, Path: "/version", Summary: "Service version", Description: "Returns build and version metadata for the current MaClawSrv binary.", Tag: "system"},
+	{Method: http.MethodGet, Path: "/metrics", Summary: "Prometheus metrics", Description: "Returns Prometheus text metrics for service-wide counters including credential lifecycle gauges.", Tag: "system", ResponseContent: "text/plain"},
 	{Method: http.MethodGet, Path: "/openapi.json", Summary: "OpenAPI document", Description: "Returns the machine-readable OpenAPI description for MaClawSrv.", Tag: "system"},
 	{Method: http.MethodGet, Path: "/api/v1/openapi.json", Summary: "OpenAPI document", Description: "Returns the machine-readable OpenAPI description for MaClawSrv.", Tag: "system"},
 	{Method: http.MethodGet, Path: "/api/v1/admin/system/readiness", Summary: "Admin readiness details", Description: "Returns admin-only detailed readiness checks for the service data root and writable state paths.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/overview", Summary: "Admin overview", Description: "Returns control-plane aggregate counts for tenants, users, activity, and audit events.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/dashboard", Summary: "Admin dashboard", Description: "Returns overview, recent audit events, and recent 24h/7d activity trends for admin homepages.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/insights", Summary: "Admin insights", Description: "Returns top tenants, inactive users, and quota-pressure insights for operator consoles.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"inactive_for_days", "limit"}},
-	{Method: http.MethodGet, Path: "/api/v1/admin/alerts", Summary: "Admin alerts", Description: "Returns unready instances, waiting runs, and failed runs for operator alert panels.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "kind", "since", "limit"}},
+	{Method: http.MethodGet, Path: "/api/v1/admin/alerts", Summary: "Admin alerts", Description: "Returns unready instances, waiting runs, failed runs, and credential expiry alerts for operator panels.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "kind", "since", "limit", "credential_expiry_window_days"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants", Summary: "List tenants", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"status", "name", "limit", "before"}},
 	{Method: http.MethodPost, Path: "/api/v1/admin/tenants", Summary: "Create tenant", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}", Summary: "Get tenant", Tag: "admin", Security: adminSecurity()},
@@ -43,11 +45,11 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPatch, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}", Summary: "Update user", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodDelete, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}", Summary: "Delete user", Description: "Deletes a user after confirm=true is explicitly provided.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"confirm"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", Summary: "List credentials", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"limit", "before"}},
-	{Method: http.MethodPost, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", Summary: "Create credential", Description: "Creates a credential. api_key and api_secret are optional; omitted values are generated and returned only in the create response.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", Summary: "Create credential", Description: "Creates a credential. api_key, api_secret, and expires_at are optional; omitted key/secret values are generated and returned only in the create response.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", Summary: "Get credential", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPatch, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", Summary: "Update credential", Tag: "admin", Security: adminSecurity()},
-	{Method: http.MethodPost, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-secret", Summary: "Rotate credential secret", Tag: "admin", Security: adminSecurity()},
-	{Method: http.MethodPost, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-key", Summary: "Rotate credential API key", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-secret", Summary: "Rotate credential secret", Description: "Rotates the credential secret. api_secret is optional; when omitted, a generated secret is returned only in this response.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-key", Summary: "Rotate credential API key", Description: "Rotates the credential API key. api_key is optional; when omitted, a generated key is returned only in this response.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodDelete, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", Summary: "Revoke credential", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/audit-events", Summary: "List audit events", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "action", "resource_type", "limit", "before"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/export", Summary: "Export service state", Description: "Exports service, tenant, or user state for backup, migration, or inspection. Sensitive values are omitted unless include_secrets=true.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "include_messages", "include_runs", "include_audit", "include_secrets"}},
@@ -133,15 +135,26 @@ func buildOpenAPISpec() map[string]any {
 		if _, ok := paths[route.Path]; !ok {
 			paths[route.Path] = map[string]any{}
 		}
+		responses := map[string]any{
+			"200": map[string]any{"description": "Successful response"},
+			"400": map[string]any{"description": "Bad request"},
+			"401": map[string]any{"description": "Unauthorized"},
+			"500": map[string]any{"description": "Internal server error"},
+		}
+		if route.ResponseContent != "" {
+			responses["200"] = map[string]any{
+				"description": "Successful response",
+				"content": map[string]any{
+					route.ResponseContent: map[string]any{
+						"schema": map[string]any{"type": "string"},
+					},
+				},
+			}
+		}
 		op := map[string]any{
 			"summary":     route.Summary,
 			"operationId": operationID(route.Method, route.Path),
-			"responses": map[string]any{
-				"200": map[string]any{"description": "Successful response"},
-				"400": map[string]any{"description": "Bad request"},
-				"401": map[string]any{"description": "Unauthorized"},
-				"500": map[string]any{"description": "Internal server error"},
-			},
+			"responses":   responses,
 		}
 		if route.Description != "" {
 			op["description"] = route.Description
@@ -284,6 +297,8 @@ func openAPIQuerySchema(path, name string) map[string]any {
 		return map[string]any{"type": "integer", "minimum": 1, "maximum": 500}
 	case "inactive_for_days":
 		return map[string]any{"type": "integer", "minimum": 0, "maximum": 3650}
+	case "credential_expiry_window_days":
+		return map[string]any{"type": "integer", "minimum": 0, "maximum": 365}
 	}
 	return map[string]any{"type": "string"}
 }
@@ -301,6 +316,8 @@ func openAPIQueryDescription(path, name string) string {
 		}
 	case "response_source":
 		return "Currently only ask_user is supported for filtering."
+	case "credential_expiry_window_days":
+		return "Number of days ahead to include credential_expiring alerts. Defaults to 7 and is capped at 365."
 	}
 	return ""
 }

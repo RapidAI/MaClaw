@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -61,7 +62,12 @@ func TestLLMProviderResilienceControllerCircuitBreakerAndReset(t *testing.T) {
 }
 
 func TestLLMEndpointProxyForwardProviderRequest(t *testing.T) {
+	var hits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			writeErrorForTest(w, http.StatusBadGateway, "temporary upstream failure")
+			return
+		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode upstream request: %v", err)
@@ -92,6 +98,9 @@ func TestLLMEndpointProxyForwardProviderRequest(t *testing.T) {
 	if result.StatusCode != http.StatusOK || result.ProviderID != "provider-a" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
+	if result.Attempts != 2 || hits.Load() != 2 {
+		t.Fatalf("expected one retry, attempts=%d hits=%d", result.Attempts, hits.Load())
+	}
 	var payload map[string]any
 	if err := json.Unmarshal(result.Body, &payload); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
@@ -101,9 +110,61 @@ func TestLLMEndpointProxyForwardProviderRequest(t *testing.T) {
 	}
 }
 
+func writeErrorForTest(w http.ResponseWriter, status int, message string) {
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": message}})
+}
+
 func TestNewLLMEndpointHTTPClientUsesConfiguredTimeout(t *testing.T) {
 	client := NewLLMEndpointHTTPClient(MaclawLLMConfig{TimeoutSec: 7})
 	if client.Timeout != 7*time.Second {
 		t.Fatalf("client.Timeout = %s, want 7s", client.Timeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.ResponseHeaderTimeout != 7*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %s, want 7s", transport.ResponseHeaderTimeout)
+	}
+	if transport.MaxIdleConnsPerHost < 100 || transport.MaxConnsPerHost < 100 {
+		t.Fatalf("transport pool too small: MaxIdleConnsPerHost=%d MaxConnsPerHost=%d", transport.MaxIdleConnsPerHost, transport.MaxConnsPerHost)
+	}
+}
+
+func TestLLMEndpointProxyReusesHTTPClientByTimeout(t *testing.T) {
+	proxy := NewLLMEndpointProxy()
+	cfg := MaclawLLMConfig{TimeoutSec: 11}
+	first := proxy.cachedHTTPClient(cfg)
+	second := proxy.cachedHTTPClient(cfg)
+	if first == nil || first != second {
+		t.Fatalf("expected cachedHTTPClient to reuse client: %p vs %p", first, second)
+	}
+}
+
+func TestBoundedSubTimeoutNeverExceedsTotal(t *testing.T) {
+	if got := boundedSubTimeout(2*time.Second, 5*time.Second, 30*time.Second); got != 2*time.Second {
+		t.Fatalf("boundedSubTimeout short total = %s, want 2s", got)
+	}
+	if got := boundedSubTimeout(10*time.Minute, 5*time.Second, 30*time.Second); got != 30*time.Second {
+		t.Fatalf("boundedSubTimeout long total = %s, want 30s", got)
+	}
+}
+
+func TestForwardOpenAICompatRequestWithRetryRespectsCallerDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		writeErrorForTest(w, http.StatusBadGateway, "slow failure")
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, _, attempts, err := ForwardOpenAICompatRequestWithRetry(ctx, MaclawLLMConfig{URL: server.URL, Model: "upstream-model", TimeoutSec: 10}, map[string]interface{}{"messages": []interface{}{}}, server.Client(), "auto")
+	if err == nil {
+		t.Fatal("expected deadline error")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 because caller deadline expired", attempts)
 	}
 }

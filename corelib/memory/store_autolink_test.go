@@ -150,24 +150,26 @@ func TestAutoLink_WithoutEmbedder_FallsBackToBM25(t *testing.T) {
 
 	// No embedder set — should use BM25 only.
 
-	// Save entries with overlapping keywords.
+	// Save entries with overlapping keywords but enough unique terms
+	// to avoid being considered duplicates by any dedup layer.
 	if err := store.Save(Entry{
-		Content:  "golang error handling best practices",
+		Content:  "golang error handling best practices for production microservices",
 		Category: CategoryProjectKnowledge,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := store.Save(Entry{
-		Content:  "python data science tutorial",
+		Content:  "python data science tutorial with pandas and numpy libraries",
 		Category: CategoryProjectKnowledge,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// This entry shares keywords with the first one.
+	// This entry shares some keywords with the first but has enough
+	// unique terms to not be considered a BM25 duplicate.
 	if err := store.Save(Entry{
-		Content:  "golang error handling patterns and idioms",
+		Content:  "golang error handling patterns using custom error types and wrapping",
 		Category: CategoryProjectKnowledge,
 	}); err != nil {
 		t.Fatal(err)
@@ -180,10 +182,10 @@ func TestAutoLink_WithoutEmbedder_FallsBackToBM25(t *testing.T) {
 	var thirdEntry *Entry
 	var firstEntry *Entry
 	for i := range store.entries {
-		if store.entries[i].Content == "golang error handling patterns and idioms" {
+		if store.entries[i].Content == "golang error handling patterns using custom error types and wrapping" {
 			thirdEntry = &store.entries[i]
 		}
-		if store.entries[i].Content == "golang error handling best practices" {
+		if store.entries[i].Content == "golang error handling best practices for production microservices" {
 			firstEntry = &store.entries[i]
 		}
 	}
@@ -442,16 +444,17 @@ func TestAutoLink_TopKLimit(t *testing.T) {
 	}
 	defer store.Stop()
 
-	// Create 5 entries all very similar, then add a 6th.
+	// Create 5 entries all very similar (via embeddings), then add a 6th.
 	// The 6th should link to at most autoLinkTopK (3) entries.
+	// Each entry has enough unique content to avoid dedup.
 	base := []float32{1, 0, 0, 0}
 	vectors := map[string][]float32{}
 	contents := []string{
-		"autolink limit test one",
-		"autolink limit test two",
-		"autolink limit test three",
-		"autolink limit test four",
-		"autolink limit test five",
+		"PostgreSQL database optimization techniques for large-scale deployments",
+		"MySQL query performance tuning with index analysis and explain plans",
+		"MongoDB sharding strategy for horizontal scaling across data centers",
+		"Redis caching patterns for session management and rate limiting",
+		"Elasticsearch cluster configuration for full-text search workloads",
 	}
 	for i, c := range contents {
 		v := make([]float32, 4)
@@ -459,8 +462,8 @@ func TestAutoLink_TopKLimit(t *testing.T) {
 		v[1] = float32(i) * 0.005
 		vectors[c] = v
 	}
-	// The new entry is also very similar.
-	newContent := "autolink limit test new"
+	// The new entry is also very similar (via embeddings).
+	newContent := "CockroachDB distributed transaction handling with Raft consensus protocol"
 	vectors[newContent] = []float32{0.99, 0.01, 0, 0}
 
 	emb := &deterministicEmbedder{dim: 4, vectors: vectors}

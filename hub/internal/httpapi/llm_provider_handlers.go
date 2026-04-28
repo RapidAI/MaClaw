@@ -51,6 +51,7 @@ type llmServiceAdminResponse struct {
 	Grants                      []llmservice.Grant             `json:"grants,omitempty"`
 	DefaultNewUserServiceGroups []string                       `json:"default_new_user_service_groups,omitempty"`
 	DefaultNewUserDurationDays  int                            `json:"default_new_user_duration_days,omitempty"`
+	DefaultNewUserCredits       float64                        `json:"default_new_user_credits,omitempty"`
 	TokensPerCredit             int                            `json:"tokens_per_credit,omitempty"`
 	ExposeAPIBaseURL            string                         `json:"expose_api_base_url,omitempty"`
 	ExposeBaseURL               string                         `json:"expose_base_url,omitempty"`
@@ -1038,6 +1039,19 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeLoggedError(hubStatus, hubCode, detail)
 			return
 		}
+		if statusCode >= 500 {
+			providerName := usedProviderID
+			if providerName == "" {
+				providerName = "unknown"
+			}
+			upstreamMsg := extractUpstreamErrorMessage(respBody)
+			detail := fmt.Sprintf("upstream LLM provider %q is temporarily unavailable", providerName)
+			if upstreamMsg != "" {
+				detail += " (" + upstreamMsg + ")"
+			}
+			writeLoggedError(upstreamGatewayStatus(statusCode), "LLM_UPSTREAM_FAILED", detail)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if authorizedModel != nil {
 			w.Header().Set("X-MaClaw-Authorized-Model", authorizedModel.Name)
@@ -1064,6 +1078,20 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string) ([]byte, int, string, []string, error) {
 	respBody, statusCode, providerID, serviceGroupIDs, _, _, err := forwardAuthorizedModelRequestWithCache(r, reg, model, body, externalModel, nil, defaultHubLLMPromptCacheConfig())
 	return respBody, statusCode, providerID, serviceGroupIDs, err
+}
+
+func upstreamGatewayStatus(upstreamStatus int) int {
+	switch upstreamStatus {
+	case http.StatusGatewayTimeout:
+		return http.StatusGatewayTimeout
+	case http.StatusServiceUnavailable:
+		return http.StatusServiceUnavailable
+	default:
+		if upstreamStatus >= 500 {
+			return http.StatusBadGateway
+		}
+		return upstreamStatus
+	}
 }
 
 type authorizedModelForwardResult struct {
@@ -1352,6 +1380,7 @@ func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry, provid
 		Grants:                      reg.Grants,
 		DefaultNewUserServiceGroups: append([]string(nil), reg.DefaultNewUserServiceGroups...),
 		DefaultNewUserDurationDays:  reg.DefaultNewUserDurationDays,
+		DefaultNewUserCredits:       reg.DefaultNewUserCredits,
 		TokensPerCredit:             reg.TokensPerCredit,
 		ExposeAPIBaseURL:            baseURL,
 		ExposeBaseURL:               strings.TrimRight(baseURL, "/") + "/chat/completions",

@@ -89,6 +89,32 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if !foundWaitingBool {
 		t.Fatalf("expected boolean schema for waiting_for_user query parameter")
 	}
+	metricsPath, ok := doc.Paths["/metrics"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metrics path object")
+	}
+	getMetrics, ok := metricsPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET metrics operation")
+	}
+	if description, _ := getMetrics["description"].(string); !strings.Contains(description, "credential") {
+		t.Fatalf("expected metrics description to mention credential gauges: %#v", getMetrics)
+	}
+	responses, ok := getMetrics["responses"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metrics responses object")
+	}
+	okResponse, ok := responses["200"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metrics 200 response")
+	}
+	content, ok := okResponse["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metrics response content")
+	}
+	if _, ok := content["text/plain"]; !ok {
+		t.Fatalf("expected metrics text/plain response content: %#v", content)
+	}
 }
 
 type blockingExecutor struct {
@@ -302,6 +328,60 @@ func TestGetAdminDashboard(t *testing.T) {
 	}
 }
 
+func TestGetAdminAlertsIncludesCredentialExpiry(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	soon := time.Now().UTC().Add(48 * time.Hour)
+	cred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Soon", APIKey: "soon-key", APISecret: "soon-secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, cred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &soon}); err != nil {
+		t.Fatalf("UpdateCredential expires_at: %v", err)
+	}
+	far := time.Now().UTC().Add(30 * 24 * time.Hour)
+	farCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Far", APIKey: "far-key", APISecret: "far-secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential far: %v", err)
+	}
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, farCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &far}); err != nil {
+		t.Fatalf("UpdateCredential far expires_at: %v", err)
+	}
+
+	server := NewHTTPServer(svc, "admin-secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/alerts?kind=credential_expiring&credential_expiry_window_days=3", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("credential expiry alerts status = %d body = %s", w.Code, w.Body.String())
+	}
+	var alerts agentservice.AdminAlerts
+	if err := json.NewDecoder(w.Body).Decode(&alerts); err != nil {
+		t.Fatalf("decode credential expiry alerts: %v", err)
+	}
+	if len(alerts.Items) != 1 || alerts.Items[0].Kind != "credential_expiring" || alerts.Items[0].CredentialID != cred.ID {
+		t.Fatalf("unexpected credential expiry alert items: %#v", alerts.Items)
+	}
+	if len(alerts.CredentialAlerts) != 1 || alerts.CredentialAlerts[0].ID != cred.ID {
+		t.Fatalf("unexpected credential alert list: %#v", alerts.CredentialAlerts)
+	}
+	if alerts.CredentialAlerts[0].APISecret != "" || alerts.CredentialAlerts[0].SecretDigest != "" || alerts.CredentialAlerts[0].APIKeyHash != "" {
+		t.Fatalf("credential alert should be sanitized: %#v", alerts.CredentialAlerts[0])
+	}
+}
+
 func TestGetAdminInsights(t *testing.T) {
 	store := agentservice.NewMemoryStore()
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
@@ -455,6 +535,37 @@ func TestGetAdminOverview(t *testing.T) {
 	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_custom", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "overview.checked", ResourceType: "system", ResourceID: "overview", CreatedAt: now.Add(3 * time.Minute)}); err != nil {
 		t.Fatalf("SaveAuditEvent: %v", err)
 	}
+	activeCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Active", APIKey: "overview-active", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential active: %v", err)
+	}
+	expiringAt := now.Add(48 * time.Hour)
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, activeCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &expiringAt}); err != nil {
+		t.Fatalf("UpdateCredential active expires_at: %v", err)
+	}
+	suspendedStatus := agentservice.CredentialStatusSuspended
+	suspendedCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Suspended", APIKey: "overview-suspended", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential suspended: %v", err)
+	}
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, suspendedCred.ID, agentservice.UpdateCredentialInput{Status: &suspendedStatus}); err != nil {
+		t.Fatalf("UpdateCredential suspended: %v", err)
+	}
+	revokedCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Revoked", APIKey: "overview-revoked", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential revoked: %v", err)
+	}
+	if _, err := svc.RevokeCredential(context.Background(), tenant.ID, user.ID, revokedCred.ID); err != nil {
+		t.Fatalf("RevokeCredential: %v", err)
+	}
+	expiredCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Expired", APIKey: "overview-expired", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential expired: %v", err)
+	}
+	expiredAt := now.Add(-time.Hour)
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, expiredCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &expiredAt}); err != nil {
+		t.Fatalf("UpdateCredential expired expires_at: %v", err)
+	}
 	server := NewHTTPServer(svc, "admin-secret")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/overview", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -475,6 +586,12 @@ func TestGetAdminOverview(t *testing.T) {
 	}
 	if overview.RunsByStatus[agentservice.RunStatusSucceeded] != 1 || overview.AuditEvents == 0 {
 		t.Fatalf("unexpected run/audit counts: %#v", overview)
+	}
+	if overview.Credentials != 4 || overview.ActiveCredentials != 2 || overview.SuspendedCredentials != 1 || overview.RevokedCredentials != 1 {
+		t.Fatalf("unexpected credential status counts: %#v", overview)
+	}
+	if overview.ExpiringCredentials != 1 || overview.ExpiredCredentials != 1 {
+		t.Fatalf("unexpected credential expiry counts: %#v", overview)
 	}
 	if overview.LastActivityAt == nil || overview.LastAuditAt == nil {
 		t.Fatalf("expected last activity and last audit timestamps: %#v", overview)
@@ -1207,6 +1324,37 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatalf("CreateUser unready: %v", err)
 	}
 	now := time.Now().UTC()
+	metricExpiringCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Metric Expiring", APIKey: "metric-expiring", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential metric expiring: %v", err)
+	}
+	metricExpiringAt := now.Add(48 * time.Hour)
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, metricExpiringCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &metricExpiringAt}); err != nil {
+		t.Fatalf("UpdateCredential metric expiring: %v", err)
+	}
+	metricExpiredCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Metric Expired", APIKey: "metric-expired", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential metric expired: %v", err)
+	}
+	metricExpiredAt := now.Add(-time.Hour)
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, metricExpiredCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &metricExpiredAt}); err != nil {
+		t.Fatalf("UpdateCredential metric expired: %v", err)
+	}
+	metricSuspendedStatus := agentservice.CredentialStatusSuspended
+	metricSuspendedCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Metric Suspended", APIKey: "metric-suspended", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential metric suspended: %v", err)
+	}
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, metricSuspendedCred.ID, agentservice.UpdateCredentialInput{Status: &metricSuspendedStatus}); err != nil {
+		t.Fatalf("UpdateCredential metric suspended: %v", err)
+	}
+	metricRevokedCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Metric Revoked", APIKey: "metric-revoked", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential metric revoked: %v", err)
+	}
+	if _, err := svc.RevokeCredential(context.Background(), tenant.ID, user.ID, metricRevokedCred.ID); err != nil {
+		t.Fatalf("RevokeCredential metric revoked: %v", err)
+	}
 	unreadyInst := agentservice.Instance{ID: "inst_unready_metric", TenantID: tenant.ID, UserID: unreadyUser.ID, Name: "Unready Instance", Status: agentservice.InstanceStatusReady, RuntimeDir: filepath.Join(t.TempDir(), "missing-runtime"), DataDir: filepath.Join(t.TempDir(), "missing-data"), Workspace: filepath.Join(t.TempDir(), "missing-workspace"), CreatedAt: now, UpdatedAt: now}
 	if err := store.SaveInstance(unreadyInst); err != nil {
 		t.Fatalf("SaveInstance unready: %v", err)
@@ -1243,6 +1391,12 @@ func TestMetricsEndpoint(t *testing.T) {
 		!strings.Contains(body, "maclaw_metrics_up 1") ||
 		!strings.Contains(body, "maclaw_tenants_total 1") ||
 		!strings.Contains(body, "maclaw_users_total 2") ||
+		!strings.Contains(body, "maclaw_credentials_total 4") ||
+		!strings.Contains(body, "maclaw_credentials_by_status{status=\"active\"} 2") ||
+		!strings.Contains(body, "maclaw_credentials_by_status{status=\"suspended\"} 1") ||
+		!strings.Contains(body, "maclaw_credentials_by_status{status=\"revoked\"} 1") ||
+		!strings.Contains(body, "maclaw_credentials_expired_total 1") ||
+		!strings.Contains(body, "maclaw_credentials_expiring_total 1") ||
 		!strings.Contains(body, "maclaw_instances_unready_total 1") ||
 		!strings.Contains(body, "maclaw_auth_token_failed_total 1") ||
 		!strings.Contains(body, "maclaw_auth_token_rate_limited_total 1") ||
@@ -1464,7 +1618,8 @@ func TestAdminCanCreateGeneratedCredentialOneTimeReveal(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret")
-	body := bytes.NewBufferString(`{"name":"Generated API"}`)
+	expiresAt := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	body := bytes.NewBufferString(fmt.Sprintf(`{"name":"Generated API","expires_at":"%s"}`, expiresAt.Format(time.RFC3339Nano)))
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials", body)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	req.Header.Set("Content-Type", "application/json")
@@ -1479,6 +1634,9 @@ func TestAdminCanCreateGeneratedCredentialOneTimeReveal(t *testing.T) {
 	}
 	if !strings.HasPrefix(created.APIKey, "mck_") || !strings.HasPrefix(created.APISecret, "mcs_") {
 		t.Fatalf("expected generated key and secret once, got %#v", created)
+	}
+	if created.ExpiresAt == nil || !created.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expected create response to include expires_at %s, got %#v", expiresAt, created)
 	}
 	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: created.APIKey, APISecret: created.APISecret}); err != nil {
 		t.Fatalf("generated credential should issue token: %v", err)
@@ -1497,6 +1655,9 @@ func TestAdminCanCreateGeneratedCredentialOneTimeReveal(t *testing.T) {
 	}
 	if fetched.APISecret != "" || fetched.APIKey == created.APIKey || fetched.APIKeyHash != "" || fetched.SecretDigest != "" {
 		t.Fatalf("expected fetched credential to be sanitized: %#v", fetched)
+	}
+	if fetched.ExpiresAt == nil || !fetched.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expected fetched credential to preserve expires_at %s, got %#v", expiresAt, fetched)
 	}
 }
 
@@ -2109,6 +2270,38 @@ func TestGetTenantSummary(t *testing.T) {
 			t.Fatalf("SaveRun %s: %v", run.ID, err)
 		}
 	}
+	credentialNow := time.Now().UTC()
+	activeCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user1.ID, Name: "Active", APIKey: "summary-active", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential active: %v", err)
+	}
+	expiringAt := credentialNow.Add(48 * time.Hour)
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user1.ID, activeCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &expiringAt}); err != nil {
+		t.Fatalf("UpdateCredential active expires_at: %v", err)
+	}
+	suspendedStatus := agentservice.CredentialStatusSuspended
+	suspendedCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user1.ID, Name: "Suspended", APIKey: "summary-suspended", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential suspended: %v", err)
+	}
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user1.ID, suspendedCred.ID, agentservice.UpdateCredentialInput{Status: &suspendedStatus}); err != nil {
+		t.Fatalf("UpdateCredential suspended: %v", err)
+	}
+	revokedCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user1.ID, Name: "Revoked", APIKey: "summary-revoked", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential revoked: %v", err)
+	}
+	if _, err := svc.RevokeCredential(context.Background(), tenant.ID, user1.ID, revokedCred.ID); err != nil {
+		t.Fatalf("RevokeCredential: %v", err)
+	}
+	expiredCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user2.ID, Name: "Expired", APIKey: "summary-expired", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential expired: %v", err)
+	}
+	expiredAt := credentialNow.Add(-time.Hour)
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user2.ID, expiredCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &expiredAt}); err != nil {
+		t.Fatalf("UpdateCredential expired expires_at: %v", err)
+	}
 
 	server := NewHTTPServer(svc, "admin-secret")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/summary", nil)
@@ -2134,6 +2327,9 @@ func TestGetTenantSummary(t *testing.T) {
 	if summary.RunsByStatus[agentservice.RunStatusSucceeded] != 1 || summary.RunsByStatus[agentservice.RunStatusFailed] != 1 {
 		t.Fatalf("unexpected run statuses: %#v", summary)
 	}
+	if summary.Credentials != 4 || summary.ActiveCredentials != 2 || summary.SuspendedCredentials != 1 || summary.RevokedCredentials != 1 || summary.ExpiredCredentials != 1 || summary.ExpiringCredentials != 1 {
+		t.Fatalf("unexpected credential totals: %#v", summary)
+	}
 	if len(summary.UserSummaries) != 2 || summary.LastActivityAt == nil {
 		t.Fatalf("unexpected user breakdown: %#v", summary)
 	}
@@ -2152,6 +2348,9 @@ func TestGetTenantSummary(t *testing.T) {
 	}
 	if user1Summary == nil {
 		t.Fatalf("missing user1 summary: %#v", summary.UserSummaries)
+	}
+	if user1Summary.Credentials != 3 || user1Summary.ActiveCredentials != 1 || user1Summary.SuspendedCredentials != 1 || user1Summary.RevokedCredentials != 1 || user1Summary.ExpiredCredentials != 0 || user1Summary.ExpiringCredentials != 1 {
+		t.Fatalf("unexpected user1 credential summary: %#v", user1Summary)
 	}
 	if user1Summary.EffectiveQuota.MaxSessions != 3 || user1Summary.QuotaUsage.Sessions.Limit != 3 || user1Summary.QuotaUsage.Sessions.Used != 1 {
 		t.Fatalf("unexpected user1 quota usage: %#v", user1Summary)
@@ -2251,6 +2450,30 @@ func TestGetUsageSummary(t *testing.T) {
 	if err := store.SaveRun(agentservice.Run{ID: "run_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now.Add(time.Minute), CompletedAt: &completed}); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
+	activeCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Usage Active", APIKey: "usage-active", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential active: %v", err)
+	}
+	expiringAt := now.Add(48 * time.Hour)
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, activeCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &expiringAt}); err != nil {
+		t.Fatalf("UpdateCredential active expires_at: %v", err)
+	}
+	suspendedStatus := agentservice.CredentialStatusSuspended
+	suspendedCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Usage Suspended", APIKey: "usage-suspended", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential suspended: %v", err)
+	}
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, suspendedCred.ID, agentservice.UpdateCredentialInput{Status: &suspendedStatus}); err != nil {
+		t.Fatalf("UpdateCredential suspended: %v", err)
+	}
+	expiredCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Usage Expired", APIKey: "usage-expired", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential expired: %v", err)
+	}
+	expiredAt := now.Add(-time.Hour)
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, expiredCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &expiredAt}); err != nil {
+		t.Fatalf("UpdateCredential expired expires_at: %v", err)
+	}
 	token, _, err := agentservice.NewTokenManager("test", time.Hour).Issue(principal)
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
@@ -2273,6 +2496,9 @@ func TestGetUsageSummary(t *testing.T) {
 	}
 	if summary.RunsByStatus[agentservice.RunStatusSucceeded] != 1 || summary.LastActivityAt == nil {
 		t.Fatalf("summary run status/last activity = %#v", summary)
+	}
+	if summary.Credentials != 3 || summary.ActiveCredentials != 2 || summary.SuspendedCredentials != 1 || summary.RevokedCredentials != 0 || summary.ExpiredCredentials != 1 || summary.ExpiringCredentials != 1 {
+		t.Fatalf("unexpected usage credential counters: %#v", summary)
 	}
 	if summary.Quota.MaxInstances != 3 || summary.Quota.MaxMessages != 5 || summary.QuotaUsage.Messages.Limit != 5 || summary.QuotaUsage.Messages.Used != 2 {
 		t.Fatalf("unexpected usage quota snapshot: %#v", summary)

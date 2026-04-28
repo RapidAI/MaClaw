@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function CheckCenterHealth():Promise<main.CenterHealthStatus>;
 
+export function DeleteWorkerMemory(arg1:string):Promise<void>;
+
 export function FetchWorkerMemoryStats():Promise<main.WorkerMemoryStats>;
 
 export function GetAppInfo():Promise<main.AppInfo>;
