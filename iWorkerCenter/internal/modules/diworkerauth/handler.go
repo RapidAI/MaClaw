@@ -259,7 +259,7 @@ func (h *Handler) handleAccountByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 500 {
 		limit = 50
@@ -307,7 +307,7 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	var req struct {
 		Username   string `json:"username"`
 		Password   string `json:"password"`
@@ -352,7 +352,7 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request, id string) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	var req struct {
 		Username   string `json:"username"`
 		Password   string `json:"password"`
@@ -404,7 +404,7 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request, id strin
 }
 
 func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request, id string) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	_, err := h.write.Exec(`DELETE FROM diworker_accounts WHERE id=? AND tenant_id=?`, id, tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -420,7 +420,7 @@ func (h *Handler) handleImportCSV(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	var reader io.Reader = r.Body
 	if err := r.ParseMultipartForm(10 << 20); err == nil {
 		if file, _, err := r.FormFile("file"); err == nil {
@@ -536,7 +536,7 @@ func (h *Handler) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, map[string]any{"authenticated": true})
 
 	case "local":
-		tenantID := tenant.TenantIDFromContext(r.Context())
+		tenantID := tenant.RequestTenantID(r)
 		var storedHash, salt string
 		var disabledInt int
 		var expiresAt sql.NullString

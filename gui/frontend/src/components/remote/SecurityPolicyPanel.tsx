@@ -4,7 +4,7 @@ import { GetHubSecurityPolicy, IsHubSecurityReadOnly } from "../../../wailsjs/go
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
 import { colors } from "./styles";
 
-type SecurityPolicyMode = "relaxed" | "standard" | "strict";
+type SecurityPolicyMode = "relaxed" | "standard" | "strict" | "developer";
 
 type Props = {
     config: main.AppConfig | null;
@@ -39,6 +39,15 @@ const SECURITY_MODES: { value: SecurityPolicyMode; labelZh: string; labelZhHant:
         descZh: "low 放行，medium 及以上均需要确认，critical 拒绝",
         descZhHant: "low 放行，medium 及以上均需要確認，critical 拒絕",
         descEn: "low allowed, medium+ requires confirmation, critical denied",
+    },
+    {
+        value: "developer",
+        labelZh: "开发者",
+        labelZhHant: "開發者",
+        labelEn: "Developer",
+        descZh: "⚠️ 所有操作直接放行，不拦截任何风险等级。仅供安全研究人员使用",
+        descZhHant: "⚠️ 所有操作直接放行，不攔截任何風險等級。僅供安全研究人員使用",
+        descEn: "⚠️ All operations allowed. No deny, no confirmation. For security researchers only",
     },
 ];
 
@@ -128,7 +137,17 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                         <button
                             key={mode.value}
                             className={securityMode === mode.value ? "btn-primary" : "btn-secondary"}
-                            style={{ flex: 1, fontSize: "0.8rem", padding: "6px 10px", height: "32px" }}
+                            style={{
+                                flex: 1,
+                                fontSize: "0.8rem",
+                                padding: "6px 10px",
+                                height: "32px",
+                                ...(mode.value === "developer" ? {
+                                    borderColor: securityMode === "developer" ? "#f59e0b" : colors.border,
+                                    background: securityMode === "developer" ? "#78350f" : undefined,
+                                    color: securityMode === "developer" ? "#fbbf24" : colors.textMuted,
+                                } : {}),
+                            }}
                             disabled={readOnly}
                             onClick={() => saveRemoteConfigField({ security_policy_mode: mode.value } as any)}
                         >
@@ -149,6 +168,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Relaxed", "宽松", "寬鬆")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Standard", "标准", "標準")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Strict", "严格", "嚴格")}</th>
+                            <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600, color: "#f59e0b" }}>{t("Dev", "开发者", "開發者")}</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -163,6 +183,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.relaxed, row.relaxed === "Allow" ? "放行" : row.relaxed, row.relaxed === "Allow" ? "放行" : row.relaxed)}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.standard, row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "记录" : row.standard === "Confirm" ? "确认" : "拒绝", row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "記錄" : row.standard === "Confirm" ? "確認" : "拒絕")}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.strict, row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "记录" : row.strict === "Confirm" ? "确认" : "拒绝", row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "記錄" : row.strict === "Confirm" ? "確認" : "拒絕")}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px", color: "#f59e0b" }}>{t("Allow", "放行", "放行")}</td>
                             </tr>
                         ))}
                     </tbody>

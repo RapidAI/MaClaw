@@ -488,11 +488,9 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 	}
 
 	// If all tier-1 entries are inside the recent window, simple FIFO.
+	// Use groups to ensure we never cut in the middle of a tool_calls group.
 	if outsideTier1 == 0 {
-		trimmed := entries[recentStart:]
-		for len(trimmed) > 0 && trimmed[0].Role == "tool" {
-			trimmed = trimmed[1:]
-		}
+		trimmed := groupAlignedSlice(entries, recentStart)
 		return trimmed
 	}
 
@@ -517,10 +515,7 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 
 	// If recalculation moved all tier-1 inside, fall back to FIFO.
 	if len(outsideSet) == 0 {
-		trimmed := entries[recentStart:]
-		for len(trimmed) > 0 && trimmed[0].Role == "tool" {
-			trimmed = trimmed[1:]
-		}
+		trimmed := groupAlignedSlice(entries, recentStart)
 		return trimmed
 	}
 
@@ -612,13 +607,38 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 		Role:    "system",
 		Content: separator,
 	})
-	result = append(result, entries[recentStart:]...)
+	// Append the recent window, aligned to group boundaries so we never
+	// start with orphaned tool messages from a split group.
+	result = append(result, groupAlignedSlice(entries, recentStart)...)
 
-	// Fix orphaned tool messages at the start.
-	for len(result) > 0 && result[0].Role == "tool" {
-		result = result[1:]
-	}
 	return result
+}
+
+// groupAlignedSlice returns entries[start:] but adjusts start forward to
+// the nearest group boundary so we never start in the middle of a
+// tool_calls group (which would orphan tool messages without their
+// preceding assistant). This replaces the old pattern of:
+//   trimmed = entries[start:]
+//   for len(trimmed) > 0 && trimmed[0].Role == "tool" { trimmed = trimmed[1:] }
+// which could leave an assistant(tool_calls) at the end of the dropped
+// region without its tool messages in the kept region.
+func groupAlignedSlice(entries []agent.ConversationEntry, start int) []agent.ConversationEntry {
+	if start <= 0 {
+		return entries
+	}
+	if start >= len(entries) {
+		return nil
+	}
+	groups := agent.BuildEntryGroups(entries)
+	g := agent.GroupContaining(groups, start)
+	if g != nil && start > g.Start {
+		// start is in the middle of a group — advance to the next group.
+		start = g.End
+	}
+	if start >= len(entries) {
+		return nil
+	}
+	return entries[start:]
 }
 
 // collectPreservedUserMessages extracts user messages from the dropped region
@@ -699,7 +719,15 @@ func collectPreservedUserMessages(entries []agent.ConversationEntry, recentStart
 // injections) are deprioritized — real user turns fill the budget first,
 // then synthetic turns fill remaining slots. This ensures user intent is
 // preserved over framework-generated context during compaction.
+//
+// Tool-call group integrity: when an assistant(tool_calls) entry is selected
+// as a boundary, ALL entries in its group (the assistant + following tool
+// entries) are included. This uses BuildEntryGroups to ensure the same
+// grouping logic as TrimHistory and TrimConversation.
 func extractTurnBoundaryIndices(entries []agent.ConversationEntry, maxCount int) []int {
+	// Build groups first — we need them to expand assistant selections.
+	groups := agent.BuildEntryGroups(entries)
+
 	var realTurns []int     // user-initiated turn boundaries
 	var syntheticTurns []int // system-injected turn boundaries
 	prevRole := ""
@@ -717,11 +745,6 @@ func extractTurnBoundaryIndices(entries []agent.ConversationEntry, maxCount int)
 				}
 			}
 		case "assistant":
-			// The first assistant message after a user message completes the
-			// turn boundary pair. prevRole tracks through all entry types
-			// (tool, system) so user→tool→assistant is correctly handled.
-			// We use lastUserWasSynthetic to associate the assistant with
-			// the correct turn type.
 			if prevRole == "user" {
 				if lastUserWasSynthetic {
 					syntheticTurns = append(syntheticTurns, i)
@@ -736,21 +759,40 @@ func extractTurnBoundaryIndices(entries []agent.ConversationEntry, maxCount int)
 	}
 
 	// Merge: real turns first, then synthetic turns, up to maxCount.
-	result := make([]int, 0, maxCount)
+	selected := make([]int, 0, maxCount)
 	for _, idx := range realTurns {
-		if len(result) >= maxCount {
+		if len(selected) >= maxCount {
 			break
 		}
-		result = append(result, idx)
+		selected = append(selected, idx)
 	}
 	for _, idx := range syntheticTurns {
-		if len(result) >= maxCount {
+		if len(selected) >= maxCount {
 			break
 		}
-		result = append(result, idx)
+		selected = append(selected, idx)
 	}
 
-	// Sort by index to maintain chronological order.
+	// Expand: if a selected index is an assistant(tool_calls), include all
+	// entries in its group. This is the mechanism-level fix — we never
+	// select an assistant without its tool messages.
+	expandedSet := make(map[int]bool, len(selected)*2)
+	for _, idx := range selected {
+		g := agent.GroupContaining(groups, idx)
+		if g == nil {
+			expandedSet[idx] = true
+			continue
+		}
+		for j := g.Start; j < g.End; j++ {
+			expandedSet[j] = true
+		}
+	}
+
+	// Convert set to sorted slice.
+	result := make([]int, 0, len(expandedSet))
+	for idx := range expandedSet {
+		result = append(result, idx)
+	}
 	sort.Ints(result)
 	return result
 }

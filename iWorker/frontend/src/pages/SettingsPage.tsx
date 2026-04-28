@@ -37,6 +37,9 @@ type Props = {
   onCenterDepartmentIdChange: (value: string) => void;
   onCenterWorkerIdChange: (value: string) => void;
   onCenterTimeoutChange: (value: string) => void;
+  onGoalWatchAutoHandleEnabledChange: (value: boolean) => void;
+  onGoalWatchIntervalChange: (value: string) => void;
+  onGoalWatchMaxDurationChange: (value: string) => void;
   onRoutingModeChange: (value: DiWorkerSettings['routing']['mode']) => void;
   onRoutingDefaultProviderChange: (value: string) => void;
   onRoutingAllowFallbackChange: (value: boolean) => void;
@@ -115,6 +118,9 @@ export function SettingsPage({
   onCenterDepartmentIdChange,
   onCenterWorkerIdChange,
   onCenterTimeoutChange,
+  onGoalWatchAutoHandleEnabledChange,
+  onGoalWatchIntervalChange,
+  onGoalWatchMaxDurationChange,
   onRoutingModeChange,
   onRoutingDefaultProviderChange,
   onRoutingAllowFallbackChange,
@@ -215,9 +221,24 @@ export function SettingsPage({
                       Worker ID
                       <input value={settings.center.workerId} onChange={(event) => onCenterWorkerIdChange(event.target.value)} placeholder="local-iworker" />
                     </label>
-                    <label className="dw-settings-field-span-2">
+                    <label>
                       超时（秒）
                       <input value={String(settings.center.timeoutSec)} onChange={(event) => onCenterTimeoutChange(event.target.value)} placeholder="60" />
+                    </label>
+                    <label>
+                      自动守护
+                      <select value={settings.center.goalWatchAutoHandleEnabled ? 'enabled' : 'disabled'} onChange={(event) => onGoalWatchAutoHandleEnabledChange(event.target.value === 'enabled')}>
+                        <option value="enabled">启用</option>
+                        <option value="disabled">关闭</option>
+                      </select>
+                    </label>
+                    <label>
+                      守护周期（秒）
+                      <input value={String(settings.center.goalWatchIntervalSec)} onChange={(event) => onGoalWatchIntervalChange(event.target.value)} placeholder="30" />
+                    </label>
+                    <label>
+                      卡死超时（秒）
+                      <input value={String(settings.center.goalWatchMaxDurationSec)} onChange={(event) => onGoalWatchMaxDurationChange(event.target.value)} placeholder="120" />
                     </label>
                   </div>
                 </section>

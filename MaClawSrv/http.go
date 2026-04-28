@@ -190,6 +190,12 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/audit-events", s.withAdmin(s.handleListAuditEvents))
 	s.mux.HandleFunc("GET /api/v1/admin/export", s.withAdmin(s.handleExportServiceState))
 	s.mux.HandleFunc("POST /api/v1/admin/import", s.withAdmin(s.handleImportServiceState))
+	s.mux.HandleFunc("GET /api/v1/admin/snapshots", s.withAdmin(s.handleListServiceSnapshots))
+	s.mux.HandleFunc("POST /api/v1/admin/snapshots", s.withAdmin(s.handleCreateServiceSnapshot))
+	s.mux.HandleFunc("POST /api/v1/admin/snapshots/prune", s.withAdmin(s.handlePruneServiceSnapshots))
+	s.mux.HandleFunc("GET /api/v1/admin/snapshots/{snapshotId}", s.withAdmin(s.handleGetServiceSnapshot))
+	s.mux.HandleFunc("POST /api/v1/admin/snapshots/{snapshotId}/restore", s.withAdmin(s.handleRestoreServiceSnapshot))
+	s.mux.HandleFunc("DELETE /api/v1/admin/snapshots/{snapshotId}", s.withAdmin(s.handleDeleteServiceSnapshot))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/retire-plan", s.withAdmin(s.handleGetTenantRetirePlan))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/retire-plan", s.withAdmin(s.handleGetUserRetirePlan))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants", s.withAdmin(s.handleCreateTenant))
@@ -486,6 +492,14 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("# TYPE maclaw_runs_total gauge\n")
 	b.WriteString("maclaw_runs_total ")
 	b.WriteString(strconv.FormatInt(int64(overview.Runs), 10))
+	b.WriteString("\n# HELP maclaw_snapshots_total Number of persisted service snapshots\n")
+	b.WriteString("# TYPE maclaw_snapshots_total gauge\n")
+	b.WriteString("maclaw_snapshots_total ")
+	b.WriteString(strconv.FormatInt(int64(overview.Snapshots), 10))
+	b.WriteString("\n# HELP maclaw_snapshot_bytes_total Total bytes used by persisted service snapshots\n")
+	b.WriteString("# TYPE maclaw_snapshot_bytes_total gauge\n")
+	b.WriteString("maclaw_snapshot_bytes_total ")
+	b.WriteString(strconv.FormatInt(overview.SnapshotBytes, 10))
 	b.WriteString("\n# HELP maclaw_audit_events_total Number of audit events\n")
 	b.WriteString("# TYPE maclaw_audit_events_total gauge\n")
 	b.WriteString("maclaw_audit_events_total ")
@@ -641,11 +655,25 @@ func (s *HTTPServer) handleListTenants(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleListAuditEvents(w http.ResponseWriter, r *http.Request) {
+	since, err := parseOptionalTimeQuery(r, "since")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	until, err := parseOptionalTimeQuery(r, "until")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	out, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{
 		TenantID:     strings.TrimSpace(r.URL.Query().Get("tenant_id")),
 		UserID:       strings.TrimSpace(r.URL.Query().Get("user_id")),
 		Action:       strings.TrimSpace(r.URL.Query().Get("action")),
 		ResourceType: strings.TrimSpace(r.URL.Query().Get("resource_type")),
+		ResourceID:   strings.TrimSpace(r.URL.Query().Get("resource_id")),
+		ActorType:    strings.TrimSpace(r.URL.Query().Get("actor_type")),
+		Since:        since,
+		Until:        until,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -719,6 +747,120 @@ func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (s *HTTPServer) handleListServiceSnapshots(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.ListServiceSnapshots(r.Context(), agentservice.ListServiceSnapshotsInput{
+		TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id")),
+		UserID:   strings.TrimSpace(r.URL.Query().Get("user_id")),
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	window, meta := paginateServiceSnapshots(items, page)
+	writeJSON(w, http.StatusOK, listResponse(window, meta))
+}
+
+func (s *HTTPServer) handleCreateServiceSnapshot(w http.ResponseWriter, r *http.Request) {
+	var in agentservice.CreateServiceSnapshotInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.CreateServiceSnapshot(r.Context(), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *HTTPServer) handlePruneServiceSnapshots(w http.ResponseWriter, r *http.Request) {
+	var in agentservice.PruneServiceSnapshotsInput
+	if !decodeOptionalJSON(w, r, &in) {
+		return
+	}
+	if tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id")); tenantID != "" {
+		in.TenantID = tenantID
+	}
+	if userID := strings.TrimSpace(r.URL.Query().Get("user_id")); userID != "" {
+		in.UserID = userID
+	}
+	if olderThan, err := parseOptionalTimeQuery(r, "older_than"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	} else if olderThan != nil {
+		in.OlderThan = olderThan
+	}
+	if keepLatestRaw := strings.TrimSpace(r.URL.Query().Get("keep_latest")); keepLatestRaw != "" {
+		keepLatest, err := strconv.Atoi(keepLatestRaw)
+		if err != nil || keepLatest < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "keep_latest must be greater than or equal to 0"})
+			return
+		}
+		in.KeepLatest = keepLatest
+	}
+	if dryRun, err := parseOptionalBoolQuery(r, "dry_run"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	} else if dryRun != nil {
+		in.DryRun = *dryRun
+	}
+	out, err := s.svc.PruneServiceSnapshots(r.Context(), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleGetServiceSnapshot(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetServiceSnapshot(r.Context(), r.PathValue("snapshotId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleRestoreServiceSnapshot(w http.ResponseWriter, r *http.Request) {
+	var in agentservice.RestoreServiceSnapshotInput
+	if !decodeOptionalJSON(w, r, &in) {
+		return
+	}
+	if overwrite, err := parseOptionalBoolQuery(r, "overwrite"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	} else if overwrite != nil {
+		in.Overwrite = *overwrite
+	}
+	if dryRun, err := parseOptionalBoolQuery(r, "dry_run"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	} else if dryRun != nil {
+		in.DryRun = *dryRun
+	}
+	out, err := s.svc.RestoreServiceSnapshot(r.Context(), r.PathValue("snapshotId"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handleDeleteServiceSnapshot(w http.ResponseWriter, r *http.Request) {
+	if err := requireDeleteConfirmation(r); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	out, err := s.svc.DeleteServiceSnapshot(r.Context(), r.PathValue("snapshotId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 func (s *HTTPServer) handleGetTenantRetirePlan(w http.ResponseWriter, r *http.Request) {
 	in, err := parseExportServiceStateInput(r)
 	if err != nil {
@@ -909,6 +1051,11 @@ func (s *HTTPServer) handleListCredentials(w http.ResponseWriter, r *http.Reques
 	out, err := s.svc.ListCredentials(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+	out, err = filterCredentialsByQuery(out, r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -1952,6 +2099,29 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	}
 	return true
 }
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out any) bool {
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read request body"})
+		return false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return true
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return false
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return false
+	}
+	return true
+}
 func parseExportServiceStateInput(r *http.Request) (agentservice.ExportServiceStateInput, error) {
 	includeMessages, err := parseOptionalBoolQuery(r, "include_messages")
 	if err != nil {
@@ -2099,6 +2269,47 @@ func parseOptionalTimeQuery(r *http.Request, key string) (*time.Time, error) {
 		return nil, errors.New(key + " must be an RFC3339 timestamp")
 	}
 	return &v, nil
+}
+func filterCredentialsByQuery(items []agentservice.Credential, r *http.Request) ([]agentservice.Credential, error) {
+	statusRaw := strings.TrimSpace(r.URL.Query().Get("status"))
+	var status agentservice.CredentialStatus
+	if statusRaw != "" {
+		status = agentservice.CredentialStatus(statusRaw)
+		switch status {
+		case agentservice.CredentialStatusActive, agentservice.CredentialStatusSuspended, agentservice.CredentialStatusRevoked:
+		default:
+			return nil, errors.New("status must be active, suspended, or revoked")
+		}
+	}
+	expired, err := parseOptionalBoolQuery(r, "expired")
+	if err != nil {
+		return nil, err
+	}
+	expiring, err := parseOptionalBoolQuery(r, "expiring")
+	if err != nil {
+		return nil, err
+	}
+	if statusRaw == "" && expired == nil && expiring == nil {
+		return items, nil
+	}
+	now := time.Now().UTC()
+	expiringCutoff := now.Add(7 * 24 * time.Hour)
+	filtered := make([]agentservice.Credential, 0, len(items))
+	for _, item := range items {
+		if statusRaw != "" && item.Status != status {
+			continue
+		}
+		isExpired := item.ExpiresAt != nil && !item.ExpiresAt.After(now)
+		isExpiring := item.ExpiresAt != nil && item.ExpiresAt.After(now) && !item.ExpiresAt.After(expiringCutoff)
+		if expired != nil && isExpired != *expired {
+			continue
+		}
+		if expiring != nil && isExpiring != *expiring {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 func parseAsyncJobStatus(raw string, terminalOnly bool) (asyncJobStatus, bool) {
@@ -2383,6 +2594,25 @@ func paginateCredentials(items []agentservice.Credential, page pageQuery) ([]age
 	})
 }
 
+func paginateServiceSnapshots(items []agentservice.ServiceSnapshot, page pageQuery) ([]agentservice.ServiceSnapshot, pageMeta) {
+	filtered := make([]agentservice.ServiceSnapshot, 0, len(items))
+	for _, item := range items {
+		if page.Before.IsZero() || item.CreatedAt.Before(page.Before) {
+			filtered = append(filtered, item)
+		}
+	}
+	start := 0
+	if len(filtered) > page.Limit {
+		start = len(filtered) - page.Limit
+	}
+	window := filtered[start:]
+	return window, buildPageMeta(len(filtered), start, page.Limit, func() time.Time {
+		if len(window) == 0 {
+			return time.Time{}
+		}
+		return window[0].CreatedAt
+	})
+}
 func paginateAsyncJobs(items []asyncJobRecord, page pageQuery) ([]asyncJobRecord, pageMeta) {
 	filtered := make([]asyncJobRecord, 0, len(items))
 	for _, item := range items {
@@ -2509,7 +2739,7 @@ func writeError(w http.ResponseWriter, err error) {
 		code = http.StatusUnauthorized
 	case errors.Is(err, agentservice.ErrForbidden):
 		code = http.StatusForbidden
-	case errors.Is(err, agentservice.ErrTenantNotFound), errors.Is(err, agentservice.ErrUserNotFound), errors.Is(err, agentservice.ErrCredentialNotFound), errors.Is(err, agentservice.ErrUserConfigNotFound), errors.Is(err, agentservice.ErrInstanceNotFound), errors.Is(err, agentservice.ErrSessionNotFound), errors.Is(err, agentservice.ErrRunNotFound):
+	case errors.Is(err, agentservice.ErrTenantNotFound), errors.Is(err, agentservice.ErrUserNotFound), errors.Is(err, agentservice.ErrCredentialNotFound), errors.Is(err, agentservice.ErrUserConfigNotFound), errors.Is(err, agentservice.ErrInstanceNotFound), errors.Is(err, agentservice.ErrSessionNotFound), errors.Is(err, agentservice.ErrRunNotFound), errors.Is(err, agentservice.ErrSnapshotNotFound):
 		code = http.StatusNotFound
 	case errors.Is(err, agentservice.ErrRunNotRunning), errors.Is(err, agentservice.ErrInstanceBusy), errors.Is(err, agentservice.ErrUserBusy), errors.Is(err, agentservice.ErrTenantBusy), errors.Is(err, agentservice.ErrDeleteProtected), errors.Is(err, agentservice.ErrSessionBusy), errors.Is(err, agentservice.ErrSessionArchived), errors.Is(err, agentservice.ErrAlreadyExists):
 		code = http.StatusConflict

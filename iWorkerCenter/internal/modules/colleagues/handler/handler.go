@@ -105,7 +105,7 @@ func (h *Handler) handleClientColleagues(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 
 	// optional filter by role_id
 	roleID := r.URL.Query().Get("role_id")
@@ -124,7 +124,7 @@ func (h *Handler) handleClientColleagues(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) listColleagues(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 
 	// optional filter by role_id
 	roleID := r.URL.Query().Get("role_id")
@@ -143,7 +143,7 @@ func (h *Handler) listColleagues(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createColleague(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 
 	var req service.CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -159,7 +159,7 @@ func (h *Handler) createColleague(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getColleague(w http.ResponseWriter, r *http.Request, id string) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 
 	c, err := h.svc.GetByID(tid, id)
 	if err != nil {
@@ -170,7 +170,7 @@ func (h *Handler) getColleague(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (h *Handler) updateColleague(w http.ResponseWriter, r *http.Request, id string) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 
 	var req service.UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -186,7 +186,7 @@ func (h *Handler) updateColleague(w http.ResponseWriter, r *http.Request, id str
 }
 
 func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 
 	var req struct {
 		Status string `json:"status"`
@@ -203,7 +203,7 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func (h *Handler) assignRole(w http.ResponseWriter, r *http.Request, id string) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 
 	var req service.AssignRoleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -218,7 +218,7 @@ func (h *Handler) assignRole(w http.ResponseWriter, r *http.Request, id string) 
 }
 
 func (h *Handler) roleHistory(w http.ResponseWriter, r *http.Request, colleagueID string) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 
 	logs, err := h.roleSvc.GetAssignmentHistory(tid, colleagueID)
 	if err != nil {

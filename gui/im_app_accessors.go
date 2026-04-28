@@ -74,6 +74,15 @@ func (h *IMMessageHandler) getRiskAssessor() *RiskAssessor {
 	return h.app.riskAssessor
 }
 
+// isSecurityDeveloperMode returns true when the security policy is in "developer"
+// mode, which disables all security guardrails for security research purposes.
+func (h *IMMessageHandler) isSecurityDeveloperMode() bool {
+	if h.app == nil {
+		return false
+	}
+	return h.app.policyEngine != nil && h.app.policyEngine.IsDeveloperMode()
+}
+
 // --- AgentNet Client ---
 
 func (h *IMMessageHandler) getAgentNetClient() *AgentNetClient {

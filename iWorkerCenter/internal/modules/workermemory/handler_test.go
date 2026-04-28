@@ -223,3 +223,51 @@ func TestWorkerMemoryStatsCountsVisibleScopes(t *testing.T) {
 		t.Fatalf("ByCategory = %+v, want only worker-a personal preference", stats.ByCategory)
 	}
 }
+
+func TestWorkerMemoryReadsTenantFromHeader(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatalf("NewStore returned error: %v", err)
+	}
+	h := NewHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterClientRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"worker_id": "worker-a",
+		"scope":     "personal",
+		"content":   "Header tenant memory",
+		"category":  "project_knowledge",
+	})
+	postReq := httptest.NewRequest(http.MethodPost, "/client/iworker/memories", bytes.NewReader(body))
+	postReq.Header.Set("X-Tenant-ID", "tenant-header")
+	postRes := httptest.NewRecorder()
+	mux.ServeHTTP(postRes, postReq)
+	if postRes.Code != http.StatusCreated {
+		t.Fatalf("POST status = %d body=%s", postRes.Code, postRes.Body.String())
+	}
+	var saved MemoryDTO
+	if err := json.Unmarshal(postRes.Body.Bytes(), &saved); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if saved.TenantID != "tenant-header" {
+		t.Fatalf("TenantID = %q, want tenant-header", saved.TenantID)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/client/iworker/memories?worker_id=worker-a&query=Header&limit=10", nil)
+	getReq.Header.Set("X-Tenant-ID", "tenant-header")
+	getRes := httptest.NewRecorder()
+	mux.ServeHTTP(getRes, getReq)
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("GET status = %d body=%s", getRes.Code, getRes.Body.String())
+	}
+	var resp struct {
+		Memories []MemoryDTO `json:"memories"`
+	}
+	if err := json.Unmarshal(getRes.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(resp.Memories) != 1 || resp.Memories[0].TenantID != "tenant-header" {
+		t.Fatalf("unexpected memories: %+v", resp.Memories)
+	}
+}

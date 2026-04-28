@@ -1,4 +1,4 @@
-# MaClawSrv Gap Analysis
+﻿# MaClawSrv Gap Analysis
 
 
 
@@ -178,7 +178,7 @@ Still missing:
 
 
 
-- Snapshotting tenant data
+- Snapshot create/list/get/delete/restore APIs are now available through `/api/v1/admin/snapshots`; remaining work is richer snapshot scheduling; manual retention pruning is now available
 
 
 - Migrating tenants or users between environments
@@ -561,3 +561,21 @@ That sequence improves both actual capability and integration confidence without
 
 - Credential creation now accepts `expires_at` directly.
 - Admin callers can create generated credentials with expiry in one request instead of issuing an unrestricted credential and patching it afterward.
+
+## Recent completion: credential list filters
+
+- Credential list now supports `status`, `expired`, and `expiring` filters before pagination.
+- Admin tools can locate suspended, revoked, expired, or soon-expiring credentials without fetching and filtering every credential client-side.
+
+## Recent completion: audit event resource filters
+
+- Audit events can now be filtered by `resource_id` and `actor_type`.
+- Operators can trace one credential, run, user, or tenant without downloading broader audit pages and filtering client-side.
+
+## Recent completion: audit event time windows
+
+- Audit events can now be filtered by `since` and `until` before pagination.
+- External tools can poll recent audit windows or investigate incident time ranges without fetching unrelated history.
+
+
+

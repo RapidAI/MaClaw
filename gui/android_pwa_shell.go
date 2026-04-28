@@ -1462,7 +1462,7 @@ func buildMobileShellRootReadme(result MobilePWAShellResult) string {
 		"",
 		"## Defaults",
 		"",
-		"Both Android and iOS default to Hub Center `http://hubs.mypapers.top:9388`.",
+		"Both Android and iOS default to Hub Center `" + defaultRemoteHubCenterURL + "`.",
 		"",
 		"## Entry Points",
 		"",

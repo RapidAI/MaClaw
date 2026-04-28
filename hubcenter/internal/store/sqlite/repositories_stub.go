@@ -691,7 +691,7 @@ func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubI
 	}
 
 	var upserted *store.HubUserLink
-	if !targetExists {
+	if !targetExists || len(remove) > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
@@ -740,7 +740,6 @@ func (r *hubUserLinkRepo) MigrateEmailPatternToHub(ctx context.Context, pattern,
 	}
 	var remove []*store.HubUserLink
 	matchedEmails := map[string]struct{}{}
-	targetEmails := map[string]struct{}{}
 	for rows.Next() {
 		item, scanErr := scanHubUserLink(rows)
 		if scanErr != nil {
@@ -751,10 +750,6 @@ func (r *hubUserLinkRepo) MigrateEmailPatternToHub(ctx context.Context, pattern,
 			continue
 		}
 		if strings.TrimSpace(item.HubID) == strings.TrimSpace(toHubID) {
-			targetEmails[normalizeStoreEmail(item.Email)] = struct{}{}
-			if strings.TrimSpace(fromHubID) == "" {
-				matchedEmails[normalizeStoreEmail(item.Email)] = struct{}{}
-			}
 			continue
 		}
 		if strings.TrimSpace(fromHubID) != "" && strings.TrimSpace(item.HubID) != strings.TrimSpace(fromHubID) {
@@ -772,10 +767,7 @@ func (r *hubUserLinkRepo) MigrateEmailPatternToHub(ctx context.Context, pattern,
 
 	upserted := make([]*store.HubUserLink, 0, len(matchedEmails))
 	for email := range matchedEmails {
-		if _, exists := targetEmails[email]; exists {
-			continue
-		}
-		link := &store.HubUserLink{ID: primaryStoreUserLinkID(toHubID, email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
+		link := &store.HubUserLink{ID: adminStoreUserLinkID(email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
@@ -933,6 +925,133 @@ func (r *hubDomainRouteRepo) MigrateDomainToHub(ctx context.Context, domain, fro
 	return remove, nil
 }
 
+func (r *hubDomainRouteRepo) MigrateDomainAndEmailPatternToHub(ctx context.Context, domain, pattern, fromHubID, toHubID string, route *store.HubDomainRoute, now time.Time) ([]*store.HubDomainRoute, []*store.HubUserLink, []*store.HubUserLink, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	routeRows, err := tx.QueryContext(ctx, `
+		SELECT id, hub_id, domain, enabled, priority, created_at, updated_at
+		FROM hub_domain_routes
+		WHERE domain = ?
+		ORDER BY priority ASC, updated_at DESC, id ASC
+	`, domain)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var removeRoutes []*store.HubDomainRoute
+	for routeRows.Next() {
+		item, scanErr := scanHubDomainRoute(routeRows)
+		if scanErr != nil {
+			_ = routeRows.Close()
+			return nil, nil, nil, scanErr
+		}
+		if item == nil || strings.TrimSpace(item.ID) == strings.TrimSpace(route.ID) {
+			continue
+		}
+		if strings.TrimSpace(item.HubID) == strings.TrimSpace(route.HubID) {
+			continue
+		}
+		if strings.TrimSpace(fromHubID) != "" && strings.TrimSpace(item.HubID) != strings.TrimSpace(fromHubID) {
+			continue
+		}
+		removeRoutes = append(removeRoutes, item)
+	}
+	if err := routeRows.Close(); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := routeRows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+
+	linkRows, err := tx.QueryContext(ctx, `
+		SELECT id, hub_id, email, is_default, created_at, updated_at
+		FROM hub_user_links
+		ORDER BY email ASC, is_default DESC, updated_at DESC
+	`)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var removeLinks []*store.HubUserLink
+	matchedEmails := map[string]struct{}{}
+	for linkRows.Next() {
+		item, scanErr := scanHubUserLink(linkRows)
+		if scanErr != nil {
+			_ = linkRows.Close()
+			return nil, nil, nil, scanErr
+		}
+		if item == nil || strings.HasPrefix(strings.TrimSpace(item.ID), "hul_owner_") || !emailWildcardMatch(pattern, item.Email) {
+			continue
+		}
+		if strings.TrimSpace(item.HubID) == strings.TrimSpace(toHubID) {
+			continue
+		}
+		if strings.TrimSpace(fromHubID) != "" && strings.TrimSpace(item.HubID) != strings.TrimSpace(fromHubID) {
+			continue
+		}
+		matchedEmails[normalizeStoreEmail(item.Email)] = struct{}{}
+		removeLinks = append(removeLinks, item)
+	}
+	if err := linkRows.Close(); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := linkRows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO hub_domain_routes (id, hub_id, domain, enabled, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			hub_id = excluded.hub_id,
+			domain = excluded.domain,
+			enabled = excluded.enabled,
+			priority = excluded.priority,
+			created_at = excluded.created_at,
+			updated_at = excluded.updated_at
+	`, route.ID, route.HubID, route.Domain, boolToInt(route.Enabled), route.Priority, route.CreatedAt.Format(time.RFC3339), route.UpdatedAt.Format(time.RFC3339)); err != nil {
+		return nil, nil, nil, err
+	}
+
+	upsertedLinks := make([]*store.HubUserLink, 0, len(matchedEmails))
+	for email := range matchedEmails {
+		link := &store.HubUserLink{ID: adminStoreUserLinkID(email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				hub_id = excluded.hub_id,
+				email = excluded.email,
+				is_default = excluded.is_default,
+				updated_at = excluded.updated_at
+		`, link.ID, link.HubID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
+			return nil, nil, nil, err
+		}
+		upsertedLinks = append(upsertedLinks, link)
+	}
+	for _, item := range removeRoutes {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hub_domain_routes WHERE id = ?`, item.ID); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	for _, item := range removeLinks {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hub_user_links WHERE id = ?`, item.ID); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, nil, err
+	}
+	committed = true
+	return removeRoutes, removeLinks, upsertedLinks, nil
+}
 func (r *blockedEmailRepo) GetByEmail(ctx context.Context, email string) (*store.BlockedEmail, error) {
 	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, email, reason, created_at, updated_at
@@ -1079,6 +1198,11 @@ func normalizeStoreEmail(email string) string {
 func primaryStoreUserLinkID(hubID, email string) string {
 	sum := sha256.Sum256([]byte(normalizeStoreEmail(email)))
 	return "hul_user_" + strings.TrimSpace(hubID) + "_" + hex.EncodeToString(sum[:])[:16]
+}
+
+func adminStoreUserLinkID(email string) string {
+	sum := sha256.Sum256([]byte(normalizeStoreEmail(email)))
+	return "hul_admin_" + hex.EncodeToString(sum[:])[:20]
 }
 
 func emailWildcardMatch(pattern, email string) bool {

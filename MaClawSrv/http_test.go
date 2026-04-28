@@ -115,6 +115,88 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if _, ok := content["text/plain"]; !ok {
 		t.Fatalf("expected metrics text/plain response content: %#v", content)
 	}
+	credentialsPath, ok := doc.Paths["/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected credentials path object")
+	}
+	getCredentials, ok := credentialsPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET credentials operation")
+	}
+	credentialParams, ok := getCredentials["parameters"].([]any)
+	if !ok {
+		t.Fatalf("expected credential list parameters")
+	}
+	foundCredentialStatus := false
+	foundExpiredBool := false
+	foundExpiringBool := false
+	for _, item := range credentialParams {
+		param, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := param["name"].(string)
+		schema, _ := param["schema"].(map[string]any)
+		switch name {
+		case "status":
+			enumValues, _ := schema["enum"].([]any)
+			if len(enumValues) == 3 {
+				foundCredentialStatus = true
+			}
+		case "expired":
+			if schema["type"] == "boolean" {
+				foundExpiredBool = true
+			}
+		case "expiring":
+			if schema["type"] == "boolean" {
+				foundExpiringBool = true
+			}
+		}
+	}
+	if !foundCredentialStatus || !foundExpiredBool || !foundExpiringBool {
+		t.Fatalf("expected credential filters in OpenAPI: %#v", credentialParams)
+	}
+	auditPath, ok := doc.Paths["/api/v1/admin/audit-events"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected audit-events path object")
+	}
+	getAuditEvents, ok := auditPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET audit-events operation")
+	}
+	auditParams, ok := getAuditEvents["parameters"].([]any)
+	if !ok {
+		t.Fatalf("expected audit-events parameters")
+	}
+	foundResourceID := false
+	foundActorType := false
+	foundAuditSince := false
+	foundAuditUntil := false
+	for _, item := range auditParams {
+		param, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := param["name"].(string)
+		schema, _ := param["schema"].(map[string]any)
+		switch name {
+		case "resource_id":
+			foundResourceID = true
+		case "actor_type":
+			foundActorType = true
+		case "since":
+			if schema["format"] == "date-time" {
+				foundAuditSince = true
+			}
+		case "until":
+			if schema["format"] == "date-time" {
+				foundAuditUntil = true
+			}
+		}
+	}
+	if !foundResourceID || !foundActorType || !foundAuditSince || !foundAuditUntil {
+		t.Fatalf("expected audit resource/time filters in OpenAPI: %#v", auditParams)
+	}
 }
 
 type blockingExecutor struct {
@@ -1661,6 +1743,77 @@ func TestAdminCanCreateGeneratedCredentialOneTimeReveal(t *testing.T) {
 	}
 }
 
+func TestAdminCanFilterCredentials(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	now := time.Now().UTC()
+	expiringAt := now.Add(48 * time.Hour)
+	expiredAt := now.Add(-time.Hour)
+	expiringCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Expiring", APIKey: "filter-expiring", APISecret: "secret", ExpiresAt: &expiringAt})
+	if err != nil {
+		t.Fatalf("CreateCredential expiring: %v", err)
+	}
+	expiredCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Expired", APIKey: "filter-expired", APISecret: "secret", ExpiresAt: &expiredAt})
+	if err != nil {
+		t.Fatalf("CreateCredential expired: %v", err)
+	}
+	suspendedStatus := agentservice.CredentialStatusSuspended
+	suspendedCred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Suspended", APIKey: "filter-suspended", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential suspended: %v", err)
+	}
+	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, suspendedCred.ID, agentservice.UpdateCredentialInput{Status: &suspendedStatus}); err != nil {
+		t.Fatalf("UpdateCredential suspended: %v", err)
+	}
+
+	server := NewHTTPServer(svc, "admin-secret")
+	listCredentials := func(query string) []agentservice.Credential {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials"+query, nil)
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list credentials %q status = %d body = %s", query, w.Code, w.Body.String())
+		}
+		var out struct {
+			Items []agentservice.Credential `json:"items"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+			t.Fatalf("decode credentials %q: %v", query, err)
+		}
+		return out.Items
+	}
+	if got := listCredentials("?status=suspended"); len(got) != 1 || got[0].ID != suspendedCred.ID {
+		t.Fatalf("unexpected suspended filter result: %#v", got)
+	}
+	if got := listCredentials("?expired=true"); len(got) != 1 || got[0].ID != expiredCred.ID {
+		t.Fatalf("unexpected expired filter result: %#v", got)
+	}
+	if got := listCredentials("?expiring=true"); len(got) != 1 || got[0].ID != expiringCred.ID {
+		t.Fatalf("unexpected expiring filter result: %#v", got)
+	}
+	if got := listCredentials("?status=active&expired=false&expiring=false"); len(got) != 0 {
+		t.Fatalf("unexpected active non-expiring/non-expired filter result: %#v", got)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials?status=paused", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid credential status filter status = %d body = %s", w.Code, w.Body.String())
+	}
+}
 func TestAdminCanListAndRevokeCredentials(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -1914,7 +2067,8 @@ func TestAdminPaginationForTenantsUsersAndCredentials(t *testing.T) {
 }
 
 func TestAdminCanListAuditEvents(t *testing.T) {
-	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -1946,6 +2100,60 @@ func TestAdminCanListAuditEvents(t *testing.T) {
 	}
 	if events.Items[0].ActorType != "admin" || events.Items[0].ResourceType != "user" {
 		t.Fatalf("unexpected audit event = %#v", events.Items[0])
+	}
+	cred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "audit-filter-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	req = httptest.NewRequest("GET", "/api/v1/admin/audit-events?resource_id="+url.QueryEscape(cred.ID)+"&actor_type=admin", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list audit events by resource/actor status = %d body = %s", w.Code, w.Body.String())
+	}
+	var credentialEvents struct {
+		Items []agentservice.AuditEvent `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&credentialEvents); err != nil {
+		t.Fatalf("decode credential audit events: %v", err)
+	}
+	if len(credentialEvents.Items) != 1 || credentialEvents.Items[0].ResourceID != cred.ID || credentialEvents.Items[0].ActorType != "admin" || credentialEvents.Items[0].Action != "credential.created" {
+		t.Fatalf("unexpected credential audit events = %#v", credentialEvents.Items)
+	}
+	base := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_window_old", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "window.old", ResourceType: "test", ResourceID: "old", CreatedAt: base}); err != nil {
+		t.Fatalf("SaveAuditEvent old: %v", err)
+	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_window_mid", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "window.mid", ResourceType: "test", ResourceID: "mid", CreatedAt: base.Add(time.Hour)}); err != nil {
+		t.Fatalf("SaveAuditEvent mid: %v", err)
+	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_window_new", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "window.new", ResourceType: "test", ResourceID: "new", CreatedAt: base.Add(2 * time.Hour)}); err != nil {
+		t.Fatalf("SaveAuditEvent new: %v", err)
+	}
+	windowURL := "/api/v1/admin/audit-events?resource_type=test&since=" + url.QueryEscape(base.Add(30*time.Minute).Format(time.RFC3339Nano)) + "&until=" + url.QueryEscape(base.Add(90*time.Minute).Format(time.RFC3339Nano))
+	req = httptest.NewRequest(http.MethodGet, windowURL, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list audit events by time window status = %d body = %s", w.Code, w.Body.String())
+	}
+	var windowEvents struct {
+		Items []agentservice.AuditEvent `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&windowEvents); err != nil {
+		t.Fatalf("decode audit time window events: %v", err)
+	}
+	if len(windowEvents.Items) != 1 || windowEvents.Items[0].ID != "audit_window_mid" {
+		t.Fatalf("unexpected audit time window events = %#v", windowEvents.Items)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/audit-events?since=not-time", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid audit since status = %d body = %s", w.Code, w.Body.String())
 	}
 }
 

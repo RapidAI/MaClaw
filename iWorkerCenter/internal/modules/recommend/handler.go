@@ -47,7 +47,7 @@ func (h *Handler) handleRecommend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build colleague profiles from DB
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	colleagues, err := h.colleagueRp.ListActive(tid)
 	if err != nil {
 		response.Internal(w, err.Error())

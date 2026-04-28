@@ -35,7 +35,7 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 			hours = n
 		}
 	}
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	stats, err := h.repo.GetStats(tenantID, hours)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -55,7 +55,7 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	logs, err := h.repo.ListRecent(tenantID, limit)
 	if err != nil {
 		response.Internal(w, err.Error())

@@ -1368,6 +1368,21 @@ func (a *App) CancelAIAssistantSession() (string, error) {
 	return hubClient.ensureIMHandler().CancelCurrentSession()
 }
 
+// InjectAIAssistantSupplementary injects a supplementary message into the
+// currently running agent loop without cancelling it. The message is consumed
+// at the start of the next iteration as a system-level "[用户补充]" entry.
+// Returns true if the injection was accepted (a loop is running), false if
+// no loop is active (caller should fall back to normal sendMessage).
+func (a *App) InjectAIAssistantSupplementary(text string) (bool, error) {
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return false, fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	return handler.InjectSupplementary("desktop-user", text), nil
+}
+
 // ResolveCriticalConfirm is called by the desktop frontend when the user
 // responds to a critical-risk skill installation confirmation prompt.
 // Returns an error if the confirmation has expired or the handler is unavailable,

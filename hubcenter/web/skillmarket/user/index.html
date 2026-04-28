@@ -5,29 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MaClaw SkillMarket</title>
   <style>
-    :root{--bg:#f8fafc;--card:#fff;--text:#1a202c;--muted:#64748b;--primary:#2563eb;--primary-light:#eff6ff;--border:#e2e8f0;--danger:#dc2626;--success:#16a34a;--warn:#f59e0b;--radius:10px;--shadow:0 1px 3px rgba(0,0,0,.08)}
+    :root{--bg:#f6f8fb;--card:#fff;--text:#172033;--muted:#667085;--primary:#2563eb;--primary-strong:#1d4ed8;--primary-light:#eff6ff;--border:#dbe3ef;--danger:#dc2626;--success:#16a34a;--warn:#f59e0b;--radius:8px;--shadow:0 10px 28px rgba(15,23,42,.07)}
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.6;font-size:14px}
-    .container{max-width:1100px;margin:0 auto;padding:20px}
-    header{text-align:center;padding:24px 0 16px;position:relative}
-    header h1{font-size:24px}
+    .container{max-width:1180px;margin:0 auto;padding:22px}
+    header{text-align:center;padding:18px 0 16px;position:relative}
+    header h1{font-size:26px;letter-spacing:.2px}
     header p{color:var(--muted);font-size:13px}
-    .tabs{display:flex;gap:4px;border-bottom:2px solid var(--border);margin-bottom:20px}
-    .tab{padding:8px 18px;cursor:pointer;border:none;background:none;font:inherit;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;transition:.2s}
-    .tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+    .tabs{display:flex;gap:6px;border-bottom:1px solid var(--border);margin-bottom:20px}
+    .tab{padding:10px 18px;cursor:pointer;border:none;background:none;font:inherit;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px;transition:.2s}
+    .tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:700}
     .tab:hover{color:var(--text)}
     .panel{display:none}.panel.active{display:block}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);margin-bottom:16px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);margin-bottom:16px}
     .card h3{font-size:15px;margin-bottom:10px}
     .stat-row{display:flex;gap:16px;flex-wrap:wrap}
-    .stat{flex:1;min-width:120px;text-align:center;padding:12px;background:var(--primary-light);border-radius:var(--radius)}
+    .stat{flex:1;min-width:130px;text-align:left;padding:14px;background:#f8fbff;border:1px solid #e8eef8;border-radius:var(--radius)}
     .stat .val{font-size:22px;font-weight:700;color:var(--primary)}
     .stat .lbl{font-size:11px;color:var(--muted)}
     table{width:100%;border-collapse:collapse;font-size:13px}
     th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
     th{background:#f1f5f9;font-weight:600;color:var(--muted);font-size:12px}
-    .btn{padding:6px 14px;border:none;border-radius:6px;font:inherit;font-size:12px;cursor:pointer;transition:.2s}
-    .btn-primary{background:var(--primary);color:#fff}
+    .btn{min-height:34px;padding:7px 14px;border:none;border-radius:7px;font:inherit;font-size:12px;cursor:pointer;transition:.2s;white-space:nowrap}
+    .btn-primary{background:linear-gradient(135deg,var(--primary),var(--primary-strong));color:#fff}
     .btn-danger{background:var(--danger);color:#fff}
     .btn-success{background:var(--success);color:#fff}
     .btn-outline{background:transparent;color:var(--primary);border:1px solid var(--primary)}
@@ -44,8 +44,8 @@
     .captcha-display{background:#f1f5f9;padding:4px 12px;border-radius:6px;font-size:16px;font-weight:700;letter-spacing:2px;user-select:none;color:var(--primary)}
     .captcha-refresh{cursor:pointer;font-size:16px;color:var(--muted)}
     .auth-toggle{font-size:12px;color:var(--primary);cursor:pointer;text-decoration:underline;margin-left:8px}
-    .logged-in-bar{display:flex;align-items:center;gap:12px;padding:8px 0;font-size:13px;color:var(--muted)}
-    .logged-in-bar .email{font-weight:600;color:var(--text)}
+    .logged-in-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;margin-bottom:16px;border:1px solid var(--border);border-radius:var(--radius);background:#fff;box-shadow:var(--shadow);font-size:13px;color:var(--muted)}
+    .logged-in-bar .email{font-weight:700;color:var(--text)}
     #auth-section .form-row input{flex:1}
     .toast-stack{position:fixed;top:18px;right:18px;z-index:9999;display:grid;gap:10px;max-width:min(360px,calc(100vw - 36px))}
     .toast-item{padding:10px 16px;border-radius:8px;color:#fff;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.15);opacity:0;transform:translateY(-8px);transition:opacity .2s,transform .2s}
@@ -61,7 +61,10 @@
     .detail-item{border:1px solid var(--border);border-radius:8px;padding:10px;background:#fff}
     .detail-item .lbl{font-size:11px;color:var(--muted);margin-bottom:3px}
     .detail-item .val{font-size:13px;word-break:break-all}
-    @media (max-width:720px){.lang-switch{position:static;justify-content:center;margin:10px auto 0;width:max-content}.form-row{align-items:stretch;flex-direction:column}.form-row label{min-width:0}.form-row input,.form-row button{width:100%}.captcha-box{flex-wrap:wrap}}
+    .console-hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;margin-bottom:18px;padding:18px;border:1px solid var(--border);border-radius:var(--radius);background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);box-shadow:var(--shadow)}
+    .console-title{display:flex;align-items:center;gap:12px;margin-bottom:6px}.avatar{width:44px;height:44px;border-radius:8px;background:linear-gradient(135deg,#2563eb,#16a34a);display:grid;place-items:center;color:#fff;font-weight:800}.console-title h2{font-size:20px;margin:0}.console-sub{color:var(--muted);font-size:13px}.quick-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.section-head h3{margin:0}.section-actions{display:flex;gap:8px;flex-wrap:wrap}.badge{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:999px;background:#eef6ff;color:var(--primary);font-size:12px;font-weight:700}.badge-ok{background:#dcfce7;color:#166534}.badge-warn{background:#fef3c7;color:#92400e}.split-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr);gap:16px}.table-wrap{overflow:auto;border:1px solid var(--border);border-radius:var(--radius)}.table-wrap table th{position:sticky;top:0}.copy-btn{padding:4px 8px;min-height:26px}.field-inline{display:flex;align-items:center;justify-content:space-between;gap:8px}.field-inline .val{min-width:0}.muted{color:var(--muted)}
+    @media (max-width:860px){.console-hero,.split-grid{grid-template-columns:1fr}.quick-actions{justify-content:flex-start}}
+    @media (max-width:720px){.lang-switch{position:static;justify-content:center;margin:10px auto 0;width:max-content}.form-row{align-items:stretch;flex-direction:column}.form-row label{min-width:0}.form-row input,.form-row button{width:100%}.captcha-box{flex-wrap:wrap}.logged-in-bar{align-items:stretch;flex-direction:column}.section-head{align-items:flex-start;flex-direction:column}.quick-actions,.section-actions{width:100%}.quick-actions .btn,.section-actions .btn{flex:1}.tabs{overflow:auto}}
   </style>
 </head>
 <body>
@@ -207,13 +210,27 @@
 
   <!-- Logged-in bar -->
   <div id="logged-in-bar" class="logged-in-bar" style="display:none">
-    <span data-i18n="auth.loggedAs">Logged in as:</span>
-    <span class="email" id="current-email"></span>
-    <button class="btn btn-outline" onclick="doLogout()" data-i18n="auth.logout">Logout</button>
+    <div><span data-i18n="auth.loggedAs">Logged in as:</span> <span class="email" id="current-email"></span></div>
+    <div class="section-actions">
+      <button class="btn btn-outline" onclick="copyText(currentEmail, 'msg.email.copied')" data-i18n="action.copyEmail">Copy Email</button>
+      <button class="btn btn-outline" onclick="loadAccountData()" data-i18n="action.refresh">Refresh</button>
+      <button class="btn btn-outline" onclick="doLogout()" data-i18n="auth.logout">Logout</button>
+    </div>
   </div>
 
   <!-- Main content (hidden until logged in) -->
   <div id="main-content" style="display:none">
+    <div class="console-hero">
+      <div>
+        <div class="console-title"><div class="avatar" id="avatar-initial">M</div><h2 data-i18n="dashboard.title">User Console</h2><span class="badge" id="account-badge">-</span></div>
+        <div class="console-sub"><span data-i18n="dashboard.subtitle">Manage account security, credits, uploads, and delivery keys.</span></div>
+      </div>
+      <div class="quick-actions">
+        <a class="btn btn-outline" href="/skillmarket" data-i18n="action.browse">Browse Market</a>
+        <button class="btn btn-primary" onclick="switchPanel('myskills')" data-i18n="action.manageSkills">Manage Skills</button>
+        <button class="btn btn-outline" onclick="exportTransactions()" data-i18n="action.exportTx">Export Transactions</button>
+      </div>
+    </div>
     <div class="tabs">
       <button class="tab active" data-panel="account" data-i18n="tab.account">Account</button>
       <button class="tab" data-panel="myskills" data-i18n="tab.myskills">My Skills</button>
@@ -221,7 +238,10 @@
 
     <div id="panel-account" class="panel active">
       <div id="account-info" class="card">
-        <h3 data-i18n="account.title">Account Info</h3>
+        <div class="section-head">
+          <h3 data-i18n="account.title">Account Info</h3>
+          <div class="section-actions"><button class="btn btn-outline" onclick="copyText(currentUserID, 'msg.userid.copied')" data-i18n="action.copyUserId">Copy User ID</button></div>
+        </div>
         <div class="stat-row">
           <div class="stat"><div class="val" id="s-credits">0</div><div class="lbl" data-i18n="account.credits">Credits</div></div>
           <div class="stat"><div class="val" id="s-settled">0</div><div class="lbl" data-i18n="account.settled">Settled</div></div>
@@ -230,16 +250,17 @@
           <div class="stat"><div class="val" id="s-status">-</div><div class="lbl" data-i18n="account.status">Status</div></div>
         </div>
         <div class="detail-grid">
-          <div class="detail-item"><div class="lbl" data-i18n="account.email">Email</div><div class="val" id="d-email">-</div></div>
-          <div class="detail-item"><div class="lbl" data-i18n="account.userid">User ID</div><div class="val" id="d-userid">-</div></div>
+          <div class="detail-item"><div class="lbl" data-i18n="account.email">Email</div><div class="field-inline"><div class="val" id="d-email">-</div><button class="btn btn-outline copy-btn" onclick="copyText(currentEmail, 'msg.email.copied')" data-i18n="action.copy">Copy</button></div></div>
+          <div class="detail-item"><div class="lbl" data-i18n="account.userid">User ID</div><div class="field-inline"><div class="val" id="d-userid">-</div><button class="btn btn-outline copy-btn" onclick="copyText(currentUserID, 'msg.userid.copied')" data-i18n="action.copy">Copy</button></div></div>
           <div class="detail-item"><div class="lbl" data-i18n="account.verifyMethod">Verify Method</div><div class="val" id="d-verify">-</div></div>
           <div class="detail-item"><div class="lbl" data-i18n="account.voucherExpires">Voucher Expires</div><div class="val" id="d-voucher-exp">-</div></div>
           <div class="detail-item"><div class="lbl" data-i18n="account.createdAt">Created At</div><div class="val" id="d-created">-</div></div>
           <div class="detail-item"><div class="lbl" data-i18n="account.verifiedAt">Verified At</div><div class="val" id="d-verified">-</div></div>
         </div>
       </div>
+      <div class="split-grid">
       <div id="security-section" class="card">
-        <h3 data-i18n="security.title">Security</h3>
+        <div class="section-head"><h3 data-i18n="security.title">Security</h3><span class="badge badge-ok" data-i18n="security.passwordAuth">Password Login</span></div>
         <div class="form-row">
           <label data-i18n="security.current">Current Password</label>
           <input id="current-password" type="password" data-i18n-placeholder="security.current.placeholder" placeholder="Current password">
@@ -259,7 +280,7 @@
         <div id="security-msg"></div>
       </div>
       <div id="tier-info" class="card" style="display:none">
-        <h3 data-i18n="tier.title">Reputation Tier</h3>
+        <div class="section-head"><h3 data-i18n="tier.title">Reputation Tier</h3><span class="badge" id="tier-badge">-</span></div>
         <div class="stat-row">
           <div class="stat"><div class="val" id="s-tier">-</div><div class="lbl" data-i18n="tier.level">Tier</div></div>
           <div class="stat"><div class="val" id="s-published">0</div><div class="lbl" data-i18n="tier.published">Published</div></div>
@@ -267,8 +288,12 @@
           <div class="stat"><div class="val" id="s-downloads">0</div><div class="lbl" data-i18n="tier.downloads">Downloads</div></div>
         </div>
       </div>
+      </div>
       <div id="credits-section" class="card">
-        <h3 data-i18n="credits.title">Top Up / Withdraw</h3>
+        <div class="section-head">
+          <h3 data-i18n="credits.title">Top Up / Withdraw</h3>
+          <div class="section-actions"><button class="btn btn-outline" onclick="exportTransactions()" data-i18n="action.exportTx">Export Transactions</button></div>
+        </div>
         <div class="form-row">
           <label data-i18n="credits.amount">Amount</label>
           <input id="credits-amount" type="number" min="1" value="100" style="width:120px">
@@ -277,18 +302,21 @@
         </div>
         <div id="credits-msg"></div>
         <h3 style="margin-top:16px" data-i18n="credits.history">Transactions</h3>
-        <table><thead><tr><th data-i18n="tx.time">Time</th><th data-i18n="tx.type">Type</th><th data-i18n="tx.amount">Amount</th><th data-i18n="tx.balance">Balance</th><th data-i18n="tx.desc">Description</th></tr></thead><tbody id="tx-list"></tbody></table><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" onclick="changeTxPage(-1)">&larr;</button><button class="btn btn-outline" id="tx-next-btn" onclick="changeTxPage(1)">&rarr;</button></div></div>
+        <div class="table-wrap"><table><thead><tr><th data-i18n="tx.time">Time</th><th data-i18n="tx.type">Type</th><th data-i18n="tx.amount">Amount</th><th data-i18n="tx.balance">Balance</th><th data-i18n="tx.desc">Description</th></tr></thead><tbody id="tx-list"></tbody></table></div><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" onclick="changeTxPage(-1)">&larr;</button><button class="btn btn-outline" id="tx-next-btn" onclick="changeTxPage(1)">&rarr;</button></div></div>
       </div>
     </div>
 
     <div id="panel-myskills" class="panel">
       <div class="card">
-        <h3 data-i18n="myskills.title">My Skills</h3>
+        <div class="section-head">
+          <h3 data-i18n="myskills.title">My Skills</h3>
+          <div class="section-actions"><button class="btn btn-outline" onclick="loadMySkills()" data-i18n="action.refresh">Refresh</button><a class="btn btn-primary" href="/skillmarket" data-i18n="action.browse">Browse Market</a></div>
+        </div>
         <p class="empty" id="myskills-empty" data-i18n="myskills.empty">No skills yet.</p>
-        <table id="myskills-table" style="display:none">
+        <div class="table-wrap" id="myskills-wrap" style="display:none"><table id="myskills-table">
           <thead><tr><th data-i18n="sk.name">Name</th><th data-i18n="sk.version">Version</th><th data-i18n="sk.status">Status</th><th data-i18n="sk.rating">Rating</th><th data-i18n="sk.downloads">Downloads</th><th data-i18n="sk.actions">Actions</th></tr></thead>
           <tbody id="myskills-list"></tbody>
-        </table>
+        </table></div>
       </div>
       <div id="apikey-section" class="card">
         <h3 data-i18n="apikey.title">API Key Management</h3>
@@ -313,6 +341,8 @@ const API = '';
 let sessionToken = localStorage.getItem('sm_session') || '';
 let currentEmail = '';
 let currentUserID = '';
+let currentAccount = null;
+let lastTransactions = [];
 
 function showToast(message, type) {
   type = type || 'info';
@@ -324,6 +354,66 @@ function showToast(message, type) {
   requestAnimationFrame(function() { el.classList.add('show'); });
   setTimeout(function() { el.classList.remove('show'); setTimeout(function() { el.remove(); }, 200); }, 3200);
   el.addEventListener('click', function() { el.classList.remove('show'); setTimeout(function() { el.remove(); }, 200); });
+}
+
+async function copyText(value, msgKey) {
+  if (!value) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    showToast(t(msgKey || 'msg.copied'), 'success');
+  } catch(_) {
+    showToast(t('err.network'), 'error');
+  }
+}
+
+function decodeActionValue(value) {
+  try { return decodeURIComponent(value || ''); } catch(_) { return ''; }
+}
+
+function switchPanel(panel) {
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.panel === panel));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + panel).classList.add('active');
+  if (panel === 'myskills') loadMySkills();
+}
+
+function updateDashboard(d) {
+  currentAccount = d || currentAccount;
+  if (!currentAccount) return;
+  const email = currentAccount.email || currentEmail || 'M';
+  document.getElementById('avatar-initial').textContent = email.slice(0, 1).toUpperCase();
+  const status = statusText(currentAccount.status);
+  const badge = document.getElementById('account-badge');
+  badge.textContent = status;
+  badge.className = 'badge ' + (String(currentAccount.status).toLowerCase() === 'verified' ? 'badge-ok' : 'badge-warn');
+}
+
+function exportTransactions() {
+  if (!lastTransactions.length) { showToast(t('msg.export.empty'), 'warning'); return; }
+  const headers = ['time','type','amount','balance','description'];
+  const rows = lastTransactions.map(tx => [tx.created_at || '', tx.type || '', tx.amount || 0, tx.balance || 0, tx.description || '']);
+  const csv = [headers].concat(rows).map(row => row.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'skillmarket-transactions-' + new Date().toISOString().slice(0,10) + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // i18n
@@ -340,6 +430,15 @@ const I18N = {
   'auth.password.confirm.placeholder': { zh: '\u518d\u8f93\u5165\u4e00\u6b21\u5bc6\u7801', en: 'Enter password again' },
   'auth.refresh':       { zh: '\u5237\u65b0', en: 'Refresh' },
   'nav.browse':         { zh: '<- \u8fd4\u56de\u6280\u80fd\u6d4f\u89c8', en: '<- Back to Skill Browse' },
+  'dashboard.title':    { zh: '\u7528\u6237\u63a7\u5236\u53f0', en: 'User Console' },
+  'dashboard.subtitle': { zh: '\u7ba1\u7406\u8d26\u6237\u5b89\u5168\u3001\u79ef\u5206\u3001\u6280\u80fd\u4e0a\u4f20\u548c\u4ea4\u4ed8\u5bc6\u94a5\u3002', en: 'Manage account security, credits, uploads, and delivery keys.' },
+  'action.copy':        { zh: '\u590d\u5236', en: 'Copy' },
+  'action.copyEmail':   { zh: '\u590d\u5236\u90ae\u7bb1', en: 'Copy Email' },
+  'action.copyUserId':  { zh: '\u590d\u5236 User ID', en: 'Copy User ID' },
+  'action.refresh':     { zh: '\u5237\u65b0', en: 'Refresh' },
+  'action.browse':      { zh: '\u6d4f\u89c8\u5e02\u573a', en: 'Browse Market' },
+  'action.manageSkills':{ zh: '\u7ba1\u7406\u6280\u80fd', en: 'Manage Skills' },
+  'action.exportTx':    { zh: '\u5bfc\u51fa\u5f53\u524d\u9875\u4ea4\u6613', en: 'Export Current Page' },
   'auth.login.title':   { zh: '\u767b\u5f55', en: 'Login' },
   'auth.register.title':{ zh: '\u6ce8\u518c\u65b0\u8d26\u6237', en: 'Create Account' },
   'auth.lookup.title':  { zh: '\u90ae\u4ef6\u9a8c\u8bc1\u767b\u5f55', en: 'Email Verification Login' },
@@ -388,6 +487,7 @@ const I18N = {
   'security.new':       { zh: '\u65b0\u5bc6\u7801', en: 'New Password' },
   'security.confirm':   { zh: '\u786e\u8ba4\u65b0\u5bc6\u7801', en: 'Confirm' },
   'security.change':    { zh: '\u4fee\u6539\u5bc6\u7801', en: 'Change Password' },
+  'security.passwordAuth': { zh: '\u5bc6\u7801\u767b\u5f55', en: 'Password Login' },
   'msg.password.changed': { zh: '\u5bc6\u7801\u5df2\u4fee\u6539', en: 'Password changed.' },
   'credits.title':      { zh: '\u5145\u503c\u4e0e\u63d0\u73b0', en: 'Top Up / Withdraw' },
   'credits.amount':     { zh: '\u91d1\u989d', en: 'Amount' },
@@ -425,6 +525,10 @@ const I18N = {
   'msg.apikey.ok':      { zh: '\u4e0a\u4f20\u6210\u529f', en: 'Upload successful.' },
   'msg.withdrawn.ok':   { zh: '\u5df2\u4e0b\u67b6', en: 'Skill withdrawn.' },
   'msg.withdraw.confirm':{ zh: '\u786e\u8ba4\u4e0b\u67b6\uff1f', en: 'Confirm withdrawal?' },
+  'msg.email.copied':   { zh: '\u90ae\u7bb1\u5df2\u590d\u5236', en: 'Email copied.' },
+  'msg.userid.copied':  { zh: 'User ID \u5df2\u590d\u5236', en: 'User ID copied.' },
+  'msg.copied':         { zh: '\u5df2\u590d\u5236', en: 'Copied.' },
+  'msg.export.empty':   { zh: '\u6682\u65e0\u53ef\u5bfc\u51fa\u7684\u4ea4\u6613', en: 'No transactions to export.' },
   'err.network':        { zh: '\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8fde\u63a5', en: 'Network error. Please check your connection.' },
   'err.captcha':        { zh: '\u9a8c\u8bc1\u7801\u9519\u8bef', en: 'Incorrect captcha.' },
   'err.password.match': { zh: '\u4e24\u6b21\u5bc6\u7801\u4e0d\u4e00\u81f4', en: 'Passwords do not match.' },
@@ -735,6 +839,7 @@ async function loadAccountData() {
 }
 
 function showAccountInfo(d) {
+  updateDashboard(d);
   document.getElementById('s-credits').textContent = d.credits || 0;
   document.getElementById('s-settled').textContent = d.settled_credits || 0;
   document.getElementById('s-pending').textContent = d.pending_settlement || 0;
@@ -756,6 +861,7 @@ async function loadTier(email) {
     const ti = d.tier || {};
     document.getElementById('tier-info').style.display = '';
     document.getElementById('s-tier').textContent = t('tier.label').replace('{value}', ti.tier || 1);
+    document.getElementById('tier-badge').textContent = t('tier.label').replace('{value}', ti.tier || 1);
     document.getElementById('s-published').textContent = ti.published_count || 0;
     document.getElementById('s-avgrating').textContent = (ti.avg_rating || 0).toFixed(1);
     document.getElementById('s-downloads').textContent = ti.total_downloads || 0;
@@ -783,6 +889,7 @@ async function loadTransactions(page) {
     if (!r.ok) return;
     const payload = await r.json();
     const list = Array.isArray(payload) ? payload : (payload.transactions || []);
+    lastTransactions = list;
     const total = typeof payload?.total === 'number' ? payload.total : list.length;
     txTotalPages = Math.max(1, Math.ceil(total / txPageSize));
     if (!list.length && total > 0 && txPage > txTotalPages) {
@@ -842,25 +949,28 @@ async function loadMySkills() {
     const tbody = document.getElementById('myskills-list');
     const empty = document.getElementById('myskills-empty');
     const table = document.getElementById('myskills-table');
+    const wrap = document.getElementById('myskills-wrap');
     tbody.innerHTML = '';
     if (!list || list.length === 0) {
       empty.style.display = '';
-      table.style.display = 'none';
+      wrap.style.display = 'none';
       return;
     }
     empty.style.display = 'none';
+    wrap.style.display = '';
     table.style.display = '';
     list.forEach(s => {
       const statusLabel = statusText(s.status || 'published');
       const rating = (s.avg_rating || 0).toFixed(1);
       const dl = s.download_count || s.downloads || 0;
+      const encodedID = encodeURIComponent(s.id || '');
       tbody.innerHTML += `<tr>
         <td>${esc(s.name)}</td>
         <td>${esc(s.version || '-')}</td>
         <td>${esc(statusLabel)}</td>
         <td>${rating}</td>
         <td>${dl}</td>
-        <td><button class="btn btn-danger" onclick="withdrawSkill('${esc(s.id)}')">${t('sk.withdraw')}</button></td>
+        <td><button class="btn btn-outline" onclick="copyText(decodeActionValue('${encodedID}'),'msg.copied')">${t('action.copy')}</button> <button class="btn btn-danger" onclick="withdrawSkill(decodeActionValue('${encodedID}'))">${t('sk.withdraw')}</button></td>
       </tr>`;
     });
   } catch(e) {}
@@ -932,6 +1042,10 @@ function applyI18n() {
     const key = el.getAttribute('data-i18n-placeholder');
     if (I18N[key]) el.placeholder = I18N[key][LANG];
   });
+  if (currentAccount) updateDashboard(currentAccount);
+  const tierText = document.getElementById('s-tier')?.textContent || '';
+  const tierValue = tierText.match(/\d+/)?.[0];
+  if (tierValue) document.getElementById('tier-badge').textContent = t('tier.label').replace('{value}', tierValue);
   renderTxPager();
 }
 

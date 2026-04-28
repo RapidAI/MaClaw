@@ -159,7 +159,7 @@ func (h *Handler) handleClientCapabilities(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) listCapabilities(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	rows, err := h.read.Query("SELECT id, name, description, category, version, source, risk_level, status, created_at, updated_at FROM capability_packages WHERE tenant_id=? ORDER BY name", tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -171,7 +171,7 @@ func (h *Handler) listCapabilities(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listActiveCapabilities(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	rows, err := h.read.Query("SELECT id, name, description, category, version, source, risk_level, status, created_at, updated_at FROM capability_packages WHERE status IN ('active','approved') AND tenant_id=? ORDER BY name", tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -183,7 +183,7 @@ func (h *Handler) listActiveCapabilities(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) listColleagueCapabilities(w http.ResponseWriter, r *http.Request, colleagueID string) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	rows, err := h.read.Query(`SELECT cp.id, cp.name, cp.description, cp.category, cp.version, cp.source, cp.risk_level, cp.status, cp.created_at, cp.updated_at
 		FROM capability_packages cp
 		JOIN colleague_capability_bindings ccb ON cp.id = ccb.capability_id
@@ -234,7 +234,7 @@ func (h *Handler) createCapability(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().Format(time.RFC3339)
 	id := idgen.New("cap")
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 
 	_, err := h.write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
@@ -251,7 +251,7 @@ func (h *Handler) createCapability(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getCapability(w http.ResponseWriter, r *http.Request, id string) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	row := h.read.QueryRow("SELECT id, name, description, category, version, source, risk_level, status, created_at, updated_at FROM capability_packages WHERE id=? AND tenant_id=?", id, tenantID)
 	var cp CapabilityPackage
 	if err := row.Scan(&cp.ID, &cp.Name, &cp.Description, &cp.Category, &cp.Version, &cp.Source, &cp.RiskLevel, &cp.Status, &cp.CreatedAt, &cp.UpdatedAt); err != nil {
@@ -279,7 +279,7 @@ func (h *Handler) updateCapability(w http.ResponseWriter, r *http.Request, id st
 	if status == "" {
 		status = "active"
 	}
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	res, err := h.write.Exec(`UPDATE capability_packages SET name=?, description=?, category=?, version=?, risk_level=?, status=?, updated_at=? WHERE id=? AND tenant_id=?`,
 		strings.TrimSpace(req.Name), strings.TrimSpace(req.Description),
 		strings.TrimSpace(req.Category), strings.TrimSpace(req.Version),
@@ -309,7 +309,7 @@ func (h *Handler) bindToColleague(w http.ResponseWriter, r *http.Request, capabi
 	}
 	id := idgen.New("bind")
 	now := time.Now().Format(time.RFC3339)
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	_, err := h.write.Exec(`INSERT OR IGNORE INTO colleague_capability_bindings (id, tenant_id, colleague_id, capability_id, bound_at) VALUES (?, ?, ?, ?, ?)`,
 		id, tenantID, strings.TrimSpace(req.ColleagueID), capabilityID, now)
 	if err != nil {
@@ -328,7 +328,7 @@ func (h *Handler) unbindFromColleague(w http.ResponseWriter, r *http.Request, ca
 		return
 	}
 	_, _ = h.write.Exec("DELETE FROM colleague_capability_bindings WHERE colleague_id=? AND capability_id=? AND tenant_id=?",
-		strings.TrimSpace(req.ColleagueID), capabilityID, tenant.TenantIDFromContext(r.Context()))
+		strings.TrimSpace(req.ColleagueID), capabilityID, tenant.RequestTenantID(r))
 	response.OK(w, map[string]string{"status": "ok"})
 }
 
@@ -404,7 +404,7 @@ func (h *Handler) handleImportFromHub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) approveCapability(w http.ResponseWriter, r *http.Request, id string) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	capabilityName, currentStatus, err := h.lookupCapabilityApprovalContext(r.Context(), tenantID, id)
 	if err == sql.ErrNoRows {
 		response.NotFound(w, "NOT_FOUND", "capability not found")
@@ -478,7 +478,7 @@ func (h *Handler) recordCapabilityApprovedAudit(ctx context.Context, tenantID, c
 func (h *Handler) rejectCapability(w http.ResponseWriter, r *http.Request, id string) {
 	if h.importer == nil {
 		now := time.Now().Format(time.RFC3339)
-		tenantID := tenant.TenantIDFromContext(r.Context())
+		tenantID := tenant.RequestTenantID(r)
 		res, err := h.write.Exec(`UPDATE capability_packages SET status='rejected', updated_at=? WHERE id=? AND status='pending_review' AND tenant_id=?`, now, id, tenantID)
 		if err != nil {
 			response.Internal(w, err.Error())

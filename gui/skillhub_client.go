@@ -195,6 +195,13 @@ var allowedFileExts = map[string]bool{
 // ~/.maclaw/data/skills/<name>/, installs declared dependencies, and converts
 // the skill to an NLSkillEntry.
 func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL string) (*corelib.NLSkillEntry, error) {
+	return c.InstallToDir(ctx, skillID, hubURL, "")
+}
+
+// InstallToDir downloads a Skill and extracts bundled files to targetDir.
+// When targetDir is empty, falls back to ~/.maclaw/data/skills/<name>/.
+// The returned entry's SkillDir is set to the actual extraction directory.
+func (c *SkillHubClient) InstallToDir(ctx context.Context, skillID, hubURL, targetDir string) (*corelib.NLSkillEntry, error) {
 	path := "/api/v1/skills/" + url.PathEscape(skillID) + "/download"
 	var full hubSkillFull
 	base, _, err := c.getJSON(ctx, path, &full)
@@ -214,8 +221,8 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 	}
 
 	status := "active"
-	installSkillDir := ""
-	if full.Name != "" {
+	installSkillDir := targetDir
+	if installSkillDir == "" && full.Name != "" {
 		if skillsRoot, err := skill.PrimarySkillsDir(); err == nil {
 			installSkillDir = filepath.Join(skillsRoot, full.Name)
 		}
@@ -224,9 +231,9 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 		steps = craftToolStepsFromBundledSkillFiles(full.Files, installSkillDir)
 	}
 
-	// Extract bundled files to ~/.maclaw/data/skills/<name>/
+	// Extract bundled files to targetDir (or default skills dir).
 	if len(full.Files) > 0 {
-		if err := c.extractFiles(full.Name, full.Files); err != nil {
+		if err := c.extractFiles(full.Name, full.Files, targetDir); err != nil {
 			// Non-fatal: mark as needs_setup but continue.
 			status = "needs_setup"
 		}
@@ -260,6 +267,7 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 		HubSkillID:    full.ID,
 		HubVersion:    full.Version,
 		TrustLevel:    trustLevel,
+		SkillDir:      installSkillDir,
 	}, nil
 }
 
@@ -290,14 +298,18 @@ func craftToolStepsFromBundledSkillFiles(files map[string]string, skillDir strin
 	return nil
 }
 
-// extractFiles writes bundled files (base64-encoded) to ~/.maclaw/data/skills/<name>/.
+// extractFiles writes bundled files (base64-encoded) to the specified targetDir.
+// When targetDir is empty, falls back to ~/.maclaw/data/skills/<name>/.
 // Validates extension whitelist, size limits, and path safety.
-func (c *SkillHubClient) extractFiles(skillName string, files map[string]string) error {
-	skillsRoot, err := skill.PrimarySkillsDir()
-	if err != nil {
-		return err
+func (c *SkillHubClient) extractFiles(skillName string, files map[string]string, targetDir string) error {
+	skillDir := targetDir
+	if skillDir == "" {
+		skillsRoot, err := skill.PrimarySkillsDir()
+		if err != nil {
+			return err
+		}
+		skillDir = filepath.Join(skillsRoot, skillName)
 	}
-	skillDir := filepath.Join(skillsRoot, skillName)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		return err
 	}

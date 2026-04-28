@@ -1,5 +1,7 @@
 package config
 
+import "github.com/RapidAI/CodeClaw/corelib/remote"
+
 type Config struct {
 	Server struct {
 		ListenHost    string `yaml:"listen_host"`
@@ -135,7 +137,7 @@ func Default() *Config {
 	cfg.PWA.RoutePrefix = "/app"
 
 	cfg.Center.Enabled = true
-	cfg.Center.BaseURL = "http://hubs.mypapers.top:9388"
+	cfg.Center.BaseURL = remote.DefaultRemoteHubCenterURLs[0]
 	cfg.Center.RegisterOnStartup = true
 	cfg.Center.HeartbeatIntervalSec = 30
 

@@ -144,6 +144,7 @@ type App struct {
 	aiAssistantFirstChatLogged atomic.Bool
 	docGenerator               *swarm.SwarmDocGenerator // cached PDF doc generator
 	workflowEngine             *workflow.WorkflowEngine // maclaw agent workflow engine (corelib/workflow)
+	workflowDisabled           atomic.Bool              // true when user disables workflow in settings; checked by getWorkflowEngine()
 	steeringStore              *steering.Store          // declarative rule injection (corelib/steering)
 	codeEventEmitter           *CodeEventEmitter        // emits code file events to frontend for code preview panel
 	floatingAssistant          *FloatingAssistantManager
@@ -3624,6 +3625,7 @@ func (a *App) LoadConfig() (corelib.AppConfig, error) {
 	}
 	a.configCache = config
 	a.configCacheValid = true
+	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
 	return config, nil
 }
 
@@ -4590,6 +4592,11 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	a.configCache = config
 	a.configCacheValid = true
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
+	// Sync workflow enabled/disabled state to the atomic flag so that
+	// getWorkflowEngine() returns nil when workflow is disabled. This is
+	// the single enforcement point — all workflow consumers go through
+	// getWorkflowEngine(), so no per-consumer guards are needed.
+	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
 	policyModeChanged := a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode
 	hubClient := (*RemoteHubClient)(nil)
 	if a.remoteSessions != nil {

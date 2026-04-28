@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -112,14 +113,17 @@ func TestSaveDiWorkerSettingsRoundTrip(t *testing.T) {
 			Description: "负责数据清洗、汇总和分析输出。",
 		},
 		Center: CenterConfig{
-			Enabled:      true,
-			Host:         "10.0.0.8",
-			Port:         9377,
-			BaseURL:      "http://10.0.0.8:9377",
-			TenantID:     "default",
-			DepartmentID: "default",
-			WorkerID:     "local-iworker",
-			TimeoutSec:   45,
+			Enabled:                    true,
+			Host:                       "10.0.0.8",
+			Port:                       9377,
+			BaseURL:                    "http://10.0.0.8:9377",
+			TenantID:                   "default",
+			DepartmentID:               "default",
+			WorkerID:                   "local-iworker",
+			TimeoutSec:                 45,
+			GoalWatchAutoHandleEnabled: true,
+			GoalWatchIntervalSec:       30,
+			GoalWatchMaxDurationSec:    120,
 		},
 		Routing: RoutingPolicy{
 			Mode:            "priority",
@@ -486,6 +490,9 @@ func TestSaveWorkerMemoryPersistsToCenterBeforeCache(t *testing.T) {
 		if r.URL.Path != "/client/iworker/memories" || r.Method != http.MethodPost {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
+		}
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 			t.Fatalf("Decode returned error: %v", err)
 		}
@@ -564,10 +571,36 @@ func TestFetchWorkerMemoriesUsesTenantDepartmentCache(t *testing.T) {
 	}
 }
 
+func TestFetchWorkerMemoriesSendsTenantHeader(t *testing.T) {
+	setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/iworker/memories" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
+		}
+		if got := r.URL.Query().Get("tenant_id"); got != "tenant-a" {
+			t.Fatalf("tenant_id = %q, want tenant-a", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":"mem-1","tenant_id":"tenant-a","department_id":"sales","worker_id":"worker-a","scope":"personal","content":"remote memory","category":"project_knowledge","tags":[]}]}`))
+	}))
+	defer server.Close()
+
+	memories := fetchWorkerMemories(server.URL, "tenant-a", "sales", "worker-a", "remote", 10, 5)
+	if len(memories) != 1 || memories[0].ID != "mem-1" {
+		t.Fatalf("unexpected memories: %+v", memories)
+	}
+}
+
 func TestFetchWorkerMemoryStatsUsesCenterContext(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/client/iworker/memory-stats" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
 		}
 		if got := r.URL.Query().Get("tenant_id"); got != "tenant-a" {
 			t.Fatalf("tenant_id = %q, want tenant-a", got)
@@ -595,11 +628,12 @@ func TestFetchWorkerMemoryStatsUsesCenterContext(t *testing.T) {
 func TestDeleteWorkerMemorySendsCenterContextAndClearsCache(t *testing.T) {
 	setTestHome(t)
 
-	var gotMethod, gotPath, gotTenant, gotDepartment, gotWorker string
+	var gotMethod, gotPath, gotTenant, gotTenantHeader, gotDepartment, gotWorker string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		gotTenant = r.URL.Query().Get("tenant_id")
+		gotTenantHeader = r.Header.Get("X-Tenant-ID")
 		gotDepartment = r.URL.Query().Get("department_id")
 		gotWorker = r.URL.Query().Get("worker_id")
 		w.Header().Set("Content-Type", "application/json")
@@ -624,11 +658,140 @@ func TestDeleteWorkerMemorySendsCenterContextAndClearsCache(t *testing.T) {
 	if gotPath != "/client/iworker/memories/mem-1" {
 		t.Fatalf("path = %q, want memory delete path", gotPath)
 	}
-	if gotTenant != "acme" || gotDepartment != "ops" || gotWorker != "worker-1" {
-		t.Fatalf("context = %q/%q/%q, want acme/ops/worker-1", gotTenant, gotDepartment, gotWorker)
+	if gotTenant != "acme" || gotTenantHeader != "acme" || gotDepartment != "ops" || gotWorker != "worker-1" {
+		t.Fatalf("context = %q header=%q/%q/%q, want acme/acme/ops/worker-1", gotTenant, gotTenantHeader, gotDepartment, gotWorker)
 	}
 	cached := readWorkerMemoryCache("acme", "ops", "worker-1")
 	if len(cached) != 1 || cached[0].ID != "mem-2" {
 		t.Fatalf("cache = %+v, want only mem-2", cached)
+	}
+}
+
+func TestFetchSharedMemoriesSendsTenantHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/memories" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
+		}
+		if got := r.URL.Query().Get("role_code"); got != "quality" {
+			t.Fatalf("role_code = %q, want quality", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":"mem-1","title":"Quality rule","content":"Review defects weekly","level":"role","scope":"quality","tags":[]}]}`))
+	}))
+	defer server.Close()
+
+	memories := fetchSharedMemories(server.URL, "tenant-a", "quality", 5)
+	if len(memories) != 1 || memories[0].ID != "mem-1" {
+		t.Fatalf("unexpected memories: %+v", memories)
+	}
+}
+
+func TestCenterOrganizationClientsSendTenantHeader(t *testing.T) {
+	seen := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("%s X-Tenant-ID = %q, want tenant-a", r.URL.Path, got)
+		}
+		seen[r.URL.Path] = true
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/client/colleagues":
+			_, _ = w.Write([]byte(`{"colleagues":[{"id":"worker-a","name":"Worker A"}]}`))
+		case "/client/roles":
+			_, _ = w.Write([]byte(`{"roles":[{"id":"role-a","name":"Role A","code":"role_a"}]}`))
+		case "/client/capabilities":
+			if got := r.URL.Query().Get("colleague_id"); got != "worker-a" {
+				t.Fatalf("colleague_id = %q, want worker-a", got)
+			}
+			_, _ = w.Write([]byte(`{"capabilities":[{"id":"cap-a","name":"Capability A"}]}`))
+		case "/client/collaborations":
+			_, _ = w.Write([]byte(`{"tasks":[{"id":"task-a","title":"Task A"}]}`))
+		case "/client/workflow-instances":
+			_, _ = w.Write([]byte(`{"instances":[{"id":"wf-a","title":"Workflow A"}]}`))
+		case "/client/recommend":
+			if r.Method != http.MethodPost {
+				t.Fatalf("recommend method = %s, want POST", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"recommendations":[{"colleague_id":"worker-a","name":"Worker A","role_code":"role_a","score":0.9,"reason":"fit"}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	if got := fetchCenterColleagues(server.URL, "tenant-a", 5); len(got) != 1 {
+		t.Fatalf("colleagues = %+v", got)
+	}
+	if got := fetchCenterRoles(server.URL, "tenant-a", 5); len(got) != 1 {
+		t.Fatalf("roles = %+v", got)
+	}
+	if got := fetchCenterCapabilities(server.URL, "tenant-a", "worker-a", 5); len(got) != 1 {
+		t.Fatalf("capabilities = %+v", got)
+	}
+	if got := fetchCenterCollaborations(server.URL, "tenant-a", "worker-a", 5); len(got) != 1 {
+		t.Fatalf("collaborations = %+v", got)
+	}
+	if got := fetchCenterWorkflowInstances(server.URL, "tenant-a", 5); len(got) != 1 {
+		t.Fatalf("workflow instances = %+v", got)
+	}
+	if got := fetchRecommendations(server.URL, "tenant-a", "assign task", 1, 5); len(got) != 1 {
+		t.Fatalf("recommendations = %+v", got)
+	}
+	for _, path := range []string{"/client/colleagues", "/client/roles", "/client/capabilities", "/client/collaborations", "/client/workflow-instances", "/client/recommend"} {
+		if !seen[path] {
+			t.Fatalf("path %s was not requested", path)
+		}
+	}
+}
+
+func TestStartAgentRuntimeHeartbeatStopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	beats := make(chan struct{}, 4)
+	startAgentRuntimeHeartbeat(ctx, 10*time.Millisecond, func() { beats <- struct{}{} })
+
+	select {
+	case <-beats:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("heartbeat did not run")
+	}
+	cancel()
+	countAfterCancel := len(beats)
+	time.Sleep(40 * time.Millisecond)
+	if len(beats) > countAfterCancel+1 {
+		t.Fatalf("heartbeat continued after cancel")
+	}
+}
+
+func TestNormalizeGoalWatchAutoHandleSettings(t *testing.T) {
+	settings := normalizeDiWorkerSettings(DiWorkerSettings{})
+	if !settings.Center.GoalWatchAutoHandleEnabled {
+		t.Fatalf("GoalWatchAutoHandleEnabled should default to true")
+	}
+	if settings.Center.GoalWatchIntervalSec != 30 || settings.Center.GoalWatchMaxDurationSec != 120 {
+		t.Fatalf("goalwatch timing = %d/%d, want 30/120", settings.Center.GoalWatchIntervalSec, settings.Center.GoalWatchMaxDurationSec)
+	}
+
+	settings = normalizeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{GoalWatchAutoHandleEnabled: false, GoalWatchIntervalSec: 45, GoalWatchMaxDurationSec: 10}})
+	if settings.Center.GoalWatchAutoHandleEnabled {
+		t.Fatalf("explicit disabled auto handle should be preserved")
+	}
+	if settings.Center.GoalWatchMaxDurationSec != 45 {
+		t.Fatalf("max duration = %d, want clamped to interval 45", settings.Center.GoalWatchMaxDurationSec)
+	}
+}
+
+func TestGoalWatchAutoHandleConfigRequiresCenterAndSetting(t *testing.T) {
+	enabled, interval, maxDuration := goalWatchAutoHandleConfig(DiWorkerSettings{Center: CenterConfig{Enabled: true, GoalWatchAutoHandleEnabled: true, GoalWatchIntervalSec: 15, GoalWatchMaxDurationSec: 40}})
+	if !enabled || interval != 15*time.Second || maxDuration != 40*time.Second {
+		t.Fatalf("config = %v %s %s, want enabled 15s 40s", enabled, interval, maxDuration)
+	}
+
+	enabled, _, _ = goalWatchAutoHandleConfig(DiWorkerSettings{Center: CenterConfig{Enabled: true, GoalWatchAutoHandleEnabled: false, GoalWatchIntervalSec: 15, GoalWatchMaxDurationSec: 40}})
+	if enabled {
+		t.Fatalf("disabled auto handle setting should stop watcher")
 	}
 }

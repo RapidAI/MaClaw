@@ -4,9 +4,15 @@ import {main} from '../models';
 
 export function AckGoalPush(arg1:string,arg2:string,arg3:string):Promise<main.CenterGoalPushAckResult>;
 
+export function AutoHandleGoalPush(arg1:string):Promise<main.AutoHandleGoalPushResult>;
+
+export function AutoHandleRecommendedGoalPushes():Promise<Array<main.AutoHandleGoalPushResult>>;
+
 export function CheckCenterHealth():Promise<main.CenterHealthStatus>;
 
 export function DeleteWorkerMemory(arg1:string):Promise<void>;
+
+export function FetchAgentInstances():Promise<Array<main.CenterAgentInstance>>;
 
 export function FetchGoalPushes(arg1:number):Promise<Array<main.CenterGoalPush>>;
 
@@ -16,7 +22,11 @@ export function GetAgentRuntimeSnapshot():Promise<main.AgentRuntimeSnapshot>;
 
 export function GetAppInfo():Promise<main.AppInfo>;
 
+export function GetGoalWatchAutoHandleStatus():Promise<main.GoalWatchAutoHandleStatus>;
+
 export function GetWelcomeData():Promise<main.WelcomeData>;
+
+export function HeartbeatAgentRuntime():Promise<Array<main.CenterAgentInstance>>;
 
 export function LoadDiWorkerSettings():Promise<main.DiWorkerSettings>;
 

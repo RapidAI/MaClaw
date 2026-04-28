@@ -31,7 +31,7 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 }
 
 func (h *Handler) handlePolicies(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	switch r.Method {
 	case http.MethodGet:
 		policies, err := h.repo.ListAllPolicies(tid)
@@ -48,7 +48,7 @@ func (h *Handler) handlePolicies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handlePolicyByID(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	id := extractID(r.URL.Path, "/admin/security/policies/")
 	if id == "" {
 		response.BadRequest(w, "MISSING_ID", "policy id required")
@@ -70,7 +70,7 @@ func (h *Handler) handlePolicyByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createPolicy(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req struct {
 		Name        string `json:"name"`
 		PolicyType  string `json:"policy_type"`
@@ -119,7 +119,7 @@ func (h *Handler) createPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request, id string) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req struct {
 		Name        string `json:"name"`
 		PolicyType  string `json:"policy_type"`
@@ -159,7 +159,7 @@ func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	if r.Method != http.MethodGet {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
@@ -173,7 +173,7 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	if r.Method != http.MethodPost {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return

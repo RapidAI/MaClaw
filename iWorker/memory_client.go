@@ -26,7 +26,7 @@ type SharedMemoryEntry struct {
 // fetchSharedMemories retrieves shared memories from iWorkerCenter.
 // It fetches enterprise-level memories plus role-specific memories matching roleCode.
 // Returns empty slice on any error (non-blocking).
-func fetchSharedMemories(centerBaseURL string, roleCode string, timeoutSec int) []SharedMemoryEntry {
+func fetchSharedMemories(centerBaseURL string, tenantID string, roleCode string, timeoutSec int) []SharedMemoryEntry {
 	if centerBaseURL == "" {
 		return nil
 	}
@@ -40,7 +40,12 @@ func fetchSharedMemories(centerBaseURL string, roleCode string, timeoutSec int) 
 		url += "?role_code=" + roleCode
 	}
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	setCenterTenantHeader(req, tenantID)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}
@@ -111,7 +116,7 @@ func colleagueRoleCode(colleagueName string) string {
 		if baseURL == "" {
 			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 		}
-		if colleagues := fetchCenterColleagues(baseURL, 3); len(colleagues) > 0 {
+		if colleagues := fetchCenterColleagues(baseURL, resolvedTenantID(settings), 3); len(colleagues) > 0 {
 			for _, c := range colleagues {
 				if c.Name == colleagueName && c.RoleCode != "" {
 					return c.RoleCode
@@ -188,8 +193,13 @@ func fetchWorkerMemoryStats(centerBaseURL, tenantID, departmentID, workerID stri
 	}
 	values.Set("worker_id", workerID)
 	endpoint := centerBaseURL + "/client/iworker/memory-stats?" + values.Encode()
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return WorkerMemoryStats{}, err
+	}
+	setCenterTenantHeader(req, tenantID)
 	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
-	resp, err := client.Get(endpoint)
+	resp, err := client.Do(req)
 	if err != nil {
 		return WorkerMemoryStats{}, err
 	}
@@ -239,8 +249,13 @@ func fetchWorkerMemories(centerBaseURL, tenantID, departmentID, workerID, query 
 		values.Set("query", strings.TrimSpace(query))
 	}
 	endpoint := centerBaseURL + "/client/iworker/memories?" + values.Encode()
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return readWorkerMemoryCache(tenantID, departmentID, workerID)
+	}
+	setCenterTenantHeader(req, tenantID)
 	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
-	resp, err := client.Get(endpoint)
+	resp, err := client.Do(req)
 	if err != nil {
 		return readWorkerMemoryCache(tenantID, departmentID, workerID)
 	}
@@ -293,8 +308,14 @@ func saveWorkerMemory(centerBaseURL, tenantID, departmentID, workerID string, re
 	if err != nil {
 		return WorkerMemoryEntry{}, err
 	}
+	httpReq, err := http.NewRequest(http.MethodPost, centerBaseURL+"/client/iworker/memories", bytes.NewReader(body))
+	if err != nil {
+		return WorkerMemoryEntry{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	setCenterTenantHeader(httpReq, tenantID)
 	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
-	resp, err := client.Post(centerBaseURL+"/client/iworker/memories", "application/json", bytes.NewReader(body))
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return WorkerMemoryEntry{}, err
 	}
@@ -345,6 +366,7 @@ func deleteWorkerMemory(centerBaseURL, tenantID, departmentID, workerID, memoryI
 	if err != nil {
 		return err
 	}
+	setCenterTenantHeader(req, tenantID)
 	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

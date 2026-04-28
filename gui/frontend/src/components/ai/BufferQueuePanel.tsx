@@ -103,7 +103,7 @@ export interface BufferQueuePanelProps {
     onSaveEdit: (id: string, text: string, attachments: AttachmentInfo[]) => void;
     onDelete: (id: string) => void;
     onReorder: (fromIndex: number, toIndex: number) => void;
-    /** Fire (send) a single queued entry, interrupting the current session. */
+    /** Fire (send) a single queued entry as supplementary info to the running task. */
     onFireEntry?: (id: string) => void;
 }
 
@@ -313,7 +313,7 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
                             dragDeltaY={deltaY}
                             onPointerDown={handlePointerDown}
                             setRowRef={setRowRef}
-                            onFireEntry={onFireEntry}
+                            onFireEntry={onFireEntry && entry.attachments.length === 0 ? onFireEntry : undefined}
                         />
                         {showInsertionAfter && (
                             <div
@@ -681,8 +681,8 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                         flexShrink: 0,
                         lineHeight: 1.2,
                     }}
-                    aria-label={localizeText(lang, "Send now (interrupt current)", "立即发送（打断当前会话）", "立即發送（打斷當前會話）")}
-                    title={localizeText(lang, "Send now", "发射", "發射")}
+                    aria-label={localizeText(lang, "Send as supplementary info", "补充到当前任务", "補充到當前任務")}
+                    title={localizeText(lang, "Supplement", "补充", "補充")}
                 >
                     ⏎
                 </button>

@@ -40,7 +40,7 @@ func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 }
 
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	switch r.Method {
 	case http.MethodGet:
 		tasks, err := h.svc.ListAll(tid)
@@ -68,7 +68,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	switch r.Method {
 	case http.MethodGet:
 		overview, err := h.svc.GetRoutingOverview(tid)
@@ -98,7 +98,7 @@ func (h *Handler) handleRoleAction(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req struct {
 		RoleCode string `json:"role_code"`
 		Action   string `json:"action"`
@@ -168,7 +168,7 @@ func (h *Handler) handleClientList(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	colleagueID := r.URL.Query().Get("colleague_id")
 	if colleagueID == "" {
 		tasks, _ := h.svc.ListAll(tid)
@@ -188,7 +188,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
@@ -238,7 +238,7 @@ func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req struct {
 		ColleagueID string `json:"colleague_id"`
 		ObservedAt  string `json:"observed_at"`
@@ -261,7 +261,7 @@ func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleByID(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/collaborations/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
@@ -294,7 +294,7 @@ func (h *Handler) handleTransition(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	rest := strings.TrimPrefix(r.URL.Path, "/runtime/collaboration/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)

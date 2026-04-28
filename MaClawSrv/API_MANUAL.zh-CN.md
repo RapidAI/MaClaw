@@ -2810,3 +2810,133 @@ Admin overview credential ???overview ????? credential ??????????
 ```
 
 如果省略 `api_key` 或 `api_secret`，服务仍会自动生成，并且只在创建响应里返回一次明文值。
+
+## Credential 列表过滤
+
+`GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials` 支持先过滤再分页。
+
+支持的查询参数：
+
+- `status=active|suspended|revoked`
+- `expired=true|false`
+- `expiring=true|false`
+- `limit` 和 `before` 用于分页
+
+`expiring=true` 使用默认 7 天前瞻窗口。`status`、`expired` 或 `expiring` 参数非法时返回 `400`。
+
+## Audit event 资源过滤
+
+`GET /api/v1/admin/audit-events` 支持额外过滤参数：
+
+- `resource_id`：精确匹配资源 ID，例如 credential id、run id、user id 或 tenant id。
+- `actor_type`：精确匹配操作者类型，例如 `admin`、`user`、`credential`、`system` 或 `anonymous`。
+
+这些参数可以和 `tenant_id`、`user_id`、`action`、`resource_type`、`limit`、`before` 组合使用。
+
+## Audit event 时间窗口过滤
+
+`GET /api/v1/admin/audit-events` 支持 `since` 和 `until`，格式为 RFC3339/RFC3339Nano。它们会按 audit event 的 `created_at` 做时间窗口过滤，并且先过滤再分页。
+
+`since/until` 用于逻辑时间窗口；`before` 仍然是分页游标，对应响应里的 `next_before`。
+
+## Admin overview 快照计数
+
+`GET /api/v1/admin/overview` 会返回持久化快照观测字段：
+
+- `snapshots`：`MACLAW_DATA_ROOT/snapshots` 下的快照数量。
+- `snapshot_bytes`：这些快照文件占用的总字节数。
+
+## Snapshot metrics 指标
+
+`GET /metrics` 会输出 Prometheus 格式的快照指标：
+
+- `maclaw_snapshots_total`
+- `maclaw_snapshot_bytes_total`
+
+这两个指标分别表示持久化快照数量和总字节数，适合接入监控系统做容量告警。
+
+### 9.13 管理端快照
+
+快照接口把已有导出能力资源化，会把导出结果保存到 `MACLAW_DATA_ROOT/snapshots`，方便备份、迁移前留档和运维巡检。
+
+创建快照：
+
+```http
+POST /api/v1/admin/snapshots
+X-MaClaw-Admin-Secret: <admin-secret>
+Content-Type: application/json
+
+{
+  "name": "tenant-a nightly backup",
+  "tenant_id": "tenant_xxx",
+  "user_id": "user_xxx",
+  "include_messages": true,
+  "include_runs": true,
+  "include_audit": true,
+  "include_secrets": false
+}
+```
+
+说明：
+
+- `tenant_id` 可选；不传表示创建全服务快照。
+- `user_id` 可选，但传 `user_id` 时必须同时传 `tenant_id`。
+- `include_messages`、`include_runs`、`include_audit` 默认是 `true`；`include_secrets` 默认是 `false`。
+- 快照文件会写入服务数据目录下的私有 JSON 文件。
+- 返回结构是 `{ "snapshot": <metadata>, "data": <ExportServiceStateOutput> }`。
+- 快照数量和总字节数可以通过 `GET /api/v1/admin/overview` 和 `GET /metrics` 查看。
+
+列出快照：
+
+```http
+GET /api/v1/admin/snapshots?tenant_id=tenant_xxx&user_id=user_xxx&limit=100&before=2026-04-28T00:00:00Z
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+读取单个快照：
+
+```http
+GET /api/v1/admin/snapshots/{snapshot_id}
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+恢复快照：
+
+```http
+POST /api/v1/admin/snapshots/{snapshot_id}/restore?dry_run=true
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+```http
+POST /api/v1/admin/snapshots/{snapshot_id}/restore?overwrite=true
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+恢复说明：
+
+- 恢复会复用 `POST /api/v1/admin/import` 的同一套导入管线。
+- `dry_run=true` 只返回冲突、警告和执行计划，不修改状态。
+- 当快照中的 tenant/user ID 已存在时，真正恢复需要 `overwrite=true`。
+- `overwrite` 和 `dry_run` 既可以放 query，也可以放 JSON body。
+- 如果要完整恢复 credential，创建快照时需要 `include_secrets=true`。
+
+清理快照：
+
+```http
+POST /api/v1/admin/snapshots/prune?tenant_id=tenant_xxx&user_id=user_xxx&older_than=2026-04-28T00:00:00Z&keep_latest=3&dry_run=true
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+清理说明：
+
+- `older_than` 是 RFC3339 时间戳。
+- `keep_latest=N` 会保护筛选范围内最新的 N 个快照。
+- `older_than` 和 `keep_latest` 至少需要传一个。
+- 建议先用 `dry_run=true` 预览 `snapshots`、`kept_snapshots` 和 `freed_bytes`。
+
+删除快照：
+
+```http
+DELETE /api/v1/admin/snapshots/{snapshot_id}?confirm=true
+X-MaClaw-Admin-Secret: <admin-secret>
+```

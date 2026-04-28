@@ -465,7 +465,8 @@ func (m *tuiModel) handleSlashCommand(text string) {
 	switch {
 	case text == "/new" || text == "/clear":
 		m.app.history.Clear("tui-user")
-		// Cancel active workflow if any.
+		// Cancel active workflow if any (even if workflow is disabled,
+		// to clean up stale state from before the toggle was turned off).
 		if m.app.workflowEngine != nil {
 			_ = m.app.workflowEngine.CancelWorkflow("tui-user")
 		}

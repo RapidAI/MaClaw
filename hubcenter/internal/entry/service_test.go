@@ -314,6 +314,69 @@ func TestResolveAdminByEmailPrefersDirectUserLinkOverOwnerLinks(t *testing.T) {
 	}
 }
 
+func TestResolveAdminByEmailPatternIncludesInventoryHiddenByAdminOverride(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	sourceHub := &store.HubInstance{
+		ID:               "hub_mypapers",
+		OwnerEmail:       "owner-papers@example.com",
+		Name:             "Papers",
+		BaseURL:          "https://hub.mypapers.top",
+		Visibility:       "private",
+		EnrollmentMode:   "open",
+		Status:           "online",
+		HubSecretHash:    "secret-papers",
+		CapabilitiesJSON: `{"user_emails":["xx@qianxin.com"],"supports_user_data_migration":true}`,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	targetHub := &store.HubInstance{
+		ID:             "hub_maclaw",
+		OwnerEmail:     "owner-maclaw@example.com",
+		Name:           "Maclaw",
+		BaseURL:        "https://hub.maclaw.top",
+		Visibility:     "private",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret-maclaw",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	for _, hub := range []*store.HubInstance{sourceHub, targetHub} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubUserLinks.Create(ctx, &store.HubUserLink{
+		ID:        "hul_admin_xx_qianxin",
+		HubID:     targetHub.ID,
+		Email:     "xx@qianxin.com",
+		IsDefault: true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create admin migration link: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	adminResult, err := svc.ResolveAdminByEmailPattern(ctx, "*@qianxin.com")
+	if err != nil {
+		t.Fatalf("ResolveAdminByEmailPattern: %v", err)
+	}
+	if adminResult == nil || adminResult.Mode != "multiple" || !resultHasHub(adminResult, sourceHub.ID) || !resultHasHub(adminResult, targetHub.ID) {
+		t.Fatalf("expected admin inventory search to show source and target hubs, got %+v", adminResult)
+	}
+
+	entryResult, err := svc.ResolveByEmail(ctx, "xx@qianxin.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if entryResult == nil || entryResult.DefaultHubID != targetHub.ID || len(entryResult.Hubs) != 1 {
+		t.Fatalf("expected normal entry routing to stay on migrated target only, got %+v", entryResult)
+	}
+}
 func TestResolveByEmailBlocked(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -819,4 +882,16 @@ func TestResolveByDomainReturnsNoneWhenNoExactDomainRoute(t *testing.T) {
 	if len(result.Hubs) != 0 {
 		t.Fatalf("expected no hubs, got %+v", result.Hubs)
 	}
+}
+
+func resultHasHub(result *ResolveResult, hubID string) bool {
+	if result == nil {
+		return false
+	}
+	for _, hub := range result.Hubs {
+		if hub.HubID == hubID {
+			return true
+		}
+	}
+	return false
 }

@@ -329,7 +329,7 @@ type validationError struct {
 func requestMemoryContext(r *http.Request) memoryContext {
 	q := r.URL.Query()
 	return memoryContext{
-		TenantID:     firstNonEmpty(q.Get("tenant_id"), tenant.TenantIDFromContext(r.Context()), "default"),
+		TenantID:     tenant.RequestTenantID(r),
 		DepartmentID: strings.TrimSpace(firstNonEmpty(q.Get("org_unit_id"), q.Get("department_id"))),
 		WorkerID:     strings.TrimSpace(q.Get("worker_id")),
 	}

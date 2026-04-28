@@ -25,6 +25,9 @@ export type CenterConfig = {
   departmentId: string;
   workerId: string;
   timeoutSec: number;
+  goalWatchAutoHandleEnabled: boolean;
+  goalWatchIntervalSec: number;
+  goalWatchMaxDurationSec: number;
 };
 
 export type CenterHealthStatus = {
@@ -155,6 +158,45 @@ export type CenterGoalPush = {
   toRoleCode: string;
   status: string;
   reason: string;
+  recommendedAction: string;
   ageSeconds: number;
+  executorStatus?: string;
+  executorHeartbeatAgeSeconds?: number;
   createdAt: string;
+};
+
+
+export type CenterAgentInstance = {
+  tenantId: string;
+  workerId: string;
+  instanceId: string;
+  role: string;
+  status: string;
+  orgUnitId?: string;
+  capabilities: string[];
+  memoryAuthority: string;
+  localCacheMode: string;
+  hostId?: string;
+  processId?: number;
+  startedAt: string;
+  lastHeartbeatAt: string;
+  heartbeatAgeSeconds: number;
+  effectiveStatus: string;
+};
+
+export type GoalWatchAutoHandleStatus = {
+  enabled: boolean;
+  running: boolean;
+  currentRunId: number;
+  runCount: number;
+  skipCount: number;
+  timeoutCancelCount: number;
+  lastHandledCount: number;
+  totalHandledCount: number;
+  lastError: string;
+  lastStartedAt: string;
+  lastFinishedAt: string;
+  lastTimeoutAt: string;
+  intervalSeconds: number;
+  maxDurationSeconds: number;
 };

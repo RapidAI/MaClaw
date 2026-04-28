@@ -135,7 +135,12 @@ func main() {
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
-			BackdropType:         windows.Auto,
+			BackdropType:         windows.None,
+			// Disable Aero Shadow and rounded-corner decorations in frameless mode.
+			// On Windows 10, the DWM reserves an invisible border area for these
+			// decorations, which offsets the webview content and clips the top of
+			// the custom title bar. The app uses CSS box-shadow for its own shadow.
+			DisableFramelessWindowDecorations: true,
 		},
 		Mac:   macOpts,
 		Linux: &linux.Options{

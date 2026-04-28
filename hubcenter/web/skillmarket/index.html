@@ -5,56 +5,104 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MaClaw SkillMarket</title>
   <style>
-    :root{--bg:#f6f8fc;--card:#fff;--text:#172033;--muted:#667085;--line:#dbe3ef;--primary:#2563eb;--primary-strong:#1d4ed8;--warn:#f59e0b;--ok:#16a34a;--danger:#dc2626;--shadow:0 12px 34px rgba(23,32,51,.08);--radius:16px}
-    *{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#fbfdff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-    .wrap{max-width:1120px;margin:0 auto;padding:28px 18px 36px}header{text-align:center;position:relative;margin-bottom:20px}.brand{display:inline-flex;align-items:center;justify-content:center;gap:12px;margin-bottom:8px}.brand-logo{width:54px;height:54px;object-fit:contain}.brand h1{margin:0;font-size:32px}header p{margin:0;color:var(--muted);font-size:14px}.user-link{position:absolute;right:0;top:6px;color:var(--primary);text-decoration:none;font-size:13px}.lang-switch{position:absolute;left:0;top:0;display:flex;gap:4px;border:1px solid var(--line);border-radius:10px;background:#fff;padding:3px}.lang-switch button{border:0;background:transparent;color:var(--muted);height:28px;padding:0 9px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer}.lang-switch button.active{background:var(--primary);color:#fff}
-    .tabs{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:18px}.tab{height:40px;padding:0 16px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--muted);font:inherit;cursor:pointer}.tab.active{background:linear-gradient(135deg,var(--primary),var(--primary-strong));border-color:transparent;color:#fff}
-    .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:18px}.toolbar input{flex:1;height:44px;padding:0 14px;border:1px solid var(--line);border-radius:12px;font:inherit;background:#fff}.toolbar button{height:44px;padding:0 18px;border:0;border-radius:12px;background:linear-gradient(135deg,var(--primary),var(--primary-strong));color:#fff;font:inherit;font-weight:700;cursor:pointer}
-    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}.card{padding:18px;border:1px solid var(--line);border-radius:var(--radius);background:var(--card);box-shadow:var(--shadow);cursor:pointer;display:flex;flex-direction:column;gap:10px}.card-name{font-size:16px;font-weight:800}.card-desc{font-size:13px;color:var(--muted);line-height:1.65;min-height:42px}.card-tags{display:flex;gap:6px;flex-wrap:wrap}.tag{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;background:#eff6ff;color:var(--primary)}.card-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
-    .state{text-align:center;padding:44px 18px;border:1px dashed var(--line);border-radius:var(--radius);background:rgba(255,255,255,.74);color:var(--muted)}
-    .overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.44);padding:20px;align-items:center;justify-content:center}.overlay.active{display:flex}.detail{width:min(620px,100%);max-height:85vh;overflow:auto;padding:22px;border-radius:20px;background:#fff;box-shadow:0 28px 60px rgba(15,23,42,.24)}.detail-close{float:right;border:0;background:none;color:var(--muted);font-size:22px;cursor:pointer}.detail h2{margin:0 0 12px;font-size:24px}.detail-row{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0;color:var(--muted);font-size:13px}.rating-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.rating-row button{width:42px;height:42px;border:1px solid var(--line);border-radius:999px;background:#fff;font:inherit;cursor:pointer}.rating-row button.selected,.rating-row button:hover{background:var(--primary);border-color:var(--primary);color:#fff}
-    @media (max-width:720px){.brand{gap:8px}.brand-logo{width:42px;height:42px}.brand h1{font-size:27px}.user-link{position:static;display:inline-block;margin-top:8px}.lang-switch{position:static;justify-content:center;margin:0 auto 12px;width:max-content}.toolbar{flex-direction:column}.toolbar input,.toolbar button{width:100%}}
+    :root{--bg:#f5f7fb;--panel:#fff;--text:#172033;--muted:#667085;--line:#d9e2ef;--soft:#f8fbff;--primary:#2563eb;--primary-strong:#1d4ed8;--green:#16a34a;--amber:#d97706;--danger:#dc2626;--shadow:0 14px 34px rgba(15,23,42,.08);--radius:8px}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.55}
+    .wrap{max-width:1200px;margin:0 auto;padding:22px 20px 40px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:12px}.brand-logo{width:46px;height:46px;object-fit:contain}.brand h1{margin:0;font-size:24px;font-weight:800}.brand-sub{color:var(--muted);font-size:12px}.nav-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.user-link,.nav-btn{height:34px;display:inline-flex;align-items:center;padding:0 12px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;color:var(--text);text-decoration:none;font-size:13px}.user-link{color:var(--primary);font-weight:700}.lang-switch{display:flex;gap:4px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;padding:3px}.lang-switch button{border:0;background:transparent;color:var(--muted);height:26px;padding:0 9px;border-radius:6px;font:inherit;font-size:12px;cursor:pointer}.lang-switch button.active{background:var(--primary);color:#fff}
+    .market-shell{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:18px;margin-bottom:18px}.search-panel,.insight-panel,.content-panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}.search-panel{padding:22px}.eyebrow{color:var(--primary);font-size:12px;font-weight:800;margin-bottom:8px}.search-panel h2{margin:0 0 10px;font-size:30px;line-height:1.18}.subtitle{margin:0 0 18px;color:var(--muted);max-width:720px}.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px}.toolbar input{flex:1;height:46px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);font:inherit;background:#fff}.toolbar button{height:46px;padding:0 18px;border:0;border-radius:var(--radius);background:linear-gradient(135deg,var(--primary),var(--primary-strong));color:#fff;font:inherit;font-weight:800;cursor:pointer}.market-stats{display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:10px}.metric{padding:12px;border:1px solid #e8eef8;border-radius:var(--radius);background:var(--soft)}.metric-value{font-size:20px;font-weight:800;color:var(--text)}.metric-label{font-size:12px;color:var(--muted)}.insight-panel{padding:18px;display:flex;flex-direction:column;gap:12px}.insight-title{font-size:13px;color:var(--muted);font-weight:700}.insight-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:10px;border-bottom:1px solid var(--line)}.insight-row:last-child{border-bottom:0;padding-bottom:0}.insight-row strong{font-size:18px}.status-dot{width:8px;height:8px;border-radius:999px;background:var(--green);display:inline-block;margin-right:6px}.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}.tab{height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;color:var(--muted);font:inherit;cursor:pointer}.tab.active{background:#172033;border-color:#172033;color:#fff;font-weight:700}.content-panel{padding:18px}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.section-head h3{margin:0;font-size:16px}.section-note{color:var(--muted);font-size:12px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}.card{padding:16px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.05);cursor:pointer;display:flex;flex-direction:column;gap:10px;min-height:188px}.card:hover{border-color:#b7c6dc;box-shadow:0 14px 30px rgba(15,23,42,.09);transform:translateY(-1px)}.card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.card-name{font-size:16px;font-weight:800;line-height:1.35}.card-version{font-size:12px;color:var(--muted);font-weight:600}.price-pill{height:26px;padding:0 9px;border-radius:999px;background:#ecfdf3;color:#166534;display:inline-flex;align-items:center;font-size:12px;font-weight:800;white-space:nowrap}.card-desc{font-size:13px;color:var(--muted);line-height:1.65;min-height:42px}.card-tags{display:flex;gap:6px;flex-wrap:wrap}.tag{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;background:#eff6ff;color:var(--primary);font-weight:700}.card-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:auto}.state{text-align:center;padding:44px 18px;border:1px dashed var(--line);border-radius:var(--radius);background:#fff;color:var(--muted)}
+    .overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.48);padding:20px;align-items:center;justify-content:center}.overlay.active{display:flex}.detail{width:min(680px,100%);max-height:85vh;overflow:auto;padding:22px;border-radius:var(--radius);background:#fff;box-shadow:0 28px 60px rgba(15,23,42,.24)}.detail-close{float:right;border:1px solid var(--line);background:#fff;color:var(--muted);font-size:18px;cursor:pointer;width:34px;height:34px;border-radius:var(--radius)}.detail h2{margin:0 0 12px;font-size:24px}.detail p{color:var(--muted);line-height:1.7}.detail-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:14px 0;color:var(--muted);font-size:13px}.detail-row span{padding:10px;border:1px solid var(--line);border-radius:var(--radius);background:var(--soft)}.rating-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.rating-row button{width:42px;height:36px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;font:inherit;cursor:pointer}.rating-row button.selected,.rating-row button:hover{background:var(--primary);border-color:var(--primary);color:#fff}
+    @media (max-width:860px){.market-shell{grid-template-columns:1fr}.market-stats{grid-template-columns:1fr 1fr}.topbar{align-items:flex-start;flex-direction:column}.nav-actions{width:100%}.search-panel h2{font-size:26px}}
+    @media (max-width:640px){.wrap{padding:16px 12px 28px}.toolbar{flex-direction:column}.toolbar input,.toolbar button{width:100%}.market-stats{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.brand h1{font-size:21px}.brand-logo{width:40px;height:40px}.tabs{overflow:auto;flex-wrap:nowrap}.tab{white-space:nowrap}.section-head{align-items:flex-start;flex-direction:column}}
   </style>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <div class="lang-switch" aria-label="Language">
-      <button type="button" id="langZh" onclick="setLanguage('zh')">中文</button>
-      <button type="button" id="langEn" onclick="setLanguage('en')">EN</button>
-    </div>
+  <header class="topbar">
     <div class="brand">
       <img class="brand-logo" src="/skillmarket/maclaw-logo.png" alt="MaClaw logo">
-      <h1 id="pageTitle">MaClaw SkillMarket</h1>
+      <div>
+        <h1 id="pageTitle">MaClaw SkillMarket</h1>
+        <div class="brand-sub" id="brandSub"></div>
+      </div>
     </div>
-    <p id="subtitle"></p>
-    <a class="user-link" href="/skillmarket/user" id="userLink"></a>
+    <div class="nav-actions">
+      <a class="user-link" href="/skillmarket/user" id="userLink"></a>
+      <div class="lang-switch" aria-label="Language">
+        <button type="button" id="langZh" onclick="setLanguage('zh')">&#20013;&#25991;</button>
+        <button type="button" id="langEn" onclick="setLanguage('en')">EN</button>
+      </div>
+    </div>
   </header>
 
-  <div class="tabs">
-    <button class="tab active" data-view="search" id="tabSearch"></button>
-    <button class="tab" data-view="top-rating" id="tabRating"></button>
-    <button class="tab" data-view="top-downloads" id="tabDownloads"></button>
-    <button class="tab" data-view="top-newest" id="tabNewest"></button>
-  </div>
-
-  <div id="view-search">
-    <div class="toolbar">
-      <input id="searchInput">
-      <button id="searchBtn" type="button" onclick="doSearch()"></button>
+  <section class="market-shell">
+    <div class="search-panel">
+      <div class="eyebrow" id="heroEyebrow"></div>
+      <h2 id="heroTitle"></h2>
+      <p class="subtitle" id="subtitle"></p>
+      <div class="toolbar">
+        <input id="searchInput">
+        <button id="searchBtn" type="button" onclick="doSearch()"></button>
+      </div>
+      <div class="market-stats" aria-label="Marketplace metrics">
+        <div class="metric">
+          <div class="metric-value" id="metricResults">0</div>
+          <div class="metric-label" id="metricResultsLabel"></div>
+        </div>
+        <div class="metric">
+          <div class="metric-value" id="metricRating">0.0</div>
+          <div class="metric-label" id="metricRatingLabel"></div>
+        </div>
+        <div class="metric">
+          <div class="metric-value" id="metricDownloads">0</div>
+          <div class="metric-label" id="metricDownloadsLabel"></div>
+        </div>
+      </div>
     </div>
-    <div id="searchResults" class="grid"></div>
-    <div id="searchEmpty" class="state" style="display:none"></div>
-  </div>
+    <aside class="insight-panel">
+      <div class="insight-title" id="insightTitle"></div>
+      <div class="insight-row">
+        <span id="insightStatusLabel"></span>
+        <strong><span class="status-dot"></span><span id="insightStatusValue"></span></strong>
+      </div>
+      <div class="insight-row">
+        <span id="insightCatalogLabel"></span>
+        <strong id="insightCatalogValue">-</strong>
+      </div>
+      <div class="insight-row">
+        <span id="insightRefreshLabel"></span>
+        <strong id="insightRefreshValue"></strong>
+      </div>
+    </aside>
+  </section>
 
-  <div id="view-top-rating" style="display:none"><div id="ratingList" class="grid"></div><div id="ratingEmpty" class="state" style="display:none"></div></div>
-  <div id="view-top-downloads" style="display:none"><div id="downloadsList" class="grid"></div><div id="downloadsEmpty" class="state" style="display:none"></div></div>
-  <div id="view-top-newest" style="display:none"><div id="newestList" class="grid"></div><div id="newestEmpty" class="state" style="display:none"></div></div>
+  <main class="content-panel">
+    <div class="section-head">
+      <div>
+        <h3 id="sectionTitle"></h3>
+        <div class="section-note" id="sectionNote"></div>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Skill views">
+        <button class="tab active" data-view="search" id="tabSearch"></button>
+        <button class="tab" data-view="top-rating" id="tabRating"></button>
+        <button class="tab" data-view="top-downloads" id="tabDownloads"></button>
+        <button class="tab" data-view="top-newest" id="tabNewest"></button>
+      </div>
+    </div>
+
+    <div id="view-search">
+      <div id="searchResults" class="grid"></div>
+      <div id="searchEmpty" class="state" style="display:none"></div>
+    </div>
+
+    <div id="view-top-rating" style="display:none"><div id="ratingList" class="grid"></div><div id="ratingEmpty" class="state" style="display:none"></div></div>
+    <div id="view-top-downloads" style="display:none"><div id="downloadsList" class="grid"></div><div id="downloadsEmpty" class="state" style="display:none"></div></div>
+    <div id="view-top-newest" style="display:none"><div id="newestList" class="grid"></div><div id="newestEmpty" class="state" style="display:none"></div></div>
+  </main>
 </div>
 
 <div class="overlay" id="detailOverlay">
   <div class="detail">
-    <button class="detail-close" type="button" onclick="closeDetail()">x</button>
+    <button class="detail-close" type="button" onclick="closeDetail()" aria-label="Close">x</button>
     <h2 id="detailName"></h2>
     <div id="detailTags" class="card-tags"></div>
     <p id="detailDesc"></p>
@@ -76,33 +124,42 @@
 
 <script>
 let LANG=localStorage.getItem('sm_lang')||((navigator.language||'en').toLowerCase().startsWith('zh')?'zh':'en');
+let currentMetricItems=[];
 document.getElementById('html-root').lang=LANG==='zh'?'zh-CN':'en';
 const I18N={
-  title:{zh:'MaClaw SkillMarket',en:'MaClaw SkillMarket'},subtitle:{zh:'\u53d1\u73b0\u4f18\u8d28\u6280\u80fd\uff0c\u641c\u7d22\u3001\u6d4f\u89c8\u5e76\u8bc4\u5206\u3002',en:'Discover quality skills, search, browse, and rate them.'},userLink:{zh:'用户中心',en:'User Center'},
-  tabSearch:{zh:'搜索',en:'Search'},tabRating:{zh:'评分排行',en:'Top Rated'},tabDownloads:{zh:'下载排行',en:'Most Downloaded'},tabNewest:{zh:'最新上架',en:'Newest'},
-  searchPlaceholder:{zh:'\u641c\u7d22\u6280\u80fd\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e',en:'Search skill name, description, tags'},search:{zh:'搜索',en:'Search'},
-  emptySearch:{zh:'暂无搜索结果',en:'No results found.'},emptyTop:{zh:'暂无数据',en:'No data.'},loading:{zh:'加载中...',en:'Loading...'},
-  priceFree:{zh:'免费',en:'Free'},credits:{zh:'积分',en:'Credits'},downloads:{zh:'下载',en:'Downloads'},rating:{zh:'评分',en:'Rating'},status:{zh:'状态',en:'Status'},version:{zh:'版本',en:'Version'},uploaded:{zh:'上传',en:'Uploaded'},
-  rateLabel:{zh:'评分（-2 到 +2）',en:'Rate (-2 to +2)'},rateNeedEmail:{zh:'请输入邮箱后评分',en:'Enter your email to rate.'},rateOk:{zh:'评分已提交',en:'Rating submitted.'},network:{zh:'网络错误。',en:'Network error.'},
-  statusPending:{zh:'待审核',en:'Pending Review'},statusPublished:{zh:'已上架',en:'Published'},statusRejected:{zh:'已拒绝',en:'Rejected'},statusWithdrawn:{zh:'已下架',en:'Withdrawn'},statusDraft:{zh:'草稿',en:'Draft'},statusActive:{zh:'有效',en:'Active'},statusInactive:{zh:'未启用',en:'Inactive'},statusUnknown:{zh:'未知',en:'Unknown'}
+  title:{zh:'MaClaw SkillMarket',en:'MaClaw SkillMarket'},brandSub:{zh:'\u7801\u5361\u9f99\u6280\u80fd\u5e02\u573a',en:'MacLaw Skill Catalog'},subtitle:{zh:'\u9762\u5411\u7814\u53d1\u4e0e\u4e1a\u52a1\u56e2\u961f\u7684\u6280\u80fd\u76ee\u5f55\uff0c\u96c6\u4e2d\u53d1\u73b0\u3001\u8bc4\u4f30\u5e76\u8c03\u7528\u53ef\u590d\u7528\u80fd\u529b\u3002',en:'A curated skill catalog for engineering and business teams to discover, evaluate, and reuse capabilities.'},userLink:{zh:'\u7528\u6237\u540e\u53f0',en:'User Console'},
+  heroEyebrow:{zh:'\u4f01\u4e1a\u7ea7\u6280\u80fd\u5e02\u573a',en:'Enterprise Skill Market'},heroTitle:{zh:'\u53d1\u73b0\u53ef\u590d\u7528\u6280\u80fd\uff0c\u6784\u5efa\u66f4\u9ad8\u6548\u7684\u667a\u80fd\u5de5\u4f5c\u6d41',en:'Find reusable skills for stronger intelligent workflows'},
+  tabSearch:{zh:'\u641c\u7d22',en:'Search'},tabRating:{zh:'\u8bc4\u5206\u6392\u884c',en:'Top Rated'},tabDownloads:{zh:'\u4e0b\u8f7d\u6392\u884c',en:'Most Downloaded'},tabNewest:{zh:'\u6700\u65b0\u4e0a\u67b6',en:'Newest'},
+  sectionSearch:{zh:'\u6280\u80fd\u68c0\u7d22',en:'Skill Discovery'},sectionRating:{zh:'\u8bc4\u5206\u6392\u884c',en:'Top Rated Skills'},sectionDownloads:{zh:'\u4e0b\u8f7d\u6392\u884c',en:'Most Downloaded'},sectionNewest:{zh:'\u6700\u65b0\u4e0a\u67b6',en:'Recently Published'},
+  noteSearch:{zh:'\u6309\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e\u5feb\u901f\u5b9a\u4f4d\u6280\u80fd\u3002',en:'Search by name, description, or tags.'},noteRating:{zh:'\u4f18\u5148\u67e5\u770b\u56e2\u961f\u53cd\u9988\u66f4\u597d\u7684\u6280\u80fd\u3002',en:'Prioritize skills with stronger team feedback.'},noteDownloads:{zh:'\u67e5\u770b\u8fd1\u671f\u4f7f\u7528\u70ed\u5ea6\u66f4\u9ad8\u7684\u6280\u80fd\u3002',en:'See skills with higher adoption.'},noteNewest:{zh:'\u8ddf\u8fdb\u6700\u65b0\u53d1\u5e03\u7684\u80fd\u529b\u3002',en:'Track newly published capabilities.'},
+  searchPlaceholder:{zh:'\u641c\u7d22\u6280\u80fd\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e',en:'Search skill name, description, tags'},search:{zh:'\u641c\u7d22',en:'Search'},
+  metricResults:{zh:'\u5f53\u524d\u7ed3\u679c',en:'Current Results'},metricRating:{zh:'\u5e73\u5747\u8bc4\u5206',en:'Average Rating'},metricDownloads:{zh:'\u7d2f\u8ba1\u4e0b\u8f7d',en:'Total Downloads'},
+  insightTitle:{zh:'\u5e02\u573a\u72b6\u6001',en:'Market Status'},insightStatusLabel:{zh:'\u670d\u52a1\u72b6\u6001',en:'Service'},insightStatusValue:{zh:'\u8fd0\u884c\u4e2d',en:'Online'},insightCatalogLabel:{zh:'\u76ee\u5f55\u8986\u76d6',en:'Catalog'},insightRefreshLabel:{zh:'\u66f4\u65b0\u65f6\u95f4',en:'Updated'},justNow:{zh:'\u521a\u521a',en:'Just now'},skillsUnit:{zh:'\u9879\u6280\u80fd',en:'skills'},
+  emptySearch:{zh:'\u6682\u65e0\u641c\u7d22\u7ed3\u679c',en:'No results found.'},emptyTop:{zh:'\u6682\u65e0\u6570\u636e',en:'No data.'},loading:{zh:'\u52a0\u8f7d\u4e2d...',en:'Loading...'},
+  priceFree:{zh:'\u514d\u8d39',en:'Free'},credits:{zh:'\u79ef\u5206',en:'Credits'},downloads:{zh:'\u4e0b\u8f7d',en:'Downloads'},rating:{zh:'\u8bc4\u5206',en:'Rating'},status:{zh:'\u72b6\u6001',en:'Status'},version:{zh:'\u7248\u672c',en:'Version'},uploaded:{zh:'\u4e0a\u4f20',en:'Uploaded'},
+  rateLabel:{zh:'\u8bc4\u5206\uff08-2 \u5230 +2\uff09',en:'Rate (-2 to +2)'},rateNeedEmail:{zh:'\u8bf7\u8f93\u5165\u90ae\u7bb1\u540e\u8bc4\u5206',en:'Enter your email to rate.'},rateOk:{zh:'\u8bc4\u5206\u5df2\u63d0\u4ea4',en:'Rating submitted.'},network:{zh:'\u7f51\u7edc\u9519\u8bef\u3002',en:'Network error.'},
+  statusPending:{zh:'\u5f85\u5ba1\u6838',en:'Pending Review'},statusPublished:{zh:'\u5df2\u4e0a\u67b6',en:'Published'},statusRejected:{zh:'\u5df2\u62d2\u7edd',en:'Rejected'},statusWithdrawn:{zh:'\u5df2\u4e0b\u67b6',en:'Withdrawn'},statusDraft:{zh:'\u8349\u7a3f',en:'Draft'},statusActive:{zh:'\u6709\u6548',en:'Active'},statusInactive:{zh:'\u672a\u542f\u7528',en:'Inactive'},statusUnknown:{zh:'\u672a\u77e5',en:'Unknown'}
 };
 function t(key){return (I18N[key]&&I18N[key][LANG])||key}
 function setLanguage(lang){LANG=lang==='en'?'en':'zh';localStorage.setItem('sm_lang',LANG);document.getElementById('html-root').lang=LANG==='zh'?'zh-CN':'en';applyI18n();refreshCurrentView();}
-function text(key,vars){var s=t(key);return String(s).replace(/\{(\w+)\}/g,function(_,n){return vars&&vars[n]!=null?vars[n]:''})}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(ch){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];});}
 function fmtDate(v){if(!v)return '-';try{var d=new Date(v);if(isNaN(d))return String(v);return d.toLocaleDateString(LANG==='zh'?'zh-CN':'en-US',{year:'numeric',month:'2-digit',day:'2-digit'});}catch(_){return String(v);}}
 function statusText(v){var raw=String(v||'').toLowerCase();var map={pending_review:'statusPending',pending:'statusPending',published:'statusPublished',approved:'statusPublished',rejected:'statusRejected',withdrawn:'statusWithdrawn',draft:'statusDraft',active:'statusActive',inactive:'statusInactive'};return t(map[raw]||'statusUnknown')}
-function applyI18n(){document.title=t('title');pageTitle.textContent=t('title');subtitle.textContent=t('subtitle');userLink.textContent=t('userLink');tabSearch.textContent=t('tabSearch');tabRating.textContent=t('tabRating');tabDownloads.textContent=t('tabDownloads');tabNewest.textContent=t('tabNewest');searchInput.placeholder=t('searchPlaceholder');searchBtn.textContent=t('search');searchEmpty.textContent=t('emptySearch');ratingEmpty.textContent=t('emptyTop');downloadsEmpty.textContent=t('emptyTop');newestEmpty.textContent=t('emptyTop');rateLabel.textContent=t('rateLabel');langZh.classList.toggle('active',LANG==='zh');langEn.classList.toggle('active',LANG==='en');}
-function refreshCurrentView(){var active=document.querySelector('.tab.active');var view=active&&active.dataset.view;if(view==='top-rating')loadTop('rating');else if(view==='top-downloads')loadTop('downloads');else if(view==='top-newest')loadTop('newest');else doSearch();}
-function renderCards(containerId,emptyId,items){var c=document.getElementById(containerId),e=document.getElementById(emptyId);c.innerHTML='';if(!items.length){e.style.display='';return;}e.style.display='none';items.forEach(function(s){var tags=(s.tags||[]).map(function(tag){return '<span class="tag">'+esc(tag)+'</span>';}).join('');var price=s.price?String(s.price)+' '+t('credits'):t('priceFree');var date=s.created_at?fmtDate(s.created_at):'';var card=document.createElement('div');card.className='card';card.innerHTML='<div class="card-name">'+esc(s.name||'-')+(s.version?' <span style="font-size:12px;color:var(--muted);font-weight:500">v'+esc(s.version)+'</span>':'')+'</div>'+'<div class="card-desc">'+esc(s.description||'')+'</div>'+'<div class="card-tags">'+tags+'</div>'+'<div class="card-meta"><span>'+t('rating')+': '+Number(s.avg_rating||0).toFixed(1)+'</span><span>'+t('downloads')+': '+Number(s.download_count||0)+'</span><span>'+price+'</span>'+(date?'<span>'+date+'</span>':'')+'</div>';card.onclick=function(){showDetail(s)};c.appendChild(card);});}
+function activeView(){var active=document.querySelector('.tab.active');return active&&active.dataset.view?active.dataset.view:'search';}
+function sectionKey(view){return view==='top-rating'?'Rating':view==='top-downloads'?'Downloads':view==='top-newest'?'Newest':'Search';}
+function updateSectionText(){var key=sectionKey(activeView());sectionTitle.textContent=t('section'+key);sectionNote.textContent=t('note'+key);}
+function updateMetrics(items){currentMetricItems=Array.isArray(items)?items:[];var total=currentMetricItems.length;var ratingSum=0;var ratingCount=0;var downloads=0;currentMetricItems.forEach(function(s){var rating=Number(s.avg_rating||0);if(rating){ratingSum+=rating;ratingCount++;}downloads+=Number(s.download_count||0);});metricResults.textContent=String(total);metricRating.textContent=ratingCount?(ratingSum/ratingCount).toFixed(1):'0.0';metricDownloads.textContent=String(downloads);insightCatalogValue.textContent=total+' '+t('skillsUnit');insightRefreshValue.textContent=t('justNow');}
+function applyI18n(){document.title=t('title');pageTitle.textContent=t('title');brandSub.textContent=t('brandSub');subtitle.textContent=t('subtitle');userLink.textContent=t('userLink');heroEyebrow.textContent=t('heroEyebrow');heroTitle.textContent=t('heroTitle');tabSearch.textContent=t('tabSearch');tabRating.textContent=t('tabRating');tabDownloads.textContent=t('tabDownloads');tabNewest.textContent=t('tabNewest');searchInput.placeholder=t('searchPlaceholder');searchBtn.textContent=t('search');metricResultsLabel.textContent=t('metricResults');metricRatingLabel.textContent=t('metricRating');metricDownloadsLabel.textContent=t('metricDownloads');insightTitle.textContent=t('insightTitle');insightStatusLabel.textContent=t('insightStatusLabel');insightStatusValue.textContent=t('insightStatusValue');insightCatalogLabel.textContent=t('insightCatalogLabel');insightRefreshLabel.textContent=t('insightRefreshLabel');searchEmpty.textContent=t('emptySearch');ratingEmpty.textContent=t('emptyTop');downloadsEmpty.textContent=t('emptyTop');newestEmpty.textContent=t('emptyTop');rateLabel.textContent=t('rateLabel');langZh.classList.toggle('active',LANG==='zh');langEn.classList.toggle('active',LANG==='en');updateSectionText();updateMetrics(currentMetricItems);}
+function refreshCurrentView(){var view=activeView();if(view==='top-rating')loadTop('rating');else if(view==='top-downloads')loadTop('downloads');else if(view==='top-newest')loadTop('newest');else doSearch();}
+function renderCards(containerId,emptyId,items){var c=document.getElementById(containerId),e=document.getElementById(emptyId);c.innerHTML='';if(!items.length){e.style.display='';updateMetrics([]);return;}e.style.display='none';updateMetrics(items);items.forEach(function(s){var tags=(s.tags||[]).map(function(tag){return '<span class="tag">'+esc(tag)+'</span>';}).join('');var price=s.price?String(s.price)+' '+t('credits'):t('priceFree');var date=s.created_at?fmtDate(s.created_at):'';var version=s.version?'<div class="card-version">v'+esc(s.version)+'</div>':'';var card=document.createElement('div');card.className='card';card.innerHTML='<div class="card-top"><div><div class="card-name">'+esc(s.name||'-')+'</div>'+version+'</div><span class="price-pill">'+esc(price)+'</span></div>'+'<div class="card-desc">'+esc(s.description||'')+'</div>'+'<div class="card-tags">'+tags+'</div>'+'<div class="card-meta"><span>'+t('rating')+': '+Number(s.avg_rating||0).toFixed(1)+'</span><span>'+t('downloads')+': '+Number(s.download_count||0)+'</span>'+(date?'<span>'+date+'</span>':'')+'</div>';card.onclick=function(){showDetail(s)};c.appendChild(card);});}
 function showLoading(containerId,emptyId){document.getElementById(containerId).innerHTML='';var e=document.getElementById(emptyId);e.style.display='';e.textContent=t('loading');}
-async function doSearch(){showLoading('searchResults','searchEmpty');try{const r=await fetch('/api/v1/skillmarket/search?q='+encodeURIComponent(searchInput.value.trim())+'&top_n=30');if(!r.ok)throw new Error(await r.text());const data=await r.json();const list=data.results||data||[];renderCards('searchResults','searchEmpty',Array.isArray(list)?list:[]);}catch(_){searchEmpty.style.display='';searchEmpty.textContent=t('network');}}
-async function loadTop(sortBy){var map={rating:['ratingList','ratingEmpty'],downloads:['downloadsList','downloadsEmpty'],newest:['newestList','newestEmpty']};showLoading(map[sortBy][0],map[sortBy][1]);try{const r=await fetch('/api/v1/skillmarket/top?sort='+sortBy+'&limit=20');if(!r.ok)throw new Error(await r.text());const data=await r.json();const list=data.entries||data||[];renderCards(map[sortBy][0],map[sortBy][1],Array.isArray(list)?list:[]);}catch(_){document.getElementById(map[sortBy][1]).style.display='';document.getElementById(map[sortBy][1]).textContent=t('network');}}
+async function doSearch(){showLoading('searchResults','searchEmpty');try{const r=await fetch('/api/v1/skillmarket/search?q='+encodeURIComponent(searchInput.value.trim())+'&top_n=30');if(!r.ok)throw new Error(await r.text());const data=await r.json();const list=data.results||data||[];renderCards('searchResults','searchEmpty',Array.isArray(list)?list:[]);}catch(_){updateMetrics([]);searchEmpty.style.display='';searchEmpty.textContent=t('network');}}
+async function loadTop(sortBy){var map={rating:['ratingList','ratingEmpty'],downloads:['downloadsList','downloadsEmpty'],newest:['newestList','newestEmpty']};showLoading(map[sortBy][0],map[sortBy][1]);try{const r=await fetch('/api/v1/skillmarket/top?sort='+sortBy+'&limit=20');if(!r.ok)throw new Error(await r.text());const data=await r.json();const list=data.entries||data||[];renderCards(map[sortBy][0],map[sortBy][1],Array.isArray(list)?list:[]);}catch(_){updateMetrics([]);document.getElementById(map[sortBy][1]).style.display='';document.getElementById(map[sortBy][1]).textContent=t('network');}}
 function showDetail(s){detailName.textContent=s.name||'-';detailDesc.textContent=s.description||'';detailTags.innerHTML=(s.tags||[]).map(function(tag){return '<span class="tag">'+esc(tag)+'</span>';}).join('');detailRatingWrap.textContent=t('rating')+': '+Number(s.avg_rating||0).toFixed(1);detailDownloadsWrap.textContent=t('downloads')+': '+Number(s.download_count||0);detailPriceWrap.textContent=(s.price?String(s.price)+' '+t('credits'):t('priceFree'));detailVersionWrap.textContent=t('version')+': '+(s.version||'-');detailDateWrap.textContent=t('uploaded')+': '+(s.created_at?fmtDate(s.created_at):'-');if(s.status){detailStatusWrap.style.display='';detailStatusWrap.textContent=t('status')+': '+statusText(s.status);}else{detailStatusWrap.style.display='none';}ratingRow.innerHTML='';[-2,-1,0,1,2].forEach(function(score){var btn=document.createElement('button');btn.type='button';btn.textContent=score>0?('+'+score):String(score);btn.onclick=function(){submitRating(s.id,score);};ratingRow.appendChild(btn);});rateMsg.textContent='';detailOverlay.classList.add('active');}
 function closeDetail(){detailOverlay.classList.remove('active');}
 detailOverlay.addEventListener('click',function(e){if(e.target===detailOverlay)closeDetail();});document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDetail();});
 async function submitRating(skillID,score){var email=window.prompt(t('rateNeedEmail'));if(!email)return;try{const r=await fetch('/api/v1/skillmarket/'+skillID+'/rate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,score:score})});if(!r.ok){rateMsg.textContent=await r.text();return;}rateMsg.textContent=t('rateOk');Array.prototype.forEach.call(document.querySelectorAll('#ratingRow button'),function(btn){btn.classList.toggle('selected',btn.textContent===(score>0?('+'+score):String(score)));});}catch(_){rateMsg.textContent=t('network');}}
-Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(tab){tab.addEventListener('click',function(){Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(btn){btn.classList.remove('active');});tab.classList.add('active');['search','top-rating','top-downloads','top-newest'].forEach(function(id){document.getElementById('view-'+id).style.display=id===tab.dataset.view?'':'none';});if(tab.dataset.view==='top-rating')loadTop('rating');if(tab.dataset.view==='top-downloads')loadTop('downloads');if(tab.dataset.view==='top-newest')loadTop('newest');});});
+Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(tab){tab.addEventListener('click',function(){Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(btn){btn.classList.remove('active');});tab.classList.add('active');['search','top-rating','top-downloads','top-newest'].forEach(function(id){document.getElementById('view-'+id).style.display=id===tab.dataset.view?'':'none';});updateSectionText();if(tab.dataset.view==='top-rating')loadTop('rating');if(tab.dataset.view==='top-downloads')loadTop('downloads');if(tab.dataset.view==='top-newest')loadTop('newest');if(tab.dataset.view==='search')doSearch();});});
 searchInput.addEventListener('keydown',function(e){if(e.key==='Enter')doSearch();});
 applyI18n();doSearch();
 </script>

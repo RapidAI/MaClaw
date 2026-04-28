@@ -6,6 +6,14 @@ export function AckGoalPush(arg1, arg2, arg3) {
   return window['go']['main']['App']['AckGoalPush'](arg1, arg2, arg3);
 }
 
+export function AutoHandleGoalPush(arg1) {
+  return window['go']['main']['App']['AutoHandleGoalPush'](arg1);
+}
+
+export function AutoHandleRecommendedGoalPushes() {
+  return window['go']['main']['App']['AutoHandleRecommendedGoalPushes']();
+}
+
 export function CheckCenterHealth() {
   return window['go']['main']['App']['CheckCenterHealth']();
 }
@@ -14,6 +22,10 @@ export function CheckCenterHealth() {
 export function DeleteWorkerMemory(arg1) {
   return window['go']['main']['App']['DeleteWorkerMemory'](arg1);
 }
+export function FetchAgentInstances() {
+  return window['go']['main']['App']['FetchAgentInstances']();
+}
+
 export function FetchGoalPushes(arg1) {
   return window['go']['main']['App']['FetchGoalPushes'](arg1);
 }
@@ -30,8 +42,16 @@ export function GetAppInfo() {
   return window['go']['main']['App']['GetAppInfo']();
 }
 
+export function GetGoalWatchAutoHandleStatus() {
+  return window['go']['main']['App']['GetGoalWatchAutoHandleStatus']();
+}
+
 export function GetWelcomeData() {
   return window['go']['main']['App']['GetWelcomeData']();
+}
+
+export function HeartbeatAgentRuntime() {
+  return window['go']['main']['App']['HeartbeatAgentRuntime']();
 }
 
 export function LoadDiWorkerSettings() {

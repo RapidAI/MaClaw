@@ -256,6 +256,8 @@ export function CancelCodeGenSSOPolling():Promise<void>;
 
 export function FetchCodeGenModels():Promise<Array<any>>;
 
+export function FetchProviderModels(arg1:string,arg2:string,arg3:string):Promise<Array<any>>;
+
 export function SaveCodeGenModelChoice(arg1:string,arg2:string):Promise<void>;
 
 export function GetOpenAIUsage():Promise<any>;
@@ -490,6 +492,8 @@ export function ClearAIAssistantHistory():Promise<void>;
 export function FetchNews():Promise<Array<any>>;
 
 export function CancelAIAssistantSession():Promise<string>;
+
+export function InjectAIAssistantSupplementary(arg1:string):Promise<boolean>;
 
 export function ResolveCriticalConfirm(arg1:string,arg2:boolean):Promise<void>;
 

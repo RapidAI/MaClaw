@@ -124,6 +124,9 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/pending-logins", RequireAdmin(admins, ListPendingLoginsHandler(identity)))
 	mux.HandleFunc("POST /api/admin/pending-logins/confirm", RequireAdmin(admins, AdminConfirmLoginHandler(identity)))
 	mux.HandleFunc("GET /api/admin/center/status", RequireAdmin(admins, GetCenterStatusHandler(centerSvc)))
+	mux.HandleFunc("POST /api/center/user-migration/export", CenterUserMigrationExportHandler(centerSvc, identity, deviceSvc))
+	mux.HandleFunc("POST /api/center/user-migration/import", CenterUserMigrationImportHandler(centerSvc, identity, deviceSvc))
+	mux.HandleFunc("POST /api/center/user-migration/delete", CenterUserMigrationDeleteHandler(centerSvc, identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, voiceprintSvc))
 	mux.HandleFunc("POST /api/admin/center/config", RequireAdmin(admins, UpdateCenterConfigHandler(centerSvc, identity, func(url string) {
 		if qqbotPlugin != nil {
 			qqbotPlugin.SetPublicBaseURL(url)

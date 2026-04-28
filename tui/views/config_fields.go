@@ -316,7 +316,7 @@ var allConfigFields = []ConfigFieldDef{
 	// ---- Tab 4: Security ----
 	{
 		Key: "security_policy_mode", Tab: CfgTabSecurity, Section: "security",
-		DescKey: i18n.MsgTUIConfigDescSecurityMode, Options: []string{"standard", "strict", "permissive"}, Default: "standard",
+		DescKey: i18n.MsgTUIConfigDescSecurityMode, Options: []string{"standard", "strict", "permissive", "developer"}, Default: "standard",
 		Get: func(c *corelib.AppConfig) string { return c.SecurityPolicyMode },
 		Set: func(c *corelib.AppConfig, v string) { c.SecurityPolicyMode = v },
 	},

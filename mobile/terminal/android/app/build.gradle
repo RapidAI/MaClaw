@@ -20,8 +20,10 @@ android {
         versionCode 1
         versionName "1.0"
 
-        buildConfigField "String", "DEFAULT_START_URL", "\"file:///android_asset/bootstrap.html?hubcenter=http%3A%2F%2Fhubs.mypapers.top%3A9388\""
-        buildConfigField "String", "DEFAULT_HUBCENTER_URL", "\"http://hubs.mypapers.top:9388\""
+        // Seed HubCenter URLs — must stay in sync with
+        // corelib/remote/defaults.go DefaultRemoteHubCenterURLs.
+        buildConfigField "String", "DEFAULT_START_URL", "\"file:///android_asset/bootstrap.html?hubcenter=https%3A%2F%2Fhubs.mypapers.top\""
+        buildConfigField "String", "DEFAULT_HUBCENTER_URL", "\"https://hubs.mypapers.top\""
     }
 
     signingConfigs {

@@ -157,3 +157,127 @@ func TestIntentUnderstanding_HandleInputNoSession(t *testing.T) {
 		t.Error("expected error for non-existent session")
 	}
 }
+
+
+func TestParseLLMIntentResponse_TrailingComma(t *testing.T) {
+	// LLMs frequently produce trailing commas in JSON. Go's json.Unmarshal
+	// rejects them. parseLLMIntentResponse must strip them before parsing.
+	raw := `{
+		"intent": {
+			"category": "presentation_design",
+			"summary": "生成PPT",
+			"goals": ["设计PPT"],
+			"constraints": ["庆祝主题"],
+			"confidence": 0.85,
+			"ready": true
+		},
+		"reply": "收到！已经为你启动工作流。",
+	}`
+
+	reply, intent, ready, parseOK := parseLLMIntentResponse(raw)
+	if !parseOK {
+		t.Fatal("expected parseOK=true, trailing comma should be stripped")
+	}
+	if reply != "收到！已经为你启动工作流。" {
+		t.Errorf("reply = %q, want extracted reply text", reply)
+	}
+	if intent.Category != "presentation_design" {
+		t.Errorf("category = %q, want presentation_design", intent.Category)
+	}
+	if !ready {
+		t.Error("expected ready=true (from intent.Ready)")
+	}
+}
+
+func TestParseLLMIntentResponse_ReadyInsideIntent(t *testing.T) {
+	// Some LLMs place "ready" inside the "intent" object instead of at
+	// the top level. parseLLMIntentResponse must accept both locations.
+	raw := `{"intent":{"category":"coding","summary":"test","ready":true},"reply":"开始吧"}`
+
+	_, _, ready, parseOK := parseLLMIntentResponse(raw)
+	if !parseOK {
+		t.Fatal("expected parseOK=true")
+	}
+	if !ready {
+		t.Error("expected ready=true from intent.Ready (top-level ready is missing)")
+	}
+}
+
+func TestParseLLMIntentResponse_ReadyAtTopLevel(t *testing.T) {
+	// Standard case: ready at top level.
+	raw := `{"intent":{"category":"coding","summary":"test"},"reply":"ok","ready":true}`
+
+	_, _, ready, parseOK := parseLLMIntentResponse(raw)
+	if !parseOK {
+		t.Fatal("expected parseOK=true")
+	}
+	if !ready {
+		t.Error("expected ready=true from top-level ready")
+	}
+}
+
+func TestStripTrailingJSONCommas(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{`{"a": 1,}`, `{"a": 1}`},
+		{`{"a": [1, 2,]}`, `{"a": [1, 2]}`},
+		{`{"a": 1, "b": 2,}`, `{"a": 1, "b": 2}`},
+		{`{"a": 1}`, `{"a": 1}`}, // no trailing comma — unchanged
+		{`{"a": "hello,"}`, `{"a": "hello,"}`}, // comma inside string — unchanged (regex doesn't match)
+	}
+	for _, tc := range cases {
+		got := stripTrailingJSONCommas(tc.in)
+		if got != tc.want {
+			t.Errorf("stripTrailingJSONCommas(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+
+func TestParseLLMIntentResponse_Failure_ReturnsEmptyReply(t *testing.T) {
+	// When JSON parsing fails, reply must be empty (not the raw LLM output).
+	// This is the mechanism-level fix: callers check parseOK and provide
+	// a user-friendly fallback instead of displaying raw JSON.
+	raw := `{"intent": {"category": "coding", INVALID JSON HERE}`
+
+	reply, _, _, parseOK := parseLLMIntentResponse(raw)
+	if parseOK {
+		t.Fatal("expected parseOK=false for invalid JSON")
+	}
+	if reply != "" {
+		t.Errorf("on parse failure, reply should be empty, got %q", reply)
+	}
+}
+
+func TestHandleInput_ParseFailure_FallsThrough(t *testing.T) {
+	// When the LLM returns malformed JSON during HandleInput, the session
+	// should be cleaned up and the function should return an error so the
+	// caller falls through to the normal agent loop. The user must NEVER
+	// see raw JSON.
+	llm := &MockLLMCaller{
+		Response: `{"intent":{"category":"coding"},"reply":"ok","ready":false}`,
+	}
+	mgr := NewIntentUnderstandingManager(NullStore{}, llm, nil)
+
+	// Start a session (this succeeds).
+	_, err := mgr.Start("u1", "做个系统")
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if !mgr.HasActiveSession("u1") {
+		t.Fatal("expected active session")
+	}
+
+	// Now make the LLM return malformed JSON for HandleInput.
+	llm.Response = `{"intent": BROKEN, "reply": "should not see this"}`
+
+	_, _, _, _, err = mgr.HandleInput("u1", "开工")
+	if err == nil {
+		t.Fatal("HandleInput should return error on parse failure")
+	}
+	// Session should be cleaned up.
+	if mgr.HasActiveSession("u1") {
+		t.Error("session should be cleaned up after parse failure")
+	}
+}

@@ -144,7 +144,7 @@ func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 func (h *Handler) handleBundles(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		tenantID := tenant.TenantIDFromContext(r.Context())
+		tenantID := tenant.RequestTenantID(r)
 		bundles, err := h.repo.List(tenantID)
 		if err != nil {
 			response.Internal(w, err.Error())
@@ -161,7 +161,7 @@ func (h *Handler) handleBundles(w http.ResponseWriter, r *http.Request) {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}
-		tenantID := tenant.TenantIDFromContext(r.Context())
+		tenantID := tenant.RequestTenantID(r)
 		latestVer, _ := h.repo.GetLatestVersion(tenantID)
 		payloadBytes, _ := json.Marshal(req.Payload)
 		now := time.Now()
@@ -191,7 +191,7 @@ func (h *Handler) handleBundleByID(w http.ResponseWriter, r *http.Request) {
 	id := parts[0]
 
 	if len(parts) == 2 && parts[1] == "publish" && r.Method == http.MethodPost {
-		tenantID := tenant.TenantIDFromContext(r.Context())
+		tenantID := tenant.RequestTenantID(r)
 		if err := h.repo.Publish(id, tenantID); err != nil {
 			response.BadRequest(w, "PUBLISH_FAILED", err.Error())
 			return
@@ -208,7 +208,7 @@ func (h *Handler) handleClientVersion(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	bundle, err := h.repo.GetLatestPublished(tenant.TenantIDFromContext(r.Context()))
+	bundle, err := h.repo.GetLatestPublished(tenant.RequestTenantID(r))
 	if err != nil {
 		response.OK(w, map[string]any{"version": 0, "available": false})
 		return
@@ -225,7 +225,7 @@ func (h *Handler) handleClientLatest(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	bundle, err := h.repo.GetLatestPublished(tenant.TenantIDFromContext(r.Context()))
+	bundle, err := h.repo.GetLatestPublished(tenant.RequestTenantID(r))
 	if err != nil {
 		response.NotFound(w, "NOT_FOUND", "no published config bundle")
 		return

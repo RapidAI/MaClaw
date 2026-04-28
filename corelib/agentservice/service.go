@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1628,7 +1629,9 @@ func (s *Service) ListAuditEvents(ctx context.Context, in ListAuditEventsInput) 
 	}
 	action := strings.TrimSpace(in.Action)
 	resourceType := strings.TrimSpace(in.ResourceType)
-	if action == "" && resourceType == "" {
+	resourceID := strings.TrimSpace(in.ResourceID)
+	actorType := strings.TrimSpace(in.ActorType)
+	if action == "" && resourceType == "" && resourceID == "" && actorType == "" && in.Since == nil && in.Until == nil {
 		return items, nil
 	}
 	filtered := make([]AuditEvent, 0, len(items))
@@ -1637,6 +1640,18 @@ func (s *Service) ListAuditEvents(ctx context.Context, in ListAuditEventsInput) 
 			continue
 		}
 		if resourceType != "" && item.ResourceType != resourceType {
+			continue
+		}
+		if resourceID != "" && item.ResourceID != resourceID {
+			continue
+		}
+		if actorType != "" && item.ActorType != actorType {
+			continue
+		}
+		if in.Since != nil && item.CreatedAt.Before(*in.Since) {
+			continue
+		}
+		if in.Until != nil && item.CreatedAt.After(*in.Until) {
 			continue
 		}
 		filtered = append(filtered, item)
@@ -1957,10 +1972,27 @@ func (s *Service) GetAdminOverview(ctx context.Context) (*AdminOverview, error) 
 		return nil, err
 	}
 	overview.AuditEvents = len(auditEvents)
+	snapshots, snapshotBytes, err := s.snapshotStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	overview.Snapshots = snapshots
+	overview.SnapshotBytes = snapshotBytes
 	for _, event := range auditEvents {
 		overview.LastAuditAt = laterTime(overview.LastAuditAt, event.CreatedAt)
 	}
 	return overview, nil
+}
+func (s *Service) snapshotStats(ctx context.Context) (int, int64, error) {
+	snapshots, err := s.ListServiceSnapshots(ctx, ListServiceSnapshotsInput{})
+	if err != nil {
+		return 0, 0, err
+	}
+	var bytes int64
+	for _, snapshot := range snapshots {
+		bytes += snapshot.SizeBytes
+	}
+	return len(snapshots), bytes, nil
 }
 func buildAdminTrendPoints(now time.Time, points int, bucketSize time.Duration) []AdminTrendPoint {
 	items := make([]AdminTrendPoint, 0, points)
@@ -2554,6 +2586,243 @@ func exportCredential(cred Credential, includeSecrets bool) ExportedCredential {
 	return out
 }
 
+func (s *Service) CreateServiceSnapshot(ctx context.Context, in CreateServiceSnapshotInput) (*ServiceSnapshotEnvelope, error) {
+	includeMessages := in.IncludeMessages == nil || *in.IncludeMessages
+	includeRuns := in.IncludeRuns == nil || *in.IncludeRuns
+	includeAudit := in.IncludeAudit == nil || *in.IncludeAudit
+	includeSecrets := in.IncludeSecrets != nil && *in.IncludeSecrets
+	export, err := s.ExportServiceState(ctx, ExportServiceStateInput{
+		TenantID:        in.TenantID,
+		UserID:          in.UserID,
+		IncludeMessages: includeMessages,
+		IncludeRuns:     includeRuns,
+		IncludeAudit:    includeAudit,
+		IncludeSecrets:  includeSecrets,
+	})
+	if err != nil {
+		return nil, err
+	}
+	createdAt := s.now().UTC()
+	snapshot := ServiceSnapshot{
+		ID:              NewID("snapshot"),
+		Name:            strings.TrimSpace(in.Name),
+		Scope:           export.Scope,
+		TenantID:        export.TenantID,
+		UserID:          export.UserID,
+		IncludeMessages: export.IncludeMessages,
+		IncludeRuns:     export.IncludeRuns,
+		IncludeAudit:    export.IncludeAudit,
+		IncludeSecrets:  export.IncludeSecrets,
+		CreatedAt:       createdAt,
+	}
+	if snapshot.Name == "" {
+		snapshot.Name = snapshot.Scope + " snapshot"
+	}
+	path, err := s.snapshotPath(snapshot.ID)
+	if err != nil {
+		return nil, err
+	}
+	snapshot.Path = path
+	envelope := &ServiceSnapshotEnvelope{Snapshot: snapshot, Data: *export}
+	data, err := marshalSnapshotEnvelope(envelope)
+	if err != nil {
+		return nil, err
+	}
+	snapshot.SizeBytes = int64(len(data))
+	envelope.Snapshot = snapshot
+	data, err = marshalSnapshotEnvelope(envelope)
+	if err != nil {
+		return nil, err
+	}
+	if err := secureMkdirAll(s.snapshotRoot()); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return nil, err
+	}
+	if stat, err := os.Stat(path); err == nil {
+		envelope.Snapshot.SizeBytes = stat.Size()
+	}
+	_ = s.recordAudit(auditRecord{TenantID: snapshot.TenantID, UserID: snapshot.UserID, Action: "snapshot.created", ResourceType: "snapshot", ResourceID: snapshot.ID, ActorType: "admin", Metadata: map[string]string{"scope": snapshot.Scope}})
+	return envelope, nil
+}
+
+func (s *Service) ListServiceSnapshots(ctx context.Context, in ListServiceSnapshotsInput) ([]ServiceSnapshot, error) {
+	_ = ctx
+	in.TenantID = strings.TrimSpace(in.TenantID)
+	in.UserID = strings.TrimSpace(in.UserID)
+	if in.UserID != "" && in.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required when user_id is set")
+	}
+	entries, err := os.ReadDir(s.snapshotRoot())
+	if errors.Is(err, os.ErrNotExist) {
+		return []ServiceSnapshot{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ServiceSnapshot, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		envelope, err := s.readServiceSnapshot(strings.TrimSuffix(entry.Name(), ".json"))
+		if err != nil {
+			return nil, err
+		}
+		snapshot := envelope.Snapshot
+		if in.TenantID != "" && snapshot.TenantID != in.TenantID {
+			continue
+		}
+		if in.UserID != "" && snapshot.UserID != in.UserID {
+			continue
+		}
+		out = append(out, snapshot)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (s *Service) GetServiceSnapshot(ctx context.Context, snapshotID string) (*ServiceSnapshotEnvelope, error) {
+	_ = ctx
+	return s.readServiceSnapshot(snapshotID)
+}
+
+func (s *Service) PruneServiceSnapshots(ctx context.Context, in PruneServiceSnapshotsInput) (*PruneServiceSnapshotsOutput, error) {
+	in.TenantID = strings.TrimSpace(in.TenantID)
+	in.UserID = strings.TrimSpace(in.UserID)
+	if in.UserID != "" && in.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required when user_id is set")
+	}
+	if in.KeepLatest < 0 {
+		return nil, fmt.Errorf("keep_latest must be greater than or equal to 0")
+	}
+	if in.OlderThan == nil && in.KeepLatest == 0 {
+		return nil, fmt.Errorf("older_than or keep_latest is required")
+	}
+	items, err := s.ListServiceSnapshots(ctx, ListServiceSnapshotsInput{TenantID: in.TenantID, UserID: in.UserID})
+	if err != nil {
+		return nil, err
+	}
+	out := &PruneServiceSnapshotsOutput{
+		TenantID:    in.TenantID,
+		UserID:      in.UserID,
+		OlderThan:   in.OlderThan,
+		KeepLatest:  in.KeepLatest,
+		DryRun:      in.DryRun,
+		Matched:     len(items),
+		GeneratedAt: s.now().UTC(),
+	}
+	protected := map[string]struct{}{}
+	if in.KeepLatest > 0 {
+		newest := append([]ServiceSnapshot(nil), items...)
+		sort.Slice(newest, func(i, j int) bool { return newest[i].CreatedAt.After(newest[j].CreatedAt) })
+		for i, item := range newest {
+			if i >= in.KeepLatest {
+				break
+			}
+			protected[item.ID] = struct{}{}
+			out.KeptSnapshots = append(out.KeptSnapshots, item)
+		}
+	}
+	for _, item := range items {
+		if _, ok := protected[item.ID]; ok {
+			continue
+		}
+		if in.OlderThan != nil && !item.CreatedAt.Before(*in.OlderThan) {
+			continue
+		}
+		out.Snapshots = append(out.Snapshots, item)
+		out.FreedBytes += item.SizeBytes
+		if in.DryRun {
+			continue
+		}
+		path, err := s.snapshotPath(item.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		out.Deleted++
+	}
+	_ = s.recordAudit(auditRecord{TenantID: in.TenantID, UserID: in.UserID, Action: "snapshot.pruned", ResourceType: "snapshot", ActorType: "admin", Metadata: map[string]string{"dry_run": fmt.Sprintf("%v", in.DryRun), "deleted": fmt.Sprintf("%d", out.Deleted), "candidates": fmt.Sprintf("%d", len(out.Snapshots)), "keep_latest": fmt.Sprintf("%d", in.KeepLatest)}})
+	return out, nil
+}
+func (s *Service) RestoreServiceSnapshot(ctx context.Context, snapshotID string, in RestoreServiceSnapshotInput) (*RestoreServiceSnapshotOutput, error) {
+	envelope, err := s.readServiceSnapshot(snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	imported, err := s.ImportServiceState(ctx, ImportServiceStateRequest{Data: envelope.Data, Overwrite: in.Overwrite, DryRun: in.DryRun})
+	if err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: envelope.Snapshot.TenantID, UserID: envelope.Snapshot.UserID, Action: "snapshot.restored", ResourceType: "snapshot", ResourceID: envelope.Snapshot.ID, ActorType: "admin", Metadata: map[string]string{"dry_run": fmt.Sprintf("%v", in.DryRun), "overwrite": fmt.Sprintf("%v", in.Overwrite), "scope": envelope.Snapshot.Scope}})
+	return &RestoreServiceSnapshotOutput{Snapshot: envelope.Snapshot, Import: *imported}, nil
+}
+func (s *Service) DeleteServiceSnapshot(ctx context.Context, snapshotID string) (*ServiceSnapshot, error) {
+	_ = ctx
+	envelope, err := s.readServiceSnapshot(snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	path, err := s.snapshotPath(snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Remove(path); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{TenantID: envelope.Snapshot.TenantID, UserID: envelope.Snapshot.UserID, Action: "snapshot.deleted", ResourceType: "snapshot", ResourceID: envelope.Snapshot.ID, ActorType: "admin", Metadata: map[string]string{"scope": envelope.Snapshot.Scope}})
+	return &envelope.Snapshot, nil
+}
+
+func (s *Service) readServiceSnapshot(snapshotID string) (*ServiceSnapshotEnvelope, error) {
+	path, err := s.snapshotPath(snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrSnapshotNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var envelope ServiceSnapshotEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Snapshot.ID == "" {
+		return nil, ErrSnapshotNotFound
+	}
+	envelope.Snapshot.Path = path
+	if stat, err := os.Stat(path); err == nil {
+		envelope.Snapshot.SizeBytes = stat.Size()
+	}
+	return &envelope, nil
+}
+
+func (s *Service) snapshotRoot() string {
+	return filepath.Join(s.dataRoot, "snapshots")
+}
+
+func (s *Service) snapshotPath(snapshotID string) (string, error) {
+	id := strings.TrimSpace(snapshotID)
+	if id == "" || strings.ContainsAny(id, `/\\`) || strings.Contains(id, "..") {
+		return "", ErrSnapshotNotFound
+	}
+	return filepath.Join(s.snapshotRoot(), id+".json"), nil
+}
+
+func marshalSnapshotEnvelope(envelope *ServiceSnapshotEnvelope) ([]byte, error) {
+	data, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
 func (s *Service) ImportServiceState(ctx context.Context, in ImportServiceStateRequest) (*ImportServiceStateOutput, error) {
 	_ = ctx
 	data := in.Data

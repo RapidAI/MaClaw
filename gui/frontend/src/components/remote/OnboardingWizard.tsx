@@ -41,6 +41,7 @@ interface LLMProvider {
     auth_type?: string;
     agent_type?: string;
     supports_vision?: boolean;
+    wire_api?: string;
 }
 
 type Props = {
@@ -405,7 +406,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                 setLlmDone(true);
                 onLLMConfigured();
             } else {
-                const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
+                const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw", wire_api: sp.wire_api || "" });
                 const nextProviders = providers.map((provider, index) => index === selectedIdx
                     ? { ...provider, supports_vision: testResult.supports_vision }
                     : { ...provider });

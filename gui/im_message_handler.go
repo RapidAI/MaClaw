@@ -196,6 +196,13 @@ type agentLoopPhase struct {
 	// (finish_reason="length"). Capped at maxLengthContinuations to
 	// prevent infinite loops.
 	LengthContinuations int
+
+	// TruncationRetries tracks how many times the loop has retried after
+	// filterTruncatedToolCalls removed tool calls with incomplete JSON
+	// arguments (output token limit hit). Capped at maxTruncationRetries
+	// to prevent infinite loops when the model keeps producing oversized
+	// arguments.
+	TruncationRetries int
 }
 
 // skillHintWordBoundaryRe matches a skill preference hint as a whole word,
@@ -212,6 +219,20 @@ func shouldPreferSkillForTask(text string) bool {
 	if lower == "" {
 		return false
 	}
+
+	// Intent-capability pre-check: if the user's intent is clearly a
+	// query/inspect action (统计/搜索/查找/列出/打开/读取), skills are
+	// unlikely to help — the user wants to operate on existing files, not
+	// generate new ones. Only enter the skill preference path when the
+	// intent is compatible with generation (the dominant skill capability).
+	//
+	// This prevents "统计d盘上的pdf文件" from triggering skill search
+	// just because it contains "pdf". The user wants to COUNT files, not
+	// CONVERT them.
+	if !isIntentSkillPreferenceCompatible(text) {
+		return false
+	}
+
 	// Substring hints — safe for multi-char Chinese phrases and distinctive
 	// English terms that rarely appear as substrings of other words.
 	substringHints := []string{
@@ -239,6 +260,8 @@ func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, str
 	if lower == "" {
 		return "", ""
 	}
+	// Extract intent once, reuse for all skill comparisons.
+	userIntent := extractUserIntentCategory(userText)
 	bestName := ""
 	bestReason := ""
 	bestScore := 0
@@ -272,6 +295,13 @@ func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, str
 					}
 				}
 			}
+		}
+		// Intent-capability compatibility gate: even if topic tokens match,
+		// reject the skill when the user's action verb is incompatible with
+		// the skill's declared capability. This prevents "统计 PDF 文件"
+		// (query intent) from matching "xh-md-to-pdf" (generate capability).
+		if score > 0 && !isIntentCategoryCompatibleWithSkill(userIntent, skill.Description) {
+			continue
 		}
 		if score > bestScore {
 			bestScore = score
@@ -616,12 +646,80 @@ func (h *IMMessageHandler) pendingBackgroundTaskHint(loopStart time.Time) string
 // paths inside runAgentLoop, structurally enforcing the invariant that the
 // loop always saves (never clears) history.
 func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.ConversationEntry, userText string) *IMAgentResponse {
+	// Cancel can interrupt the tool execution loop after the assistant
+	// message (with tool_calls) was recorded but before all tool results
+	// were added. This leaves a broken pair in history that would cause
+	// HTTP 400 on strict APIs (DeepSeek). Fix at the point of creation:
+	// find the last assistant(tool_calls), strip its ToolCalls, and remove
+	// any partial tool results that follow it.
+	history = stripTrailingBrokenToolGroup(history)
 	h.saveConversationHistoryTimed(userID, history, nil)
 	cancelMsg := "⏹️ 任务已取消。"
 	if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
 		cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
 	}
 	return &IMAgentResponse{Text: cancelMsg}
+}
+
+// stripTrailingBrokenToolGroup checks if the history ends with an incomplete
+// tool_calls group (assistant with tool_calls + fewer tool results than
+// tool_call IDs). If so, strips ToolCalls from the assistant and removes
+// the partial tool results. This is only needed for cancel/error exit paths
+// where the agent loop was interrupted mid-execution.
+func stripTrailingBrokenToolGroup(history []agent.ConversationEntry) []agent.ConversationEntry {
+	if len(history) == 0 {
+		return history
+	}
+	// Find the last assistant(tool_calls) by scanning backwards.
+	assistantIdx := -1
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "assistant" && history[i].ToolCalls != nil {
+			assistantIdx = i
+			break
+		}
+		// Stop scanning if we hit a user message — the broken group must
+		// be at the tail of the conversation.
+		if history[i].Role == "user" {
+			break
+		}
+	}
+	if assistantIdx < 0 {
+		return history
+	}
+	// Check if all tool results are present after this assistant.
+	// Count tool entries immediately following the assistant.
+	toolCount := 0
+	for j := assistantIdx + 1; j < len(history); j++ {
+		if history[j].Role != "tool" {
+			break
+		}
+		toolCount++
+	}
+	// Count expected tool_call IDs.
+	expectedCount := 0
+	if data, err := json.Marshal(history[assistantIdx].ToolCalls); err == nil {
+		var arr []struct{ ID string `json:"id"` }
+		if json.Unmarshal(data, &arr) == nil {
+			expectedCount = len(arr)
+		}
+	}
+	if expectedCount > 0 && toolCount >= expectedCount {
+		return history // group is complete, nothing to fix
+	}
+	// Incomplete group — strip ToolCalls and remove partial tool results.
+	// Copy the entry before mutating to avoid corrupting the caller's slice.
+	patched := history[assistantIdx]
+	patched.ToolCalls = nil
+	history[assistantIdx] = patched
+	// Remove tool entries after the assistant.
+	cutEnd := assistantIdx + 1
+	for cutEnd < len(history) && history[cutEnd].Role == "tool" {
+		cutEnd++
+	}
+	if cutEnd > assistantIdx+1 {
+		history = append(history[:assistantIdx+1], history[cutEnd:]...)
+	}
+	return history
 }
 
 // findLastAssistantContent scans conversation history backwards and returns
@@ -3165,7 +3263,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 	// Extract all bundled files to ~/.maclaw/data/skills/<name>/.
 	installSkillDir := ""
 	if len(full.Files) > 0 && full.Name != "" {
-		extractSkillFiles(full.Name, full.Files)
+		extractSkillFiles(full.Name, full.Files, "")
 		if skillsRoot, err := cskill.PrimarySkillsDir(); err == nil {
 			installSkillDir = filepath.Join(skillsRoot, full.Name)
 		}
@@ -3199,15 +3297,19 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 	}, nil
 }
 
-// extractSkillFiles decodes base64-encoded files and writes them to
-// ~/.maclaw/data/skills/<skillName>/, preserving subdirectory structure.
-func extractSkillFiles(skillName string, files map[string]string) {
-	skillsRoot, err := cskill.PrimarySkillsDir()
-	if err != nil {
-		log.Printf("[skill-install] cannot determine skills dir: %v", err)
-		return
+// extractSkillFiles decodes base64-encoded files and writes them to the
+// specified targetDir, preserving subdirectory structure.
+// When targetDir is empty, falls back to ~/.maclaw/data/skills/<skillName>/.
+func extractSkillFiles(skillName string, files map[string]string, targetDir string) {
+	skillDir := targetDir
+	if skillDir == "" {
+		skillsRoot, err := cskill.PrimarySkillsDir()
+		if err != nil {
+			log.Printf("[skill-install] cannot determine skills dir: %v", err)
+			return
+		}
+		skillDir = filepath.Join(skillsRoot, skillName)
 	}
-	skillDir := filepath.Join(skillsRoot, skillName)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		log.Printf("[skill-install] cannot create %s: %v", skillDir, err)
 		return
@@ -3253,18 +3355,17 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		return fmt.Sprintf("找到 Skill「%s」但 SkillExecutor 未初始化", displayName)
 	}
 
-	// Security review via RiskAssessor if available.
-	if h.getRiskAssessor() != nil {
-		sendStatus("🔒 正在进行安全审查...")
-		assessment := h.getRiskAssessor().AssessSkill(skill, skill.TrustLevel)
-		if assessment.Level == security.RiskCritical {
-			confirmed := h.confirmCriticalRiskSkill(
-				ctx, displayName, source, assessment.Factors, platform, userID,
-			)
+	// Security review: staging + intelligent scan.
+	// Developer mode: skip security review entirely.
+	if !h.isSecurityDeveloperMode() {
+		scanner := NewSkillSecurityScanner(h.app, nil)
+		scanReport := scanner.ScanStaged(ctx, skill, skill.SkillDir, sendStatus)
 
+		if scanReport.IsDangerous() {
+			confirmed := h.confirmCriticalRiskSkill(
+				ctx, displayName, source, scanReport.PatternAssessment.Factors, platform, userID,
+			)
 			if !confirmed {
-				// User rejected (or timeout / fail-closed).
-				_ = h.getAuditLog() // ensure
 				if h.getAuditLog() != nil {
 					_ = h.getAuditLog().Log(security.AuditEntry{
 						Timestamp:    time.Now(),
@@ -3272,15 +3373,12 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 						ToolName:     source + "_skill_install",
 						RiskLevel:    security.RiskCritical,
 						PolicyAction: security.PolicyDeny,
-						Result:       fmt.Sprintf("user rejected critical skill %s: critical risk", displayName),
+						Result:       fmt.Sprintf("user rejected critical skill %s: %s", displayName, scanReport.Summary),
 					})
 				}
-				return fmt.Sprintf("⚠️ Skill「%s」包含高风险操作，已拒绝自动安装。风险因素: %s",
-					displayName, strings.Join(assessment.Factors, ", "))
+				return FormatScanReportForUser(scanReport, displayName) +
+					fmt.Sprintf("\n⚠️ Skill「%s」已拒绝自动安装。", displayName)
 			}
-
-			// User confirmed — audit with PolicyUserOverride and continue to registration.
-			_ = h.getAuditLog() // ensure
 			if h.getAuditLog() != nil {
 				_ = h.getAuditLog().Log(security.AuditEntry{
 					Timestamp:    time.Now(),
@@ -3288,9 +3386,26 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 					ToolName:     source + "_skill_install",
 					RiskLevel:    security.RiskCritical,
 					PolicyAction: security.PolicyUserOverride,
-					Result: fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical, factors=[%s]",
-						displayName, source, strings.Join(assessment.Factors, ", ")),
+					Result:       fmt.Sprintf("user confirmed critical skill %s, scanned_by=%s", displayName, scanReport.ScannedBy),
 				})
+			}
+		} else if scanReport.NeedsUserReview() {
+			confirmed := h.confirmCriticalRiskSkill(
+				ctx, displayName, source, scanReport.PatternAssessment.Factors, platform, userID,
+			)
+			if !confirmed {
+				if h.getAuditLog() != nil {
+					_ = h.getAuditLog().Log(security.AuditEntry{
+						Timestamp:    time.Now(),
+						Action:       security.AuditActionHubSkillReject,
+						ToolName:     source + "_skill_install",
+						RiskLevel:    security.RiskHigh,
+						PolicyAction: security.PolicyDeny,
+						Result:       fmt.Sprintf("user rejected high-risk skill %s: %s", displayName, scanReport.Summary),
+					})
+				}
+				return FormatScanReportForUser(scanReport, displayName) +
+					fmt.Sprintf("\n⚠️ Skill「%s」已拒绝自动安装。", displayName)
 			}
 		}
 	}
@@ -5152,6 +5267,51 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 	return taskText, nil
 }
 
+// InjectSupplementary stores a supplementary message for the running agent
+// loop to consume at the start of its next iteration. Returns true if a loop
+// is currently active (injection accepted), false otherwise.
+//
+// This is the mechanism behind the desktop panel's "fire" (发射) button:
+// the user's buffered message is injected as supplementary context without
+// cancelling the ongoing task. The agent loop picks it up via
+// pendingInjection.LoadAndDelete at the top of each iteration.
+//
+// Multiple rapid injections are accumulated (newline-separated) rather than
+// overwriting each other, so consecutive fire clicks don't lose messages.
+func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
+	if h.currentLoopCtx == nil || h.currentLoopCtx.IsCancelled() {
+		return false
+	}
+	h.accumulateInjection(userID, "[用户补充] "+text)
+	log.Printf("[inject-supplementary] user=%s text=%s", userID, truncateForLog(text, 60))
+	return true
+}
+
+// accumulateInjection appends text to the pending injection for the given
+// user. If no pending injection exists, it creates one. If one already
+// exists (from a prior injection in the same iteration window), the new
+// text is appended with a newline separator.
+//
+// This is the single write path for pendingInjection — all callers
+// (InjectSupplementary, interrupt handler Merge, HandleCorrection Merge)
+// must use this method instead of calling pendingInjection.Store directly.
+func (h *IMMessageHandler) accumulateInjection(userID, prefixedText string) {
+	for {
+		existing, loaded := h.pendingInjection.Load(userID)
+		if !loaded {
+			if _, raced := h.pendingInjection.LoadOrStore(userID, prefixedText); !raced {
+				return
+			}
+			continue
+		}
+		oldText, _ := existing.(string)
+		combined := oldText + "\n" + prefixedText
+		if h.pendingInjection.CompareAndSwap(userID, existing, combined) {
+			return
+		}
+	}
+}
+
 // parseSlotKind converts a string slot kind to the SlotKind enum.
 // Defaults to SlotKindScheduled for unknown values.
 func parseSlotKind(s string) SlotKind {
@@ -5437,7 +5597,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		h.traceService.SetRunLoopID(ctx.RunID, ctx.ID)
 		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", truncateTraceText(userText, 180), "", "")
 	}
-	defer func() { h.currentLoopCtx = nil; h.lastUserText = ""; h.lastUserID = ""; ctx.Done() }()
+	defer func() {
+		// Clean up residual pending injection to prevent stale messages
+		// from leaking into the next agent loop for this user.
+		h.pendingInjection.Delete(userID)
+		h.currentLoopCtx = nil
+		h.lastUserText = ""
+		h.lastUserID = ""
+		ctx.Done()
+	}()
 
 	// Derive a context.Context from the LoopContext's CancelC so that
 	// in-flight HTTP requests (LLM streaming) are aborted on cancel.
@@ -5782,6 +5950,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, gic, h.lastUserID)
 
+	// When the user has disabled the workflow toggle ("打开工作流" = off),
+	// deactivate both the coding tool gate and the steering detector so the
+	// three-phase flow is not enforced. Without this, turning off the toggle
+	// only disables engine-driven workflows (via getWorkflowEngine() → nil)
+	// but the steering-driven coding gate + detector continue to operate.
+	workflowOff := h.app != nil && h.app.workflowDisabled.Load()
+	if workflowOff {
+		gateConfig.active = false
+	}
+
 	// Refine milestone tracker complexity now that intent is known.
 	if gateConfig.intent != "" {
 		milestoneTracker.RefineIntent(string(gateConfig.intent))
@@ -5885,6 +6063,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		//     do NOT emit fullscreen banner yet; defer to first actual
 		//     coding tool interception
 		shouldActivate := gateConfig.active || h.conversationHasCodingContext()
+		// When workflow is disabled, suppress the steering detector entirely.
+		// The detector emits doc preview events and fullscreen banners that
+		// are meaningless when the user has turned off workflow.
+		if workflowOff {
+			shouldActivate = false
+		}
 		if shouldActivate {
 			hasEngineWorkflow := false
 			if h.getWorkflowEngine() != nil {
@@ -6128,9 +6312,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if injected, ok := h.pendingInjection.LoadAndDelete(userID); ok {
 			injectedText, _ := injected.(string)
 			if injectedText != "" {
+				// The prefix (e.g. "[用户补充]") is already included by the
+				// writer (InjectSupplementary / classifyMergeInjection).
+				// Do NOT add another prefix here.
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": "[用户补充] " + injectedText,
+					"content": injectedText,
 				})
 				log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(injectedText, 50))
 			}
@@ -6789,6 +6976,41 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			//
 			// Cap at 3 continuations to prevent infinite loops when the model
 			// keeps producing max-length outputs.
+
+			// --- Truncated tool call recovery ---
+			// When filterTruncatedToolCalls removed tool calls with incomplete
+			// JSON arguments (output token limit hit), the assistant message
+			// in conversation already contains the LLM's original text (clean,
+			// no system hint). We inject a separate system message with the
+			// truncation hint so the LLM sees it in the next iteration and
+			// retries with shorter arguments.
+			//
+			// This is NOT a stall or deliverable — it's a recoverable error
+			// caused by output length limits. Without this, the no-tool branch
+			// falls through to agentStageFinalize and returns the LLM's text
+			// as the final response, even though the LLM intended to call a tool.
+			//
+			// Cap at 3 retries to prevent infinite loops when the model keeps
+			// producing oversized arguments.
+			const maxTruncationRetries = 3
+			if len(choice.TruncatedToolNames) > 0 && phase.TruncationRetries < maxTruncationRetries {
+				phase.TruncationRetries++
+				phase.ConsecutiveNoTool = 0 // reset — this is not a stall
+				truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
+				log.Printf("[agent-loop] truncated tool call recovery (retry %d/%d, iter=%d, tools=%s), injecting hint as system message",
+					phase.TruncationRetries, maxTruncationRetries, iteration, truncatedList)
+				hint := fmt.Sprintf("[系统提示] 以下工具调用的参数不完整（被截断或缺少必需字段）：%s。"+
+					"请将大文件内容拆分为多次写入（每次不超过 5000 字符），或使用 bash 工具通过脚本写入。",
+					truncatedList)
+				systemMessagesStart := len(conversation)
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": hint,
+				})
+				recordSystemMessages(systemMessagesStart, conversation)
+				continue
+			}
+
 			const maxLengthContinuations = 3
 			if choice.FinishReason == "length" && phase.LengthContinuations < maxLengthContinuations {
 				phase.LengthContinuations++
@@ -7126,7 +7348,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Skip when the LLM has been actively working (many tool-call
 			// iterations) or the response is long — these are summaries/reports,
 			// not "I can't do this" signals.
-			skipCapabilityGap := iteration >= 3 || len(trimmedVisibleContent) > 500
+			skipCapabilityGap := iteration >= 3 || len(trimmedVisibleContent) > 500 || len(choice.TruncatedToolNames) > 0
 			if !skipCapabilityGap && h.capabilityGapDetector != nil && h.capabilityGapDetector.Detect(msgContent) {
 				// Capture values for the goroutine closure BEFORE the agent
 				// loop's defer clears currentLoopCtx and lastUserID.
@@ -7181,6 +7403,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				finalText = lengthContinuationBuf.String() + msgContent
 				log.Printf("[agent-loop] assembled %d continuation chunks into final response (totalLen=%d)", phase.LengthContinuations+1, len(finalText))
 			}
+			// When truncation retries are exhausted, append a user-facing
+			// explanation so the response doesn't end with a broken promise
+			// like "让我直接运行 pptx-generator Skill 来生成这个PPT" with
+			// no actual execution.
+			if len(choice.TruncatedToolNames) > 0 && phase.TruncationRetries >= maxTruncationRetries {
+				finalText += "\n\n⚠️ 工具调用参数过长，多次重试仍被截断。请尝试简化请求或分步执行。"
+				log.Printf("[agent-loop] truncation retries exhausted (%d), appending user-facing explanation", phase.TruncationRetries)
+			}
 			finalResp := &IMAgentResponse{Text: stripThinkingTags(finalText)}
 			// --- Browser diagnostic CP7: Final output ---
 			BrowserDiagCP7_FinalOutput(finalResp.Text, "msgContent")
@@ -7213,6 +7443,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		phase.Stage = agentStageExecute
 		phase.ConsecutiveNoTool = 0
+
+		// Log partial truncation when some (but not all) tool calls were
+		// removed. The valid calls proceed normally; the LLM will see their
+		// results and may retry the truncated ones in the next iteration.
+		if len(choice.TruncatedToolNames) > 0 {
+			log.Printf("[agent-loop] partial truncation: %d tool call(s) removed (%s), %d valid call(s) proceeding",
+				len(choice.TruncatedToolNames), strings.Join(choice.TruncatedToolNames, ", "), len(choice.Message.ToolCalls))
+		}
 
 		// --- Steering Workflow: emit suggest_maximize on first tool call ---
 		// Only emit when the gate actually intercepted coding tools in this
@@ -7509,11 +7747,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// When the model generates content too long for a single JSON argument,
 			// the output gets truncated and parsing fails, or required params are
 			// omitted. After 2 consecutive failures, inject a system message guiding
-			// the model to chunk writes. Also matches the hint injected by
-			// filterTruncatedToolCalls (which removes the truncated tool call
-			// before it reaches executeTool, so the hint appears in msg.Content
-			// of the no-tool branch — but the counter here catches the case where
-			// the tool call survived filtering and failed at execution).
+			// the model to chunk writes. filterTruncatedToolCalls handles the primary
+			// case (removing truncated calls before they reach executeTool), but this
+			// counter catches edge cases where the tool call survived filtering and
+			// failed at execution (e.g. JSON valid but semantically incomplete).
 			isWriteFileFailure := tc.Function.Name == "write_file" && (strings.Contains(truncated, "参数解析失败") ||
 				strings.Contains(truncated, "缺少 path 参数") ||
 				strings.Contains(truncated, "缺少 content 参数") ||

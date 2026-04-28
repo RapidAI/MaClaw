@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
@@ -513,5 +514,222 @@ func TestAdminImportServiceStateDryRun(t *testing.T) {
 	}
 	if _, err := targetSvc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "dryrun-key", APISecret: "dryrun-secret"}); err == nil {
 		t.Fatalf("dry run should not mutate target state")
+	}
+}
+
+func TestAdminServiceSnapshots(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Snapshot Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Snapshot User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "snapshot-key", APISecret: "snapshot-secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"name":"tenant backup","tenant_id":"` + tenant.ID + `","include_messages":true,"include_runs":true,"include_audit":true,"include_secrets":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots", body)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create snapshot status = %d body = %s", w.Code, w.Body.String())
+	}
+	var created agentservice.ServiceSnapshotEnvelope
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created snapshot: %v", err)
+	}
+	if created.Snapshot.ID == "" || created.Snapshot.Scope != "tenant" || created.Snapshot.TenantID != tenant.ID || created.Snapshot.SizeBytes <= 0 {
+		t.Fatalf("unexpected created snapshot: %#v", created.Snapshot)
+	}
+	if len(created.Data.Tenants) != 1 || len(created.Data.Users) != 1 {
+		t.Fatalf("unexpected snapshot export payload: %#v", created.Data)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/snapshots?tenant_id="+tenant.ID, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list snapshots status = %d body = %s", w.Code, w.Body.String())
+	}
+	var listed struct {
+		Items []agentservice.ServiceSnapshot `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list snapshots: %v", err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].ID != created.Snapshot.ID {
+		t.Fatalf("unexpected listed snapshots: %#v", listed.Items)
+	}
+	overview, err := svc.GetAdminOverview(context.Background())
+	if err != nil {
+		t.Fatalf("GetAdminOverview: %v", err)
+	}
+	if overview.Snapshots != 1 || overview.SnapshotBytes <= 0 {
+		t.Fatalf("expected snapshot counters in overview: %#v", overview)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d body = %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("maclaw_snapshots_total 1")) || !bytes.Contains(w.Body.Bytes(), []byte("maclaw_snapshot_bytes_total ")) {
+		t.Fatalf("expected snapshot metrics, got %s", w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/snapshots/"+created.Snapshot.ID, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get snapshot status = %d body = %s", w.Code, w.Body.String())
+	}
+	var got agentservice.ServiceSnapshotEnvelope
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode got snapshot: %v", err)
+	}
+	if got.Snapshot.ID != created.Snapshot.ID || got.Data.Scope != "tenant" {
+		t.Fatalf("unexpected got snapshot: %#v", got)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots/"+created.Snapshot.ID+"/restore", bytes.NewBufferString(`{"dry_run":true}`))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("dry run restore snapshot status = %d body = %s", w.Code, w.Body.String())
+	}
+	var dryRun agentservice.RestoreServiceSnapshotOutput
+	if err := json.NewDecoder(w.Body).Decode(&dryRun); err != nil {
+		t.Fatalf("decode dry run restore: %v", err)
+	}
+	if !dryRun.Import.DryRun || len(dryRun.Import.Conflicts) == 0 {
+		t.Fatalf("expected dry run conflicts for existing resources: %#v", dryRun.Import)
+	}
+
+	if err := svc.DeleteUser(context.Background(), tenant.ID, user.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	if _, err := svc.GetUser(context.Background(), tenant.ID, user.ID); err == nil {
+		t.Fatalf("expected user to be deleted before restore")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots/"+created.Snapshot.ID+"/restore?overwrite=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restore snapshot status = %d body = %s", w.Code, w.Body.String())
+	}
+	var restored agentservice.RestoreServiceSnapshotOutput
+	if err := json.NewDecoder(w.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode restore snapshot: %v", err)
+	}
+	if restored.Snapshot.ID != created.Snapshot.ID || restored.Import.Users != 1 || restored.Import.Credentials != 1 {
+		t.Fatalf("unexpected restore output: %#v", restored)
+	}
+	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: "snapshot-key", APISecret: "snapshot-secret"}); err != nil {
+		t.Fatalf("restored credential should authenticate: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/snapshots/"+created.Snapshot.ID+"?confirm=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete snapshot status = %d body = %s", w.Code, w.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/snapshots/"+created.Snapshot.ID, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("get deleted snapshot status = %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminPruneServiceSnapshots(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Prune Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Prune User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		body := bytes.NewBufferString(`{"name":"snapshot ` + string(rune('a'+i)) + `","tenant_id":"` + tenant.ID + `","user_id":"` + user.ID + `"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots", body)
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create snapshot %d status = %d body = %s", i, w.Code, w.Body.String())
+		}
+	}
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots/prune?tenant_id="+tenant.ID+"&user_id="+user.ID+"&older_than="+future+"&keep_latest=1&dry_run=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("dry run prune status = %d body = %s", w.Code, w.Body.String())
+	}
+	var dryRun agentservice.PruneServiceSnapshotsOutput
+	if err := json.NewDecoder(w.Body).Decode(&dryRun); err != nil {
+		t.Fatalf("decode dry run prune: %v", err)
+	}
+	if !dryRun.DryRun || dryRun.Deleted != 0 || len(dryRun.Snapshots) != 2 || len(dryRun.KeptSnapshots) != 1 {
+		t.Fatalf("unexpected dry run prune output: %#v", dryRun)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots/prune?tenant_id="+tenant.ID+"&user_id="+user.ID+"&older_than="+future+"&keep_latest=1", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("prune status = %d body = %s", w.Code, w.Body.String())
+	}
+	var pruned agentservice.PruneServiceSnapshotsOutput
+	if err := json.NewDecoder(w.Body).Decode(&pruned); err != nil {
+		t.Fatalf("decode prune: %v", err)
+	}
+	if pruned.Deleted != 2 || len(pruned.Snapshots) != 2 || pruned.FreedBytes <= 0 {
+		t.Fatalf("unexpected prune output: %#v", pruned)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/snapshots?tenant_id="+tenant.ID+"&user_id="+user.ID, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list after prune status = %d body = %s", w.Code, w.Body.String())
+	}
+	var listed struct {
+		Items []agentservice.ServiceSnapshot `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list after prune: %v", err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].ID != dryRun.KeptSnapshots[0].ID {
+		t.Fatalf("unexpected snapshots after prune: %#v kept=%#v", listed.Items, dryRun.KeptSnapshots)
 	}
 }

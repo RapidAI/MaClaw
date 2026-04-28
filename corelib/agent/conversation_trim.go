@@ -132,6 +132,85 @@ func MsgHasToolCalls(m interface{}) bool {
 	return false
 }
 
+// ---------------------------------------------------------------------------
+// Entry groups: the structural primitive for tool_calls integrity.
+//
+// An assistant message with tool_calls and its immediately following tool
+// messages form an indivisible unit. All operations on conversation history
+// (trimming, compaction, boundary selection) MUST operate on groups, never
+// on individual entries. This structurally prevents broken tool_calls/tool
+// pairs — the same pattern used by trimConversation's msgGroup for the
+// []interface{} conversation format.
+// ---------------------------------------------------------------------------
+
+// EntryGroup represents a contiguous range [Start, End) of entries that
+// must be kept or dropped as a unit. An assistant(tool_calls) + its
+// following tool entries = one group. All other entries = single-entry groups.
+type EntryGroup struct {
+	Start, End int // half-open range in the entries slice
+}
+
+// BuildEntryGroups partitions entries into indivisible groups.
+// This is the single source of truth for group boundaries — all trimming
+// and selection code must use this function.
+func BuildEntryGroups(entries []ConversationEntry) []EntryGroup {
+	var groups []EntryGroup
+	i := 0
+	for i < len(entries) {
+		start := i
+		if entries[i].Role == "assistant" && entryHasToolCalls(entries[i]) {
+			// assistant(tool_calls) + all following tool entries = one group
+			i++
+			for i < len(entries) && entries[i].Role == "tool" {
+				i++
+			}
+		} else {
+			i++
+		}
+		groups = append(groups, EntryGroup{Start: start, End: i})
+	}
+	return groups
+}
+
+// entryHasToolCalls returns true if the entry has a non-nil, non-empty
+// ToolCalls field. Handles both typed slices and []interface{} (from JSON
+// round-trip). An empty slice is treated as no tool calls.
+func entryHasToolCalls(e ConversationEntry) bool {
+	if e.ToolCalls == nil {
+		return false
+	}
+	// After JSON round-trip, ToolCalls (interface{}) may hold an empty
+	// []interface{}{} which is non-nil but has no actual tool calls.
+	switch v := e.ToolCalls.(type) {
+	case []interface{}:
+		return len(v) > 0
+	default:
+		// For typed slices ([]llm.ToolCall etc.), marshal to check length.
+		data, err := json.Marshal(v)
+		if err != nil {
+			return false
+		}
+		return len(data) > 2 // "[]" is 2 bytes = empty
+	}
+}
+
+// GroupContaining returns the group that contains the entry at idx.
+// Uses binary search since groups are sorted by Start.
+func GroupContaining(groups []EntryGroup, idx int) *EntryGroup {
+	lo, hi := 0, len(groups)
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if idx < groups[mid].Start {
+			hi = mid
+		} else if idx >= groups[mid].End {
+			lo = mid + 1
+		} else {
+			return &groups[mid]
+		}
+	}
+	return nil
+}
+
 // TrimConversation keeps the first message (system prompt) and trims older
 // middle messages so the total estimated tokens stay under the limit.
 // It preserves tool-call integrity: assistant messages with tool_calls and
@@ -394,28 +473,36 @@ func TrimHistory(entries []ConversationEntry) []ConversationEntry {
 		// go straight to token-level trimming below.
 	}
 
-	// Turn-based trim: keep the most recent MaxConversationTurns entries.
-	trimmed := entries
-	if len(entries) > MaxConversationTurns {
-		trimmed = entries[len(entries)-MaxConversationTurns:]
+	// Build indivisible groups so we never split an assistant(tool_calls)
+	// from its tool result entries. This is the same pattern used by
+	// TrimConversation's msgGroup for the []interface{} format.
+	groups := BuildEntryGroups(entries)
+
+	// Turn-based trim: drop oldest groups until the total entry count
+	// fits within MaxConversationTurns.
+	dropCount := 0
+	totalEntries := len(entries)
+	for dropCount < len(groups) && totalEntries > MaxConversationTurns {
+		totalEntries -= groups[dropCount].End - groups[dropCount].Start
+		dropCount++
 	}
-	// Ensure we don't start with orphaned "tool" messages that lack a
-	// preceding assistant message with tool_calls — the LLM API rejects
-	// such sequences with "Messages with role 'tool' must be a response
-	// to a preceding message with 'tool_calls'".
-	for len(trimmed) > 0 && trimmed[0].Role == "tool" {
-		trimmed = trimmed[1:]
+
+	// Assemble the kept entries.
+	var trimmed []ConversationEntry
+	for _, g := range groups[dropCount:] {
+		trimmed = append(trimmed, entries[g.Start:g.End]...)
 	}
+
 	// Token-level secondary validation: if the turn-trimmed result still
 	// exceeds the token budget (e.g. turns with large tool outputs), drop
-	// additional oldest entries until we fit.
-	for len(trimmed) > 2 && EstimateConversationEntryTokens(trimmed) > MaxMemoryTokenEstimate {
-		// Drop the oldest entry, but skip orphaned tool messages.
-		trimmed = trimmed[1:]
-		for len(trimmed) > 0 && trimmed[0].Role == "tool" {
-			trimmed = trimmed[1:]
-		}
+	// additional oldest groups until we fit.
+	keptGroups := groups[dropCount:]
+	for len(keptGroups) > 1 && EstimateConversationEntryTokens(trimmed) > MaxMemoryTokenEstimate {
+		groupSize := keptGroups[0].End - keptGroups[0].Start
+		trimmed = trimmed[groupSize:]
+		keptGroups = keptGroups[1:]
 	}
+
 	return trimmed
 }
 

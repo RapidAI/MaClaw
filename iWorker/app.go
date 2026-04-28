@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -18,12 +19,42 @@ import (
 var doSimpleLLMRequest = agent.DoSimpleLLMRequest
 
 type App struct {
-	ctx context.Context
+	ctx                 context.Context
+	heartbeatCancel     context.CancelFunc
+	heartbeatOnce       sync.Once
+	goalWatchCancel     context.CancelFunc
+	goalWatchHandleOnce sync.Once
+	goalWatchStatusMu   sync.Mutex
+	goalWatchStatus     GoalWatchAutoHandleStatus
 }
 
 type AppInfo struct {
 	Name    string `json:"name"`
 	Tagline string `json:"tagline"`
+}
+
+type GoalWatchAutoHandleStatus struct {
+	Enabled            bool   `json:"enabled"`
+	Running            bool   `json:"running"`
+	CurrentRunID       int64  `json:"current_run_id"`
+	RunCount           int64  `json:"run_count"`
+	SkipCount          int64  `json:"skip_count"`
+	TimeoutCancelCount int64  `json:"timeout_cancel_count"`
+	LastHandledCount   int    `json:"last_handled_count"`
+	TotalHandledCount  int64  `json:"total_handled_count"`
+	LastError          string `json:"last_error"`
+	LastStartedAt      string `json:"last_started_at"`
+	LastFinishedAt     string `json:"last_finished_at"`
+	LastTimeoutAt      string `json:"last_timeout_at"`
+	IntervalSeconds    int64  `json:"interval_seconds"`
+	MaxDurationSeconds int64  `json:"max_duration_seconds"`
+}
+
+type managedPeriodicWorkerObserver struct {
+	OnStart   func(runID int64, startedAt time.Time)
+	OnSkip    func(now time.Time)
+	OnTimeout func(runID int64, now time.Time, age time.Duration)
+	OnFinish  func(runID int64, finishedAt time.Time)
 }
 
 type Colleague struct {
@@ -86,14 +117,17 @@ type RoleProfile struct {
 }
 
 type CenterConfig struct {
-	Enabled      bool   `json:"enabled"`
-	Host         string `json:"host"`
-	Port         int    `json:"port"`
-	BaseURL      string `json:"base_url"`
-	TenantID     string `json:"tenant_id"`
-	DepartmentID string `json:"department_id"`
-	WorkerID     string `json:"worker_id"`
-	TimeoutSec   int    `json:"timeout_sec"`
+	Enabled                    bool   `json:"enabled"`
+	Host                       string `json:"host"`
+	Port                       int    `json:"port"`
+	BaseURL                    string `json:"base_url"`
+	TenantID                   string `json:"tenant_id"`
+	DepartmentID               string `json:"department_id"`
+	WorkerID                   string `json:"worker_id"`
+	TimeoutSec                 int    `json:"timeout_sec"`
+	GoalWatchAutoHandleEnabled bool   `json:"goalwatch_auto_handle_enabled"`
+	GoalWatchIntervalSec       int    `json:"goalwatch_interval_sec"`
+	GoalWatchMaxDurationSec    int    `json:"goalwatch_max_duration_sec"`
 }
 
 type RoutingPolicy struct {
@@ -185,8 +219,278 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.startAgentRuntimeHeartbeatLoop()
+	a.startGoalWatchAutoHandleLoop()
 }
 
+func (a *App) shutdown(ctx context.Context) {
+	if a.heartbeatCancel != nil {
+		a.heartbeatCancel()
+	}
+	if a.goalWatchCancel != nil {
+		a.goalWatchCancel()
+	}
+}
+
+func (a *App) startAgentRuntimeHeartbeatLoop() {
+	a.heartbeatOnce.Do(func() {
+		ctx := a.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		loopCtx, cancel := context.WithCancel(ctx)
+		a.heartbeatCancel = cancel
+		startAgentRuntimeHeartbeat(loopCtx, 30*time.Second, func() {
+			_, _ = a.HeartbeatAgentRuntimeContext(loopCtx)
+		})
+	})
+}
+
+func startAgentRuntimeHeartbeat(ctx context.Context, interval time.Duration, beat func()) {
+	startPeriodicWorker(ctx, interval, beat)
+}
+
+func (a *App) startGoalWatchAutoHandleLoop() {
+	a.goalWatchHandleOnce.Do(func() {
+		ctx := a.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		settings, _ := readDiWorkerSettings()
+		settings = normalizeDiWorkerSettings(settings)
+		enabled, interval, maxDuration := goalWatchAutoHandleConfig(settings)
+		if !enabled {
+			a.initializeGoalWatchAutoHandleStatus(interval, maxDuration, false)
+			return
+		}
+		loopCtx, cancel := context.WithCancel(ctx)
+		a.goalWatchCancel = cancel
+		a.initializeGoalWatchAutoHandleStatus(interval, maxDuration)
+		startGoalWatchAutoHandleWithObserver(loopCtx, interval, maxDuration, func(runCtx context.Context) {
+			results, err := a.AutoHandleRecommendedGoalPushesContext(runCtx)
+			a.recordGoalWatchAutoHandleResult(len(results), err)
+		}, managedPeriodicWorkerObserver{
+			OnStart:   a.recordGoalWatchAutoHandleStart,
+			OnSkip:    a.recordGoalWatchAutoHandleSkip,
+			OnTimeout: a.recordGoalWatchAutoHandleTimeout,
+			OnFinish:  a.recordGoalWatchAutoHandleFinish,
+		})
+	})
+}
+
+func goalWatchAutoHandleConfig(settings DiWorkerSettings) (bool, time.Duration, time.Duration) {
+	settings = normalizeDiWorkerSettings(settings)
+	interval := time.Duration(settings.Center.GoalWatchIntervalSec) * time.Second
+	maxDuration := time.Duration(settings.Center.GoalWatchMaxDurationSec) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if maxDuration <= 0 {
+		maxDuration = 2 * time.Minute
+	}
+	return settings.Center.Enabled && settings.Center.GoalWatchAutoHandleEnabled, interval, maxDuration
+}
+
+func (a *App) restartGoalWatchAutoHandleLoop() {
+	if a.ctx == nil {
+		return
+	}
+	if a.goalWatchCancel != nil {
+		a.goalWatchCancel()
+		a.goalWatchCancel = nil
+	}
+	a.goalWatchHandleOnce = sync.Once{}
+	a.startGoalWatchAutoHandleLoop()
+}
+func startGoalWatchAutoHandle(ctx context.Context, interval, maxDuration time.Duration, handle func(context.Context)) {
+	startGoalWatchAutoHandleWithObserver(ctx, interval, maxDuration, handle, managedPeriodicWorkerObserver{})
+}
+
+func startGoalWatchAutoHandleWithObserver(ctx context.Context, interval, maxDuration time.Duration, handle func(context.Context), observer managedPeriodicWorkerObserver) {
+	startManagedPeriodicWorkerWithObserver(ctx, interval, maxDuration, handle, observer)
+}
+
+func startPeriodicWorker(ctx context.Context, interval time.Duration, run func()) {
+	if ctx == nil || run == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	go func() {
+		run()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+}
+
+func startManagedPeriodicWorker(ctx context.Context, interval, maxDuration time.Duration, run func(context.Context)) {
+	startManagedPeriodicWorkerWithObserver(ctx, interval, maxDuration, run, managedPeriodicWorkerObserver{})
+}
+
+func startManagedPeriodicWorkerWithObserver(ctx context.Context, interval, maxDuration time.Duration, run func(context.Context), observer managedPeriodicWorkerObserver) {
+	if ctx == nil || run == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if maxDuration <= 0 {
+		maxDuration = interval * 4
+	}
+	go func() {
+		var mu sync.Mutex
+		var running bool
+		var startedAt time.Time
+		var cancelRunning context.CancelFunc
+		var runID int64
+
+		startRun := func(now time.Time) {
+			mu.Lock()
+			if running {
+				if now.Sub(startedAt) <= maxDuration {
+					if observer.OnSkip != nil {
+						observer.OnSkip(now)
+					}
+					mu.Unlock()
+					return
+				}
+				if observer.OnTimeout != nil {
+					observer.OnTimeout(runID, now, now.Sub(startedAt))
+				}
+				if cancelRunning != nil {
+					cancelRunning()
+				}
+				running = false
+			}
+			runCtx, cancel := context.WithCancel(ctx)
+			running = true
+			startedAt = now
+			cancelRunning = cancel
+			runID++
+			localRunID := runID
+			if observer.OnStart != nil {
+				observer.OnStart(localRunID, now)
+			}
+			mu.Unlock()
+
+			go func(localCancel context.CancelFunc, id int64) {
+				defer localCancel()
+				run(runCtx)
+				mu.Lock()
+				if runID == id {
+					running = false
+					cancelRunning = nil
+					if observer.OnFinish != nil {
+						observer.OnFinish(id, time.Now())
+					}
+				}
+				mu.Unlock()
+			}(cancel, localRunID)
+		}
+
+		startRun(time.Now())
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				mu.Lock()
+				if cancelRunning != nil {
+					cancelRunning()
+				}
+				mu.Unlock()
+				return
+			case now := <-ticker.C:
+				startRun(now)
+			}
+		}
+	}()
+}
+
+func (a *App) initializeGoalWatchAutoHandleStatus(interval, maxDuration time.Duration, enabled ...bool) {
+	a.goalWatchStatusMu.Lock()
+	defer a.goalWatchStatusMu.Unlock()
+	a.goalWatchStatus.Enabled = true
+	if len(enabled) > 0 {
+		a.goalWatchStatus.Enabled = enabled[0]
+	}
+	a.goalWatchStatus.IntervalSeconds = int64(interval.Seconds())
+	a.goalWatchStatus.MaxDurationSeconds = int64(maxDuration.Seconds())
+}
+
+func (a *App) recordGoalWatchAutoHandleStart(runID int64, startedAt time.Time) {
+	a.goalWatchStatusMu.Lock()
+	defer a.goalWatchStatusMu.Unlock()
+	a.goalWatchStatus.Enabled = true
+	a.goalWatchStatus.Running = true
+	a.goalWatchStatus.CurrentRunID = runID
+	a.goalWatchStatus.RunCount++
+	a.goalWatchStatus.LastStartedAt = formatStatusTime(startedAt)
+}
+
+func (a *App) recordGoalWatchAutoHandleSkip(time.Time) {
+	a.goalWatchStatusMu.Lock()
+	defer a.goalWatchStatusMu.Unlock()
+	a.goalWatchStatus.SkipCount++
+}
+
+func (a *App) recordGoalWatchAutoHandleTimeout(runID int64, now time.Time, age time.Duration) {
+	a.goalWatchStatusMu.Lock()
+	defer a.goalWatchStatusMu.Unlock()
+	a.goalWatchStatus.TimeoutCancelCount++
+	a.goalWatchStatus.LastTimeoutAt = formatStatusTime(now)
+	a.goalWatchStatus.LastError = fmt.Sprintf("auto run %d exceeded max duration after %s; cancellation requested", runID, age.Round(time.Second))
+}
+
+func (a *App) recordGoalWatchAutoHandleResult(handledCount int, err error) {
+	a.goalWatchStatusMu.Lock()
+	defer a.goalWatchStatusMu.Unlock()
+	a.goalWatchStatus.LastHandledCount = handledCount
+	a.goalWatchStatus.TotalHandledCount += int64(handledCount)
+	if err != nil {
+		a.goalWatchStatus.LastError = err.Error()
+		return
+	}
+	a.goalWatchStatus.LastError = ""
+}
+
+func (a *App) recordGoalWatchAutoHandleFinish(runID int64, finishedAt time.Time) {
+	a.goalWatchStatusMu.Lock()
+	defer a.goalWatchStatusMu.Unlock()
+	if a.goalWatchStatus.CurrentRunID == runID {
+		a.goalWatchStatus.Running = false
+	}
+	a.goalWatchStatus.LastFinishedAt = formatStatusTime(finishedAt)
+}
+
+func (a *App) GetGoalWatchAutoHandleStatus() GoalWatchAutoHandleStatus {
+	a.goalWatchStatusMu.Lock()
+	defer a.goalWatchStatusMu.Unlock()
+	status := a.goalWatchStatus
+	if status.IntervalSeconds == 0 {
+		status.IntervalSeconds = 30
+	}
+	if status.MaxDurationSeconds == 0 {
+		status.MaxDurationSeconds = 120
+	}
+	return status
+}
+
+func formatStatusTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
 func (a *App) GetAppInfo() AppInfo {
 	return AppInfo{
 		Name:    "iWorker",
@@ -203,7 +507,7 @@ func (a *App) FetchColleagues() []Colleague {
 		if baseURL == "" {
 			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 		}
-		if centerColleagues := fetchCenterColleagues(baseURL, 5); len(centerColleagues) > 0 {
+		if centerColleagues := fetchCenterColleagues(baseURL, resolvedTenantID(settings), 5); len(centerColleagues) > 0 {
 			colleagues := make([]Colleague, 0, len(centerColleagues))
 			for _, cc := range centerColleagues {
 				colleagues = append(colleagues, centerColleagueToLocal(cc))
@@ -222,7 +526,7 @@ func (a *App) FetchRoles() []CenterRole {
 		if baseURL == "" {
 			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 		}
-		if roles := fetchCenterRoles(baseURL, 5); len(roles) > 0 {
+		if roles := fetchCenterRoles(baseURL, resolvedTenantID(settings), 5); len(roles) > 0 {
 			return roles
 		}
 	}
@@ -238,7 +542,7 @@ func (a *App) FetchCapabilities(colleagueID string) []CenterCapability {
 		if baseURL == "" {
 			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 		}
-		if caps := fetchCenterCapabilities(baseURL, colleagueID, 5); len(caps) > 0 {
+		if caps := fetchCenterCapabilities(baseURL, resolvedTenantID(settings), colleagueID, 5); len(caps) > 0 {
 			return caps
 		}
 	}
@@ -266,7 +570,7 @@ func (a *App) GetWelcomeData() WelcomeData {
 		if baseURL == "" {
 			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 		}
-		if centerColleagues := fetchCenterColleagues(baseURL, 5); len(centerColleagues) > 0 {
+		if centerColleagues := fetchCenterColleagues(baseURL, resolvedTenantID(settings), 5); len(centerColleagues) > 0 {
 			colleagues = make([]Colleague, 0, len(centerColleagues))
 			for _, cc := range centerColleagues {
 				colleagues = append(colleagues, centerColleagueToLocal(cc))
@@ -365,6 +669,7 @@ func (a *App) SaveDiWorkerSettings(settings DiWorkerSettings) error {
 	if err := syncCenterSettings(normalized); err != nil {
 		return fmt.Errorf("同步中心配置失败: %w", err)
 	}
+	a.restartGoalWatchAutoHandleLoop()
 	return nil
 }
 
@@ -436,7 +741,7 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 		if baseURL == "" {
 			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 		}
-		if recs := fetchRecommendations(baseURL, draft, 1, 3); len(recs) > 0 {
+		if recs := fetchRecommendations(baseURL, resolvedTenantID(settings), draft, 1, 3); len(recs) > 0 {
 			colleagueName = recs[0].Name
 		}
 	}
@@ -456,7 +761,7 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 	if settings.Center.Enabled {
 		baseURL := resolvedCenterBaseURL(settings)
 		roleCode := colleagueRoleCode(colleagueName)
-		memories := fetchSharedMemories(baseURL, roleCode, 5)
+		memories := fetchSharedMemories(baseURL, resolvedTenantID(settings), roleCode, 5)
 		if memoryBlock := buildMemorySystemPrompt(memories); memoryBlock != "" {
 			systemPrompt = systemPrompt + "\n\n以下是你需要了解的企业背景和角色知识，请在回答中自然运用这些信息：\n\n" + memoryBlock
 		}
@@ -851,14 +1156,17 @@ func defaultDiWorkerSettings() DiWorkerSettings {
 			Description: "你的数字办公助理，擅长通知、纪要与汇报整理。",
 		},
 		Center: CenterConfig{
-			Enabled:      false,
-			Host:         "127.0.0.1",
-			Port:         9377,
-			BaseURL:      "http://127.0.0.1:9377",
-			TenantID:     "default",
-			DepartmentID: "default",
-			WorkerID:     "local-iworker",
-			TimeoutSec:   60,
+			Enabled:                    false,
+			Host:                       "127.0.0.1",
+			Port:                       9377,
+			BaseURL:                    "http://127.0.0.1:9377",
+			TenantID:                   "default",
+			DepartmentID:               "default",
+			WorkerID:                   "local-iworker",
+			TimeoutSec:                 60,
+			GoalWatchAutoHandleEnabled: true,
+			GoalWatchIntervalSec:       30,
+			GoalWatchMaxDurationSec:    120,
 		},
 		Routing: RoutingPolicy{
 			Mode:            "smart",
@@ -933,6 +1241,18 @@ func normalizeDiWorkerSettings(settings DiWorkerSettings) DiWorkerSettings {
 	}
 	if settings.Center.TimeoutSec <= 0 {
 		settings.Center.TimeoutSec = defaults.Center.TimeoutSec
+	}
+	if !settings.Center.GoalWatchAutoHandleEnabled && settings.Center.GoalWatchIntervalSec <= 0 && settings.Center.GoalWatchMaxDurationSec <= 0 {
+		settings.Center.GoalWatchAutoHandleEnabled = defaults.Center.GoalWatchAutoHandleEnabled
+	}
+	if settings.Center.GoalWatchIntervalSec <= 0 {
+		settings.Center.GoalWatchIntervalSec = defaults.Center.GoalWatchIntervalSec
+	}
+	if settings.Center.GoalWatchMaxDurationSec <= 0 {
+		settings.Center.GoalWatchMaxDurationSec = defaults.Center.GoalWatchMaxDurationSec
+	}
+	if settings.Center.GoalWatchMaxDurationSec < settings.Center.GoalWatchIntervalSec {
+		settings.Center.GoalWatchMaxDurationSec = settings.Center.GoalWatchIntervalSec
 	}
 	if strings.TrimSpace(settings.Routing.Mode) == "" {
 		settings.Routing.Mode = defaults.Routing.Mode
@@ -1035,8 +1355,74 @@ func currentProviderConfig(cfgFile maclawConfigFile) (corelib.MaclawLLMConfig, b
 	return corelib.MaclawLLMConfig{}, false
 }
 
+// HeartbeatAgentRuntime sends all local iWorker agent instances to iWorkerCenter.
+func (a *App) HeartbeatAgentRuntime() ([]CenterAgentInstance, error) {
+	return a.HeartbeatAgentRuntimeContext(context.Background())
+}
+
+func (a *App) HeartbeatAgentRuntimeContext(ctx context.Context) ([]CenterAgentInstance, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return nil, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
+	if !settings.Center.Enabled {
+		return nil, fmt.Errorf("iWorkerCenter is disabled; agent runtime heartbeat requires the registered center")
+	}
+	snapshot := BuildDefaultAgentRuntimeSnapshot(settings)
+	hostID, _ := os.Hostname()
+	if err := ctxErr(ctx); err != nil {
+		return nil, err
+	}
+	results := make([]CenterAgentInstance, 0, len(snapshot.Instances))
+	for _, instance := range snapshot.Instances {
+		if err := ctxErr(ctx); err != nil {
+			return results, err
+		}
+		result, err := postAgentInstanceHeartbeatContext(ctx, resolvedCenterBaseURL(settings), resolvedTenantID(settings), CenterAgentInstanceHeartbeatRequest{
+			WorkerID:        snapshot.WorkerID,
+			InstanceID:      instance.ID,
+			Role:            string(instance.Role),
+			Status:          string(instance.Status),
+			OrgUnitID:       snapshot.OrgUnitID,
+			Capabilities:    instance.Capabilities,
+			MemoryAuthority: snapshot.MemoryAuthority,
+			LocalCacheMode:  snapshot.LocalMemoryBehavior,
+			HostID:          hostID,
+			ProcessID:       os.Getpid(),
+			StartedAt:       instance.StartedAt,
+		}, settings.Center.TimeoutSec)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, result.Instance)
+	}
+	return results, nil
+}
+
+// FetchAgentInstances returns Center-visible runtime instances for the registered iWorker.
+func (a *App) FetchAgentInstances() ([]CenterAgentInstance, error) {
+	return a.FetchAgentInstancesContext(context.Background())
+}
+
+func (a *App) FetchAgentInstancesContext(ctx context.Context) ([]CenterAgentInstance, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return nil, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
+	if !settings.Center.Enabled {
+		return nil, fmt.Errorf("iWorkerCenter is disabled; fetching agent instances requires the registered center")
+	}
+	return fetchCenterAgentInstancesContext(ctx, resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedWorkerID(settings), settings.Center.TimeoutSec)
+}
+
 // FetchGoalPushes returns pending GoalWatch pushes for the registered iWorker.
 func (a *App) FetchGoalPushes(limit int) ([]CenterGoalPush, error) {
+	return a.FetchGoalPushesContext(context.Background(), limit)
+}
+
+func (a *App) FetchGoalPushesContext(ctx context.Context, limit int) ([]CenterGoalPush, error) {
 	settings, err := readDiWorkerSettings()
 	if err != nil {
 		return nil, err
@@ -1045,11 +1431,127 @@ func (a *App) FetchGoalPushes(limit int) ([]CenterGoalPush, error) {
 	if !settings.Center.Enabled {
 		return nil, fmt.Errorf("iWorkerCenter is disabled; goal pushes require the registered center")
 	}
-	return fetchCenterGoalPushes(resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedWorkerID(settings), limit, settings.Center.TimeoutSec)
+	return fetchCenterGoalPushesContext(ctx, resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedWorkerID(settings), limit, settings.Center.TimeoutSec)
+}
+
+type AutoHandleGoalPushResult struct {
+	EventID           string                  `json:"event_id"`
+	RecommendedAction string                  `json:"recommended_action"`
+	AckStatus         string                  `json:"ack_status"`
+	Note              string                  `json:"note"`
+	HeartbeatSent     bool                    `json:"heartbeat_sent"`
+	Ack               CenterGoalPushAckResult `json:"ack"`
+}
+
+// AutoHandleGoalPush lets the watcher perform the safe part of a GoalWatch recommendation.
+func (a *App) AutoHandleGoalPush(eventID string) (AutoHandleGoalPushResult, error) {
+	return a.AutoHandleGoalPushContext(context.Background(), eventID)
+}
+
+func (a *App) AutoHandleGoalPushContext(ctx context.Context, eventID string) (AutoHandleGoalPushResult, error) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return AutoHandleGoalPushResult{}, fmt.Errorf("event_id is required")
+	}
+	if err := ctxErr(ctx); err != nil {
+		return AutoHandleGoalPushResult{}, err
+	}
+	pushes, err := a.FetchGoalPushesContext(ctx, 100)
+	if err != nil {
+		return AutoHandleGoalPushResult{}, err
+	}
+	for _, push := range pushes {
+		if err := ctxErr(ctx); err != nil {
+			return AutoHandleGoalPushResult{}, err
+		}
+		if strings.TrimSpace(push.EventID) != eventID {
+			continue
+		}
+		ackStatus, note, heartbeat := autoGoalPushAckFor(push)
+		if heartbeat {
+			if _, err := a.HeartbeatAgentRuntimeContext(ctx); err != nil {
+				return AutoHandleGoalPushResult{}, err
+			}
+		}
+		if err := ctxErr(ctx); err != nil {
+			return AutoHandleGoalPushResult{}, err
+		}
+		ack, err := a.AckGoalPushContext(ctx, eventID, ackStatus, note)
+		if err != nil {
+			return AutoHandleGoalPushResult{}, err
+		}
+		return AutoHandleGoalPushResult{EventID: eventID, RecommendedAction: push.RecommendedAction, AckStatus: ackStatus, Note: note, HeartbeatSent: heartbeat, Ack: ack}, nil
+	}
+	return AutoHandleGoalPushResult{}, fmt.Errorf("goal push not found: %s", eventID)
+}
+
+func autoGoalPushAckFor(push CenterGoalPush) (status string, note string, heartbeat bool) {
+	switch strings.TrimSpace(push.RecommendedAction) {
+	case "restart_executor":
+		return "resumed", "watcher_auto_restart_executor", true
+	case "accept_task":
+		return "accepted", "watcher_accepted_goal_push_accept_task", false
+	case "start_task":
+		return "accepted", "watcher_accepted_goal_push_start_task", false
+	case "resume_task":
+		return "accepted", "watcher_accepted_goal_push_resume_task", false
+	default:
+		return "accepted", "watcher_accepted_goal_push", false
+	}
+}
+
+// AutoHandleRecommendedGoalPushes lets the watcher safely process low-risk recommendations.
+func (a *App) AutoHandleRecommendedGoalPushes() ([]AutoHandleGoalPushResult, error) {
+	return a.AutoHandleRecommendedGoalPushesContext(context.Background())
+}
+
+func (a *App) AutoHandleRecommendedGoalPushesContext(ctx context.Context) ([]AutoHandleGoalPushResult, error) {
+	if err := ctxErr(ctx); err != nil {
+		return nil, err
+	}
+	pushes, err := a.FetchGoalPushesContext(ctx, 20)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]AutoHandleGoalPushResult, 0)
+	for _, push := range pushes {
+		if err := ctxErr(ctx); err != nil {
+			return results, err
+		}
+		if !shouldAutoHandleGoalPush(push) || strings.TrimSpace(push.EventID) == "" {
+			continue
+		}
+		result, err := a.AutoHandleGoalPushContext(ctx, push.EventID)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func shouldAutoHandleGoalPush(push CenterGoalPush) bool {
+	return strings.TrimSpace(push.RecommendedAction) == "restart_executor"
+}
+
+func ctxErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
 }
 
 // AckGoalPush acknowledges a GoalWatch push on behalf of the registered iWorker.
 func (a *App) AckGoalPush(eventID, status, note string) (CenterGoalPushAckResult, error) {
+	return a.AckGoalPushContext(context.Background(), eventID, status, note)
+}
+
+func (a *App) AckGoalPushContext(ctx context.Context, eventID, status, note string) (CenterGoalPushAckResult, error) {
 	settings, err := readDiWorkerSettings()
 	if err != nil {
 		return CenterGoalPushAckResult{}, err
@@ -1058,7 +1560,7 @@ func (a *App) AckGoalPush(eventID, status, note string) (CenterGoalPushAckResult
 	if !settings.Center.Enabled {
 		return CenterGoalPushAckResult{}, fmt.Errorf("iWorkerCenter is disabled; goal push ack requires the registered center")
 	}
-	return ackCenterGoalPush(resolvedCenterBaseURL(settings), resolvedTenantID(settings), CenterGoalPushAckRequest{
+	return ackCenterGoalPushContext(ctx, resolvedCenterBaseURL(settings), resolvedTenantID(settings), CenterGoalPushAckRequest{
 		EventID:     eventID,
 		ColleagueID: resolvedWorkerID(settings),
 		Status:      status,
@@ -1079,7 +1581,7 @@ func (a *App) FetchCollaborations(colleagueID string) []CenterCollabTask {
 	if baseURL == "" {
 		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 	}
-	return fetchCenterCollaborations(baseURL, colleagueID, 5)
+	return fetchCenterCollaborations(baseURL, resolvedTenantID(settings), colleagueID, 5)
 }
 
 // FetchWorkflowInstances returns workflow instances from iWorkerCenter.
@@ -1092,7 +1594,7 @@ func (a *App) FetchWorkflowInstances() []CenterWorkflowInstance {
 	if baseURL == "" {
 		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 	}
-	return fetchCenterWorkflowInstances(baseURL, 5)
+	return fetchCenterWorkflowInstances(baseURL, resolvedTenantID(settings), 5)
 }
 
 // RecommendColleague asks iWorkerCenter to recommend the best colleague for a task.
@@ -1105,5 +1607,5 @@ func (a *App) RecommendColleague(taskDescription string) []CenterRecommendation 
 	if baseURL == "" {
 		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 	}
-	return fetchRecommendations(baseURL, taskDescription, 3, 5)
+	return fetchRecommendations(baseURL, resolvedTenantID(settings), taskDescription, 3, 5)
 }

@@ -73,3 +73,48 @@ func TestAppConfig_UnmarshalIgnoresCompletelyUnknownTopLevelKeys(t *testing.T) {
 		t.Errorf("Claude.CurrentModel = %q, want %q", cfg.Claude.CurrentModel, "sonnet")
 	}
 }
+
+// TestIsWorkflowEnabled verifies the three-state behavior of the workflow toggle:
+// nil (default) → true, explicit true → true, explicit false → false.
+// Also verifies JSON round-trip: *bool with omitempty serializes false correctly.
+func TestIsWorkflowEnabled(t *testing.T) {
+	// nil → default true
+	var cfg AppConfig
+	if !cfg.IsWorkflowEnabled() {
+		t.Error("nil WorkflowEnabled should default to true")
+	}
+
+	// explicit true
+	cfg.SetWorkflowEnabled(true)
+	if !cfg.IsWorkflowEnabled() {
+		t.Error("explicit true should return true")
+	}
+
+	// explicit false
+	cfg.SetWorkflowEnabled(false)
+	if cfg.IsWorkflowEnabled() {
+		t.Error("explicit false should return false")
+	}
+
+	// JSON round-trip: false must survive marshal → unmarshal
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var cfg2 AppConfig
+	if err := json.Unmarshal(data, &cfg2); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg2.IsWorkflowEnabled() {
+		t.Error("workflow_enabled=false should survive JSON round-trip")
+	}
+
+	// JSON round-trip: absent field → nil → default true
+	var cfg3 AppConfig
+	if err := json.Unmarshal([]byte(`{}`), &cfg3); err != nil {
+		t.Fatalf("unmarshal empty: %v", err)
+	}
+	if !cfg3.IsWorkflowEnabled() {
+		t.Error("absent workflow_enabled should default to true")
+	}
+}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AckGoalPush, CheckCenterHealth, DeleteWorkerMemory, FetchGoalPushes, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
+import { AckGoalPush, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, FetchAgentInstances, FetchGoalPushes, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { colleagues } from './mock/colleagues';
 import { SideNav } from './components/layout/SideNav';
@@ -9,7 +9,7 @@ import { NewTaskPage } from './pages/NewTaskPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskHistoryPage } from './pages/TaskHistoryPage';
 import { recentTasks as mockRecentTasks } from './mock/tasks';
-import type { CenterGoalPush, CenterHealthStatus, DiWorkerSettings, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
+import type { CenterAgentInstance, CenterGoalPush, CenterHealthStatus, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
 
 const pageMeta: Record<DiWorkerTab, { title: string; subtitle: string }> = {
   home: { title: '新建任务', subtitle: '输入任务内容，快速开始处理。' },
@@ -43,6 +43,9 @@ const defaultSettings: DiWorkerSettings = {
     departmentId: 'default',
     workerId: 'local-iworker',
     timeoutSec: 60,
+    goalWatchAutoHandleEnabled: true,
+    goalWatchIntervalSec: 30,
+    goalWatchMaxDurationSec: 120,
   },
   routing: {
     mode: 'smart',
@@ -136,6 +139,9 @@ const fromWailsSettings = (item: main.DiWorkerSettings | null | undefined): DiWo
     departmentId: item?.center?.department_id || defaultSettings.center.departmentId,
     workerId: item?.center?.worker_id || defaultSettings.center.workerId,
     timeoutSec: item?.center?.timeout_sec || defaultSettings.center.timeoutSec,
+    goalWatchAutoHandleEnabled: item?.center?.goalwatch_auto_handle_enabled ?? defaultSettings.center.goalWatchAutoHandleEnabled,
+    goalWatchIntervalSec: item?.center?.goalwatch_interval_sec || defaultSettings.center.goalWatchIntervalSec,
+    goalWatchMaxDurationSec: item?.center?.goalwatch_max_duration_sec || defaultSettings.center.goalWatchMaxDurationSec,
   },
   routing: {
     mode: (item?.routing?.mode as DiWorkerSettings['routing']['mode']) || defaultSettings.routing.mode,
@@ -186,6 +192,24 @@ const fromWailsMemoryEntry = (item: main.WorkerMemoryEntry): WorkerMemoryEntry =
   createdAt: item.created_at,
   updatedAt: item.updated_at,
 });
+const fromWailsAgentInstance = (item: main.CenterAgentInstance): CenterAgentInstance => ({
+  tenantId: item.tenant_id,
+  workerId: item.worker_id,
+  instanceId: item.instance_id,
+  role: item.role,
+  status: item.status,
+  orgUnitId: item.org_unit_id,
+  capabilities: item.capabilities || [],
+  memoryAuthority: item.memory_authority,
+  localCacheMode: item.local_cache_mode,
+  hostId: item.host_id,
+  processId: item.process_id,
+  startedAt: item.started_at,
+  lastHeartbeatAt: item.last_heartbeat_at,
+  heartbeatAgeSeconds: item.heartbeat_age_seconds || 0,
+  effectiveStatus: item.effective_status || item.status,
+});
+
 const fromWailsGoalPush = (item: main.CenterGoalPush): CenterGoalPush => ({
   eventId: item.event_id,
   taskId: item.task_id,
@@ -194,10 +218,29 @@ const fromWailsGoalPush = (item: main.CenterGoalPush): CenterGoalPush => ({
   toRoleCode: item.to_role_code,
   status: item.status,
   reason: item.reason,
+  recommendedAction: item.recommended_action,
   ageSeconds: item.age_seconds || 0,
+  executorStatus: item.executor_status,
+  executorHeartbeatAgeSeconds: item.executor_heartbeat_age_seconds,
   createdAt: item.created_at,
 });
 
+const fromWailsGoalWatchAutoHandleStatus = (item: main.GoalWatchAutoHandleStatus): GoalWatchAutoHandleStatus => ({
+  enabled: Boolean(item.enabled),
+  running: Boolean(item.running),
+  currentRunId: item.current_run_id || 0,
+  runCount: item.run_count || 0,
+  skipCount: item.skip_count || 0,
+  timeoutCancelCount: item.timeout_cancel_count || 0,
+  lastHandledCount: item.last_handled_count || 0,
+  totalHandledCount: item.total_handled_count || 0,
+  lastError: item.last_error || '',
+  lastStartedAt: item.last_started_at || '',
+  lastFinishedAt: item.last_finished_at || '',
+  lastTimeoutAt: item.last_timeout_at || '',
+  intervalSeconds: item.interval_seconds || 30,
+  maxDurationSeconds: item.max_duration_seconds || 120,
+});
 const fromWailsCenterHealth = (
   item: main.CenterHealthStatus | null | undefined,
   source: CenterHealthStatus['source'],
@@ -226,6 +269,9 @@ const toWailsSettings = (item: DiWorkerSettings): main.DiWorkerSettings => new m
     department_id: item.center.departmentId,
     worker_id: item.center.workerId,
     timeout_sec: item.center.timeoutSec,
+    goalwatch_auto_handle_enabled: item.center.goalWatchAutoHandleEnabled,
+    goalwatch_interval_sec: item.center.goalWatchIntervalSec,
+    goalwatch_max_duration_sec: item.center.goalWatchMaxDurationSec,
   }),
   routing: new main.RoutingPolicy({
     mode: item.routing.mode,
@@ -346,6 +392,10 @@ export default function App() {
   const [goalPushLoading, setGoalPushLoading] = useState(false);
   const [goalPushError, setGoalPushError] = useState('');
   const [goalPushAckingId, setGoalPushAckingId] = useState('');
+  const [agentInstances, setAgentInstances] = useState<CenterAgentInstance[]>([]);
+  const [agentInstancesLoading, setAgentInstancesLoading] = useState(false);
+  const [agentInstancesError, setAgentInstancesError] = useState('');
+  const [goalWatchAutoStatus, setGoalWatchAutoStatus] = useState<GoalWatchAutoHandleStatus | null>(null);
 
   useEffect(() => {
     if (!hasWailsBridge()) {
@@ -377,6 +427,61 @@ export default function App() {
       });
   }, []);
 
+  const refreshGoalWatchAutoStatus = async () => {
+    if (!hasWailsBridge()) {
+      setGoalWatchAutoStatus(null);
+      return;
+    }
+    try {
+      const status = await GetGoalWatchAutoHandleStatus();
+      setGoalWatchAutoStatus(fromWailsGoalWatchAutoHandleStatus(status));
+    } catch {
+      setGoalWatchAutoStatus(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!hasWailsBridge()) {
+      return;
+    }
+    void refreshGoalWatchAutoStatus();
+    const timer = window.setInterval(() => {
+      void refreshGoalWatchAutoStatus();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const refreshAgentInstances = async () => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setAgentInstances([]);
+      setAgentInstancesError('');
+      return;
+    }
+    setAgentInstancesLoading(true);
+    setAgentInstancesError('');
+    try {
+      await HeartbeatAgentRuntime();
+      const instances = await FetchAgentInstances();
+      setAgentInstances((instances || []).map(fromWailsAgentInstance));
+    } catch (error) {
+      setAgentInstancesError(error instanceof Error ? error.message : 'Failed to sync agent runtime.');
+    } finally {
+      setAgentInstancesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setAgentInstances([]);
+      return;
+    }
+    void refreshAgentInstances();
+    const timer = window.setInterval(() => {
+      void refreshAgentInstances();
+      void refreshGoalWatchAutoStatus();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.baseUrl, settings.center.goalWatchAutoHandleEnabled, settings.center.goalWatchIntervalSec, settings.center.goalWatchMaxDurationSec]);
+
   const refreshGoalPushes = async () => {
     if (!hasWailsBridge() || !settings.center.enabled) {
       setGoalPushes([]);
@@ -405,7 +510,25 @@ export default function App() {
       void refreshGoalPushes();
     }, 30000);
     return () => window.clearInterval(timer);
-  }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.baseUrl]);
+  }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.baseUrl, settings.center.goalWatchAutoHandleEnabled, settings.center.goalWatchIntervalSec, settings.center.goalWatchMaxDurationSec]);
+
+  const handleAutoHandleGoalPush = async (eventId: string) => {
+    if (!eventId || !hasWailsBridge()) {
+      return;
+    }
+    setGoalPushAckingId(eventId);
+    setGoalPushError('');
+    try {
+      await AutoHandleGoalPush(eventId);
+      setGoalPushes((items) => items.filter((item) => item.eventId !== eventId));
+      void refreshAgentInstances();
+      void refreshGoalWatchAutoStatus();
+    } catch (error) {
+      setGoalPushError(error instanceof Error ? error.message : 'Failed to auto-handle GoalWatch push.');
+    } finally {
+      setGoalPushAckingId('');
+    }
+  };
 
   const handleAckGoalPush = async (eventId: string, status: 'resumed' | 'blocked') => {
     if (!eventId || !hasWailsBridge()) {
@@ -841,6 +964,9 @@ export default function App() {
             onCenterDepartmentIdChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, departmentId: value } }))}
             onCenterWorkerIdChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, workerId: value } }))}
             onCenterTimeoutChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, timeoutSec: Number(value) || 0 } }))}
+            onGoalWatchAutoHandleEnabledChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, goalWatchAutoHandleEnabled: value } }))}
+            onGoalWatchIntervalChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, goalWatchIntervalSec: Number(value) || 0 } }))}
+            onGoalWatchMaxDurationChange={(value) => updateSettings((current) => ({ ...current, center: { ...current.center, goalWatchMaxDurationSec: Number(value) || 0 } }))}
             onRoutingModeChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, mode: value } }))}
             onRoutingDefaultProviderChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, defaultProvider: value } }))}
             onRoutingAllowFallbackChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, allowFallback: value } }))}
@@ -852,9 +978,9 @@ export default function App() {
         );
       case 'home':
       default:
-        return <HomePage draft={draft} selectedTask={selectedTask} selectedColleagueName={selectedColleagueName} recentTasks={historyTasks} goalPushes={goalPushes} goalPushLoading={goalPushLoading} goalPushError={goalPushError} goalPushAckingId={goalPushAckingId} onRefreshGoalPushes={refreshGoalPushes} onAckGoalPush={handleAckGoalPush} onDraftChange={setDraft} onPickTask={handlePickTask} onOpenNewTask={handleOpenNewTask} onOpenRecentTask={handleOpenHistoryTask} />;
+        return <HomePage draft={draft} selectedTask={selectedTask} selectedColleagueName={selectedColleagueName} recentTasks={historyTasks} agentInstances={agentInstances} agentInstancesLoading={agentInstancesLoading} agentInstancesError={agentInstancesError} onRefreshAgentInstances={refreshAgentInstances} goalPushes={goalPushes} goalPushLoading={goalPushLoading} goalPushError={goalPushError} goalPushAckingId={goalPushAckingId} goalWatchAutoStatus={goalWatchAutoStatus} onRefreshGoalPushes={refreshGoalPushes} onAutoHandleGoalPush={handleAutoHandleGoalPush} onAckGoalPush={handleAckGoalPush} onDraftChange={setDraft} onPickTask={handlePickTask} onOpenNewTask={handleOpenNewTask} onOpenRecentTask={handleOpenHistoryTask} />;
     }
-  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
+  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
 
   const meta = pageMeta[activeTab];
   const status = statusCopy[activeTab];

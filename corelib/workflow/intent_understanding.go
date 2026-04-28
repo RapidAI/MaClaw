@@ -3,6 +3,8 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -151,7 +153,18 @@ func (m *IntentUnderstandingManager) HandleInput(userID, text string) (reply str
 	}
 
 	// Parse response
-	replyText, parsedIntent, isReady, _ := parseLLMIntentResponse(raw)
+	replyText, parsedIntent, isReady, parseOK := parseLLMIntentResponse(raw)
+
+	// JSON parse failure — LLM returned malformed output. Don't display
+	// the raw LLM output (which may be JSON gibberish) to the user.
+	// Return an error so the caller falls through to the normal agent loop.
+	// The caller's err != nil path already handles cleanup and fall-through.
+	if !parseOK {
+		log.Printf("[IntentUnderstanding] parse failed for user %s, cleaning up session. raw=%s",
+			userID, truncateForLog(raw, 200))
+		m.cleanupSession(userID)
+		return "", false, false, nil, fmt.Errorf("LLM returned unparseable response")
+	}
 
 	// Update session
 	now := time.Now()
@@ -460,17 +473,27 @@ func parseLLMIntentResponse(raw string) (reply string, intent StructuredIntent, 
 	// Try to extract JSON from the response (may be wrapped in markdown code block)
 	jsonStr := extractJSON(raw)
 
+	// LLMs sometimes produce trailing commas in JSON (e.g. "reply": "...",}).
+	// Go's json.Unmarshal rejects trailing commas. Strip them before parsing.
+	jsonStr = stripTrailingJSONCommas(jsonStr)
+
 	var result llmIntentResult
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		// Parse failed — return raw text as reply but signal failure
-		return strings.TrimSpace(raw), StructuredIntent{}, false, false
+		// Parse failed — return empty reply to signal failure. The caller
+		// MUST check parseOK and provide a user-friendly fallback instead
+		// of displaying the raw LLM output.
+		return "", StructuredIntent{}, false, false
 	}
 
 	// Normalize category: trim whitespace and lowercase to prevent LLM
 	// output variations like "None", " none ", "NONE" from bypassing guards.
 	result.Intent.Category = WorkflowType(strings.ToLower(strings.TrimSpace(string(result.Intent.Category))))
 
-	return result.Reply, result.Intent, result.Ready, true
+	// The LLM may place "ready" inside the "intent" object instead of at
+	// the top level. Accept both locations.
+	isReady := result.Ready || result.Intent.Ready
+
+	return result.Reply, result.Intent, isReady, true
 }
 
 // extractJSON attempts to extract a JSON object from text that may be
@@ -515,4 +538,14 @@ func extractJSON(text string) string {
 	}
 
 	return trimmed
+}
+
+// trailingCommaRe matches a comma followed by optional whitespace before
+// a closing bracket or brace. This is the most common LLM JSON error.
+var trailingCommaRe = regexp.MustCompile(`,\s*([}\]])`)
+
+// stripTrailingJSONCommas removes trailing commas before } and ] in JSON.
+// LLMs frequently produce these, but Go's json.Unmarshal rejects them.
+func stripTrailingJSONCommas(s string) string {
+	return trailingCommaRe.ReplaceAllString(s, "$1")
 }

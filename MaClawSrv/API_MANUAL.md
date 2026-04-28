@@ -9186,7 +9186,7 @@ The generated plaintext value is returned only once in the rotation response. La
 
 Admin overview credential counters: overview responses include credential status and expiry-risk totals.
 
-Fields include `credentials`, `active_credentials`, `suspended_credentials`, `revoked_credentials`, `expired_credentials`, and `expiring_credentials`. The `expiring_credentials` count uses the default 7-day lookahead window.
+Fields include `credentials`, `active_credentials`, `suspended_credentials`, `revoked_credentials`, `expired_credentials`, and `expiring_credentials`. The `expiring_credentials` count uses the default 7-day lookahead window. Snapshot observability fields are also included: `snapshots` and `snapshot_bytes`.
 
 ## Tenant summary credential counters
 
@@ -9225,3 +9225,122 @@ Example:
 ```
 
 When `api_key` or `api_secret` is omitted, the service still generates and returns the plaintext values only once in the create response.
+
+## Credential list filters
+
+`GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials` supports filtering before pagination.
+
+Supported query parameters:
+
+- `status=active|suspended|revoked`
+- `expired=true|false`
+- `expiring=true|false`
+- `limit` and `before` for pagination
+
+`expiring=true` uses the default 7-day lookahead window. Invalid `status`, `expired`, or `expiring` values return `400`.
+
+## Audit event resource filters
+
+`GET /api/v1/admin/audit-events` supports these additional filters:
+
+- `resource_id`: exact resource id, such as a credential id, run id, user id, or tenant id.
+- `actor_type`: exact actor type, such as `admin`, `user`, `credential`, `system`, or `anonymous`.
+
+These filters can be combined with `tenant_id`, `user_id`, `action`, `resource_type`, `limit`, and `before`.
+
+## Audit event time-window filters
+
+`GET /api/v1/admin/audit-events` supports `since` and `until` in RFC3339/RFC3339Nano format. They filter audit events by `created_at` before pagination is applied.
+
+Use `since/until` for logical time windows. Use `before` as the pagination cursor returned by `next_before`.
+
+### 9.13 Admin snapshots
+
+Persisted snapshots turn the export pipeline into a manageable backup resource under `MACLAW_DATA_ROOT/snapshots`.
+
+Create a snapshot:
+
+```http
+POST /api/v1/admin/snapshots
+X-MaClaw-Admin-Secret: <admin-secret>
+Content-Type: application/json
+
+{
+  "name": "tenant-a nightly backup",
+  "tenant_id": "tenant_xxx",
+  "user_id": "user_xxx",
+  "include_messages": true,
+  "include_runs": true,
+  "include_audit": true,
+  "include_secrets": false
+}
+```
+
+Notes:
+
+- `tenant_id` is optional. Omit it for a full service snapshot.
+- `user_id` is optional, but requires `tenant_id`.
+- `include_messages`, `include_runs`, and `include_audit` default to `true`; `include_secrets` defaults to `false`.
+- Snapshot files are private JSON files written below the service data root.
+- The response is `{ "snapshot": <metadata>, "data": <ExportServiceStateOutput> }`.
+- Snapshot counts and total snapshot bytes are visible in `GET /api/v1/admin/overview` and `GET /metrics`.
+
+List snapshots:
+
+```http
+GET /api/v1/admin/snapshots?tenant_id=tenant_xxx&user_id=user_xxx&limit=100&before=2026-04-28T00:00:00Z
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+Get one snapshot:
+
+```http
+GET /api/v1/admin/snapshots/{snapshot_id}
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+Restore a snapshot:
+
+```http
+POST /api/v1/admin/snapshots/{snapshot_id}/restore?dry_run=true
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+```http
+POST /api/v1/admin/snapshots/{snapshot_id}/restore?overwrite=true
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+Restore notes:
+
+- Restore reuses the same import pipeline as `POST /api/v1/admin/import`.
+- `dry_run=true` returns conflicts, warnings, and plan items without mutating state.
+- `overwrite=true` is required when restored tenant/user IDs already exist.
+- `overwrite` and `dry_run` can be passed either as query parameters or JSON body fields.
+- Full credential restore requires snapshots created with `include_secrets=true`.
+
+Prune snapshots:
+
+```http
+POST /api/v1/admin/snapshots/prune?tenant_id=tenant_xxx&user_id=user_xxx&older_than=2026-04-28T00:00:00Z&keep_latest=3&dry_run=true
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+Prune notes:
+
+- `older_than` is an RFC3339 timestamp cutoff.
+- `keep_latest=N` protects the latest N snapshots in the filtered tenant/user scope.
+- At least one of `older_than` or `keep_latest` is required.
+- Use `dry_run=true` first to preview `snapshots`, `kept_snapshots`, and `freed_bytes`.
+
+Delete a snapshot:
+
+```http
+DELETE /api/v1/admin/snapshots/{snapshot_id}?confirm=true
+X-MaClaw-Admin-Secret: <admin-secret>
+```
+
+
+
+
+

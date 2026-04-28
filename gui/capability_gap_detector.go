@@ -114,6 +114,9 @@ func (d *CapabilityGapDetector) Resolve(
 	conversationHistory []map[string]interface{},
 	sendStatus func(string),
 ) (skillName string, result string, err error) {
+	// Developer mode: skip all security reviews in this function.
+	isDeveloper := d.app != nil && d.app.policyEngine != nil && d.app.policyEngine.IsDeveloperMode()
+
 	// Step 1: Extract capability query from user message.
 	query := d.extractCapabilityQuery(ctx, userMessage, conversationHistory)
 	if query == "" {
@@ -141,40 +144,41 @@ func (d *CapabilityGapDetector) Resolve(
 			return "", "", nil
 		}
 
-		// Risk assessment for GitHub-imported skill (same as Hub path).
-		sendStatus("正在进行安全审查...")
-		ghAssessment := d.riskAssessor.AssessSkill(imported, "community")
-		if ghAssessment.Level == security.RiskCritical {
-			riskDetails := fmt.Sprintf("GitHub Skill「%s」来自 %s (trust_level=community) 包含 critical 级别风险操作",
-				imported.Name, ghCandidates[0].RepoURL)
-			confirmed := false
-			if d.confirmCallback != nil {
-				sendStatus(fmt.Sprintf("⚠️ 安全警告: %s\n等待用户确认...", riskDetails))
-				confirmed = d.confirmCallback(imported.Name, riskDetails)
-			}
-			if !confirmed {
+		// Security review: pattern scan (hard floor) + agent scan (upgrade only).
+		// Developer mode: skip security review entirely.
+		if !isDeveloper {
+			scanner := NewSkillSecurityScanner(d.app, nil)
+			scanReport := scanner.ScanStaged(ctx, imported, imported.SkillDir, sendStatus)
+			if scanReport.NeedsUserReview() {
+				riskDetails := FormatScanReportForUser(scanReport, imported.Name)
+				confirmed := false
+				if d.confirmCallback != nil {
+					sendStatus(fmt.Sprintf("⚠️ 安全警告: %s", scanReport.Summary))
+					confirmed = d.confirmCallback(imported.Name, riskDetails)
+				}
+				if !confirmed {
+					if d.auditLog != nil {
+						_ = d.auditLog.Log(security.AuditEntry{
+							Timestamp:    time.Now(),
+							Action:       security.AuditActionHubSkillReject,
+							ToolName:     "github_skill_install",
+							RiskLevel:    scanReport.FinalLevel,
+							PolicyAction: security.PolicyDeny,
+							Result:       fmt.Sprintf("rejected github skill %s: %s", imported.Name, scanReport.Summary),
+						})
+					}
+					return "", "", fmt.Errorf("GitHub Skill 安全审查未通过，已拒绝自动安装")
+				}
 				if d.auditLog != nil {
 					_ = d.auditLog.Log(security.AuditEntry{
 						Timestamp:    time.Now(),
-						Action:       security.AuditActionHubSkillReject,
+						Action:       security.AuditActionHubSkillInstall,
 						ToolName:     "github_skill_install",
-						RiskLevel:    security.RiskCritical,
-						PolicyAction: security.PolicyDeny,
-						Result:       fmt.Sprintf("rejected github skill %s from %s: critical risk", imported.Name, ghCandidates[0].RepoURL),
+						RiskLevel:    scanReport.FinalLevel,
+						PolicyAction: security.PolicyUserOverride,
+						Result:       fmt.Sprintf("user confirmed github skill %s, scanned_by=%s", imported.Name, scanReport.ScannedBy),
 					})
 				}
-				return "", "", fmt.Errorf("GitHub Skill 包含高风险操作，已拒绝自动安装")
-			}
-			// User confirmed — audit with PolicyUserOverride.
-			if d.auditLog != nil {
-				_ = d.auditLog.Log(security.AuditEntry{
-					Timestamp:    time.Now(),
-					Action:       security.AuditActionHubSkillInstall,
-					ToolName:     "github_skill_install",
-					RiskLevel:    security.RiskCritical,
-					PolicyAction: security.PolicyUserOverride,
-					Result:       fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical", imported.Name, ghCandidates[0].RepoURL),
-				})
 			}
 		}
 
@@ -187,18 +191,13 @@ func (d *CapabilityGapDetector) Resolve(
 
 		// Audit log for GitHub install.
 		if d.auditLog != nil {
-			// Use PolicyUserOverride when the user confirmed a critical-risk install.
-			ghPolicyAction := security.PolicyAllow
-			if ghAssessment.Level == security.RiskCritical {
-				ghPolicyAction = security.PolicyUserOverride
-			}
 			_ = d.auditLog.Log(security.AuditEntry{
 				Timestamp:    time.Now(),
 				Action:       security.AuditActionHubSkillInstall,
 				ToolName:     "github_skill_install",
-				RiskLevel:    ghAssessment.Level,
-				PolicyAction: ghPolicyAction,
-				Result:       fmt.Sprintf("installed github skill %s from %s, risk=%s", imported.Name, ghCandidates[0].RepoURL, ghAssessment.Level),
+				RiskLevel:    security.RiskLow,
+				PolicyAction: security.PolicyAllow,
+				Result:       fmt.Sprintf("installed github skill %s from %s", imported.Name, ghCandidates[0].RepoURL),
 			})
 		}
 
@@ -219,40 +218,41 @@ func (d *CapabilityGapDetector) Resolve(
 		return "", "", fmt.Errorf("install skill: %w", err)
 	}
 
-	// Step 5: Risk assessment on the entire skill.
-	sendStatus("正在进行安全审查...")
-	assessment := d.riskAssessor.AssessSkill(skill, skill.TrustLevel)
-	maxRisk := assessment.Level
-	if maxRisk == security.RiskCritical {
-		riskDetails := fmt.Sprintf("Skill「%s」来自 %s (trust_level=%s) 包含 critical 级别风险操作", chosen.Name, chosen.HubURL, skill.TrustLevel)
-		confirmed := false
-		if d.confirmCallback != nil {
-			sendStatus(fmt.Sprintf("⚠️ 安全警告: %s\n等待用户确认...", riskDetails))
-			confirmed = d.confirmCallback(chosen.Name, riskDetails)
-		}
-		if !confirmed {
+	// Step 5: Security review: pattern scan (hard floor) + agent scan (upgrade only).
+	// Developer mode: skip security review entirely.
+	if !isDeveloper {
+		scanner := NewSkillSecurityScanner(d.app, nil)
+		scanReport := scanner.ScanStaged(ctx, skill, skill.SkillDir, sendStatus)
+		if scanReport.NeedsUserReview() {
+			riskDetails := FormatScanReportForUser(scanReport, chosen.Name)
+			confirmed := false
+			if d.confirmCallback != nil {
+				sendStatus(fmt.Sprintf("⚠️ 安全警告: %s", scanReport.Summary))
+				confirmed = d.confirmCallback(chosen.Name, riskDetails)
+			}
+			if !confirmed {
+				if d.auditLog != nil {
+					_ = d.auditLog.Log(security.AuditEntry{
+						Timestamp:    time.Now(),
+						Action:       security.AuditActionHubSkillReject,
+						ToolName:     "hub_skill_install",
+						RiskLevel:    scanReport.FinalLevel,
+						PolicyAction: security.PolicyDeny,
+						Result:       fmt.Sprintf("rejected skill %s: %s", chosen.Name, scanReport.Summary),
+					})
+				}
+				return "", "", fmt.Errorf("Skill 安全审查未通过，已拒绝自动安装")
+			}
 			if d.auditLog != nil {
 				_ = d.auditLog.Log(security.AuditEntry{
 					Timestamp:    time.Now(),
-					Action:       security.AuditActionHubSkillReject,
+					Action:       security.AuditActionHubSkillInstall,
 					ToolName:     "hub_skill_install",
-					RiskLevel:    security.RiskCritical,
-					PolicyAction: security.PolicyDeny,
-					Result:       fmt.Sprintf("rejected skill %s from %s: critical risk, trust_level=%s", chosen.Name, chosen.HubURL, skill.TrustLevel),
+					RiskLevel:    scanReport.FinalLevel,
+					PolicyAction: security.PolicyUserOverride,
+					Result:       fmt.Sprintf("user confirmed skill %s, scanned_by=%s", chosen.Name, scanReport.ScannedBy),
 				})
 			}
-			return "", "", fmt.Errorf("Skill 包含高风险操作，已拒绝自动安装")
-		}
-		// User confirmed — audit with PolicyUserOverride and continue with installation.
-		if d.auditLog != nil {
-			_ = d.auditLog.Log(security.AuditEntry{
-				Timestamp:    time.Now(),
-				Action:       security.AuditActionHubSkillInstall,
-				ToolName:     "hub_skill_install",
-				RiskLevel:    security.RiskCritical,
-				PolicyAction: security.PolicyUserOverride,
-				Result:       fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical, trust_level=%s", chosen.Name, chosen.HubURL, skill.TrustLevel),
-			})
 		}
 	}
 
@@ -274,18 +274,13 @@ func (d *CapabilityGapDetector) Resolve(
 		if execErr != nil {
 			auditResult = execErr.Error()
 		}
-		// Use PolicyUserOverride when the user confirmed a critical-risk install.
-		policyAction := security.PolicyAllow
-		if maxRisk == security.RiskCritical {
-			policyAction = security.PolicyUserOverride
-		}
 		_ = d.auditLog.Log(security.AuditEntry{
 			Timestamp:    time.Now(),
 			Action:       security.AuditActionHubSkillInstall,
 			ToolName:     "hub_skill_install",
-			RiskLevel:    maxRisk,
-			PolicyAction: policyAction,
-			Result:       fmt.Sprintf("installed and executed skill %s from %s, trust_level=%s, risk=%s: %s", skill.Name, chosen.HubURL, chosen.TrustLevel, maxRisk, auditResult),
+			RiskLevel:    security.RiskLow,
+			PolicyAction: security.PolicyAllow,
+			Result:       fmt.Sprintf("installed and executed skill %s from %s: %s", skill.Name, chosen.HubURL, auditResult),
 		})
 	}
 

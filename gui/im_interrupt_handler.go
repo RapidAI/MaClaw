@@ -181,7 +181,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			DomainMatch: domainMatch,
 			Structure:   structure,
 		})
-		ih.handler.pendingInjection.Store(userID, injection)
+		ih.handler.accumulateInjection(userID, injection)
 		return progress.InterruptResult{
 			Handled: true,
 			Action:  progress.ActionMerge,
@@ -317,8 +317,9 @@ func (ih *imInterruptHandler) HandleCorrection(
 
 	case progress.ActionMerge:
 		// User wants to inject into current task instead of queuing.
+		// Prefix included here — consumption side does NOT add another.
 		injection := "[用户补充] " + messageText
-		ih.handler.pendingInjection.Store(userID, injection)
+		ih.handler.accumulateInjection(userID, injection)
 		return progress.InterruptResult{
 			Handled: true,
 			Action:  progress.ActionMerge,

@@ -1,6 +1,7 @@
 package hubs
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -29,6 +32,7 @@ var ErrHubNotFound = errors.New("hub not found")
 const hubConfirmationPrefix = "hub_registration_confirm:"
 const systemKeyPublicBaseURL = "server_public_base_url"
 const adminDomainRoutePrefix = "hdr_admin_"
+const adminUserLinkPrefix = "hul_admin_"
 
 type confirmationTokenRecord struct {
 	TokenHash string `json:"token_hash"`
@@ -67,6 +71,10 @@ type transactionalUserPatternMigrator interface {
 
 type transactionalDomainMigrator interface {
 	MigrateDomainToHub(ctx context.Context, domain, fromHubID string, route *store.HubDomainRoute) ([]*store.HubDomainRoute, error)
+}
+
+type transactionalDomainUserMigrator interface {
+	MigrateDomainAndEmailPatternToHub(ctx context.Context, domain, pattern, fromHubID, toHubID string, route *store.HubDomainRoute, now time.Time) ([]*store.HubDomainRoute, []*store.HubUserLink, []*store.HubUserLink, error)
 }
 
 type BlockedEmailRepository interface {
@@ -115,6 +123,7 @@ type HeartbeatHubUpdate struct {
 	CorporateEmailDomain  string
 	CorporateEmailDomains []string
 	AcceptPublicSignup    *bool
+	Capabilities          map[string]any
 }
 
 type MigrateUserRequest struct {
@@ -138,6 +147,43 @@ type MigrationResult struct {
 	UpsertedIDs []string `json:"upserted_ids,omitempty"`
 }
 
+type remoteUserMigrationRequest struct {
+	HubSecretHash string            `json:"hub_secret_hash"`
+	Emails        []string          `json:"emails,omitempty"`
+	Users         []json.RawMessage `json:"users,omitempty"`
+}
+
+type remoteUserMigrationExportResponse struct {
+	Users []json.RawMessage `json:"users"`
+}
+
+type remoteUserDataPackage struct {
+	User *struct {
+		Email string `json:"email"`
+	} `json:"user,omitempty"`
+}
+
+type RefreshUserInventoryResult struct {
+	HubsRefreshed int      `json:"hubs_refreshed"`
+	UsersIndexed  int      `json:"users_indexed"`
+	HubsFailed    int      `json:"hubs_failed"`
+	Errors        []string `json:"errors,omitempty"`
+}
+type HubUserDashboardItem struct {
+	HubID                 string     `json:"hub_id"`
+	HubName               string     `json:"hub_name"`
+	BaseURL               string     `json:"base_url"`
+	Status                string     `json:"status"`
+	IsDisabled            bool       `json:"is_disabled"`
+	UserCount             int        `json:"user_count"`
+	MachineCount          int        `json:"machine_count"`
+	CorporateEmailDomain  string     `json:"corporate_email_domain"`
+	CorporateEmailDomains []string   `json:"corporate_email_domains,omitempty"`
+	AcceptPublicSignup    bool       `json:"accept_public_signup"`
+	SignupMode            string     `json:"signup_mode"`
+	LastSeenAt            *time.Time `json:"last_seen_at,omitempty"`
+}
+
 type Service struct {
 	hubs          store.HubRepository
 	links         store.HubUserLinkRepository
@@ -147,6 +193,7 @@ type Service struct {
 	settings      store.SystemSettingsRepository
 	mailer        mail.Mailer
 	publicBaseURL string
+	client        *http.Client
 	sync          syncRecorder
 	refresher     routeSnapshotRefresher
 	recorder      *diagnostics.FailureEventRecorder
@@ -162,6 +209,7 @@ func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, rou
 		settings:      settings,
 		mailer:        mailer,
 		publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
+		client:        &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -271,6 +319,9 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			if err := s.syncDomainRoutes(ctx, existing, corporateEmailDomains, now); err != nil {
 				return nil, err
 			}
+			if err := s.syncHubUserEmailInventory(ctx, existing.ID, capabilityStringList(req.Capabilities["user_emails"]), now); err != nil {
+				return nil, err
+			}
 			s.refreshRoutes(ctx)
 
 			if alreadyConfirmed {
@@ -314,6 +365,9 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 		return nil, err
 	}
 	if err := s.syncDomainRoutes(ctx, hub, corporateEmailDomains, now); err != nil {
+		return nil, err
+	}
+	if err := s.syncHubUserEmailInventory(ctx, hub.ID, capabilityStringList(req.Capabilities["user_emails"]), now); err != nil {
 		return nil, err
 	}
 	s.refreshRoutes(ctx)
@@ -368,6 +422,13 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 		hub.EnrollmentMode = normalizeEnrollmentMode(update.EnrollmentMode)
 		hub.CorporateEmailDomain = corporateEmailDomain
 		hub.AcceptPublicSignup = acceptPublicSignup
+		if update.Capabilities != nil {
+			capJSON, err := json.Marshal(update.Capabilities)
+			if err != nil {
+				return err
+			}
+			hub.CapabilitiesJSON = string(capJSON)
+		}
 		hub.LastSeenAt = &now
 		hub.UpdatedAt = now
 		if hub.IsDisabled || hub.Status == "disabled" {
@@ -381,6 +442,11 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 		s.recordHubInstance(ctx, hub)
 		if err := s.syncDomainRoutes(ctx, hub, corporateEmailDomains, now); err != nil {
 			return err
+		}
+		if update.Capabilities != nil {
+			if err := s.syncHubUserEmailInventory(ctx, hub.ID, capabilityStringList(update.Capabilities["user_emails"]), now); err != nil {
+				return err
+			}
 		}
 	}
 	if err := s.hubs.UpdateHeartbeat(ctx, hubID, now); err != nil {
@@ -488,6 +554,57 @@ func (s *Service) ListHubs(ctx context.Context) ([]*store.HubInstance, error) {
 	return s.hubs.ListAll(ctx)
 }
 
+func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem, error) {
+	hubItems, err := s.hubs.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	userCounts := map[string]map[string]struct{}{}
+	if s.links != nil {
+		links, err := s.links.ListAll(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, link := range links {
+			if link == nil || strings.TrimSpace(link.HubID) == "" || strings.TrimSpace(link.Email) == "" {
+				continue
+			}
+			if userCounts[link.HubID] == nil {
+				userCounts[link.HubID] = map[string]struct{}{}
+			}
+			userCounts[link.HubID][normalizeEmail(link.Email)] = struct{}{}
+		}
+	}
+	out := make([]HubUserDashboardItem, 0, len(hubItems))
+	for _, hub := range hubItems {
+		if hub == nil {
+			continue
+		}
+		domains := hubCorporateDomains(hub)
+		signupMode := "restricted"
+		if len(domains) > 0 {
+			signupMode = "corporate_domain"
+		} else if hub.AcceptPublicSignup {
+			signupMode = "public_signup"
+		}
+		out = append(out, HubUserDashboardItem{
+			HubID:                 hub.ID,
+			HubName:               hub.Name,
+			BaseURL:               hub.BaseURL,
+			Status:                hub.Status,
+			IsDisabled:            hub.IsDisabled,
+			UserCount:             hubUserCount(hub, len(userCounts[hub.ID])),
+			MachineCount:          hubMachineCount(hub),
+			CorporateEmailDomain:  hub.CorporateEmailDomain,
+			CorporateEmailDomains: domains,
+			AcceptPublicSignup:    hub.AcceptPublicSignup,
+			SignupMode:            signupMode,
+			LastSeenAt:            hub.LastSeenAt,
+		})
+	}
+	return out, nil
+}
+
 func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*MigrationResult, error) {
 	email := normalizeEmailPattern(req.Email)
 	toHubID := strings.TrimSpace(req.ToHubID)
@@ -501,15 +618,24 @@ func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*Mig
 	if err := s.ensureTargetHub(ctx, toHubID); err != nil {
 		return nil, err
 	}
+
 	if s.links == nil {
 		return &MigrationResult{Mode: "email", Email: email, ToHubID: toHubID}, nil
 	}
 	if isEmailMigrationPattern(email) {
 		return s.migrateUserPattern(ctx, email, fromHubID, toHubID)
 	}
+	sources, err := s.collectUserMigrationSources(ctx, email, fromHubID, toHubID)
+	if err != nil {
+		return nil, err
+	}
+	cleanupLocalUsers, err := s.prepareLocalUserMigration(ctx, sources, toHubID)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now()
-	link := &store.HubUserLink{ID: primaryUserLinkID(toHubID, email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
+	link := &store.HubUserLink{ID: adminUserLinkID(email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
 	var removedLinks []*store.HubUserLink
 	var upsertedLink *store.HubUserLink
 	if migrator, ok := s.links.(transactionalUserMigrator); ok {
@@ -542,10 +668,21 @@ func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*Mig
 		upserted = append(upserted, upsertedLink.ID)
 	}
 	s.refreshRoutes(ctx)
+	if err := cleanupLocalUsers(ctx); err != nil {
+		return nil, err
+	}
 	return &MigrationResult{Mode: "email", Email: email, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: upserted}, nil
 }
 
 func (s *Service) migrateUserPattern(ctx context.Context, pattern, fromHubID, toHubID string) (*MigrationResult, error) {
+	sources, err := s.collectUserMigrationSources(ctx, pattern, fromHubID, toHubID)
+	if err != nil {
+		return nil, err
+	}
+	cleanupLocalUsers, err := s.prepareLocalUserMigration(ctx, sources, toHubID)
+	if err != nil {
+		return nil, err
+	}
 	migrator, ok := s.links.(transactionalUserPatternMigrator)
 	if !ok {
 		return nil, errors.New("transactional user pattern migration is not supported by this store")
@@ -579,6 +716,9 @@ func (s *Service) migrateUserPattern(ctx context.Context, pattern, fromHubID, to
 		}
 	}
 	s.refreshRoutes(ctx)
+	if err := cleanupLocalUsers(ctx); err != nil {
+		return nil, err
+	}
 	return &MigrationResult{Mode: "email", Email: pattern, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: upserted}, nil
 }
 
@@ -595,23 +735,47 @@ func (s *Service) MigrateDomain(ctx context.Context, req MigrateDomainRequest) (
 	if s.routes == nil {
 		return &MigrationResult{Mode: "domain", Domain: domain, ToHubID: toHubID}, nil
 	}
+	sources, err := s.collectUserMigrationSources(ctx, "*@"+domain, fromHubID, toHubID)
+	if err != nil {
+		return nil, err
+	}
+	cleanupLocalUsers, err := s.prepareLocalUserMigration(ctx, sources, toHubID)
+	if err != nil {
+		return nil, err
+	}
+
 	adminRouteID := adminDomainRouteID(domain)
 	now := time.Now()
 	route := &store.HubDomainRoute{ID: adminRouteID, HubID: toHubID, Domain: domain, Enabled: true, Priority: 0, CreatedAt: now, UpdatedAt: now}
+
 	var removedRoutes []*store.HubDomainRoute
-	if migrator, ok := s.routes.(transactionalDomainMigrator); ok {
+	var removedLinks []*store.HubUserLink
+	var upsertedLinks []*store.HubUserLink
+	if migrator, ok := s.routes.(transactionalDomainUserMigrator); ok {
 		var err error
-		removedRoutes, err = migrator.MigrateDomainToHub(ctx, domain, fromHubID, route)
+		removedRoutes, removedLinks, upsertedLinks, err = migrator.MigrateDomainAndEmailPatternToHub(ctx, domain, "*@"+domain, fromHubID, toHubID, route, now)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		return nil, errors.New("transactional domain migration is not supported by this store")
+		return nil, errors.New("transactional domain user migration is not supported by this store")
 	}
-	removed := make([]string, 0, len(removedRoutes))
+
+	removed := make([]string, 0, len(removedRoutes)+len(removedLinks))
 	for _, item := range removedRoutes {
 		if item != nil {
 			removed = append(removed, item.ID)
+		}
+	}
+	for _, item := range removedLinks {
+		if item != nil {
+			removed = append(removed, item.ID)
+		}
+	}
+	upserted := []string{route.ID}
+	for _, item := range upsertedLinks {
+		if item != nil {
+			upserted = append(upserted, item.ID)
 		}
 	}
 	if s.sync != nil {
@@ -621,11 +785,311 @@ func (s *Service) MigrateDomain(ctx context.Context, req MigrateDomainRequest) (
 			}
 		}
 		s.sync.AppendHubDomainRoute(ctx, route)
+		for _, item := range removedLinks {
+			if item != nil {
+				s.sync.DeleteHubUserLink(ctx, item.ID)
+			}
+		}
+		for _, item := range upsertedLinks {
+			if item != nil {
+				s.sync.AppendHubUserLink(ctx, item)
+			}
+		}
 	}
 	s.refreshRoutes(ctx)
-	return &MigrationResult{Mode: "domain", Domain: domain, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: []string{route.ID}}, nil
+	if err := cleanupLocalUsers(ctx); err != nil {
+		return nil, err
+	}
+	return &MigrationResult{Mode: "domain", Domain: domain, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: upserted}, nil
 }
 
+func (s *Service) RefreshUserInventory(ctx context.Context) (RefreshUserInventoryResult, error) {
+	var result RefreshUserInventoryResult
+	if s.hubs == nil {
+		return result, nil
+	}
+	hubItems, err := s.hubs.ListAll(ctx)
+	if err != nil {
+		return result, err
+	}
+	now := time.Now()
+	for _, hub := range hubItems {
+		if !hubCanAttemptDirectUserMigration(hub) {
+			continue
+		}
+		var exported remoteUserMigrationExportResponse
+		if err := s.callHubUserMigration(ctx, hub, "/api/center/user-migration/export", remoteUserMigrationRequest{HubSecretHash: hub.HubSecretHash}, &exported); err != nil {
+			result.HubsFailed++
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", hub.ID, err))
+			continue
+		}
+		emails := make([]string, 0, len(exported.Users))
+		for _, raw := range exported.Users {
+			var pkg remoteUserDataPackage
+			if err := json.Unmarshal(raw, &pkg); err != nil || pkg.User == nil {
+				continue
+			}
+			email := normalizeEmail(pkg.User.Email)
+			if email != "" {
+				emails = append(emails, email)
+			}
+		}
+		if err := s.rebuildHubUserEmailInventory(ctx, hub.ID, emails, now); err != nil {
+			result.HubsFailed++
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", hub.ID, err))
+			continue
+		}
+		if err := s.updateHubUserEmailCapability(ctx, hub, emails, now); err != nil {
+			result.HubsFailed++
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", hub.ID, err))
+			continue
+		}
+		result.HubsRefreshed++
+		result.UsersIndexed += len(emails)
+	}
+	s.refreshRoutes(ctx)
+	return result, nil
+}
+
+func (s *Service) updateHubUserEmailCapability(ctx context.Context, hub *store.HubInstance, emails []string, now time.Time) error {
+	if hub == nil {
+		return nil
+	}
+	caps := map[string]any{}
+	if strings.TrimSpace(hub.CapabilitiesJSON) != "" {
+		_ = json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps)
+	}
+	normalized := make([]string, 0, len(emails))
+	seen := map[string]struct{}{}
+	for _, rawEmail := range emails {
+		email := normalizeEmail(rawEmail)
+		if email == "" {
+			continue
+		}
+		if _, ok := seen[email]; ok {
+			continue
+		}
+		seen[email] = struct{}{}
+		normalized = append(normalized, email)
+	}
+	caps["user_emails"] = normalized
+	caps["user_count"] = len(normalized)
+	caps["supports_user_data_migration"] = true
+	data, err := json.Marshal(caps)
+	if err != nil {
+		return err
+	}
+	copy := *hub
+	copy.CapabilitiesJSON = string(data)
+	copy.UpdatedAt = now
+	if err := s.hubs.UpdateRegistration(ctx, &copy); err != nil {
+		return err
+	}
+	s.recordHubInstance(ctx, &copy)
+	return nil
+}
+
+func (s *Service) removeHubUserEmailInventory(ctx context.Context, hub *store.HubInstance, removedEmails []string, now time.Time) error {
+	if hub == nil || len(removedEmails) == 0 {
+		return nil
+	}
+	removed := map[string]struct{}{}
+	for _, rawEmail := range removedEmails {
+		if email := normalizeEmail(rawEmail); email != "" {
+			removed[email] = struct{}{}
+		}
+	}
+	if len(removed) == 0 {
+		return nil
+	}
+	caps := map[string]any{}
+	if strings.TrimSpace(hub.CapabilitiesJSON) != "" {
+		_ = json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps)
+	}
+	remaining := make([]string, 0)
+	for _, rawEmail := range capabilityStringList(caps["user_emails"]) {
+		email := normalizeEmail(rawEmail)
+		if email == "" {
+			continue
+		}
+		if _, ok := removed[email]; ok {
+			continue
+		}
+		remaining = append(remaining, email)
+	}
+	if err := s.updateHubUserEmailCapability(ctx, hub, remaining, now); err != nil {
+		return err
+	}
+	return s.rebuildHubUserEmailInventory(ctx, hub.ID, remaining, now)
+}
+
+func (s *Service) prepareLocalUserMigration(ctx context.Context, sources map[string][]string, toHubID string) (func(context.Context) error, error) {
+	if len(sources) == 0 {
+		return func(context.Context) error { return nil }, nil
+	}
+	toHub, err := s.hubs.GetByID(ctx, toHubID)
+	if err != nil {
+		return nil, err
+	}
+	if toHub == nil {
+		return nil, ErrHubNotFound
+	}
+	packages := make([]json.RawMessage, 0)
+	for sourceHubID, emails := range sources {
+		sourceHub, err := s.hubs.GetByID(ctx, sourceHubID)
+		if err != nil {
+			return nil, err
+		}
+		if sourceHub == nil || !hubSupportsDirectUserMigration(sourceHub) {
+			continue
+		}
+		var resp remoteUserMigrationExportResponse
+		if err := s.callHubUserMigration(ctx, sourceHub, "/api/center/user-migration/export", remoteUserMigrationRequest{HubSecretHash: sourceHub.HubSecretHash, Emails: emails}, &resp); err != nil {
+			return nil, err
+		}
+		packages = append(packages, resp.Users...)
+	}
+	if len(packages) == 0 {
+		return func(context.Context) error { return nil }, nil
+	}
+	if !hubSupportsDirectUserMigration(toHub) {
+		return nil, errors.New("target hub does not have migration endpoint credentials")
+	}
+	if err := s.callHubUserMigration(ctx, toHub, "/api/center/user-migration/import", remoteUserMigrationRequest{HubSecretHash: toHub.HubSecretHash, Users: packages}, nil); err != nil {
+		return nil, err
+	}
+	cleanup := func(cleanupCtx context.Context) error {
+		for sourceHubID, emails := range sources {
+			sourceHub, err := s.hubs.GetByID(cleanupCtx, sourceHubID)
+			if err != nil {
+				return err
+			}
+			if sourceHub == nil || !hubSupportsDirectUserMigration(sourceHub) {
+				continue
+			}
+			if err := s.callHubUserMigration(cleanupCtx, sourceHub, "/api/center/user-migration/delete", remoteUserMigrationRequest{HubSecretHash: sourceHub.HubSecretHash, Emails: emails}, nil); err != nil {
+				return err
+			}
+			if err := s.removeHubUserEmailInventory(cleanupCtx, sourceHub, emails, time.Now()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return cleanup, nil
+}
+
+func hubCanAttemptDirectUserMigration(hub *store.HubInstance) bool {
+	if hub == nil || strings.TrimSpace(hub.BaseURL) == "" || strings.TrimSpace(hub.HubSecretHash) == "" {
+		return false
+	}
+	baseURL := strings.ToLower(strings.TrimSpace(hub.BaseURL))
+	return strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://")
+}
+
+func hubSupportsDirectUserMigration(hub *store.HubInstance) bool {
+	if !hubCanAttemptDirectUserMigration(hub) {
+		return false
+	}
+	var caps map[string]any
+	if strings.TrimSpace(hub.CapabilitiesJSON) == "" || json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps) != nil {
+		return false
+	}
+	for _, key := range []string{"supports_user_data_migration", "supportsUserDataMigration"} {
+		if value, ok := caps[key].(bool); ok && value {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) callHubUserMigration(ctx context.Context, hub *store.HubInstance, path string, payload remoteUserMigrationRequest, out any) error {
+	if s.client == nil {
+		s.client = &http.Client{Timeout: 30 * time.Second}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	url := strings.TrimRight(strings.TrimSpace(hub.BaseURL), "/") + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("hub user migration call %s failed with status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if out != nil {
+		if err := json.Unmarshal(body, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) collectUserMigrationSources(ctx context.Context, pattern, fromHubID, toHubID string) (map[string][]string, error) {
+	out := map[string][]string{}
+	seen := map[string]struct{}{}
+	add := func(hubID, email string) {
+		hubID = strings.TrimSpace(hubID)
+		email = normalizeEmail(email)
+		if hubID == "" || email == "" || strings.TrimSpace(hubID) == strings.TrimSpace(toHubID) {
+			return
+		}
+		if strings.TrimSpace(fromHubID) != "" && strings.TrimSpace(hubID) != strings.TrimSpace(fromHubID) {
+			return
+		}
+		if !wildcardEmailMatch(pattern, email) {
+			return
+		}
+		key := hubID + "|" + email
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out[hubID] = append(out[hubID], email)
+	}
+
+	if s.links != nil {
+		links, err := s.links.ListAll(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, link := range links {
+			if link == nil || isOwnerLink(link) || isAdminUserLink(link) {
+				continue
+			}
+			add(link.HubID, link.Email)
+		}
+	}
+
+	if s.hubs != nil {
+		hubs, err := s.hubs.ListAll(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, hub := range hubs {
+			if hub == nil || strings.TrimSpace(hub.CapabilitiesJSON) == "" {
+				continue
+			}
+			var caps map[string]any
+			if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
+				continue
+			}
+			for _, email := range capabilityStringList(caps["user_emails"]) {
+				add(hub.ID, email)
+			}
+		}
+	}
+	return out, nil
+}
 func (s *Service) ensureTargetHub(ctx context.Context, hubID string) error {
 	hub, err := s.hubs.GetByID(ctx, strings.TrimSpace(hubID))
 	if err != nil {
@@ -924,6 +1388,11 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 		return err
 	}
 	for _, item := range items {
+		if isAdminUserLink(item) {
+			return nil
+		}
+	}
+	for _, item := range items {
 		if item == nil || isOwnerLink(item) {
 			continue
 		}
@@ -946,6 +1415,82 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 	return nil
 }
 
+func (s *Service) rebuildHubUserEmailInventory(ctx context.Context, hubID string, emails []string, now time.Time) error {
+	if s.links == nil || strings.TrimSpace(hubID) == "" {
+		return nil
+	}
+	current := map[string]struct{}{}
+	for _, rawEmail := range emails {
+		email := normalizeEmail(rawEmail)
+		if email != "" {
+			current[email] = struct{}{}
+		}
+	}
+	items, err := s.links.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item == nil || strings.TrimSpace(item.HubID) != strings.TrimSpace(hubID) || isOwnerLink(item) || isAdminUserLink(item) {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(item.ID), "hul_user_"+strings.TrimSpace(hubID)+"_") {
+			continue
+		}
+		email := normalizeEmail(item.Email)
+		if _, ok := current[email]; ok {
+			continue
+		}
+		if err := s.links.DeleteByID(ctx, item.ID); err != nil {
+			return err
+		}
+		if s.sync != nil {
+			s.sync.DeleteHubUserLink(ctx, item.ID)
+		}
+	}
+	return s.syncHubUserEmailInventory(ctx, hubID, emails, now)
+}
+
+func (s *Service) syncHubUserEmailInventory(ctx context.Context, hubID string, emails []string, now time.Time) error {
+	if s.links == nil || strings.TrimSpace(hubID) == "" || len(emails) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, rawEmail := range emails {
+		email := normalizeEmail(rawEmail)
+		if email == "" {
+			continue
+		}
+		if _, ok := seen[email]; ok {
+			continue
+		}
+		seen[email] = struct{}{}
+
+		items, err := s.links.ListByEmail(ctx, email)
+		if err != nil {
+			return err
+		}
+		adminManaged := false
+		for _, item := range items {
+			if isAdminUserLink(item) {
+				adminManaged = true
+				break
+			}
+		}
+		if adminManaged {
+			continue
+		}
+
+		link := &store.HubUserLink{ID: primaryUserLinkID(hubID, email), HubID: hubID, Email: email, IsDefault: false, CreatedAt: now, UpdatedAt: now}
+		if err := s.links.Upsert(ctx, link); err != nil {
+			return err
+		}
+		if s.sync != nil {
+			s.sync.AppendHubUserLink(ctx, link)
+		}
+	}
+	return nil
+}
 func (s *Service) syncDomainRoutes(ctx context.Context, hub *store.HubInstance, domains []string, now time.Time) error {
 	if s.routes == nil || hub == nil {
 		return nil
@@ -1073,13 +1618,37 @@ func normalizeEmail(email string) string {
 
 func normalizeEmailPattern(pattern string) string {
 	pattern = normalizeEmail(pattern)
-	pattern = strings.ReplaceAll(pattern, "＊", "*")
+	pattern = strings.ReplaceAll(pattern, "\uff0a", "*")
 	if strings.HasPrefix(pattern, "@") {
 		pattern = "*" + pattern
 	}
 	return pattern
 }
 
+func wildcardEmailMatch(pattern, email string) bool {
+	pattern = normalizeEmailPattern(pattern)
+	email = normalizeEmail(email)
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == email
+	}
+	if parts[0] != "" && !strings.HasPrefix(email, parts[0]) {
+		return false
+	}
+	pos := len(parts[0])
+	for _, part := range parts[1 : len(parts)-1] {
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(email[pos:], part)
+		if idx < 0 {
+			return false
+		}
+		pos += idx + len(part)
+	}
+	last := parts[len(parts)-1]
+	return last == "" || strings.HasSuffix(email[pos:], last)
+}
 func isEmailMigrationPattern(email string) bool {
 	return strings.Contains(email, "*")
 }
@@ -1156,8 +1725,134 @@ func isOwnerLink(link *store.HubUserLink) bool {
 	return strings.HasPrefix(strings.TrimSpace(link.ID), "hul_owner_")
 }
 
+func hubCorporateDomains(hub *store.HubInstance) []string {
+	if hub == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 2)
+	add := func(value string) {
+		value = normalizeCorporateEmailDomain(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	add(hub.CorporateEmailDomain)
+	var caps map[string]any
+	if strings.TrimSpace(hub.CapabilitiesJSON) != "" && json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps) == nil {
+		if values, ok := caps["corporate_email_domains"].([]any); ok {
+			for _, value := range values {
+				add(fmt.Sprint(value))
+			}
+		}
+		if value, ok := caps["corporate_email_domain"]; ok {
+			add(fmt.Sprint(value))
+		}
+	}
+	return out
+}
+
+func hubMachineCount(hub *store.HubInstance) int {
+	if hub == nil || strings.TrimSpace(hub.CapabilitiesJSON) == "" {
+		return 0
+	}
+	var caps map[string]any
+	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
+		return 0
+	}
+	for _, key := range []string{"machine_count", "machines_count", "machineCount", "machinesCount", "machine_total", "machines"} {
+		if n, ok := numericCapability(caps[key]); ok {
+			return n
+		}
+	}
+	return 0
+}
+
+func hubUserCount(hub *store.HubInstance, fallback int) int {
+	if hub == nil || strings.TrimSpace(hub.CapabilitiesJSON) == "" {
+		return fallback
+	}
+	var caps map[string]any
+	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
+		return fallback
+	}
+	for _, key := range []string{"user_count", "users_count", "userCount", "usersCount", "user_total", "users"} {
+		if n, ok := numericCapability(caps[key]); ok {
+			return n
+		}
+	}
+	return fallback
+}
+
+func capabilityStringList(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if item == nil {
+				continue
+			}
+			out = append(out, fmt.Sprint(item))
+		}
+		return out
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		parts := strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' ' })
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if strings.TrimSpace(part) != "" {
+				out = append(out, part)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func numericCapability(value any) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		if v >= 0 {
+			return int(v), true
+		}
+	case int:
+		if v >= 0 {
+			return v, true
+		}
+	case []any:
+		return len(v), true
+	case string:
+		var n int
+		if _, err := fmt.Sscanf(strings.TrimSpace(v), "%d", &n); err == nil && n >= 0 {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func isAdminUserLink(link *store.HubUserLink) bool {
+	if link == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(link.ID), adminUserLinkPrefix)
+}
+
 func primaryUserLinkID(hubID, email string) string {
 	return fmt.Sprintf("hul_user_%s_%s", strings.TrimSpace(hubID), hashToken(normalizeEmail(email))[:16])
+}
+
+func adminUserLinkID(email string) string {
+	return adminUserLinkPrefix + hashToken(normalizeEmail(email))[:20]
 }
 
 func domainRouteID(hubID string, index int) string {

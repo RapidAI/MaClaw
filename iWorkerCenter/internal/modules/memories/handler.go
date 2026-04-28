@@ -17,8 +17,8 @@ type MemoryEntry struct {
 	ID        string   `json:"id"`
 	Title     string   `json:"title"`
 	Content   string   `json:"content"`
-	Level     string   `json:"level"`  // enterprise, role, team
-	Scope     string   `json:"scope"`  // all, office, data, production, quality, team_x
+	Level     string   `json:"level"` // enterprise, role, team
+	Scope     string   `json:"scope"` // all, office, data, production, quality, team_x
 	Tags      []string `json:"tags"`
 	Version   int      `json:"version"`
 	Status    string   `json:"status"` // active, disabled
@@ -82,7 +82,7 @@ func (h *Handler) handleClientMemories(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listMemories(w http.ResponseWriter, r *http.Request, activeOnly bool) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := requestTenantID(r)
 	roleCode := r.URL.Query().Get("role_code")
 
 	query := "SELECT id, title, content, level, scope, tags, version, status, created_at, updated_at FROM shared_memories"
@@ -163,7 +163,7 @@ func (h *Handler) createMemory(w http.ResponseWriter, r *http.Request) {
 	tagsJSON, _ := json.Marshal(tags)
 	now := time.Now().Format(time.RFC3339)
 	id := idgen.New("mem")
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := requestTenantID(r)
 
 	_, err := h.write.Exec(`INSERT INTO shared_memories (id, tenant_id, title, content, level, scope, tags, version, status, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)`,
@@ -205,7 +205,7 @@ func (h *Handler) updateMemory(w http.ResponseWriter, r *http.Request, id string
 		status = "active"
 	}
 
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := requestTenantID(r)
 	res, err := h.write.Exec(`UPDATE shared_memories SET title=?, content=?, level=?, scope=?, tags=?, status=?, version=version+1, updated_at=? WHERE id=? AND tenant_id=?`,
 		strings.TrimSpace(req.Title), strings.TrimSpace(req.Content),
 		strings.TrimSpace(req.Level), strings.TrimSpace(req.Scope),
@@ -229,4 +229,8 @@ func extractID(path, prefix string) string {
 		return ""
 	}
 	return parts[0]
+}
+
+func requestTenantID(r *http.Request) string {
+	return tenant.RequestTenantID(r)
 }

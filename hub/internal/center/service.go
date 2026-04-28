@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,7 +21,9 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
+	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 const (
@@ -119,10 +122,20 @@ type syncUserLinkRequest struct {
 	IsDefault bool   `json:"is_default"`
 }
 
+type UserCounter interface {
+	ListUsers(ctx context.Context) ([]*store.User, error)
+}
+
+type MachineCounter interface {
+	ListAllMachines(ctx context.Context) ([]device.MachineRuntimeInfo, error)
+}
+
 type Service struct {
 	cfg      *config.Config
 	settings SystemSettingsRepository
 	client   *http.Client
+	users    UserCounter
+	machines MachineCounter
 
 	mu               sync.Mutex
 	heartbeatStarted bool
@@ -142,6 +155,22 @@ func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service 
 
 func (s *Service) SetFailureEventRecorder(recorder *diagnostics.FailureEventRecorder) {
 	s.recorder = recorder
+}
+
+func (s *Service) VerifyHubSecretHash(ctx context.Context, secretHash string) bool {
+	secretHash = strings.TrimSpace(secretHash)
+	if s == nil || secretHash == "" {
+		return false
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil || strings.TrimSpace(record.HubSecret) == "" {
+		return false
+	}
+	return hashHubSecret(record.HubSecret) == secretHash
+}
+func (s *Service) SetStatsProviders(users UserCounter, machines MachineCounter) {
+	s.users = users
+	s.machines = machines
 }
 
 func (s *Service) recordFailure(ctx context.Context, category, eventCode, message, entityID, email string, details map[string]any) {
@@ -409,12 +438,7 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 		CorporateEmailDomain:  corporateEmailDomain,
 		CorporateEmailDomains: corporateEmailDomains,
 		AcceptPublicSignup:    acceptPublicSignup,
-		Capabilities: map[string]any{
-			"supports_remote_control": true,
-			"supports_pwa":            true,
-			"supports_tools":          brandTools(),
-			"brand":                   brand.Current().DisplayName,
-		},
+		Capabilities:          s.registrationCapabilities(ctx),
 	}
 
 	payload, err := json.Marshal(reqBody)
@@ -975,6 +999,44 @@ func (s *Service) SyncUserRoute(ctx context.Context, email string) error {
 	return lastErr
 }
 
+func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
+	caps := map[string]any{
+		"supports_remote_control":      true,
+		"supports_pwa":                 true,
+		"supports_tools":               brandTools(),
+		"supports_user_data_migration": true,
+		"brand":                        brand.Current().DisplayName,
+	}
+	if s != nil && s.users != nil {
+		if users, err := s.users.ListUsers(ctx); err == nil {
+			seen := map[string]struct{}{}
+			for _, user := range users {
+				if user == nil || strings.TrimSpace(user.Email) == "" {
+					continue
+				}
+				email := strings.ToLower(strings.TrimSpace(user.Email))
+				if email == "" {
+					continue
+				}
+				seen[email] = struct{}{}
+			}
+			emails := make([]string, 0, len(seen))
+			for email := range seen {
+				emails = append(emails, email)
+			}
+			sort.Strings(emails)
+			caps["user_count"] = len(seen)
+			caps["user_emails"] = emails
+		}
+	}
+	if s != nil && s.machines != nil {
+		if machines, err := s.machines.ListAllMachines(ctx); err == nil {
+			caps["machine_count"] = len(machines)
+		}
+	}
+	return caps
+}
+
 func (s *Service) sendHeartbeat(ctx context.Context) error {
 	record, err := s.loadRegistration(ctx)
 	if err != nil {
@@ -1015,6 +1077,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 		"corporate_email_domain":   corporateEmailDomain,
 		"corporate_email_domains":  corporateEmailDomains,
 		"accept_public_signup":     acceptPublicSignup,
+		"capabilities":             s.registrationCapabilities(ctx),
 	})
 	if err != nil {
 		return err
@@ -1053,6 +1116,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			record.LastError = ""
 			record.LastBaseURL = baseURL
 			record.LastRegisteredAt = time.Now().Unix()
+
 			return s.saveRegistration(context.Background(), record)
 		}
 
@@ -1214,6 +1278,10 @@ func mustJSON(v any) string {
 	return string(data)
 }
 
+func hashHubSecret(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
 func randomInstallationID() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {

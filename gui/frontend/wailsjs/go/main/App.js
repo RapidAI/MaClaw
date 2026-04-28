@@ -506,6 +506,10 @@ export function FetchCodeGenModels() {
   return window['go']['main']['App']['FetchCodeGenModels']();
 }
 
+export function FetchProviderModels(arg1, arg2, arg3) {
+  return window['go']['main']['App']['FetchProviderModels'](arg1, arg2, arg3);
+}
+
 export function SaveCodeGenModelChoice(arg1, arg2) {
   return window['go']['main']['App']['SaveCodeGenModelChoice'](arg1, arg2);
 }
@@ -1093,6 +1097,10 @@ export function FetchNews() {
 
 export function CancelAIAssistantSession() {
   return window['go']['main']['App']['CancelAIAssistantSession']();
+}
+
+export function InjectAIAssistantSupplementary(arg1) {
+  return window['go']['main']['App']['InjectAIAssistantSupplementary'](arg1);
 }
 
 export function ResolveCriticalConfirm(arg1, arg2) {

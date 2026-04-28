@@ -13,9 +13,10 @@ import (
 
 // PolicyEngine evaluates tool invocations against a set of ordered policy rules.
 type PolicyEngine struct {
-	mu       sync.RWMutex
-	rules    []security.PolicyRule
-	reCache  map[string]*regexp.Regexp // compiled regex cache
+	mu            sync.RWMutex
+	rules         []security.PolicyRule
+	reCache       map[string]*regexp.Regexp // compiled regex cache
+	developerMode bool                      // true when mode == "developer"
 }
 
 // NewPolicyEngine creates a PolicyEngine initialised with the default policy rules.
@@ -27,11 +28,12 @@ func NewPolicyEngine() *PolicyEngine {
 }
 
 // NewPolicyEngineWithMode creates a PolicyEngine using rules for the given mode.
-// Supported modes: "relaxed", "standard" (default), "strict".
+// Supported modes: "developer", "relaxed", "standard" (default), "strict".
 func NewPolicyEngineWithMode(mode string) *PolicyEngine {
 	return &PolicyEngine{
-		rules:   PolicyRulesForMode(mode),
-		reCache: make(map[string]*regexp.Regexp),
+		rules:         PolicyRulesForMode(mode),
+		reCache:       make(map[string]*regexp.Regexp),
+		developerMode: mode == "developer",
 	}
 }
 
@@ -41,7 +43,17 @@ func (e *PolicyEngine) SetMode(mode string) {
 	e.mu.Lock()
 	e.rules = rules
 	e.reCache = make(map[string]*regexp.Regexp)
+	e.developerMode = mode == "developer"
 	e.mu.Unlock()
+}
+
+// IsDeveloperMode returns true when the engine is in "developer" mode.
+// Developer mode disables all security guardrails — intended for security
+// researchers who need to observe raw tool behaviour without interception.
+func (e *PolicyEngine) IsDeveloperMode() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.developerMode
 }
 
 // Evaluate determines the PolicyAction for a tool invocation by walking the
@@ -126,16 +138,21 @@ func DefaultPolicyRules() []security.PolicyRule {
 
 // PolicyRulesForMode returns the policy rules for the given security mode.
 //
-//	relaxed:  low/medium/high → allow, critical → ask (dangerous keywords → deny)
-//	standard: low → allow, medium → audit, high → ask, critical → ask (dangerous keywords → deny)
-//	strict:   low → allow, medium/high → ask, critical → deny (dangerous keywords → deny)
+// Supported modes:
+//
+//	developer: all operations allowed unconditionally (no deny, no ask, no audit).
+//	           Intended for security researchers. Use with caution.
+//	relaxed:   low/medium/high → allow, critical → ask (dangerous keywords → deny)
+//	standard:  low → allow, medium → audit, high → ask, critical → ask (dangerous keywords → deny)
+//	strict:    low → allow, medium/high → ask, critical → deny (dangerous keywords → deny)
 func PolicyRulesForMode(mode string) []security.PolicyRule {
-	// Dangerous-keyword deny rule is shared across all modes.
+	// Dangerous-keyword deny rule is shared across all non-developer modes.
+	// NOTE: \bsudo\b uses word boundaries to avoid matching "pseudo", "sudoku", etc.
 	denyDangerous := security.PolicyRule{
 		Name:        "deny-dangerous-keywords",
 		Priority:    10,
 		ToolPattern: "*",
-		ArgsPattern: "(?i)(rm\\s+-rf|DROP\\s+TABLE|sudo)",
+		ArgsPattern: "(?i)(rm\\s+-rf|DROP\\s+TABLE|\\bsudo\\b)",
 		RiskLevels:  []security.RiskLevel{security.RiskCritical},
 		Action:      security.PolicyDeny,
 	}
@@ -143,6 +160,16 @@ func PolicyRulesForMode(mode string) []security.PolicyRule {
 	var rules []security.PolicyRule
 
 	switch mode {
+	case "developer":
+		// Developer mode: allow everything unconditionally.
+		// No deny rules, no ask rules, no audit rules.
+		// Risk assessment still runs (for logging), but policy never blocks.
+		rules = []security.PolicyRule{
+			{Name: "allow-critical", Priority: 10, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyAllow},
+			{Name: "allow-high", Priority: 20, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskHigh}, Action: security.PolicyAllow},
+			{Name: "allow-medium", Priority: 30, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskMedium}, Action: security.PolicyAllow},
+			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskLow}, Action: security.PolicyAllow},
+		}
 	case "relaxed":
 		rules = []security.PolicyRule{
 			denyDangerous,

@@ -76,7 +76,7 @@ func (h *Handler) handleClientRoles(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	items, err := h.svc.ListActive(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -86,7 +86,7 @@ func (h *Handler) handleClientRoles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	items, err := h.svc.List(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -96,7 +96,7 @@ func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createRole(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req service.CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
@@ -111,7 +111,7 @@ func (h *Handler) createRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getRole(w http.ResponseWriter, r *http.Request, id string) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	role, err := h.svc.GetByID(tid, id)
 	if err != nil {
 		response.NotFound(w, "NOT_FOUND", "role not found")
@@ -121,7 +121,7 @@ func (h *Handler) getRole(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func (h *Handler) updateRole(w http.ResponseWriter, r *http.Request, id string) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req service.UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
@@ -136,7 +136,7 @@ func (h *Handler) updateRole(w http.ResponseWriter, r *http.Request, id string) 
 }
 
 func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req struct {
 		Status string `json:"status"`
 	}

@@ -385,18 +385,14 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		return "Skill Executor 未初始化"
 	}
 
-	// Route download to the correct source based on hub_url.
-	// This ensures the install path is symmetric with the search path:
-	// - SearchAll returns results from SkillHub/ClawHub/GitHub with source-specific install instructions
-	// - Install must handle all three sources, not just SkillHub
 	ctx := context.Background()
 	var entry *corelib.NLSkillEntry
 	var err error
 	var sourceLabel string
+	var stagingDir string // non-empty when files were extracted to staging
 
 	switch {
 	case strings.EqualFold(hubURL, "github"):
-		// GitHub source: requires install_ref (JSON-serialized GitHubSkillCandidate).
 		installRef, _ := args["install_ref"].(string)
 		if installRef == "" {
 			return "GitHub Skill 安装缺少 install_ref 参数"
@@ -405,38 +401,50 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		sourceLabel = "GitHub"
 
 	case strings.Contains(hubURL, "clawhub") || strings.Contains(hubURL, "clawhub-mirror"):
-		// ClawHub source: skillID is the slug.
 		entry, err = cskill.DefaultHubClient().DownloadClawHub(ctx, skillID)
 		sourceLabel = "ClawHub"
 
 	default:
-		// SkillHub source (default): use SkillHubClient for HubCenter-aware download.
 		if h.getSkillHubClient() == nil {
 			h.ensureSkillHubClient()
 		}
 		if h.getSkillHubClient() == nil {
 			return "SkillHub 客户端未初始化"
 		}
-		entry, err = h.getSkillHubClient().Install(ctx, skillID, hubURL)
+		// Prepare staging directory for file-backed skills.
+		stagingDir, err = cskill.PrepareStagingDir(skillID)
+		if err != nil {
+			return fmt.Sprintf("创建临时目录失败: %s", err.Error())
+		}
+		// Download and extract files to staging dir (not final location).
+		entry, err = h.getSkillHubClient().InstallToDir(ctx, skillID, hubURL, stagingDir)
 		sourceLabel = "SkillHub"
 	}
 
 	if err != nil {
+		cskill.CleanupStaging(stagingDir)
 		return fmt.Sprintf("安装失败 (%s): %s", sourceLabel, err.Error())
 	}
 
-	// Security review if risk assessor is available
-	if h.getRiskAssessor() != nil {
-		assessment := h.getRiskAssessor().AssessSkill(entry, entry.TrustLevel)
-		if assessment.Level == security.RiskCritical {
-			// Determine the platform for the confirmation channel.
+	// Security review: pattern scan (hard floor) + agent scan (upgrade only).
+	// Developer mode: skip entirely.
+	if !h.isSecurityDeveloperMode() {
+		// Determine the directory to scan: staging dir if available, else entry.SkillDir.
+		scanDir := stagingDir
+		if scanDir == "" {
+			scanDir = entry.SkillDir
+		}
+
+		scanner := NewSkillSecurityScanner(h.app, nil)
+		scanReport := scanner.ScanStaged(ctx, entry, scanDir, func(status string) {
+			log.Printf("[skill-install] %s: %s", entry.Name, status)
+		})
+
+		if scanReport.IsDangerous() || scanReport.NeedsUserReview() {
 			platform := ""
 			if h.currentLoopCtx != nil {
 				platform = h.currentLoopCtx.Platform
 			}
-
-			// Use the loop context so cancellation propagates when the user
-			// cancels the agent session, instead of blocking for up to 120s.
 			confirmCtx := context.Background()
 			if h.currentLoopCtx != nil {
 				var cancel context.CancelFunc
@@ -444,48 +452,63 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 				defer cancel()
 			}
 
+			allFactors := scanReport.PatternAssessment.Factors
+			for _, f := range scanReport.Findings {
+				allFactors = append(allFactors, f.Description)
+			}
+
 			confirmed := h.confirmCriticalRiskSkill(
-				confirmCtx, entry.Name, hubURL, assessment.Factors, platform, h.lastUserID,
+				confirmCtx, entry.Name, hubURL, allFactors, platform, h.lastUserID,
 			)
 
 			if !confirmed {
-				// User rejected (or timeout / fail-closed).
-				_ = h.getAuditLog() // ensure
+				cskill.CleanupStaging(stagingDir) // reject → clean up staging
+				riskLevel := security.RiskHigh
+				if scanReport.IsDangerous() {
+					riskLevel = security.RiskCritical
+				}
 				if h.getAuditLog() != nil {
 					_ = h.getAuditLog().Log(security.AuditEntry{
 						Timestamp:    time.Now(),
 						Action:       security.AuditActionHubSkillReject,
 						ToolName:     "hub_skill_install",
-						RiskLevel:    security.RiskCritical,
+						RiskLevel:    riskLevel,
 						PolicyAction: security.PolicyDeny,
-						Result:       fmt.Sprintf("user rejected critical skill %s: critical risk", entry.Name),
+						Result:       fmt.Sprintf("user rejected skill %s: %s", entry.Name, scanReport.Summary),
 					})
 				}
-				return fmt.Sprintf("⚠️ Skill %q 包含高风险操作，已拒绝自动安装。风险因素: %s",
-					entry.Name, strings.Join(assessment.Factors, ", "))
+				return FormatScanReportForUser(scanReport, entry.Name) +
+					fmt.Sprintf("\n⚠️ Skill %q 已拒绝安装。", entry.Name)
 			}
 
-			// User confirmed — audit with PolicyUserOverride and continue to registration.
-			_ = h.getAuditLog() // ensure
+			// User confirmed override.
 			if h.getAuditLog() != nil {
 				_ = h.getAuditLog().Log(security.AuditEntry{
 					Timestamp:    time.Now(),
 					Action:       security.AuditActionHubSkillInstall,
 					ToolName:     "hub_skill_install",
-					RiskLevel:    security.RiskCritical,
+					RiskLevel:    scanReport.FinalLevel,
 					PolicyAction: security.PolicyUserOverride,
-					Result: fmt.Sprintf("user confirmed critical skill %s from %s, risk=critical, factors=[%s]",
-						entry.Name, hubURL, strings.Join(assessment.Factors, ", ")),
+					Result:       fmt.Sprintf("user confirmed skill %s, scanned_by=%s, level=%s", entry.Name, scanReport.ScannedBy, scanReport.FinalLevel),
 				})
 			}
 		}
 	}
 
-	// Register locally
+	// Commit staging → final location.
+	if stagingDir != "" {
+		finalDir, commitErr := cskill.CommitStaging(stagingDir, entry.Name)
+		if commitErr != nil {
+			cskill.CleanupStaging(stagingDir)
+			return fmt.Sprintf("安装失败（提交到最终目录）: %s", commitErr.Error())
+		}
+		entry.SkillDir = finalDir
+	}
+
+	// Register locally.
 	if err := h.getSkillExecutor().Register(*entry); err != nil {
 		return fmt.Sprintf("注册失败: %s", err.Error())
 	}
-	// Auto-install dependencies for file-backed skills.
 	go h.appInstallSkillDepsIfMissing(entry.SkillDir, entry.Name)
 
 	// Refresh skill BM25 index so the router picks up the new skill

@@ -1,21 +1,27 @@
 import { useEffect, useState } from 'react';
 import { quickTasks as defaultQuickTasks } from '../mock/tasks';
-import type { CenterGoalPush, HistoryTaskItem } from '../types';
+import type { CenterAgentInstance, CenterGoalPush, GoalWatchAutoHandleStatus, HistoryTaskItem } from '../types';
 
 type Props = {
   draft: string;
   selectedTask: string;
   selectedColleagueName: string;
   recentTasks: HistoryTaskItem[];
+  agentInstances: CenterAgentInstance[];
+  agentInstancesLoading: boolean;
+  agentInstancesError: string;
   goalPushes: CenterGoalPush[];
   goalPushLoading: boolean;
   goalPushError: string;
   goalPushAckingId: string;
+  goalWatchAutoStatus: GoalWatchAutoHandleStatus | null;
   onDraftChange: (value: string) => void;
   onPickTask: (task: string, colleagueName?: string) => void;
   onOpenNewTask: () => void;
   onOpenRecentTask: (task: HistoryTaskItem) => void;
+  onRefreshAgentInstances: () => void | Promise<void>;
   onRefreshGoalPushes: () => void | Promise<void>;
+  onAutoHandleGoalPush: (eventId: string) => void | Promise<void>;
   onAckGoalPush: (eventId: string, status: 'resumed' | 'blocked') => void | Promise<void>;
 };
 
@@ -48,7 +54,7 @@ const statusCards = [
   },
 ];
 
-export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask, onRefreshGoalPushes, onAckGoalPush }: Props) {
+export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask, onRefreshAgentInstances, onRefreshGoalPushes, onAutoHandleGoalPush, onAckGoalPush }: Props) {
   const [workMode, setWorkMode] = useState<WorkMode>('voice');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
 
@@ -152,6 +158,46 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
         </div>
 
 
+
+        <div className="iw-panel-section">
+          <div className="iw-section-title-row">
+            <h3>Agent runtime</h3>
+            <button type="button" onClick={() => { void onRefreshAgentInstances(); }} disabled={agentInstancesLoading}>{agentInstancesLoading ? 'Pinging' : 'Heartbeat'}</button>
+          </div>
+          {agentInstancesError ? <p className="iw-panel-error">{agentInstancesError}</p> : null}
+          <div className="iw-agent-list">
+            {agentInstances.length === 0 ? (
+              <div className="iw-goal-empty">Center has not seen this iWorker body yet.</div>
+            ) : agentInstances.map((instance) => (
+              <article key={instance.instanceId} className="iw-agent-card">
+                <div>
+                  <strong>{instance.role}</strong>
+                  <span className={instance.effectiveStatus === 'online' ? 'is-online' : instance.effectiveStatus === 'offline' ? 'is-offline' : ''}>{instance.effectiveStatus || instance.status}</span>
+                </div>
+                <p>{instance.memoryAuthority || 'iWorkerCenter'} ? {instance.localCacheMode || 'cache_only'} ? {instance.heartbeatAgeSeconds || 0}s ago</p>
+                <small>{instance.hostId || 'local body'} ? {instance.capabilities.slice(0, 3).join(', ')}</small>
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <div className="iw-panel-section">
+          <div className="iw-section-title-row">
+            <h3>Watcher automation</h3>
+            <span className={goalWatchAutoStatus?.running ? 'iw-watch-pill is-running' : 'iw-watch-pill'}>{goalWatchAutoStatus?.running ? 'Running' : 'Single-flight'}</span>
+          </div>
+          <div className="iw-watch-grid">
+            <div><strong>{goalWatchAutoStatus?.runCount || 0}</strong><span>runs</span></div>
+            <div><strong>{goalWatchAutoStatus?.skipCount || 0}</strong><span>skipped overlaps</span></div>
+            <div><strong>{goalWatchAutoStatus?.timeoutCancelCount || 0}</strong><span>timeout cancels</span></div>
+            <div><strong>{goalWatchAutoStatus?.lastHandledCount || 0}</strong><span>last handled</span></div>
+          </div>
+          <p className="iw-watch-note">
+            Every {goalWatchAutoStatus?.intervalSeconds || 30}s, max {goalWatchAutoStatus?.maxDurationSeconds || 120}s per run.
+            {goalWatchAutoStatus?.lastStartedAt ? ` Last start ${new Date(goalWatchAutoStatus.lastStartedAt).toLocaleTimeString()}.` : ' Waiting for first watcher tick.'}
+          </p>
+          {goalWatchAutoStatus?.lastError ? <p className="iw-panel-error">{goalWatchAutoStatus.lastError}</p> : null}
+        </div>
         <div className="iw-panel-section">
           <div className="iw-section-title-row">
             <h3>GoalWatch pushes</h3>
@@ -164,10 +210,13 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             ) : goalPushes.slice(0, 4).map((push) => (
               <article key={push.eventId || push.taskId} className="iw-goal-card">
                 <span>{push.reason || 'goal_push'} ? {Math.max(1, Math.round(push.ageSeconds / 60))}m</span>
+                {push.recommendedAction ? <span className="iw-goal-action-pill">{push.recommendedAction}</span> : null}
                 <strong>{push.title || push.taskId}</strong>
                 <p>{push.status} ? {push.toRoleCode || push.toColleagueId || 'assigned iWorker'}</p>
+                {push.executorStatus ? <p className="iw-goal-diagnostic">executor {push.executorStatus} ? {push.executorHeartbeatAgeSeconds || 0}s heartbeat age</p> : null}
                 {push.eventId ? (
                   <div className="iw-goal-actions">
+                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAutoHandleGoalPush(push.eventId || ''); }}>Auto handle</button>
                     <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>Resumed</button>
                     <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'blocked'); }}>Blocked</button>
                   </div>

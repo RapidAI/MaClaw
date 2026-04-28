@@ -110,7 +110,8 @@ func TestTestMaclawLLM_ReturnsSupportsVisionFalseWhenProbeFails(t *testing.T) {
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"blue"},"finish_reason":"stop"}]}`))
+		// Simulate a model that does NOT see the image — replies with "I don't see any image".
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"I don't see any image in your message."},"finish_reason":"stop"}]}`))
 	}))
 	defer srv.Close()
 
@@ -124,6 +125,60 @@ func TestTestMaclawLLM_ReturnsSupportsVisionFalseWhenProbeFails(t *testing.T) {
 	}
 	if got.SupportsVision {
 		t.Fatal("TestMaclawLLM supports_vision = true, want false")
+	}
+}
+
+func TestTestMaclawLLM_ReturnsSupportsVisionTrueForNonRedColour(t *testing.T) {
+	// Some models misidentify the tiny red PNG as "yellow" — the probe should
+	// still detect vision support because the model named a colour.
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if hits == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Yellow"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{}
+	got, err := app.TestMaclawLLM(corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model", Protocol: "openai", AgentType: "test-agent"})
+	if err != nil {
+		t.Fatalf("TestMaclawLLM returned error: %v", err)
+	}
+	if !got.SupportsVision {
+		t.Fatal("TestMaclawLLM supports_vision = false, want true (model replied with a colour)")
+	}
+}
+
+func TestLooksLikeVisionResponse(t *testing.T) {
+	tests := []struct {
+		content string
+		want    bool
+	}{
+		{"Red", true},
+		{"red", true},
+		{"红色", true},
+		{"Yellow", true},
+		{"blue", true},
+		{"The image is green.", true},
+		{"I don't see any image", false},
+		{"no image", false},
+		{"No image attached", false},
+		{"I can't see any image in your message.", false},
+		{"没有图片", false},
+		{"hello", false},
+		{"", false},
+		{"I don't see any image, but red is my favourite colour", false}, // negative overrides positive
+	}
+	for _, tc := range tests {
+		got := looksLikeVisionResponse(tc.content)
+		if got != tc.want {
+			t.Errorf("looksLikeVisionResponse(%q) = %v, want %v", tc.content, got, tc.want)
+		}
 	}
 }
 

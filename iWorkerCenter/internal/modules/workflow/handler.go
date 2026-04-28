@@ -49,7 +49,7 @@ func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 // --- Definition endpoints ---
 
 func (h *Handler) handleDefinitions(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	switch r.Method {
 	case http.MethodGet:
 		defs, err := h.svc.ListDefinitions(tid)
@@ -76,7 +76,7 @@ func (h *Handler) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleDefinitionByID(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/workflows/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
@@ -130,7 +130,7 @@ func (h *Handler) handleInstances(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	instances, err := h.svc.ListInstances(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -140,7 +140,7 @@ func (h *Handler) handleInstances(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleInstanceByID(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/workflow-instances/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
@@ -187,7 +187,7 @@ func (h *Handler) handleDesign(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusServiceUnavailable, "DESIGNER_NOT_AVAILABLE", "AI workflow designer is not configured")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req DesignRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
@@ -200,7 +200,7 @@ func (h *Handler) handleDesign(w http.ResponseWriter, r *http.Request) {
 	}
 	response.Created(w, map[string]any{
 		"workflow":  toDefDTO(result.Definition),
-		"steps":    toStepDefDTOs(result.Steps),
+		"steps":     toStepDefDTOs(result.Steps),
 		"published": result.Published,
 	})
 }
@@ -210,7 +210,7 @@ func (h *Handler) handleStart(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	var req StartInstanceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
@@ -229,7 +229,7 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	// /runtime/workflows/steps/{id}/{action}
 	rest := strings.TrimPrefix(r.URL.Path, "/runtime/workflows/steps/")
 	rest = strings.TrimRight(rest, "/")
@@ -272,7 +272,7 @@ func (h *Handler) handleClientWorkflows(w http.ResponseWriter, r *http.Request) 
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	defs, err := h.svc.ListDefinitions(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -293,7 +293,7 @@ func (h *Handler) handleClientInstances(w http.ResponseWriter, r *http.Request) 
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	instances, err := h.svc.ListInstances(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -380,7 +380,7 @@ func toStepDefDTOs(steps []*StepDefinition) []stepDefDTO {
 			ID: s.ID, StepCode: s.StepCode, StepName: s.StepName, StepType: s.StepType,
 			AssigneeMode: s.AssigneeMode, AssigneeRoleCode: s.AssigneeRoleCode,
 			AssigneeColleagueID: s.AssigneeColleagueID,
-			TimeoutMinutes: s.TimeoutMinutes, RejectRule: s.RejectRule, SortOrder: s.SortOrder,
+			TimeoutMinutes:      s.TimeoutMinutes, RejectRule: s.RejectRule, SortOrder: s.SortOrder,
 		})
 	}
 	return out
@@ -408,7 +408,7 @@ func toStepInstDTOs(steps []*StepInstance) []stepInstDTO {
 			ID: s.ID, StepDefinitionID: s.StepDefinitionID,
 			AssigneeColleagueID: s.AssigneeColleagueID,
 			CollaborationTaskID: s.CollaborationTaskID,
-			Status: s.Status, Result: s.Result, SortOrder: s.SortOrder,
+			Status:              s.Status, Result: s.Result, SortOrder: s.SortOrder,
 			CreatedAt: s.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		})
 	}

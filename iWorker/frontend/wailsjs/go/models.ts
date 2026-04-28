@@ -8,6 +8,8 @@ export namespace main {
 	    capabilities: string[];
 	    started_at: string;
 	    last_heartbeat_at: string;
+	    heartbeat_age_seconds: number;
+	    effective_status: string;
 
 	    static createFrom(source: any = {}) {
 	        return new AgentInstance(source);
@@ -22,6 +24,8 @@ export namespace main {
 	        this.capabilities = source["capabilities"];
 	        this.started_at = source["started_at"];
 	        this.last_heartbeat_at = source["last_heartbeat_at"];
+	        this.heartbeat_age_seconds = source["heartbeat_age_seconds"];
+	        this.effective_status = source["effective_status"];
 	    }
 	}
 	export class AgentRuntimeSnapshot {
@@ -68,6 +72,48 @@ export namespace main {
 		    return a;
 		}
 	}
+
+	export class CenterAgentInstance {
+	    tenant_id: string;
+	    worker_id: string;
+	    instance_id: string;
+	    role: string;
+	    status: string;
+	    org_unit_id?: string;
+	    capabilities: string[];
+	    memory_authority: string;
+	    local_cache_mode: string;
+	    host_id?: string;
+	    process_id?: number;
+	    started_at: string;
+	    last_heartbeat_at: string;
+	    heartbeat_age_seconds: number;
+	    effective_status: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterAgentInstance(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tenant_id = source["tenant_id"];
+	        this.worker_id = source["worker_id"];
+	        this.instance_id = source["instance_id"];
+	        this.role = source["role"];
+	        this.status = source["status"];
+	        this.org_unit_id = source["org_unit_id"];
+	        this.capabilities = source["capabilities"];
+	        this.memory_authority = source["memory_authority"];
+	        this.local_cache_mode = source["local_cache_mode"];
+	        this.host_id = source["host_id"];
+	        this.process_id = source["process_id"];
+	        this.started_at = source["started_at"];
+	        this.last_heartbeat_at = source["last_heartbeat_at"];
+	        this.heartbeat_age_seconds = source["heartbeat_age_seconds"];
+	        this.effective_status = source["effective_status"];
+	    }
+	}
+
 	export class CenterGoalPush {
 	    event_id?: string;
 	    task_id: string;
@@ -76,7 +122,10 @@ export namespace main {
 	    to_role_code: string;
 	    status: string;
 	    reason: string;
+	    recommended_action: string;
 	    age_seconds: number;
+	    executor_status?: string;
+	    executor_heartbeat_age_seconds?: number;
 	    created_at: string;
 
 	    static createFrom(source: any = {}) {
@@ -92,7 +141,10 @@ export namespace main {
 	        this.to_role_code = source["to_role_code"];
 	        this.status = source["status"];
 	        this.reason = source["reason"];
+	        this.recommended_action = source["recommended_action"];
 	        this.age_seconds = source["age_seconds"];
+	        this.executor_status = source["executor_status"];
+	        this.executor_heartbeat_age_seconds = source["executor_heartbeat_age_seconds"];
 	        this.created_at = source["created_at"];
 	    }
 	}
@@ -120,6 +172,48 @@ export namespace main {
 	}
 
 
+
+	export class AutoHandleGoalPushResult {
+	    event_id: string;
+	    recommended_action: string;
+	    ack_status: string;
+	    note: string;
+	    heartbeat_sent: boolean;
+	    ack: CenterGoalPushAckResult;
+
+	    static createFrom(source: any = {}) {
+	        return new AutoHandleGoalPushResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.event_id = source["event_id"];
+	        this.recommended_action = source["recommended_action"];
+	        this.ack_status = source["ack_status"];
+	        this.note = source["note"];
+	        this.heartbeat_sent = source["heartbeat_sent"];
+	        this.ack = this.convertValues(source["ack"], CenterGoalPushAckResult);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
 	export class AppInfo {
 	    name: string;
 	    tagline: string;
@@ -143,6 +237,9 @@ export namespace main {
 	    department_id: string;
 	    worker_id: string;
 	    timeout_sec: number;
+    goalwatch_auto_handle_enabled: boolean;
+    goalwatch_interval_sec: number;
+    goalwatch_max_duration_sec: number;
 
 	    static createFrom(source: any = {}) {
 	        return new CenterConfig(source);
@@ -158,6 +255,9 @@ export namespace main {
 	        this.department_id = source["department_id"];
 	        this.worker_id = source["worker_id"];
 	        this.timeout_sec = source["timeout_sec"];
+        this.goalwatch_auto_handle_enabled = source["goalwatch_auto_handle_enabled"];
+        this.goalwatch_interval_sec = source["goalwatch_interval_sec"];
+        this.goalwatch_max_duration_sec = source["goalwatch_max_duration_sec"];
 	    }
 	}
 	export class CenterHealthStatus {
@@ -546,4 +646,42 @@ export namespace main {
 		}
 	}
 
+	export class GoalWatchAutoHandleStatus {
+	    enabled: boolean;
+	    running: boolean;
+	    current_run_id: number;
+	    run_count: number;
+	    skip_count: number;
+	    timeout_cancel_count: number;
+	    last_handled_count: number;
+	    total_handled_count: number;
+	    last_error: string;
+	    last_started_at: string;
+	    last_finished_at: string;
+	    last_timeout_at: string;
+	    interval_seconds: number;
+	    max_duration_seconds: number;
+
+	    static createFrom(source: any = {}) {
+	        return new GoalWatchAutoHandleStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.running = source["running"];
+	        this.current_run_id = source["current_run_id"];
+	        this.run_count = source["run_count"];
+	        this.skip_count = source["skip_count"];
+	        this.timeout_cancel_count = source["timeout_cancel_count"];
+	        this.last_handled_count = source["last_handled_count"];
+	        this.total_handled_count = source["total_handled_count"];
+	        this.last_error = source["last_error"];
+	        this.last_started_at = source["last_started_at"];
+	        this.last_finished_at = source["last_finished_at"];
+	        this.last_timeout_at = source["last_timeout_at"];
+	        this.interval_seconds = source["interval_seconds"];
+	        this.max_duration_seconds = source["max_duration_seconds"];
+	    }
+	}
 }

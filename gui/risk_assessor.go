@@ -29,7 +29,11 @@ type RiskAssessor struct{}
 // NOTE: "format" was removed because it causes false positives on legitimate
 // skills that use "format" in non-destructive contexts (e.g. PDF format
 // conversion, string formatting). Use dangerousFormatPatterns for context-aware checks.
-var dangerousKeywords = []string{"rm -rf", "DROP TABLE", "sudo"}
+//
+// NOTE: "sudo" was moved to dangerousCmdPatternsGUI for context-aware matching.
+// As a plain substring, "sudo" matches "pseudo", "sudoku", and documentation
+// text like "Run without sudo". The regex version uses word boundaries.
+var dangerousKeywords = []string{"rm -rf", "DROP TABLE"}
 
 // dangerousFormatPatterns are patterns where "format" IS dangerous (disk formatting).
 var dangerousFormatPatterns = []string{"format c:", "format d:", "format e:", "format f:", "diskpart", "mkfs"}
@@ -78,6 +82,19 @@ func (a *RiskAssessor) Assess(ctx RiskContext) security.RiskAssessment {
 		if containsIgnoreCase(argStr, kw) {
 			level = security.RiskCritical
 			factors = append(factors, fmt.Sprintf("dangerous keyword %q found in arguments", kw))
+		}
+	}
+
+	// Rule 1a: Context-aware dangerous command patterns (word-boundary matching).
+	for _, r := range security.CheckDangerousCmdPatterns(argStr) {
+		if !r.SafeContext {
+			level = security.RiskCritical
+			factors = append(factors, fmt.Sprintf("dangerous command pattern %q matched in arguments", r.Pattern))
+		} else {
+			if security.RiskLevelOrder[level] < security.RiskLevelOrder[security.RiskHigh] {
+				level = security.RiskHigh
+			}
+			factors = append(factors, fmt.Sprintf("dangerous command pattern %q matched but in safe context", r.Pattern))
 		}
 	}
 

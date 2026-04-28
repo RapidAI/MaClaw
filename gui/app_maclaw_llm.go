@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -699,18 +700,21 @@ func (a *App) testResponsesAPILLM(url, key, model, userAgent string) (string, er
 	return stripFunctionCalls(stripThinkTags(parsed.Choices[0].Message.Content)), nil
 }
 
-// probeVisionSupport sends a tiny 1x1 red PNG as an image_url message to the
+// probeVisionSupport sends a tiny 4x4 red PNG as an image_url message to the
 // LLM and returns true if the model responds successfully (i.e. supports vision).
 // This is a best-effort probe — network errors or timeouts return false.
 func probeVisionSupport(baseURL, key, model, protocol, userAgent string) bool {
-	// 1x1 red PNG, 68 bytes
-	const tinyPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-
 	if protocol == "anthropic" {
-		return probeVisionAnthropic(baseURL, key, model, tinyPNG, userAgent)
+		return probeVisionAnthropic(baseURL, key, model, visionProbeRedPNG, userAgent)
 	}
-	return probeVisionOpenAI(baseURL, key, model, tinyPNG, userAgent)
+	return probeVisionOpenAI(baseURL, key, model, visionProbeRedPNG, userAgent)
 }
+
+// visionProbeRedPNG is a 4x4 solid red (#FF0000) PNG used by all vision probes.
+// We use 4x4 instead of 1x1 because some models (e.g. Xiaomi MiMo-V2.5)
+// misidentify a single-pixel image's colour while correctly recognising a
+// slightly larger one.
+const visionProbeRedPNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFUlEQVR4nGL5z4AATAxEcQABAAD//zRtAQqfxpGAAAAAAElFTkSuQmCC"
 
 func probeVisionOpenAI(baseURL, key, model, imgB64, userAgent string) bool {
 	cfg := corelib.MaclawLLMConfig{URL: baseURL, Key: key, Model: model, AgentType: userAgent}
@@ -730,19 +734,61 @@ func probeVisionOpenAI(baseURL, key, model, imgB64, userAgent string) bool {
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, messages, client, 15*time.Second)
-	if err != nil || resp == nil {
+	if err != nil {
+		log.Printf("[LLM] vision probe OpenAI error: %v", err)
 		return false
 	}
-	return resp.Content != "" && looksLikeVisionResponse(resp.Content)
+	if resp == nil {
+		return false
+	}
+	ok := resp.Content != "" && looksLikeVisionResponse(resp.Content)
+	if !ok && resp.Content != "" {
+		log.Printf("[LLM] vision probe OpenAI: model replied %q, looksLikeVision=false", truncateForLog(resp.Content, 120))
+	}
+	return ok
 }
 
 // looksLikeVisionResponse checks whether the model's reply indicates it actually
-// "saw" the 1x1 red test image.  Models that silently ignore the image part
-// typically reply with generic text (e.g. "Hello!") instead of mentioning a colour.
+// "saw" the test image.  The probe sends a solid-red image and asks for the colour.
+//
+// Two-layer detection:
+//  1. Positive signal: the reply mentions ANY colour name → the model perceived
+//     the image and attempted to describe it.  Some models misidentify the exact
+//     colour of a tiny image (e.g. "yellow" instead of "red"), but the fact that
+//     they name a colour at all proves vision capability.
+//  2. Negative signal: the reply says "no image" / "can't see" / "没有图片" etc.
+//     → the model did NOT receive or process the image data.
+//
+// Result: positive && !negative → true (supports vision).
 func looksLikeVisionResponse(content string) bool {
 	lower := strings.ToLower(content)
-	// The test image is a 1x1 red pixel; a vision-capable model should mention "red".
-	return strings.Contains(lower, "red") || strings.Contains(lower, "红")
+
+	// Negative signals: model explicitly says it cannot see an image.
+	negatives := []string{
+		"no image", "don't see", "can't see", "cannot see",
+		"not see", "no picture", "not provided", "not attached",
+		"没有图片", "看不到", "无法看到", "未提供", "没有提供",
+		"no visual", "not visible",
+	}
+	for _, neg := range negatives {
+		if strings.Contains(lower, neg) {
+			return false
+		}
+	}
+
+	// Positive signals: model names a colour → it perceived the image.
+	colours := []string{
+		"red", "blue", "green", "yellow", "orange", "pink", "purple",
+		"white", "black", "gray", "grey", "brown", "cyan", "magenta",
+		"红", "蓝", "绿", "黄", "橙", "粉", "紫", "白", "黑", "灰", "棕",
+	}
+	for _, c := range colours {
+		if strings.Contains(lower, c) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
@@ -765,17 +811,23 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := doSimpleAnthropicRequest(context.Background(), cfg, messages, client, 15*time.Second)
-	if err != nil || resp == nil {
+	if err != nil {
+		log.Printf("[LLM] vision probe Anthropic error: %v", err)
 		return false
 	}
-	return resp.Content != "" && looksLikeVisionResponse(resp.Content)
+	if resp == nil {
+		return false
+	}
+	ok := resp.Content != "" && looksLikeVisionResponse(resp.Content)
+	if !ok && resp.Content != "" {
+		log.Printf("[LLM] vision probe Anthropic: model replied %q, looksLikeVision=false", truncateForLog(resp.Content, 120))
+	}
+	return ok
 }
 
-// probeVisionResponsesAPI sends a tiny 1x1 PNG via the Responses API format
+// probeVisionResponsesAPI sends a tiny 4x4 PNG via the Responses API format
 // and returns true if the model responds with a vision-aware answer.
 func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
-	const tinyPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-
 	client := &http.Client{Timeout: 15 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -788,13 +840,14 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 	}
 	reqBody := map[string]interface{}{
 		"model": model,
+		"store": false,
 		"input": []interface{}{
 			map[string]interface{}{
 				"type": "message",
 				"role": "user",
 				"content": []interface{}{
-					map[string]interface{}{"type": "input_text", "text": "What is in this image? Reply in one word."},
-					map[string]interface{}{"type": "input_image", "image_url": "data:image/png;base64," + tinyPNG},
+					map[string]interface{}{"type": "input_text", "text": "What color is this image? Reply in one word."},
+					map[string]interface{}{"type": "input_image", "image_url": "data:image/png;base64," + visionProbeRedPNG},
 				},
 			},
 		},
@@ -820,11 +873,13 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[LLM] vision probe ResponsesAPI error: %v", err)
 		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[LLM] vision probe ResponsesAPI: HTTP %d", resp.StatusCode)
 		return false
 	}
 
@@ -832,7 +887,12 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 	if err != nil || len(parsed.Choices) == 0 {
 		return false
 	}
-	return looksLikeVisionResponse(parsed.Choices[0].Message.Content)
+	content := parsed.Choices[0].Message.Content
+	ok := looksLikeVisionResponse(content)
+	if !ok && content != "" {
+		log.Printf("[LLM] vision probe ResponsesAPI: model replied %q, looksLikeVision=false", truncateForLog(content, 120))
+	}
+	return ok
 }
 
 // saveVisionProbeResult persists the vision probe result into the matching
@@ -1421,6 +1481,8 @@ type CodeGenModelItem struct {
 // FetchCodeGenModels 用当前 CodeGen provider 的 access_token 调用
 // {baseURL}/models 端点，返回该账号可用的模型列表。
 // 前端 SSO 成功后调用此函数填充模型选择器。
+//
+// 内部委托给 FetchProviderModels，避免重复的 HTTP + JSON 解析逻辑。
 func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 	// 从已保存的 CodeGen provider 中读取认证信息
 	data := a.GetMaclawLLMProviders()
@@ -1435,60 +1497,19 @@ func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 		return nil, fmt.Errorf("CodeGen SSO 未完成，请先完成企业认证")
 	}
 
-	baseURL := strings.TrimRight(strings.TrimSpace(codeGenProvider.URL), "/")
-	if baseURL == "" {
+	if strings.TrimSpace(codeGenProvider.URL) == "" {
 		return nil, fmt.Errorf("CodeGen base_url 未配置")
 	}
 
-	endpoint := baseURL + "/models"
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	// CodeGen 同时设置 Bearer 和 anthropic-version，protocol 传 "openai" 让
+	// FetchProviderModels 使用 Bearer 头（CodeGen 的 /models 端点接受 Bearer）。
+	items, err := a.FetchProviderModels(codeGenProvider.URL, codeGenProvider.Key, "openai")
 	if err != nil {
-		return nil, fmt.Errorf("构建请求失败: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+codeGenProvider.Key)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("获取模型列表失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("服务器返回 HTTP %d: %s", resp.StatusCode, truncateCodeGenStr(string(body), 256))
-	}
-
-	// 解析 OpenAI 兼容格式：{"data": [{"id": "...", ...}, ...]}
-	// 同时兼容 Anthropic 格式：{"models": [{"id": "...", "display_name": "..."}]}
-	var result struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-		Models []struct {
-			ID          string `json:"id"`
-			DisplayName string `json:"display_name"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("解析模型列表失败: %w", err)
-	}
-
-	var items []CodeGenModelItem
-	// 优先 Anthropic 格式
-	if len(result.Models) > 0 {
-		for _, m := range result.Models {
-			name := m.DisplayName
-			if name == "" {
-				name = m.ID
-			}
-			items = append(items, CodeGenModelItem{ID: m.ID, Name: name})
+		// 若服务端返回空列表或出错，至少用 SSO 返回的默认模型填充
+		if codeGenProvider.Model != "" {
+			return []CodeGenModelItem{{ID: codeGenProvider.Model, Name: codeGenProvider.Model}}, nil
 		}
-	} else {
-		for _, m := range result.Data {
-			items = append(items, CodeGenModelItem{ID: m.ID, Name: m.ID})
-		}
+		return nil, err
 	}
 
 	// 若服务端返回空列表，至少用 SSO 返回的默认模型填充
@@ -1729,6 +1750,135 @@ func (a *App) CancelCodeGenSSOPolling() {
 		a.ssoPolling.cancel()
 		a.ssoPolling = nil
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 通用模型列表获取（适用于所有 OpenAI / Anthropic 兼容服务商）
+// ---------------------------------------------------------------------------
+
+// ProviderModelItem 描述一个从服务商 /models 端点获取的可用模型。
+// 复用 CodeGenModelItem 的结构，但语义上是通用的。
+type ProviderModelItem = CodeGenModelItem
+
+// FetchProviderModels 通过 {baseURL}/models 端点获取服务商可用的模型列表。
+// 适用于所有 OpenAI / Anthropic 兼容的 API 服务商。
+//
+// 参数：
+//   - baseURL: 服务商 API 基础地址（如 https://api.deepseek.com/v1）
+//   - apiKey: API Key
+//   - protocol: "openai"（默认）或 "anthropic"
+//
+// 前端在 MaClaw LLM 配置面板和编程工具配置面板中调用此函数，
+// 让用户从服务商实际支持的模型中选择，而非手动输入模型名。
+func (a *App) FetchProviderModels(baseURL, apiKey, protocol string) ([]ProviderModelItem, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	apiKey = strings.TrimSpace(apiKey)
+	protocol = strings.TrimSpace(protocol)
+
+	if baseURL == "" {
+		return nil, fmt.Errorf("API 地址为空，请先填写 API Endpoint")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("API Key 为空，请先填写 API Key")
+	}
+
+	endpoint := baseURL + "/models"
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+
+	// 根据协议设置认证头
+	if protocol == "anthropic" {
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("获取模型列表失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("认证失败 (HTTP %d)，请检查 API Key 是否正确", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("服务器返回 HTTP %d: %s", resp.StatusCode, truncateCodeGenStr(string(body), 256))
+	}
+
+	// 解析响应——兼容多种格式：
+	// 1. OpenAI 格式：{"data": [{"id": "...", "owned_by": "..."}]}
+	// 2. Anthropic 格式：{"models": [{"id": "...", "display_name": "..."}]}
+	// 3. 简单数组格式：[{"id": "..."}, ...]
+
+	var items []ProviderModelItem
+
+	// 先尝试解析为 JSON 对象（OpenAI / Anthropic 格式）
+	var objResult struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+		Models []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"models"`
+	}
+
+	parsed := false
+	if err := json.Unmarshal(body, &objResult); err == nil {
+		// 优先 Anthropic 格式
+		if len(objResult.Models) > 0 {
+			for _, m := range objResult.Models {
+				name := m.DisplayName
+				if name == "" {
+					name = m.ID
+				}
+				items = append(items, ProviderModelItem{ID: m.ID, Name: name})
+			}
+			parsed = true
+		} else if len(objResult.Data) > 0 {
+			for _, m := range objResult.Data {
+				items = append(items, ProviderModelItem{ID: m.ID, Name: m.ID})
+			}
+			parsed = true
+		}
+	}
+
+	// 对象格式未解析出结果时，尝试解析为简单数组格式：[{"id": "..."}, ...]
+	if !parsed {
+		var arr []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(body, &arr); err == nil && len(arr) > 0 {
+			for _, m := range arr {
+				name := m.Name
+				if name == "" {
+					name = m.ID
+				}
+				if m.ID != "" {
+					items = append(items, ProviderModelItem{ID: m.ID, Name: name})
+				}
+			}
+		}
+	}
+
+	if len(items) == 0 {
+		return nil, fmt.Errorf("服务商返回了空的模型列表")
+	}
+
+	// 按 ID 排序，方便用户浏览
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].ID < items[j].ID
+	})
+
+	return items, nil
 }
 
 // truncateCodeGenStr 截断字符串到 maxLen，超出时追加 "..."。

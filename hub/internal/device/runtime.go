@@ -16,6 +16,7 @@ import (
 var ErrMachineOffline = errors.New("machine is offline")
 
 type MachineRepository interface {
+	Create(ctx context.Context, machine *store.Machine) error
 	GetByID(ctx context.Context, id string) (*store.Machine, error)
 	ListByUserID(ctx context.Context, userID string) ([]*store.Machine, error)
 	ListAll(ctx context.Context) ([]*store.Machine, error)
@@ -489,6 +490,41 @@ func (s *Service) ListOnlineMachines() []MachineRuntimeInfo {
 	return out
 }
 
+func (s *Service) ExportMachinesByUser(ctx context.Context, userID string) ([]*store.Machine, error) {
+	if s == nil || s.repo == nil || strings.TrimSpace(userID) == "" {
+		return nil, nil
+	}
+	return s.repo.ListByUserID(ctx, strings.TrimSpace(userID))
+}
+
+func (s *Service) ImportMachines(ctx context.Context, userID string, machines []*store.Machine) error {
+	if s == nil || s.repo == nil || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	for _, machine := range machines {
+		if machine == nil || strings.TrimSpace(machine.ID) == "" {
+			continue
+		}
+		existing, err := s.repo.GetByID(ctx, machine.ID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			continue
+		}
+		copy := *machine
+		copy.UserID = strings.TrimSpace(userID)
+		copy.Status = "offline"
+		if copy.CreatedAt.IsZero() {
+			copy.CreatedAt = time.Now()
+		}
+		copy.UpdatedAt = time.Now()
+		if err := s.repo.Create(ctx, &copy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func (s *Service) ListMachines(ctx context.Context, userID string) ([]MachineRuntimeInfo, error) {
 	if s.repo == nil {
 		return s.ListOnlineMachines(), nil

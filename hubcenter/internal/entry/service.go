@@ -207,6 +207,21 @@ func (s *Service) ResolveAdminByEmailPattern(ctx context.Context, pattern string
 	return snap.resolveAdminEmailPattern(pattern), nil
 }
 
+func (s *Service) ResolveAdminByDomain(ctx context.Context, domain string) (*ResolveResult, error) {
+	domain = normalizeCorporateEmailDomain(domain)
+	if domain == "" {
+		return &ResolveResult{Email: domain, Mode: "none", Message: "Domain is required"}, nil
+	}
+	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, true)
+	if err != nil {
+		return nil, err
+	}
+	if snap == nil {
+		return &ResolveResult{Email: domain, Mode: "none", Message: "No available hubs found"}, nil
+	}
+	return snap.resolveAdminDomain(domain), nil
+}
+
 func (s *Service) ResolveByDomain(ctx context.Context, domain string) (*ResolveResult, error) {
 	domain = normalizeCorporateEmailDomain(domain)
 	if domain == "" {

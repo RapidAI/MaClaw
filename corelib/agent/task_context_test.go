@@ -69,6 +69,19 @@ func TestResolve_EmptyHistory_IsNewTask(t *testing.T) {
 	}
 }
 
+func TestResolve_EmptyHistory_ShortMsg_StillNewTask(t *testing.T) {
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
+	// Short message with empty history is still a new task — the memory
+	// bridge directive is handled in the system prompt layer, not here.
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "开工",
+		History:     nil,
+	})
+	if d.Action != TaskNew {
+		t.Fatalf("expected TaskNew for short msg with empty history, got %s", d.Action)
+	}
+}
+
 func TestResolve_ShortMessage_IsContinue(t *testing.T) {
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
 	d := mgr.Resolve(ResolveInput{

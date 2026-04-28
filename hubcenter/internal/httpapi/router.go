@@ -27,16 +27,17 @@ type AdminRouteQueryRequest struct {
 }
 
 type HubHeartbeatRequest struct {
-	HubSecret              string   `json:"hub_secret"`
-	InvitationCodeRequired *bool    `json:"invitation_code_required,omitempty"`
-	BaseURL                string   `json:"base_url,omitempty"`
-	Host                   string   `json:"host,omitempty"`
-	Port                   int      `json:"port,omitempty"`
-	Visibility             string   `json:"visibility,omitempty"`
-	EnrollmentMode         string   `json:"enrollment_mode,omitempty"`
-	CorporateEmailDomain   string   `json:"corporate_email_domain,omitempty"`
-	CorporateEmailDomains  []string `json:"corporate_email_domains,omitempty"`
-	AcceptPublicSignup     *bool    `json:"accept_public_signup,omitempty"`
+	HubSecret              string         `json:"hub_secret"`
+	InvitationCodeRequired *bool          `json:"invitation_code_required,omitempty"`
+	BaseURL                string         `json:"base_url,omitempty"`
+	Host                   string         `json:"host,omitempty"`
+	Port                   int            `json:"port,omitempty"`
+	Visibility             string         `json:"visibility,omitempty"`
+	EnrollmentMode         string         `json:"enrollment_mode,omitempty"`
+	CorporateEmailDomain   string         `json:"corporate_email_domain,omitempty"`
+	CorporateEmailDomains  []string       `json:"corporate_email_domains,omitempty"`
+	AcceptPublicSignup     *bool          `json:"accept_public_signup,omitempty"`
+	Capabilities           map[string]any `json:"capabilities,omitempty"`
 }
 
 type HubUserLinkSyncRequest struct {
@@ -106,6 +107,7 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 				CorporateEmailDomain:  req.CorporateEmailDomain,
 				CorporateEmailDomains: req.CorporateEmailDomains,
 				AcceptPublicSignup:    req.AcceptPublicSignup,
+				Capabilities:          req.Capabilities,
 			}
 		}
 		if err := service.HeartbeatHubWithSecret(r.Context(), hubID, req.HubSecret, req.InvitationCodeRequired, update); err != nil {
@@ -144,7 +146,8 @@ func heartbeatHasRegistrationUpdate(req HubHeartbeatRequest) bool {
 		strings.TrimSpace(req.EnrollmentMode) != "" ||
 		strings.TrimSpace(req.CorporateEmailDomain) != "" ||
 		len(req.CorporateEmailDomains) > 0 ||
-		req.AcceptPublicSignup != nil
+		req.AcceptPublicSignup != nil ||
+		req.Capabilities != nil
 }
 
 func HubUserLinkSyncHandler(service *hubs.Service) http.HandlerFunc {
@@ -234,7 +237,7 @@ func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
 		)
 		switch queryType {
 		case "domain":
-			resp, err = service.ResolveByDomain(r.Context(), query)
+			resp, err = service.ResolveAdminByDomain(r.Context(), query)
 		default:
 			resp, err = service.ResolveAdminByEmail(r.Context(), query)
 		}
@@ -272,11 +275,13 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/mail/config", RequireAdmin(adminService, UpdateMailConfigHandler(mailer)))
 	mux.HandleFunc("GET /api/admin/hubs", RequireAdmin(adminService, ListHubsHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/hubs/runtime", RequireAdmin(adminService, ListHubRuntimeStatusesHandler(hubService)))
+	mux.HandleFunc("GET /api/admin/users/dashboard", RequireAdmin(adminService, ListUserDashboardHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/disable", RequireAdmin(adminService, DisableHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/enable", RequireAdmin(adminService, EnableHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/confirm", RequireAdmin(adminService, ConfirmHubHandler(hubService)))
 	mux.HandleFunc("DELETE /api/admin/hubs/{id}", RequireAdmin(adminService, DeleteHubHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/users/refresh-inventory", RequireAdmin(adminService, RefreshHubUserInventoryHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/users/migrate", RequireAdmin(adminService, MigrateHubUserHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/blocked-emails", RequireAdmin(adminService, ListBlockedEmailsHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/blocked-emails", RequireAdmin(adminService, AddBlockedEmailHandler(hubService)))

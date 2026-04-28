@@ -11,10 +11,19 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
-// getWorkflowEngine returns the workflow engine if available, or nil.
-// Checks the direct field first (set at construction or by TUI), then
-// falls back to h.app for GUI late-init compatibility.
+// getWorkflowEngine returns the workflow engine if available and enabled, or nil.
+// This is the single enforcement point for the "workflow enabled" config toggle.
+// All workflow consumers (handleWorkflowInterception, applyWorkflowToolFilter,
+// needsConfirmFromEngine, needsConfirmToolBranch, etc.) go through this method.
+// When it returns nil, all downstream checks naturally short-circuit.
+//
+// The workflowDisabled atomic.Bool is synced by App.SaveConfig/LoadConfig
+// whenever the config changes — zero per-call overhead (no mutex, no disk I/O).
 func (h *IMMessageHandler) getWorkflowEngine() *workflow.WorkflowEngine {
+	// Check the atomic flag first (zero-cost).
+	if h.app != nil && h.app.workflowDisabled.Load() {
+		return nil
+	}
 	if h.workflowEngine != nil {
 		return h.workflowEngine
 	}

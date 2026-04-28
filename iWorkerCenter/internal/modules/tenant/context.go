@@ -1,6 +1,10 @@
 package tenant
 
-import "context"
+import (
+	"context"
+	"net/http"
+	"strings"
+)
 
 type tenantContextKey struct{}
 
@@ -14,4 +18,18 @@ func WithTenantID(ctx context.Context, id string) context.Context {
 func TenantIDFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(tenantContextKey{}).(string)
 	return v
+}
+
+// RequestTenantID resolves tenant identity from query, header, context, then default.
+// iWorker clients send X-Tenant-ID so tenant routing remains stable through gateways.
+func RequestTenantID(r *http.Request) string {
+	if r == nil {
+		return "default"
+	}
+	for _, value := range []string{r.URL.Query().Get("tenant_id"), r.Header.Get("X-Tenant-ID"), TenantIDFromContext(r.Context()), "default"} {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return "default"
 }

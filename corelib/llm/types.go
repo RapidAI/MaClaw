@@ -19,7 +19,16 @@ type Response struct {
 
 type Choice struct {
 	Message      Message `json:"message"`
-	FinishReason string     `json:"finish_reason"`
+	FinishReason string  `json:"finish_reason"`
+
+	// TruncatedToolNames lists tool names whose JSON arguments were
+	// incomplete (output token limit hit) and were removed by
+	// filterTruncatedToolCalls. Non-nil means the agent loop should
+	// treat this as a recoverable error: inject a system message with
+	// the truncation hint and continue the loop so the LLM can retry
+	// with shorter arguments.
+	// This is NOT serialized — it is an in-process signal only.
+	TruncatedToolNames []string `json:"-"`
 }
 
 type Message struct {

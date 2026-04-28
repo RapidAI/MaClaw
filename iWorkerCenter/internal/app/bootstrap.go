@@ -13,6 +13,7 @@ import (
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	a2amodule "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/a2a"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/adminauth"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/agentruntime"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/capabilities"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/collaboration"
@@ -54,6 +55,7 @@ type Center struct {
 	WorkerMemory    *corememory.Store
 	A2A             *a2amodule.Service
 	GoalWatch       *goalwatch.Service
+	AgentRuntime    *agentruntime.Service
 	GoalMonitor     *goalwatch.Monitor
 }
 
@@ -113,6 +115,11 @@ func Bootstrap() (*Center, error) {
 	a2aSvc := a2amodule.NewService(a2aRepo)
 	a2aHandler := a2amodule.NewHandler(a2aSvc)
 
+	// --- wire iWorker multi-agent runtime module ---
+	agentRuntimeRepo := agentruntime.NewRepo(provider.Write, provider.Read)
+	agentRuntimeSvc := agentruntime.NewService(agentRuntimeRepo)
+	agentRuntimeHandler := agentruntime.NewHandler(agentRuntimeSvc)
+
 	// --- wire workflow module (depends on collaboration + colleagues) ---
 	wfRepo := workflow.NewRepo(provider.Write, provider.Read)
 	wfSvc := workflow.NewService(wfRepo, provider, collabRepo, colRepo)
@@ -167,8 +174,10 @@ func Bootstrap() (*Center, error) {
 
 	// --- wire goal watchdog / push module ---
 	goalWatchSvc := goalwatch.NewService(collabRepo, goalwatch.Config{})
+	goalWatchSvc.SetAgentRuntime(agentRuntimeSvc)
 	goalWatchHandler := goalwatch.NewHandler(goalWatchSvc)
 	goalMonitor := goalwatch.NewMonitor(goalWatchSvc, tenantSvc)
+	goalWatchHandler.SetMonitor(goalMonitor)
 	goalMonitor.Start()
 
 	// Start nonce cleanup goroutine
@@ -217,6 +226,8 @@ func Bootstrap() (*Center, error) {
 	goalWatchHandler.RegisterAdminRoutes(mux)
 	goalWatchHandler.RegisterRuntimeRoutes(mux)
 	goalWatchHandler.RegisterClientRoutes(mux)
+	agentRuntimeHandler.RegisterRuntimeRoutes(mux)
+	agentRuntimeHandler.RegisterClientRoutes(mux)
 	a2aHandler.RegisterRuntimeRoutes(mux)
 	wfHandler.RegisterAdminRoutes(mux)
 	wfHandler.RegisterRuntimeRoutes(mux)
@@ -265,6 +276,7 @@ func Bootstrap() (*Center, error) {
 		WorkerMemory:    workerMemoryStore,
 		A2A:             a2aSvc,
 		GoalWatch:       goalWatchSvc,
+		AgentRuntime:    agentRuntimeSvc,
 		GoalMonitor:     goalMonitor,
 	}, nil
 }

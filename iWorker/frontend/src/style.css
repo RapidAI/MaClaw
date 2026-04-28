@@ -2546,3 +2546,120 @@ textarea {
   margin: 0;
   color: #b42318;
 }
+
+
+.iw-agent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.iw-agent-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #dbe3ec;
+  background: linear-gradient(135deg, #ffffff, #f6f9fc);
+}
+
+.iw-agent-card div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.iw-agent-card strong {
+  color: #111827;
+  font-size: 13px;
+  text-transform: capitalize;
+}
+
+.iw-agent-card span {
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #eef2f7;
+  color: #516174;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.iw-agent-card span.is-online {
+  background: #ecfdf3;
+  color: #15803d;
+}
+
+.iw-agent-card p,
+.iw-agent-card small {
+  margin: 0;
+  color: #66758a;
+  font-size: 12px;
+}
+
+
+.iw-agent-card span.is-offline {
+  background: #fff1f2;
+  color: #be123c;
+}
+
+
+.iw-goal-diagnostic {
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: #fff7ed;
+  color: #9a3412 !important;
+  font-weight: 800;
+}
+
+
+.iw-goal-action-pill {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #eef2ff;
+  color: #3730a3 !important;
+  font-size: 11px !important;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.iw-watch-pill {
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #eef2f7;
+  color: #516174;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.iw-watch-pill.is-running {
+  background: #ecfdf3;
+  color: #15803d;
+}
+
+.iw-watch-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.iw-watch-grid div {
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+  border-radius: 9px;
+  border: 1px solid #dbe3ec;
+  background: linear-gradient(135deg, #ffffff, #f8fbff);
+}
+
+.iw-watch-grid strong {
+  color: #111827;
+  font-size: 16px;
+}
+
+.iw-watch-grid span,
+.iw-watch-note {
+  margin: 0;
+  color: #66758a;
+  font-size: 12px;
+}

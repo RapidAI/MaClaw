@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton, FetchProviderModels } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -2018,6 +2018,12 @@ function App() {
     const [selectedProviderForUrl, setSelectedProviderForUrl] = useState<ProviderEndpoint | null>(null);
     const [hoveredProvider, setHoveredProvider] = useState<{ provider: ProviderEndpoint, x: number, y: number } | null>(null);
 
+    // Dynamic model list state (for coding tool providers)
+    const [toolModelList, setToolModelList] = useState<{id: string; name: string}[]>([]);
+    const [toolModelListFetching, setToolModelListFetching] = useState(false);
+    const [toolModelListError, setToolModelListError] = useState<string | null>(null);
+    const [showToolModelList, setShowToolModelList] = useState(false);
+
     const showToastMessage = (message: string, duration: number = 3000) => {
         showToastGlobal(message, 'info', duration);
     };
@@ -3202,6 +3208,52 @@ function App() {
         setConfig(newConfig);
     };
 
+    // Fetch available models from the provider's /models endpoint
+    const handleFetchToolModels = async () => {
+        if (!config) return;
+        const model = (config as any)[activeTool]?.models?.[activeTab];
+        if (!model?.model_url || !model?.api_key) return;
+        setToolModelListFetching(true);
+        setToolModelListError(null);
+        setToolModelList([]);
+        setShowToolModelList(true);
+        setShowModelRecommend(false);
+        try {
+            // Detect protocol from wire_api field: "anthropic" → anthropic, else openai
+            const protocol = model.wire_api === "anthropic" ? "anthropic" : "openai";
+            const models = await FetchProviderModels(model.model_url, model.api_key, protocol);
+            setToolModelList(models || []);
+            if (!models || models.length === 0) {
+                setToolModelListError("服务商返回了空的模型列表");
+            }
+        } catch (e) {
+            setToolModelListError(String(e));
+            setToolModelList([]);
+        } finally {
+            setToolModelListFetching(false);
+        }
+    };
+
+    // Clear tool model list when switching tabs/tools
+    useEffect(() => {
+        setToolModelList([]);
+        setToolModelListError(null);
+        setShowToolModelList(false);
+    }, [activeTool, activeTab]);
+
+    // Close tool model list dropdown on outside click
+    useEffect(() => {
+        if (!showToolModelList) return;
+        const handler = (e: MouseEvent) => {
+            const target = e.target as HTMLElement;
+            if (!target.closest('[data-tool-model-dropdown]')) {
+                setShowToolModelList(false);
+            }
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [showToolModelList]);
+
     const handleWireApiChange = (api: string) => {
         if (!config) return;
         const toolCfg = JSON.parse(JSON.stringify((config as any)[activeTool]));
@@ -4074,6 +4126,7 @@ ${instruction}`;
                             refreshNews: aiAssistant.refreshNews,
                             onOpenOnboarding: () => setShowMaclawLLMPopup(true),
                             cancelSession: aiAssistant.cancelSession,
+                            injectSupplementary: aiAssistant.injectSupplementary,
                             onOpenTutorial: () => switchTool('tutorial'),
                         }}
                         window={{
@@ -5640,6 +5693,28 @@ ${instruction}`;
                                                 : 'Prevents sleep & screen lock while allowing display off. Useful for screenshot testing and debugging.'}
                                         </div>
                                     </div>
+                                    <div style={{ marginTop: '12px' }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={config?.workflow_enabled !== false}
+                                                onChange={(e) => {
+                                                    saveRemoteConfigField({ workflow_enabled: e.target.checked });
+                                                }}
+                                                style={{ width: '16px', height: '16px' }}
+                                            />
+                                            <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
+                                                {lang === 'zh-Hans' ? '打开工作流' : lang === 'zh-Hant' ? '開啟工作流' : 'Enable Workflow'}
+                                            </span>
+                                        </label>
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '4px', marginLeft: '24px', textAlign: 'left' }}>
+                                            {lang === 'zh-Hans'
+                                                ? '开启后，编码、PPT 设计等复杂任务会自动进入多阶段引导工作流（需求→设计→执行）。关闭后所有消息直接进入 Agent 处理。'
+                                                : lang === 'zh-Hant'
+                                                ? '開啟後，編碼、PPT 設計等複雜任務會自動進入多階段引導工作流（需求→設計→執行）。關閉後所有訊息直接進入 Agent 處理。'
+                                                : 'When enabled, complex tasks (coding, PPT design, etc.) enter a multi-phase guided workflow (requirements → design → execution). When disabled, all messages go directly to the agent.'}
+                                        </div>
+                                    </div>
                                 </div>
 
                                 {/* Diagnostics info block */}
@@ -7112,6 +7187,17 @@ ${instruction}`;
                                                 spellCheck={false}
                                                 autoComplete="off"
                                             />
+                                            {/* "List" button — fetch models from provider's /models endpoint */}
+                                            {(config as any)[activeTool].models[activeTab].model_url && (config as any)[activeTool].models[activeTab].api_key && (
+                                                <button
+                                                    data-tool-model-dropdown
+                                                    style={{ border: '1px solid var(--theme-border)', background: toolModelListFetching ? 'var(--theme-surface-muted)' : 'var(--theme-surface)', color: 'var(--theme-text-secondary)', borderRadius: '6px', padding: '6px 8px', cursor: toolModelListFetching ? 'wait' : 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0, opacity: toolModelListFetching ? 0.6 : 1 }}
+                                                    onClick={handleFetchToolModels}
+                                                    disabled={toolModelListFetching}
+                                                    title="从服务商获取可用模型列表"
+                                                >{toolModelListFetching ? '...' : 'List'}</button>
+                                            )}
+                                            {/* "..." button — static recommended models */}
                                             {(() => {
                                                 const providerName = (config as any)[activeTool].models[activeTab].model_name;
                                                 const models = (activeTool === 'claude' || (providerName !== 'Aliyun' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;
@@ -7119,12 +7205,40 @@ ${instruction}`;
                                                 return (
                                                     <button
                                                         style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-surface)', color: 'var(--theme-text-secondary)', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0 }}
-                                                        onClick={() => setShowModelRecommend(!showModelRecommend)}
+                                                        onClick={() => { setShowModelRecommend(!showModelRecommend); setShowToolModelList(false); }}
                                                         title="推荐模型"
                                                     >...</button>
                                                 );
                                             })()}
                                         </div>
+                                        {/* Dynamic model list dropdown (from /models API) */}
+                                        {showToolModelList && (toolModelList.length > 0 || toolModelListError) && (
+                                            <div data-tool-model-dropdown style={{ position: 'absolute', top: '100%', right: 0, zIndex: 100, marginTop: '4px', background: 'var(--theme-surface)', border: '1px solid var(--theme-border)', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', minWidth: '240px', maxWidth: '400px', maxHeight: '300px', overflowY: 'auto', padding: '4px 0' }}>
+                                                {toolModelListError && (
+                                                    <div style={{ padding: '8px 12px', fontSize: '0.76rem', color: 'var(--theme-danger)' }}>
+                                                        {toolModelListError}
+                                                    </div>
+                                                )}
+                                                {toolModelList.map((m, i) => (
+                                                    <div
+                                                        key={i}
+                                                        style={{ padding: '6px 12px', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--theme-text-primary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}
+                                                        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--theme-surface-muted)')}
+                                                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                                                        onClick={() => { handleModelIdChange(m.id); setShowToolModelList(false); }}
+                                                    >
+                                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.id}</span>
+                                                        {m.name !== m.id && <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', flexShrink: 0 }}>{m.name}</span>}
+                                                    </div>
+                                                ))}
+                                                {toolModelList.length > 0 && (
+                                                    <div style={{ padding: '4px 12px', fontSize: '0.68rem', color: 'var(--theme-text-muted)', borderTop: '1px solid var(--theme-border)', marginTop: '4px' }}>
+                                                        共 {toolModelList.length} 个模型
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                        {/* Static recommended models dropdown */}
                                         {showModelRecommend && (() => {
                                             const providerName = (config as any)[activeTool].models[activeTab].model_name;
                                             const models = (activeTool === 'claude' || (providerName !== 'Aliyun' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;

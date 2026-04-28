@@ -3,53 +3,139 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Discovers the real Hub server URL via HubCenter or direct probe.
+///
+/// Seed URLs mirror corelib/remote/defaults.go DefaultRemoteHubCenterURLs.
+/// At runtime, [selectBestCenter] probes all seeds concurrently and picks the
+/// fastest reachable node — the same algorithm as the Go client's
+/// SelectBestCenter + DiscoverHubCenterURLs.
 class HubDiscovery {
-  static const defaultCenterUrl = 'http://hubs.mypapers.top:9388';
+  /// Seed HubCenter URLs — must stay in sync with
+  /// corelib/remote/defaults.go DefaultRemoteHubCenterURLs.
+  static const defaultCenterUrls = [
+    'https://hubs.mypapers.top',
+    'https://hubs.maclaw.top',
+    'https://hubs2.maclaw.top',
+  ];
+
+  /// Backward-compat alias: first seed URL.
+  static String get defaultCenterUrl => defaultCenterUrls[0];
   static const _prefKeyHubUrl = 'discovered_hub_url';
   static const _prefKeyHubName = 'discovered_hub_name';
 
   static String _trimSlash(String url) => url.replaceAll(RegExp(r'/+$'), '');
 
   /// Resolve hubs for an email via HubCenter.
-  /// POST /api/entry/resolve { email } → { hubs: [...], default_hub_id, mode }
+  /// Tries all seed URLs concurrently, picks the fastest reachable node,
+  /// then calls POST /api/entry/resolve on it. Falls back to the next node
+  /// on failure — mirrors Go's EnrollmentClient.ResolveHubs().
   static Future<ResolveResult> resolve(String email, {String? centerUrl}) async {
-    final center = _trimSlash(centerUrl ?? defaultCenterUrl);
-    final resp = await http.post(
-      Uri.parse('$center/api/entry/resolve'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'email': email}),
-    ).timeout(const Duration(seconds: 15));
+    final seeds = centerUrl != null && centerUrl.isNotEmpty
+        ? [_trimSlash(centerUrl), ...defaultCenterUrls]
+        : defaultCenterUrls;
 
-    if (resp.statusCode >= 400) {
-      final body = resp.body.isNotEmpty ? jsonDecode(resp.body) : {};
-      throw HubDiscoveryException(body['message'] as String? ?? 'Resolve failed (${resp.statusCode})');
+    // Deduplicate while preserving order.
+    final seen = <String>{};
+    final unique = <String>[];
+    for (final u in seeds) {
+      final norm = _trimSlash(u);
+      if (norm.isNotEmpty && seen.add(norm)) unique.add(norm);
     }
 
-    final body = jsonDecode(resp.body) as Map<String, dynamic>;
-    final mode = body['mode'] as String? ?? 'none';
-    final message = body['message'] as String? ?? '';
-    final defaultHubId = body['default_hub_id'] as String? ?? '';
-    final hubsList = body['hubs'] as List<dynamic>? ?? [];
+    // Probe all nodes concurrently, rank by response time.
+    final ordered = await selectBestCenter(unique);
 
-    final hubs = hubsList.map((h) {
-      final m = h as Map<String, dynamic>;
-      return DiscoveredHub(
-        hubId: m['hub_id'] as String? ?? '',
-        name: m['name'] as String? ?? '',
-        baseUrl: _trimSlash(m['base_url'] as String? ?? ''),
-        pwaUrl: m['pwa_url'] as String? ?? '',
-        visibility: m['visibility'] as String? ?? '',
-        enrollmentMode: m['enrollment_mode'] as String? ?? '',
-        invitationCodeRequired: m['invitation_code_required'] as bool? ?? false,
-      );
-    }).toList();
+    // Try resolve on each node in quality order.
+    Object? lastError;
+    for (final center in ordered) {
+      try {
+        final resp = await http.post(
+          Uri.parse('$center/api/entry/resolve'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'email': email}),
+        ).timeout(const Duration(seconds: 15));
 
-    return ResolveResult(
-      mode: mode,
-      message: message,
-      defaultHubId: defaultHubId,
-      hubs: hubs,
-    );
+        if (resp.statusCode >= 400) {
+          final body = resp.body.isNotEmpty ? jsonDecode(resp.body) : {};
+          lastError = HubDiscoveryException(
+              body['message'] as String? ?? 'Resolve failed (${resp.statusCode})');
+          continue;
+        }
+
+        final body = jsonDecode(resp.body) as Map<String, dynamic>;
+        final mode = body['mode'] as String? ?? 'none';
+        final message = body['message'] as String? ?? '';
+        final defaultHubId = body['default_hub_id'] as String? ?? '';
+        final hubsList = body['hubs'] as List<dynamic>? ?? [];
+
+        final hubs = hubsList.map((h) {
+          final m = h as Map<String, dynamic>;
+          return DiscoveredHub(
+            hubId: m['hub_id'] as String? ?? '',
+            name: m['name'] as String? ?? '',
+            baseUrl: _trimSlash(m['base_url'] as String? ?? ''),
+            pwaUrl: m['pwa_url'] as String? ?? '',
+            visibility: m['visibility'] as String? ?? '',
+            enrollmentMode: m['enrollment_mode'] as String? ?? '',
+            invitationCodeRequired:
+                m['invitation_code_required'] as bool? ?? false,
+          );
+        }).toList();
+
+        return ResolveResult(
+          mode: mode,
+          message: message,
+          defaultHubId: defaultHubId,
+          hubs: hubs,
+        );
+      } catch (e) {
+        lastError = e;
+        continue;
+      }
+    }
+
+    throw lastError is HubDiscoveryException
+        ? lastError
+        : HubDiscoveryException('All hub centers unreachable: $lastError');
+  }
+
+  /// Concurrently probe all [urls] via GET /api/client/quality and return them
+  /// sorted by reachability + response time (fastest first).
+  /// Mirrors Go's SelectBestCenter in corelib/remote/hubcenter_probe.go.
+  static Future<List<String>> selectBestCenter(List<String> urls) async {
+    if (urls.length <= 1) return List.of(urls);
+
+    final futures = urls.map((url) async {
+      final sw = Stopwatch()..start();
+      try {
+        final resp = await http
+            .get(Uri.parse('$url/api/client/quality'))
+            .timeout(const Duration(seconds: 4));
+        sw.stop();
+        if (resp.statusCode == 200) {
+          final body = jsonDecode(resp.body) as Map<String, dynamic>;
+          return _CenterProbe(
+            url: url,
+            reachable: true,
+            routable: body['routable'] as bool? ?? false,
+            qualityScore: body['quality_score'] as int? ?? 0,
+            rttMs: sw.elapsedMilliseconds,
+          );
+        }
+      } catch (_) {
+        // unreachable
+      }
+      return _CenterProbe(url: url, reachable: false, routable: false, qualityScore: 0, rttMs: 99999);
+    });
+
+    final probes = List.of(await Future.wait(futures));
+    probes.sort((a, b) {
+      if (a.reachable != b.reachable) return a.reachable ? -1 : 1;
+      if (a.routable != b.routable) return a.routable ? -1 : 1;
+      if (a.qualityScore != b.qualityScore) return b.qualityScore.compareTo(a.qualityScore);
+      return a.rttMs.compareTo(b.rttMs);
+    });
+
+    return probes.map((p) => p.url).toList();
   }
 
   /// Probe a direct hub URL to check if an email is bound.
@@ -165,4 +251,20 @@ class HubDiscoveryException implements Exception {
   const HubDiscoveryException(this.message);
   @override
   String toString() => 'HubDiscoveryException: $message';
+}
+
+/// Internal probe result for [HubDiscovery.selectBestCenter].
+class _CenterProbe {
+  final String url;
+  final bool reachable;
+  final bool routable;
+  final int qualityScore;
+  final int rttMs;
+  const _CenterProbe({
+    required this.url,
+    required this.reachable,
+    required this.routable,
+    required this.qualityScore,
+    required this.rttMs,
+  });
 }

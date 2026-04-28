@@ -46,6 +46,17 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 	}
 }
 
+func ListUserDashboardHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items, err := service.ListUserDashboard(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LIST_USER_DASHBOARD_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
 func UpdateHubVisibilityHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hubID := r.PathValue("id")
@@ -134,6 +145,16 @@ func DeleteHubHandler(service *hubs.Service) http.HandlerFunc {
 	}
 }
 
+func RefreshHubUserInventoryHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		result, err := service.RefreshUserInventory(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "REFRESH_USER_INVENTORY_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
+	}
+}
 func MigrateHubUserHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req MigrateHubUserRequest

@@ -50,12 +50,16 @@ const (
 //     This happens when a large field (e.g. write_file content) consumes the
 //     entire output budget, leaving no room for subsequent fields like path.
 //
-// Truncated tool calls are removed and a hint is appended to msg.Content so
-// the LLM learns to produce shorter arguments on the next iteration.
-// Returns the (possibly modified) finishReason.
-func filterTruncatedToolCalls(msg *llm.Message, finishReason string) string {
+// Truncated tool calls are removed from msg.ToolCalls. The truncated tool
+// names are returned so the caller (agent loop) can inject a recovery system
+// message and continue the loop. msg.Content is NOT modified — the hint
+// belongs in a system message, not in the assistant's own text.
+//
+// Returns the (possibly modified) finishReason and the list of truncated
+// tool names (nil if none were truncated).
+func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []string) {
 	if len(msg.ToolCalls) == 0 {
-		return finishReason
+		return finishReason, nil
 	}
 
 	// Primary signal: finish_reason="length" means the model hit max_output_tokens.
@@ -102,17 +106,17 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) string {
 		}
 	}
 	if len(truncatedNames) == 0 {
-		return finishReason
+		return finishReason, nil
 	}
 	msg.ToolCalls = validCalls
-	hint := fmt.Sprintf("\n\n[系统提示] 以下工具调用的参数不完整（被截断或缺少必需字段）：%s。"+
-		"请将大文件内容拆分为多次写入（每次不超过 5000 字符），或使用 bash 工具通过脚本写入。",
-		strings.Join(truncatedNames, ", "))
-	msg.Content += hint
+	// Do NOT append hint to msg.Content — the agent loop will inject it
+	// as a separate system message. Keeping msg.Content clean ensures the
+	// assistant message in conversation history only contains the LLM's
+	// own text, not system-injected recovery instructions.
 	if len(msg.ToolCalls) == 0 {
-		return "stop"
+		return "stop", truncatedNames
 	}
-	return finishReason
+	return finishReason, truncatedNames
 }
 
 // truncatedRequiredFields maps tool names to their required fields for
@@ -883,10 +887,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	}
 
 	// Detect and filter truncated tool calls caused by output token limit.
-	finishReason = filterTruncatedToolCalls(&msg, finishReason)
+	finishReason, truncatedTools := filterTruncatedToolCalls(&msg, finishReason)
 
 	return &llm.Response{
-		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason}},
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
 		Usage:   usage,
 	}, nil
 }
@@ -1204,8 +1208,11 @@ anthDone:
 		finishReason = "length"
 	}
 
+	// Detect and filter truncated tool calls caused by output token limit.
+	finishReason, truncatedTools := filterTruncatedToolCalls(&msg, finishReason)
+
 	return &llm.Response{
-		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason}},
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
 		Usage:   usage,
 	}, nil
 }

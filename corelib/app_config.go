@@ -177,6 +177,11 @@ type AppConfig struct {
 	// agent tasks (bash, craft_tool, confirmation panel, etc.). When empty,
 	// falls back to ~/.maclaw/workspace via corelib.WorkspaceDir().
 	WorkingDirectory string `json:"working_directory,omitempty"`
+	// WorkflowEnabled controls whether the workflow engine (multi-phase
+	// guided workflows like coding, PPT design, etc.) is active. When false,
+	// all messages bypass workflow interception and go directly to the normal
+	// agent loop. Default: true (enabled).
+	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
 }
 
 func (c AppConfig) MarshalJSON() ([]byte, error) {
@@ -322,6 +327,20 @@ func (c *AppConfig) IsLansengerLocalMode() bool {
 // SetLansengerLocal sets the LansengerLocalMode pointer field.
 func (c *AppConfig) SetLansengerLocal(v bool) {
 	c.LansengerLocalMode = &v
+}
+
+// IsWorkflowEnabled returns the effective workflow enabled setting.
+// Default is true (enabled) when the field has never been explicitly set (nil).
+func (c *AppConfig) IsWorkflowEnabled() bool {
+	if c.WorkflowEnabled == nil {
+		return true
+	}
+	return *c.WorkflowEnabled
+}
+
+// SetWorkflowEnabled sets the WorkflowEnabled pointer field.
+func (c *AppConfig) SetWorkflowEnabled(v bool) {
+	c.WorkflowEnabled = &v
 }
 
 // SkillHubBaseURL returns the base URL for SkillHub APIs (/api/v1/skills/*).

@@ -257,10 +257,14 @@ type AuditEvent struct {
 }
 
 type ListAuditEventsInput struct {
-	TenantID     string `json:"tenant_id,omitempty"`
-	UserID       string `json:"user_id,omitempty"`
-	Action       string `json:"action,omitempty"`
-	ResourceType string `json:"resource_type,omitempty"`
+	TenantID     string     `json:"tenant_id,omitempty"`
+	UserID       string     `json:"user_id,omitempty"`
+	Action       string     `json:"action,omitempty"`
+	ResourceType string     `json:"resource_type,omitempty"`
+	ResourceID   string     `json:"resource_id,omitempty"`
+	ActorType    string     `json:"actor_type,omitempty"`
+	Since        *time.Time `json:"since,omitempty"`
+	Until        *time.Time `json:"until,omitempty"`
 }
 
 type ListSessionsInput struct {
@@ -396,6 +400,8 @@ type AdminOverview struct {
 	Runs                 int               `json:"runs"`
 	RunsByStatus         map[RunStatus]int `json:"runs_by_status"`
 	AuditEvents          int               `json:"audit_events"`
+	Snapshots            int               `json:"snapshots"`
+	SnapshotBytes        int64             `json:"snapshot_bytes"`
 	LastActivityAt       *time.Time        `json:"last_activity_at,omitempty"`
 	LastAuditAt          *time.Time        `json:"last_audit_at,omitempty"`
 }
@@ -611,6 +617,73 @@ type ExportServiceStateOutput struct {
 	Users           []ExportedUser `json:"users,omitempty"`
 	AuditEvents     []AuditEvent   `json:"audit_events,omitempty"`
 	ExportedAt      time.Time      `json:"exported_at"`
+}
+
+type CreateServiceSnapshotInput struct {
+	Name            string `json:"name,omitempty"`
+	TenantID        string `json:"tenant_id,omitempty"`
+	UserID          string `json:"user_id,omitempty"`
+	IncludeMessages *bool  `json:"include_messages,omitempty"`
+	IncludeRuns     *bool  `json:"include_runs,omitempty"`
+	IncludeAudit    *bool  `json:"include_audit,omitempty"`
+	IncludeSecrets  *bool  `json:"include_secrets,omitempty"`
+}
+
+type ListServiceSnapshotsInput struct {
+	TenantID string `json:"tenant_id,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+}
+
+type ServiceSnapshot struct {
+	ID              string    `json:"id"`
+	Name            string    `json:"name,omitempty"`
+	Scope           string    `json:"scope"`
+	TenantID        string    `json:"tenant_id,omitempty"`
+	UserID          string    `json:"user_id,omitempty"`
+	Path            string    `json:"path,omitempty"`
+	SizeBytes       int64     `json:"size_bytes"`
+	IncludeMessages bool      `json:"include_messages"`
+	IncludeRuns     bool      `json:"include_runs"`
+	IncludeAudit    bool      `json:"include_audit"`
+	IncludeSecrets  bool      `json:"include_secrets"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type ServiceSnapshotEnvelope struct {
+	Snapshot ServiceSnapshot          `json:"snapshot"`
+	Data     ExportServiceStateOutput `json:"data"`
+}
+
+type PruneServiceSnapshotsInput struct {
+	TenantID   string     `json:"tenant_id,omitempty"`
+	UserID     string     `json:"user_id,omitempty"`
+	OlderThan  *time.Time `json:"older_than,omitempty"`
+	KeepLatest int        `json:"keep_latest,omitempty"`
+	DryRun     bool       `json:"dry_run,omitempty"`
+}
+
+type PruneServiceSnapshotsOutput struct {
+	TenantID      string            `json:"tenant_id,omitempty"`
+	UserID        string            `json:"user_id,omitempty"`
+	OlderThan     *time.Time        `json:"older_than,omitempty"`
+	KeepLatest    int               `json:"keep_latest,omitempty"`
+	DryRun        bool              `json:"dry_run"`
+	Matched       int               `json:"matched"`
+	Deleted       int               `json:"deleted"`
+	FreedBytes    int64             `json:"freed_bytes"`
+	KeptSnapshots []ServiceSnapshot `json:"kept_snapshots,omitempty"`
+	Snapshots     []ServiceSnapshot `json:"snapshots,omitempty"`
+	GeneratedAt   time.Time         `json:"generated_at"`
+}
+
+type RestoreServiceSnapshotInput struct {
+	Overwrite bool `json:"overwrite,omitempty"`
+	DryRun    bool `json:"dry_run,omitempty"`
+}
+
+type RestoreServiceSnapshotOutput struct {
+	Snapshot ServiceSnapshot          `json:"snapshot"`
+	Import   ImportServiceStateOutput `json:"import"`
 }
 
 type ImportServiceStateRequest struct {

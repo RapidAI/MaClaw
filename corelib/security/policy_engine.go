@@ -12,9 +12,10 @@ import (
 
 // PolicyEngine evaluates tool invocations against a set of ordered policy rules.
 type PolicyEngine struct {
-	mu      sync.RWMutex
-	rules   []PolicyRule
-	reCache map[string]*regexp.Regexp
+	mu            sync.RWMutex
+	rules         []PolicyRule
+	reCache       map[string]*regexp.Regexp
+	developerMode bool // true when mode == "developer"
 }
 
 // NewPolicyEngine creates a PolicyEngine with default (standard) rules.
@@ -28,8 +29,9 @@ func NewPolicyEngine() *PolicyEngine {
 // NewPolicyEngineWithMode creates a PolicyEngine using rules for the given mode.
 func NewPolicyEngineWithMode(mode string) *PolicyEngine {
 	return &PolicyEngine{
-		rules:   PolicyRulesForMode(mode),
-		reCache: make(map[string]*regexp.Regexp),
+		rules:         PolicyRulesForMode(mode),
+		reCache:       make(map[string]*regexp.Regexp),
+		developerMode: mode == "developer",
 	}
 }
 
@@ -39,6 +41,7 @@ func (e *PolicyEngine) SetMode(mode string) {
 	e.mu.Lock()
 	e.rules = rules
 	e.reCache = make(map[string]*regexp.Regexp)
+	e.developerMode = mode == "developer"
 	e.mu.Unlock()
 }
 
@@ -107,16 +110,45 @@ func DefaultPolicyRules() []PolicyRule {
 	return PolicyRulesForMode("standard")
 }
 
+// IsDeveloperMode returns true when the engine is in "developer" mode.
+// Developer mode disables all security guardrails — intended for security
+// researchers who need to observe raw tool behaviour without interception.
+func (e *PolicyEngine) IsDeveloperMode() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.developerMode
+}
+
 // PolicyRulesForMode returns the policy rules for the given security mode.
+//
+// Supported modes:
+//
+//	developer: all operations allowed unconditionally (no deny, no ask, no audit).
+//	           Intended for security researchers. Use with caution.
+//	relaxed:   low/medium/high → allow, critical → ask (dangerous keywords → deny)
+//	standard:  low → allow, medium → audit, high → ask, critical → ask (dangerous keywords → deny)
+//	strict:    low → allow, medium/high → ask, critical → deny (dangerous keywords → deny)
 func PolicyRulesForMode(mode string) []PolicyRule {
+	// Dangerous-keyword deny rule is shared across all non-developer modes.
+	// NOTE: \bsudo\b uses word boundaries to avoid matching "pseudo", "sudoku", etc.
 	denyDangerous := PolicyRule{
 		Name: "deny-dangerous-keywords", Priority: 10, ToolPattern: "*",
-		ArgsPattern: "(?i)(rm\\s+-rf|DROP\\s+TABLE|sudo)",
+		ArgsPattern: "(?i)(rm\\s+-rf|DROP\\s+TABLE|\\bsudo\\b)",
 		RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyDeny,
 	}
 
 	var rules []PolicyRule
 	switch mode {
+	case "developer":
+		// Developer mode: allow everything unconditionally.
+		// No deny rules, no ask rules, no audit rules.
+		// Risk assessment still runs (for logging), but policy never blocks.
+		rules = []PolicyRule{
+			{Name: "allow-critical", Priority: 10, ToolPattern: "*", RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyAllow},
+			{Name: "allow-high", Priority: 20, ToolPattern: "*", RiskLevels: []RiskLevel{RiskHigh}, Action: PolicyAllow},
+			{Name: "allow-medium", Priority: 30, ToolPattern: "*", RiskLevels: []RiskLevel{RiskMedium}, Action: PolicyAllow},
+			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []RiskLevel{RiskLow}, Action: PolicyAllow},
+		}
 	case "relaxed":
 		rules = []PolicyRule{
 			denyDangerous,

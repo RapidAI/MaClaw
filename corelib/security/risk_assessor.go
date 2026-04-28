@@ -13,6 +13,14 @@ import (
 type ThreatPattern struct {
 	Pattern string // regex string or substring to match
 	IsRegex bool   // true = compile as regex; false = case-insensitive substring match
+	// Guard is an optional regex pattern. When non-empty and the guard matches
+	// the same text, this threat pattern hit is considered a false positive and
+	// is suppressed. This provides context-aware filtering at the pattern level
+	// rather than relying on post-hoc safe-tool category matching.
+	//
+	// Example: Pattern `\$\(.*\)` (command substitution) with
+	// Guard `\$\((date|pwd|hostname|whoami|uname -[a-z])\)` — safe substitutions.
+	Guard string
 }
 
 // ThreatCategory groups related threat patterns under a named category.
@@ -46,11 +54,16 @@ var threatPatternCategories = []ThreatCategory{
 		Patterns: []ThreatPattern{
 			{Pattern: `;\s*(rm|wget|curl|bash|sh|python|perl|nc)`, IsRegex: true},  // command chaining
 			{Pattern: `\|\s*(bash|sh|python|perl)`, IsRegex: true},                 // pipe to shell
-			{Pattern: `\$\(.*\)`, IsRegex: true},                                   // command substitution
+			// Command substitution: guard allows safe builtins like $(date), $(pwd), $(basename ...)
+			{Pattern: `\$\(.*\)`, IsRegex: true,
+				Guard: `\$\((date|pwd|hostname|basename|dirname|echo|printf|cat\s+[^/]|wc\s|head\s|tail\s|tr\s|cut\s|sort|uniq|grep\s|awk\s|sed\s)\b`},
 			{Pattern: "`[^`]*\\b(rm|wget|curl|bash|sh|python|perl|nc|cat|echo|eval|exec|whoami|id|uname)\\b[^`]*`", IsRegex: true}, // backtick command substitution (word-boundary match, not Markdown inline code)
 			{Pattern: `>\s*/dev/tcp/`, IsRegex: true},                               // bash TCP redirect
-			{Pattern: `eval\s*\(`, IsRegex: true},                                  // eval injection
-			{Pattern: `exec\s*\(`, IsRegex: true},                                  // exec injection
+			// eval/exec injection: guard allows common safe patterns like executor.execute(), exec.Command
+			{Pattern: `eval\s*\(`, IsRegex: true,
+				Guard: `\b(executor|evaluator|evaluate|evaluation)\b`},
+			{Pattern: `exec\s*\(`, IsRegex: true,
+				Guard: `\b(exec\.Command|exec\.LookPath|executor|subprocess)\b`},
 			{Pattern: `os\.system\s*\(`, IsRegex: true},                            // Python os.system
 			{Pattern: `subprocess\.call`, IsRegex: false},                           // Python subprocess
 		},
@@ -74,9 +87,14 @@ var threatPatternCategories = []ThreatCategory{
 			{Pattern: `crontab`, IsRegex: false},                                   // cron persistence
 			{Pattern: `/etc/cron`, IsRegex: false},                                 // cron directory
 			{Pattern: `systemctl\s+enable`, IsRegex: true},                         // systemd persistence
-			{Pattern: `\.bashrc`, IsRegex: false},                                  // shell profile
-			{Pattern: `\.bash_profile`, IsRegex: false},                            // shell profile
-			{Pattern: `\.profile`, IsRegex: false},                                 // shell profile
+			// Shell profiles: guard allows read-only access (cat, grep, head) and
+			// common safe operations (source, . .bashrc for env setup)
+			{Pattern: `\.bashrc`, IsRegex: false,
+				Guard: `(cat|grep|head|tail|less|more|source|\.\s+)\s+.*\.bashrc`},
+			{Pattern: `\.bash_profile`, IsRegex: false,
+				Guard: `(cat|grep|head|tail|less|more|source)\s+.*\.bash_profile`},
+			{Pattern: `\.profile`, IsRegex: false,
+				Guard: `(cat|grep|head|tail|less|more|source)\s+.*\.profile|\.profile\.(png|jpg|json|ts|js|go|py)`},
 			{Pattern: `authorized_keys`, IsRegex: false},                           // SSH key persistence
 			{Pattern: `HKLM\\.*\\Run`, IsRegex: true},                             // Windows registry run key
 			{Pattern: `schtasks\s+/create`, IsRegex: true},                         // Windows scheduled task
@@ -101,12 +119,16 @@ var threatPatternCategories = []ThreatCategory{
 	{
 		Name: "obfuscation",
 		Patterns: []ThreatPattern{
-			{Pattern: `base64\s+-d`, IsRegex: true},                                // base64 decode
-			{Pattern: `base64\s+--decode`, IsRegex: true},                          // base64 decode
-			{Pattern: `echo\s+.*\|\s*base64\s+-d\s*\|\s*(bash|sh)`, IsRegex: true}, // decode-then-exec
+			// base64 decode: guard allows safe data processing (images, JSON, certificates)
+			{Pattern: `base64\s+-d`, IsRegex: true,
+				Guard: `base64\s+-d\s*$|base64\s+-d\s*>\s*\S+\.(png|jpg|jpeg|gif|svg|pdf|json|pem|crt|cer)`},
+			{Pattern: `base64\s+--decode`, IsRegex: true,
+				Guard: `base64\s+--decode\s*$|base64\s+--decode\s*>\s*\S+\.(png|jpg|jpeg|gif|svg|pdf|json|pem|crt|cer)`},
+			{Pattern: `echo\s+.*\|\s*base64\s+-d\s*\|\s*(bash|sh)`, IsRegex: true}, // decode-then-exec (no guard — always dangerous)
 			{Pattern: `python.*-c.*exec\(`, IsRegex: true},                         // Python one-liner exec
 			{Pattern: `perl\s+-e`, IsRegex: true},                                  // Perl one-liner
-			{Pattern: `\\x[0-9a-fA-F]{2}`, IsRegex: true},                         // hex-encoded strings
+			{Pattern: `\\x[0-9a-fA-F]{2}`, IsRegex: true,
+				Guard: `\\x[0-9a-fA-F]{2}.*\.(log|txt|csv|json)`},                  // hex-encoded: guard for log/data files
 			{Pattern: `xxd\s+-r`, IsRegex: true},                                   // hex decode
 			{Pattern: `openssl\s+enc\s+-d`, IsRegex: true},                         // openssl decrypt
 		},
@@ -114,12 +136,16 @@ var threatPatternCategories = []ThreatCategory{
 	{
 		Name: "execution",
 		Patterns: []ThreatPattern{
-			{Pattern: `chmod\s+\+x`, IsRegex: true},                               // make executable
+			// chmod +x: guard allows setting executable on project scripts
+			{Pattern: `chmod\s+\+x`, IsRegex: true,
+				Guard: `chmod\s+\+x\s+\./|\bchmod\s+\+x\s+\S+\.(sh|py|rb|pl)\b`},
 			{Pattern: `chmod\s+[0-7]*7[0-7]*\s`, IsRegex: true},                   // world-executable
 			{Pattern: `curl.*\|\s*(bash|sh)`, IsRegex: true},                       // download-and-exec
 			{Pattern: `wget.*\|\s*(bash|sh)`, IsRegex: true},                       // download-and-exec
 			{Pattern: `curl.*-o\s+/tmp/.*&&.*sh\s+/tmp/`, IsRegex: true},          // download-save-exec
-			{Pattern: `python\s+-c`, IsRegex: true},                                // Python one-liner
+			// python -c: guard allows safe one-liners (print, import, json, sys.version)
+			{Pattern: `python\s+-c`, IsRegex: true,
+				Guard: `python3?\s+-c\s+['"](import\s+(json|sys|os\.path|platform)|print\(|from\s+\w+\s+import)`},
 			{Pattern: `ruby\s+-e`, IsRegex: true},                                  // Ruby one-liner
 			{Pattern: `node\s+-e`, IsRegex: true},                                  // Node one-liner
 		},
@@ -158,8 +184,12 @@ var threatPatternCategories = []ThreatCategory{
 			{Pattern: `curl.*\|\s*pip\s+install`, IsRegex: true},                   // pipe-to-pip
 			{Pattern: `setup\.py\s+install`, IsRegex: true},                        // direct setup.py
 			{Pattern: `pip\s+install\s+--pre`, IsRegex: true},                      // pre-release packages
-			{Pattern: `npm\s+install\s+.*@latest`, IsRegex: true},                  // unpinned npm install
-			{Pattern: `go\s+install\s+.*@`, IsRegex: true},                         // go install from URL
+			// npm install @latest: guard allows well-known scoped packages
+			{Pattern: `npm\s+install\s+.*@latest`, IsRegex: true,
+				Guard: `npm\s+install\s+(@types/|@babel/|@vue/|@angular/|@react-)`},
+			// go install: guard allows well-known Go module hosts
+			{Pattern: `go\s+install\s+.*@`, IsRegex: true,
+				Guard: `go\s+install\s+(golang\.org/|github\.com/|google\.golang\.org/)`},
 		},
 	},
 	{
@@ -184,13 +214,21 @@ var threatPatternCategories = []ThreatCategory{
 			{Pattern: `\.ssh/id_rsa`, IsRegex: false},                              // SSH private key
 			{Pattern: `\.ssh/id_ed25519`, IsRegex: false},                          // SSH private key
 			{Pattern: `\.aws/credentials`, IsRegex: false},                         // AWS credentials
-			{Pattern: `\.env`, IsRegex: false},                                     // environment file
+			// .env: guard allows .env.example, .env.template, .env.local, .env.development,
+			// python venv (.env as directory), and read-only access
+			{Pattern: `\.env\b`, IsRegex: true,
+				Guard: `\.env\.(example|template|sample|local|development|production|test|bak)|python.*\.env|venv.*\.env|(cat|grep|head|less)\s+.*\.env`},
 			{Pattern: `\.netrc`, IsRegex: false},                                   // netrc credentials
 			{Pattern: `\.pgpass`, IsRegex: false},                                  // PostgreSQL password
 			{Pattern: `PRIVATE KEY`, IsRegex: false},                               // private key content
-			{Pattern: `password\s*=\s*['"]`, IsRegex: true},                        // hardcoded password
-			{Pattern: `api[_-]?key\s*=\s*['"]`, IsRegex: true},                    // hardcoded API key
-			{Pattern: `secret[_-]?key\s*=\s*['"]`, IsRegex: true},                 // hardcoded secret
+			// Hardcoded password: guard allows common safe patterns like password validation,
+			// password hashing, password_field, password_input
+			{Pattern: `password\s*=\s*['"]`, IsRegex: true,
+				Guard: `password\s*=\s*['"]\s*['"]|password\s*=\s*['"](\*+|x+|placeholder|changeme|your[_-]password)['"]`},
+			{Pattern: `api[_-]?key\s*=\s*['"]`, IsRegex: true,
+				Guard: `api[_-]?key\s*=\s*['"]\s*['"]|api[_-]?key\s*=\s*['"](\*+|x+|placeholder|your[_-]api[_-]key)['"]`},
+			{Pattern: `secret[_-]?key\s*=\s*['"]`, IsRegex: true,
+				Guard: `secret[_-]?key\s*=\s*['"]\s*['"]|secret[_-]?key\s*=\s*['"](\*+|x+|placeholder|your[_-]secret)['"]`},
 		},
 	},
 }
@@ -228,6 +266,7 @@ var compiledPromptInjection []*compiledPattern
 type compiledPattern struct {
 	Original ThreatPattern
 	Regex    *regexp.Regexp // non-nil only for IsRegex patterns
+	GuardRe  *regexp.Regexp // non-nil when Original.Guard is set
 }
 
 func init() {
@@ -239,6 +278,9 @@ func init() {
 			if p.IsRegex {
 				cp.Regex = regexp.MustCompile("(?i)" + p.Pattern)
 			}
+			if p.Guard != "" {
+				cp.GuardRe = regexp.MustCompile("(?i)" + p.Guard)
+			}
 			compiled = append(compiled, cp)
 		}
 		compiledThreatPatterns[cat.Name] = compiled
@@ -248,16 +290,31 @@ func init() {
 		if p.IsRegex {
 			cp.Regex = regexp.MustCompile("(?i)" + p.Pattern)
 		}
+		if p.Guard != "" {
+			cp.GuardRe = regexp.MustCompile("(?i)" + p.Guard)
+		}
 		compiledPromptInjection = append(compiledPromptInjection, cp)
 	}
 }
 
 // matchPattern checks if text matches a compiled pattern.
+// If the pattern has a Guard and the guard also matches, the hit is considered
+// a false positive and matchPattern returns false.
 func matchPattern(cp *compiledPattern, text string) bool {
+	matched := false
 	if cp.Regex != nil {
-		return cp.Regex.MatchString(text)
+		matched = cp.Regex.MatchString(text)
+	} else {
+		matched = containsIgnoreCase(text, cp.Original.Pattern)
 	}
-	return containsIgnoreCase(text, cp.Original.Pattern)
+	if !matched {
+		return false
+	}
+	// Guard check: if the guard regex matches, this is a known safe context.
+	if cp.GuardRe != nil && cp.GuardRe.MatchString(text) {
+		return false
+	}
+	return true
 }
 
 // ThreatMatch records a matched threat pattern for risk assessment factors.
@@ -273,7 +330,40 @@ type RiskAssessor struct{}
 // NOTE: "format" was removed because it causes false positives on legitimate
 // skills that use "format" in non-destructive contexts (e.g. PDF format
 // conversion, string formatting). Use dangerousPatterns for context-aware checks.
-var dangerousKeywords = []string{"rm -rf", "DROP TABLE", "sudo"}
+//
+// NOTE: "sudo" was moved to dangerousCmdPatterns for context-aware matching.
+// As a plain substring, "sudo" matches "pseudo", "sudoku", and documentation
+// text like "Run without sudo". The regex version uses word boundaries.
+var dangerousKeywords = []string{"rm -rf", "DROP TABLE"}
+
+// dangerousCmdPatterns are regex patterns for dangerous commands that need
+// word-boundary matching to avoid false positives on substrings.
+var dangerousCmdPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bsudo\b`),
+}
+
+// dangerousCmdSafeContexts are regex patterns that, when matched alongside a
+// dangerousCmdPattern hit, indicate the command is in a safe context and should
+// not be escalated to critical. Each entry corresponds to a dangerousCmdPattern
+// by index.
+var dangerousCmdSafeContexts = [][]*regexp.Regexp{
+	// Safe contexts for \bsudo\b:
+	// - "sudo -n" (non-interactive, used in automated scripts with NOPASSWD)
+	// - "sudo apt/yum/dnf/pacman install" (package installation)
+	// - "sudo pip install" (Python package installation)
+	// - "sudo npm install -g" (Node.js global package installation)
+	// - "sudo systemctl start/restart/status" (service management)
+	// - "sudo docker" (Docker commands — user should be in docker group)
+	{
+		regexp.MustCompile(`(?i)\bsudo\s+-n\b`),
+		regexp.MustCompile(`(?i)\bsudo\s+(apt|apt-get|yum|dnf|pacman|brew)\s+(install|update|upgrade)\b`),
+		regexp.MustCompile(`(?i)\bsudo\s+pip3?\s+install\b`),
+		regexp.MustCompile(`(?i)\bsudo\s+npm\s+install\s+-g\b`),
+		regexp.MustCompile(`(?i)\bsudo\s+systemctl\s+(start|restart|status|reload)\b`),
+		regexp.MustCompile(`(?i)\bsudo\s+docker\b`),
+		regexp.MustCompile(`(?i)\bsudo\s+chown\s+\$`), // sudo chown $USER (common safe pattern)
+	},
+}
 
 // dangerousFormatPatterns are patterns where "format" IS dangerous (disk formatting).
 var dangerousFormatPatterns = []string{"format c:", "format d:", "format e:", "format f:", "diskpart", "mkfs"}
@@ -318,6 +408,32 @@ func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
 		if containsIgnoreCase(argStr, kw) {
 			level = RiskCritical
 			factors = append(factors, fmt.Sprintf("dangerous keyword %q found in arguments", kw))
+		}
+	}
+
+	// Context-aware dangerous command patterns (word-boundary matching).
+	for i, re := range dangerousCmdPatterns {
+		if re.MatchString(argStr) {
+			// Check safe contexts before escalating.
+			safeCtx := false
+			if i < len(dangerousCmdSafeContexts) {
+				for _, guard := range dangerousCmdSafeContexts[i] {
+					if guard.MatchString(argStr) {
+						safeCtx = true
+						break
+					}
+				}
+			}
+			if !safeCtx {
+				level = RiskCritical
+				factors = append(factors, fmt.Sprintf("dangerous command pattern %q matched in arguments", re.String()))
+			} else {
+				// Safe context: escalate to high instead of critical.
+				if RiskLevelOrder[level] < RiskLevelOrder[RiskHigh] {
+					level = RiskHigh
+				}
+				factors = append(factors, fmt.Sprintf("dangerous command pattern %q matched but in safe context", re.String()))
+			}
 		}
 	}
 
@@ -560,7 +676,7 @@ func ScanDirectoryStructure(skillDir string) []ThreatMatch {
 			totalSize += info.Size()
 
 			// Check for binary content (null bytes in first 512 bytes).
-			if isBinaryFile(path) {
+			if IsBinaryFile(path) {
 				relPath, _ := filepath.Rel(absSkillDir, path)
 				if relPath == "" {
 					relPath = filepath.Base(path)
@@ -593,9 +709,9 @@ func ScanDirectoryStructure(skillDir string) []ThreatMatch {
 	return matches
 }
 
-// isBinaryFile checks if a file contains null bytes in the first 512 bytes,
+// IsBinaryFile checks if a file contains null bytes in the first 512 bytes,
 // which is a common heuristic for detecting binary (non-text) content.
-func isBinaryFile(path string) bool {
+func IsBinaryFile(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
@@ -847,4 +963,40 @@ func BuildReason(level RiskLevel, factors []string) string {
 		return fmt.Sprintf("risk level: %s", level)
 	}
 	return fmt.Sprintf("risk level: %s — %s", level, strings.Join(factors, "; "))
+}
+
+// DangerousCmdResult holds the result of a dangerous command pattern check.
+type DangerousCmdResult struct {
+	Matched     bool   // true if a dangerous command pattern was found
+	SafeContext bool   // true if the match is in a known safe context
+	Pattern     string // the matched pattern string (for logging)
+}
+
+// CheckDangerousCmdPatterns checks text against dangerous command patterns
+// (word-boundary aware) and their safe context guards.
+// Returns all matches found. Callers decide how to use the results:
+// - Matched && !SafeContext → escalate to critical
+// - Matched && SafeContext → escalate to high (reduced)
+// - !Matched → no action
+func CheckDangerousCmdPatterns(text string) []DangerousCmdResult {
+	var results []DangerousCmdResult
+	for i, re := range dangerousCmdPatterns {
+		if re.MatchString(text) {
+			safeCtx := false
+			if i < len(dangerousCmdSafeContexts) {
+				for _, guard := range dangerousCmdSafeContexts[i] {
+					if guard.MatchString(text) {
+						safeCtx = true
+						break
+					}
+				}
+			}
+			results = append(results, DangerousCmdResult{
+				Matched:     true,
+				SafeContext: safeCtx,
+				Pattern:     re.String(),
+			})
+		}
+	}
+	return results
 }

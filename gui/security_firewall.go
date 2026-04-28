@@ -43,6 +43,12 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 		return true, ""
 	}
 
+	// Developer mode: bypass all security checks unconditionally.
+	// Risk assessment is skipped entirely — no deny, no ask, no audit.
+	if f.policy != nil && f.policy.IsDeveloperMode() {
+		return true, ""
+	}
+
 	// 1. Risk assessment.
 	risk := f.analyzer.Assess(toolName, args, ctx)
 

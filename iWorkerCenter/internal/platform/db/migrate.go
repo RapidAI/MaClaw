@@ -442,6 +442,28 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_a2a_sessions_tenant_status ON a2a_sessions(tenant_id, status);
 	CREATE INDEX IF NOT EXISTS idx_a2a_sessions_tenant_org_unit ON a2a_sessions(tenant_id, org_unit_id);
 	CREATE INDEX IF NOT EXISTS idx_a2a_sessions_tenant_updated ON a2a_sessions(tenant_id, updated_at);`,
+
+	// 32: iworker_agent_instances - heartbeats for multiple runtime agents under one logical iWorker
+	`CREATE TABLE IF NOT EXISTS iworker_agent_instances (
+		tenant_id          TEXT NOT NULL,
+		worker_id          TEXT NOT NULL,
+		instance_id        TEXT NOT NULL,
+		role               TEXT NOT NULL,
+		status             TEXT NOT NULL DEFAULT 'online',
+		org_unit_id        TEXT NOT NULL DEFAULT '',
+		capabilities_json  TEXT NOT NULL DEFAULT '[]',
+		memory_authority   TEXT NOT NULL DEFAULT 'iWorkerCenter',
+		local_cache_mode   TEXT NOT NULL DEFAULT 'cache_only',
+		host_id            TEXT NOT NULL DEFAULT '',
+		process_id         INTEGER NOT NULL DEFAULT 0,
+		started_at         TEXT NOT NULL DEFAULT (datetime('now')),
+		last_heartbeat_at  TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (tenant_id, instance_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_iworker_agent_instances_worker ON iworker_agent_instances(tenant_id, worker_id);
+	CREATE INDEX IF NOT EXISTS idx_iworker_agent_instances_role ON iworker_agent_instances(tenant_id, role);
+	CREATE INDEX IF NOT EXISTS idx_iworker_agent_instances_heartbeat ON iworker_agent_instances(tenant_id, last_heartbeat_at);`,
 }
 
 // Migrate applies all pending migrations inside a transaction.

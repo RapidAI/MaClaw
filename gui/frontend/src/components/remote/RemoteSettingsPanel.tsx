@@ -205,7 +205,7 @@ export function RemoteSettingsPanel({
                         value={config?.remote_hubcenter_url || ""}
                         onChange={(e) => saveRemoteConfigField({ remote_hubcenter_url: e.target.value })}
                         onBlur={(e) => saveRemoteConfigField({ remote_hubcenter_url: e.target.value.trim() })}
-                        placeholder="http://hubs.mypapers.top:9388"
+                        placeholder="https://hubs.mypapers.top"
                         spellCheck={false}
                     />
                 </div>

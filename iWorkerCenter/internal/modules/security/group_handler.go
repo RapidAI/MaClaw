@@ -32,7 +32,7 @@ func (h *GroupHandler) RegisterAdminRoutes(mux *http.ServeMux) {
 }
 
 func (h *GroupHandler) handleGroups(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	switch r.Method {
 	case http.MethodGet:
 		tree, err := h.repo.GetGroupTree(r.Context(), tid)
@@ -87,7 +87,7 @@ func (h *GroupHandler) handleGroups(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *GroupHandler) handleGroupByID(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	// Parse: /admin/security/groups/{id}[/members[/{email}]][/policy]
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/security/groups/")
 	rest = strings.TrimRight(rest, "/")
@@ -300,7 +300,7 @@ func (h *GroupHandler) getAncestorChain(r *http.Request, tenantID string, groupI
 const settingsKey = "iwc_security_settings"
 
 func (h *GroupHandler) handleSettings(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	switch r.Method {
 	case http.MethodGet:
 		settings := h.loadSettings(tid)
@@ -322,7 +322,7 @@ func (h *GroupHandler) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *GroupHandler) handleDefaultGroup(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	if r.Method != http.MethodPut {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PUT")
 		return

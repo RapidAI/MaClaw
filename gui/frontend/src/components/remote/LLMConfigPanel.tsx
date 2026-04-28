@@ -10,6 +10,7 @@ import {
     CancelOpenAIOAuth,
     ImportCodexAuth,
     FetchCodeGenModels,
+    FetchProviderModels,
     SaveCodeGenModelChoice,
     GetHubLLMServiceStatus,
 } from "../../../wailsjs/go/main/App";
@@ -31,6 +32,7 @@ interface LLMProvider {
     auth_type?: string;
     agent_type?: string; // "openclaw" (default) or "claude_code"
     supports_vision?: boolean; // whether the model supports image input
+    wire_api?: string; // "chat" (default), "responses", or "responses-ws"
 }
 
 const NONE_PROVIDER = "__none__";
@@ -122,6 +124,10 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [oauthBusy, setOauthBusy] = useState(false);
     const [codegenModels, setCodegenModels] = useState<{id: string; name: string}[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
+    // Generic provider model list (for non-SSO/non-OAuth providers)
+    const [providerModels, setProviderModels] = useState<{id: string; name: string}[]>([]);
+    const [providerModelsFetching, setProviderModelsFetching] = useState(false);
+    const [providerModelsError, setProviderModelsError] = useState<string | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
     const loadSeqRef = useRef(0);
 
@@ -294,8 +300,34 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         return () => { cancelled = true; };
     }, [dlgOpen, dlgAuthType]);
 
+    // Clear generic provider models when switching providers or closing dialog
+    useEffect(() => {
+        setProviderModels([]);
+        setProviderModelsError(null);
+    }, [dlgSelectedIdx, dlgOpen]);
+
     const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
     const dlgProvider = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx] ?? null : null;
+
+    // Handler: fetch models from any provider's /models endpoint
+    const handleFetchProviderModels = useCallback(async () => {
+        if (!dlgProvider || !dlgProvider.url || !dlgProvider.key) return;
+        setProviderModelsFetching(true);
+        setProviderModelsError(null);
+        setProviderModels([]);
+        try {
+            const models = await FetchProviderModels(dlgProvider.url, dlgProvider.key, dlgProvider.protocol || "openai");
+            setProviderModels(models || []);
+            if (!models || models.length === 0) {
+                setProviderModelsError(t("No models returned", "服务商返回了空的模型列表"));
+            }
+        } catch (e) {
+            setProviderModelsError(String(e));
+            setProviderModels([]);
+        } finally {
+            setProviderModelsFetching(false);
+        }
+    }, [dlgProvider, t]);
 
     const dlgUpdateField = useCallback((field: keyof LLMProvider, value: string) => {
         if (dlgSelectedIdx === null) return;
@@ -425,7 +457,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 return;
             }
 
-            const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
+            const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw", wire_api: sp.wire_api || "" });
             const saveName = sp.name;
             const nextProviders = dlgProviders.map((provider, index) => index === dlgSelectedIdx
                 ? { ...provider, supports_vision: testResult.supports_vision }
@@ -798,33 +830,32 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
                                         {t("Model Name", "模型名称")}
-                                        {!dlgProvider.is_custom && dlgProvider.auth_type !== "oauth" && dlgProvider.auth_type !== "sso" && (
-                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
-                                                {t("(preset)", "（预设，无需修改）")}
-                                            </span>
-                                        )}
-                                        {dlgProvider.auth_type === "oauth" && (
-                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
-                                                {t("(editable)", "（可修改）")}
-                                            </span>
-                                        )}
-                                        {dlgProvider.auth_type === "sso" && (
+                                        {dlgProvider.auth_type === "sso" ? (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {codegenModelsFetching ? t("(loading models...)", "（加载模型中...）") : t("(select model)", "（选择模型）")}
                                             </span>
+                                        ) : dlgProvider.auth_type === "oauth" ? (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {providerModels.length > 0
+                                                    ? t("(select or edit)", "（可选择或手动修改）")
+                                                    : t("(editable, click List to browse)", "（可修改，可点击 List 浏览）")}
+                                            </span>
+                                        ) : dlgProvider.is_custom ? (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {providerModels.length > 0
+                                                    ? t("(select or edit)", "（可选择或手动修改）")
+                                                    : t("(click List to browse)", "（可点击 List 浏览）")}
+                                            </span>
+                                        ) : (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {providerModels.length > 0
+                                                    ? t("(select or edit)", "（可选择或手动修改）")
+                                                    : t("(preset, click List to browse)", "（预设，可点击 List 浏览可用模型）")}
+                                            </span>
                                         )}
                                     </label>
-                                    {dlgProvider.is_custom ? (
-                                        <input style={inputStyle} value={dlgProvider.model}
-                                            onChange={e => dlgUpdateField("model", e.target.value)}
-                                            placeholder="gpt-5.4"
-                                            autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
-                                    ) : dlgProvider.auth_type === "oauth" ? (
-                                        <input style={inputStyle} value={dlgProvider.model}
-                                            onChange={e => dlgUpdateField("model", e.target.value)}
-                                            placeholder="gpt-5.4"
-                                            autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
-                                    ) : dlgProvider.auth_type === "sso" ? (
+                                    {dlgProvider.auth_type === "sso" ? (
+                                        /* SSO (CodeGen): auto-fetch model list */
                                         codegenModels.length > 0 ? (
                                             <select style={inputStyle} value={dlgProvider.model}
                                                 onChange={e => dlgUpdateField("model", e.target.value)}>
@@ -842,7 +873,49 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                 autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
                                         )
                                     ) : (
-                                        <input style={readonlyStyle} value={dlgProvider.model} readOnly tabIndex={-1} />
+                                        /* All other providers: input + List button + dropdown */
+                                        <div style={{ position: "relative" }}>
+                                            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                                {providerModels.length > 0 ? (
+                                                    <select style={{ ...inputStyle, flex: 1 }} value={dlgProvider.model}
+                                                        onChange={e => dlgUpdateField("model", e.target.value)}>
+                                                        {!providerModels.some(m => m.id === dlgProvider.model) && dlgProvider.model && (
+                                                            <option value={dlgProvider.model}>{dlgProvider.model}</option>
+                                                        )}
+                                                        {providerModels.map(m => (
+                                                            <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
+                                                        ))}
+                                                    </select>
+                                                ) : (
+                                                    <input style={{ ...inputStyle, flex: 1 }} value={dlgProvider.model}
+                                                        onChange={e => dlgUpdateField("model", e.target.value)}
+                                                        placeholder={providerModelsFetching ? t("Loading...", "加载中...") : "gpt-5.4"}
+                                                        autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                                )}
+                                                {/* List button — visible when URL and Key are available */}
+                                                {dlgProvider.url && dlgProvider.key && (
+                                                    <button
+                                                        onClick={handleFetchProviderModels}
+                                                        disabled={providerModelsFetching}
+                                                        style={{
+                                                            fontSize: "0.72rem", padding: "6px 10px", cursor: providerModelsFetching ? "wait" : "pointer",
+                                                            background: colors.surface, color: colors.text,
+                                                            border: `1px solid ${colors.border}`, borderRadius: 4,
+                                                            whiteSpace: "nowrap", flexShrink: 0,
+                                                            opacity: providerModelsFetching ? 0.6 : 1,
+                                                        }}
+                                                        title={t("Fetch available models from provider", "从服务商获取可用模型列表")}
+                                                    >
+                                                        {providerModelsFetching ? t("Loading...", "加载中...") : "List"}
+                                                    </button>
+                                                )}
+                                            </div>
+                                            {providerModelsError && (
+                                                <div style={{ fontSize: "0.68rem", color: colors.danger, marginTop: 4 }}>
+                                                    {providerModelsError}
+                                                </div>
+                                            )}
+                                        </div>
                                     )}
                                 </div>
 

@@ -91,17 +91,28 @@ func (app *TUIApp) initWorkflowEngine() *workflow.WorkflowEngine {
 	return engine
 }
 
+// getWorkflowEngine returns the workflow engine if available and enabled, or nil.
+// This is the TUI's single enforcement point for the "workflow enabled" config
+// toggle. All workflow consumers should go through this method.
+func (app *TUIApp) getWorkflowEngine() *workflow.WorkflowEngine {
+	if !app.appConfig.IsWorkflowEnabled() {
+		return nil
+	}
+	return app.workflowEngine
+}
+
 // handleWorkflowInterception checks if the message should be handled by the
 // workflow engine. Returns a non-empty string if the message was fully handled
 // (the string is the response to show the user). Returns empty string if the
 // message should proceed to the normal agent loop.
 func (app *TUIApp) handleWorkflowInterception(text string) string {
-	if app.workflowEngine == nil {
+	engine := app.getWorkflowEngine()
+	if engine == nil {
 		return ""
 	}
 
 	userID := "tui-user"
-	filter := app.workflowEngine.GetFilter()
+	filter := engine.GetFilter()
 	if filter == nil {
 		return ""
 	}

@@ -15,7 +15,6 @@ import (
 var (
 	user32               = syscall.NewLazyDLL("user32.dll")
 	gdi32                = syscall.NewLazyDLL("gdi32.dll")
-	procSetProcessDPIAware = user32.NewProc("SetProcessDPIAware")
 	procGetDesktopWindow   = user32.NewProc("GetDesktopWindow")
 	procGetWindowDC        = user32.NewProc("GetWindowDC")
 	procReleaseDC          = user32.NewProc("ReleaseDC")
@@ -51,14 +50,16 @@ type bitmapInfoHeader struct {
 	BiClrImportant  uint32
 }
 
-func init() {
-	// Ensure DPI awareness so we capture at full resolution.
-	procSetProcessDPIAware.Call()
-}
-
 // nativeScreenshot captures the entire screen using Windows GDI APIs directly
 // from Go, without spawning any external process. Returns base64-encoded PNG.
 func nativeScreenshot() (string, error) {
+	// Note: DPI awareness is NOT set here. Wails sets Per-Monitor DPI Aware V2
+	// during startup, which already ensures GetSystemMetrics returns physical
+	// pixel dimensions. The legacy SetProcessDPIAware() was previously called
+	// in init() but that conflicted with Wails' DPI initialization, causing
+	// frameless window content to be offset/clipped on Windows 10.
+	// Per-Monitor V2 is a superset of System DPI Aware, so screenshot capture
+	// at full resolution works correctly without any additional DPI calls.
 	width, _, _ := procGetSystemMetrics.Call(uintptr(smCxScreen))
 	height, _, _ := procGetSystemMetrics.Call(uintptr(smCyScreen))
 	if width == 0 || height == 0 {

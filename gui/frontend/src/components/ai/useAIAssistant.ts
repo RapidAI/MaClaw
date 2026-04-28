@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
@@ -2195,7 +2195,27 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, [resetActiveRound, setPendingTaskState]);
 
-    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
+    // injectSupplementary sends a supplementary message into the running
+    // agent loop without cancelling it. Returns true if the injection was
+    // accepted (a loop is active), false if no loop is running (caller
+    // should fall back to normal sendMessage).
+    // On success, a user message bubble is added to the chat so the user
+    // sees visual confirmation of what was injected.
+    const injectSupplementary = useCallback(async (text: string): Promise<boolean> => {
+        try {
+            const accepted = await InjectAIAssistantSupplementary(text);
+            if (accepted) {
+                // Show the injected text as a user message in the chat area
+                // so the user has visual confirmation.
+                setMessages(prev => [...prev, createUserMessage("💬 " + text)]);
+            }
+            return accepted;
+        } catch {
+            return false;
+        }
+    }, []);
+
+    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

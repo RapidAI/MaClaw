@@ -43,6 +43,7 @@ interface AIAssistantPanelActionProps {
     refreshNews: () => void;
     onOpenOnboarding?: () => void;
     cancelSession?: () => Promise<CancelAIAssistantResult>;
+    injectSupplementary?: (text: string) => Promise<boolean>;
     onOpenTutorial?: () => void;
 }
 
@@ -1152,6 +1153,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         refreshNews,
         onOpenOnboarding,
         cancelSession,
+        injectSupplementary,
         onOpenTutorial,
     } = actions;
     const {
@@ -1614,30 +1616,40 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         setEditingEntryId(null);
     }, [updateEntry]);
 
-    // ── Fire (send) a single queued entry, interrupting the current session ──
+    // ── Fire (send) a single queued entry as supplementary info ──
+    // Injects the message into the running agent loop's next iteration
+    // without cancelling the current task. Falls back to leaving the entry
+    // in the queue for normal processing when the loop finishes.
     const handleFireEntry = useCallback(async (id: string) => {
-        if (!cancelSession || cancelPending) return;
+        if (cancelPending) return;
 
-        const restoreSeq = ++cancelRestoreSeqRef.current;
-        setCancelPending(true);
-        try {
-            await cancelSession();
-            if (cancelRestoreSeqRef.current !== restoreSeq) return;
+        // Peek at the entry without removing it yet.
+        const entry = queue.find(e => e.id === id);
+        if (!entry) return;
 
-            // Extract AFTER cancelSession succeeds — if cancel fails or is
-            // superseded, the entry stays in the queue instead of being lost.
-            const extracted = extractEntry(id);
-            if (!extracted) return;
+        const text = entry.text;
+        const hasAttachments = entry.attachments.length > 0;
+        if (!text.trim() && !hasAttachments) return;
 
-            const outgoing = extracted.filePaths.length > 0
-                ? buildOutgoingMessageMulti(extracted.text, extracted.filePaths)
-                : extracted.text;
-            recordSubmittedPrompt?.(extracted.text);
-            await sendMessage(outgoing);
-        } finally {
-            setCancelPending(false);
+        // Try injection — text-only, no attachments.
+        if (injectSupplementary && !hasAttachments && text.trim()) {
+            try {
+                const accepted = await injectSupplementary(text);
+                if (accepted) {
+                    // Injection succeeded — now remove from queue.
+                    removeEntry(id);
+                    recordSubmittedPrompt?.(text);
+                    return;
+                }
+            } catch {
+                // Injection failed — entry stays in queue.
+            }
         }
-    }, [cancelSession, cancelPending, extractEntry, sendMessage, recordSubmittedPrompt]);
+
+        // Injection not possible (no active loop, has attachments, or failed).
+        // Entry stays in the queue — it will be auto-drained by the
+        // submitLocked transition effect when the current loop finishes.
+    }, [cancelPending, queue, recordSubmittedPrompt, injectSupplementary, removeEntry]);
 
     const handleCancel = useCallback(async () => {
         if (!cancelSession || cancelPending) return;

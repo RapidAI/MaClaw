@@ -56,7 +56,7 @@ func decodeDownloadedSkillJSON(data []byte) (*corelib.NLSkillEntry, error) {
 
 	installSkillDir := ""
 	if len(full.Files) > 0 && full.Name != "" {
-		extractSkillFiles(full.Name, full.Files)
+		extractSkillFiles(full.Name, full.Files, "")
 		if skillsRoot, err := cskill.PrimarySkillsDir(); err == nil {
 			installSkillDir = filepath.Join(skillsRoot, full.Name)
 		}

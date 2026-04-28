@@ -1188,7 +1188,7 @@ The service is broadly usable, but it is not yet a fully complete control plane.
 
 
 
-- Service export/import is now available, but snapshot orchestration and stronger restore policy are still missing
+- Service export/import now has persisted snapshot create/list/get/restore/delete/prune APIs; scheduled snapshot policies and stronger restore policies are still future work
 
 
 
@@ -1345,3 +1345,28 @@ The service is broadly usable, but it is not yet a fully complete control plane.
 
 - `POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials` accepts optional `expires_at` in the create body.
 - This lets admin callers issue generated credentials with an expiry policy in a single request, avoiding a create-then-patch window.
+
+## Credential list filters
+
+- `GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials` supports lifecycle filters for admin consoles and automation.
+- Query parameters: `status=active|suspended|revoked`, `expired=true|false`, and `expiring=true|false`.
+- `expiring=true` uses the same default 7-day lookahead window used by summary counters and metrics.
+
+## Audit event filters
+
+- `GET /api/v1/admin/audit-events` supports `resource_id` and `actor_type` filters in addition to tenant, user, action, and resource type filters.
+- This is useful for tracing one credential, run, user, tenant, or other resource through create/update/rotate/revoke operations.
+
+## Audit event time-window filters
+
+- `GET /api/v1/admin/audit-events` supports `since` and `until` RFC3339/RFC3339Nano filters on event `created_at`.
+- `before` remains the pagination cursor; use `since/until` for logical time windows and `before` for walking result pages.
+
+
+## Admin snapshot APIs
+
+- `POST /api/v1/admin/snapshots` persists a service, tenant, or user export under `MACLAW_DATA_ROOT/snapshots`.
+- `GET /api/v1/admin/snapshots` lists persisted snapshots with tenant/user filters and normal pagination.
+- `POST /api/v1/admin/snapshots/{snapshotId}/restore` reuses the import pipeline and supports `dry_run` plus `overwrite`.
+- `POST /api/v1/admin/snapshots/prune` supports `older_than`, `keep_latest`, and `dry_run` for manual retention cleanup.
+- `GET /api/v1/admin/overview` includes `snapshots` and `snapshot_bytes`; `/metrics` exposes `maclaw_snapshots_total` and `maclaw_snapshot_bytes_total`.

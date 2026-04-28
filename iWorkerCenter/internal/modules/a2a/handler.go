@@ -23,7 +23,7 @@ func (h *Handler) RegisterRuntimeRoutes(mux *http.ServeMux) {
 }
 
 func (h *Handler) handleSessions(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	switch r.Method {
 	case http.MethodGet:
 		filter := listFilterFromRequest(r)
@@ -51,7 +51,7 @@ func (h *Handler) handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleSessionAction(w http.ResponseWriter, r *http.Request) {
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := tenant.RequestTenantID(r)
 	id, action := parseSessionAction(r.URL.Path)
 	if id == "" {
 		response.BadRequest(w, "MISSING_SESSION_ID", "session id is required")

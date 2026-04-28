@@ -16,14 +16,14 @@ import (
 type Endpoint struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
-	Protocol  string `json:"protocol"`  // openai, anthropic
+	Protocol  string `json:"protocol"` // openai, anthropic
 	BaseURL   string `json:"base_url"`
 	APIKey    string `json:"api_key"`
 	Model     string `json:"model"`
 	CostTier  string `json:"cost_tier"` // high, medium, low
 	Priority  int    `json:"priority"`
-	Features  string `json:"features"`  // JSON array of feature keywords
-	Status    string `json:"status"`    // active, disabled
+	Features  string `json:"features"` // JSON array of feature keywords
+	Status    string `json:"status"`   // active, disabled
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
@@ -92,7 +92,7 @@ func (h *Handler) handleEndpointByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	rows, err := h.read.Query(`SELECT id, name, protocol, base_url, api_key, model, cost_tier, priority, features, status, created_at, updated_at
 		FROM model_endpoints WHERE tenant_id=? ORDER BY priority DESC`, tenantID)
 	if err != nil {
@@ -121,7 +121,7 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, id string) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	var e Endpoint
 	err := h.read.QueryRow(`SELECT id, name, protocol, base_url, api_key, model, cost_tier, priority, features, status, created_at, updated_at
 		FROM model_endpoints WHERE id=? AND tenant_id=?`, id, tenantID).Scan(&e.ID, &e.Name, &e.Protocol, &e.BaseURL, &e.APIKey, &e.Model, &e.CostTier, &e.Priority, &e.Features, &e.Status, &e.CreatedAt, &e.UpdatedAt)
@@ -148,7 +148,7 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().Format(time.RFC3339)
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	e := Endpoint{
 		ID:        idgen.New("mep"),
 		Name:      strings.TrimSpace(req.Name),
@@ -186,7 +186,7 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, id stri
 	}
 	now := time.Now().Format(time.RFC3339)
 	status := defaultStr(req.Status, "active")
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	res, err := h.write.Exec(`UPDATE model_endpoints SET name=?, protocol=?, base_url=?, api_key=?, model=?, cost_tier=?, priority=?, features=?, status=?, updated_at=? WHERE id=? AND tenant_id=?`,
 		strings.TrimSpace(req.Name), defaultStr(req.Protocol, "openai"),
 		strings.TrimSpace(req.BaseURL), strings.TrimSpace(req.APIKey),
@@ -231,7 +231,7 @@ func (h *Handler) handlePolicyByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	rows, err := h.read.Query(`SELECT id, name, description, work_type, role_code, endpoint_id, fallback_mode, priority, status, created_at, updated_at
 		FROM model_routing_policies WHERE tenant_id=? ORDER BY priority DESC`, tenantID)
 	if err != nil {
@@ -264,7 +264,7 @@ func (h *Handler) createPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().Format(time.RFC3339)
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	p := RoutingPolicy{
 		ID:           idgen.New("mrp"),
 		Name:         strings.TrimSpace(req.Name),
@@ -296,7 +296,7 @@ func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request, id string
 	}
 	now := time.Now().Format(time.RFC3339)
 	status := defaultStr(req.Status, "active")
-	tenantID := tenant.TenantIDFromContext(r.Context())
+	tenantID := tenant.RequestTenantID(r)
 	res, err := h.write.Exec(`UPDATE model_routing_policies SET name=?, description=?, work_type=?, role_code=?, endpoint_id=?, fallback_mode=?, priority=?, status=?, updated_at=? WHERE id=? AND tenant_id=?`,
 		strings.TrimSpace(req.Name), strings.TrimSpace(req.Description),
 		defaultStr(req.WorkType, "*"), defaultStr(req.RoleCode, "*"),

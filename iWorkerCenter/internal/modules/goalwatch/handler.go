@@ -12,10 +12,17 @@ import (
 )
 
 type Handler struct {
-	svc *Service
+	svc     *Service
+	monitor *Monitor
 }
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+
+func (h *Handler) SetMonitor(monitor *Monitor) {
+	if h != nil {
+		h.monitor = monitor
+	}
+}
 
 func (h *Handler) RegisterRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/runtime/goalwatch/check", h.handleCheck)
@@ -28,6 +35,7 @@ func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/goalwatch/check", h.handleCheck)
+	mux.HandleFunc("/admin/goalwatch/status", h.handleStatus)
 }
 
 func parsePushAction(path string) (string, string) {
@@ -44,7 +52,7 @@ func (h *Handler) handleClientPushes(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := requestTenantID(r)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	pushes, err := h.svc.ListPushesForColleague(tid, r.URL.Query().Get("colleague_id"), limit)
 	if err != nil {
@@ -73,7 +81,7 @@ func (h *Handler) handleClientPushAction(w http.ResponseWriter, r *http.Request)
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
-	result, err := h.svc.AckPush(tenant.TenantIDFromContext(r.Context()), req.ColleagueID, eventID, req.Status, req.Note, time.Now().UTC())
+	result, err := h.svc.AckPush(requestTenantID(r), req.ColleagueID, eventID, req.Status, req.Note, time.Now().UTC())
 	if err != nil {
 		response.BadRequest(w, "ACK_PUSH_FAILED", err.Error())
 		return
@@ -86,12 +94,13 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or POST")
 		return
 	}
-	tid := tenant.TenantIDFromContext(r.Context())
+	tid := requestTenantID(r)
 	svc := h.svc
 	if minutes, _ := strconv.Atoi(r.URL.Query().Get("stalled_after_minutes")); minutes > 0 {
 		cfg := h.svc.Config()
 		cfg.StalledAfter = time.Duration(minutes) * time.Minute
 		svc = NewService(h.svc.collabRepo, cfg)
+		svc.SetAgentRuntime(h.svc.agentRuntime)
 	}
 	result, err := svc.CheckTenant(tid, time.Now().UTC())
 	if err != nil {
@@ -99,4 +108,28 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.OK(w, result)
+}
+
+func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+	if h.monitor == nil {
+		response.OK(w, MonitorStatus{Config: configStatus(h.svc)})
+		return
+	}
+	response.OK(w, h.monitor.Status())
+}
+
+func configStatus(svc *Service) MonitorConfigStatus {
+	if svc == nil {
+		return MonitorConfigStatus{}
+	}
+	cfg := svc.Config()
+	return MonitorConfigStatus{TickIntervalSeconds: int64(cfg.TickInterval.Seconds()), StalledAfterSeconds: int64(cfg.StalledAfter.Seconds()), PushCooldownSeconds: int64(cfg.PushCooldown.Seconds()), WorkersPerShard: cfg.WorkersPerShard, MaxWatchers: cfg.MaxWatchers}
+}
+
+func requestTenantID(r *http.Request) string {
+	return tenant.RequestTenantID(r)
 }

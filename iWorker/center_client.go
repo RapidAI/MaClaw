@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,7 +37,7 @@ type CenterRole struct {
 
 // fetchCenterColleagues retrieves active colleagues from iWorkerCenter.
 // Returns nil on any error (non-blocking).
-func fetchCenterColleagues(centerBaseURL string, timeoutSec int) []CenterColleague {
+func fetchCenterColleagues(centerBaseURL string, tenantID string, timeoutSec int) []CenterColleague {
 	if centerBaseURL == "" {
 		return nil
 	}
@@ -46,7 +47,12 @@ func fetchCenterColleagues(centerBaseURL string, timeoutSec int) []CenterColleag
 	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
 	url := strings.TrimRight(centerBaseURL, "/") + "/client/colleagues"
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	setCenterTenantHeader(req, tenantID)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}
@@ -68,7 +74,7 @@ func fetchCenterColleagues(centerBaseURL string, timeoutSec int) []CenterColleag
 }
 
 // fetchCenterRoles retrieves active roles from iWorkerCenter.
-func fetchCenterRoles(centerBaseURL string, timeoutSec int) []CenterRole {
+func fetchCenterRoles(centerBaseURL string, tenantID string, timeoutSec int) []CenterRole {
 	if centerBaseURL == "" {
 		return nil
 	}
@@ -78,7 +84,12 @@ func fetchCenterRoles(centerBaseURL string, timeoutSec int) []CenterRole {
 	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
 	url := strings.TrimRight(centerBaseURL, "/") + "/client/roles"
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	setCenterTenantHeader(req, tenantID)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}
@@ -137,7 +148,7 @@ type CenterCapability struct {
 
 // fetchCenterCapabilities retrieves active capabilities from iWorkerCenter.
 // If colleagueID is provided, returns only capabilities bound to that colleague.
-func fetchCenterCapabilities(centerBaseURL string, colleagueID string, timeoutSec int) []CenterCapability {
+func fetchCenterCapabilities(centerBaseURL string, tenantID string, colleagueID string, timeoutSec int) []CenterCapability {
 	if centerBaseURL == "" {
 		return nil
 	}
@@ -150,7 +161,12 @@ func fetchCenterCapabilities(centerBaseURL string, colleagueID string, timeoutSe
 		url += "?colleague_id=" + colleagueID
 	}
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	setCenterTenantHeader(req, tenantID)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}
@@ -188,7 +204,7 @@ type CenterCollabTask struct {
 
 // fetchCenterCollaborations retrieves collaboration tasks from iWorkerCenter.
 // If colleagueID is provided, returns only tasks assigned to that colleague.
-func fetchCenterCollaborations(centerBaseURL string, colleagueID string, timeoutSec int) []CenterCollabTask {
+func fetchCenterCollaborations(centerBaseURL string, tenantID string, colleagueID string, timeoutSec int) []CenterCollabTask {
 	if centerBaseURL == "" {
 		return nil
 	}
@@ -201,7 +217,12 @@ func fetchCenterCollaborations(centerBaseURL string, colleagueID string, timeout
 		url += "?colleague_id=" + colleagueID
 	}
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	setCenterTenantHeader(req, tenantID)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}
@@ -235,7 +256,7 @@ type CenterWorkflowInstance struct {
 }
 
 // fetchCenterWorkflowInstances retrieves workflow instances from iWorkerCenter.
-func fetchCenterWorkflowInstances(centerBaseURL string, timeoutSec int) []CenterWorkflowInstance {
+func fetchCenterWorkflowInstances(centerBaseURL string, tenantID string, timeoutSec int) []CenterWorkflowInstance {
 	if centerBaseURL == "" {
 		return nil
 	}
@@ -245,7 +266,12 @@ func fetchCenterWorkflowInstances(centerBaseURL string, timeoutSec int) []Center
 	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
 	url := strings.TrimRight(centerBaseURL, "/") + "/client/workflow-instances"
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	setCenterTenantHeader(req, tenantID)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}
@@ -276,7 +302,7 @@ type CenterRecommendation struct {
 }
 
 // fetchRecommendations asks iWorkerCenter to recommend colleagues for a task.
-func fetchRecommendations(centerBaseURL string, taskDesc string, topN int, timeoutSec int) []CenterRecommendation {
+func fetchRecommendations(centerBaseURL string, tenantID string, taskDesc string, topN int, timeoutSec int) []CenterRecommendation {
 	if centerBaseURL == "" || taskDesc == "" {
 		return nil
 	}
@@ -294,7 +320,13 @@ func fetchRecommendations(centerBaseURL string, taskDesc string, topN int, timeo
 		"top_n":            topN,
 	})
 
-	resp, err := client.Post(url, "application/json", strings.NewReader(string(payload)))
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(payload)))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setCenterTenantHeader(req, tenantID)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}
@@ -317,15 +349,18 @@ func fetchRecommendations(centerBaseURL string, taskDesc string, topN int, timeo
 
 // CenterGoalPush represents a GoalWatch push fetched from iWorkerCenter.
 type CenterGoalPush struct {
-	EventID       string `json:"event_id,omitempty"`
-	TaskID        string `json:"task_id"`
-	Title         string `json:"title"`
-	ToColleagueID string `json:"to_colleague_id"`
-	ToRoleCode    string `json:"to_role_code"`
-	Status        string `json:"status"`
-	Reason        string `json:"reason"`
-	AgeSeconds    int64  `json:"age_seconds"`
-	CreatedAt     string `json:"created_at"`
+	EventID                     string `json:"event_id,omitempty"`
+	TaskID                      string `json:"task_id"`
+	Title                       string `json:"title"`
+	ToColleagueID               string `json:"to_colleague_id"`
+	ToRoleCode                  string `json:"to_role_code"`
+	Status                      string `json:"status"`
+	Reason                      string `json:"reason"`
+	RecommendedAction           string `json:"recommended_action"`
+	AgeSeconds                  int64  `json:"age_seconds"`
+	ExecutorStatus              string `json:"executor_status,omitempty"`
+	ExecutorHeartbeatAgeSeconds int64  `json:"executor_heartbeat_age_seconds,omitempty"`
+	CreatedAt                   string `json:"created_at"`
 }
 
 type CenterGoalPushAckRequest struct {
@@ -345,6 +380,10 @@ type CenterGoalPushAckResult struct {
 }
 
 func fetchCenterGoalPushes(centerBaseURL, tenantID, colleagueID string, limit int, timeoutSec int) ([]CenterGoalPush, error) {
+	return fetchCenterGoalPushesContext(context.Background(), centerBaseURL, tenantID, colleagueID, limit, timeoutSec)
+}
+
+func fetchCenterGoalPushesContext(ctx context.Context, centerBaseURL, tenantID, colleagueID string, limit int, timeoutSec int) ([]CenterGoalPush, error) {
 	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
 	colleagueID = strings.TrimSpace(colleagueID)
 	if centerBaseURL == "" {
@@ -364,7 +403,7 @@ func fetchCenterGoalPushes(centerBaseURL, tenantID, colleagueID string, limit in
 	values.Set("colleague_id", colleagueID)
 	values.Set("limit", fmt.Sprintf("%d", limit))
 	endpoint := centerBaseURL + "/client/goalwatch/pushes?" + values.Encode()
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -396,6 +435,10 @@ func fetchCenterGoalPushes(centerBaseURL, tenantID, colleagueID string, limit in
 }
 
 func ackCenterGoalPush(centerBaseURL, tenantID string, reqBody CenterGoalPushAckRequest, timeoutSec int) (CenterGoalPushAckResult, error) {
+	return ackCenterGoalPushContext(context.Background(), centerBaseURL, tenantID, reqBody, timeoutSec)
+}
+
+func ackCenterGoalPushContext(ctx context.Context, centerBaseURL, tenantID string, reqBody CenterGoalPushAckRequest, timeoutSec int) (CenterGoalPushAckResult, error) {
 	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
 	reqBody.EventID = strings.TrimSpace(reqBody.EventID)
 	reqBody.ColleagueID = strings.TrimSpace(reqBody.ColleagueID)
@@ -425,7 +468,7 @@ func ackCenterGoalPush(centerBaseURL, tenantID string, reqBody CenterGoalPushAck
 		return CenterGoalPushAckResult{}, err
 	}
 	endpoint := centerBaseURL + "/client/goalwatch/pushes/" + url.PathEscape(reqBody.EventID) + "/ack"
-	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return CenterGoalPushAckResult{}, err
 	}
@@ -459,4 +502,154 @@ func setCenterTenantHeader(req *http.Request, tenantID string) {
 	if tenantID = strings.TrimSpace(tenantID); tenantID != "" {
 		req.Header.Set("X-Tenant-ID", tenantID)
 	}
+}
+
+// CenterAgentInstanceHeartbeatRequest registers one local agent instance heartbeat with iWorkerCenter.
+type CenterAgentInstanceHeartbeatRequest struct {
+	WorkerID        string   `json:"worker_id"`
+	InstanceID      string   `json:"instance_id"`
+	Role            string   `json:"role"`
+	Status          string   `json:"status"`
+	OrgUnitID       string   `json:"org_unit_id"`
+	Capabilities    []string `json:"capabilities"`
+	MemoryAuthority string   `json:"memory_authority"`
+	LocalCacheMode  string   `json:"local_cache_mode"`
+	HostID          string   `json:"host_id"`
+	ProcessID       int      `json:"process_id"`
+	StartedAt       string   `json:"started_at"`
+}
+
+type CenterAgentInstance struct {
+	TenantID            string   `json:"tenant_id"`
+	WorkerID            string   `json:"worker_id"`
+	InstanceID          string   `json:"instance_id"`
+	Role                string   `json:"role"`
+	Status              string   `json:"status"`
+	OrgUnitID           string   `json:"org_unit_id,omitempty"`
+	Capabilities        []string `json:"capabilities"`
+	MemoryAuthority     string   `json:"memory_authority"`
+	LocalCacheMode      string   `json:"local_cache_mode"`
+	HostID              string   `json:"host_id,omitempty"`
+	ProcessID           int      `json:"process_id,omitempty"`
+	StartedAt           string   `json:"started_at"`
+	LastHeartbeatAt     string   `json:"last_heartbeat_at"`
+	HeartbeatAgeSeconds int64    `json:"heartbeat_age_seconds"`
+	EffectiveStatus     string   `json:"effective_status"`
+}
+
+type CenterAgentInstanceHeartbeatResult struct {
+	Instance CenterAgentInstance `json:"instance"`
+}
+
+func postAgentInstanceHeartbeat(centerBaseURL, tenantID string, heartbeat CenterAgentInstanceHeartbeatRequest, timeoutSec int) (CenterAgentInstanceHeartbeatResult, error) {
+	return postAgentInstanceHeartbeatContext(context.Background(), centerBaseURL, tenantID, heartbeat, timeoutSec)
+}
+
+func postAgentInstanceHeartbeatContext(ctx context.Context, centerBaseURL, tenantID string, heartbeat CenterAgentInstanceHeartbeatRequest, timeoutSec int) (CenterAgentInstanceHeartbeatResult, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return CenterAgentInstanceHeartbeatResult{}, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	heartbeat.WorkerID = strings.TrimSpace(heartbeat.WorkerID)
+	heartbeat.InstanceID = strings.TrimSpace(heartbeat.InstanceID)
+	heartbeat.Role = strings.TrimSpace(heartbeat.Role)
+	if heartbeat.WorkerID == "" {
+		return CenterAgentInstanceHeartbeatResult{}, fmt.Errorf("worker_id is required")
+	}
+	if heartbeat.Role == "" {
+		heartbeat.Role = "executor"
+	}
+	if heartbeat.InstanceID == "" {
+		heartbeat.InstanceID = heartbeat.WorkerID + ":" + heartbeat.Role
+	}
+	if heartbeat.Status == "" {
+		heartbeat.Status = "online"
+	}
+	if heartbeat.MemoryAuthority == "" {
+		heartbeat.MemoryAuthority = "iWorkerCenter"
+	}
+	if heartbeat.LocalCacheMode == "" {
+		heartbeat.LocalCacheMode = "cache_only"
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	payload, err := json.Marshal(heartbeat)
+	if err != nil {
+		return CenterAgentInstanceHeartbeatResult{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, centerBaseURL+"/runtime/iworker/instances/heartbeat", bytes.NewReader(payload))
+	if err != nil {
+		return CenterAgentInstanceHeartbeatResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	setCenterTenantHeader(httpReq, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return CenterAgentInstanceHeartbeatResult{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return CenterAgentInstanceHeartbeatResult{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return CenterAgentInstanceHeartbeatResult{}, fmt.Errorf("iWorkerCenter agent heartbeat failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result CenterAgentInstanceHeartbeatResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return CenterAgentInstanceHeartbeatResult{}, err
+	}
+	return result, nil
+}
+
+func fetchCenterAgentInstances(centerBaseURL, tenantID, workerID string, timeoutSec int) ([]CenterAgentInstance, error) {
+	return fetchCenterAgentInstancesContext(context.Background(), centerBaseURL, tenantID, workerID, timeoutSec)
+}
+
+func fetchCenterAgentInstancesContext(ctx context.Context, centerBaseURL, tenantID, workerID string, timeoutSec int) ([]CenterAgentInstance, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return nil, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	values := url.Values{}
+	if strings.TrimSpace(workerID) != "" {
+		values.Set("worker_id", strings.TrimSpace(workerID))
+	}
+	endpoint := centerBaseURL + "/client/iworker/instances"
+	if encoded := values.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	setCenterTenantHeader(req, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("iWorkerCenter agent instances failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Instances []CenterAgentInstance `json:"instances"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	if result.Instances == nil {
+		result.Instances = []CenterAgentInstance{}
+	}
+	return result.Instances, nil
 }

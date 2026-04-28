@@ -2,6 +2,8 @@ package entry
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -31,12 +33,13 @@ type resolvedCandidate struct {
 }
 
 type routeSnapshot struct {
-	blockedEmails map[string]struct{}
-	blockedIPs    map[string]struct{}
-	defaultHubIDs map[string]string
-	emailRoutes   map[string][]snapshotCandidate
-	domainRoutes  map[string][]snapshotCandidate
-	publicHubs    []snapshotCandidate
+	blockedEmails   map[string]struct{}
+	blockedIPs      map[string]struct{}
+	defaultHubIDs   map[string]string
+	adminUserEmails map[string]struct{}
+	emailRoutes     map[string][]snapshotCandidate
+	domainRoutes    map[string][]snapshotCandidate
+	publicHubs      []snapshotCandidate
 }
 
 func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails store.BlockedEmailRepository, blockedIPs store.BlockedIPRepository, includeOwnerLinks bool) (*routeSnapshot, error) {
@@ -70,12 +73,13 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 	}
 
 	snap := &routeSnapshot{
-		blockedEmails: map[string]struct{}{},
-		blockedIPs:    map[string]struct{}{},
-		defaultHubIDs: map[string]string{},
-		emailRoutes:   map[string][]snapshotCandidate{},
-		domainRoutes:  map[string][]snapshotCandidate{},
-		publicHubs:    make([]snapshotCandidate, 0),
+		blockedEmails:   map[string]struct{}{},
+		blockedIPs:      map[string]struct{}{},
+		defaultHubIDs:   map[string]string{},
+		adminUserEmails: map[string]struct{}{},
+		emailRoutes:     map[string][]snapshotCandidate{},
+		domainRoutes:    map[string][]snapshotCandidate{},
+		publicHubs:      make([]snapshotCandidate, 0),
 	}
 
 	for _, item := range blockedEmailItems {
@@ -91,6 +95,20 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		snap.blockedIPs[strings.TrimSpace(item.IP)] = struct{}{}
 	}
 
+	adminUserLinks := snap.adminUserEmails
+	for _, link := range linkItems {
+		if link == nil || !isAdminUserLink(link) {
+			continue
+		}
+		if activeHubs[link.HubID] == nil {
+			continue
+		}
+		email := strings.TrimSpace(strings.ToLower(link.Email))
+		if email != "" {
+			adminUserLinks[email] = struct{}{}
+		}
+	}
+
 	for _, link := range linkItems {
 		if link == nil {
 			continue
@@ -104,10 +122,23 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 			continue
 		}
 		email := strings.TrimSpace(strings.ToLower(link.Email))
+		if _, adminManaged := adminUserLinks[email]; adminManaged && !isAdminUserLink(link) {
+			continue
+		}
 		candidate := snapshotCandidate{hub: hub, rank: rankLinkedHub, routePriority: 0, ownerLink: ownerLink}
 		snap.emailRoutes[email] = append(snap.emailRoutes[email], candidate)
 		if link.IsDefault {
 			snap.defaultHubIDs[email] = link.HubID
+		}
+	}
+	if includeOwnerLinks {
+		for _, hub := range activeHubs {
+			for _, email := range hubInventoryEmails(hub) {
+				if email == "" {
+					continue
+				}
+				snap.emailRoutes[email] = append(snap.emailRoutes[email], snapshotCandidate{hub: hub, rank: rankLinkedHub, routePriority: 0})
+			}
 		}
 	}
 
@@ -164,6 +195,34 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 	return snap, nil
 }
 
+func hubInventoryEmails(hub *store.HubInstance) []string {
+	if hub == nil || strings.TrimSpace(hub.CapabilitiesJSON) == "" {
+		return nil
+	}
+	var caps map[string]any
+	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
+		return nil
+	}
+	values, ok := caps["user_emails"].([]any)
+	if !ok {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		email := strings.TrimSpace(strings.ToLower(fmt.Sprint(value)))
+		if email == "" {
+			continue
+		}
+		if _, ok := seen[email]; ok {
+			continue
+		}
+		seen[email] = struct{}{}
+		out = append(out, email)
+	}
+	return out
+}
+
 func isAdminDomainRoute(route *store.HubDomainRoute) bool {
 	if route == nil {
 		return false
@@ -176,6 +235,13 @@ func isOwnerLink(link *store.HubUserLink) bool {
 		return false
 	}
 	return strings.HasPrefix(strings.TrimSpace(link.ID), "hul_owner_")
+}
+
+func isAdminUserLink(link *store.HubUserLink) bool {
+	if link == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(link.ID), "hul_admin_")
 }
 
 func (s *routeSnapshot) stats() RouteSnapshotStats {
@@ -231,6 +297,9 @@ func (s *routeSnapshot) resolve(email string, clientIP string) (*ResolveResult, 
 			candidate.rank = rankPrivateLink
 		}
 		merge(candidate)
+	}
+	if _, adminManaged := s.adminUserEmails[email]; adminManaged {
+		return buildResolveResult(email, resultsByHub, "No available hubs found"), nil
 	}
 	domainCandidates := s.domainRoutes[extractEmailDomain(email)]
 	for _, candidate := range domainCandidates {
@@ -338,6 +407,33 @@ func buildResolveResult(email string, resultsByHub map[string]resolvedCandidate,
 		DefaultPWA:   views[0].PWAURL,
 		Hubs:         views,
 	}
+}
+
+func (s *routeSnapshot) resolveAdminDomain(domain string) *ResolveResult {
+	domain = normalizeCorporateEmailDomain(domain)
+	resultsByHub := map[string]resolvedCandidate{}
+	for _, candidate := range s.domainRoutes[domain] {
+		s.mergeCandidate(resultsByHub, "", candidate)
+	}
+	pattern := "*@" + domain
+	for email, candidates := range s.emailRoutes {
+		if !wildcardEmailMatch(pattern, email) {
+			continue
+		}
+		defaultHubID := strings.TrimSpace(s.defaultHubIDs[email])
+		for _, candidate := range candidates {
+			if candidate.ownerLink {
+				continue
+			}
+			if candidate.hub != nil && candidate.hub.ID == defaultHubID {
+				candidate.rank = rankDefaultLink
+			} else if candidate.hub != nil && strings.EqualFold(candidate.hub.Visibility, "private") {
+				candidate.rank = rankPrivateLink
+			}
+			s.mergeCandidate(resultsByHub, email, candidate)
+		}
+	}
+	return buildResolveResult(domain, resultsByHub, "No domain route or matching user links found")
 }
 
 func (s *routeSnapshot) resolveDomain(domain string) *ResolveResult {
