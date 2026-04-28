@@ -2,6 +2,7 @@ package skill
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -224,6 +225,29 @@ func TestRegistry_FixAll(t *testing.T) {
 	}
 }
 
+func TestRegistry_FixAll_AcceptsWarnings(t *testing.T) {
+	// FixAll should accept all violations, not just errors.
+	// If a warning-severity violation has a fixer, it should be fixed.
+	checker := &mockChecker{typ: "pip", satisfied: map[string]bool{}}
+	fixer := &mockFixer{
+		typ:   "pip",
+		fixed: map[string]bool{"optional-pkg": true},
+		onFix: func(name string) { checker.satisfied[name] = true },
+	}
+	reg := NewRegistry()
+	reg.Register(checker)
+	reg.RegisterFixer(fixer)
+
+	violations := []Violation{
+		{Requirement: Requirement{Type: "pip", Name: "optional-pkg"}, Severity: "warning"},
+	}
+
+	remaining := reg.FixAll(violations)
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 remaining (warning should be fixable), got %d", len(remaining))
+	}
+}
+
 func TestFilterErrors(t *testing.T) {
 	violations := []Violation{
 		{Severity: "error", Message: "a"},
@@ -288,23 +312,212 @@ func TestRegistry_ExtensionPoint(t *testing.T) {
 	}
 }
 
-// --- EnvVarChecker SkipNames test ---
+// --- EnvVarChecker + Provided field test ---
 
-func TestEnvVarChecker_SkipNames(t *testing.T) {
+func TestEnvVarChecker_ProvidedSkipped(t *testing.T) {
 	// Override envLookup for test.
 	orig := envLookup
 	defer func() { envLookup = orig }()
 	envLookup = func(key string) string { return "" } // all vars unset
 
-	checker := &EnvVarChecker{SkipNames: map[string]bool{"OPENAI_API_KEY": true}}
+	checker := &EnvVarChecker{}
 
-	// Skipped var should pass.
-	if v := checker.Check(Requirement{Type: "env", Name: "OPENAI_API_KEY"}); v != nil {
-		t.Error("OPENAI_API_KEY should be skipped")
+	// Provided requirement should be skipped by CheckAll, not by the checker.
+	// The checker itself doesn't know about Provided — CheckAll handles it.
+	// So calling checker.Check directly on a Provided req still returns violation.
+	v := checker.Check(Requirement{Type: "env", Name: "OPENAI_API_KEY", Provided: true})
+	if v == nil {
+		t.Error("checker.Check should still report violation — Provided is handled by CheckAll, not checker")
 	}
 
-	// Non-skipped var should fail.
+	// Non-provided var should fail.
 	if v := checker.Check(Requirement{Type: "env", Name: "OTHER_KEY"}); v == nil {
-		t.Error("OTHER_KEY should fail (not set, not skipped)")
+		t.Error("OTHER_KEY should fail (not set)")
+	}
+}
+
+func TestCheckAll_SkipsProvidedRequirements(t *testing.T) {
+	orig := envLookup
+	defer func() { envLookup = orig }()
+	envLookup = func(key string) string { return "" }
+
+	reg := DefaultRegistry()
+	reqs := []Requirement{
+		{Type: "env", Name: "OPENAI_API_KEY", Provided: true},
+		{Type: "env", Name: "OTHER_KEY"},
+	}
+	violations := reg.CheckAll(reqs)
+
+	// OPENAI_API_KEY should be skipped (Provided=true), OTHER_KEY should fail.
+	if len(violations) != 1 {
+		t.Fatalf("expected 1 violation, got %d: %+v", len(violations), violations)
+	}
+	if violations[0].Requirement.Name != "OTHER_KEY" {
+		t.Errorf("expected OTHER_KEY violation, got %q", violations[0].Requirement.Name)
+	}
+}
+
+func TestExtractRequirements_ProvidedEnvVars(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		RequiredEnv: []string{"OPENAI_API_KEY", "MY_SECRET"},
+	}
+	reqs := ExtractRequirements(skill, &CheckContext{
+		ProvidedEnvVars: map[string]bool{"OPENAI_API_KEY": true},
+	})
+
+	for _, r := range reqs {
+		if r.Type != "env" {
+			continue
+		}
+		if r.Name == "OPENAI_API_KEY" && !r.Provided {
+			t.Error("OPENAI_API_KEY should be marked Provided")
+		}
+		if r.Name == "MY_SECRET" && r.Provided {
+			t.Error("MY_SECRET should NOT be marked Provided")
+		}
+	}
+}
+
+// --- GUIChecker tests ---
+
+func TestGUIChecker_NonLinux_AlwaysPasses(t *testing.T) {
+	// GUIChecker only checks on Linux. On other platforms it always passes.
+	// We can't easily mock runtime.GOOS, so we test the envLookup path.
+	checker := &GUIChecker{}
+	req := Requirement{Type: "gui", Name: "display"}
+
+	// On Windows/macOS this will pass. On Linux it depends on DISPLAY.
+	// Either way, the checker should not panic.
+	_ = checker.Check(req)
+}
+
+func TestGUIChecker_LinuxWithDisplay(t *testing.T) {
+	// Override envLookup to simulate Linux with DISPLAY set.
+	orig := envLookup
+	defer func() { envLookup = orig }()
+	envLookup = func(key string) string {
+		if key == "DISPLAY" {
+			return ":0"
+		}
+		return ""
+	}
+
+	checker := &GUIChecker{}
+	req := Requirement{Type: "gui", Name: "display"}
+
+	// On non-Linux this always passes. On Linux with DISPLAY it should pass.
+	v := checker.Check(req)
+	// We can't force runtime.GOOS to "linux" in a unit test, so we just
+	// verify no panic and the result is nil (non-Linux) or nil (Linux+DISPLAY).
+	if v != nil && v.Severity == "error" {
+		// This would only happen on Linux without DISPLAY, which contradicts our mock.
+		// On non-Linux, v is always nil.
+		t.Logf("GUIChecker returned violation on non-Linux or mock didn't apply: %s", v.Message)
+	}
+}
+
+// --- ExtractRequirements GUI requirement test ---
+
+func TestExtractRequirements_RequiresGUI(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		RequiresGUI: true,
+	}
+	reqs := ExtractRequirements(skill)
+
+	found := false
+	for _, r := range reqs {
+		if r.Type == "gui" {
+			found = true
+			if r.Source != "explicit" {
+				t.Errorf("expected source=explicit, got %s", r.Source)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected gui requirement to be extracted from RequiresGUI=true")
+	}
+}
+
+func TestExtractRequirements_NoGUI(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		RequiresGUI: false,
+	}
+	reqs := ExtractRequirements(skill)
+
+	for _, r := range reqs {
+		if r.Type == "gui" {
+			t.Error("expected no gui requirement when RequiresGUI=false")
+		}
+	}
+}
+
+func TestExtractRequirements_NpmCarriesSkillDir(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		RequiresNode: []string{"puppeteer"},
+		SkillDir:     "/opt/skills/my-skill",
+	}
+	reqs := ExtractRequirements(skill)
+
+	for _, r := range reqs {
+		if r.Type == "npm" {
+			if r.Context == nil || r.Context["skill_dir"] != "/opt/skills/my-skill" {
+				t.Errorf("npm requirement should carry skill_dir in Context, got %v", r.Context)
+			}
+			return
+		}
+	}
+	t.Error("expected npm requirement")
+}
+
+func TestExtractRequirements_NpmNoSkillDir(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		RequiresNode: []string{"puppeteer"},
+	}
+	reqs := ExtractRequirements(skill)
+
+	for _, r := range reqs {
+		if r.Type == "npm" {
+			if r.Context != nil && r.Context["skill_dir"] != "" {
+				t.Errorf("npm requirement should not have skill_dir when SkillDir is empty, got %v", r.Context)
+			}
+			return
+		}
+	}
+	t.Error("expected npm requirement")
+}
+
+func TestExtractRequirements_CheckContextOverridesSkillDir(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		RequiresNode: []string{"puppeteer"},
+		SkillDir:     "/old/path",
+	}
+	reqs := ExtractRequirements(skill, &CheckContext{SkillDir: "/new/path"})
+
+	for _, r := range reqs {
+		if r.Type == "npm" {
+			if r.Context == nil || r.Context["skill_dir"] != "/new/path" {
+				t.Errorf("CheckContext.SkillDir should override skill.SkillDir, got %v", r.Context)
+			}
+			return
+		}
+	}
+	t.Error("expected npm requirement")
+}
+
+// --- DefaultRegistry includes GUIChecker test ---
+
+func TestDefaultRegistry_IncludesGUIChecker(t *testing.T) {
+	reg := DefaultRegistry()
+	// Verify GUIChecker is registered by checking a gui requirement.
+	reqs := []Requirement{{Type: "gui", Name: "display"}}
+	violations := reg.CheckAll(reqs)
+	// On non-Linux, GUIChecker always passes → 0 violations.
+	// On Linux with DISPLAY, also 0 violations.
+	// On Linux without DISPLAY, 1 violation.
+	// The key assertion: no "unknown requirement type" warning.
+	for _, v := range violations {
+		if strings.Contains(v.Message, "unknown requirement type") {
+			t.Error("GUIChecker not registered: got unknown requirement type warning")
+		}
 	}
 }

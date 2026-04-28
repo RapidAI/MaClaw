@@ -265,29 +265,28 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 
 	// ── Pre-checks (aligned with GUI StartRun) ──
 
-	// Platform compatibility check.
-	if len(entry.Platforms) > 0 {
-		currentOS := runtime.GOOS
-		platformName := currentOS
-		if platformName == "darwin" {
-			platformName = "macos"
-		}
-		matched := false
-		for _, p := range entry.Platforms {
-			if strings.EqualFold(strings.TrimSpace(p), platformName) || strings.EqualFold(strings.TrimSpace(p), "universal") {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return fmt.Sprintf("Skill '%s' 不兼容当前平台（需要 %s，当前 %s）", name, strings.Join(entry.Platforms, "/"), platformName)
-		}
-	}
-
-	// Windows 8.3 short path normalization.
+	// Windows 8.3 short path normalization — must happen before requirement
+	// checks so that NpmChecker/NpmFixer get the resolved long path.
 	if runtime.GOOS == "windows" && entry.SkillDir != "" {
 		if resolved, err := filepath.EvalSymlinks(entry.SkillDir); err == nil {
 			entry.SkillDir = resolved
+		}
+	}
+
+	// ── Unified requirement pre-check (aligned with GUI StartRun) ──
+	reqs := skill.ExtractRequirements(entry, skill.DefaultCheckContext())
+	if len(reqs) > 0 {
+		registry := skill.DefaultRegistry()
+		violations := registry.CheckAll(reqs)
+		remaining := registry.FixAll(violations)
+		errors := skill.FilterErrors(remaining)
+		if len(errors) > 0 {
+			return fmt.Sprintf("Skill '%s' 前置条件未满足: %s", name, skill.FormatViolations(errors))
+		}
+		for _, v := range remaining {
+			if v.Severity == "warning" {
+				log.Printf("[skill-run-tui] requirement warning for %q: %s", name, v.Message)
+			}
 		}
 	}
 
@@ -336,21 +335,8 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 		}
 	}
 
-	// Environment variable validation.
-	if len(entry.RequiredEnv) > 0 {
-		var missing []string
-		for _, env := range entry.RequiredEnv {
-			if env == "OPENAI_API_KEY" {
-				continue
-			}
-			if strings.TrimSpace(os.Getenv(env)) == "" {
-				missing = append(missing, env)
-			}
-		}
-		if len(missing) > 0 {
-			return fmt.Sprintf("Skill '%s' 缺少必需的环境变量: %s", name, strings.Join(missing, ", "))
-		}
-	}
+	// ── Environment variables are now checked by the unified requirement
+	// system above (EnvVarChecker). ──
 
 	// ── Step execution with variable capture ──
 	vars := make(map[string]string)

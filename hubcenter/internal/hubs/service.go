@@ -189,12 +189,24 @@ type UserRegistrationBucket struct {
 	Count  int    `json:"count"`
 }
 
-type UserRegistrationReport struct {
+type UserRegistrationHubReport struct {
+	HubID        string                   `json:"hub_id"`
+	HubName      string                   `json:"hub_name"`
+	BaseURL      string                   `json:"base_url"`
 	TotalUsers   int                      `json:"total_users"`
 	DailyTotal   int                      `json:"daily_total"`
 	MonthlyTotal int                      `json:"monthly_total"`
 	Daily        []UserRegistrationBucket `json:"daily"`
 	Monthly      []UserRegistrationBucket `json:"monthly"`
+}
+
+type UserRegistrationReport struct {
+	TotalUsers   int                         `json:"total_users"`
+	DailyTotal   int                         `json:"daily_total"`
+	MonthlyTotal int                         `json:"monthly_total"`
+	Daily        []UserRegistrationBucket    `json:"daily"`
+	Monthly      []UserRegistrationBucket    `json:"monthly"`
+	Hubs         []UserRegistrationHubReport `json:"hubs"`
 }
 
 type Service struct {
@@ -620,7 +632,19 @@ func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem
 
 func (s *Service) UserRegistrationReport(ctx context.Context) (UserRegistrationReport, error) {
 	var report UserRegistrationReport
+	hubItems, err := s.hubs.ListAll(ctx)
+	if err != nil {
+		return report, err
+	}
+	hubsByID := make(map[string]*store.HubInstance, len(hubItems))
+	for _, hub := range hubItems {
+		if hub == nil || strings.TrimSpace(hub.ID) == "" {
+			continue
+		}
+		hubsByID[hub.ID] = hub
+	}
 	if s.links == nil {
+		report.Hubs = buildUserRegistrationHubReports(hubItems, nil, time.Now())
 		return report, nil
 	}
 	links, err := s.links.ListAll(ctx)
@@ -628,8 +652,13 @@ func (s *Service) UserRegistrationReport(ctx context.Context) (UserRegistrationR
 		return report, err
 	}
 	firstSeen := map[string]time.Time{}
+	hubFirstSeen := map[string]map[string]time.Time{}
 	for _, link := range links {
 		if link == nil {
+			continue
+		}
+		hubID := strings.TrimSpace(link.HubID)
+		if hubID == "" {
 			continue
 		}
 		email := normalizeEmail(link.Email)
@@ -645,6 +674,12 @@ func (s *Service) UserRegistrationReport(ctx context.Context) (UserRegistrationR
 		}
 		if existing, ok := firstSeen[email]; !ok || createdAt.Before(existing) {
 			firstSeen[email] = createdAt
+		}
+		if hubFirstSeen[hubID] == nil {
+			hubFirstSeen[hubID] = map[string]time.Time{}
+		}
+		if existing, ok := hubFirstSeen[hubID][email]; !ok || createdAt.Before(existing) {
+			hubFirstSeen[hubID][email] = createdAt
 		}
 	}
 	report.TotalUsers = len(firstSeen)
@@ -666,15 +701,67 @@ func (s *Service) UserRegistrationReport(ctx context.Context) (UserRegistrationR
 			report.MonthlyTotal++
 		}
 	}
-	for i := 29; i >= 0; i-- {
+	for i := 6; i >= 0; i-- {
 		day := today.AddDate(0, 0, -i).Format("2006-01-02")
 		report.Daily = append(report.Daily, UserRegistrationBucket{Period: day, Count: dailyCounts[day]})
 	}
-	for i := 11; i >= 0; i-- {
+	for i := 5; i >= 0; i-- {
 		month := monthStart.AddDate(0, -i, 0).Format("2006-01")
 		report.Monthly = append(report.Monthly, UserRegistrationBucket{Period: month, Count: monthlyCounts[month]})
 	}
+	report.Hubs = buildUserRegistrationHubReports(hubItems, hubFirstSeen, now)
+	for hubID := range hubFirstSeen {
+		if _, ok := hubsByID[hubID]; ok {
+			continue
+		}
+		report.Hubs = append(report.Hubs, buildUserRegistrationHubReport(&store.HubInstance{ID: hubID}, hubFirstSeen[hubID], now))
+	}
 	return report, nil
+}
+
+func buildUserRegistrationHubReports(hubs []*store.HubInstance, hubFirstSeen map[string]map[string]time.Time, now time.Time) []UserRegistrationHubReport {
+	out := make([]UserRegistrationHubReport, 0, len(hubs))
+	for _, hub := range hubs {
+		if hub == nil || strings.TrimSpace(hub.ID) == "" {
+			continue
+		}
+		out = append(out, buildUserRegistrationHubReport(hub, hubFirstSeen[hub.ID], now))
+	}
+	return out
+}
+
+func buildUserRegistrationHubReport(hub *store.HubInstance, firstSeen map[string]time.Time, now time.Time) UserRegistrationHubReport {
+	report := UserRegistrationHubReport{}
+	if hub != nil {
+		report.HubID = hub.ID
+		report.HubName = hub.Name
+		report.BaseURL = hub.BaseURL
+	}
+	today := startOfDay(now)
+	monthStart := time.Date(now.Local().Year(), now.Local().Month(), 1, 0, 0, 0, 0, time.Local)
+	dailyCounts := map[string]int{}
+	monthlyCounts := map[string]int{}
+	for _, createdAt := range firstSeen {
+		local := createdAt.Local()
+		dailyCounts[local.Format("2006-01-02")]++
+		monthlyCounts[local.Format("2006-01")]++
+		if !local.Before(today) {
+			report.DailyTotal++
+		}
+		if !local.Before(monthStart) {
+			report.MonthlyTotal++
+		}
+	}
+	report.TotalUsers = len(firstSeen)
+	for i := 6; i >= 0; i-- {
+		day := today.AddDate(0, 0, -i).Format("2006-01-02")
+		report.Daily = append(report.Daily, UserRegistrationBucket{Period: day, Count: dailyCounts[day]})
+	}
+	for i := 5; i >= 0; i-- {
+		month := monthStart.AddDate(0, -i, 0).Format("2006-01")
+		report.Monthly = append(report.Monthly, UserRegistrationBucket{Period: month, Count: monthlyCounts[month]})
+	}
+	return report
 }
 
 func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*MigrationResult, error) {

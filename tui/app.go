@@ -1013,10 +1013,11 @@ func (c *tuiCallbacks) ShouldStop() bool {
 // ---------------------------------------------------------------------------
 
 var tuiBtwToolNames = map[string]bool{
-	"web_search": true,
-	"web_fetch":  true,
-	"read_file":  true,
-	"memory":     true,
+	"web_search":   true,
+	"web_fetch":    true,
+	"read_file":    true,
+	"memory":       true,
+	"agent_status": true,
 }
 
 type tuiBtwCallbacks struct {
@@ -1141,7 +1142,7 @@ func (c *tuiBtwCallbacks) BuildTools(userText string) []map[string]interface{} {
 
 func (c *tuiBtwCallbacks) ExecuteTool(name, argsJSON string) string {
 	if !tuiBtwToolNames[name] {
-		return fmt.Sprintf("未知工具: %s（/btw 仅支持 web_search, web_fetch, read_file, memory）", name)
+		return fmt.Sprintf("未知工具: %s（/btw 仅支持 web_search, web_fetch, read_file, memory, agent_status）", name)
 	}
 
 	var args map[string]interface{}
@@ -1155,6 +1156,11 @@ func (c *tuiBtwCallbacks) ExecuteTool(name, argsJSON string) string {
 		if action != "recall" {
 			return "错误: /btw 侧查询中 memory 工具仅支持 action=\"recall\"（只读查询）"
 		}
+	}
+
+	// agent_status: query TUI runtime state directly.
+	if name == "agent_status" {
+		return c.app.tuiAgentStatus(args)
 	}
 
 	// Delegate to the shared tool registry.
@@ -1201,14 +1207,23 @@ const tuiBtwSuffix = `
 你正在处理一个 /btw 侧查询。这是一个独立的单轮快速查询，不是主任务的一部分。
 
 规则：
-1. 优先使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容
-2. 如果问题涉及本地项目文件，使用 read_file 查看
-3. 如果问题涉及之前的对话或记忆，使用 memory(action="recall") 召回
-4. 回答要简洁、结构化，直接给出关键信息
-5. 引用网络来源时附上 URL
-6. 这是一个只读查询——不要修改任何文件
-7. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索
+1. 如果用户询问任务进度、运行状态等问题，优先使用 agent_status 工具查询实际运行时状态
+2. 使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容
+3. 如果问题涉及本地项目文件，使用 read_file 查看
+4. 如果问题涉及之前的对话或记忆，使用 memory(action="recall") 召回
+5. 回答要简洁、结构化，直接给出关键信息
+6. 引用网络来源时附上 URL
+7. 这是一个只读查询——不要修改任何文件
+8. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索
 `
+
+// tuiAgentStatusToolDef is the inline tool definition for agent_status in TUI.
+// Defined once, used in both the registry path and the fallback path.
+var tuiAgentStatusToolDef_ = tuiBtwToolDef("agent_status",
+	"查询主 Agent 的运行时状态，包括 SSH 连接等。当用户询问任务进度、后台任务状态时使用此工具。",
+	map[string]interface{}{
+		"category": map[string]string{"type": "string", "description": "查询类别: all（全部状态）、ssh_sessions（SSH 连接）。默认 all"},
+	}, nil)
 
 func buildTuiBtwToolDefinitions(app *TUIApp) []map[string]interface{} {
 	// Try to get definitions from the shared tool registry.
@@ -1221,10 +1236,12 @@ func buildTuiBtwToolDefinitions(app *TUIApp) []map[string]interface{} {
 				continue
 			}
 			name, _ := fn["name"].(string)
-			if tuiBtwToolNames[name] {
+			if tuiBtwToolNames[name] && name != "agent_status" {
 				btwDefs = append(btwDefs, def)
 			}
 		}
+		// agent_status is always inline-defined (not in the shared registry).
+		btwDefs = append(btwDefs, tuiAgentStatusToolDef_)
 		if len(btwDefs) > 0 {
 			return btwDefs
 		}
@@ -1253,6 +1270,7 @@ func buildTuiBtwToolDefinitions(app *TUIApp) []map[string]interface{} {
 				"action": map[string]string{"type": "string", "description": "操作: recall"},
 				"query":  map[string]string{"type": "string", "description": "查询关键词"},
 			}, []string{"action"}),
+		tuiAgentStatusToolDef_,
 	}
 }
 
@@ -1269,4 +1287,37 @@ func tuiBtwToolDef(name, desc string, props map[string]interface{}, required []s
 			},
 		},
 	}
+}
+
+// tuiAgentStatus queries the TUI's runtime state for /btw side queries.
+// TUI has fewer runtime components than GUI (no local background tasks,
+// no coding sessions), but SSH sessions are available.
+func (app *TUIApp) tuiAgentStatus(args map[string]interface{}) string {
+	category, _ := args["category"].(string)
+	if category == "" {
+		category = "all"
+	}
+
+	var sections []string
+
+	if category == "all" || category == "ssh_sessions" {
+		if app.sshMgr != nil {
+			sessions := app.sshMgr.List()
+			if len(sessions) > 0 {
+				var b strings.Builder
+				b.WriteString("🔗 **SSH 连接**\n")
+				for _, s := range sessions {
+					summary := s.GetSummary()
+					fmt.Fprintf(&b, "- %s [%s] %s\n", s.ID, summary.Status, summary.HostLabel)
+				}
+				sections = append(sections, b.String())
+			}
+		}
+	}
+
+	if len(sections) == 0 {
+		return "当前没有活跃的 SSH 连接或后台任务。"
+	}
+
+	return strings.Join(sections, "\n\n")
 }

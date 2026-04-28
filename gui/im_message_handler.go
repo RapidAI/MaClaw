@@ -582,63 +582,18 @@ func isRecoverOrNudgeSystemMessage(content string) bool {
 	return false
 }
 
-// pendingBackgroundTaskHint checks both SSH and local background task managers
-// for running tasks that were submitted after loopStart and returns a hint
-// string for the Recover prompt. The loopStart filter prevents stale tasks
-// from a previous conversation from misleading the current loop.
+// pendingBackgroundTaskHint checks all runtime task managers for running
+// tasks that were submitted after loopStart and returns a hint string for
+// the Recover prompt. The loopStart filter prevents stale tasks from a
+// previous conversation from misleading the current loop.
 // Returns "" if no relevant tasks are active.
+//
+// Delegates to collectRuntimeStatus() (single enumeration point) +
+// pendingBackgroundTaskHintFromStatus() (formatting). The extra session/
+// main-agent data collected by collectRuntimeStatus() is unused here but
+// the cost is negligible (List() calls on empty or small slices).
 func (h *IMMessageHandler) pendingBackgroundTaskHint(loopStart time.Time) string {
-	var hints []string
-
-	// Check SSH background tasks.
-	if h.bgTaskMgr != nil {
-		for _, t := range h.bgTaskMgr.ListTasks() {
-			// SSHBackgroundTask fields are accessed without per-task lock,
-			// consistent with sshListTasks and other existing callers.
-			if t.StartedAt.Before(loopStart) {
-				continue // belongs to a previous conversation
-			}
-			if t.Status == "running" || t.Status == "pending" {
-				cmd := t.Command
-				if len([]rune(cmd)) > 80 {
-					cmd = truncateRunes(cmd, 80) + "..."
-				}
-				elapsed := time.Since(t.StartedAt).Round(time.Second).String()
-				hints = append(hints, fmt.Sprintf(
-					"- SSH 后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 ssh(action=\"check_task\", task_id=\"%s\") 查看进度",
-					t.TaskID, elapsed, cmd, t.TaskID))
-			}
-		}
-	}
-
-	// Check local background tasks.
-	if h.localBgTaskMgr != nil {
-		for _, t := range h.localBgTaskMgr.List() {
-			t.Lock()
-			status := t.Status
-			taskID := t.TaskID
-			cmd := t.Command
-			startedAt := t.StartedAt
-			t.Unlock()
-			if startedAt.Before(loopStart) {
-				continue // belongs to a previous conversation
-			}
-			if status == "running" {
-				if len([]rune(cmd)) > 80 {
-					cmd = truncateRunes(cmd, 80) + "..."
-				}
-				elapsed := time.Since(startedAt).Round(time.Second).String()
-				hints = append(hints, fmt.Sprintf(
-					"- 本地后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 async_wait(action=\"check\", task_id=\"%s\") 查看进度",
-					taskID, elapsed, cmd, taskID))
-			}
-		}
-	}
-
-	if len(hints) == 0 {
-		return ""
-	}
-	return "⚠️ 检测到以下后台任务仍在运行，请优先检查其状态：\n" + strings.Join(hints, "\n")
+	return pendingBackgroundTaskHintFromStatus(h.collectRuntimeStatus(), loopStart)
 }
 
 // cancelledExitResponse saves accumulated history and returns a clean
@@ -659,6 +614,36 @@ func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.
 		cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
 	}
 	return &IMAgentResponse{Text: cancelMsg}
+}
+
+// llmErrorExitResponse saves accumulated history and returns an LLM error
+// message. This is the single exit point for all LLM error paths inside
+// runAgentLoop, structurally enforcing the invariant that the loop always
+// saves (never clears) history. Mirrors cancelledExitResponse for cancel
+// paths — see #54 and #55 for the design rationale.
+//
+// The error message includes a task context hint extracted from the last
+// user message in history, so the user knows what was being worked on and
+// that they can resume by sending another message.
+func (h *IMMessageHandler) llmErrorExitResponse(userID string, history []agent.ConversationEntry, errorMsg string) *IMAgentResponse {
+	history = stripTrailingBrokenToolGroup(history)
+	h.saveConversationHistoryTimed(userID, history, nil)
+
+	// Extract last user message as task context hint.
+	taskHint := ""
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			if s, ok := history[i].Content.(string); ok && strings.TrimSpace(s) != "" {
+				taskHint = truncateRunes(strings.TrimSpace(s), 80)
+				break
+			}
+		}
+	}
+	if taskHint != "" {
+		errorMsg += fmt.Sprintf("\n\n💡 你之前的任务：%s\n发送任意消息即可继续。", taskHint)
+	}
+
+	return &IMAgentResponse{Error: errorMsg}
 }
 
 // stripTrailingBrokenToolGroup checks if the history ends with an incomplete
@@ -6148,6 +6133,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// marker on every exit path. If the marker was never set, the cleanup
 	// is a no-op.
 	inFlightMarkerSet := false
+	llmErrorExitFlag := false // when true, defer skips ClearInFlightTask
 	setInFlightMarkerOnce := func() {
 		if inFlightMarkerSet {
 			return
@@ -6159,10 +6145,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 	}
 	// Ensure the marker is cleared on every exit path (normal, cancel,
-	// panic, max-rounds, drift, etc.). The defer runs after the named
-	// return in runAgentLoop, so it covers all paths.
+	// panic, max-rounds, drift, etc.) EXCEPT LLM error exits. When the
+	// LLM fails (e.g. 429 rate limit), the marker is preserved so the
+	// next message can detect the interrupted task and offer recovery.
+	// See #55 for the in-flight marker design and #85 for LLM error
+	// recovery.
 	defer func() {
-		if inFlightMarkerSet {
+		if inFlightMarkerSet && !llmErrorExitFlag {
 			h.memory.ClearInFlightTask(userID)
 			// Best-effort flush; if it fails the marker will be cleared on
 			// the next successful persist cycle.
@@ -6602,52 +6591,88 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 			if loopAdaptiveRetry != nil {
 				category := loopAdaptiveRetry.Classify("llm_request", err)
-				decision := loopAdaptiveRetry.Decide("llm_request", category, 0)
-				loopAdaptiveRetry.RecordFailure("llm_request", category, decision)
-				h.appendTraceEvent(ctx, "trial.retry_decided", "warn", "Adaptive retry decision", truncateTraceText(fmt.Sprintf("llm_request category=%s action=%s attempt=%d", category, decision.Action, decision.Attempt), 220), "", "")
-				h.appendTraceEvidence(ctx, "adaptive_retry", string(category), "retry decision", truncateTraceText(firstNonEmptyTraceText(decision.ErrorContext, err.Error()), 400), "", "llm_request")
-				if decision.Action == "retry" && !ctx.IsCancelled() {
-					log.Printf("[LLM] AdaptiveRetry: %s 错误，%v 后重试: %v", string(category), decision.Delay, err)
+				// Rate limit errors need multiple retries with exponential
+				// backoff (5s → 10s → 20s). Loop until Decide says "skip"
+				// or the request succeeds.
+				for retryAttempt := 0; err != nil && !ctx.IsCancelled(); retryAttempt++ {
+					decision := loopAdaptiveRetry.Decide("llm_request", category, retryAttempt)
+					h.appendTraceEvent(ctx, "trial.retry_decided", "warn", "Adaptive retry decision", truncateTraceText(fmt.Sprintf("llm_request category=%s action=%s attempt=%d", category, decision.Action, decision.Attempt), 220), "", "")
+					h.appendTraceEvidence(ctx, "adaptive_retry", string(category), "retry decision", truncateTraceText(firstNonEmptyTraceText(decision.ErrorContext, err.Error()), 400), "", "llm_request")
+					if decision.Action != "retry" {
+						// Record the final non-retry decision but don't
+						// inflate failureCounts — only actual retry attempts
+						// should count toward the cumulative failure threshold.
+						break
+					}
+					loopAdaptiveRetry.RecordFailure("llm_request", category, decision)
+					log.Printf("[LLM] AdaptiveRetry: %s 错误，%v 后重试 (%d): %v", string(category), decision.Delay, retryAttempt+1, err)
 					firstLLMRetryWaitElapsed += decision.Delay
 					firstLLMRetryCount++
+					// Notify user about transient server error wait.
+					if category == FailureTransient && onProgress != nil {
+						onProgress(fmt.Sprintf("⏳ API 服务暂时不可用，等待 %ds 后重试 (%d/%d)...", int(decision.Delay.Seconds()), retryAttempt+1, maxTransientRetries))
+					}
 					// Cancellation-aware sleep: abort wait if user cancels.
 					select {
 					case <-time.After(decision.Delay):
 					case <-ctx.CancelC:
 					}
-					if !ctx.IsCancelled() {
-						llmCallStartedAt = time.Now()
-						retryMetrics := &llmStreamMetrics{}
-						resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
-						if err == nil && firstLLMResponseAt.IsZero() {
-							if !retryMetrics.FirstTokenAt.IsZero() {
-								firstLLMResponseAt = retryMetrics.FirstTokenAt
-							} else {
-								firstLLMResponseAt = time.Now()
-							}
+					if ctx.IsCancelled() {
+						break
+					}
+					llmCallStartedAt = time.Now()
+					retryMetrics := &llmStreamMetrics{}
+					resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
+					if err == nil && firstLLMResponseAt.IsZero() {
+						if !retryMetrics.FirstTokenAt.IsZero() {
+							firstLLMResponseAt = retryMetrics.FirstTokenAt
+						} else {
+							firstLLMResponseAt = time.Now()
 						}
-						if !firstLLMRequestMarked || firstLLMRequestBuildElapsed == 0 {
-							firstLLMRequestBuildElapsed += time.Duration(retryMetrics.RequestBuildNanos)
-							firstLLMHTTPDoElapsed += time.Duration(retryMetrics.HTTPDoNanos)
-							firstLLMFirstSSEWaitElapsed += time.Duration(retryMetrics.FirstSSEWaitNanos)
-							firstLLMStreamMaxTokenGapElapsed += time.Duration(retryMetrics.MaxTokenGapNanos)
-						}
-						firstLLMIdleTimeoutCount += retryMetrics.IdleTimeoutCount
-						firstLLMIdleTimeoutAfterToken = firstLLMIdleTimeoutAfterToken || retryMetrics.IdleTimeoutAfterToken
-						if err == nil && streamDoneCallback != nil {
-							streamDoneCallback()
+					}
+					if !firstLLMRequestMarked || firstLLMRequestBuildElapsed == 0 {
+						firstLLMRequestBuildElapsed += time.Duration(retryMetrics.RequestBuildNanos)
+						firstLLMHTTPDoElapsed += time.Duration(retryMetrics.HTTPDoNanos)
+						firstLLMFirstSSEWaitElapsed += time.Duration(retryMetrics.FirstSSEWaitNanos)
+						firstLLMStreamMaxTokenGapElapsed += time.Duration(retryMetrics.MaxTokenGapNanos)
+					}
+					firstLLMIdleTimeoutCount += retryMetrics.IdleTimeoutCount
+					firstLLMIdleTimeoutAfterToken = firstLLMIdleTimeoutAfterToken || retryMetrics.IdleTimeoutAfterToken
+					if err == nil && streamDoneCallback != nil {
+						streamDoneCallback()
+					}
+					// Re-classify in case the error type changed on retry.
+					if err != nil {
+						newCategory := loopAdaptiveRetry.Classify("llm_request", err)
+						if newCategory != category {
+							category = newCategory
 						}
 					}
 				}
 			} else if isRetryableLLMError(err) && !ctx.IsCancelled() {
-				log.Printf("[LLM] 首次请求超时/网络错误，2s 后重试: %v", err)
-				firstLLMRetryWaitElapsed += 2 * time.Second
-				firstLLMRetryCount++
-				select {
-				case <-time.After(2 * time.Second):
-				case <-ctx.CancelC:
+				// Fallback path when AdaptiveRetry is not available.
+				// Transient server errors get longer delay and more retries.
+				isTransient := isTransientServerError(err)
+				retryDelay := 2 * time.Second
+				retryMax := 1
+				if isTransient {
+					retryDelay = 5 * time.Second
+					retryMax = 3
 				}
-				if !ctx.IsCancelled() {
+				for retryAttempt := 0; retryAttempt < retryMax && err != nil && !ctx.IsCancelled(); retryAttempt++ {
+					log.Printf("[LLM] 请求失败，%v 后重试 (%d/%d): %v", retryDelay, retryAttempt+1, retryMax, err)
+					firstLLMRetryWaitElapsed += retryDelay
+					firstLLMRetryCount++
+					if isTransient && onProgress != nil {
+						onProgress(fmt.Sprintf("⏳ API 服务暂时不可用，等待 %ds 后重试 (%d/%d)...", int(retryDelay.Seconds()), retryAttempt+1, retryMax))
+					}
+					select {
+					case <-time.After(retryDelay):
+					case <-ctx.CancelC:
+					}
+					if ctx.IsCancelled() {
+						break
+					}
 					llmCallStartedAt = time.Now()
 					retryMetrics := &llmStreamMetrics{}
 					resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
@@ -6666,6 +6691,24 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					firstLLMIdleTimeoutAfterToken = firstLLMIdleTimeoutAfterToken || retryMetrics.IdleTimeoutAfterToken
 					if err == nil && streamDoneCallback != nil {
 						streamDoneCallback()
+					}
+					// Re-check error type after retry — error may change
+					// (e.g. 429 → timeout, or 503 → success).
+					if err != nil {
+						newIsTransient := isTransientServerError(err)
+						if newIsTransient != isTransient {
+							isTransient = newIsTransient
+							if isTransient {
+								retryDelay = 5 * time.Second
+								retryMax = 3
+							} else {
+								retryDelay = 2 * time.Second
+							}
+						}
+					}
+					// Exponential backoff for transient errors.
+					if isTransient {
+						retryDelay *= 2
 					}
 				}
 			}
@@ -6747,12 +6790,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 			// If still errored after all retries (including context trim), return.
 			if err != nil {
-				return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol)}
+				llmErrorExitFlag = true // preserve in-flight marker for recovery
+				return h.llmErrorExitResponse(userID, history, fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol))
 			}
 		}
 		if len(resp.Choices) == 0 {
 			log.Printf("[agent-loop] LLM returned 0 choices: url=%s model=%s protocol=%s", cfg.URL, cfg.Model, cfg.Protocol)
-			return &IMAgentResponse{Error: "LLM 未返回有效回复"}
+			llmErrorExitFlag = true // preserve in-flight marker for recovery
+			return h.llmErrorExitResponse(userID, history, "LLM 未返回有效回复")
 		}
 
 		choiceStartedAt := time.Now()

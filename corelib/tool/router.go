@@ -993,8 +993,13 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 
 	var core, candidates []map[string]interface{}
 	var candidateNames []string
+	seenNames := make(map[string]bool, len(allTools))
 	for _, t := range allTools {
 		name := ExtractToolName(t)
+		if seenNames[name] {
+			continue // drop duplicates from allTools input
+		}
+		seenNames[name] = true
 		if CoreToolNames[name] || r.sessionTools[name] || condKeep[name] {
 			core = append(core, t)
 		} else if condFilterOut[name] {
@@ -1186,6 +1191,10 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	result := make([]map[string]interface{}, len(core), MaxToolBudget+2)
 	copy(result, core)
 
+	// seenNames (built during core/candidate split above) already tracks all
+	// tool names in core + candidates. Reuse it for downstream dedup — any
+	// tool appended to result must check seenNames first.
+
 	// Enhance manage_skill description with matched skill names.
 	if len(matchedSkills) > 0 && skillScore > 0.3 {
 		for i, t := range result {
@@ -1211,14 +1220,17 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 
 	if r.recommender != nil {
 		if hint := r.matchRecommendations(bm25.Tokenize(userMessage)); hint != nil {
-			result = append(result, hint)
+			if name := ExtractToolName(hint); !seenNames[name] {
+				result = append(result, hint)
+				seenNames[name] = true
+			}
 		}
 	}
 
 	// Write detailed routing log to ~/.maclaw/logs/tool_route.log
-	selectedNames := make([]string, len(result))
-	for i, t := range result {
-		selectedNames[i] = ExtractToolName(t)
+	selectedNames := make([]string, 0, len(result))
+	for _, t := range result {
+		selectedNames = append(selectedNames, ExtractToolName(t))
 	}
 	rankedNames := make([]string, len(scoredList))
 	rankedScores := make([]float64, len(scoredList))

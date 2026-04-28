@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/store"
@@ -14,6 +15,7 @@ type Store struct {
 	Licenses *LicenseRepo
 	Admins   *AdminRepo
 	System   *SystemRepo
+	Skills   *SkillRepo
 }
 
 func NewStore(p *Provider) *Store {
@@ -22,6 +24,7 @@ func NewStore(p *Provider) *Store {
 		Licenses: &LicenseRepo{w: p.Write, r: p.Read},
 		Admins:   &AdminRepo{w: p.Write, r: p.Read},
 		System:   &SystemRepo{w: p.Write, r: p.Read},
+		Skills:   &SkillRepo{w: p.Write, r: p.Read},
 	}
 }
 
@@ -298,5 +301,111 @@ func normalizeRepoControlMode(mode string) string {
 		return mode
 	default:
 		return "cloud_managed"
+	}
+}
+
+// ---------- SkillRepo ----------
+
+type SkillRepo struct{ w, r *sql.DB }
+
+func (repo *SkillRepo) Create(ctx context.Context, s *store.Skill) error {
+	_, err := repo.w.ExecContext(ctx,
+		`INSERT INTO skill_market_skills (id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.Name, s.Description, s.Category, s.Version, s.Tags, s.RiskLevel, normalizeSkillStatus(s.Status), s.Price, s.Author, s.AvgRating, s.DownloadCount, s.CreatedAt.Format(time.RFC3339), s.UpdatedAt.Format(time.RFC3339))
+	return err
+}
+
+func (repo *SkillRepo) Update(ctx context.Context, s *store.Skill) error {
+	_, err := repo.w.ExecContext(ctx,
+		`UPDATE skill_market_skills SET name=?, description=?, category=?, version=?, tags=?, risk_level=?, status=?, price=?, author=?, avg_rating=?, download_count=?, updated_at=? WHERE id=?`,
+		s.Name, s.Description, s.Category, s.Version, s.Tags, s.RiskLevel, normalizeSkillStatus(s.Status), s.Price, s.Author, s.AvgRating, s.DownloadCount, time.Now().Format(time.RFC3339), s.ID)
+	return err
+}
+
+func (repo *SkillRepo) GetByID(ctx context.Context, id string) (*store.Skill, error) {
+	row := repo.r.QueryRowContext(ctx,
+		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at FROM skill_market_skills WHERE id=?`, id)
+	return scanSkill(row)
+}
+
+func (repo *SkillRepo) List(ctx context.Context) ([]*store.Skill, error) {
+	rows, err := repo.r.QueryContext(ctx,
+		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at FROM skill_market_skills ORDER BY category, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSkillRows(rows)
+}
+
+func (repo *SkillRepo) SearchActive(ctx context.Context, query string) ([]*store.Skill, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		rows, err := repo.r.QueryContext(ctx,
+			`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at FROM skill_market_skills WHERE status='active' ORDER BY download_count DESC, category, name`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanSkillRows(rows)
+	}
+	like := "%" + query + "%"
+	rows, err := repo.r.QueryContext(ctx,
+		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, avg_rating, download_count, created_at, updated_at
+		 FROM skill_market_skills
+		 WHERE status='active' AND (id LIKE ? OR name LIKE ? OR description LIKE ? OR category LIKE ? OR tags LIKE ?)
+		 ORDER BY download_count DESC, category, name`, like, like, like, like, like)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSkillRows(rows)
+}
+
+func (repo *SkillRepo) Delete(ctx context.Context, id string) error {
+	_, err := repo.w.ExecContext(ctx, `DELETE FROM skill_market_skills WHERE id=?`, id)
+	return err
+}
+
+func (repo *SkillRepo) Count(ctx context.Context) (int, error) {
+	var n int
+	err := repo.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM skill_market_skills`).Scan(&n)
+	return n, err
+}
+
+type skillScannable interface {
+	Scan(dest ...any) error
+}
+
+func scanSkill(row skillScannable) (*store.Skill, error) {
+	var s store.Skill
+	var ca, ua string
+	if err := row.Scan(&s.ID, &s.Name, &s.Description, &s.Category, &s.Version, &s.Tags, &s.RiskLevel, &s.Status, &s.Price, &s.Author, &s.AvgRating, &s.DownloadCount, &ca, &ua); err != nil {
+		return nil, err
+	}
+	s.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+	s.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	return &s, nil
+}
+
+func scanSkillRows(rows *sql.Rows) ([]*store.Skill, error) {
+	out := make([]*store.Skill, 0)
+	for rows.Next() {
+		s, err := scanSkill(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func normalizeSkillStatus(status string) string {
+	switch status {
+	case "active", "disabled", "draft":
+		return status
+	default:
+		return "active"
 	}
 }

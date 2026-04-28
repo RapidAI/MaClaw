@@ -13,12 +13,12 @@ package main
 //   Main Agent (conversation owner)     Btw SubAgent (side query)
 //   ┌──────────────────────┐           ┌──────────────────────┐
 //   │ System Prompt  12K   │           │ Identity + Recall ~2K │
-//   │ 40+ Tools     15K   │  /btw     │ 4 Tools        500   │
+//   │ 40+ Tools     15K   │  /btw     │ 5 Tools        600   │
 //   │ Memory/Steering 5K  │ ───────→  │ Empty History         │
 //   │ History       20K   │           │                      │
 //   │                      │ ←─────── │ Duties: search,      │
-//   │ Duties: workflow,    │  result   │ fetch, read, recall  │
-//   │ IM, memory, routing  │ (1 msg)  │                      │
+//   │ Duties: workflow,    │  result   │ fetch, read, recall, │
+//   │ IM, memory, routing  │ (1 msg)  │ agent_status         │
 //   └──────────────────────┘           └──────────────────────┘
 //
 // Mechanism-level design decisions:
@@ -263,13 +263,14 @@ const btwSuffix = `
 你正在处理一个 /btw 侧查询。这是一个独立的单轮快速查询，不是主任务的一部分。
 
 规则：
-1. 优先使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容
-2. 如果问题涉及本地项目文件，使用 read_file 查看
-3. 如果问题涉及之前的对话或记忆，使用 memory(action="recall") 召回
-4. 回答要简洁、结构化，直接给出关键信息
-5. 引用网络来源时附上 URL
-6. 这是一个只读查询——不要修改任何文件，不要执行任何写操作
-7. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索
+1. 如果用户询问任务进度、运行状态等问题，优先使用 agent_status 工具查询实际运行时状态
+2. 使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容
+3. 如果问题涉及本地项目文件，使用 read_file 查看
+4. 如果问题涉及之前的对话或记忆，使用 memory(action="recall") 召回
+5. 回答要简洁、结构化，直接给出关键信息
+6. 引用网络来源时附上 URL
+7. 这是一个只读查询——不要修改任何文件，不要执行任何写操作
+8. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索
 `
 
 func (c *btwCallbacks) BuildTools(userText string) []map[string]interface{} {
@@ -281,7 +282,7 @@ func (c *btwCallbacks) BuildTools(userText string) []map[string]interface{} {
 
 func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {
 	if !btwToolNames[name] {
-		return fmt.Sprintf("未知工具: %s（/btw 仅支持 web_search, web_fetch, read_file, memory）", name)
+		return fmt.Sprintf("未知工具: %s（/btw 仅支持 web_search, web_fetch, read_file, memory, agent_status）", name)
 	}
 
 	var args map[string]interface{}
@@ -308,6 +309,8 @@ func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {
 		return h.toolReadFile(args)
 	case "memory":
 		return h.toolMemory(args)
+	case "agent_status":
+		return h.toolAgentStatus(args)
 	default:
 		return fmt.Sprintf("未知工具: %s", name)
 	}
@@ -343,10 +346,11 @@ func (c *btwCallbacks) ShouldStop() bool {
 
 // btwToolNames is the allowlist of tools available to /btw queries.
 var btwToolNames = map[string]bool{
-	"web_search": true,
-	"web_fetch":  true,
-	"read_file":  true,
-	"memory":     true,
+	"web_search":   true,
+	"web_fetch":    true,
+	"read_file":    true,
+	"memory":       true,
+	"agent_status": true,
 }
 
 // buildBtwToolDefinitions constructs the minimal tool definitions for /btw.
@@ -373,6 +377,11 @@ func buildBtwToolDefinitions() []map[string]interface{} {
 				"action": map[string]string{"type": "string", "description": "操作: recall（仅支持 recall）"},
 				"query":  map[string]string{"type": "string", "description": "查询关键词"},
 			}, []string{"action", "query"}),
+		btwToolDef("agent_status", "查询主 Agent 的运行时状态，包括本地后台任务、SSH 后台任务、编程会话、SSH 连接等。当用户询问任务进度、下载是否完成、后台任务状态时使用此工具。",
+			map[string]interface{}{
+				"category": map[string]string{"type": "string", "description": "查询类别: all（全部状态）、local_tasks（本地后台任务）、ssh_tasks（SSH 后台任务）、sessions（编程会话）、ssh_sessions（SSH 连接）。默认 all"},
+				"task_id":  map[string]string{"type": "string", "description": "指定任务 ID 查看详情和日志尾部（可选）"},
+			}, nil),
 	}
 }
 
@@ -395,4 +404,7 @@ func btwToolDef(name, desc string, props map[string]interface{}, required []stri
 // System prompt — see buildBtwSystemPrompt() above.
 // Selectively composes identity + memory recall. Does NOT call the main
 // agent's buildSystemPromptBase to avoid side effects and noise.
+//
+// agent_status tool implementation is in im_tool_agent_status.go — it's a
+// handler-level capability, not /btw-specific.
 // ---------------------------------------------------------------------------

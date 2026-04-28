@@ -444,7 +444,7 @@ func (h *ComputeHandler) ListCenterAssignments() http.HandlerFunc {
 }
 
 // CenterComputeProviders handles GET /api/centers/{id}/compute-providers.
-// Authenticates using the center's secret (query param ?secret= or X-Center-Secret header).
+// Authenticates using the center's X-Center-Secret header.
 // Returns the full provider list (with api_key) assigned to the center.
 // If the center is disabled, returns 403 CENTER_DISABLED.
 // If no specific assignments exist, returns all enabled providers.
@@ -477,7 +477,7 @@ func (h *ComputeHandler) CenterComputeProviders() http.HandlerFunc {
 		perm, _ := h.store.GetComputePermission(ctx, centerID)
 		forceSync, _ := h.store.GetForceSync(ctx, centerID)
 
-		// NOTE: Do NOT mask api_key — centers need the full key for LLM requests.
+		// NOTE: Do NOT mask api_key; centers need the full key for LLM requests.
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"providers":          providers,

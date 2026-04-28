@@ -5,13 +5,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // RunNLSkill 执行 nlskill 子命令（NL 技能管理）。
@@ -217,9 +217,16 @@ func nlskillExecute(args []string) error {
 		return fmt.Errorf("NL 技能 '%s' 没有定义步骤", name)
 	}
 
-	// 平台兼容性检查
-	if err := tui_checkPlatformCompat(skill); err != nil {
-		return err
+	// ── Unified requirement pre-check ──
+	reqs := cskill.ExtractRequirements(skill, cskill.DefaultCheckContext())
+	if len(reqs) > 0 {
+		registry := cskill.DefaultRegistry()
+		violations := registry.CheckAll(reqs)
+		remaining := registry.FixAll(violations)
+		errors := cskill.FilterErrors(remaining)
+		if len(errors) > 0 {
+			return fmt.Errorf("skill %q 前置条件未满足: %s", name, cskill.FormatViolations(errors))
+		}
 	}
 
 	type stepResult struct {
@@ -302,40 +309,6 @@ func nlskillExecute(args []string) error {
 		fmt.Printf("✓ 技能 '%s' 执行完成 (%d 步)\n", name, len(results))
 	} else {
 		fmt.Printf("✗ 技能 '%s' 执行失败\n", name)
-	}
-	return nil
-}
-
-// tui_checkPlatformCompat 检查当前平台是否匹配 skill 的 platforms 声明。
-func tui_checkPlatformCompat(skill *corelib.NLSkillEntry) error {
-	if len(skill.Platforms) == 0 {
-		return nil
-	}
-	currentOS := runtime.GOOS
-	platformName := currentOS
-	if platformName == "darwin" {
-		platformName = "macos"
-	}
-	matched := false
-	for _, p := range skill.Platforms {
-		if strings.EqualFold(strings.TrimSpace(p), platformName) {
-			matched = true
-			break
-		}
-		if strings.EqualFold(strings.TrimSpace(p), "universal") {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		return fmt.Errorf("skill %q 不支持当前平台 %s（支持: %s）",
-			skill.Name, platformName, strings.Join(skill.Platforms, ", "))
-	}
-	if currentOS == "linux" && skill.RequiresGUI {
-		if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
-			return fmt.Errorf("skill %q 需要 GUI 环境，但当前 Linux 未检测到 DISPLAY 或 WAYLAND_DISPLAY",
-				skill.Name)
-		}
 	}
 	return nil
 }

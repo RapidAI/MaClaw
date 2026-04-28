@@ -63,10 +63,15 @@ func defaultInstallPipPkg(python, pkg string) error {
 	return nil
 }
 
-var checkNpmInstalled = defaultCheckNpmInstalled
+// checkNpmInstalledInDir checks if an npm package is installed, optionally
+// scoped to a specific directory. Checks local (dir or cwd) first, then global.
+var checkNpmInstalledInDir = defaultCheckNpmInstalledInDir
 
-func defaultCheckNpmInstalled(name string) bool {
+func defaultCheckNpmInstalledInDir(name, dir string) bool {
 	cmd := exec.Command("npm", "list", name, "--depth=0")
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	if cmd.Run() == nil {
 		return true
 	}
@@ -74,14 +79,20 @@ func defaultCheckNpmInstalled(name string) bool {
 	return cmd.Run() == nil
 }
 
-var installNpmPkg = defaultInstallNpmPkg
+// installNpmPkgInDir installs an npm package, optionally in a specific
+// directory. When dir is non-empty, `npm install` runs with Dir set,
+// installing locally to that directory (no elevated permissions needed).
+var installNpmPkgInDir = defaultInstallNpmPkgInDir
 
-func defaultInstallNpmPkg(pkg string) error {
+func defaultInstallNpmPkgInDir(pkg, dir string) error {
 	cmd := exec.Command("npm", "install", "--silent", pkg)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("npm install %s failed: %v\n%s", pkg, err, strings.TrimSpace(string(out)))
 	}
-	log.Printf("[requirement] npm install %s success", pkg)
+	log.Printf("[requirement] npm install %s success (dir=%q)", pkg, dir)
 	return nil
 }

@@ -1,0 +1,350 @@
+package main
+
+// im_tool_agent_status.go implements the agent_status tool — a read-only
+// query interface for the main agent's runtime state.
+//
+// This tool is the mechanism-level fix for the "/btw 下载完了吗？" problem:
+// instead of searching long-term memory (which stores knowledge, not runtime
+// state), this tool directly queries the actual process managers and session
+// managers.
+//
+// Data sources (single enumeration point — add new sources here):
+//   - LocalBackgroundTaskManager: bash(background=true) local processes
+//   - SSHBackgroundTaskManager:   ssh(submit_task) remote processes
+//   - RemoteSessionManager:       coding sessions (create_session)
+//   - SSHSessionManager:          SSH interactive connections
+//
+// Consumers:
+//   - /btw SubAgent: agent_status tool call
+//   - pendingBackgroundTaskHint: main agent loop recover prompt injection
+//   - (future) main agent's discover_tool / system prompt injection
+//
+// Design: collectRuntimeStatus() returns structured data. Each consumer
+// formats it for its own context. New data sources are added once in
+// collectRuntimeStatus(), all consumers automatically see them.
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+)
+
+// ---------------------------------------------------------------------------
+// Structured runtime status — single data source for all consumers
+// ---------------------------------------------------------------------------
+
+// RuntimeTaskInfo represents a single background task (local or SSH).
+type RuntimeTaskInfo struct {
+	TaskID    string
+	Source    string // "local" or "ssh"
+	Status    string
+	Command   string
+	StartedAt time.Time
+	ExitCode  int    // only meaningful for local tasks when completed/failed
+	PID       string // SSH tasks use string PID
+}
+
+// RuntimeSessionInfo represents a coding session or SSH connection.
+type RuntimeSessionInfo struct {
+	ID     string
+	Source string // "coding" or "ssh"
+	Status string
+	Label  string // host label for SSH, empty for coding
+}
+
+// RuntimeStatus is the structured snapshot of all runtime state.
+type RuntimeStatus struct {
+	Tasks    []RuntimeTaskInfo
+	Sessions []RuntimeSessionInfo
+
+	// MainAgentRunning is true when the main agent loop is actively
+	// executing a task. When true, MainAgentTask and MainAgentElapsed
+	// describe what it's doing.
+	MainAgentRunning bool
+	MainAgentTask    string        // the user's original request text
+	MainAgentElapsed time.Duration // how long the loop has been running
+}
+
+// collectRuntimeStatus gathers all runtime state from the handler's managers.
+// This is the SINGLE enumeration point for runtime data sources.
+// Add new data sources (e.g. Docker containers) here — all consumers
+// (toolAgentStatus, pendingBackgroundTaskHint) automatically see them.
+func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
+	var rs RuntimeStatus
+
+	// Main agent loop state.
+	// currentLoopCtx is set at the start of runAgentLoop and cleared in defer.
+	// Reading it from /btw's goroutine is a benign race (same pattern as
+	// /cancel command). The worst case is a stale nil/non-nil read, which
+	// produces a slightly outdated "running"/"idle" report — acceptable for
+	// a status query.
+	if ctx := h.currentLoopCtx; ctx != nil {
+		rs.MainAgentRunning = true
+		rs.MainAgentTask = h.lastUserText
+		rs.MainAgentElapsed = time.Since(ctx.StartedAt).Round(time.Second)
+	}
+
+	// Local background tasks.
+	if h.localBgTaskMgr != nil {
+		for _, t := range h.localBgTaskMgr.List() {
+			t.Lock()
+			rs.Tasks = append(rs.Tasks, RuntimeTaskInfo{
+				TaskID:    t.TaskID,
+				Source:    "local",
+				Status:    t.Status,
+				Command:   t.Command,
+				StartedAt: t.StartedAt,
+				ExitCode:  t.ExitCode,
+			})
+			t.Unlock()
+		}
+	}
+
+	// SSH background tasks.
+	if h.bgTaskMgr != nil {
+		for _, t := range h.bgTaskMgr.ListTasks() {
+			rs.Tasks = append(rs.Tasks, RuntimeTaskInfo{
+				TaskID:    t.TaskID,
+				Source:    "ssh",
+				Status:    t.Status,
+				Command:   t.Command,
+				StartedAt: t.StartedAt,
+				PID:       t.PID,
+			})
+		}
+	}
+
+	// Coding sessions.
+	if h.manager != nil {
+		for _, s := range h.manager.List() {
+			s.mu.RLock()
+			rs.Sessions = append(rs.Sessions, RuntimeSessionInfo{
+				ID:     s.ID,
+				Source: "coding",
+				Status: string(s.Status),
+			})
+			s.mu.RUnlock()
+		}
+	}
+
+	// SSH connections.
+	if h.sshMgr != nil {
+		for _, s := range h.sshMgr.List() {
+			summary := s.GetSummary()
+			rs.Sessions = append(rs.Sessions, RuntimeSessionInfo{
+				ID:     s.ID,
+				Source: "ssh",
+				Status: summary.Status,
+				Label:  summary.HostLabel,
+			})
+		}
+	}
+
+	return rs
+}
+
+// ---------------------------------------------------------------------------
+// agent_status tool — consumed by /btw SubAgent
+// ---------------------------------------------------------------------------
+
+// toolAgentStatus queries the main agent's runtime state.
+// This is a read-only tool — it does not modify any state.
+func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
+	category, _ := args["category"].(string)
+	if category == "" {
+		category = "all"
+	}
+	taskID, _ := args["task_id"].(string)
+
+	// If a specific task_id is provided, do a targeted lookup with log tail.
+	if taskID != "" {
+		return h.agentStatusByTaskID(taskID)
+	}
+
+	rs := h.collectRuntimeStatus()
+	var sections []string
+
+	// Main agent loop status — always included for "all" category.
+	if category == "all" {
+		if rs.MainAgentRunning {
+			taskPreview := rs.MainAgentTask
+			if len([]rune(taskPreview)) > 80 {
+				taskPreview = string([]rune(taskPreview)[:80]) + "..."
+			}
+			sections = append(sections, fmt.Sprintf(
+				"🔄 **主 Agent**: 正在执行任务（已运行 %s）\n   任务: %s",
+				rs.MainAgentElapsed, taskPreview))
+		} else {
+			sections = append(sections, "🟢 **主 Agent**: 空闲")
+		}
+	}
+
+	// Filter and format tasks by category.
+	if category == "all" || category == "local_tasks" {
+		if s := formatTaskSection("📋 **本地后台任务**", rs.Tasks, "local"); s != "" {
+			sections = append(sections, s)
+		}
+	}
+	if category == "all" || category == "ssh_tasks" {
+		if s := formatTaskSection("🖥️ **SSH 后台任务**", rs.Tasks, "ssh"); s != "" {
+			sections = append(sections, s)
+		}
+	}
+	if category == "all" || category == "sessions" {
+		if s := formatSessionSection("💻 **编程会话**", rs.Sessions, "coding"); s != "" {
+			sections = append(sections, s)
+		}
+	}
+	if category == "all" || category == "ssh_sessions" {
+		if s := formatSessionSection("🔗 **SSH 连接**", rs.Sessions, "ssh"); s != "" {
+			sections = append(sections, s)
+		}
+	}
+
+	if len(sections) == 0 {
+		return fmt.Sprintf("查询类别 %q 没有活跃的资源。", category)
+	}
+
+	return strings.Join(sections, "\n\n")
+}
+
+// agentStatusByTaskID looks up a specific task by ID across all managers.
+// Returns detailed status + log tail (not available from collectRuntimeStatus).
+func (h *IMMessageHandler) agentStatusByTaskID(taskID string) string {
+	// Try local background tasks first.
+	if h.localBgTaskMgr != nil {
+		if status, err := h.localBgTaskMgr.Check(taskID, 30); err == nil {
+			return formatTaskStatus(status)
+		}
+	}
+
+	// Try SSH background tasks.
+	if h.bgTaskMgr != nil {
+		if status, err := h.bgTaskMgr.CheckTask(taskID, 30); err == nil {
+			return formatSSHTaskStatusForBtw(status)
+		}
+	}
+
+	return fmt.Sprintf("未找到任务 %s（已检查本地后台任务和 SSH 后台任务）", taskID)
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+func formatTaskSection(header string, tasks []RuntimeTaskInfo, source string) string {
+	var b strings.Builder
+	count := 0
+	for _, t := range tasks {
+		if t.Source != source {
+			continue
+		}
+		if count == 0 {
+			b.WriteString(header + "\n")
+		}
+		count++
+		icon := runtimeStatusIcon(t.Status)
+		cmdShort := truncateRunesForSubAgent(t.Command, 60)
+		elapsed := time.Since(t.StartedAt).Round(time.Second)
+		fmt.Fprintf(&b, "%s %s [%s] 已运行=%s 命令=%s", icon, t.TaskID, t.Status, elapsed, cmdShort)
+		if (t.Status == "completed" || t.Status == "failed") && t.Source == "local" {
+			fmt.Fprintf(&b, " 退出码=%d", t.ExitCode)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func formatSessionSection(header string, sessions []RuntimeSessionInfo, source string) string {
+	var b strings.Builder
+	count := 0
+	for _, s := range sessions {
+		if s.Source != source {
+			continue
+		}
+		if count == 0 {
+			b.WriteString(header + "\n")
+		}
+		count++
+		if s.Label != "" {
+			fmt.Fprintf(&b, "- %s [%s] %s\n", s.ID, s.Status, s.Label)
+		} else {
+			fmt.Fprintf(&b, "- %s [%s]\n", s.ID, s.Status)
+		}
+	}
+	return b.String()
+}
+
+func runtimeStatusIcon(status string) string {
+	switch status {
+	case "running", "pending":
+		return "🔄"
+	case "completed":
+		return "✅"
+	case "failed":
+		return "❌"
+	case "killed":
+		return "⏹️"
+	default:
+		return "❓"
+	}
+}
+
+// formatSSHTaskStatusForBtw formats an SSH background task status for /btw display.
+func formatSSHTaskStatusForBtw(s *remote.BackgroundTaskStatus) string {
+	var b strings.Builder
+	icon := runtimeStatusIcon(s.Status)
+	fmt.Fprintf(&b, "%s SSH 任务 %s: %s\n", icon, s.TaskID, s.Status)
+	fmt.Fprintf(&b, "已运行: %s | 日志大小: %s\n", s.Elapsed, s.LogSize)
+	if s.LogTail != "" {
+		fmt.Fprintf(&b, "\n--- 日志最后内容 ---\n%s", s.LogTail)
+	}
+	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// pendingBackgroundTaskHint consumer — formats runtime status for the main
+// agent loop's recover prompt. Only includes running tasks started after
+// loopStart to avoid stale tasks from previous conversations.
+// ---------------------------------------------------------------------------
+
+// pendingBackgroundTaskHintFromStatus formats running tasks from a
+// RuntimeStatus snapshot for the recover prompt. Filters by loopStart.
+// This replaces the old pendingBackgroundTaskHint's inline enumeration.
+func pendingBackgroundTaskHintFromStatus(rs RuntimeStatus, loopStart time.Time) string {
+	var hints []string
+
+	for _, t := range rs.Tasks {
+		// Only running/pending tasks started in this loop.
+		if t.Status != "running" && t.Status != "pending" {
+			continue
+		}
+		if t.StartedAt.Before(loopStart) {
+			continue
+		}
+
+		elapsed := time.Since(t.StartedAt).Round(time.Second)
+		cmd := t.Command
+		if len([]rune(cmd)) > 80 {
+			cmd = string([]rune(cmd)[:80]) + "..."
+		}
+
+		switch t.Source {
+		case "ssh":
+			hints = append(hints, fmt.Sprintf(
+				"- SSH 后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 ssh(action=\"check_task\", task_id=\"%s\") 查看进度",
+				t.TaskID, elapsed, cmd, t.TaskID))
+		case "local":
+			hints = append(hints, fmt.Sprintf(
+				"- 本地后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 async_wait(action=\"check\", task_id=\"%s\") 查看进度",
+				t.TaskID, elapsed, cmd, t.TaskID))
+		}
+	}
+
+	if len(hints) == 0 {
+		return ""
+	}
+	return "⚠️ 检测到以下后台任务仍在运行，请优先检查其状态：\n" + strings.Join(hints, "\n")
+}

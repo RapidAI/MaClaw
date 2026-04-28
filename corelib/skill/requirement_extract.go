@@ -12,11 +12,52 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+// CheckContext carries execution-environment information that affects how
+// requirements are extracted. This is the single place where caller-specific
+// context (e.g., "proxy provides OPENAI_API_KEY") is declared.
+//
+// Callers construct a CheckContext once; ExtractRequirements reads it.
+// Checkers and Fixers never see CheckContext — they see the Requirement's
+// Provided and Context fields, which ExtractRequirements populates.
+type CheckContext struct {
+	// ProvidedEnvVars is the set of environment variable names that are
+	// provided by the execution context at runtime (e.g., the local proxy
+	// injects OPENAI_API_KEY). Requirements for these vars are marked
+	// Provided=true and skipped by CheckAll.
+	ProvidedEnvVars map[string]bool
+
+	// SkillDir is the skill's working directory. Used to populate
+	// Requirement.Context["skill_dir"] for NpmFixer (local install).
+	// If empty, falls back to skill.SkillDir.
+	SkillDir string
+}
+
+// DefaultCheckContext returns a CheckContext with the standard provided env
+// vars (OPENAI_API_KEY from the local proxy). This is the common case for
+// all Runner callers — use it instead of constructing CheckContext manually.
+func DefaultCheckContext() *CheckContext {
+	return &CheckContext{
+		ProvidedEnvVars: map[string]bool{"OPENAI_API_KEY": true},
+	}
+}
+
 // ExtractRequirements extracts all requirements from a skill entry.
 // Sources:
 //   1. Explicit fields: RequiresPython, RequiresNode, RequiredEnv, Platforms
 //   2. Inferred from step commands: system commands used in bash steps
-func ExtractRequirements(skill *corelib.NLSkillEntry) []Requirement {
+//
+// ctx may be nil for callers that don't need context-aware extraction.
+func ExtractRequirements(skill *corelib.NLSkillEntry, ctx ...*CheckContext) []Requirement {
+	var cc *CheckContext
+	if len(ctx) > 0 {
+		cc = ctx[0]
+	}
+
+	skillDir := skill.SkillDir
+	if cc != nil && cc.SkillDir != "" {
+		skillDir = cc.SkillDir
+	}
+
 	var reqs []Requirement
 
 	for _, pkg := range skill.RequiresPython {
@@ -26,15 +67,28 @@ func ExtractRequirements(skill *corelib.NLSkillEntry) []Requirement {
 
 	for _, pkg := range skill.RequiresNode {
 		name, version := splitPkgVersion(pkg)
-		reqs = append(reqs, Requirement{Type: "npm", Name: name, Version: version, Source: "explicit"})
+		req := Requirement{Type: "npm", Name: name, Version: version, Source: "explicit"}
+		// Carry skill_dir so NpmFixer installs locally, not to process cwd.
+		if skillDir != "" {
+			req.Context = map[string]string{"skill_dir": skillDir}
+		}
+		reqs = append(reqs, req)
 	}
 
 	for _, env := range skill.RequiredEnv {
-		reqs = append(reqs, Requirement{Type: "env", Name: env, Source: "explicit"})
+		req := Requirement{Type: "env", Name: env, Source: "explicit"}
+		if cc != nil && cc.ProvidedEnvVars[env] {
+			req.Provided = true
+		}
+		reqs = append(reqs, req)
 	}
 
 	if len(skill.Platforms) > 0 {
 		reqs = append(reqs, Requirement{Type: "platform", Values: skill.Platforms, Source: "explicit"})
+	}
+
+	if skill.RequiresGUI {
+		reqs = append(reqs, Requirement{Type: "gui", Name: "display", Source: "explicit"})
 	}
 
 	inferred := inferCommandRequirements(skill)
@@ -46,11 +100,12 @@ func ExtractRequirements(skill *corelib.NLSkillEntry) []Requirement {
 // inferCommandRequirements scans bash step commands for system commands.
 // Commands that are covered by explicit RequiresPython/RequiresNode are
 // excluded dynamically (not via a hardcoded skip list).
+//
+// Limitation: only extracts the first command word from each step. Piped
+// commands (cmd1 | cmd2) and chained commands (cmd1 && cmd2) only yield
+// cmd1. This is acceptable because inferred requirements are warnings,
+// not errors — they don't block execution.
 func inferCommandRequirements(skill *corelib.NLSkillEntry) []Requirement {
-	// Build the set of runtimes that are already covered by explicit
-	// pip/npm requirements. This replaces the hardcoded skipInferredCommand
-	// map — when a new runtime type is added (e.g., RequiresCargo), its
-	// commands are automatically excluded from inference.
 	coveredRuntimes := buildCoveredRuntimes(skill)
 
 	seen := make(map[string]bool)
@@ -87,9 +142,6 @@ func inferCommandRequirements(skill *corelib.NLSkillEntry) []Requirement {
 // add a block here. This is O(dependency_types), not O(commands).
 func buildCoveredRuntimes(skill *corelib.NLSkillEntry) map[string]bool {
 	covered := make(map[string]bool)
-	// Python runtime is always potentially available (skills may use python
-	// without declaring RequiresPython if it's a system dependency).
-	// But we only skip inference when the skill explicitly declares python deps.
 	if len(skill.RequiresPython) > 0 {
 		for _, cmd := range []string{"python", "python3", "pip", "pip3"} {
 			covered[cmd] = true
@@ -128,7 +180,11 @@ func splitPkgVersion(pkg string) (string, string) {
 // --- Built-in Checkers ---
 
 // DefaultRegistry returns a Registry pre-loaded with all built-in checkers
-// and fixers.
+// and fixers. This is a factory — each call returns a fresh instance.
+//
+// Callers should NOT configure checkers on the returned registry. All
+// caller-specific context goes through CheckContext → ExtractRequirements →
+// Requirement fields (Provided, Context). The registry is context-free.
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
 	r.Register(&PipChecker{})
@@ -136,6 +192,7 @@ func DefaultRegistry() *Registry {
 	r.Register(&EnvVarChecker{})
 	r.Register(&CommandChecker{})
 	r.Register(&PlatformChecker{})
+	r.Register(&GUIChecker{})
 	// Fixers — only for types that support auto-repair.
 	r.RegisterFixer(&PipFixer{})
 	r.RegisterFixer(&NpmFixer{})
@@ -165,24 +222,25 @@ func (c *NpmChecker) Check(req Requirement) *Violation {
 	if !commandExists("npm") {
 		return &Violation{Requirement: req, Message: "npm 未安装，无法检查 Node 包 " + req.Name, Severity: "error"}
 	}
-	if !checkNpmInstalled(req.Name) {
+	// Check in skill_dir if available (local install), then global.
+	dir := ""
+	if req.Context != nil {
+		dir = req.Context["skill_dir"]
+	}
+	if !checkNpmInstalledInDir(req.Name, dir) {
 		return &Violation{Requirement: req, Message: "Node 包 " + req.Name + " 未安装", Severity: "error"}
 	}
 	return nil
 }
 
-type EnvVarChecker struct {
-	// SkipNames is the set of env var names to skip checking.
-	// This is set by the Runner based on its own context (e.g., proxy provides
-	// OPENAI_API_KEY), not hardcoded in the checker.
-	SkipNames map[string]bool
-}
+// EnvVarChecker validates that required environment variables are set.
+// Requirements with Provided=true are already skipped by CheckAll, so
+// this checker doesn't need SkipNames — the filtering happens at the
+// Requirement level, not the Checker level.
+type EnvVarChecker struct{}
 
 func (c *EnvVarChecker) Type() string { return "env" }
 func (c *EnvVarChecker) Check(req Requirement) *Violation {
-	if c.SkipNames != nil && c.SkipNames[req.Name] {
-		return nil
-	}
 	if envLookup(req.Name) == "" {
 		return &Violation{Requirement: req, Message: "环境变量 " + req.Name + " 未设置", Severity: "error"}
 	}
@@ -213,7 +271,7 @@ func (c *PlatformChecker) Type() string { return "platform" }
 func (c *PlatformChecker) Check(req Requirement) *Violation {
 	platforms := req.Values
 	if len(platforms) == 0 {
-		return nil // no constraint
+		return nil
 	}
 	currentPlatform := mapGOOSToPlatform(runtime.GOOS)
 	if !isSkillCompatibleWithPlatform(platforms, currentPlatform) {
@@ -224,6 +282,26 @@ func (c *PlatformChecker) Check(req Requirement) *Violation {
 		}
 	}
 	return nil
+}
+
+// GUIChecker validates that a GUI display environment is available.
+// On Linux, this checks for DISPLAY or WAYLAND_DISPLAY. On other platforms
+// a GUI is always assumed available.
+type GUIChecker struct{}
+
+func (c *GUIChecker) Type() string { return "gui" }
+func (c *GUIChecker) Check(req Requirement) *Violation {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	if envLookup("DISPLAY") != "" || envLookup("WAYLAND_DISPLAY") != "" {
+		return nil
+	}
+	return &Violation{
+		Requirement: req,
+		Message:     "Skill 需要 GUI 环境，但当前 Linux 未检测到 DISPLAY 或 WAYLAND_DISPLAY",
+		Severity:    "error",
+	}
 }
 
 // --- Fixers (side effects, separate from checkers) ---
@@ -239,9 +317,17 @@ func (f *PipFixer) Fix(req Requirement) error {
 	return installPipPkg(python, req.Name+req.Version)
 }
 
+// NpmFixer installs npm packages. It reads req.Context["skill_dir"] to
+// determine the install directory. If set, packages are installed locally
+// to the skill directory (no elevated permissions needed). If empty,
+// falls back to the process working directory.
 type NpmFixer struct{}
 
 func (f *NpmFixer) Type() string { return "npm" }
 func (f *NpmFixer) Fix(req Requirement) error {
-	return installNpmPkg(req.Name + req.Version)
+	skillDir := ""
+	if req.Context != nil {
+		skillDir = req.Context["skill_dir"]
+	}
+	return installNpmPkgInDir(req.Name+req.Version, skillDir)
 }

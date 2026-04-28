@@ -10,17 +10,23 @@ import (
 type FailureCategory string
 
 const (
-	FailureNetwork    FailureCategory = "network"
+	FailureTransient  FailureCategory = "transient"  // recoverable server-side errors (429, 408, 5xx, overload)
+	FailureNetwork    FailureCategory = "network"    // client-side connectivity (timeout, refused, reset)
 	FailurePermission FailureCategory = "permission"
 	FailureArgs       FailureCategory = "args"
 	FailureLogic      FailureCategory = "logic"
 	FailureUnknown    FailureCategory = "unknown"
+
+	// Kept as alias for backward compatibility in tests and trace logs.
+	FailureRateLimit = FailureTransient
 )
 
 const (
-	defaultMaxFailures    = 5
-	maxNetworkRetries     = 3
-	baseRetryDelay        = 1 * time.Second
+	defaultMaxFailures   = 5
+	maxNetworkRetries    = 3
+	maxTransientRetries  = 3
+	baseRetryDelay       = 1 * time.Second
+	baseTransientDelay   = 5 * time.Second // transient errors need longer backoff
 )
 
 // RetryDecision 重试决策。
@@ -49,12 +55,14 @@ func NewAdaptiveRetry(recorder *TrajectoryRecorder) *AdaptiveRetry {
 	}
 }
 
-// networkKeywords are substrings that indicate a network-related failure.
+// networkKeywords indicate client-side connectivity failures.
+// These are distinct from transient server errors: the request never
+// reached the server, so a short retry is appropriate.
+// All keywords must be lowercase — msg is lowercased before matching.
 var networkKeywords = []string{
-	"timeout", "connection refused", "network", "dial",
+	"timeout", "connection refused", "dial",
 	"eof", "reset by peer", "i/o timeout",
-	"http 502", "http 503", "http 504",
-	"gateway timeout", "bad gateway", "service unavailable",
+	"client.timeout", "context deadline exceeded",
 }
 
 // permissionKeywords are substrings that indicate a permission-related failure.
@@ -75,12 +83,26 @@ var logicKeywords = []string{
 }
 
 // Classify 分析错误信息，返回失败分类。
+//
+// Classification priority (highest first):
+//  1. Transient — recoverable server-side errors (429, 408, 5xx, overload).
+//     Delegates to isTransientServerError() as single source of truth.
+//  2. Network — client-side connectivity (timeout, refused, reset).
+//  3. Permission — auth/authz failures (401, 403).
+//  4. Args — bad request / invalid parameters (400).
+//  5. Logic — application-level conflicts.
+//  6. Unknown — fallback.
 func (r *AdaptiveRetry) Classify(toolName string, err error) FailureCategory {
 	if err == nil {
 		return FailureUnknown
 	}
 	msg := strings.ToLower(err.Error())
 
+	// Transient server errors must be checked first — they may contain
+	// network-related substrings (e.g. "http 502") but need longer backoff.
+	if isTransientServerError(err) {
+		return FailureTransient
+	}
 	for _, kw := range networkKeywords {
 		if strings.Contains(msg, kw) {
 			return FailureNetwork
@@ -117,6 +139,22 @@ func (r *AdaptiveRetry) Decide(toolName string, category FailureCategory, attemp
 	}
 
 	switch category {
+	case FailureTransient:
+		if attempt >= maxTransientRetries {
+			return RetryDecision{
+				Action:       "skip",
+				ErrorContext: fmt.Sprintf("工具 %s 服务端暂时不可用，重试已达上限 (%d 次)，跳过。", toolName, maxTransientRetries),
+				Attempt:      attempt,
+			}
+		}
+		// Exponential backoff: 5s → 10s → 20s
+		delay := baseTransientDelay * time.Duration(1<<uint(attempt))
+		return RetryDecision{
+			Action:  "retry",
+			Delay:   delay,
+			Attempt: attempt,
+		}
+
 	case FailureNetwork:
 		if attempt >= maxNetworkRetries {
 			return RetryDecision{
@@ -125,7 +163,7 @@ func (r *AdaptiveRetry) Decide(toolName string, category FailureCategory, attemp
 				Attempt:      attempt,
 			}
 		}
-		// Exponential backoff: baseDelay * 2^attempt
+		// Exponential backoff: 1s → 2s → 4s
 		delay := baseRetryDelay * time.Duration(1<<uint(attempt))
 		return RetryDecision{
 			Action:  "retry",

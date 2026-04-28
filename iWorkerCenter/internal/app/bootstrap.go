@@ -171,6 +171,9 @@ func Bootstrap() (*Center, error) {
 	}
 	tenantSvc := tenant.NewTenantService(tenantRepo, nonceRepo, provider.Write, provider.Write, cloudClient, pubKeyCache)
 	tenantHandler := tenant.NewHandler(tenantSvc)
+	if cloudCfg.BaseURL != "" {
+		capHandler.SetCloudImporterResolver(cloudCfg.BaseURL, tenantSvc)
+	}
 
 	// --- wire goal watchdog / push module ---
 	goalWatchSvc := goalwatch.NewService(collabRepo, goalwatch.Config{})
@@ -355,6 +358,22 @@ func yamlUnmarshal(data []byte, v any) error {
 	return yaml.Unmarshal(data, v)
 }
 
+func activeCloudCredentials(tenantSvc *tenant.TenantService) (string, string) {
+	if tenantSvc == nil {
+		return "", ""
+	}
+	tenants, err := tenantSvc.ListActiveTenants(context.Background())
+	if err != nil {
+		return "", ""
+	}
+	for _, t := range tenants {
+		if t.CloudCenterID != "" && t.CloudSecret != "" {
+			return t.CloudCenterID, t.CloudSecret
+		}
+	}
+	return "", ""
+}
+
 // wireCompute initialises the compute module components.
 // It reads cloud URL, center ID, and center secret from config/tenant,
 // creates SyncManager (nil if cloud URL is not configured), SourceManager,
@@ -370,11 +389,7 @@ func wireCompute(cloudCfg tenant.CloudConfig, tenantSvc *tenant.TenantService) (
 	cloudURL = cloudCfg.BaseURL
 
 	if cloudURL != "" && tenantSvc != nil {
-		tenants, err := tenantSvc.ListActiveTenants(context.Background())
-		if err == nil && len(tenants) > 0 {
-			centerID = tenants[0].CloudCenterID
-			centerSecret = tenants[0].CloudSecret
-		}
+		centerID, centerSecret = activeCloudCredentials(tenantSvc)
 	}
 
 	var syncMgr *compute.SyncManager

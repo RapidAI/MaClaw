@@ -1,6 +1,6 @@
 # iWorker 文档索引
 
-本目录中，以下 6 份文档为当前 `iWorker` 体系的正式主文档。
+本目录中，以下 7 份文档为当前 `iWorker` 体系的正式主文档。
 
 ## 建议阅读顺序
 
@@ -10,6 +10,7 @@
 4. `iworker-ai-native-virtual-organization-v1.md`
 5. `iworkercenter-goal-watch-and-push-v1.md`
 6. `iworker-multi-agent-runtime-v1.md`
+7. `iworker-technical-integration-and-blockers-v1.md`
 
 ## 文档定位
 
@@ -32,6 +33,10 @@
 ### 5. iWorkerCenter 目标守护与 Push 机制
 
 面向产品和研发团队，解释为什么 iWorkerCenter 必须具备定时目标检测、停滞识别和 push 推动能力，以防止 LLM 中断、工具失败或协作停滞导致任务悄悄死亡。
+
+### 6. iWorker / iWorkerCenter / iWorkerCloud 技术打通与堵点清单
+
+面向研发和架构团队，明确三层产品边界、Skill Market 与 HubCenter / Maclaw GUI 的协议对齐方式、已经打通的链路，以及接下来必须继续解决的包下载、运行时调用、记忆一致性、多实例 Goal Watch 与 Cloud 边界问题。
 
 ## 当前统一口径
 

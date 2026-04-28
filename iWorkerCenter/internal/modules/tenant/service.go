@@ -149,6 +149,21 @@ func (s *TenantService) TenantCount(ctx context.Context) (int, error) {
 	return s.tenantRepo.Count(ctx)
 }
 
+
+// CloudCredentials returns the cloud registration credentials for a tenant.
+func (s *TenantService) CloudCredentials(ctx context.Context, tenantID string) (string, string, error) {
+	t, err := s.tenantRepo.GetByID(ctx, strings.TrimSpace(tenantID))
+	if err != nil {
+		return "", "", err
+	}
+	if t == nil {
+		return "", "", ErrTenantNotFound
+	}
+	if t.CloudCenterID == "" || t.CloudSecret == "" {
+		return "", "", ErrCloudCredentialsMissing
+	}
+	return t.CloudCenterID, t.CloudSecret, nil
+}
 // FetchCloudLicense retrieves this tenant's active iWorkerCloud license.
 func (s *TenantService) FetchCloudLicense(ctx context.Context, tenantID string) (*CloudLicense, error) {
 	if s.cloudClient == nil || s.cloudClient.cfg.BaseURL == "" {

@@ -37,12 +37,18 @@ type Binding struct {
 	BoundAt      string `json:"bound_at"`
 }
 
+type cloudCredentialResolver interface {
+	CloudCredentials(ctx context.Context, tenantID string) (string, string, error)
+}
+
 // Handler provides HTTP endpoints for capability management.
 type Handler struct {
-	write    *sql.DB
-	read     *sql.DB
-	importer *Importer
-	audit    *audit.Repo
+	write                   *sql.DB
+	read                    *sql.DB
+	importer                *Importer
+	cloudURL                string
+	cloudCredentialResolver cloudCredentialResolver
+	audit                   *audit.Repo
 }
 
 // NewHandler creates a capabilities Handler.
@@ -50,11 +56,32 @@ func NewHandler(write, read *sql.DB) *Handler {
 	return &Handler{write: write, read: read}
 }
 
-// SetImporter attaches a hubcenter importer (optional).
+// SetImporter attaches an iWorkerCloud skill market importer (optional).
 func (h *Handler) SetImporter(imp *Importer) {
 	h.importer = imp
 }
 
+// SetCloudImporterResolver lets the handler build a fresh iWorkerCloud importer
+// from the current tenant registration, so post-setup cloud registration works
+// without restarting iWorkerCenter.
+func (h *Handler) SetCloudImporterResolver(cloudURL string, resolver cloudCredentialResolver) {
+	h.cloudURL = strings.TrimRight(strings.TrimSpace(cloudURL), "/")
+	h.cloudCredentialResolver = resolver
+}
+
+func (h *Handler) importerForRequest(r *http.Request) (*Importer, error) {
+	if h.importer != nil {
+		return h.importer, nil
+	}
+	if h.cloudURL == "" || h.cloudCredentialResolver == nil {
+		return nil, fmt.Errorf("iWorkerCloud skill import not configured")
+	}
+	centerID, centerSecret, err := h.cloudCredentialResolver.CloudCredentials(r.Context(), tenant.RequestTenantID(r))
+	if err != nil {
+		return nil, err
+	}
+	return NewImporter(h.write, h.cloudURL, centerID, centerSecret), nil
+}
 func (h *Handler) SetAuditRepo(repo *audit.Repo) {
 	h.audit = repo
 }
@@ -64,7 +91,7 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/capabilities", h.handleAdminCapabilities)
 	mux.HandleFunc("/admin/capabilities/", h.handleAdminCapabilityByID)
 	mux.HandleFunc("/admin/capabilities-import/search", h.handleImportSearch)
-	mux.HandleFunc("/admin/capabilities-import/import", h.handleImportFromHub)
+	mux.HandleFunc("/admin/capabilities-import/import", h.handleImportFromCloud)
 }
 
 // RegisterClientRoutes registers client-facing routes (for DiWorker).
@@ -362,26 +389,28 @@ func (h *Handler) handleImportSearch(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	if h.importer == nil {
-		response.BadRequest(w, "NOT_CONFIGURED", "hubcenter import not configured")
+	imp, err := h.importerForRequest(r)
+	if err != nil {
+		response.BadRequest(w, "NOT_CONFIGURED", err.Error())
 		return
 	}
 	query := r.URL.Query().Get("q")
-	skills, err := h.importer.SearchHubCenter(query)
+	skills, err := imp.SearchCloud(query)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
 	}
-	response.OK(w, map[string]any{"skills": skills})
+	response.OK(w, map[string]any{"results": skills})
 }
 
-func (h *Handler) handleImportFromHub(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleImportFromCloud(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
-	if h.importer == nil {
-		response.BadRequest(w, "NOT_CONFIGURED", "hubcenter import not configured")
+	imp, err := h.importerForRequest(r)
+	if err != nil {
+		response.BadRequest(w, "NOT_CONFIGURED", err.Error())
 		return
 	}
 	var req struct {
@@ -395,7 +424,7 @@ func (h *Handler) handleImportFromHub(w http.ResponseWriter, r *http.Request) {
 		response.BadRequest(w, "MISSING_SKILL_ID", "skill_id is required")
 		return
 	}
-	cap, err := h.importer.ImportFromHubCenter(strings.TrimSpace(req.SkillID))
+	cap, err := imp.ImportFromCloud(strings.TrimSpace(req.SkillID), tenant.RequestTenantID(r))
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -437,7 +466,12 @@ func (h *Handler) approveCapability(w http.ResponseWriter, r *http.Request, id s
 		response.OK(w, map[string]string{"status": "approved"})
 		return
 	}
-	if err := h.importer.ApproveCapability(id); err != nil {
+	imp, err := h.importerForRequest(r)
+	if err != nil {
+		response.BadRequest(w, "NOT_CONFIGURED", err.Error())
+		return
+	}
+	if err := imp.ApproveCapability(id, tenantID); err != nil {
 		response.BadRequest(w, "APPROVE_FAILED", err.Error())
 		return
 	}
@@ -491,7 +525,12 @@ func (h *Handler) rejectCapability(w http.ResponseWriter, r *http.Request, id st
 		response.OK(w, map[string]string{"status": "rejected"})
 		return
 	}
-	if err := h.importer.RejectCapability(id); err != nil {
+	imp, err := h.importerForRequest(r)
+	if err != nil {
+		response.BadRequest(w, "NOT_CONFIGURED", err.Error())
+		return
+	}
+	if err := imp.RejectCapability(id, tenant.RequestTenantID(r)); err != nil {
 		response.BadRequest(w, "REJECT_FAILED", err.Error())
 		return
 	}

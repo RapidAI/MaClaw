@@ -113,6 +113,24 @@ func TestCenterComputeProviders_MissingSecret(t *testing.T) {
 	}
 }
 
+func TestCenterComputeProviders_QuerySecretRejected(t *testing.T) {
+	cs := newTestComputeStore(t)
+	mock := &mockCenterAuthService{centers: map[string]*store.Center{
+		"ctr_1": {ID: "ctr_1", Status: "active", SecretHash: hashTestSecret("my-secret")},
+	}}
+	h := NewComputeHandler(cs, mock)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
+
+	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers?secret=my-secret", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for query secret, got %d", w.Code)
+	}
+}
 func TestCenterComputeProviders_InvalidSecret(t *testing.T) {
 	cs := newTestComputeStore(t)
 	mock := &mockCenterAuthService{centers: map[string]*store.Center{
@@ -123,7 +141,8 @@ func TestCenterComputeProviders_InvalidSecret(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
 
-	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers?secret=wrong-secret", nil)
+	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers", nil)
+	req.Header.Set("X-Center-Secret", "wrong-secret")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -142,7 +161,8 @@ func TestCenterComputeProviders_DisabledCenter(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
 
-	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers?secret=my-secret", nil)
+	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers", nil)
+	req.Header.Set("X-Center-Secret", "my-secret")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -177,7 +197,8 @@ func TestCenterComputeProviders_Success_NoAssignments(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
 
-	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers?secret=my-secret", nil)
+	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers", nil)
+	req.Header.Set("X-Center-Secret", "my-secret")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -194,7 +215,7 @@ func TestCenterComputeProviders_Success_NoAssignments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No assignments → all enabled providers returned.
+	// No assignments: all enabled providers returned.
 	if len(resp.Providers) != 2 {
 		t.Fatalf("expected 2 providers, got %d", len(resp.Providers))
 	}
@@ -237,7 +258,8 @@ func TestCenterComputeProviders_WithAssignments(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
 
-	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers?secret=my-secret", nil)
+	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers", nil)
+	req.Header.Set("X-Center-Secret", "my-secret")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -291,7 +313,8 @@ func TestCenterComputeProviders_CenterNotFound(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
 
-	req := httptest.NewRequest("GET", "/api/centers/nonexistent/compute-providers?secret=any", nil)
+	req := httptest.NewRequest("GET", "/api/centers/nonexistent/compute-providers", nil)
+	req.Header.Set("X-Center-Secret", "any")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 

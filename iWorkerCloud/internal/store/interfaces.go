@@ -32,3 +32,13 @@ type SystemSettingsRepository interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key, value string) error
 }
+
+type SkillRepository interface {
+	Create(ctx context.Context, s *Skill) error
+	Update(ctx context.Context, s *Skill) error
+	GetByID(ctx context.Context, id string) (*Skill, error)
+	List(ctx context.Context) ([]*Skill, error)
+	SearchActive(ctx context.Context, query string) ([]*Skill, error)
+	Delete(ctx context.Context, id string) error
+	Count(ctx context.Context) (int, error)
+}

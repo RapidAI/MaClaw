@@ -123,6 +123,64 @@ func TestSyncHubUserLinkReplacesPreviousUserBinding(t *testing.T) {
 	}
 }
 
+func TestUserRegistrationReportGroupsByHubWithRecentWindows(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+
+	hubA := &store.HubInstance{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", HubSecretHash: hashToken("secret-a"), CreatedAt: now, UpdatedAt: now}
+	hubB := &store.HubInstance{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", HubSecretHash: hashToken("secret-b"), CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{hubA, hubB} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	seedLink := func(hubID, email string, createdAt time.Time) {
+		t.Helper()
+		link := &store.HubUserLink{ID: primaryUserLinkID(hubID, email), HubID: hubID, Email: email, CreatedAt: createdAt, UpdatedAt: createdAt}
+		if err := st.HubUserLinks.Create(ctx, link); err != nil {
+			t.Fatalf("seed link %s: %v", email, err)
+		}
+	}
+	today := startOfDay(now)
+	seedLink(hubA.ID, "today@example.com", today.Add(2*time.Hour))
+	seedLink(hubA.ID, "yesterday@example.com", today.AddDate(0, 0, -1).Add(3*time.Hour))
+	seedLink(hubA.ID, "old@example.com", today.AddDate(0, 0, -8).Add(4*time.Hour))
+	seedLink(hubB.ID, "other@example.com", today.AddDate(0, 0, -2).Add(5*time.Hour))
+
+	report, err := svc.UserRegistrationReport(ctx)
+	if err != nil {
+		t.Fatalf("UserRegistrationReport: %v", err)
+	}
+	if len(report.Daily) != 7 {
+		t.Fatalf("daily buckets=%d, want 7", len(report.Daily))
+	}
+	if len(report.Monthly) != 6 {
+		t.Fatalf("monthly buckets=%d, want 6", len(report.Monthly))
+	}
+	if len(report.Hubs) != 2 {
+		t.Fatalf("hub reports=%d, want 2", len(report.Hubs))
+	}
+	byHub := map[string]UserRegistrationHubReport{}
+	for _, item := range report.Hubs {
+		byHub[item.HubID] = item
+		if len(item.Daily) != 7 || len(item.Monthly) != 6 {
+			t.Fatalf("hub %s windows: daily=%d monthly=%d", item.HubID, len(item.Daily), len(item.Monthly))
+		}
+	}
+	if byHub[hubA.ID].TotalUsers != 3 || byHub[hubB.ID].TotalUsers != 1 {
+		t.Fatalf("unexpected hub totals: %+v", byHub)
+	}
+	if byHub[hubA.ID].Daily[len(byHub[hubA.ID].Daily)-1].Count != 1 {
+		t.Fatalf("expected hub A today count 1, got %+v", byHub[hubA.ID].Daily)
+	}
+	if byHub[hubA.ID].Daily[0].Count != 0 {
+		t.Fatalf("expected 8-day-old user outside daily window, got %+v", byHub[hubA.ID].Daily)
+	}
+}
+
 func TestMigrateUserMakesTargetHubDefault(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)

@@ -32,10 +32,7 @@ func centerSecretFromRequest(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	if secret := r.Header.Get("X-Center-Secret"); secret != "" {
-		return secret
-	}
-	return r.URL.Query().Get("secret")
+	return r.Header.Get("X-Center-Secret")
 }
 
 func authenticateCenterRequest(w http.ResponseWriter, r *http.Request, auth centerAuthenticator, centerID string) (*store.Center, bool) {
@@ -87,7 +84,7 @@ func RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 		if _, ok := ValidateSession(token); !ok {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录")
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "login required")
 			return
 		}
 		next(w, r)

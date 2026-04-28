@@ -155,6 +155,25 @@ CREATE TABLE IF NOT EXISTS licenses (
 	FOREIGN KEY (center_id) REFERENCES centers(id)
 );
 
+
+CREATE TABLE IF NOT EXISTS skill_market_skills (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	category TEXT NOT NULL DEFAULT 'general',
+	version TEXT NOT NULL DEFAULT '1.0.0',
+	tags TEXT NOT NULL DEFAULT '[]',
+	risk_level TEXT NOT NULL DEFAULT 'low',
+	status TEXT NOT NULL DEFAULT 'active',
+	price INTEGER NOT NULL DEFAULT 0,
+	author TEXT NOT NULL DEFAULT '',
+	avg_rating REAL NOT NULL DEFAULT 0,
+	download_count INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL DEFAULT (datetime('now')),
+	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_skill_market_status ON skill_market_skills(status);
+CREATE INDEX IF NOT EXISTS idx_skill_market_category ON skill_market_skills(category);
 CREATE TABLE IF NOT EXISTS system_settings (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL DEFAULT ''
@@ -167,4 +186,8 @@ var centerIntegrationMigrations = []string{
 	`ALTER TABLE centers ADD COLUMN tenant_count INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE centers ADD COLUMN cloud_control_mode TEXT NOT NULL DEFAULT 'cloud_managed'`,
 	`ALTER TABLE centers ADD COLUMN last_sync_status TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE skill_market_skills ADD COLUMN price INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE skill_market_skills ADD COLUMN author TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE skill_market_skills ADD COLUMN avg_rating REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE skill_market_skills ADD COLUMN download_count INTEGER NOT NULL DEFAULT 0`,
 }

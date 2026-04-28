@@ -114,7 +114,8 @@ func TestCenterComputeProviders_ReflectsPermission(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
 
-	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers?secret=my-secret", nil)
+	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers", nil)
+	req.Header.Set("X-Center-Secret", "my-secret")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -155,7 +156,8 @@ func TestCenterComputeProviders_ForceSyncClearedAfterRead(t *testing.T) {
 	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
 
 	// First request: force_sync should be true.
-	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers?secret=my-secret", nil)
+	req := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers", nil)
+	req.Header.Set("X-Center-Secret", "my-secret")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -168,7 +170,8 @@ func TestCenterComputeProviders_ForceSyncClearedAfterRead(t *testing.T) {
 	}
 
 	// Second request: force_sync should be cleared.
-	req2 := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers?secret=my-secret", nil)
+	req2 := httptest.NewRequest("GET", "/api/centers/ctr_1/compute-providers", nil)
+	req2.Header.Set("X-Center-Secret", "my-secret")
 	w2 := httptest.NewRecorder()
 	mux.ServeHTTP(w2, req2)
 

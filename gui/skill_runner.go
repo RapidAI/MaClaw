@@ -215,9 +215,30 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	// versions may reference scripts in the old directory structure.
 	migrateLegacyCceasyPaths(target)
 
-	// 平台检查
-	if err := checkPlatformCompat(target); err != nil {
-		return "", err
+	// ── Unified requirement pre-check ──
+	// ExtractRequirements bridges the old per-field declarations to the unified
+	// Requirement model. CheckContext carries caller-specific information
+	// (provided env vars, skill directory) so that ExtractRequirements can
+	// mark requirements appropriately — callers don't configure the Registry.
+	reqs := cskill.ExtractRequirements(target, cskill.DefaultCheckContext())
+	if len(reqs) > 0 {
+		registry := cskill.DefaultRegistry()
+		violations := registry.CheckAll(reqs)
+
+		// FixAll handles all violations — it internally skips types without
+		// a registered Fixer. No pre-filtering needed.
+		remaining := registry.FixAll(violations)
+
+		// Separate remaining into errors (block execution) and warnings (log only).
+		errors := cskill.FilterErrors(remaining)
+		if len(errors) > 0 {
+			return "", fmt.Errorf("skill %q 前置条件未满足: %s", skillName, cskill.FormatViolations(errors))
+		}
+		for _, v := range remaining {
+			if v.Severity == "warning" {
+				log.Printf("[skill-runner] requirement warning for %q: %s", skillName, v.Message)
+			}
+		}
 	}
 
 	// 文件存在性检查（bash step 中引用的文件）
@@ -360,22 +381,10 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		}
 	}
 
-	// ── P2: Validate required environment variables before execution ──
-	if len(target.RequiredEnv) > 0 {
-		var missing []string
-		for _, env := range target.RequiredEnv {
-			// Skip OPENAI_API_KEY — the proxy will provide it if needed.
-			if env == "OPENAI_API_KEY" {
-				continue
-			}
-			if strings.TrimSpace(os.Getenv(env)) == "" {
-				missing = append(missing, env)
-			}
-		}
-		if len(missing) > 0 {
-			return "", fmt.Errorf("skill %q 缺少必需的环境变量: %s", skillName, strings.Join(missing, ", "))
-		}
-	}
+	// ── P2: Required environment variables are now checked by the unified
+	// requirement system above (ExtractRequirements + CheckAll). Env vars
+	// provided by the runtime (e.g., OPENAI_API_KEY from the proxy) are
+	// marked Provided=true via CheckContext.ProvidedEnvVars. ──
 
 	// 生成 runID
 	r.mu.Lock()
@@ -1176,14 +1185,9 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		}
 	}
 
-	// ── Dependency auto-install: install pip/npm packages before execution ──
-	if len(skill.RequiresPython) > 0 || len(skill.RequiresNode) > 0 {
-		if installErr := autoInstallSkillDependencies(skill); installErr != nil {
-			log.Printf("[skill-runner] dependency install warning: %v", installErr)
-			// Non-fatal: log warning but continue execution.
-			// The skill may still work if the packages are already installed.
-		}
-	}
+	// ── Dependency auto-install is now handled by the unified requirement
+	// system in StartRun (Registry.FixAll). The pip/npm packages are checked
+	// and installed before execution begins. ──
 
 	log.Printf("[skill-runner] ▶ starting skill %q (%d steps, mode=%s, dir=%s)",
 		skill.Name, len(skill.Steps), skill.Mode, skill.SkillDir)
@@ -2540,47 +2544,6 @@ var cceasyMigrationPaths = sync.OnceValue(func() cceasyPaths {
 	return cceasyPaths{oldDir, newDir}
 })
 
-// checkPlatformCompat 检查当前平台是否匹配 skill 的 platforms 声明。
-// platforms 为空视为 universal（兼容所有平台）。
-func checkPlatformCompat(skill *corelib.NLSkillEntry) error {
-	if len(skill.Platforms) == 0 {
-		return nil // universal
-	}
-
-	currentOS := runtime.GOOS // "windows", "linux", "darwin"
-	// 标准化：darwin -> macos
-	platformName := currentOS
-	if platformName == "darwin" {
-		platformName = "macos"
-	}
-
-	matched := false
-	for _, p := range skill.Platforms {
-		if strings.EqualFold(strings.TrimSpace(p), platformName) {
-			matched = true
-			break
-		}
-		if strings.EqualFold(strings.TrimSpace(p), "universal") {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		return fmt.Errorf("skill %q 不支持当前平台 %s（支持: %s）",
-			skill.Name, platformName, strings.Join(skill.Platforms, ", "))
-	}
-
-	// Linux 下检查 GUI 环境需求
-	if currentOS == "linux" && skill.RequiresGUI {
-		if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
-			return fmt.Errorf("skill %q 需要 GUI 环境，但当前 Linux 未检测到 DISPLAY 或 WAYLAND_DISPLAY",
-				skill.Name)
-		}
-	}
-
-	return nil
-}
-
 // loadSkillDocContent reads the SKILL.md documentation content from a skill
 // directory. Returns the content string if found, empty string otherwise.
 // Used as a fallback for documentation-only skills that have no executable steps.
@@ -2616,63 +2579,13 @@ func hasSkillDocFile(skillDir string) bool {
 	return false
 }
 
-// autoInstallSkillDependencies installs pip/npm packages declared in the skill's
-// requires field. Runs `pip install` and `npm install -g` as needed.
-// Returns an error if installation fails, but callers should treat this as
-// non-fatal (the packages may already be installed).
-func autoInstallSkillDependencies(skill *corelib.NLSkillEntry) error {
-	var errs []string
-
-	if len(skill.RequiresPython) > 0 {
-		// Use the resolved absolute Python path to work in any shell environment.
-		pythonCmd := findRealPythonViaCMD()
-		if pythonCmd == "" {
-			pythonCmd = "python"
-			if runtime.GOOS != "windows" {
-				pythonCmd = "python3"
-			}
-		}
-		// Use pip install with --quiet to reduce noise
-		args := append([]string{"-m", "pip", "install", "--quiet"}, skill.RequiresPython...)
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		cmd := exec.CommandContext(ctx, pythonCmd, args...)
-		cmd.Env = os.Environ()
-		out, err := cmd.CombinedOutput()
-		cancel()
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("pip install failed: %v\n%s", err, strings.TrimSpace(string(out))))
-		} else {
-			log.Printf("[skill-runner] pip install success: %v", skill.RequiresPython)
-		}
-	}
-
-	if len(skill.RequiresNode) > 0 {
-		// Install packages locally to the skill directory to avoid requiring
-		// elevated permissions that npm install -g needs on some systems.
-		args := []string{"install", "--silent"}
-		args = append(args, skill.RequiresNode...)
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		cmd := exec.CommandContext(ctx, "npm", args...)
-		if skill.SkillDir != "" {
-			cmd.Dir = skill.SkillDir
-		}
-		cmd.Env = os.Environ()
-		out, err := cmd.CombinedOutput()
-		cancel()
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("npm install failed: %v\n%s", err, strings.TrimSpace(string(out))))
-		} else {
-			log.Printf("[skill-runner] npm install success: %v", skill.RequiresNode)
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	return nil
-}
-
 // ── 文件引用存在性检查 ──────────────────────────────────────────────────
+//
+// Note: checkFileReferences is an execution-context check, not a system
+// requirement. It depends on skillDir resolution and template variable
+// substitution state, which aren't available at requirement-extraction time.
+// It stays in the Runner, outside the Registry system. See requirement.go
+// for the boundary definition.
 
 // checkFileReferences 检查 skill 中 bash step 引用的文件/命令是否存在。
 // 对于有 skillDir 的 skill，相对路径基于 skillDir 解析。

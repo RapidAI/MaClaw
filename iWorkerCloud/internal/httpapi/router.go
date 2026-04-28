@@ -6,6 +6,7 @@ import (
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/auth"
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/centers"
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/license"
+	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/skillmarket"
 )
 
 func NewRouter(
@@ -14,6 +15,7 @@ func NewRouter(
 	licenseSvc *license.Service,
 	dataDir string,
 	computeHandler *ComputeHandler,
+	skillMarketSvc *skillmarket.Service,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -56,6 +58,17 @@ func NewRouter(
 	mux.HandleFunc("GET /api/centers/{id}/license", GetActiveLicenseHandler(licenseSvc, centerSvc))
 	mux.HandleFunc("GET /api/public-key", GetPublicKeyHandler(dataDir))
 
+	// Skill market management and distribution.
+	if skillMarketSvc != nil {
+		skillMarketHandler := NewSkillMarketHandler(centerSvc, licenseSvc, skillMarketSvc)
+		mux.HandleFunc("GET /api/admin/skills", RequireAdmin(skillMarketHandler.ListAdminSkills()))
+		mux.HandleFunc("POST /api/admin/skills", RequireAdmin(skillMarketHandler.CreateAdminSkill()))
+		mux.HandleFunc("PUT /api/admin/skills/{skill_id}", RequireAdmin(skillMarketHandler.UpdateAdminSkill()))
+		mux.HandleFunc("DELETE /api/admin/skills/{skill_id}", RequireAdmin(skillMarketHandler.DeleteAdminSkill()))
+		mux.HandleFunc("GET /api/centers/{id}/skills/search", skillMarketHandler.SearchCenterSkills())
+		mux.HandleFunc("GET /api/centers/{id}/skills/{skill_id}", skillMarketHandler.GetCenterSkill())
+	}
+
 	// Compute power management (admin)
 	if computeHandler != nil {
 		mux.HandleFunc("POST /api/admin/compute/providers", RequireAdmin(computeHandler.CreateProvider()))
@@ -80,7 +93,7 @@ func NewRouter(
 		mux.HandleFunc("GET /api/centers/{id}/compute-providers", computeHandler.CenterComputeProviders())
 	}
 
-	// Static web assets 鈥?React SPA built to web/admin/dist
+	// Static web assets: React SPA built to web/admin/dist
 	registerStaticRoutes(mux, "./web/admin/dist", "/admin")
 
 	// Root redirect

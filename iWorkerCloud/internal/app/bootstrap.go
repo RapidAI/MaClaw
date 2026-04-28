@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/config"
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/license"
+	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/store/sqlite"
 )
 
@@ -48,6 +49,11 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	licenseSvc := license.NewService(st.Licenses, privKey)
 	centerSvc := centers.NewService(st.Centers, licenseSvc)
 	centerSvc.SetPrivateKey(privKey)
+	skillMarketSvc := skillmarket.NewService(st.Skills)
+	if err := skillMarketSvc.EnsureDefaults(context.Background()); err != nil {
+		provider.Close()
+		return nil, fmt.Errorf("skill market defaults: %w", err)
+	}
 
 	// Compute power management
 	computeEncKey, err := compute.LoadOrGenerateKey(dataDir)
@@ -62,7 +68,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	}
 	computeHandler := httpapi.NewComputeHandler(computeStore, centerSvc)
 
-	handler := httpapi.NewRouter(authSvc, centerSvc, licenseSvc, dataDir, computeHandler)
+	handler := httpapi.NewRouter(authSvc, centerSvc, licenseSvc, dataDir, computeHandler, skillMarketSvc)
 
 	return &App{Handler: handler, db: provider}, nil
 }

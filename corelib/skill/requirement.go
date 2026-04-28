@@ -15,6 +15,13 @@ package skill
 //   - Fix strategy can vary by context (venv install vs global install)
 //     without changing the checker
 //   - New fix strategies can be registered independently of checkers
+//
+// Boundary: The requirement system validates system-level preconditions
+// (packages installed, env vars set, platform compatible, commands available).
+// Execution-context checks (file references in step commands, credential
+// files for remote mounting) stay in the Runner because they depend on
+// runtime state (skillDir resolution, template variable substitution) that
+// isn't available at requirement-extraction time.
 
 import (
 	"fmt"
@@ -25,14 +32,32 @@ import (
 
 // Requirement is the unified representation of a skill precondition.
 type Requirement struct {
-	Type    string   // checker type key: "pip", "npm", "env", "command"
+	Type    string   // checker type key: "pip", "npm", "env", "command", "platform", "gui"
 	Name    string   // package name / variable name / command name
 	Version string   // version constraint (optional, e.g. ">=0.9")
 	Values  []string // multi-value field (e.g. platform list); nil for single-value types
+
 	// Source indicates where this requirement came from:
 	//   "explicit" = declared in skill.yaml / SKILL.md frontmatter
 	//   "inferred" = extracted from step commands automatically
 	Source string
+
+	// Provided marks requirements that are satisfied by the execution context
+	// rather than the system environment. For example, OPENAI_API_KEY is
+	// provided by the local proxy at runtime — the checker should skip it.
+	//
+	// This replaces per-caller SkipNames configuration. The decision of what
+	// is "provided" lives in ExtractRequirements (single data source), not
+	// in each caller's Registry setup.
+	Provided bool
+
+	// Context carries execution-environment metadata that Fixers need but
+	// Checkers don't. For example, "skill_dir" tells NpmFixer where to run
+	// `npm install` (local to the skill directory, not the process cwd).
+	//
+	// Keys are defined by convention per requirement type:
+	//   "npm" → "skill_dir": directory for local npm install
+	Context map[string]string
 }
 
 // Violation describes an unsatisfied precondition.
@@ -99,16 +124,19 @@ func (r *Registry) RegisterFixer(f Fixer) {
 }
 
 // CheckAll validates all requirements, returning all violations.
+// Requirements with Provided=true are skipped — they are satisfied by the
+// execution context, not the system environment.
 func (r *Registry) CheckAll(reqs []Requirement) []Violation {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	var violations []Violation
 	for _, req := range reqs {
+		if req.Provided {
+			continue
+		}
 		checker, ok := r.checkers[req.Type]
 		if !ok {
-			// Unknown type — warn but don't block. The requirement might be
-			// for a checker that hasn't been registered yet (e.g., a plugin).
 			violations = append(violations, Violation{
 				Requirement: req,
 				Message:     fmt.Sprintf("unknown requirement type %q for %q", req.Type, req.Name),
@@ -126,6 +154,10 @@ func (r *Registry) CheckAll(reqs []Requirement) []Violation {
 // FixAll attempts to auto-fix violations that have a registered Fixer.
 // After each fix, re-checks with the Checker to verify the fix worked.
 // Returns violations that remain after fix attempts.
+//
+// FixAll accepts all violations (not just errors). It decides internally
+// which violations to attempt fixing based on whether a Fixer is registered.
+// Callers should not pre-filter — pass the full CheckAll result.
 func (r *Registry) FixAll(violations []Violation) []Violation {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

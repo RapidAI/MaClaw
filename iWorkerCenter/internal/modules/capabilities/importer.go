@@ -11,128 +11,142 @@ import (
 	"strings"
 	"time"
 
+	marketschema "github.com/RapidAI/CodeClaw/corelib/skillmarket"
+
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/idgen"
 )
 
-// HubCenterSkill represents a skill from hubcenter's API.
-type HubCenterSkill struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Category    string   `json:"category"`
-	Version     string   `json:"version"`
-	Tags        []string `json:"tags"`
-	RiskLevel   string   `json:"risk_level"`
-}
+// CloudSkill represents a skill package from iWorkerCloud skill market.
+type CloudSkill = marketschema.Skill
 
-// Importer handles importing capability packages from hubcenter.
+// Importer handles importing capability packages from iWorkerCloud.
 type Importer struct {
-	write         *sql.DB
-	hubCenterURL  string
-	httpClient    *http.Client
+	write        *sql.DB
+	cloudURL     string
+	centerID     string
+	centerSecret string
+	httpClient   *http.Client
 }
 
-// NewImporter creates an Importer.
-func NewImporter(write *sql.DB, hubCenterURL string) *Importer {
+// NewImporter creates an Importer backed by iWorkerCloud skill market.
+func NewImporter(write *sql.DB, cloudURL, centerID, centerSecret string) *Importer {
 	return &Importer{
 		write:        write,
-		hubCenterURL: strings.TrimRight(hubCenterURL, "/"),
+		cloudURL:     strings.TrimRight(cloudURL, "/"),
+		centerID:     strings.TrimSpace(centerID),
+		centerSecret: centerSecret,
 		httpClient:   &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
-// SearchHubCenter searches hubcenter for available skills.
-func (imp *Importer) SearchHubCenter(query string) ([]HubCenterSkill, error) {
-	if imp.hubCenterURL == "" {
-		return nil, fmt.Errorf("hubcenter URL not configured")
+// SearchCloud searches iWorkerCloud for skills this Center is entitled to use.
+func (imp *Importer) SearchCloud(query string) ([]CloudSkill, error) {
+	if err := imp.ensureConfigured(); err != nil {
+		return nil, err
 	}
-	url := fmt.Sprintf("%s/api/skills/search?q=%s", imp.hubCenterURL, url.QueryEscape(query))
-	resp, err := imp.httpClient.Get(url)
+	endpoint := fmt.Sprintf("%s/api/centers/%s/skills/search?q=%s", imp.cloudURL, url.PathEscape(imp.centerID), url.QueryEscape(query))
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, fmt.Errorf("hubcenter request failed: %w", err)
+		return nil, err
+	}
+	req.Header.Set("X-Center-Secret", imp.centerSecret)
+
+	resp, err := imp.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cloud skill search failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("hubcenter returned %d: %s", resp.StatusCode, string(body))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("cloud skill search returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
-		Skills []HubCenterSkill `json:"skills"`
+		Results []CloudSkill `json:"results"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode cloud skill search: %w", err)
 	}
-	return result.Skills, nil
+	if result.Results == nil {
+		result.Results = []CloudSkill{}
+	}
+	return result.Results, nil
 }
 
-// ImportFromHubCenter downloads a skill from hubcenter and creates a local capability package.
-// The download happens outside the transaction; only the DB insert is transactional.
-func (imp *Importer) ImportFromHubCenter(skillID string) (*CapabilityPackage, error) {
-	if imp.hubCenterURL == "" {
-		return nil, fmt.Errorf("hubcenter URL not configured")
+// ImportFromCloud downloads a skill from iWorkerCloud and creates a local capability package.
+func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPackage, error) {
+	if err := imp.ensureConfigured(); err != nil {
+		return nil, err
+	}
+	skillID = strings.TrimSpace(skillID)
+	tenantID = strings.TrimSpace(tenantID)
+	if skillID == "" {
+		return nil, fmt.Errorf("skill_id is required")
+	}
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
 	}
 
-	// Step 1: Fetch skill metadata (outside transaction)
-	url := fmt.Sprintf("%s/api/skills/%s", imp.hubCenterURL, skillID)
-	resp, err := imp.httpClient.Get(url)
+	endpoint := fmt.Sprintf("%s/api/centers/%s/skills/%s", imp.cloudURL, url.PathEscape(imp.centerID), url.PathEscape(skillID))
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, fmt.Errorf("fetch skill: %w", err)
+		return nil, err
+	}
+	req.Header.Set("X-Center-Secret", imp.centerSecret)
+
+	resp, err := imp.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch cloud skill: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("hubcenter returned %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("cloud skill fetch returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	var skill HubCenterSkill
-	if err := json.NewDecoder(resp.Body).Decode(&skill); err != nil {
-		return nil, fmt.Errorf("decode skill: %w", err)
+	var skill CloudSkill
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&skill); err != nil {
+		return nil, fmt.Errorf("decode cloud skill: %w", err)
 	}
 
-	// Step 2: Check for existing import (idempotent by source)
+	source := "iworkercloud:" + skillID
 	var existingID string
-	err = imp.write.QueryRow(`SELECT id FROM capability_packages WHERE source=?`,
-		"hubcenter:"+skillID).Scan(&existingID)
+	err = imp.write.QueryRow(`SELECT id FROM capability_packages WHERE tenant_id=? AND source=?`, tenantID, source).Scan(&existingID)
 	if err == nil {
-		// Already imported, return existing
-		log.Printf("[importer] skill %q already imported as %s", skill.Name, existingID)
-		return &CapabilityPackage{ID: existingID, Name: skill.Name, Status: "active"}, nil
+		log.Printf("[importer] cloud skill %q already imported as %s", skill.Name, existingID)
+		return &CapabilityPackage{ID: existingID, Name: skill.Name, Source: source, Status: "active"}, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("check existing capability: %w", err)
 	}
 
-	// Step 3: Insert into DB
 	now := time.Now().Format(time.RFC3339)
 	id := idgen.New("cap")
-	riskLevel := skill.RiskLevel
-	if riskLevel == "" {
-		riskLevel = "low"
-	}
-	version := skill.Version
-	if version == "" {
-		version = "1.0.0"
-	}
+	riskLevel := firstNonEmpty(skill.RiskLevel, "low")
+	version := firstNonEmpty(skill.Version, "1.0.0")
+	category := firstNonEmpty(skill.Category, "general")
 
-	_, err = imp.write.Exec(`INSERT INTO capability_packages (id, name, description, category, version, source, risk_level, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?)`,
-		id, skill.Name, skill.Description, skill.Category, version,
-		"hubcenter:"+skillID, riskLevel, now, now)
+	_, err = imp.write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?)`,
+		id, tenantID, skill.Name, skill.Description, category, version, source, riskLevel, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("insert capability: %w", err)
 	}
 
-	log.Printf("[importer] imported skill %q from hubcenter as %s (pending_review)", skill.Name, id)
+	log.Printf("[importer] imported cloud skill %q as %s (pending_review)", skill.Name, id)
 	return &CapabilityPackage{
 		ID: id, Name: skill.Name, Description: skill.Description,
-		Category: skill.Category, Version: version, Source: "hubcenter:" + skillID,
+		Category: category, Version: version, Source: source,
 		RiskLevel: riskLevel, Status: "pending_review", CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
-// ApproveCapability changes status from pending_review to active.
-func (imp *Importer) ApproveCapability(id string) error {
+// ApproveCapability changes status from pending_review to active for one tenant.
+func (imp *Importer) ApproveCapability(id, tenantID string) error {
 	now := time.Now().Format(time.RFC3339)
-	res, err := imp.write.Exec(`UPDATE capability_packages SET status='active', updated_at=? WHERE id=? AND status='pending_review'`, now, id)
+	res, err := imp.write.Exec(`UPDATE capability_packages SET status='active', updated_at=? WHERE id=? AND tenant_id=? AND status='pending_review'`, now, id, tenantID)
 	if err != nil {
 		return err
 	}
@@ -142,10 +156,10 @@ func (imp *Importer) ApproveCapability(id string) error {
 	return nil
 }
 
-// RejectCapability changes status from pending_review to rejected.
-func (imp *Importer) RejectCapability(id string) error {
+// RejectCapability changes status from pending_review to rejected for one tenant.
+func (imp *Importer) RejectCapability(id, tenantID string) error {
 	now := time.Now().Format(time.RFC3339)
-	res, err := imp.write.Exec(`UPDATE capability_packages SET status='rejected', updated_at=? WHERE id=? AND status='pending_review'`, now, id)
+	res, err := imp.write.Exec(`UPDATE capability_packages SET status='rejected', updated_at=? WHERE id=? AND tenant_id=? AND status='pending_review'`, now, id, tenantID)
 	if err != nil {
 		return err
 	}
@@ -153,4 +167,23 @@ func (imp *Importer) RejectCapability(id string) error {
 		return fmt.Errorf("capability %s not found or not in pending_review status", id)
 	}
 	return nil
+}
+
+func (imp *Importer) ensureConfigured() error {
+	if imp.cloudURL == "" {
+		return fmt.Errorf("iWorkerCloud URL not configured")
+	}
+	if imp.centerID == "" || imp.centerSecret == "" {
+		return fmt.Errorf("iWorkerCloud center credentials not configured")
+	}
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
