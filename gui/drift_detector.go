@@ -245,14 +245,19 @@ func (d *DriftDetector) buildDriftResult(count int, toolName, lastResultHint, pa
 // (e.g., saving knowledge 4 times with different wording) but each call has
 // a different ArgsHash, so Layer 1 doesn't fire.
 //
-// The detection is based on two conditions:
+// The detection is based on three conditions:
 //  1. The tool appears >= freqAnomalyMinCalls times in the window.
 //  2. The tool's share of the window exceeds freqAnomalyDominanceRatio.
+//  3. The results are NOT changing across the dominant tool's calls.
+//
+// Condition 3 is the mechanism-level invariant shared with Layer 1:
+// if tool results are changing, external state is progressing, and the
+// LLM is not stuck. This applies regardless of whether arguments are
+// the same (Layer 1) or different (Layer 2).
 //
 // Polling is excluded via isPollingPattern: when ALL calls to the dominant
 // tool share the same ArgsHash, the tool is repeatedly querying the same
-// thing (status polling), which is legitimate. Only tools with varying
-// ArgsHash (different operations each time) are flagged.
+// thing (status polling), which is legitimate and already handled by Layer 1.
 func (d *DriftDetector) detectFrequencyAnomaly() DriftResult {
 	window := d.records
 	if len(window) < freqAnomalyMinCalls {
@@ -294,6 +299,26 @@ func (d *DriftDetector) detectFrequencyAnomaly() DriftResult {
 		return DriftResult{}
 	}
 
+	// --- Core mechanism: check if results are changing ---
+	//
+	// This is the same invariant as Layer 1 (#48): if tool results are
+	// changing across calls, external state is progressing. The LLM is
+	// making forward progress, not stuck in a semantic loop.
+	//
+	// Examples:
+	//   - ssh(connect) → "connected" → ssh(exec) → "docker ps output" →
+	//     ssh(check_task) → "completed" → ssh(exec) → "git fetch output"
+	//     → ALL results different → progressing → NOT drift
+	//
+	//   - memory(save, "知识A") → "已保存" → memory(save, "知识B") → "已保存"
+	//     → memory(save, "知识C") → "已保存" → ALL results same → stuck → DRIFT
+	//
+	// We check results across ALL calls to the dominant tool in the window
+	// (not just consecutive ones, since Layer 2 doesn't require consecutiveness).
+	if freqResultsAreProgressing(window, dominantTool) {
+		return DriftResult{}
+	}
+
 	// Find the last result hint for the dominant tool.
 	var lastHint string
 	for i := len(window) - 1; i >= 0; i-- {
@@ -304,6 +329,67 @@ func (d *DriftDetector) detectFrequencyAnomaly() DriftResult {
 	}
 
 	return d.buildDriftResult(dominantCount, dominantTool, lastHint, "frequency")
+}
+
+// resultKey returns the comparison key for a ToolCallRecord's result.
+// Prefers ResultHash (full hash) over ResultHint (truncated).
+func resultKey(r *ToolCallRecord) string {
+	if r.ResultHash != "" {
+		return r.ResultHash
+	}
+	return r.ResultHint
+}
+
+// freqResultsAreProgressing checks whether the dominant tool's calls
+// in the window represent a multi-step workflow (progressing) or a
+// semantic loop (stuck).
+//
+// The mechanism is the same invariant as Layer 1 (#48): if tool results
+// are changing across calls, external state is progressing. Uses ResultHash
+// (full result hash) for comparison — this is the most reliable signal
+// because it captures the complete tool output, not a truncated hint.
+//
+// Returns true if the majority of consecutive result pairs have different
+// ResultHash values, indicating the LLM is making forward progress.
+// Returns false if results are mostly identical (semantic loop).
+//
+// The threshold is >50% of consecutive pairs must differ.
+func freqResultsAreProgressing(window []ToolCallRecord, toolName string) bool {
+	// Collect ResultHash values for the dominant tool in order.
+	var hashes []string
+	for i := range window {
+		if window[i].ToolName == toolName {
+			hashes = append(hashes, window[i].ResultHash)
+		}
+	}
+
+	if len(hashes) < 2 {
+		return false // Not enough data to judge
+	}
+
+	// If all hashes are empty, no result data — conservative, treat as drift.
+	allEmpty := true
+	for _, h := range hashes {
+		if h != "" {
+			allEmpty = false
+			break
+		}
+	}
+	if allEmpty {
+		return false
+	}
+
+	// Count how many consecutive pairs have different hashes.
+	diffCount := 0
+	for i := 1; i < len(hashes); i++ {
+		if hashes[i] != hashes[i-1] {
+			diffCount++
+		}
+	}
+
+	// >50% of pairs differ → progressing (not a semantic loop).
+	totalPairs := len(hashes) - 1
+	return diffCount*2 > totalPairs
 }
 
 // isPollingPattern checks whether the given tool's calls in the window
@@ -356,17 +442,9 @@ func isPollingPattern(window []ToolCallRecord, toolName string) bool {
 func resultsAreChanging(window []ToolCallRecord, consecutiveCount int) bool {
 	startIdx := len(window) - consecutiveCount
 
-	// Pick the comparison key: prefer ResultHash, fall back to ResultHint.
-	getKey := func(r *ToolCallRecord) string {
-		if r.ResultHash != "" {
-			return r.ResultHash
-		}
-		return r.ResultHint
-	}
-
 	allEmpty := true
 	for i := startIdx; i < len(window); i++ {
-		if getKey(&window[i]) != "" {
+		if resultKey(&window[i]) != "" {
 			allEmpty = false
 			break
 		}
@@ -379,7 +457,7 @@ func resultsAreChanging(window []ToolCallRecord, consecutiveCount int) bool {
 
 	// Check if any two consecutive results differ.
 	for i := startIdx + 1; i < len(window); i++ {
-		if getKey(&window[i]) != getKey(&window[i-1]) {
+		if resultKey(&window[i]) != resultKey(&window[i-1]) {
 			return true // At least one state transition — not a dead loop.
 		}
 	}
@@ -431,7 +509,7 @@ func (d *DriftDetector) PreviewDrift() DriftResult {
 		for name, count := range toolCounts {
 			if count >= freqAnomalyMinCalls {
 				ratio := float64(count) / float64(len(window))
-				if ratio >= freqAnomalyDominanceRatio && !isPollingPattern(window, name) {
+				if ratio >= freqAnomalyDominanceRatio && !isPollingPattern(window, name) && !freqResultsAreProgressing(window, name) {
 					return DriftResult{
 						Drifted:       true,
 						Pattern:       "frequency",

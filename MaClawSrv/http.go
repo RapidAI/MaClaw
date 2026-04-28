@@ -748,9 +748,23 @@ func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Req
 }
 
 func (s *HTTPServer) handleListServiceSnapshots(w http.ResponseWriter, r *http.Request) {
+	since, err := parseOptionalTimeQuery(r, "since")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	until, err := parseOptionalTimeQuery(r, "until")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	items, err := s.svc.ListServiceSnapshots(r.Context(), agentservice.ListServiceSnapshotsInput{
 		TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id")),
 		UserID:   strings.TrimSpace(r.URL.Query().Get("user_id")),
+		Scope:    strings.TrimSpace(r.URL.Query().Get("scope")),
+		Name:     strings.TrimSpace(r.URL.Query().Get("name")),
+		Since:    since,
+		Until:    until,
 	})
 	if err != nil {
 		writeError(w, err)

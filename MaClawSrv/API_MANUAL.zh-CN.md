@@ -2889,9 +2889,11 @@ Content-Type: application/json
 列出快照：
 
 ```http
-GET /api/v1/admin/snapshots?tenant_id=tenant_xxx&user_id=user_xxx&limit=100&before=2026-04-28T00:00:00Z
+GET /api/v1/admin/snapshots?tenant_id=tenant_xxx&user_id=user_xxx&scope=user&name=nightly&since=2026-04-01T00:00:00Z&until=2026-04-28T00:00:00Z&limit=100&before=2026-04-28T00:00:00Z
 X-MaClaw-Admin-Secret: <admin-secret>
 ```
+
+列表过滤支持 `tenant_id`、`user_id`、`scope=service|tenant|user`、不区分大小写的 `name`，以及 RFC3339 格式的 `since`/`until` 时间窗口。
 
 读取单个快照：
 

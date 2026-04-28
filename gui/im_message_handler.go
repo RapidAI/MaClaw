@@ -6676,6 +6676,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			input, output := deriveLLMTokenUsage(resp, conversation)
 			providerName := h.getMaclawLLMProviders().Current
 			log.Printf("[LLM] usage main_round provider=%q input=%d output=%d usage_nil=%t choices=%d", providerName, input, output, resp.Usage == nil, len(resp.Choices))
+			if len(resp.Choices) > 0 {
+				log.Printf("[LLM] finish_reason=%q content_len=%d tool_calls=%d", resp.Choices[0].FinishReason, len(resp.Choices[0].Message.Content), len(resp.Choices[0].Message.ToolCalls))
+			}
 			h.accumulateLLMTokenUsage(providerName, input, output)
 			lastLLMInputTokens = input
 			lastLLMOutputTokens = output
@@ -7012,7 +7015,32 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 
 			const maxLengthContinuations = 3
-			if choice.FinishReason == "length" && phase.LengthContinuations < maxLengthContinuations {
+			// Detect output truncation by two signals:
+			// 1. Explicit: finish_reason="length" (standard OpenAI signal)
+			// 2. Heuristic: content ends mid-sentence (some APIs like DeepSeek
+			//    return "stop" instead of "length" when output is truncated)
+			//
+			// The heuristic checks: content is non-empty, doesn't end with a
+			// sentence/block terminator, and is long enough to plausibly be
+			// truncated (>200 runes — short replies shouldn't trigger this).
+			isTruncated := choice.FinishReason == "length"
+			if !isTruncated && len(msgContent) > 200 {
+				trimmed := strings.TrimRight(msgContent, " \t\r\n")
+				runes := []rune(trimmed)
+				if len(runes) > 200 {
+					last := runes[len(runes)-1]
+					switch last {
+					case '.', '!', '?', '"', ')', ']', '`',
+						'\u3002', '\uff01', '\uff1f', '\u201d', '\uff09', '\u3011', '\u300b':
+						// Ends with a sentence/block terminator — not truncated.
+					default:
+						isTruncated = true
+						log.Printf("[agent-loop] heuristic truncation detected: content ends with %q (runeLen=%d, finish_reason=%q)",
+							string(last), len(runes), choice.FinishReason)
+					}
+				}
+			}
+			if isTruncated && phase.LengthContinuations < maxLengthContinuations {
 				phase.LengthContinuations++
 				phase.ConsecutiveNoTool = 0 // reset — this is not a stall
 				// Accumulate the truncated chunk so the final response contains

@@ -572,6 +572,29 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	if len(listed.Items) != 1 || listed.Items[0].ID != created.Snapshot.ID {
 		t.Fatalf("unexpected listed snapshots: %#v", listed.Items)
 	}
+	since := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	until := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/snapshots?scope=tenant&name=BACKUP&since="+since+"&until="+until, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("filtered list snapshots status = %d body = %s", w.Code, w.Body.String())
+	}
+	listed.Items = nil
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode filtered list snapshots: %v", err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].ID != created.Snapshot.ID {
+		t.Fatalf("unexpected filtered snapshots: %#v", listed.Items)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/snapshots?scope=project", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid snapshot scope status = %d body = %s", w.Code, w.Body.String())
+	}
 	overview, err := svc.GetAdminOverview(context.Background())
 	if err != nil {
 		t.Fatalf("GetAdminOverview: %v", err)

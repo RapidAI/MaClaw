@@ -53,7 +53,12 @@ func ListUserDashboardHandler(service *hubs.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "LIST_USER_DASHBOARD_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		report, err := service.UserRegistrationReport(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "USER_REGISTRATION_REPORT_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "registration_report": report})
 	}
 }
 

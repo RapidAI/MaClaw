@@ -77,9 +77,16 @@ func GetPublicKeyHandler(dataDir string) http.HandlerFunc {
 	}
 }
 
-func GetActiveLicenseHandler(svc *license.Service) http.HandlerFunc {
+func GetActiveLicenseHandler(svc *license.Service, centerAuth centerAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		centerID := r.PathValue("id")
+		if centerID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "center id is required")
+			return
+		}
+		if _, ok := authenticateCenterRequest(w, r, centerAuth, centerID); !ok {
+			return
+		}
 		lic, err := svc.GetActive(r.Context(), centerID)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "no active license")

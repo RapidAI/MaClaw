@@ -2651,8 +2651,13 @@ func (s *Service) ListServiceSnapshots(ctx context.Context, in ListServiceSnapsh
 	_ = ctx
 	in.TenantID = strings.TrimSpace(in.TenantID)
 	in.UserID = strings.TrimSpace(in.UserID)
+	in.Scope = strings.TrimSpace(in.Scope)
+	name := strings.ToLower(strings.TrimSpace(in.Name))
 	if in.UserID != "" && in.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required when user_id is set")
+	}
+	if in.Scope != "" && in.Scope != "service" && in.Scope != "tenant" && in.Scope != "user" {
+		return nil, fmt.Errorf("scope must be service, tenant, or user")
 	}
 	entries, err := os.ReadDir(s.snapshotRoot())
 	if errors.Is(err, os.ErrNotExist) {
@@ -2675,6 +2680,18 @@ func (s *Service) ListServiceSnapshots(ctx context.Context, in ListServiceSnapsh
 			continue
 		}
 		if in.UserID != "" && snapshot.UserID != in.UserID {
+			continue
+		}
+		if in.Scope != "" && snapshot.Scope != in.Scope {
+			continue
+		}
+		if name != "" && !strings.Contains(strings.ToLower(snapshot.Name), name) {
+			continue
+		}
+		if in.Since != nil && snapshot.CreatedAt.Before(*in.Since) {
+			continue
+		}
+		if in.Until != nil && snapshot.CreatedAt.After(*in.Until) {
 			continue
 		}
 		out = append(out, snapshot)

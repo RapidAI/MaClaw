@@ -592,7 +592,6 @@ func (r *hubUserLinkRepo) Upsert(ctx context.Context, link *store.HubUserLink) e
 			hub_id = excluded.hub_id,
 			email = excluded.email,
 			is_default = excluded.is_default,
-			created_at = excluded.created_at,
 			updated_at = excluded.updated_at
 	`,
 		link.ID,
@@ -699,7 +698,6 @@ func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubI
 				hub_id = excluded.hub_id,
 				email = excluded.email,
 				is_default = excluded.is_default,
-				created_at = excluded.created_at,
 				updated_at = excluded.updated_at
 		`, link.ID, link.HubID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
 			return nil, nil, err

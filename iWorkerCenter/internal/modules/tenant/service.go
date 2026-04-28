@@ -15,13 +15,15 @@ import (
 )
 
 var (
-	ErrCompanyExists     = errors.New("company already exists")
-	ErrNoTenantsYet      = errors.New("no tenants exist")
-	ErrSetupAlreadyDone  = errors.New("initial setup already completed")
-	ErrSignatureInvalid  = errors.New("invalid signature")
-	ErrTimestampExpired  = errors.New("timestamp expired")
-	ErrNonceReplay       = errors.New("nonce already used")
-	ErrCloudNotConfigured = errors.New("iWorkerCloud not configured")
+	ErrCompanyExists           = errors.New("company already exists")
+	ErrNoTenantsYet            = errors.New("no tenants exist")
+	ErrSetupAlreadyDone        = errors.New("initial setup already completed")
+	ErrSignatureInvalid        = errors.New("invalid signature")
+	ErrTimestampExpired        = errors.New("timestamp expired")
+	ErrNonceReplay             = errors.New("nonce already used")
+	ErrCloudNotConfigured      = errors.New("iWorkerCloud not configured")
+	ErrTenantNotFound          = errors.New("tenant not found")
+	ErrCloudCredentialsMissing = errors.New("tenant cloud credentials missing")
 )
 
 // CreateTenantRequest is used for both setup-tenant and provision.
@@ -147,6 +149,26 @@ func (s *TenantService) TenantCount(ctx context.Context) (int, error) {
 	return s.tenantRepo.Count(ctx)
 }
 
+// FetchCloudLicense retrieves this tenant's active iWorkerCloud license.
+func (s *TenantService) FetchCloudLicense(ctx context.Context, tenantID string) (*CloudLicense, error) {
+	if s.cloudClient == nil || s.cloudClient.cfg.BaseURL == "" {
+		return nil, ErrCloudNotConfigured
+	}
+
+	t, err := s.tenantRepo.GetByID(ctx, strings.TrimSpace(tenantID))
+	if err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, ErrTenantNotFound
+	}
+	if t.CloudCenterID == "" || t.CloudSecret == "" {
+		return nil, ErrCloudCredentialsMissing
+	}
+
+	return s.cloudClient.FetchCenterLicense(ctx, t.CloudCenterID, t.CloudSecret)
+}
+
 // RegisterToCloud registers a tenant with iWorkerCloud (async-safe).
 func (s *TenantService) RegisterToCloud(ctx context.Context, tenantID string) {
 	if s.cloudClient == nil || s.cloudClient.cfg.BaseURL == "" {
@@ -240,8 +262,7 @@ func (s *TenantService) createAdminUser(ctx context.Context, tenantID, username,
 func (s *TenantService) initRootSecurityGroup(ctx context.Context, tenantID string) error {
 	id := fmt.Sprintf("sg_root_%s", tenantID)
 	_, err := s.secGroupDB.ExecContext(ctx,
-		`INSERT OR IGNORE INTO security_groups (id, name, parent_id, tenant_id, created_at, updated_at)
-		 VALUES (?, '全员', '', ?, datetime('now'), datetime('now'))`,
+		"INSERT OR IGNORE INTO security_groups (id, name, parent_id, tenant_id, created_at, updated_at) VALUES (?, '\u5168\u5458', '', ?, datetime('now'), datetime('now'))",
 		id, tenantID)
 	return err
 }

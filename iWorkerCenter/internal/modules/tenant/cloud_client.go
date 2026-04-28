@@ -13,7 +13,7 @@ import (
 
 // CloudConfig holds iWorkerCloud connection settings.
 type CloudConfig struct {
-	BaseURL            string `yaml:"base_url"`
+	BaseURL             string `yaml:"base_url"`
 	PublicKeyCacheHours int    `yaml:"public_key_cache_hours"`
 }
 
@@ -28,7 +28,7 @@ func NewCloudClient(cfg CloudConfig) *CloudClient {
 		cfg.PublicKeyCacheHours = 24
 	}
 	return &CloudClient{
-		cfg: cfg,
+		cfg:    cfg,
 		client: &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -75,6 +75,19 @@ type RegisterCenterResponse struct {
 	Message  string `json:"message"`
 }
 
+// CloudLicense is the active license record returned by iWorkerCloud.
+type CloudLicense struct {
+	ID          string     `json:"id"`
+	CenterID    string     `json:"center_id"`
+	Modules     string     `json:"modules"`
+	Type        string     `json:"type"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	IsLongTerm  bool       `json:"is_long_term"`
+	Certificate string     `json:"certificate"`
+	CreatedAt   time.Time  `json:"created_at"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+}
+
 // RegisterCenter calls POST /api/centers/register on iWorkerCloud.
 func (c *CloudClient) RegisterCenter(ctx context.Context, req RegisterCenterRequest) (*RegisterCenterResponse, error) {
 	if c.cfg.BaseURL == "" {
@@ -103,6 +116,43 @@ func (c *CloudClient) RegisterCenter(ctx context.Context, req RegisterCenterRequ
 	var result RegisterCenterResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode register response: %w", err)
+	}
+	return &result, nil
+}
+
+// FetchCenterLicense retrieves the active license for a registered Center.
+func (c *CloudClient) FetchCenterLicense(ctx context.Context, centerID, centerSecret string) (*CloudLicense, error) {
+	if c.cfg.BaseURL == "" {
+		return nil, fmt.Errorf("cloud base_url not configured")
+	}
+	centerID = strings.TrimSpace(centerID)
+	if centerID == "" {
+		return nil, fmt.Errorf("center_id is required")
+	}
+	if centerSecret == "" {
+		return nil, fmt.Errorf("center_secret is required")
+	}
+
+	url := fmt.Sprintf("%s/api/centers/%s/license", strings.TrimRight(c.cfg.BaseURL, "/"), centerID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Center-Secret", centerSecret)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch center license: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("fetch center license: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result CloudLicense
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode center license response: %w", err)
 	}
 	return &result, nil
 }

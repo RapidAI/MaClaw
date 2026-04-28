@@ -457,26 +457,7 @@ func (h *ComputeHandler) CenterComputeProviders() http.HandlerFunc {
 			return
 		}
 
-		// Extract secret from query param or header.
-		secret := r.URL.Query().Get("secret")
-		if secret == "" {
-			secret = r.Header.Get("X-Center-Secret")
-		}
-		if secret == "" {
-			writeError(w, http.StatusUnauthorized, "AUTH_FAILED", "missing center secret")
-			return
-		}
-
-		// Authenticate center.
-		center, err := h.centerSvc.AuthenticateCenter(r.Context(), centerID, secret)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "AUTH_FAILED", "invalid center credentials")
-			return
-		}
-
-		// Check if center is disabled.
-		if center.Status == "disabled" {
-			writeError(w, http.StatusForbidden, "CENTER_DISABLED", "center is disabled")
+		if _, ok := authenticateCenterRequest(w, r, h.centerSvc, centerID); !ok {
 			return
 		}
 

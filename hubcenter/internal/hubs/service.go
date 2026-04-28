@@ -184,6 +184,19 @@ type HubUserDashboardItem struct {
 	LastSeenAt            *time.Time `json:"last_seen_at,omitempty"`
 }
 
+type UserRegistrationBucket struct {
+	Period string `json:"period"`
+	Count  int    `json:"count"`
+}
+
+type UserRegistrationReport struct {
+	TotalUsers   int                      `json:"total_users"`
+	DailyTotal   int                      `json:"daily_total"`
+	MonthlyTotal int                      `json:"monthly_total"`
+	Daily        []UserRegistrationBucket `json:"daily"`
+	Monthly      []UserRegistrationBucket `json:"monthly"`
+}
+
 type Service struct {
 	hubs          store.HubRepository
 	links         store.HubUserLinkRepository
@@ -603,6 +616,65 @@ func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem
 		})
 	}
 	return out, nil
+}
+
+func (s *Service) UserRegistrationReport(ctx context.Context) (UserRegistrationReport, error) {
+	var report UserRegistrationReport
+	if s.links == nil {
+		return report, nil
+	}
+	links, err := s.links.ListAll(ctx)
+	if err != nil {
+		return report, err
+	}
+	firstSeen := map[string]time.Time{}
+	for _, link := range links {
+		if link == nil {
+			continue
+		}
+		email := normalizeEmail(link.Email)
+		if email == "" || strings.Contains(email, "*") {
+			continue
+		}
+		createdAt := link.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = link.UpdatedAt
+		}
+		if createdAt.IsZero() {
+			continue
+		}
+		if existing, ok := firstSeen[email]; !ok || createdAt.Before(existing) {
+			firstSeen[email] = createdAt
+		}
+	}
+	report.TotalUsers = len(firstSeen)
+	now := time.Now()
+	today := startOfDay(now)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	dailyCounts := map[string]int{}
+	monthlyCounts := map[string]int{}
+	for _, createdAt := range firstSeen {
+		local := createdAt.Local()
+		dayKey := local.Format("2006-01-02")
+		monthKey := local.Format("2006-01")
+		dailyCounts[dayKey]++
+		monthlyCounts[monthKey]++
+		if !local.Before(today) {
+			report.DailyTotal++
+		}
+		if !local.Before(monthStart) {
+			report.MonthlyTotal++
+		}
+	}
+	for i := 29; i >= 0; i-- {
+		day := today.AddDate(0, 0, -i).Format("2006-01-02")
+		report.Daily = append(report.Daily, UserRegistrationBucket{Period: day, Count: dailyCounts[day]})
+	}
+	for i := 11; i >= 0; i-- {
+		month := monthStart.AddDate(0, -i, 0).Format("2006-01")
+		report.Monthly = append(report.Monthly, UserRegistrationBucket{Period: month, Count: monthlyCounts[month]})
+	}
+	return report, nil
 }
 
 func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*MigrationResult, error) {
@@ -1853,6 +1925,11 @@ func primaryUserLinkID(hubID, email string) string {
 
 func adminUserLinkID(email string) string {
 	return adminUserLinkPrefix + hashToken(normalizeEmail(email))[:20]
+}
+
+func startOfDay(t time.Time) time.Time {
+	local := t.Local()
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
 }
 
 func domainRouteID(hubID string, index int) string {

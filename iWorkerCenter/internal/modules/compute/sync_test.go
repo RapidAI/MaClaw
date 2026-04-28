@@ -31,12 +31,15 @@ func TestSyncNowSuccess(t *testing.T) {
 		{ID: "p2", Name: "Anthropic", Protocol: "anthropic", Enabled: true},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request path and query params
+		// Verify request path and center authentication header
 		if r.URL.Path != "/api/centers/center-1/compute-providers" {
 			t.Errorf("path = %q, want /api/centers/center-1/compute-providers", r.URL.Path)
 		}
-		if r.URL.Query().Get("secret") != "secret-abc" {
-			t.Errorf("secret = %q, want secret-abc", r.URL.Query().Get("secret"))
+		if got := r.Header.Get("X-Center-Secret"); got != "secret-abc" {
+			t.Errorf("X-Center-Secret = %q, want secret-abc", got)
+		}
+		if r.URL.Query().Get("secret") != "" {
+			t.Errorf("secret query should not be set, got %q", r.URL.Query().Get("secret"))
 		}
 		resp := syncResponse{
 			Providers:         providers,
@@ -107,7 +110,7 @@ func TestSyncNowFailurePreservesProviders(t *testing.T) {
 		t.Fatalf("providers len = %d after first sync, want 1", len(sm.GetProviders()))
 	}
 
-	// Second sync fails — providers should be preserved
+	// Second sync fails; providers should be preserved
 	if err := sm.SyncNow(); err == nil {
 		t.Fatal("second SyncNow() should return error")
 	}

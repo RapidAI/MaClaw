@@ -53,7 +53,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/licenses/{id}/revoke", RequireAdmin(RevokeLicenseHandler(licenseSvc)))
 
 	// Licenses (public: center fetches its own active license + public key)
-	mux.HandleFunc("GET /api/centers/{id}/license", GetActiveLicenseHandler(licenseSvc))
+	mux.HandleFunc("GET /api/centers/{id}/license", GetActiveLicenseHandler(licenseSvc, centerSvc))
 	mux.HandleFunc("GET /api/public-key", GetPublicKeyHandler(dataDir))
 
 	// Compute power management (admin)

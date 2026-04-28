@@ -160,13 +160,15 @@ func (sm *SyncManager) loop() {
 
 // doSync performs a single sync request to iWorkerCloud.
 func (sm *SyncManager) doSync() error {
-	url := fmt.Sprintf("%s/api/centers/%s/compute-providers?secret=%s",
-		sm.cloudURL, sm.centerID, sm.centerSecret)
+	url := fmt.Sprintf("%s/api/centers/%s/compute-providers", sm.cloudURL, sm.centerID)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		sm.recordFailure(err)
 		return err
+	}
+	if sm.centerSecret != "" {
+		req.Header.Set("X-Center-Secret", sm.centerSecret)
 	}
 
 	resp, err := sm.client.Do(req)

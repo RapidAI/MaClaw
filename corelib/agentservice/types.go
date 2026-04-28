@@ -630,8 +630,12 @@ type CreateServiceSnapshotInput struct {
 }
 
 type ListServiceSnapshotsInput struct {
-	TenantID string `json:"tenant_id,omitempty"`
-	UserID   string `json:"user_id,omitempty"`
+	TenantID string     `json:"tenant_id,omitempty"`
+	UserID   string     `json:"user_id,omitempty"`
+	Scope    string     `json:"scope,omitempty"`
+	Name     string     `json:"name,omitempty"`
+	Since    *time.Time `json:"since,omitempty"`
+	Until    *time.Time `json:"until,omitempty"`
 }
 
 type ServiceSnapshot struct {

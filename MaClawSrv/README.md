@@ -1366,7 +1366,7 @@ The service is broadly usable, but it is not yet a fully complete control plane.
 ## Admin snapshot APIs
 
 - `POST /api/v1/admin/snapshots` persists a service, tenant, or user export under `MACLAW_DATA_ROOT/snapshots`.
-- `GET /api/v1/admin/snapshots` lists persisted snapshots with tenant/user filters and normal pagination.
+- `GET /api/v1/admin/snapshots` lists persisted snapshots with tenant/user/scope/name/time-window filters and normal pagination.
 - `POST /api/v1/admin/snapshots/{snapshotId}/restore` reuses the import pipeline and supports `dry_run` plus `overwrite`.
 - `POST /api/v1/admin/snapshots/prune` supports `older_than`, `keep_latest`, and `dry_run` for manual retention cleanup.
 - `GET /api/v1/admin/overview` includes `snapshots` and `snapshot_bytes`; `/metrics` exposes `maclaw_snapshots_total` and `maclaw_snapshot_bytes_total`.

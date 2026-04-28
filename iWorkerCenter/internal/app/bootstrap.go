@@ -246,6 +246,7 @@ func Bootstrap() (*Center, error) {
 	dwAuthHandler.RegisterAdminRoutes(mux)
 	dwAuthHandler.RegisterAuthRoutes(mux)
 	tenantHandler.RegisterRoutes(mux)
+	tenantHandler.RegisterAdminRoutes(mux)
 	computeHandler.RegisterAdminRoutes(mux)
 
 	// dedup/expiry endpoint

@@ -54,7 +54,7 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/admin/audit-events", Summary: "List audit events", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "action", "resource_type", "resource_id", "actor_type", "since", "until", "limit", "before"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/export", Summary: "Export service state", Description: "Exports service, tenant, or user state for backup, migration, or inspection. Sensitive values are omitted unless include_secrets=true.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "include_messages", "include_runs", "include_audit", "include_secrets"}},
 	{Method: http.MethodPost, Path: "/api/v1/admin/import", Summary: "Import service state", Description: "Imports previously exported service, tenant, or user state. Imported instance paths are remapped into the current data root, and dry_run mode returns conflicts, warnings, and per-resource plan actions without mutating state.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"overwrite", "dry_run"}},
-	{Method: http.MethodGet, Path: "/api/v1/admin/snapshots", Summary: "List service snapshots", Description: "Lists persisted export snapshots saved under the service data root.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "limit", "before"}},
+	{Method: http.MethodGet, Path: "/api/v1/admin/snapshots", Summary: "List service snapshots", Description: "Lists persisted export snapshots saved under the service data root.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "scope", "name", "since", "until", "limit", "before"}},
 	{Method: http.MethodPost, Path: "/api/v1/admin/snapshots", Summary: "Create service snapshot", Description: "Creates a persisted service, tenant, or user snapshot by reusing the export pipeline and writing a private JSON file under the service data root.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/admin/snapshots/prune", Summary: "Prune service snapshots", Description: "Deletes old persisted snapshots by tenant/user scope, older_than cutoff, and keep_latest retention. Supports dry_run previews.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "older_than", "keep_latest", "dry_run"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/snapshots/{snapshotId}", Summary: "Get service snapshot", Description: "Returns snapshot metadata and the exported state payload.", Tag: "admin", Security: adminSecurity()},
@@ -285,6 +285,8 @@ func openAPIQuerySchema(path, name string) map[string]any {
 			return map[string]any{"type": "string", "enum": []string{"active", "disabled"}}
 		case "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials":
 			return map[string]any{"type": "string", "enum": []string{"active", "suspended", "revoked"}}
+		case "/api/v1/admin/snapshots":
+			return map[string]any{"type": "string", "enum": []string{"service", "tenant", "user"}}
 		case "/api/v1/jobs":
 			return map[string]any{"type": "string", "enum": []string{"pending", "running", "succeeded", "failed", "canceled"}}
 		case "/api/v1/instances/{instanceId}/runs":
@@ -326,6 +328,10 @@ func openAPIQueryDescription(path, name string) string {
 		return "Filters audit events for a specific resource id, such as a credential, run, user, or tenant id."
 	case "actor_type":
 		return "Filters audit events by actor type, such as admin, user, credential, system, or anonymous."
+	case "scope":
+		if path == "/api/v1/admin/snapshots" {
+			return "Filters snapshots by scope: service, tenant, or user."
+		}
 	case "response_source":
 		return "Currently only ask_user is supported for filtering."
 	case "expired":

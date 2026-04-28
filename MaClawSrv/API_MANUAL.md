@@ -9288,9 +9288,11 @@ Notes:
 List snapshots:
 
 ```http
-GET /api/v1/admin/snapshots?tenant_id=tenant_xxx&user_id=user_xxx&limit=100&before=2026-04-28T00:00:00Z
+GET /api/v1/admin/snapshots?tenant_id=tenant_xxx&user_id=user_xxx&scope=user&name=nightly&since=2026-04-01T00:00:00Z&until=2026-04-28T00:00:00Z&limit=100&before=2026-04-28T00:00:00Z
 X-MaClaw-Admin-Secret: <admin-secret>
 ```
+
+List filters include `tenant_id`, `user_id`, `scope=service|tenant|user`, case-insensitive `name`, and `since`/`until` RFC3339 time windows.
 
 Get one snapshot:
 
