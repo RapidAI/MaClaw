@@ -23,6 +23,7 @@ type Service struct {
 	expExtractor *experience.Extractor // optional, may be nil
 	capResolver  CapabilityAssigneeResolver
 	capRecorder  CapabilityUsageRecorder
+	memRecorder  CapabilityExecutionMemoryRecorder
 }
 
 // NewService creates a Service.
@@ -47,12 +48,23 @@ func (s *Service) SetCapabilityAssigneeResolver(resolver CapabilityAssigneeResol
 
 // CapabilityUsageRecorder receives best-effort execution feedback from workflow runtime.
 type CapabilityUsageRecorder interface {
-	RecordCapabilityUsage(ctx context.Context, tenantID, capabilityID, colleagueID, workflowInstanceID, workflowStepInstanceID, status, resultSummary, errorMessage string, latencyMs int64) error
+	RecordCapabilityUsage(ctx context.Context, tenantID, capabilityID, colleagueID, workflowInstanceID, workflowStepInstanceID, status, resultSummary, errorMessage string, latencyMs int64, qualityScore int, qualityReason string) error
 }
 
 func (s *Service) SetCapabilityUsageRecorder(recorder CapabilityUsageRecorder) {
 	if s != nil {
 		s.capRecorder = recorder
+	}
+}
+
+// CapabilityExecutionMemoryRecorder persists workflow execution facts into Center-owned iWorker memory.
+type CapabilityExecutionMemoryRecorder interface {
+	RecordCapabilityExecutionMemory(ctx context.Context, tenantID, workerID, orgUnitID, capabilityID, taskTitle, workflowName, status, resultSummary, errorMessage string) error
+}
+
+func (s *Service) SetCapabilityExecutionMemoryRecorder(recorder CapabilityExecutionMemoryRecorder) {
+	if s != nil {
+		s.memRecorder = recorder
 	}
 }
 
@@ -64,6 +76,8 @@ type CompleteStepInput struct {
 	CapabilityStatus    string
 	CapabilityError     string
 	CapabilityLatencyMs int64
+	QualityScore        int
+	QualityReason       string
 }
 
 // --- Definition management ---
@@ -413,9 +427,15 @@ func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, 
 		return err
 	}
 
-	if s.capRecorder != nil && strings.TrimSpace(input.CapabilityID) != "" {
+	capabilityID := strings.TrimSpace(input.CapabilityID)
+	if capabilityID != "" {
 		status := normalizeCapabilityUsageStatus(input.CapabilityStatus, input.CapabilityError)
-		_ = s.capRecorder.RecordCapabilityUsage(context.Background(), tenantID, strings.TrimSpace(input.CapabilityID), actorID, inst.ID, stepInst.ID, status, result, input.CapabilityError, input.CapabilityLatencyMs)
+		if s.capRecorder != nil {
+			_ = s.capRecorder.RecordCapabilityUsage(context.Background(), tenantID, capabilityID, actorID, inst.ID, stepInst.ID, status, result, input.CapabilityError, input.CapabilityLatencyMs, input.QualityScore, input.QualityReason)
+		}
+		if s.memRecorder != nil {
+			_ = s.memRecorder.RecordCapabilityExecutionMemory(context.Background(), tenantID, actorID, stepDef.AssigneeRoleCode, capabilityID, stepDef.StepName, inst.Title, status, result, input.CapabilityError)
+		}
 	}
 
 	// Trigger experience extraction asynchronously (best-effort, after commit)

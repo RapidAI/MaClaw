@@ -185,10 +185,10 @@ func TestRecordCapabilityUsagePersistsTenantScopedFeedback(t *testing.T) {
 		t.Fatalf("seed capability: %v", err)
 	}
 	h := NewHandler(provider.Write, provider.Read)
-	if err := h.RecordCapabilityUsage(context.Background(), "tenant-a", "cap-usage", "worker-a", "wf-1", "step-1", "", "done", "", 42); err != nil {
+	if err := h.RecordCapabilityUsage(context.Background(), "tenant-a", "cap-usage", "worker-a", "wf-1", "step-1", "", "done", "", 42, 0, ""); err != nil {
 		t.Fatalf("record usage: %v", err)
 	}
-	if err := h.RecordCapabilityUsage(context.Background(), "tenant-b", "cap-usage", "worker-b", "wf-2", "step-2", "", "done", "", 0); err == nil {
+	if err := h.RecordCapabilityUsage(context.Background(), "tenant-b", "cap-usage", "worker-b", "wf-2", "step-2", "", "done", "", 0, 0, ""); err == nil {
 		t.Fatalf("expected tenant-b usage to be rejected because capability is tenant-scoped")
 	}
 
@@ -199,8 +199,95 @@ func TestRecordCapabilityUsagePersistsTenantScopedFeedback(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("usage event count = %d, want 1", len(items))
 	}
-	if items[0].Status != "success" || items[0].ColleagueID != "worker-a" || items[0].WorkflowStepInstanceID != "step-1" || items[0].LatencyMs != 42 {
+	if items[0].Status != "success" || items[0].ColleagueID != "worker-a" || items[0].WorkflowStepInstanceID != "step-1" || items[0].LatencyMs != 42 || items[0].QualityScore != 80 {
 		t.Fatalf("usage event = %+v", items[0])
+	}
+}
+
+func TestRecordCapabilityUsagePreservesReportedQualityScore(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "cap-quality", "tenant-a", "Quality Skill", "", "ops", "1.0.0", "local", "low", "approved", now, now)
+	if err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	h := NewHandler(provider.Write, provider.Read)
+	if err := h.RecordCapabilityUsage(context.Background(), "tenant-a", "cap-quality", "worker-a", "wf-1", "step-1", "success", "done", "", 10, 95, "human approved"); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+	items, err := h.listCapabilityUsageEvents(context.Background(), "tenant-a", "cap-quality", 10)
+	if err != nil {
+		t.Fatalf("list usage: %v", err)
+	}
+	if len(items) != 1 || items[0].QualityScore != 95 || items[0].QualityReason != "human approved" {
+		t.Fatalf("usage events = %+v", items)
+	}
+}
+
+func TestCapabilityUsageSummaryAndQualityUpdate(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "cap-summary", "tenant-a", "Summary Skill", "", "ops", "1.0.0", "local", "low", "approved", now, now)
+	if err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	h := NewHandler(provider.Write, provider.Read)
+	if err := h.RecordCapabilityUsage(context.Background(), "tenant-a", "cap-summary", "worker-a", "wf-1", "step-1", "success", "done", "", 100, 90, "validated"); err != nil {
+		t.Fatalf("record success: %v", err)
+	}
+	if err := h.RecordCapabilityUsage(context.Background(), "tenant-a", "cap-summary", "worker-a", "wf-2", "step-2", "failure", "", "boom", 300, 0, ""); err != nil {
+		t.Fatalf("record failure: %v", err)
+	}
+
+	summary, err := h.capabilityUsageSummary(context.Background(), "tenant-a", "cap-summary")
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if summary.Total != 2 || summary.Successes != 1 || summary.Failures != 1 || summary.SuccessRate != 0.5 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if summary.AverageQuality != 55 || summary.AverageLatencyMs != 200 {
+		t.Fatalf("summary averages = %+v", summary)
+	}
+
+	items, err := h.listCapabilityUsageEvents(context.Background(), "tenant-a", "cap-summary", 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("event count = %d", len(items))
+	}
+	if err := h.UpdateCapabilityUsageQuality(context.Background(), "tenant-a", "cap-summary", items[0].ID, 75, "manual review"); err != nil {
+		t.Fatalf("update quality: %v", err)
+	}
+	items, err = h.listCapabilityUsageEvents(context.Background(), "tenant-a", "cap-summary", 10)
+	if err != nil {
+		t.Fatalf("list after update: %v", err)
+	}
+	found := false
+	for _, item := range items {
+		if item.ID == items[0].ID && item.QualityScore == 75 && item.QualityReason == "manual review" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("updated event not found: %+v", items)
 	}
 }
 

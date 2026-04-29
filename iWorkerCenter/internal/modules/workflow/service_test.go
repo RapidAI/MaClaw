@@ -68,6 +68,31 @@ func (f fakeCapabilityResolver) SelectWorkerForTask(context.Context, string, str
 	return f.selected, f.ok, f.err
 }
 
+type fakeCapabilityMemoryRecorder struct {
+	called        bool
+	tenantID      string
+	workerID      string
+	orgUnitID     string
+	capabilityID  string
+	taskTitle     string
+	workflowName  string
+	status        string
+	resultSummary string
+}
+
+func (f *fakeCapabilityMemoryRecorder) RecordCapabilityExecutionMemory(_ context.Context, tenantID, workerID, orgUnitID, capabilityID, taskTitle, workflowName, status, resultSummary, _ string) error {
+	f.called = true
+	f.tenantID = tenantID
+	f.workerID = workerID
+	f.orgUnitID = orgUnitID
+	f.capabilityID = capabilityID
+	f.taskTitle = taskTitle
+	f.workflowName = workflowName
+	f.status = status
+	f.resultSummary = resultSummary
+	return nil
+}
+
 type fakeCapabilityUsageRecorder struct {
 	capabilityID           string
 	colleagueID            string
@@ -77,10 +102,12 @@ type fakeCapabilityUsageRecorder struct {
 	resultSummary          string
 	errorMessage           string
 	latencyMs              int64
+	qualityScore           int
+	qualityReason          string
 	called                 bool
 }
 
-func (f *fakeCapabilityUsageRecorder) RecordCapabilityUsage(_ context.Context, _, capabilityID, colleagueID, workflowInstanceID, workflowStepInstanceID, status, resultSummary, errorMessage string, latencyMs int64) error {
+func (f *fakeCapabilityUsageRecorder) RecordCapabilityUsage(_ context.Context, _, capabilityID, colleagueID, workflowInstanceID, workflowStepInstanceID, status, resultSummary, errorMessage string, latencyMs int64, qualityScore int, qualityReason string) error {
 	f.called = true
 	f.capabilityID = capabilityID
 	f.colleagueID = colleagueID
@@ -90,6 +117,8 @@ func (f *fakeCapabilityUsageRecorder) RecordCapabilityUsage(_ context.Context, _
 	f.resultSummary = resultSummary
 	f.errorMessage = errorMessage
 	f.latencyMs = latencyMs
+	f.qualityScore = qualityScore
+	f.qualityReason = qualityReason
 	return nil
 }
 
@@ -296,7 +325,9 @@ func TestCompleteStepRecordsCapabilityUsageFeedback(t *testing.T) {
 	seedRolesAndColleagues(t, p)
 	svc := newTestService(t, p)
 	recorder := &fakeCapabilityUsageRecorder{}
+	memoryRecorder := &fakeCapabilityMemoryRecorder{}
 	svc.SetCapabilityUsageRecorder(recorder)
+	svc.SetCapabilityExecutionMemoryRecorder(memoryRecorder)
 
 	def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
 		Name:  "Capability feedback",
@@ -320,6 +351,8 @@ func TestCompleteStepRecordsCapabilityUsageFeedback(t *testing.T) {
 		CapabilityID:        "cap-revenue",
 		CapabilityStatus:    "ok",
 		CapabilityLatencyMs: 1234,
+		QualityScore:        92,
+		QualityReason:       "passed validation",
 	})
 	if err != nil {
 		t.Fatalf("complete: %v", err)
@@ -327,11 +360,17 @@ func TestCompleteStepRecordsCapabilityUsageFeedback(t *testing.T) {
 	if !recorder.called {
 		t.Fatalf("expected capability usage recorder to be called")
 	}
-	if recorder.capabilityID != "cap-revenue" || recorder.colleagueID != "col-xiaozhou" || recorder.status != "success" || recorder.resultSummary != "forecast ready" || recorder.latencyMs != 1234 {
+	if recorder.capabilityID != "cap-revenue" || recorder.colleagueID != "col-xiaozhou" || recorder.status != "success" || recorder.resultSummary != "forecast ready" || recorder.latencyMs != 1234 || recorder.qualityScore != 92 || recorder.qualityReason != "passed validation" {
 		t.Fatalf("unexpected recorder payload: %+v", recorder)
 	}
 	if recorder.workflowInstanceID != inst.ID || recorder.workflowStepInstanceID != steps[0].ID {
 		t.Fatalf("workflow refs = %q/%q, want %q/%q", recorder.workflowInstanceID, recorder.workflowStepInstanceID, inst.ID, steps[0].ID)
+	}
+	if !memoryRecorder.called {
+		t.Fatalf("expected capability execution memory recorder to be called")
+	}
+	if memoryRecorder.workerID != "col-xiaozhou" || memoryRecorder.orgUnitID != "quality" || memoryRecorder.capabilityID != "cap-revenue" || memoryRecorder.status != "success" {
+		t.Fatalf("unexpected memory recorder payload: %+v", memoryRecorder)
 	}
 }
 

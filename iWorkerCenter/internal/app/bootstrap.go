@@ -126,6 +126,9 @@ func Bootstrap() (*Center, error) {
 	wfSvc := workflow.NewService(wfRepo, provider, collabRepo, colRepo)
 	wfSvc.SetCapabilityAssigneeResolver(capHandler)
 	wfSvc.SetCapabilityUsageRecorder(capHandler)
+	wfSvc.SetCapabilityExecutionMemoryRecorder(workerMemHandler)
+	modelCaller := modelrouting.NewLLMCaller(provider.Read, auditRepo)
+	wfSvc.SetExperienceExtractor(experience.NewTenantExtractor(provider.Write, modelCaller.TenantExtractFunc()))
 	wfHandler := workflow.NewHandler(wfSvc)
 
 	// --- wire delivery module ---

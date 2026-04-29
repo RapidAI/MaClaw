@@ -1,7 +1,9 @@
 package workermemory
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -31,6 +33,84 @@ type Handler struct {
 // NewHandler creates a worker memory handler backed by corelib memory.Store.
 func NewHandler(store *corememory.Store) *Handler {
 	return &Handler{store: store}
+}
+
+// RecordCapabilityExecutionMemory writes a best-effort execution fact into Center-owned iWorker memory.
+// It stores a personal memory for the executing worker and, when orgUnitID is present,
+// a department/domain memory so virtual organization units can learn from repeated executions.
+func (h *Handler) RecordCapabilityExecutionMemory(ctx context.Context, tenantID, workerID, orgUnitID, capabilityID, taskTitle, workflowName, status, resultSummary, errorMessage string) error {
+	if h == nil || h.store == nil {
+		return nil
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	workerID = strings.TrimSpace(workerID)
+	capabilityID = strings.TrimSpace(capabilityID)
+	if tenantID == "" || workerID == "" || capabilityID == "" {
+		return nil
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "success"
+	}
+	content := capabilityExecutionMemoryContent(capabilityID, taskTitle, workflowName, status, resultSummary, errorMessage)
+	tags := []string{"capability_execution", "workflow", "capability:" + capabilityID, "status:" + status}
+	now := time.Now()
+	personal := corememory.Entry{
+		Content:    content,
+		Category:   corememory.CategoryTaskArtifact,
+		Tags:       tags,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		SourceType: "iworkercenter.workflow",
+		OwnerID:    personalOwnerID(tenantID, workerID),
+	}
+	if err := h.store.SaveForUser(personal, personal.OwnerID); err != nil {
+		return err
+	}
+	if orgUnitID = strings.TrimSpace(orgUnitID); orgUnitID != "" {
+		department := personal
+		department.OwnerID = departmentOwnerID(tenantID, orgUnitID)
+		department.Tags = append(append([]string{}, tags...), "org_unit:"+orgUnitID)
+		if err := h.store.SaveForUser(department, department.OwnerID); err != nil {
+			return err
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	return h.store.Flush()
+}
+
+func capabilityExecutionMemoryContent(capabilityID, taskTitle, workflowName, status, resultSummary, errorMessage string) string {
+	parts := []string{
+		fmt.Sprintf("Capability %s executed with status %s.", strings.TrimSpace(capabilityID), strings.TrimSpace(status)),
+	}
+	if workflowName = strings.TrimSpace(workflowName); workflowName != "" {
+		parts = append(parts, "Workflow: "+workflowName+".")
+	}
+	if taskTitle = strings.TrimSpace(taskTitle); taskTitle != "" {
+		parts = append(parts, "Task: "+taskTitle+".")
+	}
+	if resultSummary = strings.TrimSpace(resultSummary); resultSummary != "" {
+		parts = append(parts, "Result: "+trimRunes(resultSummary, 600))
+	}
+	if errorMessage = strings.TrimSpace(errorMessage); errorMessage != "" {
+		parts = append(parts, "Error: "+trimRunes(errorMessage, 300))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func trimRunes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "..."
 }
 
 // RegisterClientRoutes registers iWorker-facing memory routes.

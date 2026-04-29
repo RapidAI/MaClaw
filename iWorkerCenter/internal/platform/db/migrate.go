@@ -496,6 +496,11 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_cap_usage_capability ON capability_usage_events(tenant_id, capability_id, created_at);
 	CREATE INDEX IF NOT EXISTS idx_cap_usage_colleague ON capability_usage_events(tenant_id, colleague_id, created_at);
 	CREATE INDEX IF NOT EXISTS idx_cap_usage_step ON capability_usage_events(tenant_id, workflow_step_instance_id);`,
+
+	// 36: capability execution quality signal for smarter routing
+	`ALTER TABLE capability_usage_events ADD COLUMN quality_score INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE capability_usage_events ADD COLUMN quality_reason TEXT NOT NULL DEFAULT '';
+	CREATE INDEX IF NOT EXISTS idx_cap_usage_quality ON capability_usage_events(tenant_id, capability_id, quality_score);`,
 }
 
 // Migrate applies all pending migrations inside a transaction.

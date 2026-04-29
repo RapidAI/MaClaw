@@ -248,6 +248,8 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 		CapabilityStatus    string `json:"capability_status"`
 		CapabilityError     string `json:"capability_error"`
 		CapabilityLatencyMs int64  `json:"capability_latency_ms"`
+		QualityScore        int    `json:"quality_score"`
+		QualityReason       string `json:"quality_reason"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
@@ -260,6 +262,8 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 			CapabilityStatus:    body.CapabilityStatus,
 			CapabilityError:     body.CapabilityError,
 			CapabilityLatencyMs: body.CapabilityLatencyMs,
+			QualityScore:        body.QualityScore,
+			QualityReason:       body.QualityReason,
 		}); err != nil {
 			response.BadRequest(w, "COMPLETE_FAILED", err.Error())
 			return

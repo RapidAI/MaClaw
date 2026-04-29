@@ -13,11 +13,11 @@ import (
 
 // ExtractionInput holds the context for experience extraction.
 type ExtractionInput struct {
-	TaskTitle    string `json:"task_title"`
-	TaskResult   string `json:"task_result"`
-	RoleCode     string `json:"role_code"`
+	TaskTitle     string `json:"task_title"`
+	TaskResult    string `json:"task_result"`
+	RoleCode      string `json:"role_code"`
 	ColleagueName string `json:"colleague_name"`
-	WorkflowName string `json:"workflow_name,omitempty"`
+	WorkflowName  string `json:"workflow_name,omitempty"`
 }
 
 // ExtractedExperience is the structured output from LLM extraction.
@@ -29,19 +29,28 @@ type ExtractedExperience struct {
 	Scope   string   `json:"scope"` // role code or "all"
 }
 
-// LLMExtractFunc is the function signature for calling LLM to extract experience.
+// LLMExtractFunc is the legacy function signature for calling LLM to extract experience.
 // Callers inject the actual LLM call implementation.
 type LLMExtractFunc func(systemPrompt, userPrompt string) (string, error)
 
+// TenantLLMExtractFunc is the tenant-aware extractor used by iWorkerCenter runtime.
+type TenantLLMExtractFunc func(tenantID, systemPrompt, userPrompt string) (string, error)
+
 // Extractor handles automatic experience extraction and persistence.
 type Extractor struct {
-	write     *sql.DB
-	llmExtract LLMExtractFunc
+	write            *sql.DB
+	llmExtract       LLMExtractFunc
+	tenantLLMExtract TenantLLMExtractFunc
 }
 
 // NewExtractor creates an Extractor.
 func NewExtractor(write *sql.DB, llmFn LLMExtractFunc) *Extractor {
 	return &Extractor{write: write, llmExtract: llmFn}
+}
+
+// NewTenantExtractor creates an Extractor that routes LLM calls per tenant.
+func NewTenantExtractor(write *sql.DB, llmFn TenantLLMExtractFunc) *Extractor {
+	return &Extractor{write: write, tenantLLMExtract: llmFn}
 }
 
 const extractionSystemPrompt = `你是企业知识管理专家。你的任务是从已完成的工作结果中提取可复用的经验。
@@ -59,7 +68,7 @@ const extractionSystemPrompt = `你是企业知识管理专家。你的任务是
 // Extract analyzes a completed task and creates shared memories from extracted experiences.
 // This is designed to be called asynchronously (non-blocking).
 func (e *Extractor) Extract(tenantID string, input ExtractionInput) {
-	if e.llmExtract == nil {
+	if !e.hasLLM() {
 		return
 	}
 	if strings.TrimSpace(input.TaskResult) == "" {
@@ -82,7 +91,7 @@ func (e *Extractor) Extract(tenantID string, input ExtractionInput) {
 	}
 	userPrompt += fmt.Sprintf("\n任务结果：\n%s", result)
 
-	llmOutput, err := e.llmExtract(extractionSystemPrompt, userPrompt)
+	llmOutput, err := e.extractWithLLM(tenantID, extractionSystemPrompt, userPrompt)
 	if err != nil {
 		log.Printf("[experience] LLM extraction failed: %v", err)
 		return
@@ -145,7 +154,7 @@ func (e *Extractor) Extract(tenantID string, input ExtractionInput) {
 
 // ExtractSync is like Extract but returns the count of saved experiences (for testing).
 func (e *Extractor) ExtractSync(tenantID string, input ExtractionInput) (int, error) {
-	if e.llmExtract == nil {
+	if !e.hasLLM() {
 		return 0, fmt.Errorf("no LLM function configured")
 	}
 	if strings.TrimSpace(input.TaskResult) == "" {
@@ -155,7 +164,7 @@ func (e *Extractor) ExtractSync(tenantID string, input ExtractionInput) (int, er
 	userPrompt := fmt.Sprintf("任务标题：%s\n角色：%s\n同事：%s\n\n任务结果：\n%s",
 		input.TaskTitle, input.RoleCode, input.ColleagueName, input.TaskResult)
 
-	llmOutput, err := e.llmExtract(extractionSystemPrompt, userPrompt)
+	llmOutput, err := e.extractWithLLM(tenantID, extractionSystemPrompt, userPrompt)
 	if err != nil {
 		return 0, fmt.Errorf("LLM call failed: %w", err)
 	}
@@ -199,4 +208,15 @@ func (e *Extractor) ExtractSync(tenantID string, input ExtractionInput) (int, er
 		saved++
 	}
 	return saved, nil
+}
+
+func (e *Extractor) hasLLM() bool {
+	return e != nil && (e.llmExtract != nil || e.tenantLLMExtract != nil)
+}
+
+func (e *Extractor) extractWithLLM(tenantID, systemPrompt, userPrompt string) (string, error) {
+	if e.tenantLLMExtract != nil {
+		return e.tenantLLMExtract(tenantID, systemPrompt, userPrompt)
+	}
+	return e.llmExtract(systemPrompt, userPrompt)
 }

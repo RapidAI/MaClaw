@@ -1,4 +1,4 @@
-﻿# iWorker 文档索引
+# iWorker 文档索引
 
 本目录中的正式文档用于统一 `iWorker / iWorkerCenter / iWorkerCloud` 的产品口径、技术架构和开发路线。
 

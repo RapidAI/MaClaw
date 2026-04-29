@@ -174,6 +174,28 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// /admin/capabilities/{id}/usage/{event_id}/quality
+	if strings.Contains(path, "/usage/") && strings.HasSuffix(path, "/quality") {
+		eventID := strings.TrimSuffix(strings.TrimPrefix(path, "/admin/capabilities/"+id+"/usage/"), "/quality")
+		if r.Method == http.MethodPost {
+			h.updateCapabilityUsageQuality(w, r, id, strings.Trim(eventID, "/"))
+			return
+		}
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+
+	// /admin/capabilities/{id}/usage-summary
+	if strings.HasSuffix(path, "/usage-summary") {
+		id = strings.TrimSuffix(id, "/usage-summary")
+		if r.Method == http.MethodGet {
+			h.getCapabilityUsageSummary(w, r, id)
+			return
+		}
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+
 	// /admin/capabilities/{id}/usage
 	if strings.HasSuffix(path, "/usage") {
 		id = strings.TrimSuffix(id, "/usage")
@@ -477,6 +499,38 @@ func (h *Handler) handleImportFromCloud(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	response.Created(w, cap)
+}
+
+func (h *Handler) getCapabilityUsageSummary(w http.ResponseWriter, r *http.Request, id string) {
+	summary, err := h.capabilityUsageSummary(r.Context(), tenant.RequestTenantID(r), id)
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, summary)
+}
+
+func (h *Handler) updateCapabilityUsageQuality(w http.ResponseWriter, r *http.Request, id string, eventID string) {
+	if strings.TrimSpace(eventID) == "" {
+		response.BadRequest(w, "MISSING_EVENT_ID", "usage event id is required")
+		return
+	}
+	var req struct {
+		QualityScore  int    `json:"quality_score"`
+		QualityReason string `json:"quality_reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
+		return
+	}
+	if err := h.UpdateCapabilityUsageQuality(r.Context(), tenant.RequestTenantID(r), id, eventID, req.QualityScore, req.QualityReason); err == sql.ErrNoRows {
+		response.NotFound(w, "NOT_FOUND", "usage event not found")
+		return
+	} else if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, map[string]string{"status": "ok"})
 }
 
 func (h *Handler) listCapabilityUsage(w http.ResponseWriter, r *http.Request, id string) {

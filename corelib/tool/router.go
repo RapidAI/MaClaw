@@ -62,6 +62,13 @@ type conditionalKeepRule struct {
 	matches                func(string) bool
 	needsSemanticConfirm   bool   // when true, keyword match is tentative; requires IntentClassifier confirmation
 	confirmIntent          string // the Intent* constant that confirms this rule (e.g. IntentBrowser)
+	// noMemoryPin when true means tools from this rule should NOT be pinned
+	// via memory-driven pinning or eager pinning during Route(). They should
+	// only be pinned after actual successful use (ActivateSessionTool in the
+	// tool execution path). Set this for rules whose keywords are prone to
+	// false-positive matches in recalled memory content (e.g. "窗口" from a
+	// previous GUI task, "浏览器" from a server process list).
+	noMemoryPin bool
 }
 
 var sshIntentIPv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
@@ -133,6 +140,17 @@ var allBrowserToolNames = []string{
 	"gui_record_start", "gui_record_stop",
 }
 
+// NoEagerPinToolNames returns a copy of the noEagerPinTools set as a slice.
+// Used by diagnostic code to derive tool sets from the canonical source.
+// This set is derived from conditionalKeepRules with noMemoryPin=true.
+func NoEagerPinToolNames() []string {
+	out := make([]string, 0, len(noEagerPinTools))
+	for name := range noEagerPinTools {
+		out = append(out, name)
+	}
+	return out
+}
+
 var excelKeywords = []string{
 	"xlsx", "csv", "spreadsheet", "表格", "电子表格", "excel",
 }
@@ -185,7 +203,8 @@ var conditionalKeepRules = []conditionalKeepRule{
 	// Browser tools — strong intent keywords (user explicitly mentions browser/chrome/playwright).
 	// These are high-confidence signals that don't need semantic confirmation.
 	{
-		keepTools: allBrowserToolNames,
+		keepTools:    allBrowserToolNames,
+		noMemoryPin: true,
 		matches: func(msg string) bool {
 			return containsAnyKeyword(msg, browserIntentKeywords)
 		},
@@ -197,6 +216,7 @@ var conditionalKeepRules = []conditionalKeepRule{
 		keepTools:            allBrowserToolNames,
 		needsSemanticConfirm: true,
 		confirmIntent:        IntentBrowser,
+		noMemoryPin:          true,
 		matches: func(msg string) bool {
 			// Weak signal: generic page + action words that often appear in
 			// non-browser contexts (e.g. game descriptions mentioning "页面"
@@ -229,7 +249,8 @@ var conditionalKeepRules = []conditionalKeepRule{
 	// Desktop GUI observation/verification tools — activated by desktop app
 	// keywords, independent of browser tools.
 	{
-		keepTools: []string{"gui_observe", "gui_verify", "gui_record_start", "gui_record_stop"},
+		keepTools:   []string{"gui_observe", "gui_verify", "gui_record_start", "gui_record_stop"},
+		noMemoryPin: true,
 		matches: func(msg string) bool {
 			return containsAnyKeyword(msg, desktopGUIKeywords)
 		},
@@ -678,18 +699,25 @@ var noPinConditionalTools = map[string]bool{
 }
 
 // noEagerPinTools lists conditional tools that should NOT be eagerly pinned
-// during Route() keyword matching, but SHOULD be pinned after actual successful
-// use (via ActivateSessionTool in the tool execution path).
-// Browser tools are included because their keyword matching is prone to false
-// positives (e.g. "打开"+"页面" in a game description), and eagerly pinning
-// 25+ tools from a false match would pollute the session permanently.
-// Once a browser tool is actually called and succeeds, it gets pinned normally.
+// during Route() keyword matching or memory-driven pinning, but SHOULD be
+// pinned after actual successful use (via ActivateSessionTool in the tool
+// execution path).
+//
+// This set is derived automatically from conditionalKeepRules: any rule with
+// noMemoryPin=true contributes all its keepTools to this set. This ensures
+// the protection is co-located with the rule definition — adding a new rule
+// with noMemoryPin=true automatically protects its tools, with zero changes
+// needed in MatchConditionalTools, Route(), or any other consumer.
 var noEagerPinTools map[string]bool
 
 func init() {
-	noEagerPinTools = make(map[string]bool, len(allBrowserToolNames))
-	for _, name := range allBrowserToolNames {
-		noEagerPinTools[name] = true
+	noEagerPinTools = make(map[string]bool)
+	for _, rule := range conditionalKeepRules {
+		if rule.noMemoryPin {
+			for _, name := range rule.keepTools {
+				noEagerPinTools[name] = true
+			}
+		}
 	}
 }
 
@@ -700,33 +728,23 @@ func ShouldPinConditionalTool(name string) bool {
 	return allConditionalKeepTools[name] && !noPinConditionalTools[name]
 }
 
-// isBrowserDiagTool returns true if the tool name is a browser-related tool
-// for diagnostic logging purposes. Uses the same source of truth as
-// allBrowserToolNames to avoid maintaining a separate list.
+// isBrowserDiagTool returns true if the tool name is a browser-related or
+// desktop GUI tool for diagnostic logging purposes. Uses noEagerPinTools
+// as the canonical set — any tool protected from memory-driven pinning is
+// worth diagnostic logging.
 func isBrowserDiagTool(name string) bool {
-	// allBrowserToolNames is the canonical list. Also check gui_observe/gui_verify
-	// which are in codingToolBlocklist but not in allBrowserToolNames.
-	for _, n := range allBrowserToolNames {
-		if n == name {
-			return true
-		}
-	}
-	return name == "gui_observe" || name == "gui_verify"
+	return noEagerPinTools[name]
 }
 
 // MatchConditionalTools returns the set of conditional tool names that match
 // the given text. This is used to pin tools based on recalled memory content
 // (e.g. when memory mentions "服务器" or "SSH", the ssh tool should be pinned).
 //
-// Browser tools (listed in noEagerPinTools) are excluded from memory-driven
-// pinning because their keyword matching is prone to false positives. Memory
-// text like "Chrome 浏览器进程占 CPU 39.6%" (from SSH server resource output)
-// matches the strong browser keyword "浏览器", but this is NOT a signal that
-// the user wants browser automation — it's just a process name in server output.
-// Pinning 25+ browser tools from such a false match pollutes the LLM context
-// and causes hallucinated "Browser:" role prefixes in output.
+// Tools from rules with noMemoryPin=true are excluded. This is the mechanism
+// that prevents false-positive memory-driven pinning of GUI tools — the
+// protection is declared on the rule itself, not maintained in a separate list.
 //
-// Browser tools are only pinned after actual successful use via
+// These tools are only pinned after actual successful use via
 // ActivateSessionTool in the tool execution path (im_message_handler.go).
 func MatchConditionalTools(text string) map[string]bool {
 	keep, _, needsConfirm := matchConditionalKeepRules(text)
@@ -736,9 +754,9 @@ func MatchConditionalTools(text string) map[string]bool {
 			keep[name] = true
 		}
 	}
-	// Remove noEagerPinTools entries from keep — these tools (browser_*)
-	// are prone to false-positive keyword matches in memory content and
-	// should only be pinned after actual successful use.
+	// Remove noEagerPinTools entries from keep — these tools are from rules
+	// with noMemoryPin=true, prone to false-positive keyword matches in
+	// memory content. They should only be pinned after actual successful use.
 	// Iterate over the (usually small) keep set rather than the larger
 	// noEagerPinTools map for efficiency.
 	for name := range keep {
@@ -957,7 +975,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	// pin it to the session immediately so it survives follow-up messages
 	// that lack the triggering keywords (e.g. user says "回忆下" after
 	// asking about a server — ssh should stay available).
-	// Browser tools are excluded from eager pin (noEagerPinTools) because
+	// Tools from noMemoryPin rules are excluded (noEagerPinTools) because
 	// keyword matching is prone to false positives. They get pinned after
 	// actual successful use via ActivateSessionTool in the tool execution path.
 	for name := range condKeep {

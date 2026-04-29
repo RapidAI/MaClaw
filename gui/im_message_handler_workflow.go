@@ -648,12 +648,22 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		}
 
 		// UIC says no workflow — check if it's a confident non-workflow signal.
-		// Only reject if the classification came from fusion (layer >= 2),
-		// not from L1 keywords alone (layer == 1 in degraded mode).
-		if uicResult.WorkflowType == "" && uicResult.Layer >= 2 {
+		//
+		// Rejection policy based on MayTriggerWorkflow:
+		//   - MayTriggerWorkflow=false intents (document_delivery, search, non_coding, etc.):
+		//     Any layer (including L1 keywords) with confidence >= threshold is sufficient.
+		//     These intents can NEVER trigger a workflow by definition, so even if L1
+		//     misclassifies WHICH non-workflow intent it is, the result (no workflow) is
+		//     the same. No layer restriction needed.
+		//   - MayTriggerWorkflow=true intents (coding, office, workflow_task) or Ambiguous/Unknown:
+		//     IsWorkflowCandidate returns true → canReject is false → falls through to IUM.
+		//     This prevents L1 misclassification from blocking a legitimate workflow task.
+		if uicResult.WorkflowType == "" {
+			isNonWorkflowIntent := !uic.IsWorkflowCandidate(uicResult.Primary)
 			threshold := uic.GetWorkflowRejectThreshold()
-			if uicResult.Confidence >= threshold && !uic.IsWorkflowCandidate(uicResult.Primary) {
-				log.Printf("[WorkflowInterception] UIC fusion rejected workflow for user %s: "+
+
+			if isNonWorkflowIntent && uicResult.Confidence >= threshold {
+				log.Printf("[WorkflowInterception] UIC rejected workflow for user %s: "+
 					"intent=%s conf=%.2f layer=%d threshold=%.2f — text=%q",
 					userID, uicResult.Primary, uicResult.Confidence, uicResult.Layer, threshold,
 					truncateRunes(text, 80))

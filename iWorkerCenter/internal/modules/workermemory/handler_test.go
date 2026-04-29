@@ -2,6 +2,7 @@ package workermemory
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -269,5 +270,31 @@ func TestWorkerMemoryReadsTenantFromHeader(t *testing.T) {
 	}
 	if len(resp.Memories) != 1 || resp.Memories[0].TenantID != "tenant-header" {
 		t.Fatalf("unexpected memories: %+v", resp.Memories)
+	}
+}
+
+func TestRecordCapabilityExecutionMemoryWritesPersonalAndDepartmentMemory(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatalf("NewStore returned error: %v", err)
+	}
+	h := NewHandler(store)
+	if err := h.RecordCapabilityExecutionMemory(context.Background(), "tenant-a", "worker-a", "quality", "cap-revenue", "Revenue forecast", "Monthly Ops", "success", "Forecast completed", ""); err != nil {
+		t.Fatalf("record capability execution memory: %v", err)
+	}
+
+	personal := store.Search(corememory.CategoryTaskArtifact, "cap-revenue", 0)
+	if len(personal) != 2 {
+		t.Fatalf("memory count = %d, want 2", len(personal))
+	}
+	owners := map[string]bool{}
+	for _, entry := range personal {
+		owners[entry.OwnerID] = true
+		if entry.SourceType != "iworkercenter.workflow" {
+			t.Fatalf("SourceType = %q", entry.SourceType)
+		}
+	}
+	if !owners["tenant:tenant-a:worker:worker-a"] || !owners["tenant:tenant-a:department:quality"] {
+		t.Fatalf("owners = %+v", owners)
 	}
 }

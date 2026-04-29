@@ -5181,11 +5181,17 @@ func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 
 // compactHistory summarizes old conversation turns to stay within token limits.
 //
-// Mechanism: instead of serializing all entries as JSON (which produces
-// unreadable input for the summarizer LLM), we extract turn-boundary
-// texts — the user's requests and the LLM's first responses. These carry
-// the task-level semantics. Tool call details are omitted from the summary
-// input since they're execution noise.
+// Mechanism: builds a structured handoff document from three data sources:
+//   1. Turn boundaries — user requests and LLM first responses (task-level semantics)
+//   2. Tool output key data — file paths, URLs, data statistics extracted from
+//      tool results (the "critical data" that must survive compaction)
+//   3. Final assistant summaries — the last assistant message before each new
+//      user turn (often contains the conclusion/results of a multi-tool sequence)
+//
+// Uses compactionHandoffPrompt (structured 4-section format) instead of a
+// generic "please summarize" prompt, ensuring the LLM produces a handoff
+// document with explicit "关键数据" section containing file paths, data
+// locations, and configuration values.
 func (h *IMMessageHandler) compactHistory(entries []agent.ConversationEntry, httpClient *http.Client) []agent.ConversationEntry {
 	if estimateConversationEntryTokens(entries) < agent.MaxMemoryTokenEstimate {
 		return entries
@@ -5202,11 +5208,14 @@ func (h *IMMessageHandler) compactHistory(entries []agent.ConversationEntry, htt
 		return entries
 	}
 	recent := entries[split:]
+	old := entries[:split]
 
-	// Extract turn-boundary texts from the old half for summarization.
-	// This produces human-readable input instead of raw JSON.
-	turnTexts := extractTurnBoundaryTexts(entries[:split], 20)
+	// --- Build structured summarizer input ---
 	var sb strings.Builder
+
+	// Section 1: Turn boundaries (user requests + LLM first responses).
+	sb.WriteString("## 对话轮次\n\n")
+	turnTexts := extractTurnBoundaryTexts(old, 20)
 	for _, text := range turnTexts {
 		runes := []rune(text)
 		if len(runes) > 500 {
@@ -5215,14 +5224,44 @@ func (h *IMMessageHandler) compactHistory(entries []agent.ConversationEntry, htt
 		sb.WriteString(text)
 		sb.WriteString("\n\n")
 	}
+
+	// Section 2: Key data from tool outputs — file paths, URLs, data
+	// statistics. These are the "critical data references" that turn
+	// boundaries miss because they appear in tool results, not in the
+	// first assistant response.
+	keyData := extractKeyDataFromEntries(old)
+	if len(keyData) > 0 {
+		sb.WriteString("## 工具产出的关键数据\n\n")
+		for _, kd := range keyData {
+			sb.WriteString("- ")
+			sb.WriteString(kd)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Section 3: Final assistant messages before each new user turn.
+	// These often contain the conclusion/summary of a multi-tool sequence
+	// (e.g., "99篇论文已保存到 D:\workprj\..."). Turn boundaries only
+	// capture the FIRST assistant response; the LAST one before the next
+	// user message carries the results.
+	finalAssistantTexts := extractFinalAssistantTexts(old, 5)
+	if len(finalAssistantTexts) > 0 {
+		sb.WriteString("## 任务结果摘要\n\n")
+		for _, text := range finalAssistantTexts {
+			sb.WriteString(text)
+			sb.WriteString("\n\n")
+		}
+	}
+
 	summaryText := sb.String()
-	if len(summaryText) > 32000 {
-		summaryText = summaryText[:32000] + "\n...(truncated)"
+	if len([]rune(summaryText)) > 12000 {
+		summaryText = string([]rune(summaryText)[:12000]) + "\n...(truncated)"
 	}
 
 	cfg := h.getMaclawLLMConfig()
 	msgs := []map[string]string{
-		{"role": "user", "content": "请简洁总结以下对话历史，保留关键事实、决策和待办事项：\n\n" + summaryText},
+		{"role": "user", "content": compactionHandoffPrompt + summaryText},
 	}
 	conv := make([]interface{}, len(msgs))
 	for i, m := range msgs {
@@ -5234,10 +5273,214 @@ func (h *IMMessageHandler) compactHistory(entries []agent.ConversationEntry, htt
 	}
 
 	compacted := []agent.ConversationEntry{
-		{Role: "user", Content: "[对话历史摘要]\n" + resp.Choices[0].Message.Content},
+		{Role: "user", Content: compactionRecoveryPrefix + resp.Choices[0].Message.Content},
 		{Role: "assistant", Content: "好的，我已了解之前的对话上下文。"},
 	}
 	return append(compacted, recent...)
+}
+
+// extractKeyDataFromEntries scans conversation entries for critical data
+// references that must survive compaction: file paths, URLs, data statistics.
+//
+// These references typically appear in tool results (role:"tool") and in
+// assistant messages that follow tool calls. Turn boundaries miss them
+// because they only capture the first assistant response per turn.
+//
+// Returns deduplicated key data strings, capped at 30 items.
+func extractKeyDataFromEntries(entries []agent.ConversationEntry) []string {
+	seen := make(map[string]bool)
+	var result []string
+	const maxItems = 30
+
+	for _, e := range entries {
+		if len(result) >= maxItems {
+			break
+		}
+		text, ok := e.Content.(string)
+		if !ok || text == "" {
+			continue
+		}
+		// Only scan tool results and assistant messages (not user messages —
+		// those are preserved verbatim in turn boundaries).
+		if e.Role != "tool" && e.Role != "assistant" {
+			continue
+		}
+
+		refs := extractKeyDataRefsFromText(text)
+		for _, ref := range refs {
+			if len(result) >= maxItems {
+				break
+			}
+			if !seen[ref] {
+				seen[ref] = true
+				result = append(result, ref)
+			}
+		}
+	}
+	return result
+}
+
+// extractKeyDataRefsFromText extracts file paths, URLs, and data statistics
+// from a text string. Uses pattern matching (not LLM) for speed.
+// Returns at most 10 refs per text to avoid noise from large tool outputs.
+func extractKeyDataRefsFromText(text string) []string {
+	var refs []string
+	const maxRefsPerText = 10
+
+	// Scan each line for key data patterns.
+	for _, line := range strings.Split(text, "\n") {
+		if len(refs) >= maxRefsPerText {
+			break
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Pattern 1: Windows absolute paths (C:\..., D:\...)
+		// Pattern 2: Unix absolute paths (/home/..., /tmp/...)
+		// Pattern 3: URLs (http://, https://)
+		for _, token := range strings.Fields(line) {
+			if len(refs) >= maxRefsPerText {
+				break
+			}
+			cleaned := strings.Trim(token, "\"'`()[]{}，。、；：")
+			if cleaned == "" {
+				continue
+			}
+			// Windows path: drive letter + colon + backslash
+			if len(cleaned) >= 3 && cleaned[1] == ':' && (cleaned[2] == '\\' || cleaned[2] == '/') &&
+				((cleaned[0] >= 'A' && cleaned[0] <= 'Z') || (cleaned[0] >= 'a' && cleaned[0] <= 'z')) {
+				refs = append(refs, "文件路径: "+cleaned)
+				continue
+			}
+			// Unix absolute path (skip short ones like "/n" or "/")
+			if len(cleaned) > 4 && cleaned[0] == '/' && cleaned[1] != '/' &&
+				(strings.Contains(cleaned, "/") && strings.Count(cleaned, "/") >= 2) {
+				refs = append(refs, "文件路径: "+cleaned)
+				continue
+			}
+			// URL
+			if strings.HasPrefix(cleaned, "http://") || strings.HasPrefix(cleaned, "https://") {
+				// Skip very common/noisy URLs
+				if !strings.Contains(cleaned, "api.deepseek.com") &&
+					!strings.Contains(cleaned, "api.openai.com") {
+					runes := []rune(cleaned)
+					if len(runes) > 120 {
+						cleaned = string(runes[:120]) + "..."
+					}
+					refs = append(refs, "URL: "+cleaned)
+				}
+				continue
+			}
+		}
+
+		// Pattern 4: Data statistics — lines containing numbers + Chinese
+		// quantity words (篇/条/个/份/项) near keywords (论文/评论/数据/文件).
+		if len(refs) < maxRefsPerText && containsDataStatistic(line) {
+			runes := []rune(line)
+			if len(runes) > 150 {
+				line = string(runes[:150]) + "..."
+			}
+			refs = append(refs, "数据统计: "+line)
+		}
+	}
+	return refs
+}
+
+// containsDataStatistic returns true if a line contains a data statistic
+// pattern: a number followed by a Chinese quantity word near a data keyword.
+func containsDataStatistic(line string) bool {
+	// Must contain a digit
+	hasDigit := false
+	for _, r := range line {
+		if r >= '0' && r <= '9' {
+			hasDigit = true
+			break
+		}
+	}
+	if !hasDigit {
+		return false
+	}
+	// Must contain a quantity word
+	quantityWords := []string{"篇", "条", "个", "份", "项", "张", "页"}
+	hasQuantity := false
+	for _, w := range quantityWords {
+		if strings.Contains(line, w) {
+			hasQuantity = true
+			break
+		}
+	}
+	if !hasQuantity {
+		return false
+	}
+	// Must contain a data keyword
+	dataKeywords := []string{"论文", "评论", "数据", "文件", "记录", "结果", "报告", "图片", "视频", "paper", "comment", "file", "record"}
+	for _, kw := range dataKeywords {
+		if strings.Contains(line, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractFinalAssistantTexts returns the last assistant message before each
+// new user turn in the conversation. These "conclusion" messages often
+// contain the results of a multi-tool sequence (e.g., "99篇论文已保存到...").
+//
+// Turn boundaries capture the FIRST assistant response; this captures the
+// LAST one — they are complementary. If a turn has only one assistant
+// message, it's already captured by turn boundaries and is skipped here
+// to avoid duplication in the summarizer input.
+func extractFinalAssistantTexts(entries []agent.ConversationEntry, maxTexts int) []string {
+	var texts []string
+	var lastAssistantText string
+	var lastAssistantIdx int = -1
+	var firstAssistantIdx int = -1 // first assistant after the most recent user
+
+	for i, e := range entries {
+		text, ok := e.Content.(string)
+		if !ok {
+			continue
+		}
+		switch e.Role {
+		case "assistant":
+			if text != "" {
+				if firstAssistantIdx < 0 {
+					firstAssistantIdx = i
+				}
+				lastAssistantText = text
+				lastAssistantIdx = i
+			}
+		case "user":
+			// A new user turn — the previous assistant message is the "final"
+			// one for the preceding turn.
+			if lastAssistantIdx >= 0 && lastAssistantText != "" && len(texts) < maxTexts {
+				// Skip if this is the same as the first assistant (already in turn boundaries).
+				if lastAssistantIdx != firstAssistantIdx {
+					runes := []rune(lastAssistantText)
+					if len(runes) > 600 {
+						lastAssistantText = string(runes[:600]) + "..."
+					}
+					texts = append(texts, lastAssistantText)
+				}
+			}
+			lastAssistantText = ""
+			lastAssistantIdx = -1
+			firstAssistantIdx = -1
+		}
+	}
+	// Don't forget the last assistant message at the end of the conversation.
+	if lastAssistantIdx >= 0 && lastAssistantText != "" && len(texts) < maxTexts {
+		if lastAssistantIdx != firstAssistantIdx {
+			runes := []rune(lastAssistantText)
+			if len(runes) > 600 {
+				lastAssistantText = string(runes[:600]) + "..."
+			}
+			texts = append(texts, lastAssistantText)
+		}
+	}
+	return texts
 }
 
 // ---------------------------------------------------------------------------

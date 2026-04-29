@@ -32,21 +32,16 @@ import (
 )
 
 // browserDiagToolNames is the set of tool names that trigger diagnostic logging.
-// Includes the merged "browser" tool and all individual browser_* tools.
-var browserDiagToolNames = map[string]bool{
-	"browser":              true,
-	"browser_task_run":     true,
-	"browser_task_replay":  true,
-	"browser_task_verify":  true,
-	"browser_task_status":  true,
-	"browser_record_start": true,
-	"browser_record_stop":  true,
-	"browser_list_flows":   true,
-	"browser_ocr":          true,
-	"gui_record_start":     true,
-	"gui_record_stop":      true,
-	"gui_observe":          true,
-	"gui_verify":           true,
+// Derived from noEagerPinTools (which is itself derived from conditionalKeepRules
+// with noMemoryPin=true). This is the single source of truth — any rule marked
+// noMemoryPin=true automatically gets diagnostic coverage.
+var browserDiagToolNames map[string]bool
+
+func init() {
+	browserDiagToolNames = make(map[string]bool)
+	for _, name := range tool.NoEagerPinToolNames() {
+		browserDiagToolNames[name] = true
+	}
 }
 
 // browserDiagExtractNames extracts tool names from a tool definition list.
