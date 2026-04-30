@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/adminauth"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/agentruntime"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/bootstrap"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/capabilities"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/collaboration"
 	colleagueHandler "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/handler"
@@ -136,6 +137,12 @@ func Bootstrap() (*Center, error) {
 	modelCaller := modelrouting.NewLLMCaller(provider.Read, auditRepo)
 	wfSvc.SetExperienceExtractor(experience.NewTenantExtractor(provider.Write, modelCaller.TenantExtractFunc()))
 	wfHandler := workflow.NewHandler(wfSvc)
+
+	// --- wire enterprise bootstrap module ---
+	bootstrapSvc := bootstrap.NewService(defaultBootstrapStorePath())
+	bootstrapSvc.SetOrganizationProvisioner(rSvc, colSvc)
+	bootstrapSvc.SetWorkflowProvisioner(wfSvc)
+	bootstrapHandler := bootstrap.NewHandler(bootstrapSvc)
 
 	// --- wire delivery module ---
 	deliveryHandler := delivery.NewHandler(provider.Write, provider.Read)
@@ -263,6 +270,7 @@ func Bootstrap() (*Center, error) {
 	deliveryHandler.RegisterAdminRoutes(mux)
 	deliveryHandler.RegisterClientRoutes(mux)
 	recHandler.RegisterClientRoutes(mux)
+	bootstrapHandler.RegisterAdminRoutes(mux)
 	execHandler.RegisterAdminRoutes(mux)
 	secHandler.RegisterAdminRoutes(mux)
 	secGroupHandler.RegisterAdminRoutes(mux)
@@ -466,4 +474,12 @@ func defaultLocalStorePath() string {
 		return "compute_providers.json"
 	}
 	return filepath.Join(home, ".iworkercenter", "compute_providers.json")
+}
+
+func defaultBootstrapStorePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "bootstrap_state.json"
+	}
+	return filepath.Join(home, ".iworkercenter", "bootstrap_state.json")
 }

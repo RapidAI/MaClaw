@@ -22,6 +22,7 @@ type Props = {
   goalPushAckingId: string;
   goalWatchAutoStatus: GoalWatchAutoHandleStatus | null;
   onDraftChange: (value: string) => void;
+  onExpectedOutputChange: (value: string) => void;
   onPickTask: (task: string, colleagueName?: string) => void;
   onOpenNewTask: () => void;
   onOpenRecentTask: (task: HistoryTaskItem) => void;
@@ -36,6 +37,13 @@ type Props = {
 
 type WorkMode = 'chat' | 'task' | 'research';
 type ComposerTool = 'mention' | 'attach' | 'skill' | 'memory';
+type ExpectedOutput = 'summary' | 'document' | 'table';
+
+type SelfCheckStatus = {
+  state: 'idle' | 'running' | 'done' | 'issue';
+  completedAt: string;
+  checks: Array<{ label: string; ok: boolean; detail: string }>;
+};
 
 const modeCopy: Record<WorkMode, { label: string; title: string; detail: string; placeholder: string }> = {
   chat: {
@@ -69,10 +77,11 @@ const skillChips = [
   'Evidence pack',
 ];
 
-const quickActions: Array<{ id: 'im' | 'continue' | 'memory'; title: string; detail: string }> = [
+const quickActions: Array<{ id: 'im' | 'continue' | 'memory' | 'selfcheck'; title: string; detail: string }> = [
   { id: 'im', title: 'Start from IM', detail: 'Turn a voice/chat instruction into work.' },
   { id: 'continue', title: 'Continue a task', detail: 'Resume recent evidence and result.' },
   { id: 'memory', title: 'Capture memory', detail: 'Save reusable experience to Center.' },
+  { id: 'selfcheck', title: 'Run self-check', detail: 'Check Center, memory, body runtime, and watcher queue.' },
 ];
 
 const formatRuntimeName = (instance: CenterAgentInstance) => {
@@ -82,9 +91,106 @@ const formatRuntimeName = (instance: CenterAgentInstance) => {
 
 const formatScopeCount = (stats: WorkerMemoryStats | null, scope: string) => stats?.byScope?.[scope] || 0;
 
-export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask, onOpenSettings, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush }: Props) {
+const inferExpectedOutput = (task: string): ExpectedOutput => {
+  const normalized = task.toLowerCase();
+  if (normalized.includes('data') || normalized.includes('table') || normalized.includes('cleanup')) {
+    return 'table';
+  }
+  if (normalized.includes('reply') || normalized.includes('report') || normalized.includes('brief') || normalized.includes('handoff') || normalized.includes('meeting')) {
+    return 'document';
+  }
+  return 'summary';
+};
+
+const outputBadgeCopy: Record<ExpectedOutput, string> = {
+  summary: 'Brief',
+  document: 'Doc',
+  table: 'Table',
+};
+
+const inferColleagueName = (task: string) => {
+  const normalized = task.toLowerCase();
+  if (normalized.includes('data') || normalized.includes('table') || normalized.includes('cleanup') || normalized.includes('chart')) {
+    return 'Data iWorker';
+  }
+  if (normalized.includes('quality') || normalized.includes('root cause') || normalized.includes('corrective') || normalized.includes('issue')) {
+    return 'Quality iWorker';
+  }
+  if (normalized.includes('operating') || normalized.includes('operation') || normalized.includes('production') || normalized.includes('handoff') || normalized.includes('exception') || normalized.includes('delivery')) {
+    return 'Operations iWorker';
+  }
+  if (normalized.includes('reply') || normalized.includes('meeting') || normalized.includes('report') || normalized.includes('brief') || normalized.includes('email')) {
+    return 'Office iWorker';
+  }
+  return '';
+};
+
+const colleagueBadgeCopy = (name: string) => name ? name.replace(' iWorker', '') : 'Auto';
+const outputTypeCopy: Record<ExpectedOutput, string> = {
+  summary: 'short brief / action summary',
+  document: 'stakeholder-ready document',
+  table: 'structured table / validation plan',
+};
+
+const buildCollaborationHint = (task: string) => {
+  const normalized = task.toLowerCase();
+  if (normalized.includes('peer') || normalized.includes('ask') || normalized.includes('decision')) {
+    return 'Center-mediated A2A discussion is recommended before finalizing the answer.';
+  }
+  if (normalized.includes('memory') || normalized.includes('policy')) {
+    return 'Use company, department, and personal memory from iWorkerCenter before writing new conclusions.';
+  }
+  if (normalized.includes('data') || normalized.includes('table') || normalized.includes('cleanup')) {
+    return 'Keep raw local evidence temporary, then save reusable cleanup rules back to department memory.';
+  }
+  return 'Start directly, then call peer iWorkers, cloud-approved skills, or human skills only when the task needs it.';
+};
+
+const inferRouteReason = (task: string) => {
+  const colleagueName = inferColleagueName(task);
+  if (colleagueName === 'Data iWorker') {
+    return 'Route reason: data/table/cleanup work needs structured data preparation and validation.';
+  }
+  if (colleagueName === 'Quality iWorker') {
+    return 'Route reason: quality/root-cause/corrective work needs issue classification and cause analysis.';
+  }
+  if (colleagueName === 'Operations iWorker') {
+    return 'Route reason: operations/production/handoff work needs execution context and delivery continuity.';
+  }
+  if (colleagueName === 'Office iWorker') {
+    return 'Route reason: communication/report/document work needs clear written output and stakeholder-ready language.';
+  }
+  return 'Route reason: no specialized route matched, use automatic routing through iWorkerCenter.';
+};
+
+const buildTaskTemplate = (task: string, mode: WorkMode) => {
+  const normalized = task.toLowerCase();
+  if (normalized.includes('peer') || normalized.includes('ask')) {
+    return `Task: ${task}\n\nPlease discuss this with the relevant peer iWorkers through iWorkerCenter, summarize the agreed decision, and list any human skill that must be called.\n\nExpected output: decision, owner, evidence, and next action.`;
+  }
+  if (normalized.includes('memory') || normalized.includes('policy')) {
+    return `Task: ${task}\n\nUse company, department, and personal memory from the registered iWorkerCenter. Clearly separate remembered facts from new assumptions.\n\nExpected output: matched memory, gaps, and recommended action.`;
+  }
+  if (normalized.includes('customer') || normalized.includes('reply')) {
+    return `Task: ${task}\n\nDraft a customer-ready response. Check policy memory first, keep the tone professional, and include any missing information that a human or peer iWorker should confirm.\n\nExpected output: final reply plus internal notes.`;
+  }
+  if (normalized.includes('data') || normalized.includes('table')) {
+    return `Task: ${task}\n\nClean and structure the data. Identify missing fields, suspicious values, and reusable rules that should be saved as department memory.\n\nExpected output: cleaned table plan, validation notes, and follow-up actions.`;
+  }
+  if (normalized.includes('research') || normalized.includes('market') || normalized.includes('risk')) {
+    return `Task: ${task}\n\nRun deep work mode: gather evidence, compare options, discuss uncertainty, and produce a recommendation suitable for organization memory.\n\nExpected output: findings, evidence, risks, recommendation, and reusable playbook notes.`;
+  }
+  if (mode === 'chat') {
+    return `Task: ${task}\n\nStart as an IM/voice handoff. Clarify intent first if needed, then convert the request into executable work.\n\nExpected output: clarified task, routing decision, and next action.`;
+  }
+  return `Task: ${task}\n\nTurn this into structured iWorker work. Use Center memory when helpful, route to peer iWorkers or human skills when needed, and preserve reusable experience.\n\nExpected output: result, evidence, and memory suggestions.`;
+};
+
+export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, onDraftChange, onExpectedOutputChange, onPickTask, onOpenNewTask, onOpenRecentTask, onOpenSettings, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush }: Props) {
   const [workMode, setWorkMode] = useState<WorkMode>('chat');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
+  const [activeSuggestion, setActiveSuggestion] = useState('');
+  const [selfCheckStatus, setSelfCheckStatus] = useState<SelfCheckStatus>({ state: 'idle', completedAt: '', checks: [] });
 
   useEffect(() => {
     const welcomeLoader = (window as Window & {
@@ -126,6 +232,9 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const centerEnabled = settings.center.enabled;
   const centerStatusLabel = centerEnabled ? (centerHealthStatus?.reachable ? 'Center online' : 'Center configured') : 'Local body only';
   const memoryAuthority = centerEnabled ? 'iWorkerCenter' : 'Not registered';
+  const previewTask = activeSuggestion || visibleChips[0] || '';
+  const previewOutput = inferExpectedOutput(previewTask);
+  const previewColleague = inferColleagueName(previewTask);
 
   const appendDraft = (snippet: string) => {
     onDraftChange(draft.trim() ? `${draft.trim()}\n\n${snippet}` : snippet);
@@ -148,7 +257,29 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     appendDraft(`Use Center memory for context: company memory, department memory, and personal memory. Current authority: ${memoryAuthority}.`);
   };
 
-  const handleQuickAction = (actionId: 'im' | 'continue' | 'memory') => {
+  const runSelfCheck = async () => {
+    appendDraft('Run iWorker body self-check: verify Center registration, memory authority, agent heartbeat, and GoalWatcher push queue. If any check fails, create a repair task before starting business work.');
+    setSelfCheckStatus({ state: 'running', completedAt: '', checks: [] });
+    const checks = await Promise.allSettled([
+      onCheckCenterHealth(),
+      onRefreshMemoryStats(),
+      onRefreshAgentInstances(),
+      onRefreshGoalPushes(),
+    ]);
+    const labels = ['Center registration', 'Memory authority', 'Agent runtime', 'Goal watcher queue'];
+    const nextChecks = checks.map((result, index) => ({
+      label: labels[index],
+      ok: result.status === 'fulfilled',
+      detail: result.status === 'fulfilled' ? 'Checked' : result.reason instanceof Error ? result.reason.message : 'Check failed',
+    }));
+    setSelfCheckStatus({
+      state: nextChecks.every((item) => item.ok) ? 'done' : 'issue',
+      completedAt: new Date().toLocaleTimeString(),
+      checks: nextChecks,
+    });
+  };
+
+  const handleQuickAction = (actionId: 'im' | 'continue' | 'memory' | 'selfcheck') => {
     if (actionId === 'im') {
       setWorkMode('chat');
       appendDraft('I want to start from an IM or voice instruction. Please clarify intent first, then turn it into a runnable task if needed.');
@@ -164,8 +295,40 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       onOpenNewTask();
       return;
     }
-    appendDraft('Capture this as reusable memory. Classify whether it belongs to company, department, or personal memory before saving to iWorkerCenter.');
-    onOpenSettings();
+    if (actionId === 'memory') {
+      appendDraft('Capture this as reusable memory. Classify whether it belongs to company, department, or personal memory before saving to iWorkerCenter.');
+      onOpenSettings();
+      return;
+    }
+    void runSelfCheck();
+  };
+  const handleCreateReadinessTask = () => {
+    const checkLines = selfCheckStatus.checks.length > 0
+      ? selfCheckStatus.checks.map((item) => `- ${item.label}: ${item.ok ? 'OK' : 'ISSUE'} (${item.detail})`).join('\n')
+      : '- Self-check has not run yet.';
+    const diagnostics = [
+      'Create an iWorker readiness repair task.',
+      '',
+      `Center: ${settings.center.enabled ? settings.center.baseUrl || `${settings.center.host}:${settings.center.port}` : 'disabled'}`,
+      `Tenant / Department / Worker: ${settings.center.tenantId || 'default'} / ${settings.center.departmentId || 'default'} / ${settings.center.workerId || 'local-iworker'}`,
+      `Memory authority: ${settings.center.enabled ? 'iWorkerCenter' : 'not registered'}`,
+      `Memory count: ${workerMemoryStats?.total ?? 0}`,
+      `Known errors: ${[centerHealthError, workerMemoryStatsError, agentInstancesError, goalPushError].filter(Boolean).join(' | ') || 'none reported by UI'}`,
+      '',
+      'Self-check results:',
+      checkLines,
+      '',
+      'Expected output: diagnose whether this local body can safely start business work. If not, propose concrete repair steps before execution.',
+    ].join('\n');
+    onDraftChange(diagnostics);
+    onExpectedOutputChange('summary');
+    onPickTask('iWorker readiness repair');
+  };
+  const handlePickTemplateTask = (task: string) => {
+    const template = `${buildTaskTemplate(task, workMode)}\n\n${inferRouteReason(task)}`;
+    onDraftChange(draft.trim() ? `${draft.trim()}\n\n${template}` : template);
+    onExpectedOutputChange(inferExpectedOutput(task));
+    onPickTask(task, inferColleagueName(task));
   };
   const handleSubmit = () => {
     if (draft.trim() || selectedTask) {
@@ -209,6 +372,26 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <strong>{selectedColleagueName || 'Auto-routing iWorker'}</strong>
             <p>{selectedTask || 'Listening for instruction, then routing to the right skill, peer worker, or human skill.'}</p>
           </div>
+          <div className={`iw-self-check-card is-${selfCheckStatus.state}`} aria-live="polite">
+            <div className="iw-self-check-head">
+              <span>{selfCheckStatus.state === 'idle' ? 'Self-check idle' : selfCheckStatus.state === 'running' ? 'Self-check running' : selfCheckStatus.state === 'done' ? 'Self-check complete' : 'Self-check needs attention'}</span>
+              {selfCheckStatus.completedAt ? <strong>{selfCheckStatus.completedAt}</strong> : null}
+            </div>
+            {selfCheckStatus.checks.length === 0 ? (
+              <p>Run a quick readiness check before starting business work.</p>
+            ) : (
+              <>
+                <div className="iw-self-check-grid">
+                  {selfCheckStatus.checks.map((item) => (
+                    <span key={item.label} className={item.ok ? 'is-ok' : 'is-fail'}>{item.label}</span>
+                  ))}
+                </div>
+                <button type="button" className="iw-self-check-action" onClick={handleCreateReadinessTask}>
+                  {selfCheckStatus.state === 'issue' ? 'Create repair task' : 'Create readiness task'}
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="iw-mode-pill" role="tablist" aria-label="Work mode">
@@ -220,11 +403,34 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
         </div>
 
         <div className="iw-suggestion-strip" aria-label="Quick task suggestions">
-          {visibleChips.map((task) => (
-            <button key={task} type="button" onClick={() => onPickTask(task)}>{task}</button>
-          ))}
+          {visibleChips.map((task) => {
+            const outputType = inferExpectedOutput(task);
+            const colleagueName = inferColleagueName(task);
+            return (
+              <button key={task} type="button" aria-label={task} className={previewTask === task ? 'is-previewed' : ''} onMouseEnter={() => setActiveSuggestion(task)} onFocus={() => setActiveSuggestion(task)} onClick={() => handlePickTemplateTask(task)}>
+                <span>{task}</span>
+                <small aria-hidden="true">{outputBadgeCopy[outputType]}</small>
+                <small aria-hidden="true" className="iw-route-badge">{colleagueBadgeCopy(colleagueName)}</small>
+              </button>
+            );
+          })}
         </div>
 
+        {previewTask ? (
+          <section className="iw-route-preview-card" aria-label="Route preview">
+            <div>
+              <span>Route preview</span>
+              <strong>{previewTask}</strong>
+              <p>{inferRouteReason(previewTask)}</p>
+            </div>
+            <div className="iw-route-preview-meta">
+              <span>{colleagueBadgeCopy(previewColleague)} route</span>
+              <span>{outputTypeCopy[previewOutput]}</span>
+              <span>{buildCollaborationHint(previewTask)}</span>
+            </div>
+            <button type="button" onClick={() => handlePickTemplateTask(previewTask)}>Use this route</button>
+          </section>
+        ) : null}
         <div className="iw-bottom-composer">
           <textarea
             value={draft}

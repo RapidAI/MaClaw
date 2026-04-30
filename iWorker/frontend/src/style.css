@@ -3613,3 +3613,205 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+
+.iw-self-check-card {
+  width: min(470px, 100%);
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(215, 224, 233, 0.9);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.iw-self-check-card.is-running {
+  border-color: rgba(59, 130, 246, 0.28);
+  background: rgba(239, 246, 255, 0.82);
+}
+
+.iw-self-check-card.is-done {
+  border-color: rgba(34, 197, 94, 0.24);
+  background: rgba(240, 253, 244, 0.78);
+}
+
+.iw-self-check-card.is-issue {
+  border-color: rgba(245, 158, 11, 0.32);
+  background: rgba(255, 251, 235, 0.86);
+}
+
+.iw-self-check-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.iw-self-check-head span {
+  color: var(--iw-ink);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.iw-self-check-head strong,
+.iw-self-check-card p {
+  margin: 0;
+  color: var(--iw-muted);
+  font-size: 12px;
+}
+
+.iw-self-check-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.iw-self-check-grid span {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.iw-self-check-grid span.is-ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.iw-self-check-grid span.is-fail {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.iw-self-check-action {
+  width: fit-content;
+  min-height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
+  background: #101511;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.iw-self-check-card.is-issue .iw-self-check-action {
+  background: #9a3412;
+}
+
+.iw-suggestion-strip button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.iw-suggestion-strip button small {
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #eef6f0;
+  color: #23613f;
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.iw-suggestion-strip button .iw-route-badge {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.iw-suggestion-strip button.is-previewed {
+  border-color: #8fbfa0;
+  background: #ffffff;
+  box-shadow: 0 10px 22px rgba(31, 122, 69, 0.10);
+}
+
+.iw-route-preview-card {
+  width: min(760px, 100%);
+  justify-self: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.7fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 13px 14px;
+  border-radius: 22px;
+  border: 1px solid rgba(200, 216, 205, 0.96);
+  background:
+    radial-gradient(circle at 8% 10%, rgba(72, 199, 116, 0.18), transparent 32%),
+    rgba(255, 255, 255, 0.80);
+  box-shadow: 0 16px 36px rgba(31, 41, 55, 0.08);
+}
+
+.iw-route-preview-card div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.iw-route-preview-card span:first-child {
+  color: var(--iw-faint);
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.iw-route-preview-card strong {
+  overflow: hidden;
+  color: var(--iw-ink);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iw-route-preview-card p {
+  margin: 0;
+  color: var(--iw-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.iw-route-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.iw-route-preview-meta span {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #f1f6ef;
+  color: #375342;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.iw-route-preview-card > button {
+  min-height: 36px;
+  padding: 0 13px;
+  border-radius: 999px;
+  background: #101511;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+@media (max-width: 1180px) {
+  .iw-route-preview-card {
+    grid-template-columns: 1fr;
+  }
+
+  .iw-route-preview-card > button {
+    width: fit-content;
+  }
+}

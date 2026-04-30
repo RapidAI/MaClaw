@@ -1026,6 +1026,13 @@ type pendingAskUserState struct {
 	Timestamp time.Time
 }
 
+// pendingSlotText stores the user's original task text that was intercepted
+// by the unfinished-slot hint. Expires after 10 minutes.
+type pendingSlotText struct {
+	Text      string
+	Timestamp time.Time
+}
+
 // pendingCapabilityGapResult stores the outcome of an async capability gap
 // resolution that ran in the background after the response was returned.
 // If a skill was found and installed, the result is injected into the next
@@ -1183,8 +1190,7 @@ func buildResumeSlotActions(slot *agent.UnfinishedTaskSlot) []IMResponseAction {
 	}
 	return []IMResponseAction{
 		{Label: resumeLabel, Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
-		{Label: "开始新任务", Command: "__start_new_task__", Style: "default"},
-		{Label: "放弃旧任务", Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "danger"},
+		{Label: "执行新任务", Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "primary"},
 	}
 }
 
@@ -2484,6 +2490,14 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is *pendingCapabilityGapResult.
 	pendingCapabilityGap sync.Map
 
+	// pendingSlotUserText stores the user's original task text when it was
+	// intercepted by the unfinished-slot hint. When the user clicks a slot
+	// action button (dismiss / start-new), the saved text replaces the
+	// synthetic placeholder so the original task is executed after the
+	// state change, instead of being silently dropped.
+	// Keyed by userID, value is *pendingSlotText.
+	pendingSlotUserText sync.Map
+
 	// pendingContextCompression stores a compression request from the
 	// compress_context tool. Applied by the agent loop after the tool
 	// result is appended to conversation.
@@ -2559,8 +2573,17 @@ type IMMessageHandler struct {
 
 // NewIMMessageHandler creates a new handler.
 func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
-	llmCfg := app.GetMaclawLLMConfig()
-	responseHeaderTimeout := time.Duration(llmCfg.EffectiveTimeoutSec()) * time.Second
+	// Response-header timeout: how long to wait for the FIRST byte from the
+	// LLM API after sending the request. This is NOT the total streaming
+	// duration — once headers arrive, SSE streaming continues without this
+	// limit. 120s is sufficient for even the slowest models (deepseek-reasoner
+	// thinking phase). If no byte arrives in 120s, the API is down.
+	//
+	// This is a fixed value rather than reading from LLM config because the
+	// transport outlives any single LLM provider configuration. The user may
+	// switch providers mid-session; the transport should not carry a stale
+	// timeout from the previous provider.
+	const responseHeaderTimeout = 120 * time.Second
 	// Optimised transport for interactive chat — larger connection pool
 	// so concurrent requests don't queue behind each other.
 	chatTransport := &http.Transport{
@@ -4235,8 +4258,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 		// Flush evidence batch and reset session on conversation reset.
 		h.flushEvidenceOnSessionEnd(msg.UserID)
-		// Clean up workflow and understanding state.
-		h.cancelWorkflowForUser(msg.UserID)
+		// cancelWorkflowForUser is now called inside clearPerUserSessionState.
 		resp := &IMAgentResponse{Text: "对话已重置。", ClearUI: true}
 		if h.currentLoopCtx != nil {
 			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, "")
@@ -4412,12 +4434,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if h.app != nil && h.getSessionStarter() == nil {
 		h.ensureInteractionInfra()
 	}
-	if decision.DismissSlotID != "" {
-		h.memory.DismissUnfinishedSlot(msg.UserID, decision.DismissSlotID)
-		unfinishedSlot = nil
-		decision.ResumeSlotID = ""
-		freshTask = true
-	}
+	// NOTE: DismissSlotID is handled post-lock inside the StartNewTask block
+	// (which calls ClearConversationAndDismissSlot). No pre-lock dismiss needed.
 	if decision.DismissRecoverableSessionID != "" && h.manager != nil {
 		h.manager.SuppressResumeForSession(decision.DismissRecoverableSessionID)
 		decision.ResumeRecoverableSessionID = ""
@@ -4498,6 +4516,56 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		decision = resolveExplicitTaskSlotDecision(msg, unfinishedSlot)
 	}
 
+	// ── Explicit task slot actions (StartNewTask / DismissSlotID) ──
+	//
+	// These MUST run BEFORE workflow interception. Otherwise an active
+	// workflow's QuickFilter.HasActiveWorkflow → handleActiveWorkflow
+	// intercepts the synthetic placeholder text ("放弃上次未完成任务")
+	// before clearPerUserSessionState has a chance to cancel the workflow.
+	// The workflow engine would then process the placeholder as a real
+	// user message, and the StartNewTask cleanup + UIAction replay would
+	// never execute.
+	if decision.StartNewTask {
+		// Archive current task before clearing.
+		if len(EntriesBeforeClear) >= 2 {
+			h.archiveCurrentTask(msg.UserID, EntriesBeforeClear, "abandoned")
+		}
+		h.memory.ClearConversationAndDismissSlot(msg.UserID)
+		h.clearPerUserSessionState(msg.UserID)
+		EntriesBeforeClear = nil
+		unfinishedSlot = nil
+		freshTask = true
+
+		// When UIAction=true, the message originates from a button click
+		// (dismiss / start-new), not from the user typing in the input box.
+		// msg.Text is a synthetic placeholder that should NOT enter the LLM
+		// pipeline. If the user typed a real task before the unfinished-slot
+		// hint intercepted it, replay that original text instead.
+		if msg.UIAction {
+			savedText, hasSavedText := h.pendingSlotUserText.LoadAndDelete(msg.UserID)
+			if hasSavedText {
+				pending := savedText.(*pendingSlotText)
+				if time.Since(pending.Timestamp) < 10*time.Minute {
+					msg.Text = pending.Text
+					msg.UIAction = false
+					trimmed = strings.TrimSpace(msg.Text)
+					log.Printf("[TaskSlot] UI action for user %s: dismiss+replay original task %q", msg.UserID, truncateRunes(trimmed, 80))
+				} else {
+					log.Printf("[TaskSlot] UI action for user %s: saved text expired (age=%v)", msg.UserID, time.Since(pending.Timestamp))
+					hasSavedText = false
+				}
+			}
+			if !hasSavedText {
+				log.Printf("[TaskSlot] UI action for user %s: dismiss_slot:%s", msg.UserID, decision.DismissSlotID)
+				return &IMAgentResponse{Text: "✅ 已放弃旧任务。请告诉我你的新任务。"}
+			}
+		}
+	} else if decision.ResumeSlotID != "" {
+		if h.memory.BindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
+			unfinishedSlot = h.memory.ActiveUnfinishedSlot(msg.UserID)
+		}
+	}
+
 	// --- Workflow engine interception ---
 	// Route messages through the workflow engine before the main agent loop.
 	// This handles active workflows, intent understanding, and complex task detection.
@@ -4556,22 +4624,6 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// and should not be subject to doc_only tool filtering.
 	if skipWorkflowForAttachment {
 		skipNeedsConfirmGate = true
-	}
-
-	if decision.StartNewTask {
-		// Archive current task before clearing.
-		if len(EntriesBeforeClear) >= 2 {
-			h.archiveCurrentTask(msg.UserID, EntriesBeforeClear, "abandoned")
-		}
-		h.memory.ClearConversationAndDismissSlot(msg.UserID)
-		h.clearPerUserSessionState(msg.UserID)
-		EntriesBeforeClear = nil
-		unfinishedSlot = nil
-		freshTask = true
-	} else if decision.ResumeSlotID != "" {
-		if h.memory.BindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
-			unfinishedSlot = h.memory.ActiveUnfinishedSlot(msg.UserID)
-		}
 	}
 
 	// --- Pending ask_user response detection ---
@@ -4854,6 +4906,16 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 		if !slotProjectMismatch {
 			if hint := buildUnfinishedSlotHint(unfinishedSlot); hint != "" {
+				// Save the user's original task text so it can be replayed
+				// after the user clicks dismiss/start-new. Without this,
+				// the original task is silently dropped and the user must
+				// re-type it.
+				if trimmed != "" {
+					h.pendingSlotUserText.Store(msg.UserID, &pendingSlotText{
+						Text:      trimmed,
+						Timestamp: time.Now(),
+					})
+				}
 				unfinishedTask := buildUnfinishedTaskPayload(unfinishedSlot)
 				recoverableSession := (*IMResponseRecoverableSession)(nil)
 				if h.manager != nil {
@@ -8069,6 +8131,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				finalResp.VoiceMimeType = voiceMimeType
 			}
 			h.saveConversationHistoryTimed(userID, history, finalResp)
+			// Dismiss any active unfinished slot on normal exit. The task
+			// has been executing normally (LLM produced a response), so the
+			// slot's recovery purpose is fulfilled. Without this, a stale
+			// slot from a previous max_rounds/in-flight-recovery persists
+			// across normal agent loop completions and re-triggers the
+			// "检测到未完成任务" prompt on every subsequent user message.
+			h.memory.DismissUnfinishedSlot(userID, "")
 			return finalResp
 		}
 

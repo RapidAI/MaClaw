@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import type { CenterTab } from '../../types';
 
 const tabIds: CenterTab[] = [
-  'overview', 'employees', 'communications', 'workflows',
+  'overview', 'bootstrap', 'employees', 'communications', 'workflows',
   'knowledge', 'packages', 'models', 'compute', 'security',
   'delivery', 'usage', 'im', 'auth', 'settings',
 ];

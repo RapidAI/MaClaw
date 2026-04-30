@@ -13,9 +13,17 @@ const RequiredNodeVersion = "24.13.0"
 // context_length is configured on the LLM provider.
 const DefaultContextTokens = 110_000
 
-// DefaultLLMTimeoutSec is the fallback response-header timeout in seconds
-// when no explicit timeout_sec is configured on the LLM provider.
-const DefaultLLMTimeoutSec = 360
+// DefaultLLMTimeoutSec is the fallback timeout in seconds when no explicit
+// timeout_sec is configured on the LLM provider.
+//
+// Usage varies by caller:
+//   - transport.ResponseHeaderTimeout: wait for first response byte only
+//   - http.Client.Timeout: total request timeout (connect + headers + body)
+//   - context.WithTimeout: single operation deadline
+//
+// 120s is sufficient for the slowest models (e.g. deepseek-reasoner thinking
+// phase). If no response arrives in 120s, the API is likely down.
+const DefaultLLMTimeoutSec = 120
 
 // ModelConfig 描述一个 LLM 模型的配置。
 type ModelConfig struct {

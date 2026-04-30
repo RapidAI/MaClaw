@@ -38,6 +38,14 @@ type UserMessage struct {
 	// DismissRecoverableSessionID dismisses a recoverable coding session.
 	DismissRecoverableSessionID string `json:"dismiss_recoverable_session_id,omitempty"`
 
+	// UIAction marks the message as an explicit UI button click (dismiss,
+	// start-new). When true and StartNewTask is also true, the backend
+	// performs the requested state change and returns immediately — the
+	// synthetic placeholder text is NOT sent through the LLM processing
+	// pipeline (IUM, agent loop, etc.). This is a structural signal from
+	// the frontend button protocol, not a text-based heuristic.
+	UIAction bool `json:"ui_action,omitempty"`
+
 	// SlashCommand is set by Hub when it parses a slash command and forwards
 	// it to the device for handling (e.g. "workflow:status", "workflow:cancel").
 	SlashCommand string `json:"slash_command,omitempty"`

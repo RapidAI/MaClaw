@@ -182,6 +182,39 @@ describe('App', () => {
     cleanup();
   });
 
+  it('turns a home quick chip into a structured task draft', async () => {
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'What should your iWorker handle next?' })).toBeTruthy();
+
+    expect(screen.getAllByText('Doc').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Office').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Customer reply' }));
+
+    expect(await screen.findByRole('heading', { name: '新建任务' })).toBeTruthy();
+    expect(screen.getByDisplayValue('Customer reply')).toBeTruthy();
+    expect(screen.getByDisplayValue(/Draft a customer-ready response/)).toBeTruthy();
+    expect(screen.getByDisplayValue(/Route reason: communication\/report\/document work/)).toBeTruthy();
+    expect(screen.getByDisplayValue('正式文档')).toBeTruthy();
+    expect(screen.getByText('已选同事：Office iWorker')).toBeTruthy();
+  });
+  it('previews routing and collaboration before opening a quick task', async () => {
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'What should your iWorker handle next?' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Route preview' })).toBeTruthy();
+
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Ask peer iWorkers' }));
+
+    expect(screen.getAllByText('Ask peer iWorkers').length).toBeGreaterThan(1);
+    expect(screen.getByText(/Center-mediated A2A discussion/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use this route' }));
+
+    expect(await screen.findByDisplayValue('Ask peer iWorkers')).toBeTruthy();
+    expect(screen.getByDisplayValue(/Please discuss this with the relevant peer iWorkers through iWorkerCenter/)).toBeTruthy();
+  });
   it('adds Center memory context from the home composer', async () => {
     render(<App />);
 
@@ -200,6 +233,33 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: /Capture memory/ }));
 
     expect(await screen.findByText('Memory Capture')).toBeTruthy();
+  });
+  it('runs a home self-check across Center memory runtime and watcher queue', async () => {
+    render(<App />);
+
+    expect(await screen.findByText(/acme\/ops/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /Run self-check/ }));
+
+    expect(screen.getByDisplayValue(/Run iWorker body self-check/)).toBeTruthy();
+    await waitFor(() => {
+      expect(CheckCenterHealth).toHaveBeenCalledTimes(1);
+      expect(FetchWorkerMemoryStats).toHaveBeenCalled();
+      expect(HeartbeatAgentRuntime).toHaveBeenCalled();
+      expect(FetchAgentInstances).toHaveBeenCalled();
+      expect(FetchGoalPushes).toHaveBeenCalled();
+      expect(screen.getByText('Self-check complete')).toBeTruthy();
+      expect(screen.getAllByText('Center registration').length).toBeGreaterThan(1);
+      expect(screen.getAllByText('Memory authority').length).toBeGreaterThan(1);
+      expect(screen.getByText('Agent runtime')).toBeTruthy();
+      expect(screen.getByText('Goal watcher queue')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create readiness task' }));
+
+    expect(await screen.findByRole('heading', { name: '新建任务' })).toBeTruthy();
+    expect(screen.getByDisplayValue('iWorker readiness repair')).toBeTruthy();
+    expect(screen.getByDisplayValue(/Create an iWorker readiness repair task/)).toBeTruthy();
   });
   it('tests center health from settings page and shows snapshot', async () => {
     render(<App />);

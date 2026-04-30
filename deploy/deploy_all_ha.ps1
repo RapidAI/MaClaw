@@ -303,6 +303,9 @@ function Write-RemoteScript {
         ': "${HUBCENTER_BINARY_NAME:=maclaw-hubcenter}"',
         ': "${BRAND_BUILD_TAG:=}"',
         '',
+        'PATH="$PATH:/usr/local/go/bin:/root/go/bin"',
+        'export PATH',
+        '',
         'if ! command -v go >/dev/null 2>&1; then',
         '  echo "[ERROR] go is not installed on remote host" >&2',
         '  exit 1',
@@ -678,6 +681,7 @@ function Invoke-RemotePrecheck {
     )
 
     $checks = @(
+        'PATH="$PATH:/usr/local/go/bin:/root/go/bin"; export PATH',
         '[ -n "$(command -v sh 2>/dev/null)" ] || { echo "missing:sh"; exit 1; }',
         '[ -n "$(command -v tar 2>/dev/null)" ] || { echo "missing:tar"; exit 1; }',
         '[ -n "$(command -v go 2>/dev/null)" ] || { echo "missing:go"; exit 1; }',

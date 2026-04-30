@@ -14,6 +14,7 @@
 8. `iworker-skillmarket-cloud-publish-v1.md`
 9. `iworker-technical-integration-and-blockers-v1.md`
 10. `iworkercenter-ha-architecture-v1.md`
+11. `iworkercenter-enterprise-bootstrap-v1.md`
 
 ## 当前统一口径
 

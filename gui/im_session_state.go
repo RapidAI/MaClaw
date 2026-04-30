@@ -19,9 +19,15 @@ package main
 //
 // Those are caller-specific side effects that vary by reset path.
 func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
+	// Cancel any active workflow and understanding session. Without this,
+	// a stale workflow survives dismiss/clear and hijacks subsequent messages
+	// via QuickFilter.HasActiveWorkflow → FilterActiveWorkflow.
+	h.cancelWorkflowForUser(userID)
+
 	// Pending interaction state.
 	h.pendingAskUser.Delete(userID)
 	h.pendingCapabilityGap.Delete(userID)
+	h.pendingSlotUserText.Delete(userID)
 
 	// Compaction tracking state.
 	h.compactionCount.Delete(userID)

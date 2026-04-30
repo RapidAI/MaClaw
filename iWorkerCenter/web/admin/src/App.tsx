@@ -5,6 +5,7 @@ import { TopHeader } from './components/layout/TopHeader';
 import { LanguageSwitcher } from './components/layout/LanguageSwitcher';
 import { AccountSettingsPage } from './pages/AccountSettingsPage';
 import { AuthPage } from './pages/AuthPage';
+import { EnterpriseBootstrapPage } from './pages/EnterpriseBootstrapPage';
 import { CommunicationsPage } from './pages/CommunicationsPage';
 import { DeliveryPage } from './pages/DeliveryPage';
 import { EmployeesPage } from './pages/EmployeesPage';
@@ -77,6 +78,7 @@ export default function App() {
 
   const content = useMemo(() => {
     switch (activeTab) {
+      case 'bootstrap': return <EnterpriseBootstrapPage />;
       case 'employees': return <EmployeesPage />;
       case 'models': return <ModelRoutingPage />;
       case 'compute': return <ComputePowerPage />;

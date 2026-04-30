@@ -1004,6 +1004,7 @@ export default function App() {
           onAutoHandleGoalPush={handleAutoHandleGoalPush}
           onAckGoalPush={handleAckGoalPush}
           onDraftChange={setDraft}
+          onExpectedOutputChange={setExpectedOutput}
           onPickTask={handlePickTask}
           onOpenNewTask={handleOpenNewTask}
           onOpenRecentTask={handleOpenHistoryTask}

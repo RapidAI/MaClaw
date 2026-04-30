@@ -143,6 +143,7 @@ func isAdminAPIPath(path string) bool {
 		"/admin/diworker-auth",
 		"/admin/compute",
 		"/admin/recommend",
+		"/admin/bootstrap",
 		"/admin/profile",
 		"/admin/password",
 	}

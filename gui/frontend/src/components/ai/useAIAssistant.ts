@@ -76,6 +76,7 @@ interface SendMessageOptions {
     resumeSlotID?: string;
     startNewTask?: boolean;
     dismissSlotID?: string;
+    uiAction?: boolean;
 }
 
 interface AIAssistantRemoteSessionView {
@@ -1856,6 +1857,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 resume_slot_id: options?.resumeSlotID,
                 start_new_task: options?.startNewTask,
                 dismiss_slot_id: options?.dismissSlotID,
+                ui_action: options?.uiAction,
             }) as AIAssistantSendResult;
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(response);
@@ -2100,12 +2102,15 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         if (resumeMatch) {
             return sendMessage('继续上次未完成任务', { resumeSlotID: resumeMatch[1]?.trim() || '' });
         }
+        // Backward compat: __start_new_task__ is no longer emitted by the
+        // backend (merged into __dismiss_unfinished__), but keep the handler
+        // in case older backend versions are still in use.
         if (command === '__start_new_task__') {
-            return sendMessage('开始一个新任务', { startNewTask: true });
+            return sendMessage('开始一个新任务', { startNewTask: true, uiAction: true });
         }
         const dismissMatch = command.match(/^__dismiss_unfinished__\s+(\S+)$/);
         if (dismissMatch) {
-            return sendMessage('放弃上次未完成任务', { dismissSlotID: dismissMatch[1]?.trim() || '', startNewTask: true });
+            return sendMessage('放弃上次未完成任务', { dismissSlotID: dismissMatch[1]?.trim() || '', startNewTask: true, uiAction: true });
         }
         return sendMessage(command);
     }, [sendMessage]);

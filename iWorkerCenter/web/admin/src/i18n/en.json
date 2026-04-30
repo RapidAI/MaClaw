@@ -4,6 +4,7 @@
     "title": "Digital Worker Center"
   },
   "nav": {
+    "bootstrap": "Enterprise Bootstrap",
     "overview": "Overview",
     "employees": "Workers",
     "communications": "Communications",
@@ -20,6 +21,7 @@
     "settings": "Account"
   },
   "subtitle": {
+    "bootstrap": "Launch a new customer company into an autonomous iWorker organization.",
     "overview": "Get a quick overview of the Digital Worker Center status.",
     "employees": "Manage identities, roles, capabilities and model policies.",
     "communications": "View collaboration records and request routing between workers.",

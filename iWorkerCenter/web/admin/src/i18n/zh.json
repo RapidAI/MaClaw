@@ -4,6 +4,7 @@
     "title": "数字员工中心"
   },
   "nav": {
+    "bootstrap": "Enterprise Bootstrap",
     "overview": "总览",
     "employees": "数字员工",
     "communications": "员工通讯",
@@ -20,6 +21,7 @@
     "settings": "账户设置"
   },
   "subtitle": {
+    "bootstrap": "Launch a new customer company into an autonomous iWorker organization.",
     "overview": "帮助管理员快速了解数字员工中心的整体运行情况。",
     "employees": "管理身份、角色、能力偏好和模型策略。",
     "communications": "查看数字员工之间的协作记录和请求流转。",

@@ -983,6 +983,7 @@ type AIAssistantSendRequest struct {
 	DismissSlotID               string `json:"dismiss_slot_id,omitempty"`
 	ResumeSessionID             string `json:"resume_session_id,omitempty"`
 	DismissRecoverableSessionID string `json:"dismiss_recoverable_session_id,omitempty"`
+	UIAction                    bool   `json:"ui_action,omitempty"`
 }
 
 type AIAssistantBackgroundTaskRequest struct {
@@ -1083,6 +1084,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		DismissSlotID:               strings.TrimSpace(req.DismissSlotID),
 		ResumeRecoverableSessionID:  strings.TrimSpace(req.ResumeSessionID),
 		DismissRecoverableSessionID: strings.TrimSpace(req.DismissRecoverableSessionID),
+		UIAction:                    req.UIAction,
 	}
 	requestID := strings.TrimSpace(req.RequestID)
 	if requestID == "" {
