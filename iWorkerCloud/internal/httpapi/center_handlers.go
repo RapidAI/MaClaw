@@ -124,6 +124,21 @@ func ProbeCenterHandler(svc *centers.Service) http.HandlerFunc {
 	}
 }
 
+func RuntimeSnapshotHandler(svc *centers.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		result, err := svc.RuntimeSnapshot(r.Context(), r.PathValue("id"))
+		if err != nil {
+			if errors.Is(err, centers.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "CENTER_NOT_FOUND", "center not found")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "RUNTIME_SNAPSHOT_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
 func DisableCenterHandler(svc *centers.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")

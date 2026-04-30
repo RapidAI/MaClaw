@@ -350,6 +350,9 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 			if s.entityIndex != nil {
 				s.entityIndex.IndexEntry(&s.entries[i])
 			}
+			if s.projIndex != nil {
+				s.projIndex.IndexEntry(&s.entries[i])
+			}
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -1793,6 +1796,12 @@ func (s *Store) RestoreFromArchive(id string) error {
 	s.entries = append(s.entries, *entry)
 	s.bm25.addEntry(*entry)
 	s.vecIndex.add(entry.ID, entry.Embedding)
+	if s.projIndex != nil {
+		s.projIndex.IndexEntry(entry)
+	}
+	if s.entityIndex != nil {
+		s.entityIndex.IndexEntry(entry)
+	}
 	s.evictLRU()
 	s.dirty = true
 	s.signalSave()
@@ -1828,6 +1837,9 @@ func (s *Store) SetEntries(entries []Entry) {
 	s.graph.rebuild(entries)
 	if s.entityIndex != nil {
 		s.entityIndex.Rebuild(entries)
+	}
+	if s.projIndex != nil {
+		s.projIndex.Rebuild(entries)
 	}
 }
 

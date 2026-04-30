@@ -94,6 +94,9 @@ func parseWAVForOpus(data []byte) ([]float32, int, int, error) {
 			continue
 		}
 		if id == "data" {
+			if sampleRate == 0 || channels == 0 || bitsPerSample == 0 {
+				return nil, 0, 0, fmt.Errorf("WAV data chunk found before fmt chunk")
+			}
 			raw := data[pos+8:]
 			if pos+8+sz <= len(data) { raw = data[pos+8 : pos+8+sz] }
 			var pcm []float32

@@ -421,6 +421,22 @@ func (a *App) ensureMemoryStore() {
 	}
 	if ms != nil {
 		a.memoryStore = ms
+
+		// Register ProjectIndex change callback. When any memory entry
+		// updates the project index (new project or activity change),
+		// notify the frontend to refresh the "最近任务" sidebar.
+		// This is the single notification point — all write paths
+		// (sedimentTaskEntry, workflow_artifact_saver, memorySink,
+		// conversation_archiver, etc.) flow through Store.Save →
+		// ProjectIndex.IndexEntry → OnChanged. No per-writer event
+		// emission needed.
+		if pi := ms.ProjectIndex(); pi != nil {
+			pi.OnChanged = func(_ string) {
+				if a.ctx != nil {
+					runtime.EventsEmit(a.ctx, "task-list-changed")
+				}
+			}
+		}
 		// Wire up all pipeline components. LLM-dependent components (promoter,
 		// reflector, consolidator) gracefully skip when LLM is nil/unconfigured.
 		// Step 0 (decay/dormant marking) always runs regardless.

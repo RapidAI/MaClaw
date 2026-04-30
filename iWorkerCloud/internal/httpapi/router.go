@@ -44,6 +44,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/centers/{id}/enable", RequireAdmin(EnableCenterHandler(centerSvc)))
 	mux.HandleFunc("PUT /api/admin/centers/{id}/integration", RequireAdmin(UpdateCenterIntegrationHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/centers/{id}/probe", RequireAdmin(ProbeCenterHandler(centerSvc)))
+	mux.HandleFunc("GET /api/admin/centers/{id}/runtime-snapshot", RequireAdmin(RuntimeSnapshotHandler(centerSvc)))
 	mux.HandleFunc("GET /api/admin/centers/{id}/provision-readiness", RequireAdmin(ProvisionReadinessHandler(centerSvc)))
 	mux.HandleFunc("DELETE /api/admin/centers/{id}", RequireAdmin(DeleteCenterHandler(centerSvc)))
 

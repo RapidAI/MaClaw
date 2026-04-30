@@ -135,6 +135,10 @@ export function probeCenter(id: string): Promise<CenterProbeResponse> {
   return apiPost(`/api/admin/centers/${id}/probe`);
 }
 
+export function fetchCenterRuntimeSnapshot(id: string): Promise<CenterProbeResult> {
+  return apiGet(`/api/admin/centers/${id}/runtime-snapshot`);
+}
+
 export function confirmTrial(id: string): Promise<void> {
   return apiPost(`/api/admin/centers/${id}/confirm-trial`);
 }

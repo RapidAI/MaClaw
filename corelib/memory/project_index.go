@@ -60,6 +60,19 @@ type ProjectIndex struct {
 	records   map[string]*ProjectRecord // projectPath → record
 	prefs     map[string]*TaskPref      // projectPath → user preferences (persisted)
 	prefsPath string                    // path to task_prefs.json
+
+	// OnChanged is called (outside pi.mu but possibly inside Store.mu)
+	// when IndexEntry produces a meaningful change to the index — a new
+	// project record is created, or an existing record's LastActivity is
+	// updated. Callers can use this to notify the UI.
+	//
+	// The callback receives the affected project path. It must be
+	// non-blocking (e.g. async event emission) since it may be called
+	// while Store.mu is held.
+	//
+	// Not called during Rebuild (bulk initialization) to avoid a storm of
+	// notifications on startup.
+	OnChanged func(projectPath string)
 }
 
 // TaskPref stores user-defined preferences for a task in the recent tasks list.
@@ -101,7 +114,7 @@ func (pi *ProjectIndex) Rebuild(entries []Entry) {
 
 	pi.records = make(map[string]*ProjectRecord)
 	for i := range entries {
-		pi.indexEntryLocked(&entries[i])
+		_, _ = pi.indexEntryLocked(&entries[i])
 	}
 }
 
@@ -109,27 +122,37 @@ func (pi *ProjectIndex) Rebuild(entries []Entry) {
 // Called after each Save/SaveWithContext.
 func (pi *ProjectIndex) IndexEntry(e *Entry) {
 	pi.mu.Lock()
-	defer pi.mu.Unlock()
-	pi.indexEntryLocked(e)
+	changed, projPath := pi.indexEntryLocked(e)
+	cb := pi.OnChanged
+	pi.mu.Unlock()
+
+	// Fire callback outside the lock to avoid deadlocks with consumers
+	// that call back into ProjectIndex (e.g. SearchProjects).
+	if changed && cb != nil {
+		cb(projPath)
+	}
 }
 
 // indexEntryLocked updates the index for a single entry (caller holds mu.Lock).
 // Safe to call multiple times for the same entry (idempotent for EntryCount
 // via entry ID tracking).
-func (pi *ProjectIndex) indexEntryLocked(e *Entry) {
+// Returns (changed, projectPath): changed is true when a new record was
+// created or an existing record's LastActivity was updated.
+func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 	if !projectCategories[e.Category] && !projectCategories[MapToCanonical(e.Category)] {
-		return
+		return false, ""
 	}
 	if e.Status == StatusDormant || e.Status == StatusSuperseded {
-		return
+		return false, ""
 	}
 
 	// Determine project path from entry metadata.
 	projPath := inferProjectPath(e)
 	if projPath == "" {
-		return
+		return false, ""
 	}
 
+	changed := false
 	rec, ok := pi.records[projPath]
 	if !ok {
 		rec = &ProjectRecord{
@@ -137,6 +160,7 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) {
 			seenIDs:     make(map[string]bool),
 		}
 		pi.records[projPath] = rec
+		changed = true // new project record
 	}
 
 	// Deduplicate entry count: only increment for entries we haven't seen.
@@ -153,6 +177,7 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) {
 		rec.LastActivity = e.UpdatedAt
 		// Update preview from the most recent entry.
 		rec.Preview = truncateRunes(firstMeaningfulLine(e.Content), 150)
+		changed = true // activity timestamp advanced
 	}
 
 	// Merge tags.
@@ -203,6 +228,8 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) {
 			}
 		}
 	}
+
+	return changed, projPath
 }
 
 // Search returns project records matching the query, sorted by relevance.

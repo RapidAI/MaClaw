@@ -6611,6 +6611,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// full document must be saved as the phase output.
 	var lengthContinuationBuf strings.Builder
 
+	// Voice data from tts tool — persists across iterations so voice
+	// generated in iteration N is still available when the loop finalizes
+	// in iteration N+1.
+	var voiceData, voiceFileName, voiceMimeType string
+
 	for iteration := 0; ; iteration++ {
 		ctx.SetIteration(iteration)
 
@@ -7317,11 +7322,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if !streamDoneAt.IsZero() {
 			handlerPostStreamHistoryAppendElapsed += time.Since(historyAppendStartedAt)
 		}
-
-		// Voice data from tts tool — declared at iteration level so both
-		// the tool-execution branch (which sets them) and the no-tool
-		// finalize branch (which reads them) can access them.
-		var voiceData, voiceFileName, voiceMimeType string
 
 		// --- Coding Tool Gate: strip coding tools on ALL iterations ---
 		// The gate must remain active for the entire agent loop (not just
@@ -8598,6 +8598,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				phase.Stage = agentStageFinalize
 				summaryText := fmt.Sprintf("⏸️ 编码执行已达到 %d 轮迭代上限。已完成的工作已保存。\n\n如需继续，请发送「继续」。", codingIterCount)
 				finalResp := &IMAgentResponse{Text: summaryText}
+				if voiceData != "" {
+					finalResp.VoiceData = voiceData
+					finalResp.VoiceFileName = voiceFileName
+					finalResp.VoiceMimeType = voiceMimeType
+				}
 				attachLLMTelemetry(finalResp)
 				h.saveConversationHistoryTimed(userID, history, finalResp)
 				return finalResp
@@ -8879,6 +8884,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					}
 				}
 				attachLLMTelemetry(finalResp)
+				if voiceData != "" {
+					finalResp.VoiceData = voiceData
+					finalResp.VoiceFileName = voiceFileName
+					finalResp.VoiceMimeType = voiceMimeType
+				}
 				h.saveConversationHistoryTimed(userID, history, finalResp)
 				return finalResp
 			} else if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) {

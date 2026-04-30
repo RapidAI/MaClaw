@@ -157,6 +157,27 @@ func (r heartbeatLicenseRepo) GetActiveByCenterID(context.Context, string) (*sto
 func (r heartbeatLicenseRepo) Revoke(context.Context, string) error           { return nil }
 func (r heartbeatLicenseRepo) List(context.Context) ([]*store.License, error) { return nil, nil }
 
+func TestRuntimeSnapshotHandlerReturnsNotFound(t *testing.T) {
+	repo := newHeartbeatCenterRepo()
+	svc := centers.NewService(repo, nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/centers/{id}/runtime-snapshot", RuntimeSnapshotHandler(svc))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/centers/missing/runtime-snapshot", nil)
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body=%s, want 404", res.Code, res.Body.String())
+	}
+	var body map[string]string
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["error"] != "CENTER_NOT_FOUND" {
+		t.Fatalf("error = %q, want CENTER_NOT_FOUND", body["error"])
+	}
+}
+
 func TestProvisionTenantHandlerRejectsCenterWithoutActiveLicense(t *testing.T) {
 	repo := newHeartbeatCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true})
 	svc := centers.NewService(repo, license.NewService(heartbeatLicenseRepo{}, nil))

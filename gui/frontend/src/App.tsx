@@ -2585,7 +2585,23 @@ function App() {
             IsGossipAllowed().then(setGossipAllowed).catch(() => {});
         });
 
+        // Refresh recent tasks list when ProjectIndex changes.
+        // The event fires from ProjectIndex.OnChanged (single source) whenever
+        // any memory entry updates the project index — covers all write paths
+        // (sedimentTaskEntry, workflow_artifact_saver, memorySink, archiver, etc.).
+        // Debounce: during an agent loop, Store.Save may fire 10+ times in quick
+        // succession. We coalesce into a single refresh 800ms after the last event.
+        let taskListTimer: ReturnType<typeof setTimeout> | null = null;
+        EventsOn("task-list-changed", () => {
+            if (taskListTimer) clearTimeout(taskListTimer);
+            taskListTimer = setTimeout(() => {
+                taskListTimer = null;
+                SearchProjects("", 10).then(r => setRecentProjects(r || [])).catch(() => {});
+            }, 800);
+        });
+
         return () => {
+            if (taskListTimer) clearTimeout(taskListTimer);
             EventsOff("env-log");
             EventsOff("env-check-done");
             EventsOff("download-progress");
@@ -2601,6 +2617,7 @@ function App() {
             EventsOff("tool-updated");
             EventsOff("tools-install-done");
             EventsOff("hub-security-policy-changed");
+            EventsOff("task-list-changed");
         };
     }, []);
 

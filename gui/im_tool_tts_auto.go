@@ -9,14 +9,7 @@ import (
 )
 
 // maybeAttachVoiceSummary generates a voice summary of the agent response
-// and attaches it to resp for IM channels. Called as a post-processing step
-// after the agent loop completes.
-//
-// Skips if:
-//   - Voice already attached by tts tool
-//   - Not an IM platform
-//   - TTS not enabled or auto-summary not enabled
-//   - Response too short (< 20 runes) or has error
+// and attaches it to resp for IM channels.
 func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platform string) {
 	if resp == nil || resp.Error != "" || resp.Text == "" || resp.VoiceData != "" {
 		return
@@ -35,16 +28,21 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 		return
 	}
 
-	opus, err := tts.SynthesizeVoiceOGG(h.app.ttsManager, resp.Text, 300)
-	if err != nil {
+	ogg, wav, err := tts.SynthesizeVoiceOGG(h.app.ttsManager, resp.Text, 300)
+	if ogg != nil {
+		resp.VoiceData = base64.StdEncoding.EncodeToString(ogg)
+		resp.VoiceFileName = "voice.ogg"
+		resp.VoiceMimeType = "audio/ogg"
+	} else if wav != nil {
+		// Opus failed, fall back to WAV (企微/QQ still get voice bubble).
+		resp.VoiceData = base64.StdEncoding.EncodeToString(wav)
+		resp.VoiceFileName = "voice.wav"
+		resp.VoiceMimeType = "audio/wav"
+	} else {
 		log.Printf("[tts-auto] error: %v", err)
 		return
 	}
-
-	resp.VoiceData = base64.StdEncoding.EncodeToString(opus)
-	resp.VoiceFileName = "voice.ogg"
-	resp.VoiceMimeType = "audio/ogg"
-	log.Printf("[tts-auto] attached voice summary: %d bytes OGG", len(opus))
+	log.Printf("[tts-auto] attached voice: %s %d bytes", resp.VoiceFileName, len(resp.VoiceData))
 }
 
 // isIMPlatform returns true if the platform is an IM channel (not desktop).

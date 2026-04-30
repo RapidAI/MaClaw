@@ -191,6 +191,28 @@ func TestProbeVerifiesIWorkerCenterServiceIdentity(t *testing.T) {
 	}
 }
 
+func TestRuntimeSnapshotDoesNotMutateCenterStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console","provider_count":1,"runtime_provider_mode":"cloud_sync","compute_source":"cloud","cloud_provider_count":1,"compute_sync_status":{"status":"success","provider_count":1}}`))
+	}))
+	defer server.Close()
+
+	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", BaseURL: server.URL, Status: "active", SupportsMultiTenant: true, LastSyncStatus: "configured"})
+	svc := NewService(repo, nil)
+
+	result, err := svc.RuntimeSnapshot(context.Background(), "ctr_1")
+	if err != nil {
+		t.Fatalf("RuntimeSnapshot() error: %v", err)
+	}
+	if !result.OK || result.RuntimeProviderMode != "cloud_sync" || result.ProviderCount != 1 {
+		t.Fatalf("result = %+v, want cloud runtime snapshot", result)
+	}
+	center, _ := repo.GetByID(context.Background(), "ctr_1")
+	if center.LastSyncStatus != "configured" {
+		t.Fatalf("LastSyncStatus = %q, want unchanged configured", center.LastSyncStatus)
+	}
+}
+
 func TestProbeRejectsNonIWorkerCenterEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"desktop","product_kind":"iworker","admin_console":"desktop_gui"}`))

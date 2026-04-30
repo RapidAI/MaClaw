@@ -377,47 +377,32 @@ func (s centerServiceStatus) isIWorkerCenterService() bool {
 		strings.EqualFold(strings.TrimSpace(s.AdminConsole), "web_console")
 }
 
-// Probe checks whether the configured iWorkerCenter endpoint is reachable.
-func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *store.Center, error) {
-	center, err := s.centers.GetByID(ctx, centerID)
-	if err != nil {
-		return nil, nil, ErrNotFound
-	}
+func (s *Service) fetchRuntimeSnapshot(ctx context.Context, center *store.Center) (*ProbeResult, error) {
 	baseURL := strings.TrimSpace(center.BaseURL)
 	if baseURL == "" {
-		center.LastSyncStatus = "probe_missing_base_url"
-		_ = s.centers.UpdateIntegration(ctx, center)
-		return &ProbeResult{OK: false, Message: "center base_url is not configured"}, center, nil
+		return &ProbeResult{OK: false, Message: "center base_url is not configured"}, nil
 	}
 
 	url := strings.TrimRight(baseURL, "/") + "/api/center/status"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		center.LastSyncStatus = "probe_failed"
-		_ = s.centers.UpdateIntegration(ctx, center)
-		return &ProbeResult{OK: false, Message: err.Error(), BaseURL: baseURL}, center, nil
+		return &ProbeResult{OK: false, Message: err.Error(), BaseURL: baseURL}, nil
 	}
 	defer resp.Body.Close()
 
 	result := &ProbeResult{OK: false, StatusCode: resp.StatusCode, BaseURL: baseURL}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		result.Message = fmt.Sprintf("center service status endpoint returned %d", resp.StatusCode)
-		center.LastSyncStatus = "probe_failed"
-		_ = s.centers.UpdateIntegration(ctx, center)
-		updated, _ := s.centers.GetByID(ctx, centerID)
-		return result, updated, nil
+		return result, nil
 	}
 	var serviceStatus centerServiceStatus
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&serviceStatus); err != nil {
 		result.Message = "center service status response is not valid JSON: " + err.Error()
-		center.LastSyncStatus = "probe_failed"
-		_ = s.centers.UpdateIntegration(ctx, center)
-		updated, _ := s.centers.GetByID(ctx, centerID)
-		return result, updated, nil
+		return result, nil
 	}
 	result.RuntimeType = serviceStatus.RuntimeType
 	result.ProductKind = serviceStatus.ProductKind
@@ -431,10 +416,41 @@ func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *st
 	if serviceStatus.isIWorkerCenterService() {
 		result.OK = true
 		result.Message = "iWorkerCenter service identity verified"
-		center.LastSyncStatus = "probe_ok"
 	} else {
 		result.Message = fmt.Sprintf("endpoint is not an iWorkerCenter service: runtime_type=%q product_kind=%q admin_console=%q", serviceStatus.RuntimeType, serviceStatus.ProductKind, serviceStatus.AdminConsole)
+	}
+	return result, nil
+}
+
+// RuntimeSnapshot fetches platform runtime status from Center without mutating Cloud records.
+func (s *Service) RuntimeSnapshot(ctx context.Context, centerID string) (*ProbeResult, error) {
+	center, err := s.centers.GetByID(ctx, centerID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	return s.fetchRuntimeSnapshot(ctx, center)
+}
+
+// Probe checks whether the configured iWorkerCenter endpoint is reachable and records the verification outcome.
+func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *store.Center, error) {
+	center, err := s.centers.GetByID(ctx, centerID)
+	if err != nil {
+		return nil, nil, ErrNotFound
+	}
+	result, err := s.fetchRuntimeSnapshot(ctx, center)
+	if err != nil {
+		return nil, nil, err
+	}
+	if strings.TrimSpace(center.BaseURL) == "" {
+		center.LastSyncStatus = "probe_missing_base_url"
+	} else if result.OK {
+		center.LastSyncStatus = "probe_ok"
+	} else if result.StatusCode == 0 && result.BaseURL != "" {
+		center.LastSyncStatus = "probe_failed"
+	} else if result.RuntimeType != "" || result.ProductKind != "" || result.AdminConsole != "" {
 		center.LastSyncStatus = "probe_not_iworkercenter"
+	} else {
+		center.LastSyncStatus = "probe_failed"
 	}
 	_ = s.centers.UpdateIntegration(ctx, center)
 	updated, _ := s.centers.GetByID(ctx, centerID)

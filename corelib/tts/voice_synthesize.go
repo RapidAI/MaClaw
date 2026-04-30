@@ -2,16 +2,15 @@ package tts
 
 import (
 	"fmt"
-	"log"
 	"unicode/utf8"
 )
 
 // SynthesizeVoiceOGG is the high-level API for TTS → OGG Opus.
-// It cleans the text, truncates to maxRunes, synthesizes WAV, and encodes to OGG Opus.
-// Returns the OGG Opus bytes, or error.
-func SynthesizeVoiceOGG(mgr *Manager, text string, maxRunes int) ([]byte, error) {
+// Cleans text, truncates to maxRunes, synthesizes WAV, encodes to OGG Opus.
+// Also returns the intermediate WAV for callers that need it (e.g. desktop playback).
+func SynthesizeVoiceOGG(mgr *Manager, text string, maxRunes int) (ogg []byte, wav []byte, err error) {
 	if mgr == nil {
-		return nil, fmt.Errorf("TTS manager not available")
+		return nil, nil, fmt.Errorf("TTS manager not available")
 	}
 	if maxRunes <= 0 {
 		maxRunes = 300
@@ -19,23 +18,22 @@ func SynthesizeVoiceOGG(mgr *Manager, text string, maxRunes int) ([]byte, error)
 
 	cleaned := CleanForSpeech(text)
 	if cleaned == "" {
-		return nil, fmt.Errorf("text is empty after cleaning")
+		return nil, nil, fmt.Errorf("text is empty after cleaning")
 	}
 	if utf8.RuneCountInString(cleaned) > maxRunes {
 		cleaned = TruncateRunesSmart(cleaned, maxRunes)
 	}
 
-	wav, err := mgr.SynthesizeText(cleaned)
+	wav, err = mgr.SynthesizeText(cleaned)
 	if err != nil {
-		return nil, fmt.Errorf("synthesize: %w", err)
+		return nil, nil, fmt.Errorf("synthesize: %w", err)
 	}
 
-	opus, err := EncodeWAVToOpus(wav)
+	ogg, err = EncodeWAVToOpus(wav)
 	if err != nil {
-		log.Printf("[tts] opus encode failed, returning WAV: %v", err)
-		// Return WAV as fallback — caller can check the content.
-		return wav, fmt.Errorf("opus encode failed: %w (WAV fallback available)", err)
+		// Return WAV as fallback — caller can use it for platforms that accept WAV.
+		return nil, wav, fmt.Errorf("opus encode failed: %w", err)
 	}
 
-	return opus, nil
+	return ogg, wav, nil
 }

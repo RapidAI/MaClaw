@@ -11,6 +11,7 @@ import {
   updateCenterIntegration,
   provisionTenant,
   probeCenter,
+  fetchCenterRuntimeSnapshot,
   getProvisionReadiness,
   type Center,
   type CenterManagement,
@@ -119,10 +120,39 @@ export function CentersPage() {
   const [provisionResult, setProvisionResult] = useState<Record<string, string>>({});
   const [probeResult, setProbeResult] = useState<Record<string, string>>({});
   const [probeRuntime, setProbeRuntime] = useState<Record<string, CenterProbeResult>>({});
+  const [runtimeRefreshing, setRuntimeRefreshing] = useState<Record<string, boolean>>({});
   const [readinessResult, setReadinessResult] = useState<Record<string, CenterProvisionReadiness>>({});
   const [checkingReadiness, setCheckingReadiness] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
+
+  const refreshRuntimeSnapshots = async (items = centers) => {
+    const candidates = items.filter(center => center.base_url && center.status !== 'disabled');
+    if (candidates.length === 0) return;
+    const refreshingIds = Object.fromEntries(candidates.map(center => [center.id, true]));
+    setRuntimeRefreshing(prev => ({ ...prev, ...refreshingIds }));
+    try {
+      const results = await Promise.all(candidates.map(center =>
+        fetchCenterRuntimeSnapshot(center.id)
+          .then(snapshot => ({ centerId: center.id, snapshot }))
+          .catch(() => null),
+      ));
+      const nextRuntime: Record<string, CenterProbeResult> = {};
+      for (const item of results) {
+        if (!item) continue;
+        nextRuntime[item.centerId] = item.snapshot;
+      }
+      if (Object.keys(nextRuntime).length > 0) {
+        setProbeRuntime(prev => ({ ...prev, ...nextRuntime }));
+      }
+    } finally {
+      setRuntimeRefreshing(prev => {
+        const next = { ...prev };
+        for (const center of candidates) delete next[center.id];
+        return next;
+      });
+    }
+  };
 
   const load = () => {
     setError('');
@@ -134,6 +164,7 @@ export function CentersPage() {
         setManagement(Object.fromEntries(nextItems.map(item => [item.center.id, item])));
         setDrafts(Object.fromEntries(nextCenters.map(center => [center.id, createDraft(center)])));
         setTenantDrafts(prev => Object.fromEntries(nextCenters.map(center => [center.id, prev[center.id] ?? createTenantDraft()])));
+        void refreshRuntimeSnapshots(nextCenters);
       })
       .catch(err => setError(err instanceof Error ? err.message : String(err)));
   };
@@ -310,6 +341,7 @@ export function CentersPage() {
     <div className="cloud-center-stack">
       <div className="hint">
         iWorkerCloud is our iWorkerCenter management center. It manages connected multi-tenant iWorkerCenter instances for authorization, connectivity, compute distribution, upgrades, and skill entitlement, but it does not participate in customer company management, planning, or enterprise operations.
+        {Object.keys(runtimeRefreshing).length > 0 ? ' Refreshing platform runtime snapshots...' : ''}
       </div>
       {error && <div className="hint danger">{error}</div>}
       <div className="list">
@@ -319,6 +351,7 @@ export function CentersPage() {
           const managementItem = management[center.id];
           const provisionReadiness = readinessResult[center.id];
           const runtime = probeRuntime[center.id];
+          const isRuntimeRefreshing = runtimeRefreshing[center.id] === true;
           return (
             <div key={center.id} className="item cloud-center-card">
               <div className="item-head">
@@ -496,6 +529,13 @@ export function CentersPage() {
                   onClick={() => handleProbeCenter(center)}
                 >
                   {probing === center.id ? 'Testing...' : 'Test connection'}
+                </button>
+                <button
+                  className="btn-ghost"
+                  disabled={isRuntimeRefreshing || !center.base_url}
+                  onClick={() => refreshRuntimeSnapshots([center])}
+                >
+                  {isRuntimeRefreshing ? 'Refreshing runtime...' : 'Refresh runtime'}
                 </button>
                 <button
                   className="btn-ghost"
