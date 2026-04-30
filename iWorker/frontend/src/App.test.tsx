@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
-import { CheckCenterHealth, DeleteWorkerMemory, FetchWorkerMemoryStats, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
+import { AckGoalPush, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, FetchAgentInstances, FetchGoalPushes, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 
 vi.mock('../wailsjs/go/main/App', () => ({
+  AckGoalPush: vi.fn(),
+  AutoHandleGoalPush: vi.fn(),
   CheckCenterHealth: vi.fn(),
   DeleteWorkerMemory: vi.fn(),
+  FetchAgentInstances: vi.fn(),
+  FetchGoalPushes: vi.fn(),
   FetchWorkerMemoryStats: vi.fn(),
+  GetGoalWatchAutoHandleStatus: vi.fn(),
+  HeartbeatAgentRuntime: vi.fn(),
   LoadDiWorkerSettings: vi.fn(),
   LoadTaskHistory: vi.fn(),
   RecallWorkerMemories: vi.fn(),
@@ -86,7 +92,27 @@ describe('App', () => {
     })) as unknown as typeof window.matchMedia);
     installWailsBridge();
 
-    vi.mocked(DeleteWorkerMemory).mockResolvedValue(undefined as never);
+    vi.mocked(AckGoalPush).mockResolvedValue(undefined as never);
+    vi.mocked(AutoHandleGoalPush).mockResolvedValue(undefined as never);
+    vi.mocked(FetchAgentInstances).mockResolvedValue([] as never);
+    vi.mocked(FetchGoalPushes).mockResolvedValue([] as never);
+    vi.mocked(GetGoalWatchAutoHandleStatus).mockResolvedValue({
+      enabled: true,
+      running: false,
+      current_run_id: 0,
+      run_count: 0,
+      skip_count: 0,
+      timeout_cancel_count: 0,
+      last_handled_count: 0,
+      total_handled_count: 0,
+      last_error: '',
+      last_started_at: '',
+      last_finished_at: '',
+      last_timeout_at: '',
+      interval_seconds: 30,
+      max_duration_seconds: 120,
+    } as never);
+    vi.mocked(HeartbeatAgentRuntime).mockResolvedValue(undefined as never);    vi.mocked(DeleteWorkerMemory).mockResolvedValue(undefined as never);
     vi.mocked(CheckCenterHealth).mockResolvedValue({
       reachable: true,
       status: 'ok',
@@ -156,6 +182,25 @@ describe('App', () => {
     cleanup();
   });
 
+  it('adds Center memory context from the home composer', async () => {
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'What should your iWorker handle next?' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Memory' }));
+
+    expect(screen.getByDisplayValue(/Use Center memory for context/)).toBeTruthy();
+  });
+
+  it('opens memory settings from the home quick start', async () => {
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'What should your iWorker handle next?' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /Capture memory/ }));
+
+    expect(await screen.findByText('Memory Capture')).toBeTruthy();
+  });
   it('tests center health from settings page and shows snapshot', async () => {
     render(<App />);
 

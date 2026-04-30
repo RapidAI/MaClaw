@@ -25,6 +25,7 @@ type Props = {
   onPickTask: (task: string, colleagueName?: string) => void;
   onOpenNewTask: () => void;
   onOpenRecentTask: (task: HistoryTaskItem) => void;
+  onOpenSettings: () => void;
   onRefreshAgentInstances: () => void | Promise<void>;
   onRefreshGoalPushes: () => void | Promise<void>;
   onRefreshMemoryStats: () => void | Promise<void>;
@@ -68,10 +69,10 @@ const skillChips = [
   'Evidence pack',
 ];
 
-const quickActions = [
-  { title: 'Start from IM', detail: 'Turn a voice/chat instruction into work.' },
-  { title: 'Continue a task', detail: 'Resume recent evidence and result.' },
-  { title: 'Capture memory', detail: 'Save reusable experience to Center.' },
+const quickActions: Array<{ id: 'im' | 'continue' | 'memory'; title: string; detail: string }> = [
+  { id: 'im', title: 'Start from IM', detail: 'Turn a voice/chat instruction into work.' },
+  { id: 'continue', title: 'Continue a task', detail: 'Resume recent evidence and result.' },
+  { id: 'memory', title: 'Capture memory', detail: 'Save reusable experience to Center.' },
 ];
 
 const formatRuntimeName = (instance: CenterAgentInstance) => {
@@ -81,7 +82,7 @@ const formatRuntimeName = (instance: CenterAgentInstance) => {
 
 const formatScopeCount = (stats: WorkerMemoryStats | null, scope: string) => stats?.byScope?.[scope] || 0;
 
-export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush }: Props) {
+export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask, onOpenSettings, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush }: Props) {
   const [workMode, setWorkMode] = useState<WorkMode>('chat');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
 
@@ -147,6 +148,25 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     appendDraft(`Use Center memory for context: company memory, department memory, and personal memory. Current authority: ${memoryAuthority}.`);
   };
 
+  const handleQuickAction = (actionId: 'im' | 'continue' | 'memory') => {
+    if (actionId === 'im') {
+      setWorkMode('chat');
+      appendDraft('I want to start from an IM or voice instruction. Please clarify intent first, then turn it into a runnable task if needed.');
+      return;
+    }
+    if (actionId === 'continue') {
+      const [latestTask] = recentTasks;
+      if (latestTask) {
+        onOpenRecentTask(latestTask);
+        return;
+      }
+      appendDraft('Continue the most recent unfinished work and reconstruct context from Center memory and task history.');
+      onOpenNewTask();
+      return;
+    }
+    appendDraft('Capture this as reusable memory. Classify whether it belongs to company, department, or personal memory before saving to iWorkerCenter.');
+    onOpenSettings();
+  };
   const handleSubmit = () => {
     if (draft.trim() || selectedTask) {
       onOpenNewTask();
@@ -305,7 +325,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           </div>
           <div className="iw-quick-action-list">
             {quickActions.map((item) => (
-              <button key={item.title} type="button" onClick={() => onPickTask(item.title)}>
+              <button key={item.title} type="button" onClick={() => handleQuickAction(item.id)}>
                 <strong>{item.title}</strong>
                 <span>{item.detail}</span>
               </button>
