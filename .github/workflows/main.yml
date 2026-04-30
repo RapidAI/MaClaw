@@ -1066,7 +1066,9 @@ jobs:
           fi
           git remote add gitee "https://znsoft:${GITEE_TOKEN}@gitee.com/znsoft/maclaw.git"
           git fetch origin main --tags
-          GIT_LFS_SKIP_PUSH=1 git push gitee refs/remotes/origin/main:refs/heads/main --tags
+          if ! GIT_LFS_SKIP_PUSH=1 git push gitee refs/remotes/origin/main:refs/heads/main --tags; then
+            echo "warning: Gitee git push failed; continuing with Release API asset sync" >&2
+          fi
 
       - name: Sync release assets to Gitee
         env:

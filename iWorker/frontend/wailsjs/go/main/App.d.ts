@@ -10,6 +10,10 @@ export function AutoHandleRecommendedGoalPushes():Promise<Array<main.AutoHandleG
 
 export function CheckCenterHealth():Promise<main.CenterHealthStatus>;
 
+export function DiscoverCenterEnrollment(arg1:main.CenterEnrollmentRequest):Promise<main.CenterEnrollmentDiscovery>;
+
+export function ApplyCenterEnrollment(arg1:main.ApplyCenterEnrollmentRequest):Promise<main.DiWorkerSettings>;
+
 export function DeleteWorkerMemory(arg1:string):Promise<void>;
 
 export function FetchAgentInstances():Promise<Array<main.CenterAgentInstance>>;

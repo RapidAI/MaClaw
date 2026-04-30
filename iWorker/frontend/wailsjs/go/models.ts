@@ -1,5 +1,153 @@
 export namespace main {
 
+	export class CenterTenantOption {
+	    id: string;
+	    company_name: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterTenantOption(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.company_name = source["company_name"];
+	    }
+	}
+
+	export class CenterRole {
+	    id: string;
+	    name: string;
+	    code: string;
+	    description: string;
+	    default_strengths: string[];
+	    applicable_tasks: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new CenterRole(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.code = source["code"];
+	        this.description = source["description"];
+	        this.default_strengths = source["default_strengths"];
+	        this.applicable_tasks = source["applicable_tasks"];
+	    }
+	}
+
+	export class CenterColleague {
+	    id: string;
+	    name: string;
+	    avatar: string;
+	    role_id: string;
+	    role_name: string;
+	    role_code: string;
+	    description: string;
+	    strengths: string[];
+	    tasks: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new CenterColleague(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.avatar = source["avatar"];
+	        this.role_id = source["role_id"];
+	        this.role_name = source["role_name"];
+	        this.role_code = source["role_code"];
+	        this.description = source["description"];
+	        this.strengths = source["strengths"];
+	        this.tasks = source["tasks"];
+	    }
+	}
+
+	export class CenterEnrollmentDiscovery {
+	    base_url: string;
+	    selected_tenant_id: string;
+	    tenants: CenterTenantOption[];
+	    roles: CenterRole[];
+	    colleagues: CenterColleague[];
+
+	    static createFrom(source: any = {}) {
+	        return new CenterEnrollmentDiscovery(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.base_url = source["base_url"];
+	        this.selected_tenant_id = source["selected_tenant_id"];
+	        this.tenants = this.convertValues(source["tenants"], CenterTenantOption);
+	        this.roles = this.convertValues(source["roles"], CenterRole);
+	        this.colleagues = this.convertValues(source["colleagues"], CenterColleague);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+	export class CenterEnrollmentRequest {
+	    base_url: string;
+	    preferred_tenant_id: string;
+	    timeout_sec: number;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterEnrollmentRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.base_url = source["base_url"];
+	        this.preferred_tenant_id = source["preferred_tenant_id"];
+	        this.timeout_sec = source["timeout_sec"];
+	    }
+	}
+
+	export class ApplyCenterEnrollmentRequest {
+	    base_url: string;
+	    tenant_id: string;
+	    department_id: string;
+	    worker_id: string;
+	    role_name: string;
+	    role_description: string;
+	    timeout_sec: number;
+
+	    static createFrom(source: any = {}) {
+	        return new ApplyCenterEnrollmentRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.base_url = source["base_url"];
+	        this.tenant_id = source["tenant_id"];
+	        this.department_id = source["department_id"];
+	        this.worker_id = source["worker_id"];
+	        this.role_name = source["role_name"];
+	        this.role_description = source["role_description"];
+	        this.timeout_sec = source["timeout_sec"];
+	    }
+	}
+
 	export class AgentInstance {
 	    id: string;
 	    worker_id: string;

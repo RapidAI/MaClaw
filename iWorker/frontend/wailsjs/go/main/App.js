@@ -18,6 +18,14 @@ export function CheckCenterHealth() {
   return window['go']['main']['App']['CheckCenterHealth']();
 }
 
+export function DiscoverCenterEnrollment(arg1) {
+  return window['go']['main']['App']['DiscoverCenterEnrollment'](arg1);
+}
+
+export function ApplyCenterEnrollment(arg1) {
+  return window['go']['main']['App']['ApplyCenterEnrollment'](arg1);
+}
+
 
 export function DeleteWorkerMemory(arg1) {
   return window['go']['main']['App']['DeleteWorkerMemory'](arg1);

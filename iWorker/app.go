@@ -8,9 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -761,8 +761,8 @@ func (a *App) ApplyCenterEnrollment(req ApplyCenterEnrollmentRequest) (DiWorkerS
 	settings = normalizeDiWorkerSettings(settings)
 	settings.Center.Enabled = true
 	settings.Center.BaseURL = baseURL
-	settings.Center.TenantID = firstNonEmpty(strings.TrimSpace(req.TenantID), settings.Center.TenantID, "default")
-	settings.Center.DepartmentID = firstNonEmpty(strings.TrimSpace(req.DepartmentID), settings.Center.DepartmentID, "default")
+	settings.Center.TenantID = firstNonEmptyString(strings.TrimSpace(req.TenantID), settings.Center.TenantID, "default")
+	settings.Center.DepartmentID = firstNonEmptyString(strings.TrimSpace(req.DepartmentID), settings.Center.DepartmentID, "default")
 	settings.Center.WorkerID = workerID
 	if req.TimeoutSec > 0 {
 		settings.Center.TimeoutSec = req.TimeoutSec

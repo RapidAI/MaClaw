@@ -615,11 +615,11 @@ type CenterTenantOption struct {
 
 // CenterEnrollmentDiscovery is the data a fresh iWorker needs to bind itself to a Center.
 type CenterEnrollmentDiscovery struct {
-	BaseURL          string                 `json:"base_url"`
-	SelectedTenantID string                 `json:"selected_tenant_id"`
-	Tenants          []CenterTenantOption   `json:"tenants"`
-	Roles            []CenterRole           `json:"roles"`
-	Colleagues       []CenterColleague      `json:"colleagues"`
+	BaseURL          string               `json:"base_url"`
+	SelectedTenantID string               `json:"selected_tenant_id"`
+	Tenants          []CenterTenantOption `json:"tenants"`
+	Roles            []CenterRole         `json:"roles"`
+	Colleagues       []CenterColleague    `json:"colleagues"`
 }
 
 func discoverCenterEnrollment(centerBaseURL, preferredTenantID string, timeoutSec int) (CenterEnrollmentDiscovery, error) {
