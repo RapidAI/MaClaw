@@ -549,24 +549,65 @@ func inferProjectPath(e *Entry) string {
 	// 1. SourceURL: if it looks like a file path, use its directory.
 	if e.SourceURL != "" {
 		if LooksLikeFilePath(e.SourceURL) {
-			// Use path.Dir (forward-slash) to preserve Unix paths on Windows,
-			// then filepath.Clean for the final result.
-			dir := filepath.Dir(filepath.ToSlash(e.SourceURL))
-			dir = filepath.Clean(dir)
-			if dir != "." && dir != "" && looksLikeProjectPath(filepath.ToSlash(dir)) {
-				return dir
+			// Normalize to forward slashes for consistent Dir() behavior
+			// across platforms (Linux filepath.Dir doesn't split on '\').
+			fwd := toForwardSlash(e.SourceURL)
+			dir := pathDir(fwd)
+			if dir != "." && dir != "" && looksLikeProjectPath(dir) {
+				return normalizeProjectPath(dir)
 			}
 		}
 	}
 
 	// 2. Tags: look for path-like tags.
 	for _, tag := range e.Tags {
-		if looksLikeProjectPath(tag) {
-			return filepath.Clean(tag)
+		if looksLikeProjectPath(toForwardSlash(tag)) {
+			return normalizeProjectPath(toForwardSlash(tag))
 		}
 	}
 
 	return ""
+}
+
+// toForwardSlash replaces all backslashes with forward slashes.
+func toForwardSlash(s string) string {
+	return strings.ReplaceAll(s, "\\", "/")
+}
+
+// pathDir returns the directory portion of a forward-slash path.
+// Unlike filepath.Dir, this always uses '/' as separator, making it
+// cross-platform safe for Windows paths processed on Linux.
+func pathDir(fwdPath string) string {
+	// Trim trailing slash.
+	clean := strings.TrimRight(fwdPath, "/")
+	if clean == "" {
+		return "/"
+	}
+	idx := strings.LastIndex(clean, "/")
+	if idx < 0 {
+		return "."
+	}
+	dir := clean[:idx]
+	if dir == "" {
+		return "/"
+	}
+	return dir
+}
+
+// normalizeProjectPath converts a forward-slash path back to the canonical
+// form for its platform: Windows paths (drive letter like D:/) get backslashes,
+// Unix paths keep forward slashes. This ensures deterministic output regardless
+// of the host OS (Linux CI processing Windows paths from user data).
+func normalizeProjectPath(fwdPath string) string {
+	// Detect Windows path: second char is ':' (e.g. "D:/workprj/snake").
+	if len(fwdPath) >= 2 && fwdPath[1] == ':' {
+		return strings.ReplaceAll(fwdPath, "/", "\\")
+	}
+	// Unix path: clean up double slashes but keep forward slashes.
+	for strings.Contains(fwdPath, "//") {
+		fwdPath = strings.ReplaceAll(fwdPath, "//", "/")
+	}
+	return fwdPath
 }
 
 // LooksLikeFilePath returns true if s looks like an absolute file path
@@ -603,20 +644,40 @@ func LooksLikeFilePath(s string) bool {
 }
 
 func looksLikeProjectPath(s string) bool {
-	if !LooksLikeFilePath(s) {
+	// Normalize to forward slashes for cross-platform consistency.
+	// On Linux, filepath.Ext/Split don't recognize '\' as separator.
+	fwd := toForwardSlash(s)
+	if !LooksLikeFilePath(fwd) {
 		return false
 	}
 	// Must not look like a regular file (has short extension like .go, .json).
-	ext := filepath.Ext(s)
-	if ext != "" && len(ext) <= 5 {
-		return false
+	// Use last '/' to find the basename, then check for extension.
+	lastSlash := strings.LastIndex(fwd, "/")
+	base := fwd
+	if lastSlash >= 0 {
+		base = fwd[lastSlash+1:]
 	}
-	// Must have at least 2 path segments — bare roots like "C:\" or "/" are
+	if dotIdx := strings.LastIndex(base, "."); dotIdx >= 0 {
+		ext := base[dotIdx:]
+		if len(ext) > 0 && len(ext) <= 5 {
+			return false
+		}
+	}
+	// Must have at least 2 path segments — bare roots like "C:/" or "/" are
 	// not meaningful project paths.
-	cleaned := filepath.Clean(s)
-	dir, base := filepath.Split(cleaned)
-	if base == "" || dir == cleaned || dir == "" {
-		return false // root directory only
+	// Trim trailing slash, then check for at least one '/' after any drive prefix.
+	trimmed := strings.TrimRight(fwd, "/")
+	if trimmed == "" {
+		return false // root "/"
+	}
+	// For Windows paths like "D:", strip the drive prefix.
+	checkPart := trimmed
+	if len(checkPart) >= 2 && checkPart[1] == ':' {
+		checkPart = checkPart[2:] // "D:/workprj/snake" → "/workprj/snake"
+	}
+	// Need at least one '/' in the remaining part for 2+ segments.
+	if !strings.Contains(checkPart, "/") {
+		return false
 	}
 	return true
 }

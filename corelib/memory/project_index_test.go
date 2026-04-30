@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -199,7 +198,7 @@ func TestInferProjectPath(t *testing.T) {
 		{
 			name:     "Unix file path in SourceURL",
 			entry:    Entry{SourceURL: "/home/user/projects/app/design.md"},
-			expected: filepath.Clean("/home/user/projects/app"),
+			expected: "/home/user/projects/app",
 		},
 		{
 			name:     "Directory path in tags",
