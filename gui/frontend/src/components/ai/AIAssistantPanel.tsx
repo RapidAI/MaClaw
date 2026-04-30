@@ -8,6 +8,7 @@ import { useWorkflowState } from "./useWorkflowState";
 import { WorkflowDocPreview, type DocPreviewTheme } from "./WorkflowDocPreview";
 import { useCodePreviewState } from "./useCodePreviewState";
 import { CodePreviewPanel, darkCodePreviewTheme, lightCodePreviewTheme } from "./CodePreviewPanel";
+import { useVoiceInput } from "./useVoiceInput";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { BufferQueuePanel } from "./BufferQueuePanel";
@@ -63,6 +64,10 @@ interface AIAssistantPanelProps {
     actions: AIAssistantPanelActionProps;
     window?: AIAssistantPanelWindowProps;
     onThemeModeChange?: (mode: 'light' | 'dark') => void;
+    /** Selected audio input device ID (empty = system default) */
+    audioInputDeviceId?: string;
+    /** Selected audio output device ID (empty = system default) */
+    audioOutputDeviceId?: string;
 }
 
 const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
@@ -452,6 +457,7 @@ const AI_PANEL_STATIC_STYLE_ID = "ai-panel-static-style";
 const AI_PANEL_STATIC_STYLE_TEXT = `
     @keyframes blink { 50% { opacity: 0; } }
     @keyframes ai-spinner-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes ai-voice-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.3); } }
     @keyframes maclaw-spin { to { transform: rotate(360deg); } }
     .pinned-news-card > div { margin-top: 0 !important; margin-bottom: 0 !important; }
     .ai-window-control:hover { background: var(--ai-window-control-hover-bg, rgba(148, 163, 184, 0.14)) !important; }
@@ -1298,9 +1304,83 @@ function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSwitch, o
     );
 }
 
+/* ── Voice level visualizer ── */
+
+const NUM_BARS = 12;
+
+/** Compact audio level visualizer that fits inside the mic button. */
+function VoiceLevelVisualizer({ onAudioLevelRef, isSpeaking, themeColor, speakingColor }: {
+    onAudioLevelRef: React.MutableRefObject<((level: number) => void) | null>;
+    isSpeaking: boolean;
+    themeColor: string;
+    speakingColor: string;
+}) {
+    const barsRef = useRef<HTMLDivElement | null>(null);
+    const levelsRef = useRef(new Float32Array(NUM_BARS));
+    const colorRef = useRef(themeColor);
+    colorRef.current = isSpeaking ? speakingColor : themeColor;
+
+    useEffect(() => {
+        let frameId = 0;
+        const levels = levelsRef.current;
+
+        onAudioLevelRef.current = (level: number) => {
+            for (let i = 0; i < NUM_BARS - 1; i++) levels[i] = levels[i + 1];
+            levels[NUM_BARS - 1] = level;
+
+            if (!frameId) {
+                frameId = requestAnimationFrame(() => {
+                    frameId = 0;
+                    const container = barsRef.current;
+                    if (!container) return;
+                    const bars = container.children;
+                    const c = colorRef.current;
+                    for (let i = 0; i < bars.length && i < NUM_BARS; i++) {
+                        const el = bars[i] as HTMLElement;
+                        el.style.height = `${Math.max(2, levels[i] * 18)}px`;
+                        el.style.background = c;
+                    }
+                });
+            }
+        };
+
+        return () => {
+            onAudioLevelRef.current = null;
+            if (frameId) cancelAnimationFrame(frameId);
+            levels.fill(0);
+        };
+    }, [onAudioLevelRef]);
+
+    return (
+        <div
+            ref={barsRef}
+            style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "1.5px",
+                height: "20px",
+            }}
+            aria-hidden="true"
+        >
+            {Array.from({ length: NUM_BARS }, (_, i) => (
+                <div
+                    key={i}
+                    style={{
+                        width: "2px",
+                        height: "2px",
+                        borderRadius: "1px",
+                        background: themeColor,
+                        transition: "height 0.08s ease-out",
+                    }}
+                />
+            ))}
+        </div>
+    );
+}
+
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, actions, window: panelWindow, onThemeModeChange }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, actions, window: panelWindow, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId }: AIAssistantPanelProps) {
     const {
         messages,
         progressMessages = [],
@@ -1375,12 +1455,20 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     // Load initial TTS state from backend
     useEffect(() => { GetTTSEnabled().then(v => setTtsEnabled(!!v)).catch(() => {}); }, []);
     // Listen for TTS audio events and play them
+    const audioOutputDeviceIdRef = useRef(audioOutputDeviceId);
+    audioOutputDeviceIdRef.current = audioOutputDeviceId;
     useEffect(() => {
         const handler = (b64wav: string) => {
             if (!ttsEnabledRef.current) return;
             try {
                 const audio = new Audio("data:audio/wav;base64," + b64wav);
-                audio.play().catch(() => {});
+                // Route to selected output device if specified
+                const outId = audioOutputDeviceIdRef.current;
+                if (outId && typeof (audio as any).setSinkId === 'function') {
+                    (audio as any).setSinkId(outId).then(() => audio.play()).catch(() => audio.play().catch(() => {}));
+                } else {
+                    audio.play().catch(() => {});
+                }
             } catch {}
         };
         EventsOn("tts:audio", handler);
@@ -1478,6 +1566,21 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     const showThinkingState = streaming;
     const showProcessingState = isBusy && !streaming;
     const showBusySpinner = isBusy;
+
+    // Voice input — toggle mode: open mic → auto-detect speech segments → transcribe → dispatch
+    const handleVoiceTranscribed = useCallback((text: string) => {
+        if (submitLocked) {
+            // Agent is busy — queue as buffer entry (pre-input cache)
+            addEntry(text, []);
+            recordSubmittedPrompt?.(text);
+        } else {
+            // Agent is idle — send directly
+            recordSubmittedPrompt?.(text);
+            userScrolledUpRef.current = false;
+            sendMessage(text);
+        }
+    }, [submitLocked, addEntry, recordSubmittedPrompt, sendMessage]);
+    const voiceInput = useVoiceInput(handleVoiceTranscribed, audioInputDeviceId);
 
     const initStatusLabels: Record<AIAssistantInitStatus, { en: string; zhHans: string; zhHant: string }> = {
         connecting: { en: "Connecting to Hub...", zhHans: "正在连接 Hub...", zhHant: "正在連線 Hub..." },
@@ -2666,6 +2769,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                 )}
                 <div style={{
                     display: "flex", alignItems: "flex-end", gap: "8px", minWidth: 0,
+                    position: "relative",
                 }}>
                     <span style={{
                         color: t.promptColor, fontFamily: "Consolas, monospace",
@@ -2761,6 +2865,67 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                     >
                         📎
                     </button>
+                    {voiceInput.asrReady && (
+                        <button
+                            type="button"
+                            onClick={voiceInput.toggle}
+                            disabled={!ready || voiceInput.state === "transcribing"}
+                            data-testid="ai-voice-input"
+                            style={{
+                                ...baseInputBtnStyle,
+                                position: "relative",
+                                color: voiceInput.state === "listening" ? "#22c55e" : t.textMuted,
+                                borderColor: voiceInput.state === "listening" ? "#22c55e" : t.codeBlockBorder,
+                                background: voiceInput.state === "listening"
+                                    ? (voiceInput.isSpeaking ? "rgba(239, 68, 68, 0.10)" : "rgba(34, 197, 94, 0.08)")
+                                    : "transparent",
+                                opacity: !ready || voiceInput.state === "transcribing" ? 0.5 : 1,
+                                marginBottom: "4px",
+                                transition: "all 0.2s ease",
+                            }}
+                            title={
+                                voiceInput.state === "listening"
+                                    ? localizeText(lang, "Listening — click to stop", "监听中 — 点击关闭")
+                                    : voiceInput.state === "transcribing"
+                                    ? localizeText(lang, "Transcribing...", "识别中...")
+                                    : localizeText(lang, "Voice input (toggle)", "语音输入（开关）")
+                            }
+                            aria-label={localizeText(lang, "Voice input", "语音输入")}
+                        >
+                            {voiceInput.state === "transcribing" ? (
+                                <span style={{
+                                    display: "inline-block", width: "14px", height: "14px", borderRadius: "50%",
+                                    border: `2px solid ${t.textMuted}`, borderTopColor: "transparent",
+                                    animation: "ai-spinner-spin 0.8s linear infinite",
+                                }} />
+                            ) : voiceInput.state === "listening" ? (
+                                <VoiceLevelVisualizer
+                                    onAudioLevelRef={voiceInput.onAudioLevelRef}
+                                    isSpeaking={voiceInput.isSpeaking}
+                                    themeColor="#22c55e"
+                                    speakingColor="#ef4444"
+                                />
+                            ) : (
+                                "🎙"
+                            )}
+                        </button>
+                    )}
+                    {voiceInput.error && (
+                        <div style={{
+                            position: "absolute",
+                            bottom: "calc(100% + 4px)",
+                            right: "8px",
+                            padding: "4px 8px",
+                            background: "rgba(239, 68, 68, 0.15)",
+                            color: t.errorText,
+                            fontSize: "11px",
+                            borderRadius: "4px",
+                            whiteSpace: "nowrap",
+                            zIndex: 10,
+                        }}>
+                            {voiceInput.error}
+                        </div>
+                    )}
                     {isBusy && cancelSession ? (
                         <button
                             type="button"

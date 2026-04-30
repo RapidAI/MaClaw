@@ -431,6 +431,18 @@ func (m *telegramGatewayManager) sendAgentResponse(gw *telegram.Gateway, chatID 
 			MimeType: mimeType,
 		})
 	}
+
+	// Send voice message (OGG Opus → Telegram voice bubble).
+	if resp.VoiceData != "" {
+		if err := gw.SendMedia(ctx, telegram.OutgoingMedia{
+			ChatID:   chatID,
+			FileType: "voice",
+			FileData: resp.VoiceData,
+			FileName: resp.VoiceFileName,
+		}); err != nil {
+			log.Printf("[telegram-mgr] local SendMedia (voice) error (to=%d): %v", chatID, err)
+		}
+	}
 }
 
 // GatewayReplyPayload holds the fields of an im.gateway_reply from Hub.

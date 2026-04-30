@@ -60,7 +60,8 @@ func (a *App) initWorkflowEngineWithStore(store workflow.PersistenceStore) {
 	// so they survive conversation history truncation.
 	// memoryStore may not be initialized yet (lazy init), so we use a
 	// deferred adapter that calls ensureMemoryStore on first use.
-	engine.SetArtifactSaver(&deferredArtifactSaver{app: a})
+	a.workflowArtifactSaver = &deferredArtifactSaver{app: a}
+	engine.SetArtifactSaver(a.workflowArtifactSaver)
 
 	// 9. Start periodic cleanup goroutine.
 	go workflowCleanupLoop(engine, understanding)

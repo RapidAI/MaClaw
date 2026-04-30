@@ -111,6 +111,7 @@ func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.Conv
 		Tags:       tags,
 		Scope:      memory.ScopeProject,
 		SourceType: "task_sediment",
+		OwnerID:    userID, // multi-tenant: associate with the user who ran this task
 	}
 	if err := h.memoryStore.Save(entry); err != nil {
 		log.Printf("[task_sediment] save failed: %v", err)

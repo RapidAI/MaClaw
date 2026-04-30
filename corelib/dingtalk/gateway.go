@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -212,6 +212,85 @@ func escapeJSON(s string) string {
 	return s
 }
 
+// SendAudio sends a voice message (sampleAudio) to a DingTalk user.
+// audioData must be OGG or AMR format. durationMs is the audio duration in milliseconds.
+func (g *Gateway) SendAudio(ctx context.Context, target cim.UserTarget, audioData []byte, durationMs int) error {
+	token, err := g.getAccessToken()
+	if err != nil {
+		return err
+	}
+
+	// Step 1: Upload media file to get mediaId.
+	mediaID, err := g.uploadMedia(ctx, token, audioData, "voice.ogg")
+	if err != nil {
+		return fmt.Errorf("dingtalk: upload audio: %w", err)
+	}
+
+	// Step 2: Send sampleAudio message.
+	if durationMs <= 0 {
+		// Estimate duration from file size: OGG Opus ~4KB/s at 32kbps.
+		durationMs = len(audioData) * 1000 / 4000
+		if durationMs < 1000 {
+			durationMs = 1000
+		}
+	}
+
+	body := map[string]any{
+		"robotCode": g.config.RobotCode,
+		"userIds":   []string{target.PlatformUID},
+		"msgKey":    "sampleAudio",
+		"msgParam":  fmt.Sprintf(`{"mediaId":"%s","duration":"%d"}`, mediaID, durationMs),
+	}
+	return g.postAPI(token, "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend", body)
+}
+
+// uploadMedia uploads a media file to DingTalk and returns the mediaId.
+// Uses the robot media upload API: POST /v1.0/robot/messageFiles/upload
+func (g *Gateway) uploadMedia(ctx context.Context, token string, data []byte, filename string) (string, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return "", fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", fmt.Errorf("write file data: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("close multipart: %w", err)
+	}
+
+	url := "https://api.dingtalk.com/v1.0/robot/messageFiles/upload"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("x-acs-dingtalk-access-token", token)
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("upload HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		MediaID string `json:"mediaId"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("parse upload response: %w", err)
+	}
+	if result.MediaID == "" {
+		return "", fmt.Errorf("upload returned empty mediaId: %s", string(respBody))
+	}
+
+	return result.MediaID, nil
+}
+
 // unused but keeps import valid
-var _ = strconv.Itoa
 var _ = log.Println

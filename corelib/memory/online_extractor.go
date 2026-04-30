@@ -246,8 +246,8 @@ Reference timestamp: ` + refTimeStr
 // classifyAndApply determines the correct operation for a fact and executes it.
 // Steps:
 //   1. Find top-5 similar existing memories (vector + BM25)
-//   2. If no similar memories → ADD
-//   3. If similar memories exist → LLM classifies ADD/UPDATE/DELETE/NOOP
+//   2. If no similar memories -> ADD
+//   3. If similar memories exist -> LLM classifies ADD/UPDATE/DELETE/NOOP
 //   4. Execute the operation
 //
 // All mutations go through Store's public API (Save/Update/Delete) to ensure
@@ -280,13 +280,13 @@ func (oe *OnlineExtractor) classifyAndApply(
 	// Find similar existing memories.
 	similar := oe.findSimilarMemories(content, cat, ownerID, 5)
 
-	// No similar memories → direct ADD.
+	// No similar memories -> direct ADD.
 	if len(similar) == 0 {
 		entry := Entry{
 			Content:   content,
 			Category:  cat,
 			Tags:      tags,
-			Entities:  fact.Entities,
+			Entities:  fact.ParsedEntities(),
 			ValidAt:   validAt,
 			InvalidAt: invalidAt,
 			OwnerID:   ownerID,
@@ -297,7 +297,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 		return OpAdd, nil
 	}
 
-	// Similar memories exist → LLM classifies operation.
+	// Similar memories exist -> LLM classifies operation.
 	classified, err := oe.classifyOperation(ctx, llmCaller, content, similar)
 	if err != nil {
 		// On LLM failure, default to ADD (safe: may create a near-duplicate,
@@ -306,7 +306,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 			Content:   content,
 			Category:  cat,
 			Tags:      tags,
-			Entities:  fact.Entities,
+			Entities:  fact.ParsedEntities(),
 			ValidAt:   validAt,
 			InvalidAt: invalidAt,
 			OwnerID:   ownerID,
@@ -322,7 +322,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 			Content:   content,
 			Category:  cat,
 			Tags:      tags,
-			Entities:  fact.Entities,
+			Entities:  fact.ParsedEntities(),
 			ValidAt:   validAt,
 			InvalidAt: invalidAt,
 			OwnerID:   ownerID,
@@ -353,7 +353,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 					Content:  content,
 					Category: cat,
 					Tags:     tags,
-					Entities: fact.Entities,
+					Entities:  fact.ParsedEntities(),
 					ValidAt:  validAt,
 					OwnerID:  ownerID,
 				}
@@ -362,11 +362,11 @@ func (oe *OnlineExtractor) classifyAndApply(
 			}
 
 			// Update entities on the target entry (Store.Update doesn't handle Entities).
-			if len(fact.Entities) > 0 {
+			if parsedEnts := fact.ParsedEntities(); len(parsedEnts) > 0 {
 				oe.store.mu.Lock()
 				for i := range oe.store.entries {
 					if oe.store.entries[i].ID == classified.TargetID {
-						oe.store.entries[i].Entities = mergeStringSlice(oe.store.entries[i].Entities, fact.Entities)
+						oe.store.entries[i].Entities = mergeStringSlice(oe.store.entries[i].Entities, parsedEnts)
 						if validAt != nil {
 							oe.store.entries[i].ValidAt = validAt
 						}
@@ -385,7 +385,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 			Content:  content,
 			Category: cat,
 			Tags:     tags,
-			Entities: fact.Entities,
+			Entities:  fact.ParsedEntities(),
 			ValidAt:  validAt,
 			OwnerID:  ownerID,
 		}
@@ -418,7 +418,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 				Content:   content,
 				Category:  cat,
 				Tags:      tags,
-				Entities:  fact.Entities,
+				Entities:  fact.ParsedEntities(),
 				ValidAt:   validAt,
 				InvalidAt: invalidAt,
 				OwnerID:   ownerID,
@@ -622,7 +622,7 @@ func categoryFromString(s string) Category {
 func buildFactTags(fact ExtractedFact) []string {
 	tags := []string{"online_extracted"}
 	// Add entity names as tags (strip "entity:" prefix for BM25 matching).
-	for _, e := range fact.Entities {
+	for _, e := range fact.ParsedEntities() {
 		if strings.HasPrefix(e, "entity:") {
 			name := strings.TrimPrefix(e, "entity:")
 			if name != "" {

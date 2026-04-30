@@ -232,6 +232,51 @@ func (p *FeishuPlugin) uploadBase64Image(ctx context.Context, b64Data string) (s
 	return resp.Data.ImageKey, nil
 }
 
+// SendAudio sends an audio message (voice bubble) to the target user via Feishu.
+// The audioData must be OGG Opus format (飞书 requires file_type=opus for audio messages).
+// Uses msg_type=audio which displays as a playable voice bubble in the chat.
+func (p *FeishuPlugin) SendAudio(ctx context.Context, target im.UserTarget, audioData []byte) error {
+	openID := target.PlatformUID
+	if openID == "" {
+		return fmt.Errorf("feishu: PlatformUID (open_id) is required for audio")
+	}
+
+	bot := p.notifier.Bot()
+	if bot == nil {
+		return fmt.Errorf("feishu bot not initialized")
+	}
+
+	// Step 1: Upload audio with file_type=opus.
+	uploadCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	uploadResp, err := bot.UploadFile(uploadCtx, lark.UploadFileRequest{
+		FileType: "opus", // 飞书 requires opus for audio messages
+		FileName: "voice.ogg",
+		Reader:   bytes.NewReader(audioData),
+	})
+	if err != nil {
+		return fmt.Errorf("feishu: upload audio: %w", err)
+	}
+	if uploadResp.Code != 0 {
+		return fmt.Errorf("feishu: upload audio API error: code=%d msg=%s", uploadResp.Code, uploadResp.Msg)
+	}
+
+	fileKey := uploadResp.Data.FileKey
+
+	// Step 2: Send audio message (msg_type=audio).
+	msg := lark.NewMsgBuffer(lark.MsgAudio).
+		BindOpenID(openID).
+		Audio(fileKey).
+		Build()
+
+	if _, err := bot.PostMessage(ctx, msg); err != nil {
+		return fmt.Errorf("feishu: send audio message: %w", err)
+	}
+
+	return nil
+}
+
 // SendFile sends a file to the target user via Feishu.
 // Small files (≤ feishuUploadMaxSize) are uploaded via the Feishu file API
 // and sent as native file messages. Large files are stored as temporary
@@ -551,6 +596,7 @@ func (p *FeishuPlugin) Capabilities() im.CapabilityDeclaration {
 		SupportsFile:        true,
 		SupportsButton:      true,
 		SupportsMessageEdit: false,
+		SupportsVoice:       true, // OGG Opus via SendAudio (msg_type=audio)
 		MaxTextLength:       4000,
 	}
 }

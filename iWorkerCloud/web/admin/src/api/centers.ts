@@ -43,6 +43,13 @@ export interface ProvisionTenantResult {
   message: string;
 }
 
+export interface CenterComputeSyncStatus {
+  last_sync_at: string;
+  status: 'success' | 'failure' | 'pending' | 'waiting_for_credentials';
+  error?: string;
+  provider_count: number;
+}
+
 export interface CenterProbeResult {
   ok: boolean;
   status_code: number;
@@ -51,8 +58,21 @@ export interface CenterProbeResult {
   runtime_type?: string;
   product_kind?: string;
   admin_console?: string;
+  provider_count?: number;
+  runtime_provider_mode?: 'settings' | 'cloud_sync' | 'local_self_managed';
+  compute_source?: 'cloud' | 'local';
+  compute_permission?: boolean;
+  cloud_provider_count?: number;
+  compute_sync_status?: CenterComputeSyncStatus;
 }
 
+export interface CenterProvisionReadiness {
+  allowed: boolean;
+  center: Center;
+  active_license?: unknown;
+  issues: string[];
+  recommended_actions: RecommendedAction[];
+}
 export interface CenterProbeResponse {
   probe: CenterProbeResult;
   center: Center;
@@ -104,6 +124,9 @@ export function updateCenterIntegration(id: string, patch: CenterIntegrationPatc
   return apiPut(`/api/admin/centers/${id}/integration`, patch);
 }
 
+export function getProvisionReadiness(id: string): Promise<CenterProvisionReadiness> {
+  return apiGet(`/api/admin/centers/${id}/provision-readiness`);
+}
 export function provisionTenant(id: string, request: ProvisionTenantRequest): Promise<ProvisionTenantResult> {
   return apiPost(`/api/admin/centers/${id}/provision-tenant`, request);
 }

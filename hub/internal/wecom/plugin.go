@@ -426,6 +426,7 @@ func (p *Plugin) Capabilities() im.CapabilityDeclaration {
 		SupportsFile:        true,
 		SupportsButton:      false,
 		SupportsMessageEdit: false,
+		SupportsVoice:       true, // audio/* MIME auto-routes to voice mediaType
 		MaxTextLength:       textChunkLimit,
 	}
 }

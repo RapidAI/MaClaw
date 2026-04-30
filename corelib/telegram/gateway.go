@@ -490,9 +490,16 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	}
 	method := "sendDocument"
 	fieldName := "document"
-	if msg.FileType == "photo" {
+	switch msg.FileType {
+	case "photo":
 		method = "sendPhoto"
 		fieldName = "photo"
+	case "voice":
+		method = "sendVoice"
+		fieldName = "voice"
+	case "audio":
+		method = "sendAudio"
+		fieldName = "audio"
 	}
 	url := apiBase + g.config.BotToken + "/" + method
 

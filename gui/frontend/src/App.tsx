@@ -32,6 +32,8 @@ import { MCPManagementPanel } from './components/remote/MCPManagementPanel';
 import { LLMConfigPanel } from './components/remote/LLMConfigPanel';
 import { EmbeddingConfigPanel } from './components/remote/EmbeddingConfigPanel';
 import { ASRConfigPanel } from './components/remote/ASRConfigPanel';
+import { TTSConfigPanel } from './components/remote/TTSConfigPanel';
+import { useAudioDevices } from './components/ai/useAudioDevices';
 import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { HubServiceRedeemPanel } from './components/remote/HubServiceRedeemPanel';
@@ -1797,6 +1799,7 @@ function App() {
     const { showAlert, showConfirm } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
+    const audioDevices = useAudioDevices();
     const [sidebarExpanded, setSidebarExpanded] = useState(false);
     const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
     const [recentProjects, setRecentProjects] = useState<Array<{ id: string; name: string; project_path: string; workflow_type: string; preview: string; last_activity: string; entry_count: number; pinned?: boolean }>>([]);
@@ -3819,7 +3822,7 @@ ${instruction}`;
         {
             id: 'embedding' as const,
             label: lang === 'zh-Hans' ? 'AI模型' : lang === 'zh-Hant' ? 'AI模型' : 'AI Model',
-            desc: lang === 'zh-Hans' ? 'AI模型管理（向量搜索、屏幕解析等）' : lang === 'zh-Hant' ? 'AI模型管理（向量搜索、螢幕解析等）' : 'AI model management (vector search, screen parsing, etc.)',
+            desc: lang === 'zh-Hans' ? 'AI模型管理（向量搜索、屏幕解析、语音等）' : lang === 'zh-Hant' ? 'AI模型管理（向量搜索、螢幕解析、語音等）' : 'AI model management (vector search, screen parsing, voice, etc.)',
         },
         {
             id: 'agentnet' as const,
@@ -4190,6 +4193,8 @@ ${instruction}`;
                             onToggleMaximize: handleAIPanelMaximizeToggle,
                             onHideWindow: () => WindowHide(),
                         }}
+                        audioInputDeviceId={(config as any)?.audio_input_device_id || ''}
+                        audioOutputDeviceId={(config as any)?.audio_output_device_id || ''}
                     />
                     </div>
                 ) : (
@@ -4979,6 +4984,7 @@ ${instruction}`;
                             <div className="settings-panel" style={{ display: settingsTab === 'embedding' ? 'block' : 'none' }}>
                                 <EmbeddingConfigPanel lang={lang} />
                                 <ASRConfigPanel lang={lang} />
+                                <TTSConfigPanel lang={lang} />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'agentnet' ? 'block' : 'none' }}>
@@ -5759,6 +5765,69 @@ ${instruction}`;
                                                 : lang === 'zh-Hant'
                                                 ? '開啟後，編碼、PPT 設計等複雜任務會自動進入多階段引導工作流（需求→設計→執行）。關閉後所有訊息直接進入 Agent 處理。'
                                                 : 'When enabled, complex tasks (coding, PPT design, etc.) enter a multi-phase guided workflow (requirements → design → execution). When disabled, all messages go directly to the agent.'}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Audio Device Selection */}
+                                <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+                                        {lang === 'zh-Hans' ? '音频设备' : lang === 'zh-Hant' ? '音訊裝置' : 'Audio Devices'}
+                                    </h4>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', minWidth: '80px' }}>
+                                                🎙 {lang === 'zh-Hans' ? '录音设备' : lang === 'zh-Hant' ? '錄音裝置' : 'Microphone'}
+                                            </label>
+                                            <select
+                                                className="form-input"
+                                                style={{ flex: 1, minWidth: 0 }}
+                                                value={(config as any)?.audio_input_device_id || ''}
+                                                onChange={(e) => {
+                                                    saveRemoteConfigField({ audio_input_device_id: e.target.value } as any);
+                                                }}
+                                            >
+                                                <option value="">{lang === 'zh-Hans' ? '系统默认' : lang === 'zh-Hant' ? '系統預設' : 'System Default'}</option>
+                                                {audioDevices.inputs.map(d => (
+                                                    <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', minWidth: '80px' }}>
+                                                🔊 {lang === 'zh-Hans' ? '播放设备' : lang === 'zh-Hant' ? '播放裝置' : 'Speaker'}
+                                            </label>
+                                            <select
+                                                className="form-input"
+                                                style={{ flex: 1, minWidth: 0 }}
+                                                value={(config as any)?.audio_output_device_id || ''}
+                                                onChange={(e) => {
+                                                    saveRemoteConfigField({ audio_output_device_id: e.target.value } as any);
+                                                }}
+                                            >
+                                                <option value="">{lang === 'zh-Hans' ? '系统默认' : lang === 'zh-Hant' ? '系統預設' : 'System Default'}</option>
+                                                {audioDevices.outputs.map(d => (
+                                                    <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                            <span>
+                                            {lang === 'zh-Hans'
+                                                ? '选择语音输入和 TTS 播报使用的音频设备。'
+                                                : lang === 'zh-Hant'
+                                                ? '選擇語音輸入和 TTS 播報使用的音訊裝置。'
+                                                : 'Select audio devices for voice input and TTS playback.'}
+                                            </span>
+                                            {!audioDevices.labelsAvailable && (
+                                                <button
+                                                    type="button"
+                                                    onClick={audioDevices.requestLabels}
+                                                    style={{ fontSize: '0.7rem', padding: '2px 8px', cursor: 'pointer', border: '1px solid var(--theme-border)', borderRadius: '4px', background: 'transparent', color: 'var(--theme-primary)' }}
+                                                >
+                                                    {lang === 'zh-Hans' ? '🔄 获取设备名称' : lang === 'zh-Hant' ? '🔄 取得裝置名稱' : '🔄 Load device names'}
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
                                 </div>

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -404,11 +405,42 @@ type OnlineExtractionResult struct {
 // ExtractedFact represents a single fact extracted from conversation by the
 // online extraction pipeline, with optional temporal and entity annotations.
 type ExtractedFact struct {
-	Content   string   `json:"content"`
-	Category  string   `json:"category"`            // "user_fact", "project_knowledge", "preference", "instruction"
-	Entities  []string `json:"entities,omitempty"`   // ["entity:Alice", "relation:lives_in", "entity:Shanghai"]
-	ValidAt   string   `json:"valid_at,omitempty"`   // ISO 8601 datetime or empty
-	InvalidAt string   `json:"invalid_at,omitempty"` // ISO 8601 datetime or empty
+	Content      string          `json:"content"`
+	Category     string          `json:"category"`            // "user_fact", "project_knowledge", "preference", "instruction"
+	RawEntities  json.RawMessage `json:"entities,omitempty"`  // tolerates flat ["a","b"] and nested [["a","b"]]
+	ValidAt      string          `json:"valid_at,omitempty"`  // ISO 8601 datetime or empty
+	InvalidAt    string          `json:"invalid_at,omitempty"` // ISO 8601 datetime or empty
+}
+
+// ParsedEntities returns the entities as a flat []string, tolerating three
+// formats that LLMs produce:
+//   - Flat array:   ["entity:X", "relation:Y", "entity:Z"]
+//   - Nested array: [["entity:X", "relation:Y", "entity:Z"]]
+//   - Single string: "entity:X"
+func (f ExtractedFact) ParsedEntities() []string {
+	if len(f.RawEntities) == 0 {
+		return nil
+	}
+	// Try flat array first (most common).
+	var flat []string
+	if err := json.Unmarshal(f.RawEntities, &flat); err == nil {
+		return flat
+	}
+	// Try nested array: LLM wraps each triple in its own array.
+	var nested [][]string
+	if err := json.Unmarshal(f.RawEntities, &nested); err == nil {
+		var result []string
+		for _, arr := range nested {
+			result = append(result, arr...)
+		}
+		return result
+	}
+	// Try single string.
+	var single string
+	if err := json.Unmarshal(f.RawEntities, &single); err == nil && single != "" {
+		return []string{single}
+	}
+	return nil
 }
 
 // ClassifiedOperation is the LLM's decision on how to integrate a new fact.

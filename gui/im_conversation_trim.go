@@ -461,7 +461,7 @@ func makeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(s
 }
 
 func trimHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {
-	return trimHistoryWithSummary(entries, nil, nil)
+	return trimHistoryWithSummary(entries, nil, nil, 0, 0)
 }
 
 // trimHistoryWithSummary performs structured conversation compaction with
@@ -483,8 +483,22 @@ func trimHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {
 //
 // memorySink: if non-nil, substantial assistant messages (>500 runes) that
 // are being dropped are saved to long-term memory as task_artifact entries.
-func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(string) string, memorySink func(string, []string)) []agent.ConversationEntry {
-	if len(entries) <= agent.MaxConversationTurns {
+//
+// maxEntries: if > 0, overrides MaxConversationTurns as the entry count limit.
+// Used by saveConversationHistoryTimed to pass a dynamic limit based on the
+// model's effective context window.
+//
+// maxTokens: if > 0, also triggers compaction when token count exceeds this
+// limit, even if entry count is within maxEntries. This covers the case where
+// few entries have very large content (e.g., huge tool results).
+func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(string) string, memorySink func(string, []string), maxEntries int, maxTokens int) []agent.ConversationEntry {
+	limit := agent.MaxConversationTurns
+	if maxEntries > 0 {
+		limit = maxEntries
+	}
+	entryOverLimit := len(entries) > limit
+	tokenOverLimit := maxTokens > 0 && estimateConversationEntryTokens(entries) > maxTokens
+	if !entryOverLimit && !tokenOverLimit {
 		return entries
 	}
 
@@ -502,9 +516,35 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 
 	tier1Indices := extractTurnBoundaryIndices(entries, maxTier1)
 
-	// First pass: compute recent window at full budget to check if any
-	// tier-1 entries fall outside it.
-	recentStart := len(entries) - agent.MaxConversationTurns
+	// First pass: compute recent window.
+	// When triggered by entry count: keep the last `limit` entries.
+	// When triggered by token overflow only: scan backwards to find how
+	// many entries fit within 70% of maxTokens (leaving room for the
+	// compacted summary).
+	var recentStart int
+	if entryOverLimit {
+		recentStart = len(entries) - limit
+	} else {
+		// Token-only overflow: density-aware split.
+		tokenBudget := maxTokens * 7 / 10
+		runningTokens := 0
+		recentStart = 0
+		for i := len(entries) - 1; i >= 0; i-- {
+			entryData, _ := json.Marshal(entries[i])
+			entryTokens := estimateBytesToTokens(entryData)
+			if runningTokens+entryTokens > tokenBudget {
+				recentStart = i + 1
+				break
+			}
+			runningTokens += entryTokens
+		}
+		// Group-align so we don't split a tool-call group.
+		groups := agent.BuildEntryGroups(entries)
+		g := agent.GroupContaining(groups, recentStart)
+		if g != nil && recentStart > g.Start {
+			recentStart = g.End
+		}
+	}
 	if recentStart < 0 {
 		recentStart = 0
 	}
@@ -525,9 +565,9 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 	}
 
 	// Second pass: shrink recent window to make room for outside tier-1.
-	recentCount := agent.MaxConversationTurns - outsideTier1
-	if recentCount < agent.MaxConversationTurns/2 {
-		recentCount = agent.MaxConversationTurns / 2
+	recentCount := limit - outsideTier1
+	if recentCount < limit/2 {
+		recentCount = limit / 2
 	}
 	recentStart = len(entries) - recentCount
 	if recentStart < 0 {
@@ -554,9 +594,9 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 	// iterate from most recent dropped entry backwards, preserving user
 	// messages verbatim until the token budget is exhausted.
 	//
-	// Budget is capped to ensure total output stays within MaxConversationTurns
+	// Budget is capped to ensure total output stays within the entry limit
 	// + a small margin. Each preserved user message takes one slot.
-	maxPreservedUserSlots := agent.MaxConversationTurns / 8 // max 5 extra slots
+	maxPreservedUserSlots := limit / 8 // max 5 extra slots (at limit=40)
 	preservedUserMsgs := collectPreservedUserMessages(entries, recentStart, outsideSet, maxPreservedUserTokens, maxPreservedUserSlots)
 
 	// Build result: outside tier-1 entries + preserved user msgs + separator + recent window.
@@ -597,38 +637,25 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 	// Build separator: structured handoff summary with recovery prompt,
 	// or static placeholder when no summarizer is available.
 	//
-	// The summary input excludes user messages — those are already preserved
-	// verbatim in preservedUserMsgs (tier-user). The summary focuses on
-	// what was *done* (assistant reasoning, tool results), not what was
-	// *requested* (user messages). This avoids duplication: user intent
-	// appears once as verbatim messages, assistant work appears once as summary.
+	// Uses a structured 4-section input (turn boundaries, key data, tool
+	// operations, final assistant summaries) instead of raw entry dumps.
+	// This produces much higher quality summaries because the LLM receives
+	// organized context rather than truncated role/text lines.
 	separator := "[...中间的工具调用和执行细节已省略...]"
 	if summarizer != nil {
-		var droppedText strings.Builder
+		droppedEntries := make([]agent.ConversationEntry, 0, recentStart)
 		for i := 0; i < recentStart; i++ {
 			if outsideSet[i] {
 				continue // tier-1, already preserved
 			}
-			// Skip user messages — they're preserved verbatim in tier-user.
-			// The summary should capture assistant/tool content only.
-			if entries[i].Role == "user" {
-				continue
-			}
-			text, ok := entries[i].Content.(string)
-			if !ok || text == "" {
-				continue
-			}
-			runes := []rune(text)
-			if len(runes) > 200 {
-				text = string(runes[:200])
-			}
-			droppedText.WriteString(fmt.Sprintf("[%s] %s\n", entries[i].Role, text))
+			droppedEntries = append(droppedEntries, entries[i])
 		}
-		if droppedText.Len() > 100 {
-			if summary := summarizer(droppedText.String()); summary != "" {
-				// Use recovery prefix (Codex's summary_prefix pattern) so the
-				// resuming LLM knows this is compacted context, not a fresh start.
-				separator = compactionRecoveryPrefix + summary
+		if len(droppedEntries) > 0 {
+			structuredInput := buildCompactionSummarizerInput(droppedEntries)
+			if structuredInput != "" {
+				if summary := summarizer(structuredInput); summary != "" {
+					separator = compactionRecoveryPrefix + summary
+				}
 			}
 		}
 	}
@@ -843,7 +870,7 @@ func isSyntheticUserMessage(e agent.ConversationEntry) bool {
 }
 
 // extractTurnBoundaryTexts returns the text content of turn-boundary entries.
-// Shared by TopicDetector and compactHistory.
+// Shared by TopicDetector and buildCompactionSummarizerInput.
 func extractTurnBoundaryTexts(entries []agent.ConversationEntry, maxTexts int) []string {
 	var texts []string
 	prevRole := ""
@@ -1127,6 +1154,74 @@ func inferFileDeliveryMessage(fileName string) string {
 // be shown to end users. Also handles unclosed <think> tags (e.g. when
 // output is truncated by max_tokens).
 var thinkTagPattern = regexp.MustCompile(`(?si)<think>.*?</think>|<think>.*$`)
+
+// buildCompactionSummarizerInput constructs a structured 4-section input for
+// the LLM summarizer from dropped conversation entries. This is the single
+// implementation used by trimHistoryWithSummary's separator construction.
+//
+// Sections:
+//  1. Turn boundaries — user requests and LLM first responses
+//  2. Key data — file paths, URLs, data statistics from tool results
+//  3. Tool operations — what tools were called with what key arguments
+//  4. Final assistant summaries — conclusion messages before each new user turn
+func buildCompactionSummarizerInput(entries []agent.ConversationEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+
+	// Section 1: Turn boundaries.
+	sb.WriteString("## 对话轮次\n\n")
+	turnTexts := extractTurnBoundaryTexts(entries, 20)
+	for _, text := range turnTexts {
+		runes := []rune(text)
+		if len(runes) > 500 {
+			text = string(runes[:500]) + "..."
+		}
+		sb.WriteString(text)
+		sb.WriteString("\n\n")
+	}
+
+	// Section 2: Key data from tool outputs.
+	keyData := extractKeyDataFromEntries(entries)
+	if len(keyData) > 0 {
+		sb.WriteString("## 工具产出的关键数据\n\n")
+		for _, kd := range keyData {
+			sb.WriteString("- ")
+			sb.WriteString(kd)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Section 3: Tool operation summary.
+	toolOps := extractToolOperationSummary(entries, 15)
+	if len(toolOps) > 0 {
+		sb.WriteString("## 执行的工具操作\n\n")
+		for _, op := range toolOps {
+			sb.WriteString("- ")
+			sb.WriteString(op)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Section 4: Final assistant messages.
+	finalTexts := extractFinalAssistantTexts(entries, 5)
+	if len(finalTexts) > 0 {
+		sb.WriteString("## 任务结果摘要\n\n")
+		for _, text := range finalTexts {
+			sb.WriteString(text)
+			sb.WriteString("\n\n")
+		}
+	}
+
+	result := sb.String()
+	if len([]rune(result)) > 12000 {
+		result = string([]rune(result)[:12000]) + "\n...(truncated)"
+	}
+	return result
+}
 
 // stripThinkingTags removes <think>...</think> blocks from LLM output and
 // trims any leading whitespace left behind.

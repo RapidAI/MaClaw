@@ -23,7 +23,8 @@ export interface ComputeStatus {
   compute_source: 'cloud' | 'local';
   compute_permission: boolean;
   last_sync_at?: string;
-  sync_status?: string;
+  sync_status?: ComputeSyncStatus;
+  provider_count?: number;
 }
 
 export interface DiWorkerUsage {
@@ -38,14 +39,22 @@ export interface DiWorkerUsage {
   request_count: number;
 }
 
-// Backend: GET /admin/compute/source → { source, compute_permission }
+// Backend: GET /admin/compute/source -> { source, compute_permission, sync_status }
 export function getComputeStatus(): Promise<ComputeStatus> {
-  return apiGet<{ source: string; compute_permission: boolean }>('/admin/compute/source').then(d => ({
+  return apiGet<{
+    source: string;
+    compute_permission: boolean;
+    sync_status?: ComputeSyncStatus;
+    last_sync_at?: string;
+    provider_count?: number;
+  }>('/admin/compute/source').then(d => ({
     compute_source: d.source as 'cloud' | 'local',
     compute_permission: d.compute_permission,
+    sync_status: d.sync_status,
+    last_sync_at: d.last_sync_at || d.sync_status?.last_sync_at,
+    provider_count: d.provider_count ?? d.sync_status?.provider_count,
   }));
 }
-
 // Backend: GET /admin/compute/providers → { providers, source }
 export function listComputeProviders(): Promise<ComputeProvider[]> {
   return apiGet<{ providers: ComputeProvider[] }>('/admin/compute/providers').then(d => d.providers || []);
@@ -72,7 +81,7 @@ export function testComputeProvider(id: string, provider?: ComputeProvider): Pro
 }
 
 // Backend: POST /admin/compute/sync
-export function syncFromCloud(): Promise<void> {
+export function syncFromCloud(): Promise<ComputeSyncStatus> {
   return apiPost('/admin/compute/sync');
 }
 
@@ -82,7 +91,16 @@ export function switchComputeSource(source: 'cloud' | 'local'): Promise<void> {
 }
 
 // Backend: GET /admin/compute/sync-status
-export function getSyncStatus(): Promise<{ last_sync_at: string; status: string; error?: string; provider_count: number }> {
+export type ComputeSyncState = 'success' | 'failure' | 'pending' | 'waiting_for_credentials';
+
+export interface ComputeSyncStatus {
+  last_sync_at: string;
+  status: ComputeSyncState;
+  error?: string;
+  provider_count: number;
+}
+
+export function getSyncStatus(): Promise<ComputeSyncStatus> {
   return apiGet('/admin/compute/sync-status');
 }
 

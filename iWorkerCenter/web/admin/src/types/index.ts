@@ -132,6 +132,13 @@ export interface CenterCloudHeartbeat {
   admin_console: string;
 }
 
+export interface CenterComputeSyncStatus {
+  last_sync_at: string;
+  status: 'success' | 'failure' | 'pending' | 'waiting_for_credentials';
+  error?: string;
+  provider_count: number;
+}
+
 export interface CenterStatus {
   status: string;
   runtime_type?: string;
@@ -139,6 +146,11 @@ export interface CenterStatus {
   admin_console?: string;
   provider_count: number;
   config_path: string;
+  compute_source?: 'cloud' | 'local';
+  compute_permission?: boolean;
+  compute_sync_status?: CenterComputeSyncStatus;
+  cloud_provider_count?: number;
+  runtime_provider_mode?: 'settings' | 'cloud_sync' | 'local_self_managed';
   cloud_heartbeat?: CenterCloudHeartbeat;
 }
 

@@ -47,6 +47,12 @@ func TestGetSource_Default(t *testing.T) {
 	if body["source"] != "cloud" {
 		t.Errorf("source = %v, want cloud", body["source"])
 	}
+	if body["sync_status"] == nil {
+		t.Fatal("sync_status should be included in source response")
+	}
+	if body["provider_count"] == nil {
+		t.Fatal("provider_count should be included in source response")
+	}
 }
 
 func TestSetSource_InvalidValue(t *testing.T) {
@@ -102,6 +108,7 @@ func TestGetProviders_EmptyCloud(t *testing.T) {
 	if body["source"] != "cloud" {
 		t.Errorf("source = %v, want cloud", body["source"])
 	}
+
 }
 
 func TestSyncStatus_Pending(t *testing.T) {
@@ -249,5 +256,37 @@ func TestLocalStore_TempFile(t *testing.T) {
 	_ = ls.SaveProvider(ComputeProvider{Name: "x", Protocol: "openai"})
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("file not created: %v", err)
+	}
+}
+
+func TestHandleSyncWaitingForCredentials(t *testing.T) {
+	dir := t.TempDir()
+	syncMgr := NewSyncManagerWithResolver("https://cloud.example.com", func() (string, string) { return "", "" })
+	sourceMgr := NewSourceManager(syncMgr)
+	localStore := NewLocalStore(filepath.Join(dir, "providers.json"))
+	h := NewHandler(syncMgr, sourceMgr, localStore)
+	mux := setupMux(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/compute/sync", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "waiting_for_credentials" {
+		t.Fatalf("status = %v, want waiting_for_credentials", body["status"])
+	}
+	if body["error"] == "" {
+		t.Fatal("error should be returned for waiting_for_credentials")
+	}
+	if body["last_sync_at"] == "" {
+		t.Fatal("last_sync_at should be returned for waiting_for_credentials")
+	}
+	if body["provider_count"] == nil {
+		t.Fatal("provider_count should be returned for waiting_for_credentials")
 	}
 }

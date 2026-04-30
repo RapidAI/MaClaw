@@ -147,6 +147,7 @@ type App struct {
 	aiAssistantFirstChatLogged atomic.Bool
 	docGenerator               *swarm.SwarmDocGenerator // cached PDF doc generator
 	workflowEngine             *workflow.WorkflowEngine // maclaw agent workflow engine (corelib/workflow)
+	workflowArtifactSaver      *deferredArtifactSaver   // shared artifact saver for OwnerID injection
 	workflowDisabled           atomic.Bool              // true when user disables workflow in settings; checked by getWorkflowEngine()
 	steeringStore              *steering.Store          // declarative rule injection (corelib/steering)
 	codeEventEmitter           *CodeEventEmitter        // emits code file events to frontend for code preview panel

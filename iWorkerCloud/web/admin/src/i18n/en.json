@@ -182,7 +182,12 @@
     "typeGeneral": "General",
     "typeCoding": "Coding",
     "typeDocument": "Document",
-    "typeAnalysis": "Analysis"
+    "typeAnalysis": "Analysis",
+    "providerAssignments": "Provider Distribution",
+    "assignedProviders": "assigned providers",
+    "defaultAllProviders": "Default: all enabled providers",
+    "assignProvider": "Assign provider",
+    "unassignProvider": "Unassign provider",
+    "limitToProvider": "Create explicit assignment from this provider"
   }
 }
-

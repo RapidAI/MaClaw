@@ -69,6 +69,18 @@ export function toggleCenterPermission(centerId: string, enabled: boolean): Prom
   return apiPost(`/api/admin/compute/permissions/${centerId}`, { compute_permission: enabled });
 }
 
+export function listCenterAssignments(centerId: string): Promise<string[]> {
+  return apiGet<{ assignments: string[] }>(`/api/admin/centers/${centerId}/compute-providers`).then(d => d.assignments || []);
+}
+
+export function assignProviderToCenter(centerId: string, providerId: string): Promise<void> {
+  return apiPost(`/api/admin/centers/${centerId}/compute-providers`, { provider_id: providerId });
+}
+
+export function unassignProviderFromCenter(centerId: string, providerId: string): Promise<void> {
+  return apiDelete(`/api/admin/centers/${centerId}/compute-providers/${providerId}`);
+}
+
 export function listCenterCosts(params: { period: string; start: string; end: string; center_id?: string }): Promise<CenterCostRow[]> {
   const q = new URLSearchParams({ period: params.period, start: params.start, end: params.end });
   if (params.center_id) q.set('center_id', params.center_id);

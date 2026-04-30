@@ -157,6 +157,70 @@ func (c *CloudClient) FetchCenterLicense(ctx context.Context, centerID, centerSe
 	return &result, nil
 }
 
+// CloudComputeProvider is a compute provider assignment returned by iWorkerCloud.
+type CloudComputeProvider struct {
+	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
+	BaseURL              string  `json:"base_url"`
+	APIKey               string  `json:"api_key,omitempty"`
+	Protocol             string  `json:"protocol"`
+	UserAgent            string  `json:"user_agent"`
+	ComputeType          string  `json:"compute_type"`
+	Model                string  `json:"model"`
+	Enabled              bool    `json:"enabled"`
+	Priority             int     `json:"priority"`
+	Description          string  `json:"description"`
+	InputPricePerMToken  float64 `json:"input_price_per_mtoken"`
+	OutputPricePerMToken float64 `json:"output_price_per_mtoken"`
+}
+
+// CenterComputeProvidersResponse is returned by iWorkerCloud for a registered Center.
+type CenterComputeProvidersResponse struct {
+	Providers         []CloudComputeProvider `json:"providers"`
+	ComputePermission bool                   `json:"compute_permission"`
+	ForceSync         bool                   `json:"force_sync"`
+}
+
+// FetchCenterComputeProviders retrieves compute providers assigned to this Center.
+func (c *CloudClient) FetchCenterComputeProviders(ctx context.Context, centerID, centerSecret string) (*CenterComputeProvidersResponse, error) {
+	if c.cfg.BaseURL == "" {
+		return nil, fmt.Errorf("cloud base_url not configured")
+	}
+	centerID = strings.TrimSpace(centerID)
+	if centerID == "" {
+		return nil, fmt.Errorf("center_id is required")
+	}
+	if centerSecret == "" {
+		return nil, fmt.Errorf("center_secret is required")
+	}
+
+	url := fmt.Sprintf("%s/api/centers/%s/compute-providers", strings.TrimRight(c.cfg.BaseURL, "/"), centerID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Center-Secret", centerSecret)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch center compute providers: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("fetch center compute providers: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result CenterComputeProvidersResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode center compute providers response: %w", err)
+	}
+	if result.Providers == nil {
+		result.Providers = []CloudComputeProvider{}
+	}
+	return &result, nil
+}
+
 // CenterHeartbeatRequest identifies this runtime as an iWorkerCenter service.
 type CenterHeartbeatRequest struct {
 	Secret       string `json:"secret"`

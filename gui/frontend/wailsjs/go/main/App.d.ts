@@ -648,6 +648,10 @@ export function CheckASRModel():Promise<{[key:string]:any}>;
 
 export function DownloadASRModel():Promise<void>;
 
+export function TranscribeAudioBase64(arg1:string):Promise<string>;
+
+export function IsASRReady():Promise<boolean>;
+
 // Screen parsing (OminiParser-V2) bindings
 export function GetScreenParsingEnabled():Promise<boolean>;
 

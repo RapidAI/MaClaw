@@ -2,6 +2,7 @@ package compute
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -279,5 +280,68 @@ func TestTrailingSlashTrimmed(t *testing.T) {
 	sm := NewSyncManager("https://cloud.example.com/", "c1", "s1")
 	if sm.cloudURL != "https://cloud.example.com" {
 		t.Fatalf("cloudURL = %q, trailing slash not trimmed", sm.cloudURL)
+	}
+}
+
+func TestSyncManagerWithResolverUsesLatestCredentials(t *testing.T) {
+	centerID := ""
+	centerSecret := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/centers/center-1/compute-providers" {
+			t.Fatalf("path = %q, want /api/centers/center-1/compute-providers", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Center-Secret"); got != "secret-abc" {
+			t.Fatalf("X-Center-Secret = %q, want secret-abc", got)
+		}
+		_ = json.NewEncoder(w).Encode(syncResponse{Providers: []ComputeProvider{{ID: "p1", Name: "Cloud GPT"}}})
+	}))
+	defer srv.Close()
+
+	sm := NewSyncManagerWithResolver(srv.URL, func() (string, string) {
+		return centerID, centerSecret
+	})
+	if !sm.IsConfigured() {
+		t.Fatal("resolver-backed sync manager should be configured when cloud URL is set")
+	}
+	err := sm.SyncNow()
+	if !errors.Is(err, ErrWaitingForCredentials) {
+		t.Fatalf("SyncNow() error = %v, want ErrWaitingForCredentials", err)
+	}
+	status := sm.GetSyncStatus()
+	if status.Status != "waiting_for_credentials" {
+		t.Fatalf("status = %q, want waiting_for_credentials", status.Status)
+	}
+
+	centerID = "center-1"
+	centerSecret = "secret-abc"
+	if err := sm.SyncNow(); err != nil {
+		t.Fatalf("SyncNow() after credentials error: %v", err)
+	}
+	if got := sm.GetProviders(); len(got) != 1 || got[0].ID != "p1" {
+		t.Fatalf("providers = %+v, want p1", got)
+	}
+}
+
+func TestSyncManagerIsConfiguredRequiresStaticSecret(t *testing.T) {
+	if NewSyncManager("https://cloud.example.com", "center-1", "").IsConfigured() {
+		t.Fatal("static sync manager without center secret should not be configured")
+	}
+	if !NewSyncManager("https://cloud.example.com", "center-1", "secret-abc").IsConfigured() {
+		t.Fatal("static sync manager with center id and secret should be configured")
+	}
+}
+
+func TestSyncNowMissingStaticCredentialsWaitsForCredentials(t *testing.T) {
+	sm := NewSyncManager("https://cloud.example.com", "center-1", "")
+	err := sm.SyncNow()
+	if !errors.Is(err, ErrWaitingForCredentials) {
+		t.Fatalf("SyncNow() error = %v, want ErrWaitingForCredentials", err)
+	}
+	status := sm.GetSyncStatus()
+	if status.Status != "waiting_for_credentials" {
+		t.Fatalf("status = %q, want waiting_for_credentials", status.Status)
+	}
+	if status.Error == "" {
+		t.Fatal("status error should explain missing credentials")
 	}
 }

@@ -2,6 +2,7 @@ package compute
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -49,9 +50,13 @@ func (h *Handler) handleSource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getSource(w http.ResponseWriter, _ *http.Request) {
+	syncStatus := h.syncMgr.GetSyncStatus()
 	response.OK(w, map[string]any{
 		"source":             h.sourceMgr.GetSource(),
 		"compute_permission": h.syncMgr.GetComputePermission(),
+		"sync_status":        syncStatus,
+		"last_sync_at":       syncStatus.LastSyncAt,
+		"provider_count":     syncStatus.ProviderCount,
 	})
 }
 
@@ -104,16 +109,29 @@ func (h *Handler) handleSync(w http.ResponseWriter, r *http.Request) {
 	err := h.syncMgr.SyncNow()
 	// Check force_sync after sync
 	h.sourceMgr.CheckForceSync()
+	syncStatus := h.syncMgr.GetSyncStatus()
 	if err != nil {
+		if syncStatus.Status == "" {
+			syncStatus.Status = "failure"
+			if errors.Is(err, ErrWaitingForCredentials) {
+				syncStatus.Status = "waiting_for_credentials"
+			}
+		}
+		if syncStatus.Error == "" {
+			syncStatus.Error = err.Error()
+		}
 		response.OK(w, map[string]any{
-			"status": "failure",
-			"error":  err.Error(),
+			"status":         syncStatus.Status,
+			"error":          syncStatus.Error,
+			"last_sync_at":   syncStatus.LastSyncAt,
+			"provider_count": syncStatus.ProviderCount,
 		})
 		return
 	}
 	response.OK(w, map[string]any{
-		"status":         "success",
-		"provider_count": len(h.syncMgr.GetProviders()),
+		"status":         syncStatus.Status,
+		"last_sync_at":   syncStatus.LastSyncAt,
+		"provider_count": syncStatus.ProviderCount,
 	})
 }
 

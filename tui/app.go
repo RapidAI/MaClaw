@@ -33,6 +33,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
@@ -124,6 +125,7 @@ func runTUI() {
 		history:       convMemory,
 		taskStore:     task.NewStore(),
 		toolRegistry:  agent.NewCoreToolRegistry(),
+		ttsManager:    initTUITTSManager(),
 	}
 
 	// Initialize workflow engine (19 templates, same as GUI).
@@ -145,6 +147,7 @@ func runTUI() {
 		SSHHandler:  sshHandler,
 		ExtraHandlers: map[string]agent.ToolHandler{
 			"manage_skill": newManageSkillHandler(app),
+			"tts":          newTTSHandler(app),
 		},
 		WebSearchHandler: func(args map[string]interface{}) string {
 			// Use the first configured web search provider, or DuckDuckGo fallback.
@@ -273,6 +276,7 @@ type TUIApp struct {
 	history       *agent.ConversationMemory
 	taskStore     *task.Store
 	toolRegistry  *agent.CoreToolRegistry
+	ttsManager    *tts.Manager
 	// HubCenter failover uses the shared singleton cache and persister from
 	// tui/commands/skill_search_api.go — no fields needed here.
 

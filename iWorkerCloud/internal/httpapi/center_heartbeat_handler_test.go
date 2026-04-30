@@ -169,11 +169,65 @@ func TestProvisionTenantHandlerRejectsCenterWithoutActiveLicense(t *testing.T) {
 	if res.Code != http.StatusConflict {
 		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
 	}
-	var body map[string]string
+	var body struct {
+		Error     string `json:"error"`
+		Readiness struct {
+			Allowed bool     `json:"allowed"`
+			Issues  []string `json:"issues"`
+		} `json:"readiness"`
+	}
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if body["error"] != "CENTER_NOT_READY" {
-		t.Fatalf("error = %q, want CENTER_NOT_READY", body["error"])
+	if body.Error != "CENTER_NOT_READY" {
+		t.Fatalf("error = %q, want CENTER_NOT_READY", body.Error)
 	}
+	if body.Readiness.Allowed {
+		t.Fatalf("readiness.allowed = true, want false")
+	}
+	if !stringSliceContains(body.Readiness.Issues, "no_active_license") {
+		t.Fatalf("readiness.issues = %+v, want no_active_license", body.Readiness.Issues)
+	}
+}
+
+func TestProvisionReadinessHandlerReturnsBlockingIssues(t *testing.T) {
+	repo := newHeartbeatCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true})
+	svc := centers.NewService(repo, license.NewService(heartbeatLicenseRepo{}, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/centers/{id}/provision-readiness", ProvisionReadinessHandler(svc))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/centers/ctr_1/provision-readiness", nil)
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Allowed bool     `json:"allowed"`
+		Issues  []string `json:"issues"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Allowed {
+		t.Fatalf("allowed = true, want false")
+	}
+	found := false
+	for _, issue := range body.Issues {
+		if issue == "no_active_license" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("issues = %+v, want no_active_license", body.Issues)
+	}
+}
+
+func stringSliceContains(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }

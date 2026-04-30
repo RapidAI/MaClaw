@@ -351,6 +351,18 @@ func (h *ComputeHandler) ToggleCenterPermission() http.HandlerFunc {
 	}
 }
 
+func (h *ComputeHandler) ensureCenterExists(ctx context.Context, w http.ResponseWriter, centerID string) bool {
+	if h.centerSvc == nil {
+		return true
+	}
+	center, err := h.centerSvc.Get(ctx, centerID)
+	if err != nil || center == nil {
+		writeError(w, http.StatusNotFound, "CENTER_NOT_FOUND", "center not found")
+		return false
+	}
+	return true
+}
+
 // AssignProviderToCenter handles POST /api/admin/centers/{id}/compute-providers.
 // Request body: {"provider_id": "xxx"}
 // Creates an assignment between a center and a provider.
@@ -375,6 +387,9 @@ func (h *ComputeHandler) AssignProviderToCenter() http.HandlerFunc {
 		}
 
 		ctx := r.Context()
+		if !h.ensureCenterExists(ctx, w, centerID) {
+			return
+		}
 
 		// Verify provider exists.
 		p, err := h.store.GetProvider(ctx, body.ProviderID)
@@ -391,8 +406,12 @@ func (h *ComputeHandler) AssignProviderToCenter() http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "ASSIGN_FAILED", err.Error())
 			return
 		}
+		if err := h.store.SetForceSync(ctx, centerID, true); err != nil {
+			writeError(w, http.StatusInternalServerError, "SET_FORCE_SYNC_FAILED", err.Error())
+			return
+		}
 
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "center_id": centerID, "provider_id": body.ProviderID})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "center_id": centerID, "provider_id": body.ProviderID, "force_sync": true})
 	}
 }
 
@@ -411,12 +430,21 @@ func (h *ComputeHandler) UnassignProviderFromCenter() http.HandlerFunc {
 			return
 		}
 
-		if err := h.store.UnassignProvider(r.Context(), centerID, providerID); err != nil {
-			writeError(w, http.StatusInternalServerError, "UNASSIGN_FAILED", err.Error())
+		ctx := r.Context()
+		if !h.ensureCenterExists(ctx, w, centerID) {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		if err := h.store.UnassignProvider(ctx, centerID, providerID); err != nil {
+			writeError(w, http.StatusInternalServerError, "UNASSIGN_FAILED", err.Error())
+			return
+		}
+		if err := h.store.SetForceSync(ctx, centerID, true); err != nil {
+			writeError(w, http.StatusInternalServerError, "SET_FORCE_SYNC_FAILED", err.Error())
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "force_sync": true})
 	}
 }
 
@@ -430,7 +458,12 @@ func (h *ComputeHandler) ListCenterAssignments() http.HandlerFunc {
 			return
 		}
 
-		ids, err := h.store.ListAssignments(r.Context(), centerID)
+		ctx := r.Context()
+		if !h.ensureCenterExists(ctx, w, centerID) {
+			return
+		}
+
+		ids, err := h.store.ListAssignments(ctx, centerID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return

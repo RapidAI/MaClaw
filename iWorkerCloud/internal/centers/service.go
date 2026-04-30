@@ -290,7 +290,7 @@ func (s *Service) Management(ctx context.Context) (*ManagementReport, error) {
 		if managementItem.Ready {
 			report.Summary.ReadyCenters++
 		}
-		if containsIssue(managementItem.Issues, "missing_base_url") || containsIssue(managementItem.Issues, "multi_tenant_not_confirmed") {
+		if containsIssue(managementItem.Issues, "missing_base_url") || containsIssue(managementItem.Issues, "multi_tenant_not_confirmed") || containsIssue(managementItem.Issues, "service_identity_not_verified") {
 			report.Summary.NeedsSetup++
 		}
 		if containsIssue(managementItem.Issues, "probe_failed") || containsIssue(managementItem.Issues, "probe_missing_base_url") || containsIssue(managementItem.Issues, "probe_not_iworkercenter") || containsIssue(managementItem.Issues, "heartbeat_not_iworkercenter") {
@@ -336,20 +336,39 @@ type ProvisionResult struct {
 
 // ProbeResult describes a cloud-side connectivity check to a Center.
 type ProbeResult struct {
-	OK           bool   `json:"ok"`
-	StatusCode   int    `json:"status_code"`
-	Message      string `json:"message"`
-	BaseURL      string `json:"base_url"`
-	RuntimeType  string `json:"runtime_type,omitempty"`
-	ProductKind  string `json:"product_kind,omitempty"`
-	AdminConsole string `json:"admin_console,omitempty"`
+	OK                  bool                     `json:"ok"`
+	StatusCode          int                      `json:"status_code"`
+	Message             string                   `json:"message"`
+	BaseURL             string                   `json:"base_url"`
+	RuntimeType         string                   `json:"runtime_type,omitempty"`
+	ProductKind         string                   `json:"product_kind,omitempty"`
+	AdminConsole        string                   `json:"admin_console,omitempty"`
+	ProviderCount       int                      `json:"provider_count,omitempty"`
+	RuntimeProviderMode string                   `json:"runtime_provider_mode,omitempty"`
+	ComputeSource       string                   `json:"compute_source,omitempty"`
+	ComputePermission   bool                     `json:"compute_permission,omitempty"`
+	CloudProviderCount  int                      `json:"cloud_provider_count,omitempty"`
+	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status,omitempty"`
+}
+
+type centerComputeSyncStatus struct {
+	LastSyncAt    string `json:"last_sync_at"`
+	Status        string `json:"status"`
+	Error         string `json:"error,omitempty"`
+	ProviderCount int    `json:"provider_count"`
 }
 
 type centerServiceStatus struct {
-	Status       string `json:"status"`
-	RuntimeType  string `json:"runtime_type"`
-	ProductKind  string `json:"product_kind"`
-	AdminConsole string `json:"admin_console"`
+	Status              string                   `json:"status"`
+	RuntimeType         string                   `json:"runtime_type"`
+	ProductKind         string                   `json:"product_kind"`
+	AdminConsole        string                   `json:"admin_console"`
+	ProviderCount       int                      `json:"provider_count"`
+	RuntimeProviderMode string                   `json:"runtime_provider_mode"`
+	ComputeSource       string                   `json:"compute_source"`
+	ComputePermission   bool                     `json:"compute_permission"`
+	CloudProviderCount  int                      `json:"cloud_provider_count"`
+	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status"`
 }
 
 func (s centerServiceStatus) isIWorkerCenterService() bool {
@@ -403,6 +422,12 @@ func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *st
 	result.RuntimeType = serviceStatus.RuntimeType
 	result.ProductKind = serviceStatus.ProductKind
 	result.AdminConsole = serviceStatus.AdminConsole
+	result.ProviderCount = serviceStatus.ProviderCount
+	result.RuntimeProviderMode = serviceStatus.RuntimeProviderMode
+	result.ComputeSource = serviceStatus.ComputeSource
+	result.ComputePermission = serviceStatus.ComputePermission
+	result.CloudProviderCount = serviceStatus.CloudProviderCount
+	result.ComputeSyncStatus = serviceStatus.ComputeSyncStatus
 	if serviceStatus.isIWorkerCenterService() {
 		result.OK = true
 		result.Message = "iWorkerCenter service identity verified"
@@ -432,6 +457,7 @@ func (s *Service) ProvisionReadiness(ctx context.Context, centerID string) (*Pro
 	allowed := center.Status == "active" &&
 		strings.TrimSpace(center.BaseURL) != "" &&
 		center.SupportsMultiTenant &&
+		isServiceIdentityVerified(center.LastSyncStatus) &&
 		activeLicense != nil
 	issues := append([]string(nil), management.Issues...)
 	if !allowed && len(issues) == 0 {
@@ -549,9 +575,13 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 	if !center.SupportsMultiTenant {
 		issues = append(issues, "multi_tenant_not_confirmed")
 	}
-	switch center.LastSyncStatus {
-	case "probe_failed", "probe_missing_base_url", "probe_not_iworkercenter", "heartbeat_not_iworkercenter":
-		issues = append(issues, center.LastSyncStatus)
+	if strings.TrimSpace(center.BaseURL) != "" && !isServiceIdentityVerified(center.LastSyncStatus) {
+		switch center.LastSyncStatus {
+		case "probe_failed", "probe_missing_base_url", "probe_not_iworkercenter", "heartbeat_not_iworkercenter":
+			issues = append(issues, center.LastSyncStatus)
+		default:
+			issues = append(issues, "service_identity_not_verified")
+		}
 	}
 	if activeLicense == nil {
 		issues = append(issues, "no_active_license")
@@ -577,6 +607,8 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 	if ready {
 		ManagementPosture = "ready"
 	} else if containsIssue(issues, "missing_base_url") || containsIssue(issues, "multi_tenant_not_confirmed") {
+		ManagementPosture = "needs_setup"
+	} else if containsIssue(issues, "service_identity_not_verified") {
 		ManagementPosture = "needs_setup"
 	} else if containsIssue(issues, "probe_failed") || containsIssue(issues, "probe_missing_base_url") || containsIssue(issues, "probe_not_iworkercenter") || containsIssue(issues, "heartbeat_not_iworkercenter") {
 		ManagementPosture = "connectivity_risk"
@@ -614,8 +646,8 @@ func buildRecommendedActions(issues []string) []RecommendedAction {
 			actions = append(actions, RecommendedAction{Code: "configure_base_url", Label: "Configure Base URL", Description: "Set the reachable iWorkerCenter base URL so Cloud can perform licensing, connectivity probes, compute distribution, and skill entitlement.", Priority: "high"})
 		case "multi_tenant_not_confirmed":
 			actions = append(actions, RecommendedAction{Code: "confirm_multi_tenant", Label: "Confirm Multi-tenant Support", Description: "Mark this Center as multi-tenant capable only after tenant isolation and Cloud integration are verified. Customer enterprise operations remain inside iWorkerCenter.", Priority: "medium"})
-		case "probe_failed", "probe_missing_base_url":
-			actions = append(actions, RecommendedAction{Code: "test_connection", Label: "Test Connection", Description: "Run a connection probe after checking network, DNS, TLS, and the Center /api/center/status endpoint.", Priority: "high"})
+		case "probe_failed", "probe_missing_base_url", "service_identity_not_verified":
+			actions = append(actions, RecommendedAction{Code: "test_connection", Label: "Test Connection", Description: "Run a connection probe after checking network, DNS, TLS, and the Center /api/center/status endpoint before enabling provisioning.", Priority: "high"})
 		case "probe_not_iworkercenter", "heartbeat_not_iworkercenter":
 			actions = append(actions, RecommendedAction{Code: "verify_center_service_identity", Label: "Verify Center Service Identity", Description: "The configured endpoint did not identify itself as an iWorkerCenter service. Check the URL before enabling cloud-side authorization, compute distribution, or skill entitlement.", Priority: "high"})
 		case "no_active_license":
@@ -645,6 +677,14 @@ func isActiveLicense(lic *store.License, now time.Time) bool {
 	return lic.IsLongTerm || lic.ExpiresAt.After(now)
 }
 
+func isServiceIdentityVerified(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "probe_ok", "heartbeat_ok", "tenant_provisioned":
+		return true
+	default:
+		return false
+	}
+}
 func containsIssue(issues []string, target string) bool {
 	for _, issue := range issues {
 		if issue == target {

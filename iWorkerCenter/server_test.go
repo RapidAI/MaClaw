@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/app"
+	centercompute "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/compute"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 )
 
@@ -93,6 +94,36 @@ func TestWriteCenterSettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRefreshProvidersUsesCloudComputeSource(t *testing.T) {
+	setCenterTestHome(t)
+	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"providers": []map[string]any{{
+				"id": "p1", "name": "Cloud GPT", "protocol": "openai", "base_url": "https://api.example.com/v1",
+				"api_key": "sk-cloud", "model": "gpt-cloud", "enabled": true, "priority": 88, "compute_type": "coding",
+			}},
+			"compute_permission": true,
+		})
+	}))
+	defer cloud.Close()
+
+	syncMgr := centercompute.NewSyncManager(cloud.URL, "center-1", "secret-1")
+	if err := syncMgr.SyncNow(); err != nil {
+		t.Fatalf("SyncNow returned error: %v", err)
+	}
+	sourceMgr := centercompute.NewSourceManager(syncMgr)
+	server := newCenterServer(":0")
+	server.center = &app.Center{ComputeSourceManager: sourceMgr}
+
+	server.refreshProviders()
+	if len(server.providers) != 1 {
+		t.Fatalf("providers len = %d, want 1", len(server.providers))
+	}
+	if server.providers[0].ID != "cloud-p1" || server.providers[0].Model != "gpt-cloud" {
+		t.Fatalf("provider = %+v, want cloud provider", server.providers[0])
+	}
+}
+
 func TestLoadCenterProvidersReadsSettingsFile(t *testing.T) {
 	home := setCenterTestHome(t)
 
@@ -150,12 +181,16 @@ func TestHandleHealthReturnsStatusSnapshot(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var body struct {
-		Status        string `json:"status"`
-		RuntimeType   string `json:"runtime_type"`
-		ProductKind   string `json:"product_kind"`
-		AdminConsole  string `json:"admin_console"`
-		ProviderCount int    `json:"provider_count"`
-		ConfigPath    string `json:"config_path"`
+		Status              string                           `json:"status"`
+		RuntimeType         string                           `json:"runtime_type"`
+		ProductKind         string                           `json:"product_kind"`
+		AdminConsole        string                           `json:"admin_console"`
+		ProviderCount       int                              `json:"provider_count"`
+		ConfigPath          string                           `json:"config_path"`
+		RuntimeProviderMode string                           `json:"runtime_provider_mode"`
+		ComputeSource       string                           `json:"compute_source"`
+		ComputeSyncStatus   *centercompute.ComputeSyncStatus `json:"compute_sync_status"`
+		CloudProviderCount  int                              `json:"cloud_provider_count"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("json.Unmarshal returned error: %v", err)
@@ -172,6 +207,64 @@ func TestHandleHealthReturnsStatusSnapshot(t *testing.T) {
 	wantPath := filepath.Join(home, ".iworkercenter", "settings.json")
 	if body.ConfigPath != wantPath {
 		t.Fatalf("ConfigPath = %q, want %q", body.ConfigPath, wantPath)
+	}
+	if body.RuntimeProviderMode != "settings" {
+		t.Fatalf("RuntimeProviderMode = %q, want settings", body.RuntimeProviderMode)
+	}
+}
+
+func TestHandleHealthIncludesComputeRuntimeStatus(t *testing.T) {
+	setCenterTestHome(t)
+	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"providers": []map[string]any{{
+				"id": "p1", "name": "Cloud GPT", "protocol": "openai", "base_url": "https://api.example.com/v1",
+				"api_key": "sk-cloud", "model": "gpt-cloud", "enabled": true, "priority": 88, "compute_type": "coding",
+			}},
+			"compute_permission": true,
+		})
+	}))
+	defer cloud.Close()
+
+	syncMgr := centercompute.NewSyncManager(cloud.URL, "center-1", "secret-1")
+	if err := syncMgr.SyncNow(); err != nil {
+		t.Fatalf("SyncNow returned error: %v", err)
+	}
+	server := newCenterServer(":0")
+	server.center = &app.Center{
+		ComputeSyncManager:   syncMgr,
+		ComputeSourceManager: centercompute.NewSourceManager(syncMgr),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	server.handleHealth(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		ProviderCount       int                              `json:"provider_count"`
+		RuntimeProviderMode string                           `json:"runtime_provider_mode"`
+		ComputeSource       string                           `json:"compute_source"`
+		ComputePermission   bool                             `json:"compute_permission"`
+		CloudProviderCount  int                              `json:"cloud_provider_count"`
+		ComputeSyncStatus   *centercompute.ComputeSyncStatus `json:"compute_sync_status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if body.ProviderCount != 1 || body.CloudProviderCount != 1 {
+		t.Fatalf("provider counts = runtime:%d cloud:%d, want 1/1", body.ProviderCount, body.CloudProviderCount)
+	}
+	if body.RuntimeProviderMode != "cloud_sync" || body.ComputeSource != "cloud" {
+		t.Fatalf("runtime mode/source = %q/%q, want cloud_sync/cloud", body.RuntimeProviderMode, body.ComputeSource)
+	}
+	if !body.ComputePermission {
+		t.Fatal("compute_permission should be true")
+	}
+	if body.ComputeSyncStatus == nil || body.ComputeSyncStatus.Status != "success" {
+		t.Fatalf("compute_sync_status = %+v, want success", body.ComputeSyncStatus)
 	}
 }
 
@@ -305,5 +398,47 @@ func TestHandleHealthIncludesCloudHeartbeatSnapshot(t *testing.T) {
 	}
 	if body.CloudHeartbeat.Status != "online" || body.CloudHeartbeat.CenterID != "center-1" {
 		t.Fatalf("cloud_heartbeat = %+v", body.CloudHeartbeat)
+	}
+}
+
+func TestCloudComputeProvidersToCenterProviderFiles(t *testing.T) {
+	providers := cloudComputeProvidersToCenterProviderFiles([]tenant.CloudComputeProvider{
+		{
+			ID:                  "p1",
+			Name:                "Cloud GPT",
+			BaseURL:             "https://llm.example/v1/",
+			APIKey:              "sk-cloud",
+			Protocol:            "openai",
+			ComputeType:         "high",
+			Model:               "gpt-4.1",
+			Enabled:             true,
+			Priority:            80,
+			Description:         "cloud assigned provider",
+			InputPricePerMToken: 1.25,
+		},
+		{ID: "disabled", BaseURL: "https://disabled.example", Protocol: "openai", Model: "gpt-4.1", Enabled: false},
+		{ID: "bad-protocol", BaseURL: "https://bad.example", Protocol: "unknown", Model: "x", Enabled: true},
+	})
+	if len(providers) != 1 {
+		t.Fatalf("provider count = %d, want 1", len(providers))
+	}
+	got := providers[0]
+	if got.ID != "cloud-p1" || got.BaseURL != "https://llm.example/v1" || got.APIKey != "sk-cloud" || got.Protocol != "openai" || got.Model != "gpt-4.1" {
+		t.Fatalf("provider = %+v", got)
+	}
+	if got.CostTier != "high" || got.Priority != 80 || got.TimeoutSec != 60 {
+		t.Fatalf("provider tier/priority/timeout = %+v", got)
+	}
+	if len(got.Features) == 0 {
+		t.Fatalf("features should be derived from cloud metadata")
+	}
+}
+
+func TestCloudProviderCostTierFallsBackToPrice(t *testing.T) {
+	low := cloudProviderCostTier(tenant.CloudComputeProvider{InputPricePerMToken: 0.2, OutputPricePerMToken: 0.3})
+	medium := cloudProviderCostTier(tenant.CloudComputeProvider{InputPricePerMToken: 2, OutputPricePerMToken: 3})
+	high := cloudProviderCostTier(tenant.CloudComputeProvider{InputPricePerMToken: 6, OutputPricePerMToken: 6})
+	if low != "low" || medium != "medium" || high != "high" {
+		t.Fatalf("tiers = %q/%q/%q, want low/medium/high", low, medium, high)
 	}
 }

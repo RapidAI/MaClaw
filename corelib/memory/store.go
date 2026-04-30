@@ -1222,8 +1222,20 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
 			continue
 		}
-		if e.Category == CategoryUserFact {
-			continue
+		// When no specific category is requested (category==""), skip categories
+		// that have dedicated injection paths and should not consume recall slots:
+		//   - user_fact: injected via UserFactSummary in appendMemorySection
+		//   - self_identity: injected via appendMemorySection
+		//   - session_checkpoint: progress snapshots, not useful for query answering
+		//   - conversation_summary: injected via conversation history, not recall
+		// When a specific category IS requested (e.g. LLM asks for
+		// category="session_checkpoint"), return all entries of that category.
+		if category == "" {
+			switch e.Category {
+			case CategoryUserFact, CategorySelfIdentity,
+				CategorySessionCheckpoint, CategoryConversationSummary:
+				continue
+			}
 		}
 		if category != "" && e.Category != category {
 			continue
@@ -1275,11 +1287,21 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 
 	// Post-expansion OwnerID filter: graphExpand may pull in entries from
 	// other users via graph edges. Re-apply the OwnerID filter.
-	if filterOwner != "" {
+	// Also re-apply the category exclusion for the same reason — graph
+	// edges can link project_knowledge to session_checkpoint, pulling
+	// excluded categories back into the results.
+	if filterOwner != "" || category == "" {
 		var filtered []recallScored
 		for _, c := range candidates {
-			if c.entry.OwnerID != "" && c.entry.OwnerID != filterOwner {
+			if filterOwner != "" && c.entry.OwnerID != "" && c.entry.OwnerID != filterOwner {
 				continue
+			}
+			if category == "" {
+				switch c.entry.Category {
+				case CategoryUserFact, CategorySelfIdentity,
+					CategorySessionCheckpoint, CategoryConversationSummary:
+					continue
+				}
 			}
 			filtered = append(filtered, c)
 		}

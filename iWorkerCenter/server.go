@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/app"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
+	centercompute "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/compute"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 )
 
@@ -74,13 +75,18 @@ type centerSettingsFile struct {
 }
 
 type CenterStatus struct {
-	Status         string                         `json:"status"`
-	RuntimeType    string                         `json:"runtime_type"`
-	ProductKind    string                         `json:"product_kind"`
-	AdminConsole   string                         `json:"admin_console"`
-	ProviderCount  int                            `json:"provider_count"`
-	ConfigPath     string                         `json:"config_path"`
-	CloudHeartbeat *tenant.CloudHeartbeatSnapshot `json:"cloud_heartbeat,omitempty"`
+	Status              string                           `json:"status"`
+	RuntimeType         string                           `json:"runtime_type"`
+	ProductKind         string                           `json:"product_kind"`
+	AdminConsole        string                           `json:"admin_console"`
+	ProviderCount       int                              `json:"provider_count"`
+	ConfigPath          string                           `json:"config_path"`
+	ComputeSource       string                           `json:"compute_source,omitempty"`
+	ComputePermission   bool                             `json:"compute_permission"`
+	ComputeSyncStatus   *centercompute.ComputeSyncStatus `json:"compute_sync_status,omitempty"`
+	CloudProviderCount  int                              `json:"cloud_provider_count,omitempty"`
+	RuntimeProviderMode string                           `json:"runtime_provider_mode,omitempty"`
+	CloudHeartbeat      *tenant.CloudHeartbeatSnapshot   `json:"cloud_heartbeat,omitempty"`
 }
 
 type centerProviderFile struct {
@@ -127,6 +133,22 @@ func (s *centerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	if err != nil {
 		writeCenterError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	status.ProviderCount = len(s.providers)
+	status.RuntimeProviderMode = "settings"
+	if s.center != nil && s.center.ComputeSourceManager != nil {
+		status.ComputeSource = s.center.ComputeSourceManager.GetSource()
+		if status.ComputeSource == "cloud" {
+			status.RuntimeProviderMode = "cloud_sync"
+		} else if status.ComputeSource == "local" {
+			status.RuntimeProviderMode = "local_self_managed"
+		}
+	}
+	if s.center != nil && s.center.ComputeSyncManager != nil {
+		syncStatus := s.center.ComputeSyncManager.GetSyncStatus()
+		status.ComputeSyncStatus = &syncStatus
+		status.ComputePermission = s.center.ComputeSyncManager.GetComputePermission()
+		status.CloudProviderCount = len(s.center.ComputeSyncManager.GetProviders())
 	}
 	if s.center != nil && s.center.CloudHeartbeatMonitor != nil {
 		snapshot := s.center.CloudHeartbeatMonitor.Snapshot()
@@ -570,12 +592,26 @@ func (s *centerServer) refreshProviders() {
 		return
 	}
 
-	// Read settings once, derive both providers and routing rules
 	settings, err := readCenterSettings()
 	if err != nil {
 		s.providers = defaultCenterProviders()
 		s.routingRules = DefaultRoutingRules()
 		return
+	}
+
+	// Cloud-synced compute providers are the runtime source of truth when present.
+	if s.center != nil && s.center.ComputeSourceManager != nil {
+		s.center.ComputeSourceManager.CheckForceSync()
+		providers := centerComputeProvidersToCenterProviders(s.center.ComputeSourceManager.GetActiveProviders())
+		if len(providers) > 0 {
+			s.providers = providers
+			s.routingRules = RoutingRules{
+				WorkTypeKeywords:  settings.WorkTypeKeywords,
+				WorkTypeTier:      settings.WorkTypeTier,
+				RoleProviderBoost: settings.RoleProviderBoost,
+			}.MergeWithDefaults()
+			return
+		}
 	}
 
 	providers := normalizeCenterProviders(settings)
@@ -684,6 +720,117 @@ func normalizeCenterProviders(settings centerSettingsFile) []CenterProvider {
 	return providers
 }
 
+func centerComputeProvidersToCenterProviders(providers []centercompute.ComputeProvider) []CenterProvider {
+	converted := make([]CenterProvider, 0, len(providers))
+	for _, provider := range providers {
+		id := strings.TrimSpace(provider.ID)
+		baseURL := strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+		model := strings.TrimSpace(provider.Model)
+		protocol := strings.TrimSpace(provider.Protocol)
+		if id == "" || baseURL == "" || model == "" || !provider.Enabled {
+			continue
+		}
+		switch protocol {
+		case "openai", "anthropic", "gemini":
+		default:
+			continue
+		}
+		priority := provider.Priority
+		if priority == 0 {
+			priority = 50
+		}
+		converted = append(converted, CenterProvider{
+			ID:          "cloud-" + id,
+			Name:        strings.TrimSpace(provider.Name),
+			Protocol:    protocol,
+			BaseURL:     baseURL,
+			APIKey:      strings.TrimSpace(provider.APIKey),
+			Model:       model,
+			Priority:    priority,
+			Features:    computeProviderFeatures(provider.ComputeType, provider.Name, provider.Model, provider.Protocol),
+			Description: strings.TrimSpace(provider.Description),
+			Enabled:     true,
+			TimeoutSec:  60,
+			CostTier:    computeProviderCostTier(provider.ComputeType, provider.InputPricePerMToken, provider.OutputPricePerMToken),
+		})
+	}
+	return converted
+}
+
+func cloudComputeProvidersToCenterProviderFiles(providers []tenant.CloudComputeProvider) []centerProviderFile {
+	converted := make([]centerProviderFile, 0, len(providers))
+	for _, provider := range providers {
+		id := strings.TrimSpace(provider.ID)
+		baseURL := strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+		model := strings.TrimSpace(provider.Model)
+		protocol := strings.TrimSpace(provider.Protocol)
+		if id == "" || baseURL == "" || model == "" || !provider.Enabled {
+			continue
+		}
+		switch protocol {
+		case "openai", "anthropic", "gemini":
+		default:
+			continue
+		}
+		priority := provider.Priority
+		if priority == 0 {
+			priority = 50
+		}
+		converted = append(converted, centerProviderFile{
+			ID:          "cloud-" + id,
+			Name:        strings.TrimSpace(provider.Name),
+			Protocol:    protocol,
+			BaseURL:     baseURL,
+			APIKey:      strings.TrimSpace(provider.APIKey),
+			Model:       model,
+			Priority:    priority,
+			Features:    cloudProviderFeatures(provider),
+			Description: strings.TrimSpace(provider.Description),
+			Enabled:     true,
+			TimeoutSec:  60,
+			CostTier:    cloudProviderCostTier(provider),
+		})
+	}
+	return normalizeCenterProviderFiles(converted)
+}
+
+func cloudProviderFeatures(provider tenant.CloudComputeProvider) []string {
+	return computeProviderFeatures(provider.ComputeType, provider.Name, provider.Model, provider.Protocol)
+}
+
+func computeProviderFeatures(values ...string) []string {
+	features := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			features = append(features, value)
+		}
+	}
+	return features
+}
+
+func cloudProviderCostTier(provider tenant.CloudComputeProvider) string {
+	return computeProviderCostTier(provider.ComputeType, provider.InputPricePerMToken, provider.OutputPricePerMToken)
+}
+
+func computeProviderCostTier(providerType string, inputPrice, outputPrice float64) string {
+	computeType := strings.ToLower(strings.TrimSpace(providerType))
+	switch computeType {
+	case "low", "medium", "high":
+		return computeType
+	}
+	price := inputPrice + outputPrice
+	switch {
+	case price <= 0:
+		return "medium"
+	case price < 1:
+		return "low"
+	case price > 10:
+		return "high"
+	default:
+		return "medium"
+	}
+}
 func normalizeCenterProviderFiles(providers []centerProviderFile) []centerProviderFile {
 	if len(providers) == 0 {
 		return defaultCenterProviderFiles()

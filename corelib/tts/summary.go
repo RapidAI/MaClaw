@@ -139,3 +139,16 @@ func cleanForSpeech(text string) string {
 	text = multiSpaceRe.ReplaceAllString(text, " ")
 	return strings.TrimSpace(text)
 }
+
+// CleanForSpeech is the exported version of cleanForSpeech.
+// It removes Markdown formatting, code blocks, URLs, file paths, and emoji
+// from text, making it suitable for TTS synthesis.
+func CleanForSpeech(text string) string {
+	return cleanForSpeech(text)
+}
+
+// TruncateRunesSmart is the exported version of truncateRunes.
+// It truncates text to maxRunes, preferring sentence boundaries.
+func TruncateRunesSmart(text string, maxRunes int) string {
+	return truncateRunes(text, maxRunes)
+}

@@ -2,6 +2,7 @@ package compute
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,9 @@ import (
 	"sync"
 	"time"
 )
+
+// ErrWaitingForCredentials indicates sync is configured but Center registration credentials are not ready yet.
+var ErrWaitingForCredentials = errors.New("center credentials are not configured")
 
 // ComputeProvider mirrors the iWorkerCloud compute provider configuration.
 type ComputeProvider struct {
@@ -34,10 +38,13 @@ type ComputeProvider struct {
 // ComputeSyncStatus tracks the state of provider configuration sync.
 type ComputeSyncStatus struct {
 	LastSyncAt    string `json:"last_sync_at"`
-	Status        string `json:"status"` // success | failure | pending
+	Status        string `json:"status"` // success | failure | pending | waiting_for_credentials
 	Error         string `json:"error,omitempty"`
 	ProviderCount int    `json:"provider_count"`
 }
+
+// CredentialResolver resolves the current Cloud center credentials before each sync.
+type CredentialResolver func() (centerID, centerSecret string)
 
 // syncResponse is the JSON shape returned by the Cloud compute-providers API.
 type syncResponse struct {
@@ -52,6 +59,8 @@ type SyncManager struct {
 	cloudURL     string // iWorkerCloud base URL
 	centerID     string // this center's ID
 	centerSecret string // this center's secret
+
+	resolveCredentials CredentialResolver
 
 	mu                sync.RWMutex
 	providers         []ComputeProvider
@@ -77,9 +86,22 @@ func NewSyncManager(cloudURL, centerID, centerSecret string) *SyncManager {
 	}
 }
 
+// NewSyncManagerWithResolver creates a SyncManager that resolves credentials dynamically.
+func NewSyncManagerWithResolver(cloudURL string, resolve CredentialResolver) *SyncManager {
+	sm := NewSyncManager(cloudURL, "", "")
+	sm.resolveCredentials = resolve
+	return sm
+}
+
 // IsConfigured returns true if the SyncManager has a cloud URL and center ID.
 func (sm *SyncManager) IsConfigured() bool {
-	return sm.cloudURL != "" && sm.centerID != ""
+	if sm.cloudURL == "" {
+		return false
+	}
+	if sm.centerID != "" && sm.centerSecret != "" {
+		return true
+	}
+	return sm.resolveCredentials != nil
 }
 
 // Start launches a background goroutine that syncs every 5 minutes.
@@ -140,7 +162,9 @@ func (sm *SyncManager) HasForceSync() bool {
 func (sm *SyncManager) loop() {
 	// Immediate first sync.
 	if err := sm.doSync(); err != nil {
-		log.Printf("[compute/sync] initial sync failed: %v", err)
+		if !errors.Is(err, ErrWaitingForCredentials) {
+			log.Printf("[compute/sync] initial sync failed: %v", err)
+		}
 	}
 
 	ticker := time.NewTicker(sm.interval)
@@ -152,24 +176,45 @@ func (sm *SyncManager) loop() {
 			return
 		case <-ticker.C:
 			if err := sm.doSync(); err != nil {
-				log.Printf("[compute/sync] sync failed: %v", err)
+				if !errors.Is(err, ErrWaitingForCredentials) {
+					log.Printf("[compute/sync] sync failed: %v", err)
+				}
 			}
 		}
 	}
 }
 
+func (sm *SyncManager) currentCredentials() (string, string) {
+	if sm.resolveCredentials != nil {
+		centerID, centerSecret := sm.resolveCredentials()
+		if centerID != "" || centerSecret != "" {
+			return strings.TrimSpace(centerID), centerSecret
+		}
+	}
+	return strings.TrimSpace(sm.centerID), sm.centerSecret
+}
+
 // doSync performs a single sync request to iWorkerCloud.
 func (sm *SyncManager) doSync() error {
-	url := fmt.Sprintf("%s/api/centers/%s/compute-providers", sm.cloudURL, sm.centerID)
+	centerID, centerSecret := sm.currentCredentials()
+	if sm.cloudURL == "" {
+		err := fmt.Errorf("cloud URL is not configured")
+		sm.recordFailure(err)
+		return err
+	}
+	if centerID == "" || centerSecret == "" {
+		err := ErrWaitingForCredentials
+		sm.recordWaitingForCredentials(err)
+		return err
+	}
+	url := fmt.Sprintf("%s/api/centers/%s/compute-providers", sm.cloudURL, centerID)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		sm.recordFailure(err)
 		return err
 	}
-	if sm.centerSecret != "" {
-		req.Header.Set("X-Center-Secret", sm.centerSecret)
-	}
+	req.Header.Set("X-Center-Secret", centerSecret)
 
 	resp, err := sm.client.Do(req)
 	if err != nil {
@@ -211,6 +256,17 @@ func (sm *SyncManager) doSync() error {
 
 	log.Printf("[compute/sync] synced %d providers from cloud", len(sr.Providers))
 	return nil
+}
+
+func (sm *SyncManager) recordWaitingForCredentials(err error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.syncStatus = ComputeSyncStatus{
+		LastSyncAt:    time.Now().UTC().Format(time.RFC3339),
+		Status:        "waiting_for_credentials",
+		Error:         err.Error(),
+		ProviderCount: len(sm.providers),
+	}
 }
 
 // recordFailure updates syncStatus with an error while preserving existing providers.

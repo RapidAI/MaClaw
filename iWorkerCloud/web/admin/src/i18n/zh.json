@@ -182,6 +182,12 @@
     "typeGeneral": "??",
     "typeCoding": "??",
     "typeDocument": "??",
-    "typeAnalysis": "??"
+    "typeAnalysis": "??",
+    "providerAssignments": "Provider ??",
+    "assignedProviders": "???? Provider",
+    "defaultAllProviders": "???????? Provider",
+    "assignProvider": "?? Provider",
+    "unassignProvider": "???? Provider",
+    "limitToProvider": "?? Provider ????????"
   }
 }

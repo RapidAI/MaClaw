@@ -315,6 +315,16 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		},
 		Handler: extraHandler(deps, "screenshot", "截图功能在当前环境下不可用。"),
 	})
+
+	r.Register(ToolEntry{
+		Name:        "tts",
+		Description: "将文本转换为语音消息发送给用户。IM 通道以语音气泡形式发送，桌面面板播放语音。适用于状态通知、简短回复摘要、任务完成汇报等场景。",
+		Properties: map[string]interface{}{
+			"text": map[string]string{"type": "string", "description": "要转换为语音的文本内容（中文，最长 300 字，超出自动截断）"},
+		},
+		Required: []string{"text"},
+		Handler:  extraHandler(deps, "tts", "语音合成不可用（TTS 模型未加载）。请在设置中启用 TTS 并等待模型下载完成。"),
+	})
 }
 
 // extraHandler returns the host-injected handler for the given tool name,

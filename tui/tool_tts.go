@@ -1,0 +1,95 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
+)
+
+// newTTSHandler returns a TTS tool handler for the TUI.
+// It synthesizes speech and plays the WAV file using the system default player.
+func newTTSHandler(app *TUIApp) agent.ToolHandler {
+	return func(args map[string]interface{}) string {
+		text, _ := args["text"].(string)
+		if text == "" {
+			return "缺少 text 参数"
+		}
+
+		if app.ttsManager == nil {
+			return "语音合成不可用（TTS 模型未加载）。请确认 TTS 模型已下载。"
+		}
+
+		// Clean and truncate.
+		cleaned := tts.CleanForSpeech(text)
+		if cleaned == "" {
+			return "文本清理后为空，无法合成语音"
+		}
+		const maxRunes = 300
+		if utf8.RuneCountInString(cleaned) > maxRunes {
+			cleaned = tts.TruncateRunesSmart(cleaned, maxRunes)
+		}
+
+		// Synthesize WAV.
+		wav, err := app.ttsManager.SynthesizeText(cleaned)
+		if err != nil {
+			log.Printf("[tts-tool] synthesize error: %v", err)
+			return fmt.Sprintf("语音合成失败: %v", err)
+		}
+
+		// Write to temp file and play.
+		tmpDir := os.TempDir()
+		tmpFile := filepath.Join(tmpDir, "maclaw_tts_output.wav")
+		if err := os.WriteFile(tmpFile, wav, 0o644); err != nil {
+			return fmt.Sprintf("写入临时文件失败: %v", err)
+		}
+
+		// Play using system default.
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "windows":
+			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", tmpFile)
+		case "darwin":
+			cmd = exec.Command("afplay", tmpFile)
+		default:
+			cmd = exec.Command("xdg-open", tmpFile)
+		}
+		if err := cmd.Start(); err != nil {
+			return fmt.Sprintf("语音已合成到 %s，但播放失败: %v", tmpFile, err)
+		}
+		go cmd.Wait()
+
+		return fmt.Sprintf("语音已合成并播放（%d 字符 → %s）", utf8.RuneCountInString(cleaned), tmpFile)
+	}
+}
+
+// initTUITTSManager creates a TTS manager if the model file exists.
+// Returns nil if the model is not downloaded (TTS will be unavailable).
+func initTUITTSManager() *tts.Manager {
+	dir, err := embeddingModelsDir()
+	if err != nil {
+		return nil
+	}
+	modelPath := filepath.Join(dir, tts.TTSModelFilename)
+	if _, err := os.Stat(modelPath); err != nil {
+		return nil // model not downloaded
+	}
+	return tts.NewManager(modelPath)
+}
+
+// embeddingModelsDir returns the directory for embedding/TTS models.
+// Shared with GUI: ~/.maclaw/models/
+func embeddingModelsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".maclaw", "models")
+	return dir, os.MkdirAll(dir, 0o755)
+}

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/compute"
+	cloudstore "github.com/RapidAI/CodeClaw/iWorkerCloud/internal/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -338,6 +339,13 @@ func TestAssignProviderToCenter(t *testing.T) {
 	if len(ids) != 1 || ids[0] != p.ID {
 		t.Errorf("expected assignment [%s], got %v", p.ID, ids)
 	}
+	forceSync, err := store.GetForceSync(context.Background(), "center-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !forceSync {
+		t.Fatal("expected force_sync after provider assignment")
+	}
 }
 
 func TestAssignProviderToCenterMissingProviderID(t *testing.T) {
@@ -369,6 +377,31 @@ func TestAssignProviderToCenterProviderNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAssignProviderToCenterCenterNotFound(t *testing.T) {
+	_, store := setupComputeTest(t)
+	p := createTestProvider(t, store)
+	h := NewComputeHandler(store, &mockCenterAuthService{centers: map[string]*cloudstore.Center{}})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/admin/centers/{id}/compute-providers", h.AssignProviderToCenter())
+
+	body := `{"provider_id":"` + p.ID + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/centers/missing-center/compute-providers", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	ids, err := store.ListAssignments(context.Background(), "missing-center")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("expected no dangling assignments, got %v", ids)
 	}
 }
 
@@ -427,6 +460,13 @@ func TestUnassignProviderFromCenter(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Errorf("expected 0 assignments after unassign, got %d", len(ids))
+	}
+	forceSync, err := store.GetForceSync(context.Background(), "center-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !forceSync {
+		t.Fatal("expected force_sync after provider unassignment")
 	}
 }
 
@@ -520,5 +560,21 @@ func TestListCenterAssignmentsEmpty(t *testing.T) {
 	}
 	if len(resp.Assignments) != 0 {
 		t.Errorf("expected 0 assignments, got %d", len(resp.Assignments))
+	}
+}
+
+func TestListCenterAssignmentsCenterNotFound(t *testing.T) {
+	_, store := setupComputeTest(t)
+	h := NewComputeHandler(store, &mockCenterAuthService{centers: map[string]*cloudstore.Center{}})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/centers/{id}/compute-providers", h.ListCenterAssignments())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/centers/missing-center/compute-providers", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }

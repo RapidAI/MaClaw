@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -31,6 +32,11 @@ type workflowArtifactSaver struct {
 // memory entry. Uses Store.Save for new entries and Store.Update for
 // re-saves of the same phase (e.g. user modifies and re-confirms).
 func (s *workflowArtifactSaver) SaveArtifact(title, content string, tags []string, sourceURL string) error {
+	return s.SaveArtifactForUser(title, content, tags, sourceURL, "")
+}
+
+// SaveArtifactForUser is like SaveArtifact but sets OwnerID for multi-tenant isolation.
+func (s *workflowArtifactSaver) SaveArtifactForUser(title, content string, tags []string, sourceURL string, ownerID string) error {
 	if s.store == nil || strings.TrimSpace(content) == "" {
 		return nil
 	}
@@ -65,6 +71,7 @@ func (s *workflowArtifactSaver) SaveArtifact(title, content string, tags []strin
 		Scope:      memory.ScopeProject,
 		SourceType: "workflow_output",
 		SourceURL:  sourceURL,
+		OwnerID:    ownerID, // multi-tenant: associate with the user who ran this workflow
 	}
 	// Store.Save handles content hash dedup internally.
 	if err := s.store.Save(entry); err != nil {
@@ -114,9 +121,18 @@ func extractPhaseTag(tags []string) string {
 // deferredArtifactSaver lazily resolves the memory store on first use.
 // Thread-safe: uses sync.Once for initialization.
 type deferredArtifactSaver struct {
-	app  *App
-	once sync.Once
-	inner *workflowArtifactSaver
+	app       *App
+	once      sync.Once
+	inner     *workflowArtifactSaver
+
+	// currentUserID is set by the agent loop caller before SavePhaseOutput.
+	// Must be set before each workflow phase save because runAgentLoop's
+	// defer clears lastUserID before the post-loop doc capture runs.
+	currentUserID atomic.Value // stores string
+}
+
+func (d *deferredArtifactSaver) SetCurrentUserID(userID string) {
+	d.currentUserID.Store(userID)
 }
 
 func (d *deferredArtifactSaver) SaveArtifact(title, content string, tags []string, sourceURL string) error {
@@ -129,5 +145,6 @@ func (d *deferredArtifactSaver) SaveArtifact(title, content string, tags []strin
 	if d.inner == nil {
 		return nil
 	}
-	return d.inner.SaveArtifact(title, content, tags, sourceURL)
+	ownerID, _ := d.currentUserID.Load().(string)
+	return d.inner.SaveArtifactForUser(title, content, tags, sourceURL, ownerID)
 }

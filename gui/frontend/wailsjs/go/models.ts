@@ -269,6 +269,9 @@ export namespace main {
 	    chat_font_size: number;
 	    workflow_enabled?: boolean;
 	    tts_enabled?: boolean;
+	    asr_enabled?: boolean;
+	    audio_input_device_id?: string;
+	    audio_output_device_id?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -405,6 +408,9 @@ export namespace main {
 	        this.chat_font_size = source["chat_font_size"];
 	        this.workflow_enabled = source["workflow_enabled"];
 	        this.tts_enabled = source["tts_enabled"];
+	        this.asr_enabled = source["asr_enabled"];
+	        this.audio_input_device_id = source["audio_input_device_id"];
+	        this.audio_output_device_id = source["audio_output_device_id"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

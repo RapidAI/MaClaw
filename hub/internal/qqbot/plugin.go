@@ -339,6 +339,7 @@ func (p *Plugin) Capabilities() im.CapabilityDeclaration {
 		SupportsFile:        true,
 		SupportsButton:      false,
 		SupportsMessageEdit: false,
+		SupportsVoice:       true, // file_type=3 (audio) via rich media API
 		MaxTextLength:       4000,
 	}
 }

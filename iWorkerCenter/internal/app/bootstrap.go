@@ -59,6 +59,8 @@ type Center struct {
 	GoalMonitor           *goalwatch.Monitor
 	SkillEvolutionMonitor *capabilities.SkillEvolutionMonitor
 	CloudHeartbeatMonitor *tenant.CloudHeartbeatMonitor
+	ComputeSyncManager    *compute.SyncManager
+	ComputeSourceManager  *compute.SourceManager
 }
 
 // Bootstrap initializes the database, runs migrations, wires all modules,
@@ -220,7 +222,7 @@ func Bootstrap() (*Center, error) {
 	}
 
 	// --- wire compute module ---
-	computeSyncMgr, _, _, computeHandler := wireCompute(cloudCfg, tenantSvc)
+	computeSyncMgr, computeSourceMgr, _, computeHandler := wireCompute(cloudCfg, tenantSvc)
 
 	// Start compute sync background loop (only if cloud URL is configured)
 	if computeSyncMgr != nil && computeSyncMgr.IsConfigured() {
@@ -306,6 +308,8 @@ func Bootstrap() (*Center, error) {
 		GoalMonitor:           goalMonitor,
 		SkillEvolutionMonitor: skillEvolutionMonitor,
 		CloudHeartbeatMonitor: cloudHeartbeatMonitor,
+		ComputeSyncManager:    computeSyncMgr,
+		ComputeSourceManager:  computeSourceMgr,
 	}, nil
 }
 
@@ -319,6 +323,9 @@ func (c *Center) Close() {
 	}
 	if c.CloudHeartbeatMonitor != nil {
 		c.CloudHeartbeatMonitor.Stop()
+	}
+	if c.ComputeSyncManager != nil {
+		c.ComputeSyncManager.Stop()
 	}
 	if c.WorkerMemory != nil {
 		_ = c.WorkerMemory.Flush()
@@ -427,7 +434,11 @@ func wireCompute(cloudCfg tenant.CloudConfig, tenantSvc *tenant.TenantService) (
 	}
 
 	var syncMgr *compute.SyncManager
-	if cloudURL != "" && centerID != "" {
+	if cloudURL != "" && tenantSvc != nil {
+		syncMgr = compute.NewSyncManagerWithResolver(cloudURL, func() (string, string) {
+			return activeCloudCredentials(tenantSvc)
+		})
+	} else if cloudURL != "" && centerID != "" && centerSecret != "" {
 		syncMgr = compute.NewSyncManager(cloudURL, centerID, centerSecret)
 	} else {
 		// Create a no-op sync manager (no cloud URL) so SourceManager works

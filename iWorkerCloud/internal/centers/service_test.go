@@ -163,7 +163,7 @@ func TestProbeVerifiesIWorkerCenterServiceIdentity(t *testing.T) {
 		if r.URL.Path != "/api/center/status" {
 			t.Fatalf("probe path = %q, want /api/center/status", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console","provider_count":2,"runtime_provider_mode":"cloud_sync","compute_source":"cloud","compute_permission":true,"cloud_provider_count":2,"compute_sync_status":{"status":"success","last_sync_at":"2026-04-30T00:00:00Z","provider_count":2}}`))
 	}))
 	defer server.Close()
 
@@ -176,6 +176,15 @@ func TestProbeVerifiesIWorkerCenterServiceIdentity(t *testing.T) {
 	}
 	if !result.OK || result.RuntimeType != "service" || result.ProductKind != "iworkercenter" || result.AdminConsole != "web_console" {
 		t.Fatalf("result = %+v", result)
+	}
+	if result.RuntimeProviderMode != "cloud_sync" || result.ComputeSource != "cloud" || !result.ComputePermission {
+		t.Fatalf("compute runtime result = %+v", result)
+	}
+	if result.ProviderCount != 2 || result.CloudProviderCount != 2 {
+		t.Fatalf("provider counts = runtime:%d cloud:%d, want 2/2", result.ProviderCount, result.CloudProviderCount)
+	}
+	if result.ComputeSyncStatus == nil || result.ComputeSyncStatus.Status != "success" || result.ComputeSyncStatus.ProviderCount != 2 {
+		t.Fatalf("ComputeSyncStatus = %+v, want success/2", result.ComputeSyncStatus)
 	}
 	if center.LastSyncStatus != "probe_ok" {
 		t.Fatalf("LastSyncStatus = %q, want probe_ok", center.LastSyncStatus)
@@ -280,7 +289,7 @@ func TestProvisionReadinessRejectsUnlicensedCenter(t *testing.T) {
 }
 
 func TestProvisionReadinessAllowsLicensedMultiTenantCenter(t *testing.T) {
-	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true})
+	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true, LastSyncStatus: "probe_ok"})
 	licenses := newMemoryLicenseRepo(&store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
 	svc := NewService(repo, license.NewService(licenses, nil))
 
@@ -297,5 +306,29 @@ func TestProvisionReadinessAllowsLicensedMultiTenantCenter(t *testing.T) {
 	}
 	if center.ID != "ctr_1" {
 		t.Fatalf("center.ID = %q, want ctr_1", center.ID)
+	}
+}
+
+func TestProvisionReadinessRejectsUnverifiedServiceIdentity(t *testing.T) {
+	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true, LastSyncStatus: "configured"})
+	licenses := newMemoryLicenseRepo(&store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
+	svc := NewService(repo, license.NewService(licenses, nil))
+
+	readiness, err := svc.ProvisionReadiness(context.Background(), "ctr_1")
+	if err != nil {
+		t.Fatalf("ProvisionReadiness() error: %v", err)
+	}
+	if readiness.Allowed {
+		t.Fatalf("readiness.Allowed = true, want false")
+	}
+	if !containsIssue(readiness.Issues, "service_identity_not_verified") {
+		t.Fatalf("issues = %+v, want service_identity_not_verified", readiness.Issues)
+	}
+	management := buildCenterManagement(readiness.Center, readiness.ActiveLicense)
+	if management.Ready {
+		t.Fatalf("management.Ready = true, want false")
+	}
+	if management.ManagementPosture != "needs_setup" {
+		t.Fatalf("ManagementPosture = %q, want needs_setup", management.ManagementPosture)
 	}
 }

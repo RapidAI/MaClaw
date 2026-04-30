@@ -677,7 +677,7 @@ func (cm *ConversationMemory) loadFromDisk() error {
 		// Enforce structural invariant: no orphaned tool messages.
 		// A tool entry is orphaned if no preceding assistant entry declares
 		// its tool_call_id. This can happen if a previous version of
-		// applyHistoryCompression or compactHistory split a tool-call group.
+		// applyHistoryCompression or trimHistoryWithSummary split a tool-call group.
 		// Repair on load so no downstream code ever sees corrupted data.
 		repaired := repairOrphanedToolEntries(entries)
 		if len(repaired) != len(entries) {

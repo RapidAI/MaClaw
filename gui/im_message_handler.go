@@ -72,6 +72,9 @@ type IMAgentResponse struct {
 	FileData                            string                        `json:"file_data,omitempty"`
 	FileName                            string                        `json:"file_name,omitempty"`
 	FileMimeType                        string                        `json:"file_mime_type,omitempty"`
+	VoiceData                           string                        `json:"voice_data,omitempty"`      // Base64-encoded voice audio (OGG Opus or WAV)
+	VoiceFileName                       string                        `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
+	VoiceMimeType                       string                        `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
 	LocalFilePath                       string                        `json:"local_file_path,omitempty"`
 	LocalFilePaths                      []string                      `json:"local_file_paths,omitempty"`
 	ThumbnailBase64                     string                        `json:"thumbnail_base64,omitempty"`
@@ -1850,7 +1853,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	}
 	futureDeliveryPromise := hasFutureDeliveryPromise(trimmed)
 	completionHints := []string{
-		"已生成", "已保存", "文件已保存", "将发送给用户", "已准备好，将发送给用户", "失败原因", "无法生成", "localfile", "[file_base64|",
+		"已生成", "已保存", "文件已保存", "将发送给用户", "已准备好，将发送给用户", "失败原因", "无法生成", "localfile", "[file_base64|", "[voice_base64|",
 		"已完成", "已经完成", "结果如下", "总结如下", "以下是", "here is", "here's", "results below", "summary below",
 	}
 	for _, hint := range completionHints {
@@ -3616,8 +3619,38 @@ func extractBrowserRootCause(text string) string {
 func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
 	startedAt := time.Now()
 
+	// Dynamic entry limit: scale MaxConversationTurns proportionally to the
+	// model's effective context window. A 128K model can hold more entries
+	// than the default 40 without context overflow.
+	//
+	// Formula: base 40 entries for 102K effective tokens (128K * 80%).
+	// Scale linearly, clamped to [40, 80].
+	dynamicLimit := agent.MaxConversationTurns // 40 default
+	dynamicTokenLimit := agent.MaxMemoryTokenEstimate // 60K default
+	if h.app != nil {
+		cfg := h.app.GetMaclawLLMConfig()
+		if ect := cfg.EffectiveContextTokens(); ect > 0 {
+			// Entry limit: ect / 1500, clamped to [40, 80].
+			scaled := ect / 1500
+			if scaled > 80 {
+				scaled = 80
+			}
+			if scaled > dynamicLimit {
+				dynamicLimit = scaled
+			}
+			// Token limit: match the entry limit's token equivalent.
+			// This ensures the entry-based and token-based triggers are
+			// consistent — no double-compression.
+			tokenEquiv := dynamicLimit * 1500
+			if tokenEquiv > dynamicTokenLimit {
+				dynamicTokenLimit = tokenEquiv
+			}
+		}
+	}
+
 	// Track whether compaction will occur (for post-compaction actions).
-	willCompact := len(history) > agent.MaxConversationTurns
+	willCompact := len(history) > dynamicLimit ||
+		(dynamicTokenLimit > 0 && estimateConversationEntryTokens(history) > dynamicTokenLimit)
 
 	// Build optional callbacks only when trimming will actually occur.
 	var summarizer func(string) string
@@ -3653,6 +3686,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 					Category: memory.CategoryTaskArtifact,
 					Tags:     tags,
 					Scope:    memory.ScopeProject,
+					OwnerID:  userID, // multi-tenant: associate with the user whose history is being trimmed
 				}
 				_ = h.memoryStore.Save(entry)
 			}
@@ -3660,7 +3694,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	}
 
 	beforeCount := len(history)
-	trimmed := trimHistoryWithSummary(history, summarizer, memorySink)
+	trimmed := trimHistoryWithSummary(history, summarizer, memorySink, dynamicLimit, dynamicTokenLimit)
 	h.memory.Save(userID, trimmed)
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
@@ -4663,7 +4697,6 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 		var systemPrompt string
 		history := h.memory.Load(msg.UserID)
-		history = h.compactHistory(history, httpClient)
 		if h.memoryStore != nil {
 			systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0)
 		} else {
@@ -4846,7 +4879,6 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	history := h.memory.Load(msg.UserID)
-	history = h.compactHistory(history, httpClient)
 
 	var systemPrompt string
 	if h.memoryStore != nil {
@@ -4982,6 +5014,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		// 2. Run the integration phase (BuildIntegrationPrompt) if all tasks passed
 		// 3. Advance the workflow to the review phase
 		if engine := h.getWorkflowEngine(); engine != nil {
+			// Inject OwnerID for multi-tenant artifact saving.
+			if h.app != nil && h.app.workflowArtifactSaver != nil {
+				h.app.workflowArtifactSaver.SetCurrentUserID(msg.UserID)
+			}
 			// Save implementation phase output so the engine knows it's done.
 			engine.SavePhaseOutput(msg.UserID, report)
 
@@ -5085,6 +5121,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// 200-char threshold could miss cases where the LLM used tools (write_file)
 	// to produce the document and only output a short confirmation message.
 	if workflowAgentLoop && h.getWorkflowEngine() != nil && !msg.IsBackground && !resp.HardExit && len(resp.Text) > 50 {
+		// Inject OwnerID for multi-tenant artifact saving.
+		if h.app != nil && h.app.workflowArtifactSaver != nil {
+			h.app.workflowArtifactSaver.SetCurrentUserID(msg.UserID)
+		}
 		if phaseID := h.getWorkflowEngine().SavePhaseOutput(msg.UserID, resp.Text); phaseID != "" {
 			if cb := h.getWorkflowEngine().GetCallbacks(); cb != nil {
 				_ = cb.EmitDocUpdate(msg.UserID, phaseID, resp.Text)
@@ -5099,6 +5139,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	finalizeStartedAt := time.Now()
 	resp = h.finalizeTraceResult(loopCtx, resp, firstNonEmptyTraceText(resp.Text, resp.TraceSummary), resp.Error)
 	resp.FinalizeTraceNanos = time.Since(finalizeStartedAt).Nanoseconds()
+
+	// --- Auto voice summary for IM channels ---
+	h.maybeAttachVoiceSummary(resp, msg.Platform)
+
 	return resp
 }
 
@@ -5235,108 +5279,6 @@ func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 	return &IMAgentResponse{Text: b.String()}
 }
 
-// compactHistory summarizes old conversation turns to stay within token limits.
-//
-// Mechanism: builds a structured handoff document from three data sources:
-//   1. Turn boundaries — user requests and LLM first responses (task-level semantics)
-//   2. Tool output key data — file paths, URLs, data statistics extracted from
-//      tool results (the "critical data" that must survive compaction)
-//   3. Final assistant summaries — the last assistant message before each new
-//      user turn (often contains the conclusion/results of a multi-tool sequence)
-//
-// Uses compactionHandoffPrompt (structured 4-section format) instead of a
-// generic "please summarize" prompt, ensuring the LLM produces a handoff
-// document with explicit "关键数据" section containing file paths, data
-// locations, and configuration values.
-func (h *IMMessageHandler) compactHistory(entries []agent.ConversationEntry, httpClient *http.Client) []agent.ConversationEntry {
-	if estimateConversationEntryTokens(entries) < agent.MaxMemoryTokenEstimate {
-		return entries
-	}
-	split := len(entries) / 2
-
-	// Group-align the split point so we never cut in the middle of a
-	// tool-call group (assistant+tool_calls followed by tool results).
-	// Uses BuildEntryGroups — the single source of truth for group boundaries.
-	groups := agent.BuildEntryGroups(entries)
-	g := agent.GroupContaining(groups, split)
-	if g != nil && split > g.Start {
-		// split is in the middle of a group — advance to the next group.
-		split = g.End
-	}
-	if split >= len(entries) {
-		return entries
-	}
-	recent := entries[split:]
-	old := entries[:split]
-
-	// --- Build structured summarizer input ---
-	var sb strings.Builder
-
-	// Section 1: Turn boundaries (user requests + LLM first responses).
-	sb.WriteString("## 对话轮次\n\n")
-	turnTexts := extractTurnBoundaryTexts(old, 20)
-	for _, text := range turnTexts {
-		runes := []rune(text)
-		if len(runes) > 500 {
-			text = string(runes[:500]) + "..."
-		}
-		sb.WriteString(text)
-		sb.WriteString("\n\n")
-	}
-
-	// Section 2: Key data from tool outputs — file paths, URLs, data
-	// statistics. These are the "critical data references" that turn
-	// boundaries miss because they appear in tool results, not in the
-	// first assistant response.
-	keyData := extractKeyDataFromEntries(old)
-	if len(keyData) > 0 {
-		sb.WriteString("## 工具产出的关键数据\n\n")
-		for _, kd := range keyData {
-			sb.WriteString("- ")
-			sb.WriteString(kd)
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\n")
-	}
-
-	// Section 3: Final assistant messages before each new user turn.
-	// These often contain the conclusion/summary of a multi-tool sequence
-	// (e.g., "99篇论文已保存到 D:\workprj\..."). Turn boundaries only
-	// capture the FIRST assistant response; the LAST one before the next
-	// user message carries the results.
-	finalAssistantTexts := extractFinalAssistantTexts(old, 5)
-	if len(finalAssistantTexts) > 0 {
-		sb.WriteString("## 任务结果摘要\n\n")
-		for _, text := range finalAssistantTexts {
-			sb.WriteString(text)
-			sb.WriteString("\n\n")
-		}
-	}
-
-	summaryText := sb.String()
-	if len([]rune(summaryText)) > 12000 {
-		summaryText = string([]rune(summaryText)[:12000]) + "\n...(truncated)"
-	}
-
-	cfg := h.getMaclawLLMConfig()
-	msgs := []map[string]string{
-		{"role": "user", "content": compactionHandoffPrompt + summaryText},
-	}
-	conv := make([]interface{}, len(msgs))
-	for i, m := range msgs {
-		conv[i] = m
-	}
-	resp, err := h.doLLMRequest(cfg, conv, nil, httpClient)
-	if err != nil || len(resp.Choices) == 0 {
-		return recent
-	}
-
-	compacted := []agent.ConversationEntry{
-		{Role: "user", Content: compactionRecoveryPrefix + resp.Choices[0].Message.Content},
-		{Role: "assistant", Content: "好的，我已了解之前的对话上下文。"},
-	}
-	return append(compacted, recent...)
-}
 
 // extractKeyDataFromEntries scans conversation entries for critical data
 // references that must survive compaction: file paths, URLs, data statistics.
@@ -5540,6 +5482,174 @@ func extractFinalAssistantTexts(entries []agent.ConversationEntry, maxTexts int)
 		}
 	}
 	return texts
+}
+
+// extractToolOperationSummary extracts a concise summary of tool calls from
+// conversation entries. Returns lines like:
+//
+//	"web_fetch: https://huggingface.co/papers"
+//	"write_file: D:\workprj\hf_papers.json"
+//	"generate_pdf: HF_World_日报_2026-04-30.pdf"
+//
+// This captures WHAT was done (tool names + key args), complementing
+// extractKeyDataFromEntries (WHAT was produced) and extractTurnBoundaryTexts
+// (WHAT was requested).
+func extractToolOperationSummary(entries []agent.ConversationEntry, maxOps int) []string {
+	// Two-pass approach: first count per-tool frequency, then emit summaries
+	// with high-frequency tools capped at 2 examples + count.
+	type toolOp struct {
+		name   string
+		keyArg string
+	}
+	var allOps []toolOp
+	toolFreq := make(map[string]int)
+
+	for _, e := range entries {
+		if e.Role != "assistant" || e.ToolCalls == nil {
+			continue
+		}
+		arr, ok := e.ToolCalls.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, item := range arr {
+			tc, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			fn, _ := tc["function"].(map[string]interface{})
+			if fn == nil {
+				continue
+			}
+			name, _ := fn["name"].(string)
+			if name == "" {
+				continue
+			}
+			argsStr, _ := fn["arguments"].(string)
+			keyArg := extractKeyToolArg(name, argsStr)
+			allOps = append(allOps, toolOp{name: name, keyArg: keyArg})
+			toolFreq[name]++
+		}
+	}
+
+	// Emit: for each tool, show up to 2 distinct examples. If the tool was
+	// called more than 2 times, append "(共N次)" to the last example.
+	var ops []string
+	toolEmitted := make(map[string]int)
+	seen := make(map[string]bool)
+
+	for _, op := range allOps {
+		if len(ops) >= maxOps {
+			break
+		}
+		emitted := toolEmitted[op.name]
+		freq := toolFreq[op.name]
+
+		// High-frequency tool (>2 calls): cap at 2 examples.
+		if freq > 2 && emitted >= 2 {
+			continue
+		}
+
+		summary := op.name
+		if op.keyArg != "" {
+			summary += ": " + op.keyArg
+		}
+		if seen[summary] {
+			continue
+		}
+		seen[summary] = true
+		toolEmitted[op.name] = emitted + 1
+
+		// On the last emitted example for a high-frequency tool, append count.
+		if freq > 2 && toolEmitted[op.name] >= 2 {
+			summary += fmt.Sprintf(" (共%d次)", freq)
+		}
+		ops = append(ops, summary)
+	}
+	return ops
+}
+
+// extractKeyToolArg extracts the most meaningful argument from a tool call's
+// JSON arguments string, based on the tool name.
+func extractKeyToolArg(toolName, argsJSON string) string {
+	if argsJSON == "" {
+		return ""
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return ""
+	}
+
+	// Tool-specific key argument extraction.
+	switch {
+	case toolName == "web_fetch":
+		if v, ok := args["url"].(string); ok {
+			return truncateStr(v, 100)
+		}
+	case toolName == "web_search":
+		if v, ok := args["query"].(string); ok {
+			return truncateStr(v, 80)
+		}
+	case toolName == "write_file" || toolName == "read_file" || toolName == "edit_file":
+		if v, ok := args["path"].(string); ok {
+			return v
+		}
+	case toolName == "generate_pdf":
+		if v, ok := args["title"].(string); ok {
+			return truncateStr(v, 80)
+		}
+		if v, ok := args["output"].(string); ok {
+			return v
+		}
+	case toolName == "bash":
+		if v, ok := args["command"].(string); ok {
+			return truncateStr(v, 80)
+		}
+	case toolName == "send_file":
+		if v, ok := args["file_path"].(string); ok {
+			return v
+		}
+	case toolName == "manage_skill":
+		action, _ := args["action"].(string)
+		name, _ := args["name"].(string)
+		if action != "" && name != "" {
+			return action + " " + name
+		}
+		if action != "" {
+			return action
+		}
+	case toolName == "ssh":
+		action, _ := args["action"].(string)
+		cmd, _ := args["command"].(string)
+		if action == "exec" && cmd != "" {
+			return "exec: " + truncateStr(cmd, 60)
+		}
+		if action != "" {
+			return action
+		}
+	case toolName == "memory":
+		action, _ := args["action"].(string)
+		if action != "" {
+			return action
+		}
+	}
+
+	// Generic fallback: first non-empty string argument, truncated.
+	for _, key := range []string{"query", "url", "path", "command", "name", "text", "content"} {
+		if v, ok := args[key].(string); ok && v != "" {
+			return truncateStr(v, 80)
+		}
+	}
+	return ""
+}
+
+// truncateStr truncates a string to maxLen runes, appending "..." if truncated.
+func truncateStr(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
 }
 
 // ---------------------------------------------------------------------------
@@ -7208,6 +7318,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			handlerPostStreamHistoryAppendElapsed += time.Since(historyAppendStartedAt)
 		}
 
+		// Voice data from tts tool — declared at iteration level so both
+		// the tool-execution branch (which sets them) and the no-tool
+		// finalize branch (which reads them) can access them.
+		var voiceData, voiceFileName, voiceMimeType string
+
 		// --- Coding Tool Gate: strip coding tools on ALL iterations ---
 		// The gate must remain active for the entire agent loop (not just
 		// iteration 0). Within a single user message → agent loop, if the
@@ -7947,6 +8062,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			history = h.injectNudgeMessages(history, iteration, totalToolCallsInLoop, phase, userText)
 
 			attachLLMTelemetry(finalResp)
+			// Attach voice from tts tool (if any).
+			if voiceData != "" {
+				finalResp.VoiceData = voiceData
+				finalResp.VoiceFileName = voiceFileName
+				finalResp.VoiceMimeType = voiceMimeType
+			}
 			h.saveConversationHistoryTimed(userID, history, finalResp)
 			return finalResp
 		}
@@ -7990,6 +8111,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			message              string // IM delivery prompt
 		}
 		var pendingFiles []pendingFile
+		// Voice data is set by tts tool execution below; declared at
+		// iteration level (above the tool/no-tool branch split).
 		screenshotAlreadySent := false
 		toolResults := make([]string, 0, len(choice.Message.ToolCalls))
 		totalToolCallsInLoop += len(choice.Message.ToolCalls)
@@ -8148,6 +8271,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if strings.HasPrefix(result, "[file_base64|") {
 				traceResult = "文件已生成，等待解析发送结果。"
 			}
+			if strings.HasPrefix(result, "[voice_base64|") {
+				traceResult = "语音消息已合成，等待发送。"
+			}
 			if !streamDoneAt.IsZero() {
 				handlerPostStreamToolExecElapsed += time.Since(toolExecStartedAt)
 			}
@@ -8207,6 +8333,24 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						} else {
 							toolContent = fmt.Sprintf("文件 %s 已准备好，将发送给用户。", parts[0])
 						}
+						traceResult = toolContent
+					}
+				}
+			}
+			// Intercept voice message results from tts tool.
+			// Format: [voice_base64|filename|mimetype]data
+			// Sets resp.VoiceData fields directly (NOT pendingFiles) so voice
+			// delivery is independent of file delivery and doesn't conflict.
+			if strings.HasPrefix(result, "[voice_base64|") {
+				rest := strings.TrimPrefix(result, "[voice_base64|")
+				if closeBracket := strings.Index(rest, "]"); closeBracket > 0 {
+					meta := rest[:closeBracket]
+					parts := strings.Split(meta, "|")
+					if len(parts) >= 2 {
+						voiceData = rest[closeBracket+1:]
+						voiceFileName = parts[0]
+						voiceMimeType = parts[1]
+						toolContent = "语音消息已合成，将发送给用户。"
 						traceResult = toolContent
 					}
 				}
@@ -8592,6 +8736,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				if len(savedPaths) > 0 {
 					resp.LocalFilePath = savedPaths[0]
 				}
+				// Attach voice from tts tool (if any).
+				if voiceData != "" {
+					resp.VoiceData = voiceData
+					resp.VoiceFileName = voiceFileName
+					resp.VoiceMimeType = voiceMimeType
+				}
 				return resp
 			}
 			// IM platforms: send the last file (IM channels support one attachment per message)
@@ -8600,6 +8750,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			resp.FileData = last.data
 			resp.FileName = last.name
 			resp.FileMimeType = last.mimeType
+			// Attach voice from tts tool (if any).
+			if voiceData != "" {
+				resp.VoiceData = voiceData
+				resp.VoiceFileName = voiceFileName
+				resp.VoiceMimeType = voiceMimeType
+			}
 			return resp
 		}
 

@@ -124,3 +124,59 @@ func TestSendCenterHeartbeatReturnsStatusError(t *testing.T) {
 		t.Fatalf("error = %v, want status 401", err)
 	}
 }
+
+func TestFetchCenterComputeProvidersUsesCenterSecretHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/centers/center-1/compute-providers" {
+			t.Fatalf("path = %q, want /api/centers/center-1/compute-providers", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Center-Secret"); got != "secret-abc" {
+			t.Fatalf("X-Center-Secret = %q, want secret-abc", got)
+		}
+		if got := r.URL.Query().Get("secret"); got != "" {
+			t.Fatalf("secret query should not be set, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"compute_permission":true,"force_sync":true,"providers":[{"id":"p1","name":"Cloud GPT","base_url":"https://llm.example/v1","api_key":"sk-cloud","protocol":"openai","model":"gpt-4.1","enabled":true,"priority":80,"description":"cloud assigned"}]}`))
+	}))
+	defer srv.Close()
+
+	client := NewCloudClient(CloudConfig{BaseURL: srv.URL + "/"})
+	result, err := client.FetchCenterComputeProviders(context.Background(), "center-1", "secret-abc")
+	if err != nil {
+		t.Fatalf("FetchCenterComputeProviders() error: %v", err)
+	}
+	if !result.ComputePermission || !result.ForceSync {
+		t.Fatalf("response flags = %+v", result)
+	}
+	if len(result.Providers) != 1 {
+		t.Fatalf("provider count = %d, want 1", len(result.Providers))
+	}
+	provider := result.Providers[0]
+	if provider.ID != "p1" || provider.APIKey != "sk-cloud" || provider.Protocol != "openai" || provider.Model != "gpt-4.1" {
+		t.Fatalf("provider = %+v", provider)
+	}
+}
+
+func TestFetchCenterComputeProvidersRequiresCenterCredentials(t *testing.T) {
+	client := NewCloudClient(CloudConfig{BaseURL: "https://cloud.example.com"})
+	if _, err := client.FetchCenterComputeProviders(context.Background(), "", "secret-abc"); err == nil || !strings.Contains(err.Error(), "center_id") {
+		t.Fatalf("empty center id error = %v, want center_id error", err)
+	}
+	if _, err := client.FetchCenterComputeProviders(context.Background(), "center-1", ""); err == nil || !strings.Contains(err.Error(), "center_secret") {
+		t.Fatalf("empty secret error = %v, want center_secret error", err)
+	}
+}
+
+func TestFetchCenterComputeProvidersReturnsStatusError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "disabled", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	client := NewCloudClient(CloudConfig{BaseURL: srv.URL})
+	_, err := client.FetchCenterComputeProviders(context.Background(), "center-1", "secret-abc")
+	if err == nil || !strings.Contains(err.Error(), "status 403") {
+		t.Fatalf("error = %v, want status 403", err)
+	}
+}

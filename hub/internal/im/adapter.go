@@ -53,6 +53,7 @@ type CapabilityDeclaration struct {
 	SupportsFile        bool // Supports file messages
 	SupportsButton      bool // Supports button interactions
 	SupportsMessageEdit bool // Supports message editing/updating
+	SupportsVoice       bool // Supports native voice messages (voice bubble, not file attachment)
 	MaxTextLength       int  // Maximum text length per message (0 = unlimited)
 }
 

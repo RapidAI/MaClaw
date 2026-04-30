@@ -792,27 +792,18 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 		log.Printf("[proactive_recall] after entity supplement: %d entries (entities=%v)", len(recalled), entities)
 	}
 
-	// Filter out user_fact, self_identity, and session_checkpoint
-	// (checkpoints are progress snapshots, not useful for answering user queries).
-	var relevant []corememory.Entry
-	for _, e := range recalled {
-		canonical := corememory.MapToCanonical(e.Category)
-		if canonical == corememory.CategoryUserFact || canonical == corememory.CategorySelfIdentity {
-			continue
-		}
-		if e.Category == corememory.CategorySessionCheckpoint || e.Category == corememory.CategoryConversationSummary {
-			continue
-		}
-		relevant = append(relevant, e)
-	}
-	log.Printf("[proactive_recall] relevant=%d after filter", len(relevant))
+	// RecallDynamic already excludes user_fact, self_identity,
+	// session_checkpoint, and conversation_summary when category="" (the
+	// default for proactive recall). No additional filtering needed here.
+	// This was previously a separate filter that wasted RecallDynamic's
+	// 15-entry budget on categories that would be discarded.
+	relevant := recalled
 
 	// Cap at 12 entries to control prompt size.
 	const maxProactiveRecall = 12
 	if len(relevant) > maxProactiveRecall {
 		relevant = relevant[:maxProactiveRecall]
 	}
-
 	// --- Memory Index Layer (inspired by GenericAgent L1) ---
 	// Always inject the store-level index, even when proactive recall
 	// returned zero entries. The index tells the LLM what categories of

@@ -1400,6 +1400,14 @@ export function DownloadASRModel() {
   return window['go']['main']['App']['DownloadASRModel']();
 }
 
+export function TranscribeAudioBase64(arg1) {
+  return window['go']['main']['App']['TranscribeAudioBase64'](arg1);
+}
+
+export function IsASRReady() {
+  return window['go']['main']['App']['IsASRReady']();
+}
+
 // Screen parsing (OminiParser-V2) bindings
 export function GetScreenParsingEnabled() {
   return window['go']['main']['App']['GetScreenParsingEnabled']();

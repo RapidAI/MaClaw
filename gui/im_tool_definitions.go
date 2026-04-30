@@ -218,6 +218,11 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"agent":   map[string]string{"type": "string", "description": "子 Agent 名称: coding_workflow / help。不传则列出所有可用子 Agent"},
 				"request": map[string]string{"type": "string", "description": "要委派的任务描述（用户的原始需求）"},
 			}, nil),
+		// --- 语音合成工具 ---
+		toolDef("tts", "将文本转换为语音消息发送给用户。文本会自动清理 Markdown 格式并截断到合适长度（最长 300 字）。桌面面板播放语音，IM 通道（企微/QQ）以语音消息（语音气泡，非文件附件）形式发送。适用于：状态通知、简短回复摘要、任务完成汇报、问候等场景。不适用于长文本朗读。",
+			map[string]interface{}{
+				"text": map[string]string{"type": "string", "description": "要转换为语音的文本内容（中文，最长 300 字，超出自动截断到句子边界）"},
+			}, []string{"text"}),
 		// --- 长期记忆工具（合并） ---
 		toolDef("memory", "管理长期记忆（action: recall/save/list/delete）。recall 按需检索相关记忆，save 保存新记忆。",
 			map[string]interface{}{

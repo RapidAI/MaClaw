@@ -13,6 +13,9 @@ type AgentResponse struct {
 	FileData     string           `json:"file_data,omitempty"`      // Base64-encoded file data (optional)
 	FileName     string           `json:"file_name,omitempty"`      // File display name (optional)
 	FileMimeType string           `json:"file_mime_type,omitempty"` // File MIME type (optional)
+	VoiceData     string          `json:"voice_data,omitempty"`     // Base64-encoded voice audio (optional, OGG Opus or WAV)
+	VoiceFileName string          `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
+	VoiceMimeType string          `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
 	Error        string           `json:"error,omitempty"`          // Error message (optional)
 	Deferred     bool             `json:"deferred,omitempty"`       // true = media buffered, Hub should not reply to user
 }
@@ -51,16 +54,19 @@ func (r *AgentResponse) ToGenericResponse() *GenericResponse {
 	}
 
 	resp := &GenericResponse{
-		StatusCode:   200,
-		StatusIcon:   "🤖",
-		Title:        "",
-		Body:         r.Text,
-		Fields:       filterOutTokenFields(r.Fields),
-		Actions:      r.Actions,
-		ImageKey:     r.ImageKey,
-		FileData:     r.FileData,
-		FileName:     r.FileName,
-		FileMimeType: r.FileMimeType,
+		StatusCode:    200,
+		StatusIcon:    "🤖",
+		Title:         "",
+		Body:          r.Text,
+		Fields:        filterOutTokenFields(r.Fields),
+		Actions:       r.Actions,
+		ImageKey:      r.ImageKey,
+		FileData:      r.FileData,
+		FileName:      r.FileName,
+		FileMimeType:  r.FileMimeType,
+		VoiceData:     r.VoiceData,
+		VoiceFileName: r.VoiceFileName,
+		VoiceMimeType: r.VoiceMimeType,
 	}
 
 	return resp

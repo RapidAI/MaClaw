@@ -5,8 +5,8 @@ import { DataTable } from '../components/table/DataTable';
 import {
   getComputeStatus, listComputeProviders, testComputeProvider,
   createComputeProvider, updateComputeProvider, deleteComputeProvider,
-  syncFromCloud, switchComputeSource,
-  type ComputeProvider, type ComputeStatus,
+  syncFromCloud, switchComputeSource, getSyncStatus,
+  type ComputeProvider, type ComputeStatus, type ComputeSyncStatus,
 } from '../api/compute';
 
 const emptyForm = (): Partial<ComputeProvider> & { api_key: string } => ({
@@ -19,6 +19,7 @@ export function ComputePowerPage() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<ComputeStatus | null>(null);
   const [providers, setProviders] = useState<ComputeProvider[]>([]);
+  const [syncStatus, setSyncStatus] = useState<ComputeSyncStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -29,15 +30,28 @@ export function ComputePowerPage() {
     Promise.all([
       getComputeStatus().catch(() => null),
       listComputeProviders().catch(() => []),
-    ]).then(([s, p]) => { setStatus(s); setProviders(p); }).finally(() => setLoading(false));
+      getSyncStatus().catch(() => null),
+    ]).then(([s, p, sync]) => {
+      setStatus(s);
+      setProviders(p);
+      setSyncStatus(s?.sync_status || sync);
+    }).finally(() => setLoading(false));
   };
   useEffect(load, []);
 
   const isCloud = !status || status.compute_source === 'cloud';
   const canLocal = status?.compute_permission === true;
   const isLocal = status != null && status.compute_source === 'local';
+  const syncTone = syncStatus?.status === 'success' ? '#287a3e' : syncStatus?.status === 'waiting_for_credentials' ? '#b98219' : syncStatus?.status === 'failure' ? '#b92b27' : '#5f7692';
+  const syncLabel = syncStatus?.status === 'waiting_for_credentials'
+    ? 'Waiting for Cloud registration credentials'
+    : syncStatus?.status || 'pending';
 
-  const handleSync = async () => { await syncFromCloud().catch(() => {}); load(); };
+  const handleSync = async () => {
+    const next = await syncFromCloud().catch(() => null);
+    if (next) setSyncStatus(next);
+    load();
+  };
   const handleSwitch = async (src: 'cloud' | 'local') => { await switchComputeSource(src).catch(() => {}); load(); };
   const handleTest = async (id: string) => {
     const p = providers.find(x => x.id === id);
@@ -79,6 +93,14 @@ export function ComputePowerPage() {
           <span className={`badge ${isCloud ? 'info' : 'ok'}`}>
             {isCloud ? t('compute.modeCloud') : t('compute.modeLocal')}
           </span>
+          {syncStatus && (
+            <span style={{ fontSize: 13, color: syncTone }}>
+              Sync: {syncLabel}{syncStatus.provider_count >= 0 ? ` · ${syncStatus.provider_count} providers` : ''}
+            </span>
+          )}
+          {syncStatus?.error && syncStatus.status !== 'success' && (
+            <span style={{ fontSize: 13, color: syncTone }}>{syncStatus.error}</span>
+          )}
           {status?.last_sync_at && (
             <span style={{ fontSize: 13, color: '#5f7692' }}>{t('compute.lastSync')}: {new Date(status.last_sync_at).toLocaleString()}</span>
           )}

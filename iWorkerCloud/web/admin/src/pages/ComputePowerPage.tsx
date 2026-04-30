@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   listProviders, createProvider, updateProvider, deleteProvider, toggleProvider, testProvider,
-  listCenterPermissions, toggleCenterPermission, listCenterCosts,
+  listCenterPermissions, toggleCenterPermission, listCenterAssignments, assignProviderToCenter,
+  unassignProviderFromCenter, listCenterCosts,
   type LLMProvider, type CenterPermission, type CenterCostRow,
 } from '../api/compute';
 
@@ -21,6 +22,7 @@ export function ComputePowerPage() {
   const [tab, setTab] = useState<'providers' | 'permissions' | 'usage'>('providers');
   const [providers, setProviders] = useState<LLMProvider[]>([]);
   const [permissions, setPermissions] = useState<CenterPermission[]>([]);
+  const [assignments, setAssignments] = useState<Record<string, string[]>>({});
   // form
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -32,8 +34,20 @@ export function ComputePowerPage() {
   const [costs, setCosts] = useState<CenterCostRow[]>([]);
 
   const load = () => {
-    listProviders().then(d => setProviders(d ?? [])).catch(() => {});
-    listCenterPermissions().then(d => setPermissions(d ?? [])).catch(() => {});
+    Promise.all([
+      listProviders().catch(() => []),
+      listCenterPermissions().catch(() => []),
+    ]).then(([providerRows, centerRows]) => {
+      setProviders(providerRows ?? []);
+      setPermissions(centerRows ?? []);
+      return Promise.all((centerRows ?? []).map(cp =>
+        listCenterAssignments(cp.center_id)
+          .then(ids => [cp.center_id, ids] as const)
+          .catch(() => [cp.center_id, []] as const),
+      ));
+    }).then(entries => {
+      setAssignments(Object.fromEntries(entries));
+    }).catch(() => {});
   };
   useEffect(load, []);
 
@@ -64,6 +78,12 @@ export function ComputePowerPage() {
   /* ── Permissions ── */
   const handlePermToggle = async (cid: string, cur: boolean) => {
     await toggleCenterPermission(cid, !cur).catch(() => {}); load();
+  };
+  const handleAssignProvider = async (cid: string, providerId: string) => {
+    await assignProviderToCenter(cid, providerId).catch((e: any) => alert(e.message)); load();
+  };
+  const handleUnassignProvider = async (cid: string, providerId: string) => {
+    await unassignProviderFromCenter(cid, providerId).catch((e: any) => alert(e.message)); load();
   };
 
   /* ── Usage ── */
@@ -153,25 +173,52 @@ export function ComputePowerPage() {
         </div>
       )}
 
-      {/* ═══ Permissions Tab ═══ */}
+      {/* Permissions Tab */}
       {tab === 'permissions' && (
         <div>
           <h3>{t('compute.centerPermissions')}</h3>
           {permissions.length === 0 ? <div className="hint">{t('common.noData')}</div> : (
             <table className="data-table" style={{ width: '100%', marginTop: 12 }}>
-              <thead><tr><th>Center</th><th>{t('compute.status')}</th><th>{t('compute.actions')}</th></tr></thead>
+              <thead><tr><th>Center</th><th>{t('compute.status')}</th><th>{t('compute.providerAssignments')}</th><th>{t('compute.actions')}</th></tr></thead>
               <tbody>
-                {permissions.map(cp => (
-                  <tr key={cp.center_id}>
-                    <td>{cp.company_name || cp.center_id}</td>
-                    <td><span className={`badge ${cp.compute_permission ? 'ok' : 'info'}`}>{cp.compute_permission ? t('compute.selfManaged') : t('compute.cloudManaged')}</span></td>
-                    <td>
-                      <button className={cp.compute_permission ? 'btn-ghost' : 'btn-primary'} onClick={() => handlePermToggle(cp.center_id, cp.compute_permission)}>
-                        {cp.compute_permission ? t('compute.revokePermission') : t('compute.grantPermission')}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {permissions.map(cp => {
+                  const assignedIds = assignments[cp.center_id] || [];
+                  const explicit = assignedIds.length > 0;
+                  return (
+                    <tr key={cp.center_id}>
+                      <td>{cp.company_name || cp.center_id}</td>
+                      <td><span className={`badge ${cp.compute_permission ? 'ok' : 'info'}`}>{cp.compute_permission ? t('compute.selfManaged') : t('compute.cloudManaged')}</span></td>
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <span className="hint" style={{ fontSize: 12 }}>
+                            {explicit ? `${assignedIds.length} ${t('compute.assignedProviders')}` : t('compute.defaultAllProviders')}
+                          </span>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {providers.map(p => {
+                              const selected = explicit && assignedIds.includes(p.id);
+                              return (
+                                <button
+                                  key={p.id}
+                                  className={selected ? 'btn-primary' : 'btn-ghost'}
+                                  style={{ fontSize: 12, padding: '4px 8px' }}
+                                  onClick={() => selected ? handleUnassignProvider(cp.center_id, p.id) : handleAssignProvider(cp.center_id, p.id)}
+                                  title={explicit ? (selected ? t('compute.unassignProvider') : t('compute.assignProvider')) : t('compute.limitToProvider')}
+                                >
+                                  {selected ? '* ' : explicit ? '+ ' : ''}{p.name}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <button className={cp.compute_permission ? 'btn-ghost' : 'btn-primary'} onClick={() => handlePermToggle(cp.center_id, cp.compute_permission)}>
+                          {cp.compute_permission ? t('compute.revokePermission') : t('compute.grantPermission')}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

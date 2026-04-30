@@ -1,4 +1,5 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { ApiError } from '../api/client';
 import { useTranslation } from 'react-i18next';
 import {
   getCenterManagement,
@@ -10,15 +11,30 @@ import {
   updateCenterIntegration,
   provisionTenant,
   probeCenter,
+  getProvisionReadiness,
   type Center,
   type CenterManagement,
   type CenterIntegrationPatch,
   type ProvisionTenantRequest,
   type CloudControlMode,
+  type CenterProvisionReadiness,
+  type CenterProbeResult,
 } from '../api/centers';
 
 type IntegrationDraft = CenterIntegrationPatch;
 type TenantDraft = ProvisionTenantRequest;
+type ProvisionNotReadyBody = {
+  error?: string;
+  message?: string;
+  readiness?: CenterProvisionReadiness;
+};
+
+function readinessFromError(err: unknown): CenterProvisionReadiness | null {
+  if (!(err instanceof ApiError)) return null;
+  const body = err.body as ProvisionNotReadyBody;
+  return body?.readiness ?? null;
+}
+
 
 const postureLabels: Record<string, string> = {
   ready: 'Ready',
@@ -37,6 +53,7 @@ const issueLabels: Record<string, string> = {
   probe_not_iworkercenter: 'Endpoint is not iWorkerCenter service',
   heartbeat_not_iworkercenter: 'Heartbeat identity failed',
   no_active_license: 'No active license',
+  service_identity_not_verified: 'Service identity not verified',
 };
 
 const controlModeLabels: Record<CloudControlMode, string> = {
@@ -66,7 +83,7 @@ const formatDateTime = (value?: string) => {
 
 const serviceBadgeClass = (status?: string) => {
   if (status === 'heartbeat_ok' || status === 'probe_ok' || status === 'tenant_provisioned') return 'ok';
-  if (status === 'registered' || status === 'configured' || status === 'probe_missing_base_url') return 'warn';
+  if (status === 'registered' || status === 'configured' || status === 'probe_missing_base_url' || !status) return 'warn';
   return 'danger';
 };
 
@@ -101,6 +118,9 @@ export function CentersPage() {
   const [probing, setProbing] = useState<string | null>(null);
   const [provisionResult, setProvisionResult] = useState<Record<string, string>>({});
   const [probeResult, setProbeResult] = useState<Record<string, string>>({});
+  const [probeRuntime, setProbeRuntime] = useState<Record<string, CenterProbeResult>>({});
+  const [readinessResult, setReadinessResult] = useState<Record<string, CenterProvisionReadiness>>({});
+  const [checkingReadiness, setCheckingReadiness] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
 
@@ -187,12 +207,28 @@ export function CentersPage() {
       setTenantDrafts(prev => ({ ...prev, [center.id]: createTenantDraft() }));
       load();
     } catch (err) {
+      const readiness = readinessFromError(err);
+      if (readiness) {
+        setReadinessResult(prev => ({ ...prev, [center.id]: readiness }));
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setProvisioning(null);
     }
   };
 
+  const handleCheckProvisionReadiness = async (center: Center) => {
+    setCheckingReadiness(center.id);
+    setError('');
+    try {
+      const readiness = await getProvisionReadiness(center.id);
+      setReadinessResult(prev => ({ ...prev, [center.id]: readiness }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCheckingReadiness(null);
+    }
+  };
   const handleProbeCenter = async (center: Center) => {
     setProbing(center.id);
     setError('');
@@ -201,6 +237,7 @@ export function CentersPage() {
       const response = await probeCenter(center.id);
       setCenters(prev => prev.map(item => item.id === center.id ? response.center : item));
       setDrafts(prev => ({ ...prev, [center.id]: createDraft(response.center) }));
+      setProbeRuntime(prev => ({ ...prev, [center.id]: response.probe }));
       setProbeResult(prev => ({
         ...prev,
         [center.id]: `${response.probe.ok ? 'Verified iWorkerCenter service' : 'Service check failed'}: ${response.probe.message}`,
@@ -280,6 +317,8 @@ export function CentersPage() {
           const draft = drafts[center.id] ?? createDraft(center);
           const tenantDraft = tenantDrafts[center.id] ?? createTenantDraft();
           const managementItem = management[center.id];
+          const provisionReadiness = readinessResult[center.id];
+          const runtime = probeRuntime[center.id];
           return (
             <div key={center.id} className="item cloud-center-card">
               <div className="item-head">
@@ -313,6 +352,23 @@ export function CentersPage() {
                   {managementItem.issues.length === 0
                     ? <span className="ok">No blocking issues</span>
                     : managementItem.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
+                </div>
+              </div>}
+
+              {runtime && <div className={`cloud-posture-panel ${runtime.ok ? 'ready' : 'watch'}`}>
+                <div>
+                  <label>Platform runtime snapshot</label>
+                  <strong>{runtime.runtime_provider_mode || 'unknown runtime'}</strong>
+                  <span>{runtime.message}</span>
+                </div>
+                <div className="cloud-issue-list">
+                  <span className={runtime.compute_source === 'cloud' ? 'ok' : 'warn'}>compute source: {runtime.compute_source || 'unknown'}</span>
+                  <span className={runtime.compute_sync_status?.status === 'success' ? 'ok' : 'warn'}>sync: {runtime.compute_sync_status?.status || 'unknown'}</span>
+                  <span>runtime providers: {runtime.provider_count ?? 0}</span>
+                  <span>cloud providers: {runtime.cloud_provider_count ?? runtime.compute_sync_status?.provider_count ?? 0}</span>
+                  <span>{runtime.compute_permission ? 'self-management allowed' : 'cloud-managed'}</span>
+                  {runtime.compute_sync_status?.last_sync_at ? <span>last sync: {formatDateTime(runtime.compute_sync_status.last_sync_at)}</span> : null}
+                  {runtime.compute_sync_status?.error ? <span className="warn">{runtime.compute_sync_status.error}</span> : null}
                 </div>
               </div>}
 
@@ -385,6 +441,18 @@ export function CentersPage() {
                 </div>
               </div>
 
+              {provisionReadiness && <div className={`cloud-posture-panel ${provisionReadiness.allowed ? 'ready' : 'watch'}`}>
+                <div>
+                  <label>Provision gate</label>
+                  <strong>{provisionReadiness.allowed ? 'Allowed' : 'Blocked'}</strong>
+                  <span>{provisionReadiness.allowed ? 'Cloud may request tenant container creation for this iWorkerCenter.' : 'Cloud will not provision tenants until the blocking issues are resolved.'}</span>
+                </div>
+                <div className="cloud-issue-list">
+                  {provisionReadiness.issues.length === 0
+                    ? <span className="ok">No provision blockers</span>
+                    : provisionReadiness.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
+                </div>
+              </div>}
               <div className="cloud-provision-panel">
                 <div className="field-span-2">
                   <label>Provision customer tenant container</label>
@@ -430,8 +498,15 @@ export function CentersPage() {
                   {probing === center.id ? 'Testing...' : 'Test connection'}
                 </button>
                 <button
+                  className="btn-ghost"
+                  disabled={checkingReadiness === center.id}
+                  onClick={() => handleCheckProvisionReadiness(center)}
+                >
+                  {checkingReadiness === center.id ? 'Checking...' : 'Check provision gate'}
+                </button>
+                <button
                   className="btn-secondary"
-                  disabled={provisioning === center.id || !center.base_url || center.status !== 'active'}
+                  disabled={provisioning === center.id || !center.base_url || center.status !== 'active' || provisionReadiness?.allowed === false}
                   onClick={() => handleProvisionTenant(center)}
                 >
                   {provisioning === center.id ? 'Provisioning...' : 'Provision tenant'}

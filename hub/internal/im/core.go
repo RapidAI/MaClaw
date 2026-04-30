@@ -959,6 +959,19 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		}
 	}
 
+	// Send voice message AFTER text/card/file delivery.
+	// Using defer ensures voice is sent regardless of which return path is taken.
+	defer func() {
+		if resp.VoiceData != "" && resp.VoiceFileName != "" {
+			caps := plugin.Capabilities()
+			if caps.SupportsFile {
+				if err := plugin.SendFile(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
+					log.Printf("[IM Adapter] SendFile (voice) failed for %s: %v", plugin.Name(), err)
+				}
+			}
+		}
+	}()
+
 	// Content audit: check outbound content compliance (skip if already intercepted)
 	if !intercepted && a.contentAuditor != nil {
 		result := a.contentAuditor.Audit(ctx, target.UnifiedUserID, plugin.Name(), resp)

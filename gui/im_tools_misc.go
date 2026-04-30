@@ -1725,6 +1725,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			Content:  content,
 			Category: corememory.Category(category),
 			Tags:     tags,
+			OwnerID:  h.lastUserID, // multi-tenant: associate with the current user
 		}
 		// Enrich tags from recent conversation context: extract entities
 		// from the last few user+assistant messages so alias terms (e.g.

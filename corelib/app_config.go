@@ -168,6 +168,14 @@ type AppConfig struct {
 	ASREnabled bool `json:"asr_enabled"`
 	// TTS toggle — enables voice readback of AI responses.
 	TTSEnabled bool `json:"tts_enabled"`
+	// TTS auto voice summary — when enabled, IM channel responses automatically
+	// include a voice summary version (语音摘要). Only affects IM channels
+	// (飞书/企微/QQ/钉钉), not the desktop panel.
+	TTSAutoVoiceSummary bool `json:"tts_auto_voice_summary,omitempty"`
+	// Audio device selection — stores the deviceId from navigator.mediaDevices.
+	// Empty string = system default device.
+	AudioInputDeviceID  string `json:"audio_input_device_id,omitempty"`
+	AudioOutputDeviceID string `json:"audio_output_device_id,omitempty"`
 	// Screen parsing (YOLO) toggle 鈥?enables vision-based UI element detection.
 	// Default: enabled (nil = true). Uses *bool so we can distinguish "not set" from "false".
 	ScreenParsingEnabled *bool `json:"screen_parsing_enabled,omitempty"`

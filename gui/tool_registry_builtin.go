@@ -373,6 +373,14 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			return h.toolAsyncWait(args, onProgress)
 		})
 
+	// --- TTS voice synthesis ---
+	reg("tts", "将文本转换为语音消息发送给用户。IM 通道以语音气泡形式发送，桌面面板播放语音。",
+		ToolCategoryBuiltin, []string{"tts", "voice", "speech", "语音", "朗读"},
+		map[string]interface{}{
+			"text": map[string]string{"type": "string", "description": "要转换为语音的文本内容（中文，最长 300 字）"},
+		}, []string{"text"},
+		func(args map[string]interface{}) string { return h.toolTTS(args) })
+
 	// --- Long-term memory (unified) ---
 	reg("memory", "管理长期记忆（action: recall/save/list/delete）。recall 按需检索相关记忆，save 保存新记忆。",
 		ToolCategoryBuiltin, []string{"memory", "save", "remember", "list", "search", "delete", "recall"},

@@ -1,5 +1,17 @@
 let token = '';
 
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+
+  constructor(message: string, status: number, body: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
 export function setToken(t: string) { token = t; }
 export function getToken() { return token; }
 export function clearToken() { token = ''; }
@@ -14,7 +26,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   });
   if (!res.ok) {
     const j = await res.json().catch(() => ({}));
-    throw new Error((j as any).message || res.statusText);
+    throw new ApiError((j as any).message || res.statusText, res.status, j);
   }
   return res.json();
 }

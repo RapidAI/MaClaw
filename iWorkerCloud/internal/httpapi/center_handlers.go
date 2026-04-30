@@ -174,14 +174,30 @@ func HeartbeatHandler(svc *centers.Service) http.HandlerFunc {
 }
 
 // ProvisionTenantHandler lets the admin remotely create a tenant on an iWorkerCenter.
-func ProvisionTenantHandler(svc *centers.Service) http.HandlerFunc {
+
+func ProvisionReadinessHandler(svc *centers.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		centerID := r.PathValue("id")
-		center, err := svc.EnsureProvisionAllowed(r.Context(), centerID)
+		readiness, err := svc.ProvisionReadiness(r.Context(), r.PathValue("id"))
 		if err != nil {
 			writeProvisionReadinessError(w, err)
 			return
 		}
+		writeJSON(w, http.StatusOK, readiness)
+	}
+}
+func ProvisionTenantHandler(svc *centers.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		centerID := r.PathValue("id")
+		readiness, err := svc.ProvisionReadiness(r.Context(), centerID)
+		if err != nil {
+			writeProvisionReadinessError(w, err)
+			return
+		}
+		if !readiness.Allowed {
+			writeProvisionNotReady(w, readiness)
+			return
+		}
+		center := readiness.Center
 
 		var req struct {
 			CompanyName   string `json:"company_name"`
@@ -223,6 +239,13 @@ func ProvisionTenantHandler(svc *centers.Service) http.HandlerFunc {
 	}
 }
 
+func writeProvisionNotReady(w http.ResponseWriter, readiness *centers.ProvisionReadiness) {
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error":     "CENTER_NOT_READY",
+		"message":   "center is not ready for cloud-side tenant provisioning",
+		"readiness": readiness,
+	})
+}
 func writeProvisionReadinessError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, centers.ErrNotFound):

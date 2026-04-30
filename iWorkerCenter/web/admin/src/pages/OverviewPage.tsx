@@ -2473,7 +2473,11 @@ export function OverviewPage({
         </div>
         <div className="executive-action-row">
           <span className="badge info">{centerStatus?.runtime_type || 'service'} / {centerStatus?.product_kind || 'iworkercenter'} / {centerStatus?.admin_console || 'web_console'}</span>
-          <span className="badge info">Providers: {centerStatus?.provider_count ?? 0}</span>
+          <span className="badge info">Runtime providers: {centerStatus?.provider_count ?? 0}</span>
+          <span className="badge info">Provider mode: {centerStatus?.runtime_provider_mode || 'settings'}</span>
+          <span className="badge info">Compute source: {centerStatus?.compute_source || 'settings'}</span>
+          <span className={badgeClass(centerStatus?.compute_sync_status?.status === 'failure' ? 'warn' : 'ok')}>Compute sync: {centerStatus?.compute_sync_status?.status || 'pending'}</span>
+          <span className="badge info">Cloud providers: {centerStatus?.cloud_provider_count ?? 0}</span>
           <span className={badgeClass(cloudTone)}>Cloud heartbeat: {cloudStatusLabel}</span>
           {cloudHeartbeat?.center_id ? <span className="badge info">Center ID: {cloudHeartbeat.center_id}</span> : null}
         </div>
@@ -2482,6 +2486,9 @@ export function OverviewPage({
           <p>{cloudHeartbeat
             ? `Last success: ${formatBoardTimestamp(cloudHeartbeat.last_success_at || '')}. Consecutive failures: ${cloudHeartbeat.consecutive_failures || 0}.`
             : 'Cloud heartbeat monitor is not configured for this service process yet.'}</p>
+          <p>{`Compute runtime: ${centerStatus?.runtime_provider_mode || 'settings'}, source: ${centerStatus?.compute_source || 'settings'}, permission: ${centerStatus?.compute_permission ? 'self-managed allowed' : 'cloud-managed'}.`}</p>
+          {centerStatus?.compute_sync_status?.last_sync_at ? <p>{`Last compute sync: ${formatBoardTimestamp(centerStatus.compute_sync_status.last_sync_at)}.`}</p> : null}
+          {centerStatus?.compute_sync_status?.error ? <p>{`Compute sync error: ${centerStatus.compute_sync_status.error}`}</p> : null}
           {cloudHeartbeat?.last_error ? <p>{`Last error: ${cloudHeartbeat.last_error}`}</p> : null}
         </div>
       </section>

@@ -22,6 +22,9 @@ type GenericResponse struct {
 	FileData     string           // Base64-encoded file data for IM delivery (optional)
 	FileName     string           // File display name (optional)
 	FileMimeType string           // File MIME type (optional)
+	VoiceData     string          // Base64-encoded voice audio for IM delivery (optional, OGG Opus or WAV)
+	VoiceFileName string          // Voice file name, e.g. "voice.ogg" (optional)
+	VoiceMimeType string          // Voice MIME type, e.g. "audio/ogg" (optional)
 }
 
 // ResponseField represents a structured key-value field in a response.

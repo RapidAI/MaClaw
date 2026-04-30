@@ -478,6 +478,19 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 			})
 		}
 	}
+
+	// Send voice message (as file — 蓝信 doesn't support native voice type).
+	if resp.VoiceData != "" {
+		voiceBytes, err := base64.StdEncoding.DecodeString(resp.VoiceData)
+		if err == nil && len(voiceBytes) > 0 {
+			_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
+				ToUserID:  toUserID,
+				FileData:  voiceBytes,
+				FileName:  resp.VoiceFileName,
+				MediaType: "file",
+			})
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
