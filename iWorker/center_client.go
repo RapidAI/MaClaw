@@ -607,6 +607,169 @@ func ackCenterGoalPushContext(ctx context.Context, centerBaseURL, tenantID strin
 	return result, nil
 }
 
+// CenterTenantOption represents a tenant discovered from iWorkerCenter.
+type CenterTenantOption struct {
+	ID          string `json:"id"`
+	CompanyName string `json:"company_name"`
+}
+
+// CenterEnrollmentDiscovery is the data a fresh iWorker needs to bind itself to a Center.
+type CenterEnrollmentDiscovery struct {
+	BaseURL          string                 `json:"base_url"`
+	SelectedTenantID string                 `json:"selected_tenant_id"`
+	Tenants          []CenterTenantOption   `json:"tenants"`
+	Roles            []CenterRole           `json:"roles"`
+	Colleagues       []CenterColleague      `json:"colleagues"`
+}
+
+func discoverCenterEnrollment(centerBaseURL, preferredTenantID string, timeoutSec int) (CenterEnrollmentDiscovery, error) {
+	return discoverCenterEnrollmentContext(context.Background(), centerBaseURL, preferredTenantID, timeoutSec)
+}
+
+func discoverCenterEnrollmentContext(ctx context.Context, centerBaseURL, preferredTenantID string, timeoutSec int) (CenterEnrollmentDiscovery, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return CenterEnrollmentDiscovery{}, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+
+	tenants, err := fetchCenterTenantsContext(ctx, centerBaseURL, timeoutSec)
+	if err != nil {
+		return CenterEnrollmentDiscovery{}, err
+	}
+	tenantID := strings.TrimSpace(preferredTenantID)
+	if tenantID == "" && len(tenants) > 0 {
+		tenantID = tenants[0].ID
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	roles, err := fetchCenterRolesContext(ctx, centerBaseURL, tenantID, timeoutSec)
+	if err != nil {
+		return CenterEnrollmentDiscovery{}, err
+	}
+	colleagues, err := fetchCenterColleaguesContext(ctx, centerBaseURL, tenantID, timeoutSec)
+	if err != nil {
+		return CenterEnrollmentDiscovery{}, err
+	}
+	return CenterEnrollmentDiscovery{BaseURL: centerBaseURL, SelectedTenantID: tenantID, Tenants: tenants, Roles: roles, Colleagues: colleagues}, nil
+}
+
+func fetchCenterTenantsContext(ctx context.Context, centerBaseURL string, timeoutSec int) ([]CenterTenantOption, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return nil, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, centerBaseURL+"/auth/tenants", nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("iWorkerCenter tenants discovery failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Tenants []CenterTenantOption `json:"tenants"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	if result.Tenants == nil {
+		result.Tenants = []CenterTenantOption{}
+	}
+	return result.Tenants, nil
+}
+
+func fetchCenterRolesContext(ctx context.Context, centerBaseURL, tenantID string, timeoutSec int) ([]CenterRole, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return nil, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, centerBaseURL+"/client/roles", nil)
+	if err != nil {
+		return nil, err
+	}
+	setCenterTenantHeader(req, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("iWorkerCenter roles discovery failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Roles []CenterRole `json:"roles"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	if result.Roles == nil {
+		result.Roles = []CenterRole{}
+	}
+	return result.Roles, nil
+}
+
+func fetchCenterColleaguesContext(ctx context.Context, centerBaseURL, tenantID string, timeoutSec int) ([]CenterColleague, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return nil, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, centerBaseURL+"/client/colleagues", nil)
+	if err != nil {
+		return nil, err
+	}
+	setCenterTenantHeader(req, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("iWorkerCenter colleagues discovery failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Colleagues []CenterColleague `json:"colleagues"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	if result.Colleagues == nil {
+		result.Colleagues = []CenterColleague{}
+	}
+	return result.Colleagues, nil
+}
 func setCenterTenantHeader(req *http.Request, tenantID string) {
 	if req == nil {
 		return

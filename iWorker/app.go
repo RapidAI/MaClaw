@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -711,6 +713,98 @@ func (a *App) DeleteWorkerMemory(memoryID string) error {
 		return fmt.Errorf("iWorkerCenter is disabled; memory must be deleted from the registered center")
 	}
 	return deleteWorkerMemory(resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), memoryID, settings.Center.TimeoutSec)
+}
+
+type CenterEnrollmentRequest struct {
+	BaseURL           string `json:"base_url"`
+	PreferredTenantID string `json:"preferred_tenant_id"`
+	TimeoutSec        int    `json:"timeout_sec"`
+}
+
+type ApplyCenterEnrollmentRequest struct {
+	BaseURL         string `json:"base_url"`
+	TenantID        string `json:"tenant_id"`
+	DepartmentID    string `json:"department_id"`
+	WorkerID        string `json:"worker_id"`
+	RoleName        string `json:"role_name"`
+	RoleDescription string `json:"role_description"`
+	TimeoutSec      int    `json:"timeout_sec"`
+}
+
+func (a *App) DiscoverCenterEnrollment(req CenterEnrollmentRequest) (CenterEnrollmentDiscovery, error) {
+	baseURL := strings.TrimSpace(req.BaseURL)
+	if baseURL == "" {
+		settings, _ := readDiWorkerSettings()
+		settings = normalizeDiWorkerSettings(settings)
+		baseURL = resolvedCenterBaseURL(settings)
+	}
+	return discoverCenterEnrollment(baseURL, req.PreferredTenantID, req.TimeoutSec)
+}
+
+func (a *App) ApplyCenterEnrollment(req ApplyCenterEnrollmentRequest) (DiWorkerSettings, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	if baseURL == "" {
+		return DiWorkerSettings{}, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	workerID := strings.TrimSpace(req.WorkerID)
+	if workerID == "" {
+		return DiWorkerSettings{}, fmt.Errorf("worker_id is required")
+	}
+
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return DiWorkerSettings{}, err
+		}
+		settings = defaultDiWorkerSettings()
+	}
+	settings = normalizeDiWorkerSettings(settings)
+	settings.Center.Enabled = true
+	settings.Center.BaseURL = baseURL
+	settings.Center.TenantID = firstNonEmpty(strings.TrimSpace(req.TenantID), settings.Center.TenantID, "default")
+	settings.Center.DepartmentID = firstNonEmpty(strings.TrimSpace(req.DepartmentID), settings.Center.DepartmentID, "default")
+	settings.Center.WorkerID = workerID
+	if req.TimeoutSec > 0 {
+		settings.Center.TimeoutSec = req.TimeoutSec
+	}
+	if host, port := centerHostPortFromBaseURL(baseURL); host != "" {
+		settings.Center.Host = host
+		if port > 0 {
+			settings.Center.Port = port
+		}
+	}
+	if name := strings.TrimSpace(req.RoleName); name != "" {
+		settings.RoleProfile.Name = name
+	}
+	if desc := strings.TrimSpace(req.RoleDescription); desc != "" {
+		settings.RoleProfile.Description = desc
+	}
+	if err := a.SaveDiWorkerSettings(settings); err != nil {
+		return DiWorkerSettings{}, err
+	}
+	return normalizeDiWorkerSettings(settings), nil
+}
+
+func centerHostPortFromBaseURL(baseURL string) (string, int) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Hostname() == "" {
+		return "", 0
+	}
+	port := 0
+	if parsed.Port() != "" {
+		if n, err := strconv.Atoi(parsed.Port()); err == nil {
+			port = n
+		}
+	}
+	if port == 0 {
+		switch parsed.Scheme {
+		case "https":
+			port = 443
+		case "http":
+			port = 80
+		}
+	}
+	return parsed.Hostname(), port
 }
 func (a *App) CheckCenterHealth() (CenterHealthStatus, error) {
 	settings, err := a.LoadDiWorkerSettings()

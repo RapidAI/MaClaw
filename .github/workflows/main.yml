@@ -1041,11 +1041,18 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | sort
 
+      - name: Prepare release notes
+        run: |
+          git tag -l --format='%(contents)' "${{ github.ref_name }}" > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "Release ${{ github.ref_name }}" > release_notes.md
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
-          generate_release_notes: true
+          body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
@@ -1069,7 +1076,7 @@ jobs:
           GITEE_TARGET: main
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_NAME: ${{ github.ref_name }}
-          RELEASE_BODY: Synced from GitHub release ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          RELEASE_BODY_FILE: release_notes.md
           RELEASE_PRERELEASE: ${{ contains(github.ref_name, '-') }}
           RELEASE_ASSETS_DIR: artifacts
         run: python3 .github/scripts/sync_gitee_release.py

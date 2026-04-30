@@ -107,6 +107,49 @@ const workflowTypeLabel = (type: string, lang?: string): string => {
 
 /* ── Theme definitions ── */
 
+function isSmallTalkPrompt(text: string): boolean {
+    const normalized = text.trim().toLowerCase().replace(/[\s，。！？!?,.～~]+/g, "");
+    if (!normalized) return false;
+    return /^(你好|您好|在吗|在不在|哈喽|hello|hi|hey|谢谢|感谢|多谢|好的|好|ok|嗯|嗯嗯|测试|test)$/.test(normalized);
+}
+
+function messageHasStructuredTaskSignal(message: ChatMessage | undefined): boolean {
+    if (!message) return false;
+    if (message.role === 'error') return true;
+    if (message.confirmation || message.unfinishedSlot) return true;
+    if (message.localFilePath || (message.localFilePaths?.length ?? 0) > 0) return true;
+    if (message.workflowPhaseID || message.workflowDocLabel) return true;
+    if ((message.fields?.length ?? 0) > 0 || (message.actions?.length ?? 0) > 0) return true;
+    if (message.thumbnailBase64) return true;
+    return false;
+}
+
+function messageHasTaskOutputSignal(message: ChatMessage | undefined): boolean {
+    if (messageHasStructuredTaskSignal(message)) return true;
+    if (!message) return false;
+    return /已完成|完成|失败|错误|异常|已暂停|已取消|需要确认|已生成|已创建|已修改|已保存|保存到|文件|文档|路径|部署|构建|测试|执行|工具调用|命令/.test(message.content || '');
+}
+
+function shouldSpeakTaskResult(messages: ChatMessage[], progressMessages: ChatMessage[]): boolean {
+    let lastUserIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') {
+            lastUserIndex = i;
+            break;
+        }
+    }
+    if (lastUserIndex < 0) return false;
+
+    const userMessage = messages[lastUserIndex];
+    const roundMessages = messages.slice(lastUserIndex + 1);
+    const hasStructuredSignal = roundMessages.some(messageHasStructuredTaskSignal);
+    const hasRoundSignal = roundMessages.some(messageHasTaskOutputSignal);
+    const hasRecentProgress = progressMessages.some(msg => msg.timestamp >= userMessage.timestamp);
+
+    if (isSmallTalkPrompt(userMessage.content)) return hasStructuredSignal || hasRecentProgress;
+    return hasRoundSignal || hasRecentProgress;
+}
+
 interface Theme {
     bg: string;
     titleBarBg: string;
@@ -1478,10 +1521,15 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     // Auto-speak: when TTS is enabled and a response completes (sending→false),
     // generate a spoken status summary: "{task} 已完成/失败/暂停/需要确认，该任务是 {description}"
     const prevSendingRef = useRef(sending);
+    const ttsRoundProgressStartRef = useRef(progressMessages.length);
     useEffect(() => {
         const wasSending = prevSendingRef.current;
         prevSendingRef.current = sending;
-        if (wasSending && !sending && ttsEnabled && messages.length > 0) {
+        if (!wasSending && sending) {
+            ttsRoundProgressStartRef.current = progressMessages.length;
+        }
+        const roundProgressMessages = progressMessages.slice(ttsRoundProgressStartRef.current);
+        if (wasSending && !sending && ttsEnabled && messages.length > 0 && shouldSpeakTaskResult(messages, roundProgressMessages)) {
             // Find the last user message (= task description) and last assistant/error message (= status)
             let userText = '';
             let status: 'success' | 'error' | 'paused' | 'needs_confirmation' = 'success';
@@ -1506,7 +1554,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             // Send structured data to backend for summary generation
             SpeakText(JSON.stringify({ userText, status })).catch(() => {});
         }
-    }, [sending, ttsEnabled, messages]);
+    }, [sending, ttsEnabled, messages, progressMessages]);
 
     const { queue, addEntry, removeEntry, updateEntry, reorderEntry, extractEntry, clearQueue, restoreQueue } = useBufferQueue();
 

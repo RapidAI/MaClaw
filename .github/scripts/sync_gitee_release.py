@@ -16,6 +16,11 @@ TARGET = os.environ.get("GITEE_TARGET", "main")
 TAG = os.environ["RELEASE_TAG"]
 NAME = os.environ.get("RELEASE_NAME") or TAG
 BODY = os.environ.get("RELEASE_BODY") or ""
+BODY_FILE = os.environ.get("RELEASE_BODY_FILE")
+if BODY_FILE:
+    body_path = pathlib.Path(BODY_FILE)
+    if body_path.exists():
+        BODY = body_path.read_text(encoding="utf-8")
 PRERELEASE = os.environ.get("RELEASE_PRERELEASE", "false").lower() == "true"
 ASSETS_DIR = pathlib.Path(os.environ.get("RELEASE_ASSETS_DIR", "artifacts"))
 API = f"https://gitee.com/api/v5/repos/{OWNER}/{REPO}"
