@@ -369,6 +369,8 @@ export function IsMemoryCompressing():Promise<boolean>;
 
 export function GetMemoryHealth():Promise<any>;
 
+export function GetMemoryStatus():Promise<any>;
+
 export function ListArchiveMemories(arg1:string, arg2:string):Promise<Array<any>>;
 
 export function RestoreArchiveMemory(arg1:string):Promise<void>;

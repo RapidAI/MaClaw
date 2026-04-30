@@ -732,3 +732,82 @@ func TestTenantPolicyPersistsInSystemSettings(t *testing.T) {
 		t.Fatalf("loaded policy = %+v ok=%t", loaded, ok)
 	}
 }
+
+func TestHandlerPolicyEndpointRoundTripsTenantPolicy(t *testing.T) {
+	svc, _ := newTestService(t, Config{WorkersPerShard: 9, MaxWatchers: 4})
+	handler := NewHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterAdminRoutes(mux)
+
+	body := bytes.NewBufferString(`{"enabled":true,"single_flight":true,"max_run_seconds":90,"scale_by_worker_count":true}`)
+	putReq := httptest.NewRequest(http.MethodPut, "/admin/goalwatch/policy", body)
+	putReq.Header.Set("X-Tenant-ID", "tenant-a")
+	putRes := httptest.NewRecorder()
+	mux.ServeHTTP(putRes, putReq)
+	if putRes.Code != http.StatusOK {
+		t.Fatalf("put status=%d body=%s", putRes.Code, putRes.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/goalwatch/policy", nil)
+	getReq.Header.Set("X-Tenant-ID", "tenant-a")
+	getRes := httptest.NewRecorder()
+	mux.ServeHTTP(getRes, getReq)
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", getRes.Code, getRes.Body.String())
+	}
+	var resp struct {
+		Policy    TenantPolicy `json:"policy"`
+		Persisted bool         `json:"persisted"`
+	}
+	if err := json.NewDecoder(getRes.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Persisted || resp.Policy.MaxRunSeconds != 90 || resp.Policy.WorkersPerShard != 9 || resp.Policy.MaxWatchers != 4 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestMonitorUsesTenantPolicyForShardScaling(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, _, provider := newTestServiceWithProvider(t, Config{WorkersPerShard: 50, MaxWatchers: 16})
+	runtimeSvc := agentruntime.NewService(agentruntime.NewRepo(provider.Write, provider.Read))
+	svc.SetAgentRuntime(runtimeSvc)
+	for _, workerID := range []string{"worker-1", "worker-2", "worker-3", "worker-4", "worker-5"} {
+		if _, err := runtimeSvc.Heartbeat("tenant-a", agentruntime.HeartbeatRequest{WorkerID: workerID, InstanceID: workerID + ":executor", Role: "executor", Status: "online"}, now); err != nil {
+			t.Fatalf("heartbeat %s: %v", workerID, err)
+		}
+	}
+	if _, err := svc.SaveTenantPolicy(context.Background(), "tenant-a", TenantPolicy{Enabled: true, SingleFlight: true, ScaleByWorkerCount: true, WorkersPerShard: 2, MaxWatchers: 3}); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+
+	monitor := NewMonitor(svc, nil)
+	monitor.checkTenantSharded("tenant-a", now)
+	status := monitor.Status()
+	if len(status.Tenants) != 1 {
+		t.Fatalf("status tenants = %+v", status.Tenants)
+	}
+	tenantStatus := status.Tenants[0]
+	if !tenantStatus.PolicyPersisted || tenantStatus.Policy.WorkersPerShard != 2 || tenantStatus.ShardCount != 3 || len(tenantStatus.ShardStatuses) != 3 {
+		t.Fatalf("tenant status did not use persisted policy: %+v", tenantStatus)
+	}
+}
+
+func TestMonitorUsesTenantPolicyForStalledThreshold(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo := newTestService(t, Config{StalledAfter: 10 * time.Minute, PushCooldown: 10 * time.Minute})
+	if _, err := svc.SaveTenantPolicy(context.Background(), "tenant-a", TenantPolicy{Enabled: true, SingleFlight: true, ScaleByWorkerCount: true, StalledAfterSeconds: 60, PushCooldownSeconds: 600}); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+	task := &collaboration.Task{ID: "task-policy-threshold", Title: "policy threshold", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-90 * time.Second)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	monitor := NewMonitor(svc, nil)
+	monitor.checkTenantSharded("tenant-a", now)
+	status := monitor.Status()
+	if len(status.Tenants) != 1 || status.Tenants[0].Pushed != 1 || status.Tenants[0].Checked != 1 {
+		t.Fatalf("expected policy threshold to push task, got %+v", status.Tenants)
+	}
+}

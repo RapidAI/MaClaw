@@ -13,6 +13,7 @@ import {
     IsMemoryCompressing,
     GetMemoryMaxBackups,
     SetMemoryMaxBackups,
+    GetMemoryStatus,
     ListSessionHistory,
     SearchSessionHistory,
     GetSessionFullText,
@@ -63,6 +64,8 @@ const CATEGORIES = [
     { value: "instruction", label: { zh: "指令", en: "Instruction" } },
     { value: "conversation_summary", label: { zh: "对话摘要", en: "Summary" } },
     { value: "session_checkpoint", label: { zh: "会话检查点", en: "Checkpoint" } },
+    { value: "task_artifact", label: { zh: "任务产出物", en: "Task Artifact" } },
+    { value: "profile", label: { zh: "用户画像", en: "Profile" } },
 ] as const;
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -73,6 +76,8 @@ const CATEGORY_COLORS: Record<string, string> = {
     instruction: "var(--theme-warning)",
     conversation_summary: "var(--theme-primary-strong, #8b5cf6)",
     session_checkpoint: "var(--theme-text-muted)",
+    task_artifact: "#f97316",
+    profile: "#14b8a6",
 };
 
 type Props = { lang: string };
@@ -150,7 +155,7 @@ const dangerBtnStyle: React.CSSProperties = {
 };
 
 export function MemoryManagementPanel({ lang }: Props) {
-    const [tab, setTab] = useState<"edit" | "timemachine" | "history">("edit");
+    const [tab, setTab] = useState<"edit" | "timemachine" | "history" | "status">("edit");
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
     // Revision counter — bumped by TimeMachine after restore/compress so
@@ -165,6 +170,9 @@ export function MemoryManagementPanel({ lang }: Props) {
             <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${colors.border}`, marginBottom: 10 }} role="tablist">
                 <button role="tab" aria-selected={tab === "edit"} style={tabBtnStyle(tab === "edit")} onClick={() => setTab("edit")}>
                     📝 {t("Memory Edit", "记忆编辑")}
+                </button>
+                <button role="tab" aria-selected={tab === "status"} style={tabBtnStyle(tab === "status")} onClick={() => setTab("status")}>
+                    📊 {t("Memory Status", "记忆状态")}
                 </button>
                 <button role="tab" aria-selected={tab === "history"} style={tabBtnStyle(tab === "history")} onClick={() => setTab("history")}>
                     💬 {t("Session History", "会话历史")}
@@ -183,10 +191,268 @@ export function MemoryManagementPanel({ lang }: Props) {
             </div>
             {tab === "edit"
                 ? <MemoryEditTab t={t} lang={lang} revision={revision} onCountChange={setEntryCount} createRef={createRef} />
+                : tab === "status"
+                ? <MemoryStatusTab t={t} lang={lang} />
                 : tab === "history"
                 ? <SessionHistoryTab t={t} lang={lang} />
                 : <TimeMachineTab t={t} lang={lang} onDataChanged={bumpRevision} />}
         </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tab: Memory Status (pie chart + capacity gauge)
+// ---------------------------------------------------------------------------
+
+interface MemoryStatusData {
+    total_entries: number;
+    max_capacity: number;
+    capacity_percent: number;
+    archived_entries: number;
+    stale_entries: number;
+    pinned_entries: number;
+    embedder_active: boolean;
+    oldest_entry?: string;
+    newest_entry?: string;
+    categories: Array<{
+        category: string;
+        label: string;
+        count: number;
+        percent: number;
+    }>;
+}
+
+// Pie chart color palette — visually distinct, works on both light and dark themes.
+const PIE_COLORS = [
+    "#3b82f6", // blue
+    "#10b981", // emerald
+    "#f59e0b", // amber
+    "#ef4444", // red
+    "#8b5cf6", // violet
+    "#ec4899", // pink
+    "#06b6d4", // cyan
+    "#f97316", // orange
+    "#14b8a6", // teal
+    "#6366f1", // indigo
+    "#a855f7", // purple
+    "#84cc16", // lime
+    "#e11d48", // rose
+];
+
+function MemoryStatusTab({ t, lang }: { t: (en: string, zhHans: string, zhHant?: string) => string; lang: string }) {
+    const [data, setData] = useState<MemoryStatusData | null>(null);
+    const [loading, setLoading] = useState(true);
+
+    const fetchData = useCallback(async () => {
+        setLoading(true);
+        try {
+            const result = await GetMemoryStatus();
+            setData(result);
+        } catch (e) {
+            console.error("GetMemoryStatus failed:", e);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => { fetchData(); }, [fetchData]);
+
+    if (loading || !data) {
+        return <div style={{ textAlign: "center", padding: 30, color: colors.textMuted, fontSize: "0.78rem" }}>
+            {t("Loading…", "加载中…")}
+        </div>;
+    }
+
+    const cats = data.categories || [];
+    const totalEntries = data.total_entries || 0;
+    const maxCap = data.max_capacity || 2000;
+    const capPct = data.capacity_percent || 0;
+
+    return (
+        <div style={{ padding: "0 4px" }}>
+            {/* ── Capacity gauge ── */}
+            <div style={{
+                border: `1px solid ${colors.border}`, borderRadius: radius.lg,
+                padding: "14px 16px", marginBottom: 14, background: colors.surface,
+            }}>
+                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text, marginBottom: 8 }}>
+                    {t("Capacity", "容量使用")}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                        <div style={{
+                            height: 10, borderRadius: 5, background: colors.surfaceMuted,
+                            overflow: "hidden", border: `1px solid ${colors.borderLight}`,
+                        }}>
+                            <div style={{
+                                height: "100%", borderRadius: 5,
+                                width: `${Math.min(capPct, 100)}%`,
+                                background: capPct >= 90 ? "var(--theme-danger)" : capPct >= 70 ? "var(--theme-warning)" : "var(--theme-success)",
+                                transition: "width 0.3s ease",
+                            }} />
+                        </div>
+                    </div>
+                    <span style={{ fontSize: "0.82rem", fontWeight: 700, color: colors.text, minWidth: 90, textAlign: "right" }}>
+                        {totalEntries} / {maxCap}
+                    </span>
+                </div>
+                <div style={{ fontSize: "0.7rem", color: colors.textMuted, marginTop: 4 }}>
+                    {capPct >= 90
+                        ? t("⚠️ Capacity nearly full. Old memories will be evicted.", "⚠️ 容量接近上限，旧记忆将被自动淘汰。")
+                        : capPct >= 70
+                        ? t("Capacity usage is moderate.", "容量使用适中。")
+                        : t("Capacity usage is healthy.", "容量充足。")}
+                </div>
+            </div>
+
+            {/* ── Pie chart + legend ── */}
+            <div style={{
+                border: `1px solid ${colors.border}`, borderRadius: radius.lg,
+                padding: "14px 16px", marginBottom: 14, background: colors.surface,
+            }}>
+                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text, marginBottom: 12 }}>
+                    {t("Category Distribution", "分类占比")}
+                </div>
+                {cats.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: 20, color: colors.textMuted, fontSize: "0.76rem" }}>
+                        {t("No memory entries yet.", "暂无记忆数据。")}
+                    </div>
+                ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+                        {/* SVG Pie Chart */}
+                        <PieChart data={cats} size={160} />
+                        {/* Legend */}
+                        <div style={{ flex: 1, minWidth: 160 }}>
+                            {cats.map((c, i) => (
+                                <div key={c.category} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                                    <span style={{
+                                        display: "inline-block", width: 10, height: 10, borderRadius: 2,
+                                        background: PIE_COLORS[i % PIE_COLORS.length], flexShrink: 0,
+                                    }} />
+                                    <span style={{ fontSize: "0.74rem", color: colors.text, flex: 1 }}>
+                                        {c.label}
+                                    </span>
+                                    <span style={{ fontSize: "0.72rem", color: colors.textSecondary, fontVariantNumeric: "tabular-nums" }}>
+                                        {c.count}{t(" entries", "条")} ({c.percent.toFixed(1)}%)
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* ── Detail stats ── */}
+            <div style={{
+                display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                gap: 8, marginBottom: 14,
+            }}>
+                <StatCard label={t("Archived", "已归档")} value={data.archived_entries} icon="📦" />
+                <StatCard label={t("Stale", "过期")} value={data.stale_entries} icon="🕸️" />
+                <StatCard label={t("Pinned", "固定")} value={data.pinned_entries} icon="📌" />
+                <StatCard label={t("Embedder", "向量化")} value={data.embedder_active ? "✅" : "❌"} icon="🔢" />
+            </div>
+
+            {/* ── Time range ── */}
+            {(data.oldest_entry || data.newest_entry) && (
+                <div style={{
+                    border: `1px solid ${colors.border}`, borderRadius: radius.lg,
+                    padding: "10px 16px", background: colors.surface,
+                    fontSize: "0.72rem", color: colors.textSecondary,
+                    display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8,
+                }}>
+                    {data.oldest_entry && <span>📅 {t("Oldest", "最早")}: {fmtDate(data.oldest_entry, lang)}</span>}
+                    {data.newest_entry && <span>📅 {t("Newest", "最新")}: {fmtDate(data.newest_entry, lang)}</span>}
+                </div>
+            )}
+
+            {/* ── Refresh button ── */}
+            <div style={{ textAlign: "center", marginTop: 12 }}>
+                <button onClick={fetchData} style={{
+                    padding: "4px 16px", fontSize: "0.72rem", fontWeight: 600,
+                    background: "transparent", color: colors.primary,
+                    border: `1px solid ${colors.primary}`, borderRadius: radius.md, cursor: "pointer",
+                }}>
+                    🔄 {t("Refresh", "刷新")}
+                </button>
+            </div>
+        </div>
+    );
+}
+
+/** Small stat card for the detail grid. */
+function StatCard({ label, value, icon }: { label: string; value: number | string; icon: string }) {
+    return (
+        <div style={{
+            border: `1px solid ${colors.border}`, borderRadius: radius.md,
+            padding: "10px 12px", background: colors.surface, textAlign: "center",
+        }}>
+            <div style={{ fontSize: "1.1rem", marginBottom: 2 }}>{icon}</div>
+            <div style={{ fontSize: "0.9rem", fontWeight: 700, color: colors.text }}>{value}</div>
+            <div style={{ fontSize: "0.68rem", color: colors.textMuted }}>{label}</div>
+        </div>
+    );
+}
+
+/** Pure SVG donut/pie chart — no external dependencies. */
+function PieChart({ data, size = 160 }: { data: Array<{ category: string; label: string; count: number; percent: number }>; size?: number }) {
+    const cx = size / 2;
+    const cy = size / 2;
+    const outerR = size / 2 - 4;
+    const innerR = outerR * 0.55; // donut hole
+
+    // Build arc paths.
+    let startAngle = -90; // start from top
+    const arcs: Array<{ path: string; color: string; label: string; pct: number }> = [];
+
+    for (let i = 0; i < data.length; i++) {
+        const pct = data[i].percent;
+        const sweep = (pct / 100) * 360;
+        if (sweep < 0.5) continue; // skip tiny slices
+
+        const endAngle = startAngle + sweep;
+        const largeArc = sweep > 180 ? 1 : 0;
+
+        const toRad = (deg: number) => (deg * Math.PI) / 180;
+        const x1o = cx + outerR * Math.cos(toRad(startAngle));
+        const y1o = cy + outerR * Math.sin(toRad(startAngle));
+        const x2o = cx + outerR * Math.cos(toRad(endAngle));
+        const y2o = cy + outerR * Math.sin(toRad(endAngle));
+        const x1i = cx + innerR * Math.cos(toRad(endAngle));
+        const y1i = cy + innerR * Math.sin(toRad(endAngle));
+        const x2i = cx + innerR * Math.cos(toRad(startAngle));
+        const y2i = cy + innerR * Math.sin(toRad(startAngle));
+
+        const path = [
+            `M ${x1o} ${y1o}`,
+            `A ${outerR} ${outerR} 0 ${largeArc} 1 ${x2o} ${y2o}`,
+            `L ${x1i} ${y1i}`,
+            `A ${innerR} ${innerR} 0 ${largeArc} 0 ${x2i} ${y2i}`,
+            "Z",
+        ].join(" ");
+
+        arcs.push({ path, color: PIE_COLORS[i % PIE_COLORS.length], label: data[i].label, pct });
+        startAngle = endAngle;
+    }
+
+    // Center text: total count.
+    const total = data.reduce((s, d) => s + d.count, 0);
+
+    return (
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Memory category pie chart">
+            {arcs.map((a, i) => (
+                <path key={i} d={a.path} fill={a.color} stroke={colors.surface} strokeWidth={1.5}>
+                    <title>{a.label}: {a.pct.toFixed(1)}%</title>
+                </path>
+            ))}
+            {/* Center label */}
+            <text x={cx} y={cy - 6} textAnchor="middle" fill="currentColor" fontSize={size * 0.13} fontWeight={700}>
+                {total}
+            </text>
+            <text x={cx} y={cy + 10} textAnchor="middle" fill="currentColor" fontSize={size * 0.075} opacity={0.6}>
+                条记忆
+            </text>
+        </svg>
     );
 }
 

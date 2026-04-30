@@ -627,6 +627,95 @@ func (a *App) GetMemoryHealth() *memory.HealthReport {
 	return a.memoryStore.HealthReport()
 }
 
+// MemoryStatusData holds the structured memory status for the frontend pie chart.
+type MemoryStatusData struct {
+	TotalEntries    int                  `json:"total_entries"`
+	MaxCapacity     int                  `json:"max_capacity"`
+	CapacityPercent float64              `json:"capacity_percent"`
+	ArchivedEntries int                  `json:"archived_entries"`
+	StaleEntries    int                  `json:"stale_entries"`
+	PinnedEntries   int                  `json:"pinned_entries"`
+	EmbedderActive  bool                 `json:"embedder_active"`
+	OldestEntry     string               `json:"oldest_entry,omitempty"`
+	NewestEntry     string               `json:"newest_entry,omitempty"`
+	Categories      []MemoryStatusCatRow `json:"categories"`
+}
+
+// MemoryStatusCatRow is one row in the category breakdown.
+type MemoryStatusCatRow struct {
+	Category string `json:"category"`
+	Label    string `json:"label"`
+	Count    int    `json:"count"`
+	Percent  float64 `json:"percent"`
+}
+
+// GetMemoryStatus returns structured memory status data for the frontend
+// pie chart and the /memory slash command (Wails binding).
+func (a *App) GetMemoryStatus() *MemoryStatusData {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		return &MemoryStatusData{MaxCapacity: 2000}
+	}
+	hr := a.memoryStore.HealthReport()
+	data := &MemoryStatusData{
+		TotalEntries:    hr.ActiveEntries,
+		MaxCapacity:     hr.MaxCapacity,
+		CapacityPercent: hr.CapacityPercent,
+		ArchivedEntries: hr.ArchivedEntries,
+		StaleEntries:    hr.StaleEntries,
+		PinnedEntries:   hr.PinnedEntries,
+		EmbedderActive:  hr.EmbedderActive,
+		OldestEntry:     hr.OldestEntry,
+		NewestEntry:     hr.NewestEntry,
+	}
+
+	// Category display labels (zh).
+	catLabels := map[string]string{
+		"self_identity":        "自我认知",
+		"user_fact":            "用户事实",
+		"preference":           "偏好设置",
+		"project_knowledge":    "项目知识",
+		"instruction":          "指令",
+		"conversation_summary": "对话摘要",
+		"session_checkpoint":   "会话检查点",
+		"task_artifact":        "任务产出物",
+		"profile":              "用户画像",
+		"user":                 "用户信息",
+		"feedback":             "反馈",
+		"project":              "项目",
+		"reference":            "引用",
+	}
+
+	// Build category rows from HealthReport.CategoryCounts (includes ALL categories).
+	total := hr.ActiveEntries
+	if total == 0 {
+		total = 1 // avoid division by zero
+	}
+	for cat, count := range hr.CategoryCounts {
+		label := catLabels[cat]
+		if label == "" {
+			label = cat
+		}
+		data.Categories = append(data.Categories, MemoryStatusCatRow{
+			Category: cat,
+			Label:    label,
+			Count:    count,
+			Percent:  float64(count) / float64(total) * 100,
+		})
+	}
+	// Sort by count descending for consistent display.
+	sortCatRows(data.Categories)
+	return data
+}
+
+func sortCatRows(rows []MemoryStatusCatRow) {
+	for i := 1; i < len(rows); i++ {
+		for j := i; j > 0 && rows[j].Count > rows[j-1].Count; j-- {
+			rows[j], rows[j-1] = rows[j-1], rows[j]
+		}
+	}
+}
+
 // GetMemoryMaxBackups returns the configured max backup retention count (Wails binding).
 func (a *App) GetMemoryMaxBackups() int {
 	cfg, err := a.LoadConfig()

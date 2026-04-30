@@ -49,6 +49,7 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/goalwatch/check", h.handleCheck)
 	mux.HandleFunc("/admin/goalwatch/status", h.handleStatus)
 	mux.HandleFunc("/admin/goalwatch/health", h.handleHealth)
+	mux.HandleFunc("/admin/goalwatch/policy", h.handlePolicy)
 }
 
 func parsePushAction(path string) (string, string) {
@@ -222,6 +223,36 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, h.monitor.Health(time.Now().UTC()))
 }
 
+func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.svc == nil {
+		response.Internal(w, "goalwatch service is unavailable")
+		return
+	}
+	tid := requestTenantID(r)
+	switch r.Method {
+	case http.MethodGet:
+		policy, persisted, err := h.svc.GetTenantPolicy(r.Context(), tid)
+		if err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
+		response.OK(w, map[string]any{"policy": policy, "persisted": persisted})
+	case http.MethodPut:
+		var req TenantPolicy
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
+			return
+		}
+		policy, err := h.svc.SaveTenantPolicy(r.Context(), tid, req)
+		if err != nil {
+			response.BadRequest(w, "SAVE_POLICY_FAILED", err.Error())
+			return
+		}
+		response.OK(w, map[string]any{"policy": policy, "persisted": true})
+	default:
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or PUT")
+	}
+}
 func configStatus(svc *Service) MonitorConfigStatus {
 	if svc == nil {
 		return MonitorConfigStatus{}

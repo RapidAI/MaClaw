@@ -271,6 +271,31 @@ func (s *Service) normalizeTenantPolicy(policy TenantPolicy) TenantPolicy {
 	return policy
 }
 
+func (s *Service) serviceForTenantPolicy(policy TenantPolicy) *Service {
+	if s == nil {
+		return nil
+	}
+	cfg := s.config
+	if policy.StalledAfterSeconds > 0 {
+		cfg.StalledAfter = time.Duration(policy.StalledAfterSeconds) * time.Second
+	}
+	if policy.PushCooldownSeconds > 0 {
+		cfg.PushCooldown = time.Duration(policy.PushCooldownSeconds) * time.Second
+	}
+	if policy.TickIntervalSeconds > 0 {
+		cfg.TickInterval = time.Duration(policy.TickIntervalSeconds) * time.Second
+	}
+	if policy.LeaseTTLSeconds > 0 {
+		cfg.LeaseTTL = time.Duration(policy.LeaseTTLSeconds) * time.Second
+	}
+	if policy.WorkersPerShard > 0 {
+		cfg.WorkersPerShard = policy.WorkersPerShard
+	}
+	if policy.MaxWatchers > 0 {
+		cfg.MaxWatchers = policy.MaxWatchers
+	}
+	return &Service{collabRepo: s.collabRepo, agentRuntime: s.agentRuntime, config: NewService(s.collabRepo, cfg).config}
+}
 func (s *Service) SetAgentRuntime(runtime *agentruntime.Service) {
 	if s != nil {
 		s.agentRuntime = runtime
@@ -767,11 +792,24 @@ func (m *Monitor) checkAll(now time.Time) {
 
 func (m *Monitor) checkTenantSharded(tenantID string, now time.Time) {
 	startedAt := time.Now().UTC()
+	policy, persisted, err := m.svc.GetTenantPolicy(context.Background(), tenantID)
+	if err != nil {
+		status := TenantMonitorStatus{TenantID: normalizeTenantID(tenantID), StartedAt: startedAt, FinishedAt: time.Now().UTC(), Error: err.Error(), ShardStatuses: []MonitorShardStatus{{ShardIndex: 0, ShardCount: 1, Error: err.Error()}}}
+		m.recordStatus(status)
+		return
+	}
+	if !policy.Enabled {
+		status := TenantMonitorStatus{TenantID: normalizeTenantID(tenantID), Policy: policy, PolicyPersisted: persisted, StartedAt: startedAt, FinishedAt: time.Now().UTC(), ShardCount: 0, ShardStatuses: []MonitorShardStatus{}}
+		m.recordStatus(status)
+		return
+	}
+
+	svc := m.svc.serviceForTenantPolicy(policy)
 	iworkerCount := m.knownIWorkerCount(tenantID, now)
-	shardCount := m.recommendedShardCountForIWorkers(iworkerCount)
-	status := TenantMonitorStatus{TenantID: normalizeTenantID(tenantID), StartedAt: startedAt, IWorkerCount: iworkerCount, ShardCount: shardCount, ShardStatuses: []MonitorShardStatus{}}
+	shardCount := m.recommendedShardCountForPolicy(iworkerCount, policy)
+	status := TenantMonitorStatus{TenantID: normalizeTenantID(tenantID), Policy: policy, PolicyPersisted: persisted, StartedAt: startedAt, IWorkerCount: iworkerCount, ShardCount: shardCount, ShardStatuses: []MonitorShardStatus{}}
 	if shardCount <= 1 {
-		owner, acquired, err := m.svc.acquireShardLease(context.Background(), tenantID, 0, 1, now)
+		owner, acquired, err := svc.acquireShardLease(context.Background(), tenantID, 0, 1, now)
 		if err != nil {
 			log.Printf("[goalwatch] acquire tenant %s shard=0/1 lease failed: %v", tenantID, err)
 			status.Error = err.Error()
@@ -786,8 +824,8 @@ func (m *Monitor) checkTenantSharded(tenantID string, now time.Time) {
 			m.recordStatus(status)
 			return
 		}
-		defer m.svc.releaseShardLease(context.Background(), tenantID, 0, 1, owner)
-		result, err := m.svc.CheckTenant(tenantID, now)
+		defer svc.releaseShardLease(context.Background(), tenantID, 0, 1, owner)
+		result, err := svc.CheckTenant(tenantID, now)
 		if err != nil {
 			log.Printf("[goalwatch] check tenant %s failed: %v", tenantID, err)
 			status.Error = err.Error()
@@ -813,7 +851,7 @@ func (m *Monitor) checkTenantSharded(tenantID string, now time.Time) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			owner, acquired, err := m.svc.acquireShardLease(context.Background(), tenantID, shard, shardCount, now)
+			owner, acquired, err := svc.acquireShardLease(context.Background(), tenantID, shard, shardCount, now)
 			if err != nil {
 				log.Printf("[goalwatch] acquire tenant %s shard=%d/%d lease failed: %v", tenantID, shard, shardCount, err)
 				results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount, Error: err.Error()}
@@ -823,8 +861,8 @@ func (m *Monitor) checkTenantSharded(tenantID string, now time.Time) {
 				results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount}
 				return
 			}
-			defer m.svc.releaseShardLease(context.Background(), tenantID, shard, shardCount, owner)
-			result, err := m.svc.CheckTenantShard(tenantID, now, shard, shardCount)
+			defer svc.releaseShardLease(context.Background(), tenantID, shard, shardCount, owner)
+			result, err := svc.CheckTenantShard(tenantID, now, shard, shardCount)
 			if err != nil {
 				log.Printf("[goalwatch] check tenant %s shard=%d/%d failed: %v", tenantID, shard, shardCount, err)
 				results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount, LeaseOwner: owner, LeaseHeld: true, Error: err.Error()}
@@ -850,7 +888,27 @@ func (m *Monitor) checkTenantSharded(tenantID string, now time.Time) {
 		log.Printf("[goalwatch] tenant=%s pushed=%d checked=%d watchers=%d", status.TenantID, status.Pushed, status.Checked, shardCount)
 	}
 }
-
+func (m *Monitor) recommendedShardCountForPolicy(iworkers int, policy TenantPolicy) int {
+	workersPerShard := policy.WorkersPerShard
+	if workersPerShard <= 0 {
+		workersPerShard = DefaultWorkersPerShard
+	}
+	maxWatchers := policy.MaxWatchers
+	if maxWatchers <= 0 {
+		maxWatchers = DefaultMaxWatchers
+	}
+	if iworkers <= 0 || !policy.ScaleByWorkerCount {
+		return 1
+	}
+	shards := (iworkers + workersPerShard - 1) / workersPerShard
+	if shards < 1 {
+		shards = 1
+	}
+	if shards > maxWatchers {
+		shards = maxWatchers
+	}
+	return shards
+}
 func (m *Monitor) recommendedShardCount(tenantID string, now time.Time) int {
 	return m.recommendedShardCountForIWorkers(m.knownIWorkerCount(tenantID, now))
 }

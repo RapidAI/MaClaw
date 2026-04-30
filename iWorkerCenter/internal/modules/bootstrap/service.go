@@ -30,15 +30,16 @@ type Service struct {
 }
 
 type persistedState struct {
-	Plans map[string]Plan  `json:"plans"`
-	Runs  map[string][]Run `json:"runs"`
+	Plans  map[string]Plan           `json:"plans"`
+	Runs   map[string][]Run          `json:"runs"`
+	Assets map[string][]AppliedAsset `json:"assets"`
 }
 
 func NewService(path string) *Service {
 	if strings.TrimSpace(path) == "" {
 		path = defaultStorePath()
 	}
-	s := &Service{path: path, state: persistedState{Plans: map[string]Plan{}, Runs: map[string][]Run{}}}
+	s := &Service{path: path, state: persistedState{Plans: map[string]Plan{}, Runs: map[string][]Run{}, Assets: map[string][]AppliedAsset{}}}
 	_ = s.load()
 	return s
 }
@@ -85,6 +86,7 @@ func (s *Service) Status(tenantID string) Status {
 		ValidationIssues:   issues,
 		LastRun:            lastRun,
 		SuggestedFirstWave: BuildFirstWave(plan),
+		AppliedAssets:      append([]AppliedAsset(nil), s.state.Assets[tenantID]...),
 	}
 }
 
@@ -133,6 +135,7 @@ func (s *Service) ApplyPlan(tenantID string, input Plan) (Plan, []ValidationIssu
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state.Plans[tenantID] = plan
+	s.state.Assets[tenantID] = append([]AppliedAsset(nil), assets...)
 	return plan, issues, assets, s.saveLocked()
 }
 
@@ -530,6 +533,9 @@ func (s *Service) load() error {
 	}
 	if state.Runs == nil {
 		state.Runs = map[string][]Run{}
+	}
+	if state.Assets == nil {
+		state.Assets = map[string][]AppliedAsset{}
 	}
 	s.state = state
 	return nil

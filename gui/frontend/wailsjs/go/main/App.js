@@ -731,6 +731,10 @@ export function GetMemoryHealth() {
   return window['go']['main']['App']['GetMemoryHealth']();
 }
 
+export function GetMemoryStatus() {
+  return window['go']['main']['App']['GetMemoryStatus']();
+}
+
 export function GetMemoryMaxBackups() {
   return window['go']['main']['App']['GetMemoryMaxBackups']();
 }

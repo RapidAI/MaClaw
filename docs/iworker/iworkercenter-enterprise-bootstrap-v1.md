@@ -38,6 +38,8 @@ POST /admin/bootstrap/validate-plan
 POST /admin/bootstrap/apply-plan
 POST /admin/bootstrap/start-first-wave
 GET /admin/bootstrap/runs/{run_id}
+GET /admin/goalwatch/policy
+PUT /admin/goalwatch/policy
 ```
 
 Expected DTO shape:
@@ -107,6 +109,7 @@ Each task must include owner iWorker, expected output, memory scope, escalation 
 
 ## Current code status
 
-The admin UI now has an Enterprise Bootstrap page as the product entry point. The `/admin/bootstrap/*` APIs now support status, draft plan, validation, apply plan, persisted bootstrap state, and first-wave task startup. `apply-plan` is now connected to role, colleague, and workflow-template provisioning, so virtual departments become roles, initial iWorkers become active colleague records, and the first operating workflows are created and published idempotently. `start-first-wave` starts the published workflow instances and records them on the bootstrap run. Bootstrap memory seeding now writes initial company, department, and personal memories through the iWorkerCenter worker-memory module backed by corelib multi-tenant memory. Bootstrap also records the active GoalWatcher autonomous run-loop policy as an applied asset, including single-flight and watcher scaling parameters. The next backend step is to make GoalWatcher policy tenant-scoped and editable instead of only reflecting the active Center runtime defaults.
+The admin UI now has an Enterprise Bootstrap page as the product entry point. The `/admin/bootstrap/*` APIs now support status, draft plan, validation, apply plan, persisted bootstrap state, and first-wave task startup. `apply-plan` is now connected to role, colleague, and workflow-template provisioning, so virtual departments become roles, initial iWorkers become active colleague records, and the first operating workflows are created and published idempotently. `start-first-wave` starts the published workflow instances and records them on the bootstrap run. Bootstrap memory seeding now writes initial company, department, and personal memories through the iWorkerCenter worker-memory module backed by corelib multi-tenant memory. Bootstrap now persists applied assets in its status state, so administrators can refresh the console and still see created roles, iWorkers, workflow templates, memory seeds, workflow instances, and GoalWatcher policy records. GoalWatcher policy is stored per tenant in system_settings and can be viewed or updated through the admin policy API. The next backend step is to make the running GoalWatcher monitor consume tenant-specific policy values during shard scheduling instead of only persisting and reporting them.
+
 
 

@@ -4303,11 +4303,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if trimmed == "/compress" {
 		return h.handleCompressCommand(msg.UserID)
 	}
+	if trimmed == "/memory" {
+		return h.handleMemoryStatusCommand()
+	}
 	if trimmed == "/help" {
 		return &IMAgentResponse{Text: "📖 可用命令:\n" +
 			"/new /reset /clear — 重置对话\n" +
 			"/btw <查询> — 侧查询（不打断当前任务上下文）\n" +
 			"/compress — 压缩当前对话历史\n" +
+			"/memory — 查看记忆状态和容量\n" +
 			"/cancel /取消 — 取消当前正在执行的任务\n" +
 			"/exit /quit — 终止所有会话，退出编程模式\n" +
 			"/sessions /status — 查看当前会话状态\n" +
