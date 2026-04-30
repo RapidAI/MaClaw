@@ -978,7 +978,36 @@ export default function App() {
         );
       case 'home':
       default:
-        return <HomePage draft={draft} selectedTask={selectedTask} selectedColleagueName={selectedColleagueName} recentTasks={historyTasks} agentInstances={agentInstances} agentInstancesLoading={agentInstancesLoading} agentInstancesError={agentInstancesError} onRefreshAgentInstances={refreshAgentInstances} goalPushes={goalPushes} goalPushLoading={goalPushLoading} goalPushError={goalPushError} goalPushAckingId={goalPushAckingId} goalWatchAutoStatus={goalWatchAutoStatus} onRefreshGoalPushes={refreshGoalPushes} onAutoHandleGoalPush={handleAutoHandleGoalPush} onAckGoalPush={handleAckGoalPush} onDraftChange={setDraft} onPickTask={handlePickTask} onOpenNewTask={handleOpenNewTask} onOpenRecentTask={handleOpenHistoryTask} />;
+        return <HomePage
+          draft={draft}
+          selectedTask={selectedTask}
+          selectedColleagueName={selectedColleagueName}
+          recentTasks={historyTasks}
+          settings={settings}
+          centerHealthStatus={centerHealthStatus}
+          centerHealthError={centerHealthError}
+          workerMemoryStats={workerMemoryStats}
+          workerMemoryStatsLoading={workerMemoryStatsLoading}
+          workerMemoryStatsError={workerMemoryStatsError}
+          agentInstances={agentInstances}
+          agentInstancesLoading={agentInstancesLoading}
+          agentInstancesError={agentInstancesError}
+          onRefreshAgentInstances={refreshAgentInstances}
+          goalPushes={goalPushes}
+          goalPushLoading={goalPushLoading}
+          goalPushError={goalPushError}
+          goalPushAckingId={goalPushAckingId}
+          goalWatchAutoStatus={goalWatchAutoStatus}
+          onRefreshGoalPushes={refreshGoalPushes}
+          onRefreshMemoryStats={handleRefreshWorkerMemoryStats}
+          onCheckCenterHealth={handleCheckCenterHealth}
+          onAutoHandleGoalPush={handleAutoHandleGoalPush}
+          onAckGoalPush={handleAckGoalPush}
+          onDraftChange={setDraft}
+          onPickTask={handlePickTask}
+          onOpenNewTask={handleOpenNewTask}
+          onOpenRecentTask={handleOpenHistoryTask}
+        />;
     }
   }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
 

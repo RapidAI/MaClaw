@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { quickTasks as defaultQuickTasks } from '../mock/tasks';
-import type { CenterAgentInstance, CenterGoalPush, GoalWatchAutoHandleStatus, HistoryTaskItem } from '../types';
+import type { CenterAgentInstance, CenterGoalPush, CenterHealthStatus, DiWorkerSettings, GoalWatchAutoHandleStatus, HistoryTaskItem, WorkerMemoryStats } from '../types';
 
 type Props = {
   draft: string;
   selectedTask: string;
   selectedColleagueName: string;
   recentTasks: HistoryTaskItem[];
+  settings: DiWorkerSettings;
+  centerHealthStatus: CenterHealthStatus | null;
+  centerHealthError: string;
+  workerMemoryStats: WorkerMemoryStats | null;
+  workerMemoryStatsLoading: boolean;
+  workerMemoryStatsError: string;
   agentInstances: CenterAgentInstance[];
   agentInstancesLoading: boolean;
   agentInstancesError: string;
@@ -21,11 +27,14 @@ type Props = {
   onOpenRecentTask: (task: HistoryTaskItem) => void;
   onRefreshAgentInstances: () => void | Promise<void>;
   onRefreshGoalPushes: () => void | Promise<void>;
+  onRefreshMemoryStats: () => void | Promise<void>;
+  onCheckCenterHealth: () => void | Promise<void>;
   onAutoHandleGoalPush: (eventId: string) => void | Promise<void>;
   onAckGoalPush: (eventId: string, status: 'resumed' | 'blocked') => void | Promise<void>;
 };
 
 type WorkMode = 'chat' | 'task' | 'research';
+type ComposerTool = 'mention' | 'attach' | 'skill' | 'memory';
 
 const modeCopy: Record<WorkMode, { label: string; title: string; detail: string; placeholder: string }> = {
   chat: {
@@ -59,24 +68,6 @@ const skillChips = [
   'Evidence pack',
 ];
 
-const capabilityCards = [
-  {
-    label: 'Body',
-    value: 'Local container',
-    detail: 'This computer provides screen, files, browser, and tool access.',
-  },
-  {
-    label: 'Memory',
-    value: 'Center owned',
-    detail: 'Company, department, and personal memory persist in iWorkerCenter.',
-  },
-  {
-    label: 'People',
-    value: 'Callable skill',
-    detail: 'Human staff remain available as skills without becoming the control center.',
-  },
-];
-
 const quickActions = [
   { title: 'Start from IM', detail: 'Turn a voice/chat instruction into work.' },
   { title: 'Continue a task', detail: 'Resume recent evidence and result.' },
@@ -88,7 +79,9 @@ const formatRuntimeName = (instance: CenterAgentInstance) => {
   return role.replace(/[-_]/g, ' ');
 };
 
-export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask, onRefreshAgentInstances, onRefreshGoalPushes, onAutoHandleGoalPush, onAckGoalPush }: Props) {
+const formatScopeCount = (stats: WorkerMemoryStats | null, scope: string) => stats?.byScope?.[scope] || 0;
+
+export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush }: Props) {
   const [workMode, setWorkMode] = useState<WorkMode>('chat');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
 
@@ -129,6 +122,30 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
 
   const onlineAgents = agentInstances.filter((item) => item.effectiveStatus === 'online').length;
   const pendingPushes = goalPushes.filter((item) => item.status !== 'acked' && item.status !== 'resumed').length;
+  const centerEnabled = settings.center.enabled;
+  const centerStatusLabel = centerEnabled ? (centerHealthStatus?.reachable ? 'Center online' : 'Center configured') : 'Local body only';
+  const memoryAuthority = centerEnabled ? 'iWorkerCenter' : 'Not registered';
+
+  const appendDraft = (snippet: string) => {
+    onDraftChange(draft.trim() ? `${draft.trim()}\n\n${snippet}` : snippet);
+  };
+
+  const handleComposerTool = (tool: ComposerTool) => {
+    if (tool === 'mention') {
+      appendDraft('@Operations iWorker please collaborate with the right peer worker or human skill when needed.');
+      return;
+    }
+    if (tool === 'attach') {
+      appendDraft('I will attach local evidence in the structured task workspace. Please use it as temporary body data, not durable memory unless I confirm.');
+      onOpenNewTask();
+      return;
+    }
+    if (tool === 'skill') {
+      appendDraft('Search or call the best available skill for this task. Prefer enterprise-approved skills first, then request cloud/market skills only when allowed.');
+      return;
+    }
+    appendDraft(`Use Center memory for context: company memory, department memory, and personal memory. Current authority: ${memoryAuthority}.`);
+  };
 
   const handleSubmit = () => {
     if (draft.trim() || selectedTask) {
@@ -157,6 +174,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           <div className="iw-stage-snapshot" aria-label="runtime snapshot">
             <span>{onlineAgents}/{Math.max(agentInstances.length, 1)} bodies online</span>
             <strong>{pendingPushes} watcher pushes</strong>
+            <small>{centerStatusLabel} · {settings.center.tenantId}/{settings.center.departmentId}</small>
           </div>
         </header>
 
@@ -197,10 +215,10 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           />
           <div className="iw-composer-toolbar">
             <div className="iw-tool-group" aria-label="Composer tools">
-              <button type="button" title="Mention a worker or human skill">@</button>
-              <button type="button" title="Attach local evidence">Attach</button>
-              <button type="button" title="Select skill">Skill</button>
-              <button type="button" title="Use Center memory">Memory</button>
+              <button type="button" title="Mention a worker or human skill" onClick={() => handleComposerTool('mention')}>@</button>
+              <button type="button" title="Attach local evidence" onClick={() => handleComposerTool('attach')}>Attach</button>
+              <button type="button" title="Select skill" onClick={() => handleComposerTool('skill')}>Skill</button>
+              <button type="button" title="Use Center memory" onClick={() => handleComposerTool('memory')}>Memory</button>
             </div>
             <div className="iw-mode-summary">
               <strong>{currentMode.title}</strong>
@@ -223,15 +241,60 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
         </section>
 
         <section className="iw-inspector-card">
+          <div className="iw-inspector-title-row">
+            <h3>Center registration</h3>
+            <button type="button" onClick={() => { void onCheckCenterHealth(); }}>{centerHealthStatus?.reachable ? 'Recheck' : 'Check'}</button>
+          </div>
+          <div className="iw-center-card">
+            <span className={centerHealthStatus?.reachable ? 'iw-status-dot is-online' : centerEnabled ? 'iw-status-dot is-warn' : 'iw-status-dot'} />
+            <div>
+              <strong>{centerStatusLabel}</strong>
+              <p>{settings.center.baseUrl || `${settings.center.host}:${settings.center.port}`}</p>
+            </div>
+          </div>
+          <div className="iw-context-grid">
+            <div><span>Tenant</span><strong>{settings.center.tenantId || 'default'}</strong></div>
+            <div><span>Department</span><strong>{settings.center.departmentId || 'default'}</strong></div>
+            <div><span>Worker</span><strong>{settings.center.workerId || 'local-iworker'}</strong></div>
+          </div>
+          {centerHealthError ? <p className="iw-panel-error">{centerHealthError}</p> : null}
+        </section>
+
+        <section className="iw-inspector-card">
+          <div className="iw-inspector-title-row">
+            <h3>Memory authority</h3>
+            <button type="button" onClick={() => { void onRefreshMemoryStats(); }} disabled={workerMemoryStatsLoading}>{workerMemoryStatsLoading ? 'Loading' : 'Refresh'}</button>
+          </div>
+          <div className="iw-memory-meter">
+            <strong>{workerMemoryStats?.total ?? 0}</strong>
+            <span>durable memories on {memoryAuthority}</span>
+          </div>
+          <div className="iw-context-grid iw-memory-scopes">
+            <div><span>Company</span><strong>{formatScopeCount(workerMemoryStats, 'company')}</strong></div>
+            <div><span>Department</span><strong>{formatScopeCount(workerMemoryStats, 'department')}</strong></div>
+            <div><span>Personal</span><strong>{formatScopeCount(workerMemoryStats, 'personal')}</strong></div>
+          </div>
+          {workerMemoryStatsError ? <p className="iw-panel-error">{workerMemoryStatsError}</p> : null}
+        </section>
+
+        <section className="iw-inspector-card">
           <h3>Practical operating model</h3>
           <div className="iw-capability-grid">
-            {capabilityCards.map((item) => (
-              <article key={item.label}>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-                <p>{item.detail}</p>
-              </article>
-            ))}
+            <article>
+              <span>Body</span>
+              <strong>Local container</strong>
+              <p>This computer provides screen, files, browser, and tool access.</p>
+            </article>
+            <article>
+              <span>Memory</span>
+              <strong>Center owned</strong>
+              <p>Company, department, and personal memory persist in iWorkerCenter.</p>
+            </article>
+            <article>
+              <span>People</span>
+              <strong>Callable skill</strong>
+              <p>Human staff remain available as skills without becoming the control center.</p>
+            </article>
           </div>
         </section>
 

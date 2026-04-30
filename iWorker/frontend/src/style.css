@@ -3487,3 +3487,129 @@ textarea {
     white-space: normal;
   }
 }
+
+.iw-stage-snapshot small {
+  color: var(--iw-faint);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.iw-center-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 11px;
+  border-radius: 16px;
+  border: 1px solid #e1e8ee;
+  background: #ffffff;
+}
+
+.iw-center-card div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.iw-center-card strong {
+  color: var(--iw-ink);
+  font-size: 13px;
+}
+
+.iw-center-card p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iw-status-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  box-shadow: 0 0 0 5px rgba(203, 213, 225, 0.25);
+}
+
+.iw-status-dot.is-online {
+  background: #22c55e;
+  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.18);
+}
+
+.iw-status-dot.is-warn {
+  background: #f59e0b;
+  box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.16);
+}
+
+.iw-context-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.iw-context-grid div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+  border-radius: 14px;
+  border: 1px solid #e1e8ee;
+  background: #f8fbf6;
+}
+
+.iw-context-grid span {
+  color: var(--iw-faint);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.iw-context-grid strong {
+  overflow: hidden;
+  color: var(--iw-ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iw-memory-meter {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 90% 15%, rgba(72, 199, 116, 0.18), transparent 35%),
+    #ffffff;
+  border: 1px solid #e1e8ee;
+}
+
+.iw-memory-meter strong {
+  width: 44px;
+  height: 44px;
+  border-radius: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #101511;
+  color: #ffffff;
+  font-size: 18px;
+}
+
+.iw-memory-meter span {
+  color: var(--iw-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.iw-memory-scopes div {
+  background: #ffffff;
+}
+
+@media (max-width: 1180px) {
+  .iw-context-grid {
+    grid-template-columns: 1fr;
+  }
+}
