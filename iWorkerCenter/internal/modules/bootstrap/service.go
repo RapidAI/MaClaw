@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,7 +12,9 @@ import (
 	"time"
 
 	colleagueSvc "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/service"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/goalwatch"
 	roleSvc "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/service"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/workermemory"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/workflow"
 )
 
@@ -21,6 +24,8 @@ type Service struct {
 	state      persistedState
 	roles      *roleSvc.RoleService
 	colleagues *colleagueSvc.ColleagueService
+	memories   *workermemory.Handler
+	goalWatch  *goalwatch.Service
 	workflows  *workflow.Service
 }
 
@@ -45,6 +50,14 @@ func (s *Service) SetOrganizationProvisioner(roles *roleSvc.RoleService, colleag
 
 func (s *Service) SetWorkflowProvisioner(workflows *workflow.Service) {
 	s.workflows = workflows
+}
+
+func (s *Service) SetMemoryProvisioner(memories *workermemory.Handler) {
+	s.memories = memories
+}
+
+func (s *Service) SetGoalWatchProvisioner(goalWatch *goalwatch.Service) {
+	s.goalWatch = goalWatch
 }
 
 func (s *Service) Status(tenantID string) Status {
@@ -102,6 +115,16 @@ func (s *Service) ApplyPlan(tenantID string, input Plan) (Plan, []ValidationIssu
 	}
 	workflowAssets, err := s.provisionWorkflowTemplates(tenantID)
 	assets = append(assets, workflowAssets...)
+	if err != nil {
+		return plan, issues, assets, err
+	}
+	memoryAssets, err := s.provisionBootstrapMemories(tenantID, plan)
+	assets = append(assets, memoryAssets...)
+	if err != nil {
+		return plan, issues, assets, err
+	}
+	goalWatchAssets, err := s.provisionGoalWatcherPolicy(tenantID, plan)
+	assets = append(assets, goalWatchAssets...)
 	if err != nil {
 		return plan, issues, assets, err
 	}
@@ -200,6 +223,81 @@ func (s *Service) provisionOrganizationAssets(tenantID string, plan Plan) ([]App
 	return assets, nil
 }
 
+func (s *Service) provisionBootstrapMemories(tenantID string, plan Plan) ([]AppliedAsset, error) {
+	if s.memories == nil {
+		return nil, nil
+	}
+	workers := s.bootstrapWorkerSeeds(tenantID, plan)
+	seeded, err := s.memories.SeedBootstrapMemories(context.Background(), tenantID, workermemory.BootstrapSeedInput{
+		CompanyName:        plan.CompanyName,
+		BusinessSummary:    plan.BusinessSummary,
+		Priority:           plan.Priority,
+		VirtualDepartments: plan.VirtualDepartments,
+		InitialWorkers:     workers,
+		RecurringTasks:     plan.RecurringTasks,
+	})
+	assets := make([]AppliedAsset, 0, len(seeded))
+	for _, memory := range seeded {
+		assets = append(assets, AppliedAsset{Kind: "memory", ID: memory.ID, Name: memory.Title, Status: memory.Scope})
+	}
+	return assets, err
+}
+
+func (s *Service) bootstrapWorkerSeeds(tenantID string, plan Plan) []workermemory.BootstrapWorkerSeed {
+	workers := make([]workermemory.BootstrapWorkerSeed, 0, len(plan.InitialIWorkers))
+	if s.colleagues == nil {
+		for _, name := range plan.InitialIWorkers {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				workers = append(workers, workermemory.BootstrapWorkerSeed{ID: roleCodeFromName(name), Name: name, Role: workerRoleCode(name)})
+			}
+		}
+		return workers
+	}
+	existing, err := s.colleagues.List(tenantID)
+	if err != nil {
+		return workers
+	}
+	byName := map[string]string{}
+	for _, colleague := range existing {
+		byName[strings.ToLower(strings.TrimSpace(colleague.Name))] = colleague.ID
+	}
+	for _, name := range plan.InitialIWorkers {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		id := byName[strings.ToLower(name)]
+		if id == "" {
+			id = roleCodeFromName(name)
+		}
+		workers = append(workers, workermemory.BootstrapWorkerSeed{ID: id, Name: name, Role: workerRoleCode(name)})
+	}
+	return workers
+}
+func (s *Service) provisionGoalWatcherPolicy(tenantID string, plan Plan) ([]AppliedAsset, error) {
+	if s.goalWatch == nil || !plan.WatcherPolicy.Enabled {
+		return nil, nil
+	}
+	cfg := s.goalWatch.Config()
+	policy, err := s.goalWatch.SaveTenantPolicy(context.Background(), tenantID, goalwatch.TenantPolicy{
+		Enabled:             plan.WatcherPolicy.Enabled,
+		SingleFlight:        plan.WatcherPolicy.SingleFlight,
+		MaxRunSeconds:       plan.WatcherPolicy.MaxRunSeconds,
+		ScaleByWorkerCount:  plan.WatcherPolicy.ScaleByWorkerCount,
+		TickIntervalSeconds: int64(cfg.TickInterval.Seconds()),
+		StalledAfterSeconds: int64(cfg.StalledAfter.Seconds()),
+		PushCooldownSeconds: int64(cfg.PushCooldown.Seconds()),
+		LeaseTTLSeconds:     int64(cfg.LeaseTTL.Seconds()),
+		WorkersPerShard:     cfg.WorkersPerShard,
+		MaxWatchers:         cfg.MaxWatchers,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("persist goalwatch policy: %w", err)
+	}
+	status := fmt.Sprintf("persisted single_flight=%t max_run_seconds=%d workers_per_shard=%d max_watchers=%d", policy.SingleFlight, policy.MaxRunSeconds, policy.WorkersPerShard, policy.MaxWatchers)
+	return []AppliedAsset{{Kind: "goalwatch_policy", ID: normalizeTenantID(tenantID) + ":goalwatch", Name: "GoalWatcher autonomous run loop", Status: status}}, nil
+}
 func (s *Service) provisionWorkflowTemplates(tenantID string) ([]AppliedAsset, error) {
 	if s.workflows == nil {
 		return nil, nil

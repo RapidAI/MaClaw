@@ -1,4 +1,4 @@
-# iWorkerCenter Enterprise Bootstrap v1
+﻿# iWorkerCenter Enterprise Bootstrap v1
 
 ## Why this exists
 
@@ -107,4 +107,6 @@ Each task must include owner iWorker, expected output, memory scope, escalation 
 
 ## Current code status
 
-The admin UI now has an Enterprise Bootstrap page as the product entry point. The `/admin/bootstrap/*` APIs now support status, draft plan, validation, apply plan, persisted bootstrap state, and first-wave task startup. `apply-plan` is now connected to role, colleague, and workflow-template provisioning, so virtual departments become roles, initial iWorkers become active colleague records, and the first operating workflows are created and published idempotently. `start-first-wave` starts the published workflow instances and records them on the bootstrap run. The next backend step is to connect memory seeding and GoalWatcher policy creation so the generated plan can keep pushing real work automatically after the first wave.
+The admin UI now has an Enterprise Bootstrap page as the product entry point. The `/admin/bootstrap/*` APIs now support status, draft plan, validation, apply plan, persisted bootstrap state, and first-wave task startup. `apply-plan` is now connected to role, colleague, and workflow-template provisioning, so virtual departments become roles, initial iWorkers become active colleague records, and the first operating workflows are created and published idempotently. `start-first-wave` starts the published workflow instances and records them on the bootstrap run. Bootstrap memory seeding now writes initial company, department, and personal memories through the iWorkerCenter worker-memory module backed by corelib multi-tenant memory. Bootstrap also records the active GoalWatcher autonomous run-loop policy as an applied asset, including single-flight and watcher scaling parameters. The next backend step is to make GoalWatcher policy tenant-scoped and editable instead of only reflecting the active Center runtime defaults.
+
+

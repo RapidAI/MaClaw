@@ -2,6 +2,7 @@ package goalwatch
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -711,4 +712,23 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func TestTenantPolicyPersistsInSystemSettings(t *testing.T) {
+	svc, _ := newTestService(t, Config{TickInterval: 30 * time.Second, StalledAfter: 2 * time.Minute, PushCooldown: 3 * time.Minute, LeaseTTL: 45 * time.Second, WorkersPerShard: 7, MaxWatchers: 5})
+	policy, err := svc.SaveTenantPolicy(context.Background(), "tenant-a", TenantPolicy{Enabled: true, SingleFlight: true, MaxRunSeconds: 120, ScaleByWorkerCount: true})
+	if err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+	if policy.WorkersPerShard != 7 || policy.MaxWatchers != 5 || policy.TickIntervalSeconds != 30 || policy.StalledAfterSeconds != 120 || policy.PushCooldownSeconds != 180 || policy.LeaseTTLSeconds != 45 {
+		t.Fatalf("policy defaults not merged: %+v", policy)
+	}
+
+	loaded, ok, err := svc.GetTenantPolicy(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	if !ok || loaded.MaxRunSeconds != 120 || !loaded.Enabled || !loaded.SingleFlight || !loaded.ScaleByWorkerCount || loaded.WorkersPerShard != 7 {
+		t.Fatalf("loaded policy = %+v ok=%t", loaded, ok)
+	}
 }

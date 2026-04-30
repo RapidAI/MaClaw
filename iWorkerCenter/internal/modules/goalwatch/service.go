@@ -31,6 +31,21 @@ const (
 	DefaultLeaseTTL        = 2 * time.Minute
 )
 
+// TenantPolicy is the persisted per-tenant GoalWatcher run-loop policy.
+// It is stored in system_settings so hot-standby Center nodes can read the same
+// organization runtime intent without inventing a separate config store.
+type TenantPolicy struct {
+	Enabled             bool  `json:"enabled"`
+	SingleFlight        bool  `json:"single_flight"`
+	MaxRunSeconds       int   `json:"max_run_seconds"`
+	ScaleByWorkerCount  bool  `json:"scale_by_worker_count"`
+	TickIntervalSeconds int64 `json:"tick_interval_seconds"`
+	StalledAfterSeconds int64 `json:"stalled_after_seconds"`
+	PushCooldownSeconds int64 `json:"push_cooldown_seconds"`
+	LeaseTTLSeconds     int64 `json:"lease_ttl_seconds"`
+	WorkersPerShard     int   `json:"workers_per_shard"`
+	MaxWatchers         int   `json:"max_watchers"`
+}
 type Config struct {
 	StalledAfter    time.Duration
 	PushCooldown    time.Duration
@@ -163,6 +178,98 @@ func NewService(collabRepo *collaboration.Repo, cfg Config) *Service {
 }
 
 func (s *Service) Config() Config { return s.config }
+func (s *Service) DefaultTenantPolicy() TenantPolicy {
+	cfg := s.Config()
+	return TenantPolicy{
+		Enabled:             true,
+		SingleFlight:        true,
+		MaxRunSeconds:       int(cfg.TickInterval.Seconds()),
+		ScaleByWorkerCount:  true,
+		TickIntervalSeconds: int64(cfg.TickInterval.Seconds()),
+		StalledAfterSeconds: int64(cfg.StalledAfter.Seconds()),
+		PushCooldownSeconds: int64(cfg.PushCooldown.Seconds()),
+		LeaseTTLSeconds:     int64(cfg.LeaseTTL.Seconds()),
+		WorkersPerShard:     cfg.WorkersPerShard,
+		MaxWatchers:         cfg.MaxWatchers,
+	}
+}
+
+func (s *Service) SaveTenantPolicy(ctx context.Context, tenantID string, policy TenantPolicy) (TenantPolicy, error) {
+	if s == nil || s.collabRepo == nil || s.collabRepo.WriteDB() == nil {
+		return policy, fmt.Errorf("goalwatch settings store is unavailable")
+	}
+	policy = s.normalizeTenantPolicy(policy)
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return policy, err
+	}
+	key := goalWatchTenantPolicyKey(tenantID)
+	res, err := s.collabRepo.WriteDB().ExecContext(ctx, `UPDATE system_settings SET value_json=?, updated_at=datetime('now') WHERE key=?`, string(data), key)
+	if err != nil {
+		return policy, err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return policy, nil
+	}
+	_, err = s.collabRepo.WriteDB().ExecContext(ctx, `INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, datetime('now'))`, key, string(data))
+	return policy, err
+}
+
+func (s *Service) GetTenantPolicy(ctx context.Context, tenantID string) (TenantPolicy, bool, error) {
+	if s == nil || s.collabRepo == nil || s.collabRepo.ReadDB() == nil {
+		return TenantPolicy{}, false, fmt.Errorf("goalwatch settings store is unavailable")
+	}
+	var raw string
+	err := s.collabRepo.ReadDB().QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key=?`, goalWatchTenantPolicyKey(tenantID)).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return s.DefaultTenantPolicy(), false, nil
+	}
+	if err != nil {
+		return TenantPolicy{}, false, err
+	}
+	var policy TenantPolicy
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+			return TenantPolicy{}, false, err
+		}
+	}
+	return s.normalizeTenantPolicy(policy), true, nil
+}
+
+func (s *Service) normalizeTenantPolicy(policy TenantPolicy) TenantPolicy {
+	defaults := s.DefaultTenantPolicy()
+	if policy.MaxRunSeconds <= 0 {
+		policy.MaxRunSeconds = defaults.MaxRunSeconds
+	}
+	if policy.TickIntervalSeconds <= 0 {
+		policy.TickIntervalSeconds = defaults.TickIntervalSeconds
+	}
+	if policy.StalledAfterSeconds <= 0 {
+		policy.StalledAfterSeconds = defaults.StalledAfterSeconds
+	}
+	if policy.PushCooldownSeconds <= 0 {
+		policy.PushCooldownSeconds = defaults.PushCooldownSeconds
+	}
+	if policy.LeaseTTLSeconds <= 0 {
+		policy.LeaseTTLSeconds = defaults.LeaseTTLSeconds
+	}
+	if policy.WorkersPerShard <= 0 {
+		policy.WorkersPerShard = defaults.WorkersPerShard
+	}
+	if policy.MaxWatchers <= 0 {
+		policy.MaxWatchers = defaults.MaxWatchers
+	}
+	if !policy.Enabled {
+		policy.Enabled = defaults.Enabled
+	}
+	if !policy.SingleFlight {
+		policy.SingleFlight = defaults.SingleFlight
+	}
+	if !policy.ScaleByWorkerCount {
+		policy.ScaleByWorkerCount = defaults.ScaleByWorkerCount
+	}
+	return policy
+}
 
 func (s *Service) SetAgentRuntime(runtime *agentruntime.Service) {
 	if s != nil {
@@ -839,6 +946,9 @@ func (s *Service) releaseShardLease(ctx context.Context, tenantID string, shardI
 	_, _ = s.collabRepo.WriteDB().ExecContext(ctx, `UPDATE system_settings SET value_json=?, updated_at=datetime('now') WHERE key=?`, string(data), key)
 }
 
+func goalWatchTenantPolicyKey(tenantID string) string {
+	return "goalwatch_policy:" + normalizeTenantID(tenantID)
+}
 func goalWatchShardLeaseKey(tenantID string, shardIndex, shardCount int) string {
 	return fmt.Sprintf("goalwatch_shard_lease:%s:%d:%d", normalizeTenantID(tenantID), shardCount, shardIndex)
 }

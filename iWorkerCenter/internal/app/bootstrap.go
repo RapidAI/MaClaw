@@ -141,6 +141,7 @@ func Bootstrap() (*Center, error) {
 	// --- wire enterprise bootstrap module ---
 	bootstrapSvc := bootstrap.NewService(defaultBootstrapStorePath())
 	bootstrapSvc.SetOrganizationProvisioner(rSvc, colSvc)
+	bootstrapSvc.SetMemoryProvisioner(workerMemHandler)
 	bootstrapSvc.SetWorkflowProvisioner(wfSvc)
 	bootstrapHandler := bootstrap.NewHandler(bootstrapSvc)
 
@@ -207,6 +208,7 @@ func Bootstrap() (*Center, error) {
 
 	// --- wire goal watchdog / push module ---
 	goalWatchSvc := goalwatch.NewService(collabRepo, goalwatch.Config{})
+	bootstrapSvc.SetGoalWatchProvisioner(goalWatchSvc)
 	goalWatchSvc.SetAgentRuntime(agentRuntimeSvc)
 	goalWatchHandler := goalwatch.NewHandler(goalWatchSvc)
 	goalWatchHandler.SetRecoveryExecutor(wfSvc)
