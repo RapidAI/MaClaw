@@ -72,16 +72,19 @@ func (a *App) TranscribeAudioBase64(wavBase64 string) (string, error) {
 		return "", nil
 	}
 
-	// VAD filtering â€” embedded model, no external file needed
+	// VAD filtering â€?embedded model, no external file needed
 	if vadModel, err := vad.Load(); err == nil {
-		originalLen := len(pcm)
-		pcm = vadModel.FilterSpeech(pcm)
-		if len(pcm) == 0 {
-			log.Printf("[asr] VAD filtered all %d samples as silence", originalLen)
-			return "", nil
+		originalPCM := pcm
+		filteredPCM := vadModel.FilterSpeech(pcm)
+		if len(filteredPCM) == 0 {
+			log.Printf("[asr] VAD filtered all %d samples as silence; falling back to raw PCM", len(originalPCM))
+		} else {
+			pcm = filteredPCM
 		}
-		log.Printf("[asr] VAD: %d â†’ %d samples (%.0f%% speech)",
-			originalLen, len(pcm), float64(len(pcm))/float64(originalLen)*100)
+		if len(filteredPCM) > 0 {
+			log.Printf("[asr] VAD: %d -> %d samples (%.0f%% speech)",
+				len(originalPCM), len(pcm), float64(len(pcm))/float64(len(originalPCM))*100)
+		}
 	}
 
 	model, err := a.getASRModel()
@@ -94,7 +97,7 @@ func (a *App) TranscribeAudioBase64(wavBase64 string) (string, error) {
 		return "", fmt.Errorf("transcribe: %w", err)
 	}
 
-	log.Printf("[asr] transcribed %d samples â†’ %q", len(pcm), text)
+	log.Printf("[asr] transcribed %d samples â†?%q", len(pcm), text)
 	return text, nil
 }
 

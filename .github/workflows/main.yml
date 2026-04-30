@@ -1056,6 +1056,21 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
+      - name: Verify Gitee token secret
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo "GITEE_TOKEN secret is empty or missing" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import hashlib
+          import os
+          token = os.environ["GITEE_TOKEN"]
+          print(f"GITEE_TOKEN length={len(token)} sha256_prefix={hashlib.sha256(token.encode()).hexdigest()[:12]}")
+          PY
+
       - name: Push source tags to Gitee
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
@@ -1071,6 +1086,7 @@ jobs:
           fi
 
       - name: Sync release assets to Gitee
+        continue-on-error: true
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_OWNER: znsoft

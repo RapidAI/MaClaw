@@ -75,6 +75,16 @@ const MAX_SEGMENT_SEC = 30;            // max segment duration before forced cut
 const LOW_CONFIDENCE_AUDIO_MULTIPLIER = 1.15; // below speech threshold, but likely more than room noise
 const LOW_CONFIDENCE_AUDIO_FLOOR = 0.0008;
 const LOW_CONFIDENCE_MIN_CHUNKS = 2;
+const VOICE_INPUT_DEBUG = true;
+
+function voiceDebug(event: string, detail?: Record<string, unknown>) {
+    if (!VOICE_INPUT_DEBUG) return;
+    if (detail) {
+        console.info(`[voice-input] ${event}`, detail);
+    } else {
+        console.info(`[voice-input] ${event}`);
+    }
+}
 
 // ── WAV encoding utilities ──
 
@@ -239,19 +249,38 @@ export function useVoiceInput(
 
     /** Send a completed speech segment for transcription. */
     const transcribeSegment = useCallback((chunks: Float32Array[], sampleRate: number) => {
-        if (chunks.length === 0) return;
+        if (chunks.length === 0) {
+            voiceDebug("skip transcribe: empty chunk list");
+            return;
+        }
         const total = chunks.reduce((s, c) => s + c.length, 0);
         const merged = new Float32Array(total);
         let off = 0;
         for (const c of chunks) { merged.set(c, off); off += c.length; }
 
         const pcm = downsample(merged, sampleRate, TARGET_SAMPLE_RATE);
+        const durationSec = pcm.length / TARGET_SAMPLE_RATE;
 
         // Too short — skip
-        if (pcm.length < TARGET_SAMPLE_RATE * 0.5) return;
+        if (pcm.length < TARGET_SAMPLE_RATE * 0.5) {
+            voiceDebug("skip transcribe: audio too short", {
+                chunks: chunks.length,
+                sourceSampleRate: sampleRate,
+                samples: pcm.length,
+                durationSec: Number(durationSec.toFixed(3)),
+            });
+            return;
+        }
 
         const wav = encodeWAV(pcm, TARGET_SAMPLE_RATE);
         const b64 = toBase64(wav);
+        voiceDebug("send audio to ASR", {
+            chunks: chunks.length,
+            sourceSampleRate: sampleRate,
+            targetSampleRate: TARGET_SAMPLE_RATE,
+            samples: pcm.length,
+            durationSec: Number(durationSec.toFixed(3)),
+        });
 
         pendingTranscriptionsRef.current++;
         if (!activeRef.current) {
@@ -261,12 +290,21 @@ export function useVoiceInput(
         TranscribeAudioBase64(b64)
             .then((text) => {
                 const trimmed = text.trim();
+                voiceDebug("ASR returned", {
+                    rawLength: text.length,
+                    trimmedLength: trimmed.length,
+                    text: trimmed,
+                });
                 if (trimmed) {
+                    voiceDebug("dispatch transcribed text", { text: trimmed });
                     onTranscribedRef.current(trimmed);
                     setSegmentCount(c => c + 1);
+                } else {
+                    voiceDebug("ASR returned empty text");
                 }
             })
             .catch((err) => {
+                console.warn("[voice-input] ASR failed", err);
                 setErrorAuto(`Transcription: ${err?.message || String(err)}`);
             })
             .finally(() => {
@@ -288,26 +326,53 @@ export function useVoiceInput(
     }, []);
 
     const flushFallbackBuffer = useCallback((sampleRate: number) => {
-        if (fallbackChunksRef.current.length === 0) return;
+        if (fallbackChunksRef.current.length === 0) {
+            voiceDebug("skip fallback flush: empty buffer");
+            return;
+        }
 
+        const rawChunks = fallbackChunksRef.current;
         const speechLikeCount = fallbackSpeechLikeChunksRef.current;
-        const chunks = denoiseBufferedChunks(fallbackChunksRef.current, noiseFloorRef.current);
+        const denoisedChunks = denoiseBufferedChunks(rawChunks, noiseFloorRef.current);
         resetFallbackBuffer();
 
-        if (speechLikeCount >= LOW_CONFIDENCE_MIN_CHUNKS && chunks.length > 0) {
+        const chunks = denoisedChunks.length > 0 ? denoisedChunks : rawChunks;
+        voiceDebug("flush fallback buffer", {
+            rawChunks: rawChunks.length,
+            denoisedChunks: denoisedChunks.length,
+            usedChunks: chunks.length,
+            speechLikeCount,
+            noiseFloor: Number(noiseFloorRef.current.toFixed(6)),
+        });
+
+        if (speechLikeCount >= LOW_CONFIDENCE_MIN_CHUNKS) {
             transcribeSegment(chunks, sampleRate);
+        } else {
+            voiceDebug("skip fallback flush: not enough speech-like chunks", {
+                speechLikeCount,
+                required: LOW_CONFIDENCE_MIN_CHUNKS,
+            });
         }
     }, [resetFallbackBuffer, transcribeSegment]);
 
     const flushHoldBuffer = useCallback((sampleRate: number) => {
-        if (holdChunksRef.current.length === 0) return;
+        if (holdChunksRef.current.length === 0) {
+            voiceDebug("skip hold flush: empty buffer");
+            return;
+        }
 
-        const chunks = denoiseBufferedChunks(holdChunksRef.current, noiseFloorRef.current);
+        const rawChunks = holdChunksRef.current;
+        const denoisedChunks = denoiseBufferedChunks(rawChunks, noiseFloorRef.current);
         resetHoldBuffer();
 
-        if (chunks.length > 0) {
-            transcribeSegment(chunks, sampleRate);
-        }
+        const chunks = denoisedChunks.length > 0 ? denoisedChunks : rawChunks;
+        voiceDebug("flush hold buffer", {
+            rawChunks: rawChunks.length,
+            denoisedChunks: denoisedChunks.length,
+            usedChunks: chunks.length,
+            noiseFloor: Number(noiseFloorRef.current.toFixed(6)),
+        });
+        transcribeSegment(chunks, sampleRate);
     }, [resetHoldBuffer, transcribeSegment]);
 
     /** Process one audio chunk: adaptive energy VAD for segmentation. */
@@ -485,6 +550,10 @@ export function useVoiceInput(
     useEffect(() => () => { cleanup(); if (errorTimerRef.current) clearTimeout(errorTimerRef.current); }, [cleanup]);
 
     const finishHoldRecording = useCallback((sampleRate: number) => {
+        voiceDebug("finish hold recording", {
+            sampleRate,
+            chunks: holdChunksRef.current.length,
+        });
         holdCancelRequestedRef.current = false;
         holdModeRef.current = false;
         setHoldRecording(false);
@@ -500,8 +569,18 @@ export function useVoiceInput(
 
     /** Open microphone and start continuous listening. */
     const startListening = useCallback(async () => {
-        if (startingRef.current || activeRef.current) return; // prevent double-start
+        if (startingRef.current || activeRef.current) {
+            voiceDebug("skip start listening: already starting or active", {
+                starting: startingRef.current,
+                active: activeRef.current,
+            });
+            return;
+        } // prevent double-start
         startingRef.current = true;
+        voiceDebug("start listening", {
+            holdMode: holdModeRef.current,
+            inputDeviceId: inputDeviceIdRef.current || "default",
+        });
 
         setErrorAuto(null);
         setDuration(0);
@@ -554,7 +633,9 @@ export function useVoiceInput(
             }, 500);
 
             setState("listening");
+            voiceDebug("listening started", { sampleRate: ctx.sampleRate });
         } catch (err: any) {
+            console.warn("[voice-input] failed to start microphone", err);
             cleanup();
             const msg = err?.message || String(err);
             if (msg.includes("Permission") || msg.includes("NotAllowed")) {
@@ -568,8 +649,16 @@ export function useVoiceInput(
     }, [cleanup, processChunk, resetFallbackBuffer, setErrorAuto]);
 
     const startHold = useCallback(async () => {
-        if (state !== "idle" || startingRef.current || activeRef.current) return;
+        if (state !== "idle" || startingRef.current || activeRef.current) {
+            voiceDebug("skip start hold", {
+                state,
+                starting: startingRef.current,
+                active: activeRef.current,
+            });
+            return;
+        }
 
+        voiceDebug("start hold recording");
         holdModeRef.current = true;
         holdCancelRequestedRef.current = false;
         resetHoldBuffer();
@@ -581,20 +670,29 @@ export function useVoiceInput(
             const rate = audioCtxRef.current?.sampleRate || TARGET_SAMPLE_RATE;
             finishHoldRecording(rate);
         } else if (!activeRef.current) {
+            voiceDebug("hold start ended without active microphone");
             holdModeRef.current = false;
             setHoldRecording(false);
         }
     }, [finishHoldRecording, resetHoldBuffer, startListening, state]);
 
     const stopHold = useCallback(() => {
-        if (!holdModeRef.current) return;
+        if (!holdModeRef.current) {
+            voiceDebug("skip stop hold: hold mode is inactive");
+            return;
+        }
         if (startingRef.current && !activeRef.current) {
+            voiceDebug("stop hold requested while microphone is still starting");
             holdCancelRequestedRef.current = true;
             setHoldRecording(false);
             return;
         }
 
         const rate = audioCtxRef.current?.sampleRate || TARGET_SAMPLE_RATE;
+        voiceDebug("stop hold recording", {
+            sampleRate: rate,
+            chunks: holdChunksRef.current.length,
+        });
         finishHoldRecording(rate);
     }, [finishHoldRecording]);
 
@@ -607,6 +705,12 @@ export function useVoiceInput(
 
         // Capture sample rate before cleanup closes AudioContext
         const rate = audioCtxRef.current?.sampleRate || TARGET_SAMPLE_RATE;
+        voiceDebug("stop listening", {
+            sampleRate: rate,
+            inSpeech: inSpeechRef.current,
+            segmentChunks: segmentChunksRef.current.length,
+            fallbackChunks: fallbackChunksRef.current.length,
+        });
 
         // Finalize in-progress segment if any
         if (inSpeechRef.current && segmentChunksRef.current.length > 0) {

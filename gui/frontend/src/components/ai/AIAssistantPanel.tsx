@@ -1500,23 +1500,73 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     // Listen for TTS audio events and play them
     const audioOutputDeviceIdRef = useRef(audioOutputDeviceId);
     audioOutputDeviceIdRef.current = audioOutputDeviceId;
+    const ttsAudioQueueRef = useRef<string[]>([]);
+    const ttsAudioPlayingRef = useRef(false);
+    const ttsCurrentAudioRef = useRef<HTMLAudioElement | null>(null);
+
+    const playNextTTSAudio = useCallback(() => {
+        if (ttsAudioPlayingRef.current) return;
+        if (!ttsEnabledRef.current) {
+            ttsAudioQueueRef.current = [];
+            return;
+        }
+
+        const b64wav = ttsAudioQueueRef.current.shift();
+        if (!b64wav) return;
+
+        ttsAudioPlayingRef.current = true;
+        try {
+            const audio = new Audio("data:audio/wav;base64," + b64wav);
+            ttsCurrentAudioRef.current = audio;
+
+            const finish = () => {
+                audio.onended = null;
+                audio.onerror = null;
+                if (ttsCurrentAudioRef.current === audio) {
+                    ttsCurrentAudioRef.current = null;
+                }
+                ttsAudioPlayingRef.current = false;
+                playNextTTSAudio();
+            };
+
+            audio.onended = finish;
+            audio.onerror = finish;
+
+            const play = () => audio.play().catch(finish);
+            const outId = audioOutputDeviceIdRef.current;
+            if (outId && typeof (audio as any).setSinkId === 'function') {
+                (audio as any).setSinkId(outId).then(play).catch(play);
+            } else {
+                play();
+            }
+        } catch {
+            ttsCurrentAudioRef.current = null;
+            ttsAudioPlayingRef.current = false;
+            playNextTTSAudio();
+        }
+    }, []);
+
+    useEffect(() => {
+        if (ttsEnabled) return;
+        ttsAudioQueueRef.current = [];
+        ttsAudioPlayingRef.current = false;
+        const audio = ttsCurrentAudioRef.current;
+        if (audio) {
+            audio.pause();
+            audio.src = "";
+            ttsCurrentAudioRef.current = null;
+        }
+    }, [ttsEnabled]);
+
     useEffect(() => {
         const handler = (b64wav: string) => {
             if (!ttsEnabledRef.current) return;
-            try {
-                const audio = new Audio("data:audio/wav;base64," + b64wav);
-                // Route to selected output device if specified
-                const outId = audioOutputDeviceIdRef.current;
-                if (outId && typeof (audio as any).setSinkId === 'function') {
-                    (audio as any).setSinkId(outId).then(() => audio.play()).catch(() => audio.play().catch(() => {}));
-                } else {
-                    audio.play().catch(() => {});
-                }
-            } catch {}
+            ttsAudioQueueRef.current.push(b64wav);
+            playNextTTSAudio();
         };
         EventsOn("tts:audio", handler);
         return () => { EventsOff("tts:audio"); };
-    }, []);
+    }, [playNextTTSAudio]);
 
     // Auto-speak: when TTS is enabled and a response completes (sending→false),
     // generate a spoken status summary: "{task} 已完成/失败/暂停/需要确认，该任务是 {description}"
@@ -1676,7 +1726,17 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
 
     const submitRecognizedVoiceText = useCallback((rawText: string) => {
         const text = rawText.trim();
-        if (!text) return;
+        console.info("[ai-panel][voice] recognized text received", {
+            rawLength: rawText.length,
+            trimmedLength: text.length,
+            text,
+            submitLocked,
+            ready,
+        });
+        if (!text) {
+            console.info("[ai-panel][voice] ignored empty recognized text");
+            return;
+        }
 
         updateInputValue(text);
         setHistoryIndex(-1);
@@ -1688,6 +1748,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         });
 
         if (submitLocked) {
+            console.info("[ai-panel][voice] queue recognized text", { text });
             addEntry(text, []);
             recordSubmittedPrompt?.(text);
             updateInputValue("");
@@ -1697,23 +1758,26 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             return;
         }
 
+        console.info("[ai-panel][voice] send recognized text", { text });
         recordSubmittedPrompt?.(text);
         userScrolledUpRef.current = false;
         sendMessage(text)
             .then(() => {
+                console.info("[ai-panel][voice] recognized text sent", { text });
                 updateInputValue("");
                 requestAnimationFrame(() => {
                     if (inputRef.current) inputRef.current.style.height = "auto";
                 });
             })
-            .catch(() => {
+            .catch((err) => {
+                console.warn("[ai-panel][voice] failed to send recognized text", err);
                 updateInputValue(text);
                 requestAnimationFrame(() => {
                     resizeInput();
                     inputRef.current?.focus();
                 });
             });
-    }, [addEntry, recordSubmittedPrompt, resizeInput, sendMessage, submitLocked, updateInputValue]);
+    }, [addEntry, ready, recordSubmittedPrompt, resizeInput, sendMessage, submitLocked, updateInputValue]);
 
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId);
 
@@ -1737,7 +1801,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             voiceHoldActiveRef.current = true;
             voiceSuppressClickRef.current = true;
             voiceInput.startHold();
-        }, 1000);
+        }, 300);
     }, [clearVoiceHoldTimer, ready, voiceInput]);
 
     const finishVoicePointer = useCallback(() => {
