@@ -89,9 +89,9 @@ export function TTSConfigPanel({ lang }: Props) {
             </div>
             <p style={{ fontSize: '0.76rem', color: colors.textSecondary, margin: '0 0 16px 0', lineHeight: 1.5 }}>
                 {t(
-                    'TTS uses MeloTTS model for local voice synthesis. When enabled, task completion status will be read aloud. The model (~100MB) will be downloaded from GitHub or Hub.',
-                    'TTS 使用 MeloTTS 模型进行本地语音合成。开启后，任务完成状态将自动语音播报。模型文件约 100MB，将从 GitHub 或 Hub 下载到本地。',
-                    'TTS 使用 MeloTTS 模型進行本地語音合成。開啟後，任務完成狀態將自動語音播報。模型文件約 100MB，將從 GitHub 或 Hub 下載到本地。'
+                    'TTS uses Piper VITS model (xiao_ya Chinese voice) for local voice synthesis. When enabled, task completion status will be read aloud. The model (~60MB) will be downloaded from GitHub or Hub.',
+                    'TTS 使用 Piper VITS 模型（xiao_ya 中文女声）进行本地语音合成。开启后，任务完成状态将自动语音播报。模型文件约 60MB，将从 GitHub 或 Hub 下载到本地。',
+                    'TTS 使用 Piper VITS 模型（xiao_ya 中文女聲）進行本地語音合成。開啟後，任務完成狀態將自動語音播報。模型文件約 60MB，將從 GitHub 或 Hub 下載到本地。'
                 )}
             </p>
             {enabled && (
