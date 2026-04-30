@@ -296,10 +296,12 @@ func (pi *ProjectIndex) Count() int {
 }
 
 // Get returns the record for a specific project path, or nil.
+// The path is normalized so both slash styles match the same record.
 func (pi *ProjectIndex) Get(projectPath string) *ProjectRecord {
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
-	if rec, ok := pi.records[projectPath]; ok {
+	key := normalizeProjectPath(toForwardSlash(projectPath))
+	if rec, ok := pi.records[key]; ok {
 		clone := *rec
 		return &clone
 	}
@@ -561,8 +563,9 @@ func inferProjectPath(e *Entry) string {
 
 	// 2. Tags: look for path-like tags.
 	for _, tag := range e.Tags {
-		if looksLikeProjectPath(toForwardSlash(tag)) {
-			return normalizeProjectPath(toForwardSlash(tag))
+		fwd := toForwardSlash(tag)
+		if looksLikeProjectPath(fwd) {
+			return normalizeProjectPath(fwd)
 		}
 	}
 
@@ -577,17 +580,19 @@ func toForwardSlash(s string) string {
 // pathDir returns the directory portion of a forward-slash path.
 // Unlike filepath.Dir, this always uses '/' as separator, making it
 // cross-platform safe for Windows paths processed on Linux.
+//
+// Matches filepath.Dir semantics: trailing slash means "this is a directory",
+// so pathDir("/a/b/") returns "/a/b" (not "/a").
 func pathDir(fwdPath string) string {
-	// Trim trailing slash.
-	clean := strings.TrimRight(fwdPath, "/")
-	if clean == "" {
-		return "/"
+	// Trailing slash → the path itself is a directory; return it cleaned.
+	if len(fwdPath) > 1 && fwdPath[len(fwdPath)-1] == '/' {
+		return strings.TrimRight(fwdPath, "/")
 	}
-	idx := strings.LastIndex(clean, "/")
+	idx := strings.LastIndex(fwdPath, "/")
 	if idx < 0 {
 		return "."
 	}
-	dir := clean[:idx]
+	dir := fwdPath[:idx]
 	if dir == "" {
 		return "/"
 	}
@@ -599,13 +604,13 @@ func pathDir(fwdPath string) string {
 // Unix paths keep forward slashes. This ensures deterministic output regardless
 // of the host OS (Linux CI processing Windows paths from user data).
 func normalizeProjectPath(fwdPath string) string {
+	// Clean up double slashes first (applies to both platforms).
+	for strings.Contains(fwdPath, "//") {
+		fwdPath = strings.ReplaceAll(fwdPath, "//", "/")
+	}
 	// Detect Windows path: second char is ':' (e.g. "D:/workprj/snake").
 	if len(fwdPath) >= 2 && fwdPath[1] == ':' {
 		return strings.ReplaceAll(fwdPath, "/", "\\")
-	}
-	// Unix path: clean up double slashes but keep forward slashes.
-	for strings.Contains(fwdPath, "//") {
-		fwdPath = strings.ReplaceAll(fwdPath, "//", "/")
 	}
 	return fwdPath
 }

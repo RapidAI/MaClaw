@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -33,14 +36,23 @@ var sideEffectTools = map[string]bool{
 // Gate: at least one side-effect tool call must be present in the
 // conversation history. This objectively separates "tasks with output"
 // from pure chat / lookups / reads.
+//
+// Project path: every task gets a unique standalone path derived from its
+// title hash, so each task appears as a separate item in the sidebar.
+// The current project path is added as a secondary tag for search affinity
+// but does NOT determine the index key (inferProjectPath picks the first
+// path-like tag, which is the standalone path).
 func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.ConversationEntry) {
 	if h.memoryStore == nil || len(history) == 0 {
 		return
 	}
 
-	// Count side-effect tool calls.
-	sideEffects := 0
+	// Check for at least one side-effect tool call.
+	hasSideEffect := false
 	for _, e := range history {
+		if hasSideEffect {
+			break
+		}
 		if e.Role != "assistant" || e.ToolCalls == nil {
 			continue
 		}
@@ -48,11 +60,12 @@ func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.Conv
 		collectToolNameSet(e.ToolCalls, names)
 		for name := range names {
 			if sideEffectTools[name] {
-				sideEffects++
+				hasSideEffect = true
+				break
 			}
 		}
 	}
-	if sideEffects == 0 {
+	if !hasSideEffect {
 		return
 	}
 
@@ -98,10 +111,16 @@ func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.Conv
 		buf.WriteString(truncSediment(lastReply, 300))
 	}
 
-	projectPath := h.getCurrentProjectPath()
+	// Determine project path.
+	// Every task gets a standalone path (appears as its own list item).
+	// The current project path is added as a secondary tag for affinity.
+	standalonePath, projectTag := h.resolveTaskProjectPath(title)
 	tags := []string{"task_sediment", "auto"}
-	if projectPath != "" {
-		tags = append(tags, projectPath)
+	if standalonePath != "" {
+		tags = append(tags, standalonePath)
+	}
+	if projectTag != "" && projectTag != standalonePath {
+		tags = append(tags, projectTag)
 	}
 
 	entry := memory.Entry{
@@ -116,6 +135,51 @@ func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.Conv
 	if err := h.memoryStore.Save(entry); err != nil {
 		log.Printf("[task_sediment] save failed: %v", err)
 	}
+}
+
+// resolveTaskProjectPath returns the standalone path and project tag for a
+// task sediment entry.
+//
+// Every task gets its own standalone path so it appears as a separate item
+// in the recent tasks list. The standalone path is derived from the task
+// title (deterministic hash), ensuring:
+//   - Different tasks → different paths → separate list items
+//   - Same task re-run → same path → updates existing item (idempotent)
+//
+// The current project path is returned as a secondary tag for search
+// affinity. The caller adds both to Tags; inferProjectPath picks the
+// standalone path (first path-like tag) as the index key.
+func (h *IMMessageHandler) resolveTaskProjectPath(title string) (standalone string, projectTag string) {
+	maclawDataDir := ""
+	if h.app != nil {
+		maclawDataDir = h.app.GetDataDir()
+	}
+	standalone = buildStandaloneTaskPath(maclawDataDir, title)
+	projectTag = h.getCurrentProjectPath()
+	return
+}
+
+// buildStandaloneTaskPath creates a synthetic path for standalone tasks
+// (tasks not tied to a specific project directory). The path is:
+//
+//	{maclawDataDir}/tasks/{title-hash-prefix}
+//
+// This is a real directory path that passes looksLikeProjectPath validation
+// in ProjectIndex.inferProjectPath (Windows drive letter + 2+ segments + no
+// short file extension).
+//
+// Properties:
+//   - Deterministic: same title → same path (idempotent, no duplicate entries)
+//   - Unique: different titles → different paths (each task gets its own entry)
+//   - Valid: passes all ProjectIndex path validation checks
+func buildStandaloneTaskPath(maclawDataDir, title string) string {
+	if maclawDataDir == "" {
+		return ""
+	}
+	// Use a short hash of the title for uniqueness + determinism.
+	h := sha256.Sum256([]byte(title))
+	slug := fmt.Sprintf("%x", h[:6]) // 12 hex chars
+	return filepath.Join(maclawDataDir, "tasks", slug)
 }
 
 func buildSedimentTitle(req string) string {

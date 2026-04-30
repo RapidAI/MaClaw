@@ -158,10 +158,19 @@ func (a *App) ResumeProject(projectPath string) string {
 	// idempotent, no harm done.
 
 	msg := "🔖 已切换到任务：" + projectName
-	// Only show the path line if it looks like a real absolute path.
-	// Some tasks have inferred paths like "\path.dirname" from tag fragments
-	// — showing those is confusing rather than helpful.
-	if memory.LooksLikeFilePath(projectPath) {
+	// Only show the path line if it looks like a real user project path.
+	// Suppress for:
+	//   - Inferred paths like "\path.dirname" from tag fragments
+	//   - Synthetic standalone task paths under {dataDir}/tasks/ (hash-based,
+	//     meaningless to the user)
+	showPath := memory.LooksLikeFilePath(projectPath)
+	if showPath {
+		dataDir := a.GetDataDir()
+		if dataDir != "" && strings.HasPrefix(strings.ToLower(filepath.Clean(projectPath)), strings.ToLower(filepath.Clean(dataDir))) {
+			showPath = false
+		}
+	}
+	if showPath {
 		msg += "\n📁 " + projectPath
 	}
 	return msg

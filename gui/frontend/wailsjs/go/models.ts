@@ -270,6 +270,8 @@ export namespace main {
 	    workflow_enabled?: boolean;
 	    tts_enabled?: boolean;
 	    asr_enabled?: boolean;
+	    noise_floor_calibrated?: number;
+	    speech_level_calibrated?: number;
 	    audio_input_device_id?: string;
 	    audio_output_device_id?: string;
 	
@@ -409,6 +411,8 @@ export namespace main {
 	        this.workflow_enabled = source["workflow_enabled"];
 	        this.tts_enabled = source["tts_enabled"];
 	        this.asr_enabled = source["asr_enabled"];
+	        this.noise_floor_calibrated = source["noise_floor_calibrated"];
+	        this.speech_level_calibrated = source["speech_level_calibrated"];
 	        this.audio_input_device_id = source["audio_input_device_id"];
 	        this.audio_output_device_id = source["audio_output_device_id"];
 	    }

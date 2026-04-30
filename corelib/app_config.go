@@ -166,6 +166,14 @@ type AppConfig struct {
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
 	// ASR toggle.
 	ASREnabled bool `json:"asr_enabled"`
+	// Calibrated noise floor for voice input VAD.
+	// 0 = not calibrated (use auto-calibration). Positive value = calibrated RMS baseline.
+	// Set by the "Calibrate Microphone" button in settings.
+	NoiseFloorCalibrated float64 `json:"noise_floor_calibrated,omitempty"`
+	// Calibrated speech energy level for voice input VAD.
+	// 0 = not calibrated (use multiplier-based threshold). Positive value = average speech RMS.
+	// Set by the second phase of microphone calibration (user reads a sentence aloud).
+	SpeechLevelCalibrated float64 `json:"speech_level_calibrated,omitempty"`
 	// TTS toggle — enables voice readback of AI responses.
 	TTSEnabled bool `json:"tts_enabled"`
 	// TTS auto voice summary — when enabled, IM channel responses automatically

@@ -2,17 +2,30 @@
  * useVoiceInput — Toggle-mode voice input for the AI assistant panel.
  *
  * Toggle ON: microphone opens, continuously listens. When a speech segment
- * is detected (energy-based VAD), it's automatically sent to the backend
- * for transcription. The result is dispatched via onTranscribed callback.
+ * is detected (adaptive energy-based VAD), it's automatically sent to the
+ * backend for transcription. The result is dispatched via onTranscribed callback.
  *
  * Toggle OFF: microphone closes, any in-progress segment is finalized.
  *
- * The backend also runs Silero VAD on the full audio before ASR, so the
- * frontend VAD here is a lightweight energy-based pre-filter for segmentation
- * (detecting when the user starts/stops talking), not for noise filtering.
+ * The frontend VAD uses an adaptive noise floor to distinguish speech from
+ * background noise. On mic open, the noise floor starts at a sensible default
+ * for headset/earbuds (0.006 RMS). Auto-calibration tracks the minimum RMS
+ * across the first few chunks to refine this. If the user has run manual
+ * calibration (settings panel), those values take priority and EMA adaptation
+ * is disabled — the user's calibration is authoritative.
+ *
+ * Speech threshold calculation:
+ *   - With two-phase calibration: noise + 30% of (speech - noise) gap
+ *   - Without: noise floor × 3.0 multiplier
+ * The 30% bias toward noise is intentional: false positives (noise sent to ASR)
+ * are cheap (backend Silero VAD filters them), false negatives (missed speech)
+ * are expensive (user's words are lost).
+ *
+ * The backend also runs Silero VAD on the full audio before ASR for a second
+ * layer of noise filtering.
  */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { TranscribeAudioBase64, IsASRReady } from "../../../wailsjs/go/main/App";
+import { TranscribeAudioBase64, IsASRReady, LoadConfig } from "../../../wailsjs/go/main/App";
 
 export type VoiceInputState = "idle" | "listening" | "transcribing";
 
@@ -42,11 +55,16 @@ const TARGET_SAMPLE_RATE = 16000;
 const CHUNK_SIZE = 4096; // ~256ms at 16kHz
 
 // Energy VAD thresholds for speech segmentation
-const SILENCE_THRESHOLD = 0.01;   // RMS below this = silence
-const SPEECH_START_CHUNKS = 2;    // consecutive speech chunks to start a segment
-const SILENCE_END_CHUNKS = 6;     // consecutive silence chunks to end a segment (~1.5s)
-const MIN_SPEECH_CHUNKS = 3;      // minimum speech chunks for a valid segment (~0.75s)
-const MAX_SEGMENT_SEC = 30;       // max segment duration before forced cut
+const SILENCE_THRESHOLD_FLOOR = 0.005; // absolute minimum RMS — below this is always silence (near-zero signal)
+const NOISE_CALIBRATION_CHUNKS = 4;    // first N chunks used to calibrate noise floor (~1s at 256ms/chunk)
+const NOISE_FLOOR_MULTIPLIER = 3.0;    // speech threshold = noiseFloor * multiplier (SNR requirement)
+const NOISE_FLOOR_ADAPT_RATE = 0.05;   // EMA alpha for noise floor adaptation during silence
+const NOISE_FLOOR_MAX = 0.08;          // cap noise floor — above this the environment is too loud
+const NOISE_FLOOR_DEFAULT = 0.006;     // default noise floor for headset/earbuds (typical RMS ~0.002-0.008)
+const SPEECH_START_CHUNKS = 2;         // consecutive speech chunks to start a segment
+const SILENCE_END_CHUNKS = 6;          // consecutive silence chunks to end a segment (~1.5s)
+const MIN_SPEECH_CHUNKS = 3;           // minimum speech chunks for a valid segment (~0.75s)
+const MAX_SEGMENT_SEC = 30;            // max segment duration before forced cut
 
 // ── WAV encoding utilities ──
 
@@ -144,6 +162,34 @@ export function useVoiceInput(
     const onTranscribedRef = useRef(onTranscribed);
     onTranscribedRef.current = onTranscribed;
 
+    // Adaptive noise floor state
+    const noiseFloorRef = useRef(NOISE_FLOOR_DEFAULT); // start with headset default, refined by calibration
+    const noiseCalibCountRef = useRef(0);      // chunks processed during auto-calibration phase
+    const noiseCalibMinRef = useRef(Infinity);  // minimum RMS seen during auto-calibration (robust to speech-during-calibration)
+    const noiseCalibDoneRef = useRef(false);   // true after calibration phase completes
+    const persistedNoiseFloorRef = useRef(0);  // user-calibrated value from config (0 = not calibrated)
+    const persistedSpeechLevelRef = useRef(0); // user-calibrated speech energy from config (0 = not calibrated)
+    const configLoadedRef = useRef(false);     // true after LoadConfig completes — prevents race with early mic open
+
+    // Load persisted calibration from config on mount.
+    // configLoadedRef gates processChunk's calibration path to prevent the race
+    // where auto-calibration completes before LoadConfig returns.
+    useEffect(() => {
+        LoadConfig().then(cfg => {
+            const nf = (cfg as any).noise_floor_calibrated;
+            if (typeof nf === 'number' && nf > 0) {
+                persistedNoiseFloorRef.current = nf;
+            }
+            const sl = (cfg as any).speech_level_calibrated;
+            if (typeof sl === 'number' && sl > 0) {
+                persistedSpeechLevelRef.current = sl;
+            }
+            configLoadedRef.current = true;
+        }).catch(() => {
+            configLoadedRef.current = true; // proceed with defaults on error
+        });
+    }, []);
+
     // Check ASR readiness
     useEffect(() => {
         let cancelled = false;
@@ -197,15 +243,88 @@ export function useVoiceInput(
             });
     }, [setErrorAuto]);
 
-    /** Process one audio chunk: energy VAD for segmentation. */
+    /** Process one audio chunk: adaptive energy VAD for segmentation. */
     const processChunk = useCallback((data: Float32Array) => {
         const energy = rms(data);
-        const isSpeech = energy > SILENCE_THRESHOLD;
 
-        // Emit audio level for visualization (normalized to 0-1, clamped)
-        // Scale: typical speech RMS is 0.02-0.15, scale up for visual impact
-        const normalizedLevel = Math.min(1, energy * 10);
-        audioLevelCallbackRef.current?.(normalizedLevel);
+        // ── Adaptive noise floor calibration & tracking ──
+        //
+        // Three-tier priority:
+        //   1. User-calibrated value (from settings) — highest trust, no EMA adaptation
+        //   2. Auto-calibrated value (from first N chunks) — uses minimum RMS, not average
+        //   3. NOISE_FLOOR_DEFAULT (0.006, headset/earbuds baseline) — works immediately
+        //
+        // Auto-calibration uses the MINIMUM RMS across the calibration window, not the
+        // average. This is robust to the user speaking during calibration: the quietest
+        // chunk in any N-chunk window represents the noise floor, even if other chunks
+        // contain speech. Average would be polluted by speech energy.
+        //
+        // Config loading race: we don't finalize auto-calibration until configLoadedRef
+        // is true, so persisted values always take priority even if LoadConfig is slow.
+        if (!noiseCalibDoneRef.current) {
+            if (configLoadedRef.current && persistedNoiseFloorRef.current > 0) {
+                // Tier 1: user-calibrated — use directly, no auto-calibration needed
+                noiseFloorRef.current = persistedNoiseFloorRef.current;
+                noiseCalibDoneRef.current = true;
+            } else {
+                // Tier 2/3: track minimum RMS for auto-calibration while using default
+                noiseCalibCountRef.current++;
+                if (energy < noiseCalibMinRef.current) {
+                    noiseCalibMinRef.current = energy;
+                }
+                // Only finalize auto-calibration after config has loaded (prevents race)
+                if (noiseCalibCountRef.current >= NOISE_CALIBRATION_CHUNKS && configLoadedRef.current) {
+                    const measured = noiseCalibMinRef.current;
+                    // Use measured minimum if it's in a reasonable range; otherwise keep default
+                    if (measured > 0 && measured < NOISE_FLOOR_MAX && isFinite(measured)) {
+                        noiseFloorRef.current = measured;
+                    }
+                    noiseCalibDoneRef.current = true;
+                }
+                // Fall through to speech detection using current noiseFloorRef (default or just-computed)
+            }
+        }
+
+        // Dynamic speech threshold:
+        //   - With speech calibration: noise + 30% of the gap to speech level
+        //     (biased toward noise side — better to send noise to backend Silero VAD
+        //      than to miss user speech)
+        //   - Without: noise floor × multiplier (fallback)
+        //   - Always at least SILENCE_THRESHOLD_FLOOR
+        let speechThreshold: number;
+        if (persistedSpeechLevelRef.current > 0 && persistedNoiseFloorRef.current > 0) {
+            const gap = persistedSpeechLevelRef.current - persistedNoiseFloorRef.current;
+            speechThreshold = Math.max(
+                SILENCE_THRESHOLD_FLOOR,
+                persistedNoiseFloorRef.current + gap * 0.3,
+            );
+        } else {
+            speechThreshold = Math.max(
+                SILENCE_THRESHOLD_FLOOR,
+                noiseFloorRef.current * NOISE_FLOOR_MULTIPLIER,
+            );
+        }
+        const isSpeech = energy > speechThreshold;
+
+        // Adapt noise floor during silence using EMA (exponential moving average).
+        // Only adapt when:
+        //   - NOT in a speech segment (prevents speech energy from raising the floor)
+        //   - No user-calibrated value exists (user calibration is authoritative)
+        // Cap to NOISE_FLOOR_MAX.
+        if (!isSpeech && !inSpeechRef.current && persistedNoiseFloorRef.current <= 0) {
+            noiseFloorRef.current = Math.min(
+                NOISE_FLOOR_MAX,
+                noiseFloorRef.current * (1 - NOISE_FLOOR_ADAPT_RATE) + energy * NOISE_FLOOR_ADAPT_RATE,
+            );
+        }
+
+        // Emit audio level for visualization.
+        // Show level relative to the speech threshold so the user sees meaningful
+        // feedback: bars near zero = background noise, bars jumping up = speech.
+        const relativeLevel = speechThreshold > 0
+            ? Math.min(1, Math.max(0, (energy - noiseFloorRef.current) / (speechThreshold * 3)))
+            : Math.min(1, energy * 10);
+        audioLevelCallbackRef.current?.(relativeLevel);
 
         if (isSpeech) {
             speechChunkCountRef.current++;
@@ -279,6 +398,11 @@ export function useVoiceInput(
         speechChunkCountRef.current = 0;
         silenceChunkCountRef.current = 0;
         inSpeechRef.current = false;
+        // Reset adaptive noise floor — start with default, auto-calibration will refine
+        noiseFloorRef.current = NOISE_FLOOR_DEFAULT;
+        noiseCalibCountRef.current = 0;
+        noiseCalibMinRef.current = Infinity;
+        noiseCalibDoneRef.current = false;
 
         try {
             const selectedDevice = inputDeviceIdRef.current;
