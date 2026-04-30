@@ -86,3 +86,34 @@ corelib/yolo/weights/
 
 # Build temp files
 build/windows/installer/*.nsh.tmp
+
+# TTS model and test data (large binary files)
+corelib/tts/testdata/*.gguf
+corelib/tts/testdata/*.wav
+corelib/tts/testdata/*.bin
+corelib/tts/testdata/*.npz
+corelib/tts/testdata/*.npy
+corelib/tts/testdata/ref_*
+corelib/tts/testdata/pyref_*
+corelib/tts/testdata/pyweight_*
+corelib/tts/testdata/*.tar.bz2
+corelib/tts/testdata/cmudict.dict
+corelib/tts/testdata/melotts-*.gguf
+corelib/tts/testdata/espeak-ng-data/
+corelib/tts/testdata/vits-icefall-zh-aishell3/
+corelib/tts/testdata/vits-piper-zh_CN-huayan-medium/
+corelib/tts/testdata/__pycache__/
+corelib/tts/testdata/vits-piper-zh_CN-xiao_ya-medium/
+
+# Root-level binaries and temp files
+maclaw-tool.exe
+synthesize.exe
+tts_asr_test.exe
+tui.exe
+cpu.prof
+tmp_gguf_tensors.txt
+_tmptest/
+*.pptx
+
+# Property test rapid cache
+corelib/memory/testdata/rapid/

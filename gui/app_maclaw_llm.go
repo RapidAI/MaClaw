@@ -1782,24 +1782,43 @@ func (a *App) FetchProviderModels(baseURL, apiKey, protocol string) ([]ProviderM
 		return nil, fmt.Errorf("API Key 为空，请先填写 API Key")
 	}
 
-	endpoint := baseURL + "/models"
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("构建请求失败: %w", err)
-	}
-
-	// 根据协议设置认证头
-	if protocol == "anthropic" {
-		req.Header.Set("x-api-key", apiKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	} else {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+	// 构建 models 端点候选 URL 列表。
+	// OpenAI 协议：baseURL 通常已包含 /v1（如 https://api.openai.com/v1），直接拼 /models。
+	// Anthropic 协议：baseURL 可能不含 /v1（如 http://127.0.0.1:5001/anthropic），
+	//   需要插入 /v1 前缀，否则请求 /anthropic/models 会 404（正确路径是 /anthropic/v1/models）。
+	// 首选路径 404 时尝试备选路径，兼容不同代理的路由注册方式。
+	hasV1 := strings.HasSuffix(baseURL, "/v1")
+	candidates := []string{baseURL + "/models"}
+	if protocol == "anthropic" && !hasV1 {
+		// Anthropic 代理通常注册 /anthropic/v1/models，优先尝试
+		candidates = []string{baseURL + "/v1/models", baseURL + "/models"}
+	} else if !hasV1 {
+		// OpenAI 代理 baseURL 不含 /v1 时，备选带 /v1 的路径
+		candidates = append(candidates, baseURL+"/v1/models")
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("获取模型列表失败: %w", err)
+
+	var resp *http.Response
+	var err error
+	for _, endpoint := range candidates {
+		r, e := a.doFetchModelsRequest(client, endpoint, apiKey, protocol)
+		if e != nil {
+			err = e
+			continue
+		}
+		if r.StatusCode == http.StatusNotFound {
+			r.Body.Close()
+			continue
+		}
+		resp = r
+		break
+	}
+	if resp == nil {
+		if err != nil {
+			return nil, fmt.Errorf("获取模型列表失败: %w", err)
+		}
+		return nil, fmt.Errorf("服务器返回 HTTP 404: 模型列表端点不存在，请检查 API 地址是否正确")
 	}
 	defer resp.Body.Close()
 
@@ -1879,6 +1898,22 @@ func (a *App) FetchProviderModels(baseURL, apiKey, protocol string) ([]ProviderM
 	})
 
 	return items, nil
+}
+
+// doFetchModelsRequest 发送 GET 请求到指定的 models 端点。
+// 提取为独立方法以支持 FetchProviderModels 中的 fallback 重试。
+func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protocol string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+	if protocol == "anthropic" {
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	return client.Do(req)
 }
 
 // truncateCodeGenStr 截断字符串到 maxLen，超出时追加 "..."。

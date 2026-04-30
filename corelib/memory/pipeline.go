@@ -137,6 +137,27 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		}
 	}
 
+	// Step 6: Topic clustering (inspired by Graphiti Community Subgraph).
+	// Rebuild topic clusters from current entries. This is lightweight (no LLM)
+	// and provides community-like summaries for global context.
+	if p.store.topicClusterer != nil && ctx.Err() == nil {
+		p.store.mu.RLock()
+		entries := make([]Entry, len(p.store.entries))
+		copy(entries, p.store.entries)
+		p.store.mu.RUnlock()
+
+		clusters := p.store.topicClusterer.Cluster(entries)
+
+		// Generate summaries for clusters (uses LLM if available).
+		if p.compressor != nil && p.compressor.llm != nil {
+			clusters = p.store.topicClusterer.GenerateSummaries(clusters, entries, p.compressor.llm)
+		}
+
+		if len(clusters) > 0 {
+			log.Printf("[pipeline] topic clustering: %d clusters discovered", len(clusters))
+		}
+	}
+
 	result.Duration = fmt.Sprintf("%.1fs", time.Since(start).Seconds())
 
 	p.mu.Lock()

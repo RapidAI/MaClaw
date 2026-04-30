@@ -235,7 +235,7 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 				}
 				placeholder = []interface{}{
 					map[string]string{"role": "user", "content": "[对话历史摘要]\n" + summary},
-					map[string]string{"role": "assistant", "content": "好的，我已了解之前的对话上下文。"},
+					map[string]string{"role": "assistant", "content": "好的，我已了解之前的对话上下文。", "reasoning_content": ""},
 				}
 			}
 		}
@@ -317,6 +317,30 @@ func truncateLastGroup(msgs []interface{}, start, end int, systemMsg, placeholde
 func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 	result := make([]interface{}, len(msgs))
 	copy(result, msgs)
+
+	// DeepSeek V4+ thinking mode rule (with tools present):
+	//   When the conversation contains ANY tool-call message, the API
+	//   requires reasoning_content to be preserved on ALL assistant
+	//   messages — not just those with tool_calls. This is because
+	//   drop_thinking is automatically disabled when tools are present.
+	//
+	// See: https://api-docs.deepseek.com/guides/thinking_mode
+	//   "Between two user messages, if the model performed a tool call,
+	//    the intermediate assistant's reasoning_content must participate
+	//    in the context concatenation and must be passed back to the API
+	//    in all subsequent user interaction turns."
+	//
+	// Also from the V4 encoding doc (HuggingFace):
+	//   "With tools (on system or developer message): drop_thinking is
+	//    automatically disabled. All turns retain their reasoning."
+	conversationHasToolCalls := false
+	for _, m := range result {
+		if msgHasToolCalls(m) {
+			conversationHasToolCalls = true
+			break
+		}
+	}
+
 	for i, m := range result {
 		if estimateConversationTokens(result) <= budget {
 			break
@@ -333,25 +357,31 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 		for k, v := range mm {
 			cp[k] = v
 		}
-		// DeepSeek thinking mode rule for reasoning_content:
-		//   - The field MUST EXIST on assistant messages with tool_calls
-		//   - Missing field → HTTP 400; truncated/empty string → OK
-		//   - On messages without tool_calls, the API ignores it
+		// DeepSeek thinking mode reasoning_content preservation:
+		//
+		// When the conversation has tool calls (conversationHasToolCalls),
+		// ALL assistant messages must retain reasoning_content. The field
+		// must exist (even as empty string ""); missing field → HTTP 400.
+		//
+		// When the conversation has NO tool calls, reasoning_content on
+		// non-tool-call messages is ignored by the API and can be deleted
+		// to reclaim token budget.
 		//
 		// Verified empirically:
 		//   Full reasoning_content      → 200 ✅
 		//   Truncated reasoning_content → 200 ✅
 		//   Empty string ""             → 200 ✅
-		//   Field missing entirely      → 400 ❌
-		//
-		// See: https://api-docs.deepseek.com/guides/thinking_mode
-		if msgHasToolCalls(cp) {
-			// Tool-call turn: reasoning_content field must exist.
-			// Keep it as-is (full content). Do NOT truncate — while the API
-			// currently accepts truncated values, preserving the full chain-of-
-			// thought allows the model to continue reasoning coherently.
+		//   Field missing entirely      → 400 ❌ (when tools present)
+		if conversationHasToolCalls {
+			// Conversation has tool calls: reasoning_content field must exist.
+			// Truncate long reasoning to reclaim token budget (API accepts
+			// truncated values), but never delete the field entirely.
+			if rc, _ := cp["reasoning_content"].(string); len([]rune(rc)) > 200 {
+				runes := []rune(rc)
+				cp["reasoning_content"] = string(runes[:100]) + "…(truncated)…" + string(runes[len(runes)-50:])
+			}
 		} else {
-			// Non-tool-call turn: API ignores reasoning_content.
+			// No tool calls in conversation: API ignores reasoning_content.
 			// Delete it entirely to reclaim token budget.
 			delete(cp, "reasoning_content")
 		}

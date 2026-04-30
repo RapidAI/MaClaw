@@ -69,6 +69,12 @@ type contextCompressionRequest struct {
 // - The first user message (the original task)
 // - The last N entries (recent context including the compress_context call)
 // - Replaces everything in between with a summary entry.
+//
+// The tail boundary is group-aligned: if the raw tailStart index would
+// split a tool-call group (landing between an assistant(tool_calls) and
+// its tool results), it is adjusted backward to include the full group.
+// This prevents orphaned tool messages that cause DeepSeek HTTP 400:
+//   "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
 func applyHistoryCompression(history []agent.ConversationEntry, req *contextCompressionRequest) []agent.ConversationEntry {
 	if req == nil || len(history) < 6 {
 		return history
@@ -97,6 +103,24 @@ func applyHistoryCompression(history []agent.ConversationEntry, req *contextComp
 		return history
 	}
 
+	// --- Group-align tailStart ---
+	// Use BuildEntryGroups (the single source of truth for group boundaries)
+	// to find the group containing tailStart. If tailStart lands in the
+	// middle of a group, adjust it backward to the group's start so the
+	// entire group is preserved in the tail.
+	//
+	// Example: if tailStart lands on a tool entry whose parent
+	// assistant(tool_calls) is at tailStart-1, we must include the
+	// assistant too, otherwise the tool entry becomes orphaned.
+	groups := agent.BuildEntryGroups(history)
+	g := agent.GroupContaining(groups, tailStart)
+	if g != nil && tailStart > g.Start {
+		tailStart = g.Start
+	}
+	if tailStart <= headEnd {
+		return history
+	}
+
 	removedCount := tailStart - headEnd
 	summaryMsg := fmt.Sprintf(
 		"[上下文压缩] Agent 主动压缩的工作状态摘要（替代了 %d 条历史记录）：\n\n%s",
@@ -111,8 +135,8 @@ func applyHistoryCompression(history []agent.ConversationEntry, req *contextComp
 	})
 	compressed = append(compressed, history[tailStart:]...)
 
-	log.Printf("[compress_context] history: removed %d entries, preserved head=%d tail=%d, new_len=%d",
-		removedCount, headEnd, preserveTail, len(compressed))
+	log.Printf("[compress_context] history: removed %d entries, preserved head=%d tail=%d (group-aligned), new_len=%d",
+		removedCount, headEnd, len(history)-tailStart, len(compressed))
 
 	return compressed
 }
@@ -125,6 +149,7 @@ func persistLastCompressionSummary(store interface{ Save(corememory.Entry) error
 	}
 	entry := corememory.Entry{
 		Content:  summary,
+		Title:    "工作状态快照",
 		Category: corememory.CategoryTaskArtifact,
 		Tags:     []string{"context_checkpoint", "working_state"},
 	}

@@ -119,10 +119,27 @@ export interface DashboardData {
   updated_at?: string;
 }
 
+export interface CenterCloudHeartbeat {
+  configured: boolean;
+  status: string;
+  center_id?: string;
+  last_attempt_at?: string;
+  last_success_at?: string;
+  last_error?: string;
+  consecutive_failures: number;
+  runtime_type: string;
+  product_kind: string;
+  admin_console: string;
+}
+
 export interface CenterStatus {
   status: string;
+  runtime_type?: string;
+  product_kind?: string;
+  admin_console?: string;
   provider_count: number;
   config_path: string;
+  cloud_heartbeat?: CenterCloudHeartbeat;
 }
 
 export interface CenterSettings {

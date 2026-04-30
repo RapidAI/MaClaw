@@ -208,6 +208,10 @@ type SkillYAMLFile struct {
 	RequiredCredentialFiles []string `yaml:"required_credential_files,omitempty"`
 	// Dependency auto-install: pip/npm packages to install before execution
 	Requires *SkillYAMLRequires `yaml:"requires,omitempty"`
+	// Stateful enables cross-invocation state persistence (Pattern 4: Baton Relay)
+	Stateful bool                     `yaml:"stateful,omitempty"`
+	// Pipeline declares multi-skill orchestration (Pattern 5: Multi-Phase + Checkpoint)
+	Pipeline []SkillYAMLPipelineStep  `yaml:"pipeline,omitempty"`
 	Extra            map[string]any       `yaml:"-"`
 }
 
@@ -259,6 +263,25 @@ type SkillYAMLStep struct {
 	TimeoutSeconds int                    `yaml:"timeout,omitempty"`         // per-step timeout in seconds (0 = use default)
 	ContinueOnErr  bool                   `yaml:"continue_on_error"`
 	Poll           *SkillYAMLStepPoll     `yaml:"poll,omitempty"`            // poll config for async steps
+	Loop           *SkillYAMLStepLoop     `yaml:"loop,omitempty"`            // iterative loop config (Pattern 3)
+}
+
+// SkillYAMLStepLoop configures iterative execution with verification gate.
+type SkillYAMLStepLoop struct {
+	MaxIterations int    `yaml:"max_iterations"`
+	UntilStep     string `yaml:"until_step,omitempty"`
+	UntilMatch    string `yaml:"until_match,omitempty"`
+	OnFailStep    string `yaml:"on_fail_step,omitempty"`
+}
+
+// SkillYAMLPipelineStep declares one step in a skill pipeline.
+type SkillYAMLPipelineStep struct {
+	Skill              string            `yaml:"skill"`
+	Params             map[string]string `yaml:"params,omitempty"`
+	Checkpoint         bool              `yaml:"checkpoint,omitempty"`
+	CheckpointMessage  string            `yaml:"checkpoint_message,omitempty"`
+	ContinueOnFail     bool              `yaml:"continue_on_fail,omitempty"`
+	TimeImpactOnReject string            `yaml:"time_impact_on_reject,omitempty"`
 }
 
 func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
@@ -280,6 +303,8 @@ func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
 		"requires_toolsets": true, "fallback_for_toolsets": true,
 		"required_credential_files": true,
 		"requires": true,
+		"exec_mode": true, "global_timeout": true,
+		"stateful": true, "pipeline": true,
 	}
 	extra := make(map[string]any)
 	for k, v := range raw {
@@ -382,6 +407,14 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 					MaxAttempts: s.Poll.MaxAttempts,
 					UntilMatch:  s.Poll.UntilMatch,
 					UntilStatus: s.Poll.UntilStatus,
+				}
+			}
+			if s.Loop != nil {
+				step.Loop = &corelib.StepLoopConfig{
+					MaxIterations: s.Loop.MaxIterations,
+					UntilStep:     s.Loop.UntilStep,
+					UntilMatch:    s.Loop.UntilMatch,
+					OnFailStep:    s.Loop.OnFailStep,
 				}
 			}
 			steps = append(steps, step)
@@ -540,6 +573,9 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			RequiredCredentialFiles: sf.RequiredCredentialFiles,
 			RequiresPython:         requiresPythonFromYAML(sf.Requires),
 			RequiresNode:           requiresNodeFromYAML(sf.Requires),
+			Stateful:               sf.Stateful,
+			Pipeline:               convertPipelineSteps(sf.Pipeline),
+			References:             scanReferences(skillDir),
 		}, yamlPath, nil
 	}
 
@@ -782,6 +818,7 @@ func scanSkillDirInternal(root string, filterPlatform bool) []corelib.NLSkillEnt
 		skillDir := filepath.Join(root, entry.Name())
 		parsed, defPath, err := loadSkillFromDir(skillDir, entry.Name())
 		if err != nil {
+			log.Printf("[skill-scanner] skip %s: load failed: %v", skillDir, err)
 			continue
 		}
 
@@ -927,3 +964,53 @@ func bm25ScoreSimple(queryTokens, docTokens []string) float64 {
 // newSkillBM25Index is a placeholder for future BM25 index integration.
 // Currently unused — kept for API compatibility.
 // func newSkillBM25Index() interface{} { return nil }
+
+// convertPipelineSteps converts YAML pipeline steps to corelib types.
+func convertPipelineSteps(yamlSteps []SkillYAMLPipelineStep) []corelib.SkillPipelineStep {
+	if len(yamlSteps) == 0 {
+		return nil
+	}
+	steps := make([]corelib.SkillPipelineStep, len(yamlSteps))
+	for i, s := range yamlSteps {
+		steps[i] = corelib.SkillPipelineStep{
+			Skill:              s.Skill,
+			Params:             s.Params,
+			Checkpoint:         s.Checkpoint,
+			CheckpointMessage:  s.CheckpointMessage,
+			ContinueOnFail:     s.ContinueOnFail,
+			TimeImpactOnReject: s.TimeImpactOnReject,
+		}
+	}
+	return steps
+}
+
+// scanReferences scans the {skillDir}/references/ directory for .md files
+// and returns a SkillReference for each. Description is extracted from the
+// first markdown heading. Token count is estimated from file size.
+func scanReferences(skillDir string) []corelib.SkillReference {
+	refDir := filepath.Join(skillDir, "references")
+	entries, err := os.ReadDir(refDir)
+	if err != nil {
+		return nil // no references/ directory — normal case
+	}
+	var refs []corelib.SkillReference
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+			continue
+		}
+		ref := corelib.SkillReference{
+			Filename: e.Name(),
+		}
+		// Extract description from first heading and estimate tokens
+		path := filepath.Join(refDir, e.Name())
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			content := string(data)
+			ref.Description = firstMarkdownHeading(content)
+			// Rough token estimate: ~2.5 bytes per token for mixed CJK/English
+			ref.TokenCount = len(data) * 10 / 25
+		}
+		refs = append(refs, ref)
+	}
+	return refs
+}

@@ -1,14 +1,14 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "码卡龙·蜕变 (MaClaw)",
-  "outputfilename": "码卡龙·蜕变 (MaClaw)",
+  "name": "码卡龙·琢光 (MaClaw)",
+  "outputfilename": "码卡龙·琢光 (MaClaw)",
   "frontend:install": "cd gui/frontend && npm install --cache ./.npm_cache",
   "frontend:build": "cd gui/frontend && npm run build",
   "frontend:dev:watcher": "cd gui/frontend && npm run dev",
   "frontend:dev:serverUrl": "auto",
   "info": {
-    "productName": "码卡龙·蜕变 (MaClaw)",
-    "productVersion": "5.9.0.10336",
+    "productName": "码卡龙·琢光 (MaClaw)",
+    "productVersion": "5.10.0.10336",
     "companyName": "RapidAI",
     "copyright": "Copyright (C) 2026 RapidAI",
     "comments": "MaClaw: Master your code, seize the machine."

@@ -243,6 +243,9 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 			s.dirty = true
 			s.mu.Unlock()
 			s.bm25.rebuild(kept)
+			if s.entityIndex != nil {
+				s.entityIndex.Rebuild(kept)
+			}
 			s.signalSave()
 			merged++
 			log.Printf("[semantic_dedup] merged: %q into %q",

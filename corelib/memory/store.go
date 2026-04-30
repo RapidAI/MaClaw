@@ -38,6 +38,18 @@ type Store struct {
 	gating   *RecallGating
 	partMgr  *partitionManager // category-based partitioned persistence
 
+	// --- Project index ---
+	projIndex *ProjectIndex // aggregated project metadata for search
+
+	// --- Entity index (inspired by Graphiti Semantic Entity Subgraph) ---
+	entityIndex *EntityIndex // entity name → entry ID mapping for entity-centric queries
+
+	// --- Topic clusterer (inspired by Graphiti Community Subgraph) ---
+	topicClusterer *TopicClusterer // tag-based topic clustering
+
+	// --- Online extractor (Mem0-style incremental extraction) ---
+	onlineExtractor *OnlineExtractor // real-time per-turn extraction pipeline
+
 	// --- Async semantic dedup ---
 	// pendingDedup holds (newEntryID, candidateEntryID) pairs that need
 	// LLM-based precise dedup judgment. Written by SaveWithContext (under
@@ -54,16 +66,19 @@ func NewStore(path string) (*Store, error) {
 	}
 
 	s := &Store{
-		entries:  make([]Entry, 0),
-		path:     absPath,
-		saveCh:   make(chan struct{}, 1),
-		stopCh:   make(chan struct{}),
-		maxItems: 500,
-		bm25:     newBM25Index(),
-		vecIndex: newVectorIndex(),
-		graph:    newMemoryGraph(),
-		tmt:      NewTemporalTree(),
-		partMgr:  newPartitionManager(filepath.Dir(absPath)),
+		entries:        make([]Entry, 0),
+		path:           absPath,
+		saveCh:         make(chan struct{}, 1),
+		stopCh:         make(chan struct{}),
+		maxItems:       2000,
+		bm25:           newBM25Index(),
+		vecIndex:       newVectorIndex(),
+		graph:          newMemoryGraph(),
+		tmt:            NewTemporalTree(),
+		partMgr:        newPartitionManager(filepath.Dir(absPath)),
+		projIndex:      NewProjectIndex(filepath.Dir(absPath)),
+		entityIndex:    NewEntityIndex(),
+		topicClusterer: NewTopicClusterer(),
 	}
 
 	if err := s.load(); err != nil {
@@ -76,6 +91,12 @@ func NewStore(path string) (*Store, error) {
 	s.graph.rebuild(s.entries)
 	if s.tmt != nil {
 		s.tmt.Rebuild(s.entries)
+	}
+	if s.projIndex != nil {
+		s.projIndex.Rebuild(s.entries)
+	}
+	if s.entityIndex != nil {
+		s.entityIndex.Rebuild(s.entries)
 	}
 
 	// Initialize archive store in the same directory.
@@ -189,6 +210,10 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 			s.bm25.updateEntry(s.entries[i])
 			s.dirty = true
 			s.signalSave()
+			// Update project index: tags may have changed via merge.
+			if s.projIndex != nil {
+				s.projIndex.IndexEntry(&s.entries[i])
+			}
 			return nil
 		}
 	}
@@ -215,6 +240,10 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		s.bm25.updateEntry(s.entries[substringDupIdx])
 		s.dirty = true
 		s.signalSave()
+		// Update project index: tags/content may have changed via merge.
+		if s.projIndex != nil {
+			s.projIndex.IndexEntry(&s.entries[substringDupIdx])
+		}
 		log.Printf("[memory_store] merged substring duplicate into entry %s (kept longer: %v)", s.entries[substringDupIdx].ID, newLen > existingLen)
 		return nil
 	}
@@ -259,6 +288,19 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	s.evictLRU()
 	s.dirty = true
 	s.signalSave()
+
+	// Update project index. Called under s.mu.Lock — ProjectIndex has its own
+	// mutex so this is a nested lock (Store.mu → ProjectIndex.mu). The lock
+	// order is consistent across all call sites, no deadlock risk.
+	if s.projIndex != nil {
+		s.projIndex.IndexEntry(&entry)
+	}
+
+	// Update entity index for entity-centric recall.
+	if s.entityIndex != nil {
+		s.entityIndex.IndexEntry(&entry)
+	}
+
 	return nil
 }
 
@@ -305,6 +347,9 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 			s.entries[i].UpdatedAt = time.Now()
 			s.entries[i].Stale = false // content just updated, clear stale flag
 			s.bm25.updateEntry(s.entries[i])
+			if s.entityIndex != nil {
+				s.entityIndex.IndexEntry(&s.entries[i])
+			}
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -324,12 +369,21 @@ func (s *Store) Delete(id string) error {
 			s.bm25.removeEntry(id)
 			s.vecIndex.remove(id)
 			s.graph.remove(id)
+			if s.entityIndex != nil {
+				s.entityIndex.RemoveEntry(id)
+			}
 			s.dirty = true
 			s.signalSave()
 			return nil
 		}
 	}
 	return fmt.Errorf("memory_store: entry %q not found", id)
+}
+
+// ProjectIndex returns the project index for search and listing.
+// Returns nil if the store has not been initialized.
+func (s *Store) ProjectIndex() *ProjectIndex {
+	return s.projIndex
 }
 
 // List returns entries filtered by category and keyword.
@@ -1750,6 +1804,9 @@ func (s *Store) SetEntries(entries []Entry) {
 	s.bm25.rebuild(entries)
 	s.vecIndex.rebuild(entries)
 	s.graph.rebuild(entries)
+	if s.entityIndex != nil {
+		s.entityIndex.Rebuild(entries)
+	}
 }
 
 // MarkDirty marks the store as needing a flush.
@@ -2039,6 +2096,117 @@ func (s *Store) backfillEmbeddings() {
 // Graph returns the memory graph for external access (e.g. CLI commands).
 func (s *Store) Graph() *memoryGraph { return s.graph }
 
+// EntityIndex returns the entity index for entity-centric queries.
+func (s *Store) EntityIndex() *EntityIndex { return s.entityIndex }
+
+// TopicClusterer returns the topic clusterer for community-like summaries.
+func (s *Store) TopicClusterer() *TopicClusterer { return s.topicClusterer }
+
+// OnlineExtractor returns the online extraction pipeline (may be nil).
+func (s *Store) OnlineExtractor() *OnlineExtractor { return s.onlineExtractor }
+
+// SetOnlineExtractor wires the Mem0-style online extraction pipeline.
+func (s *Store) SetOnlineExtractor(oe *OnlineExtractor) {
+	s.mu.Lock()
+	s.onlineExtractor = oe
+	s.mu.Unlock()
+}
+
+// FindByEntity returns all active entries that mention the given entity.
+// Uses the entity index for fast lookup, then filters by active status.
+func (s *Store) FindByEntity(entityName string) []Entry {
+	if s.entityIndex == nil {
+		return nil
+	}
+	ids := s.entityIndex.FindByEntity(entityName)
+	if len(ids) == 0 {
+		return nil
+	}
+
+	idSet := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		idSet[id] = true
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []Entry
+	for _, e := range s.entries {
+		if idSet[e.ID] && e.IsActive() {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+// RecallWithBFS performs a BFS-based graph traversal search starting from
+// seed entries found by the standard recall, expanding to n-hop neighbors.
+// Inspired by Graphiti's breadth-first search (φ_bfs) which discovers
+// contextually similar entries through graph proximity.
+func (s *Store) RecallWithBFS(query string, category Category, projectPath string, hops int, ownerID ...string) []Entry {
+	// First, get seed entries from standard recall.
+	seeds := s.RecallDynamic(query, category, projectPath, ownerID...)
+	if len(seeds) == 0 {
+		return nil
+	}
+
+	// Collect seed IDs.
+	seedIDs := make([]string, 0, len(seeds))
+	seedSet := make(map[string]bool, len(seeds))
+	for _, e := range seeds {
+		seedIDs = append(seedIDs, e.ID)
+		seedSet[e.ID] = true
+	}
+
+	// BFS expand through the graph.
+	expanded := s.graph.expand(seedIDs, hops)
+	if len(expanded) == 0 {
+		return seeds
+	}
+
+	// Collect expanded entry IDs (not already in seeds).
+	var expandedIDs []string
+	for id := range expanded {
+		if !seedSet[id] {
+			expandedIDs = append(expandedIDs, id)
+		}
+	}
+
+	if len(expandedIDs) == 0 {
+		return seeds
+	}
+
+	// Look up expanded entries.
+	filterOwner := ""
+	if len(ownerID) > 0 {
+		filterOwner = ownerID[0]
+	}
+
+	s.mu.RLock()
+	expandedIDSet := make(map[string]bool, len(expandedIDs))
+	for _, id := range expandedIDs {
+		expandedIDSet[id] = true
+	}
+	var bfsEntries []Entry
+	for _, e := range s.entries {
+		if !expandedIDSet[e.ID] || !e.IsActive() {
+			continue
+		}
+		if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+			continue
+		}
+		bfsEntries = append(bfsEntries, e)
+	}
+	s.mu.RUnlock()
+
+	// Combine: seeds first, then BFS-expanded entries.
+	result := make([]Entry, 0, len(seeds)+len(bfsEntries))
+	result = append(result, seeds...)
+	result = append(result, bfsEntries...)
+	return result
+}
+
 // Embedder returns the configured embedder (may be nil).
 func (s *Store) Embedder() embedding.Embedder { return s.embedder }
 
@@ -2246,6 +2414,9 @@ func (s *Store) evictLRU() {
 	s.bm25.rebuild(kept)
 	s.vecIndex.rebuild(kept)
 	s.graph.rebuild(kept)
+	if s.entityIndex != nil {
+		s.entityIndex.Rebuild(kept)
+	}
 
 	// Archive evicted entries instead of discarding them.
 	if s.archive != nil && len(evicted) > 0 {

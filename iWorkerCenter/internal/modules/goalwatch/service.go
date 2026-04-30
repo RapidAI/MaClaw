@@ -2,9 +2,12 @@ package goalwatch
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +28,7 @@ const (
 	DefaultTickInterval    = 1 * time.Minute
 	DefaultWorkersPerShard = 50
 	DefaultMaxWatchers     = 16
+	DefaultLeaseTTL        = 2 * time.Minute
 )
 
 type Config struct {
@@ -33,6 +37,7 @@ type Config struct {
 	TickInterval    time.Duration
 	WorkersPerShard int
 	MaxWatchers     int
+	LeaseTTL        time.Duration
 }
 
 type Service struct {
@@ -44,12 +49,16 @@ type Service struct {
 type Push struct {
 	EventID                     string    `json:"event_id,omitempty"`
 	TaskID                      string    `json:"task_id"`
+	WorkflowStepInstanceID      string    `json:"workflow_step_instance_id,omitempty"`
 	Title                       string    `json:"title"`
 	ToColleagueID               string    `json:"to_colleague_id"`
 	ToRoleCode                  string    `json:"to_role_code"`
 	Status                      string    `json:"status"`
 	Reason                      string    `json:"reason"`
 	RecommendedAction           string    `json:"recommended_action"`
+	RecoveryAction              string    `json:"recovery_action,omitempty"`
+	RecoveryMethod              string    `json:"recovery_method,omitempty"`
+	RecoveryPath                string    `json:"recovery_path,omitempty"`
 	AgeSeconds                  int64     `json:"age_seconds"`
 	ExecutorStatus              string    `json:"executor_status,omitempty"`
 	ExecutorHeartbeatAgeSeconds int64     `json:"executor_heartbeat_age_seconds,omitempty"`
@@ -74,6 +83,7 @@ type MonitorConfigStatus struct {
 	TickIntervalSeconds int64 `json:"tick_interval_seconds"`
 	StalledAfterSeconds int64 `json:"stalled_after_seconds"`
 	PushCooldownSeconds int64 `json:"push_cooldown_seconds"`
+	LeaseTTLSeconds     int64 `json:"lease_ttl_seconds"`
 	WorkersPerShard     int   `json:"workers_per_shard"`
 	MaxWatchers         int   `json:"max_watchers"`
 }
@@ -83,7 +93,14 @@ type MonitorShardStatus struct {
 	ShardCount int    `json:"shard_count"`
 	Checked    int    `json:"checked"`
 	Pushed     int    `json:"pushed"`
+	LeaseOwner string `json:"lease_owner,omitempty"`
+	LeaseHeld  bool   `json:"lease_held"`
 	Error      string `json:"error,omitempty"`
+}
+
+type shardLease struct {
+	Owner     string `json:"owner"`
+	ExpiresAt string `json:"expires_at"`
 }
 
 type TenantMonitorStatus struct {
@@ -101,6 +118,17 @@ type TenantMonitorStatus struct {
 type MonitorStatus struct {
 	Config  MonitorConfigStatus   `json:"config"`
 	Tenants []TenantMonitorStatus `json:"tenants"`
+}
+
+type MonitorHealth struct {
+	Level                 string              `json:"level"`
+	Reasons               []string            `json:"reasons"`
+	RecommendedActions    []string            `json:"recommended_actions"`
+	Config                MonitorConfigStatus `json:"config"`
+	TenantCount           int                 `json:"tenant_count"`
+	LastRunAgeSeconds     int64               `json:"last_run_age_seconds,omitempty"`
+	StaleThresholdSeconds int64               `json:"stale_threshold_seconds,omitempty"`
+	Status                MonitorStatus       `json:"status"`
 }
 
 type AckResult struct {
@@ -127,6 +155,9 @@ func NewService(collabRepo *collaboration.Repo, cfg Config) *Service {
 	}
 	if cfg.MaxWatchers <= 0 {
 		cfg.MaxWatchers = DefaultMaxWatchers
+	}
+	if cfg.LeaseTTL <= 0 {
+		cfg.LeaseTTL = DefaultLeaseTTL
 	}
 	return &Service{collabRepo: collabRepo, config: cfg}
 }
@@ -195,7 +226,8 @@ func (s *Service) checkTask(tenantID string, task *collaboration.Task, now time.
 	if executor.Unavailable {
 		reason = "assigned_executor_offline"
 	}
-	push := Push{TaskID: task.ID, Title: task.Title, ToColleagueID: task.ToColleagueID, ToRoleCode: task.ToRoleCode, Status: task.Status, Reason: reason, RecommendedAction: recommendedActionFor(reason, task.Status), AgeSeconds: int64(age.Seconds()), ExecutorStatus: executor.Status, ExecutorHeartbeatAgeSeconds: executor.HeartbeatAgeSeconds, CreatedAt: now}
+	push := Push{TaskID: task.ID, WorkflowStepInstanceID: task.WorkflowStepInstanceID, Title: task.Title, ToColleagueID: task.ToColleagueID, ToRoleCode: task.ToRoleCode, Status: task.Status, Reason: reason, RecommendedAction: recommendedActionForTask(task, reason), AgeSeconds: int64(age.Seconds()), ExecutorStatus: executor.Status, ExecutorHeartbeatAgeSeconds: executor.HeartbeatAgeSeconds, CreatedAt: now}
+	push = enrichRecoveryFields(push)
 	inserted, err := s.recordPush(tenantID, task, push, now)
 	if err != nil {
 		return false, Push{}, err
@@ -234,8 +266,10 @@ func (s *Service) ListPushesForColleague(tenantID, colleagueID string, limit int
 				continue
 			}
 			reason := parseNoteValue(event.Note, "reason")
-			action := firstNonEmpty(parseNoteValue(event.Note, "recommended_action"), recommendedActionFor(reason, task.Status))
-			pushes = append(pushes, Push{EventID: event.ID, TaskID: task.ID, Title: task.Title, ToColleagueID: task.ToColleagueID, ToRoleCode: task.ToRoleCode, Status: task.Status, Reason: reason, RecommendedAction: action, AgeSeconds: parseNoteInt64(event.Note, "age_seconds"), ExecutorStatus: parseNoteValue(event.Note, "executor_status"), ExecutorHeartbeatAgeSeconds: parseNoteInt64(event.Note, "executor_heartbeat_age_seconds"), CreatedAt: event.CreatedAt})
+			workflowStepID := firstNonEmpty(parseNoteValue(event.Note, "workflow_step_instance_id"), task.WorkflowStepInstanceID)
+			action := firstNonEmpty(parseNoteValue(event.Note, "recommended_action"), recommendedActionForTask(task, reason))
+			push := Push{EventID: event.ID, TaskID: task.ID, WorkflowStepInstanceID: workflowStepID, Title: task.Title, ToColleagueID: task.ToColleagueID, ToRoleCode: task.ToRoleCode, Status: task.Status, Reason: reason, RecommendedAction: normalizeRecommendedActionForWorkflow(action, reason, task.Status, workflowStepID), RecoveryAction: parseNoteValue(event.Note, "recovery_action"), RecoveryMethod: parseNoteValue(event.Note, "recovery_method"), RecoveryPath: parseNoteValue(event.Note, "recovery_path"), AgeSeconds: parseNoteInt64(event.Note, "age_seconds"), ExecutorStatus: parseNoteValue(event.Note, "executor_status"), ExecutorHeartbeatAgeSeconds: parseNoteInt64(event.Note, "executor_heartbeat_age_seconds"), CreatedAt: event.CreatedAt}
+			pushes = append(pushes, enrichRecoveryFields(push))
 		}
 	}
 	sort.SliceStable(pushes, func(i, j int) bool { return pushes[i].CreatedAt.After(pushes[j].CreatedAt) })
@@ -338,7 +372,14 @@ func (s *Service) recordPush(tenantID string, task *collaboration.Task, push Pus
 	if s.hasRecentPush(tenantID, task.ID, now) {
 		return false, nil
 	}
+	push = enrichRecoveryFields(push)
 	note := fmt.Sprintf("reason=%s recommended_action=%s age_seconds=%d to_colleague_id=%s role_code=%s", push.Reason, firstNonEmpty(push.RecommendedAction, recommendedActionFor(push.Reason, push.Status)), push.AgeSeconds, strings.TrimSpace(push.ToColleagueID), strings.TrimSpace(push.ToRoleCode))
+	if strings.TrimSpace(push.WorkflowStepInstanceID) != "" {
+		note += fmt.Sprintf(" workflow_step_instance_id=%s", strings.TrimSpace(push.WorkflowStepInstanceID))
+	}
+	if strings.TrimSpace(push.RecoveryAction) != "" {
+		note += fmt.Sprintf(" recovery_action=%s recovery_method=%s recovery_path=%s", strings.TrimSpace(push.RecoveryAction), strings.TrimSpace(push.RecoveryMethod), strings.TrimSpace(push.RecoveryPath))
+	}
 	if strings.TrimSpace(push.ExecutorStatus) != "" {
 		note += fmt.Sprintf(" executor_status=%s executor_heartbeat_age_seconds=%d", strings.TrimSpace(push.ExecutorStatus), push.ExecutorHeartbeatAgeSeconds)
 	}
@@ -396,6 +437,79 @@ func recommendedActionFor(reason, status string) string {
 	}
 }
 
+func recommendedActionForTask(task *collaboration.Task, reason string) string {
+	if task == nil {
+		return recommendedActionFor(reason, "")
+	}
+	return normalizeRecommendedActionForWorkflow(recommendedActionFor(reason, task.Status), reason, task.Status, task.WorkflowStepInstanceID)
+}
+
+func normalizeRecommendedActionForWorkflow(action, reason, status, workflowStepID string) string {
+	if strings.TrimSpace(workflowStepID) == "" {
+		return action
+	}
+	switch strings.TrimSpace(action) {
+	case "accept_task", "start_task":
+		return "start_workflow_step"
+	case "resume_task":
+		return "resume_workflow_step"
+	}
+	switch strings.TrimSpace(reason) {
+	case "task_not_accepted", "task_not_started":
+		return "start_workflow_step"
+	case "task_in_progress_stalled":
+		return "resume_workflow_step"
+	}
+	switch strings.TrimSpace(status) {
+	case collaboration.StatusPending, collaboration.StatusAccepted:
+		return "start_workflow_step"
+	case collaboration.StatusInProgress:
+		return "resume_workflow_step"
+	default:
+		return action
+	}
+}
+
+func enrichRecoveryFields(push Push) Push {
+	if strings.TrimSpace(push.WorkflowStepInstanceID) == "" || strings.TrimSpace(push.RecommendedAction) == "" {
+		return push
+	}
+	if strings.TrimSpace(push.RecoveryAction) == "" {
+		push.RecoveryAction = push.RecommendedAction
+	}
+	if strings.TrimSpace(push.RecoveryMethod) == "" {
+		push.RecoveryMethod = httpMethodForRecoveryAction(push.RecoveryAction)
+	}
+	if strings.TrimSpace(push.RecoveryPath) == "" {
+		push.RecoveryPath = recoveryPathForWorkflowAction(push.RecoveryAction, push.WorkflowStepInstanceID)
+	}
+	return push
+}
+
+func httpMethodForRecoveryAction(action string) string {
+	switch strings.TrimSpace(action) {
+	case "start_workflow_step", "resume_workflow_step":
+		return "POST"
+	default:
+		return ""
+	}
+}
+
+func recoveryPathForWorkflowAction(action, workflowStepID string) string {
+	workflowStepID = strings.TrimSpace(workflowStepID)
+	if workflowStepID == "" {
+		return ""
+	}
+	switch strings.TrimSpace(action) {
+	case "start_workflow_step":
+		return "/runtime/workflows/steps/" + workflowStepID + "/start"
+	case "resume_workflow_step":
+		return "/runtime/workflows/steps/" + workflowStepID + "/resume"
+	default:
+		return ""
+	}
+}
+
 func reasonForStatus(status string) string {
 	switch status {
 	case collaboration.StatusPending:
@@ -429,7 +543,7 @@ func (m *Monitor) Status() MonitorStatus {
 		return status
 	}
 	cfg := m.svc.Config()
-	status.Config = MonitorConfigStatus{TickIntervalSeconds: int64(cfg.TickInterval.Seconds()), StalledAfterSeconds: int64(cfg.StalledAfter.Seconds()), PushCooldownSeconds: int64(cfg.PushCooldown.Seconds()), WorkersPerShard: cfg.WorkersPerShard, MaxWatchers: cfg.MaxWatchers}
+	status.Config = MonitorConfigStatus{TickIntervalSeconds: int64(cfg.TickInterval.Seconds()), StalledAfterSeconds: int64(cfg.StalledAfter.Seconds()), PushCooldownSeconds: int64(cfg.PushCooldown.Seconds()), LeaseTTLSeconds: int64(cfg.LeaseTTL.Seconds()), WorkersPerShard: cfg.WorkersPerShard, MaxWatchers: cfg.MaxWatchers}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	status.Tenants = make([]TenantMonitorStatus, 0, len(m.statuses))
@@ -438,6 +552,66 @@ func (m *Monitor) Status() MonitorStatus {
 	}
 	sort.SliceStable(status.Tenants, func(i, j int) bool { return status.Tenants[i].TenantID < status.Tenants[j].TenantID })
 	return status
+}
+
+func (m *Monitor) Health(now time.Time) MonitorHealth {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	status := m.Status()
+	health := MonitorHealth{Level: "healthy", Reasons: []string{}, RecommendedActions: []string{}, Config: status.Config, TenantCount: len(status.Tenants), Status: status}
+	threshold := goalWatchStaleThreshold(time.Duration(status.Config.TickIntervalSeconds) * time.Second)
+	health.StaleThresholdSeconds = int64(threshold.Seconds())
+	if len(status.Tenants) == 0 {
+		health.Level = "warning"
+		health.Reasons = append(health.Reasons, "no_recent_goalwatch_runs")
+		health.RecommendedActions = append(health.RecommendedActions, "check_goalwatch_monitor_startup_and_tenant_configuration")
+		return health
+	}
+	var latest time.Time
+	allShardsSkippedByLease := true
+	for _, tenantStatus := range status.Tenants {
+		if tenantStatus.FinishedAt.After(latest) {
+			latest = tenantStatus.FinishedAt
+		}
+		if strings.TrimSpace(tenantStatus.Error) != "" {
+			health.Level = "critical"
+			health.Reasons = appendUniqueString(health.Reasons, "goalwatch_errors_detected")
+			health.RecommendedActions = appendUniqueString(health.RecommendedActions, "inspect_goalwatch_status_shard_errors")
+		}
+		for _, shard := range tenantStatus.ShardStatuses {
+			if strings.TrimSpace(shard.Error) != "" {
+				health.Level = "critical"
+				health.Reasons = appendUniqueString(health.Reasons, "goalwatch_errors_detected")
+				health.RecommendedActions = appendUniqueString(health.RecommendedActions, "inspect_goalwatch_status_shard_errors")
+			}
+			if shard.LeaseHeld || shard.Checked > 0 || shard.Pushed > 0 {
+				allShardsSkippedByLease = false
+			}
+		}
+	}
+	if !latest.IsZero() {
+		age := int64(now.Sub(latest).Seconds())
+		if age < 0 {
+			age = 0
+		}
+		health.LastRunAgeSeconds = age
+		if time.Duration(age)*time.Second > threshold {
+			if health.Level == "healthy" {
+				health.Level = "warning"
+			}
+			health.Reasons = appendUniqueString(health.Reasons, "goalwatch_stale")
+			health.RecommendedActions = appendUniqueString(health.RecommendedActions, "check_goalwatch_scheduler_and_process_health")
+		}
+	}
+	if allShardsSkippedByLease {
+		if health.Level == "healthy" {
+			health.Level = "warning"
+		}
+		health.Reasons = appendUniqueString(health.Reasons, "all_goalwatch_shards_skipped_by_active_lease")
+		health.RecommendedActions = appendUniqueString(health.RecommendedActions, "check_peer_iworkercenter_goalwatch_status")
+	}
+	return health
 }
 
 func (m *Monitor) Start() {
@@ -490,18 +664,35 @@ func (m *Monitor) checkTenantSharded(tenantID string, now time.Time) {
 	shardCount := m.recommendedShardCountForIWorkers(iworkerCount)
 	status := TenantMonitorStatus{TenantID: normalizeTenantID(tenantID), StartedAt: startedAt, IWorkerCount: iworkerCount, ShardCount: shardCount, ShardStatuses: []MonitorShardStatus{}}
 	if shardCount <= 1 {
+		owner, acquired, err := m.svc.acquireShardLease(context.Background(), tenantID, 0, 1, now)
+		if err != nil {
+			log.Printf("[goalwatch] acquire tenant %s shard=0/1 lease failed: %v", tenantID, err)
+			status.Error = err.Error()
+			status.FinishedAt = time.Now().UTC()
+			status.ShardStatuses = append(status.ShardStatuses, MonitorShardStatus{ShardIndex: 0, ShardCount: 1, Error: err.Error()})
+			m.recordStatus(status)
+			return
+		}
+		if !acquired {
+			status.FinishedAt = time.Now().UTC()
+			status.ShardStatuses = append(status.ShardStatuses, MonitorShardStatus{ShardIndex: 0, ShardCount: 1})
+			m.recordStatus(status)
+			return
+		}
+		defer m.svc.releaseShardLease(context.Background(), tenantID, 0, 1, owner)
 		result, err := m.svc.CheckTenant(tenantID, now)
 		if err != nil {
 			log.Printf("[goalwatch] check tenant %s failed: %v", tenantID, err)
 			status.Error = err.Error()
 			status.FinishedAt = time.Now().UTC()
+			status.ShardStatuses = append(status.ShardStatuses, MonitorShardStatus{ShardIndex: 0, ShardCount: 1, LeaseOwner: owner, LeaseHeld: true, Error: err.Error()})
 			m.recordStatus(status)
 			return
 		}
 		status.Checked = result.Checked
 		status.Pushed = result.Pushed
 		status.FinishedAt = time.Now().UTC()
-		status.ShardStatuses = append(status.ShardStatuses, MonitorShardStatus{ShardIndex: 0, ShardCount: 1, Checked: result.Checked, Pushed: result.Pushed})
+		status.ShardStatuses = append(status.ShardStatuses, MonitorShardStatus{ShardIndex: 0, ShardCount: 1, Checked: result.Checked, Pushed: result.Pushed, LeaseOwner: owner, LeaseHeld: true})
 		m.recordStatus(status)
 		if result.Pushed > 0 {
 			log.Printf("[goalwatch] tenant=%s pushed=%d checked=%d watchers=1", result.TenantID, result.Pushed, result.Checked)
@@ -515,13 +706,24 @@ func (m *Monitor) checkTenantSharded(tenantID string, now time.Time) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, err := m.svc.CheckTenantShard(tenantID, now, shard, shardCount)
+			owner, acquired, err := m.svc.acquireShardLease(context.Background(), tenantID, shard, shardCount, now)
 			if err != nil {
-				log.Printf("[goalwatch] check tenant %s shard=%d/%d failed: %v", tenantID, shard, shardCount, err)
+				log.Printf("[goalwatch] acquire tenant %s shard=%d/%d lease failed: %v", tenantID, shard, shardCount, err)
 				results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount, Error: err.Error()}
 				return
 			}
-			results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount, Checked: result.Checked, Pushed: result.Pushed}
+			if !acquired {
+				results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount}
+				return
+			}
+			defer m.svc.releaseShardLease(context.Background(), tenantID, shard, shardCount, owner)
+			result, err := m.svc.CheckTenantShard(tenantID, now, shard, shardCount)
+			if err != nil {
+				log.Printf("[goalwatch] check tenant %s shard=%d/%d failed: %v", tenantID, shard, shardCount, err)
+				results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount, LeaseOwner: owner, LeaseHeld: true, Error: err.Error()}
+				return
+			}
+			results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount, Checked: result.Checked, Pushed: result.Pushed, LeaseOwner: owner, LeaseHeld: true}
 		}()
 	}
 	wg.Wait()
@@ -569,6 +771,107 @@ func (m *Monitor) recommendedShardCountForIWorkers(iworkers int) int {
 	return shards
 }
 
+func (s *Service) acquireShardLease(ctx context.Context, tenantID string, shardIndex, shardCount int, now time.Time) (string, bool, error) {
+	if s == nil || s.collabRepo == nil || s.collabRepo.WriteDB() == nil || s.collabRepo.ReadDB() == nil {
+		return "", true, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	ttl := s.config.LeaseTTL
+	if ttl <= 0 {
+		ttl = DefaultLeaseTTL
+	}
+	owner := goalWatchLeaseOwner()
+	key := goalWatchShardLeaseKey(tenantID, shardIndex, shardCount)
+	expiresAt := now.Add(ttl).Format(time.RFC3339Nano)
+	tx, err := s.collabRepo.WriteDB().BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback()
+	var raw string
+	err = tx.QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key=?`, key).Scan(&raw)
+	if err == sql.ErrNoRows {
+		data, _ := json.Marshal(shardLease{Owner: owner, ExpiresAt: expiresAt})
+		if _, err := tx.ExecContext(ctx, `INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, datetime('now'))`, key, string(data)); err != nil {
+			return "", false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return "", false, err
+		}
+		return owner, true, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	var current shardLease
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &current)
+	}
+	if expires, err := time.Parse(time.RFC3339Nano, current.ExpiresAt); err == nil && expires.After(now) && current.Owner != owner {
+		return "", false, nil
+	}
+	data, _ := json.Marshal(shardLease{Owner: owner, ExpiresAt: expiresAt})
+	if _, err := tx.ExecContext(ctx, `UPDATE system_settings SET value_json=?, updated_at=datetime('now') WHERE key=?`, string(data), key); err != nil {
+		return "", false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, err
+	}
+	return owner, true, nil
+}
+
+func (s *Service) releaseShardLease(ctx context.Context, tenantID string, shardIndex, shardCount int, owner string) {
+	if s == nil || s.collabRepo == nil || s.collabRepo.WriteDB() == nil || s.collabRepo.ReadDB() == nil || strings.TrimSpace(owner) == "" {
+		return
+	}
+	key := goalWatchShardLeaseKey(tenantID, shardIndex, shardCount)
+	var raw string
+	if err := s.collabRepo.ReadDB().QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key=?`, key).Scan(&raw); err != nil {
+		return
+	}
+	var current shardLease
+	if err := json.Unmarshal([]byte(raw), &current); err != nil || current.Owner != owner {
+		return
+	}
+	data, _ := json.Marshal(shardLease{Owner: owner, ExpiresAt: time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano)})
+	_, _ = s.collabRepo.WriteDB().ExecContext(ctx, `UPDATE system_settings SET value_json=?, updated_at=datetime('now') WHERE key=?`, string(data), key)
+}
+
+func goalWatchShardLeaseKey(tenantID string, shardIndex, shardCount int) string {
+	return fmt.Sprintf("goalwatch_shard_lease:%s:%d:%d", normalizeTenantID(tenantID), shardCount, shardIndex)
+}
+
+func goalWatchLeaseOwner() string {
+	host, _ := os.Hostname()
+	if strings.TrimSpace(host) == "" {
+		host = "unknown-host"
+	}
+	return fmt.Sprintf("%s:%d", strings.TrimSpace(host), os.Getpid())
+}
+
+func goalWatchStaleThreshold(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		interval = DefaultTickInterval
+	}
+	threshold := interval * 3
+	minimum := interval + 2*time.Minute
+	if threshold < minimum {
+		threshold = minimum
+	}
+	return threshold
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
 func (m *Monitor) recordStatus(status TenantMonitorStatus) {
 	if m == nil {
 		return
@@ -614,7 +917,7 @@ func ackedPushIDs(events []*collaboration.TaskEvent) map[string]bool {
 
 func normalizeAckStatus(status string) string {
 	switch strings.TrimSpace(status) {
-	case "accepted", "resumed", "blocked":
+	case "accepted", "resumed", "blocked", "recovered":
 		return strings.TrimSpace(status)
 	default:
 		return "accepted"

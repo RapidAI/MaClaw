@@ -48,6 +48,26 @@ export function GetRemoteToolLaunchProbe(arg1:string,arg2:string,arg3:boolean):P
 
 export function GetRemotePTYProbe():Promise<any>;
 
+export function SearchProjects(arg1:string,arg2:number):Promise<Array<main.ProjectSearchResult>>;
+
+export function ResumeProject(arg1:string):Promise<string>;
+
+export function RenameTask(arg1:string,arg2:string):Promise<string>;
+
+export function PinTask(arg1:string,arg2:boolean):Promise<void>;
+
+export function HideTask(arg1:string):Promise<void>;
+
+export function GetTTSEnabled():Promise<boolean>;
+
+export function SetTTSEnabled(arg1:boolean):Promise<void>;
+
+export function SpeakText(arg1:string):Promise<void>;
+
+export function CheckTTSModel():Promise<{exists: boolean, size: number}>;
+
+export function DownloadTTSModel():Promise<void>;
+
 export function GetLastRemoteSmokeReport():Promise<any>;
 
 export function StartRemoteClaudeSession(arg1:string,arg2:boolean):Promise<any>;
@@ -78,6 +98,12 @@ export function IsToolBeingInstalled(arg1:string):Promise<boolean>;
 
 export function IsWindowsTerminalAvailable():Promise<boolean>;
 
+export function IsNativeRoundedCorners():Promise<boolean>;
+
+export function IsWebviewTransparent():Promise<boolean>;
+
+export function GetFramelessTopInset():Promise<number>;
+
 export function LaunchInstallerAndExit(arg1:string):Promise<void>;
 
 export function LaunchTool(arg1:string,arg2:boolean,arg3:boolean,arg4:boolean,arg5:string,arg6:string,arg7:boolean):Promise<void>;
@@ -97,6 +123,9 @@ export function ListSkills(arg1:string):Promise<Array<main.Skill>>;
 export function ListSkillsWithInstallStatus(arg1:string,arg2:string,arg3:string):Promise<Array<main.Skill>>;
 
 export function LoadConfig():Promise<main.AppConfig>;
+export function IWorkerCenterConfigStatus():Promise<any>;
+
+export function IWorkerGoalWatchStatus():Promise<any>;
 
 export function MaximiseAndSaveGeometry():Promise<boolean>;
 
@@ -125,6 +154,13 @@ export function RestoreWindowGeometry():Promise<void>;
 export function RunEnvironmentCheckCLI():Promise<void>;
 
 export function SaveConfig(arg1:main.AppConfig):Promise<void>;
+export function RunIWorkerGoalWatchOnce():Promise<any>;
+
+export function SaveIWorkerCenterConfig(arg1:main.IWorkerCenterConfigRequest):Promise<any>;
+
+export function StartIWorkerGoalWatch():Promise<any>;
+
+export function StopIWorkerGoalWatch():Promise<any>;
 
 export function SelectProjectDir():Promise<string>;
 

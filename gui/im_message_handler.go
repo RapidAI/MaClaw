@@ -203,6 +203,15 @@ type agentLoopPhase struct {
 	// to prevent infinite loops when the model keeps producing oversized
 	// arguments.
 	TruncationRetries int
+
+	// TruncationBlockedTools is the set of tool names that have been
+	// temporarily removed from the LLM's tool list because they exhausted
+	// their truncation retries. The agent loop strips these tools from
+	// the tools slice before each LLM call, forcing the model to use
+	// alternative approaches (e.g. bash + heredoc instead of write_file).
+	// This is a tool-execution-layer intervention, not a prompt-layer
+	// suggestion — the LLM physically cannot call these tools.
+	TruncationBlockedTools map[string]bool
 }
 
 // skillHintWordBoundaryRe matches a skill preference hint as a whole word,
@@ -3625,8 +3634,22 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		// Memory sink for substantial dropped assistant messages (Phase 1 supplement).
 		if h.memoryStore != nil {
 			memorySink = func(content string, tags []string) {
+				// Derive title from first meaningful line of the dropped content.
+				title := ""
+				for _, line := range strings.SplitN(content, "\n", 10) {
+					line = strings.TrimSpace(line)
+					if line != "" && !strings.HasPrefix(line, "#") {
+						if runes := []rune(line); len(runes) > 60 {
+							title = string(runes[:60]) + "..."
+						} else {
+							title = line
+						}
+						break
+					}
+				}
 				entry := memory.Entry{
 					Content:  content,
+					Title:    title,
 					Category: memory.CategoryTaskArtifact,
 					Tags:     tags,
 					Scope:    memory.ScopeProject,
@@ -3685,6 +3708,21 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 			}
 		}()
 	}
+
+	// --- Task sedimentation: ensure meaningful conversations appear in "最近任务" ---
+	// Many tasks (SSH ops, file processing, info queries) don't go through
+	// workflow_artifact_saver or memory(action=save), so they never appear
+	// in the task list. This mechanism creates a lightweight project_knowledge
+	// entry at the end of every substantial agent loop, giving the task list
+	// a complete picture of what the user has been working on.
+	h.sedimentTaskEntry(userID, history)
+
+	// --- Online incremental extraction (Mem0-style) ---
+	// Trigger the online extractor asynchronously after each agent loop exit.
+	// This extracts salient facts from the latest conversation turn and
+	// integrates them via four-operation classification (ADD/UPDATE/DELETE/NOOP).
+	// Runs in a goroutine to avoid blocking the response.
+	h.triggerOnlineExtraction(userID, history)
 }
 
 // persistSessionTranscriptAsync converts the conversation history to a
@@ -4314,11 +4352,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// the task was substantial enough to have produced tool-call level work
 	// before being interrupted.
 	if unfinishedSlot == nil && !msg.IsBackground {
-		if interruptedTask := h.memory.ConsumeInFlightTask(msg.UserID); interruptedTask != "" {
+		if interruptedTask, interruptedProjectPath := h.memory.ConsumeInFlightTask(msg.UserID); interruptedTask != "" {
 			slotID := fmt.Sprintf("interrupted-%d", time.Now().UnixMilli())
 			slot := &agent.UnfinishedTaskSlot{
 				SlotID:       slotID,
 				UserID:       msg.UserID,
+				ProjectPath:  interruptedProjectPath,
 				Status:       "interrupted",
 				LastTask:     interruptedTask,
 				Summary:      extractProgressSummary(EntriesBeforeClear),
@@ -4330,7 +4369,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			h.memory.UpsertUnfinishedSlot(msg.UserID, slot)
 			h.memory.BindUnfinishedSlot(msg.UserID, slotID)
 			unfinishedSlot = slot
-			log.Printf("[InFlightRecovery] recovered interrupted task for user %s: %q", msg.UserID, truncateRunes(interruptedTask, 80))
+			log.Printf("[InFlightRecovery] recovered interrupted task for user %s: %q (project=%q)", msg.UserID, truncateRunes(interruptedTask, 80), interruptedProjectPath)
 		}
 	}
 
@@ -4765,27 +4804,44 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 	if unfinishedSlot != nil && unfinishedSlot.Source != "session_exit" && !msg.IsBackground && !freshTask && !isSlotActionCommand(trimmed) && !decision.StartNewTask && decision.ResumeSlotID == "" {
-		if hint := buildUnfinishedSlotHint(unfinishedSlot); hint != "" {
-			unfinishedTask := buildUnfinishedTaskPayload(unfinishedSlot)
-			recoverableSession := (*IMResponseRecoverableSession)(nil)
-			if h.manager != nil {
-				for _, session := range h.manager.List() {
-					if strings.TrimSpace(session.ProjectPath) != strings.TrimSpace(unfinishedSlot.ProjectPath) {
-						continue
-					}
-					recoverableSession = buildRecoverableSessionPayload(session)
-					if recoverableSession != nil {
-						break
+		// Project path check: don't show an unfinished slot from a different
+		// project. The slot is preserved in memory — switching back to the
+		// original project will surface it again.
+		currentProjectPath := h.getCurrentProjectPath()
+		slotProjectMismatch := false
+		if unfinishedSlot.ProjectPath != "" && currentProjectPath != "" {
+			if !strings.EqualFold(
+				filepath.Clean(unfinishedSlot.ProjectPath),
+				filepath.Clean(currentProjectPath),
+			) {
+				slotProjectMismatch = true
+				log.Printf("[UnfinishedSlot] suppressed: slot project=%q != current project=%q",
+					unfinishedSlot.ProjectPath, currentProjectPath)
+			}
+		}
+		if !slotProjectMismatch {
+			if hint := buildUnfinishedSlotHint(unfinishedSlot); hint != "" {
+				unfinishedTask := buildUnfinishedTaskPayload(unfinishedSlot)
+				recoverableSession := (*IMResponseRecoverableSession)(nil)
+				if h.manager != nil {
+					for _, session := range h.manager.List() {
+						if strings.TrimSpace(session.ProjectPath) != strings.TrimSpace(unfinishedSlot.ProjectPath) {
+							continue
+						}
+						recoverableSession = buildRecoverableSessionPayload(session)
+						if recoverableSession != nil {
+							break
+						}
 					}
 				}
+				resp := &IMAgentResponse{
+					Text:               hint,
+					UnfinishedTask:     unfinishedTask,
+					UnfinishedSlot:     unfinishedTask,
+					RecoverableSession: recoverableSession,
+				}
+				return resp
 			}
-			resp := &IMAgentResponse{
-				Text:               hint,
-				UnfinishedTask:     unfinishedTask,
-				UnfinishedSlot:     unfinishedTask,
-				RecoverableSession: recoverableSession,
-			}
-			return resp
 		}
 	}
 
@@ -5197,14 +5253,17 @@ func (h *IMMessageHandler) compactHistory(entries []agent.ConversationEntry, htt
 		return entries
 	}
 	split := len(entries) / 2
-	// Adjust split point forward so we don't cut in the middle of a
+
+	// Group-align the split point so we never cut in the middle of a
 	// tool-call group (assistant+tool_calls followed by tool results).
-	// The "recent" slice must not start with orphaned role:"tool" entries.
-	for split < len(entries) && entries[split].Role == "tool" {
-		split++
+	// Uses BuildEntryGroups — the single source of truth for group boundaries.
+	groups := agent.BuildEntryGroups(entries)
+	g := agent.GroupContaining(groups, split)
+	if g != nil && split > g.Start {
+		// split is in the middle of a group — advance to the next group.
+		split = g.End
 	}
 	if split >= len(entries) {
-		// Degenerate case: everything is tool messages — just return as-is.
 		return entries
 	}
 	recent := entries[split:]
@@ -6395,7 +6454,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			return
 		}
 		inFlightMarkerSet = true
-		h.memory.SetInFlightTask(userID, truncateRunes(userText, 200))
+		projectPath := h.getCurrentProjectPath()
+		h.memory.SetInFlightTask(userID, truncateRunes(userText, 200), projectPath)
 		if err := h.memory.FlushNow(); err != nil {
 			log.Printf("[InFlightTask] flush failed: %v", err)
 		}
@@ -6746,6 +6806,23 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					}
 				}
 				toolsTokenBudget = estimateToolsTokens(tools)
+				// Re-apply truncation-blocked tool filter after restoring baseTools.
+				// Without this, tools blocked by Phase 2 truncation recovery
+				// would reappear in the tool list, re-enabling the dead loop.
+				if len(phase.TruncationBlockedTools) > 0 {
+					var truncFiltered []map[string]interface{}
+					for _, t := range tools {
+						name := tool.ExtractToolName(t)
+						if !phase.TruncationBlockedTools[name] {
+							truncFiltered = append(truncFiltered, t)
+						}
+					}
+					if len(truncFiltered) < len(tools) {
+						log.Printf("[agent-loop] re-applied truncation block after baseTools reset: removed %d tools", len(tools)-len(truncFiltered))
+						tools = truncFiltered
+						toolsTokenBudget = estimateToolsTokens(tools)
+					}
+				}
 			}
 			recoverReason := firstNonEmptyTraceText(phase.RecoverReason, "recover")
 			if h.traceService != nil && ctx.RunID != "" {
@@ -7098,9 +7175,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		if msgReasoning != "" {
 			assistantMsg["reasoning_content"] = msgReasoning
-		} else if len(choice.Message.ToolCalls) > 0 {
-			// DeepSeek thinking mode: reasoning_content field must exist on
-			// assistant messages with tool_calls. Missing field → HTTP 400.
+		} else {
+			// DeepSeek V4+ thinking mode: when tools are present in the
+			// request, reasoning_content must exist on ALL assistant messages.
+			// An empty string is accepted. For non-DeepSeek providers, the
+			// field is simply ignored.
 			assistantMsg["reasoning_content"] = ""
 		}
 		if len(choice.Message.ToolCalls) > 0 {
@@ -7306,23 +7385,108 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// as the final response, even though the LLM intended to call a tool.
 			//
 			// Cap at 3 retries to prevent infinite loops when the model keeps
-			// producing oversized arguments.
+			// producing oversized arguments. After exhaustion, block the
+			// truncated tools from the LLM's tool list entirely, forcing it
+			// to use alternative approaches (bash + heredoc/Python script).
 			const maxTruncationRetries = 3
-			if len(choice.TruncatedToolNames) > 0 && phase.TruncationRetries < maxTruncationRetries {
-				phase.TruncationRetries++
-				phase.ConsecutiveNoTool = 0 // reset — this is not a stall
-				truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
-				log.Printf("[agent-loop] truncated tool call recovery (retry %d/%d, iter=%d, tools=%s), injecting hint as system message",
-					phase.TruncationRetries, maxTruncationRetries, iteration, truncatedList)
-				hint := fmt.Sprintf("[系统提示] 以下工具调用的参数不完整（被截断或缺少必需字段）：%s。"+
-					"请将大文件内容拆分为多次写入（每次不超过 5000 字符），或使用 bash 工具通过脚本写入。",
-					truncatedList)
-				systemMessagesStart := len(conversation)
-				conversation = append(conversation, map[string]string{
-					"role":    "system",
-					"content": hint,
-				})
-				recordSystemMessages(systemMessagesStart, conversation)
+			if len(choice.TruncatedToolNames) > 0 {
+				if phase.TruncationRetries < maxTruncationRetries {
+					// Phase 1: hint-based recovery — ask the LLM to split.
+					phase.TruncationRetries++
+					phase.ConsecutiveNoTool = 0 // reset — this is not a stall
+					truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
+					log.Printf("[agent-loop] truncated tool call recovery (retry %d/%d, iter=%d, tools=%s), injecting hint as system message",
+						phase.TruncationRetries, maxTruncationRetries, iteration, truncatedList)
+					hint := fmt.Sprintf("[系统提示] 以下工具调用的参数不完整（被截断或缺少必需字段）：%s。"+
+						"请将大文件内容拆分为多次写入（每次不超过 5000 字符），或使用 bash 工具通过脚本写入。",
+						truncatedList)
+					systemMessagesStart := len(conversation)
+					conversation = append(conversation, map[string]string{
+						"role":    "system",
+						"content": hint,
+					})
+					recordSystemMessages(systemMessagesStart, conversation)
+					continue
+				}
+				// Phase 2: tool-execution-layer intervention — block the
+				// truncated tools from the LLM's tool list entirely.
+				// This is a mechanism-level fix: the LLM physically cannot
+				// call these tools, so it MUST use alternatives (bash +
+				// heredoc, Python script, etc.). Prompt-layer hints failed
+				// because the model ignored them; removing the tool from
+				// the available set is not ignorable.
+				if phase.TruncationBlockedTools == nil {
+					phase.TruncationBlockedTools = make(map[string]bool)
+				}
+				// Never block essential fallback tools — they are the
+				// alternatives that blocked tools should fall back to.
+				// Blocking bash would leave the LLM with no way to write files.
+				truncationBlockSafe := map[string]bool{
+					"bash": true, "read_file": true, "list_directory": true,
+				}
+				var newlyBlocked []string
+				for _, tn := range choice.TruncatedToolNames {
+					if truncationBlockSafe[tn] {
+						log.Printf("[agent-loop] skipping truncation block for essential tool %q (iter=%d)", tn, iteration)
+						continue
+					}
+					if !phase.TruncationBlockedTools[tn] {
+						phase.TruncationBlockedTools[tn] = true
+						newlyBlocked = append(newlyBlocked, tn)
+					}
+				}
+				if len(newlyBlocked) > 0 {
+					// Reset stall counter — we're making progress by blocking tools.
+					phase.ConsecutiveNoTool = 0
+					// Filter the blocked tools from the tools slice.
+					// This takes effect on the next LLM call in this loop.
+					var filtered []map[string]interface{}
+					for _, td := range tools {
+						name := tool.ExtractToolName(td)
+						if !phase.TruncationBlockedTools[name] {
+							filtered = append(filtered, td)
+						}
+					}
+					tools = filtered
+					blockedList := strings.Join(newlyBlocked, ", ")
+					log.Printf("[agent-loop] truncation retries exhausted: blocking tools [%s] from LLM tool list (iter=%d, remaining_tools=%d)",
+						blockedList, iteration, len(tools))
+					// Build alternative instructions based on which tools were blocked.
+					var altInstructions string
+					for _, tn := range newlyBlocked {
+						switch tn {
+						case "write_file":
+							altInstructions += "write_file 工具因内容过长被反复截断，已被临时禁用。" +
+								"请改用 bash 工具写入文件。方法一（推荐）：\n" +
+								"bash(command=\"python -c \\\"\nimport pathlib\n" +
+								"content = '''\n你的文件内容\n'''\n" +
+								"pathlib.Path('output.md').write_text(content, encoding='utf-8')\n\\\"\")\n" +
+								"方法二：bash(command=\"cat > output.md << 'MACLAW_EOF'\n内容\nMACLAW_EOF\")\n" +
+								"注意：每次 bash 调用的 command 参数也不要超过 5000 字符，超长内容请分多次追加写入。\n"
+						case "edit_file":
+							altInstructions += "edit_file 工具因参数过长被反复截断，已被临时禁用。" +
+								"请改用 bash + sed 或 Python 脚本进行文件编辑。\n"
+						default:
+							altInstructions += fmt.Sprintf("%s 工具因参数过长被反复截断，已被临时禁用。请使用其他方式完成任务。\n", tn)
+						}
+					}
+					hint := fmt.Sprintf("[系统提示] %s"+
+						"注意：被禁用的工具不在你的可用工具列表中，不要尝试调用它们。",
+						altInstructions)
+					systemMessagesStart := len(conversation)
+					conversation = append(conversation, map[string]string{
+						"role":    "system",
+						"content": hint,
+					})
+					recordSystemMessages(systemMessagesStart, conversation)
+					continue
+				}
+				// All truncated tools were either already blocked or are
+				// essential (safe) tools that cannot be blocked. Continue
+				// the loop — the blocking hint from a previous iteration
+				// is still in conversation history.
+				log.Printf("[agent-loop] truncated tool call: no new tools to block (tools=%v, already_blocked=%v, iter=%d)",
+					choice.TruncatedToolNames, phase.TruncationBlockedTools, iteration)
 				continue
 			}
 
@@ -7743,13 +7907,19 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				finalText = lengthContinuationBuf.String() + msgContent
 				log.Printf("[agent-loop] assembled %d continuation chunks into final response (totalLen=%d)", phase.LengthContinuations+1, len(finalText))
 			}
-			// When truncation retries are exhausted, append a user-facing
-			// explanation so the response doesn't end with a broken promise
-			// like "让我直接运行 pptx-generator Skill 来生成这个PPT" with
-			// no actual execution.
-			if len(choice.TruncatedToolNames) > 0 && phase.TruncationRetries >= maxTruncationRetries {
-				finalText += "\n\n⚠️ 工具调用参数过长，多次重试仍被截断。请尝试简化请求或分步执行。"
-				log.Printf("[agent-loop] truncation retries exhausted (%d), appending user-facing explanation", phase.TruncationRetries)
+			// When truncation retries are exhausted and tools were blocked,
+			// append a user-facing explanation if the response still looks
+			// incomplete. With the tool-blocking mechanism, this path is
+			// only reached if the LLM couldn't complete the task even after
+			// the truncated tools were removed from its tool list.
+			if len(phase.TruncationBlockedTools) > 0 {
+				var blockedNames []string
+				for tn := range phase.TruncationBlockedTools {
+					blockedNames = append(blockedNames, tn)
+				}
+				finalText += fmt.Sprintf("\n\n⚠️ 工具 %s 因参数过长被反复截断，已自动切换到替代方式。如果结果不完整，请重新发送请求。",
+					strings.Join(blockedNames, ", "))
+				log.Printf("[agent-loop] finalize with blocked tools: %v", blockedNames)
 			}
 			finalResp := &IMAgentResponse{Text: stripThinkingTags(finalText)}
 			// --- Browser diagnostic CP7: Final output ---
@@ -7852,7 +8022,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 			toolExecStartedAt := time.Now()
 			recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
-			result := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+			// Guard: reject execution of truncation-blocked tools.
+			// The tool was removed from the LLM's tool list, but some
+			// models hallucinate calls to tools not in the list. Rejecting
+			// here prevents the tool from being executed and gives the LLM
+			// a clear error message to use alternatives.
+			var result string
+			if phase.TruncationBlockedTools[tc.Function.Name] {
+				result = fmt.Sprintf("[系统拒绝] %s 工具已被临时禁用（参数过长反复截断）。请使用 bash 工具通过 Python 脚本或 heredoc 写入文件。", tc.Function.Name)
+				log.Printf("[agent-loop] rejected execution of truncation-blocked tool %q (iter=%d)", tc.Function.Name, iteration)
+			} else {
+				result = h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+			}
 
 			// Record "completed" milestone for event-driven progress.
 			milestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
@@ -8624,7 +8805,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 			if bcReasoning != "" {
 				assistantMsg["reasoning_content"] = bcReasoning
-			} else if len(bc.Message.ToolCalls) > 0 {
+			} else {
+				// DeepSeek V4+: reasoning_content on all assistant messages.
 				assistantMsg["reasoning_content"] = ""
 			}
 			if len(bc.Message.ToolCalls) > 0 {
@@ -8658,7 +8840,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 				toolExecStartedAt := time.Now()
 				recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
-				toolResult := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+				// Guard: reject truncation-blocked tools in bonus round too.
+				var toolResult string
+				if phase.TruncationBlockedTools[tc.Function.Name] {
+					toolResult = fmt.Sprintf("[系统拒绝] %s 工具已被临时禁用（参数过长反复截断）。请使用 bash 工具通过 Python 脚本或 heredoc 写入文件。", tc.Function.Name)
+				} else {
+					toolResult = h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+				}
 
 				// Record completed milestone.
 				milestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
@@ -8716,6 +8904,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		h.memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
 			SlotID:       slotID,
 			UserID:       userID,
+			ProjectPath:  h.getCurrentProjectPath(),
 			Status:       "max_rounds_reached",
 			LastTask:     originalTask,
 			Summary:      progressSummary,

@@ -34,6 +34,8 @@ const issueLabels: Record<string, string> = {
   multi_tenant_not_confirmed: 'Multi-tenant not confirmed',
   probe_failed: 'Probe failed',
   probe_missing_base_url: 'Probe missing base URL',
+  probe_not_iworkercenter: 'Endpoint is not iWorkerCenter service',
+  heartbeat_not_iworkercenter: 'Heartbeat identity failed',
   no_active_license: 'No active license',
 };
 
@@ -41,6 +43,31 @@ const controlModeLabels: Record<CloudControlMode, string> = {
   cloud_managed: 'Cloud managed',
   self_managed: 'Self managed',
   hybrid: 'Hybrid',
+};
+
+const syncStatusLabels: Record<string, string> = {
+  registered: 'Registered',
+  configured: 'Configured',
+  probe_ok: 'Service probe verified',
+  probe_failed: 'Service probe failed',
+  probe_missing_base_url: 'Missing service URL',
+  probe_not_iworkercenter: 'Wrong service endpoint',
+  heartbeat_ok: 'Heartbeat online',
+  heartbeat_not_iworkercenter: 'Heartbeat identity failed',
+  tenant_provisioned: 'Tenant provisioned',
+};
+
+const formatDateTime = (value?: string) => {
+  if (!value || value.startsWith('0001-')) return 'No heartbeat yet';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+};
+
+const serviceBadgeClass = (status?: string) => {
+  if (status === 'heartbeat_ok' || status === 'probe_ok' || status === 'tenant_provisioned') return 'ok';
+  if (status === 'registered' || status === 'configured' || status === 'probe_missing_base_url') return 'warn';
+  return 'danger';
 };
 
 function createDraft(center: Center): IntegrationDraft {
@@ -176,7 +203,7 @@ export function CentersPage() {
       setDrafts(prev => ({ ...prev, [center.id]: createDraft(response.center) }));
       setProbeResult(prev => ({
         ...prev,
-        [center.id]: `${response.probe.ok ? 'Reachable' : 'Unreachable'}: ${response.probe.message}`,
+        [center.id]: `${response.probe.ok ? 'Verified iWorkerCenter service' : 'Service check failed'}: ${response.probe.message}`,
       }));
       load();
     } catch (err) {
@@ -203,6 +230,7 @@ export function CentersPage() {
         await handleSaveIntegration(center);
         return;
       case 'test_connection':
+      case 'verify_center_service_identity':
         await handleProbeCenter(center);
         return;
       case 'issue_license':
@@ -222,6 +250,8 @@ export function CentersPage() {
         return 'Save integration';
       case 'test_connection':
         return 'Test now';
+      case 'verify_center_service_identity':
+        return 'Verify identity';
       case 'issue_license':
         return 'Issue license';
       case 'ready_for_service_management':
@@ -232,7 +262,7 @@ export function CentersPage() {
   };
 
   const isRecommendedActionDisabled = (center: Center, code: string) => {
-    if (code === 'test_connection') return probing === center.id || !center.base_url;
+    if (code === 'test_connection' || code === 'verify_center_service_identity') return probing === center.id || !center.base_url;
     if (code === 'configure_base_url' || code === 'confirm_multi_tenant') return saving === center.id;
     return false;
   };
@@ -266,9 +296,10 @@ export function CentersPage() {
                 <span>Tenants: {center.tenant_count ?? 0}</span>
                 <span>{center.supports_multi_tenant ? 'Multi-tenant ready' : 'Single tenant / unknown'}</span>
                 <span>{controlModeLabels[center.cloud_control_mode ?? 'cloud_managed']}</span>
-                <span>Sync: {center.last_sync_status || 'not configured'}</span>
+                <span className={`badge ${serviceBadgeClass(center.last_sync_status)}`}>Service: {syncStatusLabels[center.last_sync_status || ''] ?? center.last_sync_status ?? 'not configured'}</span>
                 {managementItem && <span>Commercial: {managementItem.commercial_status}</span>}
                 {managementItem && <span>Connectivity: {managementItem.connectivity}</span>}
+                <span>Last heartbeat: {formatDateTime(center.last_heartbeat)}</span>
                 {center.created_at && <span>Registered: {new Date(center.created_at).toLocaleString()}</span>}
               </div>
 
@@ -348,7 +379,7 @@ export function CentersPage() {
                   <label>Last sync status</label>
                   <input
                     value={draft.last_sync_status}
-                    placeholder="configured / synced / failed"
+                    placeholder="configured / probe_ok / heartbeat_ok"
                     onChange={event => patchDraft(center.id, { last_sync_status: event.target.value })}
                   />
                 </div>
@@ -384,7 +415,7 @@ export function CentersPage() {
                   <input type="password" value={tenantDraft.admin_password} onChange={event => patchTenantDraft(center.id, { admin_password: event.target.value })} />
                 </div>
                 {provisionResult[center.id] && <div className="hint ok field-span-2">{provisionResult[center.id]}</div>}
-                {probeResult[center.id] && <div className={`hint ${probeResult[center.id].startsWith('Reachable') ? 'ok' : 'danger'} field-span-2`}>{probeResult[center.id]}</div>}
+                {probeResult[center.id] && <div className={`hint ${probeResult[center.id].startsWith('Verified') ? 'ok' : 'danger'} field-span-2`}>{probeResult[center.id]}</div>}
               </div>
 
               <div className="actions">

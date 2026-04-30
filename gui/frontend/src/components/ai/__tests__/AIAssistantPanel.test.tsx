@@ -131,7 +131,6 @@ describe('AIAssistantPanel property tests', () => {
                 clearHistory: async () => {},
                 executeAction: async () => {},
                 refreshNews: () => {},
-                onOpenTutorial: () => {},
             },
             state: { messages: [], sending: false, streaming: false, ready: true },
         });
@@ -188,92 +187,16 @@ describe('AIAssistantPanel property tests', () => {
                 clearHistory: async () => {},
                 executeAction: async () => {},
                 refreshNews: () => {},
-                onOpenTutorial: () => {},
             },
             state: { messages: [], sending: false, streaming: false, ready: true },
         });
 
         const toolsGroup = getByTestId('ai-titlebar-tools-group');
         const buttons = Array.from(toolsGroup.querySelectorAll('button'));
-        expect(buttons).toHaveLength(5);
-        expect(buttons[0]?.getAttribute('title')).toBe('Tutorial');
-        expect(buttons[1]?.getAttribute('title')).toBe('Switch to normal mode');
-        expect(buttons[1]?.textContent).toBe('Normal');
-        expect(buttons[2]?.getAttribute('title')).toBe('Switch to dark mode');
-        expect(buttons[2]?.textContent).toBe('Dark');
-        expect(buttons[3]?.getAttribute('title')).toBe('Refresh news');
-    });
-
-    it('defaults to segmented light theme toggle and switches to dark mode', () => {
-        const { getByTestId } = renderPanel({
-            state: { messages: [], sending: false, streaming: false, ready: true },
-        });
-
-        const titleBar = getByTestId('ai-title-bar');
-        const panelBody = getByTestId('ai-panel-body');
-        const toggleGroup = getByTestId('ai-theme-toggle-group');
-        const lightToggle = getByTestId('ai-theme-toggle-light');
-        const darkToggle = getByTestId('ai-theme-toggle-dark');
-
-        expect(titleBar.style.background).toBe('rgb(226, 228, 234)');
-        expect(panelBody.style.background).toBe('rgb(238, 240, 245)');
-        expect(toggleGroup.style.background).toBe('rgb(232, 234, 240)');
-        expect(lightToggle.getAttribute('aria-pressed')).toBe('true');
-        expect(darkToggle.getAttribute('aria-pressed')).toBe('false');
-        expect(lightToggle.style.background).toBe('rgb(208, 210, 216)');
-        expect(darkToggle.style.background).toBe('transparent');
-
-        fireEvent.click(darkToggle);
-
-        expect(titleBar.style.background).toBe('rgb(17, 24, 39)');
-        expect(panelBody.style.background).toBe('rgb(11, 18, 32)');
-        expect(toggleGroup.style.background).toBe('rgb(17, 24, 39)');
-        expect(lightToggle.getAttribute('aria-pressed')).toBe('false');
-        expect(darkToggle.getAttribute('aria-pressed')).toBe('true');
-        expect(lightToggle.style.background).toBe('transparent');
-        expect(darkToggle.style.background).toBe('rgb(51, 65, 85)');
-
-        fireEvent.click(lightToggle);
-
-        expect(titleBar.style.background).toBe('rgb(226, 228, 234)');
-        expect(panelBody.style.background).toBe('rgb(238, 240, 245)');
-        expect(lightToggle.getAttribute('aria-pressed')).toBe('true');
-        expect(darkToggle.getAttribute('aria-pressed')).toBe('false');
-        expect(lightToggle.style.background).toBe('rgb(208, 210, 216)');
-        expect(darkToggle.style.background).toBe('transparent');
-    });
-
-    it('restores dark theme mode from localStorage on reopen', () => {
-        window.localStorage.setItem('ai_assistant_theme_mode', 'dark');
-
-        const { getByTestId } = renderPanel({
-            state: { messages: [], sending: false, streaming: false, ready: true },
-        });
-
-        const titleBar = getByTestId('ai-title-bar');
-        const panelBody = getByTestId('ai-panel-body');
-        const darkToggle = getByTestId('ai-theme-toggle-dark');
-
-        expect(titleBar.style.background).toBe('rgb(17, 24, 39)');
-        expect(panelBody.style.background).toBe('rgb(11, 18, 32)');
-        expect(darkToggle.getAttribute('aria-pressed')).toBe('true');
-        expect(darkToggle.getAttribute('title')).toBe('Switch to dark mode');
-        expect(darkToggle.textContent).toBe('Dark');
-        expect(darkToggle.style.background).toBe('rgb(51, 65, 85)');
-    });
-
-    it('persists selected theme mode to localStorage after toggling', () => {
-        const { getByTestId } = renderPanel({
-            state: { messages: [], sending: false, streaming: false, ready: true },
-        });
-
-        const lightToggle = getByTestId('ai-theme-toggle-light');
-        const darkToggle = getByTestId('ai-theme-toggle-dark');
-        fireEvent.click(darkToggle);
-        expect(window.localStorage.getItem('ai_assistant_theme_mode')).toBe('dark');
-
-        fireEvent.click(lightToggle);
-        expect(window.localStorage.getItem('ai_assistant_theme_mode')).toBe('light');
+        expect(buttons).toHaveLength(3);
+        expect(buttons[0]?.getAttribute('title')).toBe('Search projects');
+        expect(buttons[1]?.getAttribute('title')).toBe('Switch to dark mode');
+        expect(buttons[2]?.getAttribute('title')).toBe('New conversation');
     });
 
     it('shows trial-reflect badge when mode is enabled', () => {
@@ -1003,7 +926,7 @@ describe('AIAssistantPanel property tests', () => {
     it('separates title bar tools from window controls', () => {
         const { getByTestId } = renderPanel({
             window: { inline: true, maximized: false, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
-            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, onOpenTutorial: vi.fn() },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
         });
 
         const toolsGroup = getByTestId('ai-titlebar-tools-group');

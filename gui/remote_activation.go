@@ -175,6 +175,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		cfg.RemoteMachineToken = enrollResult.MachineToken
 		cfg.RemoteHubURL = enrollResult.HubURL
 		cfg.RemoteEnabled = true
+		cfg.DefaultLaunchMode = "remote"
 		if enrollResult.ViewerToken != "" {
 			cfg.RemoteViewerToken = enrollResult.ViewerToken
 		}

@@ -574,12 +574,19 @@ jobs:
 
   # ============================================================
   # Linux: GUI (amd64, CGO native) + TUI/tool + AppImage
+  # Build on multiple Ubuntu versions to produce binaries for:
+  #   - Ubuntu 22.04 (webkit2gtk-4.0)
+  #   - Ubuntu 24.04 (webkit2gtk-4.1)
+  #   - Ubuntu 26.04 (webkit2gtk-4.1, same binary as 24.04)
+  # When ubuntu-26.04 runner becomes available, add it to the
+  # os_version matrix to build natively on that platform.
   # ============================================================
   build-linux:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || fromJSON('["", "qianxin"]') }}
+        os_version: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -602,6 +609,22 @@ jobs:
             echo "BRAND_DISPLAY_NAME=${APP_NAME}" >> $GITHUB_ENV
           fi
 
+      - name: Compute OS suffix for artifact naming
+        run: |
+          # Extract Ubuntu version number (e.g. "22.04" from "ubuntu-22.04")
+          OS_VER="${{ matrix.os_version }}"
+          UBUNTU_VER="${OS_VER#ubuntu-}"
+          # Short label for filenames: "u2204", "u2404", etc.
+          UBUNTU_LABEL="u${UBUNTU_VER/./}"
+          echo "UBUNTU_VER=${UBUNTU_VER}" >> $GITHUB_ENV
+          echo "UBUNTU_LABEL=${UBUNTU_LABEL}" >> $GITHUB_ENV
+          # Only build TUI/tool/maclawsrv on the newest runner (avoid duplicate pure-Go artifacts)
+          if [ "${{ matrix.os_version }}" = "ubuntu-24.04" ]; then
+            echo "BUILD_PURE_GO=true" >> $GITHUB_ENV
+          else
+            echo "BUILD_PURE_GO=false" >> $GITHUB_ENV
+          fi
+
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -616,12 +639,18 @@ jobs:
       - name: Install Linux GUI dependencies
         run: |
           sudo apt-get update
-          # Try 4.0 first (Ubuntu 22.04), fall back to 4.1 (Ubuntu 24.04+)
+          # Try 4.0 first (Ubuntu 22.04), fall back to 4.1 (Ubuntu 24.04/26.04)
           if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
             TAGS="desktop,production"
+            echo "WEBKIT_API=4.0" >> $GITHUB_ENV
+            echo "WEBKIT_SONAME=libwebkit2gtk-4.0.so.37" >> $GITHUB_ENV
+            echo "WEBKIT_PKG=libwebkit2gtk-4.0-37" >> $GITHUB_ENV
           else
             sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
             TAGS="desktop,production,webkit2_41"
+            echo "WEBKIT_API=4.1" >> $GITHUB_ENV
+            echo "WEBKIT_SONAME=libwebkit2gtk-4.1.so.0" >> $GITHUB_ENV
+            echo "WEBKIT_PKG=libwebkit2gtk-4.1-0" >> $GITHUB_ENV
           fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
@@ -647,15 +676,19 @@ jobs:
           npm ci --cache ./.npm_cache
           npm run build
 
-
       - name: Build Linux GUI (amd64)
         run: |
           mkdir -p dist build/bin
           OUT_NAME="${BRAND_APP_NAME}"
+          # Include Ubuntu label in binary name so both versions coexist in artifacts
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-            go build -tags "${WEBKIT_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_amd64_linux" ./gui/
+            go build -tags "${WEBKIT_TAGS}" -ldflags "-X main.version=${VERSION}" \
+            -o "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" ./gui/
+          # Also copy to the generic name for AppImage packaging
+          cp "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_amd64_linux"
 
-      - name: Build TUI & maclaw-tool (linux)
+      - name: Build TUI & maclaw-tool (linux, pure Go — only on newest runner)
+        if: env.BUILD_PURE_GO == 'true'
         run: |
           LDFLAGS="-s -w -X main.version=${VERSION}"
           TUI_TAGS=""
@@ -675,8 +708,8 @@ jobs:
             fi
           done
 
-      - name: Build maclawsrv & srvdemo (default brand only, linux)
-        if: matrix.brand == ''
+      - name: Build maclawsrv & srvdemo (default brand, newest runner only)
+        if: matrix.brand == '' && env.BUILD_PURE_GO == 'true'
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -694,6 +727,8 @@ jobs:
         run: |
           OUT_NAME="${BRAND_APP_NAME}"
           OUT_LOWER=$(echo "$OUT_NAME" | tr '[:upper:]' '[:lower:]')
+          # AppImage name includes Ubuntu label so both versions are released
+          APPIMAGE_NAME="${OUT_NAME}-x86_64-${UBUNTU_LABEL}.AppImage"
           # Prepare AppDir
           APP_DIR="build/linux/AppDir_amd64"
           rm -rf "$APP_DIR"
@@ -716,73 +751,63 @@ jobs:
           sed -i 's/^[[:space:]]*//' "$APP_DIR/${OUT_LOWER}.desktop"
 
           # AppRun (shebang must be at column 0)
-          cat > "$APP_DIR/AppRun" << 'REOF'
+          cat > "$APP_DIR/AppRun" << REOF
           #!/bin/bash
-          HERE="$(dirname "$(readlink -f "${0}")")"
-          export PATH="${HERE}/usr/bin:${PATH}"
+          HERE="\$(dirname "\$(readlink -f "\${0}")")"
+          export PATH="\${HERE}/usr/bin:\${PATH}"
 
           # Check for WebKit2GTK runtime dependency
-          check_webkit() {
-            # Try 4.0 first, then 4.1
-            for lib in libwebkit2gtk-4.0.so.37 libwebkit2gtk-4.1.so.0; do
-              if ldconfig -p 2>/dev/null | grep -q "$lib"; then
-                return 0
-              fi
-            done
-            return 1
-          }
-
-          if ! check_webkit; then
+          # This AppImage was built against webkit2gtk-${WEBKIT_API}
+          if ! ldconfig -p 2>/dev/null | grep -q "${WEBKIT_SONAME}"; then
             echo "=========================================="
-            echo " Missing dependency: libwebkit2gtk"
+            echo " Missing dependency: ${WEBKIT_PKG}"
             echo "=========================================="
             echo ""
-            echo "This application requires WebKit2GTK to run."
+            echo "This application requires WebKit2GTK ${WEBKIT_API} to run."
             echo "Please install it with your package manager:"
             echo ""
-            echo "  Ubuntu/Debian:"
-            echo "    sudo apt install libwebkit2gtk-4.0-37"
-            echo "    (or: sudo apt install libwebkit2gtk-4.1-0)"
+            echo "  sudo apt install ${WEBKIT_PKG}"
             echo ""
-            echo "  Fedora:"
-            echo "    sudo dnf install webkit2gtk4.0"
-            echo ""
-            echo "  Arch Linux:"
-            echo "    sudo pacman -S webkit2gtk"
-            echo ""
-            echo "  openSUSE:"
-            echo "    sudo zypper install libwebkit2gtk-4_0-37"
+            echo "Note: This AppImage is built for Ubuntu ${UBUNTU_VER}."
+            echo "For other Ubuntu versions, download the matching AppImage:"
+            echo "  Ubuntu 22.04 → *-u2204.AppImage (webkit2gtk-4.0)"
+            echo "  Ubuntu 24.04/26.04 → *-u2404.AppImage (webkit2gtk-4.1)"
             echo ""
 
-            # Try to show a GUI dialog if possible
             if command -v zenity &>/dev/null; then
               zenity --error --title="Missing Dependency" \
-                --text="WebKit2GTK is required but not installed.\n\nUbuntu/Debian:\n  sudo apt install libwebkit2gtk-4.0-37\n\nFedora:\n  sudo dnf install webkit2gtk4.0\n\nArch:\n  sudo pacman -S webkit2gtk" \
+                --text="WebKit2GTK ${WEBKIT_API} is required but not installed.\n\nsudo apt install ${WEBKIT_PKG}\n\nThis AppImage is for Ubuntu ${UBUNTU_VER}." \
                 --width=400 2>/dev/null
             elif command -v kdialog &>/dev/null; then
-              kdialog --error "WebKit2GTK is required but not installed.\n\nUbuntu/Debian:\n  sudo apt install libwebkit2gtk-4.0-37\n\nFedora:\n  sudo dnf install webkit2gtk4.0\n\nArch:\n  sudo pacman -S webkit2gtk" 2>/dev/null
+              kdialog --error "WebKit2GTK ${WEBKIT_API} is required but not installed.\n\nsudo apt install ${WEBKIT_PKG}\n\nThis AppImage is for Ubuntu ${UBUNTU_VER}." 2>/dev/null
             fi
             exit 1
           fi
 
-          exec APPRUN_EXEC "$@"
+          exec ${OUT_LOWER} "\$@"
           REOF
           sed -i 's/^[[:space:]]*//' "$APP_DIR/AppRun"
-          sed -i "s|APPRUN_EXEC|${OUT_LOWER}|g" "$APP_DIR/AppRun"
           chmod +x "$APP_DIR/AppRun"
 
           # Download appimagetool
           wget -q -O appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
           chmod +x appimagetool
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$APP_DIR" \
-            "dist/${OUT_NAME}-x86_64.AppImage"
+            "dist/${APPIMAGE_NAME}"
 
-      - name: Upload Linux artifacts
+      - name: Upload Linux GUI artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-artifacts-${{ matrix.brand || 'default' }}
+          name: linux-gui-${{ matrix.os_version }}-${{ matrix.brand || 'default' }}
           path: |
-            dist/${{ env.BRAND_APP_NAME }}-x86_64.AppImage
+            dist/${{ env.BRAND_APP_NAME }}-x86_64-${{ env.UBUNTU_LABEL }}.AppImage
+
+      - name: Upload Linux TUI & tool artifacts (newest runner only)
+        if: env.BUILD_PURE_GO == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tui-${{ matrix.brand || 'default' }}
+          path: |
             dist/*-tui_amd64_linux
             dist/*-tui_arm64_linux
             dist/*-tool_amd64_linux
@@ -791,18 +816,27 @@ jobs:
             dist/maclaw-tui_arm64_linux
             dist/maclaw-tool_amd64_linux
             dist/maclaw-tool_arm64_linux
+
+      - name: Upload Linux server artifacts (default brand, newest runner only)
+        if: matrix.brand == '' && env.BUILD_PURE_GO == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-server
+          path: |
             dist/maclawsrv_amd64_linux
             dist/maclawsrv_arm64_linux
             dist/srvdemo_amd64_linux
 
   # ============================================================
   # Linux ARM64: GUI (arm64, CGO native) + AppImage
+  # Build on multiple Ubuntu versions for webkit2gtk compatibility.
   # ============================================================
   build-linux-arm64:
-    runs-on: ubuntu-24.04-arm
     strategy:
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || fromJSON('["", "qianxin"]') }}
+        os_version: [ubuntu-22.04-arm, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -825,6 +859,21 @@ jobs:
             echo "BRAND_DISPLAY_NAME=${APP_NAME}" >> $GITHUB_ENV
           fi
 
+      - name: Compute OS suffix for artifact naming
+        run: |
+          # Extract Ubuntu version number (e.g. "22.04" from "ubuntu-22.04-arm")
+          OS_VER="${{ matrix.os_version }}"
+          UBUNTU_VER=$(echo "$OS_VER" | sed 's/ubuntu-//;s/-arm//')
+          UBUNTU_LABEL="u${UBUNTU_VER/./}"
+          echo "UBUNTU_VER=${UBUNTU_VER}" >> $GITHUB_ENV
+          echo "UBUNTU_LABEL=${UBUNTU_LABEL}" >> $GITHUB_ENV
+          # Only build srvdemo on the newest runner (avoid duplicate artifacts)
+          if [ "${{ matrix.os_version }}" = "ubuntu-24.04-arm" ]; then
+            echo "BUILD_SRVDEMO=true" >> $GITHUB_ENV
+          else
+            echo "BUILD_SRVDEMO=false" >> $GITHUB_ENV
+          fi
+
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -841,9 +890,15 @@ jobs:
           sudo apt-get update
           if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
             TAGS="desktop,production"
+            echo "WEBKIT_SONAME=libwebkit2gtk-4.0.so.37" >> $GITHUB_ENV
+            echo "WEBKIT_PKG=libwebkit2gtk-4.0-37" >> $GITHUB_ENV
+            echo "WEBKIT_API=4.0" >> $GITHUB_ENV
           else
             sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
             TAGS="desktop,production,webkit2_41"
+            echo "WEBKIT_SONAME=libwebkit2gtk-4.1.so.0" >> $GITHUB_ENV
+            echo "WEBKIT_PKG=libwebkit2gtk-4.1-0" >> $GITHUB_ENV
+            echo "WEBKIT_API=4.1" >> $GITHUB_ENV
           fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
@@ -859,7 +914,6 @@ jobs:
             echo "Version from wails.json: $VERSION"
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          # Sync version.ts so frontend version matches backend
           BUILD_NUM=$(echo "$VERSION" | awk -F. '{print ($4 != "" ? $4 : "0")}')
           printf "export const buildNumber = '%s';\nexport const appVersion = '%s';\n" "$BUILD_NUM" "$VERSION" > gui/frontend/src/version.ts
 
@@ -874,12 +928,13 @@ jobs:
           mkdir -p dist build/bin
           OUT_NAME="${BRAND_APP_NAME}"
           CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
-            go build -tags "${WEBKIT_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64_linux" ./gui/
+            go build -tags "${WEBKIT_TAGS}" -ldflags "-X main.version=${VERSION}" \
+            -o "build/bin/${OUT_NAME}_arm64_linux_${UBUNTU_LABEL}" ./gui/
+          cp "build/bin/${OUT_NAME}_arm64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_arm64_linux"
 
-      - name: Build srvdemo (default brand only, linux arm64)
-        if: matrix.brand == ''
+      - name: Build srvdemo (default brand, newest runner only)
+        if: matrix.brand == '' && env.BUILD_SRVDEMO == 'true'
         run: |
-          # srvdemo: Wails GUI app (pre-committed frontend), needs CGO for WebView
           CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
             go build -tags "${WEBKIT_TAGS}" -ldflags "-s -w" -o "dist/srvdemo_arm64_linux" ./srvdemo/
 
@@ -887,6 +942,7 @@ jobs:
         run: |
           OUT_NAME="${BRAND_APP_NAME}"
           OUT_LOWER=$(echo "$OUT_NAME" | tr '[:upper:]' '[:lower:]')
+          APPIMAGE_NAME="${OUT_NAME}-aarch64-${UBUNTU_LABEL}.AppImage"
           APP_DIR="build/linux/AppDir_arm64"
           rm -rf "$APP_DIR"
           mkdir -p "$APP_DIR/usr/bin"
@@ -906,70 +962,61 @@ jobs:
           DEOF
           sed -i 's/^[[:space:]]*//' "$APP_DIR/${OUT_LOWER}.desktop"
 
-          cat > "$APP_DIR/AppRun" << 'REOF'
+          cat > "$APP_DIR/AppRun" << REOF
           #!/bin/bash
-          HERE="$(dirname "$(readlink -f "${0}")")"
-          export PATH="${HERE}/usr/bin:${PATH}"
+          HERE="\$(dirname "\$(readlink -f "\${0}")")"
+          export PATH="\${HERE}/usr/bin:\${PATH}"
 
-          # Check for WebKit2GTK runtime dependency
-          check_webkit() {
-            for lib in libwebkit2gtk-4.0.so.37 libwebkit2gtk-4.1.so.0; do
-              if ldconfig -p 2>/dev/null | grep -q "$lib"; then
-                return 0
-              fi
-            done
-            return 1
-          }
-
-          if ! check_webkit; then
+          # This AppImage was built against webkit2gtk-${WEBKIT_API}
+          if ! ldconfig -p 2>/dev/null | grep -q "${WEBKIT_SONAME}"; then
             echo "=========================================="
-            echo " Missing dependency: libwebkit2gtk"
+            echo " Missing dependency: ${WEBKIT_PKG}"
             echo "=========================================="
             echo ""
-            echo "This application requires WebKit2GTK to run."
+            echo "This application requires WebKit2GTK ${WEBKIT_API} to run."
             echo "Please install it with your package manager:"
             echo ""
-            echo "  Ubuntu/Debian:"
-            echo "    sudo apt install libwebkit2gtk-4.0-37"
-            echo "    (or: sudo apt install libwebkit2gtk-4.1-0)"
+            echo "  sudo apt install ${WEBKIT_PKG}"
             echo ""
-            echo "  Fedora:"
-            echo "    sudo dnf install webkit2gtk4.0"
-            echo ""
-            echo "  Arch Linux:"
-            echo "    sudo pacman -S webkit2gtk"
-            echo ""
-            echo "  openSUSE:"
-            echo "    sudo zypper install libwebkit2gtk-4_0-37"
+            echo "Note: This AppImage is built for Ubuntu ${UBUNTU_VER}."
+            echo "For other Ubuntu versions, download the matching AppImage:"
+            echo "  Ubuntu 22.04 → *-u2204.AppImage (webkit2gtk-4.0)"
+            echo "  Ubuntu 24.04/26.04 → *-u2404.AppImage (webkit2gtk-4.1)"
             echo ""
 
             if command -v zenity &>/dev/null; then
               zenity --error --title="Missing Dependency" \
-                --text="WebKit2GTK is required but not installed.\n\nUbuntu/Debian:\n  sudo apt install libwebkit2gtk-4.0-37\n\nFedora:\n  sudo dnf install webkit2gtk4.0\n\nArch:\n  sudo pacman -S webkit2gtk" \
+                --text="WebKit2GTK ${WEBKIT_API} is required but not installed.\n\nsudo apt install ${WEBKIT_PKG}\n\nThis AppImage is for Ubuntu ${UBUNTU_VER}." \
                 --width=400 2>/dev/null
             elif command -v kdialog &>/dev/null; then
-              kdialog --error "WebKit2GTK is required but not installed.\n\nUbuntu/Debian:\n  sudo apt install libwebkit2gtk-4.0-37\n\nFedora:\n  sudo dnf install webkit2gtk4.0\n\nArch:\n  sudo pacman -S webkit2gtk" 2>/dev/null
+              kdialog --error "WebKit2GTK ${WEBKIT_API} is required but not installed.\n\nsudo apt install ${WEBKIT_PKG}\n\nThis AppImage is for Ubuntu ${UBUNTU_VER}." 2>/dev/null
             fi
             exit 1
           fi
 
-          exec APPRUN_EXEC "$@"
+          exec ${OUT_LOWER} "\$@"
           REOF
           sed -i 's/^[[:space:]]*//' "$APP_DIR/AppRun"
-          sed -i "s|APPRUN_EXEC|${OUT_LOWER}|g" "$APP_DIR/AppRun"
           chmod +x "$APP_DIR/AppRun"
 
           wget -q -O appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage"
           chmod +x appimagetool
           ARCH=aarch64 ./appimagetool --appimage-extract-and-run "$APP_DIR" \
-            "dist/${OUT_NAME}-aarch64.AppImage"
+            "dist/${APPIMAGE_NAME}"
 
-      - name: Upload Linux ARM64 artifacts
+      - name: Upload Linux ARM64 GUI artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-arm64-artifacts-${{ matrix.brand || 'default' }}
+          name: linux-arm64-gui-${{ matrix.os_version }}-${{ matrix.brand || 'default' }}
           path: |
-            dist/${{ env.BRAND_APP_NAME }}-aarch64.AppImage
+            dist/${{ env.BRAND_APP_NAME }}-aarch64-${{ env.UBUNTU_LABEL }}.AppImage
+
+      - name: Upload Linux ARM64 srvdemo (default brand, newest runner only)
+        if: matrix.brand == '' && env.BUILD_SRVDEMO == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-srvdemo
+          path: |
             dist/srvdemo_arm64_linux
 
   # ============================================================

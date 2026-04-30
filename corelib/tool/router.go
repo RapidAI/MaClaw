@@ -151,6 +151,13 @@ func NoEagerPinToolNames() []string {
 	return out
 }
 
+// IsNoEagerPinTool returns true if the named tool is in the noEagerPinTools
+// set (derived from conditionalKeepRules with noMemoryPin=true). Such tools
+// should not be session-pinned via keyword matching or memory-driven pinning.
+func IsNoEagerPinTool(name string) bool {
+	return noEagerPinTools[name]
+}
+
 var excelKeywords = []string{
 	"xlsx", "csv", "spreadsheet", "表格", "电子表格", "excel",
 }
@@ -159,14 +166,9 @@ var pptxReadKeywords = []string{
 	"pptx", "幻灯片", "演示文稿", "powerpoint", "ppt", "读取ppt",
 }
 
-var desktopGUIKeywords = []string{
-	"桌面", "窗口", "按钮", "菜单", "对话框", "输入框", "文本框",
-	"gui", "desktop", "window", "button", "menu", "dialog",
-	"记事本", "notepad", "计算器", "calculator",
-	"gui_observe", "gui_verify", "gui_record", "gui_replay",
-	"accessibility", "元素树", "控件",
-	"检查窗口", "验证窗口", "观测窗口", "查看窗口",
-}
+// NOTE: Desktop GUI tools (gui_observe, gui_verify, gui_record_start, gui_record_stop)
+// are NOT in conditionalKeepRules. They live in DeferredToolNames, discoverable
+// via discover_tool. This avoids false-positive keyword activation (#87).
 
 var conditionalKeepRules = []conditionalKeepRule{
 	{
@@ -244,15 +246,6 @@ var conditionalKeepRules = []conditionalKeepRule{
 		keepTools: []string{"generate_pdf", "office"},
 		matches: func(msg string) bool {
 			return containsAnyKeyword(msg, codingWorkflowDocKeywords)
-		},
-	},
-	// Desktop GUI observation/verification tools — activated by desktop app
-	// keywords, independent of browser tools.
-	{
-		keepTools:   []string{"gui_observe", "gui_verify", "gui_record_start", "gui_record_stop"},
-		noMemoryPin: true,
-		matches: func(msg string) bool {
-			return containsAnyKeyword(msg, desktopGUIKeywords)
 		},
 	},
 }

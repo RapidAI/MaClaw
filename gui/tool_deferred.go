@@ -53,4 +53,11 @@ var DeferredToolNames = []string{
 	"install_skill_hub",
 	"run_skill",
 	"get_skill_run",
+	// Desktop GUI automation — low frequency, discoverable via discover_tool.
+	// Removed from conditionalKeepRules to eliminate false-positive keyword
+	// matching from memory content (e.g. "GUI agent" in research papers). (#87)
+	"gui_observe",
+	"gui_verify",
+	"gui_record_start",
+	"gui_record_stop",
 }

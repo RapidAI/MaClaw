@@ -483,21 +483,7 @@ func buildCodingToolDefinitionsFallback() []map[string]interface{} {
 }
 
 func buildToolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
-	params := map[string]interface{}{
-		"type":       "object",
-		"properties": props,
-	}
-	if len(required) > 0 {
-		params["required"] = required
-	}
-	return map[string]interface{}{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name":        name,
-			"description": desc,
-			"parameters":  params,
-		},
-	}
+	return agent.ToolDef(name, desc, props, required)
 }
 
 // ---------------------------------------------------------------------------

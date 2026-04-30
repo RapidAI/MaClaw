@@ -222,3 +222,170 @@ func TestApplyHistoryCompression_NilRequest_NoChange(t *testing.T) {
 		t.Errorf("nil request should not change history")
 	}
 }
+
+func TestApplyHistoryCompression_GroupAligned_NeverOrphansToolMessages(t *testing.T) {
+	// Reproduces the group-splitting scenario: preserve_last lands between
+	// an assistant(tool_calls) and its tool result.
+	//
+	// History layout (12 entries):
+	//   [0]  user
+	//   [1]  assistant "step 1"
+	//   [2]  assistant "step 2"
+	//   [3]  assistant "step 3"
+	//   [4]  assistant "step 4"
+	//   [5]  assistant (tool_calls: [{id: "call_A", bash}])
+	//   [6]  tool (tcid: "call_A")                          ← group with [5]
+	//   [7]  assistant ("PDF done!")
+	//   [8]  assistant (tool_calls: [{id: "call_B", compress_context}])
+	//   [9]  tool (tcid: "call_B")                          ← group with [8]
+	//   [10] assistant ("Compressed.")
+	//   [11] assistant ("Waiting for input.")
+	//
+	// With preserve_last=6, raw tailStart = 12-6 = 6.
+	// Entry [6] is tool(tcid=call_A) — MIDDLE of group [5,6].
+	// Without group alignment: tail = [6..11], head = [0], dropped = [1..5].
+	// Entry [6] is in tail but parent [5] is dropped → ORPHAN!
+	// With group alignment: tailStart adjusted to 5 (group start).
+	// Tail = [5..11], head = [0], dropped = [1..4] → no orphan.
+
+	bashToolCalls := []map[string]interface{}{
+		{"id": "call_A", "type": "function", "function": map[string]interface{}{"name": "bash", "arguments": "{}"}},
+	}
+	compressToolCalls := []map[string]interface{}{
+		{"id": "call_B", "type": "function", "function": map[string]interface{}{"name": "compress_context", "arguments": "{}"}},
+	}
+
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "Build a game"},                                                // [0]
+		{Role: "assistant", Content: "Step 1."},                                                // [1]
+		{Role: "assistant", Content: "Step 2."},                                                // [2]
+		{Role: "assistant", Content: "Step 3."},                                                // [3]
+		{Role: "assistant", Content: "Step 4."},                                                // [4]
+		{Role: "assistant", Content: "Checking file size.", ToolCalls: bashToolCalls},           // [5]
+		{Role: "tool", Content: "743.6KB", ToolCallID: "call_A"},                               // [6]
+		{Role: "assistant", Content: "PDF done!"},                                              // [7]
+		{Role: "assistant", Content: "Let me compress.", ToolCalls: compressToolCalls},          // [8]
+		{Role: "tool", Content: "Compression queued.", ToolCallID: "call_B"},                   // [9]
+		{Role: "assistant", Content: "Compressed."},                                            // [10]
+		{Role: "assistant", Content: "Waiting for input."},                                     // [11]
+	}
+
+	req := &contextCompressionRequest{
+		Summary:       "Built a game and generated PDF.",
+		PreserveLastN: 6,
+	}
+
+	result := applyHistoryCompression(history, req)
+
+	// Verify structural invariant: no orphaned tool entries.
+	declaredIDs := make(map[string]bool)
+	for _, e := range result {
+		if e.Role == "assistant" && e.ToolCalls != nil {
+			for _, tc := range e.ToolCalls.([]map[string]interface{}) {
+				if id, ok := tc["id"].(string); ok {
+					declaredIDs[id] = true
+				}
+			}
+		}
+	}
+	for i, e := range result {
+		if e.Role == "tool" {
+			if !declaredIDs[e.ToolCallID] {
+				t.Errorf("orphaned tool entry at index %d: tool_call_id=%q has no parent assistant(tool_calls)", i, e.ToolCallID)
+			}
+		}
+	}
+
+	// Verify the summary was inserted.
+	hasSummary := false
+	for _, e := range result {
+		if e.Role == "system" {
+			if s, ok := e.Content.(string); ok && strings.Contains(s, "Built a game") {
+				hasSummary = true
+			}
+		}
+	}
+	if !hasSummary {
+		t.Error("summary system message not found in result")
+	}
+}
+
+func TestApplyHistoryCompression_PreserveLast4_ExactBugScenario(t *testing.T) {
+	// Exact reproduction of the persisted conversation that caused the
+	// DeepSeek HTTP 400 error. The LLM called compress_context with
+	// preserve_last=4. The last 5 history entries before compression were:
+	//
+	//   [N-5] assistant (tool_calls: [{id: "call_sFf", bash}])
+	//   [N-4] tool (tcid: "call_sFf", content: "743.6...")
+	//   [N-3] assistant ("PDF 综述已生成完毕！...")
+	//   [N-2] assistant (tool_calls: [{id: "call_fqO", compress_context}])
+	//   [N-1] tool (tcid: "call_fqO", content: "✅ 上下文压缩已排队")
+	//
+	// With preserve_last=4, raw tailStart = N-4.
+	// Entry [N-4] is tool(tcid=call_sFf) — MIDDLE of group [N-5, N-4].
+	// Without group alignment: parent [N-5] is dropped → orphan!
+	// With group alignment: tailStart adjusted to N-5 → no orphan.
+
+	bashToolCalls := []map[string]interface{}{
+		{"id": "call_sFf", "type": "function", "function": map[string]interface{}{"name": "bash", "arguments": "{}"}},
+	}
+	compressToolCalls := []map[string]interface{}{
+		{"id": "call_fqO", "type": "function", "function": map[string]interface{}{"name": "compress_context", "arguments": "{}"}},
+	}
+
+	// Build a history with enough entries to trigger compression.
+	history := make([]agent.ConversationEntry, 0, 20)
+	history = append(history, agent.ConversationEntry{Role: "user", Content: "最近一周 HuggingFace 论文"})
+	// Add filler entries to make len > 6.
+	for i := 0; i < 10; i++ {
+		history = append(history, agent.ConversationEntry{Role: "assistant", Content: fmt.Sprintf("Working on step %d...", i)})
+	}
+	// The critical tail entries:
+	history = append(history, agent.ConversationEntry{Role: "assistant", Content: "Checking file size.", ToolCalls: bashToolCalls})
+	history = append(history, agent.ConversationEntry{Role: "tool", Content: "743.6123046875\r\n", ToolCallID: "call_sFf"})
+	history = append(history, agent.ConversationEntry{Role: "assistant", Content: "PDF 综述已生成完毕！"})
+	history = append(history, agent.ConversationEntry{Role: "assistant", Content: "已完成 PDF 综述的生成与交付。", ToolCalls: compressToolCalls})
+	history = append(history, agent.ConversationEntry{Role: "tool", Content: "✅ 上下文压缩已排队。", ToolCallID: "call_fqO"})
+
+	req := &contextCompressionRequest{
+		Summary:       "已完成 HuggingFace 一周 LLM Agent 论文综述 PDF 生成。",
+		PreserveLastN: 4,
+	}
+
+	result := applyHistoryCompression(history, req)
+
+	// Verify structural invariant: no orphaned tool entries.
+	declaredIDs := make(map[string]bool)
+	for _, e := range result {
+		if e.Role == "assistant" && e.ToolCalls != nil {
+			for _, tc := range e.ToolCalls.([]map[string]interface{}) {
+				if id, ok := tc["id"].(string); ok {
+					declaredIDs[id] = true
+				}
+			}
+		}
+	}
+	for i, e := range result {
+		if e.Role == "tool" {
+			if !declaredIDs[e.ToolCallID] {
+				t.Errorf("orphaned tool entry at index %d: tool_call_id=%q has no parent assistant(tool_calls)", i, e.ToolCallID)
+			}
+		}
+	}
+
+	// The result should have: user + summary + (group-aligned tail).
+	// With group alignment, tailStart moves from N-4 (tool) to N-5 (assistant),
+	// so the tail has 5 entries instead of 4.
+	t.Logf("result has %d entries:", len(result))
+	for i, e := range result {
+		tc := ""
+		if e.ToolCalls != nil {
+			tc = " [has tool_calls]"
+		}
+		tcid := ""
+		if e.ToolCallID != "" {
+			tcid = fmt.Sprintf(" [tcid=%s]", e.ToolCallID)
+		}
+		t.Logf("  [%d] role=%s%s%s", i, e.Role, tc, tcid)
+	}
+}

@@ -54,7 +54,7 @@ export function publishDepositionRollout(payload: {
 }
 
 export function fetchCenterStatus(): Promise<CenterStatus> {
-  return Promise.resolve({ status: 'unknown', provider_count: 0, config_path: '' } as CenterStatus);
+  return apiGet<CenterStatus>('/api/center/status');
 }
 
 export function fetchCenterSettings(): Promise<CenterSettings> {

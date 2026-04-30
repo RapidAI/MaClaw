@@ -224,6 +224,10 @@ type ConsolidationResult struct {
 type Entry struct {
 	ID          string    `json:"id"`
 	Content     string    `json:"content"`
+	// Title is a short human-readable label for this entry, set by the writer
+	// at creation time. Used by ProjectIndex for task list display names.
+	// When empty, ProjectIndex falls back to extracting a title from Content.
+	Title       string    `json:"title,omitempty"`
 	Category    Category  `json:"category"`
 	Tags        []string  `json:"tags"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -257,6 +261,20 @@ type Entry struct {
 	Versions []VersionSnapshot `json:"versions,omitempty"`
 	// --- Stale flag: set by dream cycle when newer conflicting entry exists ---
 	Stale bool `json:"stale,omitempty"`
+	// --- Bi-temporal model (inspired by Graphiti/Zep) ---
+	// ValidAt is when this fact became true in the real world.
+	// nil means "unknown" or "always true" (e.g. user preferences without a start date).
+	// Extracted by the online extraction pipeline from conversation context.
+	ValidAt *time.Time `json:"valid_at,omitempty"`
+	// InvalidAt is when this fact stopped being true in the real world.
+	// nil means "still true" or "unknown".
+	// Set when a contradicting fact is ingested (four-operation update: DELETE/UPDATE).
+	InvalidAt *time.Time `json:"invalid_at,omitempty"`
+	// --- Entity-relation triples (inspired by Mem0^g / Graphiti) ---
+	// Entities extracted from this entry's content, stored as structured tags.
+	// Format: ["entity:Alice", "entity:Shanghai", "relation:lives_in"]
+	// Used by tag-based recall and entity index for multi-hop reasoning.
+	Entities []string `json:"entities,omitempty"`
 	// --- Multi-tenant ownership (maclawsrv only) ---
 	// OwnerID identifies the user who owns this memory entry.
 	// Empty string means "shared" — visible to all users.
@@ -352,4 +370,51 @@ type HealthReport struct {
 // Package-level alias so callers within memory/ use a consistent function name.
 func EstimateTextTokens(text string) int {
 	return corelib.EstimateTextTokens(text)
+}
+
+// ---------------------------------------------------------------------------
+// Mem0-style four-operation memory management
+// ---------------------------------------------------------------------------
+
+// MemoryOperation represents the action to take when integrating a new fact
+// into the memory store. Inspired by Mem0's extraction→update pipeline.
+type MemoryOperation string
+
+const (
+	// OpAdd creates a new memory entry (no semantically equivalent memory exists).
+	OpAdd MemoryOperation = "add"
+	// OpUpdate augments an existing memory with complementary information.
+	OpUpdate MemoryOperation = "update"
+	// OpDelete removes/invalidates a memory contradicted by new information.
+	OpDelete MemoryOperation = "delete"
+	// OpNoop indicates the candidate fact requires no modification to the store.
+	OpNoop MemoryOperation = "noop"
+)
+
+// OnlineExtractionResult holds the outcome of one online extraction cycle.
+type OnlineExtractionResult struct {
+	ExtractedFacts int `json:"extracted_facts"`
+	Added          int `json:"added"`
+	Updated        int `json:"updated"`
+	Deleted        int `json:"deleted"`
+	Noops          int `json:"noops"`
+	Errors         int `json:"errors"`
+}
+
+// ExtractedFact represents a single fact extracted from conversation by the
+// online extraction pipeline, with optional temporal and entity annotations.
+type ExtractedFact struct {
+	Content   string   `json:"content"`
+	Category  string   `json:"category"`            // "user_fact", "project_knowledge", "preference", "instruction"
+	Entities  []string `json:"entities,omitempty"`   // ["entity:Alice", "relation:lives_in", "entity:Shanghai"]
+	ValidAt   string   `json:"valid_at,omitempty"`   // ISO 8601 datetime or empty
+	InvalidAt string   `json:"invalid_at,omitempty"` // ISO 8601 datetime or empty
+}
+
+// ClassifiedOperation is the LLM's decision on how to integrate a new fact.
+type ClassifiedOperation struct {
+	Operation    MemoryOperation `json:"operation"`     // add, update, delete, noop
+	TargetID     string          `json:"target_id"`     // entry ID for update/delete
+	MergedText   string          `json:"merged_text"`   // merged content for update
+	Reason       string          `json:"reason"`        // brief explanation
 }

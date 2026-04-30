@@ -5,6 +5,11 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
+/** Read the current theme from the #App element so the dialog inherits dark-mode variables. */
+function getCurrentTheme(): string | undefined {
+    return document.getElementById('App')?.getAttribute('data-ai-theme') || undefined;
+}
+
 // ── Types ──
 
 interface DialogState {
@@ -13,6 +18,7 @@ interface DialogState {
     message: string;
     mode: 'alert' | 'confirm';
     lang?: string;
+    theme?: string;
 }
 
 interface DialogContextValue {
@@ -46,14 +52,14 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     const showAlert = useCallback((message: string, title?: string): Promise<void> => {
         return new Promise(resolve => {
             resolveRef.current = () => resolve();
-            setState({ open: true, title: title || '', message, mode: 'alert', lang: document.documentElement.lang || 'en' });
+            setState({ open: true, title: title || '', message, mode: 'alert', lang: document.documentElement.lang || 'en', theme: getCurrentTheme() });
         });
     }, []);
 
     const showConfirm = useCallback((message: string, title?: string): Promise<boolean> => {
         return new Promise(resolve => {
             resolveRef.current = resolve;
-            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en' });
+            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme() });
         });
     }, []);
 
@@ -81,7 +87,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         <DialogContext.Provider value={{ showAlert, showConfirm }}>
             {children}
             {state.open && (
-                <div className="modal-backdrop"
+                <div className="modal-backdrop" data-ai-theme={state.theme}
                     onMouseDown={e => { backdropMouseDownRef.current = e.target === e.currentTarget; }}
                     onClick={e => { if (e.target === e.currentTarget && backdropMouseDownRef.current) close(state.mode === 'alert'); backdropMouseDownRef.current = false; }}
                 >

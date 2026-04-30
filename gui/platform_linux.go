@@ -23,6 +23,29 @@ import (
 func (a *App) platformStartup() {
 }
 
+// IsNativeRoundedCorners returns false on Linux — the window manager handles
+// decorations; the CSS border-radius is harmless.
+func (a *App) IsNativeRoundedCorners() bool {
+	return false
+}
+
+// PlatformTransparencyFlags returns (WebviewIsTransparent, WindowIsTranslucent).
+// On Linux both are false — compositor transparency support varies widely
+// across DEs and keeping it off is the safe default.
+func (a *App) PlatformTransparencyFlags() (webviewTransparent, windowTranslucent bool) {
+	return false, false
+}
+
+// IsWebviewTransparent returns false on Linux.
+func (a *App) IsWebviewTransparent() bool {
+	return false
+}
+
+// GetFramelessTopInset returns 0 on Linux — no DWM offset issue.
+func (a *App) GetFramelessTopInset() int {
+	return 0
+}
+
 func (a *App) platformShutdown() {
 	a.setPowerOptimizationEnabled(false)
 }

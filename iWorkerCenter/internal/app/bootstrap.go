@@ -43,20 +43,22 @@ import (
 
 // Center holds all initialized services and the HTTP mux.
 type Center struct {
-	DB              *db.Provider
-	Mux             *http.ServeMux
-	Roles           *roleService.RoleService
-	Colleagues      *colleagueService.ColleagueService
-	AuditRepo       *audit.Repo
-	SecurityChecker *security.Checker
-	Deduplicator    *experience.Deduplicator
-	Auth            *adminauth.Handler
-	TenantService   *tenant.TenantService
-	WorkerMemory    *corememory.Store
-	A2A             *a2amodule.Service
-	GoalWatch       *goalwatch.Service
-	AgentRuntime    *agentruntime.Service
-	GoalMonitor     *goalwatch.Monitor
+	DB                    *db.Provider
+	Mux                   *http.ServeMux
+	Roles                 *roleService.RoleService
+	Colleagues            *colleagueService.ColleagueService
+	AuditRepo             *audit.Repo
+	SecurityChecker       *security.Checker
+	Deduplicator          *experience.Deduplicator
+	Auth                  *adminauth.Handler
+	TenantService         *tenant.TenantService
+	WorkerMemory          *corememory.Store
+	A2A                   *a2amodule.Service
+	GoalWatch             *goalwatch.Service
+	AgentRuntime          *agentruntime.Service
+	GoalMonitor           *goalwatch.Monitor
+	SkillEvolutionMonitor *capabilities.SkillEvolutionMonitor
+	CloudHeartbeatMonitor *tenant.CloudHeartbeatMonitor
 }
 
 // Bootstrap initializes the database, runs migrations, wires all modules,
@@ -104,6 +106,8 @@ func Bootstrap() (*Center, error) {
 	// --- wire audit module ---
 	auditRepo := audit.NewRepo(provider.Write, provider.Read)
 	auditHandler := audit.NewHandler(auditRepo)
+
+	capHandler.SetAuditRepo(auditRepo)
 
 	// --- wire collaboration module ---
 	collabRepo := collaboration.NewRepo(provider.Write, provider.Read)
@@ -177,14 +181,26 @@ func Bootstrap() (*Center, error) {
 	}
 	tenantSvc := tenant.NewTenantService(tenantRepo, nonceRepo, provider.Write, provider.Write, cloudClient, pubKeyCache)
 	tenantHandler := tenant.NewHandler(tenantSvc)
+	var cloudHeartbeatMonitor *tenant.CloudHeartbeatMonitor
 	if cloudCfg.BaseURL != "" {
 		capHandler.SetCloudImporterResolver(cloudCfg.BaseURL, tenantSvc)
+		cloudHeartbeatMonitor = tenant.NewCloudHeartbeatMonitor(cloudClient, func(ctx context.Context) (string, string, error) {
+			centerID, centerSecret := activeCloudCredentialsWithContext(ctx, tenantSvc)
+			return centerID, centerSecret, nil
+		}, time.Minute)
+		cloudHeartbeatMonitor.Start()
 	}
+
+	// --- wire skill market self-evolution monitor ---
+	skillEvolutionMonitor := capabilities.NewSkillEvolutionMonitor(capHandler, tenantSvc, capabilities.SkillEvolutionMonitorConfig{})
+	capHandler.SetSkillEvolutionMonitor(skillEvolutionMonitor)
+	skillEvolutionMonitor.Start()
 
 	// --- wire goal watchdog / push module ---
 	goalWatchSvc := goalwatch.NewService(collabRepo, goalwatch.Config{})
 	goalWatchSvc.SetAgentRuntime(agentRuntimeSvc)
 	goalWatchHandler := goalwatch.NewHandler(goalWatchSvc)
+	goalWatchHandler.SetRecoveryExecutor(wfSvc)
 	goalMonitor := goalwatch.NewMonitor(goalWatchSvc, tenantSvc)
 	goalWatchHandler.SetMonitor(goalMonitor)
 	goalMonitor.Start()
@@ -274,20 +290,22 @@ func Bootstrap() (*Center, error) {
 	log.Printf("[iWorkerCenter] bootstrap complete, dsn=%s", dsn)
 
 	return &Center{
-		DB:              provider,
-		Mux:             mux,
-		Roles:           rSvc,
-		Colleagues:      colSvc,
-		AuditRepo:       auditRepo,
-		SecurityChecker: secChecker,
-		Deduplicator:    dedup,
-		Auth:            authHandler,
-		TenantService:   tenantSvc,
-		WorkerMemory:    workerMemoryStore,
-		A2A:             a2aSvc,
-		GoalWatch:       goalWatchSvc,
-		AgentRuntime:    agentRuntimeSvc,
-		GoalMonitor:     goalMonitor,
+		DB:                    provider,
+		Mux:                   mux,
+		Roles:                 rSvc,
+		Colleagues:            colSvc,
+		AuditRepo:             auditRepo,
+		SecurityChecker:       secChecker,
+		Deduplicator:          dedup,
+		Auth:                  authHandler,
+		TenantService:         tenantSvc,
+		WorkerMemory:          workerMemoryStore,
+		A2A:                   a2aSvc,
+		GoalWatch:             goalWatchSvc,
+		AgentRuntime:          agentRuntimeSvc,
+		GoalMonitor:           goalMonitor,
+		SkillEvolutionMonitor: skillEvolutionMonitor,
+		CloudHeartbeatMonitor: cloudHeartbeatMonitor,
 	}, nil
 }
 
@@ -295,6 +313,12 @@ func Bootstrap() (*Center, error) {
 func (c *Center) Close() {
 	if c.GoalMonitor != nil {
 		c.GoalMonitor.Stop()
+	}
+	if c.SkillEvolutionMonitor != nil {
+		c.SkillEvolutionMonitor.Stop()
+	}
+	if c.CloudHeartbeatMonitor != nil {
+		c.CloudHeartbeatMonitor.Stop()
 	}
 	if c.WorkerMemory != nil {
 		_ = c.WorkerMemory.Flush()
@@ -365,10 +389,14 @@ func yamlUnmarshal(data []byte, v any) error {
 }
 
 func activeCloudCredentials(tenantSvc *tenant.TenantService) (string, string) {
+	return activeCloudCredentialsWithContext(context.Background(), tenantSvc)
+}
+
+func activeCloudCredentialsWithContext(ctx context.Context, tenantSvc *tenant.TenantService) (string, string) {
 	if tenantSvc == nil {
 		return "", ""
 	}
-	tenants, err := tenantSvc.ListActiveTenants(context.Background())
+	tenants, err := tenantSvc.ListActiveTenants(ctx)
 	if err != nil {
 		return "", ""
 	}

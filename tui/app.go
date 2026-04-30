@@ -641,6 +641,27 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 		}
 		app.history.Save("tui-user", history)
 
+		// --- Online incremental extraction (Mem0-style) ---
+		// Trigger asynchronously after each agent loop to extract salient
+		// facts from the conversation and integrate them into long-term memory.
+		if app.memoryStore != nil && len(history) >= 4 {
+			if oe := app.memoryStore.OnlineExtractor(); oe != nil {
+				go func() {
+					msgs := convertTUIHistoryToMessages(history, 10)
+					if len(msgs) < 2 {
+						return
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					oeResult := oe.ExtractAndIntegrate(ctx, msgs, "", time.Now(), "tui-user")
+					if oeResult.Added > 0 || oeResult.Updated > 0 || oeResult.Deleted > 0 {
+						log.Printf("[online_extraction] tui: extracted=%d added=%d updated=%d deleted=%d",
+							oeResult.ExtractedFacts, oeResult.Added, oeResult.Updated, oeResult.Deleted)
+					}
+				}()
+			}
+		}
+
 		if result.Error != "" {
 			return views.ChatResponseMsg{Error: result.Error}
 		}
@@ -1275,18 +1296,7 @@ func buildTuiBtwToolDefinitions(app *TUIApp) []map[string]interface{} {
 }
 
 func tuiBtwToolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
-	return map[string]interface{}{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name":        name,
-			"description": desc,
-			"parameters": map[string]interface{}{
-				"type":       "object",
-				"properties": props,
-				"required":   required,
-			},
-		},
-	}
+	return agent.ToolDef(name, desc, props, required)
 }
 
 // tuiAgentStatus queries the TUI's runtime state for /btw side queries.
@@ -1320,4 +1330,34 @@ func (app *TUIApp) tuiAgentStatus(args map[string]interface{}) string {
 	}
 
 	return strings.Join(sections, "\n\n")
+}
+
+// convertTUIHistoryToMessages converts the last N conversation entries to
+// the ConversationMessage format expected by OnlineExtractor.
+func convertTUIHistoryToMessages(history []agent.ConversationEntry, maxEntries int) []memory.ConversationMessage {
+	start := len(history) - maxEntries
+	if start < 0 {
+		start = 0
+	}
+
+	var messages []memory.ConversationMessage
+	for _, e := range history[start:] {
+		role := e.Role
+		if role == "" {
+			continue
+		}
+		content, ok := e.Content.(string)
+		if !ok || strings.TrimSpace(content) == "" {
+			continue
+		}
+		// Truncate very long entries.
+		if runes := []rune(content); len(runes) > 2000 {
+			content = string(runes[:2000]) + "\n[...truncated...]"
+		}
+		messages = append(messages, memory.ConversationMessage{
+			Role:    role,
+			Content: content,
+		})
+	}
+	return messages
 }

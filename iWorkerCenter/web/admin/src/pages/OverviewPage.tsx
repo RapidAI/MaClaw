@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MetricCard } from '../components/cards/MetricCard';
 import { SectionCard } from '../components/cards/SectionCard';
@@ -8,12 +8,12 @@ import { createCollaboration, getCollaborationRoutingSettings, listCollaboration
 import type { CollaborationRoutingOverview } from '../api/collaboration';
 import { listColleagues } from '../api/colleagues';
 import type { Colleague } from '../api/colleagues';
-import { confirmReturnToAutonomy, fetchDashboard, fetchExecutiveSkills, generateDepositionDrafts, publishDepositionRollout, recordManagementDecision, runExecutiveSkill } from '../api/dashboard';
+import { confirmReturnToAutonomy, fetchCenterStatus, fetchDashboard, fetchExecutiveSkills, generateDepositionDrafts, publishDepositionRollout, recordManagementDecision, runExecutiveSkill } from '../api/dashboard';
 import { listRoles } from '../api/roles';
 import type { Role } from '../api/roles';
 import { listCapabilities } from '../api/capabilities';
 import { listMemories } from '../api/memories';
-import type { AssetNavigationTarget, CenterTab, CommunicationsNavigationTarget, Metric, DashboardItem, ExecutiveAction, ExecutiveBoardFocus, ExecutiveBoardHistoryItem, ExecutiveBriefing, ExecutiveSkill, ExecutiveSkillResult, OverviewNavigationTarget } from '../types';
+import type { AssetNavigationTarget, CenterStatus, CenterTab, CommunicationsNavigationTarget, Metric, DashboardItem, ExecutiveAction, ExecutiveBoardFocus, ExecutiveBoardHistoryItem, ExecutiveBriefing, ExecutiveSkill, ExecutiveSkillResult, OverviewNavigationTarget } from '../types';
 
 type BoardSignal = {
   title: string;
@@ -564,6 +564,20 @@ const resolveBoardFocus = (
   dashboardFocus: ExecutiveBoardFocus | null,
   skillResult: ExecutiveSkillResult | null,
 ): ExecutiveBoardFocus | null => skillResult?.focus || dashboardFocus;
+
+const cloudHeartbeatTone = (status?: string): 'ok' | 'info' | 'warn' => {
+  switch (status) {
+    case 'online':
+      return 'ok';
+    case 'degraded':
+    case 'waiting_for_credentials':
+      return 'info';
+    case 'error':
+      return 'warn';
+    default:
+      return 'info';
+  }
+};
 
 const badgeClass = (status: string) => {
   switch (status) {
@@ -1285,6 +1299,7 @@ export function OverviewPage({
 }: OverviewPageProps) {
   const { t } = useTranslation();
   const [metrics, setMetrics] = useState<Metric[]>([]);
+  const [centerStatus, setCenterStatus] = useState<CenterStatus | null>(null);
   const [briefing, setBriefing] = useState<ExecutiveBriefing | null>(null);
   const [risks, setRisks] = useState<DashboardItem[]>([]);
   const [actions, setActions] = useState<ExecutiveAction[]>([]);
@@ -1326,7 +1341,7 @@ export function OverviewPage({
     if (refreshMode) {
       setRefreshingBoard(true);
     }
-    const [cols, roleList, caps, mems, dashboard, skillData, collabTasks, routingOverview, auditLogs] = await Promise.all([
+    const [cols, roleList, caps, mems, dashboard, skillData, collabTasks, routingOverview, auditLogs, serviceStatus] = await Promise.all([
       listColleagues().catch(() => []),
       listRoles().catch(() => []),
       listCapabilities().catch(() => []),
@@ -1336,6 +1351,7 @@ export function OverviewPage({
       listCollaborations().catch(() => []),
       getCollaborationRoutingSettings().catch(() => null),
       listAuditLogs(12).catch(() => []),
+      fetchCenterStatus().catch(() => null),
     ]);
 
     const dashboardMetrics = dashboard?.metrics || [];
@@ -1344,6 +1360,7 @@ export function OverviewPage({
       { label: t('nav.packages'), value: String(caps.length), hint: `${caps.length}` },
       { label: t('nav.knowledge'), value: String(mems.length), hint: `${mems.length}` },
     ];
+    setCenterStatus(serviceStatus);
     setColleagues(cols);
     setRoles(roleList);
     setMetrics(dashboardMetrics.length > 0 ? [...baseMetrics, ...dashboardMetrics].slice(0, 4) : baseMetrics);
@@ -1932,6 +1949,10 @@ export function OverviewPage({
   }, [autonomousEscalationTarget, activeManagementReviews, deferredManagementRoles]);
 
 
+  const cloudHeartbeat = centerStatus?.cloud_heartbeat;
+  const cloudTone = cloudHeartbeatTone(cloudHeartbeat?.status);
+  const cloudStatusLabel = cloudHeartbeat?.status || (centerStatus ? 'not_configured' : 'unknown');
+
   const operatingModeCards = useMemo<OperatingModeCard[]>(() => {
     const inReviewCount = Object.keys(activeManagementReviews).length;
     const deferredCount = Object.keys(deferredManagementRoles).length;
@@ -2440,6 +2461,30 @@ export function OverviewPage({
           <MetricCard key={`${m.label}-${m.value}`} label={m.label} value={m.value} hint={m.hint} />
         ))}
       </div>
+
+      <section className="card section-card soft">
+        <div className="section-head">
+          <div>
+            <div className="mini light">Service Runtime</div>
+            <h3>iWorkerCenter service status</h3>
+            <p>This console is the management surface for the organization runtime. Customer operations stay in iWorkerCenter; iWorkerCloud only manages authorization, compute, skill entitlement, and platform connectivity.</p>
+          </div>
+          <span className={badgeClass(centerStatus?.status === 'ok' ? 'ok' : 'warn')}>{centerStatus?.status || 'unknown'}</span>
+        </div>
+        <div className="executive-action-row">
+          <span className="badge info">{centerStatus?.runtime_type || 'service'} / {centerStatus?.product_kind || 'iworkercenter'} / {centerStatus?.admin_console || 'web_console'}</span>
+          <span className="badge info">Providers: {centerStatus?.provider_count ?? 0}</span>
+          <span className={badgeClass(cloudTone)}>Cloud heartbeat: {cloudStatusLabel}</span>
+          {cloudHeartbeat?.center_id ? <span className="badge info">Center ID: {cloudHeartbeat.center_id}</span> : null}
+        </div>
+        <div className="item-row">
+          <strong>Center -&gt; Cloud connectivity</strong>
+          <p>{cloudHeartbeat
+            ? `Last success: ${formatBoardTimestamp(cloudHeartbeat.last_success_at || '')}. Consecutive failures: ${cloudHeartbeat.consecutive_failures || 0}.`
+            : 'Cloud heartbeat monitor is not configured for this service process yet.'}</p>
+          {cloudHeartbeat?.last_error ? <p>{`Last error: ${cloudHeartbeat.last_error}`}</p> : null}
+        </div>
+      </section>
 
       <div className="executive-operating-mode-grid">
         {operatingModeCards.map((card) => (

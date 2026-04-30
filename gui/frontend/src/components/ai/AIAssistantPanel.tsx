@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { colors } from "../remote/styles";
-import { OpenFileOrShowInFolder, SelectProjectDir, SetWorkflowWorkingDir } from "../../../wailsjs/go/main/App";
-import { BrowserOpenURL } from "../../../wailsjs/runtime";
+import { OpenFileOrShowInFolder, SelectProjectDir, SetWorkflowWorkingDir, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask, GetTTSEnabled, SetTTSEnabled, SpeakText } from "../../../wailsjs/go/main/App";
+import { BrowserOpenURL, EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus, ChatConfirmation, ChatUnfinishedSlot } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti } from "./useAIAssistant";
 import { useWorkflowState } from "./useWorkflowState";
@@ -11,6 +11,7 @@ import { CodePreviewPanel, darkCodePreviewTheme, lightCodePreviewTheme } from ".
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { BufferQueuePanel } from "./BufferQueuePanel";
+import { useDialog } from "../CustomDialog";
 
 interface AIAssistantPanelStateProps {
     messages: ChatMessage[];
@@ -44,7 +45,7 @@ interface AIAssistantPanelActionProps {
     onOpenOnboarding?: () => void;
     cancelSession?: () => Promise<CancelAIAssistantResult>;
     injectSupplementary?: (text: string) => Promise<boolean>;
-    onOpenTutorial?: () => void;
+    onTaskPrefsChanged?: () => void; // called when pin/rename/hide changes task list; parent refreshes sidebar
 }
 
 interface AIAssistantPanelWindowProps {
@@ -1121,6 +1122,182 @@ async function savePastedImage(base64: string, ext: string): Promise<string> {
     throw new Error("SavePastedImage binding not available");
 }
 
+/* ── Project Search ── */
+
+interface ProjectSearchItem {
+    id: string;
+    name: string;
+    project_path: string;
+    workflow_type: string;
+    preview: string;
+    tags: string[];
+    last_activity: string;
+    entry_count: number;
+    pinned?: boolean;
+}
+
+function useProjectSearch(lang: string) {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
+    const [results, setResults] = useState<ProjectSearchItem[]>([]);
+    const [loading, setLoading] = useState(false);
+    const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+        if (open && query === "") {
+            setLoading(true);
+            SearchProjects("", 10).then(r => { setResults(r || []); setLoading(false); }).catch(() => setLoading(false));
+        }
+    }, [open]);
+
+    useEffect(() => { return () => { if (debounceRef.current) clearTimeout(debounceRef.current); }; }, []);
+
+    const doSearch = useCallback((q: string) => {
+        setLoading(true);
+        SearchProjects(q, 10).then(r => { setResults(r || []); setLoading(false); }).catch(() => setLoading(false));
+    }, []);
+
+    const onQueryChange = useCallback((val: string) => {
+        setQuery(val);
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        debounceRef.current = setTimeout(() => doSearch(val), 300);
+    }, [doSearch]);
+
+    const close = useCallback(() => { setOpen(false); setQuery(""); }, []);
+    const toggle = useCallback(() => { if (open) { close(); } else { setOpen(true); } }, [open, close]);
+
+    const formatTime = useCallback((isoStr: string): string => {
+        try {
+            const d = new Date(isoStr);
+            const diffH = Math.floor((Date.now() - d.getTime()) / 3600000);
+            if (diffH < 1) return localizeText(lang, "just now", "刚刚");
+            if (diffH < 24) return `${diffH}${localizeText(lang, "h ago", "小时前")}`;
+            const diffD = Math.floor(diffH / 24);
+            if (diffD < 7) return `${diffD}${localizeText(lang, "d ago", "天前")}`;
+            return d.toLocaleDateString();
+        } catch { return ""; }
+    }, [lang]);
+
+    const refresh = useCallback(() => {
+        doSearch(query);
+    }, [doSearch, query]);
+
+    return { open, query, results, loading, toggle, close, onQueryChange, formatTime, refresh };
+}
+
+function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSwitch, onTaskPrefsChanged }: {
+    search: ReturnType<typeof useProjectSearch>;
+    lang: string;
+    theme: Theme;
+    inline: boolean;
+    onProjectSwitch: (displayMsg: string) => Promise<void> | void;
+    onTaskPrefsChanged?: () => void;
+}) {
+    const inputRef = useRef<HTMLInputElement>(null);
+    const panelRef = useRef<HTMLDivElement>(null);
+    const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; item: ProjectSearchItem } | null>(null);
+    const [renamingPath, setRenamingPath] = useState<string | null>(null);
+    const [renameVal, setRenameVal] = useState("");
+
+    useEffect(() => { if (search.open && inputRef.current) inputRef.current.focus(); }, [search.open]);
+
+    useEffect(() => {
+        if (!search.open) return;
+        const handler = (e: MouseEvent) => {
+            if (panelRef.current && !panelRef.current.contains(e.target as Node)) { search.close(); setCtxMenu(null); }
+        };
+        document.addEventListener("mousedown", handler);
+        return () => document.removeEventListener("mousedown", handler);
+    }, [search.open, search.close]);
+
+    const onSelect = useCallback(async (item: ProjectSearchItem) => {
+        if (renamingPath) return;
+        search.close();
+        try { const msg = await ResumeProject(item.project_path); if (msg) onProjectSwitch(msg); }
+        catch (err) { console.error("[ProjectSearch] ResumeProject failed:", err); }
+    }, [search, onProjectSwitch, renamingPath]);
+
+    const refreshResults = useCallback(() => {
+        search.refresh();
+        onTaskPrefsChanged?.();
+    }, [search, onTaskPrefsChanged]);
+
+    if (!search.open) return null;
+
+    return (
+        <div ref={panelRef} style={{ flexShrink: 0, borderBottom: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg, zIndex: 999 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px" }}>
+                <span style={{ fontSize: "13px", opacity: 0.4, flexShrink: 0 }}>🔍</span>
+                <input ref={inputRef} type="text" value={search.query}
+                    onChange={e => search.onQueryChange(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Escape") search.close(); }}
+                    placeholder={localizeText(lang, "Search tasks...", "搜索任务...")}
+                    style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: t.text, fontSize: "13px", fontFamily: "inherit", padding: "4px 0", minWidth: 0 }}
+                />
+                <button
+                    {...(inline ? { onMouseDown: (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); search.close(); } } : { onClick: () => search.close() })}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: t.text, opacity: 0.4, fontSize: "12px", padding: "2px 4px", lineHeight: 1, flexShrink: 0 }}
+                    title={localizeText(lang, "Close", "关闭")}
+                >✕</button>
+            </div>
+            <div style={{ maxHeight: "320px", overflowY: "auto", padding: "0 4px 4px" }}>
+                {search.loading && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.4, fontSize: "12px" }}>{localizeText(lang, "Searching...", "搜索中...")}</div>}
+                {!search.loading && search.results.length === 0 && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.4, fontSize: "12px" }}>{search.query ? localizeText(lang, "No tasks found", "未找到任务") : localizeText(lang, "No recent tasks", "暂无最近任务")}</div>}
+                {!search.loading && search.results.map(item => (
+                    <div key={item.id} onClick={() => onSelect(item)}
+                        onContextMenu={e => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, item }); }}
+                        style={{ padding: "8px 10px", cursor: "pointer", borderRadius: "6px", transition: "background 0.15s" }}
+                        onMouseEnter={e => (e.currentTarget.style.background = t.codeBlockBg)}
+                        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                    >
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px" }}>
+                            <span style={{ fontSize: "13px", flexShrink: 0 }}>{item.pinned ? '📌' : '🔖'}</span>
+                            {renamingPath === item.project_path ? (
+                                <input autoFocus value={renameVal} onChange={e => setRenameVal(e.target.value)}
+                                    onBlur={async () => {
+                                        const trimmed = renameVal.trim();
+                                        if (trimmed && trimmed !== item.name) { await RenameTask(item.project_path, trimmed); refreshResults(); }
+                                        setRenamingPath(null);
+                                    }}
+                                    onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingPath(null); }}
+                                    onClick={e => e.stopPropagation()}
+                                    style={{ flex: 1, fontSize: "13px", fontWeight: 600, color: t.text, background: t.codeBlockBg, border: `1px solid ${t.headingColor}`, borderRadius: "3px", padding: "2px 6px", outline: "none", minWidth: 0, fontFamily: "inherit" }}
+                                />
+                            ) : (
+                                <span style={{ fontSize: "13px", fontWeight: 600, color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{item.name || item.project_path}</span>
+                            )}
+                            {item.workflow_type && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(99,102,241,0.12)", color: t.headingColor, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{workflowTypeLabel(item.workflow_type, lang)}</span>}
+                            <span style={{ fontSize: "11px", color: t.text, opacity: 0.35, flexShrink: 0 }}>{search.formatTime(item.last_activity)}</span>
+                        </div>
+                        <div style={{ fontSize: "11px", color: t.text, opacity: 0.45, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingLeft: "21px" }}>{item.project_path}</div>
+                        {item.preview && <div style={{ fontSize: "11px", color: t.text, opacity: 0.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingLeft: "21px", marginTop: "1px" }}>{item.preview}</div>}
+                    </div>
+                ))}
+            </div>
+            {/* Context menu for search results */}
+            {ctxMenu && (<>
+                <div style={{ position: "fixed", inset: 0, zIndex: 9998 }} onClick={() => setCtxMenu(null)} />
+                <div style={{ position: "fixed", left: ctxMenu.x, top: ctxMenu.y, zIndex: 9999, background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: "6px", boxShadow: "0 4px 12px rgba(0,0,0,0.15)", padding: "4px 0", minWidth: "120px" }}>
+                    {[
+                        { label: localizeText(lang, "Rename", "重命名"), icon: "✏️", action: () => { setRenamingPath(ctxMenu.item.project_path); setRenameVal(ctxMenu.item.name || ""); setCtxMenu(null); } },
+                        { label: ctxMenu.item.pinned ? localizeText(lang, "Unpin", "取消置顶") : localizeText(lang, "Pin", "置顶"), icon: "📌", action: async () => { await PinTask(ctxMenu.item.project_path, !ctxMenu.item.pinned); refreshResults(); setCtxMenu(null); } },
+                        { label: localizeText(lang, "Remove", "删除"), icon: "🗑️", action: async () => { await HideTask(ctxMenu.item.project_path); refreshResults(); setCtxMenu(null); } },
+                    ].map(mi => (
+                        <div key={mi.label} onClick={mi.action}
+                            style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", cursor: "pointer", fontSize: "12px", color: t.text, transition: "background 0.1s" }}
+                            onMouseEnter={e => (e.currentTarget.style.background = t.codeBlockBg)}
+                            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                        >
+                            <span style={{ fontSize: "13px" }}>{mi.icon}</span>
+                            <span>{mi.label}</span>
+                        </div>
+                    ))}
+                </div>
+            </>)}
+        </div>
+    );
+}
+
 /* ── Main component ── */
 
 export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, actions, window: panelWindow, onThemeModeChange }: AIAssistantPanelProps) {
@@ -1154,7 +1331,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         onOpenOnboarding,
         cancelSession,
         injectSupplementary,
-        onOpenTutorial,
+        onTaskPrefsChanged,
     } = actions;
     const {
         inline,
@@ -1187,6 +1364,58 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     const prevMsgCountRef = useRef(0);
     const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const prevReadyRef = useRef(ready);
+
+    const projectSearch = useProjectSearch(lang);
+    const { showConfirm: showSwitchConfirm } = useDialog();
+
+    // TTS voice readback state
+    const [ttsEnabled, setTtsEnabled] = useState(false);
+    const ttsEnabledRef = useRef(false);
+    useEffect(() => { ttsEnabledRef.current = ttsEnabled; }, [ttsEnabled]);
+    // Load initial TTS state from backend
+    useEffect(() => { GetTTSEnabled().then(v => setTtsEnabled(!!v)).catch(() => {}); }, []);
+    // Listen for TTS audio events and play them
+    useEffect(() => {
+        const handler = (b64wav: string) => {
+            if (!ttsEnabledRef.current) return;
+            try {
+                const audio = new Audio("data:audio/wav;base64," + b64wav);
+                audio.play().catch(() => {});
+            } catch {}
+        };
+        EventsOn("tts:audio", handler);
+        return () => { EventsOff("tts:audio"); };
+    }, []);
+
+    // Auto-speak: when TTS is enabled and a response completes (sending→false),
+    // generate a spoken status summary: "{task} 已完成/失败/暂停，该任务是 {description}"
+    const prevSendingRef = useRef(sending);
+    useEffect(() => {
+        const wasSending = prevSendingRef.current;
+        prevSendingRef.current = sending;
+        if (wasSending && !sending && ttsEnabled && messages.length > 0) {
+            // Find the last user message (= task description) and last assistant/error message (= status)
+            let userText = '';
+            let status: 'success' | 'error' | 'paused' = 'success';
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (!userText && msg.role === 'user' && msg.content) {
+                    userText = msg.content;
+                }
+                if (status === 'success' && msg.role === 'error') {
+                    status = 'error';
+                }
+                if (msg.role === 'user') break; // stop at the user message that triggered this round
+            }
+            // Check if the response was a cancellation
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg?.content?.includes('⏹') || lastMsg?.content?.includes('已取消') || lastMsg?.content?.includes('已暂停')) {
+                status = 'paused';
+            }
+            // Send structured data to backend for summary generation
+            SpeakText(JSON.stringify({ userText, status })).catch(() => {});
+        }
+    }, [sending, ttsEnabled, messages]);
 
     const { queue, addEntry, removeEntry, updateEntry, reorderEntry, extractEntry, clearQueue, restoreQueue } = useBufferQueue();
 
@@ -1832,109 +2061,47 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                     ...(inline ? { '--wails-draggable': 'no-drag', position: 'relative', zIndex: 1000 } as any : {}),
                 }}>
                     <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "6px", alignItems: "center", flexShrink: 0, minWidth: 0, paddingTop: 1 }}>
-                    {onOpenTutorial && (
                     <button
                         className="ai-titlebar-tool"
-                        {...(inline ? { onMouseDown: onOpenTutorial } : { onClick: onOpenTutorial })}
-                        style={getTitleBarToolButtonStyle(t)}
-                        title={localizeText(lang, "Tutorial", "教程")}
+                        {...(inline
+                            ? { onMouseDown: (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); projectSearch.toggle(); } }
+                            : { onClick: () => projectSearch.toggle() }
+                        )}
+                        style={getTitleBarToolButtonStyle(t, projectSearch.open ? "active" : "default")}
+                        title={localizeText(lang, "Search tasks", "搜索任务")}
                     >
-                        <span
-                            aria-hidden="true"
-                            style={{
-                                fontSize: "16px",
-                                lineHeight: 1,
-                                transform: "translateY(-0.5px)",
-                            }}
-                        >
-                            📚
-                        </span>
+                        <span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>🔍</span>
                     </button>
-                    )}
-                    <div
-                        data-testid="ai-theme-toggle-group"
-                        style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '2px',
-                            padding: '2px',
-                            borderRadius: '8px',
-                            background: t.codeBlockBg,
-                            border: `1px solid ${t.codeBlockBorder}`,
-                        }}
-                    >
-                        <button
-                            className="ai-titlebar-tool"
-                            data-testid="ai-theme-toggle-light"
-                            {...(inline ? {
-                                onMouseDown: (e: React.MouseEvent<HTMLButtonElement>) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    setThemeMode('light');
-                                },
-                            } : {
-                                onClick: () => setThemeMode('light'),
-                            })}
-                            aria-label={localizeText(lang, 'Switch to normal mode', '切换到普通模式')}
-                            aria-pressed={themeMode === 'light'}
-                            style={{ ...getTitleBarToolButtonStyle(t, themeMode === 'light' ? 'active' : 'default'), width: 'auto', minWidth: '56px', padding: '0 10px', fontSize: '11px', fontWeight: 600 }}
-                            title={localizeText(lang, 'Switch to normal mode', '切换到普通模式')}
-                        >
-                            {localizeText(lang, 'Normal', '普通')}
-                        </button>
-                        <button
-                            className="ai-titlebar-tool"
-                            data-testid="ai-theme-toggle-dark"
-                            {...(inline ? {
-                                onMouseDown: (e: React.MouseEvent<HTMLButtonElement>) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    setThemeMode('dark');
-                                },
-                            } : {
-                                onClick: () => setThemeMode('dark'),
-                            })}
-                            aria-label={localizeText(lang, 'Switch to dark mode', '切换到暗黑模式')}
-                            aria-pressed={themeMode === 'dark'}
-                            style={{ ...getTitleBarToolButtonStyle(t, themeMode === 'dark' ? 'active' : 'default'), width: 'auto', minWidth: '56px', padding: '0 10px', fontSize: '11px', fontWeight: 600 }}
-                            title={localizeText(lang, 'Switch to dark mode', '切换到暗黑模式')}
-                        >
-                            {localizeText(lang, 'Dark', '暗黑')}
-                        </button>
-                    </div>
                     <button
                         className="ai-titlebar-tool"
-                        {...(inline ? { onMouseDown: refreshNews } : { onClick: refreshNews })}
-                        style={getTitleBarToolButtonStyle(t)}
-                        title={localizeText(lang, "Refresh news", "刷新消息")}
+                        onClick={() => {
+                            const next = !ttsEnabled;
+                            setTtsEnabled(next);
+                            SetTTSEnabled(next).catch(() => {});
+                        }}
+                        style={getTitleBarToolButtonStyle(t, ttsEnabled ? "active" : "default")}
+                        title={ttsEnabled ? localizeText(lang, "Voice readback ON — click to disable", "语音播报已开启，点击关闭") : localizeText(lang, "Voice readback OFF — click to enable", "语音播报已关闭，点击开启")}
                     >
-                        <span
-                            aria-hidden="true"
-                            style={{
-                                fontSize: "16px",
-                                lineHeight: 1,
-                                transform: "translateY(-0.5px)",
-                            }}
-                        >
-                            ↻
-                        </span>
+                        <span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{ttsEnabled ? '🔊' : '🔇'}</span>
+                    </button>
+                    <button
+                        className="ai-titlebar-tool"
+                        {...(inline
+                            ? { onMouseDown: (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setThemeMode(themeMode === 'dark' ? 'light' : 'dark'); } }
+                            : { onClick: () => setThemeMode(themeMode === 'dark' ? 'light' : 'dark') }
+                        )}
+                        style={getTitleBarToolButtonStyle(t)}
+                        title={themeMode === 'dark' ? localizeText(lang, "Switch to light mode", "切换到普通模式") : localizeText(lang, "Switch to dark mode", "切换到暗黑模式")}
+                    >
+                        <span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{themeMode === 'dark' ? '🌙' : '☀️'}</span>
                     </button>
                     <button
                         className="ai-titlebar-tool"
                         {...(inline ? { onMouseDown: clearHistory } : { onClick: clearHistory })}
                         style={getTitleBarToolButtonStyle(t, "danger")}
-                        title={localizeText(lang, "Clear history", "清空历史")}
+                        title={localizeText(lang, "New conversation", "新对话")}
                     >
-                        <span
-                            aria-hidden="true"
-                            style={{
-                                fontSize: "16px",
-                                lineHeight: 1,
-                                transform: "translateY(-0.5px)",
-                            }}
-                        >
-                            🗑
-                        </span>
+                        <span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>🗑</span>
                     </button>
                     </div>
                     <div data-testid="ai-titlebar-window-group" style={{ display: "flex", gap: "2px", alignItems: "center", flexShrink: 0, minWidth: 0, boxSizing: "border-box", marginLeft: inline ? "16px" : "12px", paddingLeft: inline ? "14px" : "12px", paddingTop: 1, borderLeft: `1px solid ${t.titleBarBorder}` }}>
@@ -2007,6 +2174,31 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                 overflow: "hidden",
                 background: t.bg,
             }}>
+
+            {/* Project search panel — slides out below title bar */}
+            <ProjectSearchPanel
+                search={projectSearch}
+                lang={lang}
+                theme={t}
+                inline={!!inline}
+                onProjectSwitch={async (msg: string) => {
+                    // If an agent loop is currently running, ask the user
+                    // whether to abort it first. Without this, sendMessage
+                    // silently drops the switch message because
+                    // activeRound.phase !== 'idle', leaving the UI stuck.
+                    if (sending && cancelSession) {
+                        const confirmed = await showSwitchConfirm(
+                            "当前有任务正在执行。是否中止当前任务并切换？",
+                            "切换任务",
+                        );
+                        if (!confirmed) return;
+                        await cancelSession();
+                    }
+                    await clearHistory();
+                    if (msg) { await sendMessage(msg); }
+                }}
+                onTaskPrefsChanged={onTaskPrefsChanged}
+            />
 
             {/* Workflow maximize suggestion banner */}
             {workflowState.suggestMaximize && !maximized && inline && onToggleMaximize && (

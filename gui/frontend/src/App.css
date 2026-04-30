@@ -409,7 +409,11 @@ html, body {
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background-color: var(--theme-page-bg);
+    /* Background colour is set by the inline script in index.html (theme
+       colour on all platforms) and refined by the useEffect in App.tsx.
+       On Windows 10: overridden to transparent (webview is transparent,
+       CSS border-radius clips to true transparency).
+       On Windows 11 / macOS / Linux: kept as theme colour. */
 }
 
 body {
@@ -428,6 +432,13 @@ body {
     --ui-scale: 1;
 }
 
+/* When the webview is transparent (Windows), the viewport wrapper must also
+   be transparent so the CSS border-radius on #App clips to true
+   transparency.  The data-webview-transparent attribute is set by App.tsx. */
+.app-viewport[data-webview-transparent="true"] {
+    background-color: transparent;
+}
+
 .app-scale-layer {
     width: calc(100% / var(--ui-scale));
     height: calc(100% / var(--ui-scale));
@@ -435,6 +446,18 @@ body {
     transform-origin: top left;
 }
 
+/* Windows 10 frameless DWM workaround:
+   On some Windows 10 builds (notably Enterprise/LTSC), DWM reserves an
+   invisible top border for frameless windows even when
+   DisableFramelessWindowDecorations is true.  This pushes the webview
+   content down while #App's overflow:hidden + border-radius clips at
+   the original boundary, cutting off the top of the custom title bar.
+   --dwm-top-offset is set by JS (queried from the Go backend's
+   GetFramelessTopInset, which returns SM_CYFRAME + SM_CXPADDEDBORDER
+   on Win10 and 0 elsewhere).  Typically 7–8 px at 100 % DPI.
+   On unaffected Win10 systems this adds a small top gap; on affected
+   ones it compensates for the DWM offset.
+   On Windows 11 (data-native-rounded) padding-top is reset to 0. */
 #App {
     height: 100%;
     width: 100%;
@@ -447,6 +470,17 @@ body {
     border: 1px solid var(--theme-border-subtle);
     box-sizing: border-box;
     box-shadow: var(--shadow-lg);
+    padding-top: var(--dwm-top-offset, 0px);
+}
+
+/* Windows 11+: the OS provides native DWM rounded corners for frameless
+   windows.  Remove the CSS border-radius, border, and box-shadow so we
+   don't get double rounding or decorations that fight the DWM frame. */
+#App[data-native-rounded="true"] {
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+    padding-top: 0;
 }
 
 /* PWA / mobile: remove desktop window decorations so content fills edge-to-edge */
@@ -2171,12 +2205,72 @@ body {
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: color-mix(in srgb, var(--theme-page-bg) 60%, transparent);
-    backdrop-filter: blur(4px);
+    background-color: rgba(0, 0, 0, 0.25);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: 2000;
+}
+
+.modal-backdrop[data-ai-theme='dark'] {
+    background-color: rgba(0, 0, 0, 0.4);
+    /*
+     * Dark theme variables — duplicated from #App[data-ai-theme='dark'] because
+     * DialogProvider renders outside #App and cannot inherit its CSS variables.
+     * Keep in sync with the #App dark theme block (~line 1620).
+     */
+    --theme-primary: #818cf8;
+    --theme-primary-strong: #6366f1;
+    --theme-page-bg: #0b1220;
+    --theme-surface: #111827;
+    --theme-surface-muted: #0f172a;
+    --theme-text-primary: #e5e7eb;
+    --theme-text-secondary: #cbd5e1;
+    --theme-text-muted: #94a3b8;
+    --theme-border: #334155;
+    --theme-border-subtle: #1e293b;
+}
+
+/* Inherit dark theme variables when the dialog is rendered outside #App */
+.modal-backdrop[data-ai-theme='dark'] .modal-content {
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    box-shadow: var(--shadow-lg), 0 0 0 1px var(--theme-border);
+}
+
+.modal-backdrop[data-ai-theme='dark'] .modal-content h3,
+.modal-backdrop[data-ai-theme='dark'] .modal-content h2 {
+    color: var(--theme-text-primary);
+}
+
+.modal-backdrop[data-ai-theme='dark'] .modal-content .btn-primary {
+    background: var(--theme-primary-strong);
+    color: #ffffff;
+}
+
+.modal-backdrop[data-ai-theme='dark'] .modal-content .btn-primary:hover {
+    background: var(--theme-primary);
+}
+
+.modal-backdrop[data-ai-theme='dark'] .modal-content .btn-secondary {
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    border-color: var(--theme-border);
+}
+
+.modal-backdrop[data-ai-theme='dark'] .modal-content .btn-secondary:hover {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+}
+
+.modal-backdrop[data-ai-theme='dark'] .modal-content .btn-close,
+.modal-backdrop[data-ai-theme='dark'] .modal-content .modal-close {
+    color: var(--theme-text-muted);
+}
+
+.modal-backdrop[data-ai-theme='dark'] .modal-content .btn-close:hover,
+.modal-backdrop[data-ai-theme='dark'] .modal-content .modal-close:hover {
+    color: var(--theme-text-primary);
 }
 
 .modal-header {

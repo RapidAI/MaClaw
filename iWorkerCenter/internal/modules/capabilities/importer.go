@@ -145,8 +145,8 @@ func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPacka
 	version := firstNonEmpty(skill.Version, "1.0.0")
 	category := firstNonEmpty(skill.Category, "general")
 
-	_, err = imp.write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, package_content, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = imp.write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, package_content, local_skill_origin, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, 'cloud_imported', ?, ?)`,
 		id, tenantID, skill.Name, skill.Description, category, version, source, riskLevel, packageStatus, packageFormat, packageSHA, packageSize, packageContent, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("insert capability: %w", err)
@@ -158,7 +158,8 @@ func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPacka
 		Category: category, Version: version, Source: source,
 		RiskLevel: riskLevel, Status: "pending_review", PackageStatus: packageStatus,
 		PackageFormat: packageFormat, PackageSHA256: packageSHA, PackageSize: packageSize,
-		CreatedAt: now, UpdatedAt: now,
+		LocalSkillOrigin: "cloud_imported",
+		CreatedAt:        now, UpdatedAt: now,
 	}, nil
 }
 

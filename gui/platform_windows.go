@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -85,6 +86,99 @@ func (a *App) compareVersions(v1, v2 string) int {
 		}
 	}
 	return 0
+}
+
+// isWindows11 reports whether the current OS is Windows 11 (build >= 22000).
+// Windows 11 natively rounds frameless window corners via DWM, so we can
+// let the OS handle rounding instead of faking it with CSS border-radius.
+//
+// The result is cached after the first call (OS version doesn't change at
+// runtime).
+var _isWin11     bool
+var _isWin11Once sync.Once
+
+func isWindows11() bool {
+	_isWin11Once.Do(func() {
+		ntdll := syscall.NewLazyDLL("ntdll.dll")
+		rtlGetVersion := ntdll.NewProc("RtlGetNtVersionNumbers")
+		if rtlGetVersion.Find() != nil {
+			return
+		}
+		var major, minor, build uint32
+		rtlGetVersion.Call(
+			uintptr(unsafe.Pointer(&major)),
+			uintptr(unsafe.Pointer(&minor)),
+			uintptr(unsafe.Pointer(&build)),
+		)
+		// RtlGetNtVersionNumbers sets the high bit of the build number.
+		build &= 0x0000FFFF
+		_isWin11 = major >= 10 && build >= 22000
+	})
+	return _isWin11
+}
+
+// IsNativeRoundedCorners returns true when the OS provides native rounded
+// corners for frameless windows (Windows 11+).  The frontend reads this to
+// decide whether to apply CSS border-radius on #App.
+func (a *App) IsNativeRoundedCorners() bool {
+	return isWindows11()
+}
+
+// PlatformTransparencyFlags returns (WebviewIsTransparent, WindowIsTranslucent)
+// for the Wails window options.
+//
+// Windows 10: both true — the CSS border-radius on #App clips to true
+// transparency, eliminating corner artifacts regardless of theme.
+//
+// Windows 11: both false — DWM provides native rounded corners; transparent
+// webview is unnecessary and WindowIsTranslucent triggers the slow BlurBehind
+// effect on early Win11 builds (22000–22620).
+func (a *App) PlatformTransparencyFlags() (webviewTransparent, windowTranslucent bool) {
+	if isWindows11() {
+		return false, false
+	}
+	return true, true
+}
+
+// IsWebviewTransparent returns true when the webview background is transparent.
+// The frontend uses this to set html/body background to transparent so the CSS
+// border-radius on #App clips to true transparency (no corner artifacts).
+// On Windows 11 this returns false because DWM handles rounding natively.
+func (a *App) IsWebviewTransparent() bool {
+	return !isWindows11()
+}
+
+// GetFramelessTopInset returns the number of pixels that DWM's invisible
+// border may reserve at the top of a frameless window on Windows 10.
+//
+// On some Windows 10 builds (notably Enterprise/LTSC), even with
+// DisableFramelessWindowDecorations = true, DWM still reserves the
+// non-client frame area at the top, offsetting the webview content
+// downward.  The CSS overflow:hidden + border-radius on #App then clips
+// the top of the custom title bar.
+//
+// The DWM non-client top inset for a captionless window is
+// SM_CYFRAME + SM_CXPADDEDBORDER (typically 7–8 px at 100 % DPI).
+// On unaffected Win10 systems this adds a subtle top gap; on affected
+// ones it compensates for the DWM offset.  On Windows 11 it returns 0.
+func (a *App) GetFramelessTopInset() int {
+	if isWindows11() {
+		return 0
+	}
+	user32 := syscall.NewLazyDLL("user32.dll")
+	getSystemMetrics := user32.NewProc("GetSystemMetrics")
+	if getSystemMetrics.Find() != nil {
+		return 0
+	}
+	const smCYFrame = 33        // SM_CYFRAME — sizing border height
+	const smCXPaddedBorder = 92 // SM_CXPADDEDBORDER — DWM padded border
+	cyFrame, _, _ := getSystemMetrics.Call(uintptr(smCYFrame))
+	cxPadded, _, _ := getSystemMetrics.Call(uintptr(smCXPaddedBorder))
+	inset := int(cyFrame) + int(cxPadded)
+	if inset < 0 || inset > 16 {
+		return 0 // sanity check
+	}
+	return inset
 }
 
 func (a *App) platformStartup() {

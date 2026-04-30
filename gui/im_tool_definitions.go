@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -331,23 +332,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 }
 
 func toolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
-	params := map[string]interface{}{"type": "object"}
-	if props != nil {
-		params["properties"] = props
-	} else {
-		params["properties"] = map[string]interface{}{}
-	}
-	if len(required) > 0 {
-		params["required"] = required
-	}
-	return map[string]interface{}{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name":        name,
-			"description": desc,
-			"parameters":  params,
-		},
-	}
+	return agent.ToolDef(name, desc, props, required)
 }
 
 // ---------------------------------------------------------------------------

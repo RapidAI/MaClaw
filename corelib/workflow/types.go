@@ -303,8 +303,9 @@ type LLMCaller interface {
 // corelib/workflow importing corelib/memory.
 type ArtifactSaver interface {
 	// SaveArtifact persists a workflow phase output summary to long-term memory.
-	// category should be "task_artifact", tags should include phaseID and workflowType.
-	SaveArtifact(content string, tags []string, sourceURL string) error
+	// title is a short human-readable label for the task list display.
+	// tags should include phaseID and workflowType.
+	SaveArtifact(title, content string, tags []string, sourceURL string) error
 }
 
 // PersistenceStore abstracts workflow state persistence.

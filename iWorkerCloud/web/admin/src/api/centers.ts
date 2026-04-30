@@ -48,6 +48,9 @@ export interface CenterProbeResult {
   status_code: number;
   message: string;
   base_url: string;
+  runtime_type?: string;
+  product_kind?: string;
+  admin_console?: string;
 }
 
 export interface CenterProbeResponse {

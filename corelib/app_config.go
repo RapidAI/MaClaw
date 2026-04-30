@@ -29,6 +29,13 @@ type AppConfig struct {
 	ShowIFlow            bool            `json:"show_iflow"`
 	ShowKilo             bool            `json:"show_kilo"`
 	ShowCursor           bool            `json:"show_cursor"`
+	// Sidebar navigation visibility (nil = visible by default).
+	// AI 助手, 设置, 关于 are always visible and not configurable.
+	ShowNavMonitor       *bool           `json:"show_nav_monitor,omitempty"`
+	ShowNavSkills        *bool           `json:"show_nav_skills,omitempty"`
+	ShowNavMCP           *bool           `json:"show_nav_mcp,omitempty"`
+	ShowNavGossip        *bool           `json:"show_nav_gossip,omitempty"`
+	ShowNavAgentNet      *bool           `json:"show_nav_agentnet,omitempty"`
 	Language             string          `json:"language"`
 	PowerOptimization    bool            `json:"power_optimization"`
 	ScreenDimTimeoutMin  int             `json:"screen_dim_timeout_min"`
@@ -66,7 +73,12 @@ type AppConfig struct {
 	RemoteHeartbeatSec  int      `json:"remote_heartbeat_sec"`
 	RemoteNickname      string   `json:"remote_nickname,omitempty"`
 	RemoteClientID      string   `json:"remote_client_id"`
-	DefaultLaunchMode   string   `json:"default_launch_mode"`
+	// iWorkerCenter is an independent organization runtime, not HubCenter.
+	IWorkerCenterURL                  string `json:"iworkercenter_url,omitempty"`
+	IWorkerCenterTenantID             string `json:"iworkercenter_tenant_id,omitempty"`
+	IWorkerCenterColleagueID          string `json:"iworkercenter_colleague_id,omitempty"`
+	IWorkerCenterGoalWatchIntervalSec int    `json:"iworkercenter_goalwatch_interval_sec,omitempty"`
+	DefaultLaunchMode                 string `json:"default_launch_mode"`
 	// MaClaw LLM configuration
 	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
 	MaclawLLMKey             string              `json:"maclaw_llm_key"`
@@ -124,8 +136,8 @@ type AppConfig struct {
 	WeixinBaseURL   string `json:"weixin_base_url,omitempty"`
 	WeixinCDNURL    string `json:"weixin_cdn_url,omitempty"`
 	WeixinAccountID string `json:"weixin_account_id,omitempty"`
-	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (闂佸憡顨嗗ú妯衡攦閳?, false = remote/Hub (婵犮垼鍩栫喊宥呪攦閳?
-	// IM 闂?Lansenger (闂佽棄鍟换鈧ǎ? client-side gateway
+	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (闂備礁鎲￠〃鍡椕哄Ο琛℃敠闁?, false = remote/Hub (濠电姰鍨奸崺鏍枈瀹ュ應鏀﹂柍?
+	// IM 闂?Lansenger (闂備浇妫勯崯顖滄崲閳ь剙菐? client-side gateway
 	LansengerEnabled    bool   `json:"lansenger_enabled,omitempty"`
 	LansengerAppID      string `json:"lansenger_app_id,omitempty"`
 	LansengerAppSecret  string `json:"lansenger_app_secret,omitempty"`
@@ -154,7 +166,9 @@ type AppConfig struct {
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
 	// ASR toggle.
 	ASREnabled bool `json:"asr_enabled"`
-	// Screen parsing (YOLO) toggle — enables vision-based UI element detection.
+	// TTS toggle — enables voice readback of AI responses.
+	TTSEnabled bool `json:"tts_enabled"`
+	// Screen parsing (YOLO) toggle 鈥?enables vision-based UI element detection.
 	// Default: enabled (nil = true). Uses *bool so we can distinguish "not set" from "false".
 	ScreenParsingEnabled *bool `json:"screen_parsing_enabled,omitempty"`
 	// UI zoom factor (0.5 ~ 2.0, 0 = default 1.0).
@@ -169,7 +183,7 @@ type AppConfig struct {
 	// skill repair, session search summarization). When configured, used
 	// in preference to the main LLM to reduce cost and latency.
 	AuxiliaryLLM AuxiliaryLLMConfig `json:"auxiliary_llm,omitempty"`
-	// NudgeDisabled — when true, the post-use skill nudge system is
+	// NudgeDisabled 鈥?when true, the post-use skill nudge system is
 	// completely disabled. No nudge messages will be injected into the
 	// conversation after complex tasks, skill failures, or user corrections.
 	NudgeDisabled bool `json:"nudge_disabled,omitempty"`
@@ -253,8 +267,8 @@ type SSHHostEntry struct {
 
 // IsWeixinLocalMode returns the effective WeChat local mode setting.
 // When the field has never been explicitly set (nil):
-//   - If Hub is activated (RemoteMachineID is set), default to Hub/婵犮垼鍩栫喊宥呪攦閳?mode (false)
-//   - Otherwise, default to local/闂佸憡顨嗗ú妯衡攦閳?mode (true)
+//   - If Hub is activated (RemoteMachineID is set), default to Hub/濠电姰鍨奸崺鏍枈瀹ュ應鏀﹂柍?mode (false)
+//   - Otherwise, default to local/闂備礁鎲￠〃鍡椕哄Ο琛℃敠闁?mode (true)
 func (c *AppConfig) IsWeixinLocalMode() bool {
 	if c.WeixinLocalMode == nil {
 		// Auto-detect: if Hub is activated, default to Hub mode

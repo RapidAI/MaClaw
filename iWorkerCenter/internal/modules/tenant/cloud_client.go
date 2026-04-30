@@ -156,3 +156,51 @@ func (c *CloudClient) FetchCenterLicense(ctx context.Context, centerID, centerSe
 	}
 	return &result, nil
 }
+
+// CenterHeartbeatRequest identifies this runtime as an iWorkerCenter service.
+type CenterHeartbeatRequest struct {
+	Secret       string `json:"secret"`
+	RuntimeType  string `json:"runtime_type"`
+	ProductKind  string `json:"product_kind"`
+	AdminConsole string `json:"admin_console"`
+}
+
+func NewCenterHeartbeatRequest(centerSecret string) CenterHeartbeatRequest {
+	return CenterHeartbeatRequest{Secret: centerSecret, RuntimeType: "service", ProductKind: "iworkercenter", AdminConsole: "web_console"}
+}
+
+// SendCenterHeartbeat reports that this iWorkerCenter service instance is alive.
+func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerSecret string) error {
+	if c.cfg.BaseURL == "" {
+		return fmt.Errorf("cloud base_url not configured")
+	}
+	centerID = strings.TrimSpace(centerID)
+	if centerID == "" {
+		return fmt.Errorf("center_id is required")
+	}
+	if centerSecret == "" {
+		return fmt.Errorf("center_secret is required")
+	}
+
+	url := fmt.Sprintf("%s/api/centers/%s/heartbeat", strings.TrimRight(c.cfg.BaseURL, "/"), centerID)
+	body, err := json.Marshal(NewCenterHeartbeatRequest(centerSecret))
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("send center heartbeat: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("send center heartbeat: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}

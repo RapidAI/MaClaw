@@ -1,5 +1,54 @@
 export namespace main {
 	
+	export class IWorkerCenterConfigRequest {
+	    url: string;
+	    tenant_id: string;
+	    colleague_id: string;
+	    goalwatch_interval_sec: number;
+	    auto_start: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new IWorkerCenterConfigRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.tenant_id = source["tenant_id"];
+	        this.colleague_id = source["colleague_id"];
+	        this.goalwatch_interval_sec = source["goalwatch_interval_sec"];
+	        this.auto_start = source["auto_start"];
+	    }
+	}
+	export class ProjectSearchResult {
+	    id: string;
+	    name: string;
+	    project_path: string;
+	    workflow_type: string;
+	    preview: string;
+	    tags: string[];
+	    last_activity: string;
+	    entry_count: number;
+	    pinned: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProjectSearchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.project_path = source["project_path"];
+	        this.workflow_type = source["workflow_type"];
+	        this.preview = source["preview"];
+	        this.tags = source["tags"];
+	        this.last_activity = source["last_activity"];
+	        this.entry_count = source["entry_count"];
+	        this.pinned = source["pinned"];
+	    }
+	}
+
 	export class ProjectConfig {
 	    id: string;
 	    name: string;
@@ -113,6 +162,11 @@ export namespace main {
 	    show_iflow: boolean;
 	    show_kilo: boolean;
 	    show_cursor: boolean;
+	    show_nav_monitor?: boolean;
+	    show_nav_skills?: boolean;
+	    show_nav_mcp?: boolean;
+	    show_nav_gossip?: boolean;
+	    show_nav_agentnet?: boolean;
 	    language: string;
 	    power_optimization: boolean;
 	    screen_dim_timeout_min: number;
@@ -145,6 +199,10 @@ export namespace main {
 	    remote_heartbeat_sec: number;
 	    remote_nickname: string;
 	    remote_client_id: string;
+	    iworkercenter_url: string;
+	    iworkercenter_tenant_id: string;
+	    iworkercenter_colleague_id: string;
+	    iworkercenter_goalwatch_interval_sec: number;
 	    default_launch_mode: string;
 	    maclaw_llm_url: string;
 	    maclaw_llm_key: string;
@@ -210,6 +268,7 @@ export namespace main {
 	    ui_zoom_factor: number;
 	    chat_font_size: number;
 	    workflow_enabled?: boolean;
+	    tts_enabled?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -239,6 +298,11 @@ export namespace main {
 	        this.show_iflow = source["show_iflow"];
 	        this.show_kilo = source["show_kilo"];
 	        this.show_cursor = source["show_cursor"];
+	        this.show_nav_monitor = source["show_nav_monitor"];
+	        this.show_nav_skills = source["show_nav_skills"];
+	        this.show_nav_mcp = source["show_nav_mcp"];
+	        this.show_nav_gossip = source["show_nav_gossip"];
+	        this.show_nav_agentnet = source["show_nav_agentnet"];
 	        this.language = source["language"];
 	        this.power_optimization = source["power_optimization"];
 	        this.screen_dim_timeout_min = source["screen_dim_timeout_min"];
@@ -271,6 +335,10 @@ export namespace main {
 	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
 	        this.remote_nickname = source["remote_nickname"];
 	        this.remote_client_id = source["remote_client_id"];
+	        this.iworkercenter_url = source["iworkercenter_url"];
+	        this.iworkercenter_tenant_id = source["iworkercenter_tenant_id"];
+	        this.iworkercenter_colleague_id = source["iworkercenter_colleague_id"];
+	        this.iworkercenter_goalwatch_interval_sec = source["iworkercenter_goalwatch_interval_sec"];
 	        this.default_launch_mode = source["default_launch_mode"];
 	        this.maclaw_llm_url = source["maclaw_llm_url"];
 	        this.maclaw_llm_key = source["maclaw_llm_key"];
@@ -336,6 +404,7 @@ export namespace main {
 	        this.ui_zoom_factor = source["ui_zoom_factor"];
 	        this.chat_font_size = source["chat_font_size"];
 	        this.workflow_enabled = source["workflow_enabled"];
+	        this.tts_enabled = source["tts_enabled"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

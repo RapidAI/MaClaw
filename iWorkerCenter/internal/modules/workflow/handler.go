@@ -254,6 +254,11 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
 	switch action {
+	case "start", "resume":
+		if err := h.svc.StartOrResumeStep(tid, stepID, body.ActorID, body.Note); err != nil {
+			response.BadRequest(w, "START_FAILED", err.Error())
+			return
+		}
 	case "complete":
 		if err := h.svc.CompleteStepWithInput(tid, stepID, CompleteStepInput{
 			ActorID:             body.ActorID,
@@ -274,7 +279,7 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		response.BadRequest(w, "INVALID_ACTION", "valid actions: complete, reject")
+		response.BadRequest(w, "INVALID_ACTION", "valid actions: start, resume, complete, reject")
 		return
 	}
 	response.OK(w, map[string]string{"status": "ok"})

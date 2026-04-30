@@ -32,6 +32,132 @@ func (g *GemmaEmbedder) Embed(text string) ([]float32, error) {
 	return g.truncateAndNormalize(emb), nil
 }
 
+// EmbedTokenStates returns per-token hidden states [seq, dim] without mean pooling.
+// Each row is the contextualized embedding for one token.
+// Used by TTS to provide per-phoneme BERT-like embeddings.
+func (g *GemmaEmbedder) EmbedTokenStates(text string) (states []float32, seq, dim int, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	tokens := g.tokenizer.Encode(text)
+	if len(tokens) == 0 {
+		return nil, 0, 0, fmt.Errorf("gemma: empty token sequence")
+	}
+	if len(tokens) > g.hp.MaxSeqLen {
+		tokens = tokens[:g.hp.MaxSeqLen]
+	}
+
+	sc := g.ensureScratch(len(tokens))
+	states, err = g.forwardTokenStates(tokens, sc)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return states, len(tokens), g.hp.Dim, nil
+}
+
+// forwardTokenStates runs the transformer and returns per-token hidden states
+// instead of the mean-pooled output.
+func (g *GemmaEmbedder) forwardTokenStates(tokenIDs []int, sc *gemmaScratch) ([]float32, error) {
+	hp := g.hp
+	seq := len(tokenIDs)
+	dim := hp.Dim
+
+	// Run the same forward pass as forwardWithScratch but skip mean pooling.
+	// We reuse forwardWithScratch's logic up to the final RMSNorm,
+	// then copy out the per-token states instead of pooling.
+
+	// Token embedding
+	x := sc.x[:seq*dim]
+	embScale := float32(math.Sqrt(float64(dim)))
+	for si, id := range tokenIDs {
+		if id < 0 || id >= hp.VocabSize {
+			return nil, fmt.Errorf("gemma: token id %d out of range", id)
+		}
+		dst := x[si*dim : (si+1)*dim]
+		if cached := g.tokenCache.Get(id); cached != nil {
+			copy(dst, cached)
+		} else {
+			g.weights.tokenEmb.DequantRow(id, sc.rowBuf)
+			copy(dst, sc.rowBuf)
+		}
+		tensor.Scale(dst, embScale)
+	}
+
+	// Run all transformer layers (same as forwardWithScratch)
+	normed := sc.normed[:seq*dim]
+	q := sc.q[:seq*dim]
+	k := sc.k[:seq*hp.KVDim]
+	v := sc.v[:seq*hp.KVDim]
+	attnOut := sc.attnOut[:seq*dim]
+	projOut := sc.projOut[:seq*dim]
+	ffGate := sc.ffGate[:seq*hp.FFDim]
+	ffUp := sc.ffUp[:seq*hp.FFDim]
+	ffDown := sc.ffDown[:seq*dim]
+	halfDim := hp.HeadDim / 2
+
+	nLayers := hp.NLayers
+	if ee := int(atomic.LoadInt32(&g.earlyExit)); ee > 0 && ee < nLayers {
+		nLayers = ee
+	}
+
+	for l := 0; l < nLayers; l++ {
+		layer := &g.weights.layers[l]
+
+		for s := 0; s < seq; s++ {
+			tensor.RMSNorm(normed[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], layer.attnNormW, hp.RMSNormEps)
+		}
+		tensor.MatMulQ8(q, normed, &layer.attnQWeight, seq, dim, dim)
+		tensor.MatMulQ8(k, normed, &layer.attnKWeight, seq, hp.KVDim, dim)
+		tensor.MatMulQ8(v, normed, &layer.attnVWeight, seq, hp.KVDim, dim)
+
+		for s := 0; s < seq; s++ {
+			for h := 0; h < hp.NHeads; h++ {
+				off := s*dim + h*hp.HeadDim
+				tensor.RMSNorm(q[off:off+hp.HeadDim], q[off:off+hp.HeadDim], layer.attnQNormW, hp.RMSNormEps)
+			}
+			for h := 0; h < hp.NKVHeads; h++ {
+				off := s*hp.KVDim + h*hp.HeadDim
+				tensor.RMSNorm(k[off:off+hp.HeadDim], k[off:off+hp.HeadDim], layer.attnKNormW, hp.RMSNormEps)
+			}
+			cosTab := sc.ropeCos[s*halfDim : (s+1)*halfDim]
+			sinTab := sc.ropeSin[s*halfDim : (s+1)*halfDim]
+			tensor.RoPEPrecomputed(q[s*dim:(s+1)*dim], hp.NHeads, hp.HeadDim, cosTab, sinTab)
+			tensor.RoPEPrecomputed(k[s*hp.KVDim:(s+1)*hp.KVDim], hp.NKVHeads, hp.HeadDim, cosTab, sinTab)
+		}
+
+		g.gqaAttention(attnOut, q, k, v, seq, hp.NHeads, hp.NKVHeads, hp.HeadDim, dim, hp.KVDim, sc.scores[:seq])
+		tensor.MatMulQ8(projOut, attnOut, &layer.attnOutWeight, seq, dim, dim)
+
+		for s := 0; s < seq; s++ {
+			tensor.RMSNorm(projOut[s*dim:(s+1)*dim], projOut[s*dim:(s+1)*dim], layer.postAttnNormW, hp.RMSNormEps)
+		}
+		tensor.Add(x, x, projOut)
+
+		for s := 0; s < seq; s++ {
+			tensor.RMSNorm(normed[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], layer.ffNormW, hp.RMSNormEps)
+		}
+		tensor.MatMulQ8(ffGate, normed, &layer.ffGateWeight, seq, hp.FFDim, dim)
+		tensor.MatMulQ8(ffUp, normed, &layer.ffUpWeight, seq, hp.FFDim, dim)
+		tensor.SiLUMul(ffGate, ffUp)
+		tensor.MatMulQ8(ffDown, ffGate, &layer.ffDownWeight, seq, dim, hp.FFDim)
+
+		for s := 0; s < seq; s++ {
+			tensor.RMSNorm(ffDown[s*dim:(s+1)*dim], ffDown[s*dim:(s+1)*dim], layer.postFFNNormW, hp.RMSNormEps)
+		}
+		tensor.Add(x, x, ffDown)
+	}
+
+	// Final RMSNorm
+	for s := 0; s < seq; s++ {
+		tensor.RMSNorm(x[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], g.weights.outputNorm, hp.RMSNormEps)
+	}
+
+	// Copy per-token states out of scratch
+	result := make([]float32, seq*dim)
+	copy(result, x[:seq*dim])
+	return result, nil
+}
+
 // EmbedConcurrent returns the embedding vector for a single text string.
 // Unlike Embed, it uses a pooled scratch buffer so multiple goroutines
 // can run inference in parallel without contending on the shared mutex.

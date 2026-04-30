@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -159,15 +160,13 @@ func DeleteCenterHandler(svc *centers.Service) http.HandlerFunc {
 func HeartbeatHandler(svc *centers.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		var req struct {
-			Secret string `json:"secret"`
-		}
+		var req centers.HeartbeatRequest
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
-		if err := svc.Heartbeat(r.Context(), id, req.Secret); err != nil {
-			writeError(w, http.StatusUnauthorized, "HEARTBEAT_FAILED", err.Error())
+		if err := svc.Heartbeat(r.Context(), id, req); err != nil {
+			writeHeartbeatError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -178,9 +177,9 @@ func HeartbeatHandler(svc *centers.Service) http.HandlerFunc {
 func ProvisionTenantHandler(svc *centers.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		centerID := r.PathValue("id")
-		center, err := svc.Get(r.Context(), centerID)
-		if err != nil || center == nil {
-			writeError(w, http.StatusNotFound, "CENTER_NOT_FOUND", "center not found")
+		center, err := svc.EnsureProvisionAllowed(r.Context(), centerID)
+		if err != nil {
+			writeProvisionReadinessError(w, err)
 			return
 		}
 
@@ -221,5 +220,30 @@ func ProvisionTenantHandler(svc *centers.Service) http.HandlerFunc {
 			LastSyncStatus:      "tenant_provisioned",
 		})
 		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func writeProvisionReadinessError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, centers.ErrNotFound):
+		writeError(w, http.StatusNotFound, "CENTER_NOT_FOUND", "center not found")
+	case errors.Is(err, centers.ErrProvisionNotAllowed):
+		writeError(w, http.StatusConflict, "CENTER_NOT_READY", err.Error())
+	default:
+		writeError(w, http.StatusBadRequest, "CENTER_PROVISION_CHECK_FAILED", err.Error())
+	}
+}
+func writeHeartbeatError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, centers.ErrInvalidServiceIdentity):
+		writeError(w, http.StatusBadRequest, "HEARTBEAT_IDENTITY_FAILED", err.Error())
+	case errors.Is(err, centers.ErrDisabled):
+		writeError(w, http.StatusForbidden, "CENTER_DISABLED", err.Error())
+	case errors.Is(err, centers.ErrNotFound):
+		writeError(w, http.StatusNotFound, "CENTER_NOT_FOUND", err.Error())
+	case errors.Is(err, centers.ErrUnauthorized):
+		writeError(w, http.StatusUnauthorized, "HEARTBEAT_UNAUTHORIZED", err.Error())
+	default:
+		writeError(w, http.StatusUnauthorized, "HEARTBEAT_FAILED", err.Error())
 	}
 }

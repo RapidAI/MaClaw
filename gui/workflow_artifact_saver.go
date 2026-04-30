@@ -30,7 +30,7 @@ type workflowArtifactSaver struct {
 // SaveArtifact persists a workflow phase output summary as a task_artifact
 // memory entry. Uses Store.Save for new entries and Store.Update for
 // re-saves of the same phase (e.g. user modifies and re-confirms).
-func (s *workflowArtifactSaver) SaveArtifact(content string, tags []string, sourceURL string) error {
+func (s *workflowArtifactSaver) SaveArtifact(title, content string, tags []string, sourceURL string) error {
 	if s.store == nil || strings.TrimSpace(content) == "" {
 		return nil
 	}
@@ -59,6 +59,7 @@ func (s *workflowArtifactSaver) SaveArtifact(content string, tags []string, sour
 
 	entry := memory.Entry{
 		Content:    content,
+		Title:      title,
 		Category:   memory.CategoryTaskArtifact,
 		Tags:       tags,
 		Scope:      memory.ScopeProject,
@@ -118,7 +119,7 @@ type deferredArtifactSaver struct {
 	inner *workflowArtifactSaver
 }
 
-func (d *deferredArtifactSaver) SaveArtifact(content string, tags []string, sourceURL string) error {
+func (d *deferredArtifactSaver) SaveArtifact(title, content string, tags []string, sourceURL string) error {
 	d.once.Do(func() {
 		d.app.ensureMemoryStore()
 		if d.app.memoryStore != nil {
@@ -128,5 +129,5 @@ func (d *deferredArtifactSaver) SaveArtifact(content string, tags []string, sour
 	if d.inner == nil {
 		return nil
 	}
-	return d.inner.SaveArtifact(content, tags, sourceURL)
+	return d.inner.SaveArtifact(title, content, tags, sourceURL)
 }

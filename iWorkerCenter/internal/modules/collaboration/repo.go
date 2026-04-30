@@ -18,6 +18,23 @@ func NewRepo(write, read *sql.DB) *Repo {
 	return &Repo{write: write, read: read}
 }
 
+// WriteDB exposes the write handle for modules that need to coordinate around
+// collaboration state without duplicating repository construction.
+func (r *Repo) WriteDB() *sql.DB {
+	if r == nil {
+		return nil
+	}
+	return r.write
+}
+
+// ReadDB exposes the read handle for modules that need shared coordination data.
+func (r *Repo) ReadDB() *sql.DB {
+	if r == nil {
+		return nil
+	}
+	return r.read
+}
+
 // InsertTask creates a new collaboration task.
 func (r *Repo) InsertTask(tenantID string, t *Task) error {
 	_, err := r.write.Exec(`INSERT INTO collaboration_tasks

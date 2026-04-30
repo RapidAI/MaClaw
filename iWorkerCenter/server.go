@@ -36,9 +36,9 @@ type CenterProvider struct {
 }
 
 type openAIChatRequest struct {
-	Model    string             `json:"model"`
+	Model    string              `json:"model"`
 	Messages []openAIChatMessage `json:"messages"`
-	Stream   bool               `json:"stream,omitempty"`
+	Stream   bool                `json:"stream,omitempty"`
 }
 
 type openAIChatMessage struct {
@@ -47,11 +47,11 @@ type openAIChatMessage struct {
 }
 
 type anthropicRequest struct {
-	Model     string              `json:"model"`
-	Messages  []anthropicMessage  `json:"messages"`
-	System    string              `json:"system,omitempty"`
-	MaxTokens int                 `json:"max_tokens"`
-	Stream    bool                `json:"stream,omitempty"`
+	Model     string             `json:"model"`
+	Messages  []anthropicMessage `json:"messages"`
+	System    string             `json:"system,omitempty"`
+	MaxTokens int                `json:"max_tokens"`
+	Stream    bool               `json:"stream,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -74,9 +74,13 @@ type centerSettingsFile struct {
 }
 
 type CenterStatus struct {
-	Status        string `json:"status"`
-	ProviderCount int    `json:"provider_count"`
-	ConfigPath    string `json:"config_path"`
+	Status         string                         `json:"status"`
+	RuntimeType    string                         `json:"runtime_type"`
+	ProductKind    string                         `json:"product_kind"`
+	AdminConsole   string                         `json:"admin_console"`
+	ProviderCount  int                            `json:"provider_count"`
+	ConfigPath     string                         `json:"config_path"`
+	CloudHeartbeat *tenant.CloudHeartbeatSnapshot `json:"cloud_heartbeat,omitempty"`
 }
 
 type centerProviderFile struct {
@@ -124,12 +128,12 @@ func (s *centerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		writeCenterError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if s.center != nil && s.center.CloudHeartbeatMonitor != nil {
+		snapshot := s.center.CloudHeartbeatMonitor.Snapshot()
+		status.CloudHeartbeat = &snapshot
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":         status.Status,
-		"provider_count": status.ProviderCount,
-		"config_path":    status.ConfigPath,
-	})
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 func (s *centerServer) handleModels(w http.ResponseWriter, _ *http.Request) {
@@ -140,8 +144,8 @@ func (s *centerServer) handleModels(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 		data = append(data, map[string]any{
-			"id":      provider.ID,
-			"object":  "model",
+			"id":       provider.ID,
+			"object":   "model",
 			"owned_by": provider.Protocol,
 		})
 	}
@@ -750,6 +754,9 @@ func centerStatusSnapshot() (CenterStatus, error) {
 	providers := loadCenterProviders()
 	return CenterStatus{
 		Status:        "ok",
+		RuntimeType:   "service",
+		ProductKind:   "iworkercenter",
+		AdminConsole:  "web_console",
 		ProviderCount: len(providers),
 		ConfigPath:    path,
 	}, nil

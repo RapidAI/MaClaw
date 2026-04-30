@@ -1,5 +1,7 @@
 html {
-    background-color: transparent;
+    /* background-color is set dynamically by index.html inline script and
+       App.tsx useEffect to match the active theme.  Do NOT set it here —
+       a static value would flash the wrong colour on theme mismatch. */
     text-align: center;
     color: white;
 }

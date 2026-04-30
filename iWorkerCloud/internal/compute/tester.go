@@ -12,10 +12,10 @@ import (
 
 // TestResult holds the outcome of a provider connectivity test.
 type TestResult struct {
-	Success   bool          `json:"success"`
-	Latency   time.Duration `json:"latency"`
-	Error     string        `json:"error,omitempty"`
-	Model     string        `json:"model,omitempty"`
+	Success bool          `json:"success"`
+	Latency time.Duration `json:"latency"`
+	Error   string        `json:"error,omitempty"`
+	Model   string        `json:"model,omitempty"`
 }
 
 // ProviderTester sends a simple prompt to an LLM provider and reports
@@ -41,7 +41,7 @@ func (t *ProviderTester) Test(p *ComputeProvider) TestResult {
 	}
 
 	resp, err := t.Client.Do(req)
-	latency := time.Since(start)
+	latency := positiveLatency(time.Since(start))
 	if err != nil {
 		return TestResult{Error: fmt.Sprintf("request failed: %s", err), Latency: latency}
 	}
@@ -71,6 +71,13 @@ func (t *ProviderTester) Test(p *ComputeProvider) TestResult {
 		Latency: latency,
 		Model:   model,
 	}
+}
+
+func positiveLatency(latency time.Duration) time.Duration {
+	if latency <= 0 {
+		return time.Nanosecond
+	}
+	return latency
 }
 
 // buildRequest constructs the appropriate HTTP request for the provider's protocol.

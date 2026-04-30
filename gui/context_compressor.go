@@ -369,6 +369,7 @@ func (cc *ContextCompressor) buildSummaryPlaceholder(msgs []interface{}, dropped
 				map[string]string{
 					"role":    "assistant",
 					"content": "好的，我已了解之前的对话上下文摘要，将基于此继续工作。",
+					"reasoning_content": "",
 				},
 			}
 		}

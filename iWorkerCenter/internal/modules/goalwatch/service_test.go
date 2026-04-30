@@ -71,6 +71,33 @@ func TestCheckTenantPushesStalledTask(t *testing.T) {
 	}
 }
 
+func TestCheckTenantPushIncludesWorkflowStepInstanceID(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo := newTestService(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute})
+	task := &collaboration.Task{ID: "task-workflow-step", Title: "finish workflow step", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, WorkflowStepInstanceID: "wfsi-1", CreatedAt: now.Add(-10 * time.Minute), UpdatedAt: now.Add(-6 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	result, err := svc.CheckTenant("tenant-a", now)
+	if err != nil {
+		t.Fatalf("check tenant: %v", err)
+	}
+	if result.Pushed != 1 || len(result.Pushes) != 1 || result.Pushes[0].WorkflowStepInstanceID != "wfsi-1" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Pushes[0].RecommendedAction != "resume_workflow_step" || result.Pushes[0].RecoveryMethod != "POST" || result.Pushes[0].RecoveryPath != "/runtime/workflows/steps/wfsi-1/resume" {
+		t.Fatalf("unexpected recovery fields: %+v", result.Pushes[0])
+	}
+	events, err := repo.ListEvents("tenant-a", "task-workflow-step")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 || parseNoteValue(events[0].Note, "workflow_step_instance_id") != "wfsi-1" || parseNoteValue(events[0].Note, "recovery_path") != "/runtime/workflows/steps/wfsi-1/resume" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
 func TestCheckTenantRespectsPushCooldown(t *testing.T) {
 	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
 	svc, repo := newTestService(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute})
@@ -134,6 +161,29 @@ func TestListPushesForColleagueReturnsInbox(t *testing.T) {
 	}
 	if len(pushes) != 1 || pushes[0].EventID != "evt-open" || pushes[0].Reason != "task_in_progress_stalled" || pushes[0].AgeSeconds != 600 {
 		t.Fatalf("unexpected pushes: %+v", pushes)
+	}
+}
+
+func TestListPushesForColleagueBackfillsWorkflowStepInstanceID(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo := newTestService(t, Config{StalledAfter: time.Minute})
+	task := &collaboration.Task{ID: "task-workflow-backfill", Title: "workflow push", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, WorkflowStepInstanceID: "wfsi-backfill", CreatedAt: now.Add(-20 * time.Minute), UpdatedAt: now.Add(-10 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	if err := repo.InsertEvent("tenant-a", &collaboration.TaskEvent{ID: "evt-workflow-backfill", TaskID: "task-workflow-backfill", Event: EventGoalPush, ActorID: "iworkercenter.goalwatch", Note: "reason=task_in_progress_stalled age_seconds=600", CreatedAt: now}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	pushes, err := svc.ListPushesForColleague("tenant-a", "worker-a", 10)
+	if err != nil {
+		t.Fatalf("list pushes: %v", err)
+	}
+	if len(pushes) != 1 || pushes[0].WorkflowStepInstanceID != "wfsi-backfill" {
+		t.Fatalf("unexpected pushes: %+v", pushes)
+	}
+	if pushes[0].RecommendedAction != "resume_workflow_step" || pushes[0].RecoveryPath != "/runtime/workflows/steps/wfsi-backfill/resume" {
+		t.Fatalf("unexpected recovery fields: %+v", pushes[0])
 	}
 }
 
@@ -361,6 +411,53 @@ func TestMonitorStatusCapturesShardedRun(t *testing.T) {
 	}
 }
 
+func TestMonitorSkipsShardWhenLeaseIsHeldByAnotherNode(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo, provider := newTestServiceWithProvider(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute, LeaseTTL: 5 * time.Minute})
+	task := &collaboration.Task{ID: "task-lease-held", Title: "lease held", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, CreatedAt: now.Add(-10 * time.Minute), UpdatedAt: now.Add(-6 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	lease, _ := json.Marshal(shardLease{Owner: "other-node", ExpiresAt: now.Add(5 * time.Minute).Format(time.RFC3339Nano)})
+	if _, err := provider.Write.Exec(`INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, datetime('now'))`, goalWatchShardLeaseKey("tenant-a", 0, 1), string(lease)); err != nil {
+		t.Fatalf("insert lease: %v", err)
+	}
+
+	monitor := NewMonitor(svc, nil)
+	monitor.checkTenantSharded("tenant-a", now)
+	status := monitor.Status()
+	if len(status.Tenants) != 1 || status.Tenants[0].Checked != 0 || status.Tenants[0].Pushed != 0 || len(status.Tenants[0].ShardStatuses) != 1 || status.Tenants[0].ShardStatuses[0].LeaseHeld {
+		t.Fatalf("unexpected skipped status: %+v", status)
+	}
+	events, err := repo.ListEvents("tenant-a", "task-lease-held")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no push events while lease is held, got %+v", events)
+	}
+}
+
+func TestMonitorAcquiresExpiredShardLease(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo, provider := newTestServiceWithProvider(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute, LeaseTTL: 5 * time.Minute})
+	task := &collaboration.Task{ID: "task-lease-expired", Title: "lease expired", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, CreatedAt: now.Add(-10 * time.Minute), UpdatedAt: now.Add(-6 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	lease, _ := json.Marshal(shardLease{Owner: "dead-node", ExpiresAt: now.Add(-time.Minute).Format(time.RFC3339Nano)})
+	if _, err := provider.Write.Exec(`INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, datetime('now'))`, goalWatchShardLeaseKey("tenant-a", 0, 1), string(lease)); err != nil {
+		t.Fatalf("insert lease: %v", err)
+	}
+
+	monitor := NewMonitor(svc, nil)
+	monitor.checkTenantSharded("tenant-a", now)
+	status := monitor.Status()
+	if len(status.Tenants) != 1 || status.Tenants[0].Checked != 1 || status.Tenants[0].Pushed != 1 || len(status.Tenants[0].ShardStatuses) != 1 || !status.Tenants[0].ShardStatuses[0].LeaseHeld || status.Tenants[0].ShardStatuses[0].LeaseOwner == "" {
+		t.Fatalf("unexpected acquired status: %+v", status)
+	}
+}
+
 func TestHandlerStatusEndpointReturnsMonitorStatus(t *testing.T) {
 	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
 	svc, _ := newTestService(t, Config{WorkersPerShard: 7, MaxWatchers: 9})
@@ -387,6 +484,61 @@ func TestHandlerStatusEndpointReturnsMonitorStatus(t *testing.T) {
 	}
 	if len(body.Tenants) != 1 || body.Tenants[0].TenantID != "tenant-a" || body.Tenants[0].ShardCount != 2 {
 		t.Fatalf("unexpected body: %+v", body)
+	}
+}
+
+func TestMonitorHealthReportsStaleAndShardErrors(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, _ := newTestService(t, Config{TickInterval: time.Minute})
+	monitor := NewMonitor(svc, nil)
+	monitor.recordStatus(TenantMonitorStatus{
+		TenantID:   "tenant-a",
+		StartedAt:  now.Add(-10 * time.Minute),
+		FinishedAt: now.Add(-10 * time.Minute),
+		ShardCount: 2,
+		Error:      "one or more shards failed",
+		ShardStatuses: []MonitorShardStatus{
+			{ShardIndex: 0, ShardCount: 2, LeaseHeld: true, Checked: 1},
+			{ShardIndex: 1, ShardCount: 2, LeaseHeld: true, Error: "boom"},
+		},
+	})
+
+	health := monitor.Health(now)
+	if health.Level != "critical" || !containsString(health.Reasons, "goalwatch_errors_detected") || !containsString(health.Reasons, "goalwatch_stale") || health.LastRunAgeSeconds <= health.StaleThresholdSeconds {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+func TestMonitorHealthWarnsWhenAllShardsSkippedByLease(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, _ := newTestService(t, Config{TickInterval: time.Minute})
+	monitor := NewMonitor(svc, nil)
+	monitor.recordStatus(TenantMonitorStatus{TenantID: "tenant-a", StartedAt: now.Add(-time.Second), FinishedAt: now.Add(-time.Second), ShardCount: 2, ShardStatuses: []MonitorShardStatus{{ShardIndex: 0, ShardCount: 2}, {ShardIndex: 1, ShardCount: 2}}})
+
+	health := monitor.Health(now)
+	if health.Level != "warning" || !containsString(health.Reasons, "all_goalwatch_shards_skipped_by_active_lease") {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+func TestHandlerHealthEndpointReportsMissingMonitor(t *testing.T) {
+	svc, _ := newTestService(t, Config{})
+	handler := NewHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterAdminRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/goalwatch/health", nil)
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+	var health MonitorHealth
+	if err := json.NewDecoder(res.Body).Decode(&health); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if health.Level != "warning" || !containsString(health.Reasons, "goalwatch_monitor_not_configured") || health.Config.LeaseTTLSeconds <= 0 {
+		t.Fatalf("health = %+v", health)
 	}
 }
 
@@ -444,6 +596,77 @@ func TestHandlerUsesTenantHeaderForClientPushesAndAck(t *testing.T) {
 	}
 }
 
+func TestHandlerRecoverPushRunsWorkflowRecoveryAndAck(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo := newTestService(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute})
+	task := &collaboration.Task{ID: "task-recover", Title: "recover workflow", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, WorkflowStepInstanceID: "wfsi-recover", CreatedAt: now.Add(-10 * time.Minute), UpdatedAt: now.Add(-6 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	check, err := svc.CheckTenant("tenant-a", now)
+	if err != nil {
+		t.Fatalf("check tenant: %v", err)
+	}
+	if check.Pushed != 1 || len(check.Pushes) != 1 {
+		t.Fatalf("unexpected check result: %+v", check)
+	}
+	recovery := &fakeRecoveryExecutor{}
+	handler := NewHandler(svc)
+	handler.SetRecoveryExecutor(recovery)
+	mux := http.NewServeMux()
+	handler.RegisterClientRoutes(mux)
+
+	pushes, err := svc.ListPushesForColleague("tenant-a", "worker-a", 10)
+	if err != nil {
+		t.Fatalf("list pushes: %v", err)
+	}
+	if len(pushes) != 1 || pushes[0].EventID == "" {
+		t.Fatalf("unexpected pushes: %+v", pushes)
+	}
+	body := bytes.NewBufferString(`{"colleague_id":"worker-a","note":"recover_now"}`)
+	req := httptest.NewRequest(http.MethodPost, "/client/goalwatch/pushes/"+pushes[0].EventID+"/recover", body)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("recover status=%d body=%s", res.Code, res.Body.String())
+	}
+	var result RecoverResult
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		t.Fatalf("decode recover result: %v", err)
+	}
+	if !recovery.called || recovery.tenantID != "tenant-a" || recovery.stepID != "wfsi-recover" || recovery.actorID != "worker-a" {
+		t.Fatalf("unexpected recovery call: %+v", recovery)
+	}
+	if result.Ack.Status != "recovered" || result.Push.RecoveryPath != "/runtime/workflows/steps/wfsi-recover/resume" {
+		t.Fatalf("unexpected recover result: %+v", result)
+	}
+	pushes, err = svc.ListPushesForColleague("tenant-a", "worker-a", 10)
+	if err != nil {
+		t.Fatalf("list pushes after recover: %v", err)
+	}
+	if len(pushes) != 0 {
+		t.Fatalf("expected recovered push to be acked, got %+v", pushes)
+	}
+}
+
+type fakeRecoveryExecutor struct {
+	called   bool
+	tenantID string
+	stepID   string
+	actorID  string
+	note     string
+}
+
+func (f *fakeRecoveryExecutor) StartOrResumeStep(tenantID string, stepInstanceID, actorID, note string) error {
+	f.called = true
+	f.tenantID = tenantID
+	f.stepID = stepInstanceID
+	f.actorID = actorID
+	f.note = note
+	return nil
+}
+
 func TestHandlerManualCheckWithTemporaryThresholdKeepsAgentRuntime(t *testing.T) {
 	now := time.Now().UTC()
 	svc, repo, provider := newTestServiceWithProvider(t, Config{StalledAfter: 10 * time.Minute, PushCooldown: 10 * time.Minute})
@@ -479,4 +702,13 @@ func TestHandlerManualCheckWithTemporaryThresholdKeepsAgentRuntime(t *testing.T)
 
 type CenterPushForTest struct {
 	EventID string `json:"event_id"`
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

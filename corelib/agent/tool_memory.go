@@ -68,6 +68,22 @@ func ToolMemory(store *memory.Store, args map[string]interface{}) string {
 			Category: memory.Category(category),
 			Tags:     tags,
 		}
+		// Derive a title from the first meaningful line of content.
+		// This provides a clean display name for the task list.
+		for _, line := range strings.SplitN(content, "\n", 10) {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			line = strings.TrimPrefix(line, "# ")
+			line = strings.TrimPrefix(line, "## ")
+			if runes := []rune(line); len(runes) > 60 {
+				entry.Title = string(runes[:60])
+			} else {
+				entry.Title = line
+			}
+			break
+		}
 		// Use SaveWithContext when conversation context is available,
 		// enriching tags with entities from surrounding dialogue.
 		contextHint := StringArg(args, "_context_hint")

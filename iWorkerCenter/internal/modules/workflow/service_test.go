@@ -374,6 +374,73 @@ func TestCompleteStepRecordsCapabilityUsageFeedback(t *testing.T) {
 	}
 }
 
+func TestStartOrResumeStepSyncsWorkflowAndCollaborationTask(t *testing.T) {
+	p := setupTestDB(t)
+	seedRolesAndColleagues(t, p)
+	svc := newTestService(t, p)
+
+	def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{Name: "Resume path", Steps: []CreateStepDefRequest{{StepName: "Recoverable step", AssigneeRoleCode: "quality"}}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.PublishDefinition(testTenantID, def.ID); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	inst, err := svc.StartInstance(testTenantID, StartInstanceRequest{DefinitionID: def.ID, InitiatorID: "col-xiaozhou"})
+	if err != nil {
+		t.Fatalf("start instance: %v", err)
+	}
+	steps, _ := svc.ListStepInstances(testTenantID, inst.ID)
+	if err := svc.StartOrResumeStep(testTenantID, steps[0].ID, "col-xiaozhou", "goalwatch resume"); err != nil {
+		t.Fatalf("start step: %v", err)
+	}
+
+	steps, _ = svc.ListStepInstances(testTenantID, inst.ID)
+	if steps[0].Status != StepInProgress {
+		t.Fatalf("step status = %s", steps[0].Status)
+	}
+	task, err := svc.collabRepo.GetByID(testTenantID, steps[0].CollaborationTaskID)
+	if err != nil {
+		t.Fatalf("get collab task: %v", err)
+	}
+	if task.Status != collaboration.StatusInProgress {
+		t.Fatalf("collab task status = %s", task.Status)
+	}
+	if err := svc.StartOrResumeStep(testTenantID, steps[0].ID, "col-xiaozhou", "still working"); err != nil {
+		t.Fatalf("resume step: %v", err)
+	}
+	events, _ := svc.ListEvents(testTenantID, inst.ID)
+	foundStarted := false
+	foundResumed := false
+	for _, event := range events {
+		if event.Event == "step_started" {
+			foundStarted = true
+		}
+		if event.Event == "step_resumed" {
+			foundResumed = true
+		}
+	}
+	if !foundStarted || !foundResumed {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestStartOrResumeStepRejectsTerminalStep(t *testing.T) {
+	p := setupTestDB(t)
+	seedRolesAndColleagues(t, p)
+	svc := newTestService(t, p)
+	def, _ := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{Name: "Terminal path", Steps: []CreateStepDefRequest{{StepName: "Only", AssigneeRoleCode: "quality"}}})
+	_ = svc.PublishDefinition(testTenantID, def.ID)
+	inst, _ := svc.StartInstance(testTenantID, StartInstanceRequest{DefinitionID: def.ID, InitiatorID: "col-xiaozhou"})
+	steps, _ := svc.ListStepInstances(testTenantID, inst.ID)
+	if err := svc.CompleteStep(testTenantID, steps[0].ID, "col-xiaozhou", "done"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if err := svc.StartOrResumeStep(testTenantID, steps[0].ID, "col-xiaozhou", "too late"); err == nil {
+		t.Fatal("expected terminal step resume to fail")
+	}
+}
+
 func TestWorkflowReject_TerminatesProcess(t *testing.T) {
 	p := setupTestDB(t)
 	seedRolesAndColleagues(t, p)

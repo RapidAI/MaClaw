@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $root = 'D:\workprj\aicoder'
-$version = '5.9.0.10336'
+$version = '5.10.0.10336'
 $cfg = Get-Content (Join-Path $root 'wails.json') -Raw | ConvertFrom-Json
 $parts = $version.Split('.')
 

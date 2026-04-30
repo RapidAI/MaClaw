@@ -325,7 +325,7 @@ func TrimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 				}
 				placeholder = []interface{}{
 					map[string]string{"role": "user", "content": "[对话历史摘要]\n" + summary},
-					map[string]string{"role": "assistant", "content": "好的，我已了解之前的对话上下文。"},
+					map[string]string{"role": "assistant", "content": "好的，我已了解之前的对话上下文。", "reasoning_content": ""},
 				}
 			}
 		}

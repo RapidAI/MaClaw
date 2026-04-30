@@ -121,6 +121,26 @@ type StepPollConfig struct {
 	UntilStatus string `json:"until_status,omitempty"` // shorthand: stop when output contains this string
 }
 
+// StepLoopConfig configures iterative execution of a step with verification.
+// This implements the "do → verify → improve" cycle from the "5 Skill
+// Architecture Patterns" article (Pattern 3: Iterative Loop).
+//
+// Unlike Poll (passive waiting for async results), Loop is active iteration:
+// execute → verify → fix → repeat until verification passes or max iterations.
+type StepLoopConfig struct {
+	// MaxIterations is the hard upper bound on loop iterations. Required.
+	MaxIterations int    `json:"max_iterations" yaml:"max_iterations"`
+	// UntilStep is the label of the verification step. After each loop body
+	// execution, this step runs. If its output matches UntilMatch, the loop exits.
+	UntilStep     string `json:"until_step,omitempty" yaml:"until_step,omitempty"`
+	// UntilMatch is a regex pattern. When the verification step's output matches,
+	// the loop exits successfully.
+	UntilMatch    string `json:"until_match,omitempty" yaml:"until_match,omitempty"`
+	// OnFailStep is the label of the repair step (optional). When verification
+	// fails, this step runs before the next iteration.
+	OnFailStep    string `json:"on_fail_step,omitempty" yaml:"on_fail_step,omitempty"`
+}
+
 type NLSkillStep struct {
 	Action    string                 `json:"action"`
 	Params    map[string]interface{} `json:"params"`
@@ -131,6 +151,9 @@ type NLSkillStep struct {
 	Label     string                 `json:"label,omitempty"`     // step selector label for api_workflow mode
 	Capture   map[string]string      `json:"capture,omitempty"`   // output capture: varName → regex pattern (first submatch group)
 	Poll      *StepPollConfig        `json:"poll,omitempty"`      // poll config for async steps
+	// Loop configures iterative execution with verification gate.
+	// See StepLoopConfig for the "do → verify → improve" cycle.
+	Loop     *StepLoopConfig          `json:"loop,omitempty"`
 	// FallbackStep holds the original step before solidification promotion.
 	// When a promoted bash step fails, the Runner reverts to this step.
 	// See corelib/skill/solidify.go for the revert mechanism.
@@ -210,6 +233,22 @@ type NLSkillEntry struct {
 	// SolidificationCandidates tracks craft_tool steps that are candidates
 	// for promotion to bash steps. See corelib/skill/solidify.go.
 	SolidificationCandidates []SolidificationCandidate `json:"solidification_candidates,omitempty"`
+
+	// Stateful marks this skill as having cross-invocation persistent state.
+	// When true, the Runner loads state from {skillDir}/.state/state.json
+	// before execution and saves it after. See corelib/skill/state.go.
+	Stateful bool `json:"stateful,omitempty"`
+
+	// References lists on-demand reference documents in the skill's
+	// references/ directory. These are NOT injected into LLM context by
+	// default — only an index (filename + description) is injected.
+	// LLM loads full content via manage_skill(action=read_ref).
+	References []SkillReference `json:"references,omitempty"`
+
+	// Pipeline declares a multi-skill orchestration sequence.
+	// When Mode=="pipeline", the Runner delegates to PipelineRunner
+	// instead of executing Steps directly.
+	Pipeline []SkillPipelineStep `json:"pipeline,omitempty"`
 }
 
 // NLSkillParam describes a single parameter in a skill's parameter schema.
@@ -248,6 +287,26 @@ type SkillRepairRecord struct {
 	ErrorClass  string `json:"error_class,omitempty"`
 	Explanation string `json:"explanation"`
 	Success     bool   `json:"success"`
+}
+
+// SkillReference describes an on-demand reference document in a skill's
+// references/ directory. Only the index (filename + description) is injected
+// into LLM context; full content is loaded via manage_skill(action=read_ref).
+type SkillReference struct {
+	Filename    string `json:"filename"`
+	Description string `json:"description,omitempty"` // one-line summary (from first heading)
+	TokenCount  int    `json:"token_count,omitempty"` // estimated token count
+}
+
+// SkillPipelineStep declares one step in a skill pipeline (Pattern 5:
+// Multi-Phase + Checkpoint). See corelib/skill/pipeline.go.
+type SkillPipelineStep struct {
+	Skill              string            `json:"skill" yaml:"skill"`
+	Params             map[string]string `json:"params,omitempty" yaml:"params,omitempty"`
+	Checkpoint         bool              `json:"checkpoint,omitempty" yaml:"checkpoint,omitempty"`
+	CheckpointMessage  string            `json:"checkpoint_message,omitempty" yaml:"checkpoint_message,omitempty"`
+	ContinueOnFail     bool              `json:"continue_on_fail,omitempty" yaml:"continue_on_fail,omitempty"`
+	TimeImpactOnReject string            `json:"time_impact_on_reject,omitempty" yaml:"time_impact_on_reject,omitempty"`
 }
 
 // MatchesName checks if the skill matches the given name by comparing against
@@ -422,6 +481,24 @@ func IsAnthropicWireAPI(wireAPI string) bool {
 // content must be merged into the first user message instead.
 func NeedsSystemMerge(cfg MaclawLLMConfig) bool {
 	return strings.Contains(cfg.URL, "minimaxi.com")
+}
+
+// IsDeepSeekThinking reports whether this config targets a DeepSeek model
+// that uses thinking mode (reasoning_content). DeepSeek V4+ models have
+// thinking mode enabled by default. When tools are present in the request,
+// the API requires reasoning_content to be preserved on ALL assistant
+// messages — not just those with tool_calls.
+//
+// Detection: URL contains "deepseek.com" OR model name starts with "deepseek".
+// This covers both direct DeepSeek API and third-party proxies that use
+// DeepSeek model names.
+func IsDeepSeekThinking(cfg MaclawLLMConfig) bool {
+	lower := strings.ToLower(cfg.URL)
+	if strings.Contains(lower, "deepseek.com") {
+		return true
+	}
+	model := strings.ToLower(cfg.Model)
+	return strings.HasPrefix(model, "deepseek")
 }
 
 // MergeSystemIntoUser extracts system messages and prepends their content to

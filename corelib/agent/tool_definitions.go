@@ -15,6 +15,8 @@ func ToolDef(name, desc string, props map[string]interface{}, required []string)
 	}
 	if props != nil {
 		params["properties"] = props
+	} else {
+		params["properties"] = map[string]interface{}{}
 	}
 	if len(required) > 0 {
 		params["required"] = required

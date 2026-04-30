@@ -61,6 +61,39 @@ func TestSkillMarketAdminCRUD(t *testing.T) {
 		t.Fatalf("delete status = %d body=%s", deleteRes.Code, deleteRes.Body.String())
 	}
 }
+
+func TestSkillMarketCenterCanPublishSkillWithRevenueOwnerEmail(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	licSvc := license.NewService(&memoryLicenseRepo{licenses: map[string]*store.License{
+		"ctr_1": {ID: "lic_1", CenterID: "ctr_1", Modules: `["skill_market"]`},
+	}}, priv)
+	centerAuth := &mockCenterAuthService{centers: map[string]*store.Center{
+		"ctr_1": {ID: "ctr_1", AdminEmail: "owner@example.com", Status: "active", SecretHash: hashTestSecret("center-secret")},
+	}}
+	repo := &memorySkillRepo{items: map[string]*store.Skill{}}
+	h := NewSkillMarketHandler(centerAuth, licSvc, skillmarket.NewService(repo))
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/centers/{id}/skills", h.PublishCenterSkill())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/centers/ctr_1/skills", strings.NewReader(`{"id":"center-ctr-1-cap-a","name":"Center Skill","status":"active","price":99,"package_format":"skill.md","package_content_base64":"IyBDZW50ZXIgU2tpbGwK"}`))
+	req.Header.Set("X-Center-Secret", "center-secret")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("publish status = %d body=%s", res.Code, res.Body.String())
+	}
+	var skill CloudSkill
+	if err := json.NewDecoder(res.Body).Decode(&skill); err != nil {
+		t.Fatalf("decode skill: %v", err)
+	}
+	if skill.AuthorEmail != "owner@example.com" || skill.SourceCenterID != "ctr_1" || skill.Price != 99 {
+		t.Fatalf("skill = %+v", skill)
+	}
+}
+
 func TestSkillMarketRequiresSkillMarketLicense(t *testing.T) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

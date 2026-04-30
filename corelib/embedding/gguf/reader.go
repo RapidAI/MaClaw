@@ -73,7 +73,7 @@ func (gf *File) parseHeader() error {
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
 		return fmt.Errorf("gguf: read magic: %w", err)
 	}
-	if magic != Magic {
+	if magic != Magic && magic != 0x46475547 /* legacy RapidSpeech magic */ {
 		return fmt.Errorf("gguf: bad magic %08x", magic)
 	}
 	if err := binary.Read(r, binary.LittleEndian, &version); err != nil {

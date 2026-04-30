@@ -648,6 +648,12 @@ func (m *Manager) applyRemoteChange(cfg *corelib.AppConfig, key, value string) (
 	case "remote_enabled":
 		old := fmt.Sprintf("%v", cfg.RemoteEnabled)
 		cfg.RemoteEnabled = strings.EqualFold(value, "true")
+		// Keep default_launch_mode in sync with remote_enabled.
+		if cfg.RemoteEnabled {
+			cfg.DefaultLaunchMode = "remote"
+		} else {
+			cfg.DefaultLaunchMode = "local"
+		}
 		return old, nil
 	case "remote_hub_url":
 		old := cfg.RemoteHubURL
@@ -668,6 +674,8 @@ func (m *Manager) applyRemoteChange(cfg *corelib.AppConfig, key, value string) (
 	case "default_launch_mode":
 		old := cfg.DefaultLaunchMode
 		cfg.DefaultLaunchMode = value
+		// Keep remote_enabled in sync with default_launch_mode.
+		cfg.RemoteEnabled = (value == "remote")
 		return old, nil
 	}
 	return "", fmt.Errorf("unsupported remote key %q", key)
@@ -927,7 +935,7 @@ func (m *Manager) initSchema() {
 				{Key: "remote_hub_url", Description: "Hub 服务器地址", Type: "string"},
 				{Key: "remote_email", Description: "远程账户邮箱", Type: "string"},
 				{Key: "remote_heartbeat_sec", Description: "心跳间隔（秒）", Type: "int", Default: "30"},
-				{Key: "default_launch_mode", Description: "默认启动模式", Type: "enum", Default: "local", ValidValues: []string{"local", "remote"}},
+				{Key: "default_launch_mode", Description: "编程工具默认工作模式", Type: "enum", Default: "local", ValidValues: []string{"local", "remote"}},
 			},
 		},
 		{

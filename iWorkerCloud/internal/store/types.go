@@ -47,6 +47,8 @@ type Skill struct {
 	Status         string    `json:"status"`
 	Price          int64     `json:"price"`
 	Author         string    `json:"author"`
+	AuthorEmail    string    `json:"author_email"`
+	SourceCenterID string    `json:"source_center_id"`
 	AvgRating      float64   `json:"avg_rating"`
 	DownloadCount  int       `json:"download_count"`
 	PackageFormat  string    `json:"package_format"`

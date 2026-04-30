@@ -28,7 +28,7 @@ func TestArtifactSaver_SavesTaskArtifact(t *testing.T) {
 	content := "# 需求文档\n\n## 功能需求\n1. 贪吃蛇游戏\n2. 方向键控制\n3. 计分系统"
 	tags := []string{"workflow", "requirements", "coding"}
 
-	err := saver.SaveArtifact(content, tags, "")
+	err := saver.SaveArtifact("", content, tags, "")
 	if err != nil {
 		t.Fatalf("SaveArtifact failed: %v", err)
 	}
@@ -57,8 +57,8 @@ func TestArtifactSaver_DeduplicatesByContentHash(t *testing.T) {
 	tags := []string{"workflow", "tech_design", "coding"}
 
 	// Save twice with identical content.
-	_ = saver.SaveArtifact(content, tags, "")
-	_ = saver.SaveArtifact(content, tags, "")
+	_ = saver.SaveArtifact("", content, tags, "")
+	_ = saver.SaveArtifact("", content, tags, "")
 
 	entries := ms.List(memory.CategoryTaskArtifact, "")
 	if len(entries) != 1 {
@@ -71,10 +71,10 @@ func TestArtifactSaver_UpdatesExistingByPhaseTag(t *testing.T) {
 	saver := &workflowArtifactSaver{store: ms}
 
 	// Save initial version.
-	_ = saver.SaveArtifact("需求 v1: 基本功能", []string{"workflow", "requirements", "coding"}, "")
+	_ = saver.SaveArtifact("", "需求 v1: 基本功能", []string{"workflow", "requirements", "coding"}, "")
 
 	// Save updated version with same phase tag.
-	_ = saver.SaveArtifact("需求 v2: 基本功能 + 排行榜", []string{"workflow", "requirements", "coding"}, "")
+	_ = saver.SaveArtifact("", "需求 v2: 基本功能 + 排行榜", []string{"workflow", "requirements", "coding"}, "")
 
 	entries := ms.List(memory.CategoryTaskArtifact, "")
 	if len(entries) != 1 {
@@ -89,7 +89,7 @@ func TestArtifactSaver_SkipsEmptyContent(t *testing.T) {
 	ms := newTestMemoryStore(t)
 	saver := &workflowArtifactSaver{store: ms}
 
-	err := saver.SaveArtifact("", []string{"workflow"}, "")
+	err := saver.SaveArtifact("", "", []string{"workflow"}, "")
 	if err != nil {
 		t.Fatalf("SaveArtifact with empty content should not error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestArtifactSaver_SkipsEmptyContent(t *testing.T) {
 
 func TestArtifactSaver_NilStoreNoError(t *testing.T) {
 	saver := &workflowArtifactSaver{store: nil}
-	err := saver.SaveArtifact("some content", []string{"workflow"}, "")
+	err := saver.SaveArtifact("", "some content", []string{"workflow"}, "")
 	if err != nil {
 		t.Fatalf("SaveArtifact with nil store should not error: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestArtifactSaver_ProactiveRecallIncludesTaskArtifact(t *testing.T) {
 	ms := newTestMemoryStore(t)
 	saver := &workflowArtifactSaver{store: ms}
 
-	_ = saver.SaveArtifact("贪吃蛇游戏需求文档: 方向键控制蛇的移动, 吃到食物增长, 碰到墙壁或自身游戏结束",
+	_ = saver.SaveArtifact("", "贪吃蛇游戏需求文档: 方向键控制蛇的移动, 吃到食物增长, 碰到墙壁或自身游戏结束",
 		[]string{"workflow", "requirements", "coding"}, "")
 
 	// RecallDynamic should return the task_artifact.
@@ -153,7 +153,7 @@ func TestArtifactSaver_SavePhaseOutputIntegration(t *testing.T) {
 	}
 
 	tags := []string{"workflow", "requirements", "coding"}
-	err := saver.SaveArtifact(content, tags, "/path/to/full/output.md")
+	err := saver.SaveArtifact("", content, tags, "/path/to/full/output.md")
 	if err != nil {
 		t.Fatalf("SaveArtifact failed: %v", err)
 	}

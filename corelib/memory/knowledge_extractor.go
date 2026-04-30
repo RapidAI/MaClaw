@@ -75,12 +75,15 @@ func HasRecentMemoryWrites(messages []ConversationMessage) bool {
 	return false
 }
 
-// NewKnowledgeExtractor creates a KnowledgeExtractor with a default 1-hour cooldown.
+// NewKnowledgeExtractor creates a KnowledgeExtractor with a default 10-minute cooldown.
+// The cooldown was reduced from 1 hour to 10 minutes to improve data freshness.
+// The online extractor (OnlineExtractor) is the primary extraction path;
+// KnowledgeExtractor serves as a fallback for when the online extractor is unavailable.
 func NewKnowledgeExtractor(store *Store, llm LLMChatCaller) *KnowledgeExtractor {
 	return &KnowledgeExtractor{
 		store:    store,
 		llm:      llm,
-		cooldown: 1 * time.Hour,
+		cooldown: 10 * time.Minute,
 	}
 }
 

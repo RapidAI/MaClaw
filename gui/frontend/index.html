@@ -7,6 +7,20 @@
     <title>MaClaw</title>
 </head>
 <body>
+<!-- Sync background colour with the persisted theme BEFORE React mounts.
+     On all platforms, set the theme colour to avoid a flash of white.
+     On Windows 10, the React effect will override this to transparent
+     (for true CSS border-radius clipping) within milliseconds of mount.
+     On Windows 11, DWM handles rounding natively so the theme colour stays.
+     Keep colour values in sync with App.css --theme-page-bg. -->
+<script>
+  try {
+    var d = localStorage.getItem('ai_assistant_theme_mode') === 'dark';
+    var c = d ? '#0b1220' : '#f4f5f7';
+    document.documentElement.style.backgroundColor = c;
+    document.body.style.backgroundColor = c;
+  } catch(e) {}
+</script>
 <div id="root"></div>
 <script src="./src/main.tsx" type="module"></script>
 </body>

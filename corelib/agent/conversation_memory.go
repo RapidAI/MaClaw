@@ -42,11 +42,18 @@ func (e ConversationEntry) ToMessage() interface{} {
 	m := map[string]interface{}{"role": e.Role, "content": e.Content}
 	if e.ReasoningContent != "" {
 		m["reasoning_content"] = e.ReasoningContent
-	} else if e.ToolCalls != nil {
-		// DeepSeek thinking mode: the reasoning_content field MUST exist on
-		// assistant messages that have tool_calls. A missing field causes
-		// HTTP 400. An empty string is accepted.
+	} else if e.Role == "assistant" {
+		// DeepSeek V4+ thinking mode: when tools are present in the request,
+		// the API requires reasoning_content on ALL assistant messages — not
+		// just those with tool_calls. Since MacLaw always sends tools in the
+		// agent loop, we unconditionally include reasoning_content on every
+		// assistant message. An empty string is accepted by the API.
+		//
+		// For non-DeepSeek providers, the field is simply ignored.
+		//
 		// See: https://api-docs.deepseek.com/guides/thinking_mode
+		//   "With tools: drop_thinking is automatically disabled.
+		//    All turns retain their reasoning."
 		m["reasoning_content"] = ""
 	}
 	if e.ToolCalls != nil {
@@ -94,19 +101,21 @@ type ConversationArchiver interface {
 // --- Internal types ---
 
 type conversationSession struct {
-	entries        []ConversationEntry
-	lastAccess     time.Time
-	unfinishedSlot *UnfinishedTaskSlot
-	activeSlotID   string
-	inFlightTask   string // non-empty while an agent loop is executing; cleared on normal exit
+	entries             []ConversationEntry
+	lastAccess          time.Time
+	unfinishedSlot      *UnfinishedTaskSlot
+	activeSlotID        string
+	inFlightTask        string // non-empty while an agent loop is executing; cleared on normal exit
+	inFlightProjectPath string // project path when the in-flight task was set
 }
 
 type persistedSession struct {
-	Entries        []ConversationEntry `json:"entries"`
-	LastAccess     time.Time           `json:"last_access"`
-	UnfinishedSlot *UnfinishedTaskSlot `json:"unfinished_slot,omitempty"`
-	ActiveSlotID   string              `json:"active_slot_id,omitempty"`
-	InFlightTask   string              `json:"in_flight_task,omitempty"`
+	Entries             []ConversationEntry `json:"entries"`
+	LastAccess          time.Time           `json:"last_access"`
+	UnfinishedSlot      *UnfinishedTaskSlot `json:"unfinished_slot,omitempty"`
+	ActiveSlotID        string              `json:"active_slot_id,omitempty"`
+	InFlightTask        string              `json:"in_flight_task,omitempty"`
+	InFlightProjectPath string              `json:"in_flight_project_path,omitempty"`
 }
 
 type memorySnapshot struct {
@@ -543,7 +552,9 @@ func (cm *ConversationMemory) ClearConversationAndDismissSlot(userID string) {
 // user. The task string is a brief description (e.g., the user's original
 // request, truncated). This must be followed by a synchronous FlushNow()
 // to ensure the marker survives a process kill.
-func (cm *ConversationMemory) SetInFlightTask(userID, task string) {
+// The optional projectPath parameter records which project the task belongs to,
+// enabling project-aware recovery after process kill.
+func (cm *ConversationMemory) SetInFlightTask(userID, task string, projectPath ...string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
@@ -552,6 +563,11 @@ func (cm *ConversationMemory) SetInFlightTask(userID, task string) {
 		sh.sessions[userID] = s
 	}
 	s.inFlightTask = task
+	if len(projectPath) > 0 {
+		s.inFlightProjectPath = projectPath[0]
+	} else {
+		s.inFlightProjectPath = ""
+	}
 	s.lastAccess = time.Now()
 	sh.mu.Unlock()
 	cm.markDirtyAndScheduleFlush()
@@ -564,28 +580,32 @@ func (cm *ConversationMemory) ClearInFlightTask(userID string) {
 	sh.mu.Lock()
 	if s := sh.sessions[userID]; s != nil {
 		s.inFlightTask = ""
+		s.inFlightProjectPath = ""
 	}
 	sh.mu.Unlock()
 	cm.markDirtyAndScheduleFlush()
 }
 
 // ConsumeInFlightTask atomically reads and clears the in-flight marker.
-// Returns the task description if the marker was set (meaning the previous
-// agent loop was interrupted), or empty string if no interruption occurred.
+// Returns the task description and project path if the marker was set
+// (meaning the previous agent loop was interrupted), or empty strings
+// if no interruption occurred.
 // This is a one-shot operation — calling it twice returns empty on the
 // second call.
-func (cm *ConversationMemory) ConsumeInFlightTask(userID string) string {
+func (cm *ConversationMemory) ConsumeInFlightTask(userID string) (string, string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	s := sh.sessions[userID]
 	if s == nil || s.inFlightTask == "" {
-		return ""
+		return "", ""
 	}
 	task := s.inFlightTask
+	projectPath := s.inFlightProjectPath
 	s.inFlightTask = ""
+	s.inFlightProjectPath = ""
 	cm.markDirtyAndScheduleFlush()
-	return task
+	return task, projectPath
 }
 
 // --- Disk persistence ---
@@ -612,6 +632,7 @@ func (cm *ConversationMemory) saveToDisk() error {
 				UnfinishedSlot: CloneUnfinishedTaskSlot(session.unfinishedSlot),
 				ActiveSlotID:   session.activeSlotID,
 				InFlightTask:   session.inFlightTask,
+				InFlightProjectPath: session.inFlightProjectPath,
 			}
 		}
 		sh.mu.RUnlock()
@@ -648,9 +669,24 @@ func (cm *ConversationMemory) loadFromDisk() error {
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return err
 	}
+	needsRewrite := legacyNeedsRewrite
 	for userID, session := range snapshot.Sessions {
 		entries := make([]ConversationEntry, len(session.Entries))
 		copy(entries, session.Entries)
+
+		// Enforce structural invariant: no orphaned tool messages.
+		// A tool entry is orphaned if no preceding assistant entry declares
+		// its tool_call_id. This can happen if a previous version of
+		// applyHistoryCompression or compactHistory split a tool-call group.
+		// Repair on load so no downstream code ever sees corrupted data.
+		repaired := repairOrphanedToolEntries(entries)
+		if len(repaired) != len(entries) {
+			log.Printf("[ConversationMemory] repaired %d orphaned tool entries for user=%s on load",
+				len(entries)-len(repaired), userID)
+			entries = repaired
+			needsRewrite = true
+		}
+
 		sh := cm.shard(userID)
 		sh.mu.Lock()
 		sh.sessions[userID] = &conversationSession{
@@ -659,13 +695,100 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			unfinishedSlot: CloneUnfinishedTaskSlot(session.UnfinishedSlot),
 			activeSlotID:   session.ActiveSlotID,
 			inFlightTask:   session.InFlightTask,
+			inFlightProjectPath: session.InFlightProjectPath,
 		}
 		sh.mu.Unlock()
 	}
-	if legacyNeedsRewrite {
+	if needsRewrite {
 		cm.persistStateMu.Lock()
 		cm.dirty = true
 		cm.persistStateMu.Unlock()
 	}
 	return nil
+}
+
+// repairOrphanedToolEntries removes tool entries whose tool_call_id has no
+// matching assistant(tool_calls) declaration. Returns the input slice
+// unchanged if no orphans are found (zero allocation fast path).
+func repairOrphanedToolEntries(entries []ConversationEntry) []ConversationEntry {
+	// Fast path: check if any tool entries exist at all.
+	hasToolEntries := false
+	for _, e := range entries {
+		if e.Role == "tool" {
+			hasToolEntries = true
+			break
+		}
+	}
+	if !hasToolEntries {
+		return entries
+	}
+
+	// Build set of declared tool_call IDs from assistant entries.
+	declaredIDs := make(map[string]bool)
+	for _, e := range entries {
+		if e.Role != "assistant" || e.ToolCalls == nil {
+			continue
+		}
+		for _, id := range extractToolCallIDs(e.ToolCalls) {
+			declaredIDs[id] = true
+		}
+	}
+
+	// Check if all tool entries are valid.
+	allValid := true
+	for _, e := range entries {
+		if e.Role == "tool" && (e.ToolCallID == "" || !declaredIDs[e.ToolCallID]) {
+			allValid = false
+			break
+		}
+	}
+	if allValid {
+		return entries // zero allocation — no orphans found
+	}
+
+	// Remove orphaned tool entries.
+	result := make([]ConversationEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Role == "tool" && (e.ToolCallID == "" || !declaredIDs[e.ToolCallID]) {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
+}
+
+// extractToolCallIDs extracts tool_call IDs from a ToolCalls field.
+// Handles both []interface{} (from JSON round-trip) and typed slices
+// (from in-process construction) via json.Marshal fallback.
+func extractToolCallIDs(toolCalls interface{}) []string {
+	// Fast path: after JSON round-trip, ToolCalls is []interface{}.
+	if arr, ok := toolCalls.([]interface{}); ok {
+		ids := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if m, ok := item.(map[string]interface{}); ok {
+				if id, ok := m["id"].(string); ok && id != "" {
+					ids = append(ids, id)
+				}
+			}
+		}
+		return ids
+	}
+	// Fallback: typed slice — marshal/unmarshal to extract IDs.
+	data, err := json.Marshal(toolCalls)
+	if err != nil {
+		return nil
+	}
+	var calls []struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(data, &calls) != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(calls))
+	for _, c := range calls {
+		if c.ID != "" {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids
 }

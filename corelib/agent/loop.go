@@ -213,8 +213,9 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 
 			// Inject a recover prompt to nudge the LLM.
 			conversation = append(conversation, map[string]interface{}{
-				"role":    "assistant",
-				"content": content,
+				"role":              "assistant",
+				"content":           content,
+				"reasoning_content": "", // DeepSeek V4+: must exist on all assistant messages
 			})
 			conversation = append(conversation, map[string]interface{}{
 				"role":    "user",
@@ -234,9 +235,11 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 		}
 		if choice.Message.ReasoningContent != "" {
 			assistantMsg["reasoning_content"] = choice.Message.ReasoningContent
-		} else if len(choice.Message.ToolCalls) > 0 {
-			// DeepSeek thinking mode: reasoning_content field must exist on
-			// assistant messages with tool_calls. Missing field → HTTP 400.
+		} else {
+			// DeepSeek V4+ thinking mode: when tools are present in the
+			// request, reasoning_content must exist on ALL assistant messages.
+			// An empty string is accepted. For non-DeepSeek providers, the
+			// field is simply ignored.
 			assistantMsg["reasoning_content"] = ""
 		}
 		if len(choice.Message.ToolCalls) > 0 {

@@ -72,13 +72,13 @@ func (h *IMMessageHandler) handleCompressCommand(userID string) *IMAgentResponse
 //
 // IMPORTANT: The ctxcompress.Message type only carries {Role, Content}. The
 // round-trip through the compressor strips reasoning_content, tool_calls, and
-// tool_call_id. DeepSeek's thinking mode requires reasoning_content to be
-// passed back COMPLETELY on assistant messages that have tool_calls. To avoid
-// breaking this API contract, we bypass compression entirely when any message
-// in the conversation carries reasoning_content + tool_calls. The compressor
-// is a best-effort optimization; trimConversation is the authoritative budget
-// enforcer and handles these messages correctly (it drops whole groups rather
-// than corrupting individual fields).
+// tool_call_id. DeepSeek V4+ thinking mode requires reasoning_content to be
+// passed back on ALL assistant messages when tools are present in the request
+// (not just on messages with tool_calls). To avoid breaking this API contract,
+// we bypass compression entirely when any message in the conversation carries
+// tool_calls. The compressor is a best-effort optimization; trimConversation
+// is the authoritative budget enforcer and handles these messages correctly
+// (it drops whole groups rather than corrupting individual fields).
 func autoCompressConversation(
 	conversation []interface{},
 	cfg corelib.MaclawLLMConfig,
@@ -90,9 +90,9 @@ func autoCompressConversation(
 
 	// Skip compression if any assistant message has tool_calls. The lossy
 	// Message{Role,Content} round-trip strips reasoning_content entirely
-	// (field disappears from the map). DeepSeek's thinking mode requires
-	// the reasoning_content field to EXIST on tool_calls messages — a
-	// missing field causes HTTP 400, even if the value would be empty.
+	// (field disappears from the map). DeepSeek V4+ thinking mode requires
+	// reasoning_content on ALL assistant messages when tools are present —
+	// a missing field causes HTTP 400, even if the value would be empty.
 	// Empirically verified: field present with "" → 200; field absent → 400.
 	for _, m := range conversation {
 		mm, ok := m.(map[string]interface{})

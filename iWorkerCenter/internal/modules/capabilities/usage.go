@@ -71,8 +71,8 @@ func (h *Handler) capabilityUsageSummary(ctx context.Context, tenantID, capabili
 	var latencyTotal sql.NullFloat64
 	err := h.read.QueryRowContext(ctx, `SELECT
 		COUNT(*),
-		SUM(CASE WHEN status='success' THEN 1 ELSE 0 END),
-		SUM(CASE WHEN status='failure' THEN 1 ELSE 0 END),
+		COALESCE(SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status='failure' THEN 1 ELSE 0 END), 0),
 		AVG(CASE WHEN quality_score > 0 THEN quality_score END),
 		AVG(CASE WHEN latency_ms > 0 THEN latency_ms END)
 		FROM capability_usage_events WHERE tenant_id=? AND capability_id=?`, tenantID, capabilityID).Scan(&summary.Total, &summary.Successes, &summary.Failures, &qualityTotal, &latencyTotal)

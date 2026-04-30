@@ -22,9 +22,11 @@ import (
 )
 
 var (
-	ErrNotFound     = errors.New("center not found")
-	ErrDisabled     = errors.New("center disabled")
-	ErrUnauthorized = errors.New("unauthorized")
+	ErrNotFound               = errors.New("center not found")
+	ErrDisabled               = errors.New("center disabled")
+	ErrUnauthorized           = errors.New("unauthorized")
+	ErrInvalidServiceIdentity = errors.New("invalid iWorkerCenter service identity")
+	ErrProvisionNotAllowed    = errors.New("center provisioning is not allowed")
 )
 
 type RegisterRequest struct {
@@ -37,6 +39,17 @@ type RegisterRequest struct {
 	SupportsMultiTenant bool   `json:"supports_multi_tenant"`
 	TenantCount         int    `json:"tenant_count"`
 	CloudControlMode    string `json:"cloud_control_mode"`
+}
+
+type HeartbeatRequest struct {
+	Secret       string `json:"secret"`
+	RuntimeType  string `json:"runtime_type"`
+	ProductKind  string `json:"product_kind"`
+	AdminConsole string `json:"admin_console"`
+}
+
+func (r HeartbeatRequest) serviceStatus() centerServiceStatus {
+	return centerServiceStatus{RuntimeType: r.RuntimeType, ProductKind: r.ProductKind, AdminConsole: r.AdminConsole}
 }
 
 type RegisterResult struct {
@@ -76,6 +89,14 @@ type RecommendedAction struct {
 	Priority    string `json:"priority"`
 }
 
+// ProvisionReadiness describes whether Cloud may perform service-management tenant provisioning.
+type ProvisionReadiness struct {
+	Allowed       bool                `json:"allowed"`
+	Center        *store.Center       `json:"center"`
+	ActiveLicense *store.License      `json:"active_license,omitempty"`
+	Issues        []string            `json:"issues"`
+	Actions       []RecommendedAction `json:"recommended_actions"`
+}
 type ManagementReport struct {
 	Summary ManagementSummary  `json:"summary"`
 	Items   []CenterManagement `json:"items"`
@@ -190,8 +211,8 @@ func (s *Service) Enable(ctx context.Context, centerID string) error {
 	return s.centers.UpdateStatus(ctx, centerID, "active")
 }
 
-// Heartbeat updates the last heartbeat time.
-func (s *Service) Heartbeat(ctx context.Context, centerID, rawSecret string) error {
+// Heartbeat updates the last heartbeat time after verifying this is a real iWorkerCenter service.
+func (s *Service) Heartbeat(ctx context.Context, centerID string, req HeartbeatRequest) error {
 	c, err := s.centers.GetByID(ctx, centerID)
 	if err != nil {
 		return ErrNotFound
@@ -199,8 +220,13 @@ func (s *Service) Heartbeat(ctx context.Context, centerID, rawSecret string) err
 	if c.Status == "disabled" {
 		return ErrDisabled
 	}
-	if c.SecretHash != hashSecret(rawSecret) {
+	if c.SecretHash != hashSecret(req.Secret) {
 		return ErrUnauthorized
+	}
+	if !req.serviceStatus().isIWorkerCenterService() {
+		c.LastSyncStatus = "heartbeat_not_iworkercenter"
+		_ = s.centers.UpdateIntegration(ctx, c)
+		return ErrInvalidServiceIdentity
 	}
 	return s.centers.UpdateHeartbeat(ctx, centerID)
 }
@@ -267,7 +293,7 @@ func (s *Service) Management(ctx context.Context) (*ManagementReport, error) {
 		if containsIssue(managementItem.Issues, "missing_base_url") || containsIssue(managementItem.Issues, "multi_tenant_not_confirmed") {
 			report.Summary.NeedsSetup++
 		}
-		if containsIssue(managementItem.Issues, "probe_failed") || containsIssue(managementItem.Issues, "probe_missing_base_url") {
+		if containsIssue(managementItem.Issues, "probe_failed") || containsIssue(managementItem.Issues, "probe_missing_base_url") || containsIssue(managementItem.Issues, "probe_not_iworkercenter") || containsIssue(managementItem.Issues, "heartbeat_not_iworkercenter") {
 			report.Summary.ProbeFailures++
 		}
 		if containsIssue(managementItem.Issues, "no_active_license") {
@@ -310,10 +336,26 @@ type ProvisionResult struct {
 
 // ProbeResult describes a cloud-side connectivity check to a Center.
 type ProbeResult struct {
-	OK         bool   `json:"ok"`
-	StatusCode int    `json:"status_code"`
-	Message    string `json:"message"`
-	BaseURL    string `json:"base_url"`
+	OK           bool   `json:"ok"`
+	StatusCode   int    `json:"status_code"`
+	Message      string `json:"message"`
+	BaseURL      string `json:"base_url"`
+	RuntimeType  string `json:"runtime_type,omitempty"`
+	ProductKind  string `json:"product_kind,omitempty"`
+	AdminConsole string `json:"admin_console,omitempty"`
+}
+
+type centerServiceStatus struct {
+	Status       string `json:"status"`
+	RuntimeType  string `json:"runtime_type"`
+	ProductKind  string `json:"product_kind"`
+	AdminConsole string `json:"admin_console"`
+}
+
+func (s centerServiceStatus) isIWorkerCenterService() bool {
+	return strings.EqualFold(strings.TrimSpace(s.RuntimeType), "service") &&
+		strings.EqualFold(strings.TrimSpace(s.ProductKind), "iworkercenter") &&
+		strings.EqualFold(strings.TrimSpace(s.AdminConsole), "web_console")
 }
 
 // Probe checks whether the configured iWorkerCenter endpoint is reachable.
@@ -329,7 +371,7 @@ func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *st
 		return &ProbeResult{OK: false, Message: "center base_url is not configured"}, center, nil
 	}
 
-	url := strings.TrimRight(baseURL, "/") + "/healthz"
+	url := strings.TrimRight(baseURL, "/") + "/api/center/status"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, nil, err
@@ -342,17 +384,78 @@ func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *st
 	}
 	defer resp.Body.Close()
 
-	result := &ProbeResult{OK: resp.StatusCode >= 200 && resp.StatusCode < 300, StatusCode: resp.StatusCode, BaseURL: baseURL}
-	if result.OK {
-		result.Message = "center health endpoint reachable"
+	result := &ProbeResult{OK: false, StatusCode: resp.StatusCode, BaseURL: baseURL}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		result.Message = fmt.Sprintf("center service status endpoint returned %d", resp.StatusCode)
+		center.LastSyncStatus = "probe_failed"
+		_ = s.centers.UpdateIntegration(ctx, center)
+		updated, _ := s.centers.GetByID(ctx, centerID)
+		return result, updated, nil
+	}
+	var serviceStatus centerServiceStatus
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&serviceStatus); err != nil {
+		result.Message = "center service status response is not valid JSON: " + err.Error()
+		center.LastSyncStatus = "probe_failed"
+		_ = s.centers.UpdateIntegration(ctx, center)
+		updated, _ := s.centers.GetByID(ctx, centerID)
+		return result, updated, nil
+	}
+	result.RuntimeType = serviceStatus.RuntimeType
+	result.ProductKind = serviceStatus.ProductKind
+	result.AdminConsole = serviceStatus.AdminConsole
+	if serviceStatus.isIWorkerCenterService() {
+		result.OK = true
+		result.Message = "iWorkerCenter service identity verified"
 		center.LastSyncStatus = "probe_ok"
 	} else {
-		result.Message = fmt.Sprintf("center health endpoint returned %d", resp.StatusCode)
-		center.LastSyncStatus = "probe_failed"
+		result.Message = fmt.Sprintf("endpoint is not an iWorkerCenter service: runtime_type=%q product_kind=%q admin_console=%q", serviceStatus.RuntimeType, serviceStatus.ProductKind, serviceStatus.AdminConsole)
+		center.LastSyncStatus = "probe_not_iworkercenter"
 	}
 	_ = s.centers.UpdateIntegration(ctx, center)
 	updated, _ := s.centers.GetByID(ctx, centerID)
 	return result, updated, nil
+}
+
+// ProvisionReadiness checks whether Cloud may manage tenant provisioning for this Center.
+// iWorkerCloud remains a vendor management plane: it may provision tenants only when
+// the target iWorkerCenter is active, licensed, multi-tenant capable, and reachable by URL.
+func (s *Service) ProvisionReadiness(ctx context.Context, centerID string) (*ProvisionReadiness, error) {
+	center, err := s.centers.GetByID(ctx, centerID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	var activeLicense *store.License
+	if s.licenseSvc != nil {
+		activeLicense, _ = s.licenseSvc.GetActive(ctx, centerID)
+	}
+	management := buildCenterManagement(center, activeLicense)
+	allowed := center.Status == "active" &&
+		strings.TrimSpace(center.BaseURL) != "" &&
+		center.SupportsMultiTenant &&
+		activeLicense != nil
+	issues := append([]string(nil), management.Issues...)
+	if !allowed && len(issues) == 0 {
+		issues = append(issues, "center_not_ready")
+	}
+	return &ProvisionReadiness{
+		Allowed:       allowed,
+		Center:        center,
+		ActiveLicense: activeLicense,
+		Issues:        issues,
+		Actions:       management.RecommendedActions,
+	}, nil
+}
+
+// EnsureProvisionAllowed returns the Center only when Cloud-side tenant provisioning is allowed.
+func (s *Service) EnsureProvisionAllowed(ctx context.Context, centerID string) (*store.Center, error) {
+	readiness, err := s.ProvisionReadiness(ctx, centerID)
+	if err != nil {
+		return nil, err
+	}
+	if !readiness.Allowed {
+		return nil, fmt.Errorf("%w: %s", ErrProvisionNotAllowed, strings.Join(readiness.Issues, ","))
+	}
+	return readiness.Center, nil
 }
 
 // ProvisionRemote sends a signed provision request to an iWorkerCenter.
@@ -447,7 +550,7 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 		issues = append(issues, "multi_tenant_not_confirmed")
 	}
 	switch center.LastSyncStatus {
-	case "probe_failed", "probe_missing_base_url":
+	case "probe_failed", "probe_missing_base_url", "probe_not_iworkercenter", "heartbeat_not_iworkercenter":
 		issues = append(issues, center.LastSyncStatus)
 	}
 	if activeLicense == nil {
@@ -457,9 +560,9 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 	ready := len(issues) == 0
 	connectivity := "unknown"
 	switch center.LastSyncStatus {
-	case "probe_ok", "tenant_provisioned":
+	case "probe_ok", "tenant_provisioned", "heartbeat_ok":
 		connectivity = "reachable"
-	case "probe_failed", "probe_missing_base_url":
+	case "probe_failed", "probe_missing_base_url", "probe_not_iworkercenter", "heartbeat_not_iworkercenter":
 		connectivity = "failed"
 	case "registered", "configured":
 		connectivity = "not_probed"
@@ -475,7 +578,7 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 		ManagementPosture = "ready"
 	} else if containsIssue(issues, "missing_base_url") || containsIssue(issues, "multi_tenant_not_confirmed") {
 		ManagementPosture = "needs_setup"
-	} else if containsIssue(issues, "probe_failed") || containsIssue(issues, "probe_missing_base_url") {
+	} else if containsIssue(issues, "probe_failed") || containsIssue(issues, "probe_missing_base_url") || containsIssue(issues, "probe_not_iworkercenter") || containsIssue(issues, "heartbeat_not_iworkercenter") {
 		ManagementPosture = "connectivity_risk"
 	} else if containsIssue(issues, "no_active_license") {
 		ManagementPosture = "commercial_hold"
@@ -512,7 +615,9 @@ func buildRecommendedActions(issues []string) []RecommendedAction {
 		case "multi_tenant_not_confirmed":
 			actions = append(actions, RecommendedAction{Code: "confirm_multi_tenant", Label: "Confirm Multi-tenant Support", Description: "Mark this Center as multi-tenant capable only after tenant isolation and Cloud integration are verified. Customer enterprise operations remain inside iWorkerCenter.", Priority: "medium"})
 		case "probe_failed", "probe_missing_base_url":
-			actions = append(actions, RecommendedAction{Code: "test_connection", Label: "Test Connection", Description: "Run a connection probe after checking network, DNS, TLS, and the Center /healthz endpoint.", Priority: "high"})
+			actions = append(actions, RecommendedAction{Code: "test_connection", Label: "Test Connection", Description: "Run a connection probe after checking network, DNS, TLS, and the Center /api/center/status endpoint.", Priority: "high"})
+		case "probe_not_iworkercenter", "heartbeat_not_iworkercenter":
+			actions = append(actions, RecommendedAction{Code: "verify_center_service_identity", Label: "Verify Center Service Identity", Description: "The configured endpoint did not identify itself as an iWorkerCenter service. Check the URL before enabling cloud-side authorization, compute distribution, or skill entitlement.", Priority: "high"})
 		case "no_active_license":
 			actions = append(actions, RecommendedAction{Code: "issue_license", Label: "Issue License", Description: "Create or renew the Center authorization so iWorkerCenter compute distribution, skill entitlement, and platform access are commercially valid.", Priority: "high"})
 		}

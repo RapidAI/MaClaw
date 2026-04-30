@@ -7,11 +7,9 @@
   <style>
     :root{--bg:#f6f8fb;--card:#fff;--text:#172033;--muted:#667085;--primary:#2563eb;--primary-strong:#1d4ed8;--primary-light:#eff6ff;--border:#dbe3ef;--danger:#dc2626;--success:#16a34a;--warn:#f59e0b;--radius:8px;--shadow:0 10px 28px rgba(15,23,42,.07)}
     *{box-sizing:border-box;margin:0;padding:0}
-    body{background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.6;font-size:14px}
+    body{background:linear-gradient(180deg,#f9fbff 0%,var(--bg) 42%,#eef3f9 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.6;font-size:14px}
     .container{max-width:1180px;margin:0 auto;padding:22px}
-    header{text-align:center;padding:18px 0 16px;position:relative}
-    header h1{font-size:26px;letter-spacing:.2px}
-    header p{color:var(--muted);font-size:13px}
+    header{position:relative}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:4px 0 18px}.brand{display:flex;align-items:center;gap:12px}.brand-logo{width:46px;height:46px;object-fit:contain}.brand h1{font-size:24px;letter-spacing:.1px}.brand p{color:var(--muted);font-size:12px}.nav-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.nav-link{height:34px;display:inline-flex;align-items:center;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);background:#fff;color:var(--primary);text-decoration:none;font-size:13px;font-weight:700}
     .tabs{display:flex;gap:6px;border-bottom:1px solid var(--border);margin-bottom:20px}
     .tab{padding:10px 18px;cursor:pointer;border:none;background:none;font:inherit;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px;transition:.2s}
     .tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:700}
@@ -54,7 +52,7 @@
     .toast-item.error{background:var(--danger)}
     .toast-item.success{background:var(--success)}
     .toast-item.warning{background:var(--warn);color:#1a202c}
-    .lang-switch{position:absolute;right:0;top:18px;display:flex;gap:4px;border:1px solid var(--border);border-radius:8px;background:#fff;padding:3px}
+    .lang-switch{display:flex;gap:4px;border:1px solid var(--border);border-radius:8px;background:#fff;padding:3px}
     .lang-switch button{border:0;background:transparent;color:var(--muted);height:26px;padding:0 8px;border-radius:6px;font:inherit;font-size:12px;cursor:pointer}
     .lang-switch button.active{background:var(--primary);color:#fff}
     .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px}
@@ -63,149 +61,119 @@
     .detail-item .val{font-size:13px;word-break:break-all}
     .console-hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;margin-bottom:18px;padding:18px;border:1px solid var(--border);border-radius:var(--radius);background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);box-shadow:var(--shadow)}
     .console-title{display:flex;align-items:center;gap:12px;margin-bottom:6px}.avatar{width:44px;height:44px;border-radius:8px;background:linear-gradient(135deg,#2563eb,#16a34a);display:grid;place-items:center;color:#fff;font-weight:800}.console-title h2{font-size:20px;margin:0}.console-sub{color:var(--muted);font-size:13px}.quick-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.section-head h3{margin:0}.section-actions{display:flex;gap:8px;flex-wrap:wrap}.badge{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:999px;background:#eef6ff;color:var(--primary);font-size:12px;font-weight:700}.badge-ok{background:#dcfce7;color:#166534}.badge-warn{background:#fef3c7;color:#92400e}.split-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr);gap:16px}.table-wrap{overflow:auto;border:1px solid var(--border);border-radius:var(--radius)}.table-wrap table th{position:sticky;top:0}.copy-btn{padding:4px 8px;min-height:26px}.field-inline{display:flex;align-items:center;justify-content:space-between;gap:8px}.field-inline .val{min-width:0}.muted{color:var(--muted)}
+    .auth-shell{display:grid;grid-template-columns:minmax(0,1fr) 430px;gap:18px;align-items:stretch;margin-top:10px}
+    .auth-brand-panel,.auth-card{background:#fff;border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 18px 44px rgba(15,23,42,.09)}
+    .auth-brand-panel{padding:28px;display:flex;flex-direction:column;justify-content:space-between;min-height:560px;background:linear-gradient(160deg,#fff 0%,#f7fbff 48%,#eef6ff 100%);overflow:hidden;position:relative}
+    .auth-brand-panel:before{content:"";position:absolute;right:-120px;top:-120px;width:260px;height:260px;border:1px solid #d8e6f8;border-radius:999px;background:rgba(37,99,235,.05)}
+    .auth-kicker{color:var(--primary);font-size:12px;font-weight:800;margin-bottom:10px}.auth-brand-panel h2{max-width:660px;font-size:32px;line-height:1.16;margin-bottom:12px}.auth-lead{max-width:650px;color:var(--muted);font-size:14px}
+    .auth-points{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:24px 0}.auth-point{padding:12px;border:1px solid #e4ecf7;border-radius:var(--radius);background:rgba(255,255,255,.78)}.auth-point strong{display:block;font-size:13px;margin-bottom:4px}.auth-point span{font-size:12px;color:var(--muted)}
+    .auth-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.auth-metric{padding:12px;border:1px solid #dbeafe;border-radius:var(--radius);background:#fff}.auth-metric .val{font-size:20px;font-weight:800;color:var(--text)}.auth-metric .lbl{font-size:11px;color:var(--muted)}
+    .auth-card{padding:18px}.auth-card-head{margin-bottom:14px}.auth-card-head h3{font-size:20px;margin-bottom:4px}.auth-card-head p{font-size:12px;color:var(--muted)}.auth-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:16px}.auth-tab{height:34px;border:1px solid var(--border);border-radius:var(--radius);background:#fff;color:var(--muted);font:inherit;font-size:12px;cursor:pointer}.auth-tab.active{background:#172033;border-color:#172033;color:#fff;font-weight:700}.auth-mode-panel{display:block}.auth-card .form-row{display:block;margin-bottom:12px}.auth-card .form-row label{display:block;min-width:0;margin-bottom:5px;font-size:12px;font-weight:700;color:var(--muted)}.auth-card input{width:100%;height:40px}.auth-card .captcha-box{display:grid;grid-template-columns:auto auto minmax(72px,1fr) auto;gap:8px;align-items:center}.auth-card .captcha-box input{width:100%!important}.auth-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px}.auth-actions .btn{min-height:38px;padding:8px 16px;font-weight:700}.auth-links{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.auth-toggle{font-size:12px;color:var(--primary);cursor:pointer;text-decoration:none;margin-left:0;font-weight:700}.auth-toggle:hover{text-decoration:underline}.auth-desc{font-size:12px;color:var(--muted);margin-bottom:12px}.auth-footnote{margin-top:14px;padding:10px 12px;border-radius:var(--radius);background:#f8fbff;border:1px solid #e8eef8;color:var(--muted);font-size:12px}
+    @media (max-width:960px){.auth-shell{grid-template-columns:1fr}.auth-brand-panel{min-height:auto}.auth-brand-panel h2{font-size:27px}.auth-points{grid-template-columns:1fr 1fr}}
     @media (max-width:860px){.console-hero,.split-grid{grid-template-columns:1fr}.quick-actions{justify-content:flex-start}}
-    @media (max-width:720px){.lang-switch{position:static;justify-content:center;margin:10px auto 0;width:max-content}.form-row{align-items:stretch;flex-direction:column}.form-row label{min-width:0}.form-row input,.form-row button{width:100%}.captcha-box{flex-wrap:wrap}.logged-in-bar{align-items:stretch;flex-direction:column}.section-head{align-items:flex-start;flex-direction:column}.quick-actions,.section-actions{width:100%}.quick-actions .btn,.section-actions .btn{flex:1}.tabs{overflow:auto}}
+    @media (max-width:720px){.topbar{align-items:flex-start;flex-direction:column}.nav-actions{width:100%}.auth-points,.auth-metrics{grid-template-columns:1fr}.auth-brand-panel{padding:20px}.auth-brand-panel h2{font-size:24px}.auth-tabs{grid-template-columns:1fr 1fr}.form-row{align-items:stretch;flex-direction:column}.form-row label{min-width:0}.form-row input,.form-row button{width:100%}.captcha-box{flex-wrap:wrap}.auth-card .captcha-box{grid-template-columns:1fr auto}.auth-card .captcha-display{grid-column:1}.auth-card .captcha-box input{grid-column:1 / -1}.auth-card .captcha-refresh{grid-column:1 / -1}.logged-in-bar{align-items:stretch;flex-direction:column}.section-head{align-items:flex-start;flex-direction:column}.quick-actions,.section-actions{width:100%}.quick-actions .btn,.section-actions .btn{flex:1}.tabs{overflow:auto}}
   </style>
 </head>
 <body>
 <div id="toastStack" class="toast-stack"></div>
 <div class="container">
-  <header>
-    <h1 data-i18n="title">MaClaw SkillMarket</h1>
-    <p data-i18n="subtitle">Account / Skills</p>
-    <p style="margin-top:6px"><a href="/skillmarket" style="font-size:13px;color:var(--primary);text-decoration:none" data-i18n="nav.browse"><- Back to Skill Browse</a></p>
-    <div class="lang-switch" aria-label="Language">
-      <button type="button" id="lang-zh" onclick="setLanguage('zh')">中文</button>
-      <button type="button" id="lang-en" onclick="setLanguage('en')">EN</button>
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand-logo" src="/skillmarket/maclaw-logo.png" alt="MaClaw logo">
+      <div>
+        <h1 data-i18n="title">MaClaw SkillMarket</h1>
+        <p data-i18n="subtitle">Account / Skills</p>
+      </div>
+    </div>
+    <div class="nav-actions">
+      <a class="nav-link" href="/skillmarket" data-i18n="nav.browse"><- Back to Skill Browse</a>
+      <div class="lang-switch" aria-label="Language">
+        <button type="button" id="lang-zh" onclick="setLanguage('zh')">&#20013;&#25991;</button>
+        <button type="button" id="lang-en" onclick="setLanguage('en')">EN</button>
+      </div>
     </div>
   </header>
 
   <!-- Auth Section (shown when not logged in) -->
-  <div id="auth-section" class="card">
-    <div id="auth-mode-login">
-      <h3 data-i18n="auth.login.title">Login</h3>
-      <div class="form-row">
-        <label data-i18n="auth.email">Email</label>
-        <input id="login-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com">
-      </div>
-      <div class="form-row">
-        <label data-i18n="auth.password">Password</label>
-        <input id="login-password" type="password" data-i18n-placeholder="auth.password.placeholder" placeholder="Password">
-      </div>
-      <div class="form-row">
-        <label data-i18n="auth.captcha">Captcha</label>
-        <div class="captcha-box">
-          <span class="captcha-display" id="login-captcha-q"></span>
-          <span>= </span>
-          <input id="login-captcha-a" type="text" style="width:60px" placeholder="?">
-          <span class="captcha-refresh" onclick="refreshCaptcha('login')" title="refresh" data-i18n="auth.refresh">Refresh</span>
+  <div id="auth-section" class="auth-shell">
+    <section class="auth-brand-panel">
+      <div>
+        <div class="auth-kicker" data-i18n="auth.hero.kicker">SECURE SKILL OPERATIONS</div>
+        <h2 data-i18n="auth.hero.title">Sign in to manage your SkillMarket workspace</h2>
+        <p class="auth-lead" data-i18n="auth.hero.desc">Access account security, credits, published skills, API key delivery, and marketplace operations from one professional console.</p>
+        <div class="auth-points">
+          <div class="auth-point"><strong data-i18n="auth.point.security.title">Account security</strong><span data-i18n="auth.point.security.desc">Password, reset links, and verified sessions.</span></div>
+          <div class="auth-point"><strong data-i18n="auth.point.skills.title">Skill operations</strong><span data-i18n="auth.point.skills.desc">Track publishing, downloads, ratings, and withdrawal.</span></div>
+          <div class="auth-point"><strong data-i18n="auth.point.credits.title">Credit ledger</strong><span data-i18n="auth.point.credits.desc">Review balances, settlements, and transaction history.</span></div>
+          <div class="auth-point"><strong data-i18n="auth.point.keys.title">Delivery keys</strong><span data-i18n="auth.point.keys.desc">Manage API key inventory for paid delivery.</span></div>
         </div>
       </div>
-      <div class="form-row">
-        <label></label>
-        <button class="btn btn-primary" onclick="doLogin()" data-i18n="auth.login.btn">Login</button>
-        <span class="auth-toggle" onclick="showAuthMode('register')" data-i18n="auth.switch.register">No account? Register</span>
-        <span class="auth-toggle" onclick="showAuthMode('lookup')" data-i18n="auth.switch.lookup">Email verification login</span>
-        <span class="auth-toggle" onclick="showAuthMode('forgot')" data-i18n="auth.switch.forgot">Forgot password?</span>
+      <div class="auth-metrics">
+        <div class="auth-metric"><div class="val">SSO</div><div class="lbl" data-i18n="auth.metric.identity">Identity ready</div></div>
+        <div class="auth-metric"><div class="val">2m</div><div class="lbl" data-i18n="auth.metric.recovery">Email recovery</div></div>
+        <div class="auth-metric"><div class="val">24/7</div><div class="lbl" data-i18n="auth.metric.access">Console access</div></div>
       </div>
-      <div id="login-msg"></div>
-    </div>
+    </section>
 
-    <div id="auth-mode-register" style="display:none">
-      <h3 data-i18n="auth.register.title">Create Account</h3>
-      <div class="form-row">
-        <label data-i18n="auth.email">Email</label>
-        <input id="reg-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com">
+    <section class="auth-card">
+      <div class="auth-card-head">
+        <h3 data-i18n="auth.card.title">Welcome back</h3>
+        <p data-i18n="auth.card.desc">Choose a secure sign-in method to continue.</p>
       </div>
-      <div class="form-row">
-        <label data-i18n="auth.password">Password</label>
-        <input id="reg-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters">
+      <div class="auth-tabs" role="tablist" aria-label="Authentication modes">
+        <button class="auth-tab active" type="button" data-auth-tab="login" onclick="showAuthMode('login')" data-i18n="auth.login.title">Login</button>
+        <button class="auth-tab" type="button" data-auth-tab="register" onclick="showAuthMode('register')" data-i18n="auth.register.short">Register</button>
+        <button class="auth-tab" type="button" data-auth-tab="lookup" onclick="showAuthMode('lookup')" data-i18n="auth.lookup.short">Email Login</button>
+        <button class="auth-tab" type="button" data-auth-tab="forgot" onclick="showAuthMode('forgot')" data-i18n="auth.forgot.short">Recover</button>
       </div>
-      <div class="form-row">
-        <label data-i18n="auth.confirm.password">Confirm Password</label>
-        <input id="reg-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again">
-      </div>
-      <div class="form-row">
-        <label data-i18n="auth.captcha">Captcha</label>
-        <div class="captcha-box">
-          <span class="captcha-display" id="reg-captcha-q"></span>
-          <span>= </span>
-          <input id="reg-captcha-a" type="text" style="width:60px" placeholder="?">
-          <span class="captcha-refresh" onclick="refreshCaptcha('reg')" title="refresh" data-i18n="auth.refresh">Refresh</span>
-        </div>
-      </div>
-      <div class="form-row">
-        <label></label>
-        <button class="btn btn-success" onclick="doRegister()" data-i18n="auth.register.btn">Register</button>
-        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span>
-      </div>
-      <div id="reg-msg"></div>
-    </div>
 
-    <div id="auth-mode-lookup" style="display:none">
-      <h3 data-i18n="auth.lookup.title">Email Verification Login</h3>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px" data-i18n="auth.lookup.desc">Enter your registered email. We will send a verification link to log you in.</p>
-      <div class="form-row">
-        <label data-i18n="auth.email">Email</label>
-        <input id="lookup-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com" style="flex:1">
+      <div id="auth-mode-login" class="auth-mode-panel">
+        <div class="form-row"><label data-i18n="auth.email">Email</label><input id="login-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
+        <div class="form-row"><label data-i18n="auth.password">Password</label><input id="login-password" type="password" data-i18n-placeholder="auth.password.placeholder" placeholder="Password"></div>
+        <div class="form-row"><label data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="login-captcha-q"></span><span>=</span><input id="login-captcha-a" type="text" placeholder="?"><span class="captcha-refresh" onclick="refreshCaptcha('login')" title="refresh" data-i18n="auth.refresh">Refresh</span></div></div>
+        <div class="auth-actions"><button class="btn btn-primary" onclick="doLogin()" data-i18n="auth.login.btn">Login</button></div>
+        <div class="auth-links"><span class="auth-toggle" onclick="showAuthMode('register')" data-i18n="auth.switch.register">No account? Register</span><span class="auth-toggle" onclick="showAuthMode('lookup')" data-i18n="auth.switch.lookup">Email verification login</span><span class="auth-toggle" onclick="showAuthMode('forgot')" data-i18n="auth.switch.forgot">Forgot password?</span></div>
+        <div id="login-msg"></div>
       </div>
-      <div class="form-row">
-        <label data-i18n="auth.captcha">Captcha</label>
-        <div class="captcha-box">
-          <span class="captcha-display" id="lookup-captcha-q"></span>
-          <span>= </span>
-          <input id="lookup-captcha-a" type="text" style="width:60px" placeholder="?">
-          <span class="captcha-refresh" onclick="refreshCaptcha('lookup')" title="refresh" data-i18n="auth.refresh">Refresh</span>
-        </div>
-      </div>
-      <div class="form-row">
-        <label></label>
-        <button class="btn btn-primary" onclick="doLookup()" data-i18n="auth.lookup.btn">Send Verification Email</button>
-        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span>
-      </div>
-      <div id="lookup-msg"></div>
-    </div>
 
-    <div id="auth-mode-forgot" style="display:none">
-      <h3 data-i18n="auth.forgot.title">Forgot Password</h3>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px" data-i18n="auth.forgot.desc">Enter your registered email. We will send a password reset link.</p>
-      <div class="form-row">
-        <label data-i18n="auth.email">Email</label>
-        <input id="forgot-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com" style="flex:1">
+      <div id="auth-mode-register" class="auth-mode-panel" style="display:none">
+        <p class="auth-desc" data-i18n="auth.register.desc">Create an account and activate it from your mailbox.</p>
+        <div class="form-row"><label data-i18n="auth.email">Email</label><input id="reg-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
+        <div class="form-row"><label data-i18n="auth.password">Password</label><input id="reg-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters"></div>
+        <div class="form-row"><label data-i18n="auth.confirm.password">Confirm Password</label><input id="reg-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again"></div>
+        <div class="form-row"><label data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="reg-captcha-q"></span><span>=</span><input id="reg-captcha-a" type="text" placeholder="?"><span class="captcha-refresh" onclick="refreshCaptcha('reg')" title="refresh" data-i18n="auth.refresh">Refresh</span></div></div>
+        <div class="auth-actions"><button class="btn btn-success" onclick="doRegister()" data-i18n="auth.register.btn">Register</button></div>
+        <div class="auth-links"><span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span></div>
+        <div id="reg-msg"></div>
       </div>
-      <div class="form-row">
-        <label data-i18n="auth.captcha">Captcha</label>
-        <div class="captcha-box">
-          <span class="captcha-display" id="forgot-captcha-q"></span>
-          <span>= </span>
-          <input id="forgot-captcha-a" type="text" style="width:60px" placeholder="?">
-          <span class="captcha-refresh" onclick="refreshCaptcha('forgot')" title="refresh" data-i18n="auth.refresh">Refresh</span>
-        </div>
-      </div>
-      <div class="form-row">
-        <label></label>
-        <button class="btn btn-primary" onclick="doForgotPassword()" data-i18n="auth.forgot.btn">Send Reset Email</button>
-        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span>
-      </div>
-      <div id="forgot-msg"></div>
-    </div>
 
-    <div id="auth-mode-reset" style="display:none">
-      <h3 data-i18n="auth.reset.title">Reset Password</h3>
-      <div class="form-row">
-        <label data-i18n="auth.password">Password</label>
-        <input id="reset-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters">
+      <div id="auth-mode-lookup" class="auth-mode-panel" style="display:none">
+        <p class="auth-desc" data-i18n="auth.lookup.desc">Enter your registered email. We will send a verification link to log you in.</p>
+        <div class="form-row"><label data-i18n="auth.email">Email</label><input id="lookup-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
+        <div class="form-row"><label data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="lookup-captcha-q"></span><span>=</span><input id="lookup-captcha-a" type="text" placeholder="?"><span class="captcha-refresh" onclick="refreshCaptcha('lookup')" title="refresh" data-i18n="auth.refresh">Refresh</span></div></div>
+        <div class="auth-actions"><button class="btn btn-primary" onclick="doLookup()" data-i18n="auth.lookup.btn">Send Verification Email</button></div>
+        <div class="auth-links"><span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span></div>
+        <div id="lookup-msg"></div>
       </div>
-      <div class="form-row">
-        <label data-i18n="auth.confirm.password">Confirm Password</label>
-        <input id="reset-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again">
+
+      <div id="auth-mode-forgot" class="auth-mode-panel" style="display:none">
+        <p class="auth-desc" data-i18n="auth.forgot.desc">Enter your registered email. We will send a password reset link.</p>
+        <div class="form-row"><label data-i18n="auth.email">Email</label><input id="forgot-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
+        <div class="form-row"><label data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="forgot-captcha-q"></span><span>=</span><input id="forgot-captcha-a" type="text" placeholder="?"><span class="captcha-refresh" onclick="refreshCaptcha('forgot')" title="refresh" data-i18n="auth.refresh">Refresh</span></div></div>
+        <div class="auth-actions"><button class="btn btn-primary" onclick="doForgotPassword()" data-i18n="auth.forgot.btn">Send Reset Email</button></div>
+        <div class="auth-links"><span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span></div>
+        <div id="forgot-msg"></div>
       </div>
-      <div class="form-row">
-        <label></label>
-        <button class="btn btn-primary" onclick="doResetPassword()" data-i18n="auth.reset.btn">Reset Password</button>
+
+      <div id="auth-mode-reset" class="auth-mode-panel" style="display:none">
+        <p class="auth-desc" data-i18n="auth.reset.desc">Set a new password from the secure reset link.</p>
+        <div class="form-row"><label data-i18n="auth.password">Password</label><input id="reset-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters"></div>
+        <div class="form-row"><label data-i18n="auth.confirm.password">Confirm Password</label><input id="reset-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again"></div>
+        <div class="auth-actions"><button class="btn btn-primary" onclick="doResetPassword()" data-i18n="auth.reset.btn">Reset Password</button></div>
+        <div id="reset-msg"></div>
       </div>
-      <div id="reset-msg"></div>
-    </div>
+      <div class="auth-footnote" data-i18n="auth.footnote">Use the same mailbox you use for SkillMarket publishing and delivery.</div>
+    </section>
   </div>
 
   <!-- Logged-in bar -->
@@ -423,6 +391,22 @@ document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
 const I18N = {
   'title':              { zh: 'MaClaw SkillMarket \u7528\u6237\u4e2d\u5fc3', en: 'MaClaw SkillMarket' },
   'subtitle':           { zh: '\u8d26\u6237\u7ba1\u7406 / \u6280\u80fd\u7ba1\u7406', en: 'Account / Skills' },
+  'auth.hero.kicker':   { zh: '\u5b89\u5168\u7684\u6280\u80fd\u8fd0\u8425\u5165\u53e3', en: 'SECURE SKILL OPERATIONS' },
+  'auth.hero.title':    { zh: '\u767b\u5f55\u5e76\u7ba1\u7406\u4f60\u7684 SkillMarket \u5de5\u4f5c\u53f0', en: 'Sign in to manage your SkillMarket workspace' },
+  'auth.hero.desc':     { zh: '\u4ece\u4e00\u4e2a\u4e13\u4e1a\u63a7\u5236\u53f0\u7edf\u4e00\u7ba1\u7406\u8d26\u6237\u5b89\u5168\u3001\u79ef\u5206\u3001\u6280\u80fd\u53d1\u5e03\u3001API Key \u4ea4\u4ed8\u548c\u5e02\u573a\u8fd0\u8425\u3002', en: 'Access account security, credits, published skills, API key delivery, and marketplace operations from one professional console.' },
+  'auth.point.security.title': { zh: '\u8d26\u6237\u5b89\u5168', en: 'Account security' },
+  'auth.point.security.desc': { zh: '\u5bc6\u7801\u3001\u91cd\u7f6e\u94fe\u63a5\u548c\u5df2\u9a8c\u8bc1\u4f1a\u8bdd\u3002', en: 'Password, reset links, and verified sessions.' },
+  'auth.point.skills.title': { zh: '\u6280\u80fd\u8fd0\u8425', en: 'Skill operations' },
+  'auth.point.skills.desc': { zh: '\u8ddf\u8e2a\u53d1\u5e03\u3001\u4e0b\u8f7d\u3001\u8bc4\u5206\u548c\u4e0b\u67b6\u3002', en: 'Track publishing, downloads, ratings, and withdrawal.' },
+  'auth.point.credits.title': { zh: '\u79ef\u5206\u8d26\u672c', en: 'Credit ledger' },
+  'auth.point.credits.desc': { zh: '\u67e5\u770b\u4f59\u989d\u3001\u7ed3\u7b97\u548c\u4ea4\u6613\u8bb0\u5f55\u3002', en: 'Review balances, settlements, and transaction history.' },
+  'auth.point.keys.title': { zh: '\u4ea4\u4ed8\u5bc6\u94a5', en: 'Delivery keys' },
+  'auth.point.keys.desc': { zh: '\u7ba1\u7406\u4ed8\u8d39\u4ea4\u4ed8\u9700\u8981\u7684 API Key \u5e93\u5b58\u3002', en: 'Manage API key inventory for paid delivery.' },
+  'auth.metric.identity': { zh: '\u8eab\u4efd\u5c31\u7eea', en: 'Identity ready' },
+  'auth.metric.recovery': { zh: '\u90ae\u4ef6\u627e\u56de', en: 'Email recovery' },
+  'auth.metric.access':  { zh: '\u63a7\u5236\u53f0\u8bbf\u95ee', en: 'Console access' },
+  'auth.card.title':    { zh: '\u6b22\u8fce\u56de\u6765', en: 'Welcome back' },
+  'auth.card.desc':     { zh: '\u9009\u62e9\u4e00\u79cd\u5b89\u5168\u65b9\u5f0f\u7ee7\u7eed\u3002', en: 'Choose a secure sign-in method to continue.' },
   'auth.email':         { zh: '\u90ae\u7bb1', en: 'Email' },
   'auth.email.placeholder': { zh: 'you@example.com', en: 'your@email.com' },
   'auth.password.placeholder': { zh: '\u8f93\u5165\u5bc6\u7801', en: 'Password' },
@@ -441,7 +425,10 @@ const I18N = {
   'action.exportTx':    { zh: '\u5bfc\u51fa\u5f53\u524d\u9875\u4ea4\u6613', en: 'Export Current Page' },
   'auth.login.title':   { zh: '\u767b\u5f55', en: 'Login' },
   'auth.register.title':{ zh: '\u6ce8\u518c\u65b0\u8d26\u6237', en: 'Create Account' },
+  'auth.register.short':{ zh: '\u6ce8\u518c', en: 'Register' },
+  'auth.register.desc': { zh: '\u521b\u5efa\u8d26\u6237\u540e\u8bf7\u524d\u5f80\u90ae\u7bb1\u5b8c\u6210\u6fc0\u6d3b\u3002', en: 'Create an account and activate it from your mailbox.' },
   'auth.lookup.title':  { zh: '\u90ae\u4ef6\u9a8c\u8bc1\u767b\u5f55', en: 'Email Verification Login' },
+  'auth.lookup.short':  { zh: '\u90ae\u4ef6\u767b\u5f55', en: 'Email Login' },
   'auth.lookup.desc':   { zh: '\u8f93\u5165\u5df2\u6ce8\u518c\u7684\u90ae\u7bb1\uff0c\u6211\u4eec\u5c06\u53d1\u9001\u9a8c\u8bc1\u94fe\u63a5\u5230\u60a8\u7684\u90ae\u7bb1\uff0c\u70b9\u51fb\u5373\u53ef\u767b\u5f55\u3002', en: 'Enter your registered email. We will send a verification link to log you in.' },
   'auth.password':      { zh: '\u5bc6\u7801', en: 'Password' },
   'auth.confirm.password':{ zh: '\u786e\u8ba4\u5bc6\u7801', en: 'Confirm' },
@@ -454,13 +441,16 @@ const I18N = {
   'auth.switch.lookup': { zh: '\u90ae\u4ef6\u9a8c\u8bc1\u767b\u5f55', en: 'Email verification login' },
   'auth.switch.forgot': { zh: '\u5fd8\u8bb0\u5bc6\u7801\uff1f', en: 'Forgot password?' },
   'auth.forgot.title':  { zh: '\u5fd8\u8bb0\u5bc6\u7801', en: 'Forgot Password' },
+  'auth.forgot.short':  { zh: '\u627e\u56de', en: 'Recover' },
   'auth.forgot.desc':   { zh: '\u8f93\u5165\u5df2\u6ce8\u518c\u7684\u90ae\u7bb1\uff0c\u6211\u4eec\u5c06\u53d1\u9001\u5bc6\u7801\u91cd\u8bbe\u94fe\u63a5\u3002', en: 'Enter your registered email. We will send a password reset link.' },
   'auth.forgot.btn':    { zh: '\u53d1\u9001\u91cd\u8bbe\u90ae\u4ef6', en: 'Send Reset Email' },
   'auth.reset.title':   { zh: '\u91cd\u8bbe\u5bc6\u7801', en: 'Reset Password' },
+  'auth.reset.desc':    { zh: '\u901a\u8fc7\u5b89\u5168\u91cd\u7f6e\u94fe\u63a5\u8bbe\u7f6e\u65b0\u5bc6\u7801\u3002', en: 'Set a new password from the secure reset link.' },
   'auth.reset.btn':     { zh: '\u91cd\u8bbe\u5bc6\u7801', en: 'Reset Password' },
   'msg.forgot.ok':      { zh: '\u91cd\u8bbe\u90ae\u4ef6\u5df2\u53d1\u9001\uff0c\u8bf7\u67e5\u6536\u90ae\u7bb1\u3002', en: 'Reset email sent. Please check your inbox.' },
   'msg.reset.ok':       { zh: '\u5bc6\u7801\u5df2\u91cd\u8bbe\uff0c\u5df2\u81ea\u52a8\u767b\u5f55\u3002', en: 'Password reset. You are now logged in.' },
   'auth.loggedAs':      { zh: '\u5df2\u767b\u5f55\uff1a', en: 'Logged in as:' },
+  'auth.footnote':      { zh: '\u8bf7\u4f7f\u7528\u4e0e SkillMarket \u53d1\u5e03\u548c\u4ea4\u4ed8\u76f8\u540c\u7684\u90ae\u7bb1\u3002', en: 'Use the same mailbox you use for SkillMarket publishing and delivery.' },
   'auth.logout':        { zh: '\u9000\u51fa', en: 'Logout' },
   'tab.account':        { zh: '\u8d26\u6237', en: 'Account' },
   'tab.myskills':       { zh: '\u6211\u7684\u6280\u80fd', en: 'My Skills' },
@@ -631,6 +621,9 @@ function checkCaptcha(prefix) {
 function showAuthMode(mode) {
   ['login','register','lookup','forgot','reset'].forEach(m => {
     document.getElementById('auth-mode-' + m).style.display = m === mode ? '' : 'none';
+  });
+  document.querySelectorAll('[data-auth-tab]').forEach(tab => {
+    tab.classList.toggle('active', tab.getAttribute('data-auth-tab') === mode);
   });
   if (mode === 'forgot') refreshCaptcha('forgot');
   else if (mode === 'register') refreshCaptcha('reg');

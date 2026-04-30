@@ -43,7 +43,7 @@ func run(args []string) error {
 	}
 	defer cleanup()
 
-	// Serve embedded admin frontend at /admin/ with SPA fallback.
+	// Serve the embedded Admin Web Console at /admin/ with SPA fallback.
 	// API routes under /admin/ are handled by center.Mux (registered in buildMux).
 	// Non-API requests serve static files or fall back to index.html for SPA routing.
 	adminFS, err := fs.Sub(adminAssets, "web/admin/dist")
@@ -69,7 +69,7 @@ func run(args []string) error {
 	}()
 
 	log.Printf("[iWorkerCenter] listening on %s", addr)
-	log.Printf("[iWorkerCenter] Admin UI: http://localhost:%d/admin/", cfg.Server.Port)
+	log.Printf("[iWorkerCenter] Admin Web Console: http://localhost:%d/admin/", cfg.Server.Port)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("listen: %w", err)
 	}

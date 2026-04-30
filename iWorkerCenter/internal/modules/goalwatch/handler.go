@@ -2,6 +2,7 @@ package goalwatch
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,9 +12,14 @@ import (
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
 
+type RecoveryExecutor interface {
+	StartOrResumeStep(tenantID string, stepInstanceID, actorID, note string) error
+}
+
 type Handler struct {
-	svc     *Service
-	monitor *Monitor
+	svc      *Service
+	monitor  *Monitor
+	recovery RecoveryExecutor
 }
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
@@ -21,6 +27,12 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 func (h *Handler) SetMonitor(monitor *Monitor) {
 	if h != nil {
 		h.monitor = monitor
+	}
+}
+
+func (h *Handler) SetRecoveryExecutor(recovery RecoveryExecutor) {
+	if h != nil {
+		h.recovery = recovery
 	}
 }
 
@@ -36,6 +48,7 @@ func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/goalwatch/check", h.handleCheck)
 	mux.HandleFunc("/admin/goalwatch/status", h.handleStatus)
+	mux.HandleFunc("/admin/goalwatch/health", h.handleHealth)
 }
 
 func parsePushAction(path string) (string, string) {
@@ -68,8 +81,8 @@ func (h *Handler) handleClientPushAction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	eventID, action := parsePushAction(r.URL.Path)
-	if eventID == "" || action != "ack" {
-		response.NotFound(w, "ACTION_NOT_FOUND", "expected /client/goalwatch/pushes/{event_id}/ack")
+	if eventID == "" || (action != "ack" && action != "recover") {
+		response.NotFound(w, "ACTION_NOT_FOUND", "expected /client/goalwatch/pushes/{event_id}/ack or /recover")
 		return
 	}
 	var req struct {
@@ -81,7 +94,17 @@ func (h *Handler) handleClientPushAction(w http.ResponseWriter, r *http.Request)
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
-	result, err := h.svc.AckPush(requestTenantID(r), req.ColleagueID, eventID, req.Status, req.Note, time.Now().UTC())
+	tid := requestTenantID(r)
+	if action == "recover" {
+		result, err := h.recoverPush(tid, req.ColleagueID, eventID, req.Note, time.Now().UTC())
+		if err != nil {
+			response.BadRequest(w, "RECOVER_PUSH_FAILED", err.Error())
+			return
+		}
+		response.OK(w, result)
+		return
+	}
+	result, err := h.svc.AckPush(tid, req.ColleagueID, eventID, req.Status, req.Note, time.Now().UTC())
 	if err != nil {
 		response.BadRequest(w, "ACK_PUSH_FAILED", err.Error())
 		return
@@ -89,6 +112,71 @@ func (h *Handler) handleClientPushAction(w http.ResponseWriter, r *http.Request)
 	response.OK(w, result)
 }
 
+type RecoverResult struct {
+	Push           Push      `json:"push"`
+	Ack            AckResult `json:"ack"`
+	RecoveryAction string    `json:"recovery_action"`
+	RecoveryMethod string    `json:"recovery_method"`
+	RecoveryPath   string    `json:"recovery_path"`
+	Status         string    `json:"status"`
+}
+
+func (h *Handler) recoverPush(tenantID, colleagueID, eventID, note string, now time.Time) (RecoverResult, error) {
+	if h == nil || h.svc == nil {
+		return RecoverResult{}, fmt.Errorf("goalwatch service is unavailable")
+	}
+	if h.recovery == nil {
+		return RecoverResult{}, fmt.Errorf("goalwatch recovery executor is unavailable")
+	}
+	pushes, err := h.svc.ListPushesForColleague(tenantID, colleagueID, 100)
+	if err != nil {
+		return RecoverResult{}, err
+	}
+	var target *Push
+	for i := range pushes {
+		if pushes[i].EventID == eventID {
+			target = &pushes[i]
+			break
+		}
+	}
+	if target == nil {
+		return RecoverResult{}, fmt.Errorf("push not found for colleague: %s", eventID)
+	}
+	if strings.TrimSpace(target.WorkflowStepInstanceID) == "" {
+		return RecoverResult{}, fmt.Errorf("push has no workflow_step_instance_id")
+	}
+	switch strings.TrimSpace(target.RecoveryAction) {
+	case "start_workflow_step", "resume_workflow_step":
+		if err := h.recovery.StartOrResumeStep(tenantID, target.WorkflowStepInstanceID, colleagueID, firstNonEmpty(note, target.RecoveryAction)); err != nil {
+			return RecoverResult{}, err
+		}
+	default:
+		return RecoverResult{}, fmt.Errorf("unsupported recovery action: %s", target.RecoveryAction)
+	}
+	ackNote := recoverAckNote(*target, note)
+	ack, err := h.svc.AckPush(tenantID, colleagueID, eventID, "recovered", ackNote, now)
+	if err != nil {
+		return RecoverResult{}, err
+	}
+	return RecoverResult{Push: *target, Ack: ack, RecoveryAction: target.RecoveryAction, RecoveryMethod: target.RecoveryMethod, RecoveryPath: target.RecoveryPath, Status: "recovered"}, nil
+}
+
+func recoverAckNote(push Push, note string) string {
+	parts := []string{}
+	if strings.TrimSpace(push.RecoveryAction) != "" {
+		parts = append(parts, "recovery_action="+strings.TrimSpace(push.RecoveryAction))
+	}
+	if strings.TrimSpace(push.RecoveryPath) != "" {
+		parts = append(parts, "recovery_path="+strings.TrimSpace(push.RecoveryPath))
+	}
+	if strings.TrimSpace(note) != "" {
+		parts = append(parts, "note="+strings.TrimSpace(note))
+	}
+	if len(parts) == 0 {
+		return strings.TrimSpace(push.RecoveryAction)
+	}
+	return strings.Join(parts, " ")
+}
 func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or POST")
@@ -122,12 +210,24 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, h.monitor.Status())
 }
 
+func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+	if h.monitor == nil {
+		response.OK(w, MonitorHealth{Level: "warning", Reasons: []string{"goalwatch_monitor_not_configured"}, RecommendedActions: []string{"check_iworkercenter_bootstrap_goalwatch_monitor"}, Config: configStatus(h.svc), Status: MonitorStatus{Config: configStatus(h.svc)}})
+		return
+	}
+	response.OK(w, h.monitor.Health(time.Now().UTC()))
+}
+
 func configStatus(svc *Service) MonitorConfigStatus {
 	if svc == nil {
 		return MonitorConfigStatus{}
 	}
 	cfg := svc.Config()
-	return MonitorConfigStatus{TickIntervalSeconds: int64(cfg.TickInterval.Seconds()), StalledAfterSeconds: int64(cfg.StalledAfter.Seconds()), PushCooldownSeconds: int64(cfg.PushCooldown.Seconds()), WorkersPerShard: cfg.WorkersPerShard, MaxWatchers: cfg.MaxWatchers}
+	return MonitorConfigStatus{TickIntervalSeconds: int64(cfg.TickInterval.Seconds()), StalledAfterSeconds: int64(cfg.StalledAfter.Seconds()), PushCooldownSeconds: int64(cfg.PushCooldown.Seconds()), LeaseTTLSeconds: int64(cfg.LeaseTTL.Seconds()), WorkersPerShard: cfg.WorkersPerShard, MaxWatchers: cfg.MaxWatchers}
 }
 
 func requestTenantID(r *http.Request) string {

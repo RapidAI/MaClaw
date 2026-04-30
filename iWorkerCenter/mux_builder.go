@@ -18,7 +18,7 @@ var spaFallback http.Handler
 // 2. LLM proxy routes (/v1/chat/completions, /v1/models)
 // 3. IM webhook routes (/webhook/feishu, /webhook/dingtalk, /webhook/wecom)
 // 4. Dashboard/settings API routes
-// 5. SPA frontend at /admin/ (set via spaFallback after build)
+// 5. Admin Web Console SPA at /admin/ (set via spaFallback after build)
 func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 	mux := http.NewServeMux()
 	var cleanups []func()

@@ -105,6 +105,40 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, strings.TrimSpace(id))
 }
 
+func (s *Service) PublishFromCenter(ctx context.Context, centerID string, input SkillInput) (*store.Skill, error) {
+	input.SourceCenterID = strings.TrimSpace(centerID)
+	if strings.TrimSpace(input.ID) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	if strings.TrimSpace(input.AuthorEmail) == "" {
+		return nil, fmt.Errorf("author_email is required")
+	}
+	if strings.TrimSpace(input.Author) == "" {
+		input.Author = input.AuthorEmail
+	}
+	if strings.TrimSpace(input.Status) == "" {
+		input.Status = "active"
+	}
+	skill, err := buildSkill(input, true)
+	if err != nil {
+		return nil, err
+	}
+	if existing, err := s.repo.GetByID(ctx, skill.ID); err == nil && existing != nil {
+		if existing.SourceCenterID != "" && existing.SourceCenterID != input.SourceCenterID {
+			return nil, fmt.Errorf("skill id already belongs to another center")
+		}
+		skill.CreatedAt = existing.CreatedAt
+		if err := s.repo.Update(ctx, skill); err != nil {
+			return nil, err
+		}
+		return s.repo.GetByID(ctx, skill.ID)
+	}
+	if err := s.repo.Create(ctx, skill); err != nil {
+		return nil, err
+	}
+	return skill, nil
+}
+
 func buildSkill(input SkillInput, create bool) (*store.Skill, error) {
 	id := strings.TrimSpace(input.ID)
 	if id == "" {
@@ -154,6 +188,8 @@ func buildSkill(input SkillInput, create bool) (*store.Skill, error) {
 		Status:         marketschema.NormalizeStatus(input.Status),
 		Price:          input.Price,
 		Author:         strings.TrimSpace(input.Author),
+		AuthorEmail:    strings.TrimSpace(input.AuthorEmail),
+		SourceCenterID: strings.TrimSpace(input.SourceCenterID),
 		PackageFormat:  packageFormat,
 		PackageContent: packageContent,
 		PackageSHA256:  packageSHA,

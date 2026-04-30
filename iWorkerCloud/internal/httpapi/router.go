@@ -65,6 +65,7 @@ func NewRouter(
 		mux.HandleFunc("POST /api/admin/skills", RequireAdmin(skillMarketHandler.CreateAdminSkill()))
 		mux.HandleFunc("PUT /api/admin/skills/{skill_id}", RequireAdmin(skillMarketHandler.UpdateAdminSkill()))
 		mux.HandleFunc("DELETE /api/admin/skills/{skill_id}", RequireAdmin(skillMarketHandler.DeleteAdminSkill()))
+		mux.HandleFunc("POST /api/centers/{id}/skills", skillMarketHandler.PublishCenterSkill())
 		mux.HandleFunc("GET /api/centers/{id}/skills/search", skillMarketHandler.SearchCenterSkills())
 		mux.HandleFunc("GET /api/centers/{id}/skills/{skill_id}", skillMarketHandler.GetCenterSkill())
 		mux.HandleFunc("GET /api/centers/{id}/skills/{skill_id}/package", skillMarketHandler.DownloadCenterSkillPackage())

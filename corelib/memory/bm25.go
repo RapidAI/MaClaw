@@ -54,5 +54,18 @@ func entryToDoc(e Entry) bm25.Doc {
 		// differ in tags (e.g. "api-server" vs "gpu-server").
 		text += " " + tagStr + " " + tagStr
 	}
+	// Include entity names in the index for entity-centric recall.
+	// Entity tags (e.g. "entity:Alice", "relation:lives_in") are stripped
+	// of their prefix and added to the searchable text.
+	if len(e.Entities) > 0 {
+		for _, ent := range e.Entities {
+			if strings.HasPrefix(ent, "entity:") {
+				name := strings.TrimPrefix(ent, "entity:")
+				if name != "" {
+					text += " " + name
+				}
+			}
+		}
+	}
 	return bm25.Doc{ID: e.ID, Text: text}
 }

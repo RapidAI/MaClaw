@@ -132,8 +132,8 @@ func TestCapacityInfo(t *testing.T) {
 	if active != 0 {
 		t.Fatalf("expected 0 active, got %d", active)
 	}
-	if maxItems != 500 {
-		t.Fatalf("expected 500 maxItems, got %d", maxItems)
+	if maxItems != 2000 {
+		t.Fatalf("expected 2000 maxItems, got %d", maxItems)
 	}
 
 	_ = s.Save(Entry{Content: "test entry", Category: CategoryUserFact})

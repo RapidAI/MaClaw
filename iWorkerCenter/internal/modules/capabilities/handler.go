@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,22 +17,30 @@ import (
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
 
-// CapabilityPackage represents a skill / "会做的事".
+// CapabilityPackage represents a skill package.
 type CapabilityPackage struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	Category      string `json:"category"`
-	Version       string `json:"version"`
-	Source        string `json:"source"`
-	RiskLevel     string `json:"risk_level"`
-	Status        string `json:"status"`
-	PackageStatus string `json:"package_status,omitempty"`
-	PackageFormat string `json:"package_format,omitempty"`
-	PackageSHA256 string `json:"package_sha256,omitempty"`
-	PackageSize   int64  `json:"package_size,omitempty"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Description        string `json:"description"`
+	Category           string `json:"category"`
+	Version            string `json:"version"`
+	Source             string `json:"source"`
+	RiskLevel          string `json:"risk_level"`
+	Status             string `json:"status"`
+	PackageStatus      string `json:"package_status,omitempty"`
+	PackageFormat      string `json:"package_format,omitempty"`
+	PackageSHA256      string `json:"package_sha256,omitempty"`
+	PackageSize        int64  `json:"package_size,omitempty"`
+	LocalSkillOrigin   string `json:"local_skill_origin,omitempty"`
+	CloudPublishStatus string `json:"cloud_publish_status,omitempty"`
+	CloudSkillID       string `json:"cloud_skill_id,omitempty"`
+	CloudPublishedAt   string `json:"cloud_published_at,omitempty"`
+	CloudPublishError  string `json:"cloud_publish_error,omitempty"`
+	SafetyStatus       string `json:"safety_status,omitempty"`
+	SafetyReason       string `json:"safety_reason,omitempty"`
+	SafetyReviewedAt   string `json:"safety_reviewed_at,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
 }
 
 // Binding represents a colleague-capability binding.
@@ -42,7 +51,7 @@ type Binding struct {
 	BoundAt      string `json:"bound_at"`
 }
 
-const capabilitySelectSQL = `SELECT id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, created_at, updated_at FROM capability_packages`
+const capabilitySelectSQL = `SELECT id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, local_skill_origin, cloud_publish_status, cloud_skill_id, cloud_published_at, cloud_publish_error, safety_status, safety_reason, safety_reviewed_at, created_at, updated_at FROM capability_packages`
 
 type capabilityScannable interface {
 	Scan(dest ...any) error
@@ -60,6 +69,7 @@ type Handler struct {
 	cloudURL                string
 	cloudCredentialResolver cloudCredentialResolver
 	audit                   *audit.Repo
+	skillEvolutionMonitor   *SkillEvolutionMonitor
 }
 
 // NewHandler creates a capabilities Handler.
@@ -97,8 +107,15 @@ func (h *Handler) SetAuditRepo(repo *audit.Repo) {
 	h.audit = repo
 }
 
+func (h *Handler) SetSkillEvolutionMonitor(monitor *SkillEvolutionMonitor) {
+	h.skillEvolutionMonitor = monitor
+}
+
 // RegisterAdminRoutes registers admin-facing routes.
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/admin/skillmarket/", h.handleAdminSkillMarketByID)
+	mux.HandleFunc("/admin/skillmarket", h.handleAdminSkillMarket)
+	mux.HandleFunc("/admin/capabilities-cloud-publish-rule", h.handleCloudPublishRule)
 	mux.HandleFunc("/admin/capabilities", h.handleAdminCapabilities)
 	mux.HandleFunc("/admin/capabilities/", h.handleAdminCapabilityByID)
 	mux.HandleFunc("/admin/capabilities-import/search", h.handleImportSearch)
@@ -119,6 +136,33 @@ func (h *Handler) handleAdminCapabilities(w http.ResponseWriter, r *http.Request
 		h.createCapability(w, r)
 	default:
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or POST")
+	}
+}
+
+func (h *Handler) handleCloudPublishRule(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenant.RequestTenantID(r)
+	switch r.Method {
+	case http.MethodGet:
+		rule, err := h.GetCloudPublishRule(r.Context(), tenantID)
+		if err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
+		response.OK(w, rule)
+	case http.MethodPut:
+		var rule CloudPublishRule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
+			return
+		}
+		saved, err := h.SetCloudPublishRule(r.Context(), tenantID, rule)
+		if err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
+		response.OK(w, saved)
+	default:
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or PUT")
 	}
 }
 
@@ -168,6 +212,17 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 		id = strings.TrimSuffix(id, "/reject")
 		if r.Method == http.MethodPost {
 			h.rejectCapability(w, r, id)
+			return
+		}
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+
+	// /admin/capabilities/{id}/publish-cloud
+	if strings.HasSuffix(path, "/publish-cloud") {
+		id = strings.TrimSuffix(id, "/publish-cloud")
+		if r.Method == http.MethodPost {
+			h.publishCapabilityToCloud(w, r, id)
 			return
 		}
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
@@ -276,7 +331,7 @@ func (h *Handler) listActiveCapabilities(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) listColleagueCapabilities(w http.ResponseWriter, r *http.Request, colleagueID string) {
 	tenantID := tenant.RequestTenantID(r)
-	rows, err := h.read.Query(`SELECT cp.id, cp.name, cp.description, cp.category, cp.version, cp.source, cp.risk_level, cp.status, cp.package_status, cp.package_format, cp.package_sha256, cp.package_size, cp.created_at, cp.updated_at
+	rows, err := h.read.Query(`SELECT cp.id, cp.name, cp.description, cp.category, cp.version, cp.source, cp.risk_level, cp.status, cp.package_status, cp.package_format, cp.package_sha256, cp.package_size, cp.local_skill_origin, cp.cloud_publish_status, cp.cloud_skill_id, cp.cloud_published_at, cp.cloud_publish_error, cp.safety_status, cp.safety_reason, cp.safety_reviewed_at, cp.created_at, cp.updated_at
 		FROM capability_packages cp
 		JOIN colleague_capability_bindings ccb ON cp.id = ccb.capability_id
 		WHERE ccb.colleague_id = ? AND cp.status IN ('active','approved') AND ccb.tenant_id = ?
@@ -328,9 +383,10 @@ func (h *Handler) createCapability(w http.ResponseWriter, r *http.Request) {
 	id := idgen.New("cap")
 	tenantID := tenant.RequestTenantID(r)
 
-	_, err := h.write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-		id, tenantID, name, strings.TrimSpace(req.Description), category, version, source, riskLevel, now, now)
+	localOrigin := localSkillOriginFromSource(source)
+	_, err := h.write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, local_skill_origin, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+		id, tenantID, name, strings.TrimSpace(req.Description), category, version, source, riskLevel, localOrigin, now, now)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -338,7 +394,7 @@ func (h *Handler) createCapability(w http.ResponseWriter, r *http.Request) {
 	response.Created(w, CapabilityPackage{
 		ID: id, Name: name, Description: strings.TrimSpace(req.Description),
 		Category: category, Version: version, Source: source, RiskLevel: riskLevel,
-		Status: "active", CreatedAt: now, UpdatedAt: now,
+		Status: "active", LocalSkillOrigin: localOrigin, CreatedAt: now, UpdatedAt: now,
 	})
 }
 
@@ -440,7 +496,19 @@ func scanCapabilities(rows *sql.Rows) []CapabilityPackage {
 }
 
 func scanCapabilityRow(row capabilityScannable, cp *CapabilityPackage) error {
-	return row.Scan(&cp.ID, &cp.Name, &cp.Description, &cp.Category, &cp.Version, &cp.Source, &cp.RiskLevel, &cp.Status, &cp.PackageStatus, &cp.PackageFormat, &cp.PackageSHA256, &cp.PackageSize, &cp.CreatedAt, &cp.UpdatedAt)
+	return row.Scan(&cp.ID, &cp.Name, &cp.Description, &cp.Category, &cp.Version, &cp.Source, &cp.RiskLevel, &cp.Status, &cp.PackageStatus, &cp.PackageFormat, &cp.PackageSHA256, &cp.PackageSize, &cp.LocalSkillOrigin, &cp.CloudPublishStatus, &cp.CloudSkillID, &cp.CloudPublishedAt, &cp.CloudPublishError, &cp.SafetyStatus, &cp.SafetyReason, &cp.SafetyReviewedAt, &cp.CreatedAt, &cp.UpdatedAt)
+}
+
+func localSkillOriginFromSource(source string) string {
+	source = strings.ToLower(strings.TrimSpace(source))
+	switch {
+	case strings.HasPrefix(source, "iworkercloud:"):
+		return "cloud_imported"
+	case strings.Contains(source, "summary"), strings.Contains(source, "self"):
+		return "iworker_summary"
+	default:
+		return "local"
+	}
 }
 
 func extractID(path, prefix string) string {
@@ -499,6 +567,24 @@ func (h *Handler) handleImportFromCloud(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	response.Created(w, cap)
+}
+
+func (h *Handler) publishCapabilityToCloud(w http.ResponseWriter, r *http.Request, id string) {
+	var req CloudPublishRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
+		return
+	}
+	skill, err := h.PublishCapabilityToCloud(r.Context(), tenant.RequestTenantID(r), id, req)
+	if err == sql.ErrNoRows {
+		response.NotFound(w, "NOT_FOUND", "capability not found")
+		return
+	}
+	if err != nil {
+		response.BadRequest(w, "PUBLISH_FAILED", err.Error())
+		return
+	}
+	response.Created(w, skill)
 }
 
 func (h *Handler) getCapabilityUsageSummary(w http.ResponseWriter, r *http.Request, id string) {

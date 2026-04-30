@@ -1,13 +1,13 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"io"
 	"log"
 	"net/http"
@@ -36,6 +36,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/user"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
@@ -83,7 +84,7 @@ type App struct {
 	projectScanner        *ProjectScanner
 	toolDefGenerator      *ToolDefinitionGenerator
 	toolRouter            *ToolRouter
-	gateIntentClassifier  *GateIntentClassifier // semantic gate classifier (wired in Task 12.1)
+	gateIntentClassifier  *GateIntentClassifier           // semantic gate classifier (wired in Task 12.1)
 	unifiedClassifier     *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
 	usageTracker          *tool.UsageTracker
 	experienceExtractor   *ExperienceExtractor
@@ -132,6 +133,8 @@ type App struct {
 	telegramGateway            *telegramGatewayManager
 	weixinGateway              *weixinGatewayManager
 	lansengerGateway           *lansengerGatewayManager
+	iworkerGoalWatch           *IWorkerGoalWatchService
+	iworkerGoalWatchMu         sync.Mutex
 	configMu                   sync.Mutex
 	configCache                corelib.AppConfig
 	configCacheValid           bool
@@ -164,6 +167,9 @@ type App struct {
 	// Evidence collector for user modeling (lazily initialized).
 	evidenceCollector   *user.Collector
 	evidenceCollectorMu sync.Once
+
+	// TTS manager (lazy-loaded, auto-unloading).
+	ttsManager *tts.Manager
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -428,6 +434,12 @@ func (a *App) ensureMemoryStore() {
 		// Attach TiMem recall gating for post-retrieval LLM filtering.
 		ms.SetRecallGating(memory.NewRecallGating(nil))
 		a.memPipeline.Start()
+		// Wire up Mem0-style online incremental extraction pipeline.
+		// The LLM caller is nil at this point (configured later when LLM
+		// config is available). The OnlineExtractor gracefully skips when
+		// LLM is nil/unconfigured.
+		onlineExtractor := memory.NewOnlineExtractor(ms, nil)
+		ms.SetOnlineExtractor(onlineExtractor)
 		// Load embedding model asynchronously so it doesn't block the first
 		// AI assistant message. Vector search will become available once
 		// the model finishes loading in the background. Tool embedding
@@ -1198,10 +1210,17 @@ func (a *App) startup(ctx context.Context) {
 				}
 			}()
 		}
+		go a.startIWorkerGoalWatchIfConfigured(config)
+
 		// Initialize workflow engine (SQLite store + registry + cleanup goroutine).
 		go a.initWorkflowEngine()
 		// Initialize steering store (declarative rule injection from ~/.maclaw/steering/).
 		go a.initSteeringStore()
+		// Initialize TTS manager (lazy-loaded, model downloaded on demand).
+		go func() {
+			a.initTTSManager()
+			a.backgroundPreloadTTSModel()
+		}()
 
 		// Create UnifiedIntentClassifier synchronously with L1 keywords only.
 		// This ensures intent classification is available from the very first
@@ -1303,6 +1322,7 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	// Clean up workstation mode (restore lock screen policy, etc.)
 	a.setWorkstationMode(false, 0)
+	a.stopIWorkerGoalWatch()
 	if a.localMCPManager != nil {
 		a.localMCPManager.StopAll()
 	}
@@ -3781,10 +3801,10 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			data, err := os.ReadFile(oldPath)
 			if err == nil {
 				var oldConfig struct {
-					CurrentModel string          `json:"current_model"`
+					CurrentModel string                  `json:"current_model"`
 					Models       []corelib.ModelConfig   `json:"models"`
 					Projects     []corelib.ProjectConfig `json:"projects"`
-					CurrentProj  string          `json:"current_project"`
+					CurrentProj  string                  `json:"current_project"`
 				}
 				if err := json.Unmarshal(data, &oldConfig); err == nil {
 					config := corelib.AppConfig{

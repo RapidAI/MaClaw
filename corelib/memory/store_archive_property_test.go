@@ -36,7 +36,7 @@ func genEntry(t *rapid.T, suffix string) Entry {
 // Feature: memory-claude-style-upgrade, Property 5: LRU eviction archives instead of deleting
 // **Validates: Requirements 3.1**
 //
-// At max capacity (500), saving a new entry causes evicted entry to appear
+// At max capacity, saving a new entry causes evicted entry to appear
 // in archive and no longer be in active memory.
 func TestProperty_LRUArchives(t *testing.T) {
 	dir := t.TempDir()
@@ -49,7 +49,12 @@ func TestProperty_LRUArchives(t *testing.T) {
 		}
 		defer store.Stop()
 
-		// Fill store to max capacity (500).
+		// Temporarily lower maxItems for test performance.
+		store.mu.Lock()
+		store.maxItems = 500
+		store.mu.Unlock()
+
+		// Fill store to max capacity.
 		for i := 0; i < 500; i++ {
 			e := Entry{
 				Content:     rapid.StringMatching(`[a-zA-Z]{5,20}`).Draw(rt, "fill") + string(rune(i%26+'a')),

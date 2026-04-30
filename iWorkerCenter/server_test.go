@@ -10,6 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/app"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 )
 
 func setCenterTestHome(t *testing.T) string {
@@ -122,6 +126,9 @@ func TestCenterStatusSnapshot(t *testing.T) {
 	if status.Status != "ok" {
 		t.Fatalf("Status = %q, want ok", status.Status)
 	}
+	if status.RuntimeType != "service" || status.ProductKind != "iworkercenter" || status.AdminConsole != "web_console" {
+		t.Fatalf("service identity = runtime_type:%q product_kind:%q admin_console:%q", status.RuntimeType, status.ProductKind, status.AdminConsole)
+	}
 	if status.ProviderCount != 2 {
 		t.Fatalf("ProviderCount = %d, want 2", status.ProviderCount)
 	}
@@ -144,6 +151,9 @@ func TestHandleHealthReturnsStatusSnapshot(t *testing.T) {
 	}
 	var body struct {
 		Status        string `json:"status"`
+		RuntimeType   string `json:"runtime_type"`
+		ProductKind   string `json:"product_kind"`
+		AdminConsole  string `json:"admin_console"`
 		ProviderCount int    `json:"provider_count"`
 		ConfigPath    string `json:"config_path"`
 	}
@@ -152,6 +162,9 @@ func TestHandleHealthReturnsStatusSnapshot(t *testing.T) {
 	}
 	if body.Status != "ok" {
 		t.Fatalf("Status = %q, want ok", body.Status)
+	}
+	if body.RuntimeType != "service" || body.ProductKind != "iworkercenter" || body.AdminConsole != "web_console" {
+		t.Fatalf("service identity = runtime_type:%q product_kind:%q admin_console:%q", body.RuntimeType, body.ProductKind, body.AdminConsole)
 	}
 	if body.ProviderCount != 2 {
 		t.Fatalf("ProviderCount = %d, want 2", body.ProviderCount)
@@ -241,5 +254,56 @@ func TestBuildAnthropicFallbackBody(t *testing.T) {
 	}
 	if len(parsed.Choices) != 1 || parsed.Choices[0].Message.Content != "分析结果" {
 		t.Fatalf("unexpected choices: %+v", parsed.Choices)
+	}
+}
+
+func TestHandleHealthIncludesCloudHeartbeatSnapshot(t *testing.T) {
+	setCenterTestHome(t)
+	seen := make(chan struct{}, 1)
+	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- struct{}{}
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer cloud.Close()
+
+	monitor := tenant.NewCloudHeartbeatMonitor(tenant.NewCloudClient(tenant.CloudConfig{BaseURL: cloud.URL}), func(context.Context) (string, string, error) {
+		return "center-1", "secret", nil
+	}, time.Hour)
+	monitor.Start()
+	defer monitor.Stop()
+	select {
+	case <-seen:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat was not sent")
+	}
+	deadline := time.Now().Add(time.Second)
+	for monitor.Snapshot().Status != "online" {
+		if time.Now().After(deadline) {
+			t.Fatalf("heartbeat snapshot did not become online: %+v", monitor.Snapshot())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	server := newCenterServer(":0")
+	server.center = &app.Center{CloudHeartbeatMonitor: monitor}
+	req := httptest.NewRequest(http.MethodGet, "/api/center/status", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleHealth(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		CloudHeartbeat *tenant.CloudHeartbeatSnapshot `json:"cloud_heartbeat"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if body.CloudHeartbeat == nil {
+		t.Fatal("cloud_heartbeat is missing")
+	}
+	if body.CloudHeartbeat.Status != "online" || body.CloudHeartbeat.CenterID != "center-1" {
+		t.Fatalf("cloud_heartbeat = %+v", body.CloudHeartbeat)
 	}
 }

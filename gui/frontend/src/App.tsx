@@ -1,4 +1,4 @@
-﻿import { useEffect, useState, useRef, useMemo } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
 import { appVersion, buildNumber } from './version';
 import appIcon from './assets/images/maclaw2.png';
@@ -14,13 +14,14 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton, FetchProviderModels } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, IsNativeRoundedCorners, IsWebviewTransparent, GetFramelessTopInset, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton, FetchProviderModels, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
+import { IWorkerCenterPanel } from './components/remote/IWorkerCenterPanel';
 import { SecurityPolicyPanel } from './components/remote/SecurityPolicyPanel';
 import { RemoteSessionList } from './components/remote/RemoteSessionList';
 import { useRemotePanel } from './components/remote/useRemotePanel';
@@ -274,7 +275,7 @@ const translations: any = {
         "loadingConfig": "Loading config...",
         "syncing": "Syncing...",
         "switched": "Provider switched & synced!",
-        "projectSwitched": "Project switched!",
+        "projectSwitched": "Task switched!",
         "dirUpdated": "Directory updated!",
         "langName": "English",
         "custom": "Custom",
@@ -574,13 +575,8 @@ const translations: any = {
         "remoteModeDesc": "Start this tool through Hub for phone control",
         "localModeLabel": "Local",
         "launchModeLabel": "Mode",
-        "defaultLaunchModeLabel": "Default Launch Mode",
+        "defaultLaunchModeLabel": "Default Coding Tool Mode",
         "defaultLaunchModeDesc": "Choose the default working mode for the tool launch area",
-        "uiModeLabel": "Interface Mode",
-        "uiModePro": "Pro",
-        "uiModeLite": "Lite",
-        "uiModeProDesc": "Full coding toolchain for developers",
-        "uiModeLiteDesc": "AI assistant & skill extensions, coding tools hidden",
         "workingDirLabel": "Working Directory",
         "workingDirHint": "Default directory for agent tasks. Leave empty for ~/.maclaw/workspace",
         "workingDirBrowse": "Browse",
@@ -788,7 +784,7 @@ const translations: any = {
         "loadingConfig": "加载配置中...",
         "syncing": "正在同步...",
         "switched": "服务商已切换并同步！",
-        "projectSwitched": "项目已切换！",
+        "projectSwitched": "任务已切换！",
         "dirUpdated": "目录已更新！",
         "langName": "简体中文",
         "custom": "自定义",
@@ -818,7 +814,7 @@ const translations: any = {
         "version": "版本",
         "author": "作者",
         "aboutSectionTag": "关于",
-        "aboutProductName": "码卡龙·蜕变 MaClaw",
+        "aboutProductName": "码卡龙·琢光 MaClaw",
         "buildLabel": "构建",
         "quickActionsTitle": "快捷操作",
         "quickActionsDesc": "打开官网资源、检查更新或反馈问题。",
@@ -1066,13 +1062,8 @@ const translations: any = {
         "remoteModeDesc": "通过 Hub 启动此工具，便于手机控制",
         "localModeLabel": "本地",
         "launchModeLabel": "方式",
-        "defaultLaunchModeLabel": "默认启动模式",
+        "defaultLaunchModeLabel": "编程工具默认工作模式",
         "defaultLaunchModeDesc": "选择工具启动区的默认工作模式",
-        "uiModeLabel": "界面模式",
-        "uiModePro": "专业模式",
-        "uiModeLite": "简洁模式",
-        "uiModeProDesc": "包含完整编程工具链，适合开发者",
-        "uiModeLiteDesc": "专注 AI 助手与技能扩展，隐藏编程工具",
         "workingDirLabel": "工作目录",
         "workingDirHint": "Agent 任务的默认工作目录，留空则使用 ~/.maclaw/workspace",
         "workingDirBrowse": "浏览",
@@ -1556,13 +1547,8 @@ const translations: any = {
         "remoteModeDesc": "透過 Hub 啟動此工具，方便手機控制",
         "localModeLabel": "本機",
         "launchModeLabel": "方式",
-        "defaultLaunchModeLabel": "預設啟動模式",
+        "defaultLaunchModeLabel": "編程工具預設工作模式",
         "defaultLaunchModeDesc": "選擇工具啟動區的預設工作模式",
-        "uiModeLabel": "介面模式",
-        "uiModePro": "專業模式",
-        "uiModeLite": "簡潔模式",
-        "uiModeProDesc": "包含完整程式工具鏈，適合開發者",
-        "uiModeLiteDesc": "專注 AI 助手與技能擴展，隱藏程式工具",
         "workingDirLabel": "工作目錄",
         "workingDirHint": "Agent 任務的預設工作目錄，留空則使用 ~/.maclaw/workspace",
         "workingDirBrowse": "瀏覽",
@@ -1808,9 +1794,15 @@ const ToolConfiguration = ({
 };
 
 function App() {
-    const { showAlert } = useDialog();
+    const { showAlert, showConfirm } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
+    const [sidebarExpanded, setSidebarExpanded] = useState(false);
+    const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
+    const [recentProjects, setRecentProjects] = useState<Array<{ id: string; name: string; project_path: string; workflow_type: string; preview: string; last_activity: string; entry_count: number; pinned?: boolean }>>([]);
+    const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
+    const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
+    const [renameValue, setRenameValue] = useState("");
     const [aiThemeMode, setAIThemeMode] = useState<'light' | 'dark'>(() => {
         if (typeof window === 'undefined') return 'light';
         try {
@@ -1819,6 +1811,79 @@ function App() {
             return 'light';
         }
     });
+
+    // Sync html/body background with the active theme.
+    //
+    // When the webview is transparent (Windows 10), html/body and
+    // .app-viewport backgrounds are set to transparent so the CSS
+    // border-radius on #App clips to true transparency — no corner
+    // artifacts regardless of theme.
+    //
+    // When the webview is opaque (Windows 11 / macOS / Linux), html/body
+    // background is synced to the theme color so the native window frame
+    // behind the CSS border-radius corners doesn't show a mismatched color.
+    useEffect(() => {
+        IsWebviewTransparent().then(transparent => {
+            if (transparent) {
+                document.documentElement.style.backgroundColor = 'transparent';
+                document.body.style.backgroundColor = 'transparent';
+                // Mark the viewport wrapper so CSS can make it transparent too.
+                const viewport = document.querySelector('.app-viewport');
+                if (viewport) viewport.setAttribute('data-webview-transparent', 'true');
+            } else {
+                const appEl = document.getElementById('App');
+                const bg = appEl
+                    ? getComputedStyle(appEl).getPropertyValue('--theme-page-bg').trim()
+                    : (aiThemeMode === 'dark' ? '#0b1220' : '#f4f5f7');
+                document.documentElement.style.backgroundColor = bg;
+                document.body.style.backgroundColor = bg;
+            }
+        }).catch(() => {
+            // Non-Wails environment — fall back to theme color sync.
+            const appEl = document.getElementById('App');
+            const bg = appEl
+                ? getComputedStyle(appEl).getPropertyValue('--theme-page-bg').trim()
+                : (aiThemeMode === 'dark' ? '#0b1220' : '#f4f5f7');
+            document.documentElement.style.backgroundColor = bg;
+            document.body.style.backgroundColor = bg;
+        });
+    }, [aiThemeMode]);
+
+    // On Windows 11, the OS provides native rounded corners for frameless
+    // windows via DWM.  When active, we remove the CSS border-radius on #App
+    // (which would otherwise create a double-rounding artifact) and let the
+    // OS handle the corner shape.  On Windows 10 / macOS / Linux this is a
+    // no-op and the CSS border-radius remains.
+    useEffect(() => {
+        IsNativeRoundedCorners().then(native => {
+            const appEl = document.getElementById('App');
+            if (appEl && native) {
+                appEl.setAttribute('data-native-rounded', 'true');
+            }
+        }).catch(() => { /* non-Wails environment or method not available */ });
+    }, []);
+
+    // Windows 10 DWM frameless offset workaround:
+    // On some Windows 10 builds (Enterprise/LTSC), DWM reserves an invisible
+    // top border for frameless windows that pushes the webview content down,
+    // but #App's overflow:hidden + border-radius clips at the original
+    // boundary, cutting off the top of the custom title bar.
+    // The Go backend queries the actual DWM frame metrics via Win32 API
+    // (GetSystemMetrics) and returns the inset in pixels.  We apply it as
+    // top padding on #App via a CSS custom property.
+    useEffect(() => {
+        GetFramelessTopInset()
+            .then((inset: number) => {
+                if (inset > 0) {
+                    const appEl = document.getElementById('App');
+                    if (appEl) {
+                        appEl.style.setProperty('--dwm-top-offset', `${inset}px`);
+                    }
+                }
+            })
+            .catch(() => { /* non-Wails environment or method not available */ });
+    }, []);
+
     const navTabRef = useRef(navTab);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
@@ -1831,7 +1896,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'serviceRedeem' | 'search' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'security' | 'im' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'iworkercenter' | 'skills' | 'mcp' | 'llm' | 'serviceRedeem' | 'search' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'security' | 'im' | 'system'>('general');
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
@@ -2269,13 +2334,22 @@ function App() {
 
         // Config Logic
         LoadConfig().then((cfg) => {
-            // Apply default launch mode setting on startup
-            if (cfg.default_launch_mode === 'remote') {
+            // Reconcile default_launch_mode → remote_enabled on startup.
+            // Persist the reconciled value so that subsequent LoadConfig()
+            // calls (e.g. from useRemotePanel) don't revert to a stale
+            // remote_enabled from disk.
+            let needsPersist = false;
+            if (cfg.default_launch_mode === 'remote' && !cfg.remote_enabled) {
                 cfg.remote_enabled = true;
-            } else if (cfg.default_launch_mode === 'local') {
+                needsPersist = true;
+            } else if ((!cfg.default_launch_mode || cfg.default_launch_mode === 'local') && cfg.remote_enabled) {
                 cfg.remote_enabled = false;
+                needsPersist = true;
             }
             setConfig(cfg);
+            if (needsPersist) {
+                SaveConfig(new main.AppConfig(cfg)).catch(() => {});
+            }
 
             // Apply saved UI zoom factor
             GetUIZoomFactor().then((z) => {
@@ -2676,8 +2750,16 @@ function App() {
         }
     };
 
+    // Load recent tasks when AI tab is active.
+    useEffect(() => {
+        if (navTab === 'ai') {
+            SearchProjects("", 10).then(r => setRecentProjects(r || [])).catch(() => {});
+        }
+    }, [navTab]);
+
     const switchTool = (tool: string) => {
         setNavTab(tool);
+        setToolDropdownOpen(false);
         if (isToolTab(tool)) {
             setActiveTool(tool);
             setActiveTab(0);
@@ -3430,6 +3512,7 @@ function App() {
             remote_hubcenter_url: hubCenterURL,
             remote_email: email,
             remote_enabled: true,
+            default_launch_mode: 'remote',
         });
         setConfig(newConfig);
         await SaveConfig(newConfig);
@@ -3703,6 +3786,10 @@ ${instruction}`;
             id: 'remote' as const,
             label: lang === 'zh-Hans' ? '远程连接' : lang === 'zh-Hant' ? '遠端連線' : 'Remote',
             desc: lang === 'zh-Hans' ? '远程服务器地址与连接入口' : lang === 'zh-Hant' ? '遠端伺服器位址與連線入口' : 'Server addresses only',
+        },        {
+            id: 'iworkercenter' as const,
+            label: 'Center Service',
+            desc: lang === 'zh-Hans' ? '企业组织运行时与 GoalWatch watcher' : lang === 'zh-Hant' ? '企業組織執行時與 GoalWatch watcher' : 'Organization runtime and GoalWatch watcher',
         },
         {
             id: 'llm' as const,
@@ -3758,7 +3845,6 @@ ${instruction}`;
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
     );
-    const isLiteMode = config?.ui_mode !== 'pro';
 
     return (
         <div
@@ -3769,7 +3855,7 @@ ${instruction}`;
                 <div id="App" data-ai-theme={aiThemeMode}>
             <div style={{
                 height: '30px',
-                width: isLiteMode ? '60px' : '180px',
+                width: '60px',
                 position: 'absolute',
                 top: 0,
                 left: 0,
@@ -3777,7 +3863,7 @@ ${instruction}`;
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: isLiteMode ? '60px' : '156px' } as any} data-ai-theme={aiThemeMode}>
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? '220px' : '60px' } as any} data-ai-theme={aiThemeMode}>
                 {/* Left Navigation Strip */}
                 <div style={{
                     width: '60px',
@@ -3795,150 +3881,62 @@ ${instruction}`;
                         <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '44px', height: '44px', filter: 'drop-shadow(0 3px 10px rgba(217, 75, 61, 0.18))' }} />
                     </div>
 
-                    <div
-                        className={`sidebar-item left-nav-item ${navTab === 'remote' ? 'active' : ''}`}
-                        onClick={() => switchTool('remote')}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center', position: 'relative' }}
-                        title={lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem', position: 'relative' }}>
-                            📡
-                            {activeTaskCount > 0 && (
-                                <span style={{
-                                    position: 'absolute',
-                                    top: '-5px',
-                                    right: '-8px',
-                                    minWidth: '16px',
-                                    height: '16px',
-                                    lineHeight: '16px',
-                                    fontSize: '9px',
-                                    fontWeight: 700,
-                                    textAlign: 'center',
-                                    padding: activeTaskCount > 99 ? '0 2px' : '0 3px',
-                                    borderRadius: '999px',
-                                    background: 'var(--theme-danger)',
-                                    color: '#ffffff',
-                                    boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
-                                    zIndex: 10,
-                                }}>
-                                    {activeTaskCount > 99 ? '99+' : activeTaskCount}
-                                </span>
-                            )}
-                        </span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}</span>
-                    </div>
-
-                    <div
-                        className={`sidebar-item left-nav-item ${navTab === 'skills' ? 'active' : ''}`}
-                        onClick={() => { switchTool('skills'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={t("skills")}
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🧩</span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("skills")}</span>
-                    </div>
-                    <div
-                        className={`sidebar-item left-nav-item ${navTab === 'mcp' ? 'active' : ''}`}
-                        onClick={() => { switchTool('mcp'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
-                        title="MCP"
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🔌</span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>MCP</span>
-                    </div>
-
+                    {/* Primary: AI 助手 — always visible at top */}
                     <div
                         className={`sidebar-item left-nav-item left-nav-item--ai ${navTab === 'ai' ? 'active' : ''}`}
                         onClick={() => { switchTool('ai'); }}
-                        style={{
-                            flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px',
-                            borderLeft: 'none',
-                            borderRight: navTab === 'ai' ? '3px solid var(--primary-color)' : '3px solid transparent',
-                            justifyContent: 'center'
-                        }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'ai' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}
                     >
-                        <span className="sidebar-icon" title={(() => {
-                            const llmOk = maclawLLMOnline;
-                            const netOk = agentNetRunning;
-                            const mobileOk = !!remoteActivationStatus?.activated;
-                            if (isLiteMode) {
-                                if (llmOk && netOk) return localizeText('All online', '全部在线', '全部在線');
-                                const parts: string[] = [];
-                                parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                                parts.push(netOk ? localizeText('AgentNet ✓', '智网 ✓', '智網 ✓') : localizeText('AgentNet ✗', '智网 ✗', '智網 ✗'));
-                                return parts.join('  ');
-                            }
-                            if (llmOk && netOk && mobileOk) return localizeText('All online', '全部在线', '全部在線');
-                            const parts: string[] = [];
-                            parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                            parts.push(netOk ? localizeText('AgentNet ✓', '智网 ✓', '智網 ✓') : localizeText('AgentNet ✗', '智网 ✗', '智網 ✗'));
-                            parts.push(mobileOk ? localizeText('Mobile ✓', '移动端 ✓', '移動端 ✓') : localizeText('Mobile ✗', '移动端 ✗', '移動端 ✗'));
-                            return parts.join('  ');
-                        })()} style={{
-                            margin: 0,
-                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                            width: '2rem', height: '2rem',
-                            borderRadius: '50%',
-                            padding: '3px',
-                            background: (() => {
-                                const llm = maclawLLMOnline;
-                                const net = agentNetRunning;
-                                if (isLiteMode) {
-                                    return llm && net ? 'var(--theme-primary-strong)' : (!llm && !net ? 'var(--theme-text-muted)' : llm ? 'var(--theme-primary)' : 'var(--theme-text-muted)');
-                                }
-                                const mob = remoteActivationStatus?.activated;
-                                return (llm && net && mob) ? 'var(--theme-primary-strong)' : (!llm && !net && !mob) ? 'var(--theme-text-muted)' : 'var(--theme-primary)';
-                            })(),
-                            boxShadow: (() => {
-                                const allOn = isLiteMode
-                                    ? (maclawLLMOnline && agentNetRunning)
-                                    : (maclawLLMOnline && agentNetRunning && !!remoteActivationStatus?.activated);
-                                const noneOn = isLiteMode
-                                    ? (!maclawLLMOnline && !agentNetRunning)
-                                    : (!maclawLLMOnline && !agentNetRunning && !remoteActivationStatus?.activated);
-                                if (noneOn) return 'none';
-                                if (allOn && navTab === 'ai') return '0 0 10px color-mix(in srgb, var(--theme-primary) 60%, transparent), 0 0 20px color-mix(in srgb, var(--theme-primary) 30%, transparent)';
-                                if (allOn) return '0 0 6px color-mix(in srgb, var(--theme-primary) 40%, transparent), 0 0 12px color-mix(in srgb, var(--theme-primary) 15%, transparent)';
-                                return '0 0 4px color-mix(in srgb, var(--theme-primary) 30%, transparent)';
-                            })(),
-                            transition: 'box-shadow 0.2s ease, background 0.3s ease'
-                        }}>
-                            <span style={{
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                width: '100%', height: '100%',
-                                borderRadius: '50%', background: aiThemeMode === 'dark' ? 'var(--theme-surface)' : 'var(--theme-surface)',
-                                fontSize: '1.3rem', lineHeight: 1
-                            }}>🦞</span>
+                        <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '2rem', height: '2rem', borderRadius: '50%', padding: '3px', background: (() => { const llm = maclawLLMOnline; const net = agentNetRunning; const mob = remoteActivationStatus?.activated; return (llm && net && mob) ? 'var(--theme-primary-strong)' : (!llm && !net && !mob) ? 'var(--theme-text-muted)' : 'var(--theme-primary)'; })(), boxShadow: (() => { const allOn = maclawLLMOnline && agentNetRunning && !!remoteActivationStatus?.activated; const noneOn = !maclawLLMOnline && !agentNetRunning && !remoteActivationStatus?.activated; if (noneOn) return 'none'; if (allOn && navTab === 'ai') return '0 0 10px color-mix(in srgb, var(--theme-primary) 60%, transparent)'; if (allOn) return '0 0 6px color-mix(in srgb, var(--theme-primary) 40%, transparent)'; return '0 0 4px color-mix(in srgb, var(--theme-primary) 30%, transparent)'; })(), transition: 'box-shadow 0.2s ease, background 0.3s ease' }}>
+                            <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', borderRadius: '50%', background: 'var(--theme-surface)', fontSize: '1.3rem', lineHeight: 1 }}>🦞</span>
                         </span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>
-                            {lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}
-                        </span>
+                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}</span>
                     </div>
+
+                    {/* Configurable nav items: pinned (checked in settings) show directly,
+                        unchecked items go into the collapsible ··· section */}
+                    {(() => {
+                        const navItems = [
+                            { id: 'remote', configKey: 'show_nav_monitor', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem', position: 'relative' }}>📡{activeTaskCount > 0 && (<span style={{ position: 'absolute', top: '-5px', right: '-8px', minWidth: '16px', height: '16px', lineHeight: '16px', fontSize: '9px', fontWeight: 700, textAlign: 'center', padding: activeTaskCount > 99 ? '0 2px' : '0 3px', borderRadius: '999px', background: 'var(--theme-danger)', color: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)', zIndex: 10 }}>{activeTaskCount > 99 ? '99+' : activeTaskCount}</span>)}</span>, label: lang === 'zh-Hans' ? '监控' : lang === 'zh-Hant' ? '監控' : 'Monitor' },
+                            { id: 'skills', configKey: 'show_nav_skills', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🧩</span>, label: t("skills") },
+                            { id: 'mcp', configKey: 'show_nav_mcp', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🔌</span>, label: 'MCP' },
+                            ...(gossipAllowed ? [{ id: 'gossip', configKey: 'show_nav_gossip', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🗣️</span>, label: t("gossip") }] : []),
+                            { id: 'agentnet', configKey: 'show_nav_agentnet', icon: <img src={agentnetIcon} alt="AgentNet" style={{ width: '22px', height: '22px', margin: 0 }} />, label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet' },
+                        ];
+                        const isPinned = (item: typeof navItems[0]) => (config as any)?.[item.configKey] !== false;
+                        const pinnedItems = navItems.filter(isPinned);
+                        const collapsedItems = navItems.filter(item => !isPinned(item));
+
+                        const renderItem = (item: typeof navItems[0]) => (
+                            <div key={item.id}
+                                className={`sidebar-item left-nav-item ${navTab === item.id ? 'active' : ''}`}
+                                onClick={() => switchTool(item.id)}
+                                style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === item.id ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center', position: item.id === 'remote' ? 'relative' as const : undefined }}
+                                title={item.label}
+                            >
+                                {item.icon}
+                                <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{item.label}</span>
+                            </div>
+                        );
+
+                        return (<>
+                            {pinnedItems.map(renderItem)}
+
+                            {collapsedItems.length > 0 && (
+                                <div className="sidebar-item left-nav-item" onClick={() => setSidebarExpanded(prev => !prev)}
+                                    style={{ flexDirection: 'column', padding: '4px 0', width: '100%', gap: '2px', borderLeft: 'none', borderRight: '3px solid transparent', justifyContent: 'center', cursor: 'pointer', opacity: 0.6 }}
+                                    title={sidebarExpanded ? (lang === 'zh-Hans' ? '收起' : 'Collapse') : (lang === 'zh-Hans' ? '更多' : 'More')}
+                                >
+                                    <span style={{ fontSize: '1rem', lineHeight: 1 }}>{sidebarExpanded ? '▴' : '···'}</span>
+                                </div>
+                            )}
+
+                            {sidebarExpanded && collapsedItems.map(renderItem)}
+                        </>);
+                    })()}
 
                     <div style={{ flex: 1 }}></div>
-
-                    {gossipAllowed && (
-                        <div
-                            className={`sidebar-item left-nav-item ${navTab === 'gossip' ? 'active' : ''}`}
-                            onClick={() => { switchTool('gossip'); }}
-                            style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'gossip' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
-                            title={t("gossip")}
-                        >
-                            <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🗣️</span>
-                            <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("gossip")}</span>
-                        </div>
-                    )}
-
-                    <div
-                        className={`sidebar-item left-nav-item ${navTab === 'agentnet' ? 'active' : ''}`}
-                        onClick={() => { switchTool('agentnet'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'agentnet' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet'}
-                    >
-                        <img src={agentnetIcon} alt="AgentNet" style={{ width: '22px', height: '22px', margin: 0 }} />
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet'}</span>
-                    </div>
 
                     <div
                         className={`sidebar-item left-nav-item ${navTab === 'settings' ? 'active' : ''}`}
@@ -3961,135 +3959,192 @@ ${instruction}`;
                     </div>
                 </div>
 
-                {/* Right Tool List */}
-                <div style={{ flex: 1, padding: '5px 4px 4px', overflowY: 'auto', backgroundColor: 'var(--theme-page-bg)', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', minHeight: 0 }}>
-                    <div style={{ width: '72%', height: '1px', background: 'linear-gradient(90deg, transparent, var(--theme-border), transparent)', margin: '0 auto 4px', flexShrink: 0, display: isLiteMode ? 'none' : undefined }}></div>
-                    <div style={{ flex: 1, minHeight: 0, display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                    <div className="tool-grid" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2px' }}>
-                        <div className={`sidebar-item ${navTab === 'claude' ? 'active' : ''}`} onClick={() => switchTool('claude')}>
-                            <span className="sidebar-icon">
-                                <img src={claudecodeIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Claude" />
-                            </span> <span>Claude Code</span>
+                {/* Middle column: tool selector + recent tasks — only visible on AI assistant tab */}
+                {navTab === 'ai' && (
+                <div style={{ width: '160px', flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--theme-border)', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
+                    {/* Tool selector — click to expand/collapse tool list */}
+                    <div style={{ flexShrink: 0, borderBottom: '1px solid var(--theme-border)' }}>
+                        <div onClick={() => setToolDropdownOpen(prev => !prev)}
+                            style={{ display: 'flex', alignItems: 'center', height: '32px', padding: '0 8px', gap: '5px', cursor: 'pointer' }}>
+                            <img src={activeTool === 'claude' ? claudecodeIcon : activeTool === 'gemini' ? geminiIcon : activeTool === 'codex' ? codexIcon : activeTool === 'opencode' ? opencodeIcon : activeTool === 'codebuddy' ? codebuddyIcon : activeTool === 'cursor' ? cursorIcon : activeTool === 'iflow' ? iflowIcon : activeTool === 'kilo' ? kiloIcon : claudecodeIcon} style={{ width: '16px', height: '16px', flexShrink: 0 }} alt="" />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.72rem', fontWeight: 600, color: 'var(--theme-text-primary)', flex: 1 }}>
+                                {activeTool === 'claude' ? 'Claude Code' : activeTool === 'gemini' ? 'Gemini CLI' : activeTool === 'codex' ? 'CodeX' : activeTool === 'opencode' ? 'OpenCode' : activeTool === 'codebuddy' ? 'CodeBuddy' : activeTool === 'cursor' ? 'Cursor Agent' : activeTool === 'iflow' ? 'iFlow CLI' : activeTool === 'kilo' ? 'Kilo Code' : activeTool}
+                            </span>
+                            <span style={{ fontSize: '0.55rem', opacity: 0.5, flexShrink: 0 }}>{toolDropdownOpen ? '▲' : '▼'}</span>
                         </div>
-                        {config?.show_gemini !== false && (
-                            <div className={`sidebar-item ${navTab === 'gemini' ? 'active' : ''}`} onClick={() => switchTool('gemini')}>
-                                <span className="sidebar-icon">
-                                    <img src={geminiIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Gemini" />
-                                </span> <span>Gemini CLI</span>
-                            </div>
-                        )}
-                        {config?.show_codex !== false && (
-                            <div className={`sidebar-item ${navTab === 'codex' ? 'active' : ''}`} onClick={() => switchTool('codex')}>
-                                <span className="sidebar-icon">
-                                    <img src={codexIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Codex" />
-                                </span> <span>CodeX</span>
-                            </div>
-                        )}
-                        {config?.show_opencode !== false && (
-                            <div className={`sidebar-item ${navTab === 'opencode' ? 'active' : ''}`} onClick={() => switchTool('opencode')}>
-                                <span className="sidebar-icon">
-                                    <img src={opencodeIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="OpenCode" />
-                                </span> <span>OpenCode</span>
-                            </div>
-                        )}
-                        {config?.show_codebuddy !== false && (
-                            <div className={`sidebar-item ${navTab === 'codebuddy' ? 'active' : ''}`} onClick={() => switchTool('codebuddy')}>
-                                <span className="sidebar-icon">
-                                    <img src={codebuddyIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="CodeBuddy" />
-                                </span> <span>CodeBuddy</span>
-                            </div>
-                        )}
-                        {!isWindows && config?.show_cursor !== false && (
-                            <div className={`sidebar-item ${navTab === 'cursor' ? 'active' : ''}`} onClick={() => switchTool('cursor')}>
-                                <span className="sidebar-icon">
-                                    <img src={cursorIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Cursor" />
-                                </span> <span>Cursor Agent</span>
-                            </div>
-                        )}
-                        {config?.show_iflow !== false && (
-                            <div className={`sidebar-item ${navTab === 'iflow' ? 'active' : ''}`} onClick={() => switchTool('iflow')}>
-                                <span className="sidebar-icon">
-                                    <img src={iflowIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="iFlow" />
-                                </span> <span>iFlow CLI</span>
-                            </div>
-                        )}
-                        {config?.show_kilo !== false && (
-                            <div className={`sidebar-item ${navTab === 'kilo' ? 'active' : ''}`} onClick={() => switchTool('kilo')}>
-                                <span className="sidebar-icon">
-                                    <img src={kiloIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Kilo Code" />
-                                </span> <span>Kilo Code</span>
-                            </div>
-                        )}
-
-                    </div>
-                    </div>
-
-                    {/* Status dashboard */}
-                    <div style={{ flexShrink: 0, padding: '0 1px 0', marginTop: '0' }}>
-                        <div style={{ width: '48%', height: '1px', background: aiThemeMode === 'dark' ? 'linear-gradient(90deg, transparent, rgba(71, 85, 105, 0.9), transparent)' : 'linear-gradient(90deg, transparent, rgba(225, 228, 232, 0.75), transparent)', margin: '1px auto 2px' }}></div>
-                        <div style={{ width: '76px', margin: '0 auto', padding: '2px 2px', borderRadius: '5px', background: aiThemeMode === 'dark' ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255,255,255,0.78)', border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.85)' : '1px solid rgba(225, 228, 232, 0.72)', minWidth: 0, boxShadow: aiThemeMode === 'dark' ? '0 6px 14px rgba(2, 6, 23, 0.28)' : 'none' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '2px', marginBottom: '2px' }}>
-                                {[
-                                    { label: 'LLM', on: maclawLLMOnline },
-                                    { label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'Net', on: agentNetRunning },
-                                    { label: lang === 'zh-Hans' ? '移动' : lang === 'zh-Hant' ? '移動' : 'Mob', on: !!remoteActivationStatus?.activated },
-                                    { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerStatus === 'connected', link: 'im' },
-                                ].map(({ label, on, link }) => (
-                                    <div
-                                        key={label}
-                                        style={{
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            gap: '2px',
-                                            minWidth: 0,
-                                            padding: '2px 0',
-                                            borderRadius: '4px',
-                                            background: aiThemeMode === 'dark'
-                                                ? (on ? 'rgba(30, 41, 59, 0.96)' : 'rgba(15, 23, 42, 0.88)')
-                                                : (on ? 'rgba(247, 248, 250, 0.92)' : 'rgba(247, 248, 250, 0.7)'),
-                                            border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.72)' : '1px solid rgba(225, 228, 232, 0.72)',
-                                            cursor: link ? 'pointer' : undefined,
-                                        }}
-                                        onClick={link ? () => { setNavTab('settings'); setSettingsTab(link as any); } : undefined}
-                                        title={link && !on ? localizeText('Click to configure', '点击配置', '點擊配置') : undefined}
+                        {/* Expanded tool list — pushes content down, no overlay needed */}
+                        {toolDropdownOpen && (
+                            <div style={{ padding: '0 4px 4px' }}>
+                                {([
+                                    { id: 'claude', name: 'Claude Code', icon: claudecodeIcon },
+                                    ...(config?.show_gemini !== false ? [{ id: 'gemini', name: 'Gemini CLI', icon: geminiIcon }] : []),
+                                    ...(config?.show_codex !== false ? [{ id: 'codex', name: 'CodeX', icon: codexIcon }] : []),
+                                    ...(config?.show_opencode !== false ? [{ id: 'opencode', name: 'OpenCode', icon: opencodeIcon }] : []),
+                                    ...(config?.show_codebuddy !== false ? [{ id: 'codebuddy', name: 'CodeBuddy', icon: codebuddyIcon }] : []),
+                                    ...(config?.show_iflow !== false ? [{ id: 'iflow', name: 'iFlow CLI', icon: iflowIcon }] : []),
+                                    ...(config?.show_kilo !== false ? [{ id: 'kilo', name: 'Kilo Code', icon: kiloIcon }] : []),
+                                ] as { id: string; name: string; icon: string }[]).map(tool => (
+                                    <div key={tool.id} onClick={() => switchTool(tool.id)}
+                                        style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.72rem', color: 'var(--theme-text-primary)', background: activeTool === tool.id ? (aiThemeMode === 'dark' ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.08)') : 'transparent', fontWeight: activeTool === tool.id ? 600 : 400 }}
+                                        onMouseEnter={e => { if (activeTool !== tool.id) e.currentTarget.style.background = aiThemeMode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'; }}
+                                        onMouseLeave={e => { if (activeTool !== tool.id) e.currentTarget.style.background = 'transparent'; }}
                                     >
-                                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: on ? 'var(--theme-primary-strong)' : (aiThemeMode === 'dark' ? 'rgba(148, 163, 184, 0.72)' : 'rgba(148, 163, 184, 0.65)'), boxShadow: on ? '0 0 4px color-mix(in srgb, var(--theme-primary-strong) 35%, transparent)' : 'none', display: 'inline-block' }}></span>
-                                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.42rem', color: on ? 'var(--theme-text-primary)' : 'var(--theme-text-muted)', fontWeight: 600 }}>{label}</span>
+                                        <img src={tool.icon} style={{ width: '14px', height: '14px' }} alt="" />
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tool.name}</span>
+                                        {activeTool === tool.id && <span style={{ fontSize: '0.6rem', opacity: 0.5 }}>✓</span>}
                                     </div>
                                 ))}
                             </div>
-                            <div style={{ marginBottom: '2px', minWidth: 0, borderRadius: '4px', background: aiThemeMode === 'dark' ? 'rgba(17, 24, 39, 0.96)' : 'rgba(247, 248, 250, 0.74)', border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.72)' : '1px solid rgba(225, 228, 232, 0.72)', padding: '3px 4px', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: '4px' }}>
-                                <div style={{ fontSize: '0.42rem', color: 'var(--theme-text-muted)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>
-                                    {lang === 'zh-Hans' ? '服务商' : lang === 'zh-Hant' ? '服務商' : 'Provider'}
-                                </div>
-                                <div
-                                    style={{ color: 'var(--theme-text-primary)', fontWeight: 700, fontSize: '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                        )}
+                    </div>
+
+                    {/* Recent tasks list */}
+                    <div style={{ flex: 1, overflowY: 'auto', padding: '4px' }}>
+                        <div style={{ padding: '8px 6px', fontSize: '0.68rem', color: 'var(--theme-text-muted)', fontWeight: 600 }}>
+                            {lang === 'zh-Hans' ? '最近任务' : lang === 'zh-Hant' ? '最近任務' : 'Recent Tasks'}
+                        </div>
+                        {recentProjects.length === 0 ? (
+                            <div style={{ padding: '16px 8px', textAlign: 'center', fontSize: '0.7rem', color: 'var(--theme-text-muted)', opacity: 0.5 }}>
+                                {lang === 'zh-Hans' ? '暂无最近任务' : lang === 'zh-Hant' ? '暫無最近任務' : 'No recent tasks'}
+                            </div>
+                        ) : (
+                            recentProjects.map(proj => (
+                                <div key={proj.id}
+                                    onClick={async () => {
+                                        if (renamingTaskPath) return; // don't navigate while renaming
+                                        // If an agent loop is currently running, ask the user
+                                        // whether to abort it first. Without this, sendMessage
+                                        // silently drops the switch message because
+                                        // activeRound.phase !== 'idle', leaving the UI stuck.
+                                        if (aiAssistant.sending) {
+                                            const confirmed = await showConfirm(
+                                                "当前有任务正在执行。是否中止当前任务并切换？",
+                                                "切换任务",
+                                            );
+                                            if (!confirmed) return;
+                                            await aiAssistant.cancelSession();
+                                        }
+                                        const msg = await ResumeProject(proj.project_path);
+                                        if (msg) {
+                                            switchTool('ai');
+                                            await aiAssistant.clearHistory();
+                                            await aiAssistant.sendMessage(msg);
+                                        }
+                                    }}
+                                    onContextMenu={e => {
+                                        e.preventDefault();
+                                        setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name, pinned: !!proj.pinned });
+                                    }}
+                                    style={{ display: 'flex', flexDirection: 'column', gap: '2px', padding: '6px 8px', borderRadius: '5px', cursor: 'pointer', transition: 'background 0.15s' }}
+                                    title={`${proj.name}\n${proj.project_path}${proj.preview ? '\n' + proj.preview : ''}`}
+                                    onMouseEnter={e => (e.currentTarget.style.background = aiThemeMode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)')}
+                                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                                 >
-                                    {sidebarCurrentProviderTokenUsage.provider || (lang === 'zh-Hans' ? '未选择' : lang === 'zh-Hant' ? '未選擇' : 'Not selected')}
-                                </div>
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2px' }}>
-                                {[
-                                    { label: lang === 'zh-Hans' ? '入' : lang === 'zh-Hant' ? '入' : 'In', value: sidebarCurrentProviderTokenUsage.input, tone: 'muted' },
-                                    { label: lang === 'zh-Hans' ? '出' : lang === 'zh-Hant' ? '出' : 'Out', value: sidebarCurrentProviderTokenUsage.output, tone: 'muted' },
-                                    { label: lang === 'zh-Hans' ? '总' : lang === 'zh-Hant' ? '總' : 'All', value: sidebarCurrentProviderTokenUsage.total, tone: 'primary', bold: true },
-                                ].map(({ label, value, tone, bold }) => (
-                                    <div key={label} style={{ minWidth: 0, borderRadius: '4px', background: aiThemeMode === 'dark' ? 'rgba(17, 24, 39, 0.96)' : 'rgba(247, 248, 250, 0.74)', border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.72)' : '1px solid rgba(225, 228, 232, 0.72)', padding: '3px 3px', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: '4px' }}>
-                                        <div style={{ fontSize: '0.42rem', color: 'var(--theme-text-muted)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>{label}</div>
-                                        <div style={{ color: tone === 'primary' ? 'var(--theme-text-primary)' : 'var(--theme-text-secondary)', fontWeight: bold ? 700 : 600, fontSize: bold ? '0.5rem' : '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }} title={value.toLocaleString()}>
-                                            {value.toLocaleString()}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                        <span style={{ fontSize: '0.75rem', flexShrink: 0 }}>{proj.pinned ? '📌' : '🔖'}</span>
+                                        {renamingTaskPath === proj.project_path ? (
+                                            <input
+                                                autoFocus
+                                                value={renameValue}
+                                                onChange={e => setRenameValue(e.target.value)}
+                                                onBlur={async () => {
+                                                    const trimmed = renameValue.trim();
+                                                    if (trimmed && trimmed !== proj.name) {
+                                                        await RenameTask(proj.project_path, trimmed);
+                                                        SearchProjects("", 10).then(r => setRecentProjects(r || [])).catch(() => {});
+                                                    }
+                                                    setRenamingTaskPath(null);
+                                                }}
+                                                onKeyDown={e => {
+                                                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                                    if (e.key === 'Escape') { setRenamingTaskPath(null); }
+                                                }}
+                                                onClick={e => e.stopPropagation()}
+                                                style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--theme-text-primary)', background: 'var(--theme-page-bg)', border: '1px solid var(--theme-primary)', borderRadius: '3px', padding: '1px 4px', outline: 'none', flex: 1, minWidth: 0 }}
+                                            />
+                                        ) : (
+                                            <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--theme-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                                                {proj.name}
+                                            </span>
+                                        )}
+                                        {proj.workflow_type && (
+                                            <span style={{ fontSize: '0.5rem', padding: '1px 4px', borderRadius: '999px', background: 'rgba(99,102,241,0.12)', color: 'var(--theme-primary)', border: '1px solid var(--theme-border)', flexShrink: 0 }}>
+                                                {proj.workflow_type}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {/^[A-Za-z]:[\\\/]|^\/|^~\//.test(proj.project_path) && (
+                                    <div style={{ fontSize: '0.58rem', color: 'var(--theme-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingLeft: '19px' }}>
+                                        {proj.project_path}
+                                    </div>
+                                    )}
+                                    {proj.preview && (
+                                        <div style={{ fontSize: '0.58rem', color: 'var(--theme-text-muted)', opacity: 0.7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingLeft: '19px' }}>
+                                            {proj.preview}
                                         </div>
+                                    )}
+                                </div>
+                            ))
+                        )}
+
+                        {/* Task context menu */}
+                        {taskContextMenu && (<>
+                            <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setTaskContextMenu(null)} />
+                            <div
+                                style={{ position: 'fixed', left: taskContextMenu.x, top: taskContextMenu.y, zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', padding: '4px 0', minWidth: '120px' }}
+                            >
+                                {[
+                                    { label: lang === 'zh-Hans' ? '重命名' : 'Rename', icon: '✏️', action: () => { setRenamingTaskPath(taskContextMenu.projectPath); setRenameValue(taskContextMenu.name); setTaskContextMenu(null); } },
+                                    { label: taskContextMenu.pinned ? (lang === 'zh-Hans' ? '取消置顶' : 'Unpin') : (lang === 'zh-Hans' ? '置顶' : 'Pin'), icon: '📌', action: async () => { await PinTask(taskContextMenu.projectPath, !taskContextMenu.pinned); SearchProjects("", 10).then(r => setRecentProjects(r || [])).catch(() => {}); setTaskContextMenu(null); } },
+                                    { label: lang === 'zh-Hans' ? '删除' : 'Remove', icon: '🗑️', action: async () => { await HideTask(taskContextMenu.projectPath); SearchProjects("", 10).then(r => setRecentProjects(r || [])).catch(() => {}); setTaskContextMenu(null); } },
+                                ].map(item => (
+                                    <div key={item.label} onClick={item.action}
+                                        style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', cursor: 'pointer', fontSize: '0.7rem', color: 'var(--theme-text-primary)', transition: 'background 0.1s' }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = aiThemeMode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)')}
+                                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                                    >
+                                        <span style={{ fontSize: '0.75rem' }}>{item.icon}</span>
+                                        <span>{item.label}</span>
                                     </div>
                                 ))}
                             </div>
+                        </>)}
+                    </div>
+
+                    {/* Bottom: compact status panel */}
+                    <div style={{ flexShrink: 0, padding: '6px 8px', borderTop: '1px solid var(--theme-border)' }}>
+                        {/* Connection status dots */}
+                        <div style={{ display: 'flex', gap: '6px', marginBottom: '6px', justifyContent: 'center' }}>
+                            {[
+                                { label: 'LLM', on: maclawLLMOnline },
+                                { label: lang === 'zh-Hans' ? '智网' : 'Net', on: agentNetRunning },
+                                { label: lang === 'zh-Hans' ? '移动' : 'Mob', on: !!remoteActivationStatus?.activated },
+                                { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerStatus === 'connected' },
+                            ].map(({ label, on }) => (
+                                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: on ? 'var(--theme-primary-strong)' : 'var(--theme-text-muted)', boxShadow: on ? '0 0 4px color-mix(in srgb, var(--theme-primary-strong) 40%, transparent)' : 'none', display: 'inline-block' }} />
+                                    <span style={{ fontSize: '0.52rem', color: on ? 'var(--theme-text-primary)' : 'var(--theme-text-muted)', fontWeight: 600 }}>{label}</span>
+                                </div>
+                            ))}
+                        </div>
+                        {/* Token usage */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.5rem', color: 'var(--theme-text-muted)', padding: '0 2px' }}>
+                            <span style={{ fontWeight: 600 }}>{sidebarCurrentProviderTokenUsage.provider || '—'}</span>
+                            <span style={{ fontVariantNumeric: 'tabular-nums' }} title={sidebarCurrentProviderTokenUsage.total.toLocaleString() + ' tokens'}>{(() => {
+                                const t = sidebarCurrentProviderTokenUsage.total;
+                                if (t >= 1_000_000_000) return (t / 1_000_000_000).toFixed(1) + 'B';
+                                if (t >= 1_000_000) return (t / 1_000_000).toFixed(1) + 'M';
+                                if (t >= 1_000) return (t / 1_000).toFixed(1) + 'K';
+                                return t.toString();
+                            })()} tokens</span>
                         </div>
                     </div>
                 </div>
+                )}
             </div>
 
             <div className="main-container" data-ai-theme={aiThemeMode}>
-                {/* AI assistant as main content (both lite and pro modes) */}
+                {/* AI assistant as main content */}
                 {navTab === 'ai' ? (
                     <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>
                         <AIAssistantPanel
@@ -4127,7 +4182,7 @@ ${instruction}`;
                             onOpenOnboarding: () => setShowMaclawLLMPopup(true),
                             cancelSession: aiAssistant.cancelSession,
                             injectSupplementary: aiAssistant.injectSupplementary,
-                            onOpenTutorial: () => switchTool('tutorial'),
+                            onTaskPrefsChanged: () => { SearchProjects("", 10).then(r => setRecentProjects(r || [])).catch(() => {}); },
                         }}
                         window={{
                             inline: true,
@@ -4154,7 +4209,7 @@ ${instruction}`;
                                                                     navTab === 'skills' ? t("skills") :
                                                                         navTab === 'tutorial' ? t("tutorial") :
                                                                             navTab === 'gossip' ? t("gossip") :
-                                                                            navTab === 'remote' ? (lang === 'zh-Hans' ? '任务管理' : lang === 'zh-Hant' ? '任務管理' : 'Task Management') :
+                                                                            navTab === 'remote' ? (lang === 'zh-Hans' ? '监控面板' : lang === 'zh-Hant' ? '監控面板' : 'Monitor') :
                                                                                 navTab === 'api-store' ? t("apiStore") :
                                                                                     navTab === 'mcp' ? 'MCP' :
                                                                                         navTab === 'settings' ? t("globalSettings") :
@@ -4624,7 +4679,7 @@ ${instruction}`;
                     {navTab === 'settings' && (
                         <div className="settings-shell" style={{ padding: '10px' }}>
                             <div className="settings-top-tabs">
-                                {settingsTabOptions.filter(tab => !(isLiteMode && (tab.id === 'display' || tab.id === 'remote'))).map((tab) => (
+                                {settingsTabOptions.map((tab) => (
                                     <button
                                         key={tab.id}
                                         type="button"
@@ -4646,34 +4701,18 @@ ${instruction}`;
                                         <option value="zh-Hant">繁體中文</option>
                                     </select>
                                 </div>
-                                {!isLiteMode && <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
                                     <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("defaultLaunchModeLabel")}</label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                        <input type="radio" name="launchMode" checked={!config?.default_launch_mode || config.default_launch_mode === 'local'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'local' }); setConfig(c); SaveConfig(c); } }} />
+                                        <input type="radio" name="launchMode" checked={!config?.default_launch_mode || config.default_launch_mode === 'local'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'local', remote_enabled: false }); setConfig(c); SaveConfig(c); } }} />
                                         {t("localModeLabel")}
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                        <input type="radio" name="launchMode" checked={config?.default_launch_mode === 'remote'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'remote' }); setConfig(c); SaveConfig(c); } }} />
+                                        <input type="radio" name="launchMode" checked={config?.default_launch_mode === 'remote'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true }); setConfig(c); SaveConfig(c); } }} />
                                         {t("remoteModeLabel")}
                                     </label>
-                                </div>}
+                                </div>
                                 
-                            </div>
-
-                            {/* UI Mode selector in general settings */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '15px', marginTop: '-5px', padding: '0 0 0 0' }}>
-                                <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("uiModeLabel")}</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                    <input type="radio" name="uiMode" checked={!isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'pro' }); setConfig(c); SaveConfig(c); } }} />
-                                    {t("uiModePro")}
-                                </label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                    <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); const currentTab: string = navTab; if (currentTab === 'remote' || currentTab === 'skills' || currentTab === 'mcp' || isToolTab(currentTab)) { setNavTab('ai'); } if (settingsTab === 'display' || settingsTab === 'remote' || settingsTab === 'ui') { setSettingsTab('general'); } } }} />
-                                    {t("uiModeLite")}
-                                </label>
-                                <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
-                                    {isLiteMode ? t("uiModeLiteDesc") : t("uiModeProDesc")}
-                                </span>
                             </div>
 
                             {/* Working Directory setting */}
@@ -4780,6 +4819,13 @@ ${instruction}`;
                                     invitationCode={invitationCode}
                                     setInvitationCode={setInvitationCode}
                                     invitationCodeError={invitationCodeError}
+                                />
+                            </div>
+                            <div className="settings-panel" style={{ display: settingsTab === 'iworkercenter' ? 'block' : 'none' }}>
+                                <IWorkerCenterPanel
+                                    config={config}
+                                    lang={lang}
+                                    onConfigSaved={(patch) => setConfig(new main.AppConfig({ ...config, ...patch }))}
                                 />
                             </div>
 
@@ -5782,6 +5828,38 @@ ${instruction}`;
                                         {lang === 'zh-Hans' ? '独立调整 AI 助手聊天区的字体大小（12–24px），不影响界面缩放。' : lang === 'zh-Hant' ? '獨立調整 AI 助手聊天區的字體大小（12–24px），不影響介面縮放。' : 'Adjust the AI assistant chat area font size (12–24px) independently from UI zoom.'}
                                     </p>
                                 </div>
+
+                                <div className="form-group" style={{ marginBottom: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '导航栏显示' : lang === 'zh-Hant' ? '導航欄顯示' : 'Sidebar Navigation'}</h4>
+                                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: 0, marginBottom: '10px' }}>
+                                        {lang === 'zh-Hans' ? '勾选的功能直接显示在导航栏，未勾选的收入「···」折叠菜单中。AI 助手、设置和关于始终显示。' : lang === 'zh-Hant' ? '勾選的功能直接顯示在導航欄，未勾選的收入「···」摺疊選單中。AI 助手、設定和關於始終顯示。' : 'Checked items show directly in the sidebar. Unchecked items are collapsed under "···". AI Assistant, Settings and About are always visible.'}
+                                    </p>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                                        {[
+                                            { key: 'show_nav_monitor', label: lang === 'zh-Hans' ? '📡 监控' : lang === 'zh-Hant' ? '📡 監控' : '📡 Monitor' },
+                                            { key: 'show_nav_skills', label: `🧩 ${lang === 'zh-Hans' ? '技能' : lang === 'zh-Hant' ? '技能' : 'Skills'}` },
+                                            { key: 'show_nav_mcp', label: '🔌 MCP' },
+                                            { key: 'show_nav_gossip', label: `🗣️ ${lang === 'zh-Hans' ? '八卦' : lang === 'zh-Hant' ? '八卦' : 'Gossip'}` },
+                                            { key: 'show_nav_agentnet', label: `🌐 ${lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet'}` },
+                                        ].map(item => (
+                                            <label key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={(config as any)?.[item.key] !== false}
+                                                    onChange={e => {
+                                                        if (config) {
+                                                            const newConfig = new main.AppConfig({ ...config, [item.key]: e.target.checked });
+                                                            setConfig(newConfig);
+                                                            SaveConfig(newConfig);
+                                                        }
+                                                    }}
+                                                    style={{ width: '16px', height: '16px' }}
+                                                />
+                                                <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>{item.label}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
@@ -5861,118 +5939,6 @@ ${instruction}`;
                                         </p>
                                     </div>
                                     ) : null}
-                                </div>
-                            </div>
-
-                            <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '工具显示' : lang === 'zh-Hant' ? '工具顯示' : 'Tool Visibility'}</h4>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_gemini !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_gemini: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>Gemini CLI</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_codex !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_codex: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>OpenAI Codex</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_opencode !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_opencode: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>OpenCode AI</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_codebuddy !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_codebuddy: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>CodeBuddy</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: isWindows ? 'not-allowed' : 'pointer', opacity: isWindows ? 0.5 : 1 }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={isWindows ? false : config?.show_cursor !== false}
-                                            disabled={isWindows}
-                                            onChange={(e) => {
-                                                if (config && !isWindows) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_cursor: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: isWindows ? 'var(--theme-text-muted)' : 'var(--theme-text-secondary)' }}>Cursor Agent{isWindows ? ' (macOS/Linux)' : ''}</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_iflow !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_iflow: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>iFlow CLI</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_kilo !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_kilo: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>Kilo Code CLI</span>
-                                    </label>
                                 </div>
                             </div>
 
@@ -6268,7 +6234,7 @@ ${instruction}`;
                                         <button
                                             type="button"
                                             onClick={() => {
-                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: false });
+                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: false, default_launch_mode: 'local' });
                                                 setConfig(newConfig);
                                                 SaveConfig(newConfig);
                                             }}
@@ -6289,7 +6255,7 @@ ${instruction}`;
                                             type="button"
                                             onClick={() => {
                                                 if (!isRemoteCapableActiveTool) return;
-                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: true });
+                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: true, default_launch_mode: 'remote' });
                                                 setConfig(newConfig);
                                                 SaveConfig(newConfig);
                                             }}
@@ -6469,7 +6435,7 @@ ${instruction}`;
                                             setStatus(lang === 'zh-Hans' ? '正在转为远程...' : lang === 'zh-Hant' ? '正在轉為遠端...' : 'Switching to remote...');
                                             setLaunchingTool(activeTool);
                                             try {
-                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: true });
+                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: true, default_launch_mode: 'remote' });
                                                 setConfig(newConfig);
                                                 await SaveConfig(newConfig);
                                                 await quickStartRemoteSession(activeTool as any, "handoff");
@@ -7664,7 +7630,6 @@ ${instruction}`;
                     lang={lang}
                     hubUrl={config?.remote_hub_url || ""}
                     email={config?.remote_email || ""}
-                    uiMode={config?.ui_mode || ""}
                     brandId={brandInfo?.id}
                     brandDisplayName={brandInfo?.displayName}
                     onClose={() => setShowMaclawLLMPopup(false)}
@@ -7677,13 +7642,6 @@ ${instruction}`;
                     }}
                     onSaveField={(patch) => {
                         saveRemoteConfigField(patch as any);
-                        // If ui_mode changed, update local state immediately for reactivity.
-                        // The actual persist is handled by saveRemoteConfigField (which
-                        // reloads config from backend first to avoid overwriting concurrent
-                        // backend changes like SSO provider switch).
-                        if (patch.ui_mode && config) {
-                            setConfig(new main.AppConfig({ ...config, ...patch }));
-                        }
                     }}
                 />
             )}

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -844,36 +843,6 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 		log.Printf("[proactive_recall] injected %d entries (with index) into system prompt", len(relevant))
 		b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。即使你在之前的对话中说过「没找到」或「记忆库为空」，现在已经找到了，请直接使用以上信息，不要重复之前的错误判断。）\n")
 
-		// Active project bridge: when recalled memories contain project-level
-		// context (project_knowledge / task_artifact) and the user sent a
-		// short message (< 4 words like "开工", "继续", "ok"), the user
-		// likely wants to resume the recalled project. Without this hint,
-		// the LLM treats recalled memories as passive reference and asks
-		// "what do you want to do?" instead of continuing the project.
-		//
-		// This is the single fix point for the "empty history + project in
-		// memory + short continuation signal" scenario. No changes needed
-		// in TaskContextManager — the decision layer doesn't need to know
-		// about memory content; the prompt layer handles it.
-		if wordCount := agent.CountWords(msg); wordCount > 0 && wordCount < 4 {
-			hasProjectEntry := false
-			for _, e := range relevant {
-				cat := corememory.MapToCanonical(e.Category)
-				if cat == corememory.CategoryProjectKnowledge || e.Category == corememory.CategoryTaskArtifact {
-					hasProjectEntry = true
-					break
-				}
-			}
-			if hasProjectEntry {
-				b.WriteString("\n## 活跃项目上下文\n")
-				b.WriteString("上方召回的记忆中包含你之前正在进行的项目信息。")
-				b.WriteString("虽然对话历史已清空（可能因为应用重启或会话过期），但项目仍然有效。\n")
-				b.WriteString("用户发送了继续工作的信号。请基于召回的项目记忆，简要确认项目状态后继续推进。")
-				b.WriteString("例如：「好的，继续 XXX 项目。上次进展到 YYY，接下来我来 ZZZ。」\n")
-				log.Printf("[proactive_recall] injected active project bridge directive (short msg + project_knowledge)")
-			}
-		}
-
 		// Memory-driven tool pinning: scan recalled memory content for
 		// conditional tool keywords (e.g. "服务器", "SSH") and pin matching
 		// tools to the session. This handles the case where the app was
@@ -886,7 +855,15 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 				memoryText.WriteString(" ")
 			}
 			matched := tool.MatchConditionalTools(memoryText.String())
+			// Defense-in-depth: even though MatchConditionalTools already
+			// filters noEagerPinTools, double-check here. This prevents
+			// browser tools from being session-pinned if MatchConditionalTools
+			// has a bug or the filtering is bypassed by a future code change.
 			for name := range matched {
+				if tool.IsNoEagerPinTool(name) {
+					log.Printf("[MemoryPin] BLOCKED %q from memory-driven pin (in noEagerPinTools)", name)
+					continue
+				}
 				if tool.ShouldPinConditionalTool(name) {
 					h.toolRouter.ActivateSessionTool(name)
 					log.Printf("[MemoryPin] pinned conditional tool %q from recalled memory content", name)

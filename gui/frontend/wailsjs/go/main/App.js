@@ -94,6 +94,46 @@ export function GetRemotePTYProbe() {
   return window['go']['main']['App']['GetRemotePTYProbe']();
 }
 
+export function SearchProjects(arg1, arg2) {
+  return window['go']['main']['App']['SearchProjects'](arg1, arg2);
+}
+
+export function ResumeProject(arg1) {
+  return window['go']['main']['App']['ResumeProject'](arg1);
+}
+
+export function RenameTask(arg1, arg2) {
+  return window['go']['main']['App']['RenameTask'](arg1, arg2);
+}
+
+export function PinTask(arg1, arg2) {
+  return window['go']['main']['App']['PinTask'](arg1, arg2);
+}
+
+export function HideTask(arg1) {
+  return window['go']['main']['App']['HideTask'](arg1);
+}
+
+export function GetTTSEnabled() {
+  return window['go']['main']['App']['GetTTSEnabled']();
+}
+
+export function SetTTSEnabled(arg1) {
+  return window['go']['main']['App']['SetTTSEnabled'](arg1);
+}
+
+export function SpeakText(arg1) {
+  return window['go']['main']['App']['SpeakText'](arg1);
+}
+
+export function CheckTTSModel() {
+  return window['go']['main']['App']['CheckTTSModel']();
+}
+
+export function DownloadTTSModel() {
+  return window['go']['main']['App']['DownloadTTSModel']();
+}
+
 export function GetLastRemoteSmokeReport() {
   return window['go']['main']['App']['GetLastRemoteSmokeReport']();
 }
@@ -154,6 +194,18 @@ export function IsWindowsTerminalAvailable() {
   return window['go']['main']['App']['IsWindowsTerminalAvailable']();
 }
 
+export function IsNativeRoundedCorners() {
+  return window['go']['main']['App']['IsNativeRoundedCorners']();
+}
+
+export function IsWebviewTransparent() {
+  return window['go']['main']['App']['IsWebviewTransparent']();
+}
+
+export function GetFramelessTopInset() {
+  return window['go']['main']['App']['GetFramelessTopInset']();
+}
+
 export function LaunchInstallerAndExit(arg1) {
   return window['go']['main']['App']['LaunchInstallerAndExit'](arg1);
 }
@@ -194,6 +246,13 @@ export function LoadConfig() {
   return window['go']['main']['App']['LoadConfig']();
 }
 
+export function IWorkerCenterConfigStatus() {
+  return window['go']['main']['App']['IWorkerCenterConfigStatus']();
+}
+
+export function IWorkerGoalWatchStatus() {
+  return window['go']['main']['App']['IWorkerGoalWatchStatus']();
+}
 export function MaximiseAndSaveGeometry() {
   return window['go']['main']['App']['MaximiseAndSaveGeometry']();
 }
@@ -250,6 +309,21 @@ export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
 }
 
+export function RunIWorkerGoalWatchOnce() {
+  return window['go']['main']['App']['RunIWorkerGoalWatchOnce']();
+}
+
+export function SaveIWorkerCenterConfig(arg1) {
+  return window['go']['main']['App']['SaveIWorkerCenterConfig'](arg1);
+}
+
+export function StartIWorkerGoalWatch() {
+  return window['go']['main']['App']['StartIWorkerGoalWatch']();
+}
+
+export function StopIWorkerGoalWatch() {
+  return window['go']['main']['App']['StopIWorkerGoalWatch']();
+}
 export function SelectProjectDir() {
   return window['go']['main']['App']['SelectProjectDir']();
 }

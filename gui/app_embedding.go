@@ -523,6 +523,15 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		if a.isMaclawLLMConfigured() {
 			a.memoryStore.SetLLMDedup(&archiverLLMCaller{app: a})
 		}
+
+		// Wire LLM into the Mem0-style online extraction pipeline.
+		// The OnlineExtractor was created with nil LLM in ensureMemoryStore;
+		// now that the LLM config is available, wire it in.
+		if a.isMaclawLLMConfigured() {
+			if oe := a.memoryStore.OnlineExtractor(); oe != nil {
+				oe.SetLLM(&archiverLLMCaller{app: a})
+			}
+		}
 	}
 
 	// Wire embedder into tool router (enables hybrid retrieval).

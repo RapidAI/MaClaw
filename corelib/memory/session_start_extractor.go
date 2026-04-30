@@ -166,8 +166,15 @@ func (e *SessionStartExtractor) extract(userID string, entries []ConversationMes
 	summary = redactSecretsInMemory(summary)
 
 	// Save as task_artifact so it's available via proactive recall.
+	// Derive title from the first line of the LLM-generated summary.
+	title := ""
+	if idx := strings.IndexByte(summary, '\n'); idx > 0 {
+		title = strings.TrimSpace(summary[:idx])
+		title = strings.TrimLeft(title, "# ")
+	}
 	entry := Entry{
 		Content:    summary,
+		Title:      title,
 		Category:   CategoryTaskArtifact,
 		Tags:       []string{"session_extraction", "auto", userID},
 		Scope:      ScopeProject,

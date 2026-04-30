@@ -25,8 +25,8 @@ type ComplexityResult struct {
 }
 
 // AnalyzeComplexity analyzes the complexity of a TrajectorySession.
-// Thresholds: StepCount >= 3 && ToolKindCount >= 2 && TurnCount >= 5 鈫?"worth_summarizing",
-// otherwise 鈫?"too_simple". nil/empty session returns "too_simple".
+// Thresholds: StepCount >= 3 && ToolKindCount >= 2 && TurnCount >= 5 => "worth_summarizing",
+// otherwise => "too_simple". nil/empty session returns "too_simple".
 func AnalyzeComplexity(session *TrajectorySession) ComplexityResult {
 	if session == nil || len(session.Entries) == 0 {
 		return ComplexityResult{Score: "too_simple"}
@@ -39,7 +39,7 @@ func AnalyzeComplexity(session *TrajectorySession) ComplexityResult {
 	for _, entry := range session.Entries {
 		if entry.Role == "assistant" && entry.ToolCalls != nil {
 			stepCount++
-			extractToolNames(entry.ToolCalls, toolKinds)
+			collectToolNameSet(entry.ToolCalls, toolKinds)
 		}
 	}
 
@@ -58,11 +58,11 @@ func AnalyzeComplexity(session *TrajectorySession) ComplexityResult {
 	return result
 }
 
-// extractToolNames extracts unique tool names from a ToolCalls interface{} value
+// collectToolNameSet extracts unique tool names from a ToolCalls interface{} value
 // into the provided set. ToolCalls is expected to be []interface{} where each
 // element is a map[string]interface{} with a "function" key containing a
 // map[string]interface{} with a "name" key.
-func extractToolNames(toolCalls interface{}, names map[string]bool) {
+func collectToolNameSet(toolCalls interface{}, names map[string]bool) {
 	calls, ok := toolCalls.([]interface{})
 	if !ok {
 		return
@@ -98,7 +98,7 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 		return nil, fmt.Errorf("no tool_calls found in session")
 	}
 
-	// Build a map of tool_call_id 鈫?tool result content for error detection.
+	// Build a map of tool_call_id => tool result content for error detection.
 	toolResults := buildToolResultMap(session.Entries)
 
 	// Extract raw steps from all assistant entries with ToolCalls.
@@ -316,14 +316,14 @@ func ValidateSkillDraft(
 	if strings.TrimSpace(draft.Name) == "" {
 		reasons = append(reasons, "name must not be empty")
 	} else if len(draft.Name) > 60 {
-		reasons = append(reasons, "name must be 鈮?60 characters")
+		reasons = append(reasons, "name must be <= 60 characters")
 	}
 
 	// Validate description.
 	if strings.TrimSpace(draft.Description) == "" {
 		reasons = append(reasons, "description must not be empty")
 	} else if len(draft.Description) > 500 {
-		reasons = append(reasons, "description must be 鈮?500 characters")
+		reasons = append(reasons, "description must be <= 500 characters")
 	}
 
 	// Validate steps.
@@ -399,7 +399,7 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 		return nil, fmt.Errorf("quality gate: write skill.yaml: %w", err)
 	}
 
-	// 4-6. Generate tags (optional 鈥?failure is logged but not fatal).
+	// 4-6. Generate tags (optional; failure is logged but not fatal).
 	if tagGen != nil {
 		meta, err := tagGen.GenerateTags(skillDir)
 		if err != nil {
@@ -436,8 +436,8 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 // RunAutoUpload executes the auto-upload flow for a newly created skill.
 // It records the execution, packages the skill into a zip, checks upload
 // conditions, and submits to SkillMarket if appropriate.
-// HubCenter not configured 鈫?skip upload with warning log, return nil.
-// Upload failure 鈫?log error, return error (caller preserves local skill).
+// HubCenter not configured => skip upload with warning log, return nil.
+// Upload failure => log error, return error (caller preserves local skill).
 func RunAutoUpload(
 	ctx context.Context,
 	skillName string,
@@ -501,7 +501,7 @@ func RunAutoUpload(
 }
 
 // SkillAutoSummaryPipeline orchestrates the end-to-end skill auto-summary
-// flow: complexity analysis 鈫?draft 鈫?validate 鈫?quality gate 鈫?auto upload.
+// flow: complexity analysis => draft => validate => quality gate => auto upload.
 type SkillAutoSummaryPipeline struct {
 	tagGen    *TagGenerator
 	checker   *SecurityPolicyChecker
@@ -511,7 +511,7 @@ type SkillAutoSummaryPipeline struct {
 	activity  *AgentActivityStore
 
 	mu        sync.Mutex
-	processed map[string]bool // session_id 鈫?already processed (idempotent)
+	processed map[string]bool // session_id => already processed (idempotent)
 }
 
 // NewSkillAutoSummaryPipeline creates a new pipeline with all required dependencies.
@@ -543,7 +543,7 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	}
 	sid := session.SessionID
 
-	// Idempotency check 鈥?must check and mark in the same critical section
+	// Idempotency check must check and mark in the same critical section
 	// to prevent two goroutines from both passing the check.
 	p.mu.Lock()
 	if p.processed[sid] {
@@ -561,7 +561,7 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	if p.activity != nil {
 		p.activity.Update(&AgentActivity{
 			Source:      "skill_summarizing",
-			Task:        "鑷姩鎬荤粨 Skill",
+			Task:        "Auto summarize Skill",
 			LastSummary: "pipeline started",
 		})
 	}
@@ -584,7 +584,7 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	log.Printf("[skill-auto-summary] session=%s stage=DraftSkill result=ok name=%s steps=%d",
 		sid, draft.Name, len(draft.Steps))
 
-	// Stage 2.5: FindSimilarSkill 鈥?check if an existing skill should be updated.
+	// Stage 2.5: FindSimilarSkill checks if an existing skill should be updated.
 	existing, simScore := skill.FindSimilarSkill(draft.Description, 0.6)
 	if existing != nil {
 		log.Printf("[skill-auto-summary] session=%s stage=FindSimilarSkill result=matched score=%.2f existing=%s",
@@ -611,7 +611,7 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 		} else {
 			log.Printf("[skill-auto-summary] session=%s stage=FindSimilarSkill existing skill is better, skipping iteration", sid)
 		}
-		return // Skip new skill creation 鈥?either updated or skipped.
+		return // Skip new skill creation; either updated or skipped.
 	}
 	log.Printf("[skill-auto-summary] session=%s stage=FindSimilarSkill result=unmatched score=%.2f", sid, simScore)
 
@@ -646,7 +646,7 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 		)
 		if err != nil {
 			log.Printf("[skill-auto-summary] session=%s stage=RunAutoUpload error=%v", sid, err)
-			// Upload failure is non-fatal 鈥?local skill is preserved.
+			// Upload failure => log error, return error (caller preserves local skill).
 		} else {
 			log.Printf("[skill-auto-summary] session=%s stage=RunAutoUpload result=ok", sid)
 		}

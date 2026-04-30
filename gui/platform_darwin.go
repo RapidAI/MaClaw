@@ -23,6 +23,29 @@ import (
 func (a *App) platformStartup() {
 }
 
+// IsNativeRoundedCorners returns false on macOS — macOS handles window
+// rounding through its own compositor; the CSS border-radius is harmless.
+func (a *App) IsNativeRoundedCorners() bool {
+	return false
+}
+
+// PlatformTransparencyFlags returns (WebviewIsTransparent, WindowIsTranslucent).
+// On macOS both are false to avoid NSVisualEffectView / Liquid Glass crashes
+// on macOS 15+ and 26+.
+func (a *App) PlatformTransparencyFlags() (webviewTransparent, windowTranslucent bool) {
+	return false, false
+}
+
+// IsWebviewTransparent returns false on macOS.
+func (a *App) IsWebviewTransparent() bool {
+	return false
+}
+
+// GetFramelessTopInset returns 0 on macOS — no DWM offset issue.
+func (a *App) GetFramelessTopInset() int {
+	return 0
+}
+
 func (a *App) platformShutdown() {
 	a.setPowerOptimizationEnabled(false)
 }

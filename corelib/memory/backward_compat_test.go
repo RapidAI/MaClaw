@@ -229,6 +229,10 @@ func TestBackwardCompat_NoArchiveJSON(t *testing.T) {
 	}
 
 	// Trigger eviction by filling to capacity + 1.
+	// Temporarily lower maxItems for test performance.
+	store.mu.Lock()
+	store.maxItems = 500
+	store.mu.Unlock()
 	for i := 0; i < 500; i++ {
 		if err := store.Save(Entry{
 			Content:  fmt.Sprintf("fill-entry-%d", i),

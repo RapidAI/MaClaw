@@ -126,6 +126,7 @@ func remoteActivate(args []string) error {
 	cfg.RemoteMachineToken = result.MachineToken
 	cfg.RemoteHubURL = result.HubURL
 	cfg.RemoteEnabled = true
+	cfg.DefaultLaunchMode = "remote"
 	if result.ViewerToken != "" {
 		cfg.RemoteViewerToken = result.ViewerToken
 	}

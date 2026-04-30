@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow"
+const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow piper-xiao_ya-zh-fp32.gguf"
 
 type hubModelFileView struct {
 	Name        string `json:"name"`

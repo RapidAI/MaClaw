@@ -76,6 +76,30 @@ func (h *SkillMarketHandler) DeleteAdminSkill() http.HandlerFunc {
 	}
 }
 
+func (h *SkillMarketHandler) PublishCenterSkill() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		centerID := r.PathValue("id")
+		center, ok := h.authorize(w, r, centerID)
+		if !ok {
+			return
+		}
+		var input skillmarket.SkillInput
+		if err := decodeJSON(r, &input); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+			return
+		}
+		if strings.TrimSpace(input.AuthorEmail) == "" {
+			input.AuthorEmail = center.AdminEmail
+		}
+		skill, err := h.skills.PublishFromCenter(r.Context(), center.ID, input)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "PUBLISH_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, convertSkill(skill, true))
+	}
+}
+
 func (h *SkillMarketHandler) SearchCenterSkills() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		centerID := r.PathValue("id")
@@ -174,22 +198,24 @@ func convertSkill(item *store.Skill, includeAdminFields bool) marketschema.Skill
 	var tags []string
 	_ = json.Unmarshal([]byte(item.Tags), &tags)
 	result := marketschema.Skill{
-		ID:            item.ID,
-		Name:          item.Name,
-		Description:   item.Description,
-		Category:      item.Category,
-		Version:       item.Version,
-		Tags:          tags,
-		RiskLevel:     item.RiskLevel,
-		Status:        item.Status,
-		Price:         item.Price,
-		Author:        item.Author,
-		AvgRating:     item.AvgRating,
-		DownloadCount: item.DownloadCount,
-		Downloads:     item.DownloadCount,
-		PackageFormat: item.PackageFormat,
-		PackageSHA256: item.PackageSHA256,
-		PackageSize:   item.PackageSize,
+		ID:             item.ID,
+		Name:           item.Name,
+		Description:    item.Description,
+		Category:       item.Category,
+		Version:        item.Version,
+		Tags:           tags,
+		RiskLevel:      item.RiskLevel,
+		Status:         item.Status,
+		Price:          item.Price,
+		Author:         item.Author,
+		AuthorEmail:    item.AuthorEmail,
+		SourceCenterID: item.SourceCenterID,
+		AvgRating:      item.AvgRating,
+		DownloadCount:  item.DownloadCount,
+		Downloads:      item.DownloadCount,
+		PackageFormat:  item.PackageFormat,
+		PackageSHA256:  item.PackageSHA256,
+		PackageSize:    item.PackageSize,
 	}
 	if includeAdminFields {
 		result.CreatedAt = marketschema.FormatTime(item.CreatedAt)

@@ -1157,6 +1157,101 @@ func extractCaptureDirectives(content string) []map[string]string {
 // StripBashCommentLines removes lines starting with # from a bash command
 // string. This is needed when executing via cmd.exe on Windows, where #
 // is not a valid comment character and causes "'#' is not recognized" errors.
+// SplitSkillDocSections splits SKILL.md content into CORE and REFERENCE
+// sections based on HTML comment markers:
+//
+//	<!-- CORE: description --> marks the start of core instructions
+//	<!-- REFERENCE: description --> marks the start of reference documentation
+//
+// Markers must be on their own line (the entire line is consumed).
+// Content after --> on the same line is discarded.
+//
+// When no markers are present, the entire content is treated as CORE
+// (backward compatible). The CORE section is always injected fully into
+// LLM context; the REFERENCE section is subject to token budget truncation.
+//
+// This implements the 3-layer knowledge architecture from the "5 Skill
+// Architecture Patterns" article: Layer 1 (frontmatter ~100 tokens),
+// Layer 2 (CORE ~2-5K tokens), Layer 3 (REFERENCE, loaded on demand).
+func SplitSkillDocSections(content string) (core string, reference string) {
+	const corePrefix = "<!-- CORE"
+	const refPrefix = "<!-- REFERENCE"
+
+	coreIdx := strings.Index(content, corePrefix)
+	refIdx := strings.Index(content, refPrefix)
+
+	// No markers at all → entire document is core
+	if coreIdx < 0 && refIdx < 0 {
+		return content, ""
+	}
+
+	// Helper: skip past the end of the HTML comment line
+	skipMarkerLine := func(s string, markerStart int) int {
+		rest := s[markerStart:]
+		nl := strings.Index(rest, "\n")
+		if nl < 0 {
+			return len(s) // marker is the last line
+		}
+		return markerStart + nl + 1
+	}
+
+	// Only REFERENCE marker (no CORE marker) → everything before REFERENCE is core
+	if coreIdx < 0 {
+		corePart := strings.TrimSpace(content[:refIdx])
+		refStart := skipMarkerLine(content, refIdx)
+		refPart := ""
+		if refStart < len(content) {
+			refPart = strings.TrimSpace(content[refStart:])
+		}
+		return corePart, refPart
+	}
+
+	// Only CORE marker (no REFERENCE marker) → everything after CORE marker is core
+	if refIdx < 0 {
+		// Content before CORE marker is preamble (included in core)
+		coreStart := skipMarkerLine(content, coreIdx)
+		preamble := strings.TrimSpace(content[:coreIdx])
+		coreBody := ""
+		if coreStart < len(content) {
+			coreBody = strings.TrimSpace(content[coreStart:])
+		}
+		if preamble != "" && coreBody != "" {
+			return preamble + "\n\n" + coreBody, ""
+		}
+		if coreBody != "" {
+			return coreBody, ""
+		}
+		return preamble, ""
+	}
+
+	// Both markers present — CORE must come before REFERENCE
+	if coreIdx > refIdx {
+		// Markers in wrong order → treat entire content as core (safe fallback)
+		return content, ""
+	}
+
+	coreStart := skipMarkerLine(content, coreIdx)
+	corePart := ""
+	if coreStart < refIdx {
+		corePart = strings.TrimSpace(content[coreStart:refIdx])
+	}
+	// Include any preamble before CORE marker
+	preamble := strings.TrimSpace(content[:coreIdx])
+	if preamble != "" && corePart != "" {
+		corePart = preamble + "\n\n" + corePart
+	} else if preamble != "" {
+		corePart = preamble
+	}
+
+	refStart := skipMarkerLine(content, refIdx)
+	refPart := ""
+	if refStart < len(content) {
+		refPart = strings.TrimSpace(content[refStart:])
+	}
+
+	return corePart, refPart
+}
+
 func StripBashCommentLines(command string) string {
 	lines := strings.Split(command, "\n")
 	var filtered []string

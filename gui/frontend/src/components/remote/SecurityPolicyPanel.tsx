@@ -124,10 +124,6 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                 </div>
             )}
 
-            <div style={{ fontSize: "0.9rem", fontWeight: 600, marginBottom: "12px", color: colors.text }}>
-                {t("Security Policy", "安全管理", "安全管理")}
-            </div>
-
             <div className="form-group" style={{ marginBottom: "14px", ...disabledStyle }}>
                 <label className="form-label" style={{ fontSize: "0.82rem" }}>
                     {t("Guardrail Mode", "安全护栏", "安全護欄")}

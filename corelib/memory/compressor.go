@@ -299,6 +299,9 @@ func (mc *Compressor) dedup() int {
 	mc.store.dirty = true
 	mc.store.signalSave()
 	mc.store.bm25.rebuild(kept)
+	if mc.store.entityIndex != nil {
+		mc.store.entityIndex.Rebuild(kept)
+	}
 	return len(remove)
 }
 
@@ -548,6 +551,9 @@ Rules:
 		mc.store.mu.Unlock()
 		mc.store.signalSave()
 		mc.store.bm25.rebuild(kept)
+		if mc.store.entityIndex != nil {
+			mc.store.entityIndex.Rebuild(kept)
+		}
 	}
 
 	return removed, nil
@@ -793,6 +799,9 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 	mc.store.bm25.rebuild(newEntries)
 	mc.store.vecIndex.rebuild(newEntries)
 	mc.store.graph.rebuild(newEntries)
+	if mc.store.entityIndex != nil {
+		mc.store.entityIndex.Rebuild(newEntries)
+	}
 
 	mc.store.mu.Unlock()
 	mc.store.signalSave()
@@ -1044,6 +1053,9 @@ func (mc *Compressor) RestoreBackup(backupName string) error {
 	mc.store.dirty = false
 	mc.store.mu.Unlock()
 	mc.store.bm25.rebuild(restored)
+	if mc.store.entityIndex != nil {
+		mc.store.entityIndex.Rebuild(restored)
+	}
 	return nil
 }
 

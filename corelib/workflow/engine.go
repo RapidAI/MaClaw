@@ -701,7 +701,24 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 		if projectPath != "" {
 			tags = append(tags, projectPath)
 		}
-		_ = saver.SaveArtifact(summary, tags, "")
+		// Derive a human-readable title for the task list.
+		// Use the first markdown heading if present, otherwise workflow type + phase.
+		title := ""
+		for _, line := range strings.SplitN(summary, "\n", 10) {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "# ") {
+				title = strings.TrimSpace(strings.TrimPrefix(line, "# "))
+				break
+			}
+			if strings.HasPrefix(line, "## ") {
+				title = strings.TrimSpace(strings.TrimPrefix(line, "## "))
+				break
+			}
+		}
+		if title == "" {
+			title = wsType + " — " + phaseID
+		}
+		_ = saver.SaveArtifact(title, summary, tags, "")
 	}
 
 	return phaseID

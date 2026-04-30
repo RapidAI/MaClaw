@@ -293,6 +293,58 @@ func (s *Service) CompleteStep(tenantID string, stepInstanceID, actorID, result 
 	return s.CompleteStepWithInput(tenantID, stepInstanceID, CompleteStepInput{ActorID: actorID, Result: result})
 }
 
+// StartOrResumeStep marks a non-terminal workflow step as actively executing.
+// It is intentionally conservative: it never reassigns or advances the workflow.
+func (s *Service) StartOrResumeStep(tenantID string, stepInstanceID, actorID, note string) error {
+	actorID = strings.TrimSpace(actorID)
+	if actorID == "" {
+		return fmt.Errorf("actor_id is required")
+	}
+	stepInst, err := s.repo.GetStepInstance(tenantID, stepInstanceID)
+	if err != nil {
+		return fmt.Errorf("step instance not found: %w", err)
+	}
+	if StepTerminal(stepInst.Status) {
+		return fmt.Errorf("step %s is already in terminal status %s", stepInstanceID, stepInst.Status)
+	}
+	inst, err := s.repo.GetInstance(tenantID, stepInst.InstanceID)
+	if err != nil {
+		return fmt.Errorf("workflow instance not found: %w", err)
+	}
+	if inst.Status != InstStatusRunning {
+		return fmt.Errorf("workflow instance is not running (status=%s)", inst.Status)
+	}
+	var collabTask *collaboration.Task
+	if strings.TrimSpace(stepInst.CollaborationTaskID) != "" {
+		collabTask, err = s.collabRepo.GetByID(tenantID, stepInst.CollaborationTaskID)
+		if err != nil {
+			return fmt.Errorf("collaboration task not found: %w", err)
+		}
+		if collabTask.IsTerminal() {
+			return fmt.Errorf("collaboration task %s is in terminal status %s", collabTask.ID, collabTask.Status)
+		}
+	}
+	now := time.Now()
+	eventName := "step_started"
+	if stepInst.Status == StepInProgress || (collabTask != nil && collabTask.Status == collaboration.StatusInProgress) {
+		eventName = "step_resumed"
+	}
+	return s.dbProvider.RunInTx(func(tx *sql.Tx) error {
+		stepInst.Status = StepInProgress
+		stepInst.UpdatedAt = now
+		if err := s.repo.UpdateStepInstanceTx(tenantID, tx, stepInst); err != nil {
+			return fmt.Errorf("update step: %w", err)
+		}
+		if collabTask != nil {
+			if err := s.collabRepo.UpdateStatusTx(tenantID, tx, collabTask.ID, collaboration.StatusInProgress, collabTask.Result); err != nil {
+				return fmt.Errorf("update collaboration task: %w", err)
+			}
+			_ = s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{ID: idgen.New("cevt"), TaskID: collabTask.ID, Event: collaboration.StatusInProgress, ActorID: actorID, Note: firstNonEmpty(note, eventName), CreatedAt: now})
+		}
+		return s.repo.InsertEventTx(tenantID, tx, &InstanceEvent{ID: idgen.New("wfevt"), InstanceID: inst.ID, StepID: stepInst.ID, Event: eventName, ActorID: actorID, Note: strings.TrimSpace(note), CreatedAt: now})
+	})
+}
+
 // CompleteStepWithInput marks a step completed and records optional capability execution feedback.
 func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, input CompleteStepInput) error {
 	actorID := strings.TrimSpace(input.ActorID)
@@ -558,6 +610,15 @@ func normalizeCapabilityUsageStatus(status string, errText string) string {
 		return "failure"
 	}
 	return "success"
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func defaultStr(val, def string) string {

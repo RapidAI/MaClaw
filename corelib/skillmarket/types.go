@@ -9,25 +9,27 @@ import (
 // iWorkerCenter, and iWorkerCloud. It intentionally follows the existing
 // HubCenter skillmarket search shape instead of introducing another market DTO.
 type Skill struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Description   string   `json:"description"`
-	Tags          []string `json:"tags,omitempty"`
-	Score         float64  `json:"score,omitempty"`
-	Price         int64    `json:"price,omitempty"`
-	Status        string   `json:"status,omitempty"`
-	AvgRating     float64  `json:"avg_rating,omitempty"`
-	DownloadCount int      `json:"download_count,omitempty"`
-	Downloads     int      `json:"downloads,omitempty"`
-	Version       string   `json:"version,omitempty"`
-	Author        string   `json:"author,omitempty"`
-	CreatedAt     string   `json:"created_at,omitempty"`
-	UpdatedAt     string   `json:"updated_at,omitempty"`
-	Category      string   `json:"category,omitempty"`
-	RiskLevel     string   `json:"risk_level,omitempty"`
-	PackageFormat string   `json:"package_format,omitempty"`
-	PackageSHA256 string   `json:"package_sha256,omitempty"`
-	PackageSize   int64    `json:"package_size,omitempty"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Description    string   `json:"description"`
+	Tags           []string `json:"tags,omitempty"`
+	Score          float64  `json:"score,omitempty"`
+	Price          int64    `json:"price,omitempty"`
+	Status         string   `json:"status,omitempty"`
+	AvgRating      float64  `json:"avg_rating,omitempty"`
+	DownloadCount  int      `json:"download_count,omitempty"`
+	Downloads      int      `json:"downloads,omitempty"`
+	Version        string   `json:"version,omitempty"`
+	Author         string   `json:"author,omitempty"`
+	AuthorEmail    string   `json:"author_email,omitempty"`
+	SourceCenterID string   `json:"source_center_id,omitempty"`
+	CreatedAt      string   `json:"created_at,omitempty"`
+	UpdatedAt      string   `json:"updated_at,omitempty"`
+	Category       string   `json:"category,omitempty"`
+	RiskLevel      string   `json:"risk_level,omitempty"`
+	PackageFormat  string   `json:"package_format,omitempty"`
+	PackageSHA256  string   `json:"package_sha256,omitempty"`
+	PackageSize    int64    `json:"package_size,omitempty"`
 }
 
 type SearchResponse struct {
@@ -49,6 +51,8 @@ type SkillInput struct {
 	Status               string   `json:"status"`
 	Price                int64    `json:"price,omitempty"`
 	Author               string   `json:"author,omitempty"`
+	AuthorEmail          string   `json:"author_email,omitempty"`
+	SourceCenterID       string   `json:"source_center_id,omitempty"`
 	PackageFormat        string   `json:"package_format,omitempty"`
 	PackageContentBase64 string   `json:"package_content_base64,omitempty"`
 }

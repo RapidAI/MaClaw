@@ -386,18 +386,7 @@ func buildBtwToolDefinitions() []map[string]interface{} {
 }
 
 func btwToolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
-	return map[string]interface{}{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name":        name,
-			"description": desc,
-			"parameters": map[string]interface{}{
-				"type":       "object",
-				"properties": props,
-				"required":   required,
-			},
-		},
-	}
+	return agent.ToolDef(name, desc, props, required)
 }
 
 // ---------------------------------------------------------------------------

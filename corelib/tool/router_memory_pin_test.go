@@ -216,14 +216,49 @@ func TestNoEagerPinTools_DerivedFromRules(t *testing.T) {
 	}
 
 	// Verify specific tools are protected.
-	for _, name := range []string{"browser", "gui_observe", "gui_verify", "gui_record_start"} {
+	// gui_observe/gui_verify are no longer conditional tools (moved to DeferredToolNames
+	// in #87), so they're not in noEagerPinTools. Only browser tools remain.
+	for _, name := range []string{"browser", "gui_record_start"} {
 		if !noEagerPinTools[name] {
 			t.Errorf("expected %q to be in noEagerPinTools (from noMemoryPin rules)", name)
+		}
+	}
+
+	// gui_observe/gui_verify should NOT be in noEagerPinTools (no longer conditional).
+	for _, name := range []string{"gui_observe", "gui_verify"} {
+		if noEagerPinTools[name] {
+			t.Errorf("%q should NOT be in noEagerPinTools; it was moved to DeferredToolNames", name)
 		}
 	}
 
 	// Verify SSH is NOT protected (it should be pinnable from memory).
 	if noEagerPinTools["ssh"] {
 		t.Errorf("ssh should NOT be in noEagerPinTools; it's a safe memory-driven pin target")
+	}
+}
+
+// TestDesktopGUITools_NotConditional verifies the root fix for #87:
+// gui_observe/gui_verify are no longer conditional tools. They've been moved
+// to DeferredToolNames and are discoverable via discover_tool. This eliminates
+// all keyword-based false positives from memory content.
+func TestDesktopGUITools_NotConditional(t *testing.T) {
+	guiTools := []string{"gui_observe", "gui_verify"}
+
+	for _, name := range guiTools {
+		if allConditionalKeepTools[name] {
+			t.Errorf("%q should NOT be in allConditionalKeepTools; "+
+				"it was moved to DeferredToolNames to eliminate keyword false positives", name)
+		}
+		if noEagerPinTools[name] {
+			t.Errorf("%q should NOT be in noEagerPinTools; "+
+				"it's no longer a conditional tool", name)
+		}
+	}
+
+	// Memory content with "GUI agent" should not match any rule that includes gui_observe.
+	matched := MatchConditionalTools("GUI agent, web agent, browser agent, computer use")
+	if matched["gui_observe"] || matched["gui_verify"] {
+		t.Errorf("MatchConditionalTools should not return gui_observe/gui_verify; "+
+			"they are no longer conditional tools")
 	}
 }
