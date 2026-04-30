@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { quickTasks as defaultQuickTasks } from '../mock/tasks';
 import type { CenterAgentInstance, CenterGoalPush, GoalWatchAutoHandleStatus, HistoryTaskItem } from '../types';
 
@@ -25,37 +25,71 @@ type Props = {
   onAckGoalPush: (eventId: string, status: 'resumed' | 'blocked') => void | Promise<void>;
 };
 
-type WorkMode = 'voice' | 'text';
+type WorkMode = 'chat' | 'task' | 'research';
+
+const modeCopy: Record<WorkMode, { label: string; title: string; detail: string; placeholder: string }> = {
+  chat: {
+    label: 'Talk',
+    title: 'Conversation first',
+    detail: 'Use voice or IM style instructions. The iWorker can clarify intent before opening a structured task.',
+    placeholder: 'Talk to your iWorker. Example: help me check today\'s delivery exceptions, ask Quality iWorker if needed, and prepare a short decision brief.',
+  },
+  task: {
+    label: 'Task',
+    title: 'Structured execution',
+    detail: 'Convert the request into a task workspace with output type, colleague routing, attachments, and audit trail.',
+    placeholder: 'Describe the task, expected output, context, deadline, and which digital worker should own it.',
+  },
+  research: {
+    label: 'Deep work',
+    title: 'Evidence and synthesis',
+    detail: 'Ask iWorker to gather facts, consult skills, discuss with peer agents, and produce reusable memory.',
+    placeholder: 'Ask for analysis, options, risk points, evidence, and a recommendation that can be saved as organization memory.',
+  },
+};
 
 const skillChips = [
-  'Talk to my iWorker',
-  'Summarize what changed',
-  'Ask the organization',
-  'Prepare handoff evidence',
-  'Draft a customer reply',
-  'Check policy memory',
+  'Voice handoff',
+  'Operating brief',
+  'Ask peer iWorkers',
+  'Customer reply',
+  'Policy memory check',
+  'Meeting decisions',
+  'Data cleanup',
+  'Evidence pack',
 ];
 
-const statusCards = [
+const capabilityCards = [
   {
-    label: 'Body node',
+    label: 'Body',
     value: 'Local container',
-    detail: 'This computer runs the visible body and tool access for the digital worker.',
+    detail: 'This computer provides screen, files, browser, and tool access.',
   },
   {
-    label: 'Memory owner',
-    value: 'Center synced',
-    detail: 'Durable memory belongs to iWorkerCenter; local cache only accelerates access.',
+    label: 'Memory',
+    value: 'Center owned',
+    detail: 'Company, department, and personal memory persist in iWorkerCenter.',
   },
   {
-    label: 'Human role',
+    label: 'People',
     value: 'Callable skill',
-    detail: 'People remain part of the organization, but execution continuity sits in the AI system.',
+    detail: 'Human staff remain available as skills without becoming the control center.',
   },
 ];
+
+const quickActions = [
+  { title: 'Start from IM', detail: 'Turn a voice/chat instruction into work.' },
+  { title: 'Continue a task', detail: 'Resume recent evidence and result.' },
+  { title: 'Capture memory', detail: 'Save reusable experience to Center.' },
+];
+
+const formatRuntimeName = (instance: CenterAgentInstance) => {
+  const role = instance.role || 'worker';
+  return role.replace(/[-_]/g, ' ');
+};
 
 export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, onDraftChange, onPickTask, onOpenNewTask, onOpenRecentTask, onRefreshAgentInstances, onRefreshGoalPushes, onAutoHandleGoalPush, onAckGoalPush }: Props) {
-  const [workMode, setWorkMode] = useState<WorkMode>('voice');
+  const [workMode, setWorkMode] = useState<WorkMode>('chat');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
 
   useEffect(() => {
@@ -79,8 +113,22 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           setQuickTasks(data.quick_tasks);
         }
       })
-      .catch(() => {});
+      .catch(() => undefined);
   }, []);
+
+  const currentMode = modeCopy[workMode];
+  const visibleChips = useMemo(() => {
+    if (workMode === 'task') {
+      return quickTasks;
+    }
+    if (workMode === 'research') {
+      return ['Market scan', 'Root cause analysis', 'Decision options', 'Skill search', 'Risk review', 'Reusable playbook'];
+    }
+    return skillChips;
+  }, [quickTasks, workMode]);
+
+  const onlineAgents = agentInstances.filter((item) => item.effectiveStatus === 'online').length;
+  const pendingPushes = goalPushes.filter((item) => item.status !== 'acked' && item.status !== 'resumed').length;
 
   const handleSubmit = () => {
     if (draft.trim() || selectedTask) {
@@ -88,135 +136,153 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     }
   };
 
-  const handleKeyDown = (event: React.KeyboardEvent) => {
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       handleSubmit();
     }
   };
 
-  const taskChips = workMode === 'voice' ? skillChips : quickTasks;
-
   return (
-    <div className="iw-home-shell">
-      <section className="iw-command-surface">
-        <div className="iw-command-head">
+    <div className="iw-workbuddy-shell">
+      <section className="iw-workbuddy-stage" aria-label="iWorker workspace">
+        <header className="iw-stage-topline">
           <div>
-            <span className="iw-kicker">iWorker body</span>
-            <h2>Speak to the digital employee, not the computer.</h2>
+            <span className="iw-kicker">AI native employee</span>
+            <h2>What should your iWorker handle next?</h2>
             <p>
-              This desktop is the local body and tool container. Memory, policy, and reusable ability are synced back to iWorkerCenter so the company keeps running even when a body or person changes.
+              Work with the digital employee through voice, IM, or structured tasks. The local desktop is only the body and cache; durable capability is accumulated in iWorkerCenter.
             </p>
           </div>
-          <div className="iw-body-badge">
-            <strong>{selectedColleagueName || 'Auto matched iWorker'}</strong>
-            <span>{selectedTask || 'Ready for IM or voice instruction'}</span>
+          <div className="iw-stage-snapshot" aria-label="runtime snapshot">
+            <span>{onlineAgents}/{Math.max(agentInstances.length, 1)} bodies online</span>
+            <strong>{pendingPushes} watcher pushes</strong>
+          </div>
+        </header>
+
+        <div className="iw-agent-hero-card">
+          <div className="iw-agent-orb" aria-hidden="true">
+            <span className="iw-agent-face">i</span>
+            <span className="iw-orb-ring iw-orb-ring-one" />
+            <span className="iw-orb-ring iw-orb-ring-two" />
+          </div>
+          <div className="iw-agent-activity-card">
+            <span>Active partner</span>
+            <strong>{selectedColleagueName || 'Auto-routing iWorker'}</strong>
+            <p>{selectedTask || 'Listening for instruction, then routing to the right skill, peer worker, or human skill.'}</p>
           </div>
         </div>
 
-        <div className="iw-mode-switch" role="tablist" aria-label="Interaction mode">
-          <button type="button" className={workMode === 'voice' ? 'is-active' : ''} onClick={() => setWorkMode('voice')}>Voice / IM</button>
-          <button type="button" className={workMode === 'text' ? 'is-active' : ''} onClick={() => setWorkMode('text')}>Structured task</button>
+        <div className="iw-mode-pill" role="tablist" aria-label="Work mode">
+          {(Object.keys(modeCopy) as WorkMode[]).map((mode) => (
+            <button key={mode} type="button" role="tab" aria-selected={workMode === mode} className={workMode === mode ? 'is-active' : ''} onClick={() => setWorkMode(mode)}>
+              {modeCopy[mode].label}
+            </button>
+          ))}
         </div>
 
-        <div className="iw-chip-row">
-          {taskChips.map((task) => (
+        <div className="iw-suggestion-strip" aria-label="Quick task suggestions">
+          {visibleChips.map((task) => (
             <button key={task} type="button" onClick={() => onPickTask(task)}>{task}</button>
           ))}
         </div>
 
-        <div className="iw-composer-card">
+        <div className="iw-bottom-composer">
           <textarea
             value={draft}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Say what you need. Example: ask Operations iWorker to summarize today's delivery exception and prepare evidence for the center."
-            rows={4}
+            placeholder={currentMode.placeholder}
+            rows={3}
           />
-          <div className="iw-composer-footer">
-            <div>
-              <strong>{workMode === 'voice' ? 'Conversation first' : 'Task first'}</strong>
-              <span>{workMode === 'voice' ? 'The iWorker can clarify intent before creating work.' : 'The iWorker will enter the structured task editor.'}</span>
+          <div className="iw-composer-toolbar">
+            <div className="iw-tool-group" aria-label="Composer tools">
+              <button type="button" title="Mention a worker or human skill">@</button>
+              <button type="button" title="Attach local evidence">Attach</button>
+              <button type="button" title="Select skill">Skill</button>
+              <button type="button" title="Use Center memory">Memory</button>
             </div>
-            <button type="button" onClick={handleSubmit}>Open task workspace</button>
+            <div className="iw-mode-summary">
+              <strong>{currentMode.title}</strong>
+              <span>{currentMode.detail}</span>
+            </div>
+            <button type="button" className="iw-send-button" onClick={handleSubmit} aria-label="Open task workspace">Send</button>
           </div>
         </div>
       </section>
 
-      <aside className="iw-body-panel">
-        <div className="iw-panel-section">
-          <h3>Operating role</h3>
-          <div className="iw-status-list">
-            {statusCards.map((item) => (
-              <div key={item.label} className="iw-status-card">
+      <aside className="iw-workbuddy-inspector" aria-label="iWorker operating status">
+        <section className="iw-inspector-card iw-inspector-card-dark">
+          <div className="iw-inspector-title-row">
+            <span>Center runtime</span>
+            <button type="button" onClick={() => { void onRefreshAgentInstances(); }} disabled={agentInstancesLoading}>{agentInstancesLoading ? 'Pinging' : 'Heartbeat'}</button>
+          </div>
+          <strong>{onlineAgents} online agent instance{onlineAgents === 1 ? '' : 's'}</strong>
+          <p>Multiple agent instances can share Center memory while this desktop stays a replaceable body.</p>
+          {agentInstancesError ? <p className="iw-panel-error">{agentInstancesError}</p> : null}
+        </section>
+
+        <section className="iw-inspector-card">
+          <h3>Practical operating model</h3>
+          <div className="iw-capability-grid">
+            {capabilityCards.map((item) => (
+              <article key={item.label}>
                 <span>{item.label}</span>
                 <strong>{item.value}</strong>
                 <p>{item.detail}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-
-
-        <div className="iw-panel-section">
-          <div className="iw-section-title-row">
-            <h3>Agent runtime</h3>
-            <button type="button" onClick={() => { void onRefreshAgentInstances(); }} disabled={agentInstancesLoading}>{agentInstancesLoading ? 'Pinging' : 'Heartbeat'}</button>
-          </div>
-          {agentInstancesError ? <p className="iw-panel-error">{agentInstancesError}</p> : null}
-          <div className="iw-agent-list">
-            {agentInstances.length === 0 ? (
-              <div className="iw-goal-empty">Center has not seen this iWorker body yet.</div>
-            ) : agentInstances.map((instance) => (
-              <article key={instance.instanceId} className="iw-agent-card">
-                <div>
-                  <strong>{instance.role}</strong>
-                  <span className={instance.effectiveStatus === 'online' ? 'is-online' : instance.effectiveStatus === 'offline' ? 'is-offline' : ''}>{instance.effectiveStatus || instance.status}</span>
-                </div>
-                <p>{instance.memoryAuthority || 'iWorkerCenter'} ? {instance.localCacheMode || 'cache_only'} ? {instance.heartbeatAgeSeconds || 0}s ago</p>
-                <small>{instance.hostId || 'local body'} ? {instance.capabilities.slice(0, 3).join(', ')}</small>
               </article>
             ))}
           </div>
-        </div>
+        </section>
 
-        <div className="iw-panel-section">
-          <div className="iw-section-title-row">
-            <h3>Watcher automation</h3>
+        <section className="iw-inspector-card">
+          <div className="iw-inspector-title-row">
+            <h3>Quick starts</h3>
+            <span className="iw-soft-pill">usable now</span>
+          </div>
+          <div className="iw-quick-action-list">
+            {quickActions.map((item) => (
+              <button key={item.title} type="button" onClick={() => onPickTask(item.title)}>
+                <strong>{item.title}</strong>
+                <span>{item.detail}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="iw-inspector-card">
+          <div className="iw-inspector-title-row">
+            <h3>Goal watcher</h3>
             <span className={goalWatchAutoStatus?.running ? 'iw-watch-pill is-running' : 'iw-watch-pill'}>{goalWatchAutoStatus?.running ? 'Running' : 'Single-flight'}</span>
           </div>
           <div className="iw-watch-grid">
             <div><strong>{goalWatchAutoStatus?.runCount || 0}</strong><span>runs</span></div>
-            <div><strong>{goalWatchAutoStatus?.skipCount || 0}</strong><span>skipped overlaps</span></div>
-            <div><strong>{goalWatchAutoStatus?.timeoutCancelCount || 0}</strong><span>timeout cancels</span></div>
-            <div><strong>{goalWatchAutoStatus?.lastHandledCount || 0}</strong><span>last handled</span></div>
+            <div><strong>{goalWatchAutoStatus?.skipCount || 0}</strong><span>skips</span></div>
+            <div><strong>{goalWatchAutoStatus?.timeoutCancelCount || 0}</strong><span>timeouts</span></div>
+            <div><strong>{goalWatchAutoStatus?.lastHandledCount || 0}</strong><span>handled</span></div>
           </div>
-          <p className="iw-watch-note">
-            Every {goalWatchAutoStatus?.intervalSeconds || 30}s, max {goalWatchAutoStatus?.maxDurationSeconds || 120}s per run.
-            {goalWatchAutoStatus?.lastStartedAt ? ` Last start ${new Date(goalWatchAutoStatus.lastStartedAt).toLocaleTimeString()}.` : ' Waiting for first watcher tick.'}
-          </p>
+          <p className="iw-watch-note">Interval {goalWatchAutoStatus?.intervalSeconds || 30}s, max run {goalWatchAutoStatus?.maxDurationSeconds || 120}s.</p>
           {goalWatchAutoStatus?.lastError ? <p className="iw-panel-error">{goalWatchAutoStatus.lastError}</p> : null}
-        </div>
-        <div className="iw-panel-section">
-          <div className="iw-section-title-row">
-            <h3>GoalWatch pushes</h3>
+        </section>
+
+        <section className="iw-inspector-card">
+          <div className="iw-inspector-title-row">
+            <h3>Push queue</h3>
             <button type="button" onClick={() => { void onRefreshGoalPushes(); }} disabled={goalPushLoading}>{goalPushLoading ? 'Syncing' : 'Refresh'}</button>
           </div>
           {goalPushError ? <p className="iw-panel-error">{goalPushError}</p> : null}
           <div className="iw-goal-list">
             {goalPushes.length === 0 ? (
               <div className="iw-goal-empty">No stalled task push. The watcher is quiet.</div>
-            ) : goalPushes.slice(0, 4).map((push) => (
+            ) : goalPushes.slice(0, 3).map((push) => (
               <article key={push.eventId || push.taskId} className="iw-goal-card">
-                <span>{push.reason || 'goal_push'} ? {Math.max(1, Math.round(push.ageSeconds / 60))}m</span>
+                <span>{push.reason || 'goal_push'} · {Math.max(1, Math.round(push.ageSeconds / 60))}m</span>
                 {push.recommendedAction ? <span className="iw-goal-action-pill">{push.recommendedAction}</span> : null}
                 <strong>{push.title || push.taskId}</strong>
-                <p>{push.status} ? {push.toRoleCode || push.toColleagueId || 'assigned iWorker'}</p>
-                {push.executorStatus ? <p className="iw-goal-diagnostic">executor {push.executorStatus} ? {push.executorHeartbeatAgeSeconds || 0}s heartbeat age</p> : null}
+                <p>{push.status} · {push.toRoleCode || push.toColleagueId || 'assigned iWorker'}</p>
                 {push.eventId ? (
                   <div className="iw-goal-actions">
-                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAutoHandleGoalPush(push.eventId || ''); }}>Auto handle</button>
+                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAutoHandleGoalPush(push.eventId || ''); }}>Auto</button>
                     <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>Resumed</button>
                     <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'blocked'); }}>Blocked</button>
                   </div>
@@ -224,19 +290,37 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
               </article>
             ))}
           </div>
-        </div>
+        </section>
 
-        <div className="iw-panel-section">
+        <section className="iw-inspector-card">
           <h3>Recent work</h3>
           <div className="iw-recent-list">
             {recentTasks.slice(0, 4).map((task) => (
               <button key={task.id} type="button" onClick={() => onOpenRecentTask(task)}>
                 <strong>{task.title}</strong>
-                <span>{task.owner} ? {task.status}</span>
+                <span>{task.owner} · {task.status}</span>
               </button>
             ))}
           </div>
-        </div>
+        </section>
+
+        <section className="iw-inspector-card">
+          <h3>Agent instances</h3>
+          <div className="iw-agent-list">
+            {agentInstances.length === 0 ? (
+              <div className="iw-goal-empty">Center has not seen this iWorker body yet.</div>
+            ) : agentInstances.map((instance) => (
+              <article key={instance.instanceId} className="iw-agent-card">
+                <div>
+                  <strong>{formatRuntimeName(instance)}</strong>
+                  <span className={instance.effectiveStatus === 'online' ? 'is-online' : instance.effectiveStatus === 'offline' ? 'is-offline' : ''}>{instance.effectiveStatus || instance.status}</span>
+                </div>
+                <p>{instance.memoryAuthority || 'iWorkerCenter'} · {instance.localCacheMode || 'cache_only'} · {instance.heartbeatAgeSeconds || 0}s ago</p>
+                <small>{instance.hostId || 'local body'} · {instance.capabilities.slice(0, 3).join(', ') || 'base tools'}</small>
+              </article>
+            ))}
+          </div>
+        </section>
       </aside>
     </div>
   );
