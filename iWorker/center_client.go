@@ -243,6 +243,118 @@ func fetchCenterCollaborations(centerBaseURL string, tenantID string, colleagueI
 	return result.Tasks
 }
 
+type CreateCenterCollaborationTaskRequest struct {
+	Title           string `json:"title"`
+	Description     string `json:"description"`
+	FromColleagueID string `json:"from_colleague_id"`
+	ToColleagueID   string `json:"to_colleague_id,omitempty"`
+	ToRoleCode      string `json:"to_role_code,omitempty"`
+	Priority        int    `json:"priority"`
+	SourceType      string `json:"source_type,omitempty"`
+}
+
+func createCenterCollaborationTask(centerBaseURL, tenantID string, reqBody CreateCenterCollaborationTaskRequest, timeoutSec int) (CenterCollabTask, error) {
+	return createCenterCollaborationTaskContext(context.Background(), centerBaseURL, tenantID, reqBody, timeoutSec)
+}
+
+func createCenterCollaborationTaskContext(ctx context.Context, centerBaseURL, tenantID string, reqBody CreateCenterCollaborationTaskRequest, timeoutSec int) (CenterCollabTask, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return CenterCollabTask{}, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if strings.TrimSpace(reqBody.Title) == "" {
+		return CenterCollabTask{}, fmt.Errorf("title is required")
+	}
+	if strings.TrimSpace(reqBody.FromColleagueID) == "" {
+		return CenterCollabTask{}, fmt.Errorf("from_colleague_id is required")
+	}
+	if strings.TrimSpace(reqBody.ToColleagueID) == "" && strings.TrimSpace(reqBody.ToRoleCode) == "" {
+		return CenterCollabTask{}, fmt.Errorf("to_colleague_id or to_role_code is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return CenterCollabTask{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, centerBaseURL+"/runtime/collaboration/create", bytes.NewReader(payload))
+	if err != nil {
+		return CenterCollabTask{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	setCenterTenantHeader(httpReq, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return CenterCollabTask{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return CenterCollabTask{}, err
+	}
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return CenterCollabTask{}, fmt.Errorf("iWorkerCenter collaboration create failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var task CenterCollabTask
+	if err := json.Unmarshal(body, &task); err != nil {
+		return CenterCollabTask{}, err
+	}
+	return task, nil
+}
+
+func completeCenterCollaborationTask(centerBaseURL, tenantID, taskID, actorID, result, note string, timeoutSec int) error {
+	return transitionCenterCollaborationTaskContext(context.Background(), centerBaseURL, tenantID, taskID, "complete", actorID, result, note, timeoutSec)
+}
+
+func transitionCenterCollaborationTaskContext(ctx context.Context, centerBaseURL, tenantID, taskID, action, actorID, result, note string, timeoutSec int) error {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	taskID = strings.TrimSpace(taskID)
+	action = strings.Trim(strings.TrimSpace(action), "/")
+	if centerBaseURL == "" {
+		return fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if taskID == "" {
+		return fmt.Errorf("task_id is required")
+	}
+	if action == "" {
+		return fmt.Errorf("action is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	payload, err := json.Marshal(map[string]string{
+		"actor_id": strings.TrimSpace(actorID),
+		"result":   strings.TrimSpace(result),
+		"note":     strings.TrimSpace(note),
+	})
+	if err != nil {
+		return err
+	}
+	endpoint := centerBaseURL + "/runtime/collaboration/" + url.PathEscape(taskID) + "/" + url.PathEscape(action)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	setCenterTenantHeader(httpReq, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("iWorkerCenter collaboration transition failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
 // CenterWorkflowInstance represents a workflow instance from iWorkerCenter.
 type CenterWorkflowInstance struct {
 	ID            string `json:"id"`

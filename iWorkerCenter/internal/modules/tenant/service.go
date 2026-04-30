@@ -149,7 +149,6 @@ func (s *TenantService) TenantCount(ctx context.Context) (int, error) {
 	return s.tenantRepo.Count(ctx)
 }
 
-
 // CloudCredentials returns the cloud registration credentials for a tenant.
 func (s *TenantService) CloudCredentials(ctx context.Context, tenantID string) (string, string, error) {
 	t, err := s.tenantRepo.GetByID(ctx, strings.TrimSpace(tenantID))
@@ -164,6 +163,7 @@ func (s *TenantService) CloudCredentials(ctx context.Context, tenantID string) (
 	}
 	return t.CloudCenterID, t.CloudSecret, nil
 }
+
 // FetchCloudLicense retrieves this tenant's active iWorkerCloud license.
 func (s *TenantService) FetchCloudLicense(ctx context.Context, tenantID string) (*CloudLicense, error) {
 	if s.cloudClient == nil || s.cloudClient.cfg.BaseURL == "" {
@@ -184,32 +184,50 @@ func (s *TenantService) FetchCloudLicense(ctx context.Context, tenantID string) 
 	return s.cloudClient.FetchCenterLicense(ctx, t.CloudCenterID, t.CloudSecret)
 }
 
-// RegisterToCloud registers a tenant with iWorkerCloud (async-safe).
-func (s *TenantService) RegisterToCloud(ctx context.Context, tenantID string) {
+// RegisterTenantToCloud registers a tenant with iWorkerCloud and persists the returned Center credentials.
+func (s *TenantService) RegisterTenantToCloud(ctx context.Context, tenantID string) (*RegisterCenterResponse, error) {
 	if s.cloudClient == nil || s.cloudClient.cfg.BaseURL == "" {
-		log.Printf("[tenant] cloud not configured, skipping registration for %s", tenantID)
-		return
+		return nil, ErrCloudNotConfigured
 	}
 
-	t, err := s.tenantRepo.GetByID(ctx, tenantID)
-	if err != nil || t == nil {
-		log.Printf("[tenant] cannot find tenant %s for cloud registration: %v", tenantID, err)
-		return
+	t, err := s.tenantRepo.GetByID(ctx, strings.TrimSpace(tenantID))
+	if err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, ErrTenantNotFound
+	}
+	tenantCount, err := s.tenantRepo.Count(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	resp, err := s.cloudClient.RegisterCenter(ctx, RegisterCenterRequest{
-		CompanyName: t.CompanyName,
-		AdminEmail:  t.Email,
-		LegalPerson: t.LegalPerson,
-		Address:     t.Address,
+		CompanyName:         t.CompanyName,
+		AdminEmail:          t.Email,
+		LegalPerson:         t.LegalPerson,
+		Address:             t.Address,
+		BaseURL:             strings.TrimSpace(s.cloudClient.cfg.CenterBaseURL),
+		SupportsMultiTenant: s.cloudClient.cfg.SupportsMultiTenant,
+		TenantCount:         tenantCount,
+		CloudControlMode:    firstNonEmpty(s.cloudClient.cfg.CloudControlMode, "cloud_managed"),
 	})
 	if err != nil {
-		log.Printf("[tenant] cloud registration failed for %s: %v", tenantID, err)
-		return
+		return nil, err
 	}
 
-	if err := s.tenantRepo.UpdateCloudInfo(ctx, tenantID, resp.CenterID, resp.Secret); err != nil {
-		log.Printf("[tenant] failed to save cloud info for %s: %v", tenantID, err)
+	if err := s.tenantRepo.UpdateCloudInfo(ctx, t.ID, resp.CenterID, resp.Secret); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// RegisterToCloud registers a tenant with iWorkerCloud (async-safe).
+func (s *TenantService) RegisterToCloud(ctx context.Context, tenantID string) {
+	resp, err := s.RegisterTenantToCloud(ctx, tenantID)
+	if err != nil {
+		log.Printf("[tenant] cloud registration skipped/failed for %s: %v", tenantID, err)
+		return
 	}
 	log.Printf("[tenant] registered %s with cloud, center_id=%s", tenantID, resp.CenterID)
 }
@@ -293,6 +311,14 @@ func hashPassword(password, salt string) string {
 	return hex.EncodeToString(h[:])
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
 func abs(n int64) int64 {
 	if n < 0 {
 		return -n

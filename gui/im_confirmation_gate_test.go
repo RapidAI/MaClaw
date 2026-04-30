@@ -40,14 +40,17 @@ func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution
 	if resp.Confirmation == nil {
 		t.Fatalf("expected confirmation payload, got %+v", resp)
 	}
-	if resp.Confirmation.TaskType != "coding" {
-		t.Fatalf("expected coding confirmation, got %+v", resp.Confirmation)
+	if resp.Confirmation.TaskType == "" {
+		t.Fatalf("expected confirmation task type, got %+v", resp.Confirmation)
 	}
 	if len(resp.Confirmation.TargetPaths) != 1 || resp.Confirmation.TargetPaths[0] != corelib.EffectiveWorkspaceDir() {
 		t.Fatalf("unexpected target paths: %#v (expected %s)", resp.Confirmation.TargetPaths, corelib.EffectiveWorkspaceDir())
 	}
 	if got := h.confirmationStore.get("u1"); got == nil {
 		t.Fatal("expected pending confirmation to be stored")
+	}
+	if len(resp.Actions) < 2 || resp.Actions[0].Command != buildConfirmationActionCommand("confirm", resp.Confirmation.ID) {
+		t.Fatalf("expected structured confirmation command, got %+v", resp.Actions)
 	}
 }
 
@@ -220,7 +223,8 @@ func TestHandleIMMessageWithProgressAndStream_ApproveConfirmationResumesOriginal
 	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
 		UserID:   "u1",
 		Platform: "desktop",
-		Text:     "确认，开始吧",
+		Text:     buildConfirmationActionCommand("confirm", "c1"),
+		UIAction: true,
 	}, nil, nil, nil, nil)
 	if resp == nil {
 		t.Fatal("expected response")
@@ -243,6 +247,62 @@ func TestHandleIMMessageWithProgressAndStream_ApproveConfirmationResumesOriginal
 	}
 	if got := h.confirmationStore.get("u1"); got != nil {
 		t.Fatalf("expected pending confirmation to be cleared, got %+v", got)
+	}
+}
+
+func TestNormalizeConfirmationIntentRequiresExactCategory(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{input: "confirm", want: "confirm"},
+		{input: " confirm. ", want: "confirm"},
+		{input: "cancel", want: "cancel"},
+		{input: "modify", want: "modify"},
+		{input: "not confirm", want: ""},
+		{input: "confirm or modify", want: ""},
+	}
+	for _, tc := range cases {
+		if got := normalizeConfirmationIntent(tc.input); got != tc.want {
+			t.Fatalf("normalizeConfirmationIntent(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestClassifyConfirmationIntent_UsesContextForTypedApproval(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"confirm"}}]}`)
+	}))
+	defer server.Close()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	pending := &pendingConfirmation{ID: "c1", UserID: "u1", Summary: "summary", TaskType: "coding", Status: "pending"}
+	if got := h.classifyConfirmationIntent("u1", "go ahead", pending); got != "confirm" {
+		t.Fatalf("expected semantic typed approval to classify as confirm, got %q", got)
 	}
 }
 
@@ -320,7 +380,8 @@ func TestHandleIMMessageWithProgressAndStream_CancelPendingConfirmation(t *testi
 	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
 		UserID:   "u1",
 		Platform: "desktop",
-		Text:     "取消这个任务",
+		Text:     buildConfirmationActionCommand("cancel", "c1"),
+		UIAction: true,
 	}, nil, nil, nil, nil)
 	if resp == nil || resp.Text == "" {
 		t.Fatalf("expected cancel response, got %+v", resp)

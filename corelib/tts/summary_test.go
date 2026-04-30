@@ -20,6 +20,10 @@ func TestGenerateVoiceSummary_Structured(t *testing.T) {
 			"任务已暂停，该任务是翻译技术文档为中文",
 		},
 		{
+			`{"userText":"部署 VLLM 推理服务","status":"needs_confirmation"}`,
+			"需要任务确认，该任务是部署 VLLM 推理服务",
+		},
+		{
 			`{"userText":"请帮我开发一个贪吃蛇游戏","status":"success"}`,
 			"任务已完成，该任务是开发一个贪吃蛇游戏",
 		},

@@ -14,6 +14,9 @@ import (
 // CloudConfig holds iWorkerCloud connection settings.
 type CloudConfig struct {
 	BaseURL             string `yaml:"base_url"`
+	CenterBaseURL       string `yaml:"center_base_url"`
+	SupportsMultiTenant bool   `yaml:"supports_multi_tenant"`
+	CloudControlMode    string `yaml:"cloud_control_mode"`
 	PublicKeyCacheHours int    `yaml:"public_key_cache_hours"`
 }
 
@@ -60,11 +63,15 @@ func (c *CloudClient) FetchPublicKey(ctx context.Context) ([]byte, error) {
 
 // RegisterCenterRequest is sent to iWorkerCloud to register this center.
 type RegisterCenterRequest struct {
-	CompanyName string `json:"company_name"`
-	AdminEmail  string `json:"admin_email"`
-	AdminPhone  string `json:"admin_phone"`
-	Address     string `json:"address"`
-	LegalPerson string `json:"legal_person"`
+	CompanyName         string `json:"company_name"`
+	AdminEmail          string `json:"admin_email"`
+	AdminPhone          string `json:"admin_phone"`
+	Address             string `json:"address"`
+	LegalPerson         string `json:"legal_person"`
+	BaseURL             string `json:"base_url,omitempty"`
+	SupportsMultiTenant bool   `json:"supports_multi_tenant"`
+	TenantCount         int    `json:"tenant_count"`
+	CloudControlMode    string `json:"cloud_control_mode,omitempty"`
 }
 
 // RegisterCenterResponse is returned by iWorkerCloud.

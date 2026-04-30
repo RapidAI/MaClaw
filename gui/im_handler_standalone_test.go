@@ -1,9 +1,12 @@
 package main
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 func TestNewIMMessageHandlerStandalone_MinimalConfig(t *testing.T) {
@@ -81,6 +84,49 @@ func TestNewIMMessageHandlerStandalone_AccessorsWork(t *testing.T) {
 	}
 	if h.getAgentNetClient() != nil {
 		t.Error("expected nil agentnet client")
+	}
+}
+
+func TestHandleMemoryStatusCommandUsesStandaloneMemoryStore(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	if err := store.Save(corememory.Entry{
+		Content:  "project uses memory status command",
+		Category: corememory.CategoryProjectKnowledge,
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	h := &IMMessageHandler{memoryStore: store}
+	resp := h.handleMemoryStatusCommand()
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if strings.Contains(resp.Text, "未初始化") {
+		t.Fatalf("expected standalone memory store to be used, got %q", resp.Text)
+	}
+	if !strings.Contains(resp.Text, "项目知识") || !strings.Contains(resp.Text, "1条") {
+		t.Fatalf("expected memory status summary, got %q", resp.Text)
+	}
+}
+
+func TestHandleIMMessageHelpIncludesMemoryCommand(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://test", Model: "m", Key: "k"}
+		},
+	})
+	defer h.memory.Stop()
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "tui-user", Platform: "tui", Text: "/help", Lang: "zh"})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if !strings.Contains(resp.Text, "/memory") || !strings.Contains(resp.Text, "记忆状态") {
+		t.Fatalf("expected /help to include /memory, got %q", resp.Text)
 	}
 }
 

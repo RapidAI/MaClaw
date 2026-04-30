@@ -29,6 +29,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 // RegisterAdminRoutes registers tenant-related admin routes.
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/admin/cloud/register", h.handleCloudRegister)
 	mux.HandleFunc("/admin/cloud/license", h.handleCloudLicense)
 }
 
@@ -153,6 +154,25 @@ func (h *Handler) handleProvision(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) handleCloudRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	resp, err := h.svc.RegisterTenantToCloud(r.Context(), RequestTenantID(r))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrCloudNotConfigured):
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "iWorkerCloud not configured"})
+		case errors.Is(err, ErrTenantNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "tenant not found"})
+		default:
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"center_id": resp.CenterID, "status": resp.Status, "message": resp.Message})
+}
 func (h *Handler) handleCloudLicense(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

@@ -9,7 +9,7 @@ import {
     TriggerScheduledTask,
 } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import { colors, radius } from "./styles";
+import { colors, radius, remoteActionButtonStyle, remoteDangerActionButtonStyle, remotePrimaryActionButtonStyle } from "./styles";
 
 interface ScheduledTask {
     id: string;
@@ -254,9 +254,8 @@ export function ScheduledTasksPanel({ lang }: Props) {
                     {tasks.length} {t("scheduled task(s)", "个定时任务")}
                 </span>
                 <button onClick={openCreate} style={{
-                    padding: "4px 14px", fontSize: "0.76rem", fontWeight: 600,
-                    background: colors.primary, color: "#fff", border: "none",
-                    borderRadius: radius.md, cursor: "pointer",
+                    ...remotePrimaryActionButtonStyle,
+                    padding: "4px 14px", fontSize: "0.76rem",
                 }}>
                     + {t("New", "新建")}
                 </button>
@@ -337,8 +336,8 @@ export function ScheduledTasksPanel({ lang }: Props) {
                     <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)" }}>
                         <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this scheduled task?", "确定删除这个定时任务？")}</p>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                            <button onClick={() => setDeleteTarget(null)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, color: colors.text, cursor: "pointer" }}>{t("Cancel", "取消")}</button>
-                            <button onClick={() => handleDelete(deleteTarget)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: "none", borderRadius: radius.md, background: colors.danger, color: "#fff", cursor: "pointer" }}>{t("Delete", "删除")}</button>
+                            <button onClick={() => setDeleteTarget(null)} style={{ ...remoteActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Cancel", "取消")}</button>
+                            <button onClick={() => handleDelete(deleteTarget)} style={{ ...remoteDangerActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Delete", "删除")}</button>
                         </div>
                     </div>
                 </div>
@@ -382,8 +381,8 @@ export function ScheduledTasksPanel({ lang }: Props) {
                                     <div style={{ display: "flex", gap: 0, borderRadius: 4, overflow: "hidden", border: `1px solid ${colors.border}` }}>
                                         <button type="button" onClick={() => setFScheduleMode("fixed")} style={{
                                             flex: 1, padding: "5px 0", fontSize: "0.72rem", cursor: "pointer", border: "none",
-                                            background: fScheduleMode === "fixed" ? colors.primary : colors.surface,
-                                            color: fScheduleMode === "fixed" ? "#fff" : colors.text,
+                                            background: fScheduleMode === "fixed" ? colors.primaryLight : colors.surface,
+                                            color: fScheduleMode === "fixed" ? colors.primaryDark : colors.text,
                                             fontWeight: fScheduleMode === "fixed" ? 600 : 400,
                                         }}>
                                             {t("Fixed", "固定")}
@@ -391,8 +390,8 @@ export function ScheduledTasksPanel({ lang }: Props) {
                                         <button type="button" onClick={() => setFScheduleMode("interval")} style={{
                                             flex: 1, padding: "5px 0", fontSize: "0.72rem", cursor: "pointer", border: "none",
                                             borderLeft: `1px solid ${colors.border}`,
-                                            background: fScheduleMode === "interval" ? colors.primary : colors.surface,
-                                            color: fScheduleMode === "interval" ? "#fff" : colors.text,
+                                            background: fScheduleMode === "interval" ? colors.primaryLight : colors.surface,
+                                            color: fScheduleMode === "interval" ? colors.primaryDark : colors.text,
                                             fontWeight: fScheduleMode === "interval" ? 600 : 400,
                                         }}>
                                             {t("Interval", "间隔")}
@@ -481,8 +480,9 @@ export function ScheduledTasksPanel({ lang }: Props) {
                                 {t("Cancel", "取消")}
                             </button>
                             <button onClick={handleSave} disabled={saving || !fName.trim() || !fAction.trim()} style={{
-                                padding: "5px 14px", fontSize: "0.76rem", border: "none", borderRadius: radius.md,
-                                background: colors.primary, color: "#fff", cursor: "pointer",
+                                ...remotePrimaryActionButtonStyle,
+                                padding: "5px 14px", fontSize: "0.76rem",
+                                cursor: saving || !fName.trim() || !fAction.trim() ? "default" : "pointer",
                                 opacity: saving || !fName.trim() || !fAction.trim() ? 0.5 : 1,
                             }}>
                                 {saving ? t("Saving…", "保存中…") : t("Save", "保存")}

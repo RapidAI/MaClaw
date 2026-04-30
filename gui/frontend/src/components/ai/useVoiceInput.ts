@@ -36,6 +36,12 @@ export interface UseVoiceInputResult {
     asrReady: boolean;
     /** Toggle voice input on/off */
     toggle: () => Promise<void>;
+    /** Start push-to-talk recording. */
+    startHold: () => Promise<void>;
+    /** Stop push-to-talk recording and transcribe immediately. */
+    stopHold: () => void;
+    /** True while push-to-talk recording is active. */
+    holdRecording: boolean;
     /** How long the mic has been open (seconds) */
     duration: number;
     /** True when speech is currently detected (visual feedback) */
@@ -63,8 +69,12 @@ const NOISE_FLOOR_MAX = 0.08;          // cap noise floor — above this the env
 const NOISE_FLOOR_DEFAULT = 0.006;     // default noise floor for headset/earbuds (typical RMS ~0.002-0.008)
 const SPEECH_START_CHUNKS = 2;         // consecutive speech chunks to start a segment
 const SILENCE_END_CHUNKS = 6;          // consecutive silence chunks to end a segment (~1.5s)
+const SILENCE_FALLBACK_FLUSH_CHUNKS = 12; // prolonged silence flushes low-level buffered audio (~3s)
 const MIN_SPEECH_CHUNKS = 3;           // minimum speech chunks for a valid segment (~0.75s)
 const MAX_SEGMENT_SEC = 30;            // max segment duration before forced cut
+const LOW_CONFIDENCE_AUDIO_MULTIPLIER = 1.15; // below speech threshold, but likely more than room noise
+const LOW_CONFIDENCE_AUDIO_FLOOR = 0.0008;
+const LOW_CONFIDENCE_MIN_CHUNKS = 2;
 
 // ── WAV encoding utilities ──
 
@@ -118,6 +128,25 @@ function rms(data: Float32Array): number {
     return Math.sqrt(sum / data.length);
 }
 
+function denoiseBufferedChunks(chunks: Float32Array[], noiseFloor: number): Float32Array[] {
+    if (chunks.length === 0) return [];
+
+    const energies = chunks.map(rms);
+    const gate = Math.max(LOW_CONFIDENCE_AUDIO_FLOOR, noiseFloor * LOW_CONFIDENCE_AUDIO_MULTIPLIER);
+    const keep = new Array(chunks.length).fill(false);
+
+    for (let i = 0; i < energies.length; i++) {
+        if (energies[i] > gate) {
+            // Keep one chunk of context on each side so low-volume syllable edges are not clipped.
+            keep[Math.max(0, i - 1)] = true;
+            keep[i] = true;
+            keep[Math.min(chunks.length - 1, i + 1)] = true;
+        }
+    }
+
+    return chunks.filter((_, i) => keep[i]);
+}
+
 // ── Hook ──
 
 export function useVoiceInput(
@@ -130,6 +159,7 @@ export function useVoiceInput(
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [segmentCount, setSegmentCount] = useState(0);
     const [error, setError] = useState<string | null>(null);
+    const [holdRecording, setHoldRecording] = useState(false);
 
     const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const setErrorAuto = useCallback((msg: string | null) => {
@@ -153,6 +183,11 @@ export function useVoiceInput(
     const speechChunkCountRef = useRef(0);
     const silenceChunkCountRef = useRef(0);
     const inSpeechRef = useRef(false);
+    const fallbackChunksRef = useRef<Float32Array[]>([]);
+    const fallbackSpeechLikeChunksRef = useRef(0);
+    const holdModeRef = useRef(false);
+    const holdChunksRef = useRef<Float32Array[]>([]);
+    const holdCancelRequestedRef = useRef(false);
     const pendingTranscriptionsRef = useRef(0); // count of in-flight transcription promises
     const activeRef = useRef(false); // true while mic is open
     const startingRef = useRef(false); // true during getUserMedia — prevents double-start
@@ -243,6 +278,38 @@ export function useVoiceInput(
             });
     }, [setErrorAuto]);
 
+    const resetFallbackBuffer = useCallback(() => {
+        fallbackChunksRef.current = [];
+        fallbackSpeechLikeChunksRef.current = 0;
+    }, []);
+
+    const resetHoldBuffer = useCallback(() => {
+        holdChunksRef.current = [];
+    }, []);
+
+    const flushFallbackBuffer = useCallback((sampleRate: number) => {
+        if (fallbackChunksRef.current.length === 0) return;
+
+        const speechLikeCount = fallbackSpeechLikeChunksRef.current;
+        const chunks = denoiseBufferedChunks(fallbackChunksRef.current, noiseFloorRef.current);
+        resetFallbackBuffer();
+
+        if (speechLikeCount >= LOW_CONFIDENCE_MIN_CHUNKS && chunks.length > 0) {
+            transcribeSegment(chunks, sampleRate);
+        }
+    }, [resetFallbackBuffer, transcribeSegment]);
+
+    const flushHoldBuffer = useCallback((sampleRate: number) => {
+        if (holdChunksRef.current.length === 0) return;
+
+        const chunks = denoiseBufferedChunks(holdChunksRef.current, noiseFloorRef.current);
+        resetHoldBuffer();
+
+        if (chunks.length > 0) {
+            transcribeSegment(chunks, sampleRate);
+        }
+    }, [resetHoldBuffer, transcribeSegment]);
+
     /** Process one audio chunk: adaptive energy VAD for segmentation. */
     const processChunk = useCallback((data: Float32Array) => {
         const energy = rms(data);
@@ -305,6 +372,11 @@ export function useVoiceInput(
             );
         }
         const isSpeech = energy > speechThreshold;
+        const lowConfidenceThreshold = Math.max(
+            LOW_CONFIDENCE_AUDIO_FLOOR,
+            noiseFloorRef.current * LOW_CONFIDENCE_AUDIO_MULTIPLIER,
+        );
+        const isLowConfidenceAudio = !isSpeech && energy > lowConfidenceThreshold;
 
         // Adapt noise floor during silence using EMA (exponential moving average).
         // Only adapt when:
@@ -326,6 +398,12 @@ export function useVoiceInput(
             : Math.min(1, energy * 10);
         audioLevelCallbackRef.current?.(relativeLevel);
 
+        if (holdModeRef.current) {
+            holdChunksRef.current.push(new Float32Array(data));
+            setIsSpeaking(isSpeech || isLowConfidenceAudio);
+            return;
+        }
+
         if (isSpeech) {
             speechChunkCountRef.current++;
             silenceChunkCountRef.current = 0;
@@ -336,22 +414,44 @@ export function useVoiceInput(
             }
         }
 
+        const rate = audioCtxRef.current?.sampleRate || TARGET_SAMPLE_RATE;
+
+        let startedSpeechThisChunk = false;
+
+        if (!inSpeechRef.current) {
+            if (isSpeech || isLowConfidenceAudio || fallbackChunksRef.current.length > 0) {
+                fallbackChunksRef.current.push(new Float32Array(data));
+                if (isSpeech || isLowConfidenceAudio) {
+                    fallbackSpeechLikeChunksRef.current++;
+                }
+            }
+
+            if (!isSpeech && fallbackChunksRef.current.length > 0 && silenceChunkCountRef.current >= SILENCE_FALLBACK_FLUSH_CHUNKS) {
+                flushFallbackBuffer(rate);
+                speechChunkCountRef.current = 0;
+                silenceChunkCountRef.current = 0;
+            }
+        }
+
         // Speech start: enough consecutive speech chunks
         if (!inSpeechRef.current && speechChunkCountRef.current >= SPEECH_START_CHUNKS) {
             inSpeechRef.current = true;
-            segmentChunksRef.current = [];
-            segmentSamplesRef.current = 0;
+            const preroll = denoiseBufferedChunks(fallbackChunksRef.current, noiseFloorRef.current);
+            segmentChunksRef.current = preroll;
+            segmentSamplesRef.current = preroll.reduce((sum, chunk) => sum + chunk.length, 0);
             segmentSpeechChunksRef.current = 0;
+            resetFallbackBuffer();
+            startedSpeechThisChunk = true;
             setIsSpeaking(true);
         }
 
         // Accumulate during speech (copy buffer — AudioBuffer reuses the underlying array)
         if (inSpeechRef.current) {
-            segmentChunksRef.current.push(new Float32Array(data));
-            segmentSamplesRef.current += data.length;
+            if (!startedSpeechThisChunk || segmentChunksRef.current.length === 0) {
+                segmentChunksRef.current.push(new Float32Array(data));
+                segmentSamplesRef.current += data.length;
+            }
             if (isSpeech) segmentSpeechChunksRef.current++;
-
-            const rate = audioCtxRef.current?.sampleRate || TARGET_SAMPLE_RATE;
             const segSec = segmentSamplesRef.current / rate;
 
             // Speech end: enough silence after speech, or max duration
@@ -371,7 +471,7 @@ export function useVoiceInput(
                 }
             }
         }
-    }, [transcribeSegment]);
+    }, [flushFallbackBuffer, resetFallbackBuffer, transcribeSegment]);
 
     const cleanup = useCallback(() => {
         activeRef.current = false;
@@ -384,6 +484,20 @@ export function useVoiceInput(
 
     useEffect(() => () => { cleanup(); if (errorTimerRef.current) clearTimeout(errorTimerRef.current); }, [cleanup]);
 
+    const finishHoldRecording = useCallback((sampleRate: number) => {
+        holdCancelRequestedRef.current = false;
+        holdModeRef.current = false;
+        setHoldRecording(false);
+        setIsSpeaking(false);
+        activeRef.current = false;
+        flushHoldBuffer(sampleRate);
+        cleanup();
+        if (pendingTranscriptionsRef.current <= 0) {
+            setState("idle");
+        }
+        setDuration(0);
+    }, [cleanup, flushHoldBuffer]);
+
     /** Open microphone and start continuous listening. */
     const startListening = useCallback(async () => {
         if (startingRef.current || activeRef.current) return; // prevent double-start
@@ -392,11 +506,13 @@ export function useVoiceInput(
         setErrorAuto(null);
         setDuration(0);
         setSegmentCount(0);
+        setIsSpeaking(false);
         segmentChunksRef.current = [];
         segmentSamplesRef.current = 0;
         segmentSpeechChunksRef.current = 0;
         speechChunkCountRef.current = 0;
         silenceChunkCountRef.current = 0;
+        resetFallbackBuffer();
         inSpeechRef.current = false;
         // Reset adaptive noise floor — start with default, auto-calibration will refine
         noiseFloorRef.current = NOISE_FLOOR_DEFAULT;
@@ -449,10 +565,46 @@ export function useVoiceInput(
         } finally {
             startingRef.current = false;
         }
-    }, [cleanup, processChunk, setErrorAuto]);
+    }, [cleanup, processChunk, resetFallbackBuffer, setErrorAuto]);
+
+    const startHold = useCallback(async () => {
+        if (state !== "idle" || startingRef.current || activeRef.current) return;
+
+        holdModeRef.current = true;
+        holdCancelRequestedRef.current = false;
+        resetHoldBuffer();
+        setHoldRecording(true);
+
+        await startListening();
+
+        if (holdCancelRequestedRef.current) {
+            const rate = audioCtxRef.current?.sampleRate || TARGET_SAMPLE_RATE;
+            finishHoldRecording(rate);
+        } else if (!activeRef.current) {
+            holdModeRef.current = false;
+            setHoldRecording(false);
+        }
+    }, [finishHoldRecording, resetHoldBuffer, startListening, state]);
+
+    const stopHold = useCallback(() => {
+        if (!holdModeRef.current) return;
+        if (startingRef.current && !activeRef.current) {
+            holdCancelRequestedRef.current = true;
+            setHoldRecording(false);
+            return;
+        }
+
+        const rate = audioCtxRef.current?.sampleRate || TARGET_SAMPLE_RATE;
+        finishHoldRecording(rate);
+    }, [finishHoldRecording]);
 
     /** Close microphone. Finalize any in-progress segment. */
     const stopListening = useCallback(() => {
+        if (holdModeRef.current) {
+            stopHold();
+            return;
+        }
+
         // Capture sample rate before cleanup closes AudioContext
         const rate = audioCtxRef.current?.sampleRate || TARGET_SAMPLE_RATE;
 
@@ -461,12 +613,15 @@ export function useVoiceInput(
             const chunks = segmentChunksRef.current;
             const speechCount = segmentSpeechChunksRef.current;
             segmentChunksRef.current = [];
+            segmentSamplesRef.current = 0;
             segmentSpeechChunksRef.current = 0;
             inSpeechRef.current = false;
             setIsSpeaking(false);
             if (speechCount >= MIN_SPEECH_CHUNKS) {
                 transcribeSegment(chunks, rate);
             }
+        } else {
+            flushFallbackBuffer(rate);
         }
 
         cleanup();
@@ -474,21 +629,27 @@ export function useVoiceInput(
             setState("idle");
         }
         setDuration(0);
-    }, [cleanup, transcribeSegment]);
+    }, [cleanup, flushFallbackBuffer, stopHold, transcribeSegment]);
 
     const toggle = useCallback(async () => {
         if (state === "listening") {
             stopListening();
         } else if (state === "idle") {
+            holdModeRef.current = false;
+            setHoldRecording(false);
+            resetHoldBuffer();
             await startListening();
         }
         // If transcribing (after stop), ignore — will go idle when done
-    }, [state, startListening, stopListening]);
+    }, [resetHoldBuffer, state, startListening, stopListening]);
 
     return {
         state,
         asrReady,
         toggle,
+        startHold,
+        stopHold,
+        holdRecording,
         duration,
         isSpeaking,
         segmentCount,

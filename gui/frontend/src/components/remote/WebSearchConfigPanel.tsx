@@ -176,9 +176,9 @@ export function WebSearchConfigPanel({ lang }: Props) {
                     style={{
                         padding: "8px 16px",
                         borderRadius: 4,
-                        border: "none",
-                        background: saving ? colors.primaryLight : colors.primary,
-                        color: "#fff",
+                        border: `1px solid ${colors.primary}`,
+                        background: colors.primaryLight,
+                        color: colors.primaryDark,
                         cursor: saving ? "default" : "pointer",
                         fontSize: "0.8rem",
                     }}

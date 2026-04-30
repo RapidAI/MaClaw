@@ -330,8 +330,8 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
                                 </div>
                                 <button onClick={handleCleanup} style={{
                                     width: "100%", padding: "6px", borderRadius: "6px",
-                                    border: "none", fontSize: "12px", fontWeight: 600,
-                                    background: "var(--theme-danger, #ef4444)", color: "#fff",
+                                    border: "1px solid var(--theme-danger, #ef4444)", fontSize: "12px", fontWeight: 600,
+                                    background: "var(--theme-danger-bg, rgba(239,68,68,0.12))", color: "var(--theme-danger, #ef4444)",
                                     cursor: "pointer",
                                 }}>
                                     {isZh ? `确认删除 ${cleanupDays} 天前的记录` : `Delete records older than ${cleanupDays} days`}

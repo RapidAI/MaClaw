@@ -96,7 +96,27 @@ export const remoteBodyTextStyle: CSSProperties = {
 
 export const remoteActionButtonStyle: CSSProperties = {
     fontSize: "0.72rem",
-    padding: "3px 8px",
+    padding: "4px 10px",
+    borderRadius: radius.md,
+    border: `1px solid ${colors.border}`,
+    background: colors.surfaceMuted,
+    color: colors.textSecondary,
+    fontWeight: 600,
+    cursor: "pointer",
+};
+
+export const remotePrimaryActionButtonStyle: CSSProperties = {
+    ...remoteActionButtonStyle,
+    background: colors.primaryLight,
+    border: `1px solid ${colors.primary}`,
+    color: colors.primaryDark,
+};
+
+export const remoteDangerActionButtonStyle: CSSProperties = {
+    ...remoteActionButtonStyle,
+    background: colors.dangerBg,
+    border: `1px solid ${colors.danger}`,
+    color: colors.danger,
 };
 
 export const remoteToolbarCardStyle: CSSProperties = {

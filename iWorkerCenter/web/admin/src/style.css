@@ -1748,3 +1748,115 @@ body {
   font-size: 12px;
   font-weight: 800;
 }
+.bootstrap-watcher-status {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-color: #c7d8ea;
+  background: linear-gradient(135deg, #f8fbff 0%, #ffffff 52%, #f3f8f2 100%);
+}
+
+.bootstrap-watcher-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.bootstrap-watcher-header h3 {
+  margin: 4px 0 0;
+  color: #0f172a;
+}
+
+.bootstrap-watcher-header p {
+  margin: 6px 0 0;
+  max-width: 760px;
+  color: #475569;
+  line-height: 1.55;
+}
+
+.bootstrap-watcher-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.bootstrap-watcher-metrics article {
+  padding: 13px;
+  border-radius: 16px;
+  border: 1px solid #d7e4ef;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.bootstrap-watcher-metrics span,
+.bootstrap-watcher-policy span,
+.bootstrap-watcher-shards span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bootstrap-watcher-metrics strong {
+  display: block;
+  margin-top: 5px;
+  color: #0f172a;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.bootstrap-watcher-policy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bootstrap-watcher-policy span {
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: #eaf4ff;
+  color: #075985;
+}
+
+.bootstrap-watcher-shards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.bootstrap-watcher-shards article {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid #d7e4ef;
+  background: #ffffff;
+}
+
+.bootstrap-watcher-shards article.has-error {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.bootstrap-watcher-shards strong {
+  color: #0f172a;
+}
+
+.bootstrap-watcher-shards small,
+.bootstrap-watcher-empty {
+  color: #991b1b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1100px) {
+  .bootstrap-watcher-header {
+    display: grid;
+  }
+
+  .bootstrap-watcher-metrics,
+  .bootstrap-watcher-shards {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,11 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/RapidAI/CodeClaw/corelib/scheduler"
-	"github.com/RapidAI/CodeClaw/corelib/security"
-	"github.com/RapidAI/CodeClaw/corelib/memory"
-	"github.com/RapidAI/CodeClaw/corelib/config"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -29,10 +24,15 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/nudge"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/session"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
@@ -129,7 +129,7 @@ type IMAgentResponse struct {
 	// scheduler's automatic interrupt decision may not match their intent.
 	// Populated only for interrupt responses (Merge/Queue). The Hub frontend
 	// renders these as clickable buttons; IM gateways format them as text.
-	Corrections                         []progress.CorrectionOption   `json:"corrections,omitempty"`
+	Corrections []progress.CorrectionOption `json:"corrections,omitempty"`
 }
 
 const stalledNoToolRecoverThreshold = 2
@@ -695,7 +695,9 @@ func stripTrailingBrokenToolGroup(history []agent.ConversationEntry) []agent.Con
 	// Count expected tool_call IDs.
 	expectedCount := 0
 	if data, err := json.Marshal(history[assistantIdx].ToolCalls); err == nil {
-		var arr []struct{ ID string `json:"id"` }
+		var arr []struct {
+			ID string `json:"id"`
+		}
 		if json.Unmarshal(data, &arr) == nil {
 			expectedCount = len(arr)
 		}
@@ -967,6 +969,7 @@ func shouldResumeIncompleteTask(text string) bool {
 	if lower == "" {
 		return false
 	}
+
 	resumePhrases := []string{
 		"继续", "继续呀", "继续做", "继续完成", "继续上次", "接着做", "接着完成", "接着上次", "恢复上次", "做完上次",
 		"continue", "continue it", "continue this", "resume", "resume it", "resume this", "pick up where you left off",
@@ -1210,41 +1213,42 @@ func isSlotActionCommand(text string) bool {
 	return strings.HasPrefix(trimmed, "__resume_unfinished__ ") || trimmed == "__start_new_task__" || strings.HasPrefix(trimmed, "__dismiss_unfinished__ ")
 }
 
-func isConfirmationApproval(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return false
+const (
+	confirmationApproveCommandPrefix = "__confirm_execution__"
+	confirmationCancelCommandPrefix  = "__cancel_execution__"
+)
+
+func buildConfirmationActionCommand(action, id string) string {
+	id = strings.TrimSpace(id)
+	switch action {
+	case "confirm":
+		return confirmationApproveCommandPrefix + " " + id
+	case "cancel":
+		return confirmationCancelCommandPrefix + " " + id
+	default:
+		return ""
 	}
-	phrases := []string{
-		"确认", "确认了", "可以", "可以开始", "开始吧", "继续", "继续吧", "没问题", "好的开始", "就这样", "按这个来",
-		"ok", "okay", "confirmed", "confirm", "go ahead", "looks good", "start", "continue",
-	}
-	for _, phrase := range phrases {
-		if lower == phrase || strings.Contains(lower, phrase) {
-			return true
-		}
-	}
-	return false
 }
 
-func isConfirmationCancel(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return false
+func parseConfirmationActionCommand(text string) (action string, id string, ok bool) {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) != 2 {
+		return "", "", false
 	}
-	phrases := []string{"取消", "先别做", "不用做了", "停止", "算了", "cancel", "stop", "never mind"}
-	for _, phrase := range phrases {
-		if lower == phrase || strings.Contains(lower, phrase) {
-			return true
-		}
+	switch fields[0] {
+	case confirmationApproveCommandPrefix:
+		return "confirm", strings.TrimSpace(fields[1]), true
+	case confirmationCancelCommandPrefix:
+		return "cancel", strings.TrimSpace(fields[1]), true
+	default:
+		return "", "", false
 	}
-	return false
 }
 
 // classifyConfirmationIntent uses a lightweight LLM call to classify the
-// user's response to an execution confirmation panel. Called when the user's
-// message doesn't match the keyword-based isConfirmationApproval or
-// isConfirmationCancel checks, to handle semantic confirmations like "开工".
+// user's typed response to an execution confirmation panel. Button clicks use
+// structured confirmation commands; free-form text is interpreted with the
+// pending task context so we are not depending on brittle phrase matching.
 //
 // Returns "confirm", "cancel", "modify", or "" (empty on LLM failure,
 // treated as modify by the caller).
@@ -1299,20 +1303,21 @@ When in doubt between "confirm" and "modify", prefer "confirm" if the response i
 		return "" // caller treats as modify (safe fallback)
 	}
 
-	intent := strings.ToLower(strings.TrimSpace(result.Text))
-	log.Printf("[confirmation-intent] user=%s text=%q → intent=%q (latency=%.1fs)",
+	intent := normalizeConfirmationIntent(result.Text)
+	log.Printf("[confirmation-intent] user=%s text=%q -> intent=%q (latency=%.1fs)",
 		userID, truncateForLogGUI(text, 30), intent, result.Latency.Seconds())
+	return intent
+}
 
-	if strings.Contains(intent, "confirm") {
-		return "confirm"
+func normalizeConfirmationIntent(text string) string {
+	intent := strings.ToLower(strings.TrimSpace(text))
+	intent = strings.Trim(intent, " \t\r\n`\"'.,:;!?()[]{}")
+	switch intent {
+	case "confirm", "cancel", "modify":
+		return intent
+	default:
+		return ""
 	}
-	if strings.Contains(intent, "cancel") {
-		return "cancel"
-	}
-	if strings.Contains(intent, "modify") {
-		return "modify"
-	}
-	return "" // unrecognized → caller treats as modify
 }
 
 func isShortChitChatMessage(text string) bool {
@@ -1552,10 +1557,92 @@ func buildConfirmationResponse(item *pendingConfirmation) *IMAgentResponse {
 		Text:         text,
 		Confirmation: buildConfirmationPayload(item),
 		Actions: []IMResponseAction{
-			{Label: "确认并开始", Command: "确认，按这个开始", Style: "primary"},
-			{Label: "取消", Command: "取消这个任务", Style: "secondary"},
+			{Label: "确认并开始", Command: buildConfirmationActionCommand("confirm", item.ID), Style: "primary"},
+			{Label: "取消", Command: buildConfirmationActionCommand("cancel", item.ID), Style: "secondary"},
 		},
 	}
+}
+
+type pendingExecutionConfirmationResult struct {
+	Handled           bool
+	Response          *IMAgentResponse
+	ConfirmedResume   bool
+	WorkflowAgentLoop bool
+}
+
+func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage, trimmed *string) pendingExecutionConfirmationResult {
+	if h == nil || msg == nil || trimmed == nil || h.confirmationStore == nil {
+		return pendingExecutionConfirmationResult{}
+	}
+	action, confirmationID, hasConfirmationAction := parseConfirmationActionCommand(*trimmed)
+	pending := h.confirmationStore.get(msg.UserID)
+	if pending == nil {
+		if hasConfirmationAction {
+			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "Confirmation expired; please start again."}}
+		}
+		return pendingExecutionConfirmationResult{}
+	}
+
+	saveCancelContext := func() {
+		if pending.OriginalText == "" || h.memory == nil {
+			return
+		}
+		entries := h.memory.Load(msg.UserID)
+		cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
+		entries = append(entries,
+			agent.ConversationEntry{Role: "user", Content: pending.OriginalText},
+			agent.ConversationEntry{Role: "assistant", Content: cancelNote},
+		)
+		h.memory.Save(msg.UserID, entries)
+	}
+
+	approve := func() pendingExecutionConfirmationResult {
+		h.confirmationStore.clear(msg.UserID)
+		msg.Text = confirmationApprovedText(pending)
+		*trimmed = strings.TrimSpace(msg.Text)
+		result := pendingExecutionConfirmationResult{ConfirmedResume: true}
+		if h.getWorkflowEngine() != nil && !msg.IsBackground {
+			if wfResp := h.handleWorkflowInterception(msg.UserID, *trimmed); wfResp != nil {
+				h.pendingAskUser.Delete(msg.UserID)
+				result.Handled = true
+				result.Response = wfResp
+				return result
+			}
+			if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
+				result.WorkflowAgentLoop = true
+			}
+		}
+		return result
+	}
+
+	switch {
+	case hasConfirmationAction:
+		if confirmationID != pending.ID {
+			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "Confirmation expired; please start again."}}
+		}
+		if action == "confirm" {
+			return approve()
+		}
+		saveCancelContext()
+		h.confirmationStore.clear(msg.UserID)
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "Cancelled pending confirmation."}}
+	case !msg.IsBackground:
+		llmIntent := h.classifyConfirmationIntent(msg.UserID, *trimmed, pending)
+		switch llmIntent {
+		case "confirm":
+			return approve()
+		case "cancel":
+			saveCancelContext()
+			h.confirmationStore.clear(msg.UserID)
+			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}}
+		default:
+			updated := applyConfirmationRevision(pending, *trimmed)
+			h.confirmationStore.set(updated)
+			return pendingExecutionConfirmationResult{Handled: true, Response: buildConfirmationResponse(updated)}
+		}
+	}
+
+	return pendingExecutionConfirmationResult{}
 }
 
 func applyConfirmationRevision(item *pendingConfirmation, revision string) *pendingConfirmation {
@@ -2700,6 +2787,7 @@ func containsCorrectionKeywords(text string) bool {
 	if lower == "" {
 		return false
 	}
+
 	for _, kw := range userCorrectionKeywords {
 		if strings.Contains(lower, kw) {
 			return true
@@ -3648,7 +3736,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	//
 	// Formula: base 40 entries for 102K effective tokens (128K * 80%).
 	// Scale linearly, clamped to [40, 80].
-	dynamicLimit := agent.MaxConversationTurns // 40 default
+	dynamicLimit := agent.MaxConversationTurns        // 40 default
 	dynamicTokenLimit := agent.MaxMemoryTokenEstimate // 60K default
 	if h.app != nil {
 		cfg := h.app.GetMaclawLLMConfig()
@@ -4435,6 +4523,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 	decision := resolveExplicitTaskSlotDecision(msg, unfinishedSlot)
 	freshTask := false
+	confirmedResume := false
+	confirmedWorkflowAgentLoop := false
+	if pendingResult := h.handlePendingExecutionConfirmation(&msg, &trimmed); pendingResult.Handled {
+		return pendingResult.Response
+	} else if pendingResult.ConfirmedResume {
+		confirmedResume = true
+		confirmedWorkflowAgentLoop = pendingResult.WorkflowAgentLoop
+	}
 	if h.app != nil && h.getSessionStarter() == nil {
 		h.ensureInteractionInfra()
 	}
@@ -4580,9 +4676,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// be captured as phase output. When false, the agent loop is running for
 	// a normal (non-workflow) message and doc capture must be skipped — even
 	// if a stale workflow happens to be active in memory.
-	workflowAgentLoop := false
+	workflowAgentLoop := confirmedWorkflowAgentLoop
 	skipWorkflowForAttachment := false
-	if h.getWorkflowEngine() != nil && !msg.IsBackground {
+	if !confirmedResume && h.getWorkflowEngine() != nil && !msg.IsBackground {
 		// Skip workflow interception when the user sends image attachments
 		// with a short text prompt (likely an image recognition request, not
 		// a workflow phase input). Without this, the workflow engine would
@@ -4652,7 +4748,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Replaces the scattered logic across shouldAutoClearIncompleteTaskContext,
 	// TopicSwitchDetector, and the confirmation gate's fresh-task detection.
 	// One LLM call (when needed) determines: continue / new / recall.
-	if !freshTask && !msg.IsBackground && decision.ResumeSlotID == "" {
+	if !confirmedResume && !freshTask && !msg.IsBackground && decision.ResumeSlotID == "" {
 		tcDecision := h.resolveTaskContext(
 			msg.UserID, trimmed, EntriesBeforeClear,
 			hasPendingAskUser, false, false,
@@ -4794,93 +4890,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return result
 	}
 
-	pending := (*pendingConfirmation)(nil)
-	confirmedResume := false
-	if h.confirmationStore != nil {
-		pending = h.confirmationStore.get(msg.UserID)
-	}
-	if pending != nil {
-		switch {
-		case isConfirmationCancel(trimmed):
-			// Preserve the cancelled task's original text as context so
-			// subsequent messages don't lose the conversation thread.
-			if pending.OriginalText != "" {
-				entries := h.memory.Load(msg.UserID)
-				cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
-				entries = append(entries,
-					agent.ConversationEntry{Role: "user", Content: pending.OriginalText},
-					agent.ConversationEntry{Role: "assistant", Content: cancelNote},
-				)
-				h.memory.Save(msg.UserID, entries)
-			}
-			h.confirmationStore.clear(msg.UserID)
-			return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
-		case isConfirmationApproval(trimmed):
-			h.confirmationStore.clear(msg.UserID)
-			msg.Text = confirmationApprovedText(pending)
-			trimmed = strings.TrimSpace(msg.Text)
-			confirmedResume = true
-			// Re-route through workflow engine with the restored original text.
-			// The first workflow interception (above) ran with the confirmation
-			// message ("确认并开始"), not the original task text. Now that we've
-			// restored the original text, give the workflow engine another chance
-			// to classify and intercept it.
-			if h.getWorkflowEngine() != nil && !msg.IsBackground {
-				if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
-					h.pendingAskUser.Delete(msg.UserID)
-					return wfResp
-				}
-				// Check marker from the re-routed workflow interception.
-				if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
-					workflowAgentLoop = true
-				}
-			}
-		case !msg.IsBackground:
-			// Neither explicit confirm nor cancel. Use a lightweight LLM call
-			// to classify the user's intent with the confirmation context.
-			// This handles cases like "开工" which is semantically a confirmation
-			// but not in the keyword list.
-			if llmIntent := h.classifyConfirmationIntent(msg.UserID, trimmed, pending); llmIntent == "confirm" {
-				h.confirmationStore.clear(msg.UserID)
-				msg.Text = confirmationApprovedText(pending)
-				trimmed = strings.TrimSpace(msg.Text)
-				confirmedResume = true
-				if h.getWorkflowEngine() != nil {
-					if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
-						h.pendingAskUser.Delete(msg.UserID)
-						return wfResp
-					}
-					if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
-						workflowAgentLoop = true
-					}
-				}
-			} else if llmIntent == "cancel" {
-				if pending.OriginalText != "" {
-					entries := h.memory.Load(msg.UserID)
-					cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
-					entries = append(entries,
-						agent.ConversationEntry{Role: "user", Content: pending.OriginalText},
-						agent.ConversationEntry{Role: "assistant", Content: cancelNote},
-					)
-					h.memory.Save(msg.UserID, entries)
-				}
-				h.confirmationStore.clear(msg.UserID)
-				return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
-			} else {
-				// "modify" or LLM failed — treat as revision.
-				updated := applyConfirmationRevision(pending, trimmed)
-				h.confirmationStore.set(updated)
-				return buildConfirmationResponse(updated)
-			}
-		}
-	}
 	// --- Execution confirmation gate ---
 	// Only require confirmation for genuinely new tasks (freshTask == true).
 	// When the TaskContextManager decided "continue", the message is a
 	// follow-up within the current conversation — not a fresh task.
-	if freshTask && shouldRequireExecutionConfirmation(msg, pending) {
+	if freshTask && shouldRequireExecutionConfirmation(msg, nil) {
 		intent := h.classifyTaskIntentForExecution(trimmed, msg.Attachments, httpClient)
-		if shouldRequireExecutionConfirmationForIntent(msg, pending, intent) {
+		if shouldRequireExecutionConfirmationForIntent(msg, nil, intent) {
 			// Attempt LLM-based task understanding for a structured summary.
 			// On failure (timeout, LLM not configured, etc.), understanding
 			// will be nil and buildPendingConfirmation falls back to raw-text echo.
@@ -5344,7 +5360,6 @@ func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 	b.WriteString("\n💡 发送 /exit 可终止所有会话并退出编程模式。")
 	return &IMAgentResponse{Text: b.String()}
 }
-
 
 // extractKeyDataFromEntries scans conversation entries for critical data
 // references that must survive compaction: file paths, URLs, data statistics.
@@ -6607,9 +6622,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	//
 	// This is a safety net for when the main agent loop handles coding directly
 	// (e.g. workflow engine unavailable, or coding gate enforcing three-phase).
-	const codingIterBudgetSoft = 50  // inject progress reminder
-	const codingIterBudgetHard = 65  // force return
-	codingIterCount := 0             // consecutive iterations with coding tools
+	const codingIterBudgetSoft = 50 // inject progress reminder
+	const codingIterBudgetHard = 65 // force return
+	codingIterCount := 0            // consecutive iterations with coding tools
 
 	// --- In-flight task marker (lazy activation) ---
 	// The marker is NOT set at loop entry. It is set lazily — only after
@@ -9254,6 +9269,7 @@ func (d *SteeringWorkflowDetector) isCodingTask(message string) bool {
 	if lower == "" {
 		return false
 	}
+
 	// Keywords aligned with coding-workflow.md steering rules.
 	keywords := []string{
 		"开发", "编写", "实现", "创建", "修改代码", "重构",

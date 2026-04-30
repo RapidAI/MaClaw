@@ -636,6 +636,7 @@ type MemoryStatusData struct {
 	StaleEntries    int                  `json:"stale_entries"`
 	PinnedEntries   int                  `json:"pinned_entries"`
 	EmbedderActive  bool                 `json:"embedder_active"`
+	NoEmbedding     int                  `json:"no_embedding"`
 	OldestEntry     string               `json:"oldest_entry,omitempty"`
 	NewestEntry     string               `json:"newest_entry,omitempty"`
 	Categories      []MemoryStatusCatRow `json:"categories"`
@@ -643,9 +644,8 @@ type MemoryStatusData struct {
 
 // MemoryStatusCatRow is one row in the category breakdown.
 type MemoryStatusCatRow struct {
-	Category string `json:"category"`
-	Label    string `json:"label"`
-	Count    int    `json:"count"`
+	Category string  `json:"category"`
+	Count    int     `json:"count"`
 	Percent  float64 `json:"percent"`
 }
 
@@ -654,7 +654,10 @@ type MemoryStatusCatRow struct {
 func (a *App) GetMemoryStatus() *MemoryStatusData {
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
-		return &MemoryStatusData{MaxCapacity: 2000}
+		a.ensureMemoryStore()
+	}
+	if a.memoryStore == nil {
+		return &MemoryStatusData{MaxCapacity: 2000, Categories: []MemoryStatusCatRow{}}
 	}
 	hr := a.memoryStore.HealthReport()
 	data := &MemoryStatusData{
@@ -665,25 +668,9 @@ func (a *App) GetMemoryStatus() *MemoryStatusData {
 		StaleEntries:    hr.StaleEntries,
 		PinnedEntries:   hr.PinnedEntries,
 		EmbedderActive:  hr.EmbedderActive,
+		NoEmbedding:     hr.NoEmbedding,
 		OldestEntry:     hr.OldestEntry,
 		NewestEntry:     hr.NewestEntry,
-	}
-
-	// Category display labels (zh).
-	catLabels := map[string]string{
-		"self_identity":        "自我认知",
-		"user_fact":            "用户事实",
-		"preference":           "偏好设置",
-		"project_knowledge":    "项目知识",
-		"instruction":          "指令",
-		"conversation_summary": "对话摘要",
-		"session_checkpoint":   "会话检查点",
-		"task_artifact":        "任务产出物",
-		"profile":              "用户画像",
-		"user":                 "用户信息",
-		"feedback":             "反馈",
-		"project":              "项目",
-		"reference":            "引用",
 	}
 
 	// Build category rows from HealthReport.CategoryCounts (includes ALL categories).
@@ -692,13 +679,8 @@ func (a *App) GetMemoryStatus() *MemoryStatusData {
 		total = 1 // avoid division by zero
 	}
 	for cat, count := range hr.CategoryCounts {
-		label := catLabels[cat]
-		if label == "" {
-			label = cat
-		}
 		data.Categories = append(data.Categories, MemoryStatusCatRow{
 			Category: cat,
-			Label:    label,
 			Count:    count,
 			Percent:  float64(count) / float64(total) * 100,
 		})

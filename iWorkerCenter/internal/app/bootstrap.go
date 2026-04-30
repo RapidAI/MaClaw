@@ -358,6 +358,8 @@ func defaultDSN() (string, error) {
 func loadCloudConfig() tenant.CloudConfig {
 	cfg := tenant.CloudConfig{
 		PublicKeyCacheHours: 24,
+		SupportsMultiTenant: true,
+		CloudControlMode:    "cloud_managed",
 	}
 
 	// Try config file first
@@ -365,7 +367,6 @@ func loadCloudConfig() tenant.CloudConfig {
 	if err == nil {
 		cfgPath := filepath.Join(home, ".iworkercenter", "config.yaml")
 		if data, err := os.ReadFile(cfgPath); err == nil {
-			// Simple YAML-like parsing for cloud section
 			parseCloudConfig(data, &cfg)
 		}
 	}
@@ -374,25 +375,43 @@ func loadCloudConfig() tenant.CloudConfig {
 	if v := os.Getenv("IWORKERCENTER_CLOUD_URL"); v != "" {
 		cfg.BaseURL = v
 	}
+	if v := os.Getenv("IWORKERCENTER_PUBLIC_BASE_URL"); v != "" {
+		cfg.CenterBaseURL = v
+	}
+	if v := os.Getenv("IWORKERCENTER_CLOUD_CONTROL_MODE"); v != "" {
+		cfg.CloudControlMode = v
+	}
+	if cfg.CloudControlMode == "" {
+		cfg.CloudControlMode = "cloud_managed"
+	}
 
 	return cfg
 }
 
 // parseCloudConfig does minimal parsing of the cloud section from YAML.
 func parseCloudConfig(data []byte, cfg *tenant.CloudConfig) {
-	// Use gopkg.in/yaml.v3 if available, otherwise simple line parsing
 	type yamlCfg struct {
 		Cloud struct {
 			BaseURL             string `yaml:"base_url"`
+			CenterBaseURL       string `yaml:"center_base_url"`
+			SupportsMultiTenant bool   `yaml:"supports_multi_tenant"`
+			CloudControlMode    string `yaml:"cloud_control_mode"`
 			PublicKeyCacheHours int    `yaml:"public_key_cache_hours"`
 		} `yaml:"cloud"`
 	}
-	// Try to import yaml; for now use a simple approach
-	// since the project already has gopkg.in/yaml.v3
 	var parsed yamlCfg
 	if err := yamlUnmarshal(data, &parsed); err == nil {
 		if parsed.Cloud.BaseURL != "" {
 			cfg.BaseURL = parsed.Cloud.BaseURL
+		}
+		if parsed.Cloud.CenterBaseURL != "" {
+			cfg.CenterBaseURL = parsed.Cloud.CenterBaseURL
+		}
+		if parsed.Cloud.SupportsMultiTenant {
+			cfg.SupportsMultiTenant = true
+		}
+		if parsed.Cloud.CloudControlMode != "" {
+			cfg.CloudControlMode = parsed.Cloud.CloudControlMode
 		}
 		if parsed.Cloud.PublicKeyCacheHours > 0 {
 			cfg.PublicKeyCacheHours = parsed.Cloud.PublicKeyCacheHours

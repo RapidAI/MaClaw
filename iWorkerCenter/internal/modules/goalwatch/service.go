@@ -119,15 +119,17 @@ type shardLease struct {
 }
 
 type TenantMonitorStatus struct {
-	TenantID      string               `json:"tenant_id"`
-	StartedAt     time.Time            `json:"started_at"`
-	FinishedAt    time.Time            `json:"finished_at"`
-	IWorkerCount  int                  `json:"iworker_count"`
-	ShardCount    int                  `json:"shard_count"`
-	Checked       int                  `json:"checked"`
-	Pushed        int                  `json:"pushed"`
-	Error         string               `json:"error,omitempty"`
-	ShardStatuses []MonitorShardStatus `json:"shards"`
+	TenantID        string               `json:"tenant_id"`
+	PolicyPersisted bool                 `json:"policy_persisted"`
+	Policy          TenantPolicy         `json:"policy"`
+	StartedAt       time.Time            `json:"started_at"`
+	FinishedAt      time.Time            `json:"finished_at"`
+	IWorkerCount    int                  `json:"iworker_count"`
+	ShardCount      int                  `json:"shard_count"`
+	Checked         int                  `json:"checked"`
+	Pushed          int                  `json:"pushed"`
+	Error           string               `json:"error,omitempty"`
+	ShardStatuses   []MonitorShardStatus `json:"shards"`
 }
 
 type MonitorStatus struct {
@@ -294,8 +296,11 @@ func (s *Service) serviceForTenantPolicy(policy TenantPolicy) *Service {
 	if policy.MaxWatchers > 0 {
 		cfg.MaxWatchers = policy.MaxWatchers
 	}
-	return &Service{collabRepo: s.collabRepo, agentRuntime: s.agentRuntime, config: NewService(s.collabRepo, cfg).config}
+	normalized := NewService(s.collabRepo, cfg)
+	normalized.agentRuntime = s.agentRuntime
+	return normalized
 }
+
 func (s *Service) SetAgentRuntime(runtime *agentruntime.Service) {
 	if s != nil {
 		s.agentRuntime = runtime

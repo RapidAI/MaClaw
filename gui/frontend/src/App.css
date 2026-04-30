@@ -904,21 +904,28 @@ body {
 
 /* Buttons */
 .btn-primary {
-    background: var(--primary-dark);
-    color: #ffffff;
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
     padding: 5px 14px;
-    border: none;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 58%, var(--theme-border));
     border-radius: var(--radius-sm);
     font-size: 0.8rem;
     font-weight: 600;
     cursor: pointer;
-    transition: all var(--transition-fast);
-    box-shadow: var(--shadow-sm);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), opacity var(--transition-fast);
+    box-shadow: none;
 }
 
 .btn-primary:hover {
-    background: var(--primary-color);
-    box-shadow: var(--shadow-md);
+    background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface));
+    border-color: var(--theme-primary);
+    box-shadow: var(--shadow-sm);
+}
+
+.btn-primary:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    box-shadow: none;
 }
 
 .remote-activation-row {
@@ -1696,13 +1703,14 @@ body {
 }
 
 #App[data-ai-theme='dark'] .modal-content .btn-primary {
-    background: var(--theme-primary-strong);
-    color: #ffffff;
-    border-color: var(--theme-primary);
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary);
+    border-color: color-mix(in srgb, var(--theme-primary) 54%, var(--theme-border));
 }
 
 #App[data-ai-theme='dark'] .modal-content .btn-primary:hover {
-    background: var(--theme-primary);
+    background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface));
+    border-color: var(--theme-primary);
 }
 
 #App[data-ai-theme='dark'] .modal-content .btn-secondary {

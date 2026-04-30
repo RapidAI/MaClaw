@@ -55,6 +55,17 @@ interface AutoCompressStatus {
     last_error?: string;
 }
 
+const buttonSpinnerStyle: React.CSSProperties = {
+    width: 12,
+    height: 12,
+    borderRadius: "50%",
+    border: "2px solid currentColor",
+    borderRightColor: "transparent",
+    display: "inline-block",
+    animation: "spin 0.8s linear infinite",
+    flexShrink: 0,
+};
+
 const CATEGORIES = [
     { value: "", label: { zh: "全部", en: "All" } },
     { value: "self_identity", label: { zh: "自我认知", en: "Self Identity" } },
@@ -149,9 +160,15 @@ const cancelBtnStyle: React.CSSProperties = {
     border: `1px solid ${colors.border}`, borderRadius: radius.md,
     background: colors.surface, color: colors.text, cursor: "pointer",
 };
+const primaryBtnStyle: React.CSSProperties = {
+    padding: "5px 14px", fontSize: "0.76rem", fontWeight: 600,
+    border: `1px solid ${colors.primary}`, borderRadius: radius.md,
+    background: colors.primaryLight, color: colors.primaryDark, cursor: "pointer",
+};
 const dangerBtnStyle: React.CSSProperties = {
-    padding: "5px 14px", fontSize: "0.76rem", border: "none",
-    borderRadius: radius.md, background: colors.danger, color: colors.onPrimary, cursor: "pointer",
+    padding: "5px 14px", fontSize: "0.76rem", fontWeight: 600,
+    border: `1px solid ${colors.danger}`, borderRadius: radius.md,
+    background: colors.dangerBg, color: colors.danger, cursor: "pointer",
 };
 
 export function MemoryManagementPanel({ lang }: Props) {
@@ -183,7 +200,7 @@ export function MemoryManagementPanel({ lang }: Props) {
                 {tab === "edit" && (
                     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>{entryCount} {t("entries", "条记忆")}</span>
-                        <button onClick={() => createRef.current?.()} style={{ padding: "3px 12px", fontSize: "0.72rem", fontWeight: 600, background: colors.primary, color: colors.onPrimary, border: "none", borderRadius: radius.md, cursor: "pointer" }}>
+                        <button onClick={() => createRef.current?.()} style={{ ...primaryBtnStyle, padding: "3px 12px", fontSize: "0.72rem" }}>
                             + {t("New", "新建")}
                         </button>
                     </div>
@@ -606,7 +623,7 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                             <button onClick={() => setDlgOpen(false)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
-                            <button onClick={handleSave} disabled={saving || !formContent.trim()} style={{ padding: "5px 14px", fontSize: "0.76rem", border: "none", borderRadius: radius.md, background: colors.primary, color: colors.onPrimary, cursor: "pointer", opacity: saving || !formContent.trim() ? 0.5 : 1 }}>{saving ? t("Saving…", "保存中…") : t("Save", "保存")}</button>
+                            <button onClick={handleSave} disabled={saving || !formContent.trim()} style={{ ...primaryBtnStyle, opacity: saving || !formContent.trim() ? 0.5 : 1, cursor: saving || !formContent.trim() ? "default" : "pointer" }}>{saving ? t("Saving…", "保存中…") : t("Save", "保存")}</button>
                         </div>
                     </div>
                 </ModalOverlay>
@@ -719,7 +736,7 @@ function SessionHistoryTab({ t, lang }: SessionHistoryTabProps) {
             {/* Search bar */}
             <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
                 <input placeholder={t("Full-text search (Enter)…", "全文检索（回车搜索）…")} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKeyDown} aria-label={t("Search sessions", "搜索会话")} style={{ ...inputStyle, flex: 1, padding: "6px 10px", fontSize: "0.78rem" }} />
-                <button onClick={handleSearch} disabled={loading} style={{ padding: "6px 14px", fontSize: "0.74rem", fontWeight: 600, border: "none", borderRadius: radius.md, background: colors.primary, color: colors.onPrimary, cursor: loading ? "wait" : "pointer", opacity: loading ? 0.6 : 1, whiteSpace: "nowrap" }}>🔍 {t("Search", "搜索")}</button>
+                <button onClick={handleSearch} disabled={loading} style={{ ...primaryBtnStyle, padding: "6px 14px", fontSize: "0.74rem", cursor: loading ? "wait" : "pointer", opacity: loading ? 0.6 : 1, whiteSpace: "nowrap" }}>🔍 {t("Search", "搜索")}</button>
                 {searchResults !== null && (
                     <button onClick={() => { setQuery(""); setSearchResults(null); }} style={{ padding: "6px 10px", fontSize: "0.72rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, cursor: "pointer", color: colors.textSecondary, whiteSpace: "nowrap" }}>✕ {t("Clear", "清除")}</button>
                 )}
@@ -968,16 +985,18 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                         <button onClick={handleToggleAuto} disabled={toggling} style={{
-                            padding: "4px 14px", fontSize: "0.74rem", fontWeight: 600, border: "none", borderRadius: radius.md, cursor: toggling ? "wait" : "pointer",
-                            background: autoEnabled ? colors.success : colors.textMuted, color: colors.onPrimary, whiteSpace: "nowrap",
+                            padding: "4px 14px", fontSize: "0.74rem", fontWeight: 600, border: `1px solid ${autoEnabled ? colors.success : colors.border}`, borderRadius: radius.md, cursor: toggling ? "wait" : "pointer",
+                            background: autoEnabled ? colors.successBg : colors.surfaceMuted, color: autoEnabled ? colors.success : colors.textSecondary, whiteSpace: "nowrap",
                         }}>
                             {autoEnabled ? t("ON", "已开启") : t("OFF", "已关闭")}
                         </button>
                         <button onClick={handleCompress} disabled={compressing} aria-label={t("Compress Now", "立即压缩")} style={{
-                            padding: "4px 14px", fontSize: "0.74rem", fontWeight: 600, border: "none", borderRadius: radius.md, cursor: compressing ? "wait" : "pointer",
-                            background: compressing ? colors.textMuted : colors.primary, color: colors.onPrimary, opacity: compressing ? 0.6 : 1, whiteSpace: "nowrap",
+                            padding: "4px 14px", fontSize: "0.74rem", fontWeight: 600, border: `1px solid ${compressing ? colors.border : colors.primary}`, borderRadius: radius.md, cursor: compressing ? "wait" : "pointer",
+                            background: compressing ? colors.surfaceMuted : colors.primaryLight, color: compressing ? colors.textMuted : colors.primaryDark, opacity: compressing ? 0.75 : 1, whiteSpace: "nowrap",
+                            display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
                         }}>
-                            {compressing ? t("…", "压缩中…") : t("Compress", "立即压缩")}
+                            {compressing && <span aria-hidden="true" style={buttonSpinnerStyle} />}
+                            {compressing ? t("Compressing…", "压缩中…") : t("Compress", "立即压缩")}
                         </button>
                     </div>
                 </div>
@@ -1026,7 +1045,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
                             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                                 <button onClick={() => setRestoreTarget(bk.name)} aria-label={`${t("Restore", "恢复")} ${bk.name}`} title={t("Restore", "恢复")} style={{
                                     padding: "3px 10px", fontSize: "0.7rem", cursor: "pointer", fontWeight: 600,
-                                    background: colors.success, color: colors.onPrimary, border: "none", borderRadius: radius.sm,
+                                    background: colors.successBg, color: colors.success, border: `1px solid ${colors.success}`, borderRadius: radius.sm,
                                 }}>⏪ {t("Restore", "恢复")}</button>
                                 <button onClick={() => setDeleteTarget(bk.name)} aria-label={`${t("Delete", "删除")} ${bk.name}`} title={t("Delete", "删除")} style={{
                                     padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer",
@@ -1047,7 +1066,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
                     </p>
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                         <button onClick={() => setRestoreTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
-                        <button onClick={() => handleRestore(restoreTarget)} style={{ ...cancelBtnStyle, background: colors.success, color: colors.onPrimary, border: "none" }}>{t("Confirm Restore", "确认恢复")}</button>
+                        <button onClick={() => handleRestore(restoreTarget)} style={{ ...cancelBtnStyle, background: colors.successBg, color: colors.success, border: `1px solid ${colors.success}`, fontWeight: 600 }}>{t("Confirm Restore", "确认恢复")}</button>
                     </div>
                 </ModalOverlay>
             )}

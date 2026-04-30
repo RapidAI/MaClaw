@@ -86,12 +86,12 @@ const inputStyle: React.CSSProperties = {
 };
 
 const primaryButtonStyle: React.CSSProperties = {
-    border: "none",
+    border: `1px solid ${colors.primary}`,
     borderRadius: radius.md,
     padding: "9px 16px",
     cursor: "pointer",
-    background: colors.primary,
-    color: colors.onPrimary,
+    background: colors.primaryLight,
+    color: colors.primaryDark,
     fontWeight: 600,
     fontSize: "0.8rem",
 };

@@ -9,7 +9,7 @@ import (
 // voiceSummaryInput is the structured input from the frontend.
 type voiceSummaryInput struct {
 	UserText string `json:"userText"` // user's original request
-	Status   string `json:"status"`   // "success", "error", "paused"
+	Status   string `json:"status"`   // "success", "error", "paused", "needs_confirmation"
 }
 
 // GenerateVoiceSummary generates a spoken status announcement from structured input.
@@ -52,6 +52,8 @@ func buildStructuredSummary(si voiceSummaryInput, maxRunes int) string {
 		statusPhrase = "任务处理失败"
 	case "paused":
 		statusPhrase = "任务已暂停"
+	case "needs_confirmation":
+		statusPhrase = "需要任务确认"
 	default:
 		statusPhrase = "任务已完成"
 	}

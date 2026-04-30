@@ -1476,7 +1476,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     }, []);
 
     // Auto-speak: when TTS is enabled and a response completes (sending→false),
-    // generate a spoken status summary: "{task} 已完成/失败/暂停，该任务是 {description}"
+    // generate a spoken status summary: "{task} 已完成/失败/暂停/需要确认，该任务是 {description}"
     const prevSendingRef = useRef(sending);
     useEffect(() => {
         const wasSending = prevSendingRef.current;
@@ -1484,7 +1484,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         if (wasSending && !sending && ttsEnabled && messages.length > 0) {
             // Find the last user message (= task description) and last assistant/error message (= status)
             let userText = '';
-            let status: 'success' | 'error' | 'paused' = 'success';
+            let status: 'success' | 'error' | 'paused' | 'needs_confirmation' = 'success';
             for (let i = messages.length - 1; i >= 0; i--) {
                 const msg = messages[i];
                 if (!userText && msg.role === 'user' && msg.content) {
@@ -1497,6 +1497,9 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             }
             // Check if the response was a cancellation
             const lastMsg = messages[messages.length - 1];
+            if (lastMsg?.confirmation && lastMsg.confirmation.status !== 'running') {
+                status = 'needs_confirmation';
+            }
             if (lastMsg?.content?.includes('⏹') || lastMsg?.content?.includes('已取消') || lastMsg?.content?.includes('已暂停')) {
                 status = 'paused';
             }
@@ -1567,21 +1570,6 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     const showProcessingState = isBusy && !streaming;
     const showBusySpinner = isBusy;
 
-    // Voice input — toggle mode: open mic → auto-detect speech segments → transcribe → dispatch
-    const handleVoiceTranscribed = useCallback((text: string) => {
-        if (submitLocked) {
-            // Agent is busy — queue as buffer entry (pre-input cache)
-            addEntry(text, []);
-            recordSubmittedPrompt?.(text);
-        } else {
-            // Agent is idle — send directly
-            recordSubmittedPrompt?.(text);
-            userScrolledUpRef.current = false;
-            sendMessage(text);
-        }
-    }, [submitLocked, addEntry, recordSubmittedPrompt, sendMessage]);
-    const voiceInput = useVoiceInput(handleVoiceTranscribed, audioInputDeviceId);
-
     const initStatusLabels: Record<AIAssistantInitStatus, { en: string; zhHans: string; zhHant: string }> = {
         connecting: { en: "Connecting to Hub...", zhHans: "正在连接 Hub...", zhHant: "正在連線 Hub..." },
         loading:    { en: "Loading components...", zhHans: "正在加载组件...", zhHant: "正在載入組件..." },
@@ -1607,6 +1595,9 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         setDraftInputValue?.(nextValue);
     }, [setDraftInputValue]);
     const canSend = ready && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
+    const voiceHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const voiceHoldActiveRef = useRef(false);
+    const voiceSuppressClickRef = useRef(false);
     const { pinnedNews, otherMessages } = useMemo(() => {
         const pinned: ChatMessage[] = [];
         const other: ChatMessage[] = [];
@@ -1634,6 +1625,98 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             el.style.height = Math.min(contentH, 120) + "px";
         }
     }, [inputAreaHeight]);
+
+    const submitRecognizedVoiceText = useCallback((rawText: string) => {
+        const text = rawText.trim();
+        if (!text) return;
+
+        updateInputValue(text);
+        setHistoryIndex(-1);
+        setDraftBeforeHistory(null);
+        setHistoryEdits({});
+        requestAnimationFrame(() => {
+            resizeInput();
+            inputRef.current?.focus();
+        });
+
+        if (submitLocked) {
+            addEntry(text, []);
+            recordSubmittedPrompt?.(text);
+            updateInputValue("");
+            requestAnimationFrame(() => {
+                if (inputRef.current) inputRef.current.style.height = "auto";
+            });
+            return;
+        }
+
+        recordSubmittedPrompt?.(text);
+        userScrolledUpRef.current = false;
+        sendMessage(text)
+            .then(() => {
+                updateInputValue("");
+                requestAnimationFrame(() => {
+                    if (inputRef.current) inputRef.current.style.height = "auto";
+                });
+            })
+            .catch(() => {
+                updateInputValue(text);
+                requestAnimationFrame(() => {
+                    resizeInput();
+                    inputRef.current?.focus();
+                });
+            });
+    }, [addEntry, recordSubmittedPrompt, resizeInput, sendMessage, submitLocked, updateInputValue]);
+
+    const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId);
+
+    const clearVoiceHoldTimer = useCallback(() => {
+        if (voiceHoldTimerRef.current) {
+            clearTimeout(voiceHoldTimerRef.current);
+            voiceHoldTimerRef.current = null;
+        }
+    }, []);
+
+    const handleVoicePointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+        if (!ready || voiceInput.state !== "idle") return;
+        clearVoiceHoldTimer();
+        voiceHoldActiveRef.current = false;
+        voiceSuppressClickRef.current = false;
+
+        const target = e.currentTarget;
+        target.setPointerCapture?.(e.pointerId);
+        voiceHoldTimerRef.current = setTimeout(() => {
+            voiceHoldTimerRef.current = null;
+            voiceHoldActiveRef.current = true;
+            voiceSuppressClickRef.current = true;
+            voiceInput.startHold();
+        }, 1000);
+    }, [clearVoiceHoldTimer, ready, voiceInput]);
+
+    const finishVoicePointer = useCallback(() => {
+        clearVoiceHoldTimer();
+        if (voiceHoldActiveRef.current) {
+            voiceHoldActiveRef.current = false;
+            voiceSuppressClickRef.current = true;
+            voiceInput.stopHold();
+        }
+    }, [clearVoiceHoldTimer, voiceInput]);
+
+    const handleVoicePointerLeave = useCallback(() => {
+        if (!voiceHoldActiveRef.current) {
+            clearVoiceHoldTimer();
+        }
+    }, [clearVoiceHoldTimer]);
+
+    const handleVoiceClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+        if (voiceSuppressClickRef.current) {
+            e.preventDefault();
+            voiceSuppressClickRef.current = false;
+            return;
+        }
+        voiceInput.toggle();
+    }, [voiceInput]);
+
+    useEffect(() => () => clearVoiceHoldTimer(), [clearVoiceHoldTimer]);
 
     // Sync local draft from parent-owned draft state.
     useEffect(() => {
@@ -2868,23 +2951,32 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                     {voiceInput.asrReady && (
                         <button
                             type="button"
-                            onClick={voiceInput.toggle}
+                            onClick={handleVoiceClick}
+                            onPointerDown={handleVoicePointerDown}
+                            onPointerUp={finishVoicePointer}
+                            onPointerCancel={finishVoicePointer}
+                            onPointerLeave={handleVoicePointerLeave}
+                            onContextMenu={(e) => e.preventDefault()}
                             disabled={!ready || voiceInput.state === "transcribing"}
                             data-testid="ai-voice-input"
                             style={{
                                 ...baseInputBtnStyle,
                                 position: "relative",
-                                color: voiceInput.state === "listening" ? "#22c55e" : t.textMuted,
-                                borderColor: voiceInput.state === "listening" ? "#22c55e" : t.codeBlockBorder,
+                                color: voiceInput.state === "listening" ? (voiceInput.holdRecording ? "#ef4444" : "#22c55e") : t.textMuted,
+                                borderColor: voiceInput.state === "listening" ? (voiceInput.holdRecording ? "#ef4444" : "#22c55e") : t.codeBlockBorder,
                                 background: voiceInput.state === "listening"
                                     ? (voiceInput.isSpeaking ? "rgba(239, 68, 68, 0.10)" : "rgba(34, 197, 94, 0.08)")
                                     : "transparent",
                                 opacity: !ready || voiceInput.state === "transcribing" ? 0.5 : 1,
                                 marginBottom: "4px",
                                 transition: "all 0.2s ease",
+                                touchAction: "none",
+                                userSelect: "none",
                             }}
                             title={
-                                voiceInput.state === "listening"
+                                voiceInput.holdRecording
+                                    ? localizeText(lang, "Release to transcribe", "松开后识别")
+                                    : voiceInput.state === "listening"
                                     ? localizeText(lang, "Listening — click to stop", "监听中 — 点击关闭")
                                     : voiceInput.state === "transcribing"
                                     ? localizeText(lang, "Transcribing...", "识别中...")

@@ -1026,6 +1026,12 @@ jobs:
     needs: [build-windows, build-macos, build-linux, build-linux-arm64]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: false
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -1042,3 +1048,28 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Push source tags to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo "GITEE_TOKEN secret is required for Gitee sync" >&2
+            exit 1
+          fi
+          git remote add gitee "https://znsoft:${GITEE_TOKEN}@gitee.com/znsoft/maclaw.git"
+          git fetch origin main --tags
+          GIT_LFS_SKIP_PUSH=1 git push gitee refs/remotes/origin/main:refs/heads/main --tags
+
+      - name: Sync release assets to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_OWNER: znsoft
+          GITEE_REPO: maclaw
+          GITEE_TARGET: main
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_NAME: ${{ github.ref_name }}
+          RELEASE_BODY: Synced from GitHub release ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          RELEASE_PRERELEASE: ${{ contains(github.ref_name, '-') }}
+          RELEASE_ASSETS_DIR: artifacts
+        run: python3 .github/scripts/sync_gitee_release.py

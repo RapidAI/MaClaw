@@ -45,14 +45,14 @@ func TestSaveTaskHistoryRoundTrip(t *testing.T) {
 	want := []HistoryTaskItem{
 		{
 			ID:             "task-1",
-			Title:          "整理日报",
-			Owner:          "小迪",
-			Status:         "已完成",
+			Title:          "daily report",
+			Owner:          "xiao-di",
+			Status:         "completed",
 			UpdatedAt:      "04-07 09:30",
-			Description:    "整理今日工作日报",
-			Draft:          "根据原始记录整理日报",
+			Description:    "prepare today report",
+			Draft:          "prepare a report from raw notes",
 			ExpectedOutput: "summary",
-			Result:         "已生成日报",
+			Result:         "report generated",
 			Model:          "test-model",
 		},
 	}
@@ -109,8 +109,8 @@ func TestSaveDiWorkerSettingsRoundTrip(t *testing.T) {
 	app := NewApp()
 	want := DiWorkerSettings{
 		RoleProfile: RoleProfile{
-			Name:        "阿宁助手",
-			Description: "负责数据清洗、汇总和分析输出。",
+			Name:        "A Ning Assistant",
+			Description: "Responsible for data cleaning, summaries, and analysis.",
 		},
 		Center: CenterConfig{
 			Enabled:                    true,
@@ -133,15 +133,15 @@ func TestSaveDiWorkerSettingsRoundTrip(t *testing.T) {
 		Providers: []UpstreamProvider{
 			{
 				ID:          "analysis-anthropic",
-				Name:        "分析归因服务",
+				Name:        "Analysis service",
 				Enabled:     true,
 				Protocol:    "anthropic",
 				BaseURL:     "https://analysis.example.com",
 				APIKey:      "token-a",
 				Model:       "claude-sonnet-4-6",
 				Priority:    90,
-				Features:    []string{"分析", "归因"},
-				Description: "适合异常归因",
+				Features:    []string{"analysis", "root-cause"},
+				Description: "For exception analysis",
 				Capabilities: ProviderCapabilities{
 					SupportsStream: true,
 					SupportsVision: false,
@@ -226,7 +226,7 @@ func TestLoadDiWorkerSettingsNormalizesMissingFields(t *testing.T) {
   "providers": [
     {
       "id": "custom",
-      "name": "自定义服务",
+      "name": "custom service",
       "enabled": true,
       "base_url": "http://127.0.0.1:9000",
       "api_key": "",
@@ -793,5 +793,91 @@ func TestGoalWatchAutoHandleConfigRequiresCenterAndSetting(t *testing.T) {
 	enabled, _, _ = goalWatchAutoHandleConfig(DiWorkerSettings{Center: CenterConfig{Enabled: true, GoalWatchAutoHandleEnabled: false, GoalWatchIntervalSec: 15, GoalWatchMaxDurationSec: 40}})
 	if enabled {
 		t.Fatalf("disabled auto handle setting should stop watcher")
+	}
+}
+
+func TestSubmitTaskSyncsCompletedTaskToCenter(t *testing.T) {
+	setTestHome(t)
+	original := doSimpleLLMRequest
+	defer func() { doSimpleLLMRequest = original }()
+	doSimpleLLMRequest = func(cfg corelib.MaclawLLMConfig, messages []interface{}, _ *http.Client, _ time.Duration) (*agent.LLMSimpleResponse, error) {
+		if cfg.Model != "office-openai" {
+			t.Fatalf("model = %q, want office-openai", cfg.Model)
+		}
+		if len(messages) != 2 {
+			t.Fatalf("messages len = %d, want 2", len(messages))
+		}
+		return &agent.LLMSimpleResponse{Content: "completed operating brief"}, nil
+	}
+
+	var created struct {
+		Title           string `json:"title"`
+		FromColleagueID string `json:"from_colleague_id"`
+		ToColleagueID   string `json:"to_colleague_id"`
+		SourceType      string `json:"source_type"`
+	}
+	var completed struct {
+		ActorID string `json:"actor_id"`
+		Result  string `json:"result"`
+		Note    string `json:"note"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("%s X-Tenant-ID = %q, want tenant-a", r.URL.Path, got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/client/colleagues":
+			_ = json.NewEncoder(w).Encode(map[string]any{"colleagues": []map[string]any{{"id": "worker-a", "name": "Worker A", "role_code": "ops"}}})
+		case "/client/recommend":
+			_ = json.NewEncoder(w).Encode(map[string]any{"recommendations": []map[string]any{{"colleague_id": "worker-a", "name": "Worker A", "role_code": "ops", "score": 0.9}}})
+		case "/client/memories":
+			_ = json.NewEncoder(w).Encode(map[string]any{"memories": []any{}})
+		case "/client/iworker/memories":
+			_ = json.NewEncoder(w).Encode(map[string]any{"memories": []any{}})
+		case "/runtime/collaboration/create":
+			if r.Method != http.MethodPost {
+				t.Fatalf("create method = %s, want POST", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
+				t.Fatalf("decode create: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "task-1", "title": created.Title, "to_colleague_id": created.ToColleagueID, "status": "pending"})
+		case "/runtime/collaboration/task-1/complete":
+			if r.Method != http.MethodPost {
+				t.Fatalf("complete method = %s, want POST", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&completed); err != nil {
+				t.Fatalf("decode complete: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	if err := writeDiWorkerSettings(DiWorkerSettings{
+		RoleProfile: RoleProfile{Name: "Worker A", Description: "Ops worker"},
+		Center:      CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "ops", WorkerID: "worker-a", TimeoutSec: 5},
+		Routing:     RoutingPolicy{DefaultProvider: "office-openai"},
+		Providers:   []UpstreamProvider{{ID: "office-openai", Enabled: true, APIKey: "token"}},
+	}); err != nil {
+		t.Fatalf("writeDiWorkerSettings: %v", err)
+	}
+
+	result, err := NewApp().SubmitTask(SubmitTaskRequest{TaskType: "brief", Draft: "Prepare daily operating brief", ExpectedOutput: "summary"})
+	if err != nil {
+		t.Fatalf("SubmitTask returned error: %v", err)
+	}
+	if result.Content != "completed operating brief" || result.CenterTaskID != "task-1" || result.CenterTaskStatus != "completed" || result.CenterTaskSyncError != "" {
+		t.Fatalf("unexpected submit result: %+v", result)
+	}
+	if created.ToColleagueID != "worker-a" || created.FromColleagueID != "human_operator" || created.SourceType != "human_iworker_interaction" {
+		t.Fatalf("unexpected created task: %+v", created)
+	}
+	if completed.ActorID != "worker-a" || completed.Result != "completed operating brief" || completed.Note != "completed_by_iworker_submit_task" {
+		t.Fatalf("unexpected completion: %+v", completed)
 	}
 }

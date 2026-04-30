@@ -64,9 +64,9 @@ const mono = {
 } as const;
 
 const tabStyle = (active: boolean) => ({
-    background: active ? "var(--primary-dark)" : colors.bg,
-    color: active ? colors.onPrimary : colors.textSecondary,
-    border: "none",
+    background: active ? colors.primaryLight : colors.bg,
+    color: active ? colors.primaryDark : colors.textSecondary,
+    border: `1px solid ${active ? colors.primary : colors.border}`,
     borderRadius: radius.md,
     padding: "4px 12px",
     fontSize: "0.72rem",

@@ -915,9 +915,11 @@ func (mc *Compressor) createBackup() (string, error) {
 	if err := mc.store.flush(); err != nil {
 		return "", fmt.Errorf("flush before backup: %w", err)
 	}
-	data, err := os.ReadFile(mc.store.path)
+	mc.store.mu.RLock()
+	data, err := json.MarshalIndent(mc.store.entries, "", "  ")
+	mc.store.mu.RUnlock()
 	if err != nil {
-		return "", fmt.Errorf("read memory file: %w", err)
+		return "", fmt.Errorf("marshal memory snapshot: %w", err)
 	}
 	name := fmt.Sprintf("memories_backup_%s.json", time.Now().Format("20060102_150405"))
 	dst := filepath.Join(dir, name)

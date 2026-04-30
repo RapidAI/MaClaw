@@ -89,7 +89,6 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 - 不要在每次工具调用后都压缩——只在关键检查点使用。
 `)
 
-
 	if isProMode {
 		// Pro mode: full coding workflow with session management.
 		b.WriteString(`- 智能推断参数：如果用户没有指定 session_id 等参数，查看当前会话列表自动选择。
@@ -548,11 +547,11 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 
 	b.WriteString("\n## 对话管理\n")
 	if isProMode {
-		b.WriteString("- /new /reset /clear 重置对话 | /compress 压缩历史 | /cancel /取消 取消任务 | /btw 侧查询\n")
+		b.WriteString("- /new /reset /clear 重置对话 | /compress 压缩历史 | /memory 查看记忆状态 | /cancel /取消 取消任务 | /btw 侧查询\n")
 		b.WriteString("- /sessions /status 查看状态 | /exit /quit 终止所有会话 | /help 帮助\n")
 		b.WriteString("- 用户表达退出意图时，提醒发送 /exit\n")
 	} else {
-		b.WriteString("- /new /reset /clear 重置对话 | /cancel /取消 取消任务 | /compress 压缩历史 | /btw 侧查询 | /help 帮助\n")
+		b.WriteString("- /new /reset /clear 重置对话 | /cancel /取消 取消任务 | /compress 压缩历史 | /memory 查看记忆状态 | /btw 侧查询 | /help 帮助\n")
 	}
 	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
 

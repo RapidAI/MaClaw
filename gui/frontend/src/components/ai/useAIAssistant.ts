@@ -77,6 +77,8 @@ interface SendMessageOptions {
     startNewTask?: boolean;
     dismissSlotID?: string;
     uiAction?: boolean;
+    displayText?: string;
+    markConfirmationRunning?: boolean;
 }
 
 interface AIAssistantRemoteSessionView {
@@ -1237,16 +1239,6 @@ function matchesActiveRequest(round: ActiveRound, event: AIAssistantStreamEvent)
     return !event.request_id || event.request_id === round.requestId;
 }
 
-function isConfirmationApprovalCommand(text: string): boolean {
-    const lower = text.trim().toLowerCase();
-    if (!lower) return false;
-    const phrases = [
-        '确认', '确认了', '可以', '可以开始', '开始吧', '继续', '继续吧', '没问题', '好的开始', '就这样', '按这个来',
-        'ok', 'okay', 'confirmed', 'confirm', 'go ahead', 'looks good', 'start', 'continue',
-    ];
-    return phrases.some(phrase => lower === phrase || lower.includes(phrase));
-}
-
 function matchesActiveProgressRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
     if (!round.requestId || round.generation === 0 || round.phase === 'idle') return false;
     return !!event.request_id && event.request_id === round.requestId;
@@ -1827,7 +1819,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const userMsg: ChatMessage = {
             id: nextId(),
             role: 'user',
-            content: outgoingText,
+            content: options?.displayText || outgoingText,
             timestamp: Date.now(),
         };
         const placeholderMsg: ChatMessage = {
@@ -1837,7 +1829,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             requestId,
             timestamp: Date.now(),
         };
-        const approvalMessage = isConfirmationApprovalCommand(text);
+        const approvalMessage = options?.markConfirmationRunning === true;
 
         setRoundState({
             generation,
@@ -2085,6 +2077,14 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 setMessages(prev => [...prev, createErrorMessage(err?.message || String(err))]);
             }
             return;
+        }
+        const executionConfirmMatch = command.match(/^__confirm_execution__\s+(\S+)$/);
+        if (executionConfirmMatch) {
+            return sendMessage(command, { uiAction: true, displayText: '确认并开始', markConfirmationRunning: true });
+        }
+        const executionCancelMatch = command.match(/^__cancel_execution__\s+(\S+)$/);
+        if (executionCancelMatch) {
+            return sendMessage(command, { uiAction: true, displayText: '取消' });
         }
         const traceMatch = command.match(/^__view_trace__\s+(\S+)$/);
         if (traceMatch) {

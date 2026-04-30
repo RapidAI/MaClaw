@@ -8,6 +8,7 @@ import {
   syncFromCloud, switchComputeSource, getSyncStatus,
   type ComputeProvider, type ComputeStatus, type ComputeSyncStatus,
 } from '../api/compute';
+import { registerCenterToCloud } from '../api/cloud';
 
 const emptyForm = (): Partial<ComputeProvider> & { api_key: string } => ({
   name: '', base_url: '', api_key: '', protocol: 'openai', user_agent: 'openclaw',
@@ -24,6 +25,8 @@ export function ComputePowerPage() {
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm());
+  const [cloudAction, setCloudAction] = useState<string | null>(null);
+  const [cloudError, setCloudError] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -46,11 +49,30 @@ export function ComputePowerPage() {
   const syncLabel = syncStatus?.status === 'waiting_for_credentials'
     ? 'Waiting for Cloud registration credentials'
     : syncStatus?.status || 'pending';
+  const needsCloudRegistration = isCloud && syncStatus?.status === 'waiting_for_credentials';
 
   const handleSync = async () => {
-    const next = await syncFromCloud().catch(() => null);
+    setCloudError(null);
+    const next = await syncFromCloud().catch((err) => {
+      setCloudError(err?.message || 'Cloud sync failed');
+      return null;
+    });
     if (next) setSyncStatus(next);
     load();
+  };
+  const handleCloudRegister = async () => {
+    setCloudError(null);
+    setCloudAction('Registering Center with iWorkerCloud...');
+    try {
+      const registered = await registerCenterToCloud();
+      setCloudAction(`Cloud registration ready: ${registered.center_id}`);
+      const next = await syncFromCloud().catch(() => null);
+      if (next) setSyncStatus(next);
+      load();
+    } catch (err: any) {
+      setCloudAction(null);
+      setCloudError(err?.message || 'Cloud registration failed');
+    }
   };
   const handleSwitch = async (src: 'cloud' | 'local') => { await switchComputeSource(src).catch(() => {}); load(); };
   const handleTest = async (id: string) => {
@@ -81,7 +103,7 @@ export function ComputePowerPage() {
     compute_type: p.compute_type || '-',
     user_agent: p.user_agent || '-',
     model: p.model,
-    enabled: p.enabled ? '✓' : '✗',
+    enabled: p.enabled ? 'Enabled' : 'Disabled',
     source: isCloud ? t('compute.fromCloud') : t('compute.local'),
   }));
 
@@ -95,15 +117,18 @@ export function ComputePowerPage() {
           </span>
           {syncStatus && (
             <span style={{ fontSize: 13, color: syncTone }}>
-              Sync: {syncLabel}{syncStatus.provider_count >= 0 ? ` · ${syncStatus.provider_count} providers` : ''}
+              Sync: {syncLabel}{syncStatus.provider_count >= 0 ? ` - ${syncStatus.provider_count} providers` : ''}
             </span>
           )}
           {syncStatus?.error && syncStatus.status !== 'success' && (
             <span style={{ fontSize: 13, color: syncTone }}>{syncStatus.error}</span>
           )}
+          {cloudAction && <span style={{ fontSize: 13, color: '#5f7692' }}>{cloudAction}</span>}
+          {cloudError && <span style={{ fontSize: 13, color: '#b92b27' }}>{cloudError}</span>}
           {status?.last_sync_at && (
             <span style={{ fontSize: 13, color: '#5f7692' }}>{t('compute.lastSync')}: {new Date(status.last_sync_at).toLocaleString()}</span>
           )}
+          {needsCloudRegistration && <button className="btn-primary" onClick={handleCloudRegister} style={{ height: 32, fontSize: 13 }}>Register to iWorkerCloud</button>}
           {isCloud && <button className="btn-ghost" onClick={handleSync} style={{ height: 32, fontSize: 13 }}>{t('compute.syncNow')}</button>}
           {canLocal && isCloud && <button className="btn-ghost" onClick={() => handleSwitch('local')} style={{ height: 32, fontSize: 13 }}>{t('compute.switchLocal')}</button>}
           {isLocal && <button className="btn-ghost" onClick={() => handleSwitch('cloud')} style={{ height: 32, fontSize: 13 }}>{t('compute.switchCloud')}</button>}
@@ -150,7 +175,7 @@ export function ComputePowerPage() {
 
         {/* Cloud mode: read-only label */}
         {isCloud && providers.length > 0 && (
-          <div style={{ fontSize: 13, color: '#5f7692', marginBottom: 8 }}>📡 {t('compute.fromCloud')}</div>
+          <div style={{ fontSize: 13, color: '#5f7692', marginBottom: 8 }}>[cloud] {t('compute.fromCloud')}</div>
         )}
 
         {/* Provider table */}
@@ -180,7 +205,7 @@ export function ComputePowerPage() {
                   <tr key={p.id}>
                     <td>{p.name}</td><td>{p.protocol}</td><td>{p.compute_type}</td>
                     <td>{p.model}</td><td>{p.user_agent}</td>
-                    <td>{p.enabled ? '✓' : '✗'}</td>
+                    <td>{p.enabled ? 'Enabled' : 'Disabled'}</td>
                     <td style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       <button className="btn-ghost" onClick={() => openEdit(p)}>{t('common.edit')}</button>
                       <button className="btn-ghost" onClick={() => handleTest(p.id)}>{t('compute.test')}</button>

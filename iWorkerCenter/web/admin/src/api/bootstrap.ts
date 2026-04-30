@@ -7,6 +7,53 @@ export interface WatcherPolicy {
   scale_by_worker_count: boolean;
 }
 
+
+export interface GoalWatcherPolicyStatus extends WatcherPolicy {
+  tick_interval_seconds: number;
+  stalled_after_seconds: number;
+  push_cooldown_seconds: number;
+  lease_ttl_seconds: number;
+  workers_per_shard: number;
+  max_watchers: number;
+}
+
+export interface GoalWatcherConfigStatus {
+  tick_interval_seconds: number;
+  stalled_after_seconds: number;
+  push_cooldown_seconds: number;
+  lease_ttl_seconds: number;
+  workers_per_shard: number;
+  max_watchers: number;
+}
+
+export interface GoalWatcherShardStatus {
+  shard_index: number;
+  shard_count: number;
+  checked: number;
+  pushed: number;
+  lease_owner?: string;
+  lease_held: boolean;
+  error?: string;
+}
+
+export interface GoalWatcherTenantStatus {
+  tenant_id: string;
+  policy_persisted: boolean;
+  policy: GoalWatcherPolicyStatus;
+  started_at: string;
+  finished_at: string;
+  iworker_count: number;
+  shard_count: number;
+  checked: number;
+  pushed: number;
+  error?: string;
+  shards: GoalWatcherShardStatus[];
+}
+
+export interface GoalWatcherStatus {
+  config: GoalWatcherConfigStatus;
+  tenants: GoalWatcherTenantStatus[];
+}
 export interface BootstrapPlan {
   tenant_id?: string;
   company_name: string;
@@ -93,4 +140,7 @@ export function applyBootstrapPlan(plan: BootstrapPlan) {
 
 export function startFirstWave() {
   return apiPost<BootstrapRunResponse>('/admin/bootstrap/start-first-wave');
+}
+export function fetchGoalWatcherStatus() {
+  return apiGet<GoalWatcherStatus>('/admin/goalwatch/status');
 }

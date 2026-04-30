@@ -776,8 +776,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             </p>
                             <button onClick={handleEmbeddedSSOLogin} disabled={ssoBusy || (llmDone && regDone)} style={{
                                 width: "100%", padding: "12px 0", fontSize: "0.84rem", fontWeight: 600,
-                                background: ssoBusy || regBusy ? colors.primaryLight : (llmDone && regDone) ? colors.successBg : colors.primary,
-                                color: colors.onPrimary, border: "none", borderRadius: 6,
+                                background: (llmDone && regDone) ? colors.successBg : colors.primaryLight,
+                                color: (llmDone && regDone) ? colors.success : colors.primaryDark, border: `1px solid ${(llmDone && regDone) ? colors.success : colors.primary}`, borderRadius: 6,
                                 cursor: (ssoBusy || regBusy || (llmDone && regDone)) ? "default" : "pointer",
                                 display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                             }}>
@@ -872,8 +872,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                                     {codegenModels.map(m => (
                                                         <button key={m.id} onClick={() => setMaclawModel(m.id)} style={{
                                                             fontSize: "0.7rem", padding: "4px 10px", cursor: "pointer",
-                                                            background: maclawModel === m.id ? colors.primary : colors.surface,
-                                                            color: maclawModel === m.id ? colors.onPrimary : colors.text,
+                                                            background: maclawModel === m.id ? colors.primaryLight : colors.surface,
+                                                            color: maclawModel === m.id ? colors.primaryDark : colors.text,
                                                             border: `1px solid ${maclawModel === m.id ? colors.primary : colors.border}`,
                                                             borderRadius: 4, transition: "all 0.12s",
                                                         }}>
@@ -892,9 +892,9 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                                     {codegenModels.map(m => (
                                                         <button key={m.id} onClick={() => setClaudeCodeModel(m.id)} style={{
                                                             fontSize: "0.7rem", padding: "4px 10px", cursor: "pointer",
-                                                            background: claudeCodeModel === m.id ? "var(--theme-primary-strong)" : colors.surface,
-                                                            color: claudeCodeModel === m.id ? colors.onPrimary : colors.text,
-                                                            border: `1px solid ${claudeCodeModel === m.id ? "var(--theme-primary-strong)" : colors.border}`,
+                                                            background: claudeCodeModel === m.id ? colors.primaryLight : colors.surface,
+                                                            color: claudeCodeModel === m.id ? colors.primaryDark : colors.text,
+                                                            border: `1px solid ${claudeCodeModel === m.id ? colors.primary : colors.border}`,
                                                             borderRadius: 4, transition: "all 0.12s",
                                                         }}>
                                                             {m.name}
@@ -906,8 +906,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                             {/* 保存按钮 */}
                                             <button onClick={handleModelSave} disabled={modelSaving || modelSaved} style={{
                                                 width: "100%", padding: "7px 0", fontSize: "0.76rem", fontWeight: 600,
-                                                background: modelSaved ? colors.successBg : modelSaving ? colors.primaryLight : colors.primary,
-                                                color: colors.onPrimary, border: "none", borderRadius: 6,
+                                                background: modelSaved ? colors.successBg : colors.primaryLight,
+                                                color: modelSaved ? colors.success : colors.primaryDark, border: `1px solid ${modelSaved ? colors.success : colors.primary}`, borderRadius: 6,
                                                 cursor: modelSaving || modelSaved ? "default" : "pointer",
                                             }}>
                                                 {modelSaved
@@ -985,8 +985,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             </div>
                             <button onClick={handleRegisterClick} disabled={regBusy || regDone} style={{
                                 width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
-                                background: regBusy ? colors.primaryLight : regDone ? (hubConnecting ? "var(--theme-primary-soft)" : colors.successBg) : colors.primary,
-                                color: colors.onPrimary, border: "none", borderRadius: 6,
+                                background: regDone ? (hubConnecting ? colors.primaryLight : colors.successBg) : colors.primaryLight,
+                                color: regDone && !hubConnecting ? colors.success : colors.primaryDark, border: `1px solid ${regDone && !hubConnecting ? colors.success : colors.primary}`, borderRadius: 6,
                                 cursor: regBusy || regDone ? "default" : "pointer",
                                 display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                             }}>
@@ -1076,8 +1076,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                             </p>
                                             <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                 width: "100%", padding: "10px 0", fontSize: "0.82rem", fontWeight: 600,
-                                                background: oauthBusy ? colors.primaryLight : colors.primary, color: colors.onPrimary,
-                                                border: "none", borderRadius: 6, cursor: oauthBusy ? "default" : "pointer",
+                                                background: colors.primaryLight, color: colors.primaryDark,
+                                                border: `1px solid ${colors.primary}`, borderRadius: 6, cursor: oauthBusy ? "default" : "pointer",
                                             }}>
                                                 {oauthBusy ? t("等待浏览器授权...", "Waiting for browser auth...") : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
                                             </button>
@@ -1104,8 +1104,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                                                 return (
                                                                     <button key={proto} onClick={() => updateField("protocol", proto)} style={{
                                                                         fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                                        background: active ? colors.primary : colors.surface,
-                                                                        color: active ? colors.onPrimary : colors.text,
+                                                                        background: active ? colors.primaryLight : colors.surface,
+                                                                        color: active ? colors.primaryDark : colors.text,
                                                                         border: `1px solid ${active ? colors.primary : colors.border}`,
                                                                         borderRadius: 4, transition: "all 0.15s",
                                                                     }}>
@@ -1129,8 +1129,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                                                 return (
                                                                     <button key={ua} onClick={() => updateField("agent_type", ua)} style={{
                                                                         fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                                        background: active ? colors.primary : colors.surface,
-                                                                        color: active ? colors.onPrimary : colors.text,
+                                                                        background: active ? colors.primaryLight : colors.surface,
+                                                                        color: active ? colors.primaryDark : colors.text,
                                                                         border: `1px solid ${active ? colors.primary : colors.border}`,
                                                                         borderRadius: 4, transition: "all 0.15s",
                                                                     }}>
@@ -1179,8 +1179,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                             </div>
                                             <button onClick={handleLLMSave} disabled={llmSaving} style={{
                                                 width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
-                                                background: llmSaving ? colors.primaryLight : colors.primary, color: colors.onPrimary,
-                                                border: "none", borderRadius: 6, cursor: llmSaving ? "default" : "pointer",
+                                                background: colors.primaryLight, color: colors.primaryDark,
+                                                border: `1px solid ${colors.primary}`, borderRadius: 6, cursor: llmSaving ? "default" : "pointer",
                                             }}>
                                                 {llmSaving ? t("测试并保存中...", "Testing & Saving...") : t("测试并保存", "Test & Save")}
                                             </button>
@@ -1237,8 +1237,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     {!wxQrUrl && wxStatus !== "error" && (
                                         <button onClick={startWxQR} disabled={wxLoading} style={{
                                             width: "100%", padding: "10px 0", fontSize: "0.82rem", fontWeight: 600,
-                                            background: wxLoading ? colors.primaryLight : colors.primary, color: colors.onPrimary,
-                                            border: "none", borderRadius: 6, cursor: wxLoading ? "default" : "pointer",
+                                            background: colors.primaryLight, color: colors.primaryDark,
+                                            border: `1px solid ${colors.primary}`, borderRadius: 6, cursor: wxLoading ? "default" : "pointer",
                                         }}>
                                             {wxLoading ? t("获取中...", "Loading...") : t("显示二维码", "Show QR Code")}
                                         </button>
@@ -1268,8 +1268,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     {(wxStatus === "expired" || wxStatus === "error") && (
                                         <button onClick={startWxQR} disabled={wxLoading} style={{
                                             width: "100%", padding: "10px 0", fontSize: "0.82rem", fontWeight: 600,
-                                            background: wxLoading ? colors.primaryLight : colors.primary, color: colors.onPrimary,
-                                            border: "none", borderRadius: 6, cursor: wxLoading ? "default" : "pointer",
+                                            background: colors.primaryLight, color: colors.primaryDark,
+                                            border: `1px solid ${colors.primary}`, borderRadius: 6, cursor: wxLoading ? "default" : "pointer",
                                         }}>
                                             {t("刷新二维码", "Refresh QR Code")}
                                         </button>
@@ -1322,7 +1322,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     }}
                                     style={{
                                         padding: "7px 14px", fontSize: "0.75rem", fontWeight: 500, borderRadius: 6,
-                                        background: colors.primary, color: colors.textMuted, border: `1px solid ${colors.border}`,
+                                        background: colors.surfaceMuted, color: colors.textMuted, border: `1px solid ${colors.border}`,
                                         cursor: "pointer",
                                     }}
                                 >
@@ -1337,8 +1337,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                 disabled={!wxCompleted}
                                 style={{
                                     padding: "7px 20px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,
-                                    background: wxCompleted ? colors.success : colors.border,
-                                    color: wxCompleted ? colors.onPrimary : colors.text, border: "none",
+                                    background: wxCompleted ? colors.successBg : colors.surfaceMuted,
+                                    color: wxCompleted ? colors.success : colors.textMuted, border: `1px solid ${wxCompleted ? colors.success : colors.border}`,
                                     cursor: wxCompleted ? "pointer" : "default",
                                 }}
                             >
@@ -1351,8 +1351,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             disabled={!canNext}
                             style={{
                                 padding: "7px 20px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,
-                                background: canNext ? colors.primary : colors.border,
-                                color: canNext ? colors.onPrimary : colors.text, border: "none",
+                                background: canNext ? colors.primaryLight : colors.surfaceMuted,
+                                color: canNext ? colors.primaryDark : colors.textMuted, border: `1px solid ${canNext ? colors.primary : colors.border}`,
                                 cursor: canNext ? "pointer" : "default",
                             }}
                         >
@@ -1409,7 +1409,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             </button>
                             <button onClick={doRegister} style={{
                                 padding: "6px 18px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,
-                                background: colors.primary, color: colors.onPrimary, border: "none", cursor: "pointer",
+                                background: colors.primaryLight, color: colors.primaryDark, border: `1px solid ${colors.primary}`, cursor: "pointer",
                             }}>
                                 {t("确认注册", "Confirm & Register")}
                             </button>

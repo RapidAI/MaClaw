@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
@@ -27,10 +27,10 @@ type MemoryBackupInfo struct {
 
 // MemoryCompressorStatus is returned by the status query binding.
 type MemoryCompressorStatus struct {
-	Running    bool            `json:"running"`
-	LastRun    string          `json:"last_run,omitempty"`
+	Running    bool                   `json:"running"`
+	LastRun    string                 `json:"last_run,omitempty"`
 	LastResult *memory.CompressResult `json:"last_result,omitempty"`
-	LastError  string          `json:"last_error,omitempty"`
+	LastError  string                 `json:"last_error,omitempty"`
 }
 
 // MemoryCompressor compresses long memory entries via LLM and manages backups.
@@ -478,9 +478,9 @@ func (mc *MemoryCompressor) mergeSemanticDuplicates(ctx context.Context) (int, e
 
 // mergeInstruction is the LLM merge response format.
 type mergeInstruction struct {
-	Keep    int    `json:"keep"`
-	Remove  []int  `json:"remove"`
-	Merged  string `json:"merged"`
+	Keep   int    `json:"keep"`
+	Remove []int  `json:"remove"`
+	Merged string `json:"merged"`
 }
 
 // mergeBatch sends a batch of entries to the LLM and asks it to identify
@@ -792,9 +792,11 @@ func (mc *MemoryCompressor) createBackup() (string, error) {
 	if err := mc.store.Flush(); err != nil {
 		return "", fmt.Errorf("flush before backup: %w", err)
 	}
-	data, err := os.ReadFile(mc.store.Path())
+	mc.store.RLock()
+	data, err := json.MarshalIndent(mc.store.Entries(), "", "  ")
+	mc.store.RUnlock()
 	if err != nil {
-		return "", fmt.Errorf("read memory file: %w", err)
+		return "", fmt.Errorf("marshal memory snapshot: %w", err)
 	}
 	name := fmt.Sprintf("memories_backup_%s.json", time.Now().Format("20060102_150405"))
 	dst := filepath.Join(dir, name)

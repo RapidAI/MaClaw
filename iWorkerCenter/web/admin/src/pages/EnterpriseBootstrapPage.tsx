@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { applyBootstrapPlan, draftBootstrapPlan, fetchBootstrapStatus, startFirstWave, type AppliedAsset, type BootstrapRun, type FirstWaveTask, type ValidationIssue } from '../api/bootstrap';
+import { applyBootstrapPlan, draftBootstrapPlan, fetchBootstrapStatus, fetchGoalWatcherStatus, startFirstWave, type AppliedAsset, type BootstrapRun, type FirstWaveTask, type GoalWatcherStatus, type GoalWatcherTenantStatus, type ValidationIssue } from '../api/bootstrap';
 
 type BootstrapPhaseId = 'profile' | 'organization' | 'workers' | 'memory' | 'goals' | 'watcher';
 
@@ -24,6 +24,19 @@ const defaultDepartments = ['Sales', 'Operations', 'Customer Success', 'Finance'
 const defaultWorkers = ['Office iWorker', 'Ops iWorker', 'Data iWorker', 'Quality iWorker'];
 const defaultRecurringTasks = ['Daily operating brief', 'Customer exception scan', 'Weekly decision summary', 'Policy memory review'];
 
+function formatWatcherTime(value?: string) {
+  if (!value) return 'not observed yet';
+  const time = new Date(value);
+  if (Number.isNaN(time.getTime()) || time.getFullYear() <= 1) return 'not observed yet';
+  return time.toLocaleString();
+}
+
+function describeWatcherPolicy(tenant?: GoalWatcherTenantStatus | null) {
+  if (!tenant) return 'Waiting for first monitor run';
+  if (!tenant.policy?.enabled) return 'Watcher disabled by tenant policy';
+  return tenant.policy_persisted ? 'Tenant policy active' : 'Using default watcher policy';
+}
+
 export function EnterpriseBootstrapPage() {
   const [companyName, setCompanyName] = useState('');
   const [businessSummary, setBusinessSummary] = useState('');
@@ -33,6 +46,8 @@ export function EnterpriseBootstrapPage() {
   const [firstWave, setFirstWave] = useState<FirstWaveTask[]>([]);
   const [lastRun, setLastRun] = useState<BootstrapRun | null>(null);
   const [appliedAssets, setAppliedAssets] = useState<AppliedAsset[]>([]);
+  const [goalWatcherStatus, setGoalWatcherStatus] = useState<GoalWatcherStatus | null>(null);
+  const [goalWatcherError, setGoalWatcherError] = useState('');
   const [apiMessage, setApiMessage] = useState('');
   const [apiError, setApiError] = useState('');
   const [apiBusy, setApiBusy] = useState(false);
@@ -40,6 +55,10 @@ export function EnterpriseBootstrapPage() {
   const completedCount = useMemo(() => phases.filter((phase) => completed[phase.id]).length, [completed]);
   const requiredPhasesConfirmed = completed.profile && completed.organization && completed.workers && completed.goals;
   const readyToStart = requiredPhasesConfirmed && !issues.some((issue) => issue.level === 'error');
+  const activeWatcherTenant = useMemo(() => goalWatcherStatus?.tenants?.[0] || null, [goalWatcherStatus]);
+  const watcherShards = activeWatcherTenant?.shards || [];
+  const watcherChecked = activeWatcherTenant?.checked || 0;
+  const watcherPushed = activeWatcherTenant?.pushed || 0;
 
   const bootstrapSpec = useMemo(() => ({
     company_name: companyName || 'New customer company',
@@ -52,6 +71,16 @@ export function EnterpriseBootstrapPage() {
     requires_executive_confirmation: ['business priorities', 'risk boundaries', 'external communication rules'],
     watcher_policy: { enabled: true, single_flight: true, max_run_seconds: 120, scale_by_worker_count: true },
   }), [businessSummary, companyName, priority]);
+
+  const refreshGoalWatcherStatus = async () => {
+    try {
+      const status = await fetchGoalWatcherStatus();
+      setGoalWatcherStatus(status);
+      setGoalWatcherError('');
+    } catch (error) {
+      setGoalWatcherError(error instanceof Error ? error.message : 'Load GoalWatcher status failed');
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -72,6 +101,7 @@ export function EnterpriseBootstrapPage() {
         }
       })
       .catch((error: Error) => setApiError(error.message));
+    refreshGoalWatcherStatus();
     return () => { cancelled = true; };
   }, []);
 
@@ -101,6 +131,7 @@ export function EnterpriseBootstrapPage() {
       setFirstWave(result.suggested_first_wave || []);
       setAppliedAssets(result.applied_assets || []);
       setApiMessage('Bootstrap plan applied. Roles and iWorkers are provisioned; first task wave can now be started.');
+      await refreshGoalWatcherStatus();
     } catch (error) {
       setApiError(error instanceof Error ? error.message : 'Apply plan failed');
     } finally {
@@ -175,6 +206,41 @@ export function EnterpriseBootstrapPage() {
             <button type="button" onClick={() => togglePhase(phase.id)}>{completed[phase.id] ? 'Confirmed' : 'Confirm'}</button>
           </article>
         ))}
+      </section>
+
+      <section className="card bootstrap-watcher-status">
+        <div className="bootstrap-watcher-header">
+          <div>
+            <span className="eyebrow">Autonomous run loop</span>
+            <h3>GoalWatcher runtime status</h3>
+            <p>{describeWatcherPolicy(activeWatcherTenant)}. This confirms whether iWorkerCenter is actively pushing stalled work without turning the boss into the control center.</p>
+          </div>
+          <button type="button" className="secondary" disabled={apiBusy} onClick={refreshGoalWatcherStatus}>Refresh watcher status</button>
+        </div>
+        {goalWatcherError ? <p className="bootstrap-api-error">{goalWatcherError}</p> : null}
+        <div className="bootstrap-watcher-metrics">
+          <article><span>iWorkers observed</span><strong>{activeWatcherTenant?.iworker_count ?? 0}</strong></article>
+          <article><span>Watcher shards</span><strong>{activeWatcherTenant?.shard_count ?? 0}</strong></article>
+          <article><span>Tasks checked</span><strong>{watcherChecked}</strong></article>
+          <article><span>Pushes issued</span><strong>{watcherPushed}</strong></article>
+        </div>
+        <div className="bootstrap-watcher-policy">
+          <span>{activeWatcherTenant?.policy?.scale_by_worker_count ? 'scales by iWorker count' : 'fixed watcher count'}</span>
+          <span>{activeWatcherTenant?.policy?.workers_per_shard || goalWatcherStatus?.config?.workers_per_shard || 0} workers / shard</span>
+          <span>{activeWatcherTenant?.policy?.stalled_after_seconds || goalWatcherStatus?.config?.stalled_after_seconds || 0}s stalled threshold</span>
+          <span>last run: {formatWatcherTime(activeWatcherTenant?.finished_at)}</span>
+        </div>
+        {watcherShards.length > 0 ? (
+          <div className="bootstrap-watcher-shards">
+            {watcherShards.map((shard) => (
+              <article key={`${shard.shard_index}-${shard.shard_count}`} className={shard.error ? 'has-error' : ''}>
+                <strong>Shard {shard.shard_index + 1}/{shard.shard_count}</strong>
+                <span>{shard.lease_held ? 'lease held' : 'lease skipped'} · checked {shard.checked} · pushed {shard.pushed}</span>
+                {shard.error ? <small>{shard.error}</small> : null}
+              </article>
+            ))}
+          </div>
+        ) : <p className="bootstrap-watcher-empty">No shard run has been recorded yet. Apply the plan, start the first wave, or wait for the monitor tick.</p>}
       </section>
 
       {appliedAssets.length > 0 ? (
