@@ -11,9 +11,11 @@ interface TokenUsageStat {
     input_tokens?: number;
     output_tokens?: number;
     total_tokens?: number;
+    total_cost_rmb?: number;
     InputTokens?: number;
     OutputTokens?: number;
     TotalTokens?: number;
+    TotalCostRMB?: number;
 }
 
 const providerAliases: Record<string, string[]> = {
@@ -32,7 +34,7 @@ type ProviderState = {
     Current?: string;
 } | null;
 
-const emptyUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+const emptyUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost_rmb: 0 };
 
 const normalizeProviderState = (data?: ProviderState) => {
     const providers = (data?.providers ?? data?.Providers ?? [])
@@ -47,7 +49,8 @@ const normalizeUsage = (stat?: TokenUsageStat | null) => {
     const input = stat.input_tokens ?? stat.InputTokens ?? 0;
     const output = stat.output_tokens ?? stat.OutputTokens ?? 0;
     const total = stat.total_tokens ?? stat.TotalTokens ?? (input + output);
-    return { input_tokens: input, output_tokens: output, total_tokens: total };
+    const cost = stat.total_cost_rmb ?? stat.TotalCostRMB ?? 0;
+    return { input_tokens: input, output_tokens: output, total_tokens: total, total_cost_rmb: cost };
 };
 
 const getUsageForProvider = (usageMap: Record<string, TokenUsageStat>, provider: string) => {
@@ -154,6 +157,11 @@ export function TokenUsagePanel({ lang }: Props) {
         return String(n);
     };
 
+    const formatRMB = (n: number) => {
+        if (!Number.isFinite(n)) return "0";
+        return n.toFixed(n >= 100 ? 2 : 4).replace(/0+$/, "").replace(/\.$/, "") || "0";
+    };
+
     const statRowStyle: React.CSSProperties = {
         display: "flex", justifyContent: "space-between", alignItems: "center",
         padding: "4px 0", fontSize: "0.76rem",
@@ -215,6 +223,12 @@ export function TokenUsagePanel({ lang }: Props) {
                         <span style={{ color: colors.textSecondary, fontWeight: 600 }}>{t("Total", "总计")}</span>
                         <span style={{ fontWeight: 700, fontSize: "0.82rem", color: colors.text }}>
                             {formatTokens(usage.total_tokens)}
+                        </span>
+                    </div>
+                    <div style={statRowStyle}>
+                        <span style={{ color: colors.textSecondary, fontWeight: 600 }}>{t("Cost (RMB)", "费用（元）")}</span>
+                        <span style={{ fontWeight: 700, fontSize: "0.82rem", color: colors.text }}>
+                            ¥{formatRMB(usage.total_cost_rmb)}
                         </span>
                     </div>
                 </div>

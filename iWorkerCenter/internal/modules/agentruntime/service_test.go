@@ -27,6 +27,7 @@ func newTestRepo(t *testing.T) *Repo {
 		capabilities_json TEXT NOT NULL DEFAULT '[]',
 		memory_authority TEXT NOT NULL DEFAULT 'iWorkerCenter',
 		local_cache_mode TEXT NOT NULL DEFAULT 'cache_only',
+		work_status_json TEXT NOT NULL DEFAULT '',
 		host_id TEXT NOT NULL DEFAULT '',
 		process_id INTEGER NOT NULL DEFAULT 0,
 		started_at TEXT NOT NULL,
@@ -93,6 +94,7 @@ func TestHeartbeatUpsertsInstance(t *testing.T) {
 		HostID:          "host-a",
 		ProcessID:       42,
 		StartedAt:       now.Add(-time.Hour).Format(time.RFC3339),
+		WorkStatus:      &WorkStatusSummary{CurrentTask: "Check delivery exception", ActiveCount: 1, CompletedCount: 2},
 	}, now)
 	if err != nil {
 		t.Fatalf("Heartbeat returned error: %v", err)
@@ -102,6 +104,9 @@ func TestHeartbeatUpsertsInstance(t *testing.T) {
 	}
 	if len(result.Instance.Capabilities) != 2 {
 		t.Fatalf("capabilities = %+v", result.Instance.Capabilities)
+	}
+	if result.Instance.WorkStatus == nil || result.Instance.WorkStatus.CurrentTask != "Check delivery exception" || result.Instance.WorkStatus.ActiveCount != 1 {
+		t.Fatalf("work status = %+v", result.Instance.WorkStatus)
 	}
 
 	_, err = svc.Heartbeat("tenant-a", HeartbeatRequest{

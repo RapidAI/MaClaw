@@ -86,6 +86,9 @@ func (c *SkillMarketClient) SubmitSkill(ctx context.Context, zipPath, email stri
 		return "", err
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	if cfg, err := c.app.LoadConfig(); err == nil && strings.TrimSpace(cfg.RemoteViewerToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("submit skill: %w", err)

@@ -21,8 +21,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
-	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ── Run Status ──────────────────────────────────────────────────────────
@@ -80,15 +80,15 @@ type SkillRunStatus struct {
 // visibility into what the session agent is doing without needing to call
 // query_session separately.
 type SessionProgressInfo struct {
-	SessionStatus   string   `json:"session_status"`             // "starting", "running", "busy", "completed", "failed"
-	CurrentTask     string   `json:"current_task,omitempty"`     // what the session agent is currently doing
-	ProgressSummary string   `json:"progress_summary,omitempty"` // human-readable progress
-	LastResult      string   `json:"last_result,omitempty"`      // last tool call result or output
-	LastCommand     string   `json:"last_command,omitempty"`     // last command executed
-	WaitingForUser  bool     `json:"waiting_for_user,omitempty"` // session agent is waiting for input
+	SessionStatus   string   `json:"session_status"`              // "starting", "running", "busy", "completed", "failed"
+	CurrentTask     string   `json:"current_task,omitempty"`      // what the session agent is currently doing
+	ProgressSummary string   `json:"progress_summary,omitempty"`  // human-readable progress
+	LastResult      string   `json:"last_result,omitempty"`       // last tool call result or output
+	LastCommand     string   `json:"last_command,omitempty"`      // last command executed
+	WaitingForUser  bool     `json:"waiting_for_user,omitempty"`  // session agent is waiting for input
 	LastOutputLines []string `json:"last_output_lines,omitempty"` // last N raw output lines (max 10)
-	UpdatedAt       string   `json:"updated_at,omitempty"`       // when this snapshot was taken
-	PollCount       int      `json:"poll_count,omitempty"`       // how many times we've polled
+	UpdatedAt       string   `json:"updated_at,omitempty"`        // when this snapshot was taken
+	PollCount       int      `json:"poll_count,omitempty"`        // how many times we've polled
 }
 
 // StepResult 记录单步执行结果。
@@ -130,10 +130,10 @@ type SkillRunner struct {
 type skillRun struct {
 	status        SkillRunStatus
 	cancel        context.CancelFunc
-	monitorCancel context.CancelFunc  // cancels the session monitor goroutine
+	monitorCancel context.CancelFunc // cancels the session monitor goroutine
 	templateVars  map[string]string
-	selectedSteps []string            // api_workflow mode: only run steps with these labels
-	extraEnv      map[string]string   // env vars from run_skill caller, injected into subprocesses
+	selectedSteps []string          // api_workflow mode: only run steps with these labels
+	extraEnv      map[string]string // env vars from run_skill caller, injected into subprocesses
 }
 
 // NewSkillRunner 创建 SkillRunner。
@@ -299,6 +299,12 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 				msg += fmt.Sprintf("\nDescription: %s", desc)
 			}
 			return "", fmt.Errorf("%s", msg)
+		}
+	}
+
+	if !strings.EqualFold(target.Mode, "interactive") {
+		if err := r.ensureSkillSecurityScanned(target); err != nil {
+			return "", err
 		}
 	}
 
@@ -1748,14 +1754,13 @@ func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
 
 // tryAutoUpload 在 skill 执行完成后尝试自动上传到 SkillMarket。
 func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) {
-	if r.uploadTrigger == nil || r.packageFn == nil {
+	if r.uploadTrigger == nil || r.executor == nil || r.executor.app == nil {
 		return
 	}
 	if skill.SkillDir == "" {
 		return
 	}
 
-	// 从 run status 构建 SkillExecutionResult
 	r.mu.RLock()
 	status := run.status.Status
 	hasErr := false
@@ -1767,37 +1772,22 @@ func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) 
 	}
 	r.mu.RUnlock()
 
-	result := &SkillExecutionResult{
-		Success:       status == "success",
-		HasError:      hasErr,
-		OutputQuality: "basic",
-	}
+	result := &SkillExecutionResult{Success: status == "success", HasError: hasErr, OutputQuality: "basic"}
 	if status == "success" && !hasErr {
 		result.OutputQuality = "good"
 	}
 
 	localHash := skillDirHash(skill.SkillDir)
-
-	// 记录执行并检查是否满足上传条件
 	r.uploadTrigger.RecordExecution(skill.Name, EvaluateSkillExecution(result), localHash)
 	if !r.uploadTrigger.ShouldUpload(skill.Name) {
 		return
 	}
 
-	// 满足条件，打包 zip 并上传（使用独立 context，不受 skill 执行 ctx 影响）
-	zipPath, err := r.packageFn(skill.Name)
-	if err != nil {
-		log.Printf("[auto-upload] package failed for %s: %v", skill.Name, err)
+	if _, err := r.executor.app.UploadNLSkillToMarket(skill.Name); err != nil {
+		log.Printf("[auto-upload] upload failed for %s: %v", skill.Name, err)
 		return
 	}
-	defer os.Remove(zipPath)
-
-	uploadCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	if err := r.uploadTrigger.SubmitAndMark(uploadCtx, skill.Name, zipPath, localHash); err != nil {
-		log.Printf("[auto-upload] upload failed for %s: %v", skill.Name, err)
-	}
+	r.uploadTrigger.MarkUploadedHash(skill.Name, localHash)
 }
 
 // skillDirHash 计算 skill 目录内容的简单 hash（用于变更检测）。
@@ -1944,24 +1934,7 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		if r.executor == nil || r.executor.app == nil {
 			return "", fmt.Errorf("app not initialized")
 		}
-		// BUG-003: Execute craft_tool with context awareness so it respects
-		// the global timeout and can be cancelled. We run it in a goroutine
-		// and select on context cancellation.
-		type craftResult struct {
-			output string
-			err    error
-		}
-		ch := make(chan craftResult, 1)
-		go func() {
-			out, err := executeCraftToolCore(r.executor.app, nil, step.Params, nil)
-			ch <- craftResult{out, err}
-		}()
-		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("craft_tool 步骤超时: %v", ctx.Err())
-		case result := <-ch:
-			return result.output, result.err
-		}
+		return executeCraftToolCoreWithContext(ctx, r.executor.app, nil, step.Params, nil)
 
 	case "poll":
 		return r.executePollStep(ctx, step, skillDir)
@@ -2260,10 +2233,10 @@ func (e *bashStepError) Error() string {
 	return fmt.Sprintf("%s (exit code: %d)", e.message, e.exitCode)
 }
 
-func (e *bashStepError) ExitCode() int    { return e.exitCode }
-func (e *bashStepError) IsTimeout() bool  { return e.isTimeout }
-func (e *bashStepError) Stdout() string   { return e.stdout }
-func (e *bashStepError) Stderr() string   { return e.stderr }
+func (e *bashStepError) ExitCode() int   { return e.exitCode }
+func (e *bashStepError) IsTimeout() bool { return e.isTimeout }
+func (e *bashStepError) Stdout() string  { return e.stdout }
+func (e *bashStepError) Stderr() string  { return e.stderr }
 
 // classifyBashError adds context to error messages by detecting common
 // failure patterns. Delegates to the unified error classifier in

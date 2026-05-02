@@ -232,6 +232,7 @@ func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySv
 			ExpiresAt:      expiresAt,
 			CreatedAt:      now,
 			CreditsTotal:   creditsPerGroup,
+			PeriodLimits:   card.PeriodLimits,
 		})
 	}
 	reg.Cards[idx].RedeemedByEmail = email
@@ -338,7 +339,7 @@ func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc *s
 		if now.Before(g.StartsAt) || !now.Before(g.ExpiresAt) {
 			continue
 		}
-		if g.CreditsTotal > 0 && remainingGrantCredits(g) <= 0 {
+		if g.CreditsTotal > 0 && availableGrantCredits(g, now) <= 0 {
 			continue
 		}
 		appendID(g.ServiceGroupID)
@@ -717,7 +718,7 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
 			continue
 		}
-		if grant.CreditsTotal <= 0 || remainingGrantCredits(grant) <= 0 {
+		if grant.CreditsTotal <= 0 || availableGrantCredits(grant, now) <= 0 {
 			continue
 		}
 		candidates = append(candidates, candidate{idx: i, g: grant})
@@ -732,12 +733,13 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 	consumed := 0.0
 	for _, cand := range candidates {
 		grant := &reg.Grants[cand.idx]
-		available := remainingGrantCredits(*grant)
+		available := availableGrantCredits(*grant, now)
 		if available <= 0 {
 			continue
 		}
 		use := math.Min(available, remaining)
 		grant.CreditsUsed = roundCredits(grant.CreditsUsed + use)
+		applyGrantPeriodUsage(grant, use, now)
 		consumed += use
 		remaining -= use
 		if remaining <= 0 {
@@ -770,9 +772,93 @@ func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupI
 		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
 			continue
 		}
-		total += remainingGrantCredits(grant)
+		total += availableGrantCredits(grant, now)
 	}
 	return roundCredits(total)
+}
+
+func availableGrantCredits(grant Grant, now time.Time) float64 {
+	remaining := remainingGrantCredits(grant)
+	if remaining <= 0 {
+		return 0
+	}
+	periodRemaining := availableGrantPeriodCredits(grant, now)
+	if periodRemaining <= 0 {
+		return 0
+	}
+	return roundCredits(math.Min(remaining, periodRemaining))
+}
+
+func availableGrantPeriodCredits(grant Grant, now time.Time) float64 {
+	limits := grant.PeriodLimits
+	usage := grant.PeriodUsage
+	available := math.Inf(1)
+	check := func(limit float64, window GrantUsageWindow, start time.Time) {
+		if limit <= 0 {
+			return
+		}
+		used := 0.0
+		if window.WindowStart.Equal(start) {
+			used = window.CreditsUsed
+		}
+		remain := roundCredits(limit - used)
+		if remain < 0 {
+			remain = 0
+		}
+		if remain < available {
+			available = remain
+		}
+	}
+	check(limits.FiveHour, usage.FiveHour, fiveHourWindowStart(now))
+	check(limits.Daily, usage.Daily, dayWindowStart(now))
+	check(limits.Weekly, usage.Weekly, weekWindowStart(now))
+	check(limits.Monthly, usage.Monthly, monthWindowStart(now))
+	if math.IsInf(available, 1) {
+		return math.MaxFloat64
+	}
+	return roundCredits(available)
+}
+
+func applyGrantPeriodUsage(grant *Grant, credits float64, now time.Time) {
+	if grant == nil || credits <= 0 {
+		return
+	}
+	apply := func(limit float64, window *GrantUsageWindow, start time.Time) {
+		if limit <= 0 || window == nil {
+			return
+		}
+		if !window.WindowStart.Equal(start) {
+			window.WindowStart = start
+			window.CreditsUsed = 0
+		}
+		window.CreditsUsed = roundCredits(window.CreditsUsed + credits)
+	}
+	apply(grant.PeriodLimits.FiveHour, &grant.PeriodUsage.FiveHour, fiveHourWindowStart(now))
+	apply(grant.PeriodLimits.Daily, &grant.PeriodUsage.Daily, dayWindowStart(now))
+	apply(grant.PeriodLimits.Weekly, &grant.PeriodUsage.Weekly, weekWindowStart(now))
+	apply(grant.PeriodLimits.Monthly, &grant.PeriodUsage.Monthly, monthWindowStart(now))
+}
+
+func fiveHourWindowStart(t time.Time) time.Time {
+	t = t.UTC()
+	window := int64((5 * time.Hour) / time.Second)
+	return time.Unix((t.Unix()/window)*window, 0).UTC()
+}
+
+func dayWindowStart(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func weekWindowStart(t time.Time) time.Time {
+	start := dayWindowStart(t)
+	offset := (int(start.Weekday()) + 6) % 7
+	return start.AddDate(0, 0, -offset)
+}
+
+func monthWindowStart(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
 func HasAnyGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string) bool {

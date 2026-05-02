@@ -20,6 +20,7 @@ import { SecurityPage } from './pages/SecurityPage';
 import { SetupTenantPage } from './pages/SetupTenantPage';
 import { UsagePage } from './pages/UsagePage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
+import { setCurrentTenantID } from './api/client';
 import type { AssetNavigationTarget, CenterTab, CommunicationsNavigationTarget, OverviewNavigationTarget } from './types';
 
 export default function App() {
@@ -37,7 +38,7 @@ export default function App() {
   useEffect(() => {
     Promise.all([
       fetch('/auth/tenant-status').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch('/auth/check').then(r => { if (r.ok) setAuthenticated(true); }).catch(() => {}),
+      fetch('/auth/check').then(async r => { if (r.ok) { const data = await r.json(); setCurrentTenantID(data.tenant_id || ''); setAuthenticated(true); } }).catch(() => {}),
     ]).then(([tenantStatus]) => {
       if (tenantStatus && tenantStatus.needs_setup) {
         setNeedsSetup(true);

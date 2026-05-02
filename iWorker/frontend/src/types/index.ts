@@ -30,6 +30,50 @@ export type CenterConfig = {
   goalWatchMaxDurationSec: number;
 };
 
+
+export type CenterTenantOption = {
+  id: string;
+  companyName: string;
+};
+
+export type CenterEnrollmentRole = {
+  id: string;
+  name: string;
+  code: string;
+  description: string;
+  defaultStrengths: string[];
+  applicableTasks: string[];
+};
+
+export type CenterEnrollmentColleague = {
+  id: string;
+  name: string;
+  avatar: string;
+  roleId: string;
+  roleName: string;
+  roleCode: string;
+  description: string;
+  strengths: string[];
+  tasks: string[];
+};
+
+export type CenterAuthMethodStatus = {
+  method: string;
+  label: string;
+  enabled: boolean;
+  implemented: boolean;
+  status: string;
+  description: string;
+};
+export type CenterEnrollmentDiscovery = {
+  baseUrl: string;
+  selectedTenantId: string;
+  tenants: CenterTenantOption[];
+  roles: CenterEnrollmentRole[];
+  colleagues: CenterEnrollmentColleague[];
+  authMethods: CenterAuthMethodStatus[];
+};
+
 export type CenterHealthStatus = {
   reachable: boolean;
   status: string;
@@ -37,8 +81,41 @@ export type CenterHealthStatus = {
   configPath: string;
   message: string;
   resolvedBaseUrl: string;
+  iWorkerReadiness?: CenterIWorkerReadiness;
   checkedAt: string;
   source: 'manual' | 'auto-after-save';
+};
+
+export type CenterReadinessCheck = {
+  name: string;
+  ready: boolean;
+  status: string;
+  detail?: string;
+  count?: number;
+};
+
+export type CenterAuthReadiness = {
+  method: string;
+  label: string;
+  ready: boolean;
+  implemented: boolean;
+  status: string;
+  detail?: string;
+};
+
+export type CenterIWorkerReadiness = {
+  ready: boolean;
+  status: string;
+  tenantCount: number;
+  roleCount: number;
+  colleagueCount: number;
+  localAccountCount: number;
+  agentInstanceCount: number;
+  agentRuntimeReady: boolean;
+  goalWatchReady: boolean;
+  requiredClientPaths: string[];
+  checks: CenterReadinessCheck[];
+  authMethods: CenterAuthReadiness[];
 };
 
 
@@ -126,6 +203,7 @@ export type SubmitTaskRequest = {
 
 export type SubmitTaskResult = {
   task_type: string;
+  task_title?: string;
   colleague_name: string;
   expected_output: string;
   model: string;
@@ -164,7 +242,15 @@ export type CenterGoalPush = {
   executorHeartbeatAgeSeconds?: number;
   createdAt: string;
 };
-
+export type CenterWorkStatusSummary = {
+  currentTask?: string;
+  currentDetail?: string;
+  activeCount: number;
+  completedCount: number;
+  reviewCount: number;
+  blockedCount: number;
+  updatedAt?: string;
+};
 
 export type CenterAgentInstance = {
   tenantId: string;
@@ -176,6 +262,7 @@ export type CenterAgentInstance = {
   capabilities: string[];
   memoryAuthority: string;
   localCacheMode: string;
+  workStatus?: CenterWorkStatusSummary;
   hostId?: string;
   processId?: number;
   startedAt: string;

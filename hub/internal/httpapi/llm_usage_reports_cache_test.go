@@ -63,3 +63,69 @@ func TestLLMUsageReportIncludesPromptCacheCounters(t *testing.T) {
 		t.Fatalf("trend cache counters not preserved: hour9=%+v hour10=%+v", resp.Trend[9], resp.Trend[10])
 	}
 }
+
+func TestLLMUsageReportIncludesRMBCostCounters(t *testing.T) {
+	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
+	rep.addUsage(ts, "user@example.com", []string{"engineering"}, corelib.TokenUsageStat{
+		InputTokens:   1_000_000,
+		OutputTokens:  500_000,
+		TotalTokens:   1_500_000,
+		InputCostRMB:  3,
+		OutputCostRMB: 3,
+		TotalCostRMB:  6,
+		Requests:      1,
+	}, 0)
+	rep.addUsage(ts.Add(time.Hour), "user@example.com", []string{"engineering"}, corelib.TokenUsageStat{
+		InputTokens:   250_000,
+		OutputTokens:  250_000,
+		TotalTokens:   500_000,
+		InputCostRMB:  0.25,
+		OutputCostRMB: 0.5,
+		TotalCostRMB:  0.75,
+		Requests:      1,
+	}, 0)
+
+	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-04-21", "2026-04", "", ts)
+	if resp.Summary.InputCostRMB != 3.25 || resp.Summary.OutputCostRMB != 3.5 || resp.Summary.TotalCostRMB != 6.75 {
+		t.Fatalf("summary cost = input %.4f output %.4f total %.4f, want 3.25/3.5/6.75", resp.Summary.InputCostRMB, resp.Summary.OutputCostRMB, resp.Summary.TotalCostRMB)
+	}
+	if len(resp.Rows) != 1 || resp.Rows[0].TotalCostRMB != 6.75 {
+		t.Fatalf("row cost not preserved: %#v", resp.Rows)
+	}
+	if resp.Trend[9].TotalCostRMB != 6 || resp.Trend[10].TotalCostRMB != 0.75 {
+		t.Fatalf("trend cost not preserved: hour9=%+v hour10=%+v", resp.Trend[9], resp.Trend[10])
+	}
+}
+
+func TestMonthlyUsageReportEntitySummaryDoesNotLeakGlobalTotals(t *testing.T) {
+	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	now := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
+	rep.addUsage(time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC), "alice@example.com", nil, corelib.TokenUsageStat{
+		InputTokens:  100,
+		OutputTokens: 50,
+		TotalTokens:  150,
+		TotalCostRMB: 1.5,
+		Requests:     1,
+	}, 0.015)
+	rep.addUsage(time.Date(2026, 4, 2, 9, 0, 0, 0, time.UTC), "bob@example.com", nil, corelib.TokenUsageStat{
+		InputTokens:  200,
+		OutputTokens: 100,
+		TotalTokens:  300,
+		TotalCostRMB: 3,
+		Requests:     1,
+	}, 0.03)
+
+	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "monthly", "", "2026-04", "alice@example.com", now)
+	if resp.Summary.TotalTokens != 150 || resp.Summary.TotalCostRMB != 1.5 || resp.Summary.Credits != 0.015 {
+		t.Fatalf("alice monthly summary leaked global totals: %+v", resp.Summary)
+	}
+	if len(resp.Rows) != 1 || resp.Rows[0].ID != "alice@example.com" || resp.Rows[0].TotalTokens != 150 {
+		t.Fatalf("alice monthly rows = %#v", resp.Rows)
+	}
+
+	missing := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "monthly", "", "2026-04", "nobody@example.com", now)
+	if missing.Summary.TotalTokens != 0 || missing.Summary.TotalCostRMB != 0 || len(missing.Rows) != 0 {
+		t.Fatalf("missing entity should be empty, got summary=%+v rows=%#v", missing.Summary, missing.Rows)
+	}
+}

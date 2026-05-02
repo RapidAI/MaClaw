@@ -60,11 +60,15 @@ export function HideTask(arg1:string):Promise<void>;
 
 export function GetTTSEnabled():Promise<boolean>;
 
+export function GetTTSVoiceID():Promise<string>;
+
 export function SetTTSEnabled(arg1:boolean):Promise<void>;
+
+export function SetTTSVoiceID(arg1:string):Promise<void>;
 
 export function SpeakText(arg1:string):Promise<void>;
 
-export function CheckTTSModel():Promise<{exists: boolean, size: number}>;
+export function CheckTTSModel():Promise<{exists: boolean, size: number, voice_id?: string, model_exists?: boolean, voices_exists?: boolean, voice_zip_exists?: boolean, path?: string}>;
 
 export function DownloadTTSModel():Promise<void>;
 
@@ -613,6 +617,16 @@ export function GetLansengerLocalMode():Promise<boolean>;
 
 export function SetLansengerLocalMode(arg1:boolean):Promise<void>;
 
+export function GetThirdPartyGatewayStatus():Promise<string>;
+
+export function RestartThirdPartyGateway():Promise<string>;
+
+export function StopThirdPartyGateway():Promise<void>;
+
+export function GetThirdPartyGatewayLocalMode():Promise<boolean>;
+
+export function SetThirdPartyGatewayLocalMode(arg1:boolean):Promise<void>;
+
 // Gossip bindings
 export function GossipSnapshot(arg1:string):Promise<any>;
 
@@ -670,3 +684,4 @@ export function ReadErrorLog():Promise<Array<string>>;
 export function GetHubLLMServiceStatus():Promise<any>;
 export function RedeemHubLLMService(arg1:string):Promise<any>;
 export function HideFloatingButton():Promise<void>;
+

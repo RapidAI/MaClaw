@@ -18,24 +18,28 @@ const DefaultLLMProviderCircuitBreakerCooldownMS = 30000
 const DefaultLLMProviderFailureBackoffBaseMS = 500
 const DefaultLLMProviderFailureBackoffMaxMS = 10000
 const DefaultLLMProviderUpstreamTimeoutSec = 900
+const DefaultLLMProviderInputPricePerMTokensRMB = corelib.DefaultLLMInputPricePerMTokensRMB
+const DefaultLLMProviderOutputPricePerMTokensRMB = corelib.DefaultLLMOutputPricePerMTokensRMB
 
 type LLMProvider struct {
-	ID                       string `json:"id"`
-	Name                     string `json:"name"`
-	APIURL                   string `json:"api_url"`
-	APIKey                   string `json:"api_key"`
-	Model                    string `json:"model"`
-	Protocol                 string `json:"protocol,omitempty"`
-	WireAPI                  string `json:"wire_api,omitempty"`
-	AgentType                string `json:"agent_type,omitempty"`
-	MaxConcurrency           int    `json:"max_concurrency,omitempty"`
-	MaxQueueWaiters          int    `json:"max_queue_waiters,omitempty"`
-	QueueTimeoutMS           int    `json:"queue_timeout_ms,omitempty"`
-	UpstreamTimeoutSec       int    `json:"upstream_timeout_sec,omitempty"`
-	CircuitBreakerThreshold  int    `json:"circuit_breaker_threshold,omitempty"`
-	CircuitBreakerCooldownMS int    `json:"circuit_breaker_cooldown_ms,omitempty"`
-	FailureBackoffBaseMS     int    `json:"failure_backoff_base_ms,omitempty"`
-	FailureBackoffMaxMS      int    `json:"failure_backoff_max_ms,omitempty"`
+	ID                       string  `json:"id"`
+	Name                     string  `json:"name"`
+	APIURL                   string  `json:"api_url"`
+	APIKey                   string  `json:"api_key"`
+	Model                    string  `json:"model"`
+	Protocol                 string  `json:"protocol,omitempty"`
+	WireAPI                  string  `json:"wire_api,omitempty"`
+	AgentType                string  `json:"agent_type,omitempty"`
+	MaxConcurrency           int     `json:"max_concurrency,omitempty"`
+	MaxQueueWaiters          int     `json:"max_queue_waiters,omitempty"`
+	QueueTimeoutMS           int     `json:"queue_timeout_ms,omitempty"`
+	UpstreamTimeoutSec       int     `json:"upstream_timeout_sec,omitempty"`
+	CircuitBreakerThreshold  int     `json:"circuit_breaker_threshold,omitempty"`
+	CircuitBreakerCooldownMS int     `json:"circuit_breaker_cooldown_ms,omitempty"`
+	FailureBackoffBaseMS     int     `json:"failure_backoff_base_ms,omitempty"`
+	FailureBackoffMaxMS      int     `json:"failure_backoff_max_ms,omitempty"`
+	InputPricePerMTokensRMB  float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
+	OutputPricePerMTokensRMB float64 `json:"output_price_per_m_tokens_rmb,omitempty"`
 }
 
 type LLMProviderRegistry struct {
@@ -96,6 +100,8 @@ func normalizeLLMProviderRegistry(reg *LLMProviderRegistry) *LLMProviderRegistry
 		if reg.Providers[i].FailureBackoffMaxMS < reg.Providers[i].FailureBackoffBaseMS {
 			reg.Providers[i].FailureBackoffMaxMS = reg.Providers[i].FailureBackoffBaseMS
 		}
+		reg.Providers[i].InputPricePerMTokensRMB = corelib.NormalizeLLMTokenPricePerMTokensRMB(reg.Providers[i].InputPricePerMTokensRMB, DefaultLLMProviderInputPricePerMTokensRMB)
+		reg.Providers[i].OutputPricePerMTokensRMB = corelib.NormalizeLLMTokenPricePerMTokensRMB(reg.Providers[i].OutputPricePerMTokensRMB, DefaultLLMProviderOutputPricePerMTokensRMB)
 	}
 	return reg
 }

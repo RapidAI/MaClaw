@@ -187,6 +187,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/model_download/status", RequireAdmin(admins, GetAdminModelDownloadStatusHandler(configPath)))
 	mux.HandleFunc("POST /api/admin/model_download/trigger", RequireAdmin(admins, TriggerAdminModelDownloadHandler(configPath)))
 	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
+	mux.HandleFunc("GET /api/llm/service/account", GetLLMServiceAccountHandler(identity, system, securitySvc))
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
 	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache))
@@ -344,5 +345,7 @@ func NewRouter(
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	registerBindStaticRoutes(mux, "./web/bind", "/bind")
+	registerGetCreditsStaticRoutes(mux, "./web/get-credits", "/get-credits")
+	registerStaticRoutes(mux, "./web/connector", "/connector")
 	return mux
 }

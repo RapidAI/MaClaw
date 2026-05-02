@@ -384,6 +384,76 @@ func TestApplyCreditUsageToRegistry(t *testing.T) {
 	}
 }
 
+func TestApplyCreditUsageHonorsPeriodLimits(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	reg := &Registry{Grants: []Grant{{
+		ID:             "g1",
+		Email:          "user@example.com",
+		ServiceGroupID: "coding-basic",
+		Source:         "card",
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(24 * time.Hour),
+		CreditsTotal:   100,
+		PeriodLimits:   CreditPeriodLimits{FiveHour: 10, Daily: 15, Weekly: 40, Monthly: 80},
+	}}}
+
+	used := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"coding-basic"}, 12, now)
+	if used != 10 {
+		t.Fatalf("expected first charge to stop at 5-hour limit 10, got %v", used)
+	}
+	if reg.Grants[0].CreditsUsed != 10 || reg.Grants[0].PeriodUsage.FiveHour.CreditsUsed != 10 || reg.Grants[0].PeriodUsage.Daily.CreditsUsed != 10 {
+		t.Fatalf("unexpected usage after first charge: %#v", reg.Grants[0])
+	}
+
+	used = ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"coding-basic"}, 5, now.Add(5*time.Hour))
+	if used != 5 {
+		t.Fatalf("expected next 5-hour window to allow remaining daily credits 5, got %v", used)
+	}
+	if reg.Grants[0].CreditsUsed != 15 || reg.Grants[0].PeriodUsage.Daily.CreditsUsed != 15 {
+		t.Fatalf("unexpected usage after second charge: %#v", reg.Grants[0])
+	}
+
+	used = ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"coding-basic"}, 1, now.Add(6*time.Hour))
+	if used != 0 {
+		t.Fatalf("expected daily limit to block more usage, got %v", used)
+	}
+}
+
+func TestRedeemCardCopiesPeriodLimitsToGrant(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	code := "ABCDE12345FGHIJ67890"
+	limits := CreditPeriodLimits{FiveHour: 10, Daily: 20, Weekly: 50, Monthly: 100}
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", Models: []ModelServiceModel{{Name: "gpt-5", ProviderIDs: []string{"provider-a"}}}}},
+		Cards: []RechargeCard{{
+			ID:              "card-1",
+			CodeHash:        HashCode(code),
+			ServiceGroupIDs: []string{"coding-basic"},
+			DurationDays:    30,
+			Credits:         100,
+			PeriodLimits:    limits,
+			CreatedAt:       time.Now().UTC(),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RedeemCard(ctx, system, nil, "user@example.com", code, "http://hub.test/api/llm/v1"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 1 {
+		t.Fatalf("expected 1 grant, got %d", len(saved.Grants))
+	}
+	if saved.Grants[0].PeriodLimits != limits {
+		t.Fatalf("expected period limits %#v, got %#v", limits, saved.Grants[0].PeriodLimits)
+	}
+}
+
 func TestSelectBestModelForRequestWithDebug(t *testing.T) {
 	models := []AuthorizedModel{
 		{Name: "doc-fast", CapabilityTags: []string{"document"}, ResolutionTier: 1, Priority: 10, CreditMultiplier: 1},

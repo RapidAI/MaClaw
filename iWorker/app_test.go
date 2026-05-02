@@ -79,6 +79,45 @@ func TestSaveTaskHistoryRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveTaskHistorySendsWorkStatusHeartbeat(t *testing.T) {
+	setTestHome(t)
+	seenHeartbeat := make(chan CenterAgentInstanceHeartbeatRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime/iworker/instances/heartbeat" {
+			http.NotFound(w, r)
+			return
+		}
+		var req CenterAgentInstanceHeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode heartbeat: %v", err)
+		}
+		seenHeartbeat <- req
+		_ = json.NewEncoder(w).Encode(CenterAgentInstanceHeartbeatResult{Instance: CenterAgentInstance{TenantID: r.Header.Get("X-Tenant-ID"), WorkerID: req.WorkerID, InstanceID: req.InstanceID, Role: req.Role, Status: req.Status, WorkStatus: req.WorkStatus}})
+	}))
+	defer server.Close()
+
+	if err := writeDiWorkerSettings(DiWorkerSettings{
+		RoleProfile: RoleProfile{Name: "Ops iWorker", Description: "Operations"},
+		Center:      CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "ops", WorkerID: "worker-a", TimeoutSec: 5},
+	}); err != nil {
+		t.Fatalf("writeDiWorkerSettings: %v", err)
+	}
+
+	app := NewApp()
+	if err := app.SaveTaskHistory([]HistoryTaskItem{{ID: "task-1", Title: "Review invoice exception", Owner: "Ops iWorker", Status: "needs_review", UpdatedAt: "now"}}); err != nil {
+		t.Fatalf("SaveTaskHistory returned error: %v", err)
+	}
+
+	select {
+	case heartbeat := <-seenHeartbeat:
+		if heartbeat.WorkerID != "worker-a" || heartbeat.WorkStatus == nil || heartbeat.WorkStatus.ReviewCount != 1 || heartbeat.WorkStatus.ActiveCount != 0 || heartbeat.WorkStatus.CurrentTask != "Review invoice exception" {
+			t.Fatalf("heartbeat = %+v", heartbeat)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SaveTaskHistory did not send work status heartbeat")
+	}
+}
+
 func TestLoadDiWorkerSettingsReturnsDefaultsWhenFileMissing(t *testing.T) {
 	setTestHome(t)
 
@@ -429,7 +468,7 @@ func TestSubmitTaskWithFallbackReturnsCombinedError(t *testing.T) {
 func TestCheckCenterHealthReturnsSnapshot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok","provider_count":3,"config_path":"/tmp/center.json"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","provider_count":3,"config_path":"/tmp/center.json","iworker_readiness":{"ready":true,"status":"ready","tenant_count":1,"role_count":2,"colleague_count":3,"local_account_count":4,"agent_runtime_ready":true,"goalwatch_ready":true,"required_client_paths":["/client/roles"],"checks":[{"name":"tenant","ready":true,"status":"ready","count":1}],"auth_methods":[{"method":"local","label":"Local account","ready":true,"implemented":true,"status":"ready"}]}}`))
 	}))
 	defer server.Close()
 
@@ -454,6 +493,15 @@ func TestCheckCenterHealthReturnsSnapshot(t *testing.T) {
 	}
 	if status.ResolvedBaseURL != server.URL {
 		t.Fatalf("ResolvedBaseURL = %q, want %q", status.ResolvedBaseURL, server.URL)
+	}
+	if status.IWorkerReadiness == nil || !status.IWorkerReadiness.Ready {
+		t.Fatalf("IWorkerReadiness = %+v, want ready", status.IWorkerReadiness)
+	}
+	if status.IWorkerReadiness.TenantCount != 1 || status.IWorkerReadiness.RoleCount != 2 || status.IWorkerReadiness.ColleagueCount != 3 || status.IWorkerReadiness.LocalAccountCount != 4 {
+		t.Fatalf("IWorkerReadiness counts = %+v", status.IWorkerReadiness)
+	}
+	if len(status.IWorkerReadiness.AuthMethods) != 1 || status.IWorkerReadiness.AuthMethods[0].Method != "local" || !status.IWorkerReadiness.AuthMethods[0].Ready {
+		t.Fatalf("IWorkerReadiness auth = %+v", status.IWorkerReadiness.AuthMethods)
 	}
 }
 
@@ -879,5 +927,41 @@ func TestSubmitTaskSyncsCompletedTaskToCenter(t *testing.T) {
 	}
 	if completed.ActorID != "worker-a" || completed.Result != "completed operating brief" || completed.Note != "completed_by_iworker_submit_task" {
 		t.Fatalf("unexpected completion: %+v", completed)
+	}
+}
+
+func TestGenerateSubmitTaskTitleUsesLLMTitle(t *testing.T) {
+	original := doSimpleLLMRequest
+	defer func() { doSimpleLLMRequest = original }()
+
+	calls := 0
+	doSimpleLLMRequest = func(cfg corelib.MaclawLLMConfig, messages []interface{}, _ *http.Client, _ time.Duration) (*agent.LLMSimpleResponse, error) {
+		calls++
+		if len(messages) != 2 {
+			t.Fatalf("messages len = %d, want 2", len(messages))
+		}
+		return &agent.LLMSimpleResponse{Content: "Title: Prepare Operating Brief\nextra"}, nil
+	}
+
+	title := generateSubmitTaskTitle("free input", "Please prepare a daily operating brief from these notes", "summary", "brief body", corelib.MaclawLLMConfig{URL: "http://llm", Model: "test", TimeoutSec: 5}, nil)
+	if title != "Prepare Operating Brief" {
+		t.Fatalf("title = %q, want LLM title", title)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+func TestGenerateSubmitTaskTitleFallsBackFromGenericLLMTitle(t *testing.T) {
+	original := doSimpleLLMRequest
+	defer func() { doSimpleLLMRequest = original }()
+
+	doSimpleLLMRequest = func(corelib.MaclawLLMConfig, []interface{}, *http.Client, time.Duration) (*agent.LLMSimpleResponse, error) {
+		return &agent.LLMSimpleResponse{Content: "free input"}, nil
+	}
+
+	title := generateSubmitTaskTitle("free input", "Please prepare a daily operating brief. Include risks and next steps.", "summary", "brief body", corelib.MaclawLLMConfig{URL: "http://llm", Model: "test", TimeoutSec: 5}, nil)
+	if title != "prepare a daily operating brief" {
+		t.Fatalf("title = %q, want local fallback", title)
 	}
 }

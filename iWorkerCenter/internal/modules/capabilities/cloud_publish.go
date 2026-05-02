@@ -136,7 +136,7 @@ func (h *Handler) PublishCapabilityToCloud(ctx context.Context, tenantID, capabi
 			return nil, err
 		}
 	}
-	adminEmail, centerID, centerSecret, err := h.cloudPublishIdentity(ctx, tenantID)
+	centerID, centerSecret, err := h.cloudPublishIdentity(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -158,8 +158,8 @@ func (h *Handler) PublishCapabilityToCloud(ctx context.Context, tenantID, capabi
 		RiskLevel:            capability.RiskLevel,
 		Status:               "active",
 		Price:                price,
-		Author:               adminEmail,
-		AuthorEmail:          adminEmail,
+		Author:               cloudSkillAuthor(centerID),
+		AuthorEmail:          cloudSkillAuthorEmail(centerID),
 		SourceCenterID:       centerID,
 		PackageFormat:        capability.PackageFormat,
 		PackageContentBase64: capability.PackageContent,
@@ -206,21 +206,34 @@ func (h *Handler) cloudPublishCapability(ctx context.Context, tenantID, capabili
 	return cap, err
 }
 
-func (h *Handler) cloudPublishIdentity(ctx context.Context, tenantID string) (adminEmail, centerID, centerSecret string, err error) {
-	err = h.read.QueryRowContext(ctx, `SELECT email, cloud_center_id, cloud_secret FROM tenants WHERE id=?`, tenantID).Scan(&adminEmail, &centerID, &centerSecret)
+func (h *Handler) cloudPublishIdentity(ctx context.Context, tenantID string) (centerID, centerSecret string, err error) {
+	err = h.read.QueryRowContext(ctx, `SELECT cloud_center_id, cloud_secret FROM tenants WHERE id=?`, tenantID).Scan(&centerID, &centerSecret)
 	if err != nil {
-		return "", "", "", err
-	}
-	if strings.TrimSpace(adminEmail) == "" {
-		return "", "", "", fmt.Errorf("tenant admin email is required for cloud revenue ownership")
+		return "", "", err
 	}
 	if strings.TrimSpace(centerID) == "" || strings.TrimSpace(centerSecret) == "" {
-		return "", "", "", fmt.Errorf("cloud center credentials are missing")
+		return "", "", fmt.Errorf("cloud center credentials are missing")
 	}
 	if h.cloudURL == "" {
-		return "", "", "", fmt.Errorf("iWorkerCloud URL is not configured")
+		return "", "", fmt.Errorf("iWorkerCloud URL is not configured")
 	}
-	return strings.TrimSpace(adminEmail), strings.TrimSpace(centerID), strings.TrimSpace(centerSecret), nil
+	return strings.TrimSpace(centerID), strings.TrimSpace(centerSecret), nil
+}
+
+func cloudSkillAuthor(centerID string) string {
+	centerID = strings.TrimSpace(centerID)
+	if centerID == "" {
+		return "iWorkerCenter"
+	}
+	return "iWorkerCenter " + centerID
+}
+
+func cloudSkillAuthorEmail(centerID string) string {
+	centerID = sanitizeSkillID(centerID)
+	if centerID == "" || centerID == "skill" {
+		centerID = "center"
+	}
+	return centerID + "@iworkercenter.local.invalid"
 }
 
 func (h *Handler) publishSkillInputToCloud(ctx context.Context, centerID, centerSecret string, input marketschema.SkillInput) (*marketschema.Skill, error) {

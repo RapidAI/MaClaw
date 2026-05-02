@@ -42,6 +42,9 @@ type llmUsageCounters struct {
 	TotalTokens       int64   `json:"total_tokens"`
 	CachedInputTokens int64   `json:"cached_input_tokens,omitempty"`
 	CacheWriteTokens  int64   `json:"cache_write_tokens,omitempty"`
+	InputCostRMB      float64 `json:"input_cost_rmb,omitempty"`
+	OutputCostRMB     float64 `json:"output_cost_rmb,omitempty"`
+	TotalCostRMB      float64 `json:"total_cost_rmb,omitempty"`
 	Requests          int64   `json:"requests"`
 	CachedRequests    int64   `json:"cached_requests,omitempty"`
 	Credits           float64 `json:"credits,omitempty"`
@@ -60,6 +63,9 @@ type llmUsageReportRow struct {
 	TotalTokens       int64              `json:"total_tokens"`
 	CachedInputTokens int64              `json:"cached_input_tokens,omitempty"`
 	CacheWriteTokens  int64              `json:"cache_write_tokens,omitempty"`
+	InputCostRMB      float64            `json:"input_cost_rmb,omitempty"`
+	OutputCostRMB     float64            `json:"output_cost_rmb,omitempty"`
+	TotalCostRMB      float64            `json:"total_cost_rmb,omitempty"`
 	Requests          int64              `json:"requests"`
 	CachedRequests    int64              `json:"cached_requests,omitempty"`
 	Credits           float64            `json:"credits"`
@@ -143,6 +149,9 @@ func addUsageCounters(dst *llmUsageCounters, usage corelib.TokenUsageStat, credi
 	dst.TotalTokens += usage.TotalTokens
 	dst.CachedInputTokens += usage.CachedInputTokens
 	dst.CacheWriteTokens += usage.CacheWriteTokens
+	dst.InputCostRMB += usage.InputCostRMB
+	dst.OutputCostRMB += usage.OutputCostRMB
+	dst.TotalCostRMB += usage.TotalCostRMB
 	dst.Requests += requests
 	dst.CachedRequests += usage.CachedRequests
 	dst.Credits += credits
@@ -154,6 +163,9 @@ func addUsageCountersFromTotals(dst *llmUsageCounters, src llmUsageCounters) {
 	dst.TotalTokens += src.TotalTokens
 	dst.CachedInputTokens += src.CachedInputTokens
 	dst.CacheWriteTokens += src.CacheWriteTokens
+	dst.InputCostRMB += src.InputCostRMB
+	dst.OutputCostRMB += src.OutputCostRMB
+	dst.TotalCostRMB += src.TotalCostRMB
 	dst.Requests += src.Requests
 	dst.CachedRequests += src.CachedRequests
 	dst.Credits += src.Credits
@@ -254,6 +266,27 @@ func loadLLMUsageReports(ctx context.Context, system store.SystemSettingsReposit
 		rep.Version = llmUsageReportsVersion
 	}
 	return &rep, nil
+}
+
+func llmUsageTotalsForUser(ctx context.Context, system store.SystemSettingsRepository, email string) (llmUsageCounters, error) {
+	rep, err := loadLLMUsageReports(ctx, system)
+	if err != nil {
+		return llmUsageCounters{}, err
+	}
+	var totals llmUsageCounters
+	email = strings.ToLower(strings.TrimSpace(email))
+	if rep == nil || email == "" {
+		return totals, nil
+	}
+	for _, day := range rep.Days {
+		if day == nil || day.Users == nil {
+			continue
+		}
+		if entry := day.Users[email]; entry != nil {
+			addUsageCountersFromTotals(&totals, entry.Totals)
+		}
+	}
+	return totals, nil
 }
 
 func saveLLMUsageReports(ctx context.Context, system store.SystemSettingsRepository, rep *llmUsageReportsStore) error {
@@ -403,6 +436,9 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 			TotalTokens:       totals.TotalTokens,
 			CachedInputTokens: totals.CachedInputTokens,
 			CacheWriteTokens:  totals.CacheWriteTokens,
+			InputCostRMB:      totals.InputCostRMB,
+			OutputCostRMB:     totals.OutputCostRMB,
+			TotalCostRMB:      totals.TotalCostRMB,
 			Requests:          totals.Requests,
 			CachedRequests:    totals.CachedRequests,
 			Credits:           totals.Credits,
@@ -460,7 +496,9 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 			if day == nil || !strings.HasPrefix(date, monthKey+"-") {
 				continue
 			}
-			addUsageCountersFromTotals(&resp.Summary, day.Totals)
+			if entity == "" {
+				addUsageCountersFromTotals(&resp.Summary, day.Totals)
+			}
 			if scope == "group" {
 				for id, entry := range day.Groups {
 					if entry == nil {

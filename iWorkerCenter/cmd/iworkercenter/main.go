@@ -17,7 +17,9 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/apiroutes"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/app"
+	llmcompute "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/compute"
 )
 
 //go:embed web
@@ -61,7 +63,16 @@ func main() {
 	mux.HandleFunc("/client/", forwardOrUnavailable)
 	mux.HandleFunc("/runtime/", forwardOrUnavailable)
 	mux.HandleFunc("/auth/", forwardOrUnavailable)
+	mux.HandleFunc("GET /api/center/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if center == nil {
+			writeBootstrapError(w, bootstrapErr)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(center.RuntimeStatusSnapshot())
+	})
 	mux.HandleFunc("/api/", forwardOrUnavailable)
+	registerV1Routes(mux, center)
 	mux.HandleFunc("/v1/", forwardOrUnavailable)
 	mux.HandleFunc("/diworker-auth/", forwardOrUnavailable)
 
@@ -139,38 +150,63 @@ func main() {
 	_ = ctx
 }
 
+type centerComputeProviderSource struct {
+	center *app.Center
+}
+
+func (s centerComputeProviderSource) ActiveProviders() []llmcompute.ProviderConfig {
+	if s.center == nil || s.center.ComputeSourceManager == nil {
+		return nil
+	}
+	providers := s.center.ComputeSourceManager.GetActiveProviders()
+	out := make([]llmcompute.ProviderConfig, 0, len(providers))
+	for _, provider := range providers {
+		if !provider.Enabled || strings.TrimSpace(provider.BaseURL) == "" {
+			continue
+		}
+		out = append(out, llmcompute.ProviderConfig{
+			Name:                 provider.Name,
+			BaseURL:              provider.BaseURL,
+			APIKey:               provider.APIKey,
+			Protocol:             provider.Protocol,
+			UserAgent:            provider.UserAgent,
+			Model:                provider.Model,
+			Enabled:              provider.Enabled,
+			Priority:             provider.Priority,
+			InputPricePerMToken:  provider.InputPricePerMToken,
+			OutputPricePerMToken: provider.OutputPricePerMToken,
+		})
+	}
+	return out
+}
+
+func registerV1Routes(mux *http.ServeMux, center *app.Center) {
+	source := centerComputeProviderSource{center: center}
+	proxy := llmcompute.NewLLMProxy(source, nil)
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		providers := source.ActiveProviders()
+		data := make([]map[string]any, 0, len(providers))
+		for _, provider := range providers {
+			model := strings.TrimSpace(provider.Model)
+			if model == "" {
+				continue
+			}
+			data = append(data, map[string]any{
+				"id":       model,
+				"object":   "model",
+				"owned_by": provider.Protocol,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+	})
+	mux.HandleFunc("POST /v1/chat/completions", proxy.HandleChatCompletions())
+}
+
 // isAdminAPIPath returns true if the path looks like a backend API route
 // rather than a SPA navigation route.
 func isAdminAPIPath(path string) bool {
-	apiPrefixes := []string{
-		"/admin/roles",
-		"/admin/colleagues",
-		"/admin/memories",
-		"/admin/capabilities",
-		"/admin/capabilities-import",
-		"/admin/collaborations",
-		"/admin/workflows",
-		"/admin/workflow-instances",
-		"/admin/workflow-design",
-		"/admin/audit",
-		"/admin/config-bundles",
-		"/admin/security",
-		"/admin/model-endpoints",
-		"/admin/model-routing-policies",
-		"/admin/im-config",
-		"/admin/diworker-auth",
-		"/admin/compute",
-		"/admin/recommend",
-		"/admin/executive",
-		"/admin/profile",
-		"/admin/password",
-	}
-	for _, prefix := range apiPrefixes {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-	return false
+	return apiroutes.IsAdminAPIPath(path)
 }
 
 // writeBootstrapError writes a JSON 503 response indicating bootstrap failure.

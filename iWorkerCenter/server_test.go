@@ -124,6 +124,31 @@ func TestRefreshProvidersUsesCloudComputeSource(t *testing.T) {
 	}
 }
 
+func TestRefreshProvidersFallsBackToSettingsWhenCloudUnavailable(t *testing.T) {
+	setCenterTestHome(t)
+	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer cloud.Close()
+	syncMgr := centercompute.NewSyncManager(cloud.URL, "center-1", "secret-1")
+	_ = syncMgr.SyncNow()
+	sourceMgr := centercompute.NewSourceManager(syncMgr)
+	server := newCenterServer(":0")
+	server.center = &app.Center{ComputeSyncManager: syncMgr, ComputeSourceManager: sourceMgr}
+
+	server.refreshProviders()
+	if len(server.providers) == 0 {
+		t.Fatal("providers should fall back to local settings/defaults when Cloud is unreachable")
+	}
+	if strings.HasPrefix(server.providers[0].ID, "cloud-") {
+		t.Fatalf("provider = %+v, want local/default fallback when Cloud has no cached providers", server.providers[0])
+	}
+	status := syncMgr.GetSyncStatus()
+	if status.Status != "failure" || !status.NonBlocking || status.RuntimeImpact != "local_settings_fallback" {
+		t.Fatalf("sync status = %+v, want non-blocking local fallback", status)
+	}
+}
+
 func TestLoadCenterProvidersReadsSettingsFile(t *testing.T) {
 	home := setCenterTestHome(t)
 
@@ -210,6 +235,32 @@ func TestHandleHealthReturnsStatusSnapshot(t *testing.T) {
 	}
 	if body.RuntimeProviderMode != "settings" {
 		t.Fatalf("RuntimeProviderMode = %q, want settings", body.RuntimeProviderMode)
+	}
+}
+
+func TestHandleHealthIncludesIWorkerReadinessSnapshot(t *testing.T) {
+	setCenterTestHome(t)
+	server := newCenterServer(":0")
+	server.center = &app.Center{}
+	req := httptest.NewRequest(http.MethodGet, "/api/center/status", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleHealth(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		IWorkerReadiness *app.IWorkerReadiness `json:"iworker_readiness"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if body.IWorkerReadiness == nil {
+		t.Fatal("iworker_readiness is missing")
+	}
+	if body.IWorkerReadiness.Status != "needs_bootstrap" {
+		t.Fatalf("readiness status = %q, want needs_bootstrap", body.IWorkerReadiness.Status)
 	}
 }
 
@@ -440,5 +491,20 @@ func TestCloudProviderCostTierFallsBackToPrice(t *testing.T) {
 	high := cloudProviderCostTier(tenant.CloudComputeProvider{InputPricePerMToken: 6, OutputPricePerMToken: 6})
 	if low != "low" || medium != "medium" || high != "high" {
 		t.Fatalf("tiers = %q/%q/%q, want low/medium/high", low, medium, high)
+	}
+}
+func TestAdminFrontendAPIRoutesAreForwardedToModules(t *testing.T) {
+	paths := []string{
+		"/admin/cloud/register",
+		"/admin/cloud/license",
+		"/admin/goalwatch/status",
+		"/admin/executive/overview",
+		"/admin/executive/skills/run",
+		"/admin/diworker-auth/accounts",
+	}
+	for _, path := range paths {
+		if !isAdminAPIPath(path) {
+			t.Fatalf("isAdminAPIPath(%q) = false, want true", path)
+		}
 	}
 }

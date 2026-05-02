@@ -1,9 +1,10 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"encoding/base64"
 	"encoding/json"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,10 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+const testOnePixelPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9kAAAAASUVORK5CYII="
 
 type loopTraceRequest struct {
 	Messages []map[string]interface{} `json:"messages"`
@@ -1262,6 +1265,92 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 	}
 	if !foundBaseStage {
 		t.Fatalf("progress = %#v, want visible base tool stage progress", progress)
+	}
+}
+
+func TestRunAgentLoop_AttachesIntermediateScreenshotAndQRCodeURL(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var callNum int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		w.Header().Set("Content-Type", "application/json")
+		switch callNum {
+		case 1:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"{}"}},{"id":"call_screenshot","type":"function","function":{"name":"screenshot","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"扫码登录即可。"},"finish_reason":"stop"}]}`))
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.MaclawAgentMaxIterations = 3
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.gateIntentClassifier = NewGateIntentClassifier(nil)
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.SetToolRegistry(NewToolRegistry())
+	qrURL := "https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=abc123&bot_type=3"
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "bash",
+		Description: "fake bash",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
+			return "URL: " + qrURL + "\n<terminal qr omitted>"
+		},
+	}); err != nil {
+		t.Fatalf("Register bash tool: %v", err)
+	}
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "screenshot",
+		Description: "fake screenshot",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
+			return "[screenshot_base64]" + testOnePixelPNGBase64
+		},
+	}); err != nil {
+		t.Fatalf("Register screenshot tool: %v", err)
+	}
+
+	loopCtx := NewLoopContext("chat-qr-screenshot", 3, server.Client())
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "部署 cc-connect 并给我二维码", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if !strings.Contains(resp.Text, qrURL) {
+		t.Fatalf("response text missing QR URL: %q", resp.Text)
+	}
+	if resp.LocalFilePath == "" || resp.ThumbnailBase64 == "" {
+		t.Fatalf("expected local screenshot preview, got %+v", resp)
+	}
+	if _, err := os.Stat(resp.LocalFilePath); err != nil {
+		t.Fatalf("screenshot file not saved: %v", err)
+	}
+	if _, err := base64.StdEncoding.DecodeString(resp.ThumbnailBase64); err != nil {
+		t.Fatalf("thumbnail is not base64: %v", err)
 	}
 }
 

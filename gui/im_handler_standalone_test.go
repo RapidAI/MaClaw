@@ -1,13 +1,25 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
+
+type staticTaskClassifier string
+
+func (s staticTaskClassifier) Classify(_, _ string, _ int) (string, error) {
+	return string(s), nil
+}
 
 func TestNewIMMessageHandlerStandalone_MinimalConfig(t *testing.T) {
 	// Minimal config — only LLM config is truly required for the agent to function.
@@ -154,4 +166,194 @@ func TestNewIMMessageHandlerStandalone_ShortChitChat(t *testing.T) {
 	if resp.Text == "" {
 		t.Fatal("expected non-empty text for chit-chat")
 	}
+}
+
+func TestHandleIMMessage_TaskContextSwitchSignalsClearUI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":` + strconvQuote("新任务已经开始") + `},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
+		MaxArchivedTasks:         10,
+		ActiveConversationWindow: -time.Second,
+		LLMTimeout:               2 * time.Second,
+	}, staticTaskClassifier("new"))
+	h.memory.Save("u-clear", []agent.ConversationEntry{
+		{Role: "user", Content: "旧任务：推荐一个大模型"},
+		{Role: "assistant", Content: "建议部署 Qwen3.5-122B-A10B"},
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{
+		UserID:   "u-clear",
+		Platform: "desktop",
+		Text:     "请开始一个完全不同的新话题，介绍 OmniRoute 更新发布流程",
+	})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	if !resp.ClearUI {
+		t.Fatalf("expected ClearUI after task context switch, got %+v", resp)
+	}
+}
+
+func TestHandleIMMessage_PlainTextReplyRestoresBoundQuestionContext(t *testing.T) {
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"deploying recommended model"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-pending-text"
+	boundHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "install-server-task: install an inference server"},
+		{Role: "assistant", Content: "Which model should I deploy? I recommend qwen-server-model."},
+	}
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question:  "Which model should I deploy? I recommend qwen-server-model.",
+		History:   cloneConversationEntries(boundHistory),
+		Timestamp: time.Now(),
+	})
+	h.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "omniroute stale current task"},
+		{Role: "assistant", Content: "continuing OmniRoute update"},
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u6309\u4f60\u7684\u5efa\u8bae\u90e8\u7f72"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
+	}
+	if !strings.Contains(requestBody, "install-server-task") {
+		t.Fatalf("expected restored server-install context in LLM request, got %s", requestBody)
+	}
+	if strings.Contains(requestBody, "omniroute stale current task") {
+		t.Fatalf("stale OmniRoute context leaked into LLM request: %s", requestBody)
+	}
+}
+
+func TestPendingUserReplyPromptDetection_TracksChoiceQuestionsOnly(t *testing.T) {
+	if !looksLikePendingUserReplyPrompt("Which model should I deploy? I recommend qwen-server-model.") {
+		t.Fatal("expected model selection question to create pending reply state")
+	}
+	if !looksLikePendingUserReplyPrompt("\u8bf7\u786e\u8ba4\u8981\u90e8\u7f72\u54ea\u4e2a\u6a21\u578b\uff0c\u76f4\u63a5\u56de\u590d\u63a8\u8350\u65b9\u6848\u4e5f\u53ef\u4ee5\u3002") {
+		t.Fatal("expected Chinese deployment confirmation question to create pending reply state")
+	}
+	if looksLikePendingUserReplyPrompt("\u4efb\u52a1\u5df2\u7ecf\u5b8c\u6210\uff0c\u6709\u9700\u8981\u968f\u65f6\u8bf4\u3002") {
+		t.Fatal("ordinary closing text must not create pending reply state")
+	}
+	if looksLikePendingUserReplyPrompt("I can confirm the service is healthy.") {
+		t.Fatal("bare confirm statement must not create pending reply state")
+	}
+	if !likelyResponseToPendingUserReply("\u6309\u4f60\u7684\u5efa\u8bae\u90e8\u7f72") {
+		t.Fatal("expected explicit recommendation acceptance to continue pending reply")
+	}
+	if likelyResponseToPendingUserReply("\u90e8\u7f72 nginx \u5230\u670d\u52a1\u5668") {
+		t.Fatal("fresh deployment task must not be treated as a pending reply")
+	}
+}
+
+func TestHandleIMMessage_PlainTextReplyRestoreSignalsClearUI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-pending-clear"
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question: "Which model should I deploy?",
+		History: []agent.ConversationEntry{
+			{Role: "user", Content: "install server"},
+			{Role: "assistant", Content: "Which model should I deploy?"},
+		},
+		Timestamp: time.Now(),
+	})
+	h.memory.Save(userID, []agent.ConversationEntry{{Role: "user", Content: "stale task"}})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "go ahead"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
+	}
+	if !resp.ClearUI {
+		t.Fatalf("expected ClearUI when restoring pending reply context, got %+v", resp)
+	}
+}
+
+func TestHandleIMMessage_PendingTextReplyDoesNotCaptureFreshDeploymentTask(t *testing.T) {
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"starting nginx deployment"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-pending-fresh-task"
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question: "Which model should I deploy?",
+		History: []agent.ConversationEntry{
+			{Role: "user", Content: "install-server-task: choose model"},
+			{Role: "assistant", Content: "Which model should I deploy?"},
+		},
+		Timestamp: time.Now(),
+	})
+	h.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "current task context"},
+		{Role: "assistant", Content: "ready"},
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u90e8\u7f72 nginx \u5230\u670d\u52a1\u5668"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
+	}
+	if strings.Contains(requestBody, "install-server-task: choose model") {
+		t.Fatalf("pending question context captured a fresh deployment task: %s", requestBody)
+	}
+	if !strings.Contains(requestBody, "\u90e8\u7f72 nginx \u5230\u670d\u52a1\u5668") {
+		t.Fatalf("expected fresh deployment request in LLM request, got %s", requestBody)
+	}
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

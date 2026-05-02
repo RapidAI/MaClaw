@@ -85,9 +85,12 @@ type HubLLMAuthorizedModel struct {
 }
 
 type HubLLMActiveGrant struct {
-	ServiceGroupID string `json:"service_group_id"`
-	Source         string `json:"source"`
-	ExpiresAt      string `json:"expires_at"`
+	ServiceGroupID   string  `json:"service_group_id"`
+	Source           string  `json:"source"`
+	ExpiresAt        string  `json:"expires_at"`
+	CreditsTotal     float64 `json:"credits_total,omitempty"`
+	CreditsUsed      float64 `json:"credits_used,omitempty"`
+	CreditsRemaining float64 `json:"credits_remaining,omitempty"`
 }
 
 type HubLLMServiceStatus struct {
@@ -103,6 +106,8 @@ type HubLLMServiceStatus struct {
 	NearestExpiresAt  string                  `json:"nearest_expires_at,omitempty"`
 	DefaultModel      string                  `json:"default_model,omitempty"`
 	HubLLMBaseURL     string                  `json:"hub_llm_base_url,omitempty"`
+	CreditsAvailable  float64                 `json:"credits_available,omitempty"`
+	TokensPerCredit   int                     `json:"tokens_per_credit,omitempty"`
 }
 
 type hubLLMServiceRedeemResponse struct {

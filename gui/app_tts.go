@@ -1,10 +1,13 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/tts"
@@ -13,11 +16,62 @@ import (
 
 const ttsModelFilename = tts.TTSModelFilename
 const ttsModelDefaultURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/" + ttsModelFilename
+const ttsVoiceZipFilename = tts.TTSVoiceZipFilename
+const ttsVoiceZipDefaultURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/" + ttsVoiceZipFilename
 
 var (
 	ttsDownloadMu sync.Mutex
 	ttsSpeakMu    sync.Mutex // prevents concurrent synthesis (only one audio at a time)
 )
+
+func ttsAssetsDir() (string, error) {
+	dir, err := embeddingModelsDir()
+	if err != nil {
+		return "", err
+	}
+	assetDir := filepath.Join(dir, tts.TTSAssetDirName)
+	if err := os.MkdirAll(assetDir, 0o755); err != nil {
+		return "", err
+	}
+	return assetDir, nil
+}
+
+func ttsModelPath() (string, error) {
+	dir, err := ttsAssetsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ttsModelFilename), nil
+}
+
+func ttsVoiceZipPath() (string, error) {
+	dir, err := ttsAssetsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ttsVoiceZipFilename), nil
+}
+
+func ttsVoiceDir() (string, error) {
+	dir, err := ttsAssetsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "voices"), nil
+}
+
+func normalizeTTSVoiceID(voiceID string) string {
+	voiceID = strings.TrimSpace(voiceID)
+	if voiceID == "" {
+		return tts.DefaultTTSVoiceID
+	}
+	for _, supported := range tts.SupportedTTSVoiceIDs {
+		if voiceID == supported {
+			return voiceID
+		}
+	}
+	return tts.DefaultTTSVoiceID
+}
 
 // GetTTSEnabled returns whether TTS is enabled in config.
 func (a *App) GetTTSEnabled() bool {
@@ -26,6 +80,37 @@ func (a *App) GetTTSEnabled() bool {
 		return false
 	}
 	return cfg.TTSEnabled
+}
+
+func (a *App) GetTTSVoiceID() string {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return tts.DefaultTTSVoiceID
+	}
+	return normalizeTTSVoiceID(cfg.TTSVoiceID)
+}
+
+func (a *App) SetTTSVoiceID(voiceID string) error {
+	voiceID = normalizeTTSVoiceID(voiceID)
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	if normalizeTTSVoiceID(cfg.TTSVoiceID) == voiceID && cfg.TTSVoiceID != "" {
+		return nil
+	}
+	cfg.TTSVoiceID = voiceID
+	if err := a.SaveConfig(cfg); err != nil {
+		return err
+	}
+	ttsSpeakMu.Lock()
+	defer ttsSpeakMu.Unlock()
+	if a.ttsManager != nil {
+		a.ttsManager.Unload()
+		a.ttsManager = nil
+	}
+	a.initTTSManager()
+	return nil
 }
 
 // SetTTSEnabled enables/disables TTS. Auto-downloads model if enabling.
@@ -49,16 +134,18 @@ func (a *App) SetTTSEnabled(enabled bool) error {
 
 // CheckTTSModel returns model file status.
 func (a *App) CheckTTSModel() map[string]interface{} {
-	dir, err := embeddingModelsDir()
+	modelPath, err := ttsModelPath()
 	if err != nil {
 		return map[string]interface{}{"exists": false, "size": 0}
 	}
-	p := filepath.Join(dir, ttsModelFilename)
-	fi, err := os.Stat(p)
+	voiceDir, _ := ttsVoiceDir()
+	zipPath, _ := ttsVoiceZipPath()
+	fi, err := os.Stat(modelPath)
 	if err != nil {
-		return map[string]interface{}{"exists": false, "size": 0}
+		return map[string]interface{}{"exists": false, "size": 0, "voices_exists": kokoroVoicesReady(voiceDir), "voice_zip_exists": fileExistsLocal(zipPath)}
 	}
-	return map[string]interface{}{"exists": true, "size": fi.Size()}
+	voicesReady := kokoroVoicesReady(voiceDir)
+	return map[string]interface{}{"exists": voicesReady, "model_exists": true, "size": fi.Size(), "voices_exists": voicesReady, "voice_zip_exists": fileExistsLocal(zipPath), "path": modelPath, "voice_id": a.GetTTSVoiceID()}
 }
 
 // DownloadTTSModel downloads the TTS model (GitHub first, Hub fallback).
@@ -68,39 +155,17 @@ func (a *App) DownloadTTSModel() error {
 	}
 	defer ttsDownloadMu.Unlock()
 
-	dir, err := embeddingModelsDir()
-	if err != nil {
-		return fmt.Errorf("create models dir: %w", err)
-	}
-	destPath := filepath.Join(dir, ttsModelFilename)
-
-	// GitHub first (3 retries)
-	for attempt := 0; attempt < 3; attempt++ {
-		if err := a.downloadTTSFrom(ttsModelDefaultURL, destPath, false); err == nil {
-			a.autoEnableTTS()
-			a.emitTTSProgress(100, 0, 0, "")
-			return nil
-		}
-	}
-
-	// Fallback: Hub
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	hubURL := cfg.RemoteHubURL
-	if hubURL == "" {
-		a.emitTTSProgress(0, 0, 0, "默认下载地址不可用，且 Hub URL 未配置")
-		return fmt.Errorf("默认下载地址不可用，且 Hub URL 未配置")
-	}
-	hubURL = hubURL + "/api/v1/models/" + ttsModelFilename
-	if err := a.downloadTTSFrom(hubURL, destPath, true); err != nil {
+	if err := a.ensureTTSAssets(cfg.RemoteHubURL, true); err != nil {
 		return err
 	}
 	a.autoEnableTTS()
+	a.initTTSManager()
 	return nil
 }
-
 func (a *App) autoEnableTTS() {
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -116,6 +181,126 @@ func (a *App) downloadTTSFrom(url, destPath string, emitErrors bool) error {
 	return a.downloadModelFromWithEvent(url, destPath, emitErrors, "tts-download-progress")
 }
 
+func (a *App) ensureTTSAssetsForUse(hubBaseURL string, emitErrors bool) error {
+	info := a.CheckTTSModel()
+	if exists, _ := info["exists"].(bool); exists {
+		return nil
+	}
+	ttsDownloadMu.Lock()
+	defer ttsDownloadMu.Unlock()
+	info = a.CheckTTSModel()
+	if exists, _ := info["exists"].(bool); exists {
+		return nil
+	}
+	return a.ensureTTSAssets(hubBaseURL, emitErrors)
+}
+
+func (a *App) ensureTTSAssets(hubBaseURL string, emitErrors bool) error {
+	modelPath, err := ttsModelPath()
+	if err != nil {
+		return fmt.Errorf("create tts asset dir: %w", err)
+	}
+	zipPath, err := ttsVoiceZipPath()
+	if err != nil {
+		return fmt.Errorf("create tts voice zip path: %w", err)
+	}
+	voiceDir, err := ttsVoiceDir()
+	if err != nil {
+		return fmt.Errorf("create tts voice dir: %w", err)
+	}
+
+	if !fileExistsLocal(modelPath) {
+		if err := a.downloadTTSAssetWithFallback(ttsModelFilename, ttsModelDefaultURL, hubBaseURL, modelPath, emitErrors); err != nil {
+			return err
+		}
+	}
+	if !fileExistsLocal(zipPath) {
+		if err := a.downloadTTSAssetWithFallback(ttsVoiceZipFilename, ttsVoiceZipDefaultURL, hubBaseURL, zipPath, emitErrors); err != nil {
+			return err
+		}
+	}
+	if !kokoroVoicesReady(voiceDir) {
+		if err := unzipKokoroVoices(zipPath, voiceDir); err != nil {
+			return err
+		}
+	}
+	a.emitTTSProgress(100, 0, 0, "")
+	return nil
+}
+
+func (a *App) downloadTTSAssetWithFallback(filename, primaryURL, hubBaseURL, destPath string, emitErrors bool) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := a.downloadTTSFrom(primaryURL, destPath, false); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	hubBaseURL = strings.TrimRight(strings.TrimSpace(hubBaseURL), "/")
+	if hubBaseURL == "" {
+		if emitErrors {
+			a.emitTTSProgress(0, 0, 0, "default TTS download failed and Hub URL is not configured")
+		}
+		return fmt.Errorf("download %s from GitHub failed and Hub URL is not configured: %w", filename, lastErr)
+	}
+	return a.downloadTTSFrom(hubBaseURL+"/api/v1/models/"+filename, destPath, emitErrors)
+}
+
+func kokoroVoicesReady(voiceDir string) bool {
+	if voiceDir == "" {
+		return false
+	}
+	for _, name := range []string{"zm_yunxi.koro", "zm_yunyang.koro", "zf_xiaoxiao.koro", "zf_xiaoyi.koro"} {
+		if !fileExistsLocal(filepath.Join(voiceDir, name)) {
+			return false
+		}
+	}
+	return true
+}
+
+func unzipKokoroVoices(zipPath, voiceDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("open voice zip: %w", err)
+	}
+	defer r.Close()
+	if err := os.MkdirAll(voiceDir, 0o755); err != nil {
+		return err
+	}
+	for _, f := range r.File {
+		name := filepath.Base(f.Name)
+		if name == "." || name == string(filepath.Separator) || !strings.HasSuffix(strings.ToLower(name), ".koro") {
+			continue
+		}
+		dst := filepath.Join(voiceDir, name)
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.Create(dst)
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		_, copyErr := io.Copy(out, rc)
+		closeErr := out.Close()
+		rc.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	return nil
+}
+
+func fileExistsLocal(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 func (a *App) emitTTSProgress(pct int, downloaded, total int64, errMsg string) {
 	runtime.EventsEmit(a.ctx, "tts-download-progress", map[string]interface{}{
 		"percent":    pct,
@@ -127,68 +312,40 @@ func (a *App) emitTTSProgress(pct int, downloaded, total int64, errMsg string) {
 
 // initTTSManager creates the TTS manager if model exists.
 func (a *App) initTTSManager() {
-	dir, err := embeddingModelsDir()
-	if err != nil {
-		return
-	}
-	modelPath := filepath.Join(dir, ttsModelFilename)
-	if _, err := os.Stat(modelPath); err != nil {
+	modelPath, err := ttsModelPath()
+	if err != nil || !fileExistsLocal(modelPath) {
 		return // model not downloaded yet
 	}
-	a.ttsManager = tts.NewManager(modelPath)
+	voiceDir, err := ttsVoiceDir()
+	if err != nil || !kokoroVoicesReady(voiceDir) {
+		return
+	}
+	voiceID := tts.DefaultTTSVoiceID
+	if cfg, err := a.LoadConfig(); err == nil {
+		voiceID = normalizeTTSVoiceID(cfg.TTSVoiceID)
+	}
+	a.ttsManager = tts.NewKokoroManager(modelPath, voiceDir, voiceID)
 }
 
 // backgroundPreloadTTSModel silently downloads TTS model if not present.
 func (a *App) backgroundPreloadTTSModel() {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return
-	}
-
-	dir, err := embeddingModelsDir()
-	if err != nil {
-		return
-	}
-	destPath := filepath.Join(dir, ttsModelFilename)
-	if _, err := os.Stat(destPath); err == nil {
-		// Model exists — auto-enable if not already
-		if !cfg.TTSEnabled {
-			cfg.TTSEnabled = true
-			a.SaveConfig(cfg)
-		}
-		return
-	}
-
 	if !ttsDownloadMu.TryLock() {
 		return
 	}
 	defer ttsDownloadMu.Unlock()
 
-	fmt.Println("[tts] background preload: starting silent download")
-
-	for attempt := 0; attempt < 3; attempt++ {
-		if err := a.downloadModelFromWithEvent(ttsModelDefaultURL, destPath, false, "tts-download-progress"); err == nil {
-			cfg.TTSEnabled = true
-			a.SaveConfig(cfg)
-			fmt.Println("[tts] background preload: download complete, auto-enabled")
-			a.initTTSManager()
-			return
-		}
-	}
-
-	// Hub fallback
-	hubURL := cfg.RemoteHubURL
-	if hubURL == "" {
-		fmt.Println("[tts] background preload: all sources failed")
+	cfg, err := a.LoadConfig()
+	if err != nil {
 		return
 	}
-	fallbackURL := hubURL + "/api/v1/models/" + ttsModelFilename
-	if err := a.downloadModelFromWithEvent(fallbackURL, destPath, false, "tts-download-progress"); err == nil {
-		cfg.TTSEnabled = true
-		a.SaveConfig(cfg)
-		fmt.Println("[tts] background preload: hub download complete, auto-enabled")
-		a.initTTSManager()
+	if err := a.ensureTTSAssets(cfg.RemoteHubURL, false); err != nil {
+		fmt.Printf("[tts] background preload: all sources failed: %v\n", err)
+		return
 	}
+	cfg.TTSEnabled = true
+	a.SaveConfig(cfg)
+	fmt.Println("[tts] background preload: download complete, auto-enabled")
+	a.initTTSManager()
 }
 
 // SpeakText synthesizes a voice status summary and sends it to the frontend.
@@ -208,15 +365,20 @@ func (a *App) speakTextAsync(input string) {
 	}
 	defer ttsSpeakMu.Unlock()
 
-	if a.ttsManager == nil {
-		a.initTTSManager()
-		if a.ttsManager == nil {
-			return
-		}
-	}
 	cfg, err := a.LoadConfig()
 	if err != nil || !cfg.TTSEnabled {
 		return
+	}
+	if err := a.ensureTTSAssetsForUse(cfg.RemoteHubURL, false); err != nil {
+		fmt.Printf("[tts] on-demand asset preparation failed: %v\n", err)
+		return
+	}
+	if a.ttsManager == nil {
+		a.initTTSManager()
+		if a.ttsManager == nil {
+			fmt.Println("[tts] manager unavailable after asset preparation")
+			return
+		}
 	}
 
 	summary := tts.GenerateVoiceSummary(input, 150)

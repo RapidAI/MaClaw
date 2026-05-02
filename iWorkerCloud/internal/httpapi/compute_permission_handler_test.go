@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/store"
@@ -181,5 +182,35 @@ func TestCenterComputeProviders_ForceSyncClearedAfterRead(t *testing.T) {
 	json.NewDecoder(w2.Body).Decode(&resp2)
 	if resp2.ForceSync {
 		t.Error("expected force_sync=false on second read (should be cleared)")
+	}
+}
+
+func TestListCenterPermissionsUsesCenterName(t *testing.T) {
+	cs := newTestComputeStore(t)
+	ctx := context.Background()
+	if err := cs.SetComputePermission(ctx, "ctr_1", true); err != nil {
+		t.Fatal(err)
+	}
+	mock := &mockCenterAuthService{centers: map[string]*store.Center{
+		"ctr_1": {ID: "ctr_1", CompanyName: "Center Service East", Status: "active"},
+	}}
+	h := NewComputeHandler(cs, mock)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/compute/permissions", h.ListCenterPermissions())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/compute/permissions", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "\"center_name\":\"Center Service East\"") {
+		t.Fatalf("expected center_name in response: %s", body)
+	}
+	if strings.Contains(body, "company_name") {
+		t.Fatalf("compute permissions response leaked legacy company_name: %s", body)
 	}
 }

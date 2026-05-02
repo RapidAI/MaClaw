@@ -137,6 +137,25 @@ function assertLegacyMirrorRemoved() {
   }
 }
 
+function assertLLMProviderPricingHooks() {
+  const content = read('llm-provider-tab.js');
+  [
+    'input_price_per_m_tokens_rmb',
+    'output_price_per_m_tokens_rmb',
+    'total_cost_rmb',
+    'llmProviderInputPricePerM',
+    'llmProviderOutputPricePerM',
+    'llm-provider-price-chip',
+    'pricePerMShort',
+    'input_cost_rmb',
+    'output_cost_rmb'
+  ].forEach(function(marker) {
+    if (!content.includes(marker)) {
+      fail('llm-provider-tab.js is missing pricing marker: ' + marker);
+    }
+  });
+}
+
 expectedScripts.concat(['MODULES.md', 'check-admin.ps1']).forEach(assertExists);
 expectedScripts.forEach(assertJavaScriptSyntax);
 expectedScripts.forEach(assertModuleExports);
@@ -145,6 +164,7 @@ removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();
 assertLegacyMirrorRemoved();
+assertLLMProviderPricingHooks();
 
 if (!process.exitCode) {
   console.log('Admin module validation passed.');

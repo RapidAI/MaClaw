@@ -38,6 +38,9 @@ type llmEndpointAccessLogEntry struct {
 	TotalTokens       int64          `json:"total_tokens,omitempty"`
 	CachedInputTokens int64          `json:"cached_input_tokens,omitempty"`
 	CacheWriteTokens  int64          `json:"cache_write_tokens,omitempty"`
+	InputCostRMB      float64        `json:"input_cost_rmb,omitempty"`
+	OutputCostRMB     float64        `json:"output_cost_rmb,omitempty"`
+	TotalCostRMB      float64        `json:"total_cost_rmb,omitempty"`
 	RequestBytes      int            `json:"request_bytes,omitempty"`
 	RequestBody       string         `json:"request_body,omitempty"`
 	CreatedAt         time.Time      `json:"created_at"`
@@ -71,6 +74,9 @@ type llmEndpointAccessLogView struct {
 	TotalTokens       int64          `json:"total_tokens,omitempty"`
 	CachedInputTokens int64          `json:"cached_input_tokens,omitempty"`
 	CacheWriteTokens  int64          `json:"cache_write_tokens,omitempty"`
+	InputCostRMB      float64        `json:"input_cost_rmb,omitempty"`
+	OutputCostRMB     float64        `json:"output_cost_rmb,omitempty"`
+	TotalCostRMB      float64        `json:"total_cost_rmb,omitempty"`
 	RequestBytes      int            `json:"request_bytes,omitempty"`
 	RequestBody       string         `json:"request_body,omitempty"`
 	CreatedAt         string         `json:"created_at"`
@@ -568,6 +574,9 @@ func GetLLMEndpointAccessLogsHandler(system store.SystemSettingsRepository) http
 				TotalTokens:       item.TotalTokens,
 				CachedInputTokens: item.CachedInputTokens,
 				CacheWriteTokens:  item.CacheWriteTokens,
+				InputCostRMB:      item.InputCostRMB,
+				OutputCostRMB:     item.OutputCostRMB,
+				TotalCostRMB:      item.TotalCostRMB,
 				RequestBytes:      item.RequestBytes,
 				RequestBody:       item.RequestBody,
 				CreatedAt:         item.CreatedAt.UTC().Format(time.RFC3339),

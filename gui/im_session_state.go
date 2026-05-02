@@ -26,6 +26,7 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 
 	// Pending interaction state.
 	h.pendingAskUser.Delete(userID)
+	h.pendingUserReply.Delete(userID)
 	h.pendingCapabilityGap.Delete(userID)
 	h.pendingSlotUserText.Delete(userID)
 

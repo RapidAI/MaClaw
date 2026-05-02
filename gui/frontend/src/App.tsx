@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, IsNativeRoundedCorners, IsWebviewTransparent, GetFramelessTopInset, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton, FetchProviderModels, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, IsNativeRoundedCorners, IsWebviewTransparent, GetFramelessTopInset, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, GetThirdPartyGatewayStatus, RestartThirdPartyGateway, StopThirdPartyGateway, GetThirdPartyGatewayLocalMode, SetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton, FetchProviderModels, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -1900,7 +1900,7 @@ function App() {
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
     const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'iworkercenter' | 'skills' | 'mcp' | 'llm' | 'serviceRedeem' | 'search' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'security' | 'im' | 'system'>('general');
-    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger'>('qq');
+    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
     const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');
@@ -1910,6 +1910,8 @@ function App() {
     const [lansengerStatus, setLansengerStatus] = useState<string>('disabled');
     const [imAuditPlatform, setIMAuditPlatform] = useState<string | null>(null);
     const [lansengerLocalMode, setLansengerLocalModeState] = useState<boolean>(true);
+    const [thirdPartyGatewayStatus, setThirdPartyGatewayStatus] = useState<string>('disconnected');
+    const [thirdPartyGatewayLocalMode, setThirdPartyGatewayLocalModeState] = useState<boolean>(true);
     const [weixinQRCode, setWeixinQRCode] = useState<string>('');
     const [weixinQRLoading, setWeixinQRLoading] = useState<boolean>(false);
     const [weixinQRWaiting, setWeixinQRWaiting] = useState<boolean>(false);
@@ -2531,6 +2533,13 @@ function App() {
         GetLansengerStatus().then(setLansengerStatus).catch(() => {});
         GetLansengerLocalMode().then(setLansengerLocalModeState).catch(() => {});
 
+        // Third-party gateway status listener
+        EventsOn("thirdparty-gateway-status-changed", (status: string) => {
+            setThirdPartyGatewayStatus(status);
+        });
+        GetThirdPartyGatewayStatus().then(setThirdPartyGatewayStatus).catch(() => {});
+        GetThirdPartyGatewayLocalMode().then(setThirdPartyGatewayLocalModeState).catch(() => {});
+
         // Listen for background tool installation events
         EventsOn("tool-checking", (toolName: string) => {
             setBackgroundInstallStatus(lang === 'zh-Hans' ? `检查 ${toolName}...` : `Checking ${toolName}...`);
@@ -2610,6 +2619,8 @@ function App() {
             EventsOff("qqbot-status-changed");
             EventsOff("telegram-status-changed");
             EventsOff("weixin-status-changed");
+            EventsOff("lansenger-status-changed");
+            EventsOff("thirdparty-gateway-status-changed");
             EventsOff("tool-checking");
             EventsOff("tool-installing");
             EventsOff("tool-updating");
@@ -3806,7 +3817,8 @@ ${instruction}`;
             id: 'remote' as const,
             label: lang === 'zh-Hans' ? '远程连接' : lang === 'zh-Hant' ? '遠端連線' : 'Remote',
             desc: lang === 'zh-Hans' ? '远程服务器地址与连接入口' : lang === 'zh-Hant' ? '遠端伺服器位址與連線入口' : 'Server addresses only',
-        },        {
+        },
+        {
             id: 'iworkercenter' as const,
             label: 'Center Service',
             desc: lang === 'zh-Hans' ? '企业组织运行时与 GoalWatch watcher' : lang === 'zh-Hant' ? '企業組織執行時與 GoalWatch watcher' : 'Organization runtime and GoalWatch watcher',
@@ -3848,8 +3860,8 @@ ${instruction}`;
         },
         {
             id: 'im' as const,
-            label: 'IM',
-            desc: lang === 'zh-Hans' ? '配置 QQ Bot、Telegram Bot、微信等 IM 集成' : lang === 'zh-Hant' ? '配置 QQ Bot、Telegram Bot、微信等 IM 整合' : 'Configure QQ Bot, Telegram Bot, WeChat and other IM integrations',
+            label: lang === 'zh-Hans' ? '消息接入' : lang === 'zh-Hant' ? '消息接入' : 'Message Access',
+            desc: lang === 'zh-Hans' ? '配置微信、IM 与第三方软件消息接入' : lang === 'zh-Hant' ? '配置微信、IM 與第三方軟體消息接入' : 'Configure WeChat, IM, and third-party message integrations',
         },
         {
             id: 'security' as const,
@@ -4139,7 +4151,7 @@ ${instruction}`;
                                 { label: 'LLM', on: maclawLLMOnline },
                                 { label: lang === 'zh-Hans' ? '智网' : 'Net', on: agentNetRunning },
                                 { label: lang === 'zh-Hans' ? '移动' : 'Mob', on: !!remoteActivationStatus?.activated },
-                                { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerStatus === 'connected' },
+                                { label: lang === 'zh-Hans' ? '消息' : 'Msg', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerStatus === 'connected' || thirdPartyGatewayStatus === 'connected' },
                             ].map(({ label, on }) => (
                                 <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
                                     <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: on ? 'var(--theme-primary-strong)' : 'var(--theme-text-muted)', boxShadow: on ? '0 0 4px color-mix(in srgb, var(--theme-primary-strong) 40%, transparent)' : 'none', display: 'inline-block' }} />
@@ -5020,6 +5032,7 @@ ${instruction}`;
                                         { key: 'qq' as const, label: lang === 'zh-Hans' ? 'QQ 机器人' : lang === 'zh-Hant' ? 'QQ 機器人' : 'QQ Bot' },
                                         { key: 'telegram' as const, label: 'Telegram Bot' },
                                         { key: 'weixin' as const, label: lang === 'zh-Hans' ? '微信' : lang === 'zh-Hant' ? '微信' : 'WeChat' },
+                                        { key: 'thirdparty' as const, label: lang === 'zh-Hans' ? '第三方软件接入' : lang === 'zh-Hant' ? '第三方軟體接入' : 'Third-party Access' },
                                         ...(brandInfo?.id === 'qianxin' ? [{ key: 'lansenger' as const, label: lang === 'zh-Hans' ? '蓝信' : lang === 'zh-Hant' ? '藍信' : 'Lansenger' }] : []),
                                     ]).map((t) => (
                                         <button
@@ -5683,6 +5696,105 @@ ${instruction}`;
                                             {lang === 'zh-Hans'
                                                 ? '在蓝信PC客户端 → 个人机器人 → 创建机器人后获取 AppID 和 AppSecret。API 网关地址一般无需修改。'
                                                 : 'Get AppID and AppSecret from Lansenger PC client → Personal Bot → Create Bot. API Gateway URL usually does not need to be changed.'}
+                                        </div>
+                                    </div>
+                                </div>
+                                )}
+
+                                {/* Third-party software access tab */}
+                                {imSubTab === 'thirdparty' && (
+                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
+                                    <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
+                                        {lang === 'zh-Hans'
+                                            ? '开放本机 HTTP 消息接入端口，第三方软件主动连接 MaClaw，无需提供回调地址。'
+                                            : lang === 'zh-Hant'
+                                            ? '開放本機 HTTP 消息接入端口，第三方軟體主動連接 MaClaw，無需提供回調地址。'
+                                            : 'Expose a local HTTP message gateway. Third-party software connects to MaClaw without a callback URL.'}
+                                    </p>
+
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                                            <input type="checkbox" checked={(config as any)?.thirdparty_gateway_enabled || false} onChange={async (e) => {
+                                                const enabled = e.target.checked;
+                                                const patch: any = { thirdparty_gateway_enabled: enabled };
+                                                if (enabled && !((config as any)?.thirdparty_gateway_token || '').trim()) {
+                                                    const bytes = new Uint8Array(32);
+                                                    window.crypto.getRandomValues(bytes);
+                                                    patch.thirdparty_gateway_token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+                                                }
+                                                await saveRemoteConfigField(patch);
+                                                if (enabled) {
+                                                    try { const st = await RestartThirdPartyGateway(); setThirdPartyGatewayStatus(typeof st === 'string' ? st : 'disconnected'); }
+                                                    catch (err: any) { showToastMessage(err?.message || String(err)); }
+                                                } else {
+                                                    try { await StopThirdPartyGateway(); } catch {}
+                                                    setThirdPartyGatewayStatus('disconnected');
+                                                }
+                                            }} />
+                                            {lang === 'zh-Hans' ? '开启第三方软件接入' : lang === 'zh-Hant' ? '開啟第三方軟體接入' : 'Enable third-party access'}
+                                        </label>
+                                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '10px', background: thirdPartyGatewayStatus === 'connected' ? 'var(--theme-success-bg)' : thirdPartyGatewayStatus === 'disconnected' || thirdPartyGatewayStatus === 'disabled' ? 'var(--theme-surface-muted)' : thirdPartyGatewayStatus === 'error' ? 'var(--theme-danger-bg)' : 'var(--theme-warning-bg)', color: thirdPartyGatewayStatus === 'connected' ? 'var(--theme-success)' : thirdPartyGatewayStatus === 'disconnected' || thirdPartyGatewayStatus === 'disabled' ? 'var(--theme-text-secondary)' : thirdPartyGatewayStatus === 'error' ? 'var(--theme-danger)' : 'var(--theme-warning)' }}>
+                                            {{ connected: '已启动', connecting: '启动中', disconnected: '未连接', disabled: '未启用', error: '错误' }[thirdPartyGatewayStatus] || thirdPartyGatewayStatus}
+                                        </span>
+                                        <button type="button" style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-text-secondary)', cursor: 'pointer' }} disabled={!(config as any)?.thirdparty_gateway_enabled} onClick={async () => {
+                                            try { const st = await RestartThirdPartyGateway(); setThirdPartyGatewayStatus(typeof st === 'string' ? st : 'disconnected'); }
+                                            catch (e: any) { showToastMessage(e?.message || String(e)); }
+                                        }}>
+                                            {lang === 'zh-Hans' ? '重启接口' : lang === 'zh-Hant' ? '重啟介面' : 'Restart'}
+                                        </button>
+                                    </div>
+
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                                        <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>{lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}</span>
+                                        {[
+                                            { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '单机' : 'Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本机 Agent 直接处理' : 'Handle with local Agent' },
+                                            { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '多机' : 'Hub', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '通过 Hub 转发到在线设备' : 'Forward through Hub' },
+                                        ].map((opt) => (
+                                            <button key={String(opt.value)} type="button" aria-label={opt.desc} title={opt.desc} style={{ padding: '4px 14px', borderRadius: '14px', border: thirdPartyGatewayLocalMode === opt.value ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)', background: thirdPartyGatewayLocalMode === opt.value ? 'var(--theme-info-bg)' : 'transparent', color: thirdPartyGatewayLocalMode === opt.value ? 'var(--theme-primary)' : 'var(--theme-text-secondary)', fontWeight: thirdPartyGatewayLocalMode === opt.value ? 600 : 400, fontSize: '0.75rem', cursor: 'pointer' }} onClick={() => {
+                                                const prev = thirdPartyGatewayLocalMode;
+                                                setThirdPartyGatewayLocalModeState(opt.value);
+                                                SetThirdPartyGatewayLocalMode(opt.value).then(() => { LoadConfig().then((c: any) => setConfig(c)).catch(() => {}); }).catch((err: any) => {
+                                                    setThirdPartyGatewayLocalModeState(prev);
+                                                    showToastMessage(err?.message || err || '切换失败');
+                                                });
+                                            }}>
+                                                {opt.label}
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    <div style={{ maxWidth: '760px', display: 'grid', gap: '10px' }}>
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 110px', gap: '10px' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '64px' }}>Host</label>
+                                                <input type="text" value={(config as any)?.thirdparty_gateway_host || '127.0.0.1'} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_host: e.target.value } as any)} placeholder="127.0.0.1" spellCheck={false} style={{ flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }} />
+                                            </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap' }}>Port</label>
+                                                <input type="number" min={1} max={65535} value={(config as any)?.thirdparty_gateway_port || 18777} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_port: Number(e.target.value || 18777) } as any)} style={{ width: '86px', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }} />
+                                            </div>
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '64px' }}>Token</label>
+                                            <input type="password" value={(config as any)?.thirdparty_gateway_token || ''} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_token: e.target.value } as any)} placeholder="Bearer token" autoComplete="off" style={{ flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }} />
+                                            <button type="button" style={{ fontSize: '0.68rem', padding: '3px 10px', borderRadius: '4px', border: '1px solid var(--theme-primary)', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={async () => {
+                                                const bytes = new Uint8Array(32);
+                                                window.crypto.getRandomValues(bytes);
+                                                const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+                                                await saveRemoteConfigField({ thirdparty_gateway_token: token } as any);
+                                                showToastMessage(lang === 'zh-Hans' || lang === 'zh-Hant' ? '已生成 Token' : 'Token generated');
+                                            }}>
+                                                {lang === 'zh-Hans' || lang === 'zh-Hant' ? '生成 Token' : 'Generate Token'}
+                                            </button>
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: '0.72rem', color: 'var(--theme-text-muted)' }}>
+                                            <code style={{ padding: '3px 6px', borderRadius: '4px', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-primary)' }}>{`http://${(config as any)?.thirdparty_gateway_host || '127.0.0.1'}:${(config as any)?.thirdparty_gateway_port || 18777}/api/im-gateway/v1`}</code>
+                                            <button type="button" style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-primary)', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer' }} onClick={() => {
+                                                const base = String((config as any)?.remote_hub_url || '').replace(/\/+$/, '');
+                                                BrowserOpenURL(base ? base + '/connector' : '/connector');
+                                            }}>
+                                                {lang === 'zh-Hans' ? '打开接入文档' : lang === 'zh-Hant' ? '開啟接入文件' : 'Open docs'}
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -8265,6 +8377,3 @@ const imAuditBtnStyle: React.CSSProperties = {
     cursor: 'pointer',
     fontWeight: 500,
 };
-
-
-

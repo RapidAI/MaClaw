@@ -34,33 +34,33 @@ type SkillDiagEntry struct {
 
 // NLSkillDefinition is the Wails-facing view of a Skill.
 type NLSkillDefinition struct {
-	Name           string        `json:"name"`
-	DirName        string        `json:"dir_name,omitempty"`
-	Description    string        `json:"description"`
-	Triggers       []string      `json:"triggers"`
-	Steps          []corelib.NLSkillStep `json:"steps"`
-	Status         string        `json:"status"`
-	CreatedAt      time.Time     `json:"created_at"`
-	Source         string        `json:"source"`
-	SourceProject  string        `json:"source_project"`
-	ExecutionClass string        `json:"execution_class,omitempty"`
-	HubSkillID     string        `json:"hub_skill_id,omitempty"`
-	HubVersion     string        `json:"hub_version,omitempty"`
-	TrustLevel     string        `json:"trust_level,omitempty"`
-	Type           string        `json:"type,omitempty"`           // "executable" (default) | "knowledge"
-	Content        string        `json:"content,omitempty"`        // Markdown content for knowledge-type skills
-	Publisher      string        `json:"publisher,omitempty"`      // Plugin namespace publisher
-	Mode           string        `json:"mode,omitempty"`           // "sequential" (default) | "interactive" | "api_workflow"
-	HasDocumentation bool       `json:"has_documentation"`        // true if SKILL.md exists in skill directory
-	SkillDir       string        `json:"-"`                        // skill directory path (internal use, not serialized to frontend)
-	Params         []corelib.NLSkillParam `json:"params,omitempty"`  // parameter schema (explicit or synthesized)
-	RequiredArgs   []string      `json:"required_args,omitempty"`   // required template variables
-	UsageCount     int           `json:"usage_count"`
-	SuccessCount   int           `json:"success_count"`
-	FailureCount   int           `json:"failure_count"`
-	SuccessRate    float64       `json:"success_rate"` // computed: SuccessCount / UsageCount
-	LastUsedAt     *time.Time    `json:"last_used_at,omitempty"`
-	LastError      string        `json:"last_error,omitempty"`
+	Name             string                 `json:"name"`
+	DirName          string                 `json:"dir_name,omitempty"`
+	Description      string                 `json:"description"`
+	Triggers         []string               `json:"triggers"`
+	Steps            []corelib.NLSkillStep  `json:"steps"`
+	Status           string                 `json:"status"`
+	CreatedAt        time.Time              `json:"created_at"`
+	Source           string                 `json:"source"`
+	SourceProject    string                 `json:"source_project"`
+	ExecutionClass   string                 `json:"execution_class,omitempty"`
+	HubSkillID       string                 `json:"hub_skill_id,omitempty"`
+	HubVersion       string                 `json:"hub_version,omitempty"`
+	TrustLevel       string                 `json:"trust_level,omitempty"`
+	Type             string                 `json:"type,omitempty"`          // "executable" (default) | "knowledge"
+	Content          string                 `json:"content,omitempty"`       // Markdown content for knowledge-type skills
+	Publisher        string                 `json:"publisher,omitempty"`     // Plugin namespace publisher
+	Mode             string                 `json:"mode,omitempty"`          // "sequential" (default) | "interactive" | "api_workflow"
+	HasDocumentation bool                   `json:"has_documentation"`       // true if SKILL.md exists in skill directory
+	SkillDir         string                 `json:"-"`                       // skill directory path (internal use, not serialized to frontend)
+	Params           []corelib.NLSkillParam `json:"params,omitempty"`        // parameter schema (explicit or synthesized)
+	RequiredArgs     []string               `json:"required_args,omitempty"` // required template variables
+	UsageCount       int                    `json:"usage_count"`
+	SuccessCount     int                    `json:"success_count"`
+	FailureCount     int                    `json:"failure_count"`
+	SuccessRate      float64                `json:"success_rate"` // computed: SuccessCount / UsageCount
+	LastUsedAt       *time.Time             `json:"last_used_at,omitempty"`
+	LastError        string                 `json:"last_error,omitempty"`
 }
 
 // SkillExecutor manages and executes locally-defined NL Skills.
@@ -477,30 +477,30 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			steps = []corelib.NLSkillStep{}
 		}
 		d := NLSkillDefinition{
-			Name:           s.Name,
-			DirName:        s.DirName,
-			Description:    s.Description,
-			Triggers:       triggers,
-			Steps:          steps,
-			Status:         s.Status,
-			Source:         s.Source,
-			SourceProject:  s.SourceProject,
-			ExecutionClass: classifySkillExecutionClass(s),
-			HubSkillID:     s.HubSkillID,
-			HubVersion:     s.HubVersion,
-			TrustLevel:     s.TrustLevel,
-			Type:           s.Type,
-			Content:        s.Content,
-			Publisher:      s.Publisher,
-			Mode:           s.Mode,
+			Name:             s.Name,
+			DirName:          s.DirName,
+			Description:      s.Description,
+			Triggers:         triggers,
+			Steps:            steps,
+			Status:           s.Status,
+			Source:           s.Source,
+			SourceProject:    s.SourceProject,
+			ExecutionClass:   classifySkillExecutionClass(s),
+			HubSkillID:       s.HubSkillID,
+			HubVersion:       s.HubVersion,
+			TrustLevel:       s.TrustLevel,
+			Type:             s.Type,
+			Content:          s.Content,
+			Publisher:        s.Publisher,
+			Mode:             s.Mode,
 			HasDocumentation: (s.Type == "knowledge" && s.Content != "") || (s.SkillDir != "" && hasSkillDocFile(s.SkillDir)),
-			SkillDir:       s.SkillDir,
-			Params:         s.Params,
-			RequiredArgs:   s.RequiredArgs,
-			UsageCount:     s.UsageCount,
-			SuccessCount:   s.SuccessCount,
-			FailureCount:   s.FailureCount,
-			LastError:      s.LastError,
+			SkillDir:         s.SkillDir,
+			Params:           s.Params,
+			RequiredArgs:     s.RequiredArgs,
+			UsageCount:       s.UsageCount,
+			SuccessCount:     s.SuccessCount,
+			FailureCount:     s.FailureCount,
+			LastError:        s.LastError,
 		}
 		if s.UsageCount > 0 {
 			d.SuccessRate = float64(s.SuccessCount) / float64(s.UsageCount)
@@ -2022,76 +2022,122 @@ func executeBashStep(command string, params map[string]interface{}) (string, err
 
 // ── 文件系统 helper ─────────────────────────────────────────────────────
 
-// copyDirContents 将 src 目录下的所有文件/子目录复制到 dst 目录。
+// copyDirContents copies src contents into dst without following links.
 func copyDirContents(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	srcAbs, err := filepath.Abs(src)
+	if err != nil {
+		return err
+	}
+	dstAbs, err := filepath.Abs(dst)
+	if err != nil {
+		return err
+	}
+	srcAbs = filepath.Clean(srcAbs)
+	dstAbs = filepath.Clean(dstAbs)
+	return filepath.WalkDir(srcAbs, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
+		info, err := os.Lstat(path)
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(dst, rel)
-
-		if info.IsDir() {
-			return os.MkdirAll(target, 0755)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to package link: %s", path)
 		}
-
+		rel, err := filepath.Rel(srcAbs, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dstAbs, rel)
+		if !pathWithinDir(dstAbs, target) {
+			return fmt.Errorf("illegal copy target: %s", target)
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return err
+		}
+		if !pathWithinDir(srcAbs, resolved) {
+			return fmt.Errorf("refusing to package file outside skill dir: %s", path)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, info.Mode())
+		return os.WriteFile(target, data, info.Mode().Perm())
 	})
 }
 
-// zipDirectory 将 srcDir 目录打包为 zip 文件。
+func pathWithinDir(root, target string) bool {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(rootAbs), filepath.Clean(targetAbs))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != "" && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+// zipDirectory packages srcDir into a zip file without following links.
 func zipDirectory(srcDir, zipPath string) error {
+	srcAbs, err := filepath.Abs(srcDir)
+	if err != nil {
+		return err
+	}
+	srcAbs = filepath.Clean(srcAbs)
 	outFile, err := os.Create(zipPath)
 	if err != nil {
 		return err
 	}
 	defer outFile.Close()
-
 	zw := zip.NewWriter(outFile)
 	defer zw.Close()
-
-	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+	return filepath.WalkDir(srcAbs, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(srcDir, path)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to zip link: %s", path)
+		}
+		rel, err := filepath.Rel(srcAbs, path)
 		if err != nil {
 			return err
 		}
 		if rel == "." {
 			return nil
 		}
-
-		// 使用 forward slash 作为 zip 内路径分隔符
 		zipName := filepath.ToSlash(rel)
-		if info.IsDir() {
+		if entry.IsDir() {
 			zipName += "/"
 		}
-
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			return err
 		}
 		header.Name = zipName
-		if !info.IsDir() {
+		if !entry.IsDir() {
 			header.Method = zip.Deflate
 		}
-
 		w, err := zw.CreateHeader(header)
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		if entry.IsDir() {
 			return nil
 		}
-
 		f, err := os.Open(path)
 		if err != nil {
 			return err

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow piper-xiao_ya-zh-fp32.gguf"
+const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip"
 
 type hubModelFileView struct {
 	Name        string `json:"name"`
@@ -113,10 +113,10 @@ func resolveModelPublicPath(modelsDir string, legacyDataDir string, filename str
 }
 
 // isAllowedModelExtension checks if a filename has a permitted model file extension.
-// Allows .gguf (embedding/ASR models) and .yolow (YOLO vision models).
+// Allows model artifacts distributed through the hub public model endpoint.
 func isAllowedModelExtension(filename string) bool {
 	lower := strings.ToLower(filename)
-	return strings.HasSuffix(lower, ".gguf") || strings.HasSuffix(lower, ".yolow")
+	return strings.HasSuffix(lower, ".gguf") || strings.HasSuffix(lower, ".yolow") || strings.HasSuffix(lower, ".koro") || strings.HasSuffix(lower, ".zip")
 }
 
 // ModelDownloadHandler serves model files while keeping the public URL stable.

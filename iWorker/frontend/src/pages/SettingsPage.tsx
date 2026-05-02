@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { CenterHealthStatus, DiWorkerSettings, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from '../types';
+import type { CenterEnrollmentDiscovery, CenterHealthStatus, DiWorkerSettings, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from '../types';
 
 type Props = {
   settings: DiWorkerSettings;
@@ -11,6 +11,11 @@ type Props = {
   healthChecking: boolean;
   healthStatus: CenterHealthStatus | null;
   healthError: string;
+  enrollmentDiscovery: CenterEnrollmentDiscovery | null;
+  enrollmentDiscovering: boolean;
+  enrollmentApplyingId: string;
+  enrollmentMessage: string;
+  enrollmentError: string;
   memoryStats: WorkerMemoryStats | null;
   memoryStatsLoading: boolean;
   memoryStatsError: string;
@@ -46,6 +51,8 @@ type Props = {
   onProviderChange: (providerId: string, patch: Partial<UpstreamProvider>) => void;
   onProviderFeaturesChange: (providerId: string, value: string) => void;
   onCheckCenterHealth: () => void;
+  onDiscoverCenterEnrollment: () => void;
+  onApplyCenterEnrollment: (workerId: string, auth: { method: string; username: string; password: string }) => void;
   onRefreshMemoryStats: () => void;
   onMemoryDraftScopeChange: (value: string) => void;
   onMemoryDraftContentChange: (value: string) => void;
@@ -92,6 +99,11 @@ export function SettingsPage({
   healthChecking,
   healthStatus,
   healthError,
+  enrollmentDiscovery,
+  enrollmentDiscovering,
+  enrollmentApplyingId,
+  enrollmentMessage,
+  enrollmentError,
   memoryStats,
   memoryStatsLoading,
   memoryStatsError,
@@ -127,6 +139,8 @@ export function SettingsPage({
   onProviderChange,
   onProviderFeaturesChange,
   onCheckCenterHealth,
+  onDiscoverCenterEnrollment,
+  onApplyCenterEnrollment,
   onRefreshMemoryStats,
   onMemoryDraftScopeChange,
   onMemoryDraftContentChange,
@@ -139,6 +153,18 @@ export function SettingsPage({
   onSave,
 }: Props) {
   const [expandedProviderId, setExpandedProviderId] = useState<string | null>(null);
+  const [enrollmentAuthMethod, setEnrollmentAuthMethod] = useState('local');
+  const [enrollmentAuthUsername, setEnrollmentAuthUsername] = useState('');
+  const [enrollmentAuthPassword, setEnrollmentAuthPassword] = useState('');
+  const discoveredAuthMethods = enrollmentDiscovery?.authMethods?.length
+    ? enrollmentDiscovery.authMethods
+    : [
+      { method: 'local', label: 'Local account', enabled: true, implemented: true, status: 'ready', description: 'Manual or imported username/password account.' },
+      { method: 'ldap', label: 'LDAP', enabled: true, implemented: true, status: 'available', description: 'Enterprise directory account.' },
+      { method: 'oidc', label: 'OIDC / OAuth SSO', enabled: false, implemented: false, status: 'reserved', description: 'Reserved for zero-trust SSO.' },
+    ];
+  const selectedAuthMethod = discoveredAuthMethods.find((item) => item.method === enrollmentAuthMethod);
+  const centerReadiness = healthStatus?.iWorkerReadiness;
 
   useEffect(() => {
     if (expandedProviderId && !settings.providers.some((provider) => provider.id === expandedProviderId)) {
@@ -240,6 +266,64 @@ export function SettingsPage({
                       卡死超时（秒）
                       <input value={String(settings.center.goalWatchMaxDurationSec)} onChange={(event) => onGoalWatchMaxDurationChange(event.target.value)} placeholder="120" />
                     </label>
+                  </div>
+                  <div className="dw-settings-enrollment-card">
+                    <div className="dw-settings-group-head">
+                      <strong>Center Enrollment</strong>
+                      <span>Discover tenants and bind this local body to a Center iWorker.</span>
+                    </div>
+                    <div className="dw-settings-enrollment-actions">
+                      <button type="button" className="secondary" onClick={onDiscoverCenterEnrollment} disabled={loading || enrollmentDiscovering || !settings.center.baseUrl.trim()}>
+                        {enrollmentDiscovering ? 'Discovering...' : 'Discover Center'}
+                      </button>
+                      <small>{settings.center.baseUrl || 'Set Base URL first'}</small>
+                    </div>
+                    <div className="dw-settings-enrollment-auth">
+                      <label>
+                        Human identity
+                        <select value={enrollmentAuthMethod} onChange={(event) => setEnrollmentAuthMethod(event.target.value)}>
+                          {discoveredAuthMethods.map((method) => (
+                            <option key={method.method} value={method.method} disabled={!method.enabled && method.implemented}>
+                              {method.label}{method.implemented ? '' : ' (reserved)'}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Username / email / phone
+                        <input value={enrollmentAuthUsername} onChange={(event) => setEnrollmentAuthUsername(event.target.value)} placeholder="alice@example.com" />
+                      </label>
+                      <label>
+                        Password / verification code
+                        <input type="password" value={enrollmentAuthPassword} onChange={(event) => setEnrollmentAuthPassword(event.target.value)} placeholder="Required before binding" />
+                      </label>
+                    </div>
+                    {enrollmentMessage ? <p>{enrollmentMessage}</p> : null}
+                    {enrollmentError ? <p>{enrollmentError}</p> : null}
+                    {enrollmentDiscovery ? (
+                      <div className="dw-settings-enrollment-results">
+                        <div className="dw-settings-kv-list">
+                          <div className="dw-settings-kv-item"><span>Tenant</span><strong>{enrollmentDiscovery.selectedTenantId || '-'}</strong></div>
+                          <div className="dw-settings-kv-item"><span>Companies</span><strong>{enrollmentDiscovery.tenants.length}</strong></div>
+                          <div className="dw-settings-kv-item"><span>Roles</span><strong>{enrollmentDiscovery.roles.length}</strong></div>
+                          <div className="dw-settings-kv-item"><span>iWorkers</span><strong>{enrollmentDiscovery.colleagues.length}</strong></div>
+                        </div>
+                        <div className="dw-settings-enrollment-list">
+                          {enrollmentDiscovery.colleagues.length > 0 ? enrollmentDiscovery.colleagues.map((worker) => (
+                            <article key={worker.id} className="dw-settings-enrollment-worker">
+                              <div>
+                                <strong>{worker.name}</strong>
+                                <span>{worker.roleName || worker.roleCode || 'iWorker'}</span>
+                                <p>{worker.description || 'No description from Center yet.'}</p>
+                              </div>
+                              <button type="button" className="primary" onClick={() => onApplyCenterEnrollment(worker.id, { method: enrollmentAuthMethod, username: enrollmentAuthUsername, password: enrollmentAuthPassword })} disabled={Boolean(enrollmentApplyingId) || !enrollmentAuthUsername.trim() || !enrollmentAuthPassword.trim()}>
+                                {enrollmentApplyingId === worker.id ? 'Binding...' : 'Bind here'}
+                              </button>
+                            </article>
+                          )) : <p>No active iWorkers discovered. Apply the enterprise bootstrap plan in iWorkerCenter first.</p>}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </section>
                 <section className="dw-settings-group">
@@ -514,9 +598,35 @@ export function SettingsPage({
                         <strong>{healthStatus.configPath}</strong>
                       </div>
                     ) : null}
+                    {centerReadiness ? (
+                      <>
+                        <div className="dw-settings-kv-item">
+                          <span>iWorker readiness</span>
+                          <strong>{centerReadiness.ready ? 'ready' : centerReadiness.status || 'needs setup'}</strong>
+                        </div>
+                        <div className="dw-settings-kv-item">
+                          <span>Center assets</span>
+                          <strong>{`${centerReadiness.tenantCount} tenants / ${centerReadiness.roleCount} roles / ${centerReadiness.colleagueCount} iWorkers`}</strong>
+                        </div>
+                        <div className="dw-settings-kv-item">
+                          <span>Human auth</span>
+                          <strong>{centerReadiness.authMethods.map((item) => `${item.method}:${item.status}`).join(' / ') || 'not reported'}</strong>
+                        </div>
+                      </>
+                    ) : null}
                   </>
                 ) : null}
               </div>
+              {centerReadiness?.checks?.length ? (
+                <div className="dw-settings-kv-list">
+                  {centerReadiness.checks.map((check) => (
+                    <div key={check.name} className="dw-settings-kv-item">
+                      <span>{check.name}</span>
+                      <strong>{check.ready ? 'ready' : check.status}{typeof check.count === 'number' ? ` / ${check.count}` : ''}</strong>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {healthStatus?.message ? <p>{healthStatus.message}</p> : null}
               {healthError ? <p>{healthError}</p> : null}
             </div>

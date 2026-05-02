@@ -5,15 +5,12 @@ export type CloudControlMode = 'cloud_managed' | 'self_managed' | 'hybrid';
 export interface Center {
   id: string;
   company_name: string;
-  admin_email: string;
-  admin_phone?: string;
-  address?: string;
-  legal_person?: string;
   base_url?: string;
-  supports_multi_tenant?: boolean;
-  tenant_count?: number;
   cloud_control_mode?: CloudControlMode;
   last_sync_status?: string;
+  iworker_ready?: boolean;
+  iworker_readiness_status?: string;
+  iworker_agent_instance_count?: number;
   status: string;
   created_at: string;
   updated_at?: string;
@@ -22,25 +19,28 @@ export interface Center {
 
 export interface CenterIntegrationPatch {
   base_url: string;
-  supports_multi_tenant: boolean;
-  tenant_count: number;
   cloud_control_mode: CloudControlMode;
   last_sync_status: string;
 }
 
-export interface ProvisionTenantRequest {
-  company_name: string;
-  legal_person: string;
-  email: string;
-  address: string;
-  admin_username: string;
-  admin_password: string;
+
+
+export interface CenterWorkloadSummary {
+  agent_instance_count: number;
+  active_count: number;
+  completed_count: number;
+  review_count: number;
+  blocked_count: number;
+  updated_at?: string;
 }
 
-export interface ProvisionTenantResult {
-  tenant_id: string;
+export interface CenterIWorkerReadiness {
+  ready: boolean;
   status: string;
-  message: string;
+  agent_instance_count?: number;
+  agent_runtime_ready?: boolean;
+  goalwatch_ready?: boolean;
+  workload_summary?: CenterWorkloadSummary;
 }
 
 export interface CenterComputeSyncStatus {
@@ -64,9 +64,10 @@ export interface CenterProbeResult {
   compute_permission?: boolean;
   cloud_provider_count?: number;
   compute_sync_status?: CenterComputeSyncStatus;
+  iworker_readiness?: CenterIWorkerReadiness;
 }
 
-export interface CenterProvisionReadiness {
+export interface CenterServiceReadiness {
   allowed: boolean;
   center: Center;
   active_license?: unknown;
@@ -85,9 +86,12 @@ export interface ManagementSummary {
   ready_centers: number;
   needs_setup: number;
   probe_failures: number;
-  multi_tenant_centers: number;
-  tenant_count: number;
   unlicensed_centers: number;
+  workload_agent_instances?: number;
+  workload_active_tasks?: number;
+  workload_completed_tasks?: number;
+  workload_review_tasks?: number;
+  workload_blocked_tasks?: number;
 }
 
 export interface CenterManagement {
@@ -98,6 +102,9 @@ export interface CenterManagement {
   management_posture: string;
   commercial_status: string;
   connectivity: string;
+  iworker_operational_ready?: boolean;
+  iworker_readiness_status?: string;
+  iworker_readiness?: CenterIWorkerReadiness;
 }
 
 export interface RecommendedAction {
@@ -124,11 +131,8 @@ export function updateCenterIntegration(id: string, patch: CenterIntegrationPatc
   return apiPut(`/api/admin/centers/${id}/integration`, patch);
 }
 
-export function getProvisionReadiness(id: string): Promise<CenterProvisionReadiness> {
-  return apiGet(`/api/admin/centers/${id}/provision-readiness`);
-}
-export function provisionTenant(id: string, request: ProvisionTenantRequest): Promise<ProvisionTenantResult> {
-  return apiPost(`/api/admin/centers/${id}/provision-tenant`, request);
+export function getServiceReadiness(id: string): Promise<CenterServiceReadiness> {
+  return apiGet(`/api/admin/centers/${id}/service-readiness`);
 }
 
 export function probeCenter(id: string): Promise<CenterProbeResponse> {

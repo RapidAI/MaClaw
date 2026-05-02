@@ -22,6 +22,24 @@ import (
 )
 
 // LDAPConfig holds LDAP server connection parameters.
+type AuthMethodStatus struct {
+	Method      string `json:"method"`
+	Label       string `json:"label"`
+	Enabled     bool   `json:"enabled"`
+	Implemented bool   `json:"implemented"`
+	Status      string `json:"status"`
+	Description string `json:"description"`
+}
+
+type OIDCConfig struct {
+	Enabled        bool     `json:"enabled"`
+	IssuerURL      string   `json:"issuer_url"`
+	ClientID       string   `json:"client_id"`
+	ClientSecret   string   `json:"client_secret,omitempty"`
+	RedirectURL    string   `json:"redirect_url"`
+	Scopes         []string `json:"scopes"`
+	AllowedDomains []string `json:"allowed_domains"`
+}
 type LDAPConfig struct {
 	Enabled bool   `json:"enabled"`
 	Host    string `json:"host"`
@@ -42,6 +60,8 @@ func NewHandler(write, read *sql.DB) *Handler {
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/diworker-auth/ldap", h.handleLDAP)
 	mux.HandleFunc("/admin/diworker-auth/ldap/test", h.handleLDAPTest)
+	mux.HandleFunc("/admin/diworker-auth/oidc", h.handleOIDC)
+	mux.HandleFunc("/admin/diworker-auth/methods", h.handleMethods)
 	mux.HandleFunc("/admin/diworker-auth/accounts", h.handleAccounts)
 	mux.HandleFunc("/admin/diworker-auth/accounts/", h.handleAccountByID)
 	mux.HandleFunc("/admin/diworker-auth/import-csv", h.handleImportCSV)
@@ -49,12 +69,15 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 
 // RegisterAuthRoutes registers the public authentication endpoint.
 func (h *Handler) RegisterAuthRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/diworker-auth/methods", h.handleMethods)
 	mux.HandleFunc("/diworker-auth/authenticate", h.handleAuthenticate)
+	mux.HandleFunc("/diworker-auth/enrollment/verify", h.handleEnrollmentVerify)
 }
 
 // ── LDAP config (stored in system-like key-value via a dedicated row) ──
 
 const ldapConfigKey = "diworker_ldap_config"
+const oidcConfigKey = "diworker_oidc_config"
 
 func (h *Handler) loadLDAPConfig() LDAPConfig {
 	var raw string
@@ -440,6 +463,7 @@ func (h *Handler) handleImportCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	res := result{}
 	line := 0
+	indexes := map[string]int{"username": 0, "password": 1, "identifier": 2, "expiry_days": 3}
 	for {
 		record, err := csvR.Read()
 		if err == io.EOF {
@@ -447,29 +471,30 @@ func (h *Handler) handleImportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 		line++
 		if err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("行 %d: %v", line, err))
+			res.Errors = append(res.Errors, fmt.Sprintf("line %d: %v", line, err))
 			res.Skipped++
+			continue
+		}
+		if line == 1 && isAccountImportHeader(record) {
+			indexes = accountImportHeaderIndexes(record)
 			continue
 		}
 		if len(record) < 2 {
-			res.Errors = append(res.Errors, fmt.Sprintf("行 %d: 至少需要用户名和密码", line))
+			res.Errors = append(res.Errors, fmt.Sprintf("line %d: username and password are required", line))
 			res.Skipped++
 			continue
 		}
-		username := strings.TrimSpace(record[0])
-		password := strings.TrimSpace(record[1])
+		username := csvField(record, indexes["username"])
+		password := csvField(record, indexes["password"])
 		if username == "" || password == "" {
-			res.Errors = append(res.Errors, fmt.Sprintf("行 %d: 用户名或密码为空", line))
+			res.Errors = append(res.Errors, fmt.Sprintf("line %d: username or password is empty", line))
 			res.Skipped++
 			continue
 		}
-		identifier := ""
-		if len(record) > 2 {
-			identifier = strings.TrimSpace(record[2])
-		}
+		identifier := csvField(record, indexes["identifier"])
 		expiryDays := 0
-		if len(record) > 3 {
-			if d, err := strconv.Atoi(strings.TrimSpace(record[3])); err == nil {
+		if value := csvField(record, indexes["expiry_days"]); value != "" {
+			if d, err := strconv.Atoi(value); err == nil {
 				expiryDays = d
 			}
 		}
@@ -513,7 +538,7 @@ func (h *Handler) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Method   string `json:"method"` // "ldap" or "local"
+		Method   string `json:"method"`
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
@@ -521,56 +546,152 @@ func (h *Handler) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
-
-	switch req.Method {
-	case "ldap":
-		cfg := h.loadLDAPConfig()
-		if !cfg.Enabled || cfg.Host == "" {
-			response.OK(w, map[string]any{"authenticated": false, "error": "LDAP 未配置"})
-			return
-		}
-		if err := ldapBind(&cfg, req.Username, req.Password); err != nil {
-			response.OK(w, map[string]any{"authenticated": false, "error": err.Error()})
-			return
-		}
-		response.OK(w, map[string]any{"authenticated": true})
-
-	case "local":
-		tenantID := tenant.RequestTenantID(r)
-		var storedHash, salt string
-		var disabledInt int
-		var expiresAt sql.NullString
-		err := h.read.QueryRow(
-			`SELECT password_hash, salt, disabled, expires_at FROM diworker_accounts WHERE tenant_id=? AND username=?`,
-			tenantID, req.Username).Scan(&storedHash, &salt, &disabledInt, &expiresAt)
-		if err != nil {
-			_ = hashPwd("dummy", "dummy_salt") // timing
-			response.OK(w, map[string]any{"authenticated": false, "error": "用户名或密码错误"})
-			return
-		}
-		if disabledInt != 0 {
-			response.OK(w, map[string]any{"authenticated": false, "error": "账户已禁用"})
-			return
-		}
-		if expiresAt.Valid {
-			if t, err := time.Parse(time.RFC3339, expiresAt.String); err == nil && time.Now().After(t) {
-				response.OK(w, map[string]any{"authenticated": false, "error": "账户已过期"})
-				return
-			}
-		}
-		if hashPwd(req.Password, salt) != storedHash {
-			response.OK(w, map[string]any{"authenticated": false, "error": "用户名或密码错误"})
-			return
-		}
-		response.OK(w, map[string]any{"authenticated": true})
-
-	default:
-		response.BadRequest(w, "UNKNOWN_METHOD", "method 必须是 ldap 或 local")
+	provider, ok := h.authProvider(req.Method)
+	if !ok {
+		response.BadRequest(w, "UNKNOWN_METHOD", unknownAuthMethodError(req.Method))
+		return
 	}
+	result := provider.Authenticate(AuthCredential{
+		TenantID: tenant.RequestTenantID(r),
+		Username: strings.TrimSpace(req.Username),
+		Password: req.Password,
+	})
+	if !result.Authenticated {
+		response.OK(w, map[string]any{"authenticated": false, "method": provider.Method(), "error": result.Error})
+		return
+	}
+	response.OK(w, map[string]any{"authenticated": true, "method": provider.Method(), "username": strings.TrimSpace(req.Username)})
 }
 
 // ── helpers ──
 
+func (h *Handler) handleEnrollmentVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+	var req struct {
+		Method   string `json:"method"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		WorkerID string `json:"worker_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
+		return
+	}
+	credential := AuthCredential{
+		TenantID: tenant.RequestTenantID(r),
+		Username: strings.TrimSpace(req.Username),
+		Password: req.Password,
+		WorkerID: strings.TrimSpace(req.WorkerID),
+	}
+	if credential.Username == "" || credential.Password == "" || credential.WorkerID == "" {
+		response.BadRequest(w, "MISSING_FIELDS", "username, password, and worker_id are required")
+		return
+	}
+	provider, ok := h.authProvider(req.Method)
+	if !ok {
+		response.BadRequest(w, "UNKNOWN_METHOD", unknownAuthMethodError(req.Method))
+		return
+	}
+	result := provider.Authenticate(credential)
+	if !result.Authenticated {
+		response.OK(w, map[string]any{"verified": false, "authenticated": false, "method": provider.Method(), "error": result.Error})
+		return
+	}
+	if !identifierAllowsWorker(result.Identifier, credential.Username, credential.WorkerID) {
+		response.OK(w, map[string]any{"verified": false, "authenticated": true, "method": provider.Method(), "error": "account is not allowed to bind this iWorker"})
+		return
+	}
+	response.OK(w, map[string]any{"verified": true, "authenticated": true, "method": provider.Method(), "username": credential.Username, "worker_id": credential.WorkerID})
+}
+func (h *Handler) authenticateLocalAccount(tenantID, username, password string) (bool, string, string) {
+	var storedHash, salt, identifier string
+	var disabledInt int
+	var expiresAt sql.NullString
+	err := h.read.QueryRow(
+		`SELECT password_hash, salt, identifier, disabled, expires_at FROM diworker_accounts WHERE tenant_id=? AND username=?`,
+		tenantID, username).Scan(&storedHash, &salt, &identifier, &disabledInt, &expiresAt)
+	if err != nil {
+		_ = hashPwd("dummy", "dummy_salt")
+		return false, "", "username or password is incorrect"
+	}
+	if disabledInt != 0 {
+		return false, "", "account is disabled"
+	}
+	if expiresAt.Valid {
+		if t, err := time.Parse(time.RFC3339, expiresAt.String); err == nil && time.Now().After(t) {
+			return false, "", "account is expired"
+		}
+	}
+	if hashPwd(password, salt) != storedHash {
+		return false, "", "username or password is incorrect"
+	}
+	return true, identifier, ""
+}
+
+func identifierAllowsWorker(identifier, username, workerID string) bool {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return false
+	}
+	candidates := []string{identifier, username}
+	for _, value := range candidates {
+		for _, part := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t' }) {
+			part = strings.TrimSpace(part)
+			if part == "*" || strings.EqualFold(part, workerID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeAuthMethod(method string) string {
+	method = strings.ToLower(strings.TrimSpace(method))
+	switch method {
+	case "", "manual", "password":
+		return "local"
+	case "oauth", "oauth2", "sso", "oidc":
+		return "oidc"
+	default:
+		return method
+	}
+}
+func isAccountImportHeader(record []string) bool {
+	for _, field := range record {
+		switch strings.ToLower(strings.TrimSpace(field)) {
+		case "username", "user", "account", "password", "identifier", "worker_id", "allowed_workers", "expiry_days", "expiry", "expires_in_days":
+			return true
+		}
+	}
+	return false
+}
+
+func accountImportHeaderIndexes(record []string) map[string]int {
+	indexes := map[string]int{"username": 0, "password": 1, "identifier": 2, "expiry_days": 3}
+	for i, field := range record {
+		switch strings.ToLower(strings.TrimSpace(field)) {
+		case "username", "user", "account":
+			indexes["username"] = i
+		case "password":
+			indexes["password"] = i
+		case "identifier", "worker_id", "allowed_workers":
+			indexes["identifier"] = i
+		case "expiry_days", "expiry", "expires_in_days":
+			indexes["expiry_days"] = i
+		}
+	}
+	return indexes
+}
+
+func csvField(record []string, index int) string {
+	if index < 0 || index >= len(record) {
+		return ""
+	}
+	return strings.TrimSpace(record[index])
+}
 func generateSalt() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)

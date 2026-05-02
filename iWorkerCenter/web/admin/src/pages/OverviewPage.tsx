@@ -13,7 +13,8 @@ import { listRoles } from '../api/roles';
 import type { Role } from '../api/roles';
 import { listCapabilities } from '../api/capabilities';
 import { listMemories } from '../api/memories';
-import type { AssetNavigationTarget, CenterStatus, CenterTab, CommunicationsNavigationTarget, Metric, DashboardItem, ExecutiveAction, ExecutiveBoardFocus, ExecutiveBoardHistoryItem, ExecutiveBriefing, ExecutiveSkill, ExecutiveSkillResult, OverviewNavigationTarget } from '../types';
+import { listIWorkerAgentInstances } from '../api/iworkerRuntime';
+import type { AssetNavigationTarget, CenterStatus, CenterTab, CommunicationsNavigationTarget, Metric, DashboardItem, ExecutiveAction, ExecutiveBoardFocus, ExecutiveBoardHistoryItem, ExecutiveBriefing, ExecutiveSkill, ExecutiveSkillResult, IWorkerAgentInstance, OverviewNavigationTarget } from '../types';
 
 type BoardSignal = {
   title: string;
@@ -564,6 +565,22 @@ const resolveBoardFocus = (
   dashboardFocus: ExecutiveBoardFocus | null,
   skillResult: ExecutiveSkillResult | null,
 ): ExecutiveBoardFocus | null => skillResult?.focus || dashboardFocus;
+
+const iWorkerRuntimeTone = (status?: string): 'ok' | 'info' | 'warn' => {
+  switch (status) {
+    case 'online':
+    case 'idle':
+    case 'busy':
+      return 'ok';
+    case 'degraded':
+      return 'info';
+    case 'offline':
+    case 'error':
+      return 'warn';
+    default:
+      return 'info';
+  }
+};
 
 const cloudHeartbeatTone = (status?: string): 'ok' | 'info' | 'warn' => {
   switch (status) {
@@ -1300,6 +1317,7 @@ export function OverviewPage({
   const { t } = useTranslation();
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [centerStatus, setCenterStatus] = useState<CenterStatus | null>(null);
+  const [iWorkerInstances, setIWorkerInstances] = useState<IWorkerAgentInstance[]>([]);
   const [briefing, setBriefing] = useState<ExecutiveBriefing | null>(null);
   const [risks, setRisks] = useState<DashboardItem[]>([]);
   const [actions, setActions] = useState<ExecutiveAction[]>([]);
@@ -1341,7 +1359,7 @@ export function OverviewPage({
     if (refreshMode) {
       setRefreshingBoard(true);
     }
-    const [cols, roleList, caps, mems, dashboard, skillData, collabTasks, routingOverview, auditLogs, serviceStatus] = await Promise.all([
+    const [cols, roleList, caps, mems, dashboard, skillData, collabTasks, routingOverview, auditLogs, serviceStatus, runtimeInstances] = await Promise.all([
       listColleagues().catch(() => []),
       listRoles().catch(() => []),
       listCapabilities().catch(() => []),
@@ -1352,6 +1370,7 @@ export function OverviewPage({
       getCollaborationRoutingSettings().catch(() => null),
       listAuditLogs(12).catch(() => []),
       fetchCenterStatus().catch(() => null),
+      listIWorkerAgentInstances().catch(() => []),
     ]);
 
     const dashboardMetrics = dashboard?.metrics || [];
@@ -1361,6 +1380,7 @@ export function OverviewPage({
       { label: t('nav.knowledge'), value: String(mems.length), hint: `${mems.length}` },
     ];
     setCenterStatus(serviceStatus);
+    setIWorkerInstances(runtimeInstances);
     setColleagues(cols);
     setRoles(roleList);
     setMetrics(dashboardMetrics.length > 0 ? [...baseMetrics, ...dashboardMetrics].slice(0, 4) : baseMetrics);
@@ -1952,6 +1972,64 @@ export function OverviewPage({
   const cloudHeartbeat = centerStatus?.cloud_heartbeat;
   const cloudTone = cloudHeartbeatTone(cloudHeartbeat?.status);
   const cloudStatusLabel = cloudHeartbeat?.status || (centerStatus ? 'not_configured' : 'unknown');
+  const iWorkerReadiness = centerStatus?.iworker_readiness;
+  const iWorkerReadinessChecks = iWorkerReadiness?.checks || [];
+  const iWorkerAuthMethods = iWorkerReadiness?.auth_methods || [];
+  const missingIWorkerChecks = iWorkerReadinessChecks.filter((item) => !item.ready);
+  const missingAuthMethods = iWorkerAuthMethods.filter((item) => item.implemented && !item.ready);
+  const iWorkerReadinessTone = iWorkerReadiness?.ready ? 'ok' : iWorkerReadiness ? 'warn' : 'info';
+  const iWorkerReadinessSummary = iWorkerReadiness
+    ? `${iWorkerReadiness.tenant_count || 0} tenants / ${iWorkerReadiness.role_count || 0} roles / ${iWorkerReadiness.colleague_count || 0} iWorkers / ${iWorkerReadiness.agent_instance_count || 0} agent instances / ${iWorkerReadiness.local_account_count || 0} local accounts`
+    : 'Waiting for iWorker readiness snapshot from this Center runtime.';
+  const iWorkerRuntimeCounts = useMemo(() => iWorkerInstances.reduce((acc, item) => {
+    const status = item.effective_status || item.status || 'unknown';
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>), [iWorkerInstances]);
+  const iWorkerWorkTotals = useMemo(() => iWorkerInstances.reduce((acc, item) => {
+    const work = item.work_status;
+    if (!work) return acc;
+    acc.active += work.active_count || 0;
+    acc.completed += work.completed_count || 0;
+    acc.review += work.review_count || 0;
+    acc.blocked += work.blocked_count || 0;
+    return acc;
+  }, { active: 0, completed: 0, review: 0, blocked: 0 }), [iWorkerInstances]);
+  const visibleIWorkerTasks = useMemo(() => iWorkerInstances
+    .filter((item) => item.work_status?.current_task)
+    .sort((left, right) => (left.heartbeat_age_seconds || 0) - (right.heartbeat_age_seconds || 0))
+    .slice(0, 4), [iWorkerInstances]);
+  const readinessTargetFor = (name: string): CenterTab => {
+    switch (name) {
+      case 'tenant':
+        return 'bootstrap';
+      case 'roles':
+      case 'iworkers':
+        return 'employees';
+      case 'local_accounts':
+        return 'auth';
+      case 'agent_runtime':
+      case 'goalwatch':
+      case 'routes':
+        return 'communications';
+      default:
+        return 'overview';
+    }
+  };
+  const readinessLabelFor = (name: string) => {
+    const labels: Record<string, string> = {
+      database: 'Database',
+      tenant: 'Tenant bootstrap',
+      roles: 'Roles',
+      iworkers: 'Digital colleagues',
+      agent_instances: 'Agent instances',
+      local_accounts: 'Local accounts',
+      agent_runtime: 'Agent runtime',
+      goalwatch: 'GoalWatch',
+      routes: 'Client routes',
+    };
+    return labels[name] || name.replace(/[_-]/g, ' ');
+  };
 
   const operatingModeCards = useMemo<OperatingModeCard[]>(() => {
     const inReviewCount = Object.keys(activeManagementReviews).length;
@@ -2488,8 +2566,79 @@ export function OverviewPage({
             : 'Cloud heartbeat monitor is not configured for this service process yet.'}</p>
           <p>{`Compute runtime: ${centerStatus?.runtime_provider_mode || 'settings'}, source: ${centerStatus?.compute_source || 'settings'}, permission: ${centerStatus?.compute_permission ? 'self-managed allowed' : 'cloud-managed'}.`}</p>
           {centerStatus?.compute_sync_status?.last_sync_at ? <p>{`Last compute sync: ${formatBoardTimestamp(centerStatus.compute_sync_status.last_sync_at)}.`}</p> : null}
+          {centerStatus?.compute_sync_status?.runtime_impact ? <p>{`Cloud outage impact: ${centerStatus.compute_sync_status.runtime_impact}; Center/iWorker runtime remains non-blocking.`}</p> : null}
           {centerStatus?.compute_sync_status?.error ? <p>{`Compute sync error: ${centerStatus.compute_sync_status.error}`}</p> : null}
           {cloudHeartbeat?.last_error ? <p>{`Last error: ${cloudHeartbeat.last_error}`}</p> : null}
+        </div>
+        <div className="item-row">
+          <strong>iWorker operating readiness</strong>
+          <p>{iWorkerReadinessSummary}</p>
+          <div className="executive-action-row">
+            <span className={badgeClass(iWorkerReadinessTone)}>iWorker: {iWorkerReadiness?.status || 'not_reported'}</span>
+            <span className="badge info">Agent runtime: {iWorkerReadiness?.agent_runtime_ready ? 'ready' : 'not ready'}</span>
+            <span className="badge info">GoalWatch: {iWorkerReadiness?.goalwatch_ready ? 'ready' : 'not ready'}</span>
+            <span className="badge info">Auth methods: {iWorkerAuthMethods.length}</span>
+          </div>
+          <div className="executive-action-row">
+            {(iWorkerReadinessChecks.length > 0 ? iWorkerReadinessChecks : [{ name: 'readiness', ready: false, status: 'not_reported' }]).map((check) => (
+              <span key={check.name} className={badgeClass(check.ready ? 'ok' : 'warn')} title={check.detail || check.status}>
+                {readinessLabelFor(check.name)}: {typeof check.count === 'number' && check.count > 0 ? check.count : check.status}
+              </span>
+            ))}
+          </div>
+          {iWorkerAuthMethods.length > 0 ? (
+            <div className="executive-action-row">
+              {iWorkerAuthMethods.map((method) => (
+                <span key={method.method} className={badgeClass(method.ready ? 'ok' : method.implemented ? 'warn' : 'info')} title={method.detail || method.status}>
+                  {method.label || method.method}: {method.status}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <div className="item-row">
+            <strong>iWorker runtime bodies</strong>
+            <p>Center-local view of digital colleague runtime state, current work, and human collaboration pressure. Task names and details stay inside iWorkerCenter; Cloud only receives aggregate workload counts.</p>
+            <div className="executive-action-row">
+              <span className="badge info">Instances: {iWorkerInstances.length}</span>
+              <span className={badgeClass((iWorkerRuntimeCounts.offline || iWorkerRuntimeCounts.error) ? 'warn' : 'ok')}>Online/busy/idle: {(iWorkerRuntimeCounts.online || 0) + (iWorkerRuntimeCounts.busy || 0) + (iWorkerRuntimeCounts.idle || 0)}</span>
+              <span className={badgeClass(iWorkerRuntimeCounts.degraded ? 'info' : 'ok')}>Degraded: {iWorkerRuntimeCounts.degraded || 0}</span>
+              <span className={badgeClass((iWorkerRuntimeCounts.offline || 0) > 0 ? 'warn' : 'ok')}>Offline: {iWorkerRuntimeCounts.offline || 0}</span>
+            </div>
+            <div className="executive-action-row">
+              <span className="badge info">Active tasks: {iWorkerWorkTotals.active}</span>
+              <span className="badge ok">Completed: {iWorkerWorkTotals.completed}</span>
+              <span className={badgeClass(iWorkerWorkTotals.review > 0 ? 'warn' : 'ok')}>Needs review: {iWorkerWorkTotals.review}</span>
+              <span className={badgeClass(iWorkerWorkTotals.blocked > 0 ? 'warn' : 'ok')}>Blocked: {iWorkerWorkTotals.blocked}</span>
+            </div>
+            {visibleIWorkerTasks.length > 0 ? (
+              <div className="item-list">
+                {visibleIWorkerTasks.map((item) => (
+                  <div key={item.instance_id} className="item-row">
+                    <strong>{item.work_status?.current_task}</strong>
+                    <span className={badgeClass(iWorkerRuntimeTone(item.effective_status || item.status))}>{item.worker_id} / {item.role} / {item.effective_status || item.status}</span>
+                    {item.work_status?.current_detail ? <p>{item.work_status.current_detail}</p> : null}
+                    <p>Heartbeat {item.heartbeat_age_seconds || 0}s ago{item.host_id ? ` on ${item.host_id}` : ''}.</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p>No active iWorker task summary has been reported yet.</p>
+            )}
+          </div>
+          {missingIWorkerChecks.length > 0 || missingAuthMethods.length > 0 ? (
+            <div className="executive-action-row">
+              {missingIWorkerChecks.slice(0, 4).map((check) => (
+                <button key={check.name} type="button" className="executive-link-button" onClick={() => onNavigateToTab(readinessTargetFor(check.name))}>
+                  Fix {readinessLabelFor(check.name)}
+                </button>
+              ))}
+              {missingAuthMethods.slice(0, 2).map((method) => (
+                <button key={method.method} type="button" className="executive-link-button" onClick={() => onNavigateToTab('auth')}>
+                  Configure {method.label || method.method}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </section>
 

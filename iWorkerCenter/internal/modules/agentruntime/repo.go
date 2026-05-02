@@ -44,9 +44,15 @@ func (r *Repo) UpsertHeartbeat(tenantID string, instance Instance) (Instance, er
 		instance.LastHeartbeatAt = time.Now().UTC()
 	}
 	capabilities, _ := json.Marshal(normalizeStringSlice(instance.Capabilities))
+	workStatus := normalizeWorkStatus(instance.WorkStatus)
+	workStatusJSON := ""
+	if workStatus != nil {
+		data, _ := json.Marshal(workStatus)
+		workStatusJSON = string(data)
+	}
 	_, err := r.write.Exec(`INSERT INTO iworker_agent_instances
-		(tenant_id, worker_id, instance_id, role, status, org_unit_id, capabilities_json, memory_authority, local_cache_mode, host_id, process_id, started_at, last_heartbeat_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		(tenant_id, worker_id, instance_id, role, status, org_unit_id, capabilities_json, memory_authority, local_cache_mode, work_status_json, host_id, process_id, started_at, last_heartbeat_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(tenant_id, instance_id) DO UPDATE SET
 			worker_id=excluded.worker_id,
 			role=excluded.role,
@@ -55,13 +61,14 @@ func (r *Repo) UpsertHeartbeat(tenantID string, instance Instance) (Instance, er
 			capabilities_json=excluded.capabilities_json,
 			memory_authority=excluded.memory_authority,
 			local_cache_mode=excluded.local_cache_mode,
+			work_status_json=excluded.work_status_json,
 			host_id=excluded.host_id,
 			process_id=excluded.process_id,
 			started_at=excluded.started_at,
 			last_heartbeat_at=excluded.last_heartbeat_at,
 			updated_at=excluded.updated_at`,
 		tenantID, instance.WorkerID, instance.InstanceID, instance.Role, instance.Status, instance.OrgUnitID,
-		string(capabilities), instance.MemoryAuthority, instance.LocalCacheMode, instance.HostID, instance.ProcessID,
+		string(capabilities), instance.MemoryAuthority, instance.LocalCacheMode, workStatusJSON, instance.HostID, instance.ProcessID,
 		instance.StartedAt.Format(time.RFC3339), instance.LastHeartbeatAt.Format(time.RFC3339), instance.LastHeartbeatAt.Format(time.RFC3339))
 	if err != nil {
 		return Instance{}, err
@@ -70,7 +77,7 @@ func (r *Repo) UpsertHeartbeat(tenantID string, instance Instance) (Instance, er
 }
 
 func (r *Repo) Get(tenantID, instanceID string) (Instance, error) {
-	row := r.read.QueryRow(`SELECT tenant_id, worker_id, instance_id, role, status, org_unit_id, capabilities_json, memory_authority, local_cache_mode, host_id, process_id, started_at, last_heartbeat_at
+	row := r.read.QueryRow(`SELECT tenant_id, worker_id, instance_id, role, status, org_unit_id, capabilities_json, memory_authority, local_cache_mode, work_status_json, host_id, process_id, started_at, last_heartbeat_at
 		FROM iworker_agent_instances WHERE tenant_id=? AND instance_id=?`, normalizeTenantID(tenantID), strings.TrimSpace(instanceID))
 	return scanInstance(row)
 }
@@ -81,10 +88,10 @@ func (r *Repo) List(tenantID, workerID string) ([]Instance, error) {
 	var rows *sql.Rows
 	var err error
 	if workerID == "" {
-		rows, err = r.read.Query(`SELECT tenant_id, worker_id, instance_id, role, status, org_unit_id, capabilities_json, memory_authority, local_cache_mode, host_id, process_id, started_at, last_heartbeat_at
+		rows, err = r.read.Query(`SELECT tenant_id, worker_id, instance_id, role, status, org_unit_id, capabilities_json, memory_authority, local_cache_mode, work_status_json, host_id, process_id, started_at, last_heartbeat_at
 			FROM iworker_agent_instances WHERE tenant_id=? ORDER BY worker_id, role`, tenantID)
 	} else {
-		rows, err = r.read.Query(`SELECT tenant_id, worker_id, instance_id, role, status, org_unit_id, capabilities_json, memory_authority, local_cache_mode, host_id, process_id, started_at, last_heartbeat_at
+		rows, err = r.read.Query(`SELECT tenant_id, worker_id, instance_id, role, status, org_unit_id, capabilities_json, memory_authority, local_cache_mode, work_status_json, host_id, process_id, started_at, last_heartbeat_at
 			FROM iworker_agent_instances WHERE tenant_id=? AND worker_id=? ORDER BY role`, tenantID, workerID)
 	}
 	if err != nil {
@@ -108,11 +115,17 @@ type scanner interface {
 
 func scanInstance(row scanner) (Instance, error) {
 	var item Instance
-	var caps, started, heartbeat string
-	if err := row.Scan(&item.TenantID, &item.WorkerID, &item.InstanceID, &item.Role, &item.Status, &item.OrgUnitID, &caps, &item.MemoryAuthority, &item.LocalCacheMode, &item.HostID, &item.ProcessID, &started, &heartbeat); err != nil {
+	var caps, workStatusJSON, started, heartbeat string
+	if err := row.Scan(&item.TenantID, &item.WorkerID, &item.InstanceID, &item.Role, &item.Status, &item.OrgUnitID, &caps, &item.MemoryAuthority, &item.LocalCacheMode, &workStatusJSON, &item.HostID, &item.ProcessID, &started, &heartbeat); err != nil {
 		return Instance{}, err
 	}
 	_ = json.Unmarshal([]byte(caps), &item.Capabilities)
+	if strings.TrimSpace(workStatusJSON) != "" {
+		var workStatus WorkStatusSummary
+		if err := json.Unmarshal([]byte(workStatusJSON), &workStatus); err == nil {
+			item.WorkStatus = &workStatus
+		}
+	}
 	item.StartedAt, _ = time.Parse(time.RFC3339, started)
 	item.LastHeartbeatAt, _ = time.Parse(time.RFC3339, heartbeat)
 	return item, nil
@@ -144,6 +157,17 @@ func normalizeStatus(value string) string {
 	default:
 		return "online"
 	}
+}
+
+func normalizeWorkStatus(status *WorkStatusSummary) *WorkStatusSummary {
+	if status == nil {
+		return nil
+	}
+	next := *status
+	next.CurrentTask = strings.TrimSpace(next.CurrentTask)
+	next.CurrentDetail = strings.TrimSpace(next.CurrentDetail)
+	next.UpdatedAt = strings.TrimSpace(next.UpdatedAt)
+	return &next
 }
 
 func normalizeStringSlice(values []string) []string {

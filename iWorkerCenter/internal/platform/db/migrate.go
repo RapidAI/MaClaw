@@ -515,6 +515,30 @@ var migrations = []string{
 	ALTER TABLE capability_packages ADD COLUMN safety_reason TEXT NOT NULL DEFAULT '';
 	ALTER TABLE capability_packages ADD COLUMN safety_reviewed_at TEXT NOT NULL DEFAULT '';
 	CREATE INDEX IF NOT EXISTS idx_capability_safety ON capability_packages(tenant_id, safety_status);`,
+
+	// 39: iWorker runtime work-status summary for human/Center visibility
+	`ALTER TABLE iworker_agent_instances ADD COLUMN work_status_json TEXT NOT NULL DEFAULT '';`,
+
+	// 40: Center-managed MCP servers distributed to iWorkers by department scope
+	`CREATE TABLE IF NOT EXISTS mcp_servers (
+		tenant_id     TEXT NOT NULL,
+		id            TEXT NOT NULL,
+		name          TEXT NOT NULL,
+		description   TEXT NOT NULL DEFAULT '',
+		server_type   TEXT NOT NULL DEFAULT 'http',
+		endpoint      TEXT NOT NULL DEFAULT '',
+		command       TEXT NOT NULL DEFAULT '',
+		args_json     TEXT NOT NULL DEFAULT '[]',
+		env_keys_json TEXT NOT NULL DEFAULT '[]',
+		department_id TEXT NOT NULL DEFAULT 'all',
+		risk_level    TEXT NOT NULL DEFAULT 'medium',
+		status        TEXT NOT NULL DEFAULT 'enabled',
+		installed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+		created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (tenant_id, id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_mcp_servers_department ON mcp_servers(tenant_id, department_id, status);`,
 }
 
 // Migrate applies all pending migrations inside a transaction.

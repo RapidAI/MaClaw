@@ -186,7 +186,7 @@ export function ComputePowerPage() {
                   const explicit = assignedIds.length > 0;
                   return (
                     <tr key={cp.center_id}>
-                      <td>{cp.company_name || cp.center_id}</td>
+                      <td>{cp.center_name || cp.company_name || cp.center_id}</td>
                       <td><span className={`badge ${cp.compute_permission ? 'ok' : 'info'}`}>{cp.compute_permission ? t('compute.selfManaged') : t('compute.cloudManaged')}</span></td>
                       <td>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

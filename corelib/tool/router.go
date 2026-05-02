@@ -44,7 +44,7 @@ var CoreToolNames = map[string]bool{
 	"list_sessions": true, "create_session": true,
 	"send_and_observe": true, "get_session_output": true, "get_session_events": true,
 	"control_session": true,
-	"bash":            true, "read_file": true, "write_file": true, "edit_file": true, "list_directory": true,
+	"bash":            true, "read_file": true, "FileRead": true, "ripgrep": true, "Glob": true, "write_file": true, "edit_file": true, "list_directory": true,
 	"call_mcp_tool":  true,
 	"manage_skill":   true,
 	"screenshot": true,

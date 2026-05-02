@@ -462,6 +462,25 @@ func RunAutoUpload(
 	if err := skillExec.ExportLearnedSkillsZip([]string{skillName}, zipPath); err != nil {
 		return fmt.Errorf("auto-upload: export zip: %w", err)
 	}
+	if strings.TrimSpace(skillDir) != "" {
+		if _, err := os.Stat(filepath.Join(skillDir, "skill.yaml")); err == nil {
+			report, err := skill.ValidateSkillPortability(skillDir)
+			if err != nil {
+				return fmt.Errorf("auto-upload: portability validation failed: %w", err)
+			}
+			if report.Summary.Errors > 0 {
+				return fmt.Errorf("auto-upload blocked: %d portability error(s) found", report.Summary.Errors)
+			}
+		} else if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
+			report, err := skill.ValidateSkillPortability(skillDir)
+			if err != nil {
+				return fmt.Errorf("auto-upload: portability validation failed: %w", err)
+			}
+			if report.Summary.Errors > 0 {
+				return fmt.Errorf("auto-upload blocked: %d portability error(s) found", report.Summary.Errors)
+			}
+		}
+	}
 
 	// 3. Check if upload conditions are met.
 	if !trigger.ShouldUpload(skillName) {

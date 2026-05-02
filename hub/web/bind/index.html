@@ -60,7 +60,18 @@
     body.embed .warn-box{padding:10px 12px;font-size:12px;margin-bottom:10px;border-radius:10px}
     body.embed .info-label{font-size:11px}
     body.embed .info-value{font-size:12px}
-  </style>
+    body{background:linear-gradient(180deg,#fafbfc 0%,#f3f5f8 100%);color:#2f3542}.container{border:1px solid #e2e6ee;border-radius:16px;box-shadow:0 18px 42px rgba(35,41,55,.08)}.header{background:linear-gradient(180deg,#fff 0%,#f7f9fc 100%);border-bottom:1px solid #e6e9f0;text-align:left}.header h1{display:flex;align-items:center;gap:10px;position:relative;color:#252b36;font-size:22px}.header h1::before{content:"";width:28px;height:28px;border-radius:9px;background:#f3f5f8;border:1px solid #e2e6ee;box-shadow:inset 0 1px 0 rgba(255,255,255,.9)}.header h1::after{content:"";position:absolute;left:7px;top:50%;width:15px;height:15px;transform:translateY(-50%);background:#747b88;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3 6 6v5c0 4 2.5 7.5 6 9.5 3.5-2 6-5.5 6-9.5V6l-6-3Z'/%3E%3Cpath d='m9.5 12 1.7 1.7 3.3-3.4'/%3E%3C/svg%3E") center/15px 15px no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3 6 6v5c0 4 2.5 7.5 6 9.5 3.5-2 6-5.5 6-9.5V6l-6-3Z'/%3E%3Cpath d='m9.5 12 1.7 1.7 3.3-3.4'/%3E%3C/svg%3E") center/15px 15px no-repeat}.header p{color:#707784}.tabs{background:#fff;border-bottom-color:#e6e9f0}.tabs button{gap:6px;color:#717886}.tabs button::before{content:"";display:inline-block;width:7px;height:7px;border-radius:999px;background:#a3a9b5;margin-right:7px;vertical-align:middle}.tabs button.active{color:#303744;border-bottom-color:#f06a7b;background:#fbfcfe}.tabs button.active::before{background:#f06a7b}.tabs button:hover{color:#303744;background:#f7f9fc}.panel{background:#fff}label{color:#727986}input{border-color:#dfe4ec;color:#303744;background:#fff;border-radius:10px}input:focus{border-color:#aab3c2;box-shadow:0 0 0 3px rgba(116,123,136,.12)}.btn{border-radius:10px;box-shadow:none}.btn-primary{background:linear-gradient(135deg,#f06a7b,#e55468);box-shadow:0 10px 22px rgba(239,106,124,.18)}.btn-secondary{background:#f8fafc;color:#394150;border:1px solid #dfe4ec}.btn-danger{background:#fff5f5;color:#c44e4e;border-color:#f1c6c6}.result{border-radius:10px}.result.info{background:#f7f9fc;border-color:#dfe4ec;color:#596170}.channel-select button{border-color:#dfe4ec;color:#68717f;background:#fff}.channel-select button.active{background:#fff0f2;border-color:#f3cfd5;color:#d95466}.warn-box{background:#fff8ed;border-color:#ead2a6;color:#9a6a18}.badge{border-radius:999px}body.embed{background:#fff}body.embed .container{border:0;border-radius:0;box-shadow:none}
+  
+    /* Softer text hierarchy */
+    body{color:#4b5563}.header h1,.info-value{color:#4b5563}.header p,label,.tabs button,.channel-select button,.info-label{color:#8a93a0}.tabs button.active,.tabs button:hover{color:#596170}.btn-secondary{color:#596170}.result.info{color:#68717f}.header h1::after{background:#8a93a0}
+    /* Softer text hierarchy */
+    body{color:#59636f}.header h1,.info-value{color:#5b6470}.header p,label,.tabs button,.channel-select button,.info-label{color:#9aa3ad}.tabs button.active,.tabs button:hover{color:#68717d}.btn-secondary{color:#68717d}.result.info{color:#7b8490}.header h1::after{background:#9aa3ad}
+    /* Softer text hierarchy */
+    body{color:#626c78}.header h1,.info-value{color:#66707c}.header p,label,.tabs button,.channel-select button,.info-label{color:#a5adb6}.tabs button.active,.tabs button:hover{color:#707a86}.btn-secondary{color:#707a86}.result.info{color:#858f9b}.header h1::after{background:#a5adb6}
+    /* Professional density polish */
+    h1,.tabs button,label,.btn{font-weight:650;letter-spacing:0}.header h1{line-height:1.24}.container{box-shadow:0 14px 34px rgba(35,41,55,.055)}.header{background:linear-gradient(180deg,#fff 0%,#fafbfc 100%)}.panel{padding-top:22px}.tabs button{font-size:13px}.btn-primary{box-shadow:0 8px 18px rgba(239,106,124,.14)}input,.channel-select button{border-color:#e5e9f0}.result,.warn-box{border-style:solid}.header h1::before{background:#fafbfc;border-color:#e8ebf1}.header h1::after{opacity:.92}
+    /* Softer text hierarchy */
+    body{color:#59636f}.header h1,.info-value{color:#5b6470}.header p,label,.tabs button,.channel-select button,.info-label{color:#98a1ab}.tabs button.active,.tabs button:hover{color:#68717d}.btn-secondary{color:#68717d}.result.info{color:#7b8490}.header h1::after{background:#98a1ab}</style>
 </head>
 <body>
 <div class="container">
@@ -116,51 +127,51 @@
   var I18N = {
     title: { zh: '绑定管理', en: 'Binding Manager' },
     pageTitle: { zh: 'MaClaw 绑定管理', en: 'MaClaw Binding Manager' },
-    pageDesc: { zh: '绑定、查询或解除您的设备绑定', en: 'Bind, query, or remove your device binding.' },
+    pageDesc: { zh: '绑定、查询或解除您的设备绑定。', en: 'Bind, query, or remove your device binding.' },
     tabBind: { zh: '绑定设备', en: 'Bind Device' },
     tabQuery: { zh: '查询绑定', en: 'Query Binding' },
     tabUnbind: { zh: '解除绑定', en: 'Unbind Device' },
     emailLabel: { zh: '邮箱', en: 'Email' },
     inviteCodeLabel: { zh: '邀请码', en: 'Invitation Code' },
-    inviteCodePlaceholder: { zh: '输入邀请码', en: 'Enter invitation code' },
+    inviteCodePlaceholder: { zh: '请输入邀请码', en: 'Enter invitation code' },
     bindAction: { zh: '绑定', en: 'Bind' },
     queryAction: { zh: '查询', en: 'Query' },
-    sendCodeChannel: { zh: '发送验证码渠道', en: 'Verification Channel' },
-    channelEmail: { zh: '📧 邮箱', en: 'Email' },
-    channelFeishu: { zh: '💬 飞书', en: 'Feishu' },
-    channelBoth: { zh: '📧+💬 两者', en: 'Both' },
+    sendCodeChannel: { zh: '验证码发送渠道', en: 'Verification Channel' },
+    channelEmail: { zh: '邮箱', en: 'Email' },
+    channelFeishu: { zh: '飞书', en: 'Feishu' },
+    channelBoth: { zh: '邮箱 + 飞书', en: 'Both' },
     verifyCodeLabel: { zh: '验证码', en: 'Verification Code' },
-    verifyCodePlaceholder: { zh: '6位验证码', en: '6-digit code' },
+    verifyCodePlaceholder: { zh: '6 位验证码', en: '6-digit code' },
     sendCode: { zh: '发送验证码', en: 'Send Code' },
-    unbindConfirm: { zh: '确认解绑', en: 'Confirm Unbind' },
-    unbindWarning: { zh: '⚠️ 解绑将删除所有设备绑定、IM 绑定（飞书/QQ等）。', en: 'Unbinding will remove all device bindings and IM bindings (Feishu/QQ, etc.).' },
+    unbindConfirm: { zh: '确认解除绑定', en: 'Confirm Unbind' },
+    unbindWarning: { zh: '解绑将删除所有设备绑定和 IM 绑定。', en: 'Unbinding will remove all device bindings and IM bindings (Feishu/QQ, etc.).' },
     unbindWarningInvite: { zh: '原邀请码将失效，解绑后需要获取新的邀请码才能重新绑定。', en: 'The original invitation code will become invalid. You will need a new invitation code to bind again.' },
-    pleaseEnterEmail: { zh: '请输入邮箱', en: 'Please enter your email.' },
-    pleaseEnterEmailAndCode: { zh: '请输入邮箱和验证码', en: 'Please enter your email and verification code.' },
-    bindSuccess: { zh: '✅ 绑定成功', en: 'Bind successful' },
-    pendingApproval: { zh: '⏳ 已提交，等待管理员审批', en: 'Submitted. Waiting for administrator approval.' },
-    manualBindingRequired: { zh: '⚠️ 当前需要管理员手动绑定，请联系管理员', en: 'Manual administrator binding is required. Please contact the administrator.' },
+    pleaseEnterEmail: { zh: '请输入邮箱。', en: 'Please enter your email.' },
+    pleaseEnterEmailAndCode: { zh: '请输入邮箱和验证码。', en: 'Please enter your email and verification code.' },
+    bindSuccess: { zh: '绑定成功', en: 'Bind successful' },
+    pendingApproval: { zh: '已提交，等待管理员审核。', en: 'Submitted. Waiting for administrator approval.' },
+    manualBindingRequired: { zh: '需要管理员手动绑定，请联系管理员。', en: 'Manual administrator binding is required. Please contact the administrator.' },
     bindFailed: { zh: '绑定失败', en: 'Bind failed' },
-    queryNoBinding: { zh: '该邮箱尚未绑定', en: 'This email is not bound yet.' },
+    queryNoBinding: { zh: '该邮箱尚未绑定。', en: 'This email is not bound yet.' },
     networkError: { zh: '网络错误', en: 'Network error' },
     statusLabel: { zh: '状态', en: 'Status' },
     boundBadge: { zh: '已绑定', en: 'Bound' },
     userStatusLabel: { zh: '用户状态', en: 'User Status' },
-    createdAtLabel: { zh: '注册时间', en: 'Created At' },
-    deviceIdLabel: { zh: '设备ID', en: 'Device ID' },
-    codeSent: { zh: '✅ 验证码已发送至: {channels}', en: 'Verification code sent to: {channels}' },
+    createdAtLabel: { zh: '创建时间', en: 'Created At' },
+    deviceIdLabel: { zh: '设备 ID', en: 'Device ID' },
+    codeSent: { zh: '验证码已发送至：{channels}', en: 'Verification code sent to: {channels}' },
     sendFailed: { zh: '发送失败', en: 'Send failed' },
-    confirmUnbind: { zh: '\u786e\u5b9a\u8981\u89e3\u9664 {email} \u7684\u6240\u6709\u7ed1\u5b9a\u5417\uff1f\n\n\u5c06\u4f1a\uff1a\n\u2022 \u5220\u9664\u6240\u6709\u8bbe\u5907\u7ed1\u5b9a\n\u2022 \u5220\u9664\u98de\u4e66/QQ\u7b49 IM \u7ed1\u5b9a', en: 'Are you sure you want to remove all bindings for {email}?\n\nThis will:\n- Remove all device bindings\n- Remove IM bindings such as Feishu/QQ' },
-    confirmUnbindInvite: { zh: '\n\u2022 \u539f\u9080\u8bf7\u7801\u5c06\u5931\u6548\n\n\u26a0\ufe0f \u89e3\u7ed1\u540e\u9700\u8981\u83b7\u53d6\u65b0\u7684\u9080\u8bf7\u7801\u624d\u80fd\u91cd\u65b0\u7ed1\u5b9a\uff01', en: '\n- The original invitation code will be invalidated\n\nYou will need a new invitation code to bind again.' },
-    unbindSuccess: { zh: '✅ 解绑成功，已删除 {count} 台设备', en: 'Unbind successful. Removed {count} device(s).' },
-    codesDeleted: { zh: '，已删除 {count} 个邀请码', en: ', and removed {count} invitation code(s)' },
-    needNewInvite: { zh: '⚠️ 重新绑定需要获取新的邀请码', en: 'A new invitation code is required to bind again.' },
+    confirmUnbind: { zh: '确定要解除 {email} 的所有绑定吗？\n\n将会：\n- 删除所有设备绑定\n- 删除飞书/QQ 等 IM 绑定', en: 'Are you sure you want to remove all bindings for {email}?\n\nThis will:\n- Remove all device bindings\n- Remove IM bindings such as Feishu/QQ' },
+    confirmUnbindInvite: { zh: '\n- 原邀请码将失效\n\n解绑后需要获取新的邀请码才能重新绑定。', en: '\n- The original invitation code will be invalidated\n\nYou will need a new invitation code to bind again.' },
+    unbindSuccess: { zh: '解绑成功，已移除 {count} 个设备。', en: 'Unbind successful. Removed {count} device(s).' },
+    codesDeleted: { zh: '，并移除 {count} 个邀请码', en: ', and removed {count} invitation code(s)' },
+    needNewInvite: { zh: '重新绑定需要新的邀请码。', en: 'A new invitation code is required to bind again.' },
     unbindFailed: { zh: '解绑失败', en: 'Unbind failed' }
   };
 
   function t(key, vars) {
     var text = (I18N[key] && I18N[key][LANG]) || key;
-    return String(text).replace(/{(w+)}/g, function(_, name) {
+    return String(text).replace(/\{(\w+)\}/g, function(_, name) {
       return vars && vars[name] != null ? vars[name] : '';
     });
   }

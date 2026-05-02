@@ -17,10 +17,11 @@ var ErrNotLocalMode = errors.New("cannot set local providers while in cloud mode
 // SourceManager controls which provider list (cloud-synced vs local) is active.
 // It is safe for concurrent use.
 type SourceManager struct {
-	mu             sync.RWMutex
-	source         string // "cloud" or "local"
-	syncMgr        *SyncManager
-	localProviders []ComputeProvider
+	mu                        sync.RWMutex
+	source                    string // "cloud" or "local"
+	syncMgr                   *SyncManager
+	localProviders            []ComputeProvider
+	fallbackProvidersResolver func() []ComputeProvider
 }
 
 // NewSourceManager creates a SourceManager that defaults to cloud mode.
@@ -29,6 +30,14 @@ func NewSourceManager(syncMgr *SyncManager) *SourceManager {
 		source:  "cloud",
 		syncMgr: syncMgr,
 	}
+}
+
+// SetFallbackProvidersResolver configures the local provider fallback used when
+// Cloud sync is unavailable and no cached Cloud provider list exists.
+func (sm *SourceManager) SetFallbackProvidersResolver(resolve func() []ComputeProvider) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.fallbackProvidersResolver = resolve
 }
 
 // GetSource returns the current compute source ("cloud" or "local").
@@ -57,18 +66,29 @@ func (sm *SourceManager) SetSource(source string) error {
 }
 
 // GetActiveProviders returns the provider list for the current mode.
-// In cloud mode it delegates to SyncManager; in local mode it returns
-// a copy of the local provider list.
+// In cloud mode it delegates to SyncManager, unless Cloud is unavailable and
+// no cached Cloud providers exist, in which case it uses the local fallback.
 func (sm *SourceManager) GetActiveProviders() []ComputeProvider {
+	providers, _, _ := sm.GetActiveProviderSnapshot()
+	return providers
+}
+
+// GetActiveProviderSnapshot returns providers plus the effective source actually
+// serving runtime requests. effectiveSource is cloud, local, or local_fallback.
+func (sm *SourceManager) GetActiveProviderSnapshot() ([]ComputeProvider, string, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
 	if sm.source == "local" {
 		out := make([]ComputeProvider, len(sm.localProviders))
 		copy(out, sm.localProviders)
-		return out
+		return out, "local", false
 	}
-	return sm.syncMgr.GetProviders()
+	providers := sm.syncMgr.GetProviders()
+	if len(providers) > 0 || !sm.shouldUseFallbackLocked() {
+		return providers, "cloud", false
+	}
+	return sm.localFallbackProvidersLocked(), "local_fallback", true
 }
 
 // IsLocalEditAllowed returns true only when the source is "local" and
@@ -117,5 +137,23 @@ func (sm *SourceManager) GetLocalProviders() []ComputeProvider {
 	defer sm.mu.RUnlock()
 	out := make([]ComputeProvider, len(sm.localProviders))
 	copy(out, sm.localProviders)
+	return out
+}
+
+func (sm *SourceManager) shouldUseFallbackLocked() bool {
+	if sm.fallbackProvidersResolver == nil {
+		return false
+	}
+	status := sm.syncMgr.GetSyncStatus()
+	return status.Status == "pending" || status.Status == "failure" || status.Status == "waiting_for_credentials"
+}
+
+func (sm *SourceManager) localFallbackProvidersLocked() []ComputeProvider {
+	if sm.fallbackProvidersResolver == nil {
+		return nil
+	}
+	providers := sm.fallbackProvidersResolver()
+	out := make([]ComputeProvider, len(providers))
+	copy(out, providers)
 	return out
 }

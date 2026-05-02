@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -291,7 +292,7 @@ func TestCapabilityUsageSummaryAndQualityUpdate(t *testing.T) {
 	}
 }
 
-func TestPublishCapabilityToCloudUsesRuleAndAdminEmail(t *testing.T) {
+func TestPublishCapabilityToCloudUsesCenterScopedAuthor(t *testing.T) {
 	provider, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -301,19 +302,26 @@ func TestPublishCapabilityToCloudUsesRuleAndAdminEmail(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	var received struct {
+		Author         string `json:"author"`
 		AuthorEmail    string `json:"author_email"`
 		SourceCenterID string `json:"source_center_id"`
 		Price          int64  `json:"price"`
 	}
+	var rawPublishBody string
 	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/centers/center-a/skills" || r.Header.Get("X-Center-Secret") != "secret-a" {
 			t.Fatalf("unexpected cloud request path=%s secret=%s", r.URL.Path, r.Header.Get("X-Center-Secret"))
 		}
-		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read cloud request: %v", err)
+		}
+		rawPublishBody = string(body)
+		if err := json.Unmarshal(body, &received); err != nil {
 			t.Fatalf("decode cloud request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"center-center-a-cap-local","name":"Local Skill","author_email":"admin@example.com","source_center_id":"center-a","price":25}`))
+		_, _ = w.Write([]byte(`{"id":"center-center-a-cap-local","name":"Local Skill","author_email":"center-a@iworkercenter.local.invalid","source_center_id":"center-a","price":25}`))
 	}))
 	defer cloud.Close()
 	now := time.Now().Format(time.RFC3339)
@@ -346,8 +354,11 @@ func TestPublishCapabilityToCloudUsesRuleAndAdminEmail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if skill.ID != "center-center-a-cap-local" || received.AuthorEmail != "admin@example.com" || received.SourceCenterID != "center-a" || received.Price != 25 {
+	if skill.ID != "center-center-a-cap-local" || received.Author != "iWorkerCenter center-a" || received.AuthorEmail != "center-a@iworkercenter.local.invalid" || received.SourceCenterID != "center-a" || received.Price != 25 {
 		t.Fatalf("skill=%+v received=%+v", skill, received)
+	}
+	if strings.Contains(rawPublishBody, "admin@example.com") || strings.Contains(rawPublishBody, "Tenant A") {
+		t.Fatalf("cloud publish leaked tenant business identity: %s", rawPublishBody)
 	}
 	var status string
 	if err := provider.Read.QueryRow(`SELECT cloud_publish_status FROM capability_packages WHERE tenant_id=? AND id=?`, "tenant-a", "cap-local").Scan(&status); err != nil {
@@ -1310,5 +1321,77 @@ func TestSkillEvolutionRunLeasePreventsDuplicateRealRuns(t *testing.T) {
 	}
 	if !acquired {
 		t.Fatalf("expected lease acquisition after release")
+	}
+}
+
+func TestClientMCPServersReturnsDepartmentEnabledServers(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO mcp_servers (tenant_id, id, name, description, server_type, endpoint, command, args_json, env_keys_json, department_id, risk_level, status, installed_at, created_at, updated_at) VALUES
+		(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+		(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+		(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tenant-a", "mcp-fin", "Finance MCP", "finance tools", "http", "https://mcp.example/finance", "", "[]", "[\"FINANCE_TOKEN\"]", "finance", "medium", "enabled", now, now, now,
+		"tenant-a", "mcp-all", "Common MCP", "common tools", "sse", "https://mcp.example/common", "", "[]", "[]", "all", "low", "enabled", now, now, now,
+		"tenant-a", "mcp-disabled", "Disabled MCP", "disabled", "http", "https://mcp.example/off", "", "[]", "[]", "finance", "low", "disabled", now, now, now)
+	if err != nil {
+		t.Fatalf("seed mcp servers: %v", err)
+	}
+	h := NewHandler(provider.Write, provider.Read)
+	req := httptest.NewRequest(http.MethodGet, "/client/mcp-servers?department_id=finance", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.handleClientMCPServers(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		MCPServers []MCPServer `json:"mcp_servers"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.MCPServers) != 2 {
+		t.Fatalf("mcp servers = %+v", body.MCPServers)
+	}
+	ids := map[string]bool{}
+	for _, server := range body.MCPServers {
+		ids[server.ID] = true
+	}
+	if !ids["mcp-fin"] || !ids["mcp-all"] || ids["mcp-disabled"] {
+		t.Fatalf("unexpected mcp ids: %+v", ids)
+	}
+}
+
+func TestCreateMCPServerValidatesTransportConfig(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	h := NewHandler(provider.Write, provider.Read)
+	req := httptest.NewRequest(http.MethodPost, "/admin/mcp-servers", strings.NewReader(`{"name":"Local Files MCP","server_type":"stdio","command":"mcp-files","department_id":"ops","env_keys":["FILES_TOKEN"]}`))
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.handleAdminMCPServers(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var server MCPServer
+	if err := json.NewDecoder(rr.Body).Decode(&server); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if server.ServerType != "stdio" || server.Command != "mcp-files" || server.DepartmentID != "ops" || server.Status != "enabled" || len(server.EnvKeys) != 1 {
+		t.Fatalf("server = %+v", server)
 	}
 }

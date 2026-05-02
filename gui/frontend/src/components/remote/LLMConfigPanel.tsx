@@ -240,6 +240,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const isNone = currentName === NONE_PROVIDER;
     const hasHubManagedService = !!hubServiceStatus?.active && !!hubServiceStatus?.skip_llm_config;
     const hubAvailableModels = (hubServiceStatus?.available_models || []).filter(Boolean);
+    const hubModelLabel = hubAvailableModels.length ? hubAvailableModels.join(", ") : (hubServiceStatus?.default_model || "auto");
 
     /* ── Dialog helpers ── */
 
@@ -681,33 +682,63 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                         {/* Hub-managed MaClaw Official details */}
                         {dlgHubSelected && hasHubManagedService && (
                             <div style={{
-                                marginBottom: 16, padding: "14px", borderRadius: 6,
-                                border: `1px solid ${colors.success}`, background: colors.successBg,
+                                marginBottom: 16,
+                                padding: "18px 20px",
+                                borderRadius: 12,
+                                border: "1px solid color-mix(in srgb, var(--theme-success) 52%, transparent)",
+                                background: "linear-gradient(135deg, color-mix(in srgb, var(--theme-surface) 86%, white), color-mix(in srgb, var(--theme-success-bg) 78%, var(--theme-surface)))",
+                                boxShadow: "0 18px 42px rgba(15, 23, 42, 0.18)",
+                                position: "relative",
+                                overflow: "hidden",
                             }}>
-                                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.success, marginBottom: 10 }}>
-                                    {t("MaClaw Official", "MaClaw 官方")}
-                                </div>
-                                <div style={{ fontSize: "0.74rem", color: colors.textSecondary, lineHeight: 1.6, marginBottom: 12 }}>
-                                    {t(
-                                        "This account has access to MaClaw official LLM service. You can use the OpenAI-compatible endpoint directly.",
-                                        "当前账号已开通 MaClaw 官方模型服务，可直接使用对外暴露的 OpenAI 兼容接口。"
-                                    )}
-                                </div>
-                                <div style={{ display: "grid", gap: 8 }}>
-                                    <div>
-                                        <label style={labelStyle}>{t("Exposed API URL", "对外 API 地址")}</label>
-                                        <div style={{ ...readonlyStyle, minHeight: 36, display: "flex", alignItems: "center" }}>{hubServiceStatus?.hub_llm_base_url || "-"}</div>
+                                <div style={{
+                                    position: "absolute",
+                                    inset: 0,
+                                    pointerEvents: "none",
+                                    background: "radial-gradient(circle at 16% 0%, rgba(255,255,255,0.34), transparent 34%), linear-gradient(135deg, rgba(255,255,255,0.16), transparent 48%)",
+                                }} />
+                                <div style={{ position: "relative", display: "grid", gap: 14 }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                                        <div>
+                                            <div style={{ fontSize: "0.92rem", fontWeight: 800, color: "color-mix(in srgb, var(--theme-success) 74%, var(--theme-text-primary))", marginBottom: 6 }}>
+                                                {t("MaClaw Official", "MaClaw \u5b98\u65b9")}
+                                            </div>
+                                            <div style={{ fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.7, maxWidth: 620 }}>
+                                                {t("Your account is authorized for MaClaw official LLM service. Requests are routed through the managed Hub service without exposing external API details.", "\u5f53\u524d\u8d26\u53f7\u5df2\u5f00\u901a MaClaw \u5b98\u65b9\u6a21\u578b\u670d\u52a1\u3002\u8bf7\u6c42\u5c06\u901a\u8fc7 Hub \u6258\u7ba1\u670d\u52a1\u5b89\u5168\u8f6c\u53d1\uff0c\u65e0\u9700\u5c55\u793a\u5bf9\u5916\u63a5\u53e3\u4fe1\u606f\u3002")}
+                                            </div>
+                                        </div>
+                                        <span style={{
+                                            flex: "0 0 auto",
+                                            padding: "4px 10px",
+                                            borderRadius: 999,
+                                            border: "1px solid color-mix(in srgb, var(--theme-success) 60%, transparent)",
+                                            background: "rgba(255,255,255,0.16)",
+                                            color: "color-mix(in srgb, var(--theme-success) 78%, var(--theme-text-primary))",
+                                            fontSize: "0.68rem",
+                                            fontWeight: 800,
+                                        }}>
+                                            {t("Managed", "\u6258\u7ba1\u4e2d")}
+                                        </span>
                                     </div>
-                                    <div>
-                                        <label style={labelStyle}>{t("Available Models", "可用模型名")}</label>
-                                        <div style={{ fontSize: "0.8rem", color: colors.text }}>{hubAvailableModels.length ? hubAvailableModels.join(", ") : (hubServiceStatus?.default_model || "auto")}</div>
+
+                                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+                                        <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.12)", border: "1px solid var(--theme-border-subtle)" }}>
+                                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Service Status", "\u670d\u52a1\u72b6\u6001")}</div>
+                                            <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800 }}>{t("Enabled", "\u5df2\u542f\u7528")}</div>
+                                        </div>
+                                        <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.12)", border: "1px solid var(--theme-border-subtle)" }}>
+                                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Model", "\u6a21\u578b")}</div>
+                                            <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800, wordBreak: "break-word" }}>{hubModelLabel}</div>
+                                        </div>
+                                        <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.12)", border: "1px solid var(--theme-border-subtle)" }}>
+                                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Configuration", "\u914d\u7f6e\u65b9\u5f0f")}</div>
+                                            <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800 }}>{t("No setup needed", "\u65e0\u9700\u914d\u7f6e")}</div>
+                                        </div>
                                     </div>
-                                </div>
-                                <div style={{ marginTop: 10, fontSize: "0.7rem", color: colors.textMuted, lineHeight: 1.5 }}>
-                                    {t(
-                                        "This service is managed by Hub. No additional configuration needed. You can also select another provider below to override.",
-                                        "此服务由 Hub 托管，无需额外配置。如需使用其他服务商，可在上方选择切换。"
-                                    )}
+
+                                    <div style={{ fontSize: "0.72rem", color: colors.textMuted, lineHeight: 1.6 }}>
+                                        {t("Use this managed service directly, or select another provider above if you need to override it.", "\u53ef\u76f4\u63a5\u4f7f\u7528\u6b64\u6258\u7ba1\u670d\u52a1\uff1b\u5982\u9700\u6539\u7528\u5176\u4ed6\u670d\u52a1\u5546\uff0c\u53ef\u5728\u4e0a\u65b9\u5207\u6362\u3002")}
+                                    </div>
                                 </div>
                             </div>
                         )}

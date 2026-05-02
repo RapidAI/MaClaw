@@ -7,7 +7,7 @@ type CenterRepository interface {
 	GetByID(ctx context.Context, id string) (*Center, error)
 	List(ctx context.Context) ([]*Center, error)
 	UpdateStatus(ctx context.Context, id, status string) error
-	UpdateHeartbeat(ctx context.Context, id string) error
+	UpdateHeartbeat(ctx context.Context, c *Center) error
 	UpdateIntegration(ctx context.Context, c *Center) error
 	Delete(ctx context.Context, id string) error
 }

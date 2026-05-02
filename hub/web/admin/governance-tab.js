@@ -33,6 +33,9 @@
     modelsPrefix: { zh: '\u53ef\u7528\u6a21\u578b: ', en: 'Models: ' },
     nearestExpiryPrefix: { zh: '\u6700\u8fd1\u5230\u671f: ', en: 'Nearest Expiry: ' },
     creditsPrefix: { zh: '\u79ef\u5206: ', en: 'Credits: ' },
+    creditsTotal: { zh: '\u62e5\u6709 Credits', en: 'Total Credits' },
+    creditsUsed: { zh: '\u5df2\u6d88\u8d39', en: 'Used' },
+    creditsRemaining: { zh: '\u5269\u4f59', en: 'Remaining' },
     smartRouteLabel: { zh: '\u667a\u80fd\u63a7\u5236', en: 'Smart Route' },
     boundUsersSearchPlaceholder: { zh: '\u641c\u7d22\u90ae\u7bb1 / SN...', en: 'Search email / SN...' },
     noMatches: { zh: '\u65e0\u5339\u914d\u7ed3\u679c', en: 'No matches' },
@@ -72,6 +75,35 @@
     if (status.nearest_expires_at) lines.push(gt('nearestExpiryPrefix') + status.nearest_expires_at);
     if (Number(status.credits_available || 0) > 0) lines.push(gt('creditsPrefix') + String(status.credits_available));
     return lines.join('&#10;');
+  }
+
+  function formatCreditsValue(value) {
+    var n = Number(value || 0);
+    if (!Number.isFinite(n)) n = 0;
+    if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    return String(Math.round(n * 100) / 100);
+  }
+
+  function userCreditsSummary(item) {
+    var status = item && item.service_status;
+    var grants = status && Array.isArray(status.active_grants) ? status.active_grants : [];
+    var total = 0;
+    var used = 0;
+    grants.forEach(function(grant) {
+      total += Number(grant.credits_total || 0);
+      used += Number(grant.credits_used || 0);
+    });
+    var remaining = status && Number.isFinite(Number(status.credits_available)) ? Number(status.credits_available) : Math.max(0, total - used);
+    return { total: total, used: used, remaining: remaining };
+  }
+
+  function renderCreditsSummary(item) {
+    var credits = userCreditsSummary(item);
+    return '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:7px 8px;border-radius:8px;background:#f8fafc;border:1px solid rgba(31,34,48,.06)">'
+      + '<div style="min-width:0"><div class="item-meta" style="font-size:9px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(gt('creditsTotal')) + '</div><div class="mono" style="font-size:12px;font-weight:800;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(formatCreditsValue(credits.total)) + '</div></div>'
+      + '<div style="min-width:0"><div class="item-meta" style="font-size:9px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(gt('creditsUsed')) + '</div><div class="mono" style="font-size:12px;font-weight:800;color:#ef5b70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(formatCreditsValue(credits.used)) + '</div></div>'
+      + '<div style="min-width:0"><div class="item-meta" style="font-size:9px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(gt('creditsRemaining')) + '</div><div class="mono" style="font-size:12px;font-weight:800;color:var(--ok);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(formatCreditsValue(credits.remaining)) + '</div></div>'
+      + '</div>';
   }
 
   global.renderBlockedEmails = function renderBlockedEmails(items) {
@@ -136,6 +168,7 @@
         + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '" style="justify-content:flex-start;font-size:11px"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' data-user-id="' + escapeHtml(String(item.id || '')) + '" onchange="toggleSmartRoute(this.dataset.userId, this.checked)"><span>AI</span></label>'
         + unbindBtn
         + '</div>'
+        + renderCreditsSummary(item)
         + '<div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">' + escapeHtml(item.sn || tr('na')) + '</div>'
         + '</div></div>';
     }).join('');

@@ -2,8 +2,9 @@
 //
 // Encoder-decoder transformer with RoPE, ported from RapidSpeech.cpp.
 // Architecture: Audio → Conv frontend → Encoder (LayerNorm + RoPE + GELU FFN)
-//            → Decoder (LayerNorm + RoPE + SwiGLU FFN + cross-attn)
-//            → Token logits → text
+//
+//	→ Decoder (LayerNorm + RoPE + SwiGLU FFN + cross-attn)
+//	→ Token logits → text
 //
 // Memory optimization: the GGUF file is memory-mapped. Tensors stored as Q8_0
 // in the GGUF are used via zero-copy (Q8Tensor.Data points into the mmap region).
@@ -43,38 +44,38 @@ type HParams struct {
 
 type encoderLayer struct {
 	attnQW, attnKW, attnVW, attnOutW *tensor.Q8Tensor // [dim, dim] quantized
-	attnNormW                         []float32        // [dim] — keep f32
-	ffUpW                             *tensor.Q8Tensor // [ffDim, dim]
-	ffUpB                             []float32        // [ffDim]
-	ffDownW                           *tensor.Q8Tensor // [dim, ffDim]
-	ffDownB                           []float32        // [dim]
-	ffNormW                           []float32        // [dim]
+	attnNormW                        []float32        // [dim] — keep f32
+	ffUpW                            *tensor.Q8Tensor // [ffDim, dim]
+	ffUpB                            []float32        // [ffDim]
+	ffDownW                          *tensor.Q8Tensor // [dim, ffDim]
+	ffDownB                          []float32        // [dim]
+	ffNormW                          []float32        // [dim]
 }
 
 type decoderLayer struct {
-	selfQW, selfKW, selfVW, selfOutW         *tensor.Q8Tensor
-	selfNormW                                 []float32
-	crossQW, crossKW, crossVW, crossOutW     *tensor.Q8Tensor
-	crossNormW                                []float32
-	ffUpW                                     *tensor.Q8Tensor // [2*intermediate, dim]
-	ffUpB                                     []float32
-	ffDownW                                   *tensor.Q8Tensor // [dim, intermediate]
-	ffDownB                                   []float32
-	ffNormW                                   []float32
+	selfQW, selfKW, selfVW, selfOutW     *tensor.Q8Tensor
+	selfNormW                            []float32
+	crossQW, crossKW, crossVW, crossOutW *tensor.Q8Tensor
+	crossNormW                           []float32
+	ffUpW                                *tensor.Q8Tensor // [2*intermediate, dim]
+	ffUpB                                []float32
+	ffDownW                              *tensor.Q8Tensor // [dim, intermediate]
+	ffDownB                              []float32
+	ffNormW                              []float32
 }
 
 type weights struct {
-	conv1W, conv1B       []float32
-	conv2W, conv2B       []float32
-	conv3W, conv3B       []float32
-	gnormW, gnormB       []float32
-	encLayers            []encoderLayer
-	encFinalNormW        []float32
-	decLayers            []decoderLayer
-	decFinalNormW        []float32
-	tokenEmb             []float32        // [vocabSize, dim] — keep f32 for embedding lookup
-	lmHeadW              *tensor.Q8Tensor // [vocabSize, dim] quantized; nil = weight tying
-	lmHeadF32            []float32        // fallback when weight-tied (points to tokenEmb)
+	conv1W, conv1B []float32
+	conv2W, conv2B []float32
+	conv3W, conv3B []float32
+	gnormW, gnormB []float32
+	encLayers      []encoderLayer
+	encFinalNormW  []float32
+	decLayers      []decoderLayer
+	decFinalNormW  []float32
+	tokenEmb       []float32        // [vocabSize, dim] — keep f32 for embedding lookup
+	lmHeadW        *tensor.Q8Tensor // [vocabSize, dim] quantized; nil = weight tying
+	lmHeadF32      []float32        // fallback when weight-tied (points to tokenEmb)
 }
 
 // MoonshineModel is a pure Go Moonshine ASR model.
@@ -82,7 +83,7 @@ type weights struct {
 type MoonshineModel struct {
 	hp    HParams
 	w     weights
-	vocab []string // indexed by token ID (contiguous)
+	vocab []string       // indexed by token ID (contiguous)
 	mmap  *gguf.MmapFile // kept alive for mmap-backed Q8Tensor data
 	mu    sync.Mutex
 }
@@ -310,14 +311,30 @@ func WAVToFloat32(data []byte) ([]float32, error) {
 	}
 
 	// Parse fmt chunk
-	channels, sampleRate, bitsPerSample, err := parseFmt(data)
+	audioFormat, channels, sampleRate, bitsPerSample, err := parseFmt(data)
 	if err != nil {
 		return nil, err
+	}
+	if audioFormat != 1 {
+		return nil, fmt.Errorf("asr: unsupported WAV format %d (want PCM)", audioFormat)
+	}
+	if channels != 1 && channels != 2 {
+		return nil, fmt.Errorf("asr: unsupported WAV channels %d (want mono or stereo)", channels)
+	}
+	if sampleRate <= 0 {
+		return nil, fmt.Errorf("asr: invalid WAV sample rate %d", sampleRate)
+	}
+	if bitsPerSample != 16 {
+		return nil, fmt.Errorf("asr: unsupported WAV bit depth %d (want 16-bit PCM)", bitsPerSample)
 	}
 
 	pcmData, err := extractData(data)
 	if err != nil {
 		return nil, err
+	}
+	blockAlign := channels * (bitsPerSample / 8)
+	if blockAlign <= 0 || len(pcmData)%blockAlign != 0 {
+		return nil, fmt.Errorf("asr: malformed WAV data size %d for block align %d", len(pcmData), blockAlign)
 	}
 
 	// Stereo to mono
@@ -348,11 +365,12 @@ func WAVToFloat32(data []byte) ([]float32, error) {
 	return samples, nil
 }
 
-func parseFmt(data []byte) (channels, sampleRate, bitsPerSample int, err error) {
+func parseFmt(data []byte) (audioFormat, channels, sampleRate, bitsPerSample int, err error) {
 	for i := 12; i+8 < len(data); {
 		id := string(data[i : i+4])
 		sz := int(binary.LittleEndian.Uint32(data[i+4 : i+8]))
 		if id == "fmt " && sz >= 16 && i+8+16 <= len(data) {
+			audioFormat = int(binary.LittleEndian.Uint16(data[i+8 : i+10]))
 			channels = int(binary.LittleEndian.Uint16(data[i+10 : i+12]))
 			sampleRate = int(binary.LittleEndian.Uint32(data[i+12 : i+16]))
 			bitsPerSample = int(binary.LittleEndian.Uint16(data[i+22 : i+24]))
@@ -363,7 +381,7 @@ func parseFmt(data []byte) (channels, sampleRate, bitsPerSample int, err error) 
 			i++
 		}
 	}
-	return 0, 0, 0, fmt.Errorf("asr: fmt chunk not found")
+	return 0, 0, 0, 0, fmt.Errorf("asr: fmt chunk not found")
 }
 
 func extractData(data []byte) ([]byte, error) {

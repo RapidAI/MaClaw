@@ -115,36 +115,46 @@ async function loadTlsConfig() {
 
 const ROUTING_I18N = {
   en: {
-    title: 'Enterprise Email Routing',
-    desc: 'Edit the hub\'s corporate email domains and sync them to Hub Center.',
+    title: 'Work Mode',
+    desc: 'Choose whether this hub routes enterprise email domains or accepts public signups.',
     reload: 'Reload',
+    workMode: 'Work Mode',
+    enterpriseMode: 'Enterprise Routing',
+    publicMode: 'Public Signup',
+    workModeHintEnterprise: 'Enterprise email domains can be configured only in Enterprise Routing mode.',
+    workModeHintPublic: 'Public Signup mode accepts users outside enterprise domains; enterprise email domains are disabled.',
     primaryDomain: 'Primary Corporate Email Domain',
     primaryPlaceholder: 'rapidai.tech',
     domains: 'Corporate Email Domains',
     domainsPlaceholder: 'rapidai.tech, subsidiary.example',
     domainsHint: 'Comma or newline separated. The first domain is treated as the primary route when the primary field is empty.',
-    acceptPublicSignup: 'Accept Public Signup',
-    acceptPublicSignupHint: 'Enable this only on the hub that should accept signups outside configured enterprise domains.',
     save: 'Save Routing',
-    loadFailed: 'Load enterprise email routing failed: {error}',
-    saveFailed: 'Save enterprise email routing failed: {error}',
-    saved: 'Enterprise email routing saved.'
+    saving: 'Saving...',
+    savedButton: 'Saved',
+    loadFailed: 'Load work mode failed: {error}',
+    saveFailed: 'Save work mode failed: {error}',
+    saved: 'Work mode saved.'
   },
   zh: {
-    title: '\u4f01\u4e1a\u90ae\u7bb1\u8def\u7531',
-    desc: '\u4fee\u6539 Hub \u5173\u8054\u7684\u4f01\u4e1a\u90ae\u7bb1\u57df\u540d\uff0c\u5e76\u540c\u6b65\u5230 Hub Center\u3002',
+    title: '\u5de5\u4f5c\u6a21\u5f0f',
+    desc: '\u9009\u62e9\u6b64 Hub \u662f\u627f\u63a5\u4f01\u4e1a\u90ae\u7bb1\u8def\u7531\uff0c\u8fd8\u662f\u5141\u8bb8\u6563\u5ba2\u6ce8\u518c\u3002',
     reload: '\u5237\u65b0',
+    workMode: '\u5de5\u4f5c\u6a21\u5f0f',
+    enterpriseMode: '\u4f01\u4e1a\u8def\u7531',
+    publicMode: '\u6563\u5ba2\u6ce8\u518c',
+    workModeHintEnterprise: '\u4ec5\u5728\u4f01\u4e1a\u8def\u7531\u6a21\u5f0f\u4e0b\u53ef\u8bbe\u7f6e\u4f01\u4e1a\u90ae\u4ef6\u57df\u540d\u3002',
+    workModeHintPublic: '\u6563\u5ba2\u6ce8\u518c\u6a21\u5f0f\u4f1a\u627f\u63a5\u975e\u4f01\u4e1a\u57df\u540d\u7528\u6237\uff0c\u4f01\u4e1a\u90ae\u4ef6\u57df\u540d\u4e0d\u53ef\u7f16\u8f91\u3002',
     primaryDomain: '\u4e3b\u4f01\u4e1a\u90ae\u7bb1\u57df\u540d',
     primaryPlaceholder: 'rapidai.tech',
     domains: '\u4f01\u4e1a\u90ae\u7bb1\u57df\u540d\u5217\u8868',
     domainsPlaceholder: 'rapidai.tech, subsidiary.example',
     domainsHint: '\u652f\u6301\u9017\u53f7\u6216\u6362\u884c\u5206\u9694\uff0c\u5f53\u4e3b\u57df\u540d\u4e3a\u7a7a\u65f6\u53d6\u5217\u8868\u7684\u7b2c\u4e00\u4e2a\u4f5c\u4e3a\u4e3b\u8def\u7531\u57df\u540d\u3002',
-    acceptPublicSignup: '\u5141\u8bb8\u6563\u6237\u6ce8\u518c',
-    acceptPublicSignupHint: '\u53ea\u5e94\u5728\u627f\u63a5\u975e\u4f01\u4e1a\u57df\u540d\u7528\u6237\u7684 Hub \u4e0a\u5f00\u542f\u3002',
     save: '\u4fdd\u5b58\u8def\u7531\u914d\u7f6e',
-    loadFailed: '\u52a0\u8f7d\u4f01\u4e1a\u90ae\u7bb1\u8def\u7531\u5931\u8d25: {error}',
-    saveFailed: '\u4fdd\u5b58\u4f01\u4e1a\u90ae\u7bb1\u8def\u7531\u5931\u8d25: {error}',
-    saved: '\u4f01\u4e1a\u90ae\u7bb1\u8def\u7531\u5df2\u4fdd\u5b58\u3002'
+    saving: '\u4fdd\u5b58\u4e2d...',
+    savedButton: '\u5df2\u4fdd\u5b58',
+    loadFailed: '\u52a0\u8f7d\u5de5\u4f5c\u6a21\u5f0f\u5931\u8d25: {error}',
+    saveFailed: '\u4fdd\u5b58\u5de5\u4f5c\u6a21\u5f0f\u5931\u8d25: {error}',
+    saved: '\u5de5\u4f5c\u6a21\u5f0f\u5df2\u4fdd\u5b58\u3002'
   }
 };
 const srx = (key, vars = {}) => ((ROUTING_I18N[currentLang] || ROUTING_I18N.en)[key] || ROUTING_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
@@ -161,14 +171,28 @@ function applySystemRoutingI18n() {
   _s('systemRoutingTitle', 'textContent', srx('title'));
   _s('systemRoutingDesc', 'textContent', srx('desc'));
   _s('systemRoutingReloadBtn', 'textContent', srx('reload'));
+  _s('systemWorkModeLabel', 'textContent', srx('workMode'));
+  _s('systemWorkModeEnterprise', 'textContent', srx('enterpriseMode'));
+  _s('systemWorkModePublic', 'textContent', srx('publicMode'));
   _s('systemCorporateEmailDomainLabel', 'textContent', srx('primaryDomain'));
   _s('systemCorporateEmailDomainsLabel', 'textContent', srx('domains'));
   _s('systemCorporateEmailDomainsHint', 'textContent', srx('domainsHint'));
-  _s('systemAcceptPublicSignupLabel', 'textContent', srx('acceptPublicSignup'));
-  _s('systemAcceptPublicSignupHint', 'textContent', srx('acceptPublicSignupHint'));
   _s('systemRoutingSaveBtn', 'textContent', srx('save'));
   _s('systemCorporateEmailDomain', 'placeholder', srx('primaryPlaceholder'));
   _s('systemCorporateEmailDomains', 'placeholder', srx('domainsPlaceholder'));
+  updateSystemRoutingModeState();
+}
+function systemRoutingIsEnterpriseMode() {
+  const mode = document.getElementById('systemWorkMode');
+  return !mode || mode.value !== 'public';
+}
+function updateSystemRoutingModeState() {
+  const enterpriseMode = systemRoutingIsEnterpriseMode();
+  const primary = document.getElementById('systemCorporateEmailDomain');
+  const domains = document.getElementById('systemCorporateEmailDomains');
+  if (primary) primary.disabled = !enterpriseMode;
+  if (domains) domains.disabled = !enterpriseMode;
+  _s('systemWorkModeHint', 'textContent', srx(enterpriseMode ? 'workModeHintEnterprise' : 'workModeHintPublic'));
 }
 async function loadSystemRoutingConfig() {
   applySystemRoutingI18n();
@@ -177,7 +201,8 @@ async function loadSystemRoutingConfig() {
     const domains = Array.isArray(data.corporate_email_domains) ? data.corporate_email_domains.filter(Boolean) : [];
     document.getElementById('systemCorporateEmailDomain').value = data.corporate_email_domain || '';
     document.getElementById('systemCorporateEmailDomains').value = domains.length ? domains.join('\n') : formatSystemRoutingDomains(data.corporate_email_domain || '');
-    document.getElementById('systemAcceptPublicSignup').checked = !!data.accept_public_signup;
+    document.getElementById('systemWorkMode').value = data.accept_public_signup ? 'public' : 'enterprise';
+    updateSystemRoutingModeState();
     return data;
   } catch (err) {
     const msg = srx('loadFailed', { error: err.message });
@@ -189,28 +214,35 @@ async function loadSystemRoutingConfig() {
 async function saveSystemRoutingConfig() {
   const btn = document.getElementById('systemRoutingSaveBtn');
   const previousLabel = btn ? btn.textContent : '';
-  if (btn) btn.disabled = true;
+  let savedOk = false;
+  if (btn) { btn.disabled = true; btn.textContent = srx('saving'); }
   try {
     const current = await api('/api/admin/center/status');
-    let corporateDomains = normalizeSystemRoutingDomains(document.getElementById('systemCorporateEmailDomains').value);
-    let primaryDomain = document.getElementById('systemCorporateEmailDomain').value.trim();
-    if (!corporateDomains.length && primaryDomain) corporateDomains = [primaryDomain];
-    if (!primaryDomain && corporateDomains.length) primaryDomain = corporateDomains[0];
+    const enterpriseMode = systemRoutingIsEnterpriseMode();
+    const payload = {
+      base_url: current.base_url || '',
+      public_base_url: current.public_base_url || '',
+      visibility: current.visibility || 'private',
+      enrollment_mode: current.enrollment_mode || 'open',
+      accept_public_signup: !enterpriseMode
+    };
+    if (enterpriseMode) {
+      let corporateDomains = normalizeSystemRoutingDomains(document.getElementById('systemCorporateEmailDomains').value);
+      let primaryDomain = document.getElementById('systemCorporateEmailDomain').value.trim();
+      if (!corporateDomains.length && primaryDomain) corporateDomains = [primaryDomain];
+      if (!primaryDomain && corporateDomains.length) primaryDomain = corporateDomains[0];
+      payload.corporate_email_domain = primaryDomain;
+      payload.corporate_email_domains = corporateDomains;
+    }
     await api('/api/admin/center/config', {
       method: 'POST',
-      body: JSON.stringify({
-        base_url: current.base_url || '',
-        public_base_url: current.public_base_url || '',
-        visibility: current.visibility || 'private',
-        enrollment_mode: current.enrollment_mode || 'open',
-        corporate_email_domain: primaryDomain,
-        corporate_email_domains: corporateDomains,
-        accept_public_signup: !!document.getElementById('systemAcceptPublicSignup').checked
-      })
+      body: JSON.stringify(payload)
     });
     await loadSystemRoutingConfig();
     const msg = srx('saved');
     setOutput(msg);
+    savedOk = true;
+    if (btn) btn.textContent = srx('savedButton');
     showToast(msg, 'success');
   } catch (err) {
     const msg = srx('saveFailed', { error: err.message });
@@ -218,8 +250,12 @@ async function saveSystemRoutingConfig() {
     showToast(msg, 'error');
   } finally {
     if (btn) {
-      btn.disabled = false;
-      btn.textContent = previousLabel || srx('save');
+      const restore = function() {
+        btn.disabled = false;
+        btn.textContent = previousLabel || srx('save');
+      };
+      if (savedOk) setTimeout(restore, 900);
+      else restore();
     }
   }
 }

@@ -127,6 +127,7 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 - 主动使用工具：不要只是描述步骤，直接执行。收到请求后立即调用对应工具。
 - 永远不要说"我没有某某工具"或"我无法执行"——先检查你的工具列表，大部分操作都有对应工具。
 - 执行 Skill 的正确方式：使用 manage_skill(action="run", name="skill名称")。
+- 语音朗读：当用户说“读给我听”“朗读”“念一下”“读笑话给我听”“讲给我听”等希望听到声音的表达时，必须调用 tts(text=...) 生成并播放语音；不要只用文字回复，也不要要求用户额外说“tts”。
 - 多步推理：复杂任务可以连续调用多个工具，逐步完成。
 - 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
 - ⚠️ 先查记忆再问用户：当用户提到服务器、环境、配置等信息时，先检查下方「用户记忆」和「相关记忆（自动召回）」section 中是否已有相关信息，有则直接使用，不要向用户索要已经记住的信息。
@@ -272,6 +273,9 @@ func appendCodingWorkflowRules(b *strings.Builder, hasCodingSessions bool) {
 		b.WriteString(`
 ### 编码执行方式
 你没有 create_session 等远程编程会话工具。所有编码任务直接使用以下工具完成：
+- Glob：按文件名/扩展名查找文件，例如 pattern="**/*.go"、"**/main.go"
+- ripgrep：在项目中搜索函数名、变量名、错误文案、TODO，返回 file:line:content；定位后用 FileRead 读上下文
+- FileRead：按行读取代码片段，例如 start_line=120, lines=80；修改前用它查看目标行附近上下文
 - read_file：理解现有代码结构
 - write_file：创建新文件（mode=append 分块写入大文件）
 - edit_file：增量修改现有文件（优先使用，避免全文覆盖）
@@ -279,6 +283,7 @@ func appendCodingWorkflowRules(b *strings.Builder, hasCodingSessions bool) {
 - list_directory：浏览项目结构
 
 ### 编码规范
+- 不知道文件位置时先用 Glob；不知道符号/文案位置时先用 ripgrep；拿到行号后用 FileRead 查看上下文，再 edit_file 修改
 - 优先用 edit_file 做增量修改，避免 write_file 全文覆盖已有文件
 - 单次 write_file 内容不超过 200 行，超过时用 mode=append 分块写入
 - 每个文件修改后用 bash 编译/lint 检查

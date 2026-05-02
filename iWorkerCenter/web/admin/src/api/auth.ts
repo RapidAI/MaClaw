@@ -6,7 +6,10 @@ export interface TenantStatus {
 }
 
 export interface LoginResult {
-  token: string;
+  status: string;
+  username: string;
+  email?: string;
+  tenant_id: string;
 }
 
 export function checkTenantStatus(): Promise<TenantStatus> {

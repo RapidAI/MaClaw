@@ -47,7 +47,9 @@ func SetMatMulMaxParallel(n int) { atomic.StoreInt32(&matMulMaxParallel, int32(n
 
 func getMatMulWorkers() int {
 	n := int(atomic.LoadInt32(&matMulMaxParallel))
-	if n <= 0 { return runtime.NumCPU() }
+	if n <= 0 {
+		return runtime.NumCPU()
+	}
 	return n
 }
 
@@ -68,7 +70,7 @@ func MatMulQ8(out, a []float32, b *Q8Tensor, M, N, K int) {
 		matMulQ8ParallelN(out, a, b, M, N, K)
 		return
 	}
-	buf := make([]float32, K)
+	buf := getQ8DequantBuf(K)
 	nBlocks := K / q8BlockSize
 	for m := 0; m < M; m++ {
 		aRow := a[m*K : m*K+K]
@@ -77,6 +79,7 @@ func MatMulQ8(out, a []float32, b *Q8Tensor, M, N, K int) {
 			out[m*N+n] = vek32.Dot(aRow, buf)
 		}
 	}
+	putQ8DequantBuf(buf)
 }
 
 func matMulQ8Parallel(out, a []float32, b *Q8Tensor, M, N, K int) {
@@ -99,7 +102,8 @@ func matMulQ8Parallel(out, a []float32, b *Q8Tensor, M, N, K int) {
 		wg.Add(1)
 		go func(s, e int) {
 			defer wg.Done()
-			buf := make([]float32, K) // per-goroutine buffer
+			buf := getQ8DequantBuf(K) // per-goroutine buffer
+			defer putQ8DequantBuf(buf)
 			for m := s; m < e; m++ {
 				aRow := a[m*K : m*K+K]
 				for n := 0; n < N; n++ {
@@ -135,7 +139,8 @@ func matMulQ8ParallelN(out, a []float32, b *Q8Tensor, M, N, K int) {
 		wg.Add(1)
 		go func(ns, ne int) {
 			defer wg.Done()
-			buf := make([]float32, K)
+			buf := getQ8DequantBuf(K)
+			defer putQ8DequantBuf(buf)
 			for m := 0; m < M; m++ {
 				aRow := a[m*K : m*K+K]
 				for n := ns; n < ne; n++ {
@@ -146,6 +151,22 @@ func matMulQ8ParallelN(out, a []float32, b *Q8Tensor, M, N, K int) {
 		}(nStart, nEnd)
 	}
 	wg.Wait()
+}
+
+var q8DequantPool = sync.Pool{
+	New: func() interface{} { return make([]float32, 0, 1024) },
+}
+
+func getQ8DequantBuf(n int) []float32 {
+	buf := q8DequantPool.Get().([]float32)
+	if cap(buf) < n {
+		buf = make([]float32, n)
+	}
+	return buf[:n]
+}
+
+func putQ8DequantBuf(buf []float32) {
+	q8DequantPool.Put(buf[:0])
 }
 
 // dequantRowInto dequantizes a Q8_0 row into dst (len >= nBlocks*32).

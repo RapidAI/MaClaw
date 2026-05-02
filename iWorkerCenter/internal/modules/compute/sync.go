@@ -41,6 +41,8 @@ type ComputeSyncStatus struct {
 	Status        string `json:"status"` // success | failure | pending | waiting_for_credentials
 	Error         string `json:"error,omitempty"`
 	ProviderCount int    `json:"provider_count"`
+	NonBlocking   bool   `json:"non_blocking"`
+	RuntimeImpact string `json:"runtime_impact,omitempty"`
 }
 
 // CredentialResolver resolves the current Cloud center credentials before each sync.
@@ -79,7 +81,7 @@ func NewSyncManager(cloudURL, centerID, centerSecret string) *SyncManager {
 		cloudURL:     strings.TrimRight(cloudURL, "/"),
 		centerID:     centerID,
 		centerSecret: centerSecret,
-		syncStatus:   ComputeSyncStatus{Status: "pending"},
+		syncStatus:   ComputeSyncStatus{Status: "pending", NonBlocking: true, RuntimeImpact: "waiting_for_cloud_sync"},
 		stopCh:       make(chan struct{}),
 		client:       &http.Client{Timeout: 15 * time.Second},
 		interval:     5 * time.Minute,
@@ -252,6 +254,8 @@ func (sm *SyncManager) doSync() error {
 		LastSyncAt:    time.Now().UTC().Format(time.RFC3339),
 		Status:        "success",
 		ProviderCount: len(sr.Providers),
+		NonBlocking:   true,
+		RuntimeImpact: "cloud_sync_current",
 	}
 
 	log.Printf("[compute/sync] synced %d providers from cloud", len(sr.Providers))
@@ -266,6 +270,8 @@ func (sm *SyncManager) recordWaitingForCredentials(err error) {
 		Status:        "waiting_for_credentials",
 		Error:         err.Error(),
 		ProviderCount: len(sm.providers),
+		NonBlocking:   true,
+		RuntimeImpact: runtimeImpactForProviderCount(len(sm.providers)),
 	}
 }
 
@@ -273,10 +279,20 @@ func (sm *SyncManager) recordWaitingForCredentials(err error) {
 func (sm *SyncManager) recordFailure(err error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	providerCount := len(sm.providers)
 	sm.syncStatus = ComputeSyncStatus{
 		LastSyncAt:    time.Now().UTC().Format(time.RFC3339),
 		Status:        "failure",
 		Error:         err.Error(),
-		ProviderCount: len(sm.providers), // keep previous count
+		ProviderCount: providerCount, // keep previous count
+		NonBlocking:   true,
+		RuntimeImpact: runtimeImpactForProviderCount(providerCount),
 	}
+}
+
+func runtimeImpactForProviderCount(providerCount int) string {
+	if providerCount > 0 {
+		return "using_cached_cloud_providers"
+	}
+	return "local_settings_fallback"
 }

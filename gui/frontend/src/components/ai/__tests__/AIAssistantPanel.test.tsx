@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import * as fc from 'fast-check';
 import { AIAssistantPanel } from '../AIAssistantPanel';
 import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } from '../useAIAssistant';
+import { DialogProvider } from '../../CustomDialog';
 
 const { openFileOrShowInFolderMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn(),
@@ -23,12 +24,26 @@ Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
 
 // ── Mock Wails runtime (not used by panel but imported transitively) ──
 vi.mock('../../../../wailsjs/runtime', () => ({
+    BrowserOpenURL: vi.fn(),
     EventsOn: vi.fn(),
     EventsOff: vi.fn(),
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
+    SelectProjectDir: vi.fn(),
+    SetWorkflowWorkingDir: vi.fn(),
+    SearchProjects: vi.fn().mockResolvedValue([]),
+    ResumeProject: vi.fn(),
+    RenameTask: vi.fn(),
+    PinTask: vi.fn(),
+    HideTask: vi.fn(),
+    GetTTSEnabled: vi.fn().mockResolvedValue(false),
+    SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
+    SpeakText: vi.fn().mockResolvedValue(undefined),
+    LoadConfig: vi.fn().mockResolvedValue({}),
+    IsASRReady: vi.fn().mockResolvedValue(false),
+    TranscribeAudioBase64: vi.fn().mockResolvedValue(""),
 }));
 
 function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }): ChatMessage {
@@ -97,7 +112,7 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantP
             ...overrides.window,
         },
     };
-    return render(<AIAssistantPanel {...props} />);
+    return render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
 }
 
 describe('AIAssistantPanel property tests', () => {
@@ -193,10 +208,11 @@ describe('AIAssistantPanel property tests', () => {
 
         const toolsGroup = getByTestId('ai-titlebar-tools-group');
         const buttons = Array.from(toolsGroup.querySelectorAll('button'));
-        expect(buttons).toHaveLength(3);
-        expect(buttons[0]?.getAttribute('title')).toBe('Search projects');
-        expect(buttons[1]?.getAttribute('title')).toBe('Switch to dark mode');
-        expect(buttons[2]?.getAttribute('title')).toBe('New conversation');
+        expect(buttons).toHaveLength(4);
+        expect(buttons[0]?.getAttribute('title')).toBe('Search tasks');
+        expect(buttons[1]?.getAttribute('title')).toContain('Voice readback OFF');
+        expect(buttons[2]?.getAttribute('title')).toBe('Switch to dark mode');
+        expect(buttons[3]?.getAttribute('title')).toBe('New conversation');
     });
 
     it('shows trial-reflect badge when mode is enabled', () => {
@@ -810,7 +826,8 @@ describe('AIAssistantPanel property tests', () => {
                     ...props.actions,
                     setDraftInputValue,
                 }}
-            />
+            />,
+            { wrapper: DialogProvider }
         );
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;

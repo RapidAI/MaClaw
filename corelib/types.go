@@ -1,6 +1,7 @@
 package corelib
 
 import (
+	"math"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -389,6 +390,8 @@ type MaclawLLMProvider struct {
 	TokenExpiresAt   int64  `json:"token_expires_at,omitempty"`
 	OAuthAccessToken string `json:"oauth_access_token,omitempty"` // 原始 access_token，仅用于 Costs/Usage API 查询
 	WireAPI          string `json:"wire_api,omitempty"`           // "chat" or "responses"; empty defaults to "chat"
+	InputPricePerMTokensRMB  float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
+	OutputPricePerMTokensRMB float64 `json:"output_price_per_m_tokens_rmb,omitempty"`
 }
 
 // UserAgent returns the User-Agent header value for LLM API requests.
@@ -579,13 +582,41 @@ func (c MaclawLLMConfig) EffectiveContextTokens() int {
 
 // TokenUsageStat 记录某个 LLM 服务商的累计 token 用量。
 type TokenUsageStat struct {
-	InputTokens       int64 `json:"input_tokens"`
-	OutputTokens      int64 `json:"output_tokens"`
-	TotalTokens       int64 `json:"total_tokens"`
-	CachedInputTokens int64 `json:"cached_input_tokens,omitempty"`
-	CacheWriteTokens  int64 `json:"cache_write_tokens,omitempty"`
-	Requests          int64 `json:"requests,omitempty"`
-	CachedRequests    int64 `json:"cached_requests,omitempty"`
+	InputTokens              int64   `json:"input_tokens"`
+	OutputTokens             int64   `json:"output_tokens"`
+	TotalTokens              int64   `json:"total_tokens"`
+	CachedInputTokens        int64   `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens         int64   `json:"cache_write_tokens,omitempty"`
+	InputPricePerMTokensRMB  float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
+	OutputPricePerMTokensRMB float64 `json:"output_price_per_m_tokens_rmb,omitempty"`
+	InputCostRMB             float64 `json:"input_cost_rmb,omitempty"`
+	OutputCostRMB            float64 `json:"output_cost_rmb,omitempty"`
+	TotalCostRMB             float64 `json:"total_cost_rmb,omitempty"`
+	Requests                 int64   `json:"requests,omitempty"`
+	CachedRequests           int64   `json:"cached_requests,omitempty"`
+}
+
+const (
+	DefaultLLMInputPricePerMTokensRMB  = 1.0
+	DefaultLLMOutputPricePerMTokensRMB = 2.0
+)
+
+func NormalizeLLMTokenPricePerMTokensRMB(value, fallback float64) float64 {
+	if !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 {
+		return value
+	}
+	if !math.IsNaN(fallback) && !math.IsInf(fallback, 0) && fallback >= 0 {
+		return fallback
+	}
+	return 0
+}
+
+func CalculateLLMCostRMB(inputTokens, outputTokens int64, inputPricePerM, outputPricePerM float64) (float64, float64, float64) {
+	inputPricePerM = NormalizeLLMTokenPricePerMTokensRMB(inputPricePerM, DefaultLLMInputPricePerMTokensRMB)
+	outputPricePerM = NormalizeLLMTokenPricePerMTokensRMB(outputPricePerM, DefaultLLMOutputPricePerMTokensRMB)
+	inputCost := float64(inputTokens) * inputPricePerM / 1_000_000
+	outputCost := float64(outputTokens) * outputPricePerM / 1_000_000
+	return inputCost, outputCost, inputCost + outputCost
 }
 
 // SkillHubEntry 描述一个 SkillHUB 注册端点。

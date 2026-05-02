@@ -51,12 +51,16 @@ func (h *Handler) handleSource(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getSource(w http.ResponseWriter, _ *http.Request) {
 	syncStatus := h.syncMgr.GetSyncStatus()
+	activeProviders, effectiveSource, fallbackActive := h.sourceMgr.GetActiveProviderSnapshot()
 	response.OK(w, map[string]any{
-		"source":             h.sourceMgr.GetSource(),
-		"compute_permission": h.syncMgr.GetComputePermission(),
-		"sync_status":        syncStatus,
-		"last_sync_at":       syncStatus.LastSyncAt,
-		"provider_count":     syncStatus.ProviderCount,
+		"source":                h.sourceMgr.GetSource(),
+		"effective_source":      effectiveSource,
+		"fallback_active":       fallbackActive,
+		"active_provider_count": len(activeProviders),
+		"compute_permission":    h.syncMgr.GetComputePermission(),
+		"sync_status":           syncStatus,
+		"last_sync_at":          syncStatus.LastSyncAt,
+		"provider_count":        syncStatus.ProviderCount,
 	})
 }
 
@@ -89,13 +93,15 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	providers := h.sourceMgr.GetActiveProviders()
+	providers, effectiveSource, fallbackActive := h.sourceMgr.GetActiveProviderSnapshot()
 	if providers == nil {
 		providers = []ComputeProvider{}
 	}
 	response.OK(w, map[string]any{
-		"providers": providers,
-		"source":    h.sourceMgr.GetSource(),
+		"providers":        providers,
+		"source":           h.sourceMgr.GetSource(),
+		"effective_source": effectiveSource,
+		"fallback_active":  fallbackActive,
 	})
 }
 

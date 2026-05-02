@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { ApiError } from '../api/client';
 import { useTranslation } from 'react-i18next';
 import {
   getCenterManagement,
@@ -9,34 +8,18 @@ import {
   enableCenter,
   deleteCenter,
   updateCenterIntegration,
-  provisionTenant,
   probeCenter,
   fetchCenterRuntimeSnapshot,
-  getProvisionReadiness,
+  getServiceReadiness,
   type Center,
   type CenterManagement,
   type CenterIntegrationPatch,
-  type ProvisionTenantRequest,
   type CloudControlMode,
-  type CenterProvisionReadiness,
+  type CenterServiceReadiness,
   type CenterProbeResult,
 } from '../api/centers';
 
 type IntegrationDraft = CenterIntegrationPatch;
-type TenantDraft = ProvisionTenantRequest;
-type ProvisionNotReadyBody = {
-  error?: string;
-  message?: string;
-  readiness?: CenterProvisionReadiness;
-};
-
-function readinessFromError(err: unknown): CenterProvisionReadiness | null {
-  if (!(err instanceof ApiError)) return null;
-  const body = err.body as ProvisionNotReadyBody;
-  return body?.readiness ?? null;
-}
-
-
 const postureLabels: Record<string, string> = {
   ready: 'Ready',
   needs_setup: 'Needs setup',
@@ -48,7 +31,6 @@ const postureLabels: Record<string, string> = {
 const issueLabels: Record<string, string> = {
   center_not_active: 'Center not active',
   missing_base_url: 'Missing base URL',
-  multi_tenant_not_confirmed: 'Multi-tenant not confirmed',
   probe_failed: 'Probe failed',
   probe_missing_base_url: 'Probe missing base URL',
   probe_not_iworkercenter: 'Endpoint is not iWorkerCenter service',
@@ -72,7 +54,6 @@ const syncStatusLabels: Record<string, string> = {
   probe_not_iworkercenter: 'Wrong service endpoint',
   heartbeat_ok: 'Heartbeat online',
   heartbeat_not_iworkercenter: 'Heartbeat identity failed',
-  tenant_provisioned: 'Tenant provisioned',
 };
 
 const formatDateTime = (value?: string) => {
@@ -83,7 +64,7 @@ const formatDateTime = (value?: string) => {
 };
 
 const serviceBadgeClass = (status?: string) => {
-  if (status === 'heartbeat_ok' || status === 'probe_ok' || status === 'tenant_provisioned') return 'ok';
+  if (status === 'heartbeat_ok' || status === 'probe_ok') return 'ok';
   if (status === 'registered' || status === 'configured' || status === 'probe_missing_base_url' || !status) return 'warn';
   return 'danger';
 };
@@ -91,37 +72,21 @@ const serviceBadgeClass = (status?: string) => {
 function createDraft(center: Center): IntegrationDraft {
   return {
     base_url: center.base_url ?? '',
-    supports_multi_tenant: center.supports_multi_tenant ?? true,
-    tenant_count: center.tenant_count ?? 0,
     cloud_control_mode: center.cloud_control_mode ?? 'cloud_managed',
     last_sync_status: center.last_sync_status ?? 'configured',
   };
 }
 
-function createTenantDraft(): TenantDraft {
-  return {
-    company_name: '',
-    legal_person: '',
-    email: '',
-    address: '',
-    admin_username: 'admin',
-    admin_password: '',
-  };
-}
 
 export function CentersPage() {
   const { t } = useTranslation();
   const [centers, setCenters] = useState<Center[]>([]);
   const [management, setManagement] = useState<Record<string, CenterManagement>>({});
   const [drafts, setDrafts] = useState<Record<string, IntegrationDraft>>({});
-  const [tenantDrafts, setTenantDrafts] = useState<Record<string, TenantDraft>>({});
-  const [provisioning, setProvisioning] = useState<string | null>(null);
   const [probing, setProbing] = useState<string | null>(null);
-  const [provisionResult, setProvisionResult] = useState<Record<string, string>>({});
-  const [probeResult, setProbeResult] = useState<Record<string, string>>({});
   const [probeRuntime, setProbeRuntime] = useState<Record<string, CenterProbeResult>>({});
   const [runtimeRefreshing, setRuntimeRefreshing] = useState<Record<string, boolean>>({});
-  const [readinessResult, setReadinessResult] = useState<Record<string, CenterProvisionReadiness>>({});
+  const [readinessResult, setReadinessResult] = useState<Record<string, CenterServiceReadiness>>({});
   const [checkingReadiness, setCheckingReadiness] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
@@ -163,7 +128,6 @@ export function CentersPage() {
         setCenters(nextCenters);
         setManagement(Object.fromEntries(nextItems.map(item => [item.center.id, item])));
         setDrafts(Object.fromEntries(nextCenters.map(center => [center.id, createDraft(center)])));
-        setTenantDrafts(prev => Object.fromEntries(nextCenters.map(center => [center.id, prev[center.id] ?? createTenantDraft()])));
         void refreshRuntimeSnapshots(nextCenters);
       })
       .catch(err => setError(err instanceof Error ? err.message : String(err)));
@@ -178,12 +142,6 @@ export function CentersPage() {
     }));
   };
 
-  const patchTenantDraft = (id: string, patch: Partial<TenantDraft>) => {
-    setTenantDrafts(prev => ({
-      ...prev,
-      [id]: { ...(prev[id] ?? createTenantDraft()), ...patch },
-    }));
-  };
 
   const handleSaveIntegration = async (center: Center) => {
     const draft = drafts[center.id] ?? createDraft(center);
@@ -193,7 +151,6 @@ export function CentersPage() {
       const updated = await updateCenterIntegration(center.id, {
         ...draft,
         base_url: draft.base_url.trim(),
-        tenant_count: Number(draft.tenant_count) || 0,
         last_sync_status: draft.last_sync_status.trim() || 'configured',
       });
       setCenters(prev => prev.map(item => item.id === center.id ? updated : item));
@@ -213,46 +170,12 @@ export function CentersPage() {
     load();
   };
 
-  const handleProvisionTenant = async (center: Center) => {
-    const draft = tenantDrafts[center.id] ?? createTenantDraft();
-    if (!draft.company_name.trim() || !draft.email.trim() || !draft.admin_username.trim() || !draft.admin_password.trim()) {
-      setError('company name, email, admin username, and admin password are required');
-      return;
-    }
-    setProvisioning(center.id);
-    setError('');
-    setProvisionResult(prev => ({ ...prev, [center.id]: '' }));
-    try {
-      const result = await provisionTenant(center.id, {
-        company_name: draft.company_name.trim(),
-        legal_person: draft.legal_person.trim(),
-        email: draft.email.trim(),
-        address: draft.address.trim(),
-        admin_username: draft.admin_username.trim(),
-        admin_password: draft.admin_password,
-      });
-      setProvisionResult(prev => ({
-        ...prev,
-        [center.id]: `Provisioned ${result.tenant_id || 'tenant'}: ${result.message || result.status || 'ok'}`,
-      }));
-      setTenantDrafts(prev => ({ ...prev, [center.id]: createTenantDraft() }));
-      load();
-    } catch (err) {
-      const readiness = readinessFromError(err);
-      if (readiness) {
-        setReadinessResult(prev => ({ ...prev, [center.id]: readiness }));
-      }
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setProvisioning(null);
-    }
-  };
 
-  const handleCheckProvisionReadiness = async (center: Center) => {
+  const handleCheckServiceReadiness = async (center: Center) => {
     setCheckingReadiness(center.id);
     setError('');
     try {
-      const readiness = await getProvisionReadiness(center.id);
+      const readiness = await getServiceReadiness(center.id);
       setReadinessResult(prev => ({ ...prev, [center.id]: readiness }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -263,16 +186,11 @@ export function CentersPage() {
   const handleProbeCenter = async (center: Center) => {
     setProbing(center.id);
     setError('');
-    setProbeResult(prev => ({ ...prev, [center.id]: '' }));
     try {
       const response = await probeCenter(center.id);
       setCenters(prev => prev.map(item => item.id === center.id ? response.center : item));
       setDrafts(prev => ({ ...prev, [center.id]: createDraft(response.center) }));
       setProbeRuntime(prev => ({ ...prev, [center.id]: response.probe }));
-      setProbeResult(prev => ({
-        ...prev,
-        [center.id]: `${response.probe.ok ? 'Verified iWorkerCenter service' : 'Service check failed'}: ${response.probe.message}`,
-      }));
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -294,7 +212,6 @@ export function CentersPage() {
         load();
         return;
       case 'configure_base_url':
-      case 'confirm_multi_tenant':
         await handleSaveIntegration(center);
         return;
       case 'test_connection':
@@ -305,7 +222,7 @@ export function CentersPage() {
         await handleConfirmManual(center.id);
         return;
       default:
-        setError('Fill the required tenant form or use the action buttons below.');
+        setError('Use the service action buttons below.');
     }
   };
 
@@ -314,7 +231,6 @@ export function CentersPage() {
       case 'activate_center':
         return 'Activate trial';
       case 'configure_base_url':
-      case 'confirm_multi_tenant':
         return 'Save integration';
       case 'test_connection':
         return 'Test now';
@@ -331,7 +247,7 @@ export function CentersPage() {
 
   const isRecommendedActionDisabled = (center: Center, code: string) => {
     if (code === 'test_connection' || code === 'verify_center_service_identity') return probing === center.id || !center.base_url;
-    if (code === 'configure_base_url' || code === 'confirm_multi_tenant') return saving === center.id;
+    if (code === 'configure_base_url') return saving === center.id;
     return false;
   };
 
@@ -340,24 +256,24 @@ export function CentersPage() {
   return (
     <div className="cloud-center-stack">
       <div className="hint">
-        iWorkerCloud is our iWorkerCenter management center. It manages connected multi-tenant iWorkerCenter instances for authorization, connectivity, compute distribution, upgrades, and skill entitlement, but it does not participate in customer company management, planning, or enterprise operations.
+        iWorkerCloud is our iWorkerCenter management center. It manages connected iWorkerCenter service instances for authorization, connectivity, compute distribution, upgrades, and skill entitlement, but it does not participate in customer company management, tenant administration, planning, or enterprise operations.
         {Object.keys(runtimeRefreshing).length > 0 ? ' Refreshing platform runtime snapshots...' : ''}
       </div>
       {error && <div className="hint danger">{error}</div>}
       <div className="list">
         {centers.map(center => {
           const draft = drafts[center.id] ?? createDraft(center);
-          const tenantDraft = tenantDrafts[center.id] ?? createTenantDraft();
           const managementItem = management[center.id];
-          const provisionReadiness = readinessResult[center.id];
+          const serviceReadiness = readinessResult[center.id];
           const runtime = probeRuntime[center.id];
+          const workload = managementItem?.iworker_readiness?.workload_summary;
           const isRuntimeRefreshing = runtimeRefreshing[center.id] === true;
           return (
             <div key={center.id} className="item cloud-center-card">
               <div className="item-head">
                 <div>
                   <span className="item-title">{center.company_name}</span>
-                  <div className="item-meta">ID: {center.id} | {center.admin_email}</div>
+                  <div className="item-meta">ID: {center.id}</div>
                 </div>
                 <span className={`badge ${center.status === 'active' ? 'ok' : center.status === 'pending' ? 'warn' : 'danger'}`}>
                   {t(`centers.${center.status}`)}
@@ -365,12 +281,12 @@ export function CentersPage() {
               </div>
 
               <div className="cloud-center-facts">
-                <span>Tenants: {center.tenant_count ?? 0}</span>
-                <span>{center.supports_multi_tenant ? 'Multi-tenant ready' : 'Single tenant / unknown'}</span>
                 <span>{controlModeLabels[center.cloud_control_mode ?? 'cloud_managed']}</span>
                 <span className={`badge ${serviceBadgeClass(center.last_sync_status)}`}>Service: {syncStatusLabels[center.last_sync_status || ''] ?? center.last_sync_status ?? 'not configured'}</span>
                 {managementItem && <span>Commercial: {managementItem.commercial_status}</span>}
                 {managementItem && <span>Connectivity: {managementItem.connectivity}</span>}
+                <span className={`badge ${center.iworker_ready ? 'ok' : center.iworker_readiness_status ? 'warn' : 'warn'}`}>iWorker: {center.iworker_readiness_status || 'not reported'}</span>
+                <span>Agent instances: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem?.iworker_readiness?.agent_instance_count ?? 0}</span>
                 <span>Last heartbeat: {formatDateTime(center.last_heartbeat)}</span>
                 {center.created_at && <span>Registered: {new Date(center.created_at).toLocaleString()}</span>}
               </div>
@@ -385,6 +301,27 @@ export function CentersPage() {
                   {managementItem.issues.length === 0
                     ? <span className="ok">No blocking issues</span>
                     : managementItem.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
+                </div>
+              </div>}
+
+              {managementItem && <div className={`cloud-posture-panel ${managementItem.iworker_operational_ready ? 'ready' : 'watch'}`}>
+                <div>
+                  <label>iWorker operating readiness</label>
+                  <strong>{managementItem.iworker_operational_ready ? 'Ready for pushed work' : center.iworker_readiness_status ? 'Needs iWorker setup' : 'Waiting for heartbeat'}</strong>
+                  <span>{managementItem.iworker_operational_ready ? 'This Center reports that iWorker can receive Center-pushed work and collaborate with human employees.' : 'Cloud only tracks platform readiness signals reported by Center, such as agent runtime, GoalWatch, and aggregate workload status. Customer business setup stays inside iWorkerCenter.'}</span>
+                </div>
+                <div className="cloud-issue-list">
+                  <span className={(managementItem.iworker_readiness?.agent_runtime_ready ?? false) ? 'ok' : 'warn'}>agent runtime: {(managementItem.iworker_readiness?.agent_runtime_ready ?? false) ? 'ready' : 'not ready'}</span>
+                  <span className={(managementItem.iworker_readiness?.goalwatch_ready ?? false) ? 'ok' : 'warn'}>GoalWatch: {(managementItem.iworker_readiness?.goalwatch_ready ?? false) ? 'ready' : 'not ready'}</span>
+                  <span>agent instances: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem.iworker_readiness?.agent_instance_count ?? 0}</span>
+                  {workload ? <>
+                    <span className={workload.active_count > 0 ? 'ok' : 'warn'}>active: {workload.active_count}</span>
+                    <span>completed: {workload.completed_count}</span>
+                    <span className={workload.review_count > 0 ? 'warn' : 'ok'}>review: {workload.review_count}</span>
+                    <span className={workload.blocked_count > 0 ? 'danger' : 'ok'}>blocked: {workload.blocked_count}</span>
+                    {workload.updated_at ? <span>workload sync: {formatDateTime(workload.updated_at)}</span> : null}
+                  </> : null}
+                  <span className={center.iworker_ready ? 'ok' : 'warn'}>status: {center.iworker_readiness_status || 'not reported'}</span>
                 </div>
               </div>}
 
@@ -435,15 +372,6 @@ export function CentersPage() {
                   />
                 </div>
                 <div>
-                  <label>Tenant count</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={draft.tenant_count}
-                    onChange={event => patchDraft(center.id, { tenant_count: Number(event.target.value) })}
-                  />
-                </div>
-                <div>
                   <label>Cloud control mode</label>
                   <select
                     value={draft.cloud_control_mode}
@@ -452,16 +380,6 @@ export function CentersPage() {
                     {Object.entries(controlModeLabels).map(([value, label]) => (
                       <option key={value} value={value}>{label}</option>
                     ))}
-                  </select>
-                </div>
-                <div>
-                  <label>Multi-tenant support</label>
-                  <select
-                    value={draft.supports_multi_tenant ? 'yes' : 'no'}
-                    onChange={event => patchDraft(center.id, { supports_multi_tenant: event.target.value === 'yes' })}
-                  >
-                    <option value="yes">Supported</option>
-                    <option value="no">Not yet / unknown</option>
                   </select>
                 </div>
                 <div>
@@ -474,50 +392,18 @@ export function CentersPage() {
                 </div>
               </div>
 
-              {provisionReadiness && <div className={`cloud-posture-panel ${provisionReadiness.allowed ? 'ready' : 'watch'}`}>
+              {serviceReadiness && <div className={`cloud-posture-panel ${serviceReadiness.allowed ? 'ready' : 'watch'}`}>
                 <div>
-                  <label>Provision gate</label>
-                  <strong>{provisionReadiness.allowed ? 'Allowed' : 'Blocked'}</strong>
-                  <span>{provisionReadiness.allowed ? 'Cloud may request tenant container creation for this iWorkerCenter.' : 'Cloud will not provision tenants until the blocking issues are resolved.'}</span>
+                  <label>Service coordination gate</label>
+                  <strong>{serviceReadiness.allowed ? 'Allowed' : 'Blocked'}</strong>
+                  <span>{serviceReadiness.allowed ? 'Cloud may coordinate platform services for this iWorkerCenter.' : 'Cloud will not enable service coordination until the blocking issues are resolved.'}</span>
                 </div>
                 <div className="cloud-issue-list">
-                  {provisionReadiness.issues.length === 0
-                    ? <span className="ok">No provision blockers</span>
-                    : provisionReadiness.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
+                  {serviceReadiness.issues.length === 0
+                    ? <span className="ok">No service blockers</span>
+                    : serviceReadiness.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
                 </div>
               </div>}
-              <div className="cloud-provision-panel">
-                <div className="field-span-2">
-                  <label>Provision customer tenant container</label>
-                  <p>Cloud may request tenant container creation on a connected multi-tenant iWorkerCenter for system management. Customer organization management and enterprise operations remain inside that iWorkerCenter, not in iWorkerCloud.</p>
-                </div>
-                <div>
-                  <label>Company name</label>
-                  <input value={tenantDraft.company_name} onChange={event => patchTenantDraft(center.id, { company_name: event.target.value })} />
-                </div>
-                <div>
-                  <label>Legal person</label>
-                  <input value={tenantDraft.legal_person} onChange={event => patchTenantDraft(center.id, { legal_person: event.target.value })} />
-                </div>
-                <div>
-                  <label>Admin email</label>
-                  <input value={tenantDraft.email} onChange={event => patchTenantDraft(center.id, { email: event.target.value })} />
-                </div>
-                <div>
-                  <label>Address</label>
-                  <input value={tenantDraft.address} onChange={event => patchTenantDraft(center.id, { address: event.target.value })} />
-                </div>
-                <div>
-                  <label>Admin username</label>
-                  <input value={tenantDraft.admin_username} onChange={event => patchTenantDraft(center.id, { admin_username: event.target.value })} />
-                </div>
-                <div>
-                  <label>Initial password</label>
-                  <input type="password" value={tenantDraft.admin_password} onChange={event => patchTenantDraft(center.id, { admin_password: event.target.value })} />
-                </div>
-                {provisionResult[center.id] && <div className="hint ok field-span-2">{provisionResult[center.id]}</div>}
-                {probeResult[center.id] && <div className={`hint ${probeResult[center.id].startsWith('Verified') ? 'ok' : 'danger'} field-span-2`}>{probeResult[center.id]}</div>}
-              </div>
 
               <div className="actions">
                 <button className="btn-primary" disabled={saving === center.id} onClick={() => handleSaveIntegration(center)}>
@@ -540,16 +426,9 @@ export function CentersPage() {
                 <button
                   className="btn-ghost"
                   disabled={checkingReadiness === center.id}
-                  onClick={() => handleCheckProvisionReadiness(center)}
+                  onClick={() => handleCheckServiceReadiness(center)}
                 >
-                  {checkingReadiness === center.id ? 'Checking...' : 'Check provision gate'}
-                </button>
-                <button
-                  className="btn-secondary"
-                  disabled={provisioning === center.id || !center.base_url || center.status !== 'active' || provisionReadiness?.allowed === false}
-                  onClick={() => handleProvisionTenant(center)}
-                >
-                  {provisioning === center.id ? 'Provisioning...' : 'Provision tenant'}
+                  {checkingReadiness === center.id ? 'Checking...' : 'Check service gate'}
                 </button>
                 {center.status === 'pending' && <>
                   <button className="btn-secondary" onClick={() => { confirmTrial(center.id).then(load); }}>{t('centers.confirmTrial')}</button>

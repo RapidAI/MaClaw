@@ -61,13 +61,21 @@ func (r *heartbeatCenterRepo) UpdateStatus(_ context.Context, id, status string)
 	return nil
 }
 
-func (r *heartbeatCenterRepo) UpdateHeartbeat(_ context.Context, id string) error {
-	item, ok := r.items[id]
+func (r *heartbeatCenterRepo) UpdateHeartbeat(_ context.Context, c *store.Center) error {
+	item, ok := r.items[c.ID]
 	if !ok {
 		return fmt.Errorf("not found")
 	}
 	item.LastHeartbeat = time.Now()
-	item.LastSyncStatus = "heartbeat_ok"
+	item.LastSyncStatus = c.LastSyncStatus
+	item.IWorkerReady = c.IWorkerReady
+	item.IWorkerReadinessStatus = c.IWorkerReadinessStatus
+	item.IWorkerTenantCount = c.IWorkerTenantCount
+	item.IWorkerRoleCount = c.IWorkerRoleCount
+	item.IWorkerColleagueCount = c.IWorkerColleagueCount
+	item.IWorkerLocalAccountCount = c.IWorkerLocalAccountCount
+	item.IWorkerAgentInstanceCount = c.IWorkerAgentInstanceCount
+	item.IWorkerReadinessJSON = c.IWorkerReadinessJSON
 	return nil
 }
 
@@ -81,6 +89,14 @@ func (r *heartbeatCenterRepo) UpdateIntegration(_ context.Context, c *store.Cent
 	item.TenantCount = c.TenantCount
 	item.CloudControlMode = c.CloudControlMode
 	item.LastSyncStatus = c.LastSyncStatus
+	item.IWorkerReady = c.IWorkerReady
+	item.IWorkerReadinessStatus = c.IWorkerReadinessStatus
+	item.IWorkerTenantCount = c.IWorkerTenantCount
+	item.IWorkerRoleCount = c.IWorkerRoleCount
+	item.IWorkerColleagueCount = c.IWorkerColleagueCount
+	item.IWorkerLocalAccountCount = c.IWorkerLocalAccountCount
+	item.IWorkerAgentInstanceCount = c.IWorkerAgentInstanceCount
+	item.IWorkerReadinessJSON = c.IWorkerReadinessJSON
 	return nil
 }
 
@@ -104,6 +120,25 @@ func TestHeartbeatHandlerAcceptsServiceIdentity(t *testing.T) {
 	center, _ := repo.GetByID(context.Background(), "ctr_1")
 	if center.LastSyncStatus != "heartbeat_ok" {
 		t.Fatalf("LastSyncStatus = %q, want heartbeat_ok", center.LastSyncStatus)
+	}
+}
+
+func TestHeartbeatHandlerStoresIWorkerReadiness(t *testing.T) {
+	repo := newHeartbeatCenterRepo(&store.Center{ID: "ctr_1", Status: "active", SecretHash: hashTestSecret("secret-abc")})
+	svc := centers.NewService(repo, nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/centers/{id}/heartbeat", HeartbeatHandler(svc))
+
+	body := `{"secret":"secret-abc","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console","iworker_readiness":{"ready":true,"status":"ready","tenant_count":1,"role_count":2,"colleague_count":3,"local_account_count":4,"agent_instance_count":5}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/centers/ctr_1/heartbeat", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	center, _ := repo.GetByID(context.Background(), "ctr_1")
+	if !center.IWorkerReady || center.IWorkerReadinessStatus != "ready" || center.IWorkerColleagueCount != 0 || center.IWorkerAgentInstanceCount != 5 {
+		t.Fatalf("stored sanitized readiness = %+v", center)
 	}
 }
 
@@ -178,46 +213,13 @@ func TestRuntimeSnapshotHandlerReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestProvisionTenantHandlerRejectsCenterWithoutActiveLicense(t *testing.T) {
+func TestServiceReadinessHandlerReturnsBlockingIssues(t *testing.T) {
 	repo := newHeartbeatCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true})
 	svc := centers.NewService(repo, license.NewService(heartbeatLicenseRepo{}, nil))
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/admin/centers/{id}/provision-tenant", ProvisionTenantHandler(svc))
+	mux.HandleFunc("GET /api/admin/centers/{id}/service-readiness", ServiceReadinessHandler(svc))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/admin/centers/ctr_1/provision-tenant", strings.NewReader(`{"company_name":"Acme","email":"admin@example.com"}`))
-	res := httptest.NewRecorder()
-	mux.ServeHTTP(res, req)
-	if res.Code != http.StatusConflict {
-		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
-	}
-	var body struct {
-		Error     string `json:"error"`
-		Readiness struct {
-			Allowed bool     `json:"allowed"`
-			Issues  []string `json:"issues"`
-		} `json:"readiness"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if body.Error != "CENTER_NOT_READY" {
-		t.Fatalf("error = %q, want CENTER_NOT_READY", body.Error)
-	}
-	if body.Readiness.Allowed {
-		t.Fatalf("readiness.allowed = true, want false")
-	}
-	if !stringSliceContains(body.Readiness.Issues, "no_active_license") {
-		t.Fatalf("readiness.issues = %+v, want no_active_license", body.Readiness.Issues)
-	}
-}
-
-func TestProvisionReadinessHandlerReturnsBlockingIssues(t *testing.T) {
-	repo := newHeartbeatCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true})
-	svc := centers.NewService(repo, license.NewService(heartbeatLicenseRepo{}, nil))
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/admin/centers/{id}/provision-readiness", ProvisionReadinessHandler(svc))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/admin/centers/ctr_1/provision-readiness", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/centers/ctr_1/service-readiness", nil)
 	res := httptest.NewRecorder()
 	mux.ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -241,6 +243,87 @@ func TestProvisionReadinessHandlerReturnsBlockingIssues(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("issues = %+v, want no_active_license", body.Issues)
+	}
+}
+
+func TestProvisionTenantRouteIsNotRegistered(t *testing.T) {
+	repo := newHeartbeatCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example"})
+	svc := centers.NewService(repo, license.NewService(heartbeatLicenseRepo{}, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/centers/{id}/service-readiness", ServiceReadinessHandler(svc))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/centers/ctr_1/provision-tenant", strings.NewReader(`{"company_name":"Acme","admin_password":"secret"}`))
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body=%s, want 404 for removed cloud-side tenant provisioning route", res.Code, res.Body.String())
+	}
+}
+
+func TestCenterManagementOmitsBusinessTopologyAndTaskDetails(t *testing.T) {
+	repo := newHeartbeatCenterRepo(&store.Center{
+		ID:                        "ctr_1",
+		CompanyName:               "Legacy Acme Tenant",
+		AdminEmail:                "tenant-admin@acme.example",
+		AdminPhone:                "+1-555-0100",
+		Address:                   "1 Customer Road",
+		LegalPerson:               "Jane Customer",
+		Status:                    "active",
+		BaseURL:                   "https://center.example",
+		SupportsMultiTenant:       true,
+		TenantCount:               7,
+		IWorkerTenantCount:        3,
+		IWorkerRoleCount:          4,
+		IWorkerColleagueCount:     5,
+		IWorkerLocalAccountCount:  6,
+		IWorkerAgentInstanceCount: 2,
+		IWorkerReadinessStatus:    "ready",
+		IWorkerReadinessJSON:      "{\"ready\":true,\"status\":\"ready\",\"tenant_count\":3,\"role_count\":4,\"colleague_count\":5,\"local_account_count\":6,\"agent_instance_count\":2,\"current_task\":\"Quarter-close approval\",\"current_detail\":\"Customer Acme revenue plan\",\"workload_summary\":{\"agent_instance_count\":2,\"active_count\":1,\"completed_count\":8,\"review_count\":1,\"blocked_count\":0}}",
+	})
+	svc := centers.NewService(repo, license.NewService(heartbeatLicenseRepo{}, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/centers/management", CenterManagementHandler(svc))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/centers/management", nil)
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	body := res.Body.String()
+	for _, forbidden := range []string{"tenant_count", "supports_multi_tenant", "role_count", "colleague_count", "local_account_count", "current_task", "current_detail", "Quarter-close", "Customer Acme", "tenant-admin@acme.example", "+1-555-0100", "1 Customer Road", "Jane Customer", "admin_email", "admin_phone", "legal_person", "address"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("management response leaked %q: %s", forbidden, body)
+		}
+	}
+	for _, expected := range []string{"workload_agent_instances", "workload_active_tasks", "workload_completed_tasks", "workload_review_tasks", "workload_blocked_tasks"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("management response missing aggregate %q: %s", expected, body)
+		}
+	}
+}
+
+func TestUpdateIntegrationIgnoresBusinessTopologyFields(t *testing.T) {
+	repo := newHeartbeatCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://old.example", SupportsMultiTenant: true, TenantCount: 7, LastSyncStatus: "configured"})
+	svc := centers.NewService(repo, nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /api/admin/centers/{id}/integration", UpdateCenterIntegrationHandler(svc))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/centers/ctr_1/integration", strings.NewReader(`{"base_url":"https://center.example","supports_multi_tenant":false,"tenant_count":0,"cloud_control_mode":"cloud_managed","last_sync_status":"configured"}`))
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	center, _ := repo.GetByID(context.Background(), "ctr_1")
+	if center.TenantCount != 7 {
+		t.Fatalf("TenantCount = %d, want preserved 7 when Cloud integration payload includes ignored business tenant count", center.TenantCount)
+	}
+	if center.BaseURL != "https://center.example" {
+		t.Fatalf("center integration not updated as expected: %+v", center)
+	}
+	if !center.SupportsMultiTenant {
+		t.Fatalf("SupportsMultiTenant = false, want legacy value preserved because Cloud no longer manages tenant topology")
 	}
 }
 

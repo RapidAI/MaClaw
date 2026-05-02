@@ -32,9 +32,12 @@ export function OverviewPage() {
     ready_centers: 0,
     needs_setup: 0,
     probe_failures: 0,
-    multi_tenant_centers: 0,
-    tenant_count: 0,
     unlicensed_centers: 0,
+    workload_agent_instances: 0,
+    workload_active_tasks: 0,
+    workload_completed_tasks: 0,
+    workload_review_tasks: 0,
+    workload_blocked_tasks: 0,
   };
 
   const cloudStats = useMemo<CloudStat[]>(() => [
@@ -59,12 +62,12 @@ export function OverviewPage() {
     {
       label: 'Ready centers',
       value: String(summary.ready_centers),
-      hint: 'Active, licensed, multi-tenant, reachable iWorkerCenter instances ready for iWorkerCenter management services.',
+      hint: 'Active, licensed, reachable, identity-verified iWorkerCenter instances ready for Cloud service coordination.',
     },
     {
       label: 'Needs setup',
       value: String(summary.needs_setup),
-      hint: 'Centers missing base URL or multi-tenant capability confirmation.',
+      hint: 'Centers missing base URL, service identity verification, or authorization setup.',
     },
     {
       label: 'Probe failures',
@@ -72,19 +75,29 @@ export function OverviewPage() {
       hint: 'Centers whose latest cloud-side health probe failed.',
     },
     {
-      label: 'Multi-tenant',
-      value: String(summary.multi_tenant_centers),
-      hint: 'Connected deployments declared ready for tenant-aware management.',
-    },
-    {
-      label: 'Tenants tracked',
-      value: String(summary.tenant_count),
-      hint: 'Customer tenants tracked for licensing and platform service purposes only.',
+      label: 'Service-capable',
+      value: String(summary.ready_centers),
+      hint: 'Centers ready for authorization, compute distribution, skill entitlement, and connectivity services.',
     },
     {
       label: 'Unlicensed',
       value: String(summary.unlicensed_centers),
       hint: 'Centers without an active commercial or trial entitlement.',
+    },
+    {
+      label: 'iWorker agents',
+      value: String(summary.workload_agent_instances ?? 0),
+      hint: 'Aggregate agent instance count reported by Centers. Cloud does not receive task titles, task details, tenants, users, or company workflow data.',
+    },
+    {
+      label: 'Active work',
+      value: String(summary.workload_active_tasks ?? 0),
+      hint: 'Privacy-preserving aggregate of running iWorker tasks across connected Centers.',
+    },
+    {
+      label: 'Blocked or review',
+      value: String((summary.workload_blocked_tasks ?? 0) + (summary.workload_review_tasks ?? 0)),
+      hint: 'Aggregate work needing attention, without customer business payloads.',
     },
   ], [summary]);
 
@@ -149,7 +162,7 @@ export function OverviewPage() {
             {summary.probe_failures || summary.needs_setup || summary.unlicensed_centers ? 'Watch' : 'Ready'}
           </span>
         </div>
-        <p>Cloud should know which connected iWorkerCenters are commercially authorized, reachable, multi-tenant capable, and ready for our iWorkerCenter management services. It does not participate in customer company management or enterprise operations.</p>
+        <p>Cloud should know which connected iWorkerCenters are commercially authorized, reachable, identity-verified, and ready for platform service coordination. It does not participate in customer company management, tenant administration, or enterprise operations.</p>
         <div className="cloud-ops-grid">
           {managementStats.map(item => (
             <div key={item.label} className="cloud-ops-metric">

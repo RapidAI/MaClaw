@@ -108,6 +108,7 @@ type SubmitTaskRequest struct {
 
 type SubmitTaskResult struct {
 	TaskType            string `json:"task_type"`
+	TaskTitle           string `json:"task_title"`
 	ColleagueName       string `json:"colleague_name"`
 	ExpectedOutput      string `json:"expected_output"`
 	Model               string `json:"model"`
@@ -170,12 +171,45 @@ type DiWorkerSettings struct {
 }
 
 type CenterHealthStatus struct {
-	Reachable       bool   `json:"reachable"`
-	Status          string `json:"status"`
-	ProviderCount   int    `json:"provider_count"`
-	ConfigPath      string `json:"config_path"`
-	Message         string `json:"message"`
-	ResolvedBaseURL string `json:"resolved_base_url"`
+	Reachable        bool                    `json:"reachable"`
+	Status           string                  `json:"status"`
+	ProviderCount    int                     `json:"provider_count"`
+	ConfigPath       string                  `json:"config_path"`
+	Message          string                  `json:"message"`
+	ResolvedBaseURL  string                  `json:"resolved_base_url"`
+	IWorkerReadiness *CenterIWorkerReadiness `json:"iworker_readiness,omitempty"`
+}
+
+type CenterReadinessCheck struct {
+	Name   string `json:"name"`
+	Ready  bool   `json:"ready"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+	Count  int    `json:"count,omitempty"`
+}
+
+type CenterAuthReadiness struct {
+	Method      string `json:"method"`
+	Label       string `json:"label"`
+	Ready       bool   `json:"ready"`
+	Implemented bool   `json:"implemented"`
+	Status      string `json:"status"`
+	Detail      string `json:"detail,omitempty"`
+}
+
+type CenterIWorkerReadiness struct {
+	Ready               bool                   `json:"ready"`
+	Status              string                 `json:"status"`
+	TenantCount         int                    `json:"tenant_count"`
+	RoleCount           int                    `json:"role_count"`
+	ColleagueCount      int                    `json:"colleague_count"`
+	LocalAccountCount   int                    `json:"local_account_count"`
+	AgentInstanceCount  int                    `json:"agent_instance_count"`
+	AgentRuntimeReady   bool                   `json:"agent_runtime_ready"`
+	GoalWatchReady      bool                   `json:"goalwatch_ready"`
+	RequiredClientPaths []string               `json:"required_client_paths"`
+	Checks              []CenterReadinessCheck `json:"checks"`
+	AuthMethods         []CenterAuthReadiness  `json:"auth_methods"`
 }
 
 type centerSyncSettingsFile struct {
@@ -539,6 +573,21 @@ func (a *App) FetchRoles() []CenterRole {
 	return nil
 }
 
+// FetchInstalledTools returns Center-installed skills and MCP servers enabled for this iWorker.
+func (a *App) FetchInstalledTools() CenterInstalledTools {
+	settings, _ := readDiWorkerSettings()
+	settings = normalizeDiWorkerSettings(settings)
+	if !settings.Center.Enabled {
+		return CenterInstalledTools{Skills: []CenterRuntimeCapability{}, MCPServers: []CenterMCPServer{}}
+	}
+	baseURL := resolvedCenterBaseURL(settings)
+	tenantID := resolvedTenantID(settings)
+	return CenterInstalledTools{
+		Skills:     fetchCenterRuntimeCapabilities(baseURL, tenantID, resolvedWorkerID(settings), 5),
+		MCPServers: fetchCenterMCPServers(baseURL, tenantID, resolvedDepartmentID(settings), 5),
+	}
+}
+
 // FetchCapabilities returns capabilities from iWorkerCenter.
 // If colleagueID is provided, returns only capabilities bound to that colleague.
 func (a *App) FetchCapabilities(colleagueID string) []CenterCapability {
@@ -638,15 +687,16 @@ func (a *App) LoadTaskHistory() ([]HistoryTaskItem, error) {
 		if os.IsNotExist(err) {
 			return []HistoryTaskItem{}, nil
 		}
-		return nil, fmt.Errorf("璇诲彇浠诲姟鍘嗗彶澶辫触: %w", err)
+		return nil, fmt.Errorf("闂佽崵濮村ú鈺咁敋瑜戦妵鎰板炊閵娧屾祫闁荤姴娲﹁ぐ鍐綖閵堝鐓曟俊顖滃劋椤ユ粎鎲搁幏灞界厫鐎垫澘瀚蹇涱敃閵? %w", err)
 	}
 	return items, nil
 }
 
 func (a *App) SaveTaskHistory(items []HistoryTaskItem) error {
 	if err := writeTaskHistory(items); err != nil {
-		return fmt.Errorf("淇濆瓨浠诲姟鍘嗗彶澶辫触: %w", err)
+		return fmt.Errorf("濠电儑绲藉ú锔炬崲閸岀偞鍋ら柕濠忓椤╃兘鎮归崶銊ョ祷妞ゎ偁鍊濋弻娑樜熼悜姗嗘閻熸粍濯介崺鏍ь嚗閸曨剚缍囨い鎰╁剾? %w", err)
 	}
+	a.heartbeatAgentRuntimeBestEffort(2 * time.Second)
 	return nil
 }
 
@@ -656,7 +706,7 @@ func (a *App) LoadDiWorkerSettings() (DiWorkerSettings, error) {
 		if os.IsNotExist(err) {
 			return defaultDiWorkerSettings(), nil
 		}
-		return DiWorkerSettings{}, fmt.Errorf("璇诲彇 DiWorker 閰嶇疆澶辫触: %w", err)
+		return DiWorkerSettings{}, fmt.Errorf("read DiWorker settings failed: %w", err)
 	}
 	return normalizeDiWorkerSettings(settings), nil
 }
@@ -664,10 +714,10 @@ func (a *App) LoadDiWorkerSettings() (DiWorkerSettings, error) {
 func (a *App) SaveDiWorkerSettings(settings DiWorkerSettings) error {
 	normalized := normalizeDiWorkerSettings(settings)
 	if err := writeDiWorkerSettings(normalized); err != nil {
-		return fmt.Errorf("淇濆瓨 DiWorker 閰嶇疆澶辫触: %w", err)
+		return fmt.Errorf("save DiWorker settings failed: %w", err)
 	}
 	if err := syncCenterSettings(normalized); err != nil {
-		return fmt.Errorf("鍚屾涓績閰嶇疆澶辫触: %w", err)
+		return fmt.Errorf("sync center settings failed: %w", err)
 	}
 	a.restartGoalWatchAutoHandleLoop()
 	return nil
@@ -729,6 +779,9 @@ type ApplyCenterEnrollmentRequest struct {
 	RoleName        string `json:"role_name"`
 	RoleDescription string `json:"role_description"`
 	TimeoutSec      int    `json:"timeout_sec"`
+	AuthMethod      string `json:"auth_method"`
+	AuthUsername    string `json:"auth_username"`
+	AuthPassword    string `json:"auth_password"`
 }
 
 func (a *App) DiscoverCenterEnrollment(req CenterEnrollmentRequest) (CenterEnrollmentDiscovery, error) {
@@ -767,6 +820,9 @@ func (a *App) ApplyCenterEnrollment(req ApplyCenterEnrollmentRequest) (DiWorkerS
 	if req.TimeoutSec > 0 {
 		settings.Center.TimeoutSec = req.TimeoutSec
 	}
+	if _, err := verifyCenterEnrollment(baseURL, settings.Center.TenantID, CenterEnrollmentVerifyRequest{Method: req.AuthMethod, Username: req.AuthUsername, Password: req.AuthPassword, WorkerID: workerID}, settings.Center.TimeoutSec); err != nil {
+		return DiWorkerSettings{}, fmt.Errorf("center enrollment identity verification failed: %w", err)
+	}
 	if host, port := centerHostPortFromBaseURL(baseURL); host != "" {
 		settings.Center.Host = host
 		if port > 0 {
@@ -782,7 +838,20 @@ func (a *App) ApplyCenterEnrollment(req ApplyCenterEnrollmentRequest) (DiWorkerS
 	if err := a.SaveDiWorkerSettings(settings); err != nil {
 		return DiWorkerSettings{}, err
 	}
+	a.heartbeatAgentRuntimeBestEffort(3 * time.Second)
 	return normalizeDiWorkerSettings(settings), nil
+}
+
+func (a *App) heartbeatAgentRuntimeBestEffort(timeout time.Duration) {
+	if a == nil {
+		return
+	}
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, _ = a.HeartbeatAgentRuntimeContext(ctx)
 }
 
 func centerHostPortFromBaseURL(baseURL string) (string, int) {
@@ -875,8 +944,111 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 		return SubmitTaskResult{}, fmt.Errorf("submit task failed: %w", err)
 	}
 	content := strings.TrimSpace(agent.StripThinkingTags(resp.Content))
-	centerTaskID, centerTaskStatus, centerTaskSyncErr := syncHumanTaskToCenter(settings, centerBaseURL, centerAssigneeID, centerAssigneeRoleCode, taskType, colleagueName, expectedOutput, draft, content)
-	return SubmitTaskResult{TaskType: taskType, ColleagueName: colleagueName, ExpectedOutput: expectedOutput, Model: usedCfg.Model, Content: content, CenterTaskID: centerTaskID, CenterTaskStatus: centerTaskStatus, CenterTaskSyncError: centerTaskSyncErr}, nil
+	taskTitle := generateSubmitTaskTitle(taskType, draft, expectedOutput, content, usedCfg, fallbackCfg)
+	centerTaskID, centerTaskStatus, centerTaskSyncErr := syncHumanTaskToCenter(settings, centerBaseURL, centerAssigneeID, centerAssigneeRoleCode, taskTitle, colleagueName, expectedOutput, draft, content)
+	return SubmitTaskResult{TaskType: taskType, TaskTitle: taskTitle, ColleagueName: colleagueName, ExpectedOutput: expectedOutput, Model: usedCfg.Model, Content: content, CenterTaskID: centerTaskID, CenterTaskStatus: centerTaskStatus, CenterTaskSyncError: centerTaskSyncErr}, nil
+}
+
+func generateSubmitTaskTitle(taskType, draft, expectedOutput, content string, primaryCfg corelib.MaclawLLMConfig, fallbackCfg *corelib.MaclawLLMConfig) string {
+	fallbackTitle := fallbackTaskTitle(taskType, draft)
+	messages := []interface{}{
+		map[string]string{"role": "system", "content": "You write concise task titles for an iWorker task history list. Return only one natural task title, no quotes, no markdown, no labels. Prefer the user's language. Keep Chinese titles within 18 characters or English titles within 8 words."},
+		map[string]string{"role": "user", "content": fmt.Sprintf("Task type: %s\nExpected output: %s\nUser request:\n%s\n\nGenerated result excerpt:\n%s\n\nWrite a normal task title that describes the actual work, not a UI category such as free input.", strings.TrimSpace(taskType), expectedOutputLabel(expectedOutput), compactForPrompt(draft, 700), compactForPrompt(content, 360))},
+	}
+	resp, _, err := submitTaskWithFallback(messages, primaryCfg, fallbackCfg)
+	if err != nil || resp == nil {
+		return fallbackTitle
+	}
+	if title := sanitizeTaskTitle(resp.Content); title != "" && !isGenericTaskTitle(title) {
+		return title
+	}
+	return fallbackTitle
+}
+
+func fallbackTaskTitle(taskType, draft string) string {
+	text := strings.Join(strings.Fields(strings.TrimSpace(draft)), " ")
+	for _, marker := range []string{"\n\nSupplementary materials:", " Supplementary materials:"} {
+		if idx := strings.Index(text, marker); idx >= 0 {
+			text = strings.TrimSpace(text[:idx])
+		}
+	}
+	text = trimTaskTitlePrefix(text)
+	if text == "" || isGenericTaskTitle(text) {
+		text = strings.TrimSpace(taskType)
+	}
+	text = trimAtSentenceBoundary(text)
+	return limitTaskTitleRunes(sanitizeTaskTitle(text), 36, "Task")
+}
+
+func compactForPrompt(value string, maxRunes int) string {
+	return limitTaskTitleRunes(strings.Join(strings.Fields(strings.TrimSpace(value)), " "), maxRunes, "")
+}
+
+func trimTaskTitlePrefix(text string) string {
+	patterns := []string{"please ", "Please ", "help me ", "Help me ", "can you ", "Can you ", "could you ", "Could you ", "\u8bf7\u4f60", "\u8bf7", "\u5e2e\u6211", "\u5e2e\u5fd9", "\u9ebb\u70e6\u4f60", "\u9ebb\u70e6"}
+	trimmed := strings.TrimSpace(text)
+	for {
+		changed := false
+		for _, pattern := range patterns {
+			if strings.HasPrefix(trimmed, pattern) {
+				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, pattern))
+				changed = true
+			}
+		}
+		if !changed {
+			return trimmed
+		}
+	}
+}
+
+func trimAtSentenceBoundary(text string) string {
+	text = strings.TrimSpace(text)
+	for _, sep := range []string{"\u3002", "\uff01", "\uff1f", ". ", "! ", "? ", "\n"} {
+		if idx := strings.Index(text, sep); idx > 0 {
+			return strings.TrimSpace(text[:idx])
+		}
+	}
+	return text
+}
+
+func sanitizeTaskTitle(title string) string {
+	title = strings.TrimSpace(agent.StripThinkingTags(title))
+	if idx := strings.IndexAny(title, "\r\n"); idx >= 0 {
+		title = strings.TrimSpace(title[:idx])
+	}
+	title = strings.TrimSpace(strings.Trim(title, " `\"':,.;-*_\u3002\uff0c\uff1a\uff1b"))
+	for _, prefix := range []string{"Title:", "Task title:", "\u6807\u9898\uff1a", "\u4efb\u52a1\u6807\u9898\uff1a"} {
+		if strings.HasPrefix(title, prefix) {
+			title = strings.TrimSpace(strings.TrimPrefix(title, prefix))
+		}
+	}
+	return limitTaskTitleRunes(title, 36, "")
+}
+
+func limitTaskTitleRunes(text string, maxRunes int, fallback string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fallback
+	}
+	runes := []rune(text)
+	if maxRunes > 0 && len(runes) > maxRunes {
+		text = strings.TrimSpace(string(runes[:maxRunes]))
+		text = strings.TrimRight(text, ",:;- \u3001\u3002\uff0c\uff1a\uff1b")
+	}
+	if text == "" {
+		return fallback
+	}
+	return text
+}
+
+func isGenericTaskTitle(title string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(title, "_", " ")))
+	switch normalized {
+	case "", "free input", "freeinput", "free task", "task", "new task", "\u81ea\u7531\u8f93\u5165", "\u81ea\u7531\u4efb\u52a1", "\u4efb\u52a1":
+		return true
+	default:
+		return false
+	}
 }
 
 func findCenterColleagueByName(centerBaseURL, tenantID, colleagueName string, timeoutSec int) (string, string) {
@@ -892,7 +1064,7 @@ func findCenterColleagueByName(centerBaseURL, tenantID, colleagueName string, ti
 	return "", ""
 }
 
-func syncHumanTaskToCenter(settings DiWorkerSettings, centerBaseURL, assigneeID, roleCode, taskType, colleagueName, expectedOutput, draft, result string) (string, string, string) {
+func syncHumanTaskToCenter(settings DiWorkerSettings, centerBaseURL, assigneeID, roleCode, taskTitle, colleagueName, expectedOutput, draft, result string) (string, string, string) {
 	settings = normalizeDiWorkerSettings(settings)
 	if !settings.Center.Enabled {
 		return "", "", ""
@@ -909,7 +1081,10 @@ func syncHumanTaskToCenter(settings DiWorkerSettings, centerBaseURL, assigneeID,
 	if assigneeID == "" {
 		assigneeID = resolvedWorkerID(settings)
 	}
-	title := buildCenterTaskTitle(taskType, draft)
+	title := sanitizeTaskTitle(taskTitle)
+	if title == "" {
+		title = fallbackTaskTitle("", draft)
+	}
 	description := strings.TrimSpace(draft)
 	if expectedOutput != "" {
 		description += "\n\nExpected output: " + expectedOutput
@@ -1107,7 +1282,7 @@ func checkCenterHealth(settings DiWorkerSettings) (CenterHealthStatus, error) {
 	if baseURL == "" {
 		return CenterHealthStatus{
 			Reachable:       false,
-			Message:         "鏈厤缃暟瀛楀憳宸ヤ腑蹇冨湴鍧€",
+			Message:         "center base URL is empty",
 			ResolvedBaseURL: "",
 		}, nil
 	}
@@ -1137,20 +1312,22 @@ func checkCenterHealth(settings DiWorkerSettings) (CenterHealthStatus, error) {
 		}, nil
 	}
 	var payload struct {
-		Status        string `json:"status"`
-		ProviderCount int    `json:"provider_count"`
-		ConfigPath    string `json:"config_path"`
+		Status           string                  `json:"status"`
+		ProviderCount    int                     `json:"provider_count"`
+		ConfigPath       string                  `json:"config_path"`
+		IWorkerReadiness *CenterIWorkerReadiness `json:"iworker_readiness"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return CenterHealthStatus{}, err
 	}
 	return CenterHealthStatus{
-		Reachable:       true,
-		Status:          strings.TrimSpace(payload.Status),
-		ProviderCount:   payload.ProviderCount,
-		ConfigPath:      strings.TrimSpace(payload.ConfigPath),
-		Message:         "ok",
-		ResolvedBaseURL: baseURL,
+		Reachable:        true,
+		Status:           strings.TrimSpace(payload.Status),
+		ProviderCount:    payload.ProviderCount,
+		ConfigPath:       strings.TrimSpace(payload.ConfigPath),
+		Message:          "ok",
+		ResolvedBaseURL:  baseURL,
+		IWorkerReadiness: payload.IWorkerReadiness,
 	}, nil
 }
 
@@ -1174,10 +1351,10 @@ func loadSubmitLLMConfigs() (corelib.MaclawLLMConfig, *corelib.MaclawLLMConfig, 
 			if errors.Is(fallbackErr, os.ErrNotExist) {
 				return cfg, nil, nil
 			}
-			return corelib.MaclawLLMConfig{}, nil, fmt.Errorf("璇诲彇 LLM 閰嶇疆澶辫触: %w", fallbackErr)
+			return corelib.MaclawLLMConfig{}, nil, fmt.Errorf("read fallback LLM config failed: %w", fallbackErr)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return corelib.MaclawLLMConfig{}, nil, fmt.Errorf("璇诲彇 DiWorker 閰嶇疆澶辫触: %w", err)
+		return corelib.MaclawLLMConfig{}, nil, fmt.Errorf("read DiWorker settings failed: %w", err)
 	}
 	fallbackCfg, err := loadMaclawLLMConfig()
 	if err != nil {
@@ -1387,18 +1564,18 @@ func defaultProviderMaxContext(providerID string, providers []UpstreamProvider) 
 func loadMaclawLLMConfig() (corelib.MaclawLLMConfig, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return corelib.MaclawLLMConfig{}, fmt.Errorf("璇诲彇鐢ㄦ埛鐩綍澶辫触: %w", err)
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("闂佽崵濮村ú鈺咁敋瑜戦妵鎰板炊椤掍礁浠洪梺闈涱煭缁犳垿鎮￠弴銏＄厽闁冲搫锕ら弸娑氱磽瀹ュ懐校鐎垫澘瀚蹇涱敃閵? %w", err)
 	}
 
 	configPath := filepath.Join(home, ".maclaw", "config.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return corelib.MaclawLLMConfig{}, fmt.Errorf("璇诲彇 LLM 閰嶇疆澶辫触: %w", err)
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("read LLM config failed: %w", err)
 	}
 
 	var cfgFile maclawConfigFile
 	if err := json.Unmarshal(data, &cfgFile); err != nil {
-		return corelib.MaclawLLMConfig{}, fmt.Errorf("瑙ｆ瀽 LLM 閰嶇疆澶辫触: %w", err)
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("parse LLM config failed: %w", err)
 	}
 
 	if cfg, ok := currentProviderConfig(cfgFile); ok {
@@ -1415,7 +1592,7 @@ func loadMaclawLLMConfig() (corelib.MaclawLLMConfig, error) {
 		SupportsVision: false,
 	}
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		return corelib.MaclawLLMConfig{}, fmt.Errorf("鏈壘鍒板彲鐢ㄧ殑 LLM 閰嶇疆锛岃鍏堝湪涓荤▼搴忎腑閰嶇疆妯″瀷")
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("no available LLM config found")
 	}
 	if cfg.TimeoutSec <= 0 {
 		cfg.TimeoutSec = corelib.DefaultLLMTimeoutSec
@@ -1466,6 +1643,7 @@ func (a *App) HeartbeatAgentRuntimeContext(ctx context.Context) ([]CenterAgentIn
 	}
 	snapshot := BuildDefaultAgentRuntimeSnapshot(settings)
 	hostID, _ := os.Hostname()
+	workStatus := buildLocalWorkStatusSummary()
 	if err := ctxErr(ctx); err != nil {
 		return nil, err
 	}
@@ -1483,6 +1661,7 @@ func (a *App) HeartbeatAgentRuntimeContext(ctx context.Context) ([]CenterAgentIn
 			Capabilities:    instance.Capabilities,
 			MemoryAuthority: snapshot.MemoryAuthority,
 			LocalCacheMode:  snapshot.LocalMemoryBehavior,
+			WorkStatus:      workStatus,
 			HostID:          hostID,
 			ProcessID:       os.Getpid(),
 			StartedAt:       instance.StartedAt,
@@ -1627,6 +1806,51 @@ func (a *App) AutoHandleRecommendedGoalPushesContext(ctx context.Context) ([]Aut
 
 func shouldAutoHandleGoalPush(push CenterGoalPush) bool {
 	return strings.TrimSpace(push.RecommendedAction) == "restart_executor"
+}
+
+func buildLocalWorkStatusSummary() *CenterWorkStatusSummary {
+	history, err := readTaskHistory()
+	if err != nil {
+		return &CenterWorkStatusSummary{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	}
+	summary := &CenterWorkStatusSummary{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	for _, item := range history {
+		kind := normalizeWorkStatusKind(item.Status)
+		switch kind {
+		case "done":
+			summary.CompletedCount++
+		case "review":
+			summary.ReviewCount++
+		case "blocked":
+			summary.BlockedCount++
+		default:
+			summary.ActiveCount++
+		}
+		if summary.CurrentTask == "" && (kind == "active" || kind == "review" || kind == "blocked") {
+			summary.CurrentTask = strings.TrimSpace(item.Title)
+			summary.CurrentDetail = strings.TrimSpace(item.Owner + " / " + item.Status + " / " + item.UpdatedAt)
+		}
+	}
+	if summary.CurrentTask == "" && len(history) > 0 {
+		latest := history[0]
+		summary.CurrentTask = strings.TrimSpace(latest.Title)
+		summary.CurrentDetail = strings.TrimSpace(latest.Owner + " / " + latest.Status + " / " + latest.UpdatedAt)
+	}
+	return summary
+}
+
+func normalizeWorkStatusKind(status string) string {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(status), "_", " "), "-", " "))
+	switch {
+	case strings.Contains(normalized, "done"), strings.Contains(normalized, "complete"), strings.Contains(normalized, "acked"), strings.Contains(normalized, "resumed"), strings.Contains(normalized, "resolved"):
+		return "done"
+	case strings.Contains(normalized, "review"), strings.Contains(normalized, "waiting"), strings.Contains(normalized, "approval"), strings.Contains(normalized, "human"), strings.Contains(normalized, "manual"), strings.Contains(normalized, "clarify"):
+		return "review"
+	case strings.Contains(normalized, "block"), strings.Contains(normalized, "fail"), strings.Contains(normalized, "error"), strings.Contains(normalized, "timeout"):
+		return "blocked"
+	default:
+		return "active"
+	}
 }
 
 func ctxErr(ctx context.Context) error {

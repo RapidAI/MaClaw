@@ -285,7 +285,7 @@ func (h *ComputeHandler) SetComputePermission() http.HandlerFunc {
 func (h *ComputeHandler) ListCenterPermissions() http.HandlerFunc {
 	type centerPermission struct {
 		CenterID          string `json:"center_id"`
-		CompanyName       string `json:"company_name"`
+		CenterName        string `json:"center_name"`
 		ComputePermission bool   `json:"compute_permission"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -300,7 +300,7 @@ func (h *ComputeHandler) ListCenterPermissions() http.HandlerFunc {
 			perm, _ := h.store.GetComputePermission(ctx, c.ID)
 			result = append(result, centerPermission{
 				CenterID:          c.ID,
-				CompanyName:       c.CompanyName,
+				CenterName:        c.CompanyName,
 				ComputePermission: perm,
 			})
 		}

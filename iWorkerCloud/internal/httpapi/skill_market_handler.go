@@ -89,7 +89,10 @@ func (h *SkillMarketHandler) PublishCenterSkill() http.HandlerFunc {
 			return
 		}
 		if strings.TrimSpace(input.AuthorEmail) == "" {
-			input.AuthorEmail = center.AdminEmail
+			input.AuthorEmail = centerScopedSkillAuthorEmail(center.ID)
+		}
+		if strings.TrimSpace(input.Author) == "" {
+			input.Author = centerScopedSkillAuthor(center.ID)
 		}
 		skill, err := h.skills.PublishFromCenter(r.Context(), center.ID, input)
 		if err != nil {
@@ -167,6 +170,37 @@ func (h *SkillMarketHandler) authorize(w http.ResponseWriter, r *http.Request, c
 		return nil, false
 	}
 	return center, true
+}
+
+func centerScopedSkillAuthor(centerID string) string {
+	centerID = strings.TrimSpace(centerID)
+	if centerID == "" {
+		return "iWorkerCenter"
+	}
+	return "iWorkerCenter " + centerID
+}
+
+func centerScopedSkillAuthorEmail(centerID string) string {
+	centerID = strings.ToLower(strings.TrimSpace(centerID))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range centerID {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	id := strings.Trim(b.String(), "-")
+	if id == "" {
+		id = "center"
+	}
+	return id + "@iworkercenter.local.invalid"
 }
 
 func licenseAllowsSkillMarket(modulesJSON string) bool {

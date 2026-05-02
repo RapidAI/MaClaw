@@ -2,12 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"log"
-	"net/http"
-	"strings"
-
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/apiroutes"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/app"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/config"
+	"log"
+	"net/http"
 )
 
 // spaFallback is set by main.go after buildMux returns, used for SPA routing.
@@ -35,7 +34,7 @@ func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 		centerMux = center.Mux
 	}
 
-	// /health — always available; reports bootstrap status
+	// /health 閳?always available; reports bootstrap status
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if centerMux != nil {
@@ -56,6 +55,9 @@ func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 		mux.HandleFunc("/auth/", func(w http.ResponseWriter, r *http.Request) {
 			center.Mux.ServeHTTP(w, r)
 		})
+		mux.HandleFunc("/diworker-auth/", func(w http.ResponseWriter, r *http.Request) {
+			center.Mux.ServeHTTP(w, r)
+		})
 	} else {
 		// When bootstrap failed, return JSON errors for API routes
 		unavailable := func(w http.ResponseWriter, _ *http.Request) {
@@ -64,6 +66,7 @@ func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 		mux.HandleFunc("/client/", unavailable)
 		mux.HandleFunc("/runtime/", unavailable)
 		mux.HandleFunc("/auth/", unavailable)
+		mux.HandleFunc("/diworker-auth/", unavailable)
 	}
 
 	// --- 2. LLM proxy server ---
@@ -86,7 +89,7 @@ func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 		handleCenterSettingsAPI(w, r)
 	})
 
-	// --- 5. /admin/ — API routes + SPA fallback ---
+	// --- 5. /admin/ 閳?API routes + SPA fallback ---
 	// The center.Mux has routes like /admin/roles, /admin/colleagues, /admin/im-config.
 	// We need to serve those as API, and everything else as SPA (index.html).
 	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +101,7 @@ func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 			if centerMux != nil {
 				centerMux.ServeHTTP(w, r)
 			} else {
-				// Bootstrap failed — return JSON error instead of SPA HTML
+				// Bootstrap failed 閳?return JSON error instead of SPA HTML
 				writeBootstrapError(w, bootstrapErr)
 			}
 			return
@@ -123,36 +126,7 @@ func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 // isAdminAPIPath returns true if the path looks like a backend API route
 // rather than a SPA navigation route.
 func isAdminAPIPath(path string) bool {
-	// Known admin API path prefixes registered by bootstrap modules
-	apiPrefixes := []string{
-		"/admin/roles",
-		"/admin/colleagues",
-		"/admin/memories",
-		"/admin/capabilities",
-		"/admin/capabilities-import",
-		"/admin/collaborations",
-		"/admin/workflows",
-		"/admin/workflow-instances",
-		"/admin/workflow-design",
-		"/admin/audit",
-		"/admin/config-bundles",
-		"/admin/security",
-		"/admin/model-endpoints",
-		"/admin/model-routing-policies",
-		"/admin/im-config",
-		"/admin/diworker-auth",
-		"/admin/compute",
-		"/admin/recommend",
-		"/admin/bootstrap",
-		"/admin/profile",
-		"/admin/password",
-	}
-	for _, prefix := range apiPrefixes {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-	return false
+	return apiroutes.IsAdminAPIPath(path)
 }
 
 // writeBootstrapError writes a JSON 503 response indicating bootstrap failure.

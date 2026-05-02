@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -59,6 +60,58 @@ func (m *mockAuditRepo) getLogs() []*store.AdminAuditLog {
 	return cp
 }
 
+type mockUserRepo struct {
+	items []*store.User
+}
+
+func (m *mockUserRepo) Create(_ context.Context, user *store.User) error {
+	m.items = append(m.items, user)
+	return nil
+}
+
+func (m *mockUserRepo) GetByID(_ context.Context, id string) (*store.User, error) {
+	for _, user := range m.items {
+		if user != nil && user.ID == id {
+			return user, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockUserRepo) GetByEmail(_ context.Context, email string) (*store.User, error) {
+	for _, user := range m.items {
+		if user != nil && strings.EqualFold(user.Email, email) {
+			return user, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockUserRepo) List(_ context.Context) ([]*store.User, error) {
+	return m.items, nil
+}
+
+func (m *mockUserRepo) DeleteByEmail(_ context.Context, email string) error {
+	var next []*store.User
+	for _, user := range m.items {
+		if user == nil || strings.EqualFold(user.Email, email) {
+			continue
+		}
+		next = append(next, user)
+	}
+	m.items = next
+	return nil
+}
+
+func (m *mockUserRepo) UpdateSmartRoute(_ context.Context, userID string, enabled bool) error {
+	for _, user := range m.items {
+		if user != nil && user.ID == userID {
+			user.SmartRoute = enabled
+		}
+	}
+	return nil
+}
+
 // --- Test helpers ---
 
 func newTestService(t *testing.T) (*SecurityService, *mockAuditRepo) {
@@ -82,12 +135,12 @@ func TestServiceCreateGroup(t *testing.T) {
 
 	root, _ := svc.store.GetRootGroup(ctx)
 
-	group, err := svc.CreateGroup(ctx, "研发部", root.ID)
+	group, err := svc.CreateGroup(ctx, "\u7814\u53d1\u90e8", root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if group.Name != "研发部" {
-		t.Fatalf("expected name '研发部', got %q", group.Name)
+	if group.Name != "\u7814\u53d1\u90e8" {
+		t.Fatalf("expected name '\u7814\u53d1\u90e8', got %q", group.Name)
 	}
 	if group.ParentID != root.ID {
 		t.Fatalf("expected parent %q, got %q", root.ID, group.ParentID)
@@ -228,8 +281,8 @@ func TestServiceGetGroupTree(t *testing.T) {
 	if tree == nil {
 		t.Fatal("expected tree, got nil")
 	}
-	if tree.Name != "全局" {
-		t.Fatalf("expected root name '全局', got %q", tree.Name)
+	if tree.Name != "\u5168\u5c40" {
+		t.Fatalf("expected root name '\u5168\u5c40', got %q", tree.Name)
 	}
 	if len(tree.Children) != 2 {
 		t.Fatalf("expected 2 children, got %d", len(tree.Children))
@@ -251,6 +304,45 @@ func TestServiceGetGroupTree(t *testing.T) {
 	}
 	if len(nodeA.Children) != 1 {
 		t.Fatalf("expected 1 child of A, got %d", len(nodeA.Children))
+	}
+}
+
+func TestServiceGetGroupTree_CountsAssignableUsersAndDescendants(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if err := st.InitRootGroup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	users := &mockUserRepo{items: []*store.User{
+		{ID: "u1", Email: "active@test.com", Status: "active"},
+		{ID: "u2", Email: "pending@test.com", Status: "pending"},
+		{ID: "u3", Email: "disabled@test.com", Status: "disabled"},
+	}}
+	svc := NewSecurityService(st, newMockSystemSettings(), &mockAuditRepo{}, users)
+	root, _ := svc.store.GetRootGroup(ctx)
+	parent, _ := svc.CreateGroup(ctx, "Parent", root.ID)
+	child, _ := svc.CreateGroup(ctx, "Child", parent.ID)
+	if err := svc.AssignUser(ctx, "active@test.com", child.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := svc.GetGroupTree(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree.MemberCount != 3 {
+		t.Fatalf("expected root to count all assignable users, got %d", tree.MemberCount)
+	}
+	if len(tree.Children) != 1 || tree.Children[0].MemberCount != 1 {
+		t.Fatalf("expected parent count to include child member, got tree=%+v", tree.Children)
+	}
+
+	members, err := svc.ListGroupMembers(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("expected root members to include two unassigned users, got %v", members)
 	}
 }
 

@@ -191,6 +191,29 @@ Typical usage: Run shell commands, check system status, install packages`,
 - encoding (string, optional): File encoding, default utf-8
 Typical usage: Read source code, config files, logs`,
 
+	"FileRead": `Parameters:
+- path (string, required): 要读取的文件路径，可为绝对路径或相对当前项目目录的路径
+- start_line (int, optional): 起始行号，1-based，默认 1
+- end_line (int, optional): 结束行号，1-based 且包含该行；有 end_line 时读取 start_line..end_line
+- lines (int, optional): 未传 end_line 时读取多少行，默认 200，最大 1000
+- show_line_numbers (bool, optional): 是否显示行号，默认 true
+How to use: ripgrep 找到 path:line 后，调用 FileRead(path=该文件, start_line=附近行号, lines=80) 查看上下文；修改前保留行号，便于 edit_file 精准替换。`,
+
+	"ripgrep": `Parameters:
+- pattern (string, required): 要搜索的文本或正则表达式，默认不区分大小写
+- path (string, optional): 搜索目录或单个文件；为空时搜索当前项目目录
+- glob (string, optional): 文件过滤模式，如 **/*.go、**/*.tsx、config/*.yaml
+- case_sensitive (bool, optional): 是否区分大小写，默认 false
+- max_results (int, optional): 最大匹配数，默认 100，最大 1000
+How to use: 不知道代码在哪里时先用 ripgrep(pattern="函数名/变量名/错误文案", glob="**/*.go") 定位；结果是 file:line:content，再用 FileRead 读取上下文。`,
+
+	"Glob": `Parameters:
+- pattern (string, required): 文件通配符，支持 ** 递归；例：**/*.go、**/main.go、*.md（按文件名匹配各层 Markdown）
+- path (string, optional): 基准目录，默认当前项目目录；pattern 相对该目录匹配
+- max_results (int, optional): 最大返回路径数，默认 200，最大 2000
+- include_dirs (bool, optional): 是否包含目录，默认 false
+How to use: 需要先找文件名或文件类型时用 Glob；找到路径后用 FileRead/read_file 读内容，或用 ripgrep 搜索文件内部文本。`,
+
 	"write_file": `Parameters:
 - path (string, required): Destination file path
 - content (string, required): Content to write (always saved as UTF-8), may be empty to clear/create an empty file
@@ -393,6 +416,27 @@ var BuiltinEnrichments = map[string][]string{
 		"查看文件内容",
 		"open and display a file",
 		"cat a file",
+	},
+	"FileRead": {
+		"read specific lines from a file",
+		"show lines 20 to 80 in source code",
+		"inspect code around a line number",
+		"按行读取文件",
+		"查看指定行范围",
+	},
+	"ripgrep": {
+		"search code with regex",
+		"find symbol references recursively",
+		"ripgrep text search",
+		"grep project files",
+		"搜索代码中的字符串",
+	},
+	"Glob": {
+		"find files by glob pattern",
+		"list all go files recursively",
+		"match files with wildcard",
+		"查找匹配文件",
+		"按通配符查找文件",
 	},
 	"write_file": {
 		"write content to a file",

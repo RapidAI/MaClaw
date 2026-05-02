@@ -62,7 +62,7 @@ func TestSkillMarketAdminCRUD(t *testing.T) {
 	}
 }
 
-func TestSkillMarketCenterCanPublishSkillWithRevenueOwnerEmail(t *testing.T) {
+func TestSkillMarketCenterPublishesWithCenterScopedAuthorFallback(t *testing.T) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
@@ -89,7 +89,7 @@ func TestSkillMarketCenterCanPublishSkillWithRevenueOwnerEmail(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&skill); err != nil {
 		t.Fatalf("decode skill: %v", err)
 	}
-	if skill.AuthorEmail != "owner@example.com" || skill.SourceCenterID != "ctr_1" || skill.Price != 99 {
+	if skill.Author != "iWorkerCenter ctr_1" || skill.AuthorEmail != "ctr-1@iworkercenter.local.invalid" || skill.SourceCenterID != "ctr_1" || skill.Price != 99 {
 		t.Fatalf("skill = %+v", skill)
 	}
 }

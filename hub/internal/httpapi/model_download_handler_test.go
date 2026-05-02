@@ -37,6 +37,37 @@ func TestModelDownloadHandlerServesFromModelsDirKeepingPublicURL(t *testing.T) {
 	}
 }
 
+func TestModelDownloadHandlerServesKokoroArtifacts(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "configs")
+	modelsDir := filepath.Join(root, "data", "models")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.MkdirAll(modelsDir, 0755); err != nil {
+		t.Fatalf("mkdir models dir: %v", err)
+	}
+	for name, body := range map[string]string{
+		"kokoro-v1_0.koro":                    "kokoro-model",
+		"kokoro_82m_selected_voices_koro.zip": "kokoro-voices",
+	} {
+		if err := os.WriteFile(filepath.Join(modelsDir, name), []byte(body), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		h := ModelDownloadHandler(filepath.Join(configDir, "config.yaml"))
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/models/"+name, nil)
+		req.SetPathValue("filename", name)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", name, rr.Code, rr.Body.String())
+		}
+		if got := rr.Body.String(); got != body {
+			t.Fatalf("%s body=%q want %q", name, got, body)
+		}
+	}
+}
+
 func TestGetAdminModelDownloadStatusHandlerReportsModelsDirState(t *testing.T) {
 	oldFiles := os.Getenv("HUB_MODEL_FILES")
 	oldBaseURL := os.Getenv("HUB_MODEL_BASE_URL")

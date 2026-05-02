@@ -74,6 +74,47 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	})
 
 	r.Register(ToolEntry{
+		Name:        "FileRead",
+		Description: "按行读取 UTF-8 文本文件。适合在 ripgrep/Glob 找到文件或行号后精确查看代码片段；用 start_line+end_line 读取闭区间，或 start_line+lines 读取指定行数。返回内容默认带行号，便于后续 edit_file 精准修改。",
+		Properties: map[string]interface{}{
+			"path":              map[string]string{"type": "string", "description": "要读取的文件路径。可用绝对路径，或相对当前项目目录的路径。"},
+			"start_line":        map[string]string{"type": "integer", "description": "起始行号，1-based，默认 1。例如从第 120 行开始读就传 120。"},
+			"end_line":          map[string]string{"type": "integer", "description": "结束行号，1-based 且包含该行。提供 end_line 时优先使用 start_line..end_line。"},
+			"lines":             map[string]string{"type": "integer", "description": "未提供 end_line 时读取的行数，默认 200，最大 1000。例如 start_line=50, lines=80 表示读 50-129 行。"},
+			"show_line_numbers": map[string]string{"type": "boolean", "description": "是否在每行前显示行号，默认 true。修改代码前建议保持 true。"},
+		},
+		Required: []string{"path"},
+		Handler:  func(args map[string]interface{}) string { return ToolFileRead(args) },
+	})
+
+	r.Register(ToolEntry{
+		Name:        "ripgrep",
+		Description: "在项目文件中递归搜索文本/正则表达式，返回 file:line:content。适合查找函数、变量、配置项、错误信息或 TODO。先用 ripgrep 定位候选行，再用 FileRead 查看上下文；需要限制文件类型时传 glob，如 **/*.go。",
+		Properties: map[string]interface{}{
+			"pattern":        map[string]string{"type": "string", "description": "要搜索的正则表达式。普通字符串也可直接填写；默认不区分大小写。"},
+			"path":           map[string]string{"type": "string", "description": "搜索范围：目录或单个文件。为空时使用当前项目目录。"},
+			"glob":           map[string]string{"type": "string", "description": "可选文件过滤 glob，例如 **/*.go、**/*.tsx、config/*.yaml。"},
+			"case_sensitive": map[string]string{"type": "boolean", "description": "是否区分大小写，默认 false。查 Go 导出符号、精确常量名时可设 true。"},
+			"max_results":    map[string]string{"type": "integer", "description": "最多返回匹配数，默认 100，最大 1000。结果太多时缩小 path/glob 或加更具体 pattern。"},
+		},
+		Required: []string{"pattern"},
+		Handler:  func(args map[string]interface{}) string { return ToolRipgrep(args) },
+	})
+
+	r.Register(ToolEntry{
+		Name:        "Glob",
+		Description: "按 glob 通配符查找文件路径，支持 ** 递归。适合先发现项目里有哪些相关文件，如 **/*.go、**/package.json、cmd/**/main.go；找到文件后用 FileRead/read_file 查看内容，用 ripgrep 搜索文件内文本。",
+		Properties: map[string]interface{}{
+			"pattern":      map[string]string{"type": "string", "description": "文件匹配模式。常用：**/*.go 递归找 Go 文件；**/main.go 找所有 main.go；*.md 按文件名匹配各层 Markdown。"},
+			"path":         map[string]string{"type": "string", "description": "基准目录，默认当前项目目录。pattern 相对该目录匹配。"},
+			"max_results":  map[string]string{"type": "integer", "description": "最多返回路径数，默认 200，最大 2000。结果太多时收窄 path 或 pattern。"},
+			"include_dirs": map[string]string{"type": "boolean", "description": "是否返回目录，默认 false。只有需要找目录结构时设 true。"},
+		},
+		Required: []string{"pattern"},
+		Handler:  func(args map[string]interface{}) string { return ToolGlob(args) },
+	})
+
+	r.Register(ToolEntry{
 		Name:        "write_file",
 		Description: "Write a UTF-8 text file. mode=overwrite replaces content, mode=append appends content.",
 		Properties: map[string]interface{}{
@@ -286,22 +327,22 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "manage_skill",
 		Description: skill.ManageSkillDescription(),
 		Properties: map[string]interface{}{
-			"action":       map[string]string{"type": "string", "description": "操作: " + skill.ManageSkillActionSlash()},
-			"query":        map[string]string{"type": "string", "description": "搜索关键词（search 时必填）"},
-			"skill_id":     map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
-			"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（install 时可选）"},
-			"name":         map[string]string{"type": "string", "description": "Skill 名称（run/upload/validate 时必填）"},
-			"skill_name":   map[string]string{"type": "string", "description": "Skill 名称（patch/history 时必填）"},
-			"find":         map[string]string{"type": "string", "description": "要查找的原始文本（patch 时必填，必须精确匹配唯一一处）"},
-			"replace":      map[string]string{"type": "string", "description": "替换后的新文本（patch 时必填）"},
-			"reason":       map[string]string{"type": "string", "description": "修补原因说明（patch 时可选）"},
-			"args":         map[string]string{"type": "object", "description": "Skill 运行参数（run 时按需传入）"},
-			"operation":    map[string]string{"type": "string", "description": "执行指定的 operation（run 时可选）"},
-			"input":        map[string]string{"type": "string", "description": "兼容旧调用的输入参数（run 时可选）"},
-			"output":       map[string]string{"type": "string", "description": "兼容旧调用的输出参数（run 时可选）"},
-			"user_prompt":  map[string]string{"type": "string", "description": "用户的原始请求文本（run 时可选）"},
-			"run_id":       map[string]string{"type": "string", "description": "运行 ID（status 时必填）"},
-			"auto_fix":     map[string]string{"type": "boolean", "description": "与 validate 配合，为 true 时自动修复可移植性问题（可选，默认 false）"},
+			"action":      map[string]string{"type": "string", "description": "操作: " + skill.ManageSkillActionSlash()},
+			"query":       map[string]string{"type": "string", "description": "搜索关键词（search 时必填）"},
+			"skill_id":    map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
+			"hub_url":     map[string]string{"type": "string", "description": "来源 Hub URL（install 时可选）"},
+			"name":        map[string]string{"type": "string", "description": "Skill 名称（run/upload/validate 时必填）"},
+			"skill_name":  map[string]string{"type": "string", "description": "Skill 名称（patch/history 时必填）"},
+			"find":        map[string]string{"type": "string", "description": "要查找的原始文本（patch 时必填，必须精确匹配唯一一处）"},
+			"replace":     map[string]string{"type": "string", "description": "替换后的新文本（patch 时必填）"},
+			"reason":      map[string]string{"type": "string", "description": "修补原因说明（patch 时可选）"},
+			"args":        map[string]string{"type": "object", "description": "Skill 运行参数（run 时按需传入）"},
+			"operation":   map[string]string{"type": "string", "description": "执行指定的 operation（run 时可选）"},
+			"input":       map[string]string{"type": "string", "description": "兼容旧调用的输入参数（run 时可选）"},
+			"output":      map[string]string{"type": "string", "description": "兼容旧调用的输出参数（run 时可选）"},
+			"user_prompt": map[string]string{"type": "string", "description": "用户的原始请求文本（run 时可选）"},
+			"run_id":      map[string]string{"type": "string", "description": "运行 ID（status 时必填）"},
+			"auto_fix":    map[string]string{"type": "boolean", "description": "与 validate 配合，为 true 时自动修复可移植性问题（可选，默认 false）"},
 		},
 		Required: []string{"action"},
 		Handler:  extraHandler(deps, "manage_skill", "Skill 管理未初始化。请检查配置。"),

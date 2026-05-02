@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MaClaw 第三方软件接入</title><style>:root{color-scheme:light dark}body{margin:0;background:#f7f8fb;color:#172033;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:980px;margin:0 auto;padding:32px 22px 64px}.toolbar{display:flex;justify-content:flex-end;gap:6px;margin-bottom:18px}.lang-btn{border:1px solid #b8c2d4;border-radius:999px;background:#fff;color:#172033;padding:6px 12px;cursor:pointer;font-weight:600}.lang-btn.active{background:#172033;color:#fff;border-color:#172033}h1{font-size:30px;margin:0 0 10px}h2{font-size:20px;margin-top:34px;border-top:1px solid #dfe4ee;padding-top:22px}h3{font-size:16px;margin-top:22px}p,li{line-height:1.72}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}pre{overflow:auto;background:#111827;color:#eef2ff;padding:14px;border-radius:8px}table{width:100%;border-collapse:collapse;margin:12px 0;background:#fff}th,td{border:1px solid #dfe4ee;padding:9px 10px;text-align:left;vertical-align:top}th{background:#eef2f8}.lead{color:#516070;font-size:16px}.pill{display:inline-block;border:1px solid #b8c2d4;border-radius:999px;padding:3px 10px;margin:4px 6px 4px 0;background:#fff}.lang-panel{display:none}.lang-panel.active{display:block}@media(prefers-color-scheme:dark){body{background:#0b1020;color:#e8edf7}.lead{color:#aeb8ca}table,.pill,.lang-btn{background:#11182a;color:#e8edf7}.lang-btn.active{background:#e8edf7;color:#11182a;border-color:#e8edf7}th{background:#18223a}th,td,h2,.pill,.lang-btn{border-color:#2b3856}}</style></head><body><main><div class="toolbar" aria-label="Language"><button class="lang-btn" data-lang="zh" type="button">&#20013;&#25991;</button><button class="lang-btn" data-lang="en" type="button">English</button></div><section class="lang-panel" data-lang-panel="zh"><h1>MaClaw 第三方软件接入协议 v1</h1><p class="lead">第三方软件主动连接 MaClaw 本机 HTTP 网关，通过简洁的 JSON 协议发送用户消息，并用长轮询获取 Agent 回复。接入方不需要提供公网回调地址。</p><p><span class="pill">默认地址 http://127.0.0.1:18777/api/im-gateway/v1</span><span class="pill">认证 Bearer Token</span><span class="pill">客户端主动长轮询</span></p><h2>1. 接入流程</h2><ol><li>在 MaClaw 桌面端打开“设置 / 消息接入 / 第三方软件接入”。</li><li>配置 Host、Port 和 Token，默认监听本机 127.0.0.1:18777。</li><li>第三方软件调用 /handshake 获取能力和会话参数。</li><li>调用 /incoming 提交用户消息。</li><li>调用 /outgoing 使用 cursor 长轮询拉取回复，并用 /ack 确认已处理。</li></ol><h2>2. 认证</h2><p>所有接口建议携带 HTTP 头：</p><pre>Authorization: Bearer &lt;token&gt;</pre><p>所有 API 调用都必须携带 Token。建议在 MaClaw 里点击“生成 Token”获取强随机密钥。如果 Token 可能泄露，请重新生成并更新第三方配置。</p><h2>3. 接口</h2><h3>GET /health</h3><pre>{ "ok": true, "status": "connected" }</pre><h3>POST /handshake</h3><pre>{
+  "clientId": "demo-client",
+  "clientName": "Demo CRM",
+  "protocolVersion": "1.0"
+}</pre><h3>POST /incoming</h3><pre>{
+  "eventId": "evt-20260502-0001",
+  "clientId": "demo-client",
+  "conversationId": "customer-42",
+  "sender": { "id": "u42", "name": "张三" },
+  "message": { "type": "text", "text": "帮我查一下订单状态" },
+  "timestamp": "2026-05-02T10:00:00+08:00"
+}</pre><p><code>eventId</code> 用于幂等，重复提交不会重复触发处理。</p><h3>GET /outgoing</h3><pre>GET /outgoing?clientId=demo-client&amp;cursor=0&amp;timeout=25</pre><pre>{
+  "ok": true,
+  "cursor": 12,
+  "messages": [{
+    "id": "reply-12",
+    "conversationId": "customer-42",
+    "replyToEventId": "evt-20260502-0001",
+    "message": { "type": "text", "text": "订单正在配送中。" }
+  }]
+}</pre><h3>POST /ack</h3><pre>{ "clientId": "demo-client", "messageIds": ["reply-12"] }</pre><h2>4. 字段约定</h2><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody><tr><td><code>clientId</code></td><td>第三方软件实例标识，建议稳定且唯一。</td></tr><tr><td><code>conversationId</code></td><td>第三方侧会话、客户、工单或群聊 ID。</td></tr><tr><td><code>eventId</code></td><td>入站消息唯一 ID，用于重试幂等。</td></tr><tr><td><code>cursor</code></td><td>出站消息游标，客户端保存上次返回值。</td></tr><tr><td><code>timeout</code></td><td>长轮询等待秒数，建议 15 到 30 秒。</td></tr></tbody></table><h2>4.1 请求跟踪、错误和 ACK 语义</h2><p>所有响应都会返回 requestId，第三方排查问题时建议一并提供。错误响应统一包含 ok、code、message、requestId。outgoing 使用 cursor 保证至少一次投递，第三方需要按 message.id 去重。/ack 表示第三方已将回复投递到自己的用户或业务系统，不代替 cursor 存储。</p><pre>{
+  "ok": false,
+  "code": "bad_request",
+  "message": "clientId is required",
+  "requestId": "gw_1760000000000000000"
+}</pre><h2>5. 测试客户端</h2><pre>$env:MACLAW_GATEWAY_TOKEN = "你的 Token"
+go run ./cmd/connnectMaClaw -text "你好，确认第三方通道是否可用"</pre><h2>6. 错误处理</h2><table><thead><tr><th>HTTP</th><th>含义</th><th>建议</th></tr></thead><tbody><tr><td>401</td><td>Token 缺失或错误</td><td>检查 Authorization 头。</td></tr><tr><td>409</td><td>重复事件或状态冲突</td><td>按幂等成功处理或重新获取 cursor。</td></tr><tr><td>429</td><td>请求过快</td><td>指数退避后重试。</td></tr><tr><td>5xx</td><td>MaClaw 处理失败</td><td>保留 eventId，延迟重试。</td></tr></tbody></table></section><section class="lang-panel" data-lang-panel="en"><h1>MaClaw Third-Party Software Access Protocol v1</h1><p class="lead">Third-party software connects to the local MaClaw HTTP gateway, sends user messages through a compact JSON protocol, and retrieves Agent replies through cursor-based long polling. The integrating system does not need to expose a public callback URL.</p><p><span class="pill">Default endpoint http://127.0.0.1:18777/api/im-gateway/v1</span><span class="pill">Bearer Token</span><span class="pill">Client long polling</span></p><h2>1. Integration Flow</h2><ol><li>Open <code>Settings / Message Access / Third-party Access</code> in MaClaw.</li><li>Configure <code>Host</code>, <code>Port</code>, and <code>Token</code>. The default listener is <code>127.0.0.1:18777</code>.</li><li>Call <code>/handshake</code> to negotiate protocol and capabilities.</li><li>Call <code>/incoming</code> to submit user messages.</li><li>Call <code>/outgoing</code> with a <code>cursor</code> to long-poll replies, then call <code>/ack</code>.</li></ol><h2>2. Authentication</h2><p>Send the token with every request:</p><pre>Authorization: Bearer &lt;token&gt;</pre><p>A token is required for every API call. Use Generate Token in MaClaw to create a strong random key. If the token may have leaked, regenerate it and update the third-party configuration.</p><h2>3. Endpoints</h2><h3>GET /health</h3><pre>{ "ok": true, "status": "connected" }</pre><h3>POST /handshake</h3><pre>{
+  "clientId": "demo-client",
+  "clientName": "Demo CRM",
+  "protocolVersion": "1.0"
+}</pre><h3>POST /incoming</h3><pre>{
+  "eventId": "evt-20260502-0001",
+  "clientId": "demo-client",
+  "conversationId": "customer-42",
+  "sender": { "id": "u42", "name": "Zhang San" },
+  "message": { "type": "text", "text": "Check order status" },
+  "timestamp": "2026-05-02T10:00:00+08:00"
+}</pre><p><code>eventId</code> is idempotent. Retrying the same event will not trigger duplicate handling.</p><h3>GET /outgoing</h3><pre>GET /outgoing?clientId=demo-client&amp;cursor=0&amp;timeout=25</pre><pre>{
+  "ok": true,
+  "cursor": 12,
+  "messages": [{
+    "id": "reply-12",
+    "conversationId": "customer-42",
+    "replyToEventId": "evt-20260502-0001",
+    "message": { "type": "text", "text": "The order is being delivered." }
+  }]
+}</pre><h3>POST /ack</h3><pre>{ "clientId": "demo-client", "messageIds": ["reply-12"] }</pre><h2>4. Field Contract</h2><table><thead><tr><th>Field</th><th>Description</th></tr></thead><tbody><tr><td><code>clientId</code></td><td>Stable unique ID for the third-party software instance.</td></tr><tr><td><code>conversationId</code></td><td>Conversation, customer, ticket, or group ID from the third-party system.</td></tr><tr><td><code>eventId</code></td><td>Unique inbound message ID for retry idempotency.</td></tr><tr><td><code>cursor</code></td><td>Outgoing message cursor. The client stores the last returned value.</td></tr><tr><td><code>timeout</code></td><td>Long polling wait seconds. Recommended range: 15 to 30.</td></tr></tbody></table><h2>4.1 Request Tracing, Errors, and ACK Semantics</h2><p>Every response includes <code>requestId</code>. Third-party integrators should include it when reporting issues. Error responses consistently include <code>ok</code>, <code>code</code>, <code>message</code>, and <code>requestId</code>. <code>/outgoing</code> provides at-least-once delivery by cursor, so clients should deduplicate by <code>message.id</code>. <code>/ack</code> is a delivery receipt after the third-party system has delivered the reply to its user or business system; it does not replace client-side cursor persistence.</p><pre>{
+  "ok": false,
+  "code": "bad_request",
+  "message": "clientId is required",
+  "requestId": "gw_1760000000000000000"
+}</pre><h2>5. Test Client</h2><pre>$env:MACLAW_GATEWAY_TOKEN = "your-token"
+go run ./cmd/connnectMaClaw -text "hello, check gateway"</pre><h2>6. Error Handling</h2><table><thead><tr><th>HTTP</th><th>Meaning</th><th>Action</th></tr></thead><tbody><tr><td>401</td><td>Missing or invalid token</td><td>Check the Authorization header.</td></tr><tr><td>409</td><td>Duplicate event or state conflict</td><td>Treat idempotent duplicates as success, or refresh cursor.</td></tr><tr><td>429</td><td>Too many requests</td><td>Retry with exponential backoff.</td></tr><tr><td>5xx</td><td>MaClaw processing failure</td><td>Keep the same eventId and retry later.</td></tr></tbody></table></section></main><script>(function(){var saved=localStorage.getItem('maclawConnectorLang');var lang=saved||((navigator.language||'').toLowerCase().startsWith('zh')?'zh':'en');function setLang(next){lang=next==='en'?'en':'zh';document.documentElement.lang=lang==='zh'?'zh-CN':'en';localStorage.setItem('maclawConnectorLang',lang);document.querySelectorAll('[data-lang-panel]').forEach(function(el){el.classList.toggle('active',el.getAttribute('data-lang-panel')===lang)});document.querySelectorAll('[data-lang]').forEach(function(btn){btn.classList.toggle('active',btn.getAttribute('data-lang')===lang)})}document.querySelectorAll('[data-lang]').forEach(function(btn){btn.addEventListener('click',function(){setLang(btn.getAttribute('data-lang'))})});setLang(lang)})();</script></body></html>

@@ -13,11 +13,11 @@ import (
 
 // CloudConfig holds iWorkerCloud connection settings.
 type CloudConfig struct {
-	BaseURL             string `yaml:"base_url"`
-	CenterBaseURL       string `yaml:"center_base_url"`
-	SupportsMultiTenant bool   `yaml:"supports_multi_tenant"`
-	CloudControlMode    string `yaml:"cloud_control_mode"`
-	PublicKeyCacheHours int    `yaml:"public_key_cache_hours"`
+	BaseURL           string `yaml:"base_url"`
+	CenterBaseURL     string `yaml:"center_base_url"`
+	RegistrationName  string `yaml:"registration_name"`
+	RegistrationEmail string `yaml:"registration_email"`
+	CloudControlMode  string `yaml:"cloud_control_mode"`
 }
 
 // CloudClient communicates with iWorkerCloud.
@@ -27,9 +27,6 @@ type CloudClient struct {
 }
 
 func NewCloudClient(cfg CloudConfig) *CloudClient {
-	if cfg.PublicKeyCacheHours <= 0 {
-		cfg.PublicKeyCacheHours = 24
-	}
 	return &CloudClient{
 		cfg:    cfg,
 		client: &http.Client{Timeout: 15 * time.Second},
@@ -63,15 +60,13 @@ func (c *CloudClient) FetchPublicKey(ctx context.Context) ([]byte, error) {
 
 // RegisterCenterRequest is sent to iWorkerCloud to register this center.
 type RegisterCenterRequest struct {
-	CompanyName         string `json:"company_name"`
-	AdminEmail          string `json:"admin_email"`
-	AdminPhone          string `json:"admin_phone"`
-	Address             string `json:"address"`
-	LegalPerson         string `json:"legal_person"`
-	BaseURL             string `json:"base_url,omitempty"`
-	SupportsMultiTenant bool   `json:"supports_multi_tenant"`
-	TenantCount         int    `json:"tenant_count"`
-	CloudControlMode    string `json:"cloud_control_mode,omitempty"`
+	CompanyName      string `json:"company_name"`
+	AdminEmail       string `json:"admin_email"`
+	AdminPhone       string `json:"admin_phone,omitempty"`
+	Address          string `json:"address,omitempty"`
+	LegalPerson      string `json:"legal_person,omitempty"`
+	BaseURL          string `json:"base_url,omitempty"`
+	CloudControlMode string `json:"cloud_control_mode,omitempty"`
 }
 
 // RegisterCenterResponse is returned by iWorkerCloud.
@@ -230,18 +225,44 @@ func (c *CloudClient) FetchCenterComputeProviders(ctx context.Context, centerID,
 
 // CenterHeartbeatRequest identifies this runtime as an iWorkerCenter service.
 type CenterHeartbeatRequest struct {
-	Secret       string `json:"secret"`
-	RuntimeType  string `json:"runtime_type"`
-	ProductKind  string `json:"product_kind"`
-	AdminConsole string `json:"admin_console"`
+	Secret           string                 `json:"secret"`
+	RuntimeType      string                 `json:"runtime_type"`
+	ProductKind      string                 `json:"product_kind"`
+	AdminConsole     string                 `json:"admin_console"`
+	IWorkerReadiness *CloudIWorkerReadiness `json:"iworker_readiness,omitempty"`
+}
+
+// CloudIWorkerReadiness is the customer-side iWorker operating readiness sent to Cloud.
+type CloudIWorkerReadiness struct {
+	Ready              bool                  `json:"ready"`
+	Status             string                `json:"status"`
+	AgentInstanceCount int                   `json:"agent_instance_count"`
+	AgentRuntimeReady  bool                  `json:"agent_runtime_ready"`
+	GoalWatchReady     bool                  `json:"goalwatch_ready"`
+	WorkloadSummary    *CloudWorkloadSummary `json:"workload_summary,omitempty"`
+}
+
+type CloudWorkloadSummary struct {
+	AgentInstanceCount int    `json:"agent_instance_count"`
+	ActiveCount        int    `json:"active_count"`
+	CompletedCount     int    `json:"completed_count"`
+	ReviewCount        int    `json:"review_count"`
+	BlockedCount       int    `json:"blocked_count"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
 }
 
 func NewCenterHeartbeatRequest(centerSecret string) CenterHeartbeatRequest {
 	return CenterHeartbeatRequest{Secret: centerSecret, RuntimeType: "service", ProductKind: "iworkercenter", AdminConsole: "web_console"}
 }
 
+func NewCenterHeartbeatRequestWithReadiness(centerSecret string, readiness *CloudIWorkerReadiness) CenterHeartbeatRequest {
+	req := NewCenterHeartbeatRequest(centerSecret)
+	req.IWorkerReadiness = readiness
+	return req
+}
+
 // SendCenterHeartbeat reports that this iWorkerCenter service instance is alive.
-func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerSecret string) error {
+func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerSecret string, readiness *CloudIWorkerReadiness) error {
 	if c.cfg.BaseURL == "" {
 		return fmt.Errorf("cloud base_url not configured")
 	}
@@ -254,7 +275,7 @@ func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerS
 	}
 
 	url := fmt.Sprintf("%s/api/centers/%s/heartbeat", strings.TrimRight(c.cfg.BaseURL, "/"), centerID)
-	body, err := json.Marshal(NewCenterHeartbeatRequest(centerSecret))
+	body, err := json.Marshal(NewCenterHeartbeatRequestWithReadiness(centerSecret, readiness))
 	if err != nil {
 		return err
 	}

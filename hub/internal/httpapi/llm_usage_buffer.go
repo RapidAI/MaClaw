@@ -74,6 +74,9 @@ func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, pro
 		curr.TotalTokens += usage.TotalTokens
 		curr.CachedInputTokens += usage.CachedInputTokens
 		curr.CacheWriteTokens += usage.CacheWriteTokens
+		curr.InputCostRMB += usage.InputCostRMB
+		curr.OutputCostRMB += usage.OutputCostRMB
+		curr.TotalCostRMB += usage.TotalCostRMB
 		curr.Requests += usage.Requests
 		curr.CachedRequests += usage.CachedRequests
 		buf.providerUsage[providerID] = curr
@@ -138,6 +141,9 @@ func (a *llmUsageAccumulator) requeue(system store.SystemSettingsRepository, buf
 		curr.TotalTokens += usage.TotalTokens
 		curr.CachedInputTokens += usage.CachedInputTokens
 		curr.CacheWriteTokens += usage.CacheWriteTokens
+		curr.InputCostRMB += usage.InputCostRMB
+		curr.OutputCostRMB += usage.OutputCostRMB
+		curr.TotalCostRMB += usage.TotalCostRMB
 		curr.Requests += usage.Requests
 		curr.CachedRequests += usage.CachedRequests
 		current.providerUsage[providerID] = curr
@@ -186,6 +192,11 @@ func flushProviderUsage(ctx context.Context, system store.SystemSettingsReposito
 		stat.TotalTokens += usage.TotalTokens
 		stat.CachedInputTokens += usage.CachedInputTokens
 		stat.CacheWriteTokens += usage.CacheWriteTokens
+		stat.InputPricePerMTokensRMB = usage.InputPricePerMTokensRMB
+		stat.OutputPricePerMTokensRMB = usage.OutputPricePerMTokensRMB
+		stat.InputCostRMB += usage.InputCostRMB
+		stat.OutputCostRMB += usage.OutputCostRMB
+		stat.TotalCostRMB += usage.TotalCostRMB
 		stat.Requests += usage.Requests
 		stat.CachedRequests += usage.CachedRequests
 	}

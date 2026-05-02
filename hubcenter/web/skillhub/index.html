@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en" id="html-root">
 <head>
   <meta charset="utf-8">
@@ -14,9 +14,20 @@
     .trust{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700}.trust-official{background:var(--official-soft);color:var(--official)}.trust-community{background:var(--community-soft);color:var(--community)}.trust-unknown{background:var(--unknown-soft);color:var(--unknown)}
     .pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:22px}.pager button{height:38px;padding:0 16px;border:1px solid var(--line);border-radius:12px;background:#fff;font:inherit;cursor:pointer}.pager button:disabled{opacity:.45;cursor:default}.pager span{font-size:13px;color:var(--muted)}
     .state{padding:42px 18px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:var(--radius);background:rgba(255,255,255,.72)}
+    body{background:#f6f7f9;color:#303541}.wrap{max-width:1180px}.hero{text-align:left;padding:22px 24px;margin-bottom:18px;border:1px solid #e3e7ee;border-radius:14px;background:#fff;box-shadow:0 10px 26px rgba(35,41,55,.05)}.hero h1,.card-name,.summary-card strong{color:#262b36}.hero h1,.card-name{display:flex;align-items:center;gap:10px;position:relative}.hero h1::before,.card-name::before{content:"";display:inline-block;flex:0 0 auto;width:28px;height:28px;border-radius:9px;background:#f3f5f8;border:1px solid #e2e6ee}.hero h1::after,.card-name::after{content:"";position:absolute;top:50%;width:15px;height:15px;transform:translateY(-50%);background:#747b88;-webkit-mask:var(--skillhub-icon) center/15px 15px no-repeat;mask:var(--skillhub-icon) center/15px 15px no-repeat}.hero h1::after{left:7px}.card-name::before{width:24px;height:24px;border-radius:8px}.card-name::after{left:6px;width:13px;height:13px;-webkit-mask-size:13px 13px;mask-size:13px 13px}.hero h1,.card-name{--skillhub-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m12 3.8 6.8 3.7V16L12 20.2 5.2 16V7.5L12 3.8Z'/%3E%3Cpath d='M12 11.9 5.2 7.5'/%3E%3Cpath d='M12 11.9V20.2'/%3E%3Cpath d='m18.8 7.5-6.8 4.4'/%3E%3C/svg%3E")}.hero p,.card-desc,.meta,.footer,.pager span{color:#707684}.toolbar{justify-content:flex-start;padding:12px;border:1px solid #e3e7ee;border-radius:14px;background:#fff;box-shadow:0 8px 20px rgba(35,41,55,.035)}.toolbar input{border-color:#dfe4ec;border-radius:10px;color:#303541}.toolbar input:focus{outline:none;border-color:#aab3c2;box-shadow:0 0 0 3px rgba(116,123,136,.12)}.toolbar button{border-radius:10px;background:linear-gradient(135deg,#f06a7b,#e55468);box-shadow:0 10px 22px rgba(239,106,124,.16)}.summary{justify-content:flex-start}.summary-card,.card,.pager button,.state{background:#fff;border-color:#e3e7ee;border-radius:12px;box-shadow:0 8px 20px rgba(35,41,55,.035);color:#303541}.card{transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease}.card:hover{transform:translateY(-1px);border-color:#cfd5df;box-shadow:0 14px 28px rgba(35,41,55,.06)}.tag{background:#f7f9fc;border-color:#e3e7ee;color:#596170}.trust-official{background:#edf8f2;color:#1d9365}.trust-community{background:#f3f5f8;color:#596170}.trust-unknown{background:#eef1f5;color:#707684}.footer{border-top-color:#e8ebf1}.state{border-style:dashed;background:#fbfcfe}
     @media (max-width:1000px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media (max-width:640px){.wrap{padding:22px 14px 30px}.hero h1{font-size:28px}.toolbar{justify-content:stretch}.toolbar input,.toolbar button{width:100%}.grid{grid-template-columns:1fr}}
-  </style>
+  
+    /* Softer text hierarchy */
+    :root{--text:#4b5563;--muted:#8a93a0}body{color:#4b5563}h1,.card-name,.summary strong{color:#4b5563}.summary,.card-desc,.card-tags,.state,.pager,select,input{color:#8a93a0}h1::after,.card-name::after{background:#8a93a0}
+    /* Softer text hierarchy */
+    :root{--text:#59636f;--muted:#9aa3ad}body{color:#59636f}h1,.card-name,.summary strong{color:#5b6470}.summary,.card-desc,.card-tags,.state,.pager,select,input{color:#9aa3ad}h1::after,.card-name::after{background:#9aa3ad}
+    /* Softer text hierarchy */
+    :root{--text:#626c78;--muted:#a5adb6}body{color:#626c78}h1,.card-name,.summary strong{color:#66707c}.summary,.card-desc,.card-tags,.state,.pager,select,input{color:#a5adb6}h1::after,.card-name::after{background:#a5adb6}
+    /* Professional density polish */
+    h1,.card-name,.summary strong,button{font-weight:650;letter-spacing:0}.card,.summary,.toolbar{box-shadow:0 6px 18px rgba(35,41,55,.03);border-color:#e7ebf1}.toolbar input,.toolbar select,.toolbar button{border-color:#e5e9f0}.grid{gap:14px}.card-desc{line-height:1.6}h1::before,.card-name::before{background:#fafbfc;border-color:#e8ebf1}h1::after,.card-name::after{opacity:.92}.card-tags{font-weight:500}
+    /* Softer text hierarchy */
+    :root{--text:#59636f;--muted:#98a1ab}body{color:#59636f}h1,.card-name,.summary strong{color:#5b6470}.summary,.card-desc,.card-tags,.state,.pager,select,input{color:#98a1ab}h1::after,.card-name::after{background:#98a1ab}</style>
 </head>
 <body>
   <div class="wrap">

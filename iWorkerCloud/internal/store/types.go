@@ -4,22 +4,30 @@ import "time"
 
 // Center represents a registered iWorkerCenter instance.
 type Center struct {
-	ID                  string    `json:"id"`
-	CompanyName         string    `json:"company_name"`
-	AdminEmail          string    `json:"admin_email"`
-	AdminPhone          string    `json:"admin_phone"`
-	Address             string    `json:"address"`
-	LegalPerson         string    `json:"legal_person"`
-	BaseURL             string    `json:"base_url"`
-	SupportsMultiTenant bool      `json:"supports_multi_tenant"`
-	TenantCount         int       `json:"tenant_count"`
-	CloudControlMode    string    `json:"cloud_control_mode"`
-	LastSyncStatus      string    `json:"last_sync_status"`
-	Status              string    `json:"status"` // pending, active, disabled
-	SecretHash          string    `json:"-"`
-	LastHeartbeat       time.Time `json:"last_heartbeat"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                        string    `json:"id"`
+	CompanyName               string    `json:"company_name"`
+	AdminEmail                string    `json:"-"`
+	AdminPhone                string    `json:"-"`
+	Address                   string    `json:"-"`
+	LegalPerson               string    `json:"-"`
+	BaseURL                   string    `json:"base_url"`
+	SupportsMultiTenant       bool      `json:"-"`
+	TenantCount               int       `json:"-"`
+	CloudControlMode          string    `json:"cloud_control_mode"`
+	LastSyncStatus            string    `json:"last_sync_status"`
+	IWorkerReady              bool      `json:"iworker_ready"`
+	IWorkerReadinessStatus    string    `json:"iworker_readiness_status"`
+	IWorkerTenantCount        int       `json:"-"`
+	IWorkerRoleCount          int       `json:"-"`
+	IWorkerColleagueCount     int       `json:"-"`
+	IWorkerLocalAccountCount  int       `json:"-"`
+	IWorkerAgentInstanceCount int       `json:"iworker_agent_instance_count"`
+	IWorkerReadinessJSON      string    `json:"-"`
+	Status                    string    `json:"status"` // pending, active, disabled
+	SecretHash                string    `json:"-"`
+	LastHeartbeat             time.Time `json:"last_heartbeat"`
+	CreatedAt                 time.Time `json:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
 // License represents an authorization certificate for a Center.

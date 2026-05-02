@@ -3,8 +3,10 @@ package tenant
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -28,14 +30,12 @@ func TestRegisterCenterSendsManagementMetadata(t *testing.T) {
 
 	client := NewCloudClient(CloudConfig{BaseURL: srv.URL + "/"})
 	resp, err := client.RegisterCenter(context.Background(), RegisterCenterRequest{
-		CompanyName:         "Acme Inc",
-		AdminEmail:          "admin@example.com",
-		LegalPerson:         "Jane Doe",
-		Address:             "1 Center Road",
-		BaseURL:             "https://center.example.com",
-		SupportsMultiTenant: true,
-		TenantCount:         3,
-		CloudControlMode:    "cloud_managed",
+		CompanyName:      "Acme Inc",
+		AdminEmail:       "admin@example.com",
+		LegalPerson:      "Jane Doe",
+		Address:          "1 Center Road",
+		BaseURL:          "https://center.example.com",
+		CloudControlMode: "cloud_managed",
 	})
 	if err != nil {
 		t.Fatalf("RegisterCenter() error: %v", err)
@@ -45,19 +45,25 @@ func TestRegisterCenterSendsManagementMetadata(t *testing.T) {
 	}
 
 	req := <-seen
-	if req.CompanyName != "Acme Inc" || req.AdminEmail != "admin@example.com" || req.LegalPerson != "Jane Doe" || req.Address != "1 Center Road" {
-		t.Fatalf("business identity = %+v", req)
+	if req.CompanyName != "Acme Inc" || req.AdminEmail != "admin@example.com" {
+		t.Fatalf("registration identity = %+v", req)
 	}
-	if req.BaseURL != "https://center.example.com" || !req.SupportsMultiTenant || req.TenantCount != 3 || req.CloudControlMode != "cloud_managed" {
-		t.Fatalf("management metadata = %+v", req)
+	if req.BaseURL != "https://center.example.com" || req.CloudControlMode != "cloud_managed" {
+		t.Fatalf("management service metadata = %+v", req)
 	}
 }
 
 func TestRegisterTenantToCloudPersistsReturnedCredentials(t *testing.T) {
 	seen := make(chan RegisterCenterRequest, 1)
+	rawBody := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		rawBody <- string(body)
 		var req RegisterCenterRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(body, &req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
 		seen <- req
@@ -67,10 +73,11 @@ func TestRegisterTenantToCloudPersistsReturnedCredentials(t *testing.T) {
 
 	svc, _ := newTestService(t)
 	svc.cloudClient = NewCloudClient(CloudConfig{
-		BaseURL:             srv.URL,
-		CenterBaseURL:       " https://center.example.com ",
-		SupportsMultiTenant: true,
-		CloudControlMode:    "cloud_managed",
+		BaseURL:           srv.URL,
+		CenterBaseURL:     " https://center.example.com ",
+		RegistrationName:  "HQ iWorkerCenter",
+		RegistrationEmail: "center-admin@example.net",
+		CloudControlMode:  "cloud_managed",
 	})
 	tenant, err := svc.SetupFirstTenant(context.Background(), CreateTenantRequest{
 		CompanyName:   "Acme Inc",
@@ -93,14 +100,24 @@ func TestRegisterTenantToCloudPersistsReturnedCredentials(t *testing.T) {
 	}
 
 	req := <-seen
-	if req.BaseURL != "https://center.example.com" || !req.SupportsMultiTenant || req.TenantCount != 1 || req.CloudControlMode != "cloud_managed" {
+	if req.CompanyName != "HQ iWorkerCenter" || req.AdminEmail != "center-admin@example.net" || req.BaseURL != "https://center.example.com" || req.CloudControlMode != "cloud_managed" {
 		t.Fatalf("metadata = %+v", req)
+	}
+	if req.LegalPerson != "" || req.Address != "" {
+		t.Fatalf("tenant business fields leaked into cloud registration: %+v", req)
 	}
 
 	updated, err := svc.tenantRepo.GetByID(context.Background(), tenant.ID)
 	if err != nil {
 		t.Fatalf("get tenant: %v", err)
 	}
+	body := <-rawBody
+	for _, forbidden := range []string{"Acme Inc", "Jane Doe", "1 Center Road", "admin@example.com", "tenant_count", "legal_person"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("cloud registration leaked %q: %s", forbidden, body)
+		}
+	}
+
 	if updated.CloudCenterID != "center-service-1" || updated.CloudSecret != "secret-service-1" {
 		t.Fatalf("cloud credentials were not persisted: %+v", updated)
 	}
@@ -116,7 +133,7 @@ func TestAdminCloudRegisterRouteRegistersTenant(t *testing.T) {
 	defer srv.Close()
 
 	svc, _ := newTestService(t)
-	svc.cloudClient = NewCloudClient(CloudConfig{BaseURL: srv.URL, CenterBaseURL: "https://center.example.com", SupportsMultiTenant: true})
+	svc.cloudClient = NewCloudClient(CloudConfig{BaseURL: srv.URL, CenterBaseURL: "https://center.example.com"})
 	tenant, err := svc.SetupFirstTenant(context.Background(), CreateTenantRequest{
 		CompanyName:   "Admin Route Inc",
 		Email:         "admin-route@example.com",

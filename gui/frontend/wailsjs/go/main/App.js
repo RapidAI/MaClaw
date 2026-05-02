@@ -118,8 +118,16 @@ export function GetTTSEnabled() {
   return window['go']['main']['App']['GetTTSEnabled']();
 }
 
+export function GetTTSVoiceID() {
+  return window['go']['main']['App']['GetTTSVoiceID']();
+}
+
 export function SetTTSEnabled(arg1) {
   return window['go']['main']['App']['SetTTSEnabled'](arg1);
+}
+
+export function SetTTSVoiceID(arg1) {
+  return window['go']['main']['App']['SetTTSVoiceID'](arg1);
 }
 
 export function SpeakText(arg1) {
@@ -1334,6 +1342,26 @@ export function SetLansengerLocalMode(arg1) {
   return window['go']['main']['App']['SetLansengerLocalMode'](arg1);
 }
 
+export function GetThirdPartyGatewayStatus() {
+  return window['go']['main']['App']['GetThirdPartyGatewayStatus']();
+}
+
+export function RestartThirdPartyGateway() {
+  return window['go']['main']['App']['RestartThirdPartyGateway']();
+}
+
+export function StopThirdPartyGateway() {
+  return window['go']['main']['App']['StopThirdPartyGateway']();
+}
+
+export function GetThirdPartyGatewayLocalMode() {
+  return window['go']['main']['App']['GetThirdPartyGatewayLocalMode']();
+}
+
+export function SetThirdPartyGatewayLocalMode(arg1) {
+  return window['go']['main']['App']['SetThirdPartyGatewayLocalMode'](arg1);
+}
+
 // Gossip bindings
 export function GossipSnapshot(arg1) {
   return window['go']['main']['App']['GossipSnapshot'](arg1);
@@ -1448,3 +1476,5 @@ export function RedeemHubLLMService(arg1) {
 export function HideFloatingButton() {
   return window['go']['main']['App']['HideFloatingButton']();
 }
+
+

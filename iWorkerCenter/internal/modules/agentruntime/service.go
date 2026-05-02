@@ -48,6 +48,7 @@ func (s *Service) Heartbeat(tenantID string, req HeartbeatRequest, now time.Time
 		Capabilities:    req.Capabilities,
 		MemoryAuthority: req.MemoryAuthority,
 		LocalCacheMode:  req.LocalCacheMode,
+		WorkStatus:      req.WorkStatus,
 		HostID:          req.HostID,
 		ProcessID:       req.ProcessID,
 		StartedAt:       startedAt,

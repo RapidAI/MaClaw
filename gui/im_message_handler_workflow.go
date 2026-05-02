@@ -162,6 +162,25 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAg
 		return nil
 	}
 
+	// Let the unified intent classifier decide whether a workflow is allowed to
+	// take over. The workflow filter is intentionally broad, so executable tasks
+	// such as installs, deployments, server work, bug fixes, and maintenance can
+	// otherwise be mistaken for a new multi-phase coding workflow just because
+	// they mention a project or document. UIC owns the semantic distinction:
+	// workflow_type + CreationOriented means multi-phase; confident non-workflow
+	// labels mean the normal agent loop should execute directly.
+	if h.shouldBypassWorkflowForIntent(userID, text) {
+		if engine.GetActiveWorkflow(userID) != nil {
+			h.workflowPendingConfirmOther.Store(userID, true)
+			h.stashedPhasePrompt.Delete(userID)
+			h.workflowAgentLoopMarker.Delete(userID)
+			log.Printf("[WorkflowInterception] bypassing active workflow by UIC intent: user=%s text=%q", userID, truncateRunes(text, 80))
+		} else {
+			log.Printf("[WorkflowInterception] bypassing workflow start by UIC intent: user=%s text=%q", userID, truncateRunes(text, 80))
+		}
+		return nil
+	}
+
 	filter := engine.GetFilter()
 	if filter == nil {
 		return nil
@@ -191,6 +210,129 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAg
 	}
 
 	return nil
+}
+
+func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	uic := h.getUnifiedClassifier()
+	if uic == nil {
+		return false
+	}
+
+	result := uic.Classify(intent.MessageContext{
+		Text:   text,
+		UserID: userID,
+	})
+	threshold := uic.GetWorkflowRejectThreshold()
+
+	if result.Primary == intent.LabelContinuation {
+		history := h.recentConversationTexts(userID, 8)
+		if len(history) > 0 {
+			result = uic.Classify(intent.MessageContext{
+				Text:          text,
+				UserID:        userID,
+				RecentHistory: history,
+			})
+		}
+		bypass := h.recentContextResolvesToNonWorkflow(uic, userID, history, threshold)
+		log.Printf("[WorkflowInterception] UIC continuation context: user=%s bypass=%v conf=%.2f", userID, bypass, result.Confidence)
+		return bypass
+	}
+
+	bypass := shouldBypassWorkflowForClassification(result, uic.IsWorkflowCandidate(result.Primary), threshold)
+	if bypass {
+		log.Printf("[WorkflowInterception] UIC rejected workflow takeover: user=%s intent=%s conf=%.2f layer=%d workflow_type=%q creation=%v",
+			userID, result.Primary, result.Confidence, result.Layer, result.WorkflowType, result.CreationOriented)
+	}
+	return bypass
+}
+
+func shouldBypassWorkflowForClassification(result intent.ClassificationResult, isWorkflowCandidate bool, rejectThreshold float64) bool {
+	if result.WorkflowType != "" && result.WorkflowType != "none" {
+		return false
+	}
+	if rejectThreshold <= 0 {
+		rejectThreshold = intent.DefaultWorkflowRejectThreshold
+	}
+	if result.Confidence < rejectThreshold {
+		return false
+	}
+
+	switch result.Primary {
+	case intent.LabelContinuation, intent.LabelWorkflowTask, intent.LabelAmbiguous, intent.LabelUnknown:
+		return false
+	case intent.LabelCoding:
+		return !result.CreationOriented && !result.Degraded && (result.Layer == 3 || result.Layer == 23)
+	case intent.LabelBugFix, intent.LabelMaintenance, intent.LabelSSH:
+		return true
+	default:
+		return !isWorkflowCandidate
+	}
+}
+
+func (h *IMMessageHandler) recentContextResolvesToNonWorkflow(uic *intent.UnifiedIntentClassifier, userID string, history []string, threshold float64) bool {
+	if uic == nil || len(history) == 0 {
+		return false
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := strings.TrimSpace(history[i])
+		if entry == "" {
+			continue
+		}
+		result := uic.Classify(intent.MessageContext{
+			Text:          entry,
+			UserID:        userID,
+			RecentHistory: history[:i],
+		})
+		if result.Primary == intent.LabelContinuation || result.Primary == intent.LabelAmbiguous || result.Primary == intent.LabelUnknown {
+			continue
+		}
+		return shouldBypassWorkflowForClassification(result, uic.IsWorkflowCandidate(result.Primary), threshold)
+	}
+	return false
+}
+
+func (h *IMMessageHandler) recentConversationTexts(userID string, maxEntries int) []string {
+	if h == nil || h.memory == nil || maxEntries <= 0 {
+		return nil
+	}
+	history := h.memory.Load(userID)
+	if len(history) == 0 {
+		return nil
+	}
+	start := len(history) - maxEntries
+	if start < 0 {
+		start = 0
+	}
+	texts := make([]string, 0, len(history)-start)
+	for _, e := range history[start:] {
+		if text := strings.TrimSpace(conversationEntryText(e.Content)); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return texts
+}
+
+func conversationEntryText(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []interface{}:
+		var b strings.Builder
+		for _, item := range v {
+			if m, ok := item.(map[string]interface{}); ok {
+				if s, ok := m["text"].(string); ok {
+					b.WriteString(s)
+					b.WriteByte('\n')
+				}
+			}
+		}
+		return b.String()
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 // handleActiveWorkflow processes input for a user with an active workflow.

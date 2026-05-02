@@ -184,12 +184,7 @@ func Bootstrap() (*Center, error) {
 	cloudCfg := loadCloudConfig()
 	cloudClient := tenant.NewCloudClient(cloudCfg)
 	tenantRepo := tenant.NewTenantRepo(provider.Write, provider.Read)
-	nonceRepo := tenant.NewNonceRepo(provider.Write)
-	var pubKeyCache *tenant.PublicKeyCache
-	if cloudCfg.BaseURL != "" {
-		pubKeyCache = tenant.NewPublicKeyCache(cloudCfg.PublicKeyCacheHours, cloudClient.FetchPublicKey)
-	}
-	tenantSvc := tenant.NewTenantService(tenantRepo, nonceRepo, provider.Write, provider.Write, cloudClient, pubKeyCache)
+	tenantSvc := tenant.NewTenantService(tenantRepo, provider.Write, provider.Write, cloudClient)
 	tenantHandler := tenant.NewHandler(tenantSvc)
 	var cloudHeartbeatMonitor *tenant.CloudHeartbeatMonitor
 	if cloudCfg.BaseURL != "" {
@@ -198,7 +193,6 @@ func Bootstrap() (*Center, error) {
 			centerID, centerSecret := activeCloudCredentialsWithContext(ctx, tenantSvc)
 			return centerID, centerSecret, nil
 		}, time.Minute)
-		cloudHeartbeatMonitor.Start()
 	}
 
 	// --- wire skill market self-evolution monitor ---
@@ -216,20 +210,6 @@ func Bootstrap() (*Center, error) {
 	goalWatchHandler.SetMonitor(goalMonitor)
 	goalMonitor.Start()
 
-	// Start nonce cleanup goroutine
-	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			_ = nonceRepo.Cleanup(context.Background())
-		}
-	}()
-
-	// Warmup public key cache
-	if pubKeyCache != nil {
-		go pubKeyCache.Warmup(context.Background())
-	}
-
 	// --- wire compute module ---
 	computeSyncMgr, computeSourceMgr, _, computeHandler := wireCompute(cloudCfg, tenantSvc)
 
@@ -244,7 +224,11 @@ func Bootstrap() (*Center, error) {
 	// health
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		_ = json.NewEncoder(w).Encode((&Center{DB: provider, Mux: mux, Roles: rSvc, Colleagues: colSvc, TenantService: tenantSvc, WorkerMemory: workerMemoryStore, A2A: a2aSvc, GoalWatch: goalWatchSvc, AgentRuntime: agentRuntimeSvc, GoalMonitor: goalMonitor, SkillEvolutionMonitor: skillEvolutionMonitor, CloudHeartbeatMonitor: cloudHeartbeatMonitor}).RuntimeStatusSnapshot())
+	})
+	mux.HandleFunc("/client/center/readiness", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode((&Center{DB: provider, Mux: mux, AgentRuntime: agentRuntimeSvc, GoalWatch: goalWatchSvc, GoalMonitor: goalMonitor}).IWorkerReadinessSnapshot())
 	})
 
 	// register module routes
@@ -264,6 +248,7 @@ func Bootstrap() (*Center, error) {
 	goalWatchHandler.RegisterClientRoutes(mux)
 	agentRuntimeHandler.RegisterRuntimeRoutes(mux)
 	agentRuntimeHandler.RegisterClientRoutes(mux)
+	agentRuntimeHandler.RegisterAdminRoutes(mux)
 	a2aHandler.RegisterRuntimeRoutes(mux)
 	wfHandler.RegisterAdminRoutes(mux)
 	wfHandler.RegisterRuntimeRoutes(mux)
@@ -299,9 +284,7 @@ func Bootstrap() (*Center, error) {
 		_ = json.NewEncoder(w).Encode(result)
 	})
 
-	log.Printf("[iWorkerCenter] bootstrap complete, dsn=%s", dsn)
-
-	return &Center{
+	center := &Center{
 		DB:                    provider,
 		Mux:                   mux,
 		Roles:                 rSvc,
@@ -320,7 +303,19 @@ func Bootstrap() (*Center, error) {
 		CloudHeartbeatMonitor: cloudHeartbeatMonitor,
 		ComputeSyncManager:    computeSyncMgr,
 		ComputeSourceManager:  computeSourceMgr,
-	}, nil
+	}
+	if cloudHeartbeatMonitor != nil {
+		cloudHeartbeatMonitor.SetReadinessResolver(func(context.Context) *tenant.CloudIWorkerReadiness {
+			return center.CloudIWorkerReadinessSnapshot()
+		})
+		agentRuntimeHandler.SetHeartbeatObserver(func() {
+			cloudHeartbeatMonitor.TriggerNow()
+		})
+		cloudHeartbeatMonitor.Start()
+	}
+
+	log.Printf("[iWorkerCenter] bootstrap complete, dsn=%s", dsn)
+	return center, nil
 }
 
 // Close releases all resources.
@@ -357,9 +352,7 @@ func defaultDSN() (string, error) {
 // or environment variables.
 func loadCloudConfig() tenant.CloudConfig {
 	cfg := tenant.CloudConfig{
-		PublicKeyCacheHours: 24,
-		SupportsMultiTenant: true,
-		CloudControlMode:    "cloud_managed",
+		CloudControlMode: "cloud_managed",
 	}
 
 	// Try config file first
@@ -378,6 +371,12 @@ func loadCloudConfig() tenant.CloudConfig {
 	if v := os.Getenv("IWORKERCENTER_PUBLIC_BASE_URL"); v != "" {
 		cfg.CenterBaseURL = v
 	}
+	if v := os.Getenv("IWORKERCENTER_CLOUD_REGISTRATION_NAME"); v != "" {
+		cfg.RegistrationName = v
+	}
+	if v := os.Getenv("IWORKERCENTER_CLOUD_REGISTRATION_EMAIL"); v != "" {
+		cfg.RegistrationEmail = v
+	}
 	if v := os.Getenv("IWORKERCENTER_CLOUD_CONTROL_MODE"); v != "" {
 		cfg.CloudControlMode = v
 	}
@@ -392,11 +391,11 @@ func loadCloudConfig() tenant.CloudConfig {
 func parseCloudConfig(data []byte, cfg *tenant.CloudConfig) {
 	type yamlCfg struct {
 		Cloud struct {
-			BaseURL             string `yaml:"base_url"`
-			CenterBaseURL       string `yaml:"center_base_url"`
-			SupportsMultiTenant bool   `yaml:"supports_multi_tenant"`
-			CloudControlMode    string `yaml:"cloud_control_mode"`
-			PublicKeyCacheHours int    `yaml:"public_key_cache_hours"`
+			BaseURL           string `yaml:"base_url"`
+			CenterBaseURL     string `yaml:"center_base_url"`
+			RegistrationName  string `yaml:"registration_name"`
+			RegistrationEmail string `yaml:"registration_email"`
+			CloudControlMode  string `yaml:"cloud_control_mode"`
 		} `yaml:"cloud"`
 	}
 	var parsed yamlCfg
@@ -407,14 +406,14 @@ func parseCloudConfig(data []byte, cfg *tenant.CloudConfig) {
 		if parsed.Cloud.CenterBaseURL != "" {
 			cfg.CenterBaseURL = parsed.Cloud.CenterBaseURL
 		}
-		if parsed.Cloud.SupportsMultiTenant {
-			cfg.SupportsMultiTenant = true
+		if parsed.Cloud.RegistrationName != "" {
+			cfg.RegistrationName = parsed.Cloud.RegistrationName
+		}
+		if parsed.Cloud.RegistrationEmail != "" {
+			cfg.RegistrationEmail = parsed.Cloud.RegistrationEmail
 		}
 		if parsed.Cloud.CloudControlMode != "" {
 			cfg.CloudControlMode = parsed.Cloud.CloudControlMode
-		}
-		if parsed.Cloud.PublicKeyCacheHours > 0 {
-			cfg.PublicKeyCacheHours = parsed.Cloud.PublicKeyCacheHours
 		}
 	}
 }
@@ -475,6 +474,7 @@ func wireCompute(cloudCfg tenant.CloudConfig, tenantSvc *tenant.TenantService) (
 	}
 
 	sourceMgr := compute.NewSourceManager(syncMgr)
+	sourceMgr.SetFallbackProvidersResolver(localStore.ListProviders)
 	handler := compute.NewHandler(syncMgr, sourceMgr, localStore)
 
 	return syncMgr, sourceMgr, localStore, handler

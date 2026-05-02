@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,8 +14,8 @@ import (
 // Config holds initialization parameters for the UnifiedIntentClassifier.
 type Config struct {
 	Embedder   embedding.Embedder
-	LLMFunc    LLMClassifyFunc   // optional, can be nil
-	LLMTimeout time.Duration     // 0 → default 15s
+	LLMFunc    LLMClassifyFunc // optional, can be nil
+	LLMTimeout time.Duration   // 0 → default 15s
 }
 
 // UnifiedIntentClassifier is the single entry point for all user-intent
@@ -38,13 +39,13 @@ type UnifiedIntentClassifier struct {
 	llmTimeout time.Duration
 
 	// Intent Tree text for Layer 3 tree reasoning (pre-built from definitions).
-	treeText  string
+	treeText string
 	// Flat LLM prompt for Layer 3 single-channel fallback (pre-built from definitions).
 	llmPrompt string
 	fusionCfg FusionConfig
 
 	// Per-message cache: cleared after each message processing cycle.
-	cache      sync.Map // map[string]*ClassificationResult
+	cache       sync.Map // map[string]*ClassificationResult
 	fusionCache sync.Map // map[string]FusionResult — stores fusion details for diagnostics
 
 	// workflowCandidates is the set of IntentLabels that may trigger a
@@ -98,8 +99,8 @@ func New(cfg Config) *UnifiedIntentClassifier {
 
 	// Start background anchor warmup if embedder is real.
 	if !isNoop {
-		anchors := u.anchors       // snapshot for goroutine
-		embedder := cfg.Embedder   // snapshot for goroutine
+		anchors := u.anchors     // snapshot for goroutine
+		embedder := cfg.Embedder // snapshot for goroutine
 		go func() {
 			warmupAnchors(embedder, anchors)
 			u.mu.Lock()
@@ -117,8 +118,8 @@ func New(cfg Config) *UnifiedIntentClassifier {
 }
 
 // Classify returns the ClassificationResult for the given message.
-// Results are cached per message text; subsequent calls with the same
-// text return the cached result without recomputation.
+// Results are cached per message text plus recent-history context; subsequent
+// calls with the same semantic input return the cached result without recomputation.
 //
 // Execution model:
 //  1. Layer 1 (keywords): always runs, provides prior signal for tool affinity
@@ -135,8 +136,10 @@ func New(cfg Config) *UnifiedIntentClassifier {
 // analysis (e.g., "基于文档生成PPT" being classified as non_coding by
 // keywords because "基于" looks like content processing).
 func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationResult {
+	cacheKey := classificationCacheKey(msg)
+
 	// Check cache first.
-	if cached, ok := u.cache.Load(msg.Text); ok {
+	if cached, ok := u.cache.Load(cacheKey); ok {
 		return *cached.(*ClassificationResult)
 	}
 
@@ -163,7 +166,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 		u.fusionCache.Store(msg.Text, fusionResult) // store for diagnostics
 		bestResult := u.fusionToClassification(fusionResult)
 		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
-		u.cacheAndLog(msg.Text, &bestResult)
+		u.cacheAndLog(cacheKey, msg.Text, &bestResult)
 		return bestResult
 	}
 
@@ -171,7 +174,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	if canEmb {
 		l2Result, _ := classifyByEmbedding(emb, anchors, msg.Text)
 		l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
-		u.cacheAndLog(msg.Text, &l2Result)
+		u.cacheAndLog(cacheKey, msg.Text, &l2Result)
 		return l2Result
 	}
 
@@ -195,7 +198,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 				bestResult.CreationOriented = true
 			}
 			bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
-			u.cacheAndLog(msg.Text, &bestResult)
+			u.cacheAndLog(cacheKey, msg.Text, &bestResult)
 			return bestResult
 		}
 		log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v, falling back to L1 keywords (degraded)", err)
@@ -205,7 +208,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	// L1 keyword classification is the last resort.
 	l1Result, _ := classifyByKeywords(u.registry, u.affinity, msg)
 	l1Result.ToolNames = u.affinity.Resolve(l1Result.Primary, l1Result.Secondary)
-	u.cacheAndLog(msg.Text, &l1Result)
+	u.cacheAndLog(cacheKey, msg.Text, &l1Result)
 	return l1Result
 }
 
@@ -301,9 +304,16 @@ func (u *UnifiedIntentClassifier) DiagnoseScores(text string) map[IntentLabel]fl
 	return scores
 }
 
+func classificationCacheKey(msg MessageContext) string {
+	if len(msg.RecentHistory) == 0 {
+		return msg.Text
+	}
+	return msg.Text + "\x00" + strings.Join(msg.RecentHistory, "\x00")
+}
+
 // cacheAndLog stores the result in cache and logs the decision.
-func (u *UnifiedIntentClassifier) cacheAndLog(text string, result *ClassificationResult) {
-	u.cache.Store(text, result)
+func (u *UnifiedIntentClassifier) cacheAndLog(cacheKey, text string, result *ClassificationResult) {
+	u.cache.Store(cacheKey, result)
 	log.Printf("[UnifiedIntentClassifier] result: text=%q primary=%s conf=%.2f layer=%d reason=%s",
 		truncateText(text, 30), result.Primary, result.Confidence, result.Layer, result.Reason)
 }

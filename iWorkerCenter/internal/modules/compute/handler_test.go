@@ -3,6 +3,7 @@ package compute
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -288,5 +289,63 @@ func TestHandleSyncWaitingForCredentials(t *testing.T) {
 	}
 	if body["provider_count"] == nil {
 		t.Fatal("provider_count should be returned for waiting_for_credentials")
+	}
+}
+
+func TestGetProvidersReportsLocalFallback(t *testing.T) {
+	h, syncMgr, sourceMgr, localStore := newTestHandler(t)
+	if err := localStore.SaveProvider(ComputeProvider{ID: "local-1", Name: "Local Backup", Protocol: "openai"}); err != nil {
+		t.Fatal(err)
+	}
+	sourceMgr.SetFallbackProvidersResolver(localStore.ListProviders)
+	syncMgr.recordFailure(errors.New("cloud unavailable"))
+	mux := setupMux(h)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/compute/providers", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Source          string            `json:"source"`
+		EffectiveSource string            `json:"effective_source"`
+		FallbackActive  bool              `json:"fallback_active"`
+		Providers       []ComputeProvider `json:"providers"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Source != "cloud" || body.EffectiveSource != "local_fallback" || !body.FallbackActive {
+		t.Fatalf("fallback metadata = %+v", body)
+	}
+	if len(body.Providers) != 1 || body.Providers[0].ID != "local-1" {
+		t.Fatalf("providers = %+v, want local fallback", body.Providers)
+	}
+}
+
+func TestGetSourceReportsActiveProviderCount(t *testing.T) {
+	h, syncMgr, sourceMgr, localStore := newTestHandler(t)
+	if err := localStore.SaveProvider(ComputeProvider{ID: "local-1", Name: "Local Backup", Protocol: "openai"}); err != nil {
+		t.Fatal(err)
+	}
+	sourceMgr.SetFallbackProvidersResolver(localStore.ListProviders)
+	syncMgr.recordFailure(errors.New("cloud unavailable"))
+	mux := setupMux(h)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/compute/source", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["effective_source"] != "local_fallback" || body["fallback_active"] != true || int(body["active_provider_count"].(float64)) != 1 {
+		t.Fatalf("source body = %+v", body)
 	}
 }

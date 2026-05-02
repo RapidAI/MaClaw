@@ -1,6 +1,9 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GetHubLLMServiceStatus, RedeemHubLLMService } from "../../../wailsjs/go/main/App";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GetHubLLMServiceStatus, LoadConfig, RedeemHubLLMService } from "../../../wailsjs/go/main/App";
+import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { colors, radius } from "./styles";
+import { useDialog } from "../CustomDialog";
+import { buildHubCreditsURL } from "../../utils/hubCredits";
 
 interface HubLLMAuthorizedModel {
     name: string;
@@ -166,6 +169,7 @@ function formatTime(value?: string, lang?: string): string {
 }
 
 export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
+    const { showAlert } = useDialog();
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [status, setStatus] = useState<HubLLMServiceStatus | null>(null);
@@ -214,6 +218,20 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     const availableModels = useMemo(() => {
         return (status?.available_models || []).filter(Boolean);
     }, [status]);
+
+    const openHubCreditsPage = useCallback(async () => {
+        try {
+            const cfg = await LoadConfig() as { remote_hub_url?: string; remote_viewer_token?: string } | null;
+            const url = buildHubCreditsURL(cfg?.remote_hub_url, cfg?.remote_viewer_token);
+            if (!url) {
+                await showAlert(t("Credits page is unavailable because Hub login information is missing.", "Hub 登录信息缺失，暂时无法打开 Credits 页面。"));
+                return;
+            }
+            BrowserOpenURL(url);
+        } catch (error) {
+            await showAlert(String(error || t("Failed to open Credits page", "打开 Credits 页面失败")));
+        }
+    }, [showAlert, t]);
 
     const handleRedeem = useCallback(async () => {
         const code = redeemCode.trim();
@@ -272,9 +290,14 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             <div style={cardStyle}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
                     <h3 style={sectionTitleStyle}>{t("Service Status", "服务状态")}</h3>
-                    <button type="button" onClick={() => loadStatus(true)} disabled={refreshing} style={secondaryButtonStyle}>
-                        {refreshing ? t("Refreshing...", "刷新中...") : t("Refresh", "刷新")}
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        <button type="button" onClick={() => void openHubCreditsPage()} style={secondaryButtonStyle}>
+                            {t("View Credits", "查看Credits 或 购买兑换码")}
+                        </button>
+                        <button type="button" onClick={() => loadStatus(true)} disabled={refreshing} style={secondaryButtonStyle}>
+                            {refreshing ? t("Refreshing...", "刷新中...") : t("Refresh", "刷新")}
+                        </button>
+                    </div>
                 </div>
 
                 {/* loadError: show inline in the status card — not above the redeem input */}
@@ -320,10 +343,6 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                 <h3 style={{ ...sectionTitleStyle, marginBottom: 12 }}>{t("Current Authorization Details", "当前授权详情")}</h3>
                 <table style={detailTableStyle}>
                     <tbody>
-                        <tr>
-                            <td style={detailThStyle}>{t("Exposed API URL", "对外 API 地址")}</td>
-                            <td style={detailTdStyle}>{status?.hub_llm_base_url || "-"}</td>
-                        </tr>
                         <tr>
                             <td style={detailThStyle}>{t("Available Models", "可用模型列表")}</td>
                             <td style={detailTdStyle}>{availableModels.length ? availableModels.join(", ") : "auto"}</td>
@@ -390,3 +409,4 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         </div>
     );
 }
+

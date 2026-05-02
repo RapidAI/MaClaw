@@ -115,7 +115,7 @@ func fetchCenterRoles(centerBaseURL string, tenantID string, timeoutSec int) []C
 func centerColleagueToLocal(c CenterColleague) Colleague {
 	role := c.RoleName
 	if role == "" && c.RoleCode != "" {
-		role = "你的" + c.RoleCode + "同事"
+		role = "\u4f60\u7684" + c.RoleCode + "\u540c\u4e8b"
 	}
 	strengths := c.Strengths
 	if strengths == nil {
@@ -185,6 +185,127 @@ func fetchCenterCapabilities(centerBaseURL string, tenantID string, colleagueID 
 		return nil
 	}
 	return result.Capabilities
+}
+
+type CenterRuntimeSkillEntry struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Triggers    []string `json:"triggers"`
+}
+
+type CenterRuntimeCapability struct {
+	CapabilityID string                  `json:"capability_id"`
+	Name         string                  `json:"name"`
+	Source       string                  `json:"source"`
+	Version      string                  `json:"version"`
+	RiskLevel    string                  `json:"risk_level"`
+	Entry        CenterRuntimeSkillEntry `json:"entry"`
+}
+
+type CenterMCPServer struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	ServerType   string   `json:"server_type"`
+	Endpoint     string   `json:"endpoint"`
+	Command      string   `json:"command,omitempty"`
+	Args         []string `json:"args"`
+	EnvKeys      []string `json:"env_keys"`
+	DepartmentID string   `json:"department_id"`
+	RiskLevel    string   `json:"risk_level"`
+	Status       string   `json:"status"`
+	InstalledAt  string   `json:"installed_at"`
+}
+
+type CenterInstalledTools struct {
+	Skills     []CenterRuntimeCapability `json:"skills"`
+	MCPServers []CenterMCPServer         `json:"mcp_servers"`
+}
+
+func fetchCenterRuntimeCapabilities(centerBaseURL string, tenantID string, colleagueID string, timeoutSec int) []CenterRuntimeCapability {
+	if centerBaseURL == "" || strings.TrimSpace(colleagueID) == "" {
+		return nil
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	values := url.Values{}
+	values.Set("runtime", "1")
+	values.Set("colleague_id", colleagueID)
+	endpoint := strings.TrimRight(centerBaseURL, "/") + "/client/capabilities?" + values.Encode()
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil
+	}
+	setCenterTenantHeader(req, tenantID)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return nil
+	}
+	var result struct {
+		RuntimeEntries []CenterRuntimeCapability `json:"runtime_entries"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil
+	}
+	if result.RuntimeEntries == nil {
+		result.RuntimeEntries = []CenterRuntimeCapability{}
+	}
+	return result.RuntimeEntries
+}
+
+func fetchCenterMCPServers(centerBaseURL string, tenantID string, departmentID string, timeoutSec int) []CenterMCPServer {
+	if centerBaseURL == "" {
+		return nil
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	values := url.Values{}
+	if strings.TrimSpace(departmentID) != "" {
+		values.Set("department_id", departmentID)
+	}
+	endpoint := strings.TrimRight(centerBaseURL, "/") + "/client/mcp-servers"
+	if encoded := values.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil
+	}
+	setCenterTenantHeader(req, tenantID)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return nil
+	}
+	var result struct {
+		MCPServers []CenterMCPServer `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil
+	}
+	if result.MCPServers == nil {
+		result.MCPServers = []CenterMCPServer{}
+	}
+	return result.MCPServers
 }
 
 // CenterCollabTask represents a collaboration task fetched from iWorkerCenter.
@@ -613,13 +734,24 @@ type CenterTenantOption struct {
 	CompanyName string `json:"company_name"`
 }
 
+// CenterAuthMethodStatus describes an iWorkerCenter authentication provider.
+type CenterAuthMethodStatus struct {
+	Method      string `json:"method"`
+	Label       string `json:"label"`
+	Enabled     bool   `json:"enabled"`
+	Implemented bool   `json:"implemented"`
+	Status      string `json:"status"`
+	Description string `json:"description"`
+}
+
 // CenterEnrollmentDiscovery is the data a fresh iWorker needs to bind itself to a Center.
 type CenterEnrollmentDiscovery struct {
-	BaseURL          string               `json:"base_url"`
-	SelectedTenantID string               `json:"selected_tenant_id"`
-	Tenants          []CenterTenantOption `json:"tenants"`
-	Roles            []CenterRole         `json:"roles"`
-	Colleagues       []CenterColleague    `json:"colleagues"`
+	BaseURL          string                   `json:"base_url"`
+	SelectedTenantID string                   `json:"selected_tenant_id"`
+	Tenants          []CenterTenantOption     `json:"tenants"`
+	Roles            []CenterRole             `json:"roles"`
+	Colleagues       []CenterColleague        `json:"colleagues"`
+	AuthMethods      []CenterAuthMethodStatus `json:"auth_methods"`
 }
 
 func discoverCenterEnrollment(centerBaseURL, preferredTenantID string, timeoutSec int) (CenterEnrollmentDiscovery, error) {
@@ -655,9 +787,49 @@ func discoverCenterEnrollmentContext(ctx context.Context, centerBaseURL, preferr
 	if err != nil {
 		return CenterEnrollmentDiscovery{}, err
 	}
-	return CenterEnrollmentDiscovery{BaseURL: centerBaseURL, SelectedTenantID: tenantID, Tenants: tenants, Roles: roles, Colleagues: colleagues}, nil
+	authMethods, err := fetchCenterAuthMethodsContext(ctx, centerBaseURL, timeoutSec)
+	if err != nil {
+		authMethods = []CenterAuthMethodStatus{{Method: "local", Label: "Local account", Enabled: true, Implemented: true, Status: "ready"}}
+	}
+	return CenterEnrollmentDiscovery{BaseURL: centerBaseURL, SelectedTenantID: tenantID, Tenants: tenants, Roles: roles, Colleagues: colleagues, AuthMethods: authMethods}, nil
 }
 
+func fetchCenterAuthMethodsContext(ctx context.Context, centerBaseURL string, timeoutSec int) ([]CenterAuthMethodStatus, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return nil, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, centerBaseURL+"/diworker-auth/methods", nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("iWorkerCenter auth methods discovery failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Methods []CenterAuthMethodStatus `json:"methods"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	if result.Methods == nil {
+		result.Methods = []CenterAuthMethodStatus{}
+	}
+	return result.Methods, nil
+}
 func fetchCenterTenantsContext(ctx context.Context, centerBaseURL string, timeoutSec int) ([]CenterTenantOption, error) {
 	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
 	if centerBaseURL == "" {
@@ -770,6 +942,83 @@ func fetchCenterColleaguesContext(ctx context.Context, centerBaseURL, tenantID s
 	}
 	return result.Colleagues, nil
 }
+
+type CenterEnrollmentVerifyRequest struct {
+	Method   string `json:"method"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	WorkerID string `json:"worker_id"`
+}
+
+type CenterEnrollmentVerifyResult struct {
+	Verified      bool   `json:"verified"`
+	Authenticated bool   `json:"authenticated"`
+	Method        string `json:"method"`
+	Username      string `json:"username"`
+	WorkerID      string `json:"worker_id"`
+	Error         string `json:"error,omitempty"`
+}
+
+func verifyCenterEnrollment(centerBaseURL, tenantID string, reqBody CenterEnrollmentVerifyRequest, timeoutSec int) (CenterEnrollmentVerifyResult, error) {
+	return verifyCenterEnrollmentContext(context.Background(), centerBaseURL, tenantID, reqBody, timeoutSec)
+}
+
+func verifyCenterEnrollmentContext(ctx context.Context, centerBaseURL, tenantID string, reqBody CenterEnrollmentVerifyRequest, timeoutSec int) (CenterEnrollmentVerifyResult, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return CenterEnrollmentVerifyResult{}, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	reqBody.Method = strings.TrimSpace(reqBody.Method)
+	if reqBody.Method == "" {
+		reqBody.Method = "local"
+	}
+	reqBody.Username = strings.TrimSpace(reqBody.Username)
+	reqBody.WorkerID = strings.TrimSpace(reqBody.WorkerID)
+	if reqBody.Username == "" || strings.TrimSpace(reqBody.Password) == "" {
+		return CenterEnrollmentVerifyResult{}, fmt.Errorf("human identity username and password are required")
+	}
+	if reqBody.WorkerID == "" {
+		return CenterEnrollmentVerifyResult{}, fmt.Errorf("worker_id is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return CenterEnrollmentVerifyResult{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, centerBaseURL+"/diworker-auth/enrollment/verify", bytes.NewReader(payload))
+	if err != nil {
+		return CenterEnrollmentVerifyResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	setCenterTenantHeader(httpReq, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return CenterEnrollmentVerifyResult{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return CenterEnrollmentVerifyResult{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return CenterEnrollmentVerifyResult{}, fmt.Errorf("iWorkerCenter enrollment verify failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result CenterEnrollmentVerifyResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return CenterEnrollmentVerifyResult{}, err
+	}
+	if !result.Verified {
+		if result.Error == "" {
+			result.Error = "human identity is not allowed to bind this iWorker"
+		}
+		return result, fmt.Errorf("%s", result.Error)
+	}
+	return result, nil
+}
+
 func setCenterTenantHeader(req *http.Request, tenantID string) {
 	if req == nil {
 		return
@@ -779,37 +1028,49 @@ func setCenterTenantHeader(req *http.Request, tenantID string) {
 	}
 }
 
+type CenterWorkStatusSummary struct {
+	CurrentTask    string `json:"current_task,omitempty"`
+	CurrentDetail  string `json:"current_detail,omitempty"`
+	ActiveCount    int    `json:"active_count"`
+	CompletedCount int    `json:"completed_count"`
+	ReviewCount    int    `json:"review_count"`
+	BlockedCount   int    `json:"blocked_count"`
+	UpdatedAt      string `json:"updated_at,omitempty"`
+}
+
 // CenterAgentInstanceHeartbeatRequest registers one local agent instance heartbeat with iWorkerCenter.
 type CenterAgentInstanceHeartbeatRequest struct {
-	WorkerID        string   `json:"worker_id"`
-	InstanceID      string   `json:"instance_id"`
-	Role            string   `json:"role"`
-	Status          string   `json:"status"`
-	OrgUnitID       string   `json:"org_unit_id"`
-	Capabilities    []string `json:"capabilities"`
-	MemoryAuthority string   `json:"memory_authority"`
-	LocalCacheMode  string   `json:"local_cache_mode"`
-	HostID          string   `json:"host_id"`
-	ProcessID       int      `json:"process_id"`
-	StartedAt       string   `json:"started_at"`
+	WorkerID        string                   `json:"worker_id"`
+	InstanceID      string                   `json:"instance_id"`
+	Role            string                   `json:"role"`
+	Status          string                   `json:"status"`
+	OrgUnitID       string                   `json:"org_unit_id"`
+	Capabilities    []string                 `json:"capabilities"`
+	MemoryAuthority string                   `json:"memory_authority"`
+	LocalCacheMode  string                   `json:"local_cache_mode"`
+	WorkStatus      *CenterWorkStatusSummary `json:"work_status,omitempty"`
+	HostID          string                   `json:"host_id"`
+	ProcessID       int                      `json:"process_id"`
+	StartedAt       string                   `json:"started_at"`
 }
 
 type CenterAgentInstance struct {
-	TenantID            string   `json:"tenant_id"`
-	WorkerID            string   `json:"worker_id"`
-	InstanceID          string   `json:"instance_id"`
-	Role                string   `json:"role"`
-	Status              string   `json:"status"`
-	OrgUnitID           string   `json:"org_unit_id,omitempty"`
-	Capabilities        []string `json:"capabilities"`
-	MemoryAuthority     string   `json:"memory_authority"`
-	LocalCacheMode      string   `json:"local_cache_mode"`
-	HostID              string   `json:"host_id,omitempty"`
-	ProcessID           int      `json:"process_id,omitempty"`
-	StartedAt           string   `json:"started_at"`
-	LastHeartbeatAt     string   `json:"last_heartbeat_at"`
-	HeartbeatAgeSeconds int64    `json:"heartbeat_age_seconds"`
-	EffectiveStatus     string   `json:"effective_status"`
+	TenantID            string                   `json:"tenant_id"`
+	WorkerID            string                   `json:"worker_id"`
+	InstanceID          string                   `json:"instance_id"`
+	Role                string                   `json:"role"`
+	Status              string                   `json:"status"`
+	OrgUnitID           string                   `json:"org_unit_id,omitempty"`
+	Capabilities        []string                 `json:"capabilities"`
+	MemoryAuthority     string                   `json:"memory_authority"`
+	LocalCacheMode      string                   `json:"local_cache_mode"`
+	WorkStatus          *CenterWorkStatusSummary `json:"work_status,omitempty"`
+	HostID              string                   `json:"host_id,omitempty"`
+	ProcessID           int                      `json:"process_id,omitempty"`
+	StartedAt           string                   `json:"started_at"`
+	LastHeartbeatAt     string                   `json:"last_heartbeat_at"`
+	HeartbeatAgeSeconds int64                    `json:"heartbeat_age_seconds"`
+	EffectiveStatus     string                   `json:"effective_status"`
 }
 
 type CenterAgentInstanceHeartbeatResult struct {

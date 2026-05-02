@@ -78,6 +78,12 @@ func TestLLMProviderRegistryRoundTripNormalizesAgentTypeAndWireAPI(t *testing.T)
 	if provider.UpstreamTimeoutSec != DefaultLLMProviderUpstreamTimeoutSec {
 		t.Fatalf("upstream_timeout_sec = %d, want %d", provider.UpstreamTimeoutSec, DefaultLLMProviderUpstreamTimeoutSec)
 	}
+	if provider.InputPricePerMTokensRMB != 0 {
+		t.Fatalf("input price = %.4f, want 0", provider.InputPricePerMTokensRMB)
+	}
+	if provider.OutputPricePerMTokensRMB != 0 {
+		t.Fatalf("output price = %.4f, want 0", provider.OutputPricePerMTokensRMB)
+	}
 	cfg := loaded.ToHubLLMConfig()
 	if cfg == nil {
 		t.Fatal("ToHubLLMConfig() returned nil")

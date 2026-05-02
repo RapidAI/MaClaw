@@ -1,0 +1,157 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MaClaw Credits Center</title>
+  <meta name="app-version" content="get-credits-20260502-i18n" />
+  <style>
+    :root { color-scheme: light; --bg: #f4f5f6; --panel: #ffffff; --panel-subtle: #fafafa; --ink: #5a626d; --ink-strong: #424a55; --muted: #8d95a1; --muted-soft: #a8afb8; --line: #e0e3e8; --line-strong: #cfd4dc; --primary: #5d6673; --primary-strong: #4d5662; --primary-soft: #f0f2f5; --green: #238064; --green-soft: #f1f6f4; --amber: #8a6726; --amber-soft: #fbf7ef; --shadow: 0 26px 72px rgba(54, 61, 72, .10); --shadow-soft: 0 12px 32px rgba(54, 61, 72, .055); --shadow-tight: 0 1px 2px rgba(54, 61, 72, .06), 0 10px 28px rgba(54, 61, 72, .045); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; color: var(--ink); background: radial-gradient(circle at 50% 0, rgba(255,255,255,.98) 0, rgba(255,255,255,.92) 290px, transparent 620px), linear-gradient(180deg, #f8f8f9 0%, #f2f3f5 54%, #e9edf2 100%); }
+    body::before { content: ""; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(90deg, rgba(33,38,47,.035) 1px, transparent 1px), linear-gradient(180deg, rgba(33,38,47,.026) 1px, transparent 1px); background-size: 72px 72px; -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,.8), rgba(0,0,0,.16) 62%, transparent); mask-image: linear-gradient(180deg, rgba(0,0,0,.8), rgba(0,0,0,.16) 62%, transparent); }
+    .shell { position: relative; z-index: 1; width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 38px 0 56px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 26px; }
+    .brand { display: flex; gap: 13px; align-items: center; min-width: 0; }
+    .mark { width: 38px; height: 38px; border-radius: 8px; background: linear-gradient(145deg, #68717e, #4f5864); color: #fff; display: grid; place-items: center; font-weight: 900; font-size: 20px; box-shadow: 0 12px 28px rgba(82,91,104,.16), inset 0 1px 0 rgba(255,255,255,.2); }
+    .brand-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .brand-title strong { font-size: 18px; letter-spacing: 0; color: var(--ink-strong); }
+    .brand-title span { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+    .lang { display: inline-flex; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.74); box-shadow: var(--shadow-tight); backdrop-filter: blur(10px); }
+    .lang button { border: 0; background: transparent; color: var(--ink); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-weight: 850; font-size: 13px; }
+    .lang button.active { background: linear-gradient(180deg, #68717e, #525b67); color: #fff; box-shadow: 0 10px 22px rgba(82,91,104,.16); }
+    .status-panel { display: block; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.9); box-shadow: var(--shadow-tight); margin-bottom: 22px; overflow: hidden; backdrop-filter: blur(10px); }
+    .status-head { display: flex; justify-content: space-between; gap: 14px; align-items: center; padding: 20px 22px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #fff, #fbfbfc); }
+    .status-kicker { color: #747b86; font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .09em; }
+    .status-account { margin-top: 5px; font-size: 22px; line-height: 1.15; font-weight: 900; color: var(--ink-strong); overflow-wrap: anywhere; }
+    .status-pill { flex: 0 0 auto; display: inline-flex; align-items: center; min-height: 30px; padding: 6px 11px; border-radius: 999px; background: var(--green-soft); color: var(--green); font-size: 12px; font-weight: 900; border: 1px solid #d5e4de; box-shadow: inset 0 1px 0 rgba(255,255,255,.76); }
+    .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    .metric { min-width: 0; padding: 17px 18px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #fbfbfc, #f7f8fa); }
+    .metric:nth-child(6n) { border-right: 0; }
+    .metric label { display: block; color: var(--muted); font-size: 12px; font-weight: 850; margin-bottom: 8px; }
+    .metric strong { display: block; font-size: 23px; line-height: 1.08; letter-spacing: 0; color: var(--ink-strong); overflow-wrap: anywhere; }
+    .metric.wide { grid-column: span 2; }
+    .hero { position: relative; overflow: hidden; min-height: 220px; padding: 32px 38px; border: 1px solid var(--line); border-radius: 12px; background: #fff; box-shadow: var(--shadow); }
+    .hero::before { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg,#fff 0%,#f9fafb 54%,#eff1f4 100%); z-index: 0; }
+    .hero::after { content: ""; position: absolute; right: -4%; top: -18%; width: 44%; height: 138%; background: repeating-linear-gradient(135deg,rgba(75,83,96,.12) 0 1px,transparent 1px 19px); opacity: .52; z-index: 0; transform: skewX(-8deg); }
+    .hero-inner { position: relative; z-index: 1; max-width: 620px; }
+    .eyebrow { color: #747b88; font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .09em; margin: 0 0 12px; }
+    h1 { margin: 0; font-size: clamp(24px, 2.7vw, 32px); line-height: 1.18; letter-spacing: 0; max-width: 620px; font-weight: 850; color: var(--ink-strong); }
+    .lead { margin: 14px 0 0; max-width: 620px; color: var(--muted); font-size: 15px; line-height: 1.7; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+    .button { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line-strong); background: #fff; color: var(--primary); font-weight: 900; text-decoration: none; box-shadow: 0 1px 0 rgba(255,255,255,.8); transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease, color .18s ease, transform .18s ease; }
+    .button:hover { transform: translateY(-1px); }
+    .button.primary { background: linear-gradient(180deg, #68717e, #525b67); border-color: #56606c; color: #fff; box-shadow: 0 12px 24px rgba(82,91,104,.16); }
+    .button.active { border-color: #cfd5df; background: var(--primary-soft); color: #303744; }
+    .button.primary.active { background: var(--primary); color: #fff; }
+    .section-title { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin: 30px 0 14px; }
+    .section-title h2 { margin: 0; font-size: 24px; letter-spacing: 0; color: var(--ink-strong); }
+    .section-title p { margin: 6px 0 0; color: var(--muted); line-height: 1.6; }
+    .redeem-notice { margin: 18px 0 26px; display: flex; gap: 14px; align-items: flex-start; padding: 18px 20px; border: 1px solid #c9d0d9; border-left: 5px solid var(--primary); border-radius: 12px; background: linear-gradient(180deg, #fff, #f6f7f9); box-shadow: 0 18px 44px rgba(54,61,72,.09); color: var(--ink); }
+    .redeem-notice::before { content: "!"; flex: 0 0 auto; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 999px; background: linear-gradient(180deg, #68717e, #525b67); color: #fff; font-weight: 950; box-shadow: 0 10px 22px rgba(82,91,104,.16); }
+    .redeem-notice strong { display: block; margin-bottom: 5px; color: var(--ink-strong); font-size: 16px; }
+    .redeem-notice span { color: var(--muted); line-height: 1.7; font-weight: 760; }
+    .redeem-path { color: var(--ink-strong); font-weight: 950; }
+    .redeem-notice [data-lang] { display: none; }
+    body.lang-en .redeem-notice [data-lang="en"], body.lang-zh .redeem-notice [data-lang="zh"] { display: block; }
+    .option-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .option { position: relative; display: grid; grid-template-rows: auto 1fr auto; min-height: 318px; padding: 26px; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(180deg, #fff, #fbfbfc); box-shadow: var(--shadow-soft); cursor: pointer; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+    .option:hover { transform: translateY(-1px); }
+    .option.selected { border-color: #bcc3ce; box-shadow: 0 0 0 3px rgba(41,49,61,.08), var(--shadow-soft); }
+    .option.featured { border-color: #b7c7c0; box-shadow: 0 0 0 4px rgba(35,128,100,.08), 0 18px 42px rgba(29,34,43,.09); }
+    .option-top { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; margin-bottom: 18px; }
+    .step { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 999px; background: #f0f2f5; color: #596170; font-weight: 950; border: 1px solid #e5e8ed; }
+    .tag { min-height: 28px; display: inline-flex; align-items: center; padding: 6px 9px; border-radius: 999px; background: #f4f7fb; border: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 850; }
+    .tag.ready { background: var(--green-soft); border-color: #cdebd8; color: var(--green); }
+    .tag.pending { background: var(--amber-soft); border-color: #ead2a6; color: var(--amber); }
+    .option h3 { margin: 0 0 12px; font-size: 26px; line-height: 1.16; letter-spacing: 0; color: var(--ink-strong); }
+    .option p { margin: 0; color: var(--muted); line-height: 1.72; font-size: 16px; }
+    .checklist { margin: 20px 0 0; padding: 0; list-style: none; display: grid; gap: 9px; color: var(--muted); font-size: 14px; font-weight: 750; }
+    .checklist li { display: flex; gap: 9px; align-items: flex-start; }
+    .checklist li::before { content: ""; flex: 0 0 auto; width: 7px; height: 7px; margin-top: 7px; border-radius: 999px; background: #9aa2af; }
+    .option-footer { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .path { display: inline-flex; min-height: 38px; align-items: center; padding: 8px 10px; border-radius: 8px; background: #f8fafc; border: 1px solid var(--line-strong); font-size: 14px; font-weight: 900; color: var(--muted); }
+    .disabled-action { display: inline-flex; align-items: center; min-height: 38px; padding: 8px 10px; border-radius: 8px; background: var(--amber-soft); color: var(--amber); font-weight: 900; border: 1px solid #ead2a6; }
+    .official-action { display: inline-flex; align-items: center; min-height: 42px; padding: 10px 14px; border-radius: 8px; background: linear-gradient(180deg, #68717e, #525b67); color: #fff; font-weight: 950; border: 1px solid #56606c; box-shadow: 0 12px 24px rgba(82,91,104,.16); text-decoration: none; }
+    .note { margin-top: 22px; display: flex; gap: 12px; align-items: flex-start; padding: 18px 20px; border: 1px solid #d7e2de; border-left: 4px solid var(--green); background: linear-gradient(180deg, #fbfdfc, #f4f8f6); border-radius: 10px; color: #3d6653; line-height: 1.65; font-weight: 720; box-shadow: var(--shadow-tight); }
+    .note::before { content: ""; flex: 0 0 10px; width: 10px; height: 10px; margin-top: 7px; border-radius: 999px; background: var(--green); }
+    [data-lang] { display: none; }
+    body.lang-en [data-lang="en"], body.lang-zh [data-lang="zh"] { display: revert; }
+    body.lang-en label[data-lang="zh"], body.lang-zh label[data-lang="en"] { display: none; }
+    body.lang-en label[data-lang="en"], body.lang-zh label[data-lang="zh"] { display: block; }
+    body.lang-en .status-pill[data-lang="en"], body.lang-zh .status-pill[data-lang="zh"], body.lang-en .tag[data-lang="en"], body.lang-zh .tag[data-lang="zh"], body.lang-en .button[data-lang="en"], body.lang-zh .button[data-lang="zh"], body.lang-en .path[data-lang="en"], body.lang-zh .path[data-lang="zh"], body.lang-en .disabled-action[data-lang="en"], body.lang-zh .disabled-action[data-lang="zh"], body.lang-en .official-action[data-lang="en"], body.lang-zh .official-action[data-lang="zh"] { display: inline-flex; }
+    @media (max-width: 900px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric:nth-child(6n) { border-right: 1px solid #e6e9f0; } .metric:nth-child(2n) { border-right: 0; } .option-grid { grid-template-columns: 1fr; } .hero::after { width: 100%; opacity: .32; } }
+    @media (max-width: 640px) { .shell { width: min(100% - 24px, 1120px); padding-top: 24px; } header { align-items: flex-start; } .brand-title span { display: none; } .hero { min-height: 0; padding: 30px 22px; } .status-head { align-items: flex-start; flex-direction: column; } .metric-grid { grid-template-columns: 1fr; } .metric, .metric:nth-child(2n), .metric:nth-child(6n) { border-right: 0; } .metric.wide { grid-column: auto; } .option { min-height: 0; padding: 22px; } .section-title { display: block; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <div class="mark">M</div>
+        <div class="brand-title"><strong>MaClaw Hub</strong><span data-lang="en">Credits Center</span><span data-lang="zh">额度中心</span></div>
+      </div>
+      <div class="lang" aria-label="Language"><button type="button" data-set-lang="en">EN</button><button type="button" data-set-lang="zh">中文</button></div>
+    </header>
+
+    <section id="creditStatus" class="status-panel" aria-live="polite">
+      <div class="status-head"><div><div class="status-kicker" data-lang="en">Current authorization</div><div class="status-kicker" data-lang="zh">当前授权状态</div><div id="accountEmail" class="status-account">-</div></div><div id="accountStateEn" class="status-pill" data-lang="en">Not connected</div><div id="accountStateZh" class="status-pill" data-lang="zh">未连接授权账户</div></div>
+      <div class="metric-grid">
+        <div class="metric wide"><label data-lang="en">Authorized groups</label><label data-lang="zh">授权组</label><strong id="creditGroups">-</strong></div>
+        <div class="metric"><label data-lang="en">Total credits</label><label data-lang="zh">总额度</label><strong id="creditTotal">-</strong></div>
+        <div class="metric"><label data-lang="en">Used</label><label data-lang="zh">已用</label><strong id="creditUsed">-</strong></div>
+        <div class="metric"><label data-lang="en">Remaining</label><label data-lang="zh">剩余</label><strong id="creditRemaining">-</strong></div>
+        <div class="metric"><label data-lang="en">Valid until</label><label data-lang="zh">有效期</label><strong id="creditExpiry">-</strong></div>
+        <div class="metric"><label data-lang="en">Input tokens</label><label data-lang="zh">输入令牌</label><strong id="usageInputTokens">-</strong></div>
+        <div class="metric"><label data-lang="en">Output tokens</label><label data-lang="zh">输出令牌</label><strong id="usageOutputTokens">-</strong></div>
+        <div class="metric"><label data-lang="en">Total tokens</label><label data-lang="zh">令牌总数</label><strong id="usageTotalTokens">-</strong></div>
+        <div class="metric"><label data-lang="en">Input cost</label><label data-lang="zh">输入费用</label><strong id="usageInputCost">-</strong></div>
+        <div class="metric"><label data-lang="en">Output cost</label><label data-lang="zh">输出费用</label><strong id="usageOutputCost">-</strong></div>
+        <div class="metric"><label data-lang="en">Total cost</label><label data-lang="zh">总费用</label><strong id="usageTotalCost">-</strong></div>
+      </div>
+    </section>
+
+    <section class="hero"><div class="hero-inner"><p class="eyebrow" data-lang="en">Credits and service continuity</p><p class="eyebrow" data-lang="zh">额度与服务连续性</p><h1 data-lang="en">MaClaw workspace continuity</h1><h1 data-lang="zh">MaClaw 工作区连续性</h1><p class="lead" data-lang="en">Review your Credits status and continue with MaClaw official Credits for the smoothest managed experience.</p><p class="lead" data-lang="zh">查看当前额度状态，优先使用 MaClaw 官方额度，获得更稳定的托管服务体验。</p><div class="hero-actions"><a class="button primary" href="#official" data-select-option="official" data-lang="en">Use official Credits</a><a class="button primary" href="#official" data-select-option="official" data-lang="zh">使用官方额度</a><a class="button" href="#provider" data-select-option="provider" data-lang="en">Use my provider</a><a class="button" href="#provider" data-select-option="provider" data-lang="zh">使用自己的服务商</a></div></div></section>
+
+    <div class="redeem-notice"><div><strong data-lang="en">Service redemption</strong><strong data-lang="zh">注意服务兑换方式</strong><span data-lang="en">In MaClaw, open <span class="redeem-path">Settings -> Service Redemption</span>, enter your redemption code, then click <span class="redeem-path">Redeem now</span>.</span><span data-lang="zh">MaClaw 中进入 <span class="redeem-path">设置 -> 服务兑换</span>，输入兑换码，点击 <span class="redeem-path">“立即兑换”</span> 按钮。</span></div></div>
+
+    <div class="section-title"><div><h2 data-lang="en">Two ways to continue</h2><h2 data-lang="zh">两种续用方式</h2><p data-lang="en">Start with official Credits, or keep your own provider as a backup path when needed.</p><p data-lang="zh">建议优先使用官方额度；如需自管密钥，也可以保留自己的服务商作为备用方案。</p></div></div>
+
+    <main class="option-grid">
+      <article id="official" class="option selected featured" tabindex="0" role="button" aria-pressed="true"><div class="option-top"><div class="step">1</div><div class="tag ready" data-lang="en">Recommended</div><div class="tag ready" data-lang="zh">官方推荐</div></div><div><h3 data-lang="en">Use MaClaw official Credits</h3><h3 data-lang="zh">使用 MaClaw 官方额度</h3><p data-lang="en">Official Credits keep authorized users on MaClaw's managed provider directly inside the app, with usage and remaining Credits visible in your authorization status.</p><p data-lang="zh">官方额度可让已授权用户在应用内直接使用 MaClaw 托管服务商，并在授权状态中清楚展示用量与剩余额度。</p><ul class="checklist"><li><span data-lang="en">Managed provider access</span><span data-lang="zh">托管服务商访问</span></li><li><span data-lang="en">Credits tracked in your authorization status</span><span data-lang="zh">额度会显示在授权状态中</span></li><li><span data-lang="en">Best path when you want MaClaw to manage provider keys</span><span data-lang="zh">适合希望由 MaClaw 托管服务商密钥的用户</span></li></ul></div><div class="option-footer"><a class="official-action" href="https://shop35347815.taobao.com/" target="_blank" rel="noopener" data-lang="en">Visit official store to buy service redemption cards</a><a class="official-action" href="https://shop35347815.taobao.com/" target="_blank" rel="noopener" data-lang="zh">访问官方商店购买服务兑换卡</a></div></article>
+      <article id="provider" class="option" tabindex="0" role="button" aria-pressed="false"><div class="option-top"><div class="step">2</div><div class="tag pending" data-lang="en">Backup path</div><div class="tag pending" data-lang="zh">备用方案</div></div><div><h3 data-lang="en">Use your own LLM provider</h3><h3 data-lang="zh">添加自己的大模型服务商</h3><p data-lang="en">Add a provider API key in MaClaw settings when you want billing and provider credentials to stay under your own account.</p><p data-lang="zh">如果你希望账单和服务商密钥都由自己的账户管理，可以在 MaClaw 设置中添加服务商密钥作为备用路径。</p><ul class="checklist"><li><span data-lang="en">Works immediately after configuration</span><span data-lang="zh">配置完成后即可使用</span></li><li><span data-lang="en">Provider billing stays under your own account</span><span data-lang="zh">服务商账单由你自己的账户管理</span></li><li><span data-lang="en">Useful as a fallback when official Credits are not enough</span><span data-lang="zh">适合作为官方额度不足时的补充通道</span></li></ul></div><div class="option-footer"><div class="path" data-lang="en">Settings -> LLM Configuration</div><div class="path" data-lang="zh">设置 -> 大模型配置</div></div></article>
+    </main>
+
+    <div class="note" data-lang="en">Tip: official Credits are the recommended path for managed MaClaw usage. Your own provider remains available as a backup option.</div><div class="note" data-lang="zh">提示：官方额度是推荐的托管使用方式；自己的服务商可作为备用方案保留。</div>
+  </div>
+
+  <script>
+    (function() {
+      var latestAccountData = null;
+      var latestEmptyAccountState = null;
+      var saved = localStorage.getItem('maclaw-get-credits-lang');
+      var initial = saved || (/^zh/i.test(navigator.language || '') ? 'zh' : 'en');
+      function isZh() { return document.documentElement.lang === 'zh-CN'; }
+      function setLang(lang) { document.body.className = lang === 'zh' ? 'lang-zh' : 'lang-en'; document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en'; document.title = lang === 'zh' ? 'MaClaw 额度中心' : 'MaClaw Credits Center'; localStorage.setItem('maclaw-get-credits-lang', lang); document.querySelectorAll('[data-set-lang]').forEach(function(btn) { btn.classList.toggle('active', btn.getAttribute('data-set-lang') === lang); }); renderLatestAccountState(); }
+      function formatNumber(value) { var n = Number(value || 0); if (!Number.isFinite(n)) return '-'; return n.toLocaleString(isZh() ? 'zh-CN' : 'en-US', { maximumFractionDigits: 2 }); }
+      function formatDate(value) { if (!value) return isZh() ? '永久' : 'Permanent'; if (typeof value === 'string' && /^(永久|Permanent)$/i.test(value.trim())) return isZh() ? '永久' : 'Permanent'; var d = new Date(value); if (Number.isNaN(d.getTime())) return value; return d.toLocaleDateString(isZh() ? 'zh-CN' : 'en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }); }
+      function formatMoney(value) { var n = Number(value || 0); if (!Number.isFinite(n)) return '-'; return (isZh() ? '¥' : 'RMB ') + n.toLocaleString(isZh() ? 'zh-CN' : 'en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+      function formatGroupName(value) { if (isZh()) return value; var groupNames = { 'VIP服务': 'VIP service', 'VIP 服务': 'VIP service', '默认服务': 'Default service', '官方额度': 'Official Credits' }; return groupNames[value] || value; }
+      function renderLatestAccountState() { if (latestAccountData) renderAccount(latestAccountData); else if (latestEmptyAccountState) renderEmptyAccount(latestEmptyAccountState.en, latestEmptyAccountState.zh); }
+      function getAccountToken() { var hash = (window.location.hash || '').replace(/^#/, ''); var hashToken = new URLSearchParams(hash).get('token') || ''; var queryToken = new URLSearchParams(window.location.search || '').get('token') || ''; var token = hashToken || queryToken || localStorage.getItem('maclaw-get-credits-token') || ''; if (hashToken || queryToken) localStorage.setItem('maclaw-get-credits-token', token); return token; }
+      function setAccountState(en, zh) { document.getElementById('accountStateEn').textContent = en; document.getElementById('accountStateZh').textContent = zh; }
+      function renderEmptyAccount(en, zh) { latestAccountData = null; latestEmptyAccountState = { en: en || 'Not connected', zh: zh || '未连接授权账户' }; document.getElementById('accountEmail').textContent = '-'; setAccountState(latestEmptyAccountState.en, latestEmptyAccountState.zh); }
+      function renderAccount(data) { latestAccountData = data; latestEmptyAccountState = null; var status = data && data.status ? data.status : {}; var usage = data && data.usage ? data.usage : {}; var grants = Array.isArray(status.active_grants) ? status.active_grants : []; var total = grants.reduce(function(sum, grant) { return sum + Number(grant.credits_total || 0); }, 0); var used = grants.reduce(function(sum, grant) { return sum + Number(grant.credits_used || 0); }, 0); var remainingFromGrants = grants.reduce(function(sum, grant) { return sum + Number(grant.credits_remaining || 0); }, 0); var remaining = Number.isFinite(Number(status.credits_available)) ? Number(status.credits_available || 0) : remainingFromGrants; var groups = Array.isArray(status.service_group_names) && status.service_group_names.length ? status.service_group_names : status.service_group_ids || []; document.getElementById('accountEmail').textContent = data.email || '-'; setAccountState('Connected account', '已连接账户'); document.getElementById('creditGroups').textContent = groups.length ? groups.map(formatGroupName).join(', ') : '-'; document.getElementById('creditTotal').textContent = total > 0 ? formatNumber(total) : (status.active ? '∞' : '-'); document.getElementById('creditUsed').textContent = total > 0 || used > 0 ? formatNumber(used) : '-'; document.getElementById('creditRemaining').textContent = total > 0 || remaining > 0 ? formatNumber(remaining) : (status.active ? '∞' : '-'); document.getElementById('creditExpiry').textContent = formatDate(status.nearest_expires_at); document.getElementById('usageInputTokens').textContent = formatNumber(usage.input_tokens || 0); document.getElementById('usageOutputTokens').textContent = formatNumber(usage.output_tokens || 0); document.getElementById('usageTotalTokens').textContent = formatNumber(usage.total_tokens || 0); document.getElementById('usageInputCost').textContent = formatMoney(usage.input_cost_rmb || 0); document.getElementById('usageOutputCost').textContent = formatMoney(usage.output_cost_rmb || 0); document.getElementById('usageTotalCost').textContent = formatMoney(usage.total_cost_rmb || 0); }
+      function selectOption(id, shouldScroll) { var target = document.getElementById(id); if (!target) return; document.querySelectorAll('.option.selected').forEach(function(card) { card.classList.remove('selected'); }); document.querySelectorAll('[data-select-option]').forEach(function(btn) { btn.classList.toggle('active', btn.getAttribute('data-select-option') === id); }); target.classList.add('selected'); if (shouldScroll) target.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+      function renderCreditStatus() { var token = getAccountToken(); if (!token) { renderEmptyAccount('Not connected', '未连接授权账户'); return; } setAccountState('Loading account', '正在同步授权'); if (window.history && window.history.replaceState) window.history.replaceState(null, document.title, window.location.pathname); fetch('/api/llm/service/account', { headers: { Authorization: 'Bearer ' + token } }).then(function(resp) { if (!resp.ok) throw new Error('account load failed'); return resp.json(); }).then(renderAccount).catch(function() { localStorage.removeItem('maclaw-get-credits-token'); renderEmptyAccount('Account unavailable', '授权信息暂不可用'); }); }
+      document.querySelectorAll('[data-set-lang]').forEach(function(btn) { btn.addEventListener('click', function() { setLang(btn.getAttribute('data-set-lang') || 'en'); }); });
+      document.querySelectorAll('[data-select-option]').forEach(function(btn) { btn.addEventListener('click', function(event) { event.preventDefault(); selectOption(btn.getAttribute('data-select-option') || '', true); }); });
+      setLang(initial); renderCreditStatus(); selectOption('official', false);
+    })();
+  </script>
+</body>
+</html>
+
+
+
+

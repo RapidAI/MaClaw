@@ -145,6 +145,42 @@ const maxConsecutiveEmptyResponses = 3
 // recover-empty-recover cycle.
 const maxTotalRecoverInjections = 8
 
+const minHeuristicTextContinuationRunes = 1200
+
+func shouldContinueTextOutput(finishReason, content string) (bool, string) {
+	if finishReason == "length" {
+		return true, "finish_reason=length"
+	}
+	if !looksStructurallyTruncatedText(content) {
+		return false, ""
+	}
+	return true, "structural_heuristic"
+}
+
+func looksStructurallyTruncatedText(content string) bool {
+	trimmed := strings.TrimRight(content, " \t\r\n")
+	if trimmed == "" {
+		return false
+	}
+	runes := []rune(trimmed)
+	if len(runes) < minHeuristicTextContinuationRunes {
+		return false
+	}
+	if strings.Count(trimmed, "```")%2 == 1 {
+		return true
+	}
+	switch runes[len(runes)-1] {
+	case ',', '\uFF0C', ':', '\uFF1A', ';', '\uFF1B', '\u3001', '-', '\u2014', '(', '\uFF08', '[', '\u3010', '{', '\u300A':
+		return true
+	default:
+		return false
+	}
+}
+
+func isPureScreenshotAction(totalNonScreenshotToolCalls int) bool {
+	return totalNonScreenshotToolCalls == 0
+}
+
 type agentLoopStage string
 
 type skillPreferenceMode string
@@ -1027,6 +1063,92 @@ type pendingAskUserState struct {
 	Options   []string
 	InputType string
 	Timestamp time.Time
+}
+
+// pendingUserReplyState binds a plain-text assistant question to the
+// conversation snapshot that produced it. It covers normal prose follow-ups
+// such as "which model should I deploy?" that do not use the ask_user tool.
+type pendingUserReplyState struct {
+	Question  string
+	History   []agent.ConversationEntry
+	Timestamp time.Time
+}
+
+func cloneConversationEntries(entries []agent.ConversationEntry) []agent.ConversationEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	clone := make([]agent.ConversationEntry, len(entries))
+	copy(clone, entries)
+	return clone
+}
+
+func latestAssistantText(entries []agent.ConversationEntry) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Role != "assistant" {
+			continue
+		}
+		if text, ok := entries[i].Content.(string); ok {
+			return strings.TrimSpace(text)
+		}
+	}
+	return ""
+}
+
+func conversationHistoryEqual(a, b []agent.ConversationEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Role != b[i].Role {
+			return false
+		}
+		textA, okA := a[i].Content.(string)
+		textB, okB := b[i].Content.(string)
+		if !okA || !okB || strings.TrimSpace(textA) != strings.TrimSpace(textB) {
+			return false
+		}
+	}
+	return true
+}
+
+func looksLikePendingUserReplyPrompt(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	casualClosers := []string{"anything else", "what else", "let me know", "i'm here if", "\u8fd8\u6709\u4ec0\u4e48", "\u968f\u65f6\u53eb", "\u968f\u65f6\u8bf4"}
+	for _, hint := range casualClosers {
+		if strings.Contains(lower, hint) {
+			return false
+		}
+	}
+	questionHints := []string{"?", "\uff1f", "\u8bf7\u9009\u62e9", "\u8bf7\u786e\u8ba4", "\u8bf7\u63d0\u4f9b", "\u8bf7\u8865\u5145", "\u8bf7\u544a\u8bc9\u6211", "\u8bf7\u56de\u590d", "\u76f4\u63a5\u56de\u590d", "\u9700\u8981\u4f60\u9009", "\u9700\u8981\u4f60\u786e\u8ba4", "\u8981\u90e8\u7f72", "\u90e8\u7f72\u54ea", "\u54ea\u4e2a\u6a21\u578b", "\u6a21\u578b\u9009\u62e9", "\u63a8\u8350\u65b9\u6848", "please choose", "please confirm", "please provide", "which model", "what model", "deploy which", "reply with"}
+	for _, hint := range questionHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func likelyResponseToPendingUserReply(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	replyHints := []string{"ok", "okay", "yes", "confirm", "go ahead", "as you suggest", "your suggestion", "recommended", "\u597d", "\u597d\u7684", "\u53ef\u4ee5", "\u786e\u8ba4", "\u5c31\u8fd9\u4e2a", "\u6309\u4f60\u7684\u5efa\u8bae", "\u6309\u5efa\u8bae", "\u63a8\u8350"}
+	for _, hint := range replyHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	if looksLikeFreshTaskRequest(trimmed) {
+		return false
+	}
+	return len([]rune(trimmed)) <= 20 && countWords(trimmed) < 4
 }
 
 // pendingSlotText stores the user's original task text that was intercepted
@@ -2046,6 +2168,60 @@ func hasVisibleIMResult(resp *IMAgentResponse) bool {
 	return false
 }
 
+var weixinQRCodeURLPattern = regexp.MustCompile("https://liteapp\\.weixin\\.qq\\.com/q/[^\\s<>\\\"']+")
+
+func extractWeixinQRCodeURLFromToolResult(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	match := weixinQRCodeURLPattern.FindString(text)
+	if match == "" || !strings.Contains(match, "qrcode=") {
+		return ""
+	}
+	match = strings.TrimRight(match, ").,;:!?")
+	if parsed, err := url.Parse(match); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		return match
+	}
+	return ""
+}
+
+func attachLocalPreview(resp *IMAgentResponse, filePath, thumbnailBase64 string) {
+	if resp == nil || strings.TrimSpace(filePath) == "" {
+		return
+	}
+	if strings.TrimSpace(resp.LocalFilePath) == "" {
+		resp.LocalFilePath = filePath
+	}
+	seen := map[string]bool{}
+	for _, p := range resp.LocalFilePaths {
+		if strings.TrimSpace(p) != "" {
+			seen[p] = true
+		}
+	}
+	if !seen[filePath] {
+		resp.LocalFilePaths = append(resp.LocalFilePaths, filePath)
+	}
+	if strings.TrimSpace(resp.ThumbnailBase64) == "" {
+		resp.ThumbnailBase64 = thumbnailBase64
+	}
+}
+
+func appendVisibleNote(resp *IMAgentResponse, note string) {
+	if resp == nil {
+		return
+	}
+	note = strings.TrimSpace(note)
+	if note == "" || strings.Contains(resp.Text, note) {
+		return
+	}
+	if strings.TrimSpace(resp.Text) == "" {
+		resp.Text = note
+		return
+	}
+	resp.Text = strings.TrimRight(resp.Text, " \t\r\n") + "\n\n" + note
+}
+
 func ensureTraceAction(resp *IMAgentResponse) {
 	if resp == nil || strings.TrimSpace(resp.RunID) == "" {
 		return
@@ -2569,6 +2745,11 @@ type IMMessageHandler struct {
 	// as a response (not a new request) and the context is preserved.
 	// Keyed by userID, value is *pendingAskUserState.
 	pendingAskUser sync.Map
+
+	// pendingUserReply tracks plain-text assistant questions that expect the
+	// next user message to continue the same task. Keyed by userID, value is
+	// *pendingUserReplyState.
+	pendingUserReply sync.Map
 
 	// pendingCapabilityGap stores the result of an async capability gap
 	// resolution (skill search + install) that completed after the response
@@ -3809,6 +3990,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	h.memory.Save(userID, trimmed)
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
+		h.updatePendingUserReplyFromHistory(userID, trimmed, resp)
 	}
 
 	// --- Post-compaction actions (inspired by Codex CLI) ---
@@ -3868,6 +4050,19 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// integrates them via four-operation classification (ADD/UPDATE/DELETE/NOOP).
 	// Runs in a goroutine to avoid blocking the response.
 	h.triggerOnlineExtraction(userID, history)
+}
+
+func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
+	if h == nil || strings.TrimSpace(userID) == "" || resp == nil {
+		return
+	}
+	assistantText := strings.TrimSpace(firstNonEmptyTraceText(resp.Text, latestAssistantText(history)))
+	if !looksLikePendingUserReplyPrompt(assistantText) {
+		h.pendingUserReply.Delete(userID)
+		return
+	}
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{Question: truncateRunes(assistantText, 500), History: cloneConversationEntries(history), Timestamp: time.Now()})
+	log.Printf("[PendingUserReply] stored pending text reply context for user=%s historyLen=%d question=%q", userID, len(history), truncateRunes(assistantText, 80))
 }
 
 // persistSessionTranscriptAsync converts the conversation history to a
@@ -4525,6 +4720,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	freshTask := false
 	confirmedResume := false
 	confirmedWorkflowAgentLoop := false
+	clearUIAfterContextSwitch := false
 	if pendingResult := h.handlePendingExecutionConfirmation(&msg, &trimmed); pendingResult.Handled {
 		return pendingResult.Response
 	} else if pendingResult.ConfirmedResume {
@@ -4666,6 +4862,33 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 
+	// --- Pending plain-text user reply binding ---
+	// Assistant questions emitted as normal prose still need task affinity.
+	var pendingUserReplyContext string
+	var hasPendingUserReply bool
+	if !msg.IsBackground {
+		if raw, ok := h.pendingUserReply.LoadAndDelete(msg.UserID); ok {
+			pending, _ := raw.(*pendingUserReplyState)
+			if pending != nil && time.Since(pending.Timestamp) < 30*time.Minute && likelyResponseToPendingUserReply(trimmed) {
+				hasPendingUserReply = true
+				if len(pending.History) > 0 {
+					current := h.memory.Load(msg.UserID)
+					if !conversationHistoryEqual(current, pending.History) {
+						restored := cloneConversationEntries(pending.History)
+						h.memory.Save(msg.UserID, restored)
+						EntriesBeforeClear = restored
+						unfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)
+						clearUIAfterContextSwitch = clearUIAfterContextSwitch || len(current) > 0
+						log.Printf("[PendingUserReply] restored bound question context for user=%s currentLen=%d restoredLen=%d answer=%q", msg.UserID, len(current), len(restored), truncateRunes(trimmed, 80))
+					}
+				}
+				pendingUserReplyContext = fmt.Sprintf("[Context hint] The user is answering the assistant question from the current task, not starting or resuming another task.\nAssistant question: %s\nUser answer: %s", pending.Question, trimmed)
+			} else if pending != nil && time.Since(pending.Timestamp) < 30*time.Minute && trimmed == "" {
+				h.pendingUserReply.Store(msg.UserID, pending)
+			}
+		}
+	}
+
 	// --- Workflow engine interception ---
 	// Route messages through the workflow engine before the main agent loop.
 	// This handles active workflows, intent understanding, and complex task detection.
@@ -4678,7 +4901,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// if a stale workflow happens to be active in memory.
 	workflowAgentLoop := confirmedWorkflowAgentLoop
 	skipWorkflowForAttachment := false
-	if !confirmedResume && h.getWorkflowEngine() != nil && !msg.IsBackground {
+	if !confirmedResume && h.getWorkflowEngine() != nil && !msg.IsBackground && !hasPendingUserReply {
 		// Skip workflow interception when the user sends image attachments
 		// with a short text prompt (likely an image recognition request, not
 		// a workflow phase input). Without this, the workflow engine would
@@ -4725,6 +4948,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if skipWorkflowForAttachment {
 		skipNeedsConfirmGate = true
 	}
+	if hasPendingUserReply {
+		skipNeedsConfirmGate = true
+	}
 
 	// --- Pending ask_user response detection ---
 	// Detected BEFORE the unified task context decision so it can be used
@@ -4751,7 +4977,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if !confirmedResume && !freshTask && !msg.IsBackground && decision.ResumeSlotID == "" {
 		tcDecision := h.resolveTaskContext(
 			msg.UserID, trimmed, EntriesBeforeClear,
-			hasPendingAskUser, false, false,
+			hasPendingAskUser || hasPendingUserReply, false, false,
 		)
 		switch tcDecision.Action {
 		case agent.TaskNew:
@@ -4766,6 +4992,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				h.confirmationStore.clear(msg.UserID)
 			}
 			freshTask = true
+			clearUIAfterContextSwitch = clearUIAfterContextSwitch || len(EntriesBeforeClear) > 0
 			// Clear ask_user context — it belongs to the old task.
 			askUserContext = ""
 			log.Printf("[TaskContext] new task for user %s: %s", msg.UserID, tcDecision.Reason)
@@ -4781,12 +5008,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			if h.restoreRecalledTask(msg.UserID, tcDecision.RecallTaskID) {
 				askUserContext = ""
 				unfinishedSlot = nil // recalled task replaces the old context
+				clearUIAfterContextSwitch = true
 				log.Printf("[TaskContext] recalled task %s for user %s", tcDecision.RecallTaskID, msg.UserID)
 			} else {
 				// Recall failed — treat as new task.
 				h.memory.ClearConversationAndDismissSlot(msg.UserID)
 				h.clearPerUserSessionState(msg.UserID)
 				freshTask = true
+				clearUIAfterContextSwitch = clearUIAfterContextSwitch || len(EntriesBeforeClear) > 0
 				log.Printf("[TaskContext] recall failed for user %s, treating as new task", msg.UserID)
 			}
 		case agent.TaskContinue:
@@ -4997,6 +5226,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if askUserContext != "" {
 		systemPrompt += "\n\n" + askUserContext
 	}
+	if pendingUserReplyContext != "" {
+		systemPrompt += "\n\n" + pendingUserReplyContext
+	}
 
 	// Inject async capability gap result so the LLM knows about newly
 	// installed skills from the background search.
@@ -5037,7 +5269,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 	// Propagate the ask_user response flag so runAgentLoop skips task-level
 	// routing decisions (e.g. Skill preference) that assume a fresh task.
-	loopCtx.IsAskUserResponse = askUserContext != ""
+	loopCtx.IsAskUserResponse = askUserContext != "" || pendingUserReplyContext != ""
 
 	// NOTE: chatLoopMu is already held — acquired at the serialization
 	// boundary above (before workflow interception). The interrupt handler
@@ -5188,6 +5420,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if resp == nil {
 		resp = &IMAgentResponse{}
 	}
+	resp.ClearUI = resp.ClearUI || clearUIAfterContextSwitch
 
 	// --- Evidence collection hook: async user profile signal analysis ---
 	// Must not block the agent loop response. All work runs in goroutines.
@@ -6305,6 +6538,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		defer recorder.Flush()
 		if loopAdaptiveRetry == nil {
 			loopAdaptiveRetry = NewAdaptiveRetry(recorder)
+		}
+	}
+	var pendingLocalPreviewPath string
+	var pendingLocalPreviewThumbnail string
+	var pendingQRCodeURL string
+	attachPendingVisibleArtifacts := func(resp *IMAgentResponse) {
+		attachLocalPreview(resp, pendingLocalPreviewPath, pendingLocalPreviewThumbnail)
+		if pendingQRCodeURL != "" {
+			appendVisibleNote(resp, "二维码登录链接："+pendingQRCodeURL)
 		}
 	}
 	recordSystemMessages := func(start int, items []interface{}) {
@@ -7506,6 +7748,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							}
 						}
 						attachLLMTelemetry(finalResp)
+						attachPendingVisibleArtifacts(finalResp)
 						h.saveConversationHistoryTimed(userID, history, finalResp)
 						return finalResp
 					}
@@ -7890,6 +8133,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						log.Printf("[agent-loop] NeedsConfirm gate: skipped doc preview emission (workflowEngine=%v)", h.getWorkflowEngine() != nil)
 					}
 					attachLLMTelemetry(finalResp)
+					attachPendingVisibleArtifacts(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
 					return finalResp
 				} else if trimmedForGate != "" && !looksLikeNoToolStallReply(msgContent) {
@@ -7916,6 +8160,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					postStreamLastReturnPrepAt = time.Now()
 				}
 				attachLLMTelemetry(finalResp)
+				attachPendingVisibleArtifacts(finalResp)
 				h.saveConversationHistoryTimed(userID, history, finalResp)
 				return finalResp
 			}
@@ -7991,6 +8236,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					}
 					finalResp := &IMAgentResponse{Text: fallbackText, HardExit: true}
 					attachLLMTelemetry(finalResp)
+					attachPendingVisibleArtifacts(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
 					return finalResp
 				}
@@ -8143,6 +8389,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			history = h.injectNudgeMessages(history, iteration, totalToolCallsInLoop, phase, userText)
 
 			attachLLMTelemetry(finalResp)
+			attachPendingVisibleArtifacts(finalResp)
 			// Attach voice from tts tool (if any).
 			if voiceData != "" {
 				finalResp.VoiceData = voiceData
@@ -8244,6 +8491,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				log.Printf("[agent-loop] rejected execution of truncation-blocked tool %q (iter=%d)", tc.Function.Name, iteration)
 			} else {
 				result = h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+			}
+			if pendingQRCodeURL == "" {
+				pendingQRCodeURL = extractWeixinQRCodeURLFromToolResult(result)
 			}
 
 			// Record "completed" milestone for event-driven progress.
@@ -8692,6 +8942,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					finalResp.VoiceMimeType = voiceMimeType
 				}
 				attachLLMTelemetry(finalResp)
+				attachPendingVisibleArtifacts(finalResp)
 				h.saveConversationHistoryTimed(userID, history, finalResp)
 				return finalResp
 			}
@@ -8752,6 +9003,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// stop the loop. The LLM will continue with the next step.
 			if platform == "desktop" {
 				if filePath, err := h.saveScreenshotToFile(pendingImageKey); err == nil {
+					pendingLocalPreviewPath = filePath
+					pendingLocalPreviewThumbnail = pendingImageKey
+					if len(pendingLocalPreviewThumbnail) > 50000 {
+						if downsized, err := remote.DownsizeScreenshotBase64(pendingLocalPreviewThumbnail, 10000); err == nil {
+							pendingLocalPreviewThumbnail = downsized
+						}
+					}
 					log.Printf("[screenshot] intermediate screenshot saved to %s, loop continues (iteration=%d toolCalls=%d)", filePath, iteration, len(choice.Message.ToolCalls))
 				}
 			} else {
@@ -8972,6 +9230,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					}
 				}
 				attachLLMTelemetry(finalResp)
+				attachPendingVisibleArtifacts(finalResp)
 				if voiceData != "" {
 					finalResp.VoiceData = voiceData
 					finalResp.VoiceFileName = voiceFileName
@@ -9144,6 +9403,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		h.saveConversationHistoryTimed(userID, history, &IMAgentResponse{})
 		resp := &IMAgentResponse{Text: "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。", Deferred: true}
 		attachLLMTelemetry(resp)
+		attachPendingVisibleArtifacts(resp)
 		return resp
 	}
 
@@ -9171,6 +9431,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	resp := &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
 	attachLLMTelemetry(resp)
+	attachPendingVisibleArtifacts(resp)
 	// Nudge injection at max-rounds exit.
 	history = h.injectNudgeMessages(history, finalIteration, totalToolCallsInLoop, phase, userText)
 	h.saveConversationHistoryTimed(userID, history, resp)

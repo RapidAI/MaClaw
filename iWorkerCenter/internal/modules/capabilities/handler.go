@@ -113,6 +113,8 @@ func (h *Handler) SetSkillEvolutionMonitor(monitor *SkillEvolutionMonitor) {
 
 // RegisterAdminRoutes registers admin-facing routes.
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/admin/mcp-servers/", h.handleAdminMCPServerByID)
+	mux.HandleFunc("/admin/mcp-servers", h.handleAdminMCPServers)
 	mux.HandleFunc("/admin/skillmarket/", h.handleAdminSkillMarketByID)
 	mux.HandleFunc("/admin/skillmarket", h.handleAdminSkillMarket)
 	mux.HandleFunc("/admin/capabilities-cloud-publish-rule", h.handleCloudPublishRule)
@@ -124,6 +126,7 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 
 // RegisterClientRoutes registers client-facing routes (for DiWorker).
 func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/client/mcp-servers", h.handleClientMCPServers)
 	mux.HandleFunc("/client/capabilities", h.handleClientCapabilities)
 	mux.HandleFunc("/client/capabilities/", h.handleClientCapabilities)
 }

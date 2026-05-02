@@ -11,10 +11,18 @@ import (
 )
 
 type Handler struct {
-	svc *Service
+	svc         *Service
+	onHeartbeat func()
 }
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+
+func (h *Handler) SetHeartbeatObserver(observer func()) {
+	if h == nil {
+		return
+	}
+	h.onHeartbeat = observer
+}
 
 func (h *Handler) RegisterRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/runtime/iworker/instances/heartbeat", h.handleHeartbeat)
@@ -22,6 +30,10 @@ func (h *Handler) RegisterRuntimeRoutes(mux *http.ServeMux) {
 
 func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/client/iworker/instances", h.handleList)
+}
+
+func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/admin/iworker/instances", h.handleList)
 }
 
 func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +50,9 @@ func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		response.BadRequest(w, "HEARTBEAT_FAILED", err.Error())
 		return
+	}
+	if h.onHeartbeat != nil {
+		go h.onHeartbeat()
 	}
 	response.OK(w, result)
 }

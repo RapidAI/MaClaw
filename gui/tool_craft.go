@@ -1,10 +1,10 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"log"
 	"net/http"
 	"os"
@@ -205,6 +205,10 @@ func parseCraftInt(raw string) (int, error) {
 }
 
 func executeCraftToolCore(app *App, client *http.Client, args map[string]interface{}, onProgress tool.ProgressCallback) (string, error) {
+	return executeCraftToolCoreWithContext(context.Background(), app, client, args, onProgress)
+}
+
+func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http.Client, args map[string]interface{}, onProgress tool.ProgressCallback) (string, error) {
 	normalizedArgs, err := normalizeCraftToolArgs(args)
 	if err != nil {
 		return "", err
@@ -256,7 +260,7 @@ func executeCraftToolCore(app *App, client *http.Client, args map[string]interfa
 		} else {
 			sendProgress(fmt.Sprintf("🛠️ 首次执行未通过，正在基于错误信息修复脚本（第 %d/%d 次）...", attempt, attempts))
 		}
-		script, genErr := craftToolGenerateScriptFn(cfg, request, runtimes, lastAttempt, client)
+		script, genErr := generateScriptWithContext(ctx, cfg, request, runtimes, lastAttempt, client)
 		if genErr != nil {
 			lastAttempt = craftAttemptResult{Language: request.Language, Attempts: attempt, VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: genErr.Error()}
 			break
@@ -274,7 +278,7 @@ func executeCraftToolCore(app *App, client *http.Client, args map[string]interfa
 		}
 
 		sendProgress(fmt.Sprintf("🚀 正在执行脚本（%s，第 %d/%d 次，超时 %ds）...", request.Language, attempt, attempts, request.Timeout))
-		output, execErr := craftToolExecuteScriptFn(scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes)
+		output, execErr := executeScriptWithContext(ctx, scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes)
 		lastAttempt = craftAttemptResult{
 			ScriptPath: scriptPath,
 			Script:     script,
@@ -450,6 +454,10 @@ func firstAvailableLookPath(names ...string) string {
 }
 
 func generateScript(cfg corelib.MaclawLLMConfig, request craftToolRequest, runtimes craftRuntimeAvailability, previous craftAttemptResult, client *http.Client) (string, error) {
+	return generateScriptWithContext(context.Background(), cfg, request, runtimes, previous, client)
+}
+
+func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig, request craftToolRequest, runtimes craftRuntimeAvailability, previous craftAttemptResult, client *http.Client) (string, error) {
 	sysPrompt := buildCraftSystemPrompt(request, runtimes, previous)
 	userPrompt := buildCraftUserPrompt(request, previous)
 	messages := []interface{}{
@@ -473,11 +481,15 @@ func generateScript(cfg corelib.MaclawLLMConfig, request craftToolRequest, runti
 			} else {
 				log.Printf("[craft_tool] HTTP 429 rate limit, retrying in %v (attempt %d/%d)", backoff, retry+1, maxRetries+1)
 			}
-			time.Sleep(backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
 			backoff *= 2 // exponential backoff: 2s, 4s, 8s
 		}
 		isCode1234 = false // reset on each iteration
-		result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, requestTimeout)
+		result, err := doSimpleLLMRequest(ctx, cfg, messages, client, requestTimeout)
 		if err != nil {
 			errMsg := err.Error()
 			if strings.Contains(errMsg, "429") || strings.Contains(strings.ToLower(errMsg), "rate limit") || strings.Contains(strings.ToLower(errMsg), "too many requests") {
@@ -990,7 +1002,11 @@ func saveScript(script, language, task string) (string, error) {
 
 // executeScript runs a script file and returns its output.
 func executeScript(scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	return executeScriptWithContext(context.Background(), scriptPath, language, workingDir, timeout, runtimes)
+}
+
+func executeScriptWithContext(parent context.Context, scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	cmd, err := buildCraftExecCommand(ctx, scriptPath, language, runtimes)

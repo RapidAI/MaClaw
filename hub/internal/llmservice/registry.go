@@ -83,16 +83,36 @@ type UserBinding struct {
 }
 
 type RechargeCard struct {
-	ID              string     `json:"id"`
-	CodeHash        string     `json:"code_hash,omitempty"`
-	EncryptedCode   string     `json:"encrypted_code,omitempty"`
-	Label           string     `json:"label,omitempty"`
-	ServiceGroupIDs []string   `json:"service_group_ids,omitempty"`
-	DurationDays    int        `json:"duration_days"`
-	Credits         float64    `json:"credits,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	RedeemedByEmail string     `json:"redeemed_by_email,omitempty"`
-	RedeemedAt      *time.Time `json:"redeemed_at,omitempty"`
+	ID              string             `json:"id"`
+	CodeHash        string             `json:"code_hash,omitempty"`
+	EncryptedCode   string             `json:"encrypted_code,omitempty"`
+	Label           string             `json:"label,omitempty"`
+	ServiceGroupIDs []string           `json:"service_group_ids,omitempty"`
+	DurationDays    int                `json:"duration_days"`
+	Credits         float64            `json:"credits,omitempty"`
+	PeriodLimits    CreditPeriodLimits `json:"period_limits,omitempty"`
+	CreatedAt       time.Time          `json:"created_at"`
+	RedeemedByEmail string             `json:"redeemed_by_email,omitempty"`
+	RedeemedAt      *time.Time         `json:"redeemed_at,omitempty"`
+}
+
+type CreditPeriodLimits struct {
+	FiveHour float64 `json:"five_hour,omitempty"`
+	Daily    float64 `json:"daily,omitempty"`
+	Weekly   float64 `json:"weekly,omitempty"`
+	Monthly  float64 `json:"monthly,omitempty"`
+}
+
+type CreditPeriodUsage struct {
+	FiveHour GrantUsageWindow `json:"five_hour,omitempty"`
+	Daily    GrantUsageWindow `json:"daily,omitempty"`
+	Weekly   GrantUsageWindow `json:"weekly,omitempty"`
+	Monthly  GrantUsageWindow `json:"monthly,omitempty"`
+}
+
+type GrantUsageWindow struct {
+	WindowStart time.Time `json:"window_start,omitempty"`
+	CreditsUsed float64   `json:"credits_used,omitempty"`
 }
 
 // PlainCode returns the decrypted card code, or empty string if unavailable
@@ -102,16 +122,18 @@ func (c RechargeCard) PlainCode() string {
 }
 
 type Grant struct {
-	ID             string    `json:"id"`
-	Email          string    `json:"email"`
-	ServiceGroupID string    `json:"service_group_id"`
-	Source         string    `json:"source"`
-	CardID         string    `json:"card_id,omitempty"`
-	StartsAt       time.Time `json:"starts_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	CreatedAt      time.Time `json:"created_at"`
-	CreditsTotal   float64   `json:"credits_total,omitempty"`
-	CreditsUsed    float64   `json:"credits_used,omitempty"`
+	ID             string             `json:"id"`
+	Email          string             `json:"email"`
+	ServiceGroupID string             `json:"service_group_id"`
+	Source         string             `json:"source"`
+	CardID         string             `json:"card_id,omitempty"`
+	StartsAt       time.Time          `json:"starts_at"`
+	ExpiresAt      time.Time          `json:"expires_at"`
+	CreatedAt      time.Time          `json:"created_at"`
+	CreditsTotal   float64            `json:"credits_total,omitempty"`
+	CreditsUsed    float64            `json:"credits_used,omitempty"`
+	PeriodLimits   CreditPeriodLimits `json:"period_limits,omitempty"`
+	PeriodUsage    CreditPeriodUsage  `json:"period_usage,omitempty"`
 }
 
 type AuthorizedModel struct {
@@ -223,6 +245,7 @@ func (r *Registry) Normalize() {
 		if r.Cards[i].Credits < 0 {
 			r.Cards[i].Credits = 0
 		}
+		r.Cards[i].PeriodLimits = normalizeCreditPeriodLimits(r.Cards[i].PeriodLimits)
 	}
 	for i := range r.Grants {
 		r.Grants[i].ID = strings.TrimSpace(r.Grants[i].ID)
@@ -239,6 +262,8 @@ func (r *Registry) Normalize() {
 		if r.Grants[i].CreditsUsed > r.Grants[i].CreditsTotal && r.Grants[i].CreditsTotal > 0 {
 			r.Grants[i].CreditsUsed = r.Grants[i].CreditsTotal
 		}
+		r.Grants[i].PeriodLimits = normalizeCreditPeriodLimits(r.Grants[i].PeriodLimits)
+		r.Grants[i].PeriodUsage = normalizeCreditPeriodUsage(r.Grants[i].PeriodUsage)
 	}
 	r.DefaultNewUserServiceGroups = normalizeStringSlice(r.DefaultNewUserServiceGroups)
 	if r.DefaultNewUserDurationDays < 0 {
@@ -250,6 +275,37 @@ func (r *Registry) Normalize() {
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit
 	}
+}
+
+func normalizeCreditPeriodLimits(limits CreditPeriodLimits) CreditPeriodLimits {
+	if limits.FiveHour < 0 {
+		limits.FiveHour = 0
+	}
+	if limits.Daily < 0 {
+		limits.Daily = 0
+	}
+	if limits.Weekly < 0 {
+		limits.Weekly = 0
+	}
+	if limits.Monthly < 0 {
+		limits.Monthly = 0
+	}
+	return limits
+}
+
+func normalizeCreditPeriodUsage(usage CreditPeriodUsage) CreditPeriodUsage {
+	usage.FiveHour.CreditsUsed = mathMaxZero(usage.FiveHour.CreditsUsed)
+	usage.Daily.CreditsUsed = mathMaxZero(usage.Daily.CreditsUsed)
+	usage.Weekly.CreditsUsed = mathMaxZero(usage.Weekly.CreditsUsed)
+	usage.Monthly.CreditsUsed = mathMaxZero(usage.Monthly.CreditsUsed)
+	return usage
+}
+
+func mathMaxZero(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 func (r *Registry) ensureDefaultNewUserSettings() {

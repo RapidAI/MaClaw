@@ -10,15 +10,19 @@ package agent
 // Migrated from gui/im_tools_local.go as part of the agent-unification plan.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io/fs"
 	"mime"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,9 +32,10 @@ import (
 // --- Constants ---
 
 const (
-	ReadFileMaxLines = 200
-	WriteFileMaxSize = 512 * 1024 // 512 KB per write
-	SendFileMaxSize  = 200 << 20  // 200 MB
+	ReadFileMaxLines  = 200
+	WriteFileMaxSize  = 512 * 1024 // 512 KB per write
+	SendFileMaxSize   = 200 << 20  // 200 MB
+	MaxSearchFileSize = 2 << 20    // 2 MB per file for search tools
 )
 
 // --- Bash ---
@@ -204,6 +209,185 @@ func ToolReadFile(args map[string]interface{}) string {
 		return fmt.Sprintf("(第 %d-%d 行，共 %d 行)\n%s", startLine, totalLines, totalLines, strings.Join(remaining, ""))
 	}
 	return string(data)
+}
+
+// ToolFileRead reads a precise line range from a text file.
+func ToolFileRead(args map[string]interface{}) string {
+	p := StringArg(args, "path")
+	if p == "" {
+		return "缺少 path 参数"
+	}
+	absPath, err := ResolveFileToolPath(p)
+	if err != nil {
+		return err.Error()
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Sprintf("文件不存在或无法访问: %s", err.Error())
+	}
+	if info.IsDir() {
+		return fmt.Sprintf("%s 是目录，请使用 Glob 或 list_directory 工具", absPath)
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return fmt.Sprintf("读取失败: %s", err.Error())
+	}
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	lines := strings.SplitAfter(text, "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	total := len(lines)
+	if total == 0 {
+		return fmt.Sprintf("%s 为空文件", absPath)
+	}
+
+	startLine := intArg(args, "start_line", 1)
+	if startLine < 1 {
+		startLine = 1
+	}
+	endLine := intArg(args, "end_line", 0)
+	if endLine <= 0 {
+		count := intArg(args, "lines", ReadFileMaxLines)
+		if count <= 0 {
+			count = ReadFileMaxLines
+		}
+		if count > 1000 {
+			count = 1000
+		}
+		endLine = startLine + count - 1
+	}
+	if startLine > total {
+		return fmt.Sprintf("start_line=%d 超出文件总行数 %d", startLine, total)
+	}
+	if endLine < startLine {
+		return fmt.Sprintf("end_line=%d 不能小于 start_line=%d", endLine, startLine)
+	}
+	if endLine > total {
+		endLine = total
+	}
+
+	showLineNumbers := boolArg(args, "show_line_numbers", true)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("%s (lines %d-%d of %d)\n", absPath, startLine, endLine, total))
+	for i := startLine; i <= endLine; i++ {
+		line := lines[i-1]
+		if showLineNumbers {
+			b.WriteString(fmt.Sprintf("%6d\t%s", i, line))
+		} else {
+			b.WriteString(line)
+		}
+		if !strings.HasSuffix(line, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	if endLine < total {
+		b.WriteString(fmt.Sprintf("... next start_line=%d\n", endLine+1))
+	}
+	return b.String()
+}
+
+// ToolRipgrep searches text files recursively using Go regexp.
+func ToolRipgrep(args map[string]interface{}) string {
+	pattern := StringArg(args, "pattern")
+	if pattern == "" {
+		return "缺少 pattern 参数"
+	}
+	caseSensitive := boolArg(args, "case_sensitive", false)
+	compilePattern := pattern
+	if !caseSensitive {
+		compilePattern = "(?i:" + pattern + ")"
+	}
+	re, err := regexp.Compile(compilePattern)
+	if err != nil {
+		return fmt.Sprintf("正则表达式无效: %s", err.Error())
+	}
+
+	base, err := resolveSearchBase(StringArg(args, "path"))
+	if err != nil {
+		return err.Error()
+	}
+	globPattern := StringArg(args, "glob")
+	maxResults := intArg(args, "max_results", 100)
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+	if maxResults > 1000 {
+		maxResults = 1000
+	}
+
+	matches := make([]string, 0, min(maxResults, 100))
+	filesSearched := 0
+	err = walkSearchFiles(base, globPattern, false, func(path string, d fs.DirEntry) error {
+		if len(matches) >= maxResults {
+			return filepath.SkipAll
+		}
+		info, err := d.Info()
+		if err != nil || info.Size() > MaxSearchFileSize {
+			return nil
+		}
+		if isLikelyBinary(path) {
+			return nil
+		}
+		filesSearched++
+		return searchFileLines(path, re, maxResults, &matches)
+	})
+	if err != nil && err != filepath.SkipAll {
+		return fmt.Sprintf("搜索失败: %s", err.Error())
+	}
+	if len(matches) == 0 {
+		return fmt.Sprintf("未找到匹配项（已搜索 %d 个文件）", filesSearched)
+	}
+	result := strings.Join(matches, "\n")
+	if len(matches) >= maxResults {
+		result += fmt.Sprintf("\n... 已达到 max_results=%d", maxResults)
+	}
+	return result
+}
+
+// ToolGlob finds files by glob pattern, including recursive ** patterns.
+func ToolGlob(args map[string]interface{}) string {
+	pattern := StringArg(args, "pattern")
+	if pattern == "" {
+		return "缺少 pattern 参数"
+	}
+	base, err := resolveSearchBase(StringArg(args, "path"))
+	if err != nil {
+		return err.Error()
+	}
+	maxResults := intArg(args, "max_results", 200)
+	if maxResults <= 0 {
+		maxResults = 200
+	}
+	if maxResults > 2000 {
+		maxResults = 2000
+	}
+	includeDirs := boolArg(args, "include_dirs", false)
+
+	var results []string
+	err = walkSearchFiles(base, pattern, includeDirs, func(path string, d fs.DirEntry) error {
+		if d.IsDir() && !includeDirs {
+			return nil
+		}
+		results = append(results, path)
+		if len(results) >= maxResults {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil && err != filepath.SkipAll {
+		return fmt.Sprintf("Glob 失败: %s", err.Error())
+	}
+	sort.Strings(results)
+	if len(results) == 0 {
+		return "未找到匹配路径"
+	}
+	result := strings.Join(results, "\n")
+	if len(results) >= maxResults {
+		result += fmt.Sprintf("\n... 已达到 max_results=%d", maxResults)
+	}
+	return result
 }
 
 // BuildAdaptiveReadResult 根据文件类型和大小自动决定返回内容。
@@ -562,6 +746,163 @@ func StringArg(args map[string]interface{}, key string) string {
 	v, _ := args[key].(string)
 	return v
 }
+
+func intArg(args map[string]interface{}, key string, fallback int) int {
+	if args == nil {
+		return fallback
+	}
+	switch v := args[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	}
+	return fallback
+}
+
+func boolArg(args map[string]interface{}, key string, fallback bool) bool {
+	if args == nil {
+		return fallback
+	}
+	if v, ok := args[key].(bool); ok {
+		return v
+	}
+	return fallback
+}
+
+func resolveSearchBase(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		if wd, err := os.Getwd(); err == nil {
+			return wd, nil
+		}
+	}
+	return ResolveFileToolPath(path)
+}
+
+func walkSearchFiles(base, pattern string, includeDirs bool, visit func(string, fs.DirEntry) error) error {
+	info, err := os.Stat(base)
+	if err != nil {
+		return fmt.Errorf("路径不存在或无法访问: %w", err)
+	}
+	if !info.IsDir() {
+		if pattern != "" {
+			matched, err := matchGlob(pattern, filepath.Base(base), false)
+			if err != nil || !matched {
+				return err
+			}
+		}
+		return visit(base, fileInfoDirEntry{info: info})
+	}
+	return filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if path != base && d.IsDir() && shouldSkipSearchDir(d.Name()) {
+			return filepath.SkipDir
+		}
+		if path == base {
+			return nil
+		}
+		if d.IsDir() && !includeDirs {
+			return nil
+		}
+		if pattern != "" {
+			rel, err := filepath.Rel(base, path)
+			if err != nil {
+				return nil
+			}
+			matched, err := matchGlob(pattern, rel, d.IsDir())
+			if err != nil || !matched {
+				return err
+			}
+		}
+		return visit(path, d)
+	})
+}
+
+func matchGlob(pattern, rel string, isDir bool) (bool, error) {
+	pattern = filepath.ToSlash(strings.TrimSpace(pattern))
+	rel = filepath.ToSlash(rel)
+	if isDir {
+		rel = strings.TrimSuffix(rel, "/") + "/"
+	}
+	if pattern == "" || pattern == "**" || pattern == "**/*" {
+		return true, nil
+	}
+	if strings.HasPrefix(pattern, "**/") {
+		matched, err := matchGlob(strings.TrimPrefix(pattern, "**/"), rel, isDir)
+		if err != nil || matched {
+			return matched, err
+		}
+	}
+	if !strings.Contains(pattern, "/") {
+		return filepath.Match(pattern, filepath.Base(rel))
+	}
+	re := regexp.QuoteMeta(pattern)
+	re = strings.ReplaceAll(re, `\*\*`, `.*`)
+	re = strings.ReplaceAll(re, `\*`, `[^/]*`)
+	re = strings.ReplaceAll(re, `\?`, `[^/]`)
+	return regexp.MatchString("^"+re+"$", rel)
+}
+
+func shouldSkipSearchDir(name string) bool {
+	switch name {
+	case ".git", "node_modules", "vendor", "dist", "build", ".next", ".cache", ".gomodcache", ".gocache":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLikelyBinary(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+	buf := make([]byte, 8000)
+	n, _ := f.Read(buf)
+	return bytes.Contains(buf[:n], []byte{0})
+}
+
+func searchFileLines(path string, re *regexp.Regexp, maxResults int, matches *[]string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		if re.MatchString(line) {
+			trimmed := strings.TrimSpace(line)
+			if len([]rune(trimmed)) > 240 {
+				trimmed = string([]rune(trimmed)[:237]) + "..."
+			}
+			*matches = append(*matches, fmt.Sprintf("%s:%d:%s", path, lineNo, trimmed))
+			if len(*matches) >= maxResults {
+				return filepath.SkipAll
+			}
+		}
+	}
+	return nil
+}
+
+type fileInfoDirEntry struct {
+	info os.FileInfo
+}
+
+func (d fileInfoDirEntry) Name() string               { return d.info.Name() }
+func (d fileInfoDirEntry) IsDir() bool                { return d.info.IsDir() }
+func (d fileInfoDirEntry) Type() fs.FileMode          { return d.info.Mode().Type() }
+func (d fileInfoDirEntry) Info() (os.FileInfo, error) { return d.info, nil }
 
 // ResolvePath resolves a path relative to the default workspace.
 func ResolvePath(p string) string {

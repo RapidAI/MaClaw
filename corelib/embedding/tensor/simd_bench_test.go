@@ -169,6 +169,88 @@ func BenchmarkRoPEPrecomputedScalar_12x64(b *testing.B) {
 	}
 }
 
+func BenchmarkLayerNorm_288(b *testing.B) {
+	x := makeFloat32(288)
+	weight := makeFloat32(288)
+	out := make([]float32, 288)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		LayerNorm(out, x, weight, 1e-5)
+	}
+}
+
+func BenchmarkLayerNorm_768(b *testing.B) {
+	x := makeFloat32(768)
+	weight := makeFloat32(768)
+	out := make([]float32, 768)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		LayerNorm(out, x, weight, 1e-5)
+	}
+}
+
+func BenchmarkGroupNorm1_384x288(b *testing.B) {
+	data := makeFloat32(384 * 288)
+	weight := makeFloat32(288)
+	bias := makeFloat32(288)
+	buf := make([]float32, len(data))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(buf, data)
+		GroupNorm1(buf, 384, 288, weight, bias, 1e-5)
+	}
+}
+
+func BenchmarkSoftmaxWeightedSumStrided_64x64(b *testing.B) {
+	scores := makeFloat32(64)
+	values := makeFloat32(64 * 64)
+	out := make([]float32, 64)
+	scratch := make([]float32, len(scores))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(scratch, scores)
+		SoftmaxWeightedSumStrided(out, scratch, values, 64, 64, 64)
+	}
+}
+
+func BenchmarkSoftmaxThenWeightedSumStrided_64x64(b *testing.B) {
+	scores := makeFloat32(64)
+	values := makeFloat32(64 * 64)
+	out := make([]float32, 64)
+	scratch := make([]float32, len(scores))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(scratch, scores)
+		Softmax(scratch)
+		WeightedSumStrided(out, scratch, values, 64, 64, 64)
+	}
+}
+
+func BenchmarkSoftmaxWeightedSumStrided_384x36(b *testing.B) {
+	scores := makeFloat32(384)
+	values := makeFloat32(384 * 288)
+	out := make([]float32, 36)
+	scratch := make([]float32, len(scores))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(scratch, scores)
+		SoftmaxWeightedSumStrided(out, scratch, values, 384, 288, 36)
+	}
+}
+
+func BenchmarkSoftmaxThenWeightedSumStrided_384x36(b *testing.B) {
+	scores := makeFloat32(384)
+	values := makeFloat32(384 * 288)
+	out := make([]float32, 36)
+	scratch := make([]float32, len(scores))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(scratch, scores)
+		Softmax(scratch)
+		WeightedSumStrided(out, scratch, values, 384, 288, 36)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Correctness tests: ASM vs Scalar
 // ---------------------------------------------------------------------------
@@ -279,7 +361,8 @@ func TestSiLUMul_OddSize(t *testing.T) {
 }
 
 // Test RoPE with non-8-aligned halfDim
-func TestRoPEPrecomputed_OddHalfDim(t *testing.T) {	for _, headDim := range []int{16, 24, 48, 64, 128} {
+func TestRoPEPrecomputed_OddHalfDim(t *testing.T) {
+	for _, headDim := range []int{16, 24, 48, 64, 128} {
 		nHeads := 4
 		halfDim := headDim / 2
 		x := makeFloat32(nHeads * headDim)
@@ -322,6 +405,58 @@ func BenchmarkMatMulQ8_1x768x768(b *testing.B) {
 
 func BenchmarkMatMulQ8Fused_1x768x768(b *testing.B) {
 	M, N, K := 1, 768, 768
+	a := makeFloat32(M * K)
+	q8 := &Q8Tensor{Data: makeQ8Data(N, K), Rows: N, Cols: K}
+	out := make([]float32, M*N)
+	SetMatMulMaxParallel(1)
+	defer SetMatMulMaxParallel(0)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		MatMulQ8Fused(out, a, q8, M, N, K)
+	}
+}
+
+func BenchmarkMatMulQ8_1x288x288(b *testing.B) {
+	M, N, K := 1, 288, 288
+	a := makeFloat32(M * K)
+	q8 := &Q8Tensor{Data: makeQ8Data(N, K), Rows: N, Cols: K}
+	out := make([]float32, M*N)
+	SetMatMulMaxParallel(1)
+	defer SetMatMulMaxParallel(0)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		MatMulQ8(out, a, q8, M, N, K)
+	}
+}
+
+func BenchmarkMatMulQ8Fused_1x288x288(b *testing.B) {
+	M, N, K := 1, 288, 288
+	a := makeFloat32(M * K)
+	q8 := &Q8Tensor{Data: makeQ8Data(N, K), Rows: N, Cols: K}
+	out := make([]float32, M*N)
+	SetMatMulMaxParallel(1)
+	defer SetMatMulMaxParallel(0)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		MatMulQ8Fused(out, a, q8, M, N, K)
+	}
+}
+
+func BenchmarkMatMulQ8_1x576x288(b *testing.B) {
+	M, N, K := 1, 576, 288
+	a := makeFloat32(M * K)
+	q8 := &Q8Tensor{Data: makeQ8Data(N, K), Rows: N, Cols: K}
+	out := make([]float32, M*N)
+	SetMatMulMaxParallel(1)
+	defer SetMatMulMaxParallel(0)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		MatMulQ8(out, a, q8, M, N, K)
+	}
+}
+
+func BenchmarkMatMulQ8Fused_1x576x288(b *testing.B) {
+	M, N, K := 1, 576, 288
 	a := makeFloat32(M * K)
 	q8 := &Q8Tensor{Data: makeQ8Data(N, K), Rows: N, Cols: K}
 	out := make([]float32, M*N)

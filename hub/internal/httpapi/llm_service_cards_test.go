@@ -165,6 +165,51 @@ func TestCreateLLMServiceCardHandlerClampsNegativeCredits(t *testing.T) {
 		t.Fatalf("expected saved credits to be clamped to 0, got %#v", saved.Cards)
 	}
 }
+
+func TestCreateLLMServiceCardHandlerPersistsPeriodLimitsAndCapsDuration(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"service_group_ids":["coding-basic"],"duration_days":365,"credits":1000,"five_hour_credits":50,"daily_credits":100,"weekly_credits":400,"monthly_credits":800,"count":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	CreateLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Cards []struct {
+			PeriodLimits llmservice.CreditPeriodLimits `json:"period_limits"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Cards) != 1 || resp.Cards[0].PeriodLimits.Daily != 100 {
+		t.Fatalf("unexpected response period limits: %#v", resp.Cards)
+	}
+	saved, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Cards) != 1 || saved.Cards[0].PeriodLimits.FiveHour != 50 || saved.Cards[0].PeriodLimits.Monthly != 800 {
+		t.Fatalf("unexpected saved period limits: %#v", saved.Cards)
+	}
+
+	body = []byte(`{"service_group_ids":["coding-basic"],"duration_days":366,"credits":100,"count":1}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	CreateLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected duration cap rejection, status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreateLLMServiceCardHandlerRejectsOversizedBatch(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
 	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{

@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { colors } from "../remote/styles";
 import { OpenFileOrShowInFolder, SelectProjectDir, SetWorkflowWorkingDir, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask, GetTTSEnabled, SetTTSEnabled, SpeakText } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL, EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus, ChatConfirmation, ChatUnfinishedSlot } from "./useAIAssistant";
@@ -8,7 +7,7 @@ import { useWorkflowState } from "./useWorkflowState";
 import { WorkflowDocPreview, type DocPreviewTheme } from "./WorkflowDocPreview";
 import { useCodePreviewState } from "./useCodePreviewState";
 import { CodePreviewPanel, darkCodePreviewTheme, lightCodePreviewTheme } from "./CodePreviewPanel";
-import { useVoiceInput } from "./useVoiceInput";
+import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { BufferQueuePanel } from "./BufferQueuePanel";
@@ -35,13 +34,13 @@ interface AIAssistantPanelActionProps {
     browseFile?: () => Promise<void>;
     clearSelectedFile?: () => void;
     removeSelectedFile?: (index: number) => void;
-    sendMessage: (text: string) => Promise<void>;
+    sendMessage: (text: string) => Promise<boolean | void>;
     sendBtwMessage?: (query: string) => Promise<void>;
     sendMessageInBackground?: (text: string) => Promise<void>;
     clearHistory: () => Promise<void>;
     recordSubmittedPrompt?: (text: string) => void;
     setDraftInputValue?: (text: string) => void;
-    executeAction: (command: string) => Promise<void>;
+    executeAction: (command: string) => Promise<boolean | void>;
     refreshNews: () => void;
     onOpenOnboarding?: () => void;
     cancelSession?: () => Promise<CancelAIAssistantResult>;
@@ -75,6 +74,146 @@ const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
+export function appendVoiceTextToDraft(current: string, recognized: string): string {
+    const text = normalizeVoiceTextForDraft(recognized);
+    if (!text) return current;
+    if (!current.trim()) return text;
+    const currentTrimmedEnd = current.trimEnd();
+    if (currentTrimmedEnd.endsWith(text)) return current;
+    const overlap = findVoiceTextBoundaryOverlap(currentTrimmedEnd, text);
+    const textToAppend = overlap > 0 ? text.slice(overlap).trimStart() : text;
+    if (!textToAppend) return current;
+    if (/\s$/.test(current)) return `${current}${textToAppend}`;
+    const last = currentTrimmedEnd.slice(-1);
+    const first = textToAppend.slice(0, 1);
+    const cjk = /[\u3400-\u9fff\uf900-\ufaff]/;
+    return `${current}${cjk.test(last) && cjk.test(first) ? "" : " "}${textToAppend}`;
+}
+
+function tokenSpans(text: string): Array<{ value: string; start: number; end: number }> {
+    const spans: Array<{ value: string; start: number; end: number }> = [];
+    for (const match of text.matchAll(/\S+/g)) {
+        const value = match[0];
+        const start = match.index ?? 0;
+        spans.push({ value, start, end: start + value.length });
+    }
+    return spans;
+}
+
+function findTokenBoundaryOverlap(current: string, next: string): number {
+    const currentTokens = tokenSpans(current);
+    const nextTokens = tokenSpans(next);
+    const maxSize = Math.min(8, currentTokens.length, nextTokens.length);
+    for (let size = maxSize; size >= 1; size--) {
+        let same = true;
+        for (let i = 0; i < size; i++) {
+            const a = currentTokens[currentTokens.length - size + i].value.toLocaleLowerCase();
+            const b = nextTokens[i].value.toLocaleLowerCase();
+            if (a !== b) { same = false; break; }
+        }
+        if (same) return nextTokens[size - 1].end;
+    }
+    return 0;
+}
+
+function findRuneBoundaryOverlap(current: string, next: string): number {
+    const currentRunes = Array.from(current);
+    const nextRunes = Array.from(next);
+    const maxSize = Math.min(24, currentRunes.length, nextRunes.length);
+    for (let size = maxSize; size >= 2; size--) {
+        let same = true;
+        for (let i = 0; i < size; i++) {
+            if (currentRunes[currentRunes.length - size + i] !== nextRunes[i]) { same = false; break; }
+        }
+        if (same) return nextRunes.slice(0, size).join("").length;
+    }
+    return 0;
+}
+
+export function findVoiceTextBoundaryOverlap(current: string, next: string): number {
+    if (!current || !next) return 0;
+    return Math.max(findTokenBoundaryOverlap(current, next), findRuneBoundaryOverlap(current, next));
+}
+
+function sameRuneWindow(runes: string[], a: number, b: number, size: number): boolean {
+    for (let i = 0; i < size; i++) if (runes[a + i] !== runes[b + i]) return false;
+    return true;
+}
+
+function collapseRepeatedRunePhrases(text: string): string {
+    const runes = Array.from(text);
+    if (runes.length < 4) return text;
+    const out: string[] = [];
+    for (let i = 0; i < runes.length;) {
+        let collapsed = false;
+        const maxSize = Math.min(16, Math.floor((runes.length - i) / 2));
+        for (let size = maxSize; size >= 2; size--) {
+            let repeats = 1;
+            while (i + (repeats + 1) * size <= runes.length && sameRuneWindow(runes, i, i + repeats * size, size)) repeats++;
+            if (repeats >= 2) { out.push(...runes.slice(i, i + size)); i += repeats * size; collapsed = true; break; }
+        }
+        if (!collapsed) out.push(runes[i++]);
+    }
+    return out.join("");
+}
+
+function sameTokenWindow(tokens: string[], a: number, b: number, size: number): boolean {
+    for (let i = 0; i < size; i++) if (tokens[a + i].toLocaleLowerCase() !== tokens[b + i].toLocaleLowerCase()) return false;
+    return true;
+}
+
+function collapseRepeatedTokenPhrases(text: string): string {
+    const tokens = text.split(/\s+/).filter(Boolean);
+    if (tokens.length < 2) return text;
+    const out: string[] = [];
+    for (let i = 0; i < tokens.length;) {
+        let collapsed = false;
+        const maxSize = Math.min(8, Math.floor((tokens.length - i) / 2));
+        for (let size = maxSize; size >= 1; size--) {
+            let repeats = 1;
+            while (i + (repeats + 1) * size <= tokens.length && sameTokenWindow(tokens, i, i + repeats * size, size)) repeats++;
+            if (repeats >= 2) { out.push(...tokens.slice(i, i + size)); i += repeats * size; collapsed = true; break; }
+        }
+        if (!collapsed) out.push(tokens[i++]);
+    }
+    return out.join(" ");
+}
+
+export function normalizeVoiceTextForDraft(rawText: string): string {
+    let text = rawText.replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    text = collapseRepeatedTokenPhrases(text);
+    text = collapseRepeatedRunePhrases(text);
+    return text.trim();
+}
+
+export function isObviousVoiceRecognitionNoise(rawText: string): boolean {
+    const text = normalizeVoiceTextForDraft(rawText);
+    if (!text) return true;
+    const compact = text.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+    if (!compact) return true;
+    const rawCompact = rawText.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+    if (rawCompact.length >= 12 && compact.length * 2 <= rawCompact.length) return true;
+    const lowInfo = ["\u55ef", "\u554a", "\u54e6", "\u5443", "\u54c8\u54c8", "\u5929\u54ea", "\u62cd\u8138\u74dc"];
+    return lowInfo.some(item => compact === item || (compact.includes(item) && compact.length <= item.length + 2));
+}
+
+export function isLikelyVoiceCommandText(rawText: string): boolean {
+    const text = normalizeVoiceTextForDraft(rawText);
+    if (!text || isObviousVoiceRecognitionNoise(text)) return false;
+    const compact = text.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+    if (!compact) return false;
+    const cjkOnly = compact.replace(/[^\u3400-\u9fff\uf900-\ufaff]/g, "");
+    if (cjkOnly.length > 0 && cjkOnly.length * 2 >= compact.length) {
+        const commandAnchors = ["\u7ee7\u7eed", "\u505c\u6b62", "\u6682\u505c", "\u53d6\u6d88", "\u91cd\u8bd5", "\u6253\u5f00", "\u5173\u95ed", "\u5f00\u59cb", "\u65b0\u5efa", "\u521b\u5efa", "\u751f\u6210", "\u622a\u56fe", "\u4fdd\u5b58", "\u53d1\u9001", "\u641c\u7d22", "\u67e5\u627e", "\u8fd0\u884c", "\u6267\u884c", "\u4fee\u590d", "\u4f18\u5316", "\u89e3\u91ca", "\u603b\u7ed3", "\u7ffb\u8bd1", "\u5206\u6790", "\u68c0\u67e5", "\u6d4b\u8bd5", "\u63d0\u4ea4", "\u90e8\u7f72", "\u544a\u8bc9", "\u56de\u7b54", "\u8bfb\u53d6", "\u64ad\u62a5", "\u5220\u9664", "\u6e05\u7a7a", "\u590d\u5236", "\u7c98\u8d34", "\u8f93\u5165", "\u5e2e\u6211", "\u7ed9\u6211", "\u6211\u8981", "\u6211\u60f3", "\u8bf7\u4f60"];
+        if (commandAnchors.some(anchor => compact.includes(anchor))) return true;
+        const questionAnchors = ["\u600e\u4e48", "\u4e3a\u4ec0\u4e48", "\u54ea\u91cc", "\u54ea\u4e2a", "\u591a\u5c11", "\u662f\u5426", "\u80fd\u5426", "\u53ef\u4ee5\u5417", "\u597d\u4e86\u5417", "\u7ed3\u679c", "\u8fdb\u5ea6", "\u72b6\u6001", "\u62a5\u9519", "\u9519\u8bef", "\u95ee\u9898"];
+        return questionAnchors.some(anchor => compact.includes(anchor));
+    }
+    if (/^(open|close|start|stop|pause|continue|cancel|retry|run|execute|search|find|save|send|create|generate|fix|optimize|explain|summarize|translate|test|deploy|delete|clear|copy|paste|upload|download|show|tell|read)\b/i.test(text)) return true;
+    if (/\b(please|can you|could you|would you|help me|i want|i need)\b/i.test(text)) return true;
+    return text.trim().split(/\s+/).length >= 4;
+}
 
 /** Map raw workflow_type strings to user-friendly display labels. */
 const workflowTypeLabelMap: Record<string, { en: string; zh: string }> = {
@@ -107,12 +246,6 @@ const workflowTypeLabel = (type: string, lang?: string): string => {
 
 /* ── Theme definitions ── */
 
-function isSmallTalkPrompt(text: string): boolean {
-    const normalized = text.trim().toLowerCase().replace(/[\s，。！？!?,.～~]+/g, "");
-    if (!normalized) return false;
-    return /^(你好|您好|在吗|在不在|哈喽|hello|hi|hey|谢谢|感谢|多谢|好的|好|ok|嗯|嗯嗯|测试|test)$/.test(normalized);
-}
-
 function messageHasStructuredTaskSignal(message: ChatMessage | undefined): boolean {
     if (!message) return false;
     if (message.role === 'error') return true;
@@ -124,13 +257,7 @@ function messageHasStructuredTaskSignal(message: ChatMessage | undefined): boole
     return false;
 }
 
-function messageHasTaskOutputSignal(message: ChatMessage | undefined): boolean {
-    if (messageHasStructuredTaskSignal(message)) return true;
-    if (!message) return false;
-    return /已完成|完成|失败|错误|异常|已暂停|已取消|需要确认|已生成|已创建|已修改|已保存|保存到|文件|文档|路径|部署|构建|测试|执行|工具调用|命令/.test(message.content || '');
-}
-
-function shouldSpeakTaskResult(messages: ChatMessage[], progressMessages: ChatMessage[]): boolean {
+function shouldSpeakTaskResult(messages: ChatMessage[], _progressMessages: ChatMessage[]): boolean {
     let lastUserIndex = -1;
     for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].role === 'user') {
@@ -140,14 +267,8 @@ function shouldSpeakTaskResult(messages: ChatMessage[], progressMessages: ChatMe
     }
     if (lastUserIndex < 0) return false;
 
-    const userMessage = messages[lastUserIndex];
     const roundMessages = messages.slice(lastUserIndex + 1);
-    const hasStructuredSignal = roundMessages.some(messageHasStructuredTaskSignal);
-    const hasRoundSignal = roundMessages.some(messageHasTaskOutputSignal);
-    const hasRecentProgress = progressMessages.some(msg => msg.timestamp >= userMessage.timestamp);
-
-    if (isSmallTalkPrompt(userMessage.content)) return hasStructuredSignal || hasRecentProgress;
-    return hasRoundSignal || hasRecentProgress;
+    return roundMessages.some(messageHasStructuredTaskSignal);
 }
 
 interface Theme {
@@ -449,15 +570,115 @@ const dotBase: React.CSSProperties = {
 const baseInputBtnStyle: React.CSSProperties = {
     background: "transparent",
     border: "1px solid",
-    borderRadius: "4px",
-    padding: "6px 12px",
-    fontSize: "13px",
-    fontFamily: "Consolas, monospace",
+    borderRadius: "8px",
+    padding: 0,
+    width: "52px",
+    height: "44px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 0,
+    fontFamily: "'Segoe UI Symbol', 'Segoe UI', sans-serif",
     cursor: "pointer",
     lineHeight: 1,
-    minHeight: "34px",
+    minHeight: "44px",
     flexShrink: 0,
+    boxSizing: "border-box",
+    transition: "background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
+    userSelect: "none",
 };
+
+type AssistantInputIconName = "paperclip" | "mic" | "cornerDownLeft" | "stop";
+
+function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIconName; size?: number }) {
+    const common = {
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: 2,
+        strokeLinecap: "round" as const,
+        strokeLinejoin: "round" as const,
+    };
+
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: "block" }}>
+            {name === "paperclip" && (
+                <path {...common} d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 1 1-2.83-2.83l8.49-8.48" />
+            )}
+            {name === "mic" && (
+                <>
+                    <path {...common} d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                    <path {...common} d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <path {...common} d="M12 19v3" />
+                    <path {...common} d="M8 22h8" />
+                </>
+            )}
+            {name === "cornerDownLeft" && (
+                <path {...common} d="M9 10 4 15l5 5M20 4v7a4 4 0 0 1-4 4H4" />
+            )}
+            {name === "stop" && (
+                <rect {...common} x="7" y="7" width="10" height="10" rx="1.8" />
+            )}
+        </svg>
+    );
+}
+
+function getInputActionButtonStyle(
+    t: Theme,
+    themeMode: 'light' | 'dark',
+    tone: "neutral" | "attach" | "voice" | "voiceHold" | "send" | "cancel",
+    disabled = false,
+): React.CSSProperties {
+    const dark = themeMode === 'dark';
+    const palette = {
+        neutral: {
+            color: t.textMuted,
+            border: dark ? "rgba(148, 163, 184, 0.28)" : "rgba(99, 102, 241, 0.16)",
+            bg: dark ? "rgba(15, 23, 42, 0.72)" : "rgba(255, 255, 255, 0.86)",
+            shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "0 1px 2px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.82)",
+        },
+        attach: {
+            color: dark ? "#67e8f9" : "#0891b2",
+            border: dark ? "rgba(34, 211, 238, 0.38)" : "rgba(8, 145, 178, 0.28)",
+            bg: dark ? "rgba(8, 145, 178, 0.10)" : "rgba(236, 254, 255, 0.86)",
+            shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(8,145,178,0.08), inset 0 1px 0 rgba(255,255,255,0.9)",
+        },
+        voice: {
+            color: dark ? "#cbd5e1" : "#475569",
+            border: dark ? "rgba(148, 163, 184, 0.30)" : "rgba(71, 85, 105, 0.20)",
+            bg: dark ? "rgba(15, 23, 42, 0.74)" : "rgba(248, 250, 252, 0.92)",
+            shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "0 1px 2px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.86)",
+        },
+        voiceHold: {
+            color: dark ? "#fecaca" : "#dc2626",
+            border: dark ? "rgba(248, 113, 113, 0.56)" : "rgba(220, 38, 38, 0.34)",
+            bg: dark ? "rgba(127, 29, 29, 0.28)" : "rgba(254, 242, 242, 0.96)",
+            shadow: dark ? "0 0 0 2px rgba(248, 113, 113, 0.10), inset 0 1px 0 rgba(255,255,255,0.05)" : "0 0 0 2px rgba(248, 113, 113, 0.12), inset 0 1px 0 rgba(255,255,255,0.9)",
+        },
+        send: {
+            color: dark ? "#ffffff" : "#ffffff",
+            border: dark ? "rgba(129, 140, 248, 0.78)" : "rgba(79, 70, 229, 0.72)",
+            bg: dark ? "linear-gradient(180deg, #818cf8 0%, #6366f1 100%)" : "linear-gradient(180deg, #6366f1 0%, #4f46e5 100%)",
+            shadow: dark ? "0 8px 18px rgba(79,70,229,0.28), inset 0 1px 0 rgba(255,255,255,0.18)" : "0 8px 18px rgba(79,70,229,0.20), inset 0 1px 0 rgba(255,255,255,0.22)",
+        },
+        cancel: {
+            color: dark ? "#ddd6fe" : "#4f46e5",
+            border: dark ? "rgba(129, 140, 248, 0.56)" : "rgba(79, 70, 229, 0.34)",
+            bg: dark ? "rgba(99, 102, 241, 0.16)" : "rgba(238, 242, 255, 0.94)",
+            shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(79,70,229,0.08), inset 0 1px 0 rgba(255,255,255,0.9)",
+        },
+    }[tone];
+
+    return {
+        ...baseInputBtnStyle,
+        color: palette.color,
+        borderColor: palette.border,
+        background: palette.bg,
+        boxShadow: palette.shadow,
+        fontSize: "14px",
+        opacity: disabled ? 0.45 : 1,
+        cursor: disabled ? "default" : "pointer",
+    };
+}
 
 const baseWindowControlBtnStyle: React.CSSProperties = {
     width: "36px",
@@ -1598,9 +1819,6 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             if (lastMsg?.confirmation && lastMsg.confirmation.status !== 'running') {
                 status = 'needs_confirmation';
             }
-            if (lastMsg?.content?.includes('⏹') || lastMsg?.content?.includes('已取消') || lastMsg?.content?.includes('已暂停')) {
-                status = 'paused';
-            }
             // Send structured data to backend for summary generation
             SpeakText(JSON.stringify({ userText, status })).catch(() => {});
         }
@@ -1664,6 +1882,9 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
     // the textarea itself stays editable so users can type ahead.
     const submitLocked = isBusy || cancelPending;
     const prevSubmitLockedRef = useRef(submitLocked);
+    const queueDrainInFlightRef = useRef(false);
+    const queueDrainRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [queueDrainRetrySeq, setQueueDrainRetrySeq] = useState(0);
     const showThinkingState = streaming;
     const showProcessingState = isBusy && !streaming;
     const showBusySpinner = isBusy;
@@ -1724,9 +1945,10 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         }
     }, [inputAreaHeight]);
 
-    const submitRecognizedVoiceText = useCallback((rawText: string) => {
-        const text = rawText.trim();
+    const submitRecognizedVoiceText = useCallback((rawText: string, source: VoiceInputSource) => {
+        const text = normalizeVoiceTextForDraft(rawText);
         console.info("[ai-panel][voice] recognized text received", {
+            source,
             rawLength: rawText.length,
             trimmedLength: text.length,
             text,
@@ -1737,48 +1959,37 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             console.info("[ai-panel][voice] ignored empty recognized text");
             return;
         }
-
-        updateInputValue(text);
-        setHistoryIndex(-1);
-        setDraftBeforeHistory(null);
-        setHistoryEdits({});
-        requestAnimationFrame(() => {
-            resizeInput();
-            inputRef.current?.focus();
-        });
-
-        if (submitLocked) {
-            console.info("[ai-panel][voice] queue recognized text", { text });
-            addEntry(text, []);
-            recordSubmittedPrompt?.(text);
-            updateInputValue("");
-            requestAnimationFrame(() => {
-                if (inputRef.current) inputRef.current.style.height = "auto";
-            });
+        if (isObviousVoiceRecognitionNoise(text)) {
+            console.info("[ai-panel][voice] ignored obvious recognition noise", { source, text });
+            return;
+        }
+        if (source === "continuous" && !isLikelyVoiceCommandText(text)) {
+            console.info("[ai-panel][voice] ignored non-command continuous speech", { text });
             return;
         }
 
-        console.info("[ai-panel][voice] send recognized text", { text });
-        recordSubmittedPrompt?.(text);
+        setHistoryIndex(-1);
+        setDraftBeforeHistory(null);
+        setHistoryEdits({});
+
+        if (submitLocked) {
+            console.info("[ai-panel][voice] queue recognized text", { source, text });
+            addEntry(text, []);
+            recordSubmittedPrompt?.(text);
+            return;
+        }
+
+        console.info("[ai-panel][voice] send recognized text", { source, text });
         userScrolledUpRef.current = false;
         sendMessage(text)
             .then(() => {
-                console.info("[ai-panel][voice] recognized text sent", { text });
-                updateInputValue("");
-                requestAnimationFrame(() => {
-                    if (inputRef.current) inputRef.current.style.height = "auto";
-                });
+                console.info("[ai-panel][voice] recognized text sent", { source, text });
+                recordSubmittedPrompt?.(text);
             })
             .catch((err) => {
                 console.warn("[ai-panel][voice] failed to send recognized text", err);
-                updateInputValue(text);
-                requestAnimationFrame(() => {
-                    resizeInput();
-                    inputRef.current?.focus();
-                });
             });
-    }, [addEntry, ready, recordSubmittedPrompt, resizeInput, sendMessage, submitLocked, updateInputValue]);
-
+    }, [addEntry, ready, recordSubmittedPrompt, sendMessage, submitLocked]);
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId);
 
     const clearVoiceHoldTimer = useCallback(() => {
@@ -2110,31 +2321,47 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         // Non-image paste: allow default behavior
     }, []);
 
-    // ── submitLocked true→false transition: process next queued entry ──
-    // Each entry gets its own independent agent loop. When the loop finishes
-    // (submitLocked goes false again), the next entry is automatically processed.
-    //
-    // We read entry data directly from queue[0], remove it, then send.
-    // sendMessage checks activeRoundRef (a ref, not state) synchronously —
-    // it will accept the message because the round must be idle when
-    // submitLocked just transitioned to false.
+    // Drain one queued entry whenever the agent is idle. This supports hands-free
+    // continuous voice input: speech is either sent immediately or queued, never
+    // left waiting for Enter/click.
     useEffect(() => {
-        if (prevSubmitLockedRef.current && !submitLocked && queue.length > 0) {
-            const firstEntry = queue[0];
-            const filePaths = firstEntry.attachments.map(a => a.filePath);
-            const outgoing = filePaths.length > 0
-                ? buildOutgoingMessageMulti(firstEntry.text, filePaths)
-                : firstEntry.text;
-            recordSubmittedPrompt?.(firstEntry.text);
-            removeEntry(firstEntry.id);
-            sendMessage(outgoing).catch(() => {
-                // On failure, entry is already removed. Remaining queue
-                // entries will be processed on next submitLocked transition.
-            });
+        if (queueDrainRetryTimerRef.current) {
+            clearTimeout(queueDrainRetryTimerRef.current);
+            queueDrainRetryTimerRef.current = null;
         }
-        prevSubmitLockedRef.current = submitLocked;
-    }, [submitLocked, queue.length, removeEntry, sendMessage, recordSubmittedPrompt]);
+        if (submitLocked || queue.length === 0 || queueDrainInFlightRef.current) {
+            prevSubmitLockedRef.current = submitLocked;
+            return;
+        }
 
+        const firstEntry = queue[0];
+        const filePaths = firstEntry.attachments.map(a => a.filePath);
+        const outgoing = filePaths.length > 0
+            ? buildOutgoingMessageMulti(firstEntry.text, filePaths)
+            : firstEntry.text;
+        queueDrainInFlightRef.current = true;
+        removeEntry(firstEntry.id);
+
+        Promise.resolve(sendMessage(outgoing))
+            .then(() => {
+                recordSubmittedPrompt?.(firstEntry.text);
+            })
+            .catch(() => {
+                addEntry(firstEntry.text, firstEntry.attachments);
+            })
+            .finally(() => {
+                queueDrainInFlightRef.current = false;
+                queueDrainRetryTimerRef.current = setTimeout(() => {
+                    queueDrainRetryTimerRef.current = null;
+                    setQueueDrainRetrySeq(seq => seq + 1);
+                }, 800);
+            });
+        prevSubmitLockedRef.current = submitLocked;
+    }, [addEntry, queue, queueDrainRetrySeq, removeEntry, sendMessage, submitLocked, recordSubmittedPrompt]);
+
+    useEffect(() => () => {
+        if (queueDrainRetryTimerRef.current) clearTimeout(queueDrainRetryTimerRef.current);
+    }, []);
     // ── BufferQueuePanel edit handlers (Task 12.1) ──
     const handleEditEntry = useCallback((id: string) => setEditingEntryId(id), []);
     const handleCancelEdit = useCallback(() => setEditingEntryId(null), []);
@@ -3050,15 +3277,12 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                         onClick={browseFile}
                         disabled={!ready}
                         style={{
-                            ...baseInputBtnStyle,
-                            color: t.pathColor,
-                            borderColor: t.pathColor,
-                            opacity: !ready ? 0.5 : 1,
+                            ...getInputActionButtonStyle(t, themeMode, "attach", !ready),
                             marginBottom: "4px",
                         }}
                         title={localizeText(lang, "Choose file", "选择文件")}
                     >
-                        📎
+                        <AssistantInputIcon name="paperclip" />
                     </button>
                     {voiceInput.asrReady && (
                         <button
@@ -3072,18 +3296,17 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                             disabled={!ready || voiceInput.state === "transcribing"}
                             data-testid="ai-voice-input"
                             style={{
-                                ...baseInputBtnStyle,
+                                ...getInputActionButtonStyle(
+                                    t,
+                                    themeMode,
+                                    voiceInput.state === "listening"
+                                        ? (voiceInput.holdRecording || voiceInput.isSpeaking ? "voiceHold" : "send")
+                                        : "voice",
+                                    !ready || voiceInput.state === "transcribing"
+                                ),
                                 position: "relative",
-                                color: voiceInput.state === "listening" ? (voiceInput.holdRecording ? "#ef4444" : "#22c55e") : t.textMuted,
-                                borderColor: voiceInput.state === "listening" ? (voiceInput.holdRecording ? "#ef4444" : "#22c55e") : t.codeBlockBorder,
-                                background: voiceInput.state === "listening"
-                                    ? (voiceInput.isSpeaking ? "rgba(239, 68, 68, 0.10)" : "rgba(34, 197, 94, 0.08)")
-                                    : "transparent",
-                                opacity: !ready || voiceInput.state === "transcribing" ? 0.5 : 1,
                                 marginBottom: "4px",
-                                transition: "all 0.2s ease",
                                 touchAction: "none",
-                                userSelect: "none",
                             }}
                             title={
                                 voiceInput.holdRecording
@@ -3106,11 +3329,11 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                                 <VoiceLevelVisualizer
                                     onAudioLevelRef={voiceInput.onAudioLevelRef}
                                     isSpeaking={voiceInput.isSpeaking}
-                                    themeColor="#22c55e"
-                                    speakingColor="#ef4444"
+                                    themeColor="#ffffff"
+                                    speakingColor={themeMode === 'dark' ? "#fecaca" : "#dc2626"}
                                 />
                             ) : (
-                                "🎙"
+                                <AssistantInputIcon name="mic" />
                             )}
                         </button>
                     )}
@@ -3136,16 +3359,8 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                             onClick={handleCancel}
                             data-testid="ai-cancel-progress"
                             style={{
-                                ...baseInputBtnStyle,
-                                display: "inline-flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                width: inline ? "60px" : "64px",
-                                padding: 0,
+                                ...getInputActionButtonStyle(t, themeMode, "cancel"),
                                 marginBottom: "4px",
-                                background: inline ? "transparent" : "rgba(99, 102, 241, 0.08)",
-                                borderColor: inline ? colors.primary : "var(--theme-primary-strong)",
-                                color: inline ? colors.primary : "var(--theme-primary-strong)",
                             }}
                             title={localizeText(lang, "Cancel", "取消")}
                             aria-label={localizeText(lang, "Cancel", "取消")}
@@ -3157,23 +3372,14 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                                         width: "18px",
                                         height: "18px",
                                         borderRadius: "50%",
-                                        border: `2px solid ${inline ? "var(--theme-primary-soft)" : "rgba(124, 58, 237, 0.22)"}`,
-                                        borderTopColor: inline ? colors.primary : "var(--theme-primary-strong)",
-                                        borderRightColor: inline ? colors.primary : "var(--theme-primary-strong)",
+                                        border: `2px solid ${themeMode === 'dark' ? "rgba(221, 214, 254, 0.24)" : "rgba(79, 70, 229, 0.18)"}`,
+                                        borderTopColor: themeMode === 'dark' ? "#ddd6fe" : "#4f46e5",
+                                        borderRightColor: themeMode === 'dark' ? "#ddd6fe" : "#4f46e5",
                                         animation: "ai-spinner-spin 0.8s linear infinite",
                                     }}
                                 />
                             ) : (
-                                <span
-                                    aria-hidden="true"
-                                    style={{
-                                        fontSize: "16px",
-                                        lineHeight: 1,
-                                        fontWeight: 700,
-                                    }}
-                                >
-                                    ■
-                                </span>
+                                <AssistantInputIcon name="stop" />
                             )}
                             <span style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}>
                                 {localizeText(lang, "Cancel", "取消")}
@@ -3185,16 +3391,16 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                             onClick={handleSend}
                             disabled={!canSend}
                             style={{
-                                ...baseInputBtnStyle,
-                                ...(inline
-                                    ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
-                                    : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
-                                opacity: canSend ? 1 : 0.5,
+                                ...getInputActionButtonStyle(t, themeMode, canSend ? "send" : "neutral", !canSend),
                                 marginBottom: "4px",
                             }}
                             title={localizeText(lang, "Send", "发送")}
                         >
-                            {isBusy ? "…" : "⏎"}
+                            {isBusy ? (
+                                <span style={{ width: "16px", height: "16px", borderRadius: "50%", border: `2px solid ${t.textMuted}`, borderTopColor: "transparent", animation: "ai-spinner-spin 0.8s linear infinite" }} />
+                            ) : (
+                                <AssistantInputIcon name="cornerDownLeft" />
+                            )}
                         </button>
                     )}
                 </div>

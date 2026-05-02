@@ -162,6 +162,18 @@ func TestParseUsageStatsIncludesPromptCache(t *testing.T) {
 	}
 }
 
+func TestApplyProviderUsageCostUsesProviderPricing(t *testing.T) {
+	usage := corelib.TokenUsageStat{InputTokens: 1_000_000, OutputTokens: 500_000, TotalTokens: 1_500_000}
+	provider := &im.LLMProvider{InputPricePerMTokensRMB: 3, OutputPricePerMTokensRMB: 6}
+	priced := applyProviderUsageCost(usage, provider)
+	if priced.InputCostRMB != 3 || priced.OutputCostRMB != 3 || priced.TotalCostRMB != 6 {
+		t.Fatalf("cost = input %.4f output %.4f total %.4f, want 3/3/6", priced.InputCostRMB, priced.OutputCostRMB, priced.TotalCostRMB)
+	}
+	if priced.InputPricePerMTokensRMB != 3 || priced.OutputPricePerMTokensRMB != 6 {
+		t.Fatalf("prices = %.4f/%.4f, want 3/6", priced.InputPricePerMTokensRMB, priced.OutputPricePerMTokensRMB)
+	}
+}
+
 func TestForwardAuthorizedModelRequestUsesLocalCacheWhenAvailable(t *testing.T) {
 	var upstreamHits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -503,9 +515,10 @@ func TestLLMV1ChatCompletionsHandlerMissEnqueuesUsageAndCredits(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model", InputPricePerMTokensRMB: 100, OutputPricePerMTokensRMB: 150}}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
+	invalidateLLMRuntimeCaches(system)
 
 	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1 << 20})
 	globalLLMUsageAccumulator.mu.Lock()
@@ -554,6 +567,9 @@ func TestLLMV1ChatCompletionsHandlerMissEnqueuesUsageAndCredits(t *testing.T) {
 	}
 	if stat.InputTokens != 12000 || stat.OutputTokens != 8000 || stat.TotalTokens != 20000 || stat.Requests != 1 {
 		t.Fatalf("unexpected provider usage: %#v", stat)
+	}
+	if stat.InputCostRMB != 1.2 || stat.OutputCostRMB != 1.2 || stat.TotalCostRMB != 2.4 {
+		t.Fatalf("unexpected provider display cost: %#v", stat)
 	}
 
 	serviceReg, err := llmservice.LoadRegistry(ctx, system)

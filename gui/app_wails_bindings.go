@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -1047,14 +1048,90 @@ func (a *App) GetAIAssistantTrace(runID string) (*AIAssistantTraceView, error) {
 }
 
 type AIAssistantSendRequest struct {
-	Text                        string `json:"text"`
-	RequestID                   string `json:"request_id,omitempty"`
-	ResumeSlotID                string `json:"resume_slot_id,omitempty"`
-	StartNewTask                bool   `json:"start_new_task,omitempty"`
-	DismissSlotID               string `json:"dismiss_slot_id,omitempty"`
-	ResumeSessionID             string `json:"resume_session_id,omitempty"`
-	DismissRecoverableSessionID string `json:"dismiss_recoverable_session_id,omitempty"`
-	UIAction                    bool   `json:"ui_action,omitempty"`
+	Text                        string                      `json:"text"`
+	RequestID                   string                      `json:"request_id,omitempty"`
+	RecentMessages              []AIAssistantContextMessage `json:"recent_messages,omitempty"`
+	ResumeSlotID                string                      `json:"resume_slot_id,omitempty"`
+	StartNewTask                bool                        `json:"start_new_task,omitempty"`
+	DismissSlotID               string                      `json:"dismiss_slot_id,omitempty"`
+	ResumeSessionID             string                      `json:"resume_session_id,omitempty"`
+	DismissRecoverableSessionID string                      `json:"dismiss_recoverable_session_id,omitempty"`
+	UIAction                    bool                        `json:"ui_action,omitempty"`
+}
+
+type AIAssistantContextMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+func sanitizeAIAssistantClientHistory(messages []AIAssistantContextMessage) []agent.ConversationEntry {
+	if len(messages) == 0 {
+		return nil
+	}
+	const maxClientHistoryMessages = 80
+	start := 0
+	if len(messages) > maxClientHistoryMessages {
+		start = len(messages) - maxClientHistoryMessages
+	}
+	entries := make([]agent.ConversationEntry, 0, len(messages)-start)
+	for _, msg := range messages[start:] {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			continue
+		}
+		entries = append(entries, agent.ConversationEntry{Role: role, Content: content})
+	}
+	return entries
+}
+
+func conversationTextSuffixMatches(shorter, longer []agent.ConversationEntry) bool {
+	if len(shorter) == 0 {
+		return true
+	}
+	if len(shorter) > len(longer) {
+		return false
+	}
+	offset := len(longer) - len(shorter)
+	for i := range shorter {
+		left := shorter[i]
+		right := longer[offset+i]
+		if strings.TrimSpace(left.Role) != strings.TrimSpace(right.Role) {
+			return false
+		}
+		leftText, leftOK := left.Content.(string)
+		rightText, rightOK := right.Content.(string)
+		if !leftOK || !rightOK {
+			return false
+		}
+		if strings.TrimSpace(leftText) != strings.TrimSpace(rightText) {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *App) reconcileAIAssistantClientHistory(handler *IMMessageHandler, userID string, clientMessages []AIAssistantContextMessage) {
+	if handler == nil || handler.memory == nil || len(clientMessages) == 0 {
+		return
+	}
+	clientEntries := sanitizeAIAssistantClientHistory(clientMessages)
+	if len(clientEntries) == 0 {
+		return
+	}
+	existing := handler.memory.Load(userID)
+	if len(existing) >= len(clientEntries) {
+		return
+	}
+	if !conversationTextSuffixMatches(existing, clientEntries) {
+		log.Printf("[AI assistant] client history reconciliation skipped: backendLen=%d clientLen=%d suffix=false", len(existing), len(clientEntries))
+		return
+	}
+	handler.memory.Save(userID, clientEntries)
+	log.Printf("[AI assistant] reconciled desktop conversation history from client transcript: %d->%d", len(existing), len(clientEntries))
 }
 
 type AIAssistantBackgroundTaskRequest struct {
@@ -1202,6 +1279,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	imHandlerStartedAt := time.Now()
 	handler := hubClient.ensureIMHandler()
 	ensureIMHandlerElapsed = time.Since(imHandlerStartedAt)
+	a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)
 	agentLoopStartedAt := time.Now()
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	if resp != nil {

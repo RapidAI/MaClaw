@@ -20,6 +20,8 @@
         defaultGroupTree: [],
         assignUsers: [],
         selectedAssignEmail: '',
+        selectedAssignEmails: {},
+        contextMenuHideHandler: null,
         membersPage: 1,
         membersPageSize: 50,
         membersCache: []
@@ -80,6 +82,9 @@
     statusApproved: { zh: '\u5df2\u6279\u51c6', en: 'Approved' },
     move: { zh: '\u79fb\u5165', en: 'Move' },
     showingUsers: { zh: '\u663e\u793a {visible} / {total} \u4e2a\u7528\u6237', en: 'Showing {visible} / {total} users' },
+    selectedUsers: { zh: '\u5df2\u9009 {count} \u4e2a\u7528\u6237', en: 'Selected {count} users' },
+    selectVisibleUsers: { zh: '\u5168\u9009\u5217\u8868\u7528\u6237', en: 'Select listed users' },
+    clearVisibleUsers: { zh: '\u53d6\u6d88\u5217\u8868\u5168\u9009', en: 'Clear listed users' },
     loadingMembers: { zh: '\u6b63\u5728\u52a0\u8f7d\u6210\u5458...', en: 'Loading members...' },
     removed: { zh: '\u5df2\u79fb\u9664', en: 'Removed' },
     centralizedEnabled: { zh: '\u96c6\u4e2d\u7b56\u7565\u5df2\u542f\u7528', en: 'Centralized policy enabled' },
@@ -91,7 +96,7 @@
     loadingUsers: { zh: '\u6b63\u5728\u52a0\u8f7d\u7528\u6237\u5217\u8868...', en: 'Loading users...' },
     moveUsersHere: { zh: '\u79fb\u5165\u7528\u6237', en: 'Move Users Here' },
     moveUsers: { zh: '\u79fb\u5165\u7528\u6237', en: 'Move Users' },
-    moveUsersDesc: { zh: '\u53ef\u4ee5\u641c\u7d22\u5e76\u5c06\u7528\u6237\u79fb\u5165\u5f53\u524d\u90e8\u95e8\u3002', en: 'Search and move a user into the selected department.' },
+    moveUsersDesc: { zh: '\u53ef\u4ee5\u641c\u7d22\u5e76\u6279\u91cf\u5c06\u7528\u6237\u79fb\u5165\u5f53\u524d\u90e8\u95e8\u3002', en: 'Search and move users into the selected department.' },
     searchEmailOrSn: { zh: '\u641c\u7d22\u90ae\u7bb1\u6216 SN', en: 'Search email or SN' },
     departmentActions: { zh: '\u90e8\u95e8\u64cd\u4f5c\u83dc\u5355', en: 'Department actions' },
     userMoved: { zh: '\u7528\u6237\u5df2\u79fb\u5165', en: 'User moved' },
@@ -141,6 +146,7 @@
     groupDeleted: { zh: '\u7ec4\u5df2\u5220\u9664', en: 'Group deleted' },
     deleteFailed: { zh: '\u5220\u9664\u5931\u8d25: ', en: 'Delete failed: ' },
     selectOrEnterEmail: { zh: '\u8bf7\u9009\u62e9\u6216\u8f93\u5165\u90ae\u7bb1', en: 'Select or enter an email' },
+    selectOrEnterUsers: { zh: '\u8bf7\u9009\u62e9\u7528\u6237\u6216\u8f93\u5165\u90ae\u7bb1', en: 'Select users or enter an email' },
     assignFailed: { zh: '\u5206\u914d\u5931\u8d25: ', en: 'Assign failed: ' },
     members: { zh: '\u6210\u5458', en: 'Members' },
     confirmRemoveUser: { zh: '\u786e\u5b9a\u79fb\u9664 {email} \u5417\uff1f', en: 'Remove {email}?' },
@@ -178,6 +184,17 @@
 
   function errorHint(message) {
     return '<div class="hint" style="color:var(--danger)">' + escapeHtml(message || '') + '</div>';
+  }
+
+  function escapeJsString(value) {
+    return String(value || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/</g, '\\x3c')
+      .replace(/>/g, '\\x3e')
+      .replace(/&/g, '\\x26');
   }
 
   function normalizeEmailKey(email) {
@@ -221,6 +238,37 @@
       items.push(user);
     });
     return items;
+  }
+
+  function selectedAssignEmailList() {
+    var selected = state().selectedAssignEmails || {};
+    return Object.keys(selected).filter(function(key) { return !!selected[key]; }).map(function(key) { return selected[key]; });
+  }
+
+  function filteredAssignUsers() {
+    var sec = state();
+    var input = document.getElementById('assignUsersSearch');
+    var query = String(input && input.value || '').trim().toLowerCase();
+    return (sec.assignUsers || []).filter(function(user) {
+      if (!query) return true;
+      var email = String(user.email || '').toLowerCase();
+      var sn = String(user.sn || '').toLowerCase();
+      return email.indexOf(query) >= 0 || sn.indexOf(query) >= 0;
+    });
+  }
+
+  function setAssignUserSelected(email, checked) {
+    var sec = state();
+    var clean = String(email || '').trim();
+    var key = normalizeEmailKey(clean);
+    if (!key) return;
+    if (!sec.selectedAssignEmails) sec.selectedAssignEmails = {};
+    if (checked) {
+      sec.selectedAssignEmails[key] = clean;
+    } else {
+      delete sec.selectedAssignEmails[key];
+    }
+    sec.selectedAssignEmail = selectedAssignEmailList()[0] || '';
   }
 
   function renderMembersSection(children, members) {
@@ -293,6 +341,7 @@
     _s('assignUsersModalDesc', 'textContent', st('moveUsersDesc'));
     _s('assignUsersCancelBtn', 'textContent', st('cancel'));
     _s('assignUsersConfirmBtn', 'textContent', st('confirm'));
+    _s('assignUsersSelectAllBtn', 'textContent', st('selectVisibleUsers'));
     _s('assignUsersSearch', 'placeholder', st('searchEmailOrSn'));
     _s('secContextMenu', 'title', st('departmentActions'));
   }
@@ -465,28 +514,46 @@
     var input = document.getElementById('assignUsersSearch');
     if (!root || !input) return;
     var query = String(input.value || '').trim().toLowerCase();
-    var rows = (sec.assignUsers || []).filter(function(user) {
-      if (!query) return true;
-      var email = String(user.email || '').toLowerCase();
-      var sn = String(user.sn || '').toLowerCase();
-      return email.indexOf(query) >= 0 || sn.indexOf(query) >= 0;
-    });
+    var rows = filteredAssignUsers();
     if (!rows.length) {
       root.innerHTML = hint(query ? st('noUsersMatchSearch') : st('noUsersAvailable'));
     } else {
       root.innerHTML = rows.map(function(user) {
         var email = user.email || '';
-        var selected = sec.selectedAssignEmail === email;
-        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:6px"><div><div style="font-weight:600">' + escapeHtml(email) + '</div><div class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(st('status')) + ': ' + escapeHtml(localizeUserStatus(user.status)) + '</div></div><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px">' + escapeHtml(st('move')) + '</button></div></div>';
+        var key = normalizeEmailKey(email);
+        var selected = !!(sec.selectedAssignEmails && sec.selectedAssignEmails[key]);
+        var jsEmail = escapeJsString(email);
+        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + jsEmail + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label style="display:flex;align-items:center;gap:8px;margin:0;min-width:0;cursor:pointer;flex:1" onclick="event.stopPropagation()"><input type="checkbox" style="width:16px;height:16px;flex:0 0 auto" ' + (selected ? 'checked' : '') + ' onchange="toggleAssignUser(\'' + jsEmail + '\', this.checked)"><span style="min-width:0"><span style="display:block;font-weight:600;word-break:break-all">' + escapeHtml(email) + '</span><span class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(st('status')) + ': ' + escapeHtml(localizeUserStatus(user.status)) + '</span></span></label><button class="btn-ghost" type="button" style="height:26px;font-size:11px;padding:0 10px;flex:0 0 auto" onclick="event.stopPropagation();selectAssignUser(\'' + jsEmail + '\')">' + escapeHtml(selected ? st('remove') : st('move')) + '</button></div></div>';
       }).join('');
     }
-    _s('assignUsersCount', 'textContent', st('showingUsers', { visible: rows.length, total: sec.assignUsers.length }));
+    var selectedCount = selectedAssignEmailList().length;
+    var visibleSelectedCount = rows.filter(function(user) { return !!(sec.selectedAssignEmails && sec.selectedAssignEmails[normalizeEmailKey(user.email)]); }).length;
+    var countText = st('showingUsers', { visible: rows.length, total: sec.assignUsers.length });
+    if (selectedCount) countText += ' | ' + st('selectedUsers', { count: selectedCount });
+    _s('assignUsersCount', 'textContent', countText);
+    var selectAllBtn = document.getElementById('assignUsersSelectAllBtn');
+    if (selectAllBtn) {
+      selectAllBtn.textContent = rows.length > 0 && visibleSelectedCount === rows.length ? st('clearVisibleUsers') : st('selectVisibleUsers');
+      selectAllBtn.disabled = rows.length === 0;
+    }
   }
 
   async function loadAssignableUsers() {
     var sec = state();
-    var data = await api('/api/admin/users');
-    sec.assignUsers = dedupeUsersByEmail((data.users || []).filter(function(user) { return !!(user && user.email); }));
+    var userReq = api('/api/admin/users');
+    var memberReq = sec.assignGroupId
+      ? api('/api/admin/security/groups/' + encodeURIComponent(sec.assignGroupId) + '/members')
+      : Promise.resolve({ members: [] });
+    var results = await Promise.all([userReq, memberReq]);
+    var data = results[0] || {};
+    var memberData = results[1] || {};
+    var currentMemberKeys = {};
+    dedupeEmails(memberData.members || []).forEach(function(email) {
+      currentMemberKeys[normalizeEmailKey(email)] = true;
+    });
+    sec.assignUsers = dedupeUsersByEmail((data.users || []).filter(function(user) {
+      return !!(user && user.email) && !currentMemberKeys[normalizeEmailKey(user.email)];
+    }));
     renderAssignUsers();
   }
 
@@ -542,16 +609,37 @@
   };
 
   global.showSecContextMenu = function showSecContextMenu(x, y) {
+    var sec = state();
     var menu = document.getElementById('secContextMenu');
     if (!menu) return;
+    if (sec.contextMenuHideHandler) {
+      document.removeEventListener('click', sec.contextMenuHideHandler);
+      document.removeEventListener('contextmenu', sec.contextMenuHideHandler);
+      sec.contextMenuHideHandler = null;
+    }
+    if (menu.parentElement !== document.body) document.body.appendChild(menu);
     menu.classList.remove('hidden');
-    menu.style.left = x + 'px';
-    menu.style.top = y + 'px';
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    var margin = 8;
+    var rect = menu.getBoundingClientRect();
+    var maxLeft = Math.max(margin, global.innerWidth - rect.width - margin);
+    var maxTop = Math.max(margin, global.innerHeight - rect.height - margin);
+    var left = Math.min(Math.max(margin, Number(x || 0) + 2), maxLeft);
+    var top = Math.min(Math.max(margin, Number(y || 0) + 2), maxTop);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
     function hide() {
       menu.classList.add('hidden');
       document.removeEventListener('click', hide);
+      document.removeEventListener('contextmenu', hide);
+      if (state().contextMenuHideHandler === hide) state().contextMenuHideHandler = null;
     }
-    setTimeout(function() { document.addEventListener('click', hide); }, 0);
+    sec.contextMenuHideHandler = hide;
+    setTimeout(function() {
+      document.addEventListener('click', hide);
+      document.addEventListener('contextmenu', hide);
+    }, 0);
   };
 
   global.selectSecGroup = function selectSecGroup(id, name) {
@@ -782,6 +870,7 @@
   global.closeAssignUsersModal = function closeAssignUsersModal() {
     var sec = state();
     sec.selectedAssignEmail = '';
+    sec.selectedAssignEmails = {};
     sec.assignGroupId = null;
     sec.contextGroupName = null;
     var overlay = document.getElementById('assignUsersModalOverlay');
@@ -789,9 +878,27 @@
   };
 
   global.selectAssignUser = function selectAssignUser(email) {
+    var key = normalizeEmailKey(email);
+    var selected = !!(state().selectedAssignEmails && state().selectedAssignEmails[key]);
+    setAssignUserSelected(email, !selected);
+    renderAssignUsers();
+  };
+
+  global.toggleAssignUser = function toggleAssignUser(email, checked) {
+    setAssignUserSelected(email, checked);
+    renderAssignUsers();
+  };
+
+  global.toggleAssignVisibleUsers = function toggleAssignVisibleUsers() {
+    var rows = filteredAssignUsers();
+    if (!rows.length) return;
     var sec = state();
-    sec.selectedAssignEmail = email || '';
-    _s('assignUsersSearch', 'value', sec.selectedAssignEmail);
+    var allSelected = rows.every(function(user) {
+      return !!(sec.selectedAssignEmails && sec.selectedAssignEmails[normalizeEmailKey(user.email)]);
+    });
+    rows.forEach(function(user) {
+      setAssignUserSelected(user.email, !allSelected);
+    });
     renderAssignUsers();
   };
 
@@ -826,6 +933,7 @@
       sec.assignGroupId = groupID;
       sec.contextGroupName = groupName;
       sec.selectedAssignEmail = '';
+      sec.selectedAssignEmails = {};
       global._secAssignGroupId = groupID;
       _s('assignUsersModalTitle', 'textContent', st('assignTitleWithGroup', { name: groupName }));
       _s('assignUsersSearch', 'value', '');
@@ -898,17 +1006,28 @@
   global.confirmAssignUsers = async function confirmAssignUsers() {
     var sec = state();
     var input = document.getElementById('assignUsersSearch');
-    var email = String(input && input.value || '').trim() || sec.selectedAssignEmail;
-    if (!email || !sec.assignGroupId) {
-      showToast(st('selectOrEnterEmail'), 'info');
+    var typedEmail = String(input && input.value || '').trim();
+    var emails = selectedAssignEmailList();
+    if (!emails.length && typedEmail) emails = [typedEmail];
+    emails = dedupeEmails(emails);
+    if (!emails.length || !sec.assignGroupId) {
+      showToast(st('selectOrEnterUsers'), 'info');
       return;
     }
     try {
-      await api('/api/admin/security/groups/' + encodeURIComponent(sec.assignGroupId) + '/members', { method: 'POST', body: JSON.stringify({ email: email }) });
+      for (var i = 0; i < emails.length; i += 1) {
+        await api('/api/admin/security/groups/' + encodeURIComponent(sec.assignGroupId) + '/members', { method: 'POST', body: JSON.stringify({ email: emails[i] }) });
+      }
+      var targetGroupId = sec.assignGroupId;
+      var targetGroupName = sec.contextGroupName;
       showToast(st('userMoved'), 'success');
       global.closeAssignUsersModal();
-      global.loadSecurityTab();
-      if (sec.selectedGroupId) global.loadSecGroupMembers();
+      sec.selectedGroupId = targetGroupId;
+      sec.selectedGroupName = targetGroupName;
+      global._secSelectedGroupId = targetGroupId;
+      global._secSelectedGroupName = targetGroupName;
+      await global.loadSecurityTab();
+      if (targetGroupId) global.selectSecGroup(targetGroupId, targetGroupName || targetGroupId);
     } catch (err) {
       showToast(st('assignFailed') + err.message, 'error');
     }

@@ -55,8 +55,12 @@ const LLM_SERVICE_I18N = {
     newUserDays: 'Validity (Days)',
     newUserCredits: 'Benefit Credits',
     saveDefaults: 'Save Defaults',
-    tokensPerCredit: 'Tokens per Credit',
     credits: 'Credits',
+    fiveHourCredits: '5h Credits',
+    dailyCredits: 'Daily Credits',
+    weeklyCredits: 'Weekly Credits',
+    monthlyCredits: 'Monthly Credits',
+    periodLimits: 'Limits',
     count: 'Quantity',
     diagnoseTitle: 'Entitlement Diagnostic',
     diagnoseDesc: 'Explain why a user can or cannot access model services.',
@@ -310,8 +314,12 @@ const LLM_SERVICE_I18N = {
     newUserDays: '\u6709\u6548\u671f\uff08\u5929\uff09',
     newUserCredits: '\u798f\u5229 Credits',
     saveDefaults: '\u4fdd\u5b58\u9ed8\u8ba4\u503c',
-    tokensPerCredit: '\u6bcf Credit \u5bf9\u5e94 Token \u6570',
     credits: '\u79ef\u5206',
+    fiveHourCredits: '5 \u5c0f\u65f6\u989d\u5ea6',
+    dailyCredits: '\u6bcf\u65e5\u989d\u5ea6',
+    weeklyCredits: '\u6bcf\u5468\u989d\u5ea6',
+    monthlyCredits: '\u6bcf\u6708\u989d\u5ea6',
+    periodLimits: '\u9650\u989d',
     count: '\u751f\u6210\u6570\u91cf',
     diagnoseTitle: '\u6388\u6743\u8bca\u65ad',
     diagnoseDesc: '\u8bf4\u660e\u67d0\u4e2a\u7528\u6237\u4e3a\u4ec0\u4e48\u80fd\u6216\u4e0d\u80fd\u8bbf\u95ee\u6a21\u578b\u670d\u52a1\u3002',
@@ -788,7 +796,7 @@ async function triggerLLMServiceModelDownload() {
 }
 function llmServiceCardsPanelMarkup() {
   return '' +
-    '<div class="item" style="padding:14px 16px"><div class="item-title" id="llmServiceCardsTitle"></div><div style="display:grid;grid-template-columns:minmax(160px,1.05fr) minmax(240px,1.55fr) minmax(82px,.5fr) minmax(96px,.58fr) minmax(82px,.5fr) auto;gap:14px;align-items:end;margin-top:10px"><div><label id="llmServiceCardLabelLabel"></label><input id="llmServiceCardLabel"></div><div><label id="llmServiceCardGroupsLabel"></label><input id="llmServiceCardGroups" list="llmServiceGroupOptions"></div><div><label id="llmServiceCardDaysLabel"></label><input id="llmServiceCardDays" type="number" min="1" value="30"></div><div><label id="llmServiceCardCreditsLabel"></label><input id="llmServiceCardCredits" type="number" min="0" step="1" value="1000"></div><div><label id="llmServiceCardCountLabel"></label><input id="llmServiceCardCount" type="number" min="1" max="1000" value="1"></div><div style="display:flex;align-items:flex-end"><button class="btn-primary" onclick="issueLLMServiceCard()" id="llmServiceIssueBtn" style="height:36px;padding:0 14px;white-space:nowrap"></button></div></div><div id="llmServiceIssuedCodes" class="hint" style="margin-top:8px;padding:8px 10px;min-height:0"></div></div>' +
+    '<div class="item" style="padding:14px 16px"><div class="item-title" id="llmServiceCardsTitle"></div><div style="display:grid;grid-template-columns:minmax(150px,1fr) minmax(220px,1.4fr) repeat(7,minmax(78px,.55fr)) auto;gap:10px;align-items:end;margin-top:10px"><div><label id="llmServiceCardLabelLabel"></label><input id="llmServiceCardLabel"></div><div><label id="llmServiceCardGroupsLabel"></label><input id="llmServiceCardGroups" list="llmServiceGroupOptions"></div><div><label id="llmServiceCardDaysLabel"></label><input id="llmServiceCardDays" type="number" min="1" max="365" value="30"></div><div><label id="llmServiceCardCreditsLabel"></label><input id="llmServiceCardCredits" type="number" min="0" step="1" value="1000"></div><div><label id="llmServiceCardFiveHourCreditsLabel"></label><input id="llmServiceCardFiveHourCredits" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceCardDailyCreditsLabel"></label><input id="llmServiceCardDailyCredits" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceCardWeeklyCreditsLabel"></label><input id="llmServiceCardWeeklyCredits" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceCardMonthlyCreditsLabel"></label><input id="llmServiceCardMonthlyCredits" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceCardCountLabel"></label><input id="llmServiceCardCount" type="number" min="1" max="1000" value="1"></div><div style="display:flex;align-items:flex-end"><button class="btn-primary" onclick="issueLLMServiceCard()" id="llmServiceIssueBtn" style="height:36px;padding:0 14px;white-space:nowrap"></button></div></div><div id="llmServiceIssuedCodes" class="hint" style="margin-top:8px;padding:8px 10px;min-height:0"></div></div>' +
     '<div class="item"><div class="item-title" id="llmServiceCardsListTitle"></div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceCardSearchLabel"></label><input id="llmServiceCardSearch" oninput="llmServiceSetCardSearch(this.value)"></div><div></div></div><div class="actions" style="margin-top:10px"><button class="btn-ghost" type="button" onclick="llmServiceSetCardFilter(\'all\')" id="llmServiceFilterAllBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceSetCardFilter(\'unused\')" id="llmServiceFilterUnusedBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceSetCardFilter(\'redeemed\')" id="llmServiceFilterRedeemedBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceSelectCurrentPage()" id="llmServiceSelectPageBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceSelectFilteredCards()" id="llmServiceSelectFilteredBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceClearSelectedCards()" id="llmServiceClearSelectedBtn"></button><button class="btn-danger" type="button" onclick="llmServiceDeleteSelectedCards()" id="llmServiceDeleteSelectedBtn"></button><button class="btn-danger" type="button" onclick="llmServiceDeleteFilteredUnusedCards()" id="llmServiceDeleteFilteredBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceDownloadSelectedCards(\'txt\')" id="llmServiceExportSelectedTxtBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceDownloadSelectedCards(\'csv\')" id="llmServiceExportSelectedCsvBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceExportCurrentCards(\'txt\')" id="llmServiceExportCurrentTxtBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceExportCurrentCards(\'csv\')" id="llmServiceExportCurrentCsvBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceExportAllCards(\'all\',\'csv\')" id="llmServiceExportAllCsvBtn"></button></div><div id="llmServiceCardsList"></div><div id="llmServiceCardsPager" class="actions hidden" style="margin-top:10px"><div id="llmServiceCardsPagerMeta" class="hint" style="margin-right:auto"></div><button class="btn-ghost" type="button" onclick="llmServiceChangeCardPage(-1)" id="llmServiceCardsPrevBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceChangeCardPage(1)" id="llmServiceCardsNextBtn"></button></div><div style="margin-top:10px" class="item-title" id="llmServiceGrantsTitle"></div><div id="llmServiceGrantsList"></div></div>';
 }
 function applyLLMServiceI18n() {
@@ -819,6 +827,10 @@ function applyLLMServiceI18n() {
   _s('llmServiceCardGroupsLabel', 'textContent', lsx('serviceGroups'));
   _s('llmServiceCardDaysLabel', 'textContent', lsx('days'));
   _s('llmServiceCardCountLabel', 'textContent', lsx('count'));
+  _s('llmServiceCardFiveHourCreditsLabel', 'textContent', lsx('fiveHourCredits'));
+  _s('llmServiceCardDailyCreditsLabel', 'textContent', lsx('dailyCredits'));
+  _s('llmServiceCardWeeklyCreditsLabel', 'textContent', lsx('weeklyCredits'));
+  _s('llmServiceCardMonthlyCreditsLabel', 'textContent', lsx('monthlyCredits'));
   _s('llmServiceCardSearchLabel', 'textContent', lsx('cardSearch'));
   _s('llmServiceGrantsTitle', 'textContent', lsx('grants'));
   _s('llmServiceAddGroupBtn', 'textContent', lsx('addGroup'));
@@ -890,6 +902,24 @@ function llmServiceBuildServiceGroupMap(cache) {
 }
 function llmServiceJSArg(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+function llmServiceFormatLimitValue(value) {
+  const n = Number(value || 0);
+  if (!(n > 0)) return '';
+  return n.toFixed(3).replace(/\.000$/, '').replace(/(\.\d*?)0+$/, '$1');
+}
+function llmServicePeriodLimitsText(limits) {
+  limits = limits || {};
+  const parts = [];
+  const fiveHour = llmServiceFormatLimitValue(limits.five_hour);
+  const daily = llmServiceFormatLimitValue(limits.daily);
+  const weekly = llmServiceFormatLimitValue(limits.weekly);
+  const monthly = llmServiceFormatLimitValue(limits.monthly);
+  if (fiveHour) parts.push(lsx('fiveHourCredits') + ': ' + fiveHour);
+  if (daily) parts.push(lsx('dailyCredits') + ': ' + daily);
+  if (weekly) parts.push(lsx('weeklyCredits') + ': ' + weekly);
+  if (monthly) parts.push(lsx('monthlyCredits') + ': ' + monthly);
+  return parts.join(' | ');
 }
 function llmServiceIssuedCodesText() {
   return (llmServiceLastIssuedCodes || []).join('\n');
@@ -1617,6 +1647,7 @@ function renderLLMServiceAdmin() {
         const redemptionMeta = (c.redeemed_by_email || '') + (c.redeemed_at ? (' | ' + String(c.redeemed_at)) : '');
         const issueLines = (cardHealth.issues || []).map(function(issue) { return '<span style="color:#c05621">' + escapeHtml(issue) + '</span>'; }).join('<span style="color:rgba(31,34,48,.16)"> | </span>');
         const unlockLabel = cardHealth.grantGroupCount > 0 && cardHealth.freeGroupCount > 0 ? lsx('cardUnlocksMixed') : (cardHealth.grantGroupCount > 0 ? lsx('cardUnlocksGrant') : lsx('cardUnlocksFree'));
+        const periodLimits = llmServicePeriodLimitsText(c.period_limits);
         const selected = selectedCardSet.has(String(c && c.id || '').trim());
         const cardCode = String(c.code || '').trim();
         const cardCodeLine = cardCode
@@ -1635,6 +1666,7 @@ function renderLLMServiceAdmin() {
           + '<div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">' + ui.badge(healthLabel, healthTone) + ui.badge(redeemedLabel, redeemedTone) + '</div>'
           + '<div class="item-meta mono" style="text-align:right">' + escapeHtml(lsx('days')) + ': ' + escapeHtml(String(c.duration_days || 0)) + '</div>'
           + '<div class="item-meta mono" style="text-align:right">' + escapeHtml(lsx('credits')) + ': ' + escapeHtml(String(c.credits || 0)) + '</div>'
+          + (periodLimits ? '<div class="item-meta mono" style="text-align:right;line-height:1.35">' + escapeHtml(lsx('periodLimits')) + ': ' + escapeHtml(periodLimits) + '</div>' : '')
           + '<div style="display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap;width:100%">' + (c.redeemed_at ? '' : '<button class="btn-danger" style="height:28px;font-size:11px;padding:0 10px" onclick="llmServiceDeleteCard(\'' + llmServiceJSArg(c.id || '') + '\')">' + escapeHtml(lsx('deleteCard')) + '</button>') + '</div>'
           + '</div>'
           + '</div>'
@@ -1878,9 +1910,13 @@ async function issueLLMServiceCard() {
     const groupsEl = document.getElementById('llmServiceCardGroups');
     const daysEl = document.getElementById('llmServiceCardDays');
     const creditsEl = document.getElementById('llmServiceCardCredits');
+    const fiveHourCreditsEl = document.getElementById('llmServiceCardFiveHourCredits');
+    const dailyCreditsEl = document.getElementById('llmServiceCardDailyCredits');
+    const weeklyCreditsEl = document.getElementById('llmServiceCardWeeklyCredits');
+    const monthlyCreditsEl = document.getElementById('llmServiceCardMonthlyCredits');
     const countEl = document.getElementById('llmServiceCardCount');
     const issuedCodesEl = document.getElementById('llmServiceIssuedCodes');
-    if (!labelEl || !groupsEl || !daysEl || !creditsEl || !countEl) return;
+    if (!labelEl || !groupsEl || !daysEl || !creditsEl || !fiveHourCreditsEl || !dailyCreditsEl || !weeklyCreditsEl || !monthlyCreditsEl || !countEl) return;
     const serviceGroupIDs = parseCSV(groupsEl.value || '');
     if (!serviceGroupIDs.length) {
       const msg = lsx('serviceGroupRequired');
@@ -1891,9 +1927,19 @@ async function issueLLMServiceCard() {
     }
     if (llmServiceWarnUnknownServiceGroups(serviceGroupIDs)) return;
     const count = Math.max(1, Math.min(1000, Number(countEl.value || 1) || 1));
-    const durationDays = Math.max(1, Number(daysEl.value || 30) || 30);
+    const durationDays = Math.max(1, Math.min(365, Number(daysEl.value || 30) || 30));
     const credits = Math.max(0, Number(creditsEl.value || 0) || 0);
-    const data = await api('/api/admin/llm/service-cards', { method: 'POST', body: JSON.stringify({ label: (labelEl.value || '').trim(), service_group_ids: serviceGroupIDs, duration_days: durationDays, credits: credits, count: count }) });
+    const data = await api('/api/admin/llm/service-cards', { method: 'POST', body: JSON.stringify({
+      label: (labelEl.value || '').trim(),
+      service_group_ids: serviceGroupIDs,
+      duration_days: durationDays,
+      credits: credits,
+      five_hour_credits: Math.max(0, Number(fiveHourCreditsEl.value || 0) || 0),
+      daily_credits: Math.max(0, Number(dailyCreditsEl.value || 0) || 0),
+      weekly_credits: Math.max(0, Number(weeklyCreditsEl.value || 0) || 0),
+      monthly_credits: Math.max(0, Number(monthlyCreditsEl.value || 0) || 0),
+      count: count
+    }) });
     const codes = (data.cards || []).map(function(card) { return String(card && card.code || '').trim(); }).filter(Boolean);
     llmServiceLastIssuedCodes = codes;
     if (issuedCodesEl) renderLLMServiceIssuedCodes();
@@ -1922,7 +1968,7 @@ function ensureLLMServiceSystemUI() {
     '<div class="grid2">' +
     '<div><label id="llmServiceSystemGroupsLabel"></label><select id="llmServiceSystemGroups" style="width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel, #fff);font:inherit;min-height:42px"></select></div>' +
     '<div><label id="llmServiceSystemDaysLabel"></label><input id="llmServiceSystemDays" type="number" min="1" value="30"></div>' +
-    '</div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceSystemCreditsLabel"></label><input id="llmServiceSystemCredits" type="number" min="1" step="1" value="1000"></div><div><label id="llmServiceSystemTokensLabel"></label><input id="llmServiceSystemTokensPerCredit" type="number" min="1" value="10000"></div></div><div class="hint" id="llmServiceSystemHint" style="margin-top:10px"></div>';
+    '</div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceSystemCreditsLabel"></label><input id="llmServiceSystemCredits" type="number" min="1" step="1" value="1000"></div></div><div class="hint" id="llmServiceSystemHint" style="margin-top:10px"></div>';
   tab.appendChild(host);
   applyLLMServiceSystemI18n();
 }
@@ -1933,7 +1979,6 @@ function applyLLMServiceSystemI18n() {
   _s('llmServiceSystemDaysLabel', 'textContent', lsx('newUserDays'));
   _s('llmServiceSystemCreditsLabel', 'textContent', lsx('newUserCredits'));
   _s('llmServiceSystemSaveBtn', 'textContent', lsx('saveDefaults'));
-  _s('llmServiceSystemTokensLabel', 'textContent', lsx('tokensPerCredit'));
   _s('llmServiceSystemHint', 'textContent', lsx('systemHint'));
 }
 function renderLLMServiceSystemSettings() {
@@ -1946,7 +1991,6 @@ function renderLLMServiceSystemSettings() {
   _s('llmServiceSystemGroups', 'value', String((llmServiceAdminCache.default_new_user_service_groups || [])[0] || BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID));
   _s('llmServiceSystemDays', 'value', String(llmServiceAdminCache.default_new_user_duration_days || 30));
   _s('llmServiceSystemCredits', 'value', String(llmServiceAdminCache.default_new_user_credits || 1000));
-  _s('llmServiceSystemTokensPerCredit', 'value', String(llmServiceAdminCache.tokens_per_credit || 10000));
   refreshLLMServiceGroupSelectors();
 }
 function ensureLLMServiceSystemSettingsLoaded() {
@@ -1967,7 +2011,6 @@ async function saveLLMServiceSystemSettings() {
   if (!(llmServiceAdminCache.default_new_user_duration_days > 0)) llmServiceAdminCache.default_new_user_duration_days = 30;
   llmServiceAdminCache.default_new_user_credits = Number(document.getElementById('llmServiceSystemCredits').value || 1000);
   if (!(llmServiceAdminCache.default_new_user_credits > 0)) llmServiceAdminCache.default_new_user_credits = 1000;
-  llmServiceAdminCache.tokens_per_credit = Number(document.getElementById('llmServiceSystemTokensPerCredit').value || 10000);
   if (!(llmServiceAdminCache.tokens_per_credit > 0)) llmServiceAdminCache.tokens_per_credit = 10000;
   if (llmServiceWarnUnknownServiceGroups(llmServiceAdminCache.default_new_user_service_groups || [])) return;
   try {

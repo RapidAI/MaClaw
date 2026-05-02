@@ -25,8 +25,7 @@ func newTestService(t *testing.T) (*TenantService, *db.Provider) {
 	t.Helper()
 	p := setupTestDB(t)
 	repo := NewTenantRepo(p.Write, p.Read)
-	nonceRepo := NewNonceRepo(p.Write)
-	svc := NewTenantService(repo, nonceRepo, p.Write, p.Write, nil, nil)
+	svc := NewTenantService(repo, p.Write, p.Write, nil)
 	return svc, p
 }
 

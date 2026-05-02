@@ -10,6 +10,9 @@ import (
 // CloudCredentialResolver resolves the Center registration used for Cloud-side service management.
 type CloudCredentialResolver func(context.Context) (centerID, centerSecret string, err error)
 
+// CloudReadinessResolver returns the current iWorker operating readiness for Cloud visibility.
+type CloudReadinessResolver func(context.Context) *CloudIWorkerReadiness
+
 type CloudHeartbeatSnapshot struct {
 	Configured          bool      `json:"configured"`
 	Status              string    `json:"status"`
@@ -27,6 +30,7 @@ type CloudHeartbeatSnapshot struct {
 type CloudHeartbeatMonitor struct {
 	client              *CloudClient
 	resolve             CloudCredentialResolver
+	readiness           CloudReadinessResolver
 	interval            time.Duration
 	timeout             time.Duration
 	stop                chan struct{}
@@ -56,6 +60,15 @@ func NewCloudHeartbeatMonitor(client *CloudClient, resolve CloudCredentialResolv
 	}
 }
 
+func (m *CloudHeartbeatMonitor) SetReadinessResolver(resolve CloudReadinessResolver) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.readiness = resolve
+	m.mu.Unlock()
+}
+
 func (m *CloudHeartbeatMonitor) Start() {
 	if m == nil || m.client == nil || m.resolve == nil {
 		return
@@ -66,6 +79,13 @@ func (m *CloudHeartbeatMonitor) Start() {
 		m.mu.Unlock()
 		go m.loop()
 	})
+}
+
+func (m *CloudHeartbeatMonitor) TriggerNow() {
+	if m == nil || m.client == nil || m.resolve == nil {
+		return
+	}
+	m.sendOnce()
 }
 
 func (m *CloudHeartbeatMonitor) Stop() {
@@ -141,12 +161,23 @@ func (m *CloudHeartbeatMonitor) sendOnce() {
 	if centerID == "" || centerSecret == "" {
 		return
 	}
-	if err := m.client.SendCenterHeartbeat(ctx, centerID, centerSecret); err != nil {
+	readiness := m.resolveReadiness(ctx)
+	if err := m.client.SendCenterHeartbeat(ctx, centerID, centerSecret, readiness); err != nil {
 		m.recordFailure(err.Error())
 		log.Printf("[tenant/cloud-heartbeat] send heartbeat failed: %v", err)
 		return
 	}
 	m.recordSuccess(time.Now().UTC())
+}
+
+func (m *CloudHeartbeatMonitor) resolveReadiness(ctx context.Context) *CloudIWorkerReadiness {
+	m.mu.Lock()
+	resolver := m.readiness
+	m.mu.Unlock()
+	if resolver == nil {
+		return nil
+	}
+	return resolver(ctx)
 }
 
 func (m *CloudHeartbeatMonitor) recordAttempt(centerID string, at time.Time) {

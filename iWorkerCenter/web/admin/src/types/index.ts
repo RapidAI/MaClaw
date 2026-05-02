@@ -138,6 +138,70 @@ export interface CenterComputeSyncStatus {
   status: 'success' | 'failure' | 'pending' | 'waiting_for_credentials';
   error?: string;
   provider_count: number;
+  non_blocking?: boolean;
+  runtime_impact?: 'cloud_sync_current' | 'using_cached_cloud_providers' | 'local_settings_fallback' | 'waiting_for_cloud_sync' | string;
+}
+
+
+export interface CenterReadinessCheck {
+  name: string;
+  ready: boolean;
+  status: string;
+  detail?: string;
+  count?: number;
+}
+
+export interface CenterAuthReadiness {
+  method: string;
+  label: string;
+  ready: boolean;
+  implemented: boolean;
+  status: string;
+  detail?: string;
+}
+
+export interface CenterIWorkerReadiness {
+  ready: boolean;
+  status: string;
+  tenant_count: number;
+  role_count: number;
+  colleague_count: number;
+  local_account_count: number;
+  agent_instance_count: number;
+  agent_runtime_ready: boolean;
+  goalwatch_ready: boolean;
+  required_client_paths: string[];
+  checks: CenterReadinessCheck[];
+  auth_methods: CenterAuthReadiness[];
+}
+
+export interface IWorkerWorkStatusSummary {
+  current_task?: string;
+  current_detail?: string;
+  active_count: number;
+  completed_count: number;
+  review_count: number;
+  blocked_count: number;
+  updated_at?: string;
+}
+
+export interface IWorkerAgentInstance {
+  tenant_id: string;
+  worker_id: string;
+  instance_id: string;
+  role: string;
+  status: string;
+  org_unit_id?: string;
+  capabilities: string[];
+  memory_authority: string;
+  local_cache_mode: string;
+  work_status?: IWorkerWorkStatusSummary;
+  host_id?: string;
+  process_id?: number;
+  started_at: string;
+  last_heartbeat_at: string;
+  heartbeat_age_seconds: number;
+  effective_status: string;
 }
 
 export interface CenterStatus {
@@ -153,6 +217,7 @@ export interface CenterStatus {
   cloud_provider_count?: number;
   runtime_provider_mode?: 'settings' | 'cloud_sync' | 'local_self_managed';
   cloud_heartbeat?: CenterCloudHeartbeat;
+  iworker_readiness?: CenterIWorkerReadiness;
 }
 
 export interface CenterSettings {

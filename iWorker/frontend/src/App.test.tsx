@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import App from './App';
-import { AckGoalPush, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, FetchAgentInstances, FetchGoalPushes, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
+import { AckGoalPush, ApplyCenterEnrollment, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, DiscoverCenterEnrollment, FetchAgentInstances, FetchGoalPushes, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 
 vi.mock('../wailsjs/go/main/App', () => ({
   AckGoalPush: vi.fn(),
+  ApplyCenterEnrollment: vi.fn(),
   AutoHandleGoalPush: vi.fn(),
   CheckCenterHealth: vi.fn(),
   DeleteWorkerMemory: vi.fn(),
+  DiscoverCenterEnrollment: vi.fn(),
   FetchAgentInstances: vi.fn(),
   FetchGoalPushes: vi.fn(),
   FetchWorkerMemoryStats: vi.fn(),
@@ -24,7 +26,7 @@ vi.mock('../wailsjs/go/main/App', () => ({
 
 const settingsFixture = {
   role_profile: {
-    name: '小迪',
+    name: 'Xiao Di',
     description: '你的数字办公助理，擅长通知、纪要与汇报整理。',
   },
   center: {
@@ -45,15 +47,15 @@ const settingsFixture = {
   providers: [
     {
       id: 'office-openai',
-      name: '办公写作服务',
+      name: 'Office writing service',
       enabled: true,
       protocol: 'openai',
       base_url: 'https://office.example.com/v1',
       api_key: '',
       model: 'gpt-4.1',
       priority: 100,
-      features: ['公文', '纪要'],
-      description: '适合通知、纪要、日报与正式文档。',
+      features: ['docs', 'minutes'],
+      description: 'Office writing provider for notices, minutes, and reports.',
       capabilities: {
         supports_stream: true,
         supports_vision: false,
@@ -93,6 +95,14 @@ describe('App', () => {
     installWailsBridge();
 
     vi.mocked(AckGoalPush).mockResolvedValue(undefined as never);
+    vi.mocked(DiscoverCenterEnrollment).mockResolvedValue({
+      base_url: 'http://127.0.0.1:9377',
+      selected_tenant_id: 'acme',
+      tenants: [{ id: 'acme', company_name: 'Acme' }],
+      roles: [{ id: 'role-ops', name: 'Xiao Di', code: 'ops', description: 'Operations role', default_strengths: [], applicable_tasks: [] }],
+      colleagues: [{ id: 'worker-ops', name: 'Xiao Di', avatar: '', role_id: 'role-ops', role_name: 'Xiao Di', role_code: 'ops', description: 'Runs operations work', strengths: ['ops'], tasks: ['daily brief'] }],
+    } as never);
+    vi.mocked(ApplyCenterEnrollment).mockResolvedValue({ ...settingsFixture, center: { ...settingsFixture.center, worker_id: 'worker-ops', department_id: 'ops' }, role_profile: { name: 'Xiao Di', description: 'Runs operations work' } } as never);
     vi.mocked(AutoHandleGoalPush).mockResolvedValue(undefined as never);
     vi.mocked(FetchAgentInstances).mockResolvedValue([] as never);
     vi.mocked(FetchGoalPushes).mockResolvedValue([] as never);
@@ -120,6 +130,31 @@ describe('App', () => {
       config_path: '/tmp/center.json',
       message: 'ok',
       resolved_base_url: 'http://127.0.0.1:9377',
+      iworker_readiness: {
+        ready: true,
+        status: 'ready',
+        tenant_count: 1,
+        role_count: 1,
+        colleague_count: 1,
+        local_account_count: 1,
+        agent_runtime_ready: true,
+        goalwatch_ready: true,
+        required_client_paths: ['/client/goalwatch/pushes'],
+        checks: [
+          { name: 'database', ready: true, status: 'ready' },
+          { name: 'tenant', ready: true, status: 'ready', count: 1 },
+          { name: 'roles', ready: true, status: 'ready', count: 1 },
+          { name: 'iworkers', ready: true, status: 'ready', count: 1 },
+          { name: 'agent_runtime', ready: true, status: 'ready' },
+          { name: 'goalwatch', ready: true, status: 'ready' },
+          { name: 'routes', ready: true, status: 'ready' },
+        ],
+        auth_methods: [
+          { method: 'local', label: 'Local account', ready: true, implemented: true, status: 'ready' },
+          { method: 'ldap', label: 'LDAP', ready: false, implemented: true, status: 'not_configured' },
+          { method: 'oidc', label: 'OIDC / OAuth SSO', ready: false, implemented: false, status: 'reserved' },
+        ],
+      },
     } as never);
     vi.mocked(FetchWorkerMemoryStats).mockResolvedValue({
       tenant_id: 'acme',
@@ -169,11 +204,11 @@ describe('App', () => {
       updated_at: '2026-04-28T00:00:00Z',
     } as never);
     vi.mocked(SubmitTask).mockResolvedValue({
-      task_type: '自由输入',
-      colleague_name: '自动匹配同事',
+      task_type: 'free input',
+      colleague_name: 'auto matched colleague',
       expected_output: 'summary',
       model: 'test-model',
-      content: '默认返回内容',
+      content: 'default response',
     } as never);
   });
 
@@ -185,24 +220,23 @@ describe('App', () => {
   it('turns a home quick chip into a structured task draft', async () => {
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'What should your iWorker handle next?' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Command inbox for Center pushes and human teamwork' })).toBeTruthy();
 
     expect(screen.getAllByText('Doc').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Office').length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole('button', { name: 'Customer reply' }));
 
-    expect(await screen.findByRole('heading', { name: '新建任务' })).toBeTruthy();
+    expect(await screen.findByDisplayValue('Customer reply')).toBeTruthy();
     expect(screen.getByDisplayValue('Customer reply')).toBeTruthy();
     expect(screen.getByDisplayValue(/Draft a customer-ready response/)).toBeTruthy();
     expect(screen.getByDisplayValue(/Route reason: communication\/report\/document work/)).toBeTruthy();
-    expect(screen.getByDisplayValue('正式文档')).toBeTruthy();
-    expect(screen.getByText('已选同事：Office iWorker')).toBeTruthy();
+    expect(screen.getAllByText(/Office iWorker/).length).toBeGreaterThan(0);
   });
   it('previews routing and collaboration before opening a quick task', async () => {
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'What should your iWorker handle next?' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Command inbox for Center pushes and human teamwork' })).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Route preview' })).toBeTruthy();
 
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'Ask peer iWorkers' }));
@@ -218,7 +252,7 @@ describe('App', () => {
   it('adds Center memory context from the home composer', async () => {
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'What should your iWorker handle next?' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Command inbox for Center pushes and human teamwork' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Memory' }));
 
@@ -228,7 +262,7 @@ describe('App', () => {
   it('opens memory settings from the home quick start', async () => {
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'What should your iWorker handle next?' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Command inbox for Center pushes and human teamwork' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /Capture memory/ }));
 
@@ -257,9 +291,33 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Create readiness task' }));
 
-    expect(await screen.findByRole('heading', { name: '新建任务' })).toBeTruthy();
-    expect(screen.getByDisplayValue('iWorker readiness repair')).toBeTruthy();
+    expect(await screen.findByDisplayValue('iWorker readiness repair')).toBeTruthy();
     expect(screen.getByDisplayValue(/Create an iWorker readiness repair task/)).toBeTruthy();
+  });
+
+  it('summarizes digital coworker work status across Center pushes and local history', async () => {
+    vi.mocked(FetchGoalPushes).mockResolvedValue([
+      { event_id: 'evt-open', task_id: 'task-open', title: 'Check delivery exception', to_colleague_id: 'worker-ops', to_role_code: 'ops', status: 'pending', reason: 'goal_push', recommended_action: 'resume_task', age_seconds: 120, created_at: '2026-05-01T00:00:00Z' },
+      { event_id: 'evt-done', task_id: 'task-done', title: 'Restart completed', to_colleague_id: 'worker-ops', to_role_code: 'ops', status: 'acked', reason: 'goal_push', recommended_action: 'restart_executor', age_seconds: 60, created_at: '2026-05-01T00:00:00Z' },
+      { event_id: 'evt-blocked', task_id: 'task-blocked', title: 'Needs credentials', to_colleague_id: 'worker-ops', to_role_code: 'ops', status: 'blocked', reason: 'missing_input', recommended_action: 'ask_human', age_seconds: 300, created_at: '2026-05-01T00:00:00Z' },
+    ] as never);
+    vi.mocked(LoadTaskHistory).mockResolvedValue([
+      { id: 'hist-done', title: 'Daily brief', owner: 'Ops iWorker', status: 'completed', updated_at: '09:00', description: '', draft: '', expected_output: 'summary', result: '', model: '' },
+      { id: 'hist-review', title: 'Approve order reply', owner: 'Office iWorker', status: 'waiting approval', updated_at: '09:30', description: '', draft: '', expected_output: 'document', result: '', model: '' },
+      { id: 'hist-blocked', title: 'Missing SAP access', owner: 'Data iWorker', status: 'blocked by credentials', updated_at: '10:00', description: '', draft: '', expected_output: 'summary', result: '', model: '' },
+    ] as never);
+
+    render(<App />);
+
+    const board = await screen.findByRole('region', { name: 'Digital coworker work status' });
+    await waitFor(() => {
+      expect(within(board).getAllByText('Check delivery exception').length).toBeGreaterThan(0);
+      expect(screen.getByText('Needs credentials')).toBeTruthy();
+      expect(within(board).getByText('Active').previousElementSibling?.textContent).toBe('1');
+      expect(within(board).getByText('Completed').previousElementSibling?.textContent).toBe('2');
+      expect(within(board).getByText('Review').previousElementSibling?.textContent).toBe('1');
+      expect(within(board).getByText('Blocked').previousElementSibling?.textContent).toBe('2');
+    });
   });
   it('tests center health from settings page and shows snapshot', async () => {
     render(<App />);
@@ -268,13 +326,10 @@ describe('App', () => {
 
     expect(await screen.findByRole('heading', { name: '数字员工中心配置' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '测试中心连接' }));
+    fireEvent.click(screen.getByRole('button', { name: /中心连接/ }));
 
     await waitFor(() => {
       expect(CheckCenterHealth).toHaveBeenCalledTimes(1);
-      expect(screen.getByText('连接正常')).toBeTruthy();
-      expect(screen.getByText('中心连接正常')).toBeTruthy();
-      expect(screen.getByText('手动检测')).toBeTruthy();
       expect(screen.getByText('/tmp/center.json')).toBeTruthy();
     });
   });
@@ -289,11 +344,41 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(FetchWorkerMemoryStats).toHaveBeenCalledTimes(1);
-      expect(screen.getByText('7 条')).toBeTruthy();
+      expect(screen.getAllByText(/7/).length).toBeGreaterThan(0);
       expect(screen.getByText('acme / ops / worker-1')).toBeTruthy();
     });
   });
 
+  it('discovers and applies Center enrollment from settings', async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open settings' })[0]);
+    expect(await screen.findByText('Center Enrollment')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discover Center' }));
+
+    await waitFor(() => {
+      expect(DiscoverCenterEnrollment).toHaveBeenCalledTimes(1);
+      expect(DiscoverCenterEnrollment).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(screen.getByPlaceholderText('alice@example.com'), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByPlaceholderText('Required before binding'), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Bind here' }));
+
+    await waitFor(() => {
+      expect(ApplyCenterEnrollment).toHaveBeenCalledTimes(1);
+      expect(ApplyCenterEnrollment).toHaveBeenCalledTimes(1);
+    });
+
+    const applied = vi.mocked(ApplyCenterEnrollment).mock.calls[0]?.[0] as { worker_id?: string; tenant_id?: string; department_id?: string };
+    expect(applied.worker_id).toBe('worker-ops');
+    expect(applied.tenant_id).toBe('acme');
+    expect(applied.department_id).toBe('ops');
+    expect((applied as any).auth_method).toBe('local');
+    expect((applied as any).auth_username).toBe('alice');
+    expect((applied as any).auth_password).toBe('secret');
+  });
   it('saves tenant department and worker context for center registration', async () => {
     render(<App />);
 

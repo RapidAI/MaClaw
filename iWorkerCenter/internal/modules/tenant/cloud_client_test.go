@@ -3,6 +3,7 @@ package tenant
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -97,17 +98,52 @@ func TestSendCenterHeartbeatUsesServiceIdentity(t *testing.T) {
 	defer srv.Close()
 
 	client := NewCloudClient(CloudConfig{BaseURL: srv.URL + "/"})
-	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc"); err != nil {
+	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", nil); err != nil {
 		t.Fatalf("SendCenterHeartbeat() error: %v", err)
+	}
+}
+
+func TestSendCenterHeartbeatIncludesOnlyCloudSafeIWorkerReadiness(t *testing.T) {
+	seen := make(chan CenterHeartbeatRequest, 1)
+	rawBody := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		rawBody <- string(body)
+		var req CenterHeartbeatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seen <- req
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer srv.Close()
+
+	client := NewCloudClient(CloudConfig{BaseURL: srv.URL})
+	readiness := &CloudIWorkerReadiness{Ready: true, Status: "ready", AgentInstanceCount: 4, AgentRuntimeReady: true, GoalWatchReady: true, WorkloadSummary: &CloudWorkloadSummary{AgentInstanceCount: 4, ActiveCount: 2, CompletedCount: 8, ReviewCount: 1, BlockedCount: 0}}
+	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", readiness); err != nil {
+		t.Fatalf("SendCenterHeartbeat() error: %v", err)
+	}
+	req := <-seen
+	if req.IWorkerReadiness == nil || !req.IWorkerReadiness.Ready || req.IWorkerReadiness.AgentInstanceCount != 4 || !req.IWorkerReadiness.AgentRuntimeReady || !req.IWorkerReadiness.GoalWatchReady {
+		t.Fatalf("IWorkerReadiness = %+v", req.IWorkerReadiness)
+	}
+	body := <-rawBody
+	for _, forbidden := range []string{"tenant_count", "role_count", "colleague_count", "local_account_count", "required_client_paths", "checks", "auth_methods", "current_task", "current_detail"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("heartbeat leaked %q: %s", forbidden, body)
+		}
 	}
 }
 
 func TestSendCenterHeartbeatRequiresCenterCredentials(t *testing.T) {
 	client := NewCloudClient(CloudConfig{BaseURL: "https://cloud.example.com"})
-	if err := client.SendCenterHeartbeat(context.Background(), "", "secret-abc"); err == nil || !strings.Contains(err.Error(), "center_id") {
+	if err := client.SendCenterHeartbeat(context.Background(), "", "secret-abc", nil); err == nil || !strings.Contains(err.Error(), "center_id") {
 		t.Fatalf("empty center id error = %v, want center_id error", err)
 	}
-	if err := client.SendCenterHeartbeat(context.Background(), "center-1", ""); err == nil || !strings.Contains(err.Error(), "center_secret") {
+	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "", nil); err == nil || !strings.Contains(err.Error(), "center_secret") {
 		t.Fatalf("empty secret error = %v, want center_secret error", err)
 	}
 }
@@ -119,7 +155,7 @@ func TestSendCenterHeartbeatReturnsStatusError(t *testing.T) {
 	defer srv.Close()
 
 	client := NewCloudClient(CloudConfig{BaseURL: srv.URL})
-	err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc")
+	err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", nil)
 	if err == nil || !strings.Contains(err.Error(), "status 401") {
 		t.Fatalf("error = %v, want status 401", err)
 	}

@@ -85,3 +85,16 @@ func TestProperty_MaclawLLMProvider_OmitEmpty(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeLLMTokenPricePerMTokensRMBAllowsZero(t *testing.T) {
+	if got := NormalizeLLMTokenPricePerMTokensRMB(0, DefaultLLMInputPricePerMTokensRMB); got != 0 {
+		t.Fatalf("zero price normalized to %v, want 0", got)
+	}
+	if got := NormalizeLLMTokenPricePerMTokensRMB(-1, DefaultLLMInputPricePerMTokensRMB); got != DefaultLLMInputPricePerMTokensRMB {
+		t.Fatalf("negative price normalized to %v, want default", got)
+	}
+	_, _, total := CalculateLLMCostRMB(1_000_000, 1_000_000, 0, 0)
+	if total != 0 {
+		t.Fatalf("zero token prices produced total cost %v, want 0", total)
+	}
+}

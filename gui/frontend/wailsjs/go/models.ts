@@ -253,6 +253,11 @@ export namespace main {
 	    lansenger_app_secret: string;
 	    lansenger_gateway_url: string;
 	    lansenger_local_mode?: boolean;
+	    thirdparty_gateway_enabled?: boolean;
+	    thirdparty_gateway_token: string;
+	    thirdparty_gateway_host: string;
+	    thirdparty_gateway_port: number;
+	    thirdparty_gateway_local_mode?: boolean;
 	    ui_mode: string;
 	    skill_purchase_mode: string;
 	    gossip_auto_publish: boolean;
@@ -269,6 +274,7 @@ export namespace main {
 	    chat_font_size: number;
 	    workflow_enabled?: boolean;
 	    tts_enabled?: boolean;
+	    tts_voice_id?: string;
 	    asr_enabled?: boolean;
 	    noise_floor_calibrated?: number;
 	    speech_level_calibrated?: number;
@@ -394,6 +400,11 @@ export namespace main {
 	        this.lansenger_app_secret = source["lansenger_app_secret"];
 	        this.lansenger_gateway_url = source["lansenger_gateway_url"];
 	        this.lansenger_local_mode = source["lansenger_local_mode"];
+	        this.thirdparty_gateway_enabled = source["thirdparty_gateway_enabled"];
+	        this.thirdparty_gateway_token = source["thirdparty_gateway_token"];
+	        this.thirdparty_gateway_host = source["thirdparty_gateway_host"];
+	        this.thirdparty_gateway_port = source["thirdparty_gateway_port"];
+	        this.thirdparty_gateway_local_mode = source["thirdparty_gateway_local_mode"];
 	        this.ui_mode = source["ui_mode"];
 	        this.skill_purchase_mode = source["skill_purchase_mode"];
 	        this.gossip_auto_publish = source["gossip_auto_publish"];
@@ -410,6 +421,7 @@ export namespace main {
 	        this.chat_font_size = source["chat_font_size"];
 	        this.workflow_enabled = source["workflow_enabled"];
 	        this.tts_enabled = source["tts_enabled"];
+	        this.tts_voice_id = source["tts_voice_id"];
 	        this.asr_enabled = source["asr_enabled"];
 	        this.noise_floor_calibrated = source["noise_floor_calibrated"];
 	        this.speech_level_calibrated = source["speech_level_calibrated"];
@@ -573,3 +585,5 @@ export namespace main {
 	}
 
 }
+
+

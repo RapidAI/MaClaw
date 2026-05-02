@@ -21,6 +21,7 @@ type Props = {
   goalPushError: string;
   goalPushAckingId: string;
   goalWatchAutoStatus: GoalWatchAutoHandleStatus | null;
+  submitting: boolean;
   onDraftChange: (value: string) => void;
   onExpectedOutputChange: (value: string) => void;
   onPickTask: (task: string, colleagueName?: string) => void;
@@ -30,7 +31,7 @@ type Props = {
   onRefreshAgentInstances: () => void | Promise<void>;
   onRefreshGoalPushes: () => void | Promise<void>;
   onRefreshMemoryStats: () => void | Promise<void>;
-  onCheckCenterHealth: () => void | Promise<void>;
+  onCheckCenterHealth: () => void | Promise<CenterHealthStatus | undefined>;
   onAutoHandleGoalPush: (eventId: string) => void | Promise<void>;
   onAckGoalPush: (eventId: string, status: 'resumed' | 'blocked') => void | Promise<void>;
 };
@@ -38,6 +39,8 @@ type Props = {
 type WorkMode = 'chat' | 'task' | 'research';
 type ComposerTool = 'mention' | 'attach' | 'skill' | 'memory';
 type ExpectedOutput = 'summary' | 'document' | 'table';
+type CollaborationLane = 'center' | 'human' | 'autonomy';
+type WorkStatusKind = 'active' | 'done' | 'review' | 'blocked';
 
 type SelfCheckStatus = {
   state: 'idle' | 'running' | 'done' | 'issue';
@@ -84,6 +87,63 @@ const quickActions: Array<{ id: 'im' | 'continue' | 'memory' | 'selfcheck'; titl
   { id: 'selfcheck', title: 'Run self-check', detail: 'Check Center, memory, body runtime, and watcher queue.' },
 ];
 
+
+const laneCopy: Record<CollaborationLane, { title: string; label: string; detail: string }> = {
+  center: {
+    title: 'Center assigned work',
+    label: 'Push inbox',
+    detail: 'Work pushed by iWorkerCenter should be visible before ad-hoc prompting, with clear run, resume, and block decisions.',
+  },
+  human: {
+    title: 'Human collaboration',
+    label: 'Clarify and approve',
+    detail: 'Human coworkers can hand off context, answer questions, approve risky steps, or become callable human skills.',
+  },
+  autonomy: {
+    title: 'Autonomous runtime',
+    label: 'Run state',
+    detail: 'The local body executes, reports heartbeat, saves durable memory, and escalates when it cannot safely continue.',
+  },
+};
+
+const formatPushAge = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return 'just now';
+  }
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) {
+    return `${minutes}m waiting`;
+  }
+  return `${Math.round(minutes / 60)}h waiting`;
+};
+
+const normalizeWorkStatus = (status: string): WorkStatusKind => {
+  const normalized = status.toLowerCase().replace(/[_-]/g, ' ');
+  if (['done', 'complete', 'completed', 'acked', 'acknowledged', 'resumed', 'resolved'].some((token) => normalized.includes(token))) {
+    return 'done';
+  }
+  if (['review', 'waiting', 'approval', 'human', 'manual', 'clarify'].some((token) => normalized.includes(token))) {
+    return 'review';
+  }
+  if (['block', 'fail', 'error', 'timeout'].some((token) => normalized.includes(token))) {
+    return 'blocked';
+  }
+  return 'active';
+};
+
+const normalizeTaskStatus = (status: string): WorkStatusKind => normalizeWorkStatus(status);
+const normalizePushStatus = (push: CenterGoalPush): WorkStatusKind => normalizeWorkStatus(push.status || push.recommendedAction || 'pushed');
+const isOpenPush = (push: CenterGoalPush) => {
+  const kind = normalizePushStatus(push);
+  return kind === 'active' || kind === 'review';
+};
+
+const workStatusCopy: Record<WorkStatusKind, string> = {
+  active: 'In progress',
+  done: 'Completed',
+  review: 'Needs review',
+  blocked: 'Blocked',
+};
 const formatRuntimeName = (instance: CenterAgentInstance) => {
   const role = instance.role || 'worker';
   return role.replace(/[-_]/g, ' ');
@@ -163,6 +223,39 @@ const inferRouteReason = (task: string) => {
   return 'Route reason: no specialized route matched, use automatic routing through iWorkerCenter.';
 };
 
+const readinessCheckLabel = (name: string) => {
+  const labels: Record<string, string> = {
+    database: 'Center database',
+    tenant: 'Tenant bootstrap',
+    roles: 'Role setup',
+    iworkers: 'Digital colleagues',
+    local_accounts: 'Local auth accounts',
+    agent_runtime: 'Center agent runtime',
+    goalwatch: 'Center GoalWatch push loop',
+    routes: 'Client routes',
+  };
+  return labels[name] || name.replace(/[_-]/g, ' ');
+};
+
+const readinessSelfChecks = (health: CenterHealthStatus | null | undefined) => {
+  const readiness = health?.iWorkerReadiness;
+  if (!readiness) {
+    return [{ label: 'Center iWorker readiness', ok: false, detail: health?.reachable ? 'Center did not report iWorker readiness' : 'Center health has not been checked' }];
+  }
+  const checks = readiness.checks.map((item) => ({
+    label: readinessCheckLabel(item.name),
+    ok: item.ready,
+    detail: `${item.status}${typeof item.count === 'number' ? ` / ${item.count}` : ''}${item.detail ? ` / ${item.detail}` : ''}`,
+  }));
+  const hasReadyAuth = readiness.authMethods.some((item) => item.ready);
+  const authChecks = readiness.authMethods.map((item) => ({
+    label: `Auth ${item.method}`,
+    ok: item.ready || !item.implemented || (hasReadyAuth && item.status === 'not_configured'),
+    detail: `${item.status}${item.detail ? ` / ${item.detail}` : ''}`,
+  }));
+  return [...checks, ...authChecks];
+};
+
 const buildTaskTemplate = (task: string, mode: WorkMode) => {
   const normalized = task.toLowerCase();
   if (normalized.includes('peer') || normalized.includes('ask')) {
@@ -186,7 +279,7 @@ const buildTaskTemplate = (task: string, mode: WorkMode) => {
   return `Task: ${task}\n\nTurn this into structured iWorker work. Use Center memory when helpful, route to peer iWorkers or human skills when needed, and preserve reusable experience.\n\nExpected output: result, evidence, and memory suggestions.`;
 };
 
-export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, onDraftChange, onExpectedOutputChange, onPickTask, onOpenNewTask, onOpenRecentTask, onOpenSettings, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush }: Props) {
+export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, submitting, onDraftChange, onExpectedOutputChange, onPickTask, onOpenNewTask, onOpenRecentTask, onOpenSettings, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush }: Props) {
   const [workMode, setWorkMode] = useState<WorkMode>('chat');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
   const [activeSuggestion, setActiveSuggestion] = useState('');
@@ -228,14 +321,75 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   }, [quickTasks, workMode]);
 
   const onlineAgents = agentInstances.filter((item) => item.effectiveStatus === 'online').length;
-  const pendingPushes = goalPushes.filter((item) => item.status !== 'acked' && item.status !== 'resumed').length;
+  const openPushes = goalPushes.filter(isOpenPush);
+  const pendingPushes = openPushes.length;
   const centerEnabled = settings.center.enabled;
-  const centerStatusLabel = centerEnabled ? (centerHealthStatus?.reachable ? 'Center online' : 'Center configured') : 'Local body only';
+  const centerReady = Boolean(centerHealthStatus?.iWorkerReadiness?.ready);
+  const centerStatusLabel = centerEnabled ? (centerHealthStatus?.reachable ? (centerReady ? 'Center ready' : 'Center online') : 'Center configured') : 'Local body only';
+  const readiness = centerHealthStatus?.iWorkerReadiness;
+  const readinessLine = readiness
+    ? `${readiness.tenantCount} tenants / ${readiness.roleCount} roles / ${readiness.colleagueCount} iWorkers / ${readiness.localAccountCount} local accounts`
+    : 'Run Center check to load iWorker readiness.';
   const memoryAuthority = centerEnabled ? 'iWorkerCenter' : 'Not registered';
   const previewTask = activeSuggestion || visibleChips[0] || '';
   const previewOutput = inferExpectedOutput(previewTask);
   const previewColleague = inferColleagueName(previewTask);
+  const primaryPush = openPushes[0] || goalPushes[0];
+  const runningPush = goalPushAckingId ? goalPushes.find((item) => item.eventId === goalPushAckingId) : undefined;
+  const humanQueueLabel = pendingPushes > 0 ? `${pendingPushes} pending handoff${pendingPushes === 1 ? '' : 's'}` : 'ready for coworker input';
+  const localActiveWork = submitting ? {
+    id: 'local-submit',
+    title: selectedTask || draft.trim().split('\n')[0] || 'Direct human handoff',
+    owner: selectedColleagueName || 'Auto-routing iWorker',
+    status: 'running',
+    updatedAt: 'running now',
+    kind: 'active' as WorkStatusKind,
+    source: 'Local run',
+    onOpen: onOpenNewTask,
+  } : null;
 
+  const activeTasks = recentTasks.filter((task) => normalizeTaskStatus(task.status) === 'active');
+  const completedTasks = recentTasks.filter((task) => normalizeTaskStatus(task.status) === 'done');
+  const reviewTasks = recentTasks.filter((task) => normalizeTaskStatus(task.status) === 'review');
+  const blockedTasks = recentTasks.filter((task) => normalizeTaskStatus(task.status) === 'blocked');
+  const completedPushes = goalPushes.filter((push) => normalizePushStatus(push) === 'done');
+  const reviewPushes = goalPushes.filter((push) => normalizePushStatus(push) === 'review');
+  const blockedPushes = goalPushes.filter((push) => normalizePushStatus(push) === 'blocked');
+  const visibleWorkItems = [
+    ...(localActiveWork ? [localActiveWork] : []),
+    ...goalPushes.slice(0, 2).map((push) => ({
+      id: push.eventId || push.taskId,
+      title: push.title || push.taskId,
+      owner: push.toRoleCode || push.toColleagueId || 'Center assigned',
+      status: push.status || 'pushed',
+      updatedAt: goalPushAckingId === push.eventId ? 'running now' : formatPushAge(push.ageSeconds),
+      kind: normalizePushStatus(push),
+      source: goalPushAckingId === push.eventId ? 'Center run' : 'Center push',
+      onOpen: undefined as undefined | (() => void),
+    })),
+    ...recentTasks.slice(0, 4).map((task) => ({
+      id: task.id,
+      title: task.title,
+      owner: task.owner,
+      status: task.status,
+      updatedAt: task.updatedAt,
+      kind: normalizeTaskStatus(task.status),
+      source: 'Task history',
+      onOpen: () => onOpenRecentTask(task),
+    })),
+  ].slice(0, 5);
+  const currentWorkTitle = runningPush?.title || localActiveWork?.title || primaryPush?.title || activeTasks[0]?.title || (goalWatchAutoStatus?.running ? 'Goal watcher is handling pushed work' : 'No active task');
+  const currentWorkDetail = runningPush
+    ? `${runningPush.reason || 'Center push'} / running now`
+    : localActiveWork
+      ? `${localActiveWork.owner} / local execution`
+      : primaryPush
+        ? `${primaryPush.reason || 'Center push'} / ${formatPushAge(primaryPush.ageSeconds)}`
+        : activeTasks[0]
+          ? `${activeTasks[0].owner} / ${activeTasks[0].updatedAt}`
+          : goalWatchAutoStatus?.running
+            ? `Run ${goalWatchAutoStatus.currentRunId || goalWatchAutoStatus.runCount} / single-flight watcher`
+            : 'Ready for Center push or human handoff.';
   const appendDraft = (snippet: string) => {
     onDraftChange(draft.trim() ? `${draft.trim()}\n\n${snippet}` : snippet);
   };
@@ -257,6 +411,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     appendDraft(`Use Center memory for context: company memory, department memory, and personal memory. Current authority: ${memoryAuthority}.`);
   };
 
+  const handleHumanHandoff = () => {
+    setWorkMode('chat');
+    appendDraft('Human collaboration needed: ask the coworker for missing context, approval, or a decision. Keep the autonomous run paused until the human answer is captured and saved as task evidence.');
+  };
+
   const runSelfCheck = async () => {
     appendDraft('Run iWorker body self-check: verify Center registration, memory authority, agent heartbeat, and GoalWatcher push queue. If any check fails, create a repair task before starting business work.');
     setSelfCheckStatus({ state: 'running', completedAt: '', checks: [] });
@@ -267,11 +426,13 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       onRefreshGoalPushes(),
     ]);
     const labels = ['Center registration', 'Memory authority', 'Agent runtime', 'Goal watcher queue'];
-    const nextChecks = checks.map((result, index) => ({
+    const baseChecks = checks.map((result, index) => ({
       label: labels[index],
-      ok: result.status === 'fulfilled',
-      detail: result.status === 'fulfilled' ? 'Checked' : result.reason instanceof Error ? result.reason.message : 'Check failed',
+      ok: result.status === 'fulfilled' && (index !== 0 || Boolean(result.value?.reachable)),
+      detail: result.status === 'fulfilled' ? (index === 0 ? result.value?.message || 'Checked' : 'Checked') : result.reason instanceof Error ? result.reason.message : 'Check failed',
     }));
+    const healthFromCheck = checks[0].status === 'fulfilled' ? checks[0].value : undefined;
+    const nextChecks = [...baseChecks, ...readinessSelfChecks(healthFromCheck || centerHealthStatus)];
     setSelfCheckStatus({
       state: nextChecks.every((item) => item.ok) ? 'done' : 'issue',
       completedAt: new Date().toLocaleTimeString(),
@@ -349,18 +510,84 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
         <header className="iw-stage-topline">
           <div>
             <span className="iw-kicker">AI native employee</span>
-            <h2>What should your iWorker handle next?</h2>
+            <h2>Command inbox for Center pushes and human teamwork</h2>
             <p>
-              Work with the digital employee through voice, IM, or structured tasks. The local desktop is only the body and cache; durable capability is accumulated in iWorkerCenter.
+              iWorker should start from Center-assigned work, keep a human collaboration loop open for clarifications and approvals, and use this desktop as the execution body and local cache.
             </p>
           </div>
           <div className="iw-stage-snapshot" aria-label="runtime snapshot">
             <span>{onlineAgents}/{Math.max(agentInstances.length, 1)} bodies online</span>
             <strong>{pendingPushes} watcher pushes</strong>
-            <small>{centerStatusLabel} · {settings.center.tenantId}/{settings.center.departmentId}</small>
+            <small>{centerStatusLabel} / {settings.center.tenantId}/{settings.center.departmentId}</small>
           </div>
         </header>
 
+
+        <section className="iw-command-rail" aria-label="Command inbox lanes">
+          <article className="iw-command-card is-center">
+            <span>{laneCopy.center.label}</span>
+            <strong>{primaryPush?.title || 'No Center push waiting'}</strong>
+            <p>{primaryPush ? `${primaryPush.reason || 'goal push'} / ${formatPushAge(primaryPush.ageSeconds)}` : laneCopy.center.detail}</p>
+            <div className="iw-command-actions">
+              {primaryPush?.eventId ? (
+                <>
+                  <button type="button" disabled={goalPushAckingId === primaryPush.eventId} onClick={() => { void onAutoHandleGoalPush(primaryPush.eventId || ''); }}>Run</button>
+                  <button type="button" disabled={goalPushAckingId === primaryPush.eventId} onClick={handleHumanHandoff}>Ask human</button>
+                </>
+              ) : (
+                <button type="button" onClick={() => { void onRefreshGoalPushes(); }} disabled={goalPushLoading}>{goalPushLoading ? 'Syncing' : 'Check inbox'}</button>
+              )}
+            </div>
+          </article>
+
+          <article className="iw-command-card">
+            <span>{laneCopy.human.label}</span>
+            <strong>{humanQueueLabel}</strong>
+            <p>{laneCopy.human.detail}</p>
+            <div className="iw-command-actions">
+              <button type="button" onClick={handleHumanHandoff}>Start handoff</button>
+              <button type="button" onClick={() => handleComposerTool('mention')}>Mention</button>
+            </div>
+          </article>
+
+          <article className="iw-command-card">
+            <span>{laneCopy.autonomy.label}</span>
+            <strong>{goalWatchAutoStatus?.running ? 'Handling push now' : `${onlineAgents} runtime body${onlineAgents === 1 ? '' : 'ies'} online`}</strong>
+            <p>{goalWatchAutoStatus?.lastError || laneCopy.autonomy.detail}</p>
+            <div className="iw-command-actions">
+              <button type="button" onClick={() => { void runSelfCheck(); }}>Self-check</button>
+              <button type="button" onClick={() => { void onRefreshAgentInstances(); }}>Heartbeat</button>
+            </div>
+          </article>
+        </section>
+
+        <section className="iw-work-status-board" aria-label="Digital coworker work status">
+          <div className="iw-work-status-main">
+            <span>Current work</span>
+            <strong>{currentWorkTitle}</strong>
+            <p>{currentWorkDetail}</p>
+          </div>
+          <div className="iw-work-status-counts" aria-label="Work status summary">
+            <div><strong>{activeTasks.length + pendingPushes + (localActiveWork ? 1 : 0)}</strong><span>Active</span></div>
+            <div><strong>{completedTasks.length + completedPushes.length}</strong><span>Completed</span></div>
+            <div><strong>{reviewTasks.length + reviewPushes.length}</strong><span>Review</span></div>
+            <div><strong>{blockedTasks.length + blockedPushes.length}</strong><span>Blocked</span></div>
+          </div>
+          <div className="iw-work-status-feed" aria-label="Recent work status">
+            {visibleWorkItems.length === 0 ? (
+              <div className="iw-work-status-empty">No task history yet.</div>
+            ) : visibleWorkItems.map((item) => (
+              <button key={`${item.source}-${item.id}`} type="button" onClick={item.onOpen} disabled={!item.onOpen}>
+                <span className={`iw-work-status-dot is-${item.kind}`} aria-hidden="true" />
+                <span className="iw-work-status-copy">
+                  <strong>{item.title}</strong>
+                  <small>{workStatusCopy[item.kind]} / {item.owner} / {item.updatedAt}</small>
+                </span>
+                <em>{item.source}</em>
+              </button>
+            ))}
+          </div>
+        </section>
         <div className="iw-agent-hero-card">
           <div className="iw-agent-orb" aria-hidden="true">
             <span className="iw-agent-face">i</span>
@@ -370,7 +597,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           <div className="iw-agent-activity-card">
             <span>Active partner</span>
             <strong>{selectedColleagueName || 'Auto-routing iWorker'}</strong>
-            <p>{selectedTask || 'Listening for instruction, then routing to the right skill, peer worker, or human skill.'}</p>
+            <p>{selectedTask || 'Waiting for Center push, coworker handoff, or a direct instruction, then routing to the right worker, skill, or human approval.'}</p>
           </div>
           <div className={`iw-self-check-card is-${selfCheckStatus.state}`} aria-live="polite">
             <div className="iw-self-check-head">
@@ -382,8 +609,8 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             ) : (
               <>
                 <div className="iw-self-check-grid">
-                  {selfCheckStatus.checks.map((item) => (
-                    <span key={item.label} className={item.ok ? 'is-ok' : 'is-fail'}>{item.label}</span>
+                  {selfCheckStatus.checks.map((item, index) => (
+                    <span key={`${item.label}-${index}`} className={item.ok ? 'is-ok' : 'is-fail'}>{item.label}</span>
                   ))}
                 </div>
                 <button type="button" className="iw-self-check-action" onClick={handleCreateReadinessTask}>
@@ -472,10 +699,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <button type="button" onClick={() => { void onCheckCenterHealth(); }}>{centerHealthStatus?.reachable ? 'Recheck' : 'Check'}</button>
           </div>
           <div className="iw-center-card">
-            <span className={centerHealthStatus?.reachable ? 'iw-status-dot is-online' : centerEnabled ? 'iw-status-dot is-warn' : 'iw-status-dot'} />
+            <span className={centerReady ? 'iw-status-dot is-online' : centerHealthStatus?.reachable || centerEnabled ? 'iw-status-dot is-warn' : 'iw-status-dot'} />
             <div>
               <strong>{centerStatusLabel}</strong>
               <p>{settings.center.baseUrl || `${settings.center.host}:${settings.center.port}`}</p>
+              <p>{readinessLine}</p>
             </div>
           </div>
           <div className="iw-context-grid">
@@ -562,18 +790,18 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           {goalPushError ? <p className="iw-panel-error">{goalPushError}</p> : null}
           <div className="iw-goal-list">
             {goalPushes.length === 0 ? (
-              <div className="iw-goal-empty">No stalled task push. The watcher is quiet.</div>
+              <div className="iw-goal-empty">No Center push is waiting. The inbox is clear.</div>
             ) : goalPushes.slice(0, 3).map((push) => (
               <article key={push.eventId || push.taskId} className="iw-goal-card">
-                <span>{push.reason || 'goal_push'} · {Math.max(1, Math.round(push.ageSeconds / 60))}m</span>
+                <span>{push.reason || 'goal_push'} / {Math.max(1, Math.round(push.ageSeconds / 60))}m</span>
                 {push.recommendedAction ? <span className="iw-goal-action-pill">{push.recommendedAction}</span> : null}
                 <strong>{push.title || push.taskId}</strong>
-                <p>{push.status} · {push.toRoleCode || push.toColleagueId || 'assigned iWorker'}</p>
+                <p>{push.status} / {push.toRoleCode || push.toColleagueId || 'assigned iWorker'}</p>
                 {push.eventId ? (
                   <div className="iw-goal-actions">
-                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAutoHandleGoalPush(push.eventId || ''); }}>Auto</button>
-                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>Resumed</button>
-                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'blocked'); }}>Blocked</button>
+                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAutoHandleGoalPush(push.eventId || ''); }}>Run</button>
+                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>Resume</button>
+                    <button type="button" disabled={goalPushAckingId === push.eventId} onClick={() => { void onAckGoalPush(push.eventId || '', 'blocked'); }}>Block</button>
                   </div>
                 ) : null}
               </article>
@@ -587,7 +815,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             {recentTasks.slice(0, 4).map((task) => (
               <button key={task.id} type="button" onClick={() => onOpenRecentTask(task)}>
                 <strong>{task.title}</strong>
-                <span>{task.owner} · {task.status}</span>
+                <span>{task.owner} / {task.status}</span>
               </button>
             ))}
           </div>
@@ -604,8 +832,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
                   <strong>{formatRuntimeName(instance)}</strong>
                   <span className={instance.effectiveStatus === 'online' ? 'is-online' : instance.effectiveStatus === 'offline' ? 'is-offline' : ''}>{instance.effectiveStatus || instance.status}</span>
                 </div>
-                <p>{instance.memoryAuthority || 'iWorkerCenter'} · {instance.localCacheMode || 'cache_only'} · {instance.heartbeatAgeSeconds || 0}s ago</p>
-                <small>{instance.hostId || 'local body'} · {instance.capabilities.slice(0, 3).join(', ') || 'base tools'}</small>
+                <p>{instance.memoryAuthority || 'iWorkerCenter'} / {instance.localCacheMode || 'cache_only'} / {instance.heartbeatAgeSeconds || 0}s ago</p>
+                {instance.workStatus ? (
+                  <p>{instance.workStatus.currentTask || 'No active task'} / active {instance.workStatus.activeCount} / done {instance.workStatus.completedCount} / review {instance.workStatus.reviewCount} / blocked {instance.workStatus.blockedCount}</p>
+                ) : null}
+                <small>{instance.hostId || 'local body'} / {instance.capabilities.slice(0, 3).join(', ') || 'base tools'}</small>
               </article>
             ))}
           </div>

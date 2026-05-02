@@ -74,20 +74,7 @@ type centerSettingsFile struct {
 	RoleProviderBoost map[string][]string  `json:"role_provider_boost,omitempty"`
 }
 
-type CenterStatus struct {
-	Status              string                           `json:"status"`
-	RuntimeType         string                           `json:"runtime_type"`
-	ProductKind         string                           `json:"product_kind"`
-	AdminConsole        string                           `json:"admin_console"`
-	ProviderCount       int                              `json:"provider_count"`
-	ConfigPath          string                           `json:"config_path"`
-	ComputeSource       string                           `json:"compute_source,omitempty"`
-	ComputePermission   bool                             `json:"compute_permission"`
-	ComputeSyncStatus   *centercompute.ComputeSyncStatus `json:"compute_sync_status,omitempty"`
-	CloudProviderCount  int                              `json:"cloud_provider_count,omitempty"`
-	RuntimeProviderMode string                           `json:"runtime_provider_mode,omitempty"`
-	CloudHeartbeat      *tenant.CloudHeartbeatSnapshot   `json:"cloud_heartbeat,omitempty"`
-}
+type CenterStatus = app.RuntimeStatus
 
 type centerProviderFile struct {
 	ID          string   `json:"id"`
@@ -129,31 +116,18 @@ func newCenterServer(addr string) *centerServer {
 
 func (s *centerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	s.refreshProviders()
-	status, err := centerStatusSnapshot()
-	if err != nil {
-		writeCenterError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	status.ProviderCount = len(s.providers)
-	status.RuntimeProviderMode = "settings"
-	if s.center != nil && s.center.ComputeSourceManager != nil {
-		status.ComputeSource = s.center.ComputeSourceManager.GetSource()
-		if status.ComputeSource == "cloud" {
-			status.RuntimeProviderMode = "cloud_sync"
-		} else if status.ComputeSource == "local" {
-			status.RuntimeProviderMode = "local_self_managed"
+	var status CenterStatus
+	if s.center != nil {
+		status = s.center.RuntimeStatusSnapshot()
+	} else {
+		var err error
+		status, err = centerStatusSnapshot()
+		if err != nil {
+			writeCenterError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
 	}
-	if s.center != nil && s.center.ComputeSyncManager != nil {
-		syncStatus := s.center.ComputeSyncManager.GetSyncStatus()
-		status.ComputeSyncStatus = &syncStatus
-		status.ComputePermission = s.center.ComputeSyncManager.GetComputePermission()
-		status.CloudProviderCount = len(s.center.ComputeSyncManager.GetProviders())
-	}
-	if s.center != nil && s.center.CloudHeartbeatMonitor != nil {
-		snapshot := s.center.CloudHeartbeatMonitor.Snapshot()
-		status.CloudHeartbeat = &snapshot
-	}
+	status.ProviderCount = len(s.providers)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
 }
@@ -900,12 +874,13 @@ func centerStatusSnapshot() (CenterStatus, error) {
 	}
 	providers := loadCenterProviders()
 	return CenterStatus{
-		Status:        "ok",
-		RuntimeType:   "service",
-		ProductKind:   "iworkercenter",
-		AdminConsole:  "web_console",
-		ProviderCount: len(providers),
-		ConfigPath:    path,
+		Status:              "ok",
+		RuntimeType:         "service",
+		ProductKind:         "iworkercenter",
+		AdminConsole:        "web_console",
+		ProviderCount:       len(providers),
+		ConfigPath:          path,
+		RuntimeProviderMode: "settings",
 	}, nil
 }
 

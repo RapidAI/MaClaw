@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   createTypingCallbacks,
@@ -329,7 +330,7 @@ export async function processOneMessage(
             if (!mediaUrl.includes("://") || mediaUrl.startsWith("file://")) {
               // Local path: absolute, relative, or file:// URL
               if (mediaUrl.startsWith("file://")) {
-                filePath = new URL(mediaUrl).pathname;
+                filePath = fileURLToPath(mediaUrl);
               } else if (!path.isAbsolute(mediaUrl)) {
                 filePath = path.resolve(mediaUrl);
                 logger.debug(`outbound: resolved relative path ${mediaUrl} -> ${filePath}`);

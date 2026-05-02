@@ -65,11 +65,21 @@ type createLLMServiceCardRequest struct {
 	ServiceGroupIDs []string `json:"service_group_ids"`
 	DurationDays    int      `json:"duration_days"`
 	Credits         float64  `json:"credits"`
+	FiveHourCredits float64  `json:"five_hour_credits"`
+	DailyCredits    float64  `json:"daily_credits"`
+	WeeklyCredits   float64  `json:"weekly_credits"`
+	MonthlyCredits  float64  `json:"monthly_credits"`
 	Count           int      `json:"count"`
 }
 
 type redeemLLMServiceCardRequest struct {
 	Code string `json:"code"`
+}
+
+type llmServiceAccountResponse struct {
+	Email  string                    `json:"email"`
+	Status *llmservice.ServiceStatus `json:"status,omitempty"`
+	Usage  llmUsageCounters          `json:"usage"`
 }
 
 type llmProviderTestKeyRequest struct {
@@ -395,10 +405,21 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 		if days <= 0 {
 			days = 30
 		}
+		if days > 365 {
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_DURATION_INVALID", "duration_days must be no more than 365")
+			return
+		}
 		credits := req.Credits
 		if credits < 0 {
 			credits = 0
 		}
+		periodLimits := llmservice.CreditPeriodLimits{
+			FiveHour: req.FiveHourCredits,
+			Daily:    req.DailyCredits,
+			Weekly:   req.WeeklyCredits,
+			Monthly:  req.MonthlyCredits,
+		}
+		periodLimits = sanitizeLLMServicePeriodLimits(periodLimits)
 		existingHashes := make(map[string]struct{}, len(reg.Cards)+count)
 		for _, card := range reg.Cards {
 			if hash := strings.TrimSpace(card.CodeHash); hash != "" {
@@ -435,6 +456,7 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 				ServiceGroupIDs: serviceGroupIDs,
 				DurationDays:    days,
 				Credits:         credits,
+				PeriodLimits:    periodLimits,
 				CreatedAt:       time.Now().UTC(),
 			})
 			issuedCodes = append(issuedCodes, code)
@@ -450,6 +472,7 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 			"service_group_ids": append([]string(nil), serviceGroupIDs...),
 			"duration_days":     days,
 			"credits":           credits,
+			"period_limits":     periodLimits,
 			"count":             len(cards),
 			"created_ids":       collectRechargeCardIDs(cards),
 		})
@@ -461,6 +484,7 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 				"service_group_ids": card.ServiceGroupIDs,
 				"duration_days":     card.DurationDays,
 				"credits":           card.Credits,
+				"period_limits":     card.PeriodLimits,
 				"created_at":        card.CreatedAt,
 				"code":              issuedCodes[i],
 			})
@@ -518,6 +542,7 @@ func ListLLMServiceCardsHandler(system store.SystemSettingsRepository) http.Hand
 				"service_group_ids": card.ServiceGroupIDs,
 				"duration_days":     card.DurationDays,
 				"credits":           card.Credits,
+				"period_limits":     card.PeriodLimits,
 				"created_at":        card.CreatedAt,
 				"redeemed_by_email": card.RedeemedByEmail,
 				"redeemed_at":       card.RedeemedAt,
@@ -789,6 +814,36 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 	}
 }
 
+func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		status, err := llmservice.ResolveServiceStatus(r.Context(), system, securitySvc, principal.Email, externalLLMBaseURL(r))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
+			return
+		}
+		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
+			return
+		}
+		status, filtered := filterAuthorizedModelsByProviderRegistry(status, status.AuthorizedModels, providerReg)
+		if status != nil {
+			status.InactiveReasons = explainFilteredServiceStatusIssues(status, filtered, providerReg)
+		}
+		usage, err := llmUsageTotalsForUser(r.Context(), system, principal.Email)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_USAGE_REPORT_LOAD_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, llmServiceAccountResponse{Email: principal.Email, Status: status, Usage: usage})
+	}
+}
+
 func GetLLMServiceEntitlementDiagnosticHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		email := strings.TrimSpace(r.URL.Query().Get("email"))
@@ -924,6 +979,9 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				TotalTokens:       logUsage.TotalTokens,
 				CachedInputTokens: logUsage.CachedInputTokens,
 				CacheWriteTokens:  logUsage.CacheWriteTokens,
+				InputCostRMB:      logUsage.InputCostRMB,
+				OutputCostRMB:     logUsage.OutputCostRMB,
+				TotalCostRMB:      logUsage.TotalCostRMB,
 				RequestBytes:      len(bodyBytes),
 				RequestBody:       requestBody,
 				CreatedAt:         time.Now().UTC(),
@@ -941,11 +999,10 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		}
 		logRequestedModel = llmEndpointRequestedModel(body)
 		var (
-			status     *llmservice.ServiceStatus
 			models     []llmservice.AuthorizedModel
 			serviceReg *llmservice.Registry
 		)
-		status, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(r.Context(), r, system, securitySvc, principal.Email, providerReg)
+		_, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(r.Context(), r, system, securitySvc, principal.Email, providerReg)
 		if err != nil {
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -975,6 +1032,11 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		logStatusCode = statusCode
 		logProviderID = strings.TrimSpace(usedProviderID)
 		logUsage = usageStat
+		if localCacheHit {
+			logUsage.InputCostRMB = 0
+			logUsage.OutputCostRMB = 0
+			logUsage.TotalCostRMB = 0
+		}
 		if err != nil {
 			if queueErr, ok := err.(*providerConcurrencyError); ok {
 				switch queueErr.Kind {
@@ -993,7 +1055,15 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			return
 		}
 		if statusCode < 400 && usedProviderID != "" && !localCacheHit {
-			credits := llmservice.EstimateCredits(usageStat.TotalTokens, llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID), status.TokensPerCredit)
+			tokensPerCredit := 0
+			if serviceReg != nil {
+				tokensPerCredit = serviceReg.TokensPerCredit
+			}
+			credits := llmservice.EstimateCredits(
+				usageStat.TotalTokens,
+				llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
+				tokensPerCredit,
+			)
 			userGroupIDs := []string(nil)
 			if securitySvc != nil {
 				if resolved, resolveErr := securitySvc.ResolveUserGroupChain(r.Context(), principal.Email); resolveErr == nil {
@@ -1231,7 +1301,7 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 			log.Printf("[LLM-V1] provider %q returned %d, trying next provider", provider.ID, statusCode)
 			continue
 		}
-		usageStat := parseUsageStats(respBody)
+		usageStat := applyProviderUsageCost(parseUsageStats(respBody), provider)
 		serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, provider.ID)
 		_ = putCachedAuthorizedModelResponse(ctx, promptCache, model, body, externalModel, respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, cacheCfg)
 		return authorizedModelForwardResult{
@@ -1261,6 +1331,19 @@ func firstPromptCacheSource(sources []any) llmPromptCacheStore {
 	return nil
 }
 
+func applyProviderUsageCost(usage corelib.TokenUsageStat, provider *im.LLMProvider) corelib.TokenUsageStat {
+	inputPrice := corelib.DefaultLLMInputPricePerMTokensRMB
+	outputPrice := corelib.DefaultLLMOutputPricePerMTokensRMB
+	if provider != nil {
+		inputPrice = corelib.NormalizeLLMTokenPricePerMTokensRMB(provider.InputPricePerMTokensRMB, inputPrice)
+		outputPrice = corelib.NormalizeLLMTokenPricePerMTokensRMB(provider.OutputPricePerMTokensRMB, outputPrice)
+	}
+	usage.InputPricePerMTokensRMB = inputPrice
+	usage.OutputPricePerMTokensRMB = outputPrice
+	usage.InputCostRMB, usage.OutputCostRMB, usage.TotalCostRMB = corelib.CalculateLLMCostRMB(usage.InputTokens, usage.OutputTokens, inputPrice, outputPrice)
+	return usage
+}
+
 func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []string) llmProviderRegistryResponse {
 	providers := make([]any, 0, len(reg.Providers))
 	availableModels := make([]string, 0, len(reg.Providers))
@@ -1274,29 +1357,31 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []s
 		snapshot := globalProviderConcurrency.snapshot(p.ID, p.MaxConcurrency, p.MaxQueueWaiters, p.QueueTimeoutMS)
 		resilience := globalProviderResilience.snapshot(&p)
 		providers = append(providers, map[string]any{
-			"id":                          p.ID,
-			"name":                        p.Name,
-			"api_url":                     p.APIURL,
-			"api_key":                     "",
-			"has_api_key":                 p.APIKey != "",
-			"model":                       p.Model,
-			"protocol":                    normalizeProviderProtocol(p.Protocol),
-			"wire_api":                    wireAPI,
-			"agent_type":                  strings.TrimSpace(p.AgentType),
-			"max_concurrency":             p.MaxConcurrency,
-			"max_queue_waiters":           p.MaxQueueWaiters,
-			"queue_timeout_ms":            p.QueueTimeoutMS,
-			"circuit_breaker_threshold":   p.CircuitBreakerThreshold,
-			"circuit_breaker_cooldown_ms": p.CircuitBreakerCooldownMS,
-			"failure_backoff_base_ms":     p.FailureBackoffBaseMS,
-			"failure_backoff_max_ms":      p.FailureBackoffMaxMS,
-			"in_flight":                   snapshot.InFlight,
-			"queue_waiters":               snapshot.QueueWaiters,
-			"consecutive_failures":        resilience.ConsecutiveFailures,
-			"circuit_open":                resilience.CircuitOpen,
-			"circuit_open_until":          resilience.CircuitOpenUntil,
-			"backoff_until":               resilience.BackoffUntil,
-			"usage":                       usage,
+			"id":                            p.ID,
+			"name":                          p.Name,
+			"api_url":                       p.APIURL,
+			"api_key":                       "",
+			"has_api_key":                   p.APIKey != "",
+			"model":                         p.Model,
+			"protocol":                      normalizeProviderProtocol(p.Protocol),
+			"wire_api":                      wireAPI,
+			"agent_type":                    strings.TrimSpace(p.AgentType),
+			"input_price_per_m_tokens_rmb":  p.InputPricePerMTokensRMB,
+			"output_price_per_m_tokens_rmb": p.OutputPricePerMTokensRMB,
+			"max_concurrency":               p.MaxConcurrency,
+			"max_queue_waiters":             p.MaxQueueWaiters,
+			"queue_timeout_ms":              p.QueueTimeoutMS,
+			"circuit_breaker_threshold":     p.CircuitBreakerThreshold,
+			"circuit_breaker_cooldown_ms":   p.CircuitBreakerCooldownMS,
+			"failure_backoff_base_ms":       p.FailureBackoffBaseMS,
+			"failure_backoff_max_ms":        p.FailureBackoffMaxMS,
+			"in_flight":                     snapshot.InFlight,
+			"queue_waiters":                 snapshot.QueueWaiters,
+			"consecutive_failures":          resilience.ConsecutiveFailures,
+			"circuit_open":                  resilience.CircuitOpen,
+			"circuit_open_until":            resilience.CircuitOpenUntil,
+			"backoff_until":                 resilience.BackoffUntil,
+			"usage":                         usage,
 		})
 		if _, ok := seenModels[p.ID]; !ok && p.ID != "" {
 			availableModels = append(availableModels, p.ID)
@@ -1348,6 +1433,7 @@ func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry, provid
 				"service_group_ids": card.ServiceGroupIDs,
 				"duration_days":     card.DurationDays,
 				"credits":           card.Credits,
+				"period_limits":     card.PeriodLimits,
 				"created_at":        card.CreatedAt,
 				"redeemed_by_email": card.RedeemedByEmail,
 				"redeemed_at":       card.RedeemedAt,
@@ -1670,6 +1756,14 @@ func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.Rechar
 			sb.WriteByte(',')
 			sb.WriteString(fmt.Sprintf("%.3f", card.Credits))
 			sb.WriteByte(',')
+			sb.WriteString(fmt.Sprintf("%.3f", card.PeriodLimits.FiveHour))
+			sb.WriteByte(',')
+			sb.WriteString(fmt.Sprintf("%.3f", card.PeriodLimits.Daily))
+			sb.WriteByte(',')
+			sb.WriteString(fmt.Sprintf("%.3f", card.PeriodLimits.Weekly))
+			sb.WriteByte(',')
+			sb.WriteString(fmt.Sprintf("%.3f", card.PeriodLimits.Monthly))
+			sb.WriteByte(',')
 			sb.WriteString(fmt.Sprintf("%d", card.DurationDays))
 			sb.WriteByte(',')
 			sb.WriteString(card.CreatedAt.Format(time.RFC3339))
@@ -1687,7 +1781,7 @@ func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.Rechar
 	case "csv":
 		var buf bytes.Buffer
 		writer := csv.NewWriter(&buf)
-		_ = writer.Write([]string{"id", "code", "status", "label", "service_group_ids", "credits", "duration_days", "created_at", "redeemed_by_email", "redeemed_at"})
+		_ = writer.Write([]string{"id", "code", "status", "label", "service_group_ids", "credits", "five_hour_credits", "daily_credits", "weekly_credits", "monthly_credits", "duration_days", "created_at", "redeemed_by_email", "redeemed_at"})
 		for _, card := range cards {
 			status := "unused"
 			redeemedAt := ""
@@ -1702,6 +1796,10 @@ func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.Rechar
 				strings.TrimSpace(card.Label),
 				strings.Join(card.ServiceGroupIDs, ","),
 				fmt.Sprintf("%.3f", card.Credits),
+				fmt.Sprintf("%.3f", card.PeriodLimits.FiveHour),
+				fmt.Sprintf("%.3f", card.PeriodLimits.Daily),
+				fmt.Sprintf("%.3f", card.PeriodLimits.Weekly),
+				fmt.Sprintf("%.3f", card.PeriodLimits.Monthly),
 				fmt.Sprintf("%d", card.DurationDays),
 				card.CreatedAt.Format(time.RFC3339),
 				strings.TrimSpace(card.RedeemedByEmail),
@@ -1721,6 +1819,22 @@ func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.Rechar
 	default:
 		writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_FORMAT_INVALID", "format must be one of: txt, csv")
 	}
+}
+
+func sanitizeLLMServicePeriodLimits(limits llmservice.CreditPeriodLimits) llmservice.CreditPeriodLimits {
+	if limits.FiveHour < 0 {
+		limits.FiveHour = 0
+	}
+	if limits.Daily < 0 {
+		limits.Daily = 0
+	}
+	if limits.Weekly < 0 {
+		limits.Weekly = 0
+	}
+	if limits.Monthly < 0 {
+		limits.Monthly = 0
+	}
+	return limits
 }
 
 func filterLLMServiceCards(cards []llmservice.RechargeCard, statusFilter, search string) []llmservice.RechargeCard {

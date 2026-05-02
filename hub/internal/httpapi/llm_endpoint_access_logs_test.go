@@ -27,7 +27,7 @@ func TestGetLLMEndpointAccessLogsHandlerMergesPendingEntries(t *testing.T) {
 		globalLLMEndpointAccessLogAccumulator.mu.Unlock()
 	}()
 
-	enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{Email: "a@example.com", ClientIP: "10.0.0.1", StatusCode: http.StatusOK, RequestBody: `{"model":"auto"}`})
+	enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{Email: "a@example.com", ClientIP: "10.0.0.1", StatusCode: http.StatusOK, TotalCostRMB: 1.25, RequestBody: `{"model":"auto"}`})
 	enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{Email: "b@example.com", ClientIP: "10.0.0.2", StatusCode: http.StatusBadGateway, ErrorCode: "LLM_UPSTREAM_FAILED", RequestBody: `{"model":"auto"}`})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/access-logs?limit=10", nil)
@@ -48,6 +48,15 @@ func TestGetLLMEndpointAccessLogsHandlerMergesPendingEntries(t *testing.T) {
 	}
 	if len(resp.Logs) != 2 {
 		t.Fatalf("logs len = %d, want 2", len(resp.Logs))
+	}
+	foundCost := false
+	for _, item := range resp.Logs {
+		if item.TotalCostRMB == 1.25 {
+			foundCost = true
+		}
+	}
+	if !foundCost {
+		t.Fatalf("total_cost_rmb not returned in logs: %#v", resp.Logs)
 	}
 }
 

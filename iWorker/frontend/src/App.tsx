@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AckGoalPush, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, FetchAgentInstances, FetchGoalPushes, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
+import { AckGoalPush, ApplyCenterEnrollment, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, DiscoverCenterEnrollment, FetchAgentInstances, FetchGoalPushes, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { colleagues } from './mock/colleagues';
 import { SideNav } from './components/layout/SideNav';
@@ -9,7 +9,7 @@ import { NewTaskPage } from './pages/NewTaskPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskHistoryPage } from './pages/TaskHistoryPage';
 import { recentTasks as mockRecentTasks } from './mock/tasks';
-import type { CenterAgentInstance, CenterGoalPush, CenterHealthStatus, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
+import type { CenterAgentInstance, CenterEnrollmentDiscovery, CenterGoalPush, CenterHealthStatus, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
 
 const pageMeta: Record<DiWorkerTab, { title: string; subtitle: string }> = {
   home: { title: '新建任务', subtitle: '输入任务内容，快速开始处理。' },
@@ -192,23 +192,47 @@ const fromWailsMemoryEntry = (item: main.WorkerMemoryEntry): WorkerMemoryEntry =
   createdAt: item.created_at,
   updatedAt: item.updated_at,
 });
-const fromWailsAgentInstance = (item: main.CenterAgentInstance): CenterAgentInstance => ({
-  tenantId: item.tenant_id,
-  workerId: item.worker_id,
-  instanceId: item.instance_id,
-  role: item.role,
-  status: item.status,
-  orgUnitId: item.org_unit_id,
-  capabilities: item.capabilities || [],
-  memoryAuthority: item.memory_authority,
-  localCacheMode: item.local_cache_mode,
-  hostId: item.host_id,
-  processId: item.process_id,
-  startedAt: item.started_at,
-  lastHeartbeatAt: item.last_heartbeat_at,
-  heartbeatAgeSeconds: item.heartbeat_age_seconds || 0,
-  effectiveStatus: item.effective_status || item.status,
-});
+type WailsAgentInstanceWithWorkStatus = main.CenterAgentInstance & {
+  work_status?: {
+    current_task?: string;
+    current_detail?: string;
+    active_count: number;
+    completed_count: number;
+    review_count: number;
+    blocked_count: number;
+    updated_at?: string;
+  };
+};
+
+const fromWailsAgentInstance = (item: main.CenterAgentInstance): CenterAgentInstance => {
+  const source = item as WailsAgentInstanceWithWorkStatus;
+  return {
+    tenantId: source.tenant_id,
+    workerId: source.worker_id,
+    instanceId: source.instance_id,
+    role: source.role,
+    status: source.status,
+    orgUnitId: source.org_unit_id,
+    capabilities: source.capabilities || [],
+    memoryAuthority: source.memory_authority,
+    localCacheMode: source.local_cache_mode,
+    workStatus: source.work_status ? {
+      currentTask: source.work_status.current_task,
+      currentDetail: source.work_status.current_detail,
+      activeCount: source.work_status.active_count || 0,
+      completedCount: source.work_status.completed_count || 0,
+      reviewCount: source.work_status.review_count || 0,
+      blockedCount: source.work_status.blocked_count || 0,
+      updatedAt: source.work_status.updated_at,
+    } : undefined,
+    hostId: source.host_id,
+    processId: source.process_id,
+    startedAt: source.started_at,
+    lastHeartbeatAt: source.last_heartbeat_at,
+    heartbeatAgeSeconds: source.heartbeat_age_seconds || 0,
+    effectiveStatus: source.effective_status || source.status,
+  };
+};
 
 const fromWailsGoalPush = (item: main.CenterGoalPush): CenterGoalPush => ({
   eventId: item.event_id,
@@ -241,19 +265,74 @@ const fromWailsGoalWatchAutoHandleStatus = (item: main.GoalWatchAutoHandleStatus
   intervalSeconds: item.interval_seconds || 30,
   maxDurationSeconds: item.max_duration_seconds || 120,
 });
+type WailsEnrollmentDiscoveryWithAuth = main.CenterEnrollmentDiscovery & {
+  auth_methods?: Array<{ method: string; label: string; enabled: boolean; implemented: boolean; status: string; description: string }>;
+};
+
+const fromWailsEnrollmentDiscovery = (item: main.CenterEnrollmentDiscovery | null | undefined): CenterEnrollmentDiscovery => {
+  const source = item as WailsEnrollmentDiscoveryWithAuth | null | undefined;
+  return {
+    baseUrl: source?.base_url || '',
+    selectedTenantId: source?.selected_tenant_id || '',
+    tenants: (source?.tenants || []).map((tenant) => ({ id: tenant.id, companyName: tenant.company_name })),
+    roles: (source?.roles || []).map((role) => ({ id: role.id, name: role.name, code: role.code, description: role.description, defaultStrengths: role.default_strengths || [], applicableTasks: role.applicable_tasks || [] })),
+    colleagues: (source?.colleagues || []).map((colleague) => ({ id: colleague.id, name: colleague.name, avatar: colleague.avatar, roleId: colleague.role_id, roleName: colleague.role_name, roleCode: colleague.role_code, description: colleague.description, strengths: colleague.strengths || [], tasks: colleague.tasks || [] })),
+    authMethods: (source?.auth_methods || []).map((method) => ({ method: method.method, label: method.label, enabled: method.enabled, implemented: method.implemented, status: method.status, description: method.description })),
+  };
+};
+type WailsCenterHealthWithReadiness = main.CenterHealthStatus & {
+  iworker_readiness?: {
+    ready: boolean;
+    status: string;
+    tenant_count: number;
+    role_count: number;
+    colleague_count: number;
+    local_account_count: number;
+    agent_instance_count?: number;
+    agent_runtime_ready: boolean;
+    goalwatch_ready: boolean;
+    required_client_paths?: string[];
+    checks?: Array<{ name: string; ready: boolean; status: string; detail?: string; count?: number }>;
+    auth_methods?: Array<{ method: string; label: string; ready: boolean; implemented: boolean; status: string; detail?: string }>;
+  };
+};
+
+const fromWailsIWorkerReadiness = (item: WailsCenterHealthWithReadiness['iworker_readiness']): CenterHealthStatus['iWorkerReadiness'] | undefined => {
+  if (!item) {
+    return undefined;
+  }
+  return {
+    ready: Boolean(item.ready),
+    status: item.status || '',
+    tenantCount: item.tenant_count || 0,
+    roleCount: item.role_count || 0,
+    colleagueCount: item.colleague_count || 0,
+    localAccountCount: item.local_account_count || 0,
+    agentInstanceCount: item.agent_instance_count || 0,
+    agentRuntimeReady: Boolean(item.agent_runtime_ready),
+    goalWatchReady: Boolean(item.goalwatch_ready),
+    requiredClientPaths: item.required_client_paths || [],
+    checks: (item.checks || []).map((check: { name: string; ready: boolean; status: string; detail?: string; count?: number }) => ({ name: check.name, ready: Boolean(check.ready), status: check.status, detail: check.detail, count: check.count })),
+    authMethods: (item.auth_methods || []).map((method: { method: string; label: string; ready: boolean; implemented: boolean; status: string; detail?: string }) => ({ method: method.method, label: method.label, ready: Boolean(method.ready), implemented: Boolean(method.implemented), status: method.status, detail: method.detail })),
+  };
+};
 const fromWailsCenterHealth = (
   item: main.CenterHealthStatus | null | undefined,
   source: CenterHealthStatus['source'],
-): CenterHealthStatus => ({
-  reachable: item?.reachable ?? false,
-  status: item?.status || '',
-  providerCount: item?.provider_count || 0,
-  configPath: item?.config_path || '',
-  message: item?.message || '',
-  resolvedBaseUrl: item?.resolved_base_url || '',
-  checkedAt: formatTimestamp(),
-  source,
-});
+): CenterHealthStatus => {
+  const health = item as WailsCenterHealthWithReadiness | null | undefined;
+  return {
+    reachable: health?.reachable ?? false,
+    status: health?.status || '',
+    providerCount: health?.provider_count || 0,
+    configPath: health?.config_path || '',
+    message: health?.message || '',
+    resolvedBaseUrl: health?.resolved_base_url || '',
+    iWorkerReadiness: fromWailsIWorkerReadiness(health?.iworker_readiness),
+    checkedAt: formatTimestamp(),
+    source,
+  };
+};
 
 const toWailsSettings = (item: DiWorkerSettings): main.DiWorkerSettings => new main.DiWorkerSettings({
   role_profile: new main.RoleProfile({
@@ -372,6 +451,11 @@ export default function App() {
   const [centerHealthChecking, setCenterHealthChecking] = useState(false);
   const [centerHealthStatus, setCenterHealthStatus] = useState<CenterHealthStatus | null>(null);
   const [centerHealthError, setCenterHealthError] = useState('');
+  const [centerEnrollmentDiscovery, setCenterEnrollmentDiscovery] = useState<CenterEnrollmentDiscovery | null>(null);
+  const [centerEnrollmentDiscovering, setCenterEnrollmentDiscovering] = useState(false);
+  const [centerEnrollmentApplyingId, setCenterEnrollmentApplyingId] = useState('');
+  const [centerEnrollmentMessage, setCenterEnrollmentMessage] = useState('');
+  const [centerEnrollmentError, setCenterEnrollmentError] = useState('');
   const [workerMemoryStats, setWorkerMemoryStats] = useState<WorkerMemoryStats | null>(null);
   const [workerMemoryStatsLoading, setWorkerMemoryStatsLoading] = useState(false);
   const [workerMemoryStatsError, setWorkerMemoryStatsError] = useState('');
@@ -595,7 +679,7 @@ export default function App() {
       setSubmitError('');
       setSubmitResult(null);
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : '读取材料失败，请稍后再试');
+      setSubmitError(error instanceof Error ? error.message : '璇诲彇鏉愭枡澶辫触锛岃绋嶅悗鍐嶈瘯');
     }
   };
 
@@ -692,7 +776,7 @@ export default function App() {
       const nextHistory = [
         {
           id: `task-${Date.now()}`,
-          title: result.task_type,
+          title: result.task_title || result.task_type,
           owner: result.colleague_name,
           status: '已完成',
           updatedAt: formatTimestamp(),
@@ -709,7 +793,7 @@ export default function App() {
       await persistHistoryTasks(nextHistory);
       setActiveTab('history');
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : '提交失败，请稍后再试');
+      setSubmitError(error instanceof Error ? error.message : '鎻愪氦澶辫触锛岃绋嶅悗鍐嶈瘯');
     } finally {
       setSubmitting(false);
     }
@@ -837,26 +921,86 @@ export default function App() {
         setCenterHealthError(error instanceof Error ? error.message : '中心连接检测失败');
       }
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : '保存配置失败');
+      setSettingsError(error instanceof Error ? error.message : '淇濆瓨閰嶇疆澶辫触');
     } finally {
       setSettingsSaving(false);
     }
   };
 
-  const handleCheckCenterHealth = async () => {
+  const handleDiscoverCenterEnrollment = async () => {
+    setCenterEnrollmentError('');
+    setCenterEnrollmentMessage('');
+    setCenterEnrollmentDiscovery(null);
+    if (!hasWailsBridge()) {
+      setCenterEnrollmentError('Wails bridge is not connected.');
+      return;
+    }
+    setCenterEnrollmentDiscovering(true);
+    try {
+      const discovery = await DiscoverCenterEnrollment(new main.CenterEnrollmentRequest({ base_url: settings.center.baseUrl, preferred_tenant_id: settings.center.tenantId, timeout_sec: settings.center.timeoutSec }));
+      const next = fromWailsEnrollmentDiscovery(discovery as main.CenterEnrollmentDiscovery);
+      setCenterEnrollmentDiscovery(next);
+      setCenterEnrollmentMessage('Found ' + next.colleagues.length + ' iWorker candidates and ' + next.authMethods.length + ' auth methods in ' + (next.selectedTenantId || 'default') + '.');
+    } catch (error) {
+      setCenterEnrollmentError(error instanceof Error ? error.message : 'Center enrollment discovery failed.');
+    } finally {
+      setCenterEnrollmentDiscovering(false);
+    }
+  };
+
+  const handleApplyCenterEnrollment = async (workerId: string, auth: { method: string; username: string; password: string }) => {
+    const worker = centerEnrollmentDiscovery?.colleagues.find((item) => item.id === workerId);
+    if (!worker || !centerEnrollmentDiscovery) {
+      setCenterEnrollmentError('Please discover and select a Center iWorker first.');
+      return;
+    }
+    if (!hasWailsBridge()) {
+      setCenterEnrollmentError('Wails bridge is not connected.');
+      return;
+    }
+    setCenterEnrollmentApplyingId(workerId);
+    setCenterEnrollmentError('');
+    setCenterEnrollmentMessage('Applying Center enrollment...');
+    try {
+      const applied = await ApplyCenterEnrollment(new main.ApplyCenterEnrollmentRequest({ base_url: centerEnrollmentDiscovery.baseUrl || settings.center.baseUrl, tenant_id: centerEnrollmentDiscovery.selectedTenantId || settings.center.tenantId, department_id: worker.roleCode || settings.center.departmentId, worker_id: worker.id, role_name: worker.name, role_description: worker.description || worker.roleName, timeout_sec: settings.center.timeoutSec, auth_method: auth.method, auth_username: auth.username, auth_password: auth.password }));
+      const nextSettings = fromWailsSettings(applied as main.DiWorkerSettings);
+      setSettings(nextSettings);
+      setSavedSettingsSnapshot(settingsSnapshot(nextSettings));
+      setCenterEnrollmentMessage('Bound to ' + worker.name + '. Local iWorker is ready to use iWorkerCenter memory and GoalWatcher.');
+      try {
+        const status = await CheckCenterHealth();
+        setCenterHealthError('');
+        setCenterHealthStatus(fromWailsCenterHealth(status as main.CenterHealthStatus, 'auto-after-save'));
+        void handleRefreshWorkerMemoryStats();
+        void refreshAgentInstances();
+      } catch (error) {
+        setCenterHealthStatus(null);
+        setCenterHealthError(error instanceof Error ? error.message : 'Center health check failed after enrollment.');
+      }
+    } catch (error) {
+      setCenterEnrollmentError(error instanceof Error ? error.message : 'Center enrollment apply failed.');
+    } finally {
+      setCenterEnrollmentApplyingId('');
+    }
+  };
+
+  const handleCheckCenterHealth = async (): Promise<CenterHealthStatus | undefined> => {
     setCenterHealthError('');
     setCenterHealthStatus(null);
     if (!hasWailsBridge()) {
       setCenterHealthError('当前未连接 Wails，无法测试中心连接。');
-      return;
+      return undefined;
     }
     setCenterHealthChecking(true);
     try {
       const status = await CheckCenterHealth();
-      setCenterHealthStatus(fromWailsCenterHealth(status as main.CenterHealthStatus, 'manual'));
+      const nextStatus = fromWailsCenterHealth(status as main.CenterHealthStatus, 'manual');
+      setCenterHealthStatus(nextStatus);
       void handleRefreshWorkerMemoryStats();
+      return nextStatus;
     } catch (error) {
       setCenterHealthError(error instanceof Error ? error.message : '中心连接检测失败');
+      return undefined;
     } finally {
       setCenterHealthChecking(false);
     }
@@ -929,6 +1073,11 @@ export default function App() {
             healthChecking={centerHealthChecking}
             healthStatus={centerHealthStatus}
             healthError={centerHealthError}
+            enrollmentDiscovery={centerEnrollmentDiscovery}
+            enrollmentDiscovering={centerEnrollmentDiscovering}
+            enrollmentApplyingId={centerEnrollmentApplyingId}
+            enrollmentMessage={centerEnrollmentMessage}
+            enrollmentError={centerEnrollmentError}
             memoryStats={workerMemoryStats}
             memoryStatsLoading={workerMemoryStatsLoading}
             memoryStatsError={workerMemoryStatsError}
@@ -973,6 +1122,8 @@ export default function App() {
             onProviderChange={updateProvider}
             onProviderFeaturesChange={(providerId, value) => updateProvider(providerId, { features: value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) })}
             onCheckCenterHealth={handleCheckCenterHealth}
+            onDiscoverCenterEnrollment={handleDiscoverCenterEnrollment}
+            onApplyCenterEnrollment={handleApplyCenterEnrollment}
             onSave={handleSaveSettings}
           />
         );
@@ -998,6 +1149,7 @@ export default function App() {
           goalPushError={goalPushError}
           goalPushAckingId={goalPushAckingId}
           goalWatchAutoStatus={goalWatchAutoStatus}
+          submitting={submitting}
           onRefreshGoalPushes={refreshGoalPushes}
           onRefreshMemoryStats={handleRefreshWorkerMemoryStats}
           onCheckCenterHealth={handleCheckCenterHealth}
@@ -1011,7 +1163,7 @@ export default function App() {
           onOpenSettings={() => setActiveTab('settings')}
         />;
     }
-  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask]);
+  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask, centerEnrollmentDiscovery, centerEnrollmentDiscovering, centerEnrollmentApplyingId, centerEnrollmentMessage, centerEnrollmentError]);
 
   const meta = pageMeta[activeTab];
   const status = statusCopy[activeTab];

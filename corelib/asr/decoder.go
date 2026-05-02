@@ -1,4 +1,4 @@
-﻿package asr
+package asr
 
 import (
 	"math"
@@ -16,7 +16,7 @@ type kvCache struct {
 
 // decoderBufs holds reusable scratch buffers for decoder steps.
 type decoderBufs struct {
-	x, residual, q, kNew, vNew, cq     []float32
+	x, residual, q, kNew, vNew, cq      []float32
 	projOut, crossProj, downOut, fc1Out []float32
 	logits                              []float32
 	selfScores                          []float32 // [maxSeqLen] reusable
@@ -218,28 +218,7 @@ func sdpaSingleOpt(q, k, v, out, scores []float32, seqK, nHeads, headDim int) {
 		for sk := 0; sk < seqK; sk++ {
 			scores[sk] = vek32.Dot(qVec, k[sk*dim+hOff:sk*dim+hOff+headDim]) * scale
 		}
-		tensor.Softmax(scores[:seqK])
-
 		outSlice := out[hOff : hOff+headDim]
-		// Zero + weighted sum: out = sum(scores[sk] * v[sk])
-		// First iteration: copy scaled v instead of zero+add
-		if seqK > 0 {
-			w0 := scores[0]
-			vSlice := v[hOff : hOff+headDim]
-			for i := 0; i < headDim; i++ {
-				outSlice[i] = w0 * vSlice[i]
-			}
-			for sk := 1; sk < seqK; sk++ {
-				w := scores[sk]
-				vOff := sk*dim + hOff
-				for i := 0; i < headDim; i++ {
-					outSlice[i] += w * v[vOff+i]
-				}
-			}
-		} else {
-			for i := 0; i < headDim; i++ {
-				outSlice[i] = 0
-			}
-		}
+		tensor.SoftmaxWeightedSumStrided(outSlice, scores[:seqK], v[hOff:], seqK, dim, headDim)
 	}
 }

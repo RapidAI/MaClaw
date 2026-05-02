@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,9 +17,6 @@ var (
 	ErrCompanyExists           = errors.New("company already exists")
 	ErrNoTenantsYet            = errors.New("no tenants exist")
 	ErrSetupAlreadyDone        = errors.New("initial setup already completed")
-	ErrSignatureInvalid        = errors.New("invalid signature")
-	ErrTimestampExpired        = errors.New("timestamp expired")
-	ErrNonceReplay             = errors.New("nonce already used")
 	ErrCloudNotConfigured      = errors.New("iWorkerCloud not configured")
 	ErrTenantNotFound          = errors.New("tenant not found")
 	ErrCloudCredentialsMissing = errors.New("tenant cloud credentials missing")
@@ -36,44 +32,25 @@ type CreateTenantRequest struct {
 	AdminPassword string `json:"admin_password"`
 }
 
-// ProvisionRequest is the signed request from iWorkerCloud.
-type ProvisionRequest struct {
-	CompanyName   string `json:"company_name"`
-	LegalPerson   string `json:"legal_person"`
-	Email         string `json:"email"`
-	Address       string `json:"address"`
-	AdminUsername string `json:"admin_username"`
-	AdminPassword string `json:"admin_password"`
-	Timestamp     int64  `json:"timestamp"`
-	Nonce         string `json:"nonce"`
-	Signature     string `json:"signature"` // base64-encoded RSA signature
-}
-
 // TenantService handles multi-tenancy business logic.
 type TenantService struct {
 	tenantRepo  *TenantRepo
-	nonceRepo   *NonceRepo
 	adminDB     *sql.DB // write DB for creating admin_users
 	cloudClient *CloudClient
-	pubKeyCache *PublicKeyCache
 	secGroupDB  *sql.DB // write DB for security_groups init
 }
 
 func NewTenantService(
 	tenantRepo *TenantRepo,
-	nonceRepo *NonceRepo,
 	adminDB *sql.DB,
 	secGroupDB *sql.DB,
 	cloudClient *CloudClient,
-	pubKeyCache *PublicKeyCache,
 ) *TenantService {
 	return &TenantService{
 		tenantRepo:  tenantRepo,
-		nonceRepo:   nonceRepo,
 		adminDB:     adminDB,
 		secGroupDB:  secGroupDB,
 		cloudClient: cloudClient,
-		pubKeyCache: pubKeyCache,
 	}
 }
 
@@ -87,56 +64,6 @@ func (s *TenantService) SetupFirstTenant(ctx context.Context, req CreateTenantRe
 		return nil, ErrSetupAlreadyDone
 	}
 	return s.createTenantInternal(ctx, req)
-}
-
-// ProvisionFromCloud handles a signed provision request from iWorkerCloud.
-func (s *TenantService) ProvisionFromCloud(ctx context.Context, req ProvisionRequest, rawBodyWithoutSig []byte) (*Tenant, error) {
-	// 1. Verify timestamp (5 min window)
-	now := time.Now().Unix()
-	if abs(now-req.Timestamp) > 300 {
-		return nil, ErrTimestampExpired
-	}
-
-	// 2. Verify nonce
-	expiresAt := time.Now().Add(10 * time.Minute)
-	ok, err := s.nonceRepo.Consume(ctx, req.Nonce, expiresAt)
-	if err != nil {
-		return nil, fmt.Errorf("nonce check: %w", err)
-	}
-	if !ok {
-		return nil, ErrNonceReplay
-	}
-
-	// 3. Verify signature
-	if s.pubKeyCache == nil {
-		return nil, ErrCloudNotConfigured
-	}
-	pubKey, err := s.pubKeyCache.Get(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get public key: %w", err)
-	}
-
-	bodyHash := sha256.Sum256(rawBodyWithoutSig)
-	bodyHashHex := hex.EncodeToString(bodyHash[:])
-
-	sigBytes, err := base64.StdEncoding.DecodeString(req.Signature)
-	if err != nil {
-		return nil, ErrSignatureInvalid
-	}
-
-	if err := VerifyProvisionSignature(pubKey, req.Timestamp, req.Nonce, bodyHashHex, sigBytes); err != nil {
-		return nil, ErrSignatureInvalid
-	}
-
-	// 4. Create tenant
-	return s.createTenantInternal(ctx, CreateTenantRequest{
-		CompanyName:   req.CompanyName,
-		LegalPerson:   req.LegalPerson,
-		Email:         req.Email,
-		Address:       req.Address,
-		AdminUsername: req.AdminUsername,
-		AdminPassword: req.AdminPassword,
-	})
 }
 
 // ListActiveTenants returns all active tenants (for login page).
@@ -197,20 +124,12 @@ func (s *TenantService) RegisterTenantToCloud(ctx context.Context, tenantID stri
 	if t == nil {
 		return nil, ErrTenantNotFound
 	}
-	tenantCount, err := s.tenantRepo.Count(ctx)
-	if err != nil {
-		return nil, err
-	}
 
 	resp, err := s.cloudClient.RegisterCenter(ctx, RegisterCenterRequest{
-		CompanyName:         t.CompanyName,
-		AdminEmail:          t.Email,
-		LegalPerson:         t.LegalPerson,
-		Address:             t.Address,
-		BaseURL:             strings.TrimSpace(s.cloudClient.cfg.CenterBaseURL),
-		SupportsMultiTenant: s.cloudClient.cfg.SupportsMultiTenant,
-		TenantCount:         tenantCount,
-		CloudControlMode:    firstNonEmpty(s.cloudClient.cfg.CloudControlMode, "cloud_managed"),
+		CompanyName:      cloudRegistrationName(s.cloudClient.cfg, t.ID),
+		AdminEmail:       cloudRegistrationEmail(s.cloudClient.cfg),
+		BaseURL:          strings.TrimSpace(s.cloudClient.cfg.CenterBaseURL),
+		CloudControlMode: firstNonEmpty(s.cloudClient.cfg.CloudControlMode, "cloud_managed"),
 	})
 	if err != nil {
 		return nil, err
@@ -230,6 +149,24 @@ func (s *TenantService) RegisterToCloud(ctx context.Context, tenantID string) {
 		return
 	}
 	log.Printf("[tenant] registered %s with cloud, center_id=%s", tenantID, resp.CenterID)
+}
+
+func cloudRegistrationName(cfg CloudConfig, fallbackID string) string {
+	if name := strings.TrimSpace(cfg.RegistrationName); name != "" {
+		return name
+	}
+	fallbackID = strings.TrimSpace(fallbackID)
+	if fallbackID == "" {
+		return "iWorkerCenter service"
+	}
+	return "iWorkerCenter service " + fallbackID
+}
+
+func cloudRegistrationEmail(cfg CloudConfig) string {
+	if email := strings.TrimSpace(cfg.RegistrationEmail); email != "" {
+		return email
+	}
+	return "iworkercenter@local.invalid"
 }
 
 func (s *TenantService) createTenantInternal(ctx context.Context, req CreateTenantRequest) (*Tenant, error) {
@@ -318,10 +255,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-func abs(n int64) int64 {
-	if n < 0 {
-		return -n
-	}
-	return n
 }

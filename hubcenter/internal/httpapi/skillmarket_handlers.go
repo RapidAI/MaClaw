@@ -98,7 +98,22 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 		smError(w, http.StatusBadRequest, "invalid multipart form: "+err.Error())
 		return
 	}
-	email := strings.TrimSpace(r.FormValue("email"))
+	email := ""
+	if h.authSvc != nil {
+		token := extractSessionToken(r)
+		if token == "" {
+			smError(w, http.StatusUnauthorized, "session token required")
+			return
+		}
+		sess, err := h.authSvc.ValidateSession(r.Context(), token)
+		if err != nil {
+			smError(w, http.StatusUnauthorized, "session expired or invalid")
+			return
+		}
+		email = strings.TrimSpace(sess.Email)
+	} else {
+		email = strings.TrimSpace(r.FormValue("email"))
+	}
 	if email == "" {
 		smError(w, http.StatusBadRequest, "email is required")
 		return

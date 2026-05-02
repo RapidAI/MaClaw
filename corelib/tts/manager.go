@@ -1,154 +1,146 @@
-// corelib/tts/manager.go — Lazy-load TTS model with auto-unload after idle.
+// corelib/tts/manager.go - Lazy-load TTS model with auto-unload after idle.
 //
 // Follows the same pattern as corelib/asr/manager.go.
-// Small data files (lexicon, CMU dict, duration caches) are embedded in the binary.
-// The GGUF model file (60MB) is loaded from disk (downloaded on demand by GUI).
+// Kokoro model and voice files are loaded from disk on demand.
 package tts
 
 import (
 	"bytes"
-	"compress/gzip"
 	"fmt"
-	"io"
+	"path/filepath"
 	"time"
 
-	ttsembed "github.com/RapidAI/CodeClaw/corelib/tts/embed"
 	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
+	"github.com/RapidAI/CodeClaw/corelib/tts/kokoro"
 )
 
 const (
 	defaultTTSUnloadDelay = 5 * time.Minute
-	TTSModelFilename      = "piper-xiao_ya-zh-fp32.gguf"
+	TTSModelFilename      = "kokoro-v1_0.koro"
+	TTSVoiceZipFilename   = "kokoro_82m_selected_voices_koro.zip"
+	TTSAssetDirName       = "kokoro_82m"
+	DefaultTTSVoiceID     = "zf_xiaoyi"
 )
+
+var SupportedTTSVoiceIDs = []string{"zm_yunxi", "zm_yunyang", "zf_xiaoxiao", "zf_xiaoyi"}
 
 // Manager provides lazy-loaded, auto-unloading TTS.
 // Call SynthesizeText; model loads on first use, unloads after idle.
 type Manager struct {
-	mm *modelmanager.Manager[*PiperModel]
+	kokoro *modelmanager.Manager[*KokoroRuntime]
 }
 
-// NewManager creates a TTS manager. Model is NOT loaded until first use.
-// modelPath is the path to the GGUF model file.
+type KokoroRuntime struct {
+	Model    *kokoro.Model
+	Voice    *kokoro.TensorFile
+	VoiceDir string
+	VoiceID  string
+}
+
+// NewManager creates a Kokoro TTS manager. Model is NOT loaded until first use.
+// modelPath is the path to the Kokoro model file.
 func NewManager(modelPath string) *Manager {
-	mm := modelmanager.New(modelmanager.Config[*PiperModel]{
-		Name: "tts",
-		Load: func() (*PiperModel, error) {
-			return loadFullModel(modelPath)
+	voiceDir := filepath.Join(filepath.Dir(modelPath), "voices")
+	return NewKokoroManager(modelPath, voiceDir, DefaultTTSVoiceID)
+}
+
+func NewKokoroManager(modelPath, voiceDir, voiceID string) *Manager {
+	if voiceID == "" {
+		voiceID = DefaultTTSVoiceID
+	}
+	mm := modelmanager.New(modelmanager.Config[*KokoroRuntime]{
+		Name: "tts-kokoro",
+		Load: func() (*KokoroRuntime, error) {
+			model, err := kokoro.LoadModel(kokoro.Assets{WeightsPath: modelPath})
+			if err != nil {
+				return nil, err
+			}
+			voice, err := model.LoadVoice(voiceDir, voiceID)
+			if err != nil {
+				return nil, err
+			}
+			return &KokoroRuntime{Model: model, Voice: voice, VoiceDir: voiceDir, VoiceID: voiceID}, nil
 		},
-		Close:       func(m *PiperModel) { /* PiperModel has no Close — GC handles it */ },
+		Close:       func(m *KokoroRuntime) {},
 		UnloadDelay: defaultTTSUnloadDelay,
 	})
-	return &Manager{mm: mm}
+	return &Manager{kokoro: mm}
 }
 
 // SetUnloadDelay configures idle timeout before model is unloaded.
 func (mgr *Manager) SetUnloadDelay(d time.Duration) {
-	mgr.mm.SetUnloadDelay(d)
+	if mgr == nil {
+		return
+	}
+	if mgr.kokoro != nil {
+		mgr.kokoro.SetUnloadDelay(d)
+	}
 }
 
 // Unload releases the model from memory.
 func (mgr *Manager) Unload() {
-	mgr.mm.Unload()
+	if mgr == nil {
+		return
+	}
+	if mgr.kokoro != nil {
+		mgr.kokoro.Unload()
+	}
 }
 
 // Loaded returns true if the model is currently in memory.
 func (mgr *Manager) Loaded() bool {
-	return mgr.mm.Loaded()
+	if mgr == nil {
+		return false
+	}
+	if mgr.kokoro != nil {
+		return mgr.kokoro.Loaded()
+	}
+	return false
 }
 
 // SynthesizeText loads model on demand, synthesizes text to WAV bytes.
 func (mgr *Manager) SynthesizeText(text string) ([]byte, error) {
-	m, done, err := mgr.mm.Acquire()
+	if mgr == nil {
+		return nil, fmt.Errorf("tts: manager not available")
+	}
+	pcm, sampleRate, err := mgr.SynthesizeAudio(text)
 	if err != nil {
 		return nil, err
 	}
-	defer done()
-
-	wav, err := m.SynthesizeToWAV(text)
-	if err != nil {
+	var buf bytes.Buffer
+	if err := kokoro.WriteWAVTo(&buf, pcm, sampleRate); err != nil {
 		return nil, err
 	}
-	return wav, nil
+	return buf.Bytes(), nil
 }
 
 // SynthesizeAudio loads model on demand, synthesizes text to float32 PCM.
 func (mgr *Manager) SynthesizeAudio(text string) ([]float32, int, error) {
-	m, done, err := mgr.mm.Acquire()
+	if mgr == nil {
+		return nil, 0, fmt.Errorf("tts: manager not available")
+	}
+	phonemes := KokoroTextToPhonemes(text)
+	if phonemes == "" {
+		return nil, 0, fmt.Errorf("tts: text produced no Kokoro phonemes")
+	}
+	return mgr.SynthesizeKokoroPhonemes(phonemes, 1)
+}
+
+func (mgr *Manager) SynthesizeKokoroPhonemes(phonemes string, speed float32) ([]float32, int, error) {
+	if mgr == nil || mgr.kokoro == nil {
+		return nil, 0, fmt.Errorf("tts: Kokoro manager not available")
+	}
+	rt, done, err := mgr.kokoro.Acquire()
 	if err != nil {
 		return nil, 0, err
 	}
 	defer done()
-
-	audio, err := m.SynthesizeText(text)
+	if speed <= 0 {
+		speed = 1
+	}
+	pcm, err := rt.Model.SynthesizePhonemes(phonemes, rt.Voice, speed)
 	if err != nil {
 		return nil, 0, err
 	}
-	return audio, m.HP.SampleRate, nil
-}
-
-// loadFullModel loads the GGUF model and all embedded data files.
-func loadFullModel(modelPath string) (*PiperModel, error) {
-	// Load lexicon from embedded data
-	lexData, err := gunzipBytes(ttsembed.LexiconGz)
-	if err != nil {
-		return nil, fmt.Errorf("tts: decompress lexicon: %w", err)
-	}
-	lex, err := LoadPiperLexiconFromReader(bytes.NewReader(lexData))
-	if err != nil {
-		return nil, fmt.Errorf("tts: load lexicon: %w", err)
-	}
-
-	// Load GGUF model
-	model, err := NewPiper(modelPath)
-	if err != nil {
-		return nil, fmt.Errorf("tts: load model: %w", err)
-	}
-	model.Lex = lex
-
-	// Load CMU dictionary from embedded data
-	cmuData, err := gunzipBytes(ttsembed.CMUDictGz)
-	if err == nil {
-		cmuDict, err := LoadCMUDictFromReader(bytes.NewReader(cmuData))
-		if err == nil {
-			model.CMUDict = cmuDict
-		}
-	}
-
-	// Load duration caches from embedded data
-	triData, _ := gunzipBytes(ttsembed.DurationTrigramCacheGz)
-	biData, _ := gunzipBytes(ttsembed.DurationBigramCacheGz)
-	uniData, _ := gunzipBytes(ttsembed.DurationUnigramCacheGz)
-	if triData != nil {
-		dc, err := LoadDurationCacheFromBytes(triData, biData, uniData)
-		if err == nil {
-			model.DurCache = dc
-		}
-	}
-
-	// Load duration MLP from embedded data
-	mlpData, _ := gunzipBytes(ttsembed.DurationMLPGz)
-	if mlpData != nil {
-		w1, b1, w2, b2, err := LoadDurationMLPFromBytes(mlpData)
-		if err == nil {
-			model.DurMLPW1 = w1
-			model.DurMLPB1 = b1
-			model.DurMLPW2 = w2
-			model.DurMLPB2 = b2
-		}
-	}
-
-	return model, nil
-}
-
-// gunzipBytes decompresses gzipped data.
-func gunzipBytes(data []byte) ([]byte, error) {
-	if len(data) == 0 {
-		return nil, fmt.Errorf("empty data")
-	}
-	gz, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	defer gz.Close()
-	return io.ReadAll(gz)
+	return pcm, kokoro.DefaultSampleRate, nil
 }

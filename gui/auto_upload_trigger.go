@@ -100,6 +100,14 @@ func (t *AutoUploadTrigger) CheckAndTrigger(ctx context.Context, skillName, zipP
 }
 
 // SubmitAndMark 娑撳﹣绱?zip 楠炶埖鐖ｇ拋鏉垮嚒娑撳﹣绱?hash閵?
+func (t *AutoUploadTrigger) MarkUploadedHash(skillName, localHash string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if rec, ok := t.tracker[skillName]; ok {
+		rec.LastUploaded = localHash
+	}
+}
+
 func (t *AutoUploadTrigger) SubmitAndMark(ctx context.Context, skillName, zipPath, localHash string) error {
 	email := t.emailFn()
 	if email == "" {

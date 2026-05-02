@@ -166,6 +166,80 @@ func TestWAVToFloat32_Resample(t *testing.T) {
 	t.Logf("resampled %d -> %d samples", nSamples, len(pcm))
 }
 
+func TestWAVToFloat32RejectsUnsupportedBitDepth(t *testing.T) {
+	sampleRate := 16000
+	nSamples := 16
+	dataSize := nSamples
+	wav := make([]byte, 44+dataSize)
+	copy(wav[0:4], "RIFF")
+	le32(wav[4:8], uint32(36+dataSize))
+	copy(wav[8:12], "WAVE")
+	copy(wav[12:16], "fmt ")
+	le32(wav[16:20], 16)
+	le16(wav[20:22], 1)
+	le16(wav[22:24], 1)
+	le32(wav[24:28], uint32(sampleRate))
+	le32(wav[28:32], uint32(sampleRate))
+	le16(wav[32:34], 1)
+	le16(wav[34:36], 8)
+	copy(wav[36:40], "data")
+	le32(wav[40:44], uint32(dataSize))
+
+	_, err := WAVToFloat32(wav)
+	if err == nil {
+		t.Fatal("expected unsupported bit depth error")
+	}
+}
+
+func TestWAVToFloat32RejectsNonPCMFormat(t *testing.T) {
+	sampleRate := 16000
+	nSamples := 16
+	dataSize := nSamples * 2
+	wav := make([]byte, 44+dataSize)
+	copy(wav[0:4], "RIFF")
+	le32(wav[4:8], uint32(36+dataSize))
+	copy(wav[8:12], "WAVE")
+	copy(wav[12:16], "fmt ")
+	le32(wav[16:20], 16)
+	le16(wav[20:22], 3) // IEEE float, not PCM
+	le16(wav[22:24], 1)
+	le32(wav[24:28], uint32(sampleRate))
+	le32(wav[28:32], uint32(sampleRate*2))
+	le16(wav[32:34], 2)
+	le16(wav[34:36], 16)
+	copy(wav[36:40], "data")
+	le32(wav[40:44], uint32(dataSize))
+
+	_, err := WAVToFloat32(wav)
+	if err == nil {
+		t.Fatal("expected unsupported WAV format error")
+	}
+}
+
+func TestWAVToFloat32RejectsMisalignedData(t *testing.T) {
+	sampleRate := 16000
+	dataSize := 3 // mono 16-bit must be divisible by 2
+	wav := make([]byte, 44+dataSize)
+	copy(wav[0:4], "RIFF")
+	le32(wav[4:8], uint32(36+dataSize))
+	copy(wav[8:12], "WAVE")
+	copy(wav[12:16], "fmt ")
+	le32(wav[16:20], 16)
+	le16(wav[20:22], 1)
+	le16(wav[22:24], 1)
+	le32(wav[24:28], uint32(sampleRate))
+	le32(wav[28:32], uint32(sampleRate*2))
+	le16(wav[32:34], 2)
+	le16(wav[34:36], 16)
+	copy(wav[36:40], "data")
+	le32(wav[40:44], uint32(dataSize))
+
+	_, err := WAVToFloat32(wav)
+	if err == nil {
+		t.Fatal("expected malformed WAV data size error")
+	}
+}
+
 func le32(b []byte, v uint32) {
 	b[0] = byte(v)
 	b[1] = byte(v >> 8)

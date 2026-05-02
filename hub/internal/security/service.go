@@ -210,6 +210,7 @@ func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, err
 		extra := s.countUnassignedUsers(ctx)
 		root.MemberCount += extra
 	}
+	rollupGroupMemberCounts(root)
 
 	cloned := cloneGroupTreeNode(root)
 	s.groupTreeMu.Lock()
@@ -220,30 +221,19 @@ func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, err
 }
 
 func (s *SecurityService) GetRootGroupNode(ctx context.Context) (*GroupTreeNode, error) {
-	root, err := s.store.GetRootGroup(ctx)
+	root, err := s.GetGroupTree(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get root group: %w", err)
+		return nil, err
 	}
 	if root == nil {
 		return nil, nil
-	}
-	count, err := s.store.CountGroupMembers(ctx, root.ID)
-	if err != nil {
-		return nil, fmt.Errorf("count root members: %w", err)
-	}
-	if s.users != nil {
-		count += s.countUnassignedUsers(ctx)
-	}
-	children, err := s.GetGroupChildren(ctx, root.ID)
-	if err != nil {
-		return nil, err
 	}
 	return &GroupTreeNode{
 		ID:          root.ID,
 		Name:        root.Name,
 		ParentID:    root.ParentID,
-		MemberCount: count,
-		HasChildren: len(children) > 0,
+		MemberCount: root.MemberCount,
+		HasChildren: len(root.Children) > 0,
 		Children:    []*GroupTreeNode{},
 	}, nil
 }
@@ -263,6 +253,18 @@ func cloneGroupTreeNode(node *GroupTreeNode) *GroupTreeNode {
 		cloned.Children = append(cloned.Children, cloneGroupTreeNode(child))
 	}
 	return cloned
+}
+
+func rollupGroupMemberCounts(node *GroupTreeNode) int {
+	if node == nil {
+		return 0
+	}
+	total := node.MemberCount
+	for _, child := range node.Children {
+		total += rollupGroupMemberCounts(child)
+	}
+	node.MemberCount = total
+	return total
 }
 
 func (s *SecurityService) invalidateGroupTreeCache() {
@@ -356,7 +358,7 @@ func (s *SecurityService) listUnassignedEmails(ctx context.Context) []string {
 	seen := map[string]struct{}{}
 	var result []string
 	for _, u := range allUsers {
-		if u == nil || u.Status != "active" {
+		if u == nil {
 			continue
 		}
 		key := strings.TrimSpace(strings.ToLower(u.Email))
@@ -381,13 +383,25 @@ func (s *SecurityService) GetGroupChildren(ctx context.Context, parentID string)
 	if err != nil {
 		return nil, fmt.Errorf("list groups: %w", err)
 	}
+	counts, err := s.store.CountGroupMembersMap(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("count group members: %w", err)
+	}
+	childMap := make(map[string][]string, len(allGroups))
+	for _, g := range allGroups {
+		childMap[g.ParentID] = append(childMap[g.ParentID], g.ID)
+	}
+	var subtreeCount func(string) int
+	subtreeCount = func(groupID string) int {
+		total := counts[groupID]
+		for _, childID := range childMap[groupID] {
+			total += subtreeCount(childID)
+		}
+		return total
+	}
 	var children []*GroupTreeNode
 	for _, g := range allGroups {
 		if g.ParentID == parentID {
-			count, err := s.store.CountGroupMembers(ctx, g.ID)
-			if err != nil {
-				return nil, fmt.Errorf("count members for %s: %w", g.ID, err)
-			}
 			hasChildren := false
 			for _, g2 := range allGroups {
 				if g2.ParentID == g.ID {
@@ -399,7 +413,7 @@ func (s *SecurityService) GetGroupChildren(ctx context.Context, parentID string)
 				ID:          g.ID,
 				Name:        g.Name,
 				ParentID:    g.ParentID,
-				MemberCount: count,
+				MemberCount: subtreeCount(g.ID),
 				HasChildren: hasChildren,
 			})
 		}

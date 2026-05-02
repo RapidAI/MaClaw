@@ -134,13 +134,6 @@ describe('OnboardingWizard registration', () => {
         // Navigate to step 2 (UI Mode)
         fireEvent.click(screen.getByRole('button', { name: 'Next' }));
         // Step 2 auto-completes, click Next again — should skip step 3 and go to step 4
-        await waitFor(() => {
-            const nextBtn = screen.getByRole('button', { name: 'Next' });
-            expect(nextBtn).toBeTruthy();
-            expect((nextBtn as HTMLButtonElement).disabled).toBe(false);
-        });
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-
         // Should be on step 4 (WeChat), not step 3 (LLM)
         await waitFor(() => {
             expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
@@ -192,10 +185,6 @@ describe('OnboardingWizard registration', () => {
         });
 
         fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-        await waitFor(() => {
-            expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(false);
-        });
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
         await waitFor(() => {
             expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
@@ -219,10 +208,6 @@ describe('OnboardingWizard registration', () => {
 
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
-        });
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-        await waitFor(() => {
-            expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(false);
         });
         fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
@@ -408,9 +393,6 @@ describe('OnboardingWizard registration', () => {
         });
         fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
-        fireEvent.click(screen.getByText(/Pro/));
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-
         fireEvent.click(await screen.findByRole('button', { name: 'Custom1' }));
         fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
         fireEvent.change(screen.getByPlaceholderText('gpt-4o'), { target: { value: 'gpt-test' } });
@@ -424,6 +406,7 @@ describe('OnboardingWizard registration', () => {
                 model: 'gpt-test',
                 protocol: 'openai',
                 agent_type: 'openclaw',
+                wire_api: '',
             });
         });
 
@@ -458,9 +441,6 @@ describe('OnboardingWizard registration', () => {
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
         });
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-
-        fireEvent.click(screen.getByText(/Pro/));
         fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
         fireEvent.click(await screen.findByRole('button', { name: 'Custom1' }));

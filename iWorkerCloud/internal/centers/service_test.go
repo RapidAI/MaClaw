@@ -2,10 +2,12 @@ package centers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,14 +62,22 @@ func (m *memoryCenterRepo) UpdateStatus(_ context.Context, id, status string) er
 	return nil
 }
 
-func (m *memoryCenterRepo) UpdateHeartbeat(_ context.Context, id string) error {
-	c, ok := m.items[id]
+func (m *memoryCenterRepo) UpdateHeartbeat(_ context.Context, c *store.Center) error {
+	current, ok := m.items[c.ID]
 	if !ok {
 		return fmt.Errorf("not found")
 	}
-	c.LastHeartbeat = time.Now()
-	c.LastSyncStatus = "heartbeat_ok"
-	c.UpdatedAt = c.LastHeartbeat
+	current.LastHeartbeat = time.Now()
+	current.LastSyncStatus = c.LastSyncStatus
+	current.IWorkerReady = c.IWorkerReady
+	current.IWorkerReadinessStatus = c.IWorkerReadinessStatus
+	current.IWorkerTenantCount = c.IWorkerTenantCount
+	current.IWorkerRoleCount = c.IWorkerRoleCount
+	current.IWorkerColleagueCount = c.IWorkerColleagueCount
+	current.IWorkerLocalAccountCount = c.IWorkerLocalAccountCount
+	current.IWorkerAgentInstanceCount = c.IWorkerAgentInstanceCount
+	current.IWorkerReadinessJSON = c.IWorkerReadinessJSON
+	current.UpdatedAt = current.LastHeartbeat
 	return nil
 }
 
@@ -81,6 +91,14 @@ func (m *memoryCenterRepo) UpdateIntegration(_ context.Context, c *store.Center)
 	current.TenantCount = c.TenantCount
 	current.CloudControlMode = c.CloudControlMode
 	current.LastSyncStatus = c.LastSyncStatus
+	current.IWorkerReady = c.IWorkerReady
+	current.IWorkerReadinessStatus = c.IWorkerReadinessStatus
+	current.IWorkerTenantCount = c.IWorkerTenantCount
+	current.IWorkerRoleCount = c.IWorkerRoleCount
+	current.IWorkerColleagueCount = c.IWorkerColleagueCount
+	current.IWorkerLocalAccountCount = c.IWorkerLocalAccountCount
+	current.IWorkerAgentInstanceCount = c.IWorkerAgentInstanceCount
+	current.IWorkerReadinessJSON = c.IWorkerReadinessJSON
 	current.UpdatedAt = time.Now()
 	return nil
 }
@@ -163,7 +181,7 @@ func TestProbeVerifiesIWorkerCenterServiceIdentity(t *testing.T) {
 		if r.URL.Path != "/api/center/status" {
 			t.Fatalf("probe path = %q, want /api/center/status", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console","provider_count":2,"runtime_provider_mode":"cloud_sync","compute_source":"cloud","compute_permission":true,"cloud_provider_count":2,"compute_sync_status":{"status":"success","last_sync_at":"2026-04-30T00:00:00Z","provider_count":2}}`))
+		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console","provider_count":2,"runtime_provider_mode":"cloud_sync","compute_source":"cloud","compute_permission":true,"cloud_provider_count":2,"compute_sync_status":{"status":"success","last_sync_at":"2026-04-30T00:00:00Z","provider_count":2},"iworker_readiness":{"ready":true,"status":"ready","tenant_count":1,"role_count":2,"colleague_count":3,"local_account_count":4,"agent_instance_count":5}}`))
 	}))
 	defer server.Close()
 
@@ -188,6 +206,21 @@ func TestProbeVerifiesIWorkerCenterServiceIdentity(t *testing.T) {
 	}
 	if center.LastSyncStatus != "probe_ok" {
 		t.Fatalf("LastSyncStatus = %q, want probe_ok", center.LastSyncStatus)
+	}
+	if !center.IWorkerReady || center.IWorkerReadinessStatus != "ready" || center.IWorkerColleagueCount != 0 || center.IWorkerLocalAccountCount != 0 || center.IWorkerAgentInstanceCount != 5 {
+		t.Fatalf("stored iWorker readiness = %+v", center)
+	}
+	if result.IWorkerReadiness == nil || result.IWorkerReadiness.AgentInstanceCount != 5 {
+		t.Fatalf("probe iWorker readiness = %+v", result.IWorkerReadiness)
+	}
+	rawResult, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal probe result: %v", err)
+	}
+	for _, forbidden := range []string{"tenant_count", "role_count", "colleague_count", "local_account_count", "required_client_paths", "checks", "auth_methods"} {
+		if strings.Contains(string(rawResult), forbidden) {
+			t.Fatalf("probe result leaked %q: %s", forbidden, rawResult)
+		}
 	}
 }
 
@@ -291,13 +324,69 @@ func TestHeartbeatAcceptsIWorkerCenterServiceIdentity(t *testing.T) {
 	}
 }
 
-func TestProvisionReadinessRejectsUnlicensedCenter(t *testing.T) {
+func TestHeartbeatStoresIWorkerReadiness(t *testing.T) {
+	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", SecretHash: hashSecret("secret-abc"), LastSyncStatus: "configured"})
+	svc := NewService(repo, nil)
+
+	err := svc.Heartbeat(context.Background(), "ctr_1", HeartbeatRequest{
+		Secret:       "secret-abc",
+		RuntimeType:  "service",
+		ProductKind:  "iworkercenter",
+		AdminConsole: "web_console",
+		IWorkerReadiness: &IWorkerReadinessReport{
+			Ready:               false,
+			Status:              "needs_bootstrap",
+			AgentInstanceCount:  4,
+			RequiredClientPaths: []string{"/client/iworker/instances"},
+			Checks:              []ReadinessItem{{Name: "tenant", Ready: true, Status: "ready", Count: 3}, {Name: "agent_runtime", Ready: true, Status: "ready"}},
+			AuthMethods:         []AuthItem{{Method: "local", Label: "Local account", Ready: true, Implemented: true, Status: "ready"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Heartbeat() error: %v", err)
+	}
+	center, _ := repo.GetByID(context.Background(), "ctr_1")
+	if center.IWorkerReady || center.IWorkerReadinessStatus != "needs_bootstrap" || center.IWorkerRoleCount != 0 || center.IWorkerLocalAccountCount != 0 || center.IWorkerAgentInstanceCount != 4 {
+		t.Fatalf("stored sanitized readiness = %+v", center)
+	}
+	if center.IWorkerReadinessJSON == "" {
+		t.Fatal("IWorkerReadinessJSON was not stored")
+	}
+	for _, forbidden := range []string{"required_client_paths", "checks", "auth_methods", "/client/iworker/instances", "tenant", "local"} {
+		if strings.Contains(center.IWorkerReadinessJSON, forbidden) {
+			t.Fatalf("stored readiness leaked %q: %s", forbidden, center.IWorkerReadinessJSON)
+		}
+	}
+	management := buildCenterManagement(center, &store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
+	if containsIssue(management.Issues, "iworker_readiness_incomplete") {
+		t.Fatalf("iWorker readiness should be observed but not block Cloud service readiness: %+v", management.Issues)
+	}
+	if management.IWorkerOperationalReady {
+		t.Fatalf("IWorkerOperationalReady = true, want false")
+	}
+	if management.IWorkerReadiness == nil || management.IWorkerReadiness.Status != "needs_bootstrap" {
+		t.Fatalf("management.IWorkerReadiness = %+v", management.IWorkerReadiness)
+	}
+}
+
+func TestManagementDoesNotRequireIWorkerBusinessReadinessAfterServiceIdentityVerified(t *testing.T) {
+	center := &store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: false, LastSyncStatus: "heartbeat_ok"}
+	management := buildCenterManagement(center, &store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
+	if !management.Ready {
+		t.Fatalf("management.Ready = false, issues=%+v; Cloud service readiness must stay isolated from Center business setup", management.Issues)
+	}
+	if containsIssue(management.Issues, "iworker_readiness_not_reported") || containsIssue(management.Issues, "multi_tenant_not_confirmed") {
+		t.Fatalf("business readiness leaked into Cloud management issues: %+v", management.Issues)
+	}
+}
+
+func TestServiceReadinessRejectsUnlicensedCenter(t *testing.T) {
 	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true})
 	svc := NewService(repo, license.NewService(newMemoryLicenseRepo(), nil))
 
-	readiness, err := svc.ProvisionReadiness(context.Background(), "ctr_1")
+	readiness, err := svc.ServiceReadiness(context.Background(), "ctr_1")
 	if err != nil {
-		t.Fatalf("ProvisionReadiness() error: %v", err)
+		t.Fatalf("ServiceReadiness() error: %v", err)
 	}
 	if readiness.Allowed {
 		t.Fatalf("readiness.Allowed = true, want false")
@@ -305,40 +394,40 @@ func TestProvisionReadinessRejectsUnlicensedCenter(t *testing.T) {
 	if !containsIssue(readiness.Issues, "no_active_license") {
 		t.Fatalf("issues = %+v, want no_active_license", readiness.Issues)
 	}
-	if _, err := svc.EnsureProvisionAllowed(context.Background(), "ctr_1"); !errors.Is(err, ErrProvisionNotAllowed) {
-		t.Fatalf("EnsureProvisionAllowed() error = %v, want ErrProvisionNotAllowed", err)
+	if _, err := svc.EnsureServiceManagementAllowed(context.Background(), "ctr_1"); !errors.Is(err, ErrServiceManagementNotAllowed) {
+		t.Fatalf("EnsureServiceManagementAllowed() error = %v, want ErrServiceManagementNotAllowed", err)
 	}
 }
 
-func TestProvisionReadinessAllowsLicensedMultiTenantCenter(t *testing.T) {
+func TestServiceReadinessAllowsLicensedCenter(t *testing.T) {
 	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true, LastSyncStatus: "probe_ok"})
 	licenses := newMemoryLicenseRepo(&store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
 	svc := NewService(repo, license.NewService(licenses, nil))
 
-	readiness, err := svc.ProvisionReadiness(context.Background(), "ctr_1")
+	readiness, err := svc.ServiceReadiness(context.Background(), "ctr_1")
 	if err != nil {
-		t.Fatalf("ProvisionReadiness() error: %v", err)
+		t.Fatalf("ServiceReadiness() error: %v", err)
 	}
 	if !readiness.Allowed {
 		t.Fatalf("readiness.Allowed = false, issues=%+v", readiness.Issues)
 	}
-	center, err := svc.EnsureProvisionAllowed(context.Background(), "ctr_1")
+	center, err := svc.EnsureServiceManagementAllowed(context.Background(), "ctr_1")
 	if err != nil {
-		t.Fatalf("EnsureProvisionAllowed() error: %v", err)
+		t.Fatalf("EnsureServiceManagementAllowed() error: %v", err)
 	}
 	if center.ID != "ctr_1" {
 		t.Fatalf("center.ID = %q, want ctr_1", center.ID)
 	}
 }
 
-func TestProvisionReadinessRejectsUnverifiedServiceIdentity(t *testing.T) {
+func TestServiceReadinessRejectsUnverifiedServiceIdentity(t *testing.T) {
 	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true, LastSyncStatus: "configured"})
 	licenses := newMemoryLicenseRepo(&store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
 	svc := NewService(repo, license.NewService(licenses, nil))
 
-	readiness, err := svc.ProvisionReadiness(context.Background(), "ctr_1")
+	readiness, err := svc.ServiceReadiness(context.Background(), "ctr_1")
 	if err != nil {
-		t.Fatalf("ProvisionReadiness() error: %v", err)
+		t.Fatalf("ServiceReadiness() error: %v", err)
 	}
 	if readiness.Allowed {
 		t.Fatalf("readiness.Allowed = true, want false")

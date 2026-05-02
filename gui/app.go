@@ -133,6 +133,7 @@ type App struct {
 	telegramGateway            *telegramGatewayManager
 	weixinGateway              *weixinGatewayManager
 	lansengerGateway           *lansengerGatewayManager
+	thirdPartyGateway          *thirdPartyGatewayManager
 	iworkerGoalWatch           *IWorkerGoalWatchService
 	iworkerGoalWatchMu         sync.Mutex
 	configMu                   sync.Mutex
@@ -1108,6 +1109,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	// Start Lansenger gateway if configured (runs on client side).
 	a.ensureLansengerGateway()
 
+	// Start third-party local HTTP gateway if configured.
+	a.ensureThirdPartyGateway()
+
 	return hubClient
 }
 
@@ -1201,6 +1205,7 @@ func (a *App) startup(ctx context.Context) {
 				a.ensureTelegramGateway()
 				a.ensureWeixinGateway()
 				a.ensureLansengerGateway()
+				a.ensureThirdPartyGateway()
 			}()
 		}
 		// CodeGen SSO token validation on startup (qianxin brand only).
@@ -1400,6 +1405,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.lansengerGateway != nil {
 		a.lansengerGateway.Stop()
+	}
+	if a.thirdPartyGateway != nil {
+		a.thirdPartyGateway.Stop()
 	}
 	a.platformShutdown()
 }
@@ -2046,6 +2054,10 @@ func (a *App) startConfigWatcher() {
 						// Re-sync Lansenger gateway on config change
 						if a.lansengerGateway != nil {
 							a.lansengerGateway.SyncFromConfig()
+						}
+						// Re-sync third-party gateway on config change
+						if a.thirdPartyGateway != nil {
+							a.thirdPartyGateway.SyncFromConfig()
 						}
 					}
 				}

@@ -7,40 +7,40 @@ import (
 )
 
 type AppConfig struct {
-	Claude               ToolConfig      `json:"claude"`
-	Gemini               ToolConfig      `json:"gemini"`
-	Codex                ToolConfig      `json:"codex"`
-	Opencode             ToolConfig      `json:"opencode"`
-	CodeBuddy            ToolConfig      `json:"codebuddy"`
-	IFlow                ToolConfig      `json:"iflow"`
-	Kilo                 ToolConfig      `json:"kilo"`
-	Cursor               ToolConfig      `json:"cursor"`
-	Projects             []ProjectConfig `json:"projects"`
-	CurrentProject       string          `json:"current_project"`
-	ActiveTool           string          `json:"active_tool"`
-	DefaultTool          string          `json:"default_tool"`
-	DefaultToolProvider  string          `json:"default_tool_provider"`
-	HideStartupPopup     bool            `json:"hide_startup_popup"`
-	HideMaclawLLMPopup   bool            `json:"hide_maclaw_llm_popup"`
-	ShowGemini           bool            `json:"show_gemini"`
-	ShowCodex            bool            `json:"show_codex"`
-	ShowOpenCode         bool            `json:"show_opencode"`
-	ShowCodeBuddy        bool            `json:"show_codebuddy"`
-	ShowIFlow            bool            `json:"show_iflow"`
-	ShowKilo             bool            `json:"show_kilo"`
-	ShowCursor           bool            `json:"show_cursor"`
+	Claude              ToolConfig      `json:"claude"`
+	Gemini              ToolConfig      `json:"gemini"`
+	Codex               ToolConfig      `json:"codex"`
+	Opencode            ToolConfig      `json:"opencode"`
+	CodeBuddy           ToolConfig      `json:"codebuddy"`
+	IFlow               ToolConfig      `json:"iflow"`
+	Kilo                ToolConfig      `json:"kilo"`
+	Cursor              ToolConfig      `json:"cursor"`
+	Projects            []ProjectConfig `json:"projects"`
+	CurrentProject      string          `json:"current_project"`
+	ActiveTool          string          `json:"active_tool"`
+	DefaultTool         string          `json:"default_tool"`
+	DefaultToolProvider string          `json:"default_tool_provider"`
+	HideStartupPopup    bool            `json:"hide_startup_popup"`
+	HideMaclawLLMPopup  bool            `json:"hide_maclaw_llm_popup"`
+	ShowGemini          bool            `json:"show_gemini"`
+	ShowCodex           bool            `json:"show_codex"`
+	ShowOpenCode        bool            `json:"show_opencode"`
+	ShowCodeBuddy       bool            `json:"show_codebuddy"`
+	ShowIFlow           bool            `json:"show_iflow"`
+	ShowKilo            bool            `json:"show_kilo"`
+	ShowCursor          bool            `json:"show_cursor"`
 	// Sidebar navigation visibility (nil = visible by default).
 	// AI 助手, 设置, 关于 are always visible and not configurable.
-	ShowNavMonitor       *bool           `json:"show_nav_monitor,omitempty"`
-	ShowNavSkills        *bool           `json:"show_nav_skills,omitempty"`
-	ShowNavMCP           *bool           `json:"show_nav_mcp,omitempty"`
-	ShowNavGossip        *bool           `json:"show_nav_gossip,omitempty"`
-	ShowNavAgentNet      *bool           `json:"show_nav_agentnet,omitempty"`
-	Language             string          `json:"language"`
-	PowerOptimization    bool            `json:"power_optimization"`
-	ScreenDimTimeoutMin  int             `json:"screen_dim_timeout_min"`
-	WorkstationMode      bool            `json:"workstation_mode"`
-	CheckUpdateOnStartup bool            `json:"check_update_on_startup"`
+	ShowNavMonitor       *bool  `json:"show_nav_monitor,omitempty"`
+	ShowNavSkills        *bool  `json:"show_nav_skills,omitempty"`
+	ShowNavMCP           *bool  `json:"show_nav_mcp,omitempty"`
+	ShowNavGossip        *bool  `json:"show_nav_gossip,omitempty"`
+	ShowNavAgentNet      *bool  `json:"show_nav_agentnet,omitempty"`
+	Language             string `json:"language"`
+	PowerOptimization    bool   `json:"power_optimization"`
+	ScreenDimTimeoutMin  int    `json:"screen_dim_timeout_min"`
+	WorkstationMode      bool   `json:"workstation_mode"`
+	CheckUpdateOnStartup bool   `json:"check_update_on_startup"`
 	// Environment check settings
 	PauseEnvCheck    bool   `json:"pause_env_check"`
 	EnvCheckDone     bool   `json:"env_check_done"`
@@ -146,6 +146,12 @@ type AppConfig struct {
 	QQBotLocalMode     *bool `json:"qqbot_local_mode,omitempty"`     // nil = auto-detect, true = local, false = hub
 	TelegramLocalMode  *bool `json:"telegram_local_mode,omitempty"`  // nil = auto-detect, true = local, false = hub
 	LansengerLocalMode *bool `json:"lansenger_local_mode,omitempty"` // nil = auto-detect, true = local, false = hub
+	// IM third-party local HTTP gateway.
+	ThirdPartyGatewayEnabled   bool   `json:"thirdparty_gateway_enabled,omitempty"`
+	ThirdPartyGatewayToken     string `json:"thirdparty_gateway_token,omitempty"`
+	ThirdPartyGatewayHost      string `json:"thirdparty_gateway_host,omitempty"`
+	ThirdPartyGatewayPort      int    `json:"thirdparty_gateway_port,omitempty"`
+	ThirdPartyGatewayLocalMode *bool  `json:"thirdparty_gateway_local_mode,omitempty"`
 	// Extra tool configs for OEM brands (keyed by ExtraToolDef.ConfigKey)
 	ExtraToolConfigs map[string]ToolConfig `json:"extra_tool_configs,omitempty"`
 	// UI mode: "pro" (full coding tools) or "lite" (default, simplified, no coding tools)
@@ -176,6 +182,8 @@ type AppConfig struct {
 	SpeechLevelCalibrated float64 `json:"speech_level_calibrated,omitempty"`
 	// TTS toggle — enables voice readback of AI responses.
 	TTSEnabled bool `json:"tts_enabled"`
+	// TTSVoiceID stores the selected Kokoro voice id. Empty means default.
+	TTSVoiceID string `json:"tts_voice_id,omitempty"`
 	// TTS auto voice summary — when enabled, IM channel responses automatically
 	// include a voice summary version (语音摘要). Only affects IM channels
 	// (飞书/企微/QQ/钉钉), not the desktop panel.
@@ -357,6 +365,22 @@ func (c *AppConfig) IsLansengerLocalMode() bool {
 // SetLansengerLocal sets the LansengerLocalMode pointer field.
 func (c *AppConfig) SetLansengerLocal(v bool) {
 	c.LansengerLocalMode = &v
+}
+
+// IsThirdPartyGatewayLocalMode returns the effective third-party gateway local mode setting.
+func (c *AppConfig) IsThirdPartyGatewayLocalMode() bool {
+	if c.ThirdPartyGatewayLocalMode == nil {
+		if c.RemoteMachineID != "" {
+			return false
+		}
+		return true
+	}
+	return *c.ThirdPartyGatewayLocalMode
+}
+
+// SetThirdPartyGatewayLocal sets the ThirdPartyGatewayLocalMode pointer field.
+func (c *AppConfig) SetThirdPartyGatewayLocal(v bool) {
+	c.ThirdPartyGatewayLocalMode = &v
 }
 
 // IsWorkflowEnabled returns the effective workflow enabled setting.

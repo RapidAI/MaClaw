@@ -287,3 +287,47 @@ func TestGetActiveProvidersReturnsCopyInLocalMode(t *testing.T) {
 		t.Fatal("GetActiveProviders should return a copy in local mode")
 	}
 }
+
+func TestGetActiveProvidersFallsBackToLocalWhenCloudUnavailable(t *testing.T) {
+	sm := NewSyncManager("http://127.0.0.1:1", "center-1", "secret")
+	src := NewSourceManager(sm)
+	src.SetFallbackProvidersResolver(func() []ComputeProvider {
+		return []ComputeProvider{{ID: "local-1", Name: "Local Backup"}}
+	})
+
+	if err := sm.SyncNow(); err == nil {
+		t.Fatal("SyncNow should fail for unreachable cloud")
+	}
+	got := src.GetActiveProviders()
+	if len(got) != 1 || got[0].ID != "local-1" {
+		t.Fatalf("active providers = %+v, want local fallback", got)
+	}
+}
+
+func TestGetActiveProvidersUsesCloudWhenSyncCurrent(t *testing.T) {
+	sm, srv := newTestSyncManager([]ComputeProvider{{ID: "cloud-1", Name: "Cloud"}}, false, false)
+	defer srv.Close()
+	src := NewSourceManager(sm)
+	src.SetFallbackProvidersResolver(func() []ComputeProvider {
+		return []ComputeProvider{{ID: "local-1", Name: "Local Backup"}}
+	})
+
+	got := src.GetActiveProviders()
+	if len(got) != 1 || got[0].ID != "cloud-1" {
+		t.Fatalf("active providers = %+v, want cloud provider", got)
+	}
+}
+
+func TestGetActiveProvidersDoesNotFallbackOnSuccessfulEmptyCloudSync(t *testing.T) {
+	sm, srv := newTestSyncManager([]ComputeProvider{}, false, false)
+	defer srv.Close()
+	src := NewSourceManager(sm)
+	src.SetFallbackProvidersResolver(func() []ComputeProvider {
+		return []ComputeProvider{{ID: "local-1", Name: "Local Backup"}}
+	})
+
+	got := src.GetActiveProviders()
+	if len(got) != 0 {
+		t.Fatalf("active providers = %+v, want successful empty cloud list", got)
+	}
+}

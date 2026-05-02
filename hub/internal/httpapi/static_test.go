@@ -141,6 +141,26 @@ func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
 	}
 }
 
+func TestRegisterGetCreditsStaticRoutesServesPage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("credits-page"), 0644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerGetCreditsStaticRoutes(mux, dir, "/get-credits")
+
+	req := httptest.NewRequest(http.MethodGet, "/get-credits", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("index status = %d", rec.Code)
+	}
+	if body := rec.Body.String(); body != "credits-page" {
+		t.Fatalf("index body = %q", body)
+	}
+}
+
 func TestAdminLegacyMirrorTreeRemoved(t *testing.T) {
 	legacyDir := filepath.Join("..", "..", "web", "admin", "js")
 	if _, err := os.Stat(legacyDir); !os.IsNotExist(err) {

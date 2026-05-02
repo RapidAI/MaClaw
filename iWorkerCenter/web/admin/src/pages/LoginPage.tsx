@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { setCurrentTenantID } from '../api/client';
 
 type CaptchaData = { captcha_id: string; question: string };
 type TenantItem = { id: string; company_name: string };
@@ -48,6 +49,7 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
       });
       const data = await resp.json();
       if (resp.ok && data.status === 'ok') {
+        setCurrentTenantID(data.tenant_id || selectedTenantId);
         onLogin();
       } else {
         setError(data?.error?.message || data?.message || t('login.error'));

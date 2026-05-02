@@ -1,13 +1,10 @@
 package centers
 
 import (
-	"bytes"
 	"context"
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,30 +19,67 @@ import (
 )
 
 var (
-	ErrNotFound               = errors.New("center not found")
-	ErrDisabled               = errors.New("center disabled")
-	ErrUnauthorized           = errors.New("unauthorized")
-	ErrInvalidServiceIdentity = errors.New("invalid iWorkerCenter service identity")
-	ErrProvisionNotAllowed    = errors.New("center provisioning is not allowed")
+	ErrNotFound                    = errors.New("center not found")
+	ErrDisabled                    = errors.New("center disabled")
+	ErrUnauthorized                = errors.New("unauthorized")
+	ErrInvalidServiceIdentity      = errors.New("invalid iWorkerCenter service identity")
+	ErrServiceManagementNotAllowed = errors.New("center service management is not allowed")
 )
 
 type RegisterRequest struct {
-	CompanyName         string `json:"company_name"`
-	AdminEmail          string `json:"admin_email"`
-	AdminPhone          string `json:"admin_phone"`
-	Address             string `json:"address"`
-	LegalPerson         string `json:"legal_person"`
-	BaseURL             string `json:"base_url"`
-	SupportsMultiTenant bool   `json:"supports_multi_tenant"`
-	TenantCount         int    `json:"tenant_count"`
-	CloudControlMode    string `json:"cloud_control_mode"`
+	CompanyName      string `json:"company_name"`
+	AdminEmail       string `json:"admin_email"`
+	AdminPhone       string `json:"admin_phone,omitempty"`
+	Address          string `json:"address,omitempty"`
+	LegalPerson      string `json:"legal_person,omitempty"`
+	BaseURL          string `json:"base_url"`
+	CloudControlMode string `json:"cloud_control_mode"`
 }
 
 type HeartbeatRequest struct {
-	Secret       string `json:"secret"`
-	RuntimeType  string `json:"runtime_type"`
-	ProductKind  string `json:"product_kind"`
-	AdminConsole string `json:"admin_console"`
+	Secret           string                  `json:"secret"`
+	RuntimeType      string                  `json:"runtime_type"`
+	ProductKind      string                  `json:"product_kind"`
+	AdminConsole     string                  `json:"admin_console"`
+	IWorkerReadiness *IWorkerReadinessReport `json:"iworker_readiness,omitempty"`
+}
+
+type IWorkerReadinessReport struct {
+	Ready               bool             `json:"ready"`
+	Status              string           `json:"status"`
+	AgentInstanceCount  int              `json:"agent_instance_count"`
+	AgentRuntimeReady   bool             `json:"agent_runtime_ready"`
+	GoalWatchReady      bool             `json:"goalwatch_ready"`
+	WorkloadSummary     *WorkloadSummary `json:"workload_summary,omitempty"`
+	RequiredClientPaths []string         `json:"required_client_paths,omitempty"`
+	Checks              []ReadinessItem  `json:"checks,omitempty"`
+	AuthMethods         []AuthItem       `json:"auth_methods,omitempty"`
+}
+
+type WorkloadSummary struct {
+	AgentInstanceCount int    `json:"agent_instance_count"`
+	ActiveCount        int    `json:"active_count"`
+	CompletedCount     int    `json:"completed_count"`
+	ReviewCount        int    `json:"review_count"`
+	BlockedCount       int    `json:"blocked_count"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
+}
+
+type ReadinessItem struct {
+	Name   string `json:"name"`
+	Ready  bool   `json:"ready"`
+	Status string `json:"status"`
+	Count  int    `json:"count,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type AuthItem struct {
+	Method      string `json:"method"`
+	Label       string `json:"label"`
+	Ready       bool   `json:"ready"`
+	Implemented bool   `json:"implemented"`
+	Status      string `json:"status"`
+	Detail      string `json:"detail,omitempty"`
 }
 
 func (r HeartbeatRequest) serviceStatus() centerServiceStatus {
@@ -60,26 +94,32 @@ type RegisterResult struct {
 }
 
 type ManagementSummary struct {
-	TotalCenters       int `json:"total_centers"`
-	PendingCenters     int `json:"pending_centers"`
-	ActiveLicenses     int `json:"active_licenses"`
-	ReadyCenters       int `json:"ready_centers"`
-	NeedsSetup         int `json:"needs_setup"`
-	ProbeFailures      int `json:"probe_failures"`
-	MultiTenantCenters int `json:"multi_tenant_centers"`
-	TenantCount        int `json:"tenant_count"`
-	UnlicensedCenters  int `json:"unlicensed_centers"`
+	TotalCenters           int `json:"total_centers"`
+	PendingCenters         int `json:"pending_centers"`
+	ActiveLicenses         int `json:"active_licenses"`
+	ReadyCenters           int `json:"ready_centers"`
+	NeedsSetup             int `json:"needs_setup"`
+	ProbeFailures          int `json:"probe_failures"`
+	UnlicensedCenters      int `json:"unlicensed_centers"`
+	WorkloadAgentInstances int `json:"workload_agent_instances"`
+	WorkloadActiveTasks    int `json:"workload_active_tasks"`
+	WorkloadCompletedTasks int `json:"workload_completed_tasks"`
+	WorkloadReviewTasks    int `json:"workload_review_tasks"`
+	WorkloadBlockedTasks   int `json:"workload_blocked_tasks"`
 }
 
 type CenterManagement struct {
-	Center             *store.Center       `json:"center"`
-	ActiveLicense      *store.License      `json:"active_license,omitempty"`
-	Ready              bool                `json:"ready"`
-	Issues             []string            `json:"issues"`
-	RecommendedActions []RecommendedAction `json:"recommended_actions"`
-	ManagementPosture  string              `json:"management_posture"`
-	CommercialStatus   string              `json:"commercial_status"`
-	Connectivity       string              `json:"connectivity"`
+	Center                  *store.Center           `json:"center"`
+	ActiveLicense           *store.License          `json:"active_license,omitempty"`
+	Ready                   bool                    `json:"ready"`
+	Issues                  []string                `json:"issues"`
+	RecommendedActions      []RecommendedAction     `json:"recommended_actions"`
+	ManagementPosture       string                  `json:"management_posture"`
+	CommercialStatus        string                  `json:"commercial_status"`
+	Connectivity            string                  `json:"connectivity"`
+	IWorkerOperationalReady bool                    `json:"iworker_operational_ready"`
+	IWorkerReadinessStatus  string                  `json:"iworker_readiness_status,omitempty"`
+	IWorkerReadiness        *IWorkerReadinessReport `json:"iworker_readiness,omitempty"`
 }
 
 type RecommendedAction struct {
@@ -89,8 +129,9 @@ type RecommendedAction struct {
 	Priority    string `json:"priority"`
 }
 
-// ProvisionReadiness describes whether Cloud may perform service-management tenant provisioning.
-type ProvisionReadiness struct {
+// ServiceReadiness describes whether Cloud may enable platform-level services for this Center.
+// It deliberately excludes customer tenant creation and customer business data.
+type ServiceReadiness struct {
 	Allowed       bool                `json:"allowed"`
 	Center        *store.Center       `json:"center"`
 	ActiveLicense *store.License      `json:"active_license,omitempty"`
@@ -113,7 +154,7 @@ func NewService(centers store.CenterRepository, licenseSvc *license.Service) *Se
 	return &Service{centers: centers, licenseSvc: licenseSvc, httpClient: &http.Client{Timeout: 15 * time.Second}}
 }
 
-// SetPrivateKey sets the RSA private key for signing provision requests.
+// SetPrivateKey keeps compatibility for license signing setup. Cloud no longer signs tenant provisioning requests.
 func (s *Service) SetPrivateKey(key *rsa.PrivateKey) {
 	s.privKey = key
 }
@@ -132,21 +173,16 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 
 	id := fmt.Sprintf("ctr_%d", now.UnixNano())
 	c := &store.Center{
-		ID:                  id,
-		CompanyName:         strings.TrimSpace(req.CompanyName),
-		AdminEmail:          strings.TrimSpace(req.AdminEmail),
-		AdminPhone:          strings.TrimSpace(req.AdminPhone),
-		Address:             strings.TrimSpace(req.Address),
-		LegalPerson:         strings.TrimSpace(req.LegalPerson),
-		BaseURL:             strings.TrimSpace(req.BaseURL),
-		SupportsMultiTenant: req.SupportsMultiTenant,
-		TenantCount:         req.TenantCount,
-		CloudControlMode:    normalizeControlMode(req.CloudControlMode),
-		LastSyncStatus:      "registered",
-		Status:              "pending",
-		SecretHash:          hashSecret(rawSecret),
-		CreatedAt:           now,
-		UpdatedAt:           now,
+		ID:               id,
+		CompanyName:      strings.TrimSpace(req.CompanyName),
+		AdminEmail:       strings.TrimSpace(req.AdminEmail),
+		BaseURL:          strings.TrimSpace(req.BaseURL),
+		CloudControlMode: normalizeControlMode(req.CloudControlMode),
+		LastSyncStatus:   "registered",
+		Status:           "pending",
+		SecretHash:       hashSecret(rawSecret),
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
 	if err := s.centers.Create(ctx, c); err != nil {
@@ -179,17 +215,13 @@ func (s *Service) ConfirmManual(ctx context.Context, centerID string, modules []
 	return err
 }
 
-// UpdateIntegration updates how Cloud connects to a multi-tenant iWorkerCenter deployment.
+// UpdateIntegration updates how Cloud connects to an iWorkerCenter service deployment.
 func (s *Service) UpdateIntegration(ctx context.Context, centerID string, patch store.Center) (*store.Center, error) {
 	current, err := s.centers.GetByID(ctx, centerID)
 	if err != nil {
 		return nil, ErrNotFound
 	}
 	current.BaseURL = strings.TrimSpace(patch.BaseURL)
-	current.SupportsMultiTenant = patch.SupportsMultiTenant
-	if patch.TenantCount >= 0 {
-		current.TenantCount = patch.TenantCount
-	}
 	current.CloudControlMode = normalizeControlMode(patch.CloudControlMode)
 	current.LastSyncStatus = strings.TrimSpace(patch.LastSyncStatus)
 	if current.LastSyncStatus == "" {
@@ -228,7 +260,40 @@ func (s *Service) Heartbeat(ctx context.Context, centerID string, req HeartbeatR
 		_ = s.centers.UpdateIntegration(ctx, c)
 		return ErrInvalidServiceIdentity
 	}
-	return s.centers.UpdateHeartbeat(ctx, centerID)
+	c.LastSyncStatus = "heartbeat_ok"
+	applyIWorkerReadiness(c, req.IWorkerReadiness)
+	return s.centers.UpdateHeartbeat(ctx, c)
+}
+
+func applyIWorkerReadiness(center *store.Center, readiness *IWorkerReadinessReport) {
+	if center == nil || readiness == nil {
+		return
+	}
+	sanitized := sanitizeIWorkerReadiness(readiness)
+	center.IWorkerReady = sanitized.Ready
+	center.IWorkerReadinessStatus = strings.TrimSpace(sanitized.Status)
+	center.IWorkerAgentInstanceCount = sanitized.AgentInstanceCount
+	if center.IWorkerReadinessStatus == "" {
+		if sanitized.Ready {
+			center.IWorkerReadinessStatus = "ready"
+		} else {
+			center.IWorkerReadinessStatus = "unknown"
+		}
+	}
+	if raw, err := json.Marshal(sanitized); err == nil {
+		center.IWorkerReadinessJSON = string(raw)
+	}
+}
+
+func sanitizeIWorkerReadiness(readiness *IWorkerReadinessReport) *IWorkerReadinessReport {
+	if readiness == nil {
+		return nil
+	}
+	sanitized := *readiness
+	sanitized.RequiredClientPaths = nil
+	sanitized.Checks = nil
+	sanitized.AuthMethods = nil
+	return &sanitized
 }
 
 // AuthenticateCenter validates the center secret and returns the center record.
@@ -283,14 +348,10 @@ func (s *Service) Management(ctx context.Context) (*ManagementReport, error) {
 		if center.Status == "pending" {
 			report.Summary.PendingCenters++
 		}
-		if center.SupportsMultiTenant {
-			report.Summary.MultiTenantCenters++
-		}
-		report.Summary.TenantCount += center.TenantCount
 		if managementItem.Ready {
 			report.Summary.ReadyCenters++
 		}
-		if containsIssue(managementItem.Issues, "missing_base_url") || containsIssue(managementItem.Issues, "multi_tenant_not_confirmed") || containsIssue(managementItem.Issues, "service_identity_not_verified") {
+		if containsIssue(managementItem.Issues, "missing_base_url") || containsIssue(managementItem.Issues, "service_identity_not_verified") {
 			report.Summary.NeedsSetup++
 		}
 		if containsIssue(managementItem.Issues, "probe_failed") || containsIssue(managementItem.Issues, "probe_missing_base_url") || containsIssue(managementItem.Issues, "probe_not_iworkercenter") || containsIssue(managementItem.Issues, "heartbeat_not_iworkercenter") {
@@ -298,6 +359,16 @@ func (s *Service) Management(ctx context.Context) (*ManagementReport, error) {
 		}
 		if containsIssue(managementItem.Issues, "no_active_license") {
 			report.Summary.UnlicensedCenters++
+		}
+		if managementItem.IWorkerReadiness != nil && managementItem.IWorkerReadiness.WorkloadSummary != nil {
+			workload := managementItem.IWorkerReadiness.WorkloadSummary
+			report.Summary.WorkloadAgentInstances += workload.AgentInstanceCount
+			report.Summary.WorkloadActiveTasks += workload.ActiveCount
+			report.Summary.WorkloadCompletedTasks += workload.CompletedCount
+			report.Summary.WorkloadReviewTasks += workload.ReviewCount
+			report.Summary.WorkloadBlockedTasks += workload.BlockedCount
+		} else {
+			report.Summary.WorkloadAgentInstances += center.IWorkerAgentInstanceCount
 		}
 		report.Items = append(report.Items, managementItem)
 	}
@@ -312,26 +383,6 @@ func (s *Service) Get(ctx context.Context, id string) (*store.Center, error) {
 // Delete removes a center.
 func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.centers.Delete(ctx, id)
-}
-
-// ProvisionRequest is sent to an iWorkerCenter to create a tenant.
-type ProvisionRequest struct {
-	CompanyName   string `json:"company_name"`
-	LegalPerson   string `json:"legal_person"`
-	Email         string `json:"email"`
-	Address       string `json:"address"`
-	AdminUsername string `json:"admin_username"`
-	AdminPassword string `json:"admin_password"`
-	Timestamp     int64  `json:"timestamp"`
-	Nonce         string `json:"nonce"`
-	Signature     string `json:"signature"`
-}
-
-// ProvisionResult is returned by iWorkerCenter.
-type ProvisionResult struct {
-	TenantID string `json:"tenant_id"`
-	Status   string `json:"status"`
-	Message  string `json:"message"`
 }
 
 // ProbeResult describes a cloud-side connectivity check to a Center.
@@ -349,6 +400,7 @@ type ProbeResult struct {
 	ComputePermission   bool                     `json:"compute_permission,omitempty"`
 	CloudProviderCount  int                      `json:"cloud_provider_count,omitempty"`
 	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status,omitempty"`
+	IWorkerReadiness    *IWorkerReadinessReport  `json:"iworker_readiness,omitempty"`
 }
 
 type centerComputeSyncStatus struct {
@@ -369,6 +421,7 @@ type centerServiceStatus struct {
 	ComputePermission   bool                     `json:"compute_permission"`
 	CloudProviderCount  int                      `json:"cloud_provider_count"`
 	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status"`
+	IWorkerReadiness    *IWorkerReadinessReport  `json:"iworker_readiness,omitempty"`
 }
 
 func (s centerServiceStatus) isIWorkerCenterService() bool {
@@ -413,6 +466,7 @@ func (s *Service) fetchRuntimeSnapshot(ctx context.Context, center *store.Center
 	result.ComputePermission = serviceStatus.ComputePermission
 	result.CloudProviderCount = serviceStatus.CloudProviderCount
 	result.ComputeSyncStatus = serviceStatus.ComputeSyncStatus
+	result.IWorkerReadiness = sanitizeIWorkerReadiness(serviceStatus.IWorkerReadiness)
 	if serviceStatus.isIWorkerCenterService() {
 		result.OK = true
 		result.Message = "iWorkerCenter service identity verified"
@@ -445,6 +499,7 @@ func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *st
 		center.LastSyncStatus = "probe_missing_base_url"
 	} else if result.OK {
 		center.LastSyncStatus = "probe_ok"
+		applyIWorkerReadiness(center, result.IWorkerReadiness)
 	} else if result.StatusCode == 0 && result.BaseURL != "" {
 		center.LastSyncStatus = "probe_failed"
 	} else if result.RuntimeType != "" || result.ProductKind != "" || result.AdminConsole != "" {
@@ -457,10 +512,11 @@ func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *st
 	return result, updated, nil
 }
 
-// ProvisionReadiness checks whether Cloud may manage tenant provisioning for this Center.
-// iWorkerCloud remains a vendor management plane: it may provision tenants only when
-// the target iWorkerCenter is active, licensed, multi-tenant capable, and reachable by URL.
-func (s *Service) ProvisionReadiness(ctx context.Context, centerID string) (*ProvisionReadiness, error) {
+// ServiceReadiness checks whether Cloud may enable platform services for this Center.
+// iWorkerCloud remains a vendor coordination plane: registration, authorization,
+// connectivity checks, compute distribution, skill entitlement, and observed readiness.
+// Tenant/company/user administration stays inside each iWorkerCenter.
+func (s *Service) ServiceReadiness(ctx context.Context, centerID string) (*ServiceReadiness, error) {
 	center, err := s.centers.GetByID(ctx, centerID)
 	if err != nil {
 		return nil, ErrNotFound
@@ -472,14 +528,13 @@ func (s *Service) ProvisionReadiness(ctx context.Context, centerID string) (*Pro
 	management := buildCenterManagement(center, activeLicense)
 	allowed := center.Status == "active" &&
 		strings.TrimSpace(center.BaseURL) != "" &&
-		center.SupportsMultiTenant &&
 		isServiceIdentityVerified(center.LastSyncStatus) &&
 		activeLicense != nil
 	issues := append([]string(nil), management.Issues...)
 	if !allowed && len(issues) == 0 {
 		issues = append(issues, "center_not_ready")
 	}
-	return &ProvisionReadiness{
+	return &ServiceReadiness{
 		Allowed:       allowed,
 		Center:        center,
 		ActiveLicense: activeLicense,
@@ -488,83 +543,16 @@ func (s *Service) ProvisionReadiness(ctx context.Context, centerID string) (*Pro
 	}, nil
 }
 
-// EnsureProvisionAllowed returns the Center only when Cloud-side tenant provisioning is allowed.
-func (s *Service) EnsureProvisionAllowed(ctx context.Context, centerID string) (*store.Center, error) {
-	readiness, err := s.ProvisionReadiness(ctx, centerID)
+// EnsureServiceManagementAllowed returns the Center only when platform service management is allowed.
+func (s *Service) EnsureServiceManagementAllowed(ctx context.Context, centerID string) (*store.Center, error) {
+	readiness, err := s.ServiceReadiness(ctx, centerID)
 	if err != nil {
 		return nil, err
 	}
 	if !readiness.Allowed {
-		return nil, fmt.Errorf("%w: %s", ErrProvisionNotAllowed, strings.Join(readiness.Issues, ","))
+		return nil, fmt.Errorf("%w: %s", ErrServiceManagementNotAllowed, strings.Join(readiness.Issues, ","))
 	}
 	return readiness.Center, nil
-}
-
-// ProvisionRemote sends a signed provision request to an iWorkerCenter.
-func (s *Service) ProvisionRemote(ctx context.Context, centerBaseURL string, companyName, legalPerson, email, address, adminUser, adminPass string) (*ProvisionResult, error) {
-	if s.privKey == nil {
-		return nil, fmt.Errorf("private key not set")
-	}
-
-	timestamp := time.Now().Unix()
-	nonce, err := randomToken()
-	if err != nil {
-		return nil, err
-	}
-
-	// Build body without signature
-	bodyMap := map[string]any{
-		"company_name":   companyName,
-		"legal_person":   legalPerson,
-		"email":          email,
-		"address":        address,
-		"admin_username": adminUser,
-		"admin_password": adminPass,
-		"timestamp":      timestamp,
-		"nonce":          nonce,
-	}
-	bodyJSON, err := json.Marshal(bodyMap)
-	if err != nil {
-		return nil, err
-	}
-
-	// Sign: sha256(timestamp:nonce:sha256hex(body))
-	bodyHash := sha256.Sum256(bodyJSON)
-	bodyHashHex := hex.EncodeToString(bodyHash[:])
-	payload := fmt.Sprintf("%d:%s:%s", timestamp, nonce, bodyHashHex)
-	payloadHash := sha256.Sum256([]byte(payload))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, s.privKey, crypto.SHA256, payloadHash[:])
-	if err != nil {
-		return nil, fmt.Errorf("sign: %w", err)
-	}
-
-	// Add signature to body
-	bodyMap["signature"] = base64.StdEncoding.EncodeToString(sig)
-	finalBody, _ := json.Marshal(bodyMap)
-
-	url := strings.TrimRight(centerBaseURL, "/") + "/api/tenants/provision"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(finalBody))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("provision request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("provision failed: status %d, body: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result ProvisionResult
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("decode provision response: %w", err)
-	}
-	return &result, nil
 }
 
 func randomToken() (string, error) {
@@ -588,9 +576,6 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 	if strings.TrimSpace(center.BaseURL) == "" {
 		issues = append(issues, "missing_base_url")
 	}
-	if !center.SupportsMultiTenant {
-		issues = append(issues, "multi_tenant_not_confirmed")
-	}
 	if strings.TrimSpace(center.BaseURL) != "" && !isServiceIdentityVerified(center.LastSyncStatus) {
 		switch center.LastSyncStatus {
 		case "probe_failed", "probe_missing_base_url", "probe_not_iworkercenter", "heartbeat_not_iworkercenter":
@@ -602,11 +587,10 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 	if activeLicense == nil {
 		issues = append(issues, "no_active_license")
 	}
-
 	ready := len(issues) == 0
 	connectivity := "unknown"
 	switch center.LastSyncStatus {
-	case "probe_ok", "tenant_provisioned", "heartbeat_ok":
+	case "probe_ok", "heartbeat_ok":
 		connectivity = "reachable"
 	case "probe_failed", "probe_missing_base_url", "probe_not_iworkercenter", "heartbeat_not_iworkercenter":
 		connectivity = "failed"
@@ -622,7 +606,7 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 	ManagementPosture := "watch"
 	if ready {
 		ManagementPosture = "ready"
-	} else if containsIssue(issues, "missing_base_url") || containsIssue(issues, "multi_tenant_not_confirmed") {
+	} else if containsIssue(issues, "missing_base_url") {
 		ManagementPosture = "needs_setup"
 	} else if containsIssue(issues, "service_identity_not_verified") {
 		ManagementPosture = "needs_setup"
@@ -633,15 +617,30 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 	}
 
 	return CenterManagement{
-		Center:             center,
-		ActiveLicense:      activeLicense,
-		Ready:              ready,
-		Issues:             issues,
-		RecommendedActions: buildRecommendedActions(issues),
-		ManagementPosture:  ManagementPosture,
-		CommercialStatus:   commercialStatus,
-		Connectivity:       connectivity,
+		Center:                  center,
+		ActiveLicense:           activeLicense,
+		Ready:                   ready,
+		Issues:                  issues,
+		RecommendedActions:      buildRecommendedActions(issues),
+		ManagementPosture:       ManagementPosture,
+		CommercialStatus:        commercialStatus,
+		Connectivity:            connectivity,
+		IWorkerOperationalReady: center.IWorkerReady,
+		IWorkerReadinessStatus:  center.IWorkerReadinessStatus,
+		IWorkerReadiness:        parseIWorkerReadiness(center.IWorkerReadinessJSON),
 	}
+}
+
+func parseIWorkerReadiness(raw string) *IWorkerReadinessReport {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var readiness IWorkerReadinessReport
+	if err := json.Unmarshal([]byte(raw), &readiness); err != nil {
+		return nil
+	}
+	return &readiness
 }
 
 func buildRecommendedActions(issues []string) []RecommendedAction {
@@ -649,7 +648,7 @@ func buildRecommendedActions(issues []string) []RecommendedAction {
 		return []RecommendedAction{{
 			Code:        "ready_for_service_management",
 			Label:       "Ready for system service",
-			Description: "This Center is active, licensed, reachable, and multi-tenant capable. Cloud may manage iWorkerCenter services such as authorization, compute distribution, skill entitlement, upgrades, and connectivity.",
+			Description: "This Center is active, licensed, reachable, and identity-verified. Cloud may coordinate iWorkerCenter platform services such as registration, authorization, compute distribution, skill entitlement, upgrades, and connectivity. Customer business remains inside iWorkerCenter.",
 			Priority:    "info",
 		}}
 	}
@@ -660,10 +659,8 @@ func buildRecommendedActions(issues []string) []RecommendedAction {
 			actions = append(actions, RecommendedAction{Code: "activate_center", Label: "Activate Center", Description: "Approve this iWorkerCenter instance and issue a trial or manual authorization before iWorkerCenter management services are enabled.", Priority: "high"})
 		case "missing_base_url":
 			actions = append(actions, RecommendedAction{Code: "configure_base_url", Label: "Configure Base URL", Description: "Set the reachable iWorkerCenter base URL so Cloud can perform licensing, connectivity probes, compute distribution, and skill entitlement.", Priority: "high"})
-		case "multi_tenant_not_confirmed":
-			actions = append(actions, RecommendedAction{Code: "confirm_multi_tenant", Label: "Confirm Multi-tenant Support", Description: "Mark this Center as multi-tenant capable only after tenant isolation and Cloud integration are verified. Customer enterprise operations remain inside iWorkerCenter.", Priority: "medium"})
 		case "probe_failed", "probe_missing_base_url", "service_identity_not_verified":
-			actions = append(actions, RecommendedAction{Code: "test_connection", Label: "Test Connection", Description: "Run a connection probe after checking network, DNS, TLS, and the Center /api/center/status endpoint before enabling provisioning.", Priority: "high"})
+			actions = append(actions, RecommendedAction{Code: "test_connection", Label: "Test Connection", Description: "Run a connection probe after checking network, DNS, TLS, and the Center /api/center/status endpoint before enabling Cloud service coordination.", Priority: "high"})
 		case "probe_not_iworkercenter", "heartbeat_not_iworkercenter":
 			actions = append(actions, RecommendedAction{Code: "verify_center_service_identity", Label: "Verify Center Service Identity", Description: "The configured endpoint did not identify itself as an iWorkerCenter service. Check the URL before enabling cloud-side authorization, compute distribution, or skill entitlement.", Priority: "high"})
 		case "no_active_license":
@@ -695,7 +692,7 @@ func isActiveLicense(lic *store.License, now time.Time) bool {
 
 func isServiceIdentityVerified(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "probe_ok", "heartbeat_ok", "tenant_provisioned":
+	case "probe_ok", "heartbeat_ok":
 		return true
 	default:
 		return false

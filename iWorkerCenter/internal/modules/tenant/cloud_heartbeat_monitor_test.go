@@ -29,6 +29,9 @@ func TestCloudHeartbeatMonitorSendsImmediateServiceHeartbeat(t *testing.T) {
 	monitor := NewCloudHeartbeatMonitor(client, func(context.Context) (string, string, error) {
 		return "center-1", "secret-abc", nil
 	}, time.Hour)
+	monitor.SetReadinessResolver(func(context.Context) *CloudIWorkerReadiness {
+		return &CloudIWorkerReadiness{Ready: true, Status: "ready", AgentInstanceCount: 1}
+	})
 	monitor.Start()
 	defer monitor.Stop()
 
@@ -36,6 +39,9 @@ func TestCloudHeartbeatMonitorSendsImmediateServiceHeartbeat(t *testing.T) {
 	case req := <-seen:
 		if req.Secret != "secret-abc" || req.RuntimeType != "service" || req.ProductKind != "iworkercenter" || req.AdminConsole != "web_console" {
 			t.Fatalf("heartbeat request = %+v", req)
+		}
+		if req.IWorkerReadiness == nil || req.IWorkerReadiness.Status != "ready" {
+			t.Fatalf("IWorkerReadiness = %+v", req.IWorkerReadiness)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("heartbeat was not sent immediately")
@@ -99,5 +105,35 @@ func TestCloudHeartbeatMonitorSnapshotTracksSuccessAndFailure(t *testing.T) {
 	succeeded := monitor.Snapshot()
 	if succeeded.Status != "online" || succeeded.LastError != "" || succeeded.ConsecutiveFailures != 0 || succeeded.CenterID != "center-1" {
 		t.Fatalf("success snapshot = %+v", succeeded)
+	}
+}
+
+func TestCloudHeartbeatMonitorTriggerNowSendsReadiness(t *testing.T) {
+	seen := make(chan CenterHeartbeatRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CenterHeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seen <- req
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer srv.Close()
+
+	monitor := NewCloudHeartbeatMonitor(NewCloudClient(CloudConfig{BaseURL: srv.URL}), func(context.Context) (string, string, error) {
+		return "center-1", "secret-abc", nil
+	}, time.Hour)
+	monitor.SetReadinessResolver(func(context.Context) *CloudIWorkerReadiness {
+		return &CloudIWorkerReadiness{Ready: true, Status: "ready", AgentInstanceCount: 2}
+	})
+	monitor.TriggerNow()
+
+	select {
+	case req := <-seen:
+		if req.IWorkerReadiness == nil || req.IWorkerReadiness.AgentInstanceCount != 2 {
+			t.Fatalf("readiness = %+v", req.IWorkerReadiness)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("triggered heartbeat was not sent")
 	}
 }

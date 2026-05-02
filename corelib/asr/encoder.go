@@ -1,4 +1,4 @@
-﻿package asr
+package asr
 
 import (
 	"math"
@@ -12,14 +12,14 @@ import (
 // encoderBufs holds reusable scratch buffers for encoder layers,
 // eliminating per-layer allocations during inference.
 type encoderBufs struct {
-	q, k, v     []float32 // [maxFrames * dim]
-	residual    []float32
-	ffOut       []float32 // [maxFrames * ffDim]
-	downOut     []float32
-	attnOut     []float32
-	projOut     []float32
-	scores      []float32 // [maxFrames] for sdpa
-	rotaryDim   int       // cached, avoids recomputing per layer
+	q, k, v   []float32 // [maxFrames * dim]
+	residual  []float32
+	ffOut     []float32 // [maxFrames * ffDim]
+	downOut   []float32
+	attnOut   []float32
+	projOut   []float32
+	scores    []float32 // [maxFrames] for sdpa
+	rotaryDim int       // cached, avoids recomputing per layer
 	// RoPE precomputed cos/sin tables: [maxFrames][halfRotDim]
 	ropeCos [][]float32
 	ropeSin [][]float32
@@ -81,16 +81,18 @@ func (m *MoonshineModel) encode(pcm []float32) ([]float32, int, error) {
 	x = conv1dParallel(x, nFrames, dim, w.conv2W, 7, c1, 3)
 	nFrames = len(x) / c1
 	if w.conv2B != nil {
-		tensor.AddBias(x, nFrames, c1, w.conv2B)
+		tensor.AddBiasGELU(x, nFrames, c1, w.conv2B)
+	} else {
+		tensor.GELU(x)
 	}
-	tensor.GELU(x)
 
 	x = conv1dParallel(x, nFrames, c1, w.conv3W, 3, dim, 2)
 	nFrames = len(x) / dim
 	if w.conv3B != nil {
-		tensor.AddBias(x, nFrames, dim, w.conv3B)
+		tensor.AddBiasGELU(x, nFrames, dim, w.conv3B)
+	} else {
+		tensor.GELU(x)
 	}
-	tensor.GELU(x)
 
 	// Allocate encoder scratch buffers once for all layers
 	ffDim := w.encLayers[0].ffUpW.Rows
@@ -110,7 +112,7 @@ func (m *MoonshineModel) encode(pcm []float32) ([]float32, int, error) {
 
 // conv1dParallel: parallelized conv1d with ggml kernel layout [outCh][inCh][kSize].
 func conv1dParallel(input []float32, inLen, inCh int, kernel []float32, kSize, outCh, stride int) []float32 {
-	outLen := (inLen - kSize) / stride + 1
+	outLen := (inLen-kSize)/stride + 1
 	if outLen <= 0 {
 		return nil
 	}
@@ -228,9 +230,10 @@ func (m *MoonshineModel) encoderLayerOpt(x []float32, nFrames int, l *encoderLay
 	ffOut := eb.ffOut[:nFrames*ffDim]
 	tensor.MatMulQ8(ffOut, x[:n], l.ffUpW, nFrames, ffDim, dim)
 	if l.ffUpB != nil {
-		tensor.AddBias(ffOut, nFrames, ffDim, l.ffUpB)
+		tensor.AddBiasGELU(ffOut, nFrames, ffDim, l.ffUpB)
+	} else {
+		tensor.GELU(ffOut)
 	}
-	tensor.GELU(ffOut)
 
 	downOut := eb.downOut[:n]
 	tensor.MatMulQ8(downOut, ffOut, l.ffDownW, nFrames, dim, ffDim)
@@ -270,21 +273,8 @@ func sdpaMultiHeadOpt(q, k, v, out, scores []float32, seqQ, seqK, nHeads, headDi
 				kOff := sk*dim + hOff
 				scores[sk] = vek32.Dot(qVec, k[kOff:kOff+headDim]) * scale
 			}
-			tensor.Softmax(scores[:seqK])
-
 			outOff := sq*dim + hOff
-			// Zero output slice
-			for i := 0; i < headDim; i++ {
-				out[outOff+i] = 0
-			}
-			// Weighted sum of values
-			for sk := 0; sk < seqK; sk++ {
-				w := scores[sk]
-				vOff := sk*dim + hOff
-				for i := 0; i < headDim; i++ {
-					out[outOff+i] += w * v[vOff+i]
-				}
-			}
+			tensor.SoftmaxWeightedSumStrided(out[outOff:outOff+headDim], scores[:seqK], v[hOff:], seqK, dim, headDim)
 		}
 	}
 }

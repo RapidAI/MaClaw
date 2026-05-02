@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 func TestHandlerTenantStatus_Empty(t *testing.T) {
@@ -109,6 +108,20 @@ func TestHandlerSetupTenant_Success(t *testing.T) {
 	}
 }
 
+func TestRegisterRoutesDoesNotExposeCloudProvision(t *testing.T) {
+	svc, _ := newTestService(t)
+	h := NewHandler(svc)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tenants/provision", bytes.NewReader([]byte(`{"company_name":"Acme","admin_password":"secret"}`)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body=%s, want 404 for disabled cloud tenant provisioning route", w.Code, w.Body.String())
+	}
+}
+
 func TestHandlerSetupTenant_AlreadyDone(t *testing.T) {
 	svc, _ := newTestService(t)
 	h := NewHandler(svc)
@@ -135,28 +148,5 @@ func TestHandlerSetupTenant_AlreadyDone(t *testing.T) {
 	h.handleSetupTenant(w2, req2)
 	if w2.Code != http.StatusConflict {
 		t.Errorf("expected 409, got %d: %s", w2.Code, w2.Body.String())
-	}
-}
-
-func TestHandlerProvision_NoCloudConfig(t *testing.T) {
-	svc, _ := newTestService(t)
-	h := NewHandler(svc)
-
-	body, _ := json.Marshal(ProvisionRequest{
-		CompanyName:   "远程公司",
-		Email:         "remote@t.com",
-		AdminUsername: "admin",
-		AdminPassword: "pass",
-		Timestamp:     time.Now().Unix(),
-		Nonce:         "nonce-1",
-		Signature:     "invalid",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/tenants/provision", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-	h.handleProvision(w, req)
-
-	// Should fail because no cloud config (pubKeyCache is nil)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503, got %d: %s", w.Code, w.Body.String())
 	}
 }

@@ -72,6 +72,11 @@ interface AIAssistantSendResult {
     RunID?: string;
 }
 
+interface AIAssistantContextMessage {
+    role: 'user' | 'assistant';
+    content: string;
+}
+
 interface SendMessageOptions {
     resumeSlotID?: string;
     startNewTask?: boolean;
@@ -237,6 +242,7 @@ const PROGRESS_EVENT = "ai-assistant-progress";
 export const AI_ASSISTANT_HISTORY_STORAGE_KEY = "ai-assistant-history";
 export const AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY = "ai-assistant-prompt-history";
 const MAX_PERSISTED_MESSAGES = 200;
+const MAX_CONTEXT_MESSAGES_TO_SEND = 80;
 const MAX_PERSISTED_PROMPTS = 100;
 const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
@@ -381,6 +387,36 @@ function serializePersistedMessages(msgs: ChatMessage[]): string | null {
             return rest;
         });
     return toSave.length === 0 ? null : JSON.stringify(toSave);
+}
+
+function buildClientContextMessages(messages: ChatMessage[]): AIAssistantContextMessage[] {
+    return messages
+        .filter((message): message is ChatMessage & { role: 'user' | 'assistant' } =>
+            (message.role === 'user' || message.role === 'assistant') && message.content.trim() !== ''
+        )
+        .slice(-MAX_CONTEXT_MESSAGES_TO_SEND)
+        .map(message => ({
+            role: message.role,
+            content: message.content,
+        }));
+}
+
+function buildAIAssistantSendPayload(
+    outgoingText: string,
+    requestId: string,
+    recentMessages: AIAssistantContextMessage[],
+    options?: SendMessageOptions,
+) {
+    const payload: Record<string, unknown> = {
+        text: outgoingText,
+        request_id: requestId,
+    };
+    if (recentMessages.length > 0) payload.recent_messages = recentMessages;
+    if (options?.resumeSlotID) payload.resume_slot_id = options.resumeSlotID;
+    if (options?.startNewTask !== undefined) payload.start_new_task = options.startNewTask;
+    if (options?.dismissSlotID) payload.dismiss_slot_id = options.dismissSlotID;
+    if (options?.uiAction !== undefined) payload.ui_action = options.uiAction;
+    return payload;
 }
 
 function persistMessages(msgs: ChatMessage[]) {
@@ -540,6 +576,19 @@ function markLatestConfirmationAsRunning(messages: ChatMessage[]): ChatMessage[]
         },
     };
     return next;
+}
+
+function findLatestConfirmationAction(messages: ChatMessage[], command: string): ChatAction | undefined {
+    const index = findLastIndex(messages, message => message.role === 'assistant' && !!message.confirmation);
+    if (index < 0) return undefined;
+    return messages[index].actions?.find(action => action.command === command);
+}
+
+function isConfirmationApprovalAction(action: ChatAction | undefined): boolean {
+    if (!action) return false;
+    const text = `${action.label} ${action.command}`.toLocaleLowerCase();
+    if (text.includes('cancel') || text.includes('reject')) return false;
+    return true;
 }
 
 function appendTokenToMessage(message: ChatMessage, delta: string): ChatMessage {
@@ -1451,6 +1500,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const [pendingTask, setPendingTask] = useState<AIAssistantPendingTask | null>(null);
     const activeRoundRef = useRef<ActiveRound>(IDLE_ROUND);
     const pendingTaskRef = useRef<AIAssistantPendingTask | null>(null);
+    const foregroundSendTailRef = useRef<Promise<boolean>>(Promise.resolve(true));
+    const idleWaitersRef = useRef<Set<() => void>>(new Set());
     const initStatusRef = useRef<AIAssistantInitStatus>("connecting");
     const latestNewsPayloadRef = useRef<string>("[]");
     const progressTailRef = useRef<string | null>(null);
@@ -1461,6 +1512,22 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         refreshSessionsOnlyRef.current = options?.refreshSessionsOnly;
     }, [options?.refreshSessionsOnly]);
 
+    const notifyForegroundIdle = useCallback(() => {
+        if (activeRoundRef.current.phase !== 'idle' || pendingTaskRef.current) return;
+        const waiters = Array.from(idleWaitersRef.current);
+        idleWaitersRef.current.clear();
+        waiters.forEach(resolve => resolve());
+    }, []);
+
+    const waitForForegroundIdle = useCallback(() => {
+        if (activeRoundRef.current.phase === 'idle' && !pendingTaskRef.current) {
+            return Promise.resolve();
+        }
+        return new Promise<void>(resolve => {
+            idleWaitersRef.current.add(resolve);
+        });
+    }, []);
+
     const setPendingTaskState = useCallback((nextTask: AIAssistantPendingTask | null) => {
         pendingTaskRef.current = nextTask;
         setPendingTask(current => {
@@ -1470,7 +1537,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 && current?.runID === nextTask?.runID;
             return same ? current : nextTask;
         });
-    }, []);
+        if (!nextTask) notifyForegroundIdle();
+    }, [notifyForegroundIdle]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1601,8 +1669,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
         activeRoundRef.current = next;
         setActiveRound(prev => sameActiveRound(prev, next) ? prev : next);
+        if (next.phase === 'idle') notifyForegroundIdle();
         return next;
-    }, []);
+    }, [notifyForegroundIdle]);
 
     const transitionRound = useCallback((updater: (current: ActiveRound) => ActiveRound) => {
         const next = updater(activeRoundRef.current);
@@ -1807,11 +1876,12 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
     }, [ensureRoundPlaceholder, transitionRound]);
 
-    const sendMessage = useCallback(async (text: string, options?: SendMessageOptions) => {
+    const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
         // embedding file paths into `text` via buildOutgoingMessageMulti before calling here.
         const outgoingText = text.trim();
-        if (outgoingText === "" || activeRoundRef.current.phase !== 'idle') return;
+        if (outgoingText === "") return false;
+        await waitForForegroundIdle();
 
         const generation = activeRoundRef.current.generation + 1;
         const assistantMessageId = nextId();
@@ -1830,6 +1900,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             timestamp: Date.now(),
         };
         const approvalMessage = options?.markConfirmationRunning === true;
+        const recentMessages = buildClientContextMessages(latestMessagesRef.current);
 
         setRoundState({
             generation,
@@ -1843,19 +1914,14 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         });
 
         try {
-            const rawResponse = await SendAIAssistantMessage({
-                text: outgoingText,
-                request_id: requestId,
-                resume_slot_id: options?.resumeSlotID,
-                start_new_task: options?.startNewTask,
-                dismiss_slot_id: options?.dismissSlotID,
-                ui_action: options?.uiAction,
-            }) as AIAssistantSendResult;
+            const rawResponse = await SendAIAssistantMessage(
+                buildAIAssistantSendPayload(outgoingText, requestId, recentMessages, options)
+            ) as AIAssistantSendResult;
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(response);
             const effectiveRequestId = responseRequestId || requestId;
             if (activeRoundRef.current.generation !== generation && activeRoundRef.current.requestId !== effectiveRequestId) {
-                return;
+                return true;
             }
             if (responseRequestId && responseRequestId !== requestId) {
                 setRoundState({
@@ -1889,7 +1955,18 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } finally {
             finalizeRound(generation);
         }
-    }, [finalizeRound, preferences, setRoundState]);
+        return true;
+    }, [finalizeRound, preferences, setRoundState, waitForForegroundIdle]);
+
+    const sendMessage = useCallback((text: string, options?: SendMessageOptions): Promise<boolean> => {
+        const outgoingText = text.trim();
+        if (outgoingText === "") return Promise.resolve(false);
+        const run = foregroundSendTailRef.current
+            .catch(() => true)
+            .then(() => sendMessageNow(outgoingText, options));
+        foregroundSendTailRef.current = run.catch(() => false);
+        return run;
+    }, [sendMessageNow]);
 
     const sendMessageInBackground = useCallback(async (text: string) => {
         // Callers are responsible for embedding file paths into `text` before calling here.
@@ -2085,6 +2162,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const executionCancelMatch = command.match(/^__cancel_execution__\s+(\S+)$/);
         if (executionCancelMatch) {
             return sendMessage(command, { uiAction: true, displayText: '取消' });
+        }
+        const legacyConfirmationAction = findLatestConfirmationAction(latestMessagesRef.current, command);
+        if (isConfirmationApprovalAction(legacyConfirmationAction)) {
+            return sendMessage(command, { uiAction: true, displayText: legacyConfirmationAction?.label || command, markConfirmationRunning: true });
         }
         const traceMatch = command.match(/^__view_trace__\s+(\S+)$/);
         if (traceMatch) {

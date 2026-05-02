@@ -3,6 +3,7 @@ import type { TaskAttachment } from '../types';
 
 type SubmitTaskResult = {
   task_type: string;
+  task_title?: string;
   colleague_name: string;
   expected_output: string;
   model: string;
@@ -155,7 +156,7 @@ export function NewTaskPage({
             {submitResult ? (
               <div className="dw-feedback-card dw-feedback-success">
                 <div className="dw-feedback-meta">
-                  <span className="dw-status-pill">任务：{submitResult.task_type}</span>
+                  <span className="dw-status-pill">任务：{submitResult.task_title || submitResult.task_type}</span>
                   <span className="dw-status-pill">同事：{submitResult.colleague_name}</span>
                   <span className="dw-status-pill">模型：{submitResult.model}</span>
                 </div>

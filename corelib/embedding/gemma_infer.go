@@ -11,7 +11,7 @@ import (
 )
 
 // Embed returns the embedding vector for a single text string.
-// Uses a shared scratch buffer protected by a mutex — suitable for sequential calls.
+// Uses a shared scratch buffer protected by a mutex, suitable for sequential calls.
 func (g *GemmaEmbedder) Embed(text string) ([]float32, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -215,7 +215,7 @@ func (g *GemmaEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 		maxWorkers = len(texts)
 	}
 
-	// Disable internal MatMul parallelism — we're parallelizing at the batch
+	// Disable internal MatMul parallelism; we're parallelizing at the batch
 	// level instead. Each goroutine runs a full single-threaded inference,
 	// which avoids nested goroutine contention and maximizes CPU utilization.
 	tensor.SetMatMulMaxParallel(1)
@@ -303,7 +303,7 @@ func (g *GemmaEmbedder) getScratchFromPool(seq int) *gemmaScratch {
 			g.recomputeRoPE(s, seq)
 			return s
 		}
-		// Too small — discard and allocate fresh
+		// Too small; discard and allocate fresh.
 	}
 	return newGemmaScratch(g.hp, seq)
 }
@@ -350,7 +350,7 @@ func (g *GemmaEmbedder) forward(tokenIDs []int) ([]float32, error) {
 }
 
 // forwardWithScratch runs the Gemma2 transformer with an externally provided
-// scratch buffer. This is the core inference function — safe to call from
+// scratch buffer. This is the core inference function, safe to call from
 // multiple goroutines as long as each has its own scratch and weights are
 // read-only (mmap-backed Q8 tensors).
 func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]float32, error) {
@@ -406,7 +406,7 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 			tensor.RMSNorm(normed[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], layer.attnNormW, hp.RMSNormEps)
 		}
 
-		// Q, K, V projections — Q8 MatMul (normed is float32, weights are Q8)
+		// Q, K, V projections using Q8 MatMul (normed is float32, weights are Q8).
 		tensor.MatMulQ8(q, normed, &layer.attnQWeight, seq, dim, dim)
 		tensor.MatMulQ8(k, normed, &layer.attnKWeight, seq, kvDim, dim)
 		tensor.MatMulQ8(v, normed, &layer.attnVWeight, seq, kvDim, dim)
@@ -415,7 +415,7 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 		for s := 0; s < seq; s++ {
 			for h := 0; h < nHeads; h++ {
 				off := s*dim + h*headDim
-				// In-place RMSNorm — avoids copy through temp buffer.
+				// In-place RMSNorm avoids copying through a temp buffer.
 				tensor.RMSNorm(q[off:off+headDim], q[off:off+headDim], layer.attnQNormW, hp.RMSNormEps)
 			}
 			for h := 0; h < nKVHeads; h++ {
@@ -431,7 +431,7 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 		// GQA attention
 		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim, sc.scores[:seq])
 
-		// Output projection — Q8 MatMul
+		// Output projection using Q8 MatMul.
 		tensor.MatMulQ8(projOut, attnOut, &layer.attnOutWeight, seq, dim, dim)
 
 		// Post-attention norm + residual
@@ -445,13 +445,13 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 			tensor.RMSNorm(normed[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], layer.ffNormW, hp.RMSNormEps)
 		}
 
-		// Gate + Up — Q8 MatMul
+		// Gate + Up using Q8 MatMul.
 		tensor.MatMulQ8(ffGate, normed, &layer.ffGateWeight, seq, ffDim, dim)
 		tensor.MatMulQ8(ffUp, normed, &layer.ffUpWeight, seq, ffDim, dim)
-		// Fused SiLU(gate) * up — saves one full pass over ffDim*seq elements
+		// Fused SiLU(gate) * up saves one full pass over ffDim*seq elements.
 		tensor.SiLUMul(ffGate, ffUp)
 
-		// Down projection — Q8 MatMul
+		// Down projection using Q8 MatMul.
 		tensor.MatMulQ8(ffDown, ffGate, &layer.ffDownWeight, seq, dim, ffDim)
 
 		// Post-FFN norm + residual
@@ -466,7 +466,7 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 		tensor.RMSNorm(x[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], g.weights.outputNorm, hp.RMSNormEps)
 	}
 
-	// Mean pooling — use scratch buffer and SIMD-accelerated addition
+	// Mean pooling uses a scratch buffer and SIMD-accelerated addition.
 	out := sc.poolOut[:dim]
 	for i := range out {
 		out[i] = 0
@@ -502,27 +502,9 @@ func (g *GemmaEmbedder) gqaAttention(out, q, k, v []float32,
 				scores[sk] = tensor.Dot(qVec, k[kOff:kOff+headDim]) * scale
 			}
 
-			tensor.Softmax(scores[:seq])
-
-			// Weighted sum of V: fused scale-add without Axpy pool overhead.
-			// For typical seq=40, headDim=256, this is ~10K FMAs — fast enough
-			// as a scalar loop that the compiler can auto-vectorize.
 			outOff := sq*qStride + h*headDim
 			outSlice := out[outOff : outOff+headDim]
-			for i := range outSlice {
-				outSlice[i] = 0
-			}
-			for sk := 0; sk < seq; sk++ {
-				s := scores[sk]
-				if s == 0 {
-					continue
-				}
-				vOff := sk*kvStride + kvH*headDim
-				vSlice := v[vOff : vOff+headDim]
-				for i := 0; i < headDim; i++ {
-					outSlice[i] += s * vSlice[i]
-				}
-			}
+			tensor.SoftmaxWeightedSumStrided(outSlice, scores[:seq], v[kvH*headDim:], seq, kvStride, headDim)
 		}
 	}
 }

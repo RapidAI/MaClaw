@@ -18,7 +18,8 @@ export interface LLMProvider {
 
 export interface CenterPermission {
   center_id: string;
-  company_name: string;
+  center_name?: string;
+  company_name?: string;
   compute_permission: boolean;
 }
 

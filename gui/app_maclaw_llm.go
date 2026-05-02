@@ -47,6 +47,8 @@ func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.Macl
 	provider.Key = strings.TrimSpace(provider.Key)
 	provider.Model = strings.TrimSpace(provider.Model)
 	provider.TimeoutSec = normalizeLLMTimeoutSec(provider.TimeoutSec)
+	provider.InputPricePerMTokensRMB = corelib.NormalizeLLMTokenPricePerMTokensRMB(provider.InputPricePerMTokensRMB, corelib.DefaultLLMInputPricePerMTokensRMB)
+	provider.OutputPricePerMTokensRMB = corelib.NormalizeLLMTokenPricePerMTokensRMB(provider.OutputPricePerMTokensRMB, corelib.DefaultLLMOutputPricePerMTokensRMB)
 	return provider
 }
 

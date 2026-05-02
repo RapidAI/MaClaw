@@ -131,6 +131,9 @@ export namespace main {
 	    role_name: string;
 	    role_description: string;
 	    timeout_sec: number;
+	    auth_method?: string;
+	    auth_username?: string;
+	    auth_password?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new ApplyCenterEnrollmentRequest(source);
@@ -145,6 +148,9 @@ export namespace main {
 	        this.role_name = source["role_name"];
 	        this.role_description = source["role_description"];
 	        this.timeout_sec = source["timeout_sec"];
+	        this.auth_method = source["auth_method"];
+	        this.auth_username = source["auth_username"];
+	        this.auth_password = source["auth_password"];
 	    }
 	}
 
@@ -221,6 +227,31 @@ export namespace main {
 		}
 	}
 
+	export class CenterWorkStatusSummary {
+	    current_task?: string;
+	    current_detail?: string;
+	    active_count: number;
+	    completed_count: number;
+	    review_count: number;
+	    blocked_count: number;
+	    updated_at?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterWorkStatusSummary(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.current_task = source["current_task"];
+	        this.current_detail = source["current_detail"];
+	        this.active_count = source["active_count"];
+	        this.completed_count = source["completed_count"];
+	        this.review_count = source["review_count"];
+	        this.blocked_count = source["blocked_count"];
+	        this.updated_at = source["updated_at"];
+	    }
+	}
+
 	export class CenterAgentInstance {
 	    tenant_id: string;
 	    worker_id: string;
@@ -231,6 +262,7 @@ export namespace main {
 	    capabilities: string[];
 	    memory_authority: string;
 	    local_cache_mode: string;
+	    work_status?: CenterWorkStatusSummary;
 	    host_id?: string;
 	    process_id?: number;
 	    started_at: string;
@@ -253,6 +285,7 @@ export namespace main {
 	        this.capabilities = source["capabilities"];
 	        this.memory_authority = source["memory_authority"];
 	        this.local_cache_mode = source["local_cache_mode"];
+	        this.work_status = source["work_status"] ? new CenterWorkStatusSummary(source["work_status"]) : undefined;
 	        this.host_id = source["host_id"];
 	        this.process_id = source["process_id"];
 	        this.started_at = source["started_at"];
@@ -415,6 +448,7 @@ export namespace main {
 	    config_path: string;
 	    message: string;
 	    resolved_base_url: string;
+	    iworker_readiness?: any;
 
 	    static createFrom(source: any = {}) {
 	        return new CenterHealthStatus(source);
@@ -428,6 +462,7 @@ export namespace main {
 	        this.config_path = source["config_path"];
 	        this.message = source["message"];
 	        this.resolved_base_url = source["resolved_base_url"];
+	        this.iworker_readiness = source["iworker_readiness"];
 	    }
 	}
 	export class Colleague {
@@ -714,6 +749,7 @@ export namespace main {
 	}
 	export class SubmitTaskResult {
 	    task_type: string;
+	    task_title: string;
 	    colleague_name: string;
 	    expected_output: string;
 	    model: string;
@@ -726,6 +762,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.task_type = source["task_type"];
+	        this.task_title = source["task_title"];
 	        this.colleague_name = source["colleague_name"];
 	        this.expected_output = source["expected_output"];
 	        this.model = source["model"];

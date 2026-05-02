@@ -226,6 +226,12 @@ func (c *RemoteHubClient) syncIMGatewayClaims() {
 			log.Printf("[hub-client] re-sent qqbot gateway claim on connect")
 		}
 	}
+	// Third-party local HTTP gateway
+	if !cfg.IsThirdPartyGatewayLocalMode() && c.app.thirdPartyGateway != nil && c.app.thirdPartyGateway.Status() == "connected" {
+		if err := c.SendIMGatewayClaim("thirdparty"); err == nil {
+			log.Printf("[hub-client] re-sent thirdparty gateway claim on connect")
+		}
+	}
 }
 
 // errHubAuthFailed is returned when the hub rejects machine credentials.
@@ -1192,6 +1198,22 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			FileData:    reply.FileData,
 			FileName:    reply.FileName,
 			MimeType:    reply.MimeType,
+		})
+	case "thirdparty":
+		if c.app.thirdPartyGateway == nil {
+			c.app.log("[hub-client] im.gateway_reply: thirdPartyGateway is nil, ignoring")
+			return
+		}
+		c.app.thirdPartyGateway.HandleGatewayReply(GatewayReplyPayload{
+			ReplyType:   reply.ReplyType,
+			PlatformUID: reply.PlatformUID,
+			Text:        reply.Text,
+			ImageData:   reply.ImageData,
+			Caption:     reply.Caption,
+			FileData:    reply.FileData,
+			FileName:    reply.FileName,
+			MimeType:    reply.MimeType,
+			Extra:       reply.Extra,
 		})
 	}
 }

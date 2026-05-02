@@ -137,20 +137,115 @@ function New-CleanDirectory {
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
 }
 
+function Test-StageExcludedPath {
+    param(
+        [string]$RelativePath,
+        [string[]]$ExcludePaths
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+        return $false
+    }
+
+    $normalized = ($RelativePath -replace '/', '\').Trim('\')
+    foreach ($exclude in $ExcludePaths) {
+        if ([string]::IsNullOrWhiteSpace($exclude)) {
+            continue
+        }
+        $excludeNormalized = ($exclude -replace '/', '\').Trim('\')
+        if ($normalized.Equals($excludeNormalized, [StringComparison]::OrdinalIgnoreCase) -or
+            $normalized.StartsWith($excludeNormalized + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Copy-StageDirectory {
+    param(
+        [string]$SourceRoot,
+        [string]$DestinationRoot,
+        [string[]]$ExcludePaths = @(),
+        [string[]]$ExcludeFilePatterns = @()
+    )
+
+    if (-not (Test-Path -LiteralPath $SourceRoot)) {
+        return
+    }
+
+    New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+    $sourceFullPath = (Resolve-Path -LiteralPath $SourceRoot).Path.TrimEnd('\')
+
+    function Copy-StageDirectoryChildren {
+        param([string]$CurrentSource)
+
+        Get-ChildItem -LiteralPath $CurrentSource -Force | ForEach-Object {
+            $relative = $_.FullName.Substring($sourceFullPath.Length).TrimStart('\')
+            if (Test-StageExcludedPath -RelativePath $relative -ExcludePaths $ExcludePaths) {
+                return
+            }
+
+            $destination = Join-Path $DestinationRoot $relative
+            if ($_.PSIsContainer) {
+                New-Item -ItemType Directory -Path $destination -Force | Out-Null
+                Copy-StageDirectoryChildren -CurrentSource $_.FullName
+                return
+            }
+
+            foreach ($pattern in $ExcludeFilePatterns) {
+                if ($_.Name -like $pattern) {
+                    return
+                }
+            }
+
+            $destinationParent = Split-Path -Parent $destination
+            if (-not [string]::IsNullOrWhiteSpace($destinationParent)) {
+                New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+            }
+            Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+        }
+    }
+
+    Copy-StageDirectoryChildren -CurrentSource $SourceRoot
+}
+
 function Stage-SourceTree {
     param(
         [string]$SourceRoot,
         [string]$StageRoot
     )
 
+    $includeRapidSpeech = (Get-EnvOrDefault 'DEPLOY_INCLUDE_RAPIDSPEECH' '0') -eq '1'
+
     $copyDirs = @(
-        'corelib',
-        'hub',
-        'hubcenter',
-        'openclaw-bridge',
-        'RapidSpeech.cpp',
-        'gui\internal\systray'
+        [pscustomobject]@{
+            Path = 'corelib'
+            ExcludePaths = @('tts', 'yolo\weights', '.gocache', '.gomodcache', 'bin', 'package', 'data')
+        },
+        [pscustomobject]@{
+            Path = 'hub'
+            ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache')
+        },
+        [pscustomobject]@{
+            Path = 'hubcenter'
+            ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache')
+        },
+        [pscustomobject]@{
+            Path = 'openclaw-bridge'
+            ExcludePaths = @('node_modules', 'dist')
+        },
+        [pscustomobject]@{
+            Path = 'gui\internal\systray'
+            ExcludePaths = @()
+        }
     )
+
+    if ($includeRapidSpeech) {
+        $copyDirs += [pscustomobject]@{
+            Path = 'RapidSpeech.cpp'
+            ExcludePaths = @('build', 'models', '.git', 'ggml\.git', 'test', 'server', 'examples', 'assets')
+        }
+    }
     $copyFiles = @('go.mod', 'go.sum')
 
     foreach ($file in $copyFiles) {
@@ -161,52 +256,20 @@ function Stage-SourceTree {
     }
 
     foreach ($dir in $copyDirs) {
-        $src = Join-Path $SourceRoot $dir
+        $src = Join-Path $SourceRoot $dir.Path
         if (Test-Path $src) {
-            $dstParent = Split-Path -Parent (Join-Path $StageRoot $dir)
+            $dst = Join-Path $StageRoot $dir.Path
+            $dstParent = Split-Path -Parent $dst
             if (-not [string]::IsNullOrWhiteSpace($dstParent)) {
                 New-Item -ItemType Directory -Path $dstParent -Force | Out-Null
             }
-            Copy-Item -LiteralPath $src -Destination (Join-Path $StageRoot $dir) -Recurse -Force
+            Copy-StageDirectory -SourceRoot $src -DestinationRoot $dst -ExcludePaths $dir.ExcludePaths -ExcludeFilePatterns @('*.exe', '*.exe~')
         }
     }
 
-
-    $removePaths = @(
-        'hub\bin',
-        'hub\package',
-        'hub\data',
-        'hub\.gocache',
-        'hub\.gomodcache',
-        'hubcenter\bin',
-        'hubcenter\package',
-        'hubcenter\data',
-        'hubcenter\.gocache',
-        'hubcenter\.gomodcache',
-        'openclaw-bridge\node_modules',
-        'openclaw-bridge\dist',
-        'RapidSpeech.cpp\build',
-        'RapidSpeech.cpp\models',
-        'RapidSpeech.cpp\.git',
-        'RapidSpeech.cpp\ggml\.git',
-        'RapidSpeech.cpp\test',
-        'RapidSpeech.cpp\server',
-        'RapidSpeech.cpp\examples',
-        'RapidSpeech.cpp\assets',
-        'RapidSpeech.cpp\RapidSpeech.cpp.rar',
-        'corelib\yolo\weights'
-    )
-
-    foreach ($rel in $removePaths) {
-        $target = Join-Path $StageRoot $rel
-        if (Test-Path $target) {
-            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
-        }
+    if (-not $includeRapidSpeech) {
+        Write-Host '  - RapidSpeech source skipped for fast deploy (set DEPLOY_INCLUDE_RAPIDSPEECH=1 to include it).'
     }
-
-    Get-ChildItem -LiteralPath $StageRoot -Recurse -File -Force | Where-Object {
-        $_.Extension -ieq '.exe' -or $_.Name -like '*.exe~'
-    } | Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
 function Write-InventoryFile {
@@ -296,7 +359,7 @@ function Write-RemoteScript {
         ': "${DEPLOY_HUB:=0}"',
         ': "${ENSURE_HUB_MODELS:=0}"',
         ': "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"',
-        ': "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf}"',
+        ': "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip}"',
         ': "${HUB_CONFIG_BASENAME:=}"',
         ': "${HUBCENTER_CONFIG_BASENAME:=hubcenter-config.yaml}"',
         ': "${HUB_BINARY_NAME:=maclaw-hub}"',
@@ -426,12 +489,23 @@ function Write-RemoteScript {
         '  chmod +x "$MODEL_SCRIPT"',
         '}',
         '',
+        'hub_models_missing() {',
+        '  for name in $HUB_MODEL_FILES; do',
+        '    if [ ! -f "$HUB_MODELS_DIR/$name" ]; then',
+        '      return 0',
+        '    fi',
+        '  done',
+        '  return 1',
+        '}',
+        '',
         'ensure_hub_models() {',
-        '  if [ -f "$MODEL_SENTINEL" ]; then',
+        '  mkdir -p "$HUB_MODELS_DIR" "$HUB_DATA_DIR/logs"',
+        '  if ! hub_models_missing; then',
+        '    touch "$MODEL_SENTINEL"',
         '    seed_home_models',
         '    return 0',
         '  fi',
-        '  mkdir -p "$HUB_MODELS_DIR" "$HUB_DATA_DIR/logs"',
+        '  rm -f "$MODEL_SENTINEL"',
         '  if [ -f "$MODEL_LOCK" ]; then',
         '    echo "[remote] Hub model download already in progress."',
         '    return 0',
@@ -722,7 +796,7 @@ $sshPort = [int](Get-EnvOrDefault 'REMOTE_PORT' '22')
 $cgoEnabled = Get-EnvOrDefault 'CGO_ENABLED' '0'
 $goproxy = Get-EnvOrDefault 'GOPROXY' 'https://goproxy.cn,direct'
 $hubModelBaseUrl = Get-EnvOrDefault 'HUB_MODEL_BASE_URL' 'https://github.com/RapidAI/MaClaw/releases/download/Model_Release'
-$hubModelFiles = Get-EnvOrDefault 'HUB_MODEL_FILES' 'embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf'
+$hubModelFiles = Get-EnvOrDefault 'HUB_MODEL_FILES' 'embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip'
 
 $brandKey = $Brand.ToLowerInvariant()
 $brandBuildTag = ''
@@ -870,7 +944,10 @@ try {
             Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $hubConfigPath -RemotePath "$($target.RemoteTmpDir)/$($target.HubConfig)"
             $remoteModelSentinel = "$($target.RemoteHubDir)/data/models/.models-initialized"
             $remoteModelLock = "$($target.RemoteHubDir)/data/models/.models-downloading"
-            $modelState = Invoke-PlinkCapture -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText "if [ -f '$remoteModelSentinel' ]; then echo ready; elif [ -f '$remoteModelLock' ]; then echo downloading; else echo missing; fi"
+            $remoteModelDir = "$($target.RemoteHubDir)/data/models"
+            $remoteModelFilesList = ($hubModelFiles -split '\s+' | Where-Object { $_ }) -join ' '
+            $modelStateScript = "missing=0; for name in $remoteModelFilesList; do [ -f '$remoteModelDir/`$name' ] || missing=1; done; if [ -f '$remoteModelLock' ]; then echo downloading; elif [ `$missing -eq 0 ]; then echo ready; else echo missing; fi"
+            $modelState = Invoke-PlinkCapture -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText $modelStateScript
             if ($modelState -eq 'ready') {
                 $modelStatuses += ("{0}: existing models kept in {1}/data/models" -f $target.Host, $target.RemoteHubDir)
             }
@@ -951,6 +1028,7 @@ finally {
         Remove-Item -LiteralPath $passwordFile -Force -ErrorAction SilentlyContinue
     }
 }
+
 
 
 

@@ -345,3 +345,45 @@ func TestSyncNowMissingStaticCredentialsWaitsForCredentials(t *testing.T) {
 		t.Fatal("status error should explain missing credentials")
 	}
 }
+
+func TestSyncNowFailureMarksNonBlockingCachedProviders(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			_ = json.NewEncoder(w).Encode(syncResponse{Providers: []ComputeProvider{{ID: "p1", Name: "Cloud GPT"}}})
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("cloud down"))
+	}))
+	defer srv.Close()
+
+	sm := NewSyncManager(srv.URL, "center-1", "secret-abc")
+	if err := sm.SyncNow(); err != nil {
+		t.Fatalf("first SyncNow() error: %v", err)
+	}
+	if err := sm.SyncNow(); err == nil {
+		t.Fatal("second SyncNow() should fail")
+	}
+	status := sm.GetSyncStatus()
+	if status.Status != "failure" || !status.NonBlocking || status.RuntimeImpact != "using_cached_cloud_providers" || status.ProviderCount != 1 {
+		t.Fatalf("status = %+v, want non-blocking cached provider failure", status)
+	}
+}
+
+func TestSyncNowFailureWithoutCacheMarksLocalFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	sm := NewSyncManager(srv.URL, "center-1", "secret-abc")
+	if err := sm.SyncNow(); err == nil {
+		t.Fatal("SyncNow() should fail")
+	}
+	status := sm.GetSyncStatus()
+	if status.Status != "failure" || !status.NonBlocking || status.RuntimeImpact != "local_settings_fallback" || status.ProviderCount != 0 {
+		t.Fatalf("status = %+v, want non-blocking local fallback failure", status)
+	}
+}

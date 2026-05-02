@@ -1,7 +1,8 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk";
-import { normalizeAccountId } from "openclaw/plugin-sdk";
+import { normalizeAccountId, resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
 
 import {
   registerWeixinAccountId,
@@ -37,11 +38,11 @@ function isRemoteUrl(mediaUrl: string): boolean {
   return mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://");
 }
 
-const MEDIA_OUTBOUND_TEMP_DIR = "/tmp/openclaw/weixin/media/outbound-temp";
+const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
 
 /** Resolve any local path scheme to an absolute filesystem path. */
 function resolveLocalPath(mediaUrl: string): string {
-  if (mediaUrl.startsWith("file://")) return new URL(mediaUrl).pathname;
+  if (mediaUrl.startsWith("file://")) return fileURLToPath(mediaUrl);
   // Resolve any relative path (./foo, ../foo, .openclaw/foo, foo/bar) against cwd
   if (!path.isAbsolute(mediaUrl)) return path.resolve(mediaUrl);
   return mediaUrl;
@@ -126,12 +127,13 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
     deliveryMode: "direct",
     textChunkLimit: 4000,
     sendText: async (ctx) => {
+      const account = resolveWeixinAccount(ctx.cfg, ctx.accountId);
       const result = await sendWeixinOutbound({
         cfg: ctx.cfg,
         to: ctx.to,
         text: ctx.text,
-        accountId: ctx.accountId,
-        contextToken: getContextToken(ctx.accountId!, ctx.to),
+        accountId: account.accountId,
+        contextToken: getContextToken(account.accountId, ctx.to),
       });
       return result;
     },
@@ -173,8 +175,8 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         cfg: ctx.cfg,
         to: ctx.to,
         text: ctx.text ?? "",
-        accountId: ctx.accountId,
-        contextToken: getContextToken(ctx.accountId!, ctx.to),
+        accountId: account.accountId,
+        contextToken: getContextToken(account.accountId, ctx.to),
       });
       return result;
     },

@@ -19,8 +19,7 @@ type Config struct {
 	} `yaml:"database"`
 
 	Cloud struct {
-		BaseURL             string `yaml:"base_url"`
-		PublicKeyCacheHours int    `yaml:"public_key_cache_hours"`
+		BaseURL string `yaml:"base_url"`
 	} `yaml:"cloud"`
 
 	Logging struct {
@@ -34,7 +33,6 @@ func Default() *Config {
 	cfg.Server.Host = "0.0.0.0"
 	cfg.Server.Port = 9377
 	cfg.Database.DSN = "" // resolved at runtime from ~/.iworkercenter/center.db
-	cfg.Cloud.PublicKeyCacheHours = 24
 	cfg.Logging.Level = "info"
 	return cfg
 }

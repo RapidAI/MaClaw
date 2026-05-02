@@ -21,6 +21,9 @@ export interface ComputeProvider {
 
 export interface ComputeStatus {
   compute_source: 'cloud' | 'local';
+  effective_source?: 'cloud' | 'local' | 'local_fallback' | string;
+  fallback_active?: boolean;
+  active_provider_count?: number;
   compute_permission: boolean;
   last_sync_at?: string;
   sync_status?: ComputeSyncStatus;
@@ -44,11 +47,17 @@ export function getComputeStatus(): Promise<ComputeStatus> {
   return apiGet<{
     source: string;
     compute_permission: boolean;
+    effective_source?: string;
+    fallback_active?: boolean;
+    active_provider_count?: number;
     sync_status?: ComputeSyncStatus;
     last_sync_at?: string;
     provider_count?: number;
   }>('/admin/compute/source').then(d => ({
     compute_source: d.source as 'cloud' | 'local',
+    effective_source: d.effective_source,
+    fallback_active: d.fallback_active,
+    active_provider_count: d.active_provider_count,
     compute_permission: d.compute_permission,
     sync_status: d.sync_status,
     last_sync_at: d.last_sync_at || d.sync_status?.last_sync_at,
@@ -98,6 +107,8 @@ export interface ComputeSyncStatus {
   status: ComputeSyncState;
   error?: string;
   provider_count: number;
+  non_blocking?: boolean;
+  runtime_impact?: 'cloud_sync_current' | 'using_cached_cloud_providers' | 'local_settings_fallback' | 'waiting_for_cloud_sync' | string;
 }
 
 export function getSyncStatus(): Promise<ComputeSyncStatus> {

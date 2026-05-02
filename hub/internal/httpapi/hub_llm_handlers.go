@@ -143,6 +143,9 @@ type hubLLMCacheStatus struct {
 	InputTokens       int64                        `json:"input_tokens"`
 	CachedInputTokens int64                        `json:"cached_input_tokens"`
 	CacheWriteTokens  int64                        `json:"cache_write_tokens"`
+	InputCostRMB      float64                      `json:"input_cost_rmb,omitempty"`
+	OutputCostRMB     float64                      `json:"output_cost_rmb,omitempty"`
+	TotalCostRMB      float64                      `json:"total_cost_rmb,omitempty"`
 	Requests          int64                        `json:"requests"`
 	CachedRequests    int64                        `json:"cached_requests"`
 	CacheRate         float64                      `json:"cache_rate"`
@@ -184,6 +187,9 @@ func hubLLMPromptCacheStatus(r *http.Request, system store.SystemSettingsReposit
 		out.InputTokens += stat.InputTokens
 		out.CachedInputTokens += stat.CachedInputTokens
 		out.CacheWriteTokens += stat.CacheWriteTokens
+		out.InputCostRMB += stat.InputCostRMB
+		out.OutputCostRMB += stat.OutputCostRMB
+		out.TotalCostRMB += stat.TotalCostRMB
 		out.Requests += stat.Requests
 		out.CachedRequests += stat.CachedRequests
 	}

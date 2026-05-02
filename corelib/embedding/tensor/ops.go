@@ -158,7 +158,7 @@ func fastExp(x float32) float32 {
 	// exp(x) ≈ 2^(x / ln2) via IEEE 754 float bit manipulation.
 	// Constant: 2^23 / ln(2) ≈ 12102203.16, bias: 127 * 2^23 = 1065353216.
 	const (
-		a = 12102203.0 // 2^23 / ln(2)
+		a = 12102203.0             // 2^23 / ln(2)
 		b = 1065353216.0 - 60801.0 // 127*2^23 - correction term
 	)
 	if x < -88 {
@@ -335,17 +335,22 @@ func L2Normalize(v []float32) {
 // out and x may alias.
 func LayerNorm(out, x, weight []float32, eps float32) {
 	n := len(x)
+	if n == 0 {
+		return
+	}
 	mean := vek32.Sum(x) / float32(n)
-	var variance float32
-	for i := 0; i < n; i++ {
-		d := x[i] - mean
-		variance += d * d
+	variance := vek32.Dot(x, x)/float32(n) - mean*mean
+	if variance < 0 {
+		variance = 0
 	}
-	variance /= float32(n)
 	scale := 1.0 / float32(math.Sqrt(float64(variance+eps)))
-	for i := 0; i < n; i++ {
-		out[i] = (x[i] - mean) * scale * weight[i]
+	out = out[:n]
+	if &out[0] != &x[0] {
+		copy(out, x[:n])
 	}
+	vek32.AddNumber_Inplace(out, -mean)
+	vek32.MulNumber_Inplace(out, scale)
+	vek32.Mul_Inplace(out, weight[:n])
 }
 
 // GroupNorm1 computes GroupNorm with n_groups=1 over a [time, channels] tensor.
@@ -353,25 +358,25 @@ func LayerNorm(out, x, weight []float32, eps float32) {
 // data is row-major [time][channels]. weight and bias are [channels].
 func GroupNorm1(data []float32, time, channels int, weight, bias []float32, eps float32) {
 	n := time * channels
-	mean := vek32.Sum(data[:n]) / float32(n)
-	var variance float32
-	for i := 0; i < n; i++ {
-		d := data[i] - mean
-		variance += d * d
+	if n == 0 {
+		return
 	}
-	variance /= float32(n)
+	mean := vek32.Sum(data[:n]) / float32(n)
+	variance := vek32.Dot(data[:n], data[:n])/float32(n) - mean*mean
+	if variance < 0 {
+		variance = 0
+	}
 	scale := 1.0 / float32(math.Sqrt(float64(variance+eps)))
 	for t := 0; t < time; t++ {
 		off := t * channels
-		for c := 0; c < channels; c++ {
-			v := (data[off+c] - mean) * scale
-			if weight != nil {
-				v *= weight[c]
-			}
-			if bias != nil {
-				v += bias[c]
-			}
-			data[off+c] = v
+		row := data[off : off+channels]
+		vek32.AddNumber_Inplace(row, -mean)
+		vek32.MulNumber_Inplace(row, scale)
+		if weight != nil {
+			vek32.Mul_Inplace(row, weight[:channels])
+		}
+		if bias != nil {
+			vek32.Add_Inplace(row, bias[:channels])
 		}
 	}
 }
@@ -389,6 +394,127 @@ func GELU(x []float32) {
 	for i := range x {
 		v := float64(x[i])
 		x[i] = float32(0.5 * v * (1.0 + math.Tanh(c*(v+0.044715*v*v*v))))
+	}
+}
+
+// AddBiasGELU fuses row-wise bias addition with GELU activation.
+func AddBiasGELU(data []float32, rows, dim int, bias []float32) {
+	const c = 0.7978845608 // sqrt(2/pi)
+	for r := 0; r < rows; r++ {
+		off := r * dim
+		row := data[off : off+dim]
+		for i := 0; i < dim; i++ {
+			v := float64(row[i] + bias[i])
+			row[i] = float32(0.5 * v * (1.0 + math.Tanh(c*(v+0.044715*v*v*v))))
+		}
+	}
+}
+
+// WeightedSumStrided computes out = sum_r weights[r] * values[r*stride:r*stride+dim].
+// It is tuned for attention heads where each value row is embedded in a larger
+// model-dimension stride.
+func WeightedSumStrided(out, weights, values []float32, rows, stride, dim int) {
+	if rows <= 0 || dim <= 0 {
+		return
+	}
+	w0 := weights[0]
+	v0 := values[:dim]
+	i := 0
+	for ; i+7 < dim; i += 8 {
+		out[i] = w0 * v0[i]
+		out[i+1] = w0 * v0[i+1]
+		out[i+2] = w0 * v0[i+2]
+		out[i+3] = w0 * v0[i+3]
+		out[i+4] = w0 * v0[i+4]
+		out[i+5] = w0 * v0[i+5]
+		out[i+6] = w0 * v0[i+6]
+		out[i+7] = w0 * v0[i+7]
+	}
+	for ; i < dim; i++ {
+		out[i] = w0 * v0[i]
+	}
+
+	for r := 1; r < rows; r++ {
+		w := weights[r]
+		if w == 0 {
+			continue
+		}
+		v := values[r*stride : r*stride+dim]
+		i = 0
+		for ; i+7 < dim; i += 8 {
+			out[i] += w * v[i]
+			out[i+1] += w * v[i+1]
+			out[i+2] += w * v[i+2]
+			out[i+3] += w * v[i+3]
+			out[i+4] += w * v[i+4]
+			out[i+5] += w * v[i+5]
+			out[i+6] += w * v[i+6]
+			out[i+7] += w * v[i+7]
+		}
+		for ; i < dim; i++ {
+			out[i] += w * v[i]
+		}
+	}
+}
+
+// SoftmaxWeightedSumStrided computes out = softmax(scores) @ values without
+// materializing normalized scores. scores is reused as exp(score-max) scratch.
+func SoftmaxWeightedSumStrided(out, scores, values []float32, rows, stride, dim int) {
+	if rows <= 0 || dim <= 0 {
+		return
+	}
+	scores = scores[:rows]
+	max := vek32.Max(scores)
+	var sum float32
+	for i := range scores {
+		v := fastExp(scores[i] - max)
+		scores[i] = v
+		sum += v
+	}
+	if sum == 0 {
+		for i := 0; i < dim; i++ {
+			out[i] = 0
+		}
+		return
+	}
+	invSum := 1.0 / sum
+	w0 := scores[0] * invSum
+	v0 := values[:dim]
+	i := 0
+	for ; i+7 < dim; i += 8 {
+		out[i] = w0 * v0[i]
+		out[i+1] = w0 * v0[i+1]
+		out[i+2] = w0 * v0[i+2]
+		out[i+3] = w0 * v0[i+3]
+		out[i+4] = w0 * v0[i+4]
+		out[i+5] = w0 * v0[i+5]
+		out[i+6] = w0 * v0[i+6]
+		out[i+7] = w0 * v0[i+7]
+	}
+	for ; i < dim; i++ {
+		out[i] = w0 * v0[i]
+	}
+
+	for r := 1; r < rows; r++ {
+		w := scores[r] * invSum
+		if w == 0 {
+			continue
+		}
+		v := values[r*stride : r*stride+dim]
+		i = 0
+		for ; i+7 < dim; i += 8 {
+			out[i] += w * v[i]
+			out[i+1] += w * v[i+1]
+			out[i+2] += w * v[i+2]
+			out[i+3] += w * v[i+3]
+			out[i+4] += w * v[i+4]
+			out[i+5] += w * v[i+5]
+			out[i+6] += w * v[i+6]
+			out[i+7] += w * v[i+7]
+		}
+		for ; i < dim; i++ {
+			out[i] += w * v[i]
+		}
 	}
 }
 

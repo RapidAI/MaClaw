@@ -45,11 +45,8 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/admin/centers/{id}/integration", RequireAdmin(UpdateCenterIntegrationHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/centers/{id}/probe", RequireAdmin(ProbeCenterHandler(centerSvc)))
 	mux.HandleFunc("GET /api/admin/centers/{id}/runtime-snapshot", RequireAdmin(RuntimeSnapshotHandler(centerSvc)))
-	mux.HandleFunc("GET /api/admin/centers/{id}/provision-readiness", RequireAdmin(ProvisionReadinessHandler(centerSvc)))
+	mux.HandleFunc("GET /api/admin/centers/{id}/service-readiness", RequireAdmin(ServiceReadinessHandler(centerSvc)))
 	mux.HandleFunc("DELETE /api/admin/centers/{id}", RequireAdmin(DeleteCenterHandler(centerSvc)))
-
-	// Provision tenant on a remote center (admin)
-	mux.HandleFunc("POST /api/admin/centers/{id}/provision-tenant", RequireAdmin(ProvisionTenantHandler(centerSvc)))
 
 	// Licenses (admin)
 	mux.HandleFunc("GET /api/admin/licenses", RequireAdmin(ListLicensesHandler(licenseSvc)))

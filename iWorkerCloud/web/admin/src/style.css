@@ -367,22 +367,6 @@ label { display: block; font-size: 12px; font-weight: 800; color: var(--muted); 
   background: #ecf3ff;
 }
 
-.cloud-provision-panel {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  padding: 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(31,143,106,.18);
-  background: linear-gradient(135deg, rgba(31,143,106,.08), rgba(47,128,237,.08));
-}
-
-.cloud-provision-panel p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
-}
 
 .field-span-2 {
   grid-column: 1 / -1;
@@ -392,8 +376,7 @@ label { display: block; font-size: 12px; font-weight: 800; color: var(--muted); 
   .cloud-market-grid,
   .cloud-posture-panel,
   .cloud-action-panel,
-  .cloud-integration-panel,
-  .cloud-provision-panel {
+  .cloud-integration-panel {
     grid-template-columns: 1fr;
   }
 }

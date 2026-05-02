@@ -27,6 +27,7 @@ const USAGE_STATS_I18N = {
     summaryCacheWrite: 'Cache Write Tokens',
     summaryRequests: 'Requests',
     summaryCredits: 'Credits',
+    summaryCostRMB: 'Charge (RMB)',
     trendTitle: '24-Hour Trend',
     trendEmpty: 'No daily trend is available for the selected view.',
     rowsTitle: 'Usage Ranking',
@@ -39,6 +40,7 @@ const USAGE_STATS_I18N = {
     colCacheRate: 'Cache Rate',
     colRequests: 'Requests',
     colCredits: 'Credits',
+    colCostRMB: 'Charge',
     loadFailed: 'Load usage stats failed: {error}',
     generatedAt: 'Generated at {time}'
   },
@@ -66,6 +68,7 @@ const USAGE_STATS_I18N = {
     summaryCacheWrite: '\u7f13\u5b58\u5199\u5165 Token',
     summaryRequests: '\u8bf7\u6c42\u6570',
     summaryCredits: '\u79ef\u5206',
+    summaryCostRMB: '\u8ba1\u8d39\uff08\u5143\uff09',
     trendTitle: '24 \u5c0f\u65f6\u8d8b\u52bf',
     trendEmpty: '\u5f53\u524d\u7b5b\u9009\u4e0b\u65e0\u6bcf\u65e5\u8d8b\u52bf\u6570\u636e\u3002',
     rowsTitle: '\u7528\u91cf\u6392\u540d',
@@ -78,6 +81,7 @@ const USAGE_STATS_I18N = {
     colCacheRate: '\u7f13\u5b58\u7387',
     colRequests: '\u8bf7\u6c42\u6570',
     colCredits: '\u79ef\u5206',
+    colCostRMB: '\u8ba1\u8d39',
     loadFailed: '\u52a0\u8f7d\u4f7f\u7528\u7edf\u8ba1\u5931\u8d25: {error}',
     generatedAt: '\u751f\u6210\u65f6\u95f4 {time}'
   }
@@ -115,6 +119,11 @@ function fmtCredits(value) {
   const n = Number(value || 0);
   return Math.abs(n - Math.round(n)) < 0.000001 ? String(Math.round(n)) : n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
+function fmtRMB(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return '0';
+  return n.toFixed(n >= 100 ? 2 : 4).replace(/0+$/, '').replace(/\.$/, '') || '0';
+}
 function usageMetricCard(label, value, hint) {
   return '<div class="metric" style="padding:12px 13px"><label>' + escapeHtml(label) + '</label><strong>' + escapeHtml(value) + '</strong>' + (hint ? ('<span>' + escapeHtml(hint) + '</span>') : '') + '</div>';
 }
@@ -133,7 +142,7 @@ function ensureUsageStatsUI() {
     '<div style="grid-column:1 / -1"><label id="usageStatsEntityLabel"></label><select id="usageStatsEntity" style="height:36px;max-width:360px" onchange="onUsageStatsFilterChange()"></select></div>' +
     '</div><div id="usageStatsGeneratedAt" class="item-meta" style="margin-top:8px;font-size:11px"></div></div>' +
     '<div id="usageStatsSummary" class="metrics" style="margin-top:10px;max-width:none;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px"></div>' +
-    '<div class="grid2" style="margin-top:10px;gap:10px">' +
+    '<div class="usage-stats-detail-grid">' +
     '<div class="item" style="padding:12px 14px"><div class="item-title" style="font-size:14px" id="usageStatsTrendTitle"></div><div id="usageStatsTrend" style="margin-top:8px"></div></div>' +
     '<div class="item" style="padding:12px 14px"><div class="item-title" style="font-size:14px" id="usageStatsRowsTitle"></div><div id="usageStatsRows" style="margin-top:8px"></div></div>' +
     '</div>';
@@ -222,14 +231,29 @@ function renderUsageRows() {
   if (!root) return;
   const rows = usageStatsCache && usageStatsCache.rows || [];
   if (!rows.length) {
-    root.innerHTML = '<div class="hint">' + ust('rowsEmpty') + '</div>';
+    root.innerHTML = '<div class="usage-rank-empty">' + ust('rowsEmpty') + '</div>';
     return;
   }
-  const header = '<div class="row header" style="grid-template-columns:1.45fr .9fr .9fr .9fr .85fr .78fr .82fr .75fr;padding:8px 10px"><div>' + ust('colName') + '</div><div>' + ust('colTotal') + '</div><div>' + ust('colInput') + '</div><div>' + ust('colOutput') + '</div><div>' + ust('colCacheRead') + '</div><div>' + ust('colCacheRate') + '</div><div>' + ust('colRequests') + '</div><div>' + ust('colCredits') + '</div></div>';
-  const body = rows.slice(0, 20).map(function(row) {
-    return '<div class="row" style="grid-template-columns:1.45fr .9fr .9fr .9fr .85fr .78fr .82fr .75fr;padding:8px 10px"><div class="mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(row.name || row.id || '-') + '</div><div>' + fmtInt(row.total_tokens) + '</div><div>' + fmtInt(row.input_tokens) + '</div><div>' + fmtInt(row.output_tokens) + '</div><div style="color:#10aeca">' + fmtInt(row.cached_input_tokens) + '</div><div style="color:var(--ok);font-weight:800">' + fmtPercent(row.cached_requests, row.requests) + '</div><div>' + fmtInt(row.cached_requests) + ' / ' + fmtInt(row.requests) + '</div><div>' + fmtCredits(row.credits) + '</div></div>';
+  const body = rows.slice(0, 20).map(function(row, index) {
+    const name = escapeHtml(row.name || row.id || '-');
+    return '' +
+      '<div class="usage-rank-row">' +
+        '<div class="usage-rank-main">' +
+          '<div class="usage-rank-name"><span class="usage-rank-index">' + (index + 1) + '</span><div style="min-width:0"><span class="usage-rank-label">' + ust('colName') + '</span><span class="usage-rank-value mono" title="' + name + '" style="overflow:hidden;text-overflow:ellipsis">' + name + '</span></div></div>' +
+          '<div><span class="usage-rank-label">' + ust('colTotal') + '</span><span class="usage-rank-value">' + fmtInt(row.total_tokens) + '</span></div>' +
+          '<div><span class="usage-rank-label">' + ust('colCacheRate') + '</span><span class="usage-rank-value ok">' + fmtPercent(row.cached_requests, row.requests) + '</span></div>' +
+          '<div><span class="usage-rank-label">' + ust('colRequests') + '</span><span class="usage-rank-value">' + fmtInt(row.cached_requests) + ' / ' + fmtInt(row.requests) + '</span></div>' +
+        '</div>' +
+        '<div class="usage-rank-sub">' +
+          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colInput') + '</span><span class="usage-rank-value">' + fmtInt(row.input_tokens) + '</span></div>' +
+          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colOutput') + '</span><span class="usage-rank-value">' + fmtInt(row.output_tokens) + '</span></div>' +
+          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCacheRead') + '</span><span class="usage-rank-value cache">' + fmtInt(row.cached_input_tokens) + '</span></div>' +
+          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCredits') + '</span><span class="usage-rank-value">' + fmtCredits(row.credits) + '</span></div>' +
+          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCostRMB') + '</span><span class="usage-rank-value">\u00a5' + fmtRMB(row.total_cost_rmb) + '</span></div>' +
+        '</div>' +
+      '</div>';
   }).join('');
-  root.innerHTML = '<div class="table" style="gap:4px">' + header + body + '</div>';
+  root.innerHTML = '<div class="usage-rank-list">' + body + '</div>';
 }
 function renderUsageSummary() {
   const root = document.getElementById('usageStatsSummary');
@@ -243,7 +267,8 @@ function renderUsageSummary() {
     usageMetricCard(ust('summaryCacheRead'), fmtInt(s.cached_input_tokens), ust('colCacheRead')),
     usageMetricCard(ust('summaryCacheWrite'), fmtInt(s.cache_write_tokens), ust('summaryCacheWrite')),
     usageMetricCard(ust('summaryRequests'), fmtInt(s.cached_requests) + ' / ' + fmtInt(s.requests), ust('summaryRequests')),
-    usageMetricCard(ust('summaryCredits'), fmtCredits(s.credits), ust('summaryCredits'))
+    usageMetricCard(ust('summaryCredits'), fmtCredits(s.credits), ust('summaryCredits')),
+    usageMetricCard(ust('summaryCostRMB'), '\u00a5' + fmtRMB(s.total_cost_rmb), ust('summaryCostRMB'))
   ].join('');
 }
 function renderUsageStats() {

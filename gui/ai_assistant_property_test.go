@@ -249,3 +249,60 @@ func TestAIAssistantProperty7_ClearHistoryClearsMemory(t *testing.T) {
 		t.Errorf("Property 7 failed: %v", err)
 	}
 }
+
+func TestAIAssistantClientHistoryReconciliationRestoresMissingPrefix(t *testing.T) {
+	app := &App{}
+	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	defer h.memory.Stop()
+
+	userID := "desktop-user"
+	backendSuffix := []agent.ConversationEntry{
+		{Role: "user", Content: "你好了呀。"},
+		{Role: "assistant", Content: "你好，我在这。"},
+		{Role: "user", Content: "没照片。老友聚会风格，没有会，只有回顾。"},
+		{Role: "assistant", Content: "我需要结合上下文理解一下。"},
+	}
+	h.memory.Save(userID, backendSuffix)
+
+	clientHistory := []AIAssistantContextMessage{
+		{Role: "user", Content: "制作一个庆祝怀中95级2班毕业31周年PPT，需要20页。"},
+		{Role: "assistant", Content: "收到，我会按老友回顾方向设计。"},
+		{Role: "user", Content: "你好了呀。"},
+		{Role: "assistant", Content: "你好，我在这。"},
+		{Role: "user", Content: "没照片。老友聚会风格，没有会，只有回顾。"},
+		{Role: "assistant", Content: "我需要结合上下文理解一下。"},
+	}
+
+	app.reconcileAIAssistantClientHistory(h, userID, clientHistory)
+	loaded := h.memory.Load(userID)
+	if len(loaded) != len(clientHistory) {
+		t.Fatalf("history length = %d, want %d", len(loaded), len(clientHistory))
+	}
+	if loaded[0].Content != clientHistory[0].Content {
+		t.Fatalf("first entry = %q, want %q", loaded[0].Content, clientHistory[0].Content)
+	}
+}
+
+func TestAIAssistantClientHistoryReconciliationSkipsDivergentHistory(t *testing.T) {
+	app := &App{}
+	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	defer h.memory.Stop()
+
+	userID := "desktop-user"
+	existing := []agent.ConversationEntry{
+		{Role: "user", Content: "后端真实新任务"},
+		{Role: "assistant", Content: "正在处理。"},
+	}
+	h.memory.Save(userID, existing)
+
+	clientHistory := []AIAssistantContextMessage{
+		{Role: "user", Content: "旧任务"},
+		{Role: "assistant", Content: "旧回答"},
+	}
+
+	app.reconcileAIAssistantClientHistory(h, userID, clientHistory)
+	loaded := h.memory.Load(userID)
+	if len(loaded) != len(existing) || loaded[0].Content != existing[0].Content {
+		t.Fatalf("divergent history should not be overwritten: %#v", loaded)
+	}
+}

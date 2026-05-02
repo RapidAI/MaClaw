@@ -23,16 +23,17 @@ func TestCoreToolNames_AllRegistered(t *testing.T) {
 	// engine, remote session manager, etc.) and are intentionally not
 	// available in TUI. Each entry must have a comment explaining why.
 	guiOnly := map[string]bool{
-		"list_sessions":    true, // requires RemoteSessionManager (Wails)
-		"create_session":   true, // requires RemoteSessionManager (Wails)
-		"send_and_observe": true, // requires RemoteSessionManager (Wails)
+		"list_sessions":      true, // requires RemoteSessionManager (Wails)
+		"create_session":     true, // requires RemoteSessionManager (Wails)
+		"send_and_observe":   true, // requires RemoteSessionManager (Wails)
 		"get_session_output": true, // requires RemoteSessionManager (Wails)
 		"get_session_events": true, // requires RemoteSessionManager (Wails)
-		"control_session":  true, // requires RemoteSessionManager (Wails)
-		"call_mcp_tool":    true, // requires MCPRegistry (Wails)
-		"set_nickname":     true, // requires GUI user model
-		"discover_tool":    true, // requires GUI ToolRegistry + deferred tools
-		"async_wait":       true, // requires IMMessageHandler + LoopContext cancel channel (GUI)
+		"control_session":    true, // requires RemoteSessionManager (Wails)
+		"call_mcp_tool":      true, // requires MCPRegistry (Wails)
+		"set_nickname":       true, // requires GUI user model
+		"discover_tool":      true, // requires GUI ToolRegistry + deferred tools
+		"async_wait":         true, // requires IMMessageHandler + LoopContext cancel channel (GUI)
+		"compress_context":   true, // requires GUI run-loop context compression state
 	}
 
 	missing := reg.MissingTools(tool.CoreToolNames)

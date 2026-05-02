@@ -1,9 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/remote"
-	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,8 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/swarm"
 )
 
 // ---------------------------------------------------------------------------
@@ -882,6 +882,35 @@ func TestExecuteTool_ScreenshotBlockedForUserSuppliedImagePath(t *testing.T) {
 	}
 	if contains(result, "缺少 session_id") {
 		t.Fatalf("expected guard to trigger before screenshot execution flow, got: %s", result)
+	}
+}
+
+func TestIsPureScreenshotAction_AllowsCooldownRetries(t *testing.T) {
+	if !isPureScreenshotAction(0) {
+		t.Fatal("expected repeated screenshot-only tool calls to remain a pure screenshot action")
+	}
+	if isPureScreenshotAction(1) {
+		t.Fatal("expected any non-screenshot tool call to make the action intermediate")
+	}
+}
+
+func TestShouldContinueTextOutput_DoesNotContinueWeatherTilde(t *testing.T) {
+	text := strings.Repeat("北京今天阴天，晚间不下雨，明天有小雨，出门带伞。", 20) + "早晚凉建议带件外套~"
+	if got, reason := shouldContinueTextOutput("stop", text); got {
+		t.Fatalf("shouldContinueTextOutput(stop, weather) = true (%s), want false", reason)
+	}
+}
+
+func TestShouldContinueTextOutput_ExplicitLengthStillContinues(t *testing.T) {
+	if got, reason := shouldContinueTextOutput("length", "短文本也要续写"); !got || reason != "finish_reason=length" {
+		t.Fatalf("shouldContinueTextOutput(length) = (%v,%q), want true finish_reason=length", got, reason)
+	}
+}
+
+func TestShouldContinueTextOutput_LongStructuralFragmentContinues(t *testing.T) {
+	text := strings.Repeat("这是一个很长的报告段落，用来模拟模型在输出限制附近被截断。", 90) + "下一节："
+	if got, reason := shouldContinueTextOutput("stop", text); !got || reason != "structural_heuristic" {
+		t.Fatalf("shouldContinueTextOutput(long fragment) = (%v,%q), want true structural_heuristic", got, reason)
 	}
 }
 
