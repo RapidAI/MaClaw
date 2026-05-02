@@ -648,7 +648,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	var others []recallScored
 	for i, c := range candidates {
 		fusedRelevance := rrfScores[i]
-		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, "", now)
+		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, projectLower, now)
 		others = append(others, recallScored{entry: c.entry, score: sc})
 	}
 
@@ -881,32 +881,12 @@ func rrfFuseScores(bm25Scores, vecScores []float64, entries []Entry, projectLowe
 		return nil
 	}
 
-	// Build index arrays sorted by each signal descending.
-	bm25Order := make([]int, n)
-	vecOrder := make([]int, n)
-	for i := range bm25Order {
-		bm25Order[i] = i
-		vecOrder[i] = i
-	}
+	bm25Rank := positiveSignalRanks(bm25Scores)
+	vecRank := positiveSignalRanks(vecScores)
 
-	sort.SliceStable(bm25Order, func(a, b int) bool {
-		return bm25Scores[bm25Order[a]] > bm25Scores[bm25Order[b]]
-	})
-	sort.SliceStable(vecOrder, func(a, b int) bool {
-		return vecScores[vecOrder[a]] > vecScores[vecOrder[b]]
-	})
-
-	// Assign ranks (1-based).
-	bm25Rank := make([]int, n)
-	vecRank := make([]int, n)
-	for rank, idx := range bm25Order {
-		bm25Rank[idx] = rank + 1
-	}
-	for rank, idx := range vecOrder {
-		vecRank[idx] = rank + 1
-	}
-
-	// Tag cross-matching: compute tag scores and ranks.
+	// Tag cross-matching becomes a rank-fusion channel only when an entry has
+	// a positive tag score. Zero-score channels must not create synthetic
+	// relevance for every active memory entry.
 	var tagRank []int
 	hasTagSignal := len(queryTokens) > 0
 	if hasTagSignal {
@@ -914,25 +894,21 @@ func rrfFuseScores(bm25Scores, vecScores []float64, entries []Entry, projectLowe
 		for i := range entries {
 			tagScores[i] = tagCrossScore(entries[i], queryTokens)
 		}
-		tagOrder := make([]int, n)
-		for i := range tagOrder {
-			tagOrder[i] = i
-		}
-		sort.SliceStable(tagOrder, func(a, b int) bool {
-			return tagScores[tagOrder[a]] > tagScores[tagOrder[b]]
-		})
-		tagRank = make([]int, n)
-		for rank, idx := range tagOrder {
-			tagRank[idx] = rank + 1
-		}
+		tagRank = positiveSignalRanks(tagScores)
 	}
 
 	// Compute RRF scores.
 	const tagAlpha = 0.8 // tag signal weight (slightly lower than BM25/Vec)
 	scores := make([]float64, n)
 	for i := range scores {
-		rrf := 1.0/float64(rrfK+bm25Rank[i]) + 1.0/float64(rrfK+vecRank[i])
-		if hasTagSignal {
+		rrf := 0.0
+		if bm25Rank[i] > 0 {
+			rrf += 1.0 / float64(rrfK+bm25Rank[i])
+		}
+		if vecRank[i] > 0 {
+			rrf += 1.0 / float64(rrfK+vecRank[i])
+		}
+		if hasTagSignal && tagRank[i] > 0 {
 			rrf += tagAlpha / float64(rrfK+tagRank[i])
 		}
 		// Project affinity boost.
@@ -947,6 +923,23 @@ func rrfFuseScores(bm25Scores, vecScores []float64, entries []Entry, projectLowe
 		scores[i] = rrf
 	}
 	return scores
+}
+
+func positiveSignalRanks(scores []float64) []int {
+	ranks := make([]int, len(scores))
+	order := make([]int, 0, len(scores))
+	for i, score := range scores {
+		if score > 0 {
+			order = append(order, i)
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return scores[order[a]] > scores[order[b]]
+	})
+	for rank, idx := range order {
+		ranks[idx] = rank + 1
+	}
+	return ranks
 }
 
 // tagCrossScore computes the cross-match score between user message tokens
@@ -1373,12 +1366,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 			semanticHitDebug[hit.EntryID] = hit
 		}
 	}
-	s.mu.Lock()
-	s.lastSemanticHits = semanticHitDebug
-	s.mu.Unlock()
-
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	const maxEntries = 15
 	const maxTokens = 2500
@@ -1452,7 +1440,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		if c.sem > 0 {
 			fusedRelevance += c.sem
 		}
-		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, "", now)
+		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, projectLower, now)
 		candidates = append(candidates, recallScored{entry: c.entry, score: sc})
 	}
 
@@ -1517,6 +1505,17 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		tokenBudget -= tokens
 		result = append(result, sc.entry)
 	}
+	s.mu.RUnlock()
+
+	finalSemanticHits := make(map[string]SemanticSearchHit)
+	for _, entry := range result {
+		if hit, ok := semanticHitDebug[entry.ID]; ok {
+			finalSemanticHits[entry.ID] = hit
+		}
+	}
+	s.mu.Lock()
+	s.lastSemanticHits = finalSemanticHits
+	s.mu.Unlock()
 	return result
 }
 
@@ -1977,6 +1976,7 @@ func (s *Store) RestoreFromArchive(id string) error {
 
 	now := time.Now()
 	entry.UpdatedAt = now
+	normalizeEntryTimestamp(entry, now)
 	entry.AccessCount = 1
 
 	s.mu.Lock()
@@ -2023,8 +2023,32 @@ func (s *Store) Entries() []Entry { return s.entries }
 
 // SetEntries replaces the internal entries slice. Caller MUST hold the write lock.
 func (s *Store) SetEntries(entries []Entry) {
+	normalizeEntryTimestamps(entries)
 	s.entries = entries
 	s.rebuildDerivedIndexesLocked(false)
+}
+
+func normalizeEntryTimestamps(entries []Entry) {
+	now := time.Now()
+	for i := range entries {
+		normalizeEntryTimestamp(&entries[i], now)
+	}
+}
+
+func normalizeEntryTimestamp(e *Entry, fallback time.Time) {
+	if e == nil {
+		return
+	}
+	if e.UpdatedAt.IsZero() {
+		if !e.CreatedAt.IsZero() {
+			e.UpdatedAt = e.CreatedAt
+		} else {
+			e.UpdatedAt = fallback
+		}
+	}
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = e.UpdatedAt
+	}
 }
 
 // MarkDirty marks the store as needing a flush.

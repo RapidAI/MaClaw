@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/csv"
@@ -1036,6 +1037,52 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		}
 		cacheCfg := loadCachedHubLLMPromptCacheConfig(r.Context(), system)
 		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cacheCfg)
+		if llmEndpointStreamRequested(body) {
+			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedModelRequest(w, r, providerReg, authorizedModel, body, requestedModel, selectedModelDebug)
+			logStatusCode = statusCode
+			logProviderID = strings.TrimSpace(usedProviderID)
+			logUsage = usageStat
+			if err != nil {
+				if wroteStream {
+					logErrorCode = "LLM_STREAM_INTERRUPTED"
+					return
+				}
+				if queueErr, ok := err.(*providerConcurrencyError); ok {
+					switch queueErr.Kind {
+					case providerConcurrencyQueueFull:
+						writeLoggedError(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error())
+					default:
+						writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error())
+					}
+					return
+				}
+				if resilienceErr, ok := err.(*providerResilienceError); ok {
+					writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error())
+					return
+				}
+				writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
+				return
+			}
+			if statusCode < 400 && usedProviderID != "" {
+				tokensPerCredit := 0
+				if serviceReg != nil {
+					tokensPerCredit = serviceReg.TokensPerCredit
+				}
+				credits := llmservice.EstimateCredits(
+					usageStat.TotalTokens,
+					llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
+					tokensPerCredit,
+				)
+				userGroupIDs := []string(nil)
+				if securitySvc != nil {
+					if resolved, resolveErr := securitySvc.ResolveUserGroupChain(r.Context(), principal.Email); resolveErr == nil {
+						userGroupIDs = resolved
+					}
+				}
+				enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+			}
+			return
+		}
 		respBody, statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, providerReg, authorizedModel, body, requestedModel, firstPromptCacheSource(promptCacheSources), cacheCfg)
 		logStatusCode = statusCode
 		logProviderID = strings.TrimSpace(usedProviderID)
@@ -1156,6 +1203,304 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string) ([]byte, int, string, []string, error) {
 	respBody, statusCode, providerID, serviceGroupIDs, _, _, err := forwardAuthorizedModelRequestWithCache(r, reg, model, body, externalModel, nil, defaultHubLLMPromptCacheConfig())
 	return respBody, statusCode, providerID, serviceGroupIDs, err
+}
+
+func llmEndpointStreamRequested(body map[string]any) bool {
+	stream, _ := body["stream"].(bool)
+	return stream
+}
+
+func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (int, string, []string, corelib.TokenUsageStat, bool, error) {
+	if model == nil {
+		return 0, "", nil, corelib.TokenUsageStat{}, false, fmt.Errorf("authorized model is required")
+	}
+	if reg == nil {
+		return 0, "", nil, corelib.TokenUsageStat{}, false, fmt.Errorf("provider registry is required")
+	}
+	request := r.Clone(r.Context())
+	var lastErr error
+	var lastProviderID string
+	var lastStatus int
+	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
+		provider := reg.FindProvider(providerID)
+		if provider == nil {
+			lastErr = fmt.Errorf("provider %q not configured", providerID)
+			continue
+		}
+		if normalizeProviderWireAPI(provider.WireAPI) != "chat" || normalizeProviderProtocol(provider.Protocol) != "openai" {
+			lastErr = fmt.Errorf("provider %q does not support streaming passthrough", provider.ID)
+			lastProviderID = provider.ID
+			continue
+		}
+		if gateErr := globalProviderResilience.beforeAttempt(provider); gateErr != nil {
+			lastErr = gateErr
+			lastProviderID = provider.ID
+			continue
+		}
+		resp, release, err := openLLMStreamRequest(request, provider, body)
+		if err != nil {
+			globalProviderResilience.recordFailure(provider)
+			lastErr = err
+			lastProviderID = provider.ID
+			continue
+		}
+		statusCode := resp.StatusCode
+		lastStatus = statusCode
+		lastProviderID = provider.ID
+		if shouldCountProviderFailure(statusCode, nil) {
+			globalProviderResilience.recordFailure(provider)
+		} else {
+			globalProviderResilience.recordSuccess(provider.ID)
+		}
+		if statusCode >= 500 || statusCode == http.StatusNotFound || statusCode == http.StatusUnprocessableEntity ||
+			statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden ||
+			statusCode == http.StatusTooManyRequests {
+			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			release()
+			lastErr = fmt.Errorf("provider %q returned http %d: %s", provider.ID, statusCode, strings.TrimSpace(string(bodyBytes)))
+			log.Printf("[LLM-V1] provider %q returned %d for stream, trying next provider", provider.ID, statusCode)
+			continue
+		}
+		usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug)
+		_ = resp.Body.Close()
+		release()
+		if copyErr != nil {
+			return statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), usageStat, wroteStream, copyErr
+		}
+		return statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), usageStat, wroteStream, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
+	}
+	return lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, lastErr
+}
+
+func openLLMStreamRequest(r *http.Request, p *im.LLMProvider, body map[string]any) (*http.Response, func(), error) {
+	if p == nil {
+		return nil, func() {}, fmt.Errorf("provider is required")
+	}
+	release, err := globalProviderConcurrency.acquire(r.Context(), p.ID, p.MaxConcurrency, p.MaxQueueWaiters, p.QueueTimeoutMS)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	provider := toCoreLLMEndpointProvider(p)
+	resp, err := corelib.ForwardOpenAICompatStreamRequest(r.Context(), provider.MaclawLLMConfig(), body, llmProviderUpstreamStreamHTTPClient(provider.MaclawLLMConfig()))
+	if err != nil {
+		release()
+		return nil, func() {}, err
+	}
+	return resp, release, nil
+}
+
+func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return corelib.TokenUsageStat{}, false, fmt.Errorf("streaming not supported by response writer")
+	}
+	reader := bufio.NewReaderSize(resp.Body, 4096)
+	if !looksLikeOpenAIStream(resp, reader) {
+		return writeOpenAINonStreamAsStreamResponse(w, flusher, reader, resp.StatusCode, provider, model, externalModel, selectedModelDebug)
+	}
+	setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
+	w.WriteHeader(resp.StatusCode)
+	flusher.Flush()
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	usage := corelib.TokenUsageStat{}
+	event := make([][]byte, 0, 4)
+	flushEvent := func() error {
+		if len(event) == 0 {
+			return nil
+		}
+		for _, line := range event {
+			out := rewriteOpenAIStreamLine(line, externalModel, &usage)
+			out = append(out, '\n')
+			if _, err := w.Write(out); err != nil {
+				return err
+			}
+		}
+		if _, err := w.Write([]byte("\n")); err != nil {
+			return err
+		}
+		flusher.Flush()
+		event = event[:0]
+		return nil
+	}
+	for scanner.Scan() {
+		line := append([]byte(nil), scanner.Bytes()...)
+		if len(strings.TrimSpace(string(line))) == 0 {
+			if err := flushEvent(); err != nil {
+				return applyProviderUsageCost(usage, provider), true, err
+			}
+			continue
+		}
+		event = append(event, line)
+	}
+	if err := flushEvent(); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	if err := scanner.Err(); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	return applyProviderUsageCost(usage, provider), true, nil
+}
+
+func looksLikeOpenAIStream(resp *http.Response, reader *bufio.Reader) bool {
+	if resp != nil && strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		return true
+	}
+	peeked, err := reader.Peek(64)
+	if err != nil && len(peeked) == 0 {
+		return false
+	}
+	trimmed := strings.TrimLeft(string(peeked), " \t\r\n")
+	return strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, ":")
+}
+
+func writeOpenAINonStreamAsStreamResponse(w http.ResponseWriter, flusher http.Flusher, reader io.Reader, statusCode int, provider *im.LLMProvider, model *llmservice.AuthorizedModel, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, 32<<20))
+	if err != nil {
+		return corelib.TokenUsageStat{}, false, fmt.Errorf("read non-stream upstream response: %w", err)
+	}
+	chunk, usage, err := synthesizeOpenAIStreamChunk(body, externalModel)
+	if err != nil {
+		return corelib.TokenUsageStat{}, false, err
+	}
+	setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
+	w.WriteHeader(statusCode)
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	if _, err := w.Write(chunk); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	if _, err := w.Write([]byte("\n\ndata: [DONE]\n\n")); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	flusher.Flush()
+	return applyProviderUsageCost(usage, provider), true, nil
+}
+
+func setOpenAIStreamResponseHeaders(w http.ResponseWriter, provider *im.LLMProvider, model *llmservice.AuthorizedModel, selectedModelDebug *llmservice.ModelSelectionDebug) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	if model != nil {
+		w.Header().Set("X-MaClaw-Authorized-Model", model.Name)
+	}
+	if selectedModelDebug != nil {
+		if selectedModelDebug.SelectionReason != "" {
+			w.Header().Set("X-MaClaw-Model-Selection", selectedModelDebug.SelectionReason)
+		}
+		if len(selectedModelDebug.CapabilityNeeds) > 0 {
+			w.Header().Set("X-MaClaw-Model-Needs", strings.Join(selectedModelDebug.CapabilityNeeds, ","))
+		}
+	}
+	if provider != nil && provider.ID != "" {
+		w.Header().Set("X-MaClaw-Upstream-Provider", provider.ID)
+	}
+}
+
+func synthesizeOpenAIStreamChunk(body []byte, externalModel string) ([]byte, corelib.TokenUsageStat, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, corelib.TokenUsageStat{}, fmt.Errorf("upstream returned non-SSE, non-JSON response: %w", err)
+	}
+	model := strings.TrimSpace(externalModel)
+	if model == "" {
+		model, _ = payload["model"].(string)
+	}
+	id, _ := payload["id"].(string)
+	if id == "" {
+		id = "chatcmpl-proxy"
+	}
+	choice := firstOpenAIChoice(payload)
+	message, _ := choice["message"].(map[string]any)
+	delta := map[string]any{"role": "assistant"}
+	if content, ok := message["content"].(string); ok {
+		delta["content"] = content
+	}
+	if toolCalls, ok := message["tool_calls"]; ok {
+		delta["tool_calls"] = synthesizeOpenAIStreamToolCalls(toolCalls)
+	}
+	finishReason, _ := choice["finish_reason"].(string)
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+	chunk := map[string]any{
+		"id":     id,
+		"object": "chat.completion.chunk",
+		"model":  model,
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         delta,
+			"finish_reason": finishReason,
+		}},
+	}
+	if usage, ok := payload["usage"].(map[string]any); ok {
+		chunk["usage"] = usage
+	}
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		return nil, corelib.TokenUsageStat{}, fmt.Errorf("marshal synthesized stream chunk: %w", err)
+	}
+	return data, parseUsageStats(body), nil
+}
+
+func synthesizeOpenAIStreamToolCalls(raw any) any {
+	calls, ok := raw.([]any)
+	if !ok {
+		return raw
+	}
+	out := make([]any, 0, len(calls))
+	for i, item := range calls {
+		call, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		clone := make(map[string]any, len(call)+1)
+		for k, v := range call {
+			clone[k] = v
+		}
+		if _, ok := clone["index"]; !ok {
+			clone["index"] = i
+		}
+		out = append(out, clone)
+	}
+	return out
+}
+
+func firstOpenAIChoice(payload map[string]any) map[string]any {
+	choices, _ := payload["choices"].([]any)
+	if len(choices) == 0 {
+		return map[string]any{}
+	}
+	choice, _ := choices[0].(map[string]any)
+	if choice == nil {
+		return map[string]any{}
+	}
+	return choice
+}
+
+func rewriteOpenAIStreamLine(line []byte, externalModel string, usage *corelib.TokenUsageStat) []byte {
+	out := append([]byte(nil), line...)
+	trimmed := strings.TrimSpace(string(line))
+	if !strings.HasPrefix(trimmed, "data:") {
+		return out
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	chunkUsage := corelib.OpenAIStreamUsageFromData([]byte(payload))
+	if usage != nil && (chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0) {
+		*usage = chunkUsage
+	}
+	rewritten := corelib.RewriteOpenAIStreamDataModel([]byte(payload), externalModel)
+	out = []byte("data: ")
+	out = append(out, rewritten...)
+	return out
 }
 
 func upstreamGatewayStatus(upstreamStatus int) int {
@@ -2029,6 +2374,12 @@ func forwardLLMRequest(r *http.Request, p *im.LLMProvider, body map[string]any, 
 
 func llmProviderUpstreamHTTPClient(cfg corelib.MaclawLLMConfig) *http.Client {
 	return corelib.NewLLMEndpointHTTPClient(cfg)
+}
+
+func llmProviderUpstreamStreamHTTPClient(cfg corelib.MaclawLLMConfig) *http.Client {
+	client := corelib.NewLLMEndpointHTTPClient(cfg)
+	client.Timeout = 0
+	return client
 }
 
 func toCoreLLMEndpointProvider(p *im.LLMProvider) corelib.LLMEndpointProvider {

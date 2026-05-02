@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS centers (
 	runtime_status_json TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT 'pending',
 	secret_hash TEXT NOT NULL DEFAULT '',
+	management_secret TEXT NOT NULL DEFAULT '',
 	last_heartbeat TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL DEFAULT (datetime('now')),
 	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -210,6 +211,7 @@ var centerIntegrationMigrations = []string{
 	`ALTER TABLE centers ADD COLUMN iworker_agent_instance_count INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE centers ADD COLUMN iworker_readiness_json TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE centers ADD COLUMN runtime_status_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE centers ADD COLUMN management_secret TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE skill_market_skills ADD COLUMN price INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE skill_market_skills ADD COLUMN author TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE skill_market_skills ADD COLUMN author_email TEXT NOT NULL DEFAULT ''`,

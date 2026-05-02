@@ -27,6 +27,7 @@ export function ComputePowerPage() {
   const [form, setForm] = useState(emptyForm());
   const [cloudAction, setCloudAction] = useState<string | null>(null);
   const [cloudError, setCloudError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'ok' | 'danger' | 'info'; text: string } | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -74,11 +75,11 @@ export function ComputePowerPage() {
       setCloudError(err?.message || 'Cloud registration failed');
     }
   };
-  const handleSwitch = async (src: 'cloud' | 'local') => { await switchComputeSource(src).catch(() => {}); load(); };
+  const handleSwitch = async (src: 'cloud' | 'local') => { await switchComputeSource(src).then(() => setNotice({ tone: 'ok', text: t('compute.noticeUpdated') })).catch((err: any) => setNotice({ tone: 'danger', text: err?.message || t('common.error') })); load(); };
   const handleTest = async (id: string) => {
     const p = providers.find(x => x.id === id);
     const r = await testComputeProvider(id, p).catch(() => ({ ok: false, latency_ms: 0, error: 'failed' }));
-    alert(r.ok ? `OK (${r.latency_ms}ms)` : `Failed: ${r.error}`);
+    setNotice({ tone: r.ok ? 'ok' : 'danger', text: r.ok ? `${t('compute.testOk')} (${r.latency_ms}ms)` : `${t('compute.testFailed')}: ${r.error}` });
   };
 
   const openAdd = () => { setEditId(null); setForm(emptyForm()); setShowForm(true); };
@@ -89,12 +90,13 @@ export function ComputePowerPage() {
     try {
       if (editId) await updateComputeProvider(editId, form as any);
       else await createComputeProvider(form as any);
+      setNotice({ tone: 'ok', text: t('compute.noticeSaved') });
       setShowForm(false); load();
-    } catch (e: any) { alert(e.message); }
+    } catch (e: any) { setNotice({ tone: 'danger', text: e?.message || t('common.error') }); }
   };
   const handleDelete = async (id: string) => {
     if (!confirm(t('compute.confirmDelete'))) return;
-    await deleteComputeProvider(id).catch(() => {}); load();
+    await deleteComputeProvider(id).then(() => setNotice({ tone: 'ok', text: t('compute.noticeDeleted') })).catch((err: any) => setNotice({ tone: 'danger', text: err?.message || t('common.error') })); load();
   };
 
   const rows = providers.map(p => ({
@@ -103,13 +105,14 @@ export function ComputePowerPage() {
     compute_type: p.compute_type || '-',
     user_agent: p.user_agent || '-',
     model: p.model,
-    enabled: p.enabled ? 'Enabled' : 'Disabled',
+    enabled: p.enabled ? t('compute.enabled') : t('compute.disabled'),
     source: isCloud ? t('compute.fromCloud') : t('compute.local'),
   }));
 
   return (
     <div className="center-page-stack">
       <SectionCard title={t('compute.title')} desc={loading ? t('common.loading') : undefined}>
+        {notice && <div className={`notice ${notice.tone}`} style={{ marginBottom: 12 }}>{notice.text}</div>}
         {/* Mode bar */}
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
           <span className={`badge ${isCloud ? 'info' : 'ok'}`}>
@@ -205,7 +208,7 @@ export function ComputePowerPage() {
                   <tr key={p.id}>
                     <td>{p.name}</td><td>{p.protocol}</td><td>{p.compute_type}</td>
                     <td>{p.model}</td><td>{p.user_agent}</td>
-                    <td>{p.enabled ? 'Enabled' : 'Disabled'}</td>
+                    <td>{p.enabled ? t('compute.enabled') : t('compute.disabled')}</td>
                     <td style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       <button className="btn-ghost" onClick={() => openEdit(p)}>{t('common.edit')}</button>
                       <button className="btn-ghost" onClick={() => handleTest(p.id)}>{t('compute.test')}</button>

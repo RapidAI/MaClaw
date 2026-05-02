@@ -392,6 +392,64 @@ func TestSkillQualityAcceptsFlagStyleReferencedScript(t *testing.T) {
 	}
 }
 
+func TestSkillQualityDetectsMissingStructuredCommandScript(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("name: structured-missing-script\ndescription: A portable skill using structured command metadata.\ntriggers:\n  - structured-missing-script\nplatforms:\n  - universal\nsteps:\n  - action: run\n    params:\n      command:\n        program: python\n        args:\n          - scripts/missing.py\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Structured missing script\n\nRuns a bundled script.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block missing structured script reference: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "scripts/missing.py" {
+		t.Fatalf("ReferencedMissing = %+v, want scripts/missing.py", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityAcceptsPackagedStructuredCommandScript(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	data := []byte("name: structured-script\ndescription: A portable skill using structured command metadata.\ntriggers:\n  - structured-script\nplatforms:\n  - universal\nsteps:\n  - action: run\n    params:\n      command:\n        program: python\n        args:\n          - scripts/run.py\n          - --count\n          - 3\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Structured script\n\nRuns a bundled script.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality should accept packaged structured script reference: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 0 {
+		t.Fatalf("ReferencedMissing = %+v", quality.Package.ReferencedMissing)
+	}
+}
+
 func TestSkillLifecycleRetryBlockedKeepsUnreadySkillBlocked(t *testing.T) {
 	dir := t.TempDir()
 	data := []byte("name: blocked-missing-script\ndescription: A portable skill whose referenced script is not packaged yet.\ntriggers:\n  - blocked-missing-script\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: python scripts/missing.py\n")

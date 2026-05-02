@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,23 +23,52 @@ type CloudConfig struct {
 
 // CloudClient communicates with iWorkerCloud.
 type CloudClient struct {
+	mu     sync.RWMutex
 	cfg    CloudConfig
 	client *http.Client
 }
 
 func NewCloudClient(cfg CloudConfig) *CloudClient {
-	return &CloudClient{
-		cfg:    cfg,
-		client: &http.Client{Timeout: 15 * time.Second},
+	c := &CloudClient{client: &http.Client{Timeout: 15 * time.Second}}
+	c.SetConfig(cfg)
+	return c
+}
+
+// Config returns a sanitized copy of the current iWorkerCloud settings.
+func (c *CloudClient) Config() CloudConfig {
+	if c == nil {
+		return CloudConfig{CloudControlMode: "cloud_managed"}
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cfg
+}
+
+// SetConfig updates the iWorkerCloud settings used by subsequent requests.
+func (c *CloudClient) SetConfig(cfg CloudConfig) {
+	if c == nil {
+		return
+	}
+	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	cfg.CenterBaseURL = strings.TrimRight(strings.TrimSpace(cfg.CenterBaseURL), "/")
+	cfg.RegistrationName = strings.TrimSpace(cfg.RegistrationName)
+	cfg.RegistrationEmail = strings.TrimSpace(cfg.RegistrationEmail)
+	cfg.CloudControlMode = strings.TrimSpace(cfg.CloudControlMode)
+	if cfg.CloudControlMode == "" {
+		cfg.CloudControlMode = "cloud_managed"
+	}
+	c.mu.Lock()
+	c.cfg = cfg
+	c.mu.Unlock()
 }
 
 // FetchPublicKey retrieves the iWorkerCloud RSA public key (PEM).
 func (c *CloudClient) FetchPublicKey(ctx context.Context) ([]byte, error) {
-	if c.cfg.BaseURL == "" {
+	cfg := c.Config()
+	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("cloud base_url not configured")
 	}
-	url := strings.TrimRight(c.cfg.BaseURL, "/") + "/api/public-key"
+	url := strings.TrimRight(cfg.BaseURL, "/") + "/api/public-key"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -60,13 +90,15 @@ func (c *CloudClient) FetchPublicKey(ctx context.Context) ([]byte, error) {
 
 // RegisterCenterRequest is sent to iWorkerCloud to register this center.
 type RegisterCenterRequest struct {
-	CompanyName      string `json:"company_name"`
-	AdminEmail       string `json:"admin_email"`
-	AdminPhone       string `json:"admin_phone,omitempty"`
-	Address          string `json:"address,omitempty"`
-	LegalPerson      string `json:"legal_person,omitempty"`
-	BaseURL          string `json:"base_url,omitempty"`
-	CloudControlMode string `json:"cloud_control_mode,omitempty"`
+	CompanyName         string `json:"company_name"`
+	AdminEmail          string `json:"admin_email"`
+	AdminPhone          string `json:"admin_phone,omitempty"`
+	Address             string `json:"address,omitempty"`
+	LegalPerson         string `json:"legal_person,omitempty"`
+	BaseURL             string `json:"base_url,omitempty"`
+	CloudControlMode    string `json:"cloud_control_mode,omitempty"`
+	SupportsMultiTenant bool   `json:"supports_multi_tenant,omitempty"`
+	TenantCount         int    `json:"tenant_count,omitempty"`
 }
 
 // RegisterCenterResponse is returned by iWorkerCloud.
@@ -92,10 +124,11 @@ type CloudLicense struct {
 
 // RegisterCenter calls POST /api/centers/register on iWorkerCloud.
 func (c *CloudClient) RegisterCenter(ctx context.Context, req RegisterCenterRequest) (*RegisterCenterResponse, error) {
-	if c.cfg.BaseURL == "" {
+	cfg := c.Config()
+	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("cloud base_url not configured")
 	}
-	url := strings.TrimRight(c.cfg.BaseURL, "/") + "/api/centers/register"
+	url := strings.TrimRight(cfg.BaseURL, "/") + "/api/centers/register"
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -124,7 +157,8 @@ func (c *CloudClient) RegisterCenter(ctx context.Context, req RegisterCenterRequ
 
 // FetchCenterLicense retrieves the active license for a registered Center.
 func (c *CloudClient) FetchCenterLicense(ctx context.Context, centerID, centerSecret string) (*CloudLicense, error) {
-	if c.cfg.BaseURL == "" {
+	cfg := c.Config()
+	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("cloud base_url not configured")
 	}
 	centerID = strings.TrimSpace(centerID)
@@ -135,7 +169,7 @@ func (c *CloudClient) FetchCenterLicense(ctx context.Context, centerID, centerSe
 		return nil, fmt.Errorf("center_secret is required")
 	}
 
-	url := fmt.Sprintf("%s/api/centers/%s/license", strings.TrimRight(c.cfg.BaseURL, "/"), centerID)
+	url := fmt.Sprintf("%s/api/centers/%s/license", strings.TrimRight(cfg.BaseURL, "/"), centerID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -185,7 +219,8 @@ type CenterComputeProvidersResponse struct {
 
 // FetchCenterComputeProviders retrieves compute providers assigned to this Center.
 func (c *CloudClient) FetchCenterComputeProviders(ctx context.Context, centerID, centerSecret string) (*CenterComputeProvidersResponse, error) {
-	if c.cfg.BaseURL == "" {
+	cfg := c.Config()
+	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("cloud base_url not configured")
 	}
 	centerID = strings.TrimSpace(centerID)
@@ -196,7 +231,7 @@ func (c *CloudClient) FetchCenterComputeProviders(ctx context.Context, centerID,
 		return nil, fmt.Errorf("center_secret is required")
 	}
 
-	url := fmt.Sprintf("%s/api/centers/%s/compute-providers", strings.TrimRight(c.cfg.BaseURL, "/"), centerID)
+	url := fmt.Sprintf("%s/api/centers/%s/compute-providers", strings.TrimRight(cfg.BaseURL, "/"), centerID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -295,7 +330,8 @@ func NewCenterHeartbeatRequestWithReadiness(centerSecret string, readiness *Clou
 
 // SendCenterHeartbeat reports that this iWorkerCenter service instance is alive.
 func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerSecret string, readiness *CloudIWorkerReadiness, runtime *CloudCenterRuntime) error {
-	if c.cfg.BaseURL == "" {
+	cfg := c.Config()
+	if cfg.BaseURL == "" {
 		return fmt.Errorf("cloud base_url not configured")
 	}
 	centerID = strings.TrimSpace(centerID)
@@ -306,7 +342,7 @@ func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerS
 		return fmt.Errorf("center_secret is required")
 	}
 
-	url := fmt.Sprintf("%s/api/centers/%s/heartbeat", strings.TrimRight(c.cfg.BaseURL, "/"), centerID)
+	url := fmt.Sprintf("%s/api/centers/%s/heartbeat", strings.TrimRight(cfg.BaseURL, "/"), centerID)
 	body, err := json.Marshal(NewCenterHeartbeatRequestWithReadiness(centerSecret, readiness, runtime))
 	if err != nil {
 		return err

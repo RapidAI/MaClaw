@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { main } from '../../wailsjs/go/models';
-import { getPetSkinOption, petSkinOptions } from './petSkins';
+import { defaultPetSize, getPetSkinOption, petSkinOptions } from './petSkins';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type PetPreviewState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -14,31 +14,10 @@ interface PetSettingsPanelProps {
     saveConfig: (config: main.AppConfig) => Promise<void>;
 }
 
-const modeOptions = [
-    { id: 'quiet', label: 'Quiet' },
-    { id: 'balanced', label: 'Balanced' },
-    { id: 'active', label: 'Active' },
-];
-
-const conversationModeOptions = [
-    { id: 'text-first', label: 'Text First' },
-    { id: 'voice-turn', label: 'Voice Turn' },
-    { id: 'continuous', label: 'Continuous' },
-];
-
-const readbackModeOptions = [
-    { id: 'off', label: 'Off' },
-    { id: 'summary', label: 'Summary' },
-    { id: 'full', label: 'Full' },
-    { id: 'done-only', label: 'Done Only' },
-];
-
-const previewStateOptions: Array<{ id: PetPreviewState; label: string }> = [
-    { id: 'idle', label: 'Idle' },
-    { id: 'listening', label: 'Listen' },
-    { id: 'thinking', label: 'Think' },
-    { id: 'speaking', label: 'Speak' },
-];
+const modeOptionIds = ['quiet', 'balanced', 'active'] as const;
+const conversationModeOptionIds = ['text-first', 'voice-turn', 'continuous'] as const;
+const readbackModeOptionIds = ['off', 'summary', 'full', 'done-only'] as const;
+const previewStateOptionIds: PetPreviewState[] = ['idle', 'listening', 'thinking', 'speaking'];
 
 function text(lang: Lang, zhHans: string, zhHant: string, en: string): string {
     if (lang === 'zh-Hans') return zhHans;
@@ -46,8 +25,102 @@ function text(lang: Lang, zhHans: string, zhHant: string, en: string): string {
     return en;
 }
 
+function interactionModeLabel(lang: Lang, id: string): string {
+    switch (id) {
+        case 'quiet':
+            return text(lang, '安静', '安靜', 'Quiet');
+        case 'active':
+            return text(lang, '活跃', '活躍', 'Active');
+        case 'balanced':
+        default:
+            return text(lang, '平衡', '平衡', 'Balanced');
+    }
+}
+
+function conversationModeLabel(lang: Lang, id: string): string {
+    switch (id) {
+        case 'voice-turn':
+            return text(lang, '语音轮次', '語音輪次', 'Voice Turn');
+        case 'continuous':
+            return text(lang, '连续对话', '連續對話', 'Continuous');
+        case 'text-first':
+        default:
+            return text(lang, '文字优先', '文字優先', 'Text First');
+    }
+}
+
+function readbackModeLabel(lang: Lang, id: string): string {
+    switch (id) {
+        case 'summary':
+            return text(lang, '摘要', '摘要', 'Summary');
+        case 'full':
+            return text(lang, '全文', '全文', 'Full');
+        case 'done-only':
+            return text(lang, '仅完成时', '僅完成時', 'Done Only');
+        case 'off':
+        default:
+            return text(lang, '关闭', '關閉', 'Off');
+    }
+}
+
+function previewStateLabel(lang: Lang, id: PetPreviewState): string {
+    switch (id) {
+        case 'listening':
+            return text(lang, '聆听', '聆聽', 'Listen');
+        case 'thinking':
+            return text(lang, '思考', '思考', 'Think');
+        case 'speaking':
+            return text(lang, '说话', '說話', 'Speak');
+        case 'idle':
+        default:
+            return text(lang, '待机', '待機', 'Idle');
+    }
+}
+
+function skinToneLabel(lang: Lang, tone: string): string {
+    switch (tone) {
+        case 'Compact':
+            return text(lang, '紧凑', '緊湊', 'Compact');
+        case 'Developer':
+            return text(lang, '开发者', '開發者', 'Developer');
+        case 'Focus':
+            return text(lang, '专注', '專注', 'Focus');
+        case 'Balanced':
+        default:
+            return text(lang, '平衡', '平衡', 'Balanced');
+    }
+}
+
+function skinDescription(lang: Lang, id: string): string {
+    switch (id) {
+        case 'mini-claw':
+            return text(lang, '接近当前悬浮按钮的极简入口', '接近目前懸浮按鈕的極簡入口', 'Minimal entry close to the current floating button');
+        case 'dev-claw':
+            return text(lang, '面向开发场景的伙伴形象', '面向開發場景的夥伴形象', 'Developer-focused companion style');
+        case 'focus-claw':
+            return text(lang, '低打扰的安静桌面陪伴', '低打擾的安靜桌面陪伴', 'Quiet low-distraction desktop presence');
+        case 'clawmate':
+        default:
+            return text(lang, '默认 MaClaw 爪爪伙伴', '預設 MaClaw 爪爪夥伴', 'Default MaClaw claw companion');
+    }
+}
+
+function skinPreviewLine(lang: Lang, id: string): string {
+    switch (id) {
+        case 'mini-claw':
+            return text(lang, '小巧、快速，适合贴边常驻。', '小巧、快速，適合貼邊常駐。', 'Small, fast, and easy to keep near the edge.');
+        case 'dev-claw':
+            return text(lang, '更技术、更直接，随时准备进入编码轮次。', '更技術、更直接，隨時準備進入編碼輪次。', 'More technical, direct, and ready for coding turns.');
+        case 'focus-claw':
+            return text(lang, '动作更克制，适合长时间专注。', '動作更克制，適合長時間專注。', 'Calmer motion for long focus sessions.');
+        case 'clawmate':
+        default:
+            return text(lang, '抓住问题，把有效信号拎出来。', '抓住問題，把有效訊號拎出來。', 'Catches the problem and pulls out the signal.');
+    }
+}
+
 function clampPetSize(value: number): number {
-    if (!Number.isFinite(value)) return 72;
+    if (!Number.isFinite(value)) return defaultPetSize;
     return Math.min(120, Math.max(56, Math.round(value)));
 }
 
@@ -59,7 +132,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
     const savedTimerRef = useRef<number | undefined>(undefined);
     const mountedRef = useRef(true);
     const saveSeqRef = useRef(0);
-    const petSize = clampPetSize((config as any).pet_size || 72);
+    const petSize = clampPetSize((config as any).pet_size || defaultPetSize);
     const selectedSkin = (config as any).pet_skin || 'clawmate';
     const interactionMode = (config as any).pet_interaction_mode || 'balanced';
     const conversationMode = (config as any).pet_conversation_mode || 'text-first';
@@ -176,7 +249,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
             </div>
 
             <div className="pet-settings-grid">
-                <section className="pet-preview-card" aria-label="MaClaw pet preview">
+                <section className="pet-preview-card" aria-label={text(lang, 'MaClaw 宠物预览', 'MaClaw 寵物預覽', 'MaClaw pet preview')}>
                     <div
                         className="pet-preview-stage"
                         data-pet-skin={selectedSkinOption.id}
@@ -186,21 +259,21 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                     >
                         <img src={selectedSkinOption.image} alt={selectedSkinOption.label} className="pet-preview-image" style={{ width: petSize * 1.45, height: petSize * 1.45 }} />
                     </div>
-                    <div className="pet-preview-state-row" aria-label="Pet animation preview state">
-                        {previewStateOptions.map((state) => (
+                    <div className="pet-preview-state-row" aria-label={text(lang, '宠物动画预览状态', '寵物動畫預覽狀態', 'Pet animation preview state')}>
+                        {previewStateOptionIds.map((state) => (
                             <button
-                                key={state.id}
+                                key={state}
                                 type="button"
-                                className={previewState === state.id ? 'active' : ''}
-                                onClick={() => setPreviewState(state.id)}
+                                className={previewState === state ? 'active' : ''}
+                                onClick={() => setPreviewState(state)}
                             >
-                                {state.label}
+                                {previewStateLabel(lang, state)}
                             </button>
                         ))}
                     </div>
                     <div className="pet-preview-meta">
                         <strong>{selectedSkinOption.label}</strong>
-                        <span>{selectedSkinOption.previewLine}</span>
+                        <span>{skinPreviewLine(lang, selectedSkinOption.id)}</span>
                     </div>
                 </section>
 
@@ -218,9 +291,9 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                                     <img src={skin.image} alt="" className="pet-skin-thumb" aria-hidden="true" />
                                     <span className="pet-skin-title-row">
                                         <span>{skin.label}</span>
-                                        <em>{skin.tone}</em>
+                                        <em>{skinToneLabel(lang, skin.tone)}</em>
                                     </span>
-                                    <small>{skin.desc}</small>
+                                    <small>{skinDescription(lang, skin.id)}</small>
                                 </button>
                             ))}
                         </div>
@@ -245,14 +318,14 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                     <div className="pet-form-section">
                         <label className="form-label">{text(lang, '\u4ea4\u4e92\u98ce\u683c', '\u4e92\u52d5\u98a8\u683c', 'Interaction Style')}</label>
                         <div className="pet-segmented-control">
-                            {modeOptions.map((mode) => (
+                            {modeOptionIds.map((mode) => (
                                 <button
-                                    key={mode.id}
+                                    key={mode}
                                     type="button"
-                                    className={interactionMode === mode.id ? 'active' : ''}
-                                    onClick={() => updatePetConfig({ pet_interaction_mode: mode.id })}
+                                    className={interactionMode === mode ? 'active' : ''}
+                                    onClick={() => updatePetConfig({ pet_interaction_mode: mode })}
                                 >
-                                    {mode.label}
+                                    {interactionModeLabel(lang, mode)}
                                 </button>
                             ))}
                         </div>
@@ -273,14 +346,14 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                         <div className="pet-form-section">
                             <label className="form-label">{text(lang, '\u5bf9\u8bdd\u6a21\u5f0f', '\u5c0d\u8a71\u6a21\u5f0f', 'Conversation Mode')}</label>
                             <div className="pet-segmented-control pet-segmented-control--voice">
-                                {conversationModeOptions.map((mode) => (
+                                {conversationModeOptionIds.map((mode) => (
                                     <button
-                                        key={mode.id}
+                                        key={mode}
                                         type="button"
-                                        className={conversationMode === mode.id ? 'active' : ''}
-                                        onClick={() => updatePetConfig({ pet_conversation_mode: mode.id })}
+                                        className={conversationMode === mode ? 'active' : ''}
+                                        onClick={() => updatePetConfig({ pet_conversation_mode: mode })}
                                     >
-                                        {mode.label}
+                                        {conversationModeLabel(lang, mode)}
                                     </button>
                                 ))}
                             </div>
@@ -289,17 +362,17 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                         <div className="pet-form-section">
                             <label className="form-label">{text(lang, '\u64ad\u62a5\u7b56\u7565', '\u64ad\u5831\u7b56\u7565', 'Readback')}</label>
                             <div className="pet-segmented-control pet-segmented-control--readback">
-                                {readbackModeOptions.map((mode) => (
+                                {readbackModeOptionIds.map((mode) => (
                                     <button
-                                        key={mode.id}
+                                        key={mode}
                                         type="button"
-                                        className={readbackMode === mode.id ? 'active' : ''}
+                                        className={readbackMode === mode ? 'active' : ''}
                                         onClick={() => updatePetConfig({
-                                            pet_readback_mode: mode.id,
-                                            pet_voice_readback_enabled: mode.id !== 'off',
+                                            pet_readback_mode: mode,
+                                            pet_voice_readback_enabled: mode !== 'off',
                                         })}
                                     >
-                                        {mode.label}
+                                        {readbackModeLabel(lang, mode)}
                                     </button>
                                 ))}
                             </div>

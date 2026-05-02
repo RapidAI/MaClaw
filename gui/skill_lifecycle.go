@@ -444,22 +444,100 @@ func missingReferencedSkillFiles(skillDir string, entry *corelib.NLSkillEntry) [
 	seen := map[string]struct{}{}
 	var missing []string
 	for _, step := range entry.Steps {
-		command, _ := step.Params["command"].(string)
-		for _, ref := range localFileRefsFromCommand(command) {
-			cleanRef := strings.TrimPrefix(filepath.ToSlash(ref), "./")
-			if cleanRef == "" || strings.HasPrefix(cleanRef, "../") {
-				continue
-			}
-			if _, ok := seen[cleanRef]; ok {
-				continue
-			}
-			seen[cleanRef] = struct{}{}
-			if _, err := os.Stat(filepath.Join(skillDir, filepath.FromSlash(cleanRef))); err != nil {
-				missing = append(missing, cleanRef)
+		for _, command := range commandStringsForPackageRefs(step) {
+			for _, ref := range localFileRefsFromCommand(command) {
+				cleanRef := strings.TrimPrefix(filepath.ToSlash(ref), "./")
+				if cleanRef == "" || strings.HasPrefix(cleanRef, "../") {
+					continue
+				}
+				if _, ok := seen[cleanRef]; ok {
+					continue
+				}
+				seen[cleanRef] = struct{}{}
+				if _, err := os.Stat(filepath.Join(skillDir, filepath.FromSlash(cleanRef))); err != nil {
+					missing = append(missing, cleanRef)
+				}
 			}
 		}
 	}
 	return missing
+}
+
+func commandStringsForPackageRefs(step corelib.NLSkillStep) []string {
+	if len(step.Params) == 0 {
+		return nil
+	}
+	keys := []string{"command", "cmd", "run", "script", "shell_command"}
+	var commands []string
+	for _, key := range keys {
+		raw, ok := step.Params[key]
+		if !ok || raw == nil {
+			continue
+		}
+		commands = append(commands, commandStringsFromPackageValue(raw)...)
+	}
+	return commands
+}
+
+func commandStringsFromPackageValue(raw interface{}) []string {
+	switch v := raw.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		return []string{v}
+	case []string:
+		return []string{strings.Join(v, " ")}
+	case []interface{}:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", item)); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		if len(parts) == 0 {
+			return nil
+		}
+		return []string{strings.Join(parts, " ")}
+	case map[string]interface{}:
+		return commandStringsFromPackageMap(v)
+	case map[string]string:
+		converted := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			converted[key] = value
+		}
+		return commandStringsFromPackageMap(converted)
+	default:
+		return nil
+	}
+}
+
+func commandStringsFromPackageMap(m map[string]interface{}) []string {
+	program := firstPackageString(m, "program", "cmd", "command", "executable", "binary")
+	if program == "" {
+		return nil
+	}
+	parts := []string{program}
+	for _, key := range []string{"args", "argv", "arguments"} {
+		if raw, ok := m[key]; ok && raw != nil {
+			if values := commandStringsFromPackageValue(raw); len(values) > 0 {
+				parts = append(parts, values...)
+			}
+			break
+		}
+	}
+	return []string{strings.Join(parts, " ")}
+}
+
+func firstPackageString(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := m[key]; ok {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", value)); s != "" && s != "<nil>" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 func localFileRefsFromCommand(command string) []string {

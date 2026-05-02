@@ -11,22 +11,28 @@ package qqbot
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	"github.com/gorilla/websocket"
+	silk "github.com/wdvxdr1123/go-silk"
 )
 
 const (
-	qqAPIBase     = "https://api.sgroup.qq.com"
-	tokenEndpoint = "https://bots.qq.com/app/getAppAccessToken"
+	qqAPIBase         = "https://api.sgroup.qq.com"
+	tokenEndpoint     = "https://bots.qq.com/app/getAppAccessToken"
+	qqVoiceSampleRate = 24000
+	qqVoiceBitRate    = 24000
 
 	intentsGroupAndC2C = 1 << 25
 
@@ -701,6 +707,15 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	if err != nil {
 		return err
 	}
+	if msg.FileType == 3 {
+		voiceData, err := prepareQQVoiceData(msg.FileName, msg.FileData)
+		if err != nil {
+			return err
+		}
+		msg.FileData = voiceData
+		msg.FileName = "voice.silk"
+		msg.MimeType = "audio/silk"
+	}
 
 	// Step 1: Upload media
 	uploadURL := fmt.Sprintf("%s/v2/users/%s/files", qqAPIBase, msg.OpenID)
@@ -775,6 +790,181 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		_ = g.SendText(ctx, OutgoingText{OpenID: msg.OpenID, Text: msg.Caption})
 	}
 	return nil
+}
+
+type qqVoiceMetadata struct {
+	sampleRate    int
+	channels      int
+	bitsPerSample int
+	dataStart     int
+	dataSize      int
+}
+
+func prepareQQVoiceData(fileName, b64 string) (string, error) {
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		data, err = base64.RawStdEncoding.DecodeString(b64)
+		if err != nil {
+			return "", fmt.Errorf("qqbot: voice base64 decode failed: %w", err)
+		}
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("qqbot: empty voice data")
+	}
+	if isTencentSilk(data) {
+		return base64.StdEncoding.EncodeToString(data), nil
+	}
+	if strings.EqualFold(filepath.Ext(fileName), ".silk") || strings.EqualFold(filepath.Ext(fileName), ".slk") {
+		return "", fmt.Errorf("qqbot: invalid SILK voice payload")
+	}
+	pcm, meta, ok := qqWAVVoicePayload(data)
+	if !ok {
+		return "", fmt.Errorf("qqbot: voice payload must be Tencent SILK or PCM WAV, got %s", filepath.Ext(fileName))
+	}
+	silkData, err := encodeQQWAVVoicePayload(pcm, meta)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(silkData), nil
+}
+
+func encodeQQWAVVoicePayload(pcm []byte, meta qqVoiceMetadata) ([]byte, error) {
+	if meta.bitsPerSample != 16 {
+		return nil, fmt.Errorf("qqbot: unsupported WAV bit depth %d for SILK voice", meta.bitsPerSample)
+	}
+	mono := pcm
+	if meta.channels == 2 {
+		mono = qqDownmixStereoS16ToMono(pcm)
+	} else if meta.channels != 1 {
+		return nil, fmt.Errorf("qqbot: unsupported WAV channel count %d for SILK voice", meta.channels)
+	}
+	if meta.sampleRate != qqVoiceSampleRate {
+		mono = qqResampleS16Mono(mono, meta.sampleRate, qqVoiceSampleRate)
+	}
+	mono, err := qqPadPCMForSilk(mono, qqVoiceSampleRate)
+	if err != nil {
+		return nil, err
+	}
+	out, err := silk.EncodePcmBuffToSilk(mono, qqVoiceSampleRate, qqVoiceBitRate, true)
+	if err != nil {
+		return nil, fmt.Errorf("qqbot: SILK encode failed: %w", err)
+	}
+	if !isTencentSilk(out) {
+		return nil, fmt.Errorf("qqbot: SILK encode produced invalid payload")
+	}
+	return out, nil
+}
+
+func isTencentSilk(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("\x02#!SILK_V3")) || bytes.HasPrefix(data, []byte("#!SILK_V3"))
+}
+
+func qqWAVVoicePayload(data []byte) ([]byte, qqVoiceMetadata, bool) {
+	meta, ok := parseQQWAVVoiceMetadata(data)
+	if !ok {
+		return nil, qqVoiceMetadata{}, false
+	}
+	return data[meta.dataStart : meta.dataStart+meta.dataSize], meta, true
+}
+
+func parseQQWAVVoiceMetadata(data []byte) (qqVoiceMetadata, bool) {
+	if len(data) < 44 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
+		return qqVoiceMetadata{}, false
+	}
+	var audioFormat, channels, bits uint16
+	var sampleRate uint32
+	meta := qqVoiceMetadata{}
+	for off := 12; off+8 <= len(data); {
+		chunkID := string(data[off : off+4])
+		chunkSize := int(binary.LittleEndian.Uint32(data[off+4 : off+8]))
+		chunkStart := off + 8
+		chunkEnd := chunkStart + chunkSize
+		if chunkSize < 0 || chunkEnd > len(data) {
+			break
+		}
+		switch chunkID {
+		case "fmt ":
+			if chunkSize >= 16 {
+				audioFormat = binary.LittleEndian.Uint16(data[chunkStart : chunkStart+2])
+				channels = binary.LittleEndian.Uint16(data[chunkStart+2 : chunkStart+4])
+				sampleRate = binary.LittleEndian.Uint32(data[chunkStart+4 : chunkStart+8])
+				bits = binary.LittleEndian.Uint16(data[chunkStart+14 : chunkStart+16])
+			}
+		case "data":
+			meta.dataStart = chunkStart
+			meta.dataSize = chunkSize
+		}
+		if sampleRate > 0 && channels > 0 && bits > 0 && meta.dataSize > 0 {
+			break
+		}
+		off = chunkEnd
+		if off%2 == 1 {
+			off++
+		}
+	}
+	if audioFormat != 1 || sampleRate == 0 || channels == 0 || bits == 0 || meta.dataSize == 0 || meta.dataStart == 0 {
+		return qqVoiceMetadata{}, false
+	}
+	meta.sampleRate = int(sampleRate)
+	meta.channels = int(channels)
+	meta.bitsPerSample = int(bits)
+	return meta, true
+}
+
+func qqPadPCMForSilk(data []byte, sampleRate int) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("qqbot: empty WAV voice payload")
+	}
+	if len(data)%2 != 0 {
+		return nil, fmt.Errorf("qqbot: malformed 16-bit PCM payload size %d", len(data))
+	}
+	frameBytes := sampleRate / 1000 * 40
+	if frameBytes <= 0 {
+		return nil, fmt.Errorf("qqbot: invalid SILK sample rate %d", sampleRate)
+	}
+	rem := len(data) % frameBytes
+	if rem == 0 {
+		return data, nil
+	}
+	out := make([]byte, len(data)+frameBytes-rem)
+	copy(out, data)
+	return out, nil
+}
+
+func qqDownmixStereoS16ToMono(data []byte) []byte {
+	frames := len(data) / 4
+	out := make([]byte, frames*2)
+	for i := 0; i < frames; i++ {
+		l := int(int16(binary.LittleEndian.Uint16(data[i*4:])))
+		r := int(int16(binary.LittleEndian.Uint16(data[i*4+2:])))
+		binary.LittleEndian.PutUint16(out[i*2:], uint16(int16((l+r)/2)))
+	}
+	return out
+}
+
+func qqResampleS16Mono(data []byte, fromRate, toRate int) []byte {
+	if fromRate <= 0 || toRate <= 0 || fromRate == toRate || len(data) < 2 {
+		return data
+	}
+	inSamples := len(data) / 2
+	outSamples := int((int64(inSamples)*int64(toRate) + int64(fromRate) - 1) / int64(fromRate))
+	if outSamples <= 0 {
+		return nil
+	}
+	out := make([]byte, outSamples*2)
+	for i := 0; i < outSamples; i++ {
+		posNum := int64(i) * int64(fromRate)
+		idx := int(posNum / int64(toRate))
+		if idx >= inSamples-1 {
+			copy(out[i*2:], data[(inSamples-1)*2:inSamples*2])
+			continue
+		}
+		frac := float64(posNum%int64(toRate)) / float64(toRate)
+		a := float64(int16(binary.LittleEndian.Uint16(data[idx*2:])))
+		b := float64(int16(binary.LittleEndian.Uint16(data[(idx+1)*2:])))
+		binary.LittleEndian.PutUint16(out[i*2:], uint16(int16(a+(b-a)*frac)))
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

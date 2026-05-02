@@ -1,4 +1,4 @@
-﻿{
+{
   "app": {
     "title": "iWorkerCloud Admin",
     "loading": "Loading..."
@@ -54,9 +54,9 @@
   },
   "skills": {
     "title": "Top-level iWorker Skill Market",
-    "desc": "Package elite skills once, authorize them by Center policy, and roll them out through connected iWorkerCenters without confusing Cloud with customer execution.",
+    "desc": "Create, package, publish, disable, and retire reusable iWorker skills for connected iWorkerCenters.",
     "positionTitle": "Market, not organization",
-    "positionDesc": "Cloud sells and distributes skills. The connected iWorkerCenter decides how the skill enters its local organization, roles, workflows, policy, and audit trail.",
+    "positionDesc": "Cloud sells and distributes skills. Each iWorkerCenter decides how a skill enters local roles, workflows, policy, and audit.",
     "stage": {
       "draft": "Draft",
       "listed": "Listed",
@@ -92,6 +92,31 @@
         "summary": "Analyzes Center-level system usage and recommends model routing, quota, and cost policy for platform management.",
         "detail": "This should sit close to Cloud's compute distribution layer and help our operators tune cost, latency, and product packaging."
       }
+    },
+    "search": "Search skills",
+    "newSkill": "New skill",
+    "empty": "No skills in the market yet.",
+    "activate": "Publish",
+    "disable": "Disable",
+    "confirmDelete": "Delete this skill from the Cloud market?",
+    "downloads": "Downloads",
+    "noPackage": "No package",
+    "updatedAt": "Updated",
+    "packagePlaceholder": "Paste skill package content here. It will be encoded and stored as the downloadable package.",
+    "fields": {
+      "id": "Skill ID",
+      "name": "Name",
+      "category": "Category",
+      "version": "Version",
+      "risk": "Risk",
+      "status": "Status",
+      "price": "Price",
+      "author": "Author",
+      "authorEmail": "Author email",
+      "tags": "Tags",
+      "description": "Description",
+      "packageFormat": "Package format",
+      "packageText": "Package content"
     }
   },
   "login": {
@@ -126,7 +151,11 @@
     "empty": "No licenses.",
     "centerId": "Center ID",
     "days": "Days",
-    "modules": "Modules"
+    "modules": "Modules",
+    "desc": "Issue and revoke commercial module entitlements for connected iWorkerCenters.",
+    "confirmRevoke": "Revoke this license? The Center may lose access to licensed Cloud services.",
+    "expiresAt": "Expires",
+    "issuedAt": "Issued"
   },
   "common": {
     "save": "Save",
@@ -188,6 +217,12 @@
     "defaultAllProviders": "Default: all enabled providers",
     "assignProvider": "Assign provider",
     "unassignProvider": "Unassign provider",
-    "limitToProvider": "Create explicit assignment from this provider"
+    "limitToProvider": "Create explicit assignment from this provider",
+    "noticeSaved": "Provider saved.",
+    "noticeDeleted": "Provider deleted.",
+    "noticeUpdated": "Settings updated.",
+    "noticeAssigned": "Provider distribution updated.",
+    "testOk": "Connection succeeded",
+    "testFailed": "Connection failed"
   }
 }

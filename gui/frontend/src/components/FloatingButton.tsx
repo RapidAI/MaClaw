@@ -15,7 +15,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { EventsOn } from '../../wailsjs/runtime';
 import './FloatingButton.css';
 import logoSrc from '../assets/images/maclaw2.png';
-import { defaultPetSkinId, getPetSkinOption, normalizePetSkinId, type PetSkinId } from './petSkins';
+import { defaultPetSize, defaultPetSkinId, getPetSkinOption, normalizePetSkinId, type PetSkinId } from './petSkins';
 
 // Wails Go binding bridge
 // The floating window's WebView will have Wails bindings injected.
@@ -78,7 +78,7 @@ interface FloatingPetConfig {
 const defaultPetConfig: FloatingPetConfig = {
     petEnabled: false,
     petSkin: defaultPetSkinId,
-    petSize: 72,
+    petSize: defaultPetSize,
     motionEnabled: true,
     quietMode: false,
     interactionMode: 'balanced',
@@ -86,7 +86,7 @@ const defaultPetConfig: FloatingPetConfig = {
 
 function clampPetSize(value: unknown): number {
     const n = Number(value);
-    if (!Number.isFinite(n)) return 72;
+    if (!Number.isFinite(n)) return defaultPetSize;
     return Math.min(120, Math.max(56, Math.round(n)));
 }
 

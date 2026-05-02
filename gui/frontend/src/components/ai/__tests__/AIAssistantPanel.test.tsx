@@ -412,8 +412,31 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('unfinished-slot-title').textContent).toContain('继续 Daily Paper');
         expect(getByTestId('unfinished-slot-summary').textContent).toContain('还差最后一轮整理');
         expect(getByTestId('unfinished-slot-project').textContent).toContain('D:/work/project');
+        expect(getByTestId('unfinished-slot-status').textContent).toBe('Status: pending resume');
         expect(getByText('继续上次任务')).toBeTruthy();
         expect(getByText('开始新任务')).toBeTruthy();
+    });
+
+    it('localizes unfinished slot status in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '检测到一个未完成任务。',
+                unfinishedSlot: {
+                    slotID: 'slot-zh',
+                    title: '继续旧任务',
+                    status: 'resumed',
+                },
+            }),
+        ];
+
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-status').textContent).toBe('状态：已恢复');
     });
 
     it('unfinished slot card buttons reuse executeAction', async () => {

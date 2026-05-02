@@ -803,3 +803,114 @@ label,
 .auth-error-tight {
   margin: 0;
 }
+
+textarea { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: #fff; color: var(--text); font: inherit; resize: vertical; }
+.skill-editor-grid, .license-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.field-span-2 { grid-column: 1 / -1; }
+.skill-card { min-width: 0; }
+.skill-card h3, .skill-card p, .skill-card strong { overflow-wrap: anywhere; }
+.module-check-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+.module-check { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; margin: 0; border: 1px solid var(--line); border-radius: 999px; background: #f8fbff; color: var(--text); font-size: 13px; font-weight: 700; }
+.module-check input { width: 16px; height: 16px; }
+.license-page-stack, .license-list { display: grid; gap: 14px; }
+@media (max-width: 900px) { .skill-editor-grid, .license-editor-grid { grid-template-columns: 1fr; } .field-span-2 { grid-column: auto; } }
+
+.cloud-review-panel,
+.cloud-tenant-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.cloud-review-panel {
+  grid-template-columns: minmax(0, 280px) 1fr;
+  align-items: center;
+}
+
+.cloud-review-panel label,
+.cloud-tenant-panel label {
+  display: block;
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.cloud-review-panel strong,
+.cloud-tenant-panel strong {
+  display: block;
+  color: var(--text);
+}
+
+.cloud-review-panel span,
+.cloud-tenant-panel span,
+.cloud-tenant-panel small {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.cloud-tenant-head,
+.cloud-tenant-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cloud-tenant-actions,
+.cloud-tenant-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.cloud-tenant-list {
+  display: grid;
+  gap: 8px;
+}
+
+.cloud-tenant-row {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.cloud-tenant-row small {
+  display: block;
+}
+
+@media (max-width: 900px) {
+  .cloud-review-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .cloud-tenant-head,
+  .cloud-tenant-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .cloud-tenant-actions,
+  .cloud-tenant-row-actions {
+    justify-content: flex-start;
+  }
+}
+
+.notice {
+  border: 1px solid var(--line, rgba(37, 84, 140, 0.18));
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 650;
+  background: #f8fbff;
+}
+.notice.ok { color: var(--ok, #1f8f6a); background: rgba(31, 143, 106, 0.10); }
+.notice.info { color: var(--primary, #2c6fca); background: rgba(47, 128, 237, 0.10); }
+.notice.danger { color: var(--danger, #bf5648); background: rgba(199, 90, 74, 0.10); }

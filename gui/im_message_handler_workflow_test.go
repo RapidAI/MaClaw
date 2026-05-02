@@ -45,8 +45,10 @@ func (m *mockEngineCallbacksGUI) SendTextToUser(userID, text string) error {
 	m.SentTexts = append(m.SentTexts, text)
 	return nil
 }
-func (m *mockEngineCallbacksGUI) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error { return nil }
-func (m *mockEngineCallbacksGUI) EmitDocUpdate(userID, phaseID, content string) error                { return nil }
+func (m *mockEngineCallbacksGUI) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
+	return nil
+}
+func (m *mockEngineCallbacksGUI) EmitDocUpdate(userID, phaseID, content string) error { return nil }
 func (m *mockEngineCallbacksGUI) EmitGateResult(userID, phaseID string, result *workflow.QualityGateResult) error {
 	return nil
 }
@@ -181,6 +183,32 @@ func TestBugCondition_CategoryEmptyReadyTrue_ShouldNotCallStartWorkflow(t *testi
 				"Expected behavior: should return nil (fall through to agent loop)",
 				resp.Text, resp.Error)
 		}
+	}
+}
+
+func TestActiveUnderstanding_ErrorPreservesSession(t *testing.T) {
+	llm := &mockLLMCallerGUI{
+		Response: `{"intent":{"category":"presentation_design","summary":"做PPT","confidence":0.8,"ready":false},"reply":"请补充风格","ready":false}`,
+	}
+	handler, _ := setupWorkflowTestHandler(llm)
+	engine := handler.app.workflowEngine
+	understanding := engine.GetUnderstanding()
+	userID := "test-user-understanding-error"
+
+	if _, err := understanding.Start(userID, "做一个纪念PPT"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if !understanding.HasActiveSession(userID) {
+		t.Fatal("expected active session after Start")
+	}
+
+	llm.Err = fmt.Errorf("temporary LLM failure")
+	resp := handler.handleActiveUnderstanding(engine, userID, "抗战胜利，中国民众，激昂")
+	if resp == nil || strings.TrimSpace(resp.Text) == "" {
+		t.Fatalf("expected user-visible retry guidance, got %#v", resp)
+	}
+	if !understanding.HasActiveSession(userID) {
+		t.Fatal("active understanding session should survive transient HandleInput error")
 	}
 }
 

@@ -1,6 +1,7 @@
 package centers
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -27,13 +29,15 @@ var (
 )
 
 type RegisterRequest struct {
-	CompanyName      string `json:"company_name"`
-	AdminEmail       string `json:"admin_email"`
-	AdminPhone       string `json:"admin_phone,omitempty"`
-	Address          string `json:"address,omitempty"`
-	LegalPerson      string `json:"legal_person,omitempty"`
-	BaseURL          string `json:"base_url"`
-	CloudControlMode string `json:"cloud_control_mode"`
+	CompanyName         string `json:"company_name"`
+	AdminEmail          string `json:"admin_email"`
+	AdminPhone          string `json:"admin_phone,omitempty"`
+	Address             string `json:"address,omitempty"`
+	LegalPerson         string `json:"legal_person,omitempty"`
+	BaseURL             string `json:"base_url"`
+	CloudControlMode    string `json:"cloud_control_mode"`
+	SupportsMultiTenant bool   `json:"supports_multi_tenant"`
+	TenantCount         int    `json:"tenant_count"`
 }
 
 type HeartbeatRequest struct {
@@ -160,6 +164,26 @@ type RecommendedAction struct {
 
 // ServiceReadiness describes whether Cloud may enable platform-level services for this Center.
 // It deliberately excludes customer tenant creation and customer business data.
+type CenterTenant struct {
+	ID          string `json:"id"`
+	CompanyName string `json:"company_name"`
+	LegalPerson string `json:"legal_person"`
+	Email       string `json:"email"`
+	Address     string `json:"address"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+}
+
+type CenterTenantRequest struct {
+	CompanyName   string `json:"company_name"`
+	LegalPerson   string `json:"legal_person"`
+	Email         string `json:"email"`
+	Address       string `json:"address"`
+	Status        string `json:"status,omitempty"`
+	AdminUsername string `json:"admin_username,omitempty"`
+	AdminPassword string `json:"admin_password,omitempty"`
+}
 type ServiceReadiness struct {
 	Allowed       bool                `json:"allowed"`
 	Center        *store.Center       `json:"center"`
@@ -202,16 +226,22 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 
 	id := fmt.Sprintf("ctr_%d", now.UnixNano())
 	c := &store.Center{
-		ID:               id,
-		CompanyName:      strings.TrimSpace(req.CompanyName),
-		AdminEmail:       strings.TrimSpace(req.AdminEmail),
-		BaseURL:          strings.TrimSpace(req.BaseURL),
-		CloudControlMode: normalizeControlMode(req.CloudControlMode),
-		LastSyncStatus:   "registered",
-		Status:           "pending",
-		SecretHash:       hashSecret(rawSecret),
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                  id,
+		CompanyName:         strings.TrimSpace(req.CompanyName),
+		AdminEmail:          strings.TrimSpace(req.AdminEmail),
+		AdminPhone:          strings.TrimSpace(req.AdminPhone),
+		Address:             strings.TrimSpace(req.Address),
+		LegalPerson:         strings.TrimSpace(req.LegalPerson),
+		BaseURL:             strings.TrimSpace(req.BaseURL),
+		CloudControlMode:    normalizeControlMode(req.CloudControlMode),
+		LastSyncStatus:      "registered",
+		Status:              "pending",
+		SecretHash:          hashSecret(rawSecret),
+		ManagementSecret:    rawSecret,
+		SupportsMultiTenant: req.SupportsMultiTenant,
+		TenantCount:         req.TenantCount,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 
 	if err := s.centers.Create(ctx, c); err != nil {
@@ -622,6 +652,84 @@ func (s *Service) ServiceReadiness(ctx context.Context, centerID string) (*Servi
 		Issues:        issues,
 		Actions:       management.RecommendedActions,
 	}, nil
+}
+
+func (s *Service) ListCenterTenants(ctx context.Context, centerID string) ([]CenterTenant, error) {
+	var resp struct {
+		Tenants []CenterTenant `json:"tenants"`
+	}
+	if err := s.centerTenantRequest(ctx, centerID, http.MethodGet, "/api/cloud/tenants", nil, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Tenants == nil {
+		resp.Tenants = []CenterTenant{}
+	}
+	return resp.Tenants, nil
+}
+
+func (s *Service) CreateCenterTenant(ctx context.Context, centerID string, req CenterTenantRequest) (*CenterTenant, error) {
+	var tenant CenterTenant
+	if err := s.centerTenantRequest(ctx, centerID, http.MethodPost, "/api/cloud/tenants", req, &tenant); err != nil {
+		return nil, err
+	}
+	return &tenant, nil
+}
+
+func (s *Service) UpdateCenterTenant(ctx context.Context, centerID, tenantID string, req CenterTenantRequest) (*CenterTenant, error) {
+	var tenant CenterTenant
+	if err := s.centerTenantRequest(ctx, centerID, http.MethodPut, "/api/cloud/tenants/"+url.PathEscape(strings.TrimSpace(tenantID)), req, &tenant); err != nil {
+		return nil, err
+	}
+	return &tenant, nil
+}
+
+func (s *Service) DeleteCenterTenant(ctx context.Context, centerID, tenantID string) error {
+	var resp map[string]any
+	return s.centerTenantRequest(ctx, centerID, http.MethodDelete, "/api/cloud/tenants/"+url.PathEscape(strings.TrimSpace(tenantID)), nil, &resp)
+}
+
+func (s *Service) centerTenantRequest(ctx context.Context, centerID, method, path string, body any, out any) error {
+	center, err := s.EnsureServiceManagementAllowed(ctx, centerID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(center.ManagementSecret) == "" {
+		return fmt.Errorf("%w: center management secret is missing; re-register the Center", ErrServiceManagementNotAllowed)
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(center.BaseURL), "/")
+	if baseURL == "" {
+		return fmt.Errorf("%w: center base_url is missing", ErrServiceManagementNotAllowed)
+	}
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("X-Center-ID", center.ID)
+	req.Header.Set("X-Center-Secret", center.ManagementSecret)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("center tenant request failed: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
 }
 
 // EnsureServiceManagementAllowed returns the Center only when platform service management is allowed.

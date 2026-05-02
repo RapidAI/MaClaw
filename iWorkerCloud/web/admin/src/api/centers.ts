@@ -1,4 +1,4 @@
-﻿import { apiGet, apiPost, apiPut, apiDelete } from './client';
+import { apiGet, apiPost, apiPut, apiDelete } from './client';
 
 export type CloudControlMode = 'cloud_managed' | 'self_managed' | 'hybrid';
 
@@ -15,6 +15,12 @@ export interface Center {
   created_at: string;
   updated_at?: string;
   last_heartbeat?: string;
+  admin_email?: string;
+  admin_phone?: string;
+  address?: string;
+  legal_person?: string;
+  supports_multi_tenant?: boolean;
+  tenant_count?: number;
 }
 
 export interface CenterIntegrationPatch {
@@ -175,3 +181,40 @@ export function deleteCenter(id: string): Promise<void> {
 }
 
 
+
+export interface CenterTenant {
+  id: string;
+  company_name: string;
+  legal_person: string;
+  email: string;
+  address: string;
+  status: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CenterTenantRequest {
+  company_name: string;
+  legal_person?: string;
+  email: string;
+  address?: string;
+  status?: string;
+  admin_username?: string;
+  admin_password?: string;
+}
+
+export function listCenterTenants(centerId: string): Promise<{ tenants: CenterTenant[] }> {
+  return apiGet(`/api/admin/centers/${centerId}/tenants`);
+}
+
+export function createCenterTenant(centerId: string, req: CenterTenantRequest): Promise<CenterTenant> {
+  return apiPost(`/api/admin/centers/${centerId}/tenants`, req);
+}
+
+export function updateCenterTenant(centerId: string, tenantId: string, req: CenterTenantRequest): Promise<CenterTenant> {
+  return apiPut(`/api/admin/centers/${centerId}/tenants/${tenantId}`, req);
+}
+
+export function deleteCenterTenant(centerId: string, tenantId: string): Promise<void> {
+  return apiDelete(`/api/admin/centers/${centerId}/tenants/${tenantId}`);
+}

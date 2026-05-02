@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 // ── Task 21.7: Auto Upload Trigger 单元测试 ─────────────────────────────
 
@@ -97,5 +101,24 @@ func TestRecordExecution_RecentScoresCapped(t *testing.T) {
 	}
 	if rec.ExecCount != 15 {
 		t.Errorf("exec count=%d, want 15", rec.ExecCount)
+	}
+}
+
+func TestSubmitAndMarkRequiresLifecycleQualityGate(t *testing.T) {
+	trigger := NewAutoUploadTrigger(nil, func() string { return "dev@test.com" })
+	err := trigger.SubmitAndMark(context.Background(), "my-skill", "skill.zip", "hash-v2")
+	if err == nil || !strings.Contains(err.Error(), "direct auto upload is disabled") {
+		t.Fatalf("SubmitAndMark() error = %v, want direct upload disabled", err)
+	}
+}
+
+func TestCheckAndTriggerDoesNotBypassLifecycleQualityGate(t *testing.T) {
+	trigger := NewAutoUploadTrigger(nil, func() string { return "dev@test.com" })
+	for i := 0; i < 2; i++ {
+		trigger.RecordExecution("my-skill", 2, "hash-v2")
+	}
+	err := trigger.CheckAndTrigger(context.Background(), "my-skill", "skill.zip", "hash-v2", &SkillExecutionResult{Success: true, OutputQuality: "good"})
+	if err == nil || !strings.Contains(err.Error(), "direct auto upload is disabled") {
+		t.Fatalf("CheckAndTrigger() error = %v, want direct upload disabled", err)
 	}
 }

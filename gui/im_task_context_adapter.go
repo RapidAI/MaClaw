@@ -86,15 +86,23 @@ func (h *IMMessageHandler) resolveTaskContext(
 		archived = h.taskArchive.List(userID)
 	}
 
+	hasActiveUnderstanding := false
+	if engine := h.getWorkflowEngine(); engine != nil {
+		if understanding := engine.GetUnderstanding(); understanding != nil {
+			hasActiveUnderstanding = understanding.HasActiveSession(userID)
+		}
+	}
+
 	input := agent.ResolveInput{
-		UserMessage:            trimmedMsg,
-		History:                history,
-		LastAccess:             h.memory.LastAccessTime(userID),
-		ArchivedTasks:          archived,
-		HasPendingAskUser:      hasPendingAskUser,
-		IsConfirmedResume:      isConfirmedResume,
-		HasIncompleteTaskMarker: hasIncompleteTaskMarker(history),
-		ExplicitNewTask:        explicitNewTask,
+		UserMessage:                   trimmedMsg,
+		History:                       history,
+		LastAccess:                    h.memory.LastAccessTime(userID),
+		ArchivedTasks:                 archived,
+		HasPendingAskUser:             hasPendingAskUser,
+		IsConfirmedResume:             isConfirmedResume,
+		HasActiveUnderstandingSession: hasActiveUnderstanding,
+		HasIncompleteTaskMarker:       hasIncompleteTaskMarker(history),
+		ExplicitNewTask:               explicitNewTask,
 	}
 
 	decision := h.taskContextManager.Resolve(input)

@@ -95,7 +95,7 @@ func (m *MoonshineModel) encode(pcm []float32) ([]float32, int, error) {
 	}
 
 	// Allocate encoder scratch buffers once for all layers
-	ffDim := w.encLayers[0].ffUpW.Rows
+	ffDim := w.encLayers[0].ffUpW.Rows()
 	bufs := newEncoderBufs(nFrames, dim, ffDim, hp.EncoderHeads, hp.EncoderHDim, hp.RopeTheta, hp.PartialRot)
 
 	for li := 0; li < hp.EncoderDepth; li++ {
@@ -196,9 +196,9 @@ func (m *MoonshineModel) encoderLayerOpt(x []float32, nFrames int, l *encoderLay
 	q := eb.q[:n]
 	k := eb.k[:n]
 	v := eb.v[:n]
-	tensor.MatMulQ8(q, x[:n], l.attnQW, nFrames, dim, dim)
-	tensor.MatMulQ8(k, x[:n], l.attnKW, nFrames, dim, dim)
-	tensor.MatMulQ8(v, x[:n], l.attnVW, nFrames, dim, dim)
+	matMulLinear(q, x[:n], l.attnQW, nFrames, dim, dim)
+	matMulLinear(k, x[:n], l.attnKW, nFrames, dim, dim)
+	matMulLinear(v, x[:n], l.attnVW, nFrames, dim, dim)
 
 	// RoPE with precomputed tables
 	rotaryDim := eb.rotaryDim
@@ -213,7 +213,7 @@ func (m *MoonshineModel) encoderLayerOpt(x []float32, nFrames int, l *encoderLay
 
 	// Output projection + residual
 	projOut := eb.projOut[:n]
-	tensor.MatMulQ8(projOut, attnOut, l.attnOutW, nFrames, dim, dim)
+	matMulLinear(projOut, attnOut, l.attnOutW, nFrames, dim, dim)
 	tensor.Add(x[:n], eb.residual[:n], projOut)
 
 	// FFN residual
@@ -225,10 +225,10 @@ func (m *MoonshineModel) encoderLayerOpt(x []float32, nFrames int, l *encoderLay
 		tensor.LayerNorm(x[off:off+dim], x[off:off+dim], l.ffNormW, 1e-5)
 	}
 
-	// FFN up + GELU + down (Q8 quantized)
-	ffDim := l.ffUpW.Rows
+	// FFN up + GELU + down
+	ffDim := l.ffUpW.Rows()
 	ffOut := eb.ffOut[:nFrames*ffDim]
-	tensor.MatMulQ8(ffOut, x[:n], l.ffUpW, nFrames, ffDim, dim)
+	matMulLinear(ffOut, x[:n], l.ffUpW, nFrames, ffDim, dim)
 	if l.ffUpB != nil {
 		tensor.AddBiasGELU(ffOut, nFrames, ffDim, l.ffUpB)
 	} else {
@@ -236,7 +236,7 @@ func (m *MoonshineModel) encoderLayerOpt(x []float32, nFrames int, l *encoderLay
 	}
 
 	downOut := eb.downOut[:n]
-	tensor.MatMulQ8(downOut, ffOut, l.ffDownW, nFrames, dim, ffDim)
+	matMulLinear(downOut, ffOut, l.ffDownW, nFrames, dim, ffDim)
 	if l.ffDownB != nil {
 		tensor.AddBias(downOut, nFrames, dim, l.ffDownB)
 	}

@@ -6,8 +6,6 @@ import {
   unassignProviderFromCenter, listCenterCosts,
   type LLMProvider, type CenterPermission, type CenterCostRow,
 } from '../api/compute';
-
-/* ── tiny helpers ── */
 const today = () => new Date().toISOString().slice(0, 10);
 const monthAgo = () => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 10); };
 
@@ -32,6 +30,7 @@ export function ComputePowerPage() {
   const [dateStart, setDateStart] = useState(monthAgo());
   const [dateEnd, setDateEnd] = useState(today());
   const [costs, setCosts] = useState<CenterCostRow[]>([]);
+  const [notice, setNotice] = useState<{ tone: 'ok' | 'danger' | 'info'; text: string } | null>(null);
 
   const load = () => {
     Promise.all([
@@ -50,8 +49,6 @@ export function ComputePowerPage() {
     }).catch(() => {});
   };
   useEffect(load, []);
-
-  /* ── Provider CRUD ── */
   const openAdd = () => { setEditId(null); setForm(emptyForm()); setShowForm(true); };
   const openEdit = (p: LLMProvider) => {
     setEditId(p.id);
@@ -62,31 +59,28 @@ export function ComputePowerPage() {
     try {
       if (editId) await updateProvider(editId, form as any);
       else await createProvider(form as any);
+      setNotice({ tone: 'ok', text: t('compute.noticeSaved') });
       setShowForm(false); load();
-    } catch (e: any) { alert(e.message); }
+    } catch (e: any) { setNotice({ tone: 'danger', text: e?.message || t('common.error') }); }
   };
   const handleDelete = async (id: string) => {
     if (!confirm(t('compute.confirmDelete'))) return;
-    await deleteProvider(id).catch(() => {}); load();
+    await deleteProvider(id).then(() => setNotice({ tone: 'ok', text: t('compute.noticeDeleted') })).catch((e: any) => setNotice({ tone: 'danger', text: e?.message || t('common.error') })); load();
   };
-  const handleToggle = async (id: string) => { await toggleProvider(id).catch(() => {}); load(); };
+  const handleToggle = async (id: string) => { await toggleProvider(id).then(() => setNotice({ tone: 'ok', text: t('compute.noticeUpdated') })).catch((e: any) => setNotice({ tone: 'danger', text: e?.message || t('common.error') })); load(); };
   const handleTest = async (id: string) => {
     const r = await testProvider(id).catch(() => ({ ok: false, latency_ms: 0, error: 'failed' }));
-    alert(r.ok ? `OK (${r.latency_ms}ms)` : `Failed: ${r.error}`);
+    setNotice({ tone: r.ok ? 'ok' : 'danger', text: r.ok ? `${t('compute.testOk')} (${r.latency_ms}ms)` : `${t('compute.testFailed')}: ${r.error}` });
   };
-
-  /* ── Permissions ── */
   const handlePermToggle = async (cid: string, cur: boolean) => {
-    await toggleCenterPermission(cid, !cur).catch(() => {}); load();
+    await toggleCenterPermission(cid, !cur).then(() => setNotice({ tone: 'ok', text: t('compute.noticeUpdated') })).catch((e: any) => setNotice({ tone: 'danger', text: e?.message || t('common.error') })); load();
   };
   const handleAssignProvider = async (cid: string, providerId: string) => {
-    await assignProviderToCenter(cid, providerId).catch((e: any) => alert(e.message)); load();
+    await assignProviderToCenter(cid, providerId).then(() => setNotice({ tone: 'ok', text: t('compute.noticeAssigned') })).catch((e: any) => setNotice({ tone: 'danger', text: e?.message || t('common.error') })); load();
   };
   const handleUnassignProvider = async (cid: string, providerId: string) => {
-    await unassignProviderFromCenter(cid, providerId).catch((e: any) => alert(e.message)); load();
+    await unassignProviderFromCenter(cid, providerId).then(() => setNotice({ tone: 'ok', text: t('compute.noticeAssigned') })).catch((e: any) => setNotice({ tone: 'danger', text: e?.message || t('common.error') })); load();
   };
-
-  /* ── Usage ── */
   const loadCosts = () => {
     listCenterCosts({ period, start: dateStart, end: dateEnd }).then(d => setCosts(d ?? [])).catch(() => {});
   };
@@ -96,6 +90,7 @@ export function ComputePowerPage() {
   return (
     <div>
       {/* Sub-tabs */}
+      {notice && <div className={`notice ${notice.tone}`} style={{ marginBottom: 12 }}>{notice.text}</div>}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {(['providers', 'permissions', 'usage'] as const).map(k => (
           <button key={k} className={tab === k ? 'btn-primary' : 'btn-ghost'} onClick={() => setTab(k)}>
@@ -103,8 +98,6 @@ export function ComputePowerPage() {
           </button>
         ))}
       </div>
-
-      {/* ═══ Providers Tab ═══ */}
       {tab === 'providers' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -172,8 +165,6 @@ export function ComputePowerPage() {
           )}
         </div>
       )}
-
-      {/* Permissions Tab */}
       {tab === 'permissions' && (
         <div>
           <h3>{t('compute.centerPermissions')}</h3>
@@ -224,8 +215,6 @@ export function ComputePowerPage() {
           )}
         </div>
       )}
-
-      {/* ═══ Usage Tab ═══ */}
       {tab === 'usage' && (
         <div>
           <h3>{t('compute.usageStats')}</h3>

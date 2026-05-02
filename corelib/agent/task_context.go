@@ -154,6 +154,12 @@ type ResolveInput struct {
 	// been replaced with the enhanced instruction.
 	IsConfirmedResume bool
 
+	// HasActiveUnderstandingSession is true while a workflow clarification
+	// session owns the user's next replies. In that state, the message is bound
+	// to the active clarification unless the frontend explicitly starts a new
+	// task.
+	HasActiveUnderstandingSession bool
+
 	// HasIncompleteTaskMarker is true if the conversation history contains
 	// markers indicating the previous task was interrupted (max rounds
 	// reached, session still running, etc.).
@@ -196,6 +202,14 @@ func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 		return TaskContextDecision{
 			Action: TaskContinue,
 			Reason: "user confirmed pending task execution",
+			Source: "explicit",
+		}
+	}
+
+	if input.HasActiveUnderstandingSession {
+		return TaskContextDecision{
+			Action: TaskContinue,
+			Reason: "active workflow understanding session",
 			Source: "explicit",
 		}
 	}

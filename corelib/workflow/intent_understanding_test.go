@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -158,7 +159,6 @@ func TestIntentUnderstanding_HandleInputNoSession(t *testing.T) {
 	}
 }
 
-
 func TestParseLLMIntentResponse_TrailingComma(t *testing.T) {
 	// LLMs frequently produce trailing commas in JSON. Go's json.Unmarshal
 	// rejects them. parseLLMIntentResponse must strip them before parsing.
@@ -223,7 +223,7 @@ func TestStripTrailingJSONCommas(t *testing.T) {
 		{`{"a": 1,}`, `{"a": 1}`},
 		{`{"a": [1, 2,]}`, `{"a": [1, 2]}`},
 		{`{"a": 1, "b": 2,}`, `{"a": 1, "b": 2}`},
-		{`{"a": 1}`, `{"a": 1}`}, // no trailing comma — unchanged
+		{`{"a": 1}`, `{"a": 1}`},               // no trailing comma — unchanged
 		{`{"a": "hello,"}`, `{"a": "hello,"}`}, // comma inside string — unchanged (regex doesn't match)
 	}
 	for _, tc := range cases {
@@ -233,7 +233,6 @@ func TestStripTrailingJSONCommas(t *testing.T) {
 		}
 	}
 }
-
 
 func TestParseLLMIntentResponse_Failure_ReturnsEmptyReply(t *testing.T) {
 	// When JSON parsing fails, reply must be empty (not the raw LLM output).
@@ -250,11 +249,11 @@ func TestParseLLMIntentResponse_Failure_ReturnsEmptyReply(t *testing.T) {
 	}
 }
 
-func TestHandleInput_ParseFailure_FallsThrough(t *testing.T) {
-	// When the LLM returns malformed JSON during HandleInput, the session
-	// should be cleaned up and the function should return an error so the
-	// caller falls through to the normal agent loop. The user must NEVER
-	// see raw JSON.
+func TestHandleInput_ParseFailure_PreservesSession(t *testing.T) {
+	// When the LLM returns malformed JSON during HandleInput, the session must
+	// stay active. The user's follow-up is still bound to the workflow
+	// clarification task, and falling through to the normal agent loop can make
+	// task-context classify it against unrelated prior history.
 	llm := &MockLLMCaller{
 		Response: `{"intent":{"category":"coding"},"reply":"ok","ready":false}`,
 	}
@@ -272,12 +271,42 @@ func TestHandleInput_ParseFailure_FallsThrough(t *testing.T) {
 	// Now make the LLM return malformed JSON for HandleInput.
 	llm.Response = `{"intent": BROKEN, "reply": "should not see this"}`
 
-	_, _, _, _, err = mgr.HandleInput("u1", "开工")
-	if err == nil {
-		t.Fatal("HandleInput should return error on parse failure")
+	reply, ready, cancelled, _, err := mgr.HandleInput("u1", "开工")
+	if err != nil {
+		t.Fatalf("HandleInput should not error on parse failure: %v", err)
 	}
-	// Session should be cleaned up.
-	if mgr.HasActiveSession("u1") {
-		t.Error("session should be cleaned up after parse failure")
+	if reply == "" {
+		t.Fatal("expected safe fallback reply on parse failure")
+	}
+	if ready {
+		t.Fatal("parse failure must not mark workflow ready")
+	}
+	if cancelled {
+		t.Fatal("parse failure must not cancel the session")
+	}
+	if !mgr.HasActiveSession("u1") {
+		t.Error("session should remain active after parse failure")
+	}
+}
+
+func TestBuildIntentParseFailureReply_HidesStructuredGarbage(t *testing.T) {
+	cases := []string{
+		`{"intent": BROKEN, "reply": "should not see this"}`,
+		"```json\n{\"intent\": BROKEN}\n```",
+		`前缀 {"intent": BROKEN}`,
+	}
+	for _, raw := range cases {
+		reply := buildIntentParseFailureReply(raw)
+		if strings.Contains(reply, "BROKEN") || strings.Contains(reply, "intent") {
+			t.Fatalf("fallback leaked structured garbage: %q", reply)
+		}
+	}
+}
+
+func TestBuildIntentParseFailureReply_AllowsNaturalLanguageClarification(t *testing.T) {
+	raw := "我已理解你想做一份激昂风格的抗战胜利纪念PPT，请确认受众和页数。"
+	reply := buildIntentParseFailureReply(raw)
+	if !strings.Contains(reply, "抗战胜利纪念PPT") {
+		t.Fatalf("expected natural-language clarification to be preserved, got %q", reply)
 	}
 }

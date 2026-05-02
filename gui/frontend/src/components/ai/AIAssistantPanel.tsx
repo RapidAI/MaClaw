@@ -672,16 +672,27 @@ const baseInputBtnStyle: React.CSSProperties = {
     userSelect: "none",
 };
 
-const actionBtnStyle: React.CSSProperties = {
-    ...baseInputBtnStyle,
-    width: "auto",
-    height: "auto",
+const messageActionBtnStyle: React.CSSProperties = {
+    background: "transparent",
+    border: "1px solid",
+    borderRadius: "8px",
     minWidth: "96px",
+    maxWidth: "100%",
     minHeight: "32px",
     padding: "5px 12px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
     fontSize: "1em",
+    fontFamily: "inherit",
     lineHeight: 1.35,
-    whiteSpace: "nowrap",
+    textAlign: "center",
+    overflowWrap: "anywhere",
+    cursor: "pointer",
+    flexShrink: 0,
+    boxSizing: "border-box",
+    transition: "background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
+    userSelect: "none",
 };
 
 type AssistantInputIconName = "paperclip" | "mic" | "cornerDownLeft" | "stop";
@@ -1220,7 +1231,7 @@ function renderActions(
                     data-testid="action-button"
                     onClick={() => executeAction(a.command)}
                     style={{
-                        ...actionBtnStyle,
+                        ...messageActionBtnStyle,
                         color: a.style === "danger" ? t.errorText : t.btnColor,
                         borderColor: a.style === "danger" ? t.errorText : t.btnBorder,
                     }}

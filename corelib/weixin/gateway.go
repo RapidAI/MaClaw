@@ -29,12 +29,15 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
+	silk "github.com/wdvxdr1123/go-silk"
 )
 
 const (
-	DefaultBaseURL    = "https://ilinkai.weixin.qq.com"
-	DefaultCDNBaseURL = "https://novac2c.cdn.weixin.qq.com/c2c"
-	DefaultBotType    = "3"
+	DefaultBaseURL        = "https://ilinkai.weixin.qq.com"
+	DefaultCDNBaseURL     = "https://novac2c.cdn.weixin.qq.com/c2c"
+	DefaultBotType        = "3"
+	weixinVoiceSampleRate = 24000
+	weixinVoiceBitRate    = 24000
 
 	longPollTimeout        = 35 * time.Second
 	apiTimeout             = 15 * time.Second
@@ -1147,7 +1150,11 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		}
 	}
 
-	wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "media=%s size=%d upload_size=%d name=%s", msg.MediaType, len(msg.FileData), len(uploadData), msg.FileName)
+	if msg.MediaType == "voice" && voiceMeta != nil {
+		wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "media=%s size=%d upload_size=%d encode_type=6 sample_rate=%d playtime=%d name=%s", msg.MediaType, len(msg.FileData), len(uploadData), voiceMeta.sampleRate, voiceMeta.playtimeMS, msg.FileName)
+	} else {
+		wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "media=%s size=%d upload_size=%d name=%s", msg.MediaType, len(msg.FileData), len(uploadData), msg.FileName)
+	}
 
 	// Determine upload media type
 	uploadType := UploadMediaFile
@@ -1211,7 +1218,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 				EncryptQueryParam: uploaded.downloadParam,
 				AESKey:            aesKeyForMedia,
 				EncryptType:       1,
-			}, msg.FileName, voiceMeta),
+			}, voiceMeta),
 		}
 	default: // file
 		item = messageItem{
@@ -1246,42 +1253,21 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	return err
 }
 
-func buildVoiceItem(media *cdnMedia, fileName string, meta *voiceMetadata) *voiceItem {
-	encodeType := inferVoiceEncodeType(fileName)
-	if meta != nil {
-		encodeType = 1
-	}
+func buildVoiceItem(media *cdnMedia, meta *voiceMetadata) *voiceItem {
 	item := &voiceItem{
 		Media:      media,
-		EncodeType: encodeType,
+		EncodeType: 6,
 	}
 	if meta != nil {
 		item.SampleRate = meta.sampleRate
-		item.BitsPerSample = meta.bitsPerSample
 		item.Playtime = meta.playtimeMS
 	}
 	return item
 }
 
-func inferVoiceEncodeType(fileName string) int {
-	switch strings.ToLower(filepath.Ext(fileName)) {
-	case ".wav", ".pcm":
-		return 1
-	case ".amr":
-		return 5
-	case ".silk", ".slk":
-		return 6
-	case ".mp3":
-		return 7
-	case ".ogg", ".opus":
-		return 8
-	default:
-		return 8
-	}
-}
-
 type voiceMetadata struct {
 	sampleRate    int
+	channels      int
 	bitsPerSample int
 	playtimeMS    int
 	dataStart     int
@@ -1313,21 +1299,141 @@ func wavVoicePayload(data []byte) ([]byte, voiceMetadata, bool) {
 }
 
 func voiceUploadPayload(fileName string, data []byte) ([]byte, *voiceMetadata, error) {
+	if isSilkVoicePayload(data) {
+		meta := &voiceMetadata{sampleRate: weixinVoiceSampleRate, playtimeMS: estimateSilkPlaytimeMS(data)}
+		return data, meta, nil
+	}
+
 	switch strings.ToLower(filepath.Ext(fileName)) {
 	case ".wav":
 		payload, meta, ok := wavVoicePayload(data)
 		if !ok {
 			return nil, nil, fmt.Errorf("weixin: invalid PCM WAV voice payload")
 		}
-		return payload, &meta, nil
+		return encodeWAVVoicePayload(payload, meta)
 	case ".pcm":
-		return nil, nil, fmt.Errorf("weixin: raw PCM voice payload requires WAV metadata")
+		return nil, nil, fmt.Errorf("weixin: raw PCM voice payload requires WAV metadata before SILK encoding")
+	case ".silk", ".slk":
+		return nil, nil, fmt.Errorf("weixin: invalid SILK voice payload")
 	default:
 		if payload, meta, ok := wavVoicePayload(data); ok {
-			return payload, &meta, nil
+			return encodeWAVVoicePayload(payload, meta)
 		}
-		return data, nil, nil
+		return nil, nil, fmt.Errorf("weixin: voice payload must be SILK or PCM WAV, got %s", filepath.Ext(fileName))
 	}
+}
+
+func encodeWAVVoicePayload(pcm []byte, meta voiceMetadata) ([]byte, *voiceMetadata, error) {
+	if meta.bitsPerSample != 16 {
+		return nil, nil, fmt.Errorf("weixin: unsupported WAV bit depth %d for SILK voice", meta.bitsPerSample)
+	}
+	mono := pcm
+	if meta.channels == 2 {
+		mono = downmixStereoS16ToMono(pcm)
+	} else if meta.channels != 1 {
+		return nil, nil, fmt.Errorf("weixin: unsupported WAV channel count %d for SILK voice", meta.channels)
+	}
+	if meta.sampleRate != weixinVoiceSampleRate {
+		mono = resampleS16Mono(mono, meta.sampleRate, weixinVoiceSampleRate)
+	}
+	mono, err := padPCMForSilk(mono, weixinVoiceSampleRate)
+	if err != nil {
+		return nil, nil, err
+	}
+	silkData, err := silk.EncodePcmBuffToSilk(mono, weixinVoiceSampleRate, weixinVoiceBitRate, true)
+	if err != nil {
+		return nil, nil, fmt.Errorf("weixin: SILK encode failed: %w", err)
+	}
+	if !isSilkVoicePayload(silkData) {
+		return nil, nil, fmt.Errorf("weixin: SILK encode produced invalid payload")
+	}
+	outMeta := meta
+	outMeta.sampleRate = weixinVoiceSampleRate
+	outMeta.channels = 1
+	outMeta.bitsPerSample = 0
+	return silkData, &outMeta, nil
+}
+
+func padPCMForSilk(data []byte, sampleRate int) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("weixin: empty WAV voice payload")
+	}
+	if len(data)%2 != 0 {
+		return nil, fmt.Errorf("weixin: malformed 16-bit PCM payload size %d", len(data))
+	}
+	frameBytes := sampleRate / 1000 * 40
+	if frameBytes <= 0 {
+		return nil, fmt.Errorf("weixin: invalid SILK sample rate %d", sampleRate)
+	}
+	rem := len(data) % frameBytes
+	if rem == 0 {
+		return data, nil
+	}
+	out := make([]byte, len(data)+frameBytes-rem)
+	copy(out, data)
+	return out, nil
+}
+
+func isSilkVoicePayload(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("#!SILK_V3")) || bytes.HasPrefix(data, []byte("\x02#!SILK_V3"))
+}
+
+func estimateSilkPlaytimeMS(data []byte) int {
+	if !isSilkVoicePayload(data) {
+		return 0
+	}
+	off := 9
+	if bytes.HasPrefix(data, []byte("\x02#!SILK_V3")) {
+		off = 10
+	}
+	frames := 0
+	for off+2 <= len(data) {
+		n := int(int16(binary.LittleEndian.Uint16(data[off : off+2])))
+		off += 2
+		if n <= 0 || off+n > len(data) {
+			break
+		}
+		off += n
+		frames++
+	}
+	return frames * 20
+}
+
+func downmixStereoS16ToMono(data []byte) []byte {
+	frames := len(data) / 4
+	out := make([]byte, frames*2)
+	for i := 0; i < frames; i++ {
+		l := int(int16(binary.LittleEndian.Uint16(data[i*4:])))
+		r := int(int16(binary.LittleEndian.Uint16(data[i*4+2:])))
+		binary.LittleEndian.PutUint16(out[i*2:], uint16(int16((l+r)/2)))
+	}
+	return out
+}
+
+func resampleS16Mono(data []byte, fromRate, toRate int) []byte {
+	if fromRate <= 0 || toRate <= 0 || fromRate == toRate || len(data) < 2 {
+		return data
+	}
+	inSamples := len(data) / 2
+	outSamples := int((int64(inSamples)*int64(toRate) + int64(fromRate) - 1) / int64(fromRate))
+	if outSamples <= 0 {
+		return nil
+	}
+	out := make([]byte, outSamples*2)
+	for i := 0; i < outSamples; i++ {
+		posNum := int64(i) * int64(fromRate)
+		idx := int(posNum / int64(toRate))
+		if idx >= inSamples-1 {
+			copy(out[i*2:], data[(inSamples-1)*2:inSamples*2])
+			continue
+		}
+		frac := float64(posNum%int64(toRate)) / float64(toRate)
+		a := float64(int16(binary.LittleEndian.Uint16(data[idx*2:])))
+		b := float64(int16(binary.LittleEndian.Uint16(data[(idx+1)*2:])))
+		sample := int16(a + (b-a)*frac)
+		binary.LittleEndian.PutUint16(out[i*2:], uint16(sample))
+	}
+	return out
 }
 
 func parseWAVVoiceMetadata(data []byte) (voiceMetadata, bool) {
@@ -1366,7 +1472,7 @@ func parseWAVVoiceMetadata(data []byte) (voiceMetadata, bool) {
 			off++
 		}
 	}
-	if audioFormat != 1 || sr == 0 || bits == 0 || meta.dataSize == 0 || meta.dataStart == 0 {
+	if audioFormat != 1 || sr == 0 || channels == 0 || bits == 0 || meta.dataSize == 0 || meta.dataStart == 0 {
 		return voiceMetadata{}, false
 	}
 	rate := uint64(byteRate)
@@ -1377,6 +1483,7 @@ func parseWAVVoiceMetadata(data []byte) (voiceMetadata, bool) {
 		return voiceMetadata{}, false
 	}
 	meta.sampleRate = int(sr)
+	meta.channels = int(channels)
 	meta.bitsPerSample = int(bits)
 	meta.playtimeMS = int((uint64(meta.dataSize) * 1000) / rate)
 	return meta, true

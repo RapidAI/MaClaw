@@ -1045,3 +1045,29 @@ func TestSummarizeAuditEntriesComparesRFC3339Offsets(t *testing.T) {
 		t.Fatalf("expected chronological latest timestamp across offsets, got %#v", health)
 	}
 }
+
+func TestAuditTrailListReturnsSanitizedDeepCopies(t *testing.T) {
+	trail := NewAuditTrailWithOptions(5, AuditOptions{MaxStringLength: 32})
+	trail.Append(AuditEntry{
+		SessionID: "sess-sk-12345678901234567890",
+		Summary:   ResultSummary{SkipReasons: map[string]int{"secret sk-12345678901234567890": 1}},
+		Decisions: []Decision{{Quality: QualityReport{Reasons: []string{"stable"}}}},
+	})
+
+	first := trail.List()
+	if len(first) != 1 {
+		t.Fatalf("expected one entry, got %#v", first)
+	}
+	if strings.Contains(first[0].SessionID, "sk-12345678901234567890") {
+		t.Fatalf("list should return sanitized entries, got %#v", first[0])
+	}
+	first[0].Decisions[0].Quality.Reasons[0] = "mutated"
+	for key := range first[0].Summary.SkipReasons {
+		delete(first[0].Summary.SkipReasons, key)
+	}
+
+	second := trail.List()
+	if second[0].Decisions[0].Quality.Reasons[0] == "mutated" || len(second[0].Summary.SkipReasons) == 0 {
+		t.Fatalf("list should return deep copies, got %#v", second[0])
+	}
+}

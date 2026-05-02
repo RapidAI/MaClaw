@@ -56,18 +56,34 @@ func TestRegisterCenterSendsManagementMetadata(t *testing.T) {
 func TestRegisterTenantToCloudPersistsReturnedCredentials(t *testing.T) {
 	seen := make(chan RegisterCenterRequest, 1)
 	rawBody := make(chan string, 1)
+	heartbeatSeen := make(chan bool, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request: %v", err)
+		switch r.URL.Path {
+		case "/api/centers/register":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read request: %v", err)
+			}
+			rawBody <- string(body)
+			var req RegisterCenterRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			seen <- req
+			_ = json.NewEncoder(w).Encode(RegisterCenterResponse{CenterID: "center-service-1", Secret: "secret-service-1", Status: "active", Message: "registered"})
+		case "/api/centers/center-service-1/heartbeat":
+			var req CenterHeartbeatRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode heartbeat: %v", err)
+			}
+			if req.Secret != "secret-service-1" || req.RuntimeType != "service" || req.ProductKind != "iworkercenter" || req.AdminConsole != "web_console" {
+				t.Fatalf("heartbeat identity = %+v", req)
+			}
+			heartbeatSeen <- true
+			writeJSON(w, http.StatusOK, map[string]any{"status": "heartbeat_ok"})
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
 		}
-		rawBody <- string(body)
-		var req RegisterCenterRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		seen <- req
-		_ = json.NewEncoder(w).Encode(RegisterCenterResponse{CenterID: "center-service-1", Secret: "secret-service-1", Status: "active", Message: "registered"})
 	}))
 	defer srv.Close()
 
@@ -100,11 +116,11 @@ func TestRegisterTenantToCloudPersistsReturnedCredentials(t *testing.T) {
 	}
 
 	req := <-seen
-	if req.CompanyName != "HQ iWorkerCenter" || req.AdminEmail != "center-admin@example.net" || req.BaseURL != "https://center.example.com" || req.CloudControlMode != "cloud_managed" {
+	if req.CompanyName != "Acme Inc" || req.AdminEmail != "admin@example.com" || req.BaseURL != "https://center.example.com" || req.CloudControlMode != "cloud_managed" {
 		t.Fatalf("metadata = %+v", req)
 	}
-	if req.LegalPerson != "" || req.Address != "" {
-		t.Fatalf("tenant business fields leaked into cloud registration: %+v", req)
+	if req.LegalPerson != "Jane Doe" || req.Address != "1 Center Road" {
+		t.Fatalf("company review fields missing from cloud registration: %+v", req)
 	}
 
 	updated, err := svc.tenantRepo.GetByID(context.Background(), tenant.ID)
@@ -112,23 +128,28 @@ func TestRegisterTenantToCloudPersistsReturnedCredentials(t *testing.T) {
 		t.Fatalf("get tenant: %v", err)
 	}
 	body := <-rawBody
-	for _, forbidden := range []string{"Acme Inc", "Jane Doe", "1 Center Road", "admin@example.com", "tenant_count", "legal_person"} {
-		if strings.Contains(body, forbidden) {
-			t.Fatalf("cloud registration leaked %q: %s", forbidden, body)
+	for _, required := range []string{"Acme Inc", "Jane Doe", "1 Center Road", "admin@example.com", "tenant_count", "legal_person"} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("cloud registration missing %q: %s", required, body)
 		}
 	}
 
 	if updated.CloudCenterID != "center-service-1" || updated.CloudSecret != "secret-service-1" {
 		t.Fatalf("cloud credentials were not persisted: %+v", updated)
 	}
+	<-heartbeatSeen
 }
 
 func TestAdminCloudRegisterRouteRegistersTenant(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/centers/register" {
+		switch r.URL.Path {
+		case "/api/centers/register":
+			_ = json.NewEncoder(w).Encode(RegisterCenterResponse{CenterID: "center-admin-1", Secret: "secret-admin-1", Status: "active", Message: "registered"})
+		case "/api/centers/center-admin-1/heartbeat":
+			writeJSON(w, http.StatusOK, map[string]any{"status": "heartbeat_ok"})
+		default:
 			t.Fatalf("path = %q", r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(RegisterCenterResponse{CenterID: "center-admin-1", Secret: "secret-admin-1", Status: "active", Message: "registered"})
 	}))
 	defer srv.Close()
 

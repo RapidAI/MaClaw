@@ -419,3 +419,31 @@ func TestProfileUpdateRebuildsTemporalTree(t *testing.T) {
 		t.Fatalf("profile update should rebuild TMT with LevelProfile, level=%v ok=%v", level, ok)
 	}
 }
+
+func TestSetEntriesNormalizesMissingTimestamps(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	updated := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	store.SetEntries([]Entry{{
+		ID:        "missing-created",
+		Content:   "alpha port is 2222",
+		Category:  CategoryProjectKnowledge,
+		UpdatedAt: updated,
+		Entities:  []string{"entity:alpha", "relation:config_of", "entity:port-2222"},
+	}})
+
+	store.mu.RLock()
+	entry := store.entries[0]
+	store.mu.RUnlock()
+	if !entry.CreatedAt.Equal(updated) || !entry.UpdatedAt.Equal(updated) {
+		t.Fatalf("SetEntries should normalize timestamps from UpdatedAt, got created=%v updated=%v", entry.CreatedAt, entry.UpdatedAt)
+	}
+	asOfBefore := updated.Add(-time.Nanosecond)
+	if hits := store.SemanticGraph().SearchWithOptions([]string{"alpha"}, SemanticSearchOptions{Now: asOfBefore, AsOf: &asOfBefore, TemporalMode: SemanticTemporalAsOf}); len(hits) != 0 {
+		t.Fatalf("normalized created timestamp should keep future facts out of as-of recall, got %+v", hits)
+	}
+}

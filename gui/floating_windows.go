@@ -163,7 +163,11 @@ type windowsFloatingWindow struct {
 	dragMoved    bool
 
 	// Halo animation
-	haloPhase float64 // 0..2*pi, advances each timer tick
+	haloPhase          float64 // 0..2*pi, advances each timer tick
+	petEnabled         bool
+	petMotionEnabled   bool
+	petQuietMode       bool
+	petInteractionMode string
 
 	// Pre-rendered base image (logo + circle clip, without halo)
 	baseImg *image.NRGBA
@@ -219,10 +223,20 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 
 	sz := normalizeFloatingNativeSize(width)
 	petEnabled := false
+	petMotionEnabled := true
+	petQuietMode := false
+	petInteractionMode := "balanced"
 	petSkin := "clawmate"
 	if w.app != nil {
 		if cfg, err := w.app.LoadConfig(); err == nil {
 			petEnabled = cfg.PetEnabled
+			petQuietMode = cfg.PetQuietMode
+			if cfg.PetMotionEnabled != nil {
+				petMotionEnabled = *cfg.PetMotionEnabled
+			}
+			if cfg.PetInteractionMode != "" {
+				petInteractionMode = cfg.PetInteractionMode
+			}
 			if cfg.PetSkin != "" {
 				petSkin = cfg.PetSkin
 			}
@@ -238,6 +252,10 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.baseImg = base
 	w.size = sz
 	w.haloPhase = 0
+	w.petEnabled = petEnabled
+	w.petMotionEnabled = petMotionEnabled
+	w.petQuietMode = petQuietMode
+	w.petInteractionMode = petInteractionMode
 	w.stopCh = make(chan struct{})
 
 	w.distMap = make([]float64, sz*sz)
@@ -473,6 +491,17 @@ func renderCircularLogo(sz int) (*image.NRGBA, error) {
 }
 
 func renderClawMatePet(sz int, skin string) *image.NRGBA {
+	renderScale := 3
+	if sz < 96 {
+		renderScale = 4
+	}
+	hiRes := renderClawMatePetRaster(sz*renderScale, skin)
+	out := image.NewNRGBA(image.Rect(0, 0, sz, sz))
+	xdraw.CatmullRom.Scale(out, out.Bounds(), hiRes, hiRes.Bounds(), xdraw.Over, nil)
+	return out
+}
+
+func renderClawMatePetRaster(sz int, skin string) *image.NRGBA {
 	out := image.NewNRGBA(image.Rect(0, 0, sz, sz))
 	cx, cy := float64(sz)/2, float64(sz)*0.47
 	headR := float64(sz) * 0.31
@@ -595,6 +624,10 @@ func (w *windowsFloatingWindow) renderFrame() {
 	base := w.baseImg
 	phase := w.haloPhase
 	distMap := w.distMap
+	petEnabled := w.petEnabled
+	petMotionEnabled := w.petMotionEnabled
+	petQuietMode := w.petQuietMode
+	petInteractionMode := w.petInteractionMode
 	w.mu.Unlock()
 
 	if hwnd == 0 || base == nil || distMap == nil {
@@ -603,7 +636,20 @@ func (w *windowsFloatingWindow) renderFrame() {
 
 	sz := w.currentSize()
 	frame := image.NewNRGBA(image.Rect(0, 0, sz, sz))
-	copy(frame.Pix, base.Pix)
+	if petEnabled && petMotionEnabled && !petQuietMode {
+		petScale := 1.0 + 0.018*math.Sin(phase)
+		petYOffset := math.Sin(phase+math.Pi/5) * float64(sz) * 0.012
+		if petInteractionMode == "active" {
+			petScale = 1.0 + 0.026*math.Sin(phase*1.35)
+			petYOffset = math.Sin(phase*1.35+math.Pi/5) * float64(sz) * 0.018
+		} else if petInteractionMode == "quiet" {
+			petScale = 1.0 + 0.01*math.Sin(phase*0.75)
+			petYOffset = math.Sin(phase*0.75+math.Pi/5) * float64(sz) * 0.006
+		}
+		renderAnimatedPetFrame(frame, base, petScale, petYOffset)
+	} else {
+		copy(frame.Pix, base.Pix)
+	}
 
 	// Animated pulsing glow overlay - modulate the glow ring alpha.
 	logoRadius := float64(sz)/2 - 8
@@ -633,6 +679,34 @@ func (w *windowsFloatingWindow) renderFrame() {
 	}
 
 	applyNRGBAToLayeredWindow(hwnd, frame, sz)
+}
+
+func renderAnimatedPetFrame(dst, src *image.NRGBA, scale, offsetY float64) {
+	b := dst.Bounds()
+	sz := b.Dx()
+	if sz <= 0 || src == nil {
+		return
+	}
+	target := int(math.Round(float64(sz) * scale))
+	if target < 1 {
+		target = 1
+	}
+	x := (sz - target) / 2
+	y := int(math.Round((float64(sz)-float64(target))/2 + offsetY))
+	rect := image.Rect(x, y, x+target, y+target)
+	if rect.Min.X < b.Min.X {
+		rect = rect.Add(image.Pt(b.Min.X-rect.Min.X, 0))
+	}
+	if rect.Min.Y < b.Min.Y {
+		rect = rect.Add(image.Pt(0, b.Min.Y-rect.Min.Y))
+	}
+	if rect.Max.X > b.Max.X {
+		rect = rect.Add(image.Pt(b.Max.X-rect.Max.X, 0))
+	}
+	if rect.Max.Y > b.Max.Y {
+		rect = rect.Add(image.Pt(0, b.Max.Y-rect.Max.Y))
+	}
+	xdraw.CatmullRom.Scale(dst, rect, src, src.Bounds(), xdraw.Over, nil)
 }
 
 // UpdateLayeredWindow helper

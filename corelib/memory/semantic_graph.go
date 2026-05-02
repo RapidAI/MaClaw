@@ -331,7 +331,7 @@ func (g *SemanticGraph) Diagnostics(opts SemanticSearchOptions) SemanticGraphDia
 			union(fact.Subject, fact.Object)
 		}
 		if semanticIsDominanceRelation(fact.Predicate) && !fact.Negated {
-			key := fact.Subject + "\x00" + fact.Predicate
+			key := semanticDominanceGroupKey(fact, opts.OwnerID, projectLower)
 			if conflicts[key] == nil {
 				conflicts[key] = make(map[string]map[string]struct{})
 			}
@@ -388,7 +388,10 @@ func (g *SemanticGraph) Diagnostics(opts SemanticSearchOptions) SemanticGraphDia
 		if len(byObject) < 2 {
 			continue
 		}
-		parts := strings.SplitN(key, "\x00", 2)
+		parts := strings.Split(key, "\x00")
+		if len(parts) < 2 {
+			continue
+		}
 		conflict := SemanticGraphConflict{Subject: parts[0], Predicate: parts[1]}
 		for object := range byObject {
 			conflict.Objects = append(conflict.Objects, object)
@@ -740,7 +743,7 @@ func (g *SemanticGraph) semanticDominanceFactorsLocked(now time.Time, ownerID, p
 		if ownerID != "" && fact.OwnerID != "" && fact.OwnerID != ownerID {
 			continue
 		}
-		key := fact.Subject + "\x00" + fact.Predicate
+		key := semanticDominanceGroupKey(fact, ownerID, projectLower)
 		if groups[key] == nil {
 			groups[key] = make(map[string][]int)
 		}
@@ -778,6 +781,30 @@ func (g *SemanticGraph) semanticDominanceFactorsLocked(now time.Time, ownerID, p
 	return factors
 }
 
+func semanticDominanceGroupKey(fact SemanticFact, ownerID, projectLower string) string {
+	ownerPart := "all"
+	if ownerID != "" {
+		ownerPart = "shared"
+		if fact.OwnerID != "" {
+			ownerPart = fact.OwnerID
+		}
+	}
+	projectPart := "all"
+	if projectLower != "" {
+		projectPart = "global"
+		if fact.Scope == ScopeProject {
+			projectPart = "project:"
+			for _, tag := range fact.Tags {
+				tl := strings.ToLower(strings.TrimSpace(tag))
+				if semanticLooksLikePath(tl) && semanticProjectPathMatches(tl, projectLower) {
+					projectPart = "project:" + projectLower
+					break
+				}
+			}
+		}
+	}
+	return fact.Subject + "\x00" + fact.Predicate + "\x00" + ownerPart + "\x00" + projectPart
+}
 func semanticHasPolarityCompetition(facts []SemanticFact, byObject map[string][]int) bool {
 	for _, idxs := range byObject {
 		hasPositive := false
@@ -999,14 +1026,27 @@ func (g *SemanticGraph) semanticTraversalPriorityLocked(fact SemanticFact, front
 	return priority
 }
 
+func (g *SemanticGraph) semanticRelationOnlyPriorityLocked(idx int, relationHints map[string]struct{}, dominance map[int]float64, asOf time.Time, temporalMode SemanticTemporalMode) float64 {
+	fact := g.facts[idx]
+	priority := semanticRelationWeight(fact.Predicate) * semanticRelationHintFactor(fact.Predicate, relationHints) * semanticRelationSchemaFactor(fact.Predicate)
+	priority *= semanticProvenanceFactor(fact.SourceType, fact.Pinned)
+	priority *= semanticCertaintyFactor(fact.Content)
+	priority *= dominance[idx]
+	priority *= semanticTemporalFactor(fact.Status, fact.ValidAt, fact.InvalidAt, asOf, temporalMode)
+	priority *= semanticFactRecencyFactor(fact.ValidAt, fact.CreatedAt, fact.UpdatedAt, asOf)
+	if fact.Negated {
+		priority *= 0.35
+	}
+	return priority
+}
 func (g *SemanticGraph) searchRelationOnlyLocked(addHit func(string, float64, string), relationHints map[string]struct{}, dominance map[int]float64, ownerID, projectLower string, asOf time.Time, temporalMode SemanticTemporalMode, maxVisitedFacts int) {
 	indexes := make([]int, 0, len(g.facts))
 	for i := range g.facts {
 		indexes = append(indexes, i)
 	}
 	sort.SliceStable(indexes, func(i, j int) bool {
-		pi := semanticRelationWeight(g.facts[indexes[i]].Predicate) * semanticRelationHintFactor(g.facts[indexes[i]].Predicate, relationHints) * semanticRelationSchemaFactor(g.facts[indexes[i]].Predicate)
-		pj := semanticRelationWeight(g.facts[indexes[j]].Predicate) * semanticRelationHintFactor(g.facts[indexes[j]].Predicate, relationHints) * semanticRelationSchemaFactor(g.facts[indexes[j]].Predicate)
+		pi := g.semanticRelationOnlyPriorityLocked(indexes[i], relationHints, dominance, asOf, temporalMode)
+		pj := g.semanticRelationOnlyPriorityLocked(indexes[j], relationHints, dominance, asOf, temporalMode)
 		if pi != pj {
 			return pi > pj
 		}

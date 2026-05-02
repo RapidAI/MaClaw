@@ -57,6 +57,25 @@ func TestResolve_ConfirmedResume(t *testing.T) {
 	}
 }
 
+func TestResolve_ActiveUnderstandingSession_IsContinue(t *testing.T) {
+	llm := &mockLLMClassifier{response: "new"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage:                   "抗战胜利，中国民众，激昂",
+		History:                       []ConversationEntry{{Role: "user", Content: "查看api服务器状态"}},
+		HasActiveUnderstandingSession: true,
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue for active understanding session, got %s", d.Action)
+	}
+	if d.Source != "explicit" {
+		t.Fatalf("expected source=explicit, got %s", d.Source)
+	}
+	if llm.calls != 0 {
+		t.Fatalf("active understanding should bypass LLM classifier, got %d calls", llm.calls)
+	}
+}
+
 func TestResolve_EmptyHistory_IsNewTask(t *testing.T) {
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
 	d := mgr.Resolve(ResolveInput{

@@ -74,7 +74,7 @@ html, body {
     border-radius: 28%;
     display: grid;
     place-items: center;
-    filter: drop-shadow(0 8px 18px rgba(15, 23, 42, 0.18));
+    filter: drop-shadow(0 6px 12px rgba(15, 23, 42, 0.16));
 }
 
 .floating-assistant-container--pet:hover {
@@ -82,14 +82,15 @@ html, body {
 }
 
 .floating-assistant-pet {
-    width: 100%;
-    height: 100%;
+    width: 94%;
+    height: 94%;
     object-fit: contain;
     position: relative;
     z-index: 1;
     pointer-events: none;
     -webkit-user-drag: none;
     transform-origin: 50% 82%;
+    image-rendering: auto;
 }
 
 .floating-assistant-container--pet[data-pet-state="idle"] .floating-assistant-pet {

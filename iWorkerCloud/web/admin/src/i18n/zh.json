@@ -20,31 +20,31 @@
     "settings": "修改管理员密码。"
   },
   "cloudOverview": {
-    "title": "面向 iWorker 的厂商云控制面",
+    "title": "面向 iWorker 的厂商云控制平面",
     "desc": "iWorkerCloud 管理已接入的 iWorkerCenter，负责算力分发、技能市场、商业授权、升级和集成，不运行客户企业。",
     "positionTitle": "Cloud 管理 iWorkerCenter 服务",
-    "positionDesc": "客户公司的组织管理和业务执行留在自己的 iWorkerCenter 内。iWorkerCloud 只管理我们提供的系统服务。",
-    "statCenters": "已接入并由云端管理系统服务的 iWorkerCenter。",
+    "positionDesc": "客户公司的组织管理和企业执行留在自己的 iWorkerCenter 内。iWorkerCloud 只管理我们提供的系统服务：算力、技能、授权、升级和集成。",
+    "statCenters": "接入并由云端管理系统服务的 iWorkerCenter。",
     "statPending": "等待激活、商业审核或试用审批的 iWorkerCenter 部署。",
-    "statLicenses": "由云平台签发的有效付费或试用权益。",
+    "statLicenses": "云平台签发的有效付费或试用权益。",
     "computeEyebrow": "算力分发",
     "computeTitle": "Provider 路由和容量销售",
     "computeSummary": "Cloud 拥有商业算力池，并通过接入的 iWorkerCenter 分发容量。",
-    "computeDetail": "Provider、模型路由、配额、价格和用量计量由这里控制。",
+    "computeDetail": "Provider、模型路由、配额、价格和用量计量由这里控制。iWorkerCenter 可消费云端算力，也可被授权自主管理本地路由。",
     "computePoint1": "Provider 池",
     "computePoint2": "Center 配额和策略",
     "computePoint3": "用量计费",
     "marketEyebrow": "技能市场",
     "marketTitle": "面向多个 Center 的顶层技能",
-    "marketSummary": "可复用的 iWorker 技能在 Cloud 统一打包、售卖或授权，再分发到接入的 iWorkerCenter。",
-    "marketDetail": "Cloud 管理技能上架、版本发布、权益和下架。iWorkerCenter 接收技能后映射到自己的组织和策略层。",
+    "marketSummary": "可复用 iWorker 技能在 Cloud 统一打包、销售或授权，再分发到接入的 iWorkerCenter。",
+    "marketDetail": "Cloud 管理技能上架、版本发布、权益和下架。iWorkerCenter 接收技能后映射到本地组织、角色、流程和策略层。",
     "marketPoint1": "技能目录",
     "marketPoint2": "版本发布",
     "marketPoint3": "Center 权益",
     "tenantEyebrow": "Center 集成",
     "tenantTitle": "iWorkerCenter 服务控制",
     "tenantSummary": "Cloud 在 Center 边界管理注册、授权、商业访问、模块、升级、算力和技能服务。",
-    "tenantDetail": "Cloud 不重建租户组织，也不参与企业运营，只管理接入的 iWorkerCenter 实例及其系统服务能力。",
+    "tenantDetail": "Cloud 不重建租户组织，也不参与企业运营，只管理接入的 iWorkerCenter 实例及系统服务能力。",
     "tenantPoint1": "Center 注册",
     "tenantPoint2": "服务授权",
     "tenantPoint3": "部署健康",
@@ -54,16 +54,16 @@
   },
   "skills": {
     "title": "顶层 iWorker 技能市场",
-    "desc": "将优秀技能打包一次，按 Center 策略授权，并通过 iWorkerCenter 下发。",
+    "desc": "为接入的 iWorkerCenter 创建、打包、发布、停用和下架可复用 iWorker 技能。",
     "positionTitle": "市场，不是组织",
-    "positionDesc": "Cloud 销售并分发技能。接入的 iWorkerCenter 决定技能如何进入本地组织、角色、流程、策略和审计链。",
+    "positionDesc": "Cloud 负责销售和分发技能。每个 iWorkerCenter 自己决定技能如何进入本地角色、流程、策略和审计。",
     "stage": {
       "draft": "草稿",
-      "listed": "上架",
+      "listed": "已上架",
       "controlled": "受控"
     },
     "badge": {
-      "draft": "设计",
+      "draft": "设计中",
       "listed": "市场",
       "controlled": "治理"
     },
@@ -78,20 +78,45 @@
     "tagCost": "成本",
     "items": {
       "executive": {
-        "title": "经营汇报技能",
+        "title": "经营报告技能",
         "summary": "为 iWorkerCenter 客户打包可选的经营汇报能力。",
-        "detail": "Cloud 可将其作为高级技能分发，Center 决定如何使用。"
+        "detail": "Cloud 可将其作为高级技能分发；接入的 iWorkerCenter 决定客户如何在治理边界内使用。"
       },
       "recovery": {
-        "title": "恢复经验制度化技能",
-        "summary": "将异常恢复转化为记忆、能力包、流程和策略监控资产。",
-        "detail": "帮助客户沉淀组织能力。"
+        "title": "异常恢复沉淀技能",
+        "summary": "把已恢复的异常沉淀为记忆、包、流程和策略监控资产。",
+        "detail": "帮助客户积累组织能力，而不是让恢复经验停留在单个员工或人工记忆中。"
       },
       "compute": {
         "title": "算力优化技能",
-        "summary": "分析 Center 级系统用量，并建议模型路由、配额和成本策略。",
-        "detail": "帮助运营人员优化成本、延迟和产品包装。"
+        "summary": "分析 Center 级系统用量并建议模型路由、配额和成本策略。",
+        "detail": "靠近 Cloud 算力分发层，辅助运营人员优化成本、延迟和产品包装。"
       }
+    },
+    "search": "搜索技能",
+    "newSkill": "新建技能",
+    "empty": "技能市场暂无技能。",
+    "activate": "发布",
+    "disable": "停用",
+    "confirmDelete": "确定从云端技能市场删除此技能？",
+    "downloads": "下载",
+    "noPackage": "无包文件",
+    "updatedAt": "更新时间",
+    "packagePlaceholder": "在这里粘贴技能包内容，系统会编码后保存为可下载包。",
+    "fields": {
+      "id": "技能 ID",
+      "name": "名称",
+      "category": "分类",
+      "version": "版本",
+      "risk": "风险",
+      "status": "状态",
+      "price": "价格",
+      "author": "作者",
+      "authorEmail": "作者邮箱",
+      "tags": "标签",
+      "description": "描述",
+      "packageFormat": "包格式",
+      "packageText": "包内容"
     }
   },
   "login": {
@@ -126,7 +151,11 @@
     "empty": "暂无授权。",
     "centerId": "Center ID",
     "days": "天数",
-    "modules": "模块"
+    "modules": "模块",
+    "desc": "为接入的 iWorkerCenter 签发和吊销商业模块权益。",
+    "confirmRevoke": "确定吊销此授权？对应 Center 可能失去已授权的 Cloud 服务访问。",
+    "expiresAt": "到期",
+    "issuedAt": "签发"
   },
   "common": {
     "save": "保存",
@@ -146,10 +175,10 @@
     "centerPermissions": "Center 算力权限",
     "enabled": "启用",
     "disabled": "停用",
-    "selfManaged": "自管理",
+    "selfManaged": "自主管理",
     "cloudManaged": "云端管理",
-    "grantPermission": "授予自管理",
-    "revokePermission": "撤销自管理",
+    "grantPermission": "授权自主管理",
+    "revokePermission": "撤销自主管理",
     "test": "测试连接",
     "addProvider": "添加服务商",
     "name": "名称",
@@ -184,10 +213,16 @@
     "typeDocument": "文档",
     "typeAnalysis": "分析",
     "providerAssignments": "Provider 分发",
-    "assignedProviders": "已分配 Provider",
+    "assignedProviders": "个已分配 Provider",
     "defaultAllProviders": "默认使用所有启用 Provider",
     "assignProvider": "分配 Provider",
     "unassignProvider": "取消分配 Provider",
-    "limitToProvider": "从此 Provider 创建显式分配"
+    "limitToProvider": "从此 Provider 创建显式分配",
+    "noticeSaved": "已保存服务商。",
+    "noticeDeleted": "已删除服务商。",
+    "noticeUpdated": "已更新设置。",
+    "noticeAssigned": "分发设置已更新。",
+    "testOk": "连接成功",
+    "testFailed": "连接失败"
   }
 }

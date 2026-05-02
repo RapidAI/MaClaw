@@ -1,4 +1,12 @@
-import { apiGet, apiPost } from './client';
+import { apiGet, apiPost, apiPut } from './client';
+
+export interface CloudConfig {
+  base_url: string;
+  center_base_url?: string;
+  registration_name?: string;
+  registration_email?: string;
+  cloud_control_mode?: string;
+}
 
 export interface CloudRegisterResponse {
   center_id: string;
@@ -40,4 +48,12 @@ export function fetchCloudLicense(): Promise<CloudLicense> {
 
 export function fetchCloudStatus(): Promise<CloudRegistrationStatus> {
   return apiGet<CloudRegistrationStatus>('/admin/cloud/status');
+}
+
+export function fetchCloudConfig(): Promise<CloudConfig> {
+  return apiGet<CloudConfig>('/admin/cloud/config');
+}
+
+export function updateCloudConfig(config: CloudConfig): Promise<CloudConfig> {
+  return apiPut<CloudConfig>('/admin/cloud/config', config);
 }

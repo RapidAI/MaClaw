@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiPut } from './client';
+import { apiGet, apiPost } from './client';
 
 export interface Colleague {
   id: string;
@@ -20,5 +20,5 @@ export function createColleague(data: { name: string; code: string; role_id?: st
 }
 
 export function assignRole(colleagueID: string, roleID: string, reason: string): Promise<void> {
-  return apiPut(`/admin/colleagues/${colleagueID}/role`, { role_id: roleID, reason });
+  return apiPost(`/admin/colleagues/${colleagueID}/assign-role`, { role_id: roleID, reason });
 }

@@ -868,6 +868,10 @@ func skillPatchStructured(app *TUIApp, skillName string, args map[string]interfa
 		return fmt.Sprintf("序列化 YAML 失败: %s", err.Error())
 	}
 
+	if validationErr := validateSkillContent(modified, defFormat); validationErr != "" {
+		return fmt.Sprintf("patch 后的 skill 定义无效，已拒绝保存: %s", validationErr)
+	}
+
 	if err := fileutil.AtomicWriteFile(defPath, modified, 0644); err != nil {
 		return fmt.Sprintf("保存 Skill 定义文件失败: %s", err.Error())
 	}
@@ -909,7 +913,7 @@ func skillPatchText(app *TUIApp, skillName string, args map[string]interface{}) 
 
 	defPath, defFormat := findSkillDefFile(entry.SkillDir)
 	if defPath == "" {
-		return fmt.Sprintf("在 Skill 目录中未找到 skill.yaml 或 skill.json: %s", entry.SkillDir)
+		return fmt.Sprintf("在 Skill 目录中未找到 skill.yaml/skill.yml: %s", entry.SkillDir)
 	}
 
 	content, err := os.ReadFile(defPath)
@@ -1014,30 +1018,23 @@ func findSkillEntry(app *TUIApp, name string) *corelib.NLSkillEntry {
 	return nil
 }
 
-// findSkillDefFile locates skill.yaml or skill.json in a skill directory.
+// findSkillDefFile locates YAML skill definitions in a skill directory.
 func findSkillDefFile(skillDir string) (string, string) {
-	yamlPath := filepath.Join(skillDir, "skill.yaml")
-	if _, err := os.Stat(yamlPath); err == nil {
-		return yamlPath, "yaml"
-	}
-	jsonPath := filepath.Join(skillDir, "skill.json")
-	if _, err := os.Stat(jsonPath); err == nil {
-		return jsonPath, "json"
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		yamlPath := filepath.Join(skillDir, name)
+		if _, err := os.Stat(yamlPath); err == nil {
+			return yamlPath, "yaml"
+		}
 	}
 	return "", ""
 }
 
-// validateSkillContent checks YAML/JSON validity.
+// validateSkillContent checks YAML validity.
 func validateSkillContent(data []byte, format string) string {
 	switch format {
 	case "yaml":
-		var m map[string]interface{}
-		if err := yaml.Unmarshal(data, &m); err != nil {
-			return fmt.Sprintf("YAML 验证失败: %s", err.Error())
-		}
-	case "json":
-		if !json.Valid(data) {
-			return "JSON 验证失败: 内容不是有效的 JSON"
+		if _, err := skill.ParseSkillDefinitionFile(data, format); err != nil {
+			return fmt.Sprintf("skill.yaml 验证失败: %s", err.Error())
 		}
 	default:
 		return fmt.Sprintf("未知文件格式: %s", format)

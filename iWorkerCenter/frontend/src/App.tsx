@@ -3,6 +3,7 @@ import { SideNav } from './components/layout/SideNav';
 import { TopHeader } from './components/layout/TopHeader';
 import { AccountSettingsPage } from './pages/AccountSettingsPage';
 import { AuthPage } from './pages/AuthPage';
+import { CloudRegistrationPage } from './pages/CloudRegistrationPage';
 import { CommunicationsPage } from './pages/CommunicationsPage';
 import { DeliveryPage } from './pages/DeliveryPage';
 import { EmployeesPage } from './pages/EmployeesPage';
@@ -26,6 +27,7 @@ const meta: Record<CenterTab, { title: string; subtitle: string }> = {
   knowledge: { title: '经验共享', subtitle: '沉淀经验并支持不同员工复用。' },
   packages: { title: '能力包', subtitle: '管理能力包来源、版本和分发状态。' },
   models: { title: '模型调度', subtitle: '统一配置默认模型、备用模型与路由规则。' },
+  cloud: { title: 'Cloud Registration', subtitle: 'Connect this Center to iWorkerCloud and verify heartbeat status.' },
   security: { title: '安全规则', subtitle: '下发统一治理规则并保留审计入口。' },
   delivery: { title: '下发管理', subtitle: '查看配置和能力向客户端下发的状态。' },
   usage: { title: '使用情况', subtitle: '跟踪数字员工使用量和趋势变化。' },
@@ -72,6 +74,7 @@ export default function App() {
     switch (activeTab) {
       case 'employees': return <EmployeesPage />;
       case 'models': return <ModelRoutingPage />;
+      case 'cloud': return <CloudRegistrationPage />;
       case 'overview': return <OverviewPage />;
       case 'communications': return <CommunicationsPage />;
       case 'workflows': return <WorkflowsPage />;

@@ -291,9 +291,14 @@ func TestCenterManagementOmitsBusinessTopologyAndTaskDetails(t *testing.T) {
 		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
 	}
 	body := res.Body.String()
-	for _, forbidden := range []string{"tenant_count", "supports_multi_tenant", "role_count", "colleague_count", "local_account_count", "current_task", "current_detail", "Quarter-close", "Customer Acme", "tenant-admin@acme.example", "+1-555-0100", "1 Customer Road", "Jane Customer", "admin_email", "admin_phone", "legal_person", "address"} {
+	for _, forbidden := range []string{"tenant_count", "supports_multi_tenant", "role_count", "colleague_count", "local_account_count", "current_task", "current_detail", "Quarter-close", "Customer Acme"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("management response leaked %q: %s", forbidden, body)
+		}
+	}
+	for _, expected := range []string{"tenant-admin@acme.example", "+1-555-0100", "1 Customer Road", "Jane Customer", "admin_email", "admin_phone", "legal_person", "address"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("management response missing registration review field %q: %s", expected, body)
 		}
 	}
 	for _, expected := range []string{"workload_agent_instances", "workload_active_tasks", "workload_completed_tasks", "workload_review_tasks", "workload_blocked_tasks"} {

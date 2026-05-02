@@ -43,23 +43,36 @@ type HParams struct {
 }
 
 type encoderLayer struct {
-	attnQW, attnKW, attnVW, attnOutW *tensor.Q8Tensor // [dim, dim] quantized
-	attnNormW                        []float32        // [dim] — keep f32
-	ffUpW                            *tensor.Q8Tensor // [ffDim, dim]
-	ffUpB                            []float32        // [ffDim]
-	ffDownW                          *tensor.Q8Tensor // [dim, ffDim]
-	ffDownB                          []float32        // [dim]
-	ffNormW                          []float32        // [dim]
+	attnQW, attnKW, attnVW, attnOutW linearWeight // [dim, dim]
+	attnNormW                        []float32    // [dim]
+	ffUpW                            linearWeight // [ffDim, dim]
+	ffUpB                            []float32    // [ffDim]
+	ffDownW                          linearWeight // [dim, ffDim]
+	ffDownB                          []float32    // [dim]
+	ffNormW                          []float32    // [dim]
+}
+
+type linearWeight struct {
+	q8   *tensor.Q8Tensor
+	f32  []float32
+	rows int
+}
+
+func (w linearWeight) Rows() int {
+	if w.q8 != nil {
+		return w.q8.Rows
+	}
+	return w.rows
 }
 
 type decoderLayer struct {
-	selfQW, selfKW, selfVW, selfOutW     *tensor.Q8Tensor
+	selfQW, selfKW, selfVW, selfOutW     linearWeight
 	selfNormW                            []float32
-	crossQW, crossKW, crossVW, crossOutW *tensor.Q8Tensor
+	crossQW, crossKW, crossVW, crossOutW linearWeight
 	crossNormW                           []float32
-	ffUpW                                *tensor.Q8Tensor // [2*intermediate, dim]
+	ffUpW                                linearWeight // [2*intermediate, dim]
 	ffUpB                                []float32
-	ffDownW                              *tensor.Q8Tensor // [dim, intermediate]
+	ffDownW                              linearWeight // [dim, intermediate]
 	ffDownB                              []float32
 	ffNormW                              []float32
 }
@@ -88,6 +101,16 @@ type MoonshineModel struct {
 	mu    sync.Mutex
 }
 
+func defaultMoonshinePartialRotaryFactor(encoderDim, decoderDim int) float32 {
+	// Moonshine tiny uses 288-dim heads and defaults to 0.9. The base/base-zh
+	// 416-dim models use 0.62; some older packaged GGUF files omitted this
+	// metadata, so infer the known architecture default instead of using 0.9.
+	if encoderDim == 416 || decoderDim == 416 {
+		return 0.62
+	}
+	return 0.9
+}
+
 // NewMoonshine loads a Moonshine model from a GGUF file using memory mapping.
 // The mmap is kept alive for the lifetime of the model (Q8Tensor.Data may
 // point into the mmap region). Call Close() to release.
@@ -110,8 +133,8 @@ func NewMoonshine(modelPath string) (*MoonshineModel, error) {
 		MaxSeqLen:    gguf.GetMetaI32(mf.Meta, "moonshine.max_seq_len", 448),
 		SampleRate:   gguf.GetMetaI32(mf.Meta, "moonshine.sample_rate", 16000),
 		RopeTheta:    gguf.GetMetaF32(mf.Meta, "moonshine.rope_theta", 10000.0),
-		PartialRot:   gguf.GetMetaF32(mf.Meta, "moonshine.partial_rotary_factor", 0.9),
 	}
+	hp.PartialRot = gguf.GetMetaF32(mf.Meta, "moonshine.partial_rotary_factor", defaultMoonshinePartialRotaryFactor(hp.EncoderDim, hp.DecoderDim))
 	hp.EncoderHDim = hp.EncoderDim / hp.EncoderHeads
 	hp.DecoderHDim = hp.DecoderDim / hp.DecoderHeads
 
@@ -147,27 +170,30 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 		d, _ := getF32(name)
 		return d
 	}
-	// getQ8 tries to load a weight matrix as Q8_0 zero-copy from mmap.
-	// If the tensor is stored as Q8_0 in the GGUF, returns a Q8Tensor
-	// pointing directly into the mmap region (zero allocation).
-	// If stored as F32, reads and runtime-quantizes to Q8_0 (heap allocation).
-	getQ8 := func(name string, rows, cols int) *tensor.Q8Tensor {
-		// Try mmap zero-copy for Q8_0 tensors first.
+	getLinear := func(name string, rows, cols int) linearWeight {
 		for _, prefix := range []string{"model.", ""} {
-			raw, ti, err := mf.TensorRawBytes(prefix + name)
+			_, ti, err := mf.TensorRawBytes(prefix + name)
 			if err != nil {
 				continue
 			}
+			if ti.Type == gguf.TypeF32 || ti.Type == gguf.TypeF16 {
+				d, err := mf.TensorF32(prefix + name)
+				if err == nil && len(d) > 0 {
+					return linearWeight{f32: d, rows: rows}
+				}
+			}
 			if ti.Type == gguf.TypeQ8_0 {
-				return &tensor.Q8Tensor{Data: raw, Rows: rows, Cols: cols}
+				raw, _, err := mf.TensorRawBytes(prefix + name)
+				if err == nil {
+					return linearWeight{q8: &tensor.Q8Tensor{Data: raw, Rows: rows, Cols: cols}, rows: rows}
+				}
 			}
 		}
-		// Fallback: read as F32 and runtime-quantize.
 		d, err := getF32(name)
 		if err != nil || len(d) == 0 {
-			return nil
+			return linearWeight{}
 		}
-		return tensor.QuantizeToQ8(d, rows, cols)
+		return linearWeight{f32: d, rows: rows}
 	}
 
 	w := &m.w
@@ -189,10 +215,10 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 	for i := range w.encLayers {
 		p := fmt.Sprintf("encoder.layers.%d.", i)
 		l := &w.encLayers[i]
-		l.attnQW = getQ8(p+"self_attn.q_proj.weight", dim, dim)
-		l.attnKW = getQ8(p+"self_attn.k_proj.weight", dim, dim)
-		l.attnVW = getQ8(p+"self_attn.v_proj.weight", dim, dim)
-		l.attnOutW = getQ8(p+"self_attn.o_proj.weight", dim, dim)
+		l.attnQW = getLinear(p+"self_attn.q_proj.weight", dim, dim)
+		l.attnKW = getLinear(p+"self_attn.k_proj.weight", dim, dim)
+		l.attnVW = getLinear(p+"self_attn.v_proj.weight", dim, dim)
+		l.attnOutW = getLinear(p+"self_attn.o_proj.weight", dim, dim)
 		l.attnNormW, _ = getF32(p + "input_layernorm.weight")
 		// Determine FFN dimensions from the weight size
 		ffUpF32, _ := getF32(p + "mlp.fc1.weight")
@@ -200,11 +226,11 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 			continue // skip layer if weights missing
 		}
 		ffDim := len(ffUpF32) / dim
-		l.ffUpW = tensor.QuantizeToQ8(ffUpF32, ffDim, dim)
+		l.ffUpW = linearWeight{f32: ffUpF32, rows: ffDim}
 		l.ffUpB = tryGetF32(p + "mlp.fc1.bias")
 		ffDownF32, _ := getF32(p + "mlp.fc2.weight")
 		if len(ffDownF32) > 0 {
-			l.ffDownW = tensor.QuantizeToQ8(ffDownF32, dim, ffDim)
+			l.ffDownW = linearWeight{f32: ffDownF32, rows: dim}
 		}
 		l.ffDownB = tryGetF32(p + "mlp.fc2.bias")
 		l.ffNormW, _ = getF32(p + "post_attention_layernorm.weight")
@@ -216,27 +242,26 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 	for i := range w.decLayers {
 		p := fmt.Sprintf("decoder.layers.%d.", i)
 		l := &w.decLayers[i]
-		l.selfQW = getQ8(p+"self_attn.q_proj.weight", ddim, ddim)
-		l.selfKW = getQ8(p+"self_attn.k_proj.weight", ddim, ddim)
-		l.selfVW = getQ8(p+"self_attn.v_proj.weight", ddim, ddim)
-		l.selfOutW = getQ8(p+"self_attn.o_proj.weight", ddim, ddim)
+		l.selfQW = getLinear(p+"self_attn.q_proj.weight", ddim, ddim)
+		l.selfKW = getLinear(p+"self_attn.k_proj.weight", ddim, ddim)
+		l.selfVW = getLinear(p+"self_attn.v_proj.weight", ddim, ddim)
+		l.selfOutW = getLinear(p+"self_attn.o_proj.weight", ddim, ddim)
 		l.selfNormW, _ = getF32(p + "input_layernorm.weight")
-		l.crossQW = getQ8(p+"encoder_attn.q_proj.weight", ddim, ddim)
-		l.crossKW = getQ8(p+"encoder_attn.k_proj.weight", ddim, ddim)
-		l.crossVW = getQ8(p+"encoder_attn.v_proj.weight", ddim, ddim)
-		l.crossOutW = getQ8(p+"encoder_attn.o_proj.weight", ddim, ddim)
+		l.crossQW = getLinear(p+"encoder_attn.q_proj.weight", ddim, ddim)
+		l.crossKW = getLinear(p+"encoder_attn.k_proj.weight", ddim, ddim)
+		l.crossVW = getLinear(p+"encoder_attn.v_proj.weight", ddim, ddim)
+		l.crossOutW = getLinear(p+"encoder_attn.o_proj.weight", ddim, ddim)
 		l.crossNormW, _ = getF32(p + "post_attention_layernorm.weight")
 		ffUpF32, _ := getF32(p + "mlp.fc1.weight")
 		if len(ffUpF32) == 0 {
 			continue
 		}
 		ffDim2x := len(ffUpF32) / ddim
-		l.ffUpW = tensor.QuantizeToQ8(ffUpF32, ffDim2x, ddim)
+		l.ffUpW = linearWeight{f32: ffUpF32, rows: ffDim2x}
 		l.ffUpB = tryGetF32(p + "mlp.fc1.bias")
 		ffDownF32, _ := getF32(p + "mlp.fc2.weight")
-		intermediate := ffDim2x / 2
 		if len(ffDownF32) > 0 {
-			l.ffDownW = tensor.QuantizeToQ8(ffDownF32, ddim, intermediate)
+			l.ffDownW = linearWeight{f32: ffDownF32, rows: ddim}
 		}
 		l.ffDownB = tryGetF32(p + "mlp.fc2.bias")
 		l.ffNormW, _ = getF32(p + "final_layernorm.weight")

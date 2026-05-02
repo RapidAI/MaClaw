@@ -2,6 +2,7 @@ package im
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -13,12 +14,28 @@ type stubCorelibPlugin struct {
 	handler cim.MessageHandler
 }
 
-func (s *stubCorelibPlugin) Name() string                                                        { return s.name }
-func (s *stubCorelibPlugin) Start(ctx context.Context) error                                     { return nil }
-func (s *stubCorelibPlugin) Stop(ctx context.Context) error                                      { return nil }
-func (s *stubCorelibPlugin) OnMessage(handler cim.MessageHandler)                                { s.handler = handler }
-func (s *stubCorelibPlugin) SendText(ctx context.Context, target cim.UserTarget, text string) error { return nil }
-func (s *stubCorelibPlugin) SendMarkdown(ctx context.Context, target cim.UserTarget, md string) error { return nil }
+type stubAudioCorelibPlugin struct {
+	stubCorelibPlugin
+	audioData []byte
+	audioUID  string
+}
+
+func (s *stubAudioCorelibPlugin) SendAudio(ctx context.Context, target cim.UserTarget, audioData []byte, durationMs int) error {
+	s.audioUID = target.PlatformUID
+	s.audioData = append([]byte(nil), audioData...)
+	return nil
+}
+
+func (s *stubCorelibPlugin) Name() string                         { return s.name }
+func (s *stubCorelibPlugin) Start(ctx context.Context) error      { return nil }
+func (s *stubCorelibPlugin) Stop(ctx context.Context) error       { return nil }
+func (s *stubCorelibPlugin) OnMessage(handler cim.MessageHandler) { s.handler = handler }
+func (s *stubCorelibPlugin) SendText(ctx context.Context, target cim.UserTarget, text string) error {
+	return nil
+}
+func (s *stubCorelibPlugin) SendMarkdown(ctx context.Context, target cim.UserTarget, md string) error {
+	return nil
+}
 func (s *stubCorelibPlugin) Capabilities() cim.Capabilities {
 	return cim.Capabilities{SupportsMarkdown: true, MaxTextLength: 4096}
 }
@@ -69,6 +86,30 @@ func TestCorelibPluginAdapter_Capabilities(t *testing.T) {
 	}
 	if caps.MaxTextLength != 4096 {
 		t.Errorf("expected 4096, got %d", caps.MaxTextLength)
+	}
+}
+
+func TestCorelibPluginAdapter_VoiceCapabilityRequiresSendAudio(t *testing.T) {
+	plain := NewCorelibPluginAdapter(&stubCorelibPlugin{name: "feishu"}, nil)
+	if plain.Capabilities().SupportsVoice {
+		t.Fatal("plain corelib plugin SupportsVoice = true, want false")
+	}
+
+	audio := NewCorelibPluginAdapter(&stubAudioCorelibPlugin{stubCorelibPlugin: stubCorelibPlugin{name: "dingtalk"}}, nil)
+	if !audio.Capabilities().SupportsVoice {
+		t.Fatal("audio corelib plugin SupportsVoice = false, want true")
+	}
+}
+
+func TestCorelibPluginAdapter_SendVoiceUsesSendAudio(t *testing.T) {
+	plugin := &stubAudioCorelibPlugin{stubCorelibPlugin: stubCorelibPlugin{name: "dingtalk"}}
+	adapter := NewCorelibPluginAdapter(plugin, nil)
+	data := []byte("ogg voice")
+	if err := adapter.SendVoice(context.Background(), UserTarget{PlatformUID: "staff-1"}, base64.StdEncoding.EncodeToString(data), "voice.ogg", "audio/ogg"); err != nil {
+		t.Fatalf("SendVoice() error = %v", err)
+	}
+	if plugin.audioUID != "staff-1" || string(plugin.audioData) != string(data) {
+		t.Fatalf("SendAudio target/data = %q/%q", plugin.audioUID, plugin.audioData)
 	}
 }
 

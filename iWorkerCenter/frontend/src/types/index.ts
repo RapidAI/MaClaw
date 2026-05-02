@@ -6,6 +6,7 @@ export type CenterTab =
   | 'knowledge'
   | 'packages'
   | 'models'
+  | 'cloud'
   | 'security'
   | 'delivery'
   | 'usage'

@@ -19,6 +19,7 @@ const items: NavItem[] = [
   { id: 'knowledge', label: '经验共享', hint: '经验沉淀与复用' },
   { id: 'packages', label: '能力包', hint: '管理能力分发' },
   { id: 'models', label: '模型调度', hint: '模型策略与路由' },
+  { id: 'cloud', label: 'Cloud', hint: 'Register with iWorkerCloud' },
   { id: 'security', label: '安全规则', hint: '统一治理和审计' },
   { id: 'delivery', label: '下发管理', hint: '查看下发状态' },
   { id: 'usage', label: '使用情况', hint: '统计和趋势' },

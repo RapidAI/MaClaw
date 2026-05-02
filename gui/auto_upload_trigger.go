@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 )
@@ -86,20 +85,18 @@ func (t *AutoUploadTrigger) ShouldUpload(skillName string) bool {
 	return true
 }
 
-// CheckAndTrigger 閸?Skill 閹笛嗩攽鐎瑰本鍨氶崥搴ょ殶閻㈩煉绱濋崚銈嗘焽閺勵垰鎯佺憴锕€褰傛稉濠佺炊閵?
-// 濞夈劍鍓伴敍姘劃閺傝纭舵导姘帥閹垫挸瀵橀崘宥呭灲閺傤叏绱濋柅鍌氭値婢舵牠鍎撮惄瀛樺复鐠嬪啰鏁ら妴?
-// SkillRunner 閸愬懘鍎存担璺ㄦ暏 RecordExecution + ShouldUpload + SubmitAndMark 閸掑棙顒炵拫鍐暏娴犮儵浼╅崗宥勭瑝韫囧懓顩﹂惃鍕ⅵ閸栧懌鈧?
+// CheckAndTrigger records legacy execution statistics, but direct upload is
+// disabled. Automatic uploads must go through SkillLifecycleManager so the
+// quality gate, portability checks, runtime proof, package manifest, and queue
+// dedupe all run before SkillMarket submission.
 func (t *AutoUploadTrigger) CheckAndTrigger(ctx context.Context, skillName, zipPath, localHash string, execResult *SkillExecutionResult) error {
 	t.RecordExecution(skillName, EvaluateSkillExecution(execResult), localHash)
-
 	if !t.ShouldUpload(skillName) {
 		return nil
 	}
-
 	return t.SubmitAndMark(ctx, skillName, zipPath, localHash)
 }
 
-// SubmitAndMark 娑撳﹣绱?zip 楠炶埖鐖ｇ拋鏉垮嚒娑撳﹣绱?hash閵?
 func (t *AutoUploadTrigger) MarkUploadedHash(skillName, localHash string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -108,24 +105,8 @@ func (t *AutoUploadTrigger) MarkUploadedHash(skillName, localHash string) {
 	}
 }
 
+// SubmitAndMark is kept for compatibility with older callers. It intentionally
+// refuses direct submission because it cannot evaluate package quality by itself.
 func (t *AutoUploadTrigger) SubmitAndMark(ctx context.Context, skillName, zipPath, localHash string) error {
-	email := t.emailFn()
-	if email == "" {
-		return fmt.Errorf("remote_email is not configured, skipping auto upload")
-	}
-
-	log.Printf("[auto-upload] triggering upload for skill %s", skillName)
-	submissionID, err := t.client.SubmitSkill(ctx, zipPath, email)
-	if err != nil {
-		return err
-	}
-	log.Printf("[auto-upload] submitted skill %s, submission_id=%s", skillName, submissionID)
-
-	t.mu.Lock()
-	if rec, ok := t.tracker[skillName]; ok {
-		rec.LastUploaded = localHash
-	}
-	t.mu.Unlock()
-
-	return nil
+	return fmt.Errorf("direct auto upload is disabled; enqueue through SkillLifecycleManager so portability, package completeness, runtime proof, and quality gates run before SkillMarket upload")
 }

@@ -9,6 +9,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+const defaultPetSize = 88
+
 // FloatingAssistantManager manages the floating assistant button window lifecycle.
 // It handles creation, display, hiding, and destruction of the floating button
 // that appears when the main window is hidden.
@@ -275,7 +277,7 @@ func floatingWindowSize(config corelib.AppConfig) int {
 	}
 	size := config.PetSize
 	if size <= 0 {
-		size = 72
+		size = defaultPetSize
 	}
 	if size < 56 {
 		size = 56
@@ -299,7 +301,7 @@ func sanitizePetConfig(config *corelib.AppConfig) {
 	}
 
 	if config.PetSize == 0 {
-		config.PetSize = 72
+		config.PetSize = defaultPetSize
 	} else if config.PetSize < 56 {
 		config.PetSize = 56
 	} else if config.PetSize > 120 {

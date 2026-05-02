@@ -29,7 +29,7 @@ func TestCreateInspectRestore(t *testing.T) {
 	writeFile(t, filepath.Join(root, "configs", "config.yaml"), "database:\n  dsn: ./data/hubcenter.db\n")
 	writeFile(t, filepath.Join(dataDir, "rsa_private.pem"), "private")
 	writeFile(t, filepath.Join(dataDir, "gossip_cache.json.gz"), "gossip")
-	writeFile(t, filepath.Join(dataDir, "skills", "skill-a", "skill.json"), "{}")
+	writeFile(t, filepath.Join(dataDir, "skills", "skill-a", "skill.yaml"), "name: skill-a\n")
 	writeFile(t, filepath.Join(dataDir, "hubcenter-run.log"), "runtime log")
 
 	oldwd, err := os.Getwd()
@@ -64,7 +64,7 @@ func TestCreateInspectRestore(t *testing.T) {
 	assertEntry(t, manifest, "data/hubcenter.db", "sqlite_snapshot")
 	assertEntry(t, manifest, "data/rsa_private.pem", "certificate")
 	assertEntry(t, manifest, "data/gossip_cache.json.gz", "gossip_cache")
-	assertEntry(t, manifest, "data/skills/skill-a/skill.json", "skill")
+	assertEntry(t, manifest, "data/skills/skill-a/skill.yaml", "skill")
 	assertNoEntry(t, manifest, "data/hubcenter-run.log")
 	assertNoEntry(t, manifest, "data/backups/backup.tar.gz")
 	assertTarGzEntry(t, archivePath, ManifestPath)

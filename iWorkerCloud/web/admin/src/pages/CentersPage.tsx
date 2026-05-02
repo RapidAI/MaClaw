@@ -11,6 +11,10 @@ import {
   probeCenter,
   fetchCenterRuntimeSnapshot,
   getServiceReadiness,
+  listCenterTenants,
+  createCenterTenant,
+  updateCenterTenant,
+  deleteCenterTenant,
   type Center,
   type CenterManagement,
   type CenterIntegrationPatch,
@@ -18,6 +22,7 @@ import {
   type CenterServiceReadiness,
   type CenterProbeResult,
   type CenterRuntimeStatus,
+  type CenterTenant,
 } from '../api/centers';
 
 type IntegrationDraft = CenterIntegrationPatch;
@@ -126,6 +131,9 @@ export function CentersPage() {
   const [readinessResult, setReadinessResult] = useState<Record<string, CenterServiceReadiness>>({});
   const [checkingReadiness, setCheckingReadiness] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  const [tenantLists, setTenantLists] = useState<Record<string, CenterTenant[]>>({});
+  const [loadingTenants, setLoadingTenants] = useState<Record<string, boolean>>({});
+  const [savingTenant, setSavingTenant] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
 
   const refreshRuntimeSnapshots = async (items = centers) => {
@@ -208,6 +216,89 @@ export function CentersPage() {
   };
 
 
+  const loadCenterTenants = async (center: Center) => {
+    setLoadingTenants(prev => ({ ...prev, [center.id]: true }));
+    setError('');
+    try {
+      const response = await listCenterTenants(center.id);
+      setTenantLists(prev => ({ ...prev, [center.id]: response.tenants ?? [] }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingTenants(prev => ({ ...prev, [center.id]: false }));
+    }
+  };
+
+  const handleCreateTenant = async (center: Center) => {
+    const companyName = prompt('Company name:');
+    if (!companyName?.trim()) return;
+    const email = prompt('Admin email:');
+    if (!email?.trim()) return;
+    const legalPerson = prompt('Legal person:', '') ?? '';
+    const address = prompt('Company address:', '') ?? '';
+    const adminUsername = prompt('Tenant admin username:', 'admin');
+    if (!adminUsername?.trim()) return;
+    const adminPassword = prompt('Tenant admin password:');
+    if (!adminPassword) return;
+    setSavingTenant(center.id);
+    setError('');
+    try {
+      await createCenterTenant(center.id, {
+        company_name: companyName.trim(),
+        email: email.trim(),
+        legal_person: legalPerson.trim(),
+        address: address.trim(),
+        admin_username: adminUsername.trim(),
+        admin_password: adminPassword,
+        status: 'active',
+      });
+      await loadCenterTenants(center);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingTenant(null);
+    }
+  };
+
+  const handleEditTenant = async (center: Center, tenant: CenterTenant) => {
+    const companyName = prompt('Company name:', tenant.company_name);
+    if (!companyName?.trim()) return;
+    const email = prompt('Admin email:', tenant.email);
+    if (!email?.trim()) return;
+    const legalPerson = prompt('Legal person:', tenant.legal_person ?? '') ?? '';
+    const address = prompt('Company address:', tenant.address ?? '') ?? '';
+    const status = prompt('Status:', tenant.status || 'active') || tenant.status || 'active';
+    setSavingTenant(tenant.id);
+    setError('');
+    try {
+      await updateCenterTenant(center.id, tenant.id, {
+        company_name: companyName.trim(),
+        email: email.trim(),
+        legal_person: legalPerson.trim(),
+        address: address.trim(),
+        status: status.trim(),
+      });
+      await loadCenterTenants(center);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingTenant(null);
+    }
+  };
+
+  const handleDeleteTenant = async (center: Center, tenant: CenterTenant) => {
+    if (!confirm(`Delete tenant ${tenant.company_name}?`)) return;
+    setSavingTenant(tenant.id);
+    setError('');
+    try {
+      await deleteCenterTenant(center.id, tenant.id);
+      await loadCenterTenants(center);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingTenant(null);
+    }
+  };
   const handleCheckServiceReadiness = async (center: Center) => {
     setCheckingReadiness(center.id);
     setError('');
@@ -304,6 +395,9 @@ export function CentersPage() {
           const serviceReadiness = readinessResult[center.id];
           const runtime = probeRuntime[center.id] || managementItem?.runtime_status;
           const workload = managementItem?.iworker_readiness?.workload_summary;
+          const tenants = tenantLists[center.id];
+          const isLoadingTenants = loadingTenants[center.id] === true;
+          const tenantActionsDisabled = center.status !== 'active' || !center.base_url;
           const isRuntimeRefreshing = runtimeRefreshing[center.id] === true;
           return (
             <div key={center.id} className="item cloud-center-card">
@@ -324,8 +418,59 @@ export function CentersPage() {
                 {managementItem && <span>Connectivity: {managementItem.connectivity}</span>}
                 <span className={`badge ${center.iworker_ready ? 'ok' : center.iworker_readiness_status ? 'warn' : 'warn'}`}>iWorker: {center.iworker_readiness_status || 'not reported'}</span>
                 <span>Agent instances: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem?.iworker_readiness?.agent_instance_count ?? 0}</span>
+                <span>Tenant mode: {center.supports_multi_tenant === true ? 'multi-tenant' : center.supports_multi_tenant === false ? 'dedicated' : 'reported by Center'}</span>
+                {typeof center.tenant_count === 'number' && <span>Tenants: {center.tenant_count}</span>}
                 <span>Last heartbeat: {formatDateTime(center.last_heartbeat)}</span>
                 {center.created_at && <span>Registered: {new Date(center.created_at).toLocaleString()}</span>}
+              </div>
+
+              <div className="cloud-review-panel">
+                <div>
+                  <label>Registration review</label>
+                  <strong>{center.company_name || 'Unnamed company'}</strong>
+                  <span>Review company identity before activating trial or issuing a license.</span>
+                </div>
+                <div className="cloud-issue-list">
+                  <span>Legal: {center.legal_person || 'not provided'}</span>
+                  <span>Email: {center.admin_email || 'not provided'}</span>
+                  <span>Phone: {center.admin_phone || 'not provided'}</span>
+                  <span>Address: {center.address || 'not provided'}</span>
+                </div>
+              </div>
+
+              <div className="cloud-tenant-panel">
+                <div className="cloud-tenant-head">
+                  <div>
+                    <label>Remote tenant management</label>
+                    <strong>{center.supports_multi_tenant === true ? 'Multi-tenant enabled' : center.supports_multi_tenant === false ? 'Dedicated mode reported' : 'Center decides current mode'}</strong>
+                    <span>Cloud can manage tenants only after the Center is active, reachable, and set to multi-tenant mode.</span>
+                  </div>
+                  <div className="cloud-tenant-actions">
+                    <button className="btn-ghost" disabled={isLoadingTenants || tenantActionsDisabled} onClick={() => loadCenterTenants(center)}>
+                      {isLoadingTenants ? 'Loading...' : 'View tenants'}
+                    </button>
+                    <button className="btn-secondary" disabled={savingTenant === center.id || tenantActionsDisabled} onClick={() => handleCreateTenant(center)}>
+                      {savingTenant === center.id ? 'Adding...' : 'Add tenant'}
+                    </button>
+                  </div>
+                </div>
+                {tenantActionsDisabled && <div className="hint">Set Base URL and activate this Center before remote tenant operations. If Center is dedicated mode, it will reject the request.</div>}
+                {tenants && tenants.length === 0 && <div className="hint">No tenants returned by this iWorkerCenter.</div>}
+                {tenants && tenants.length > 0 && <div className="cloud-tenant-list">
+                  {tenants.map(tenant => (
+                    <div key={tenant.id} className="cloud-tenant-row">
+                      <div>
+                        <strong>{tenant.company_name}</strong>
+                        <span>{tenant.email || 'no admin email'} · {tenant.legal_person || 'no legal person'} · {tenant.status || 'active'}</span>
+                        {tenant.address ? <small>{tenant.address}</small> : null}
+                      </div>
+                      <div className="cloud-tenant-row-actions">
+                        <button className="btn-ghost" disabled={savingTenant === tenant.id} onClick={() => handleEditTenant(center, tenant)}>Edit</button>
+                        <button className="btn-danger" disabled={savingTenant === tenant.id} onClick={() => handleDeleteTenant(center, tenant)}>Delete</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>}
               </div>
 
               {managementItem && <div className={`cloud-posture-panel ${managementItem.ready ? 'ready' : 'watch'}`}>

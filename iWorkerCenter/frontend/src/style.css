@@ -617,3 +617,132 @@ label {
     align-items: stretch;
   }
 }
+
+.cloud-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.cloud-status-tile {
+  min-height: 88px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfcfd;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cloud-status-tile span,
+.cloud-field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+}
+
+.cloud-status-tile strong {
+  color: #5b6470;
+  font-size: 18px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.cloud-status-tile.ok {
+  background: rgba(35, 162, 109, 0.08);
+  border-color: rgba(35, 162, 109, 0.18);
+}
+
+.cloud-status-tile.warn {
+  background: rgba(194, 139, 44, 0.09);
+  border-color: rgba(194, 139, 44, 0.18);
+}
+
+.cloud-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.cloud-field {
+  display: grid;
+  gap: 7px;
+}
+
+.cloud-field input,
+.cloud-field select {
+  min-height: 42px;
+  width: 100%;
+  padding: 8px 11px;
+  color: #59636f;
+  background: #fff;
+  border: 1px solid #dfe3eb;
+  border-radius: 10px;
+  outline: none;
+}
+
+.cloud-field input:focus,
+.cloud-field select:focus {
+  border-color: #f0a5b0;
+  box-shadow: 0 0 0 3px rgba(239, 106, 124, 0.12);
+}
+
+.cloud-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.cloud-primary {
+  height: 40px;
+  padding: 0 16px;
+  color: #fff;
+  background: var(--primary);
+  border: 1px solid var(--primary-strong);
+  border-radius: 12px;
+  font-weight: 650;
+}
+
+.cloud-primary:disabled,
+.cloud-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.cloud-message {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fbfcfd;
+  overflow-wrap: anywhere;
+}
+
+.cloud-message.ok {
+  color: var(--ok);
+  background: rgba(35, 162, 109, 0.08);
+  border-color: rgba(35, 162, 109, 0.16);
+}
+
+.cloud-message.warn {
+  color: var(--warn);
+  background: rgba(194, 139, 44, 0.09);
+  border-color: rgba(194, 139, 44, 0.16);
+}
+
+.cloud-message.danger {
+  color: var(--danger);
+  background: rgba(196, 78, 78, 0.08);
+  border-color: rgba(196, 78, 78, 0.16);
+}
+
+@media (max-width: 760px) {
+  .cloud-status-grid,
+  .cloud-form-grid {
+    grid-template-columns: 1fr;
+  }
+}

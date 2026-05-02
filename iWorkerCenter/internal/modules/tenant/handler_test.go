@@ -150,3 +150,33 @@ func TestHandlerSetupTenant_AlreadyDone(t *testing.T) {
 		t.Errorf("expected 409, got %d: %s", w2.Code, w2.Body.String())
 	}
 }
+
+func TestAdminCloudConfigRouteUpdatesRuntimeConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	svc, _ := newTestService(t)
+	h := NewHandler(svc)
+	mux := http.NewServeMux()
+	h.RegisterAdminRoutes(mux)
+
+	body := bytes.NewReader([]byte(`{"base_url":"http://127.0.0.1:9366/","center_base_url":"http://127.0.0.1:9377/","registration_name":"Local Center","registration_email":"admin@example.com","cloud_control_mode":"hybrid"}`))
+	req := httptest.NewRequest(http.MethodPut, "/admin/cloud/config", body)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp CloudConfig
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.BaseURL != "http://127.0.0.1:9366" || resp.CenterBaseURL != "http://127.0.0.1:9377" || resp.CloudControlMode != "hybrid" {
+		t.Fatalf("config = %+v", resp)
+	}
+	if got := svc.CloudConfig(context.Background()); got.BaseURL != "http://127.0.0.1:9366" {
+		t.Fatalf("runtime config not updated: %+v", got)
+	}
+}

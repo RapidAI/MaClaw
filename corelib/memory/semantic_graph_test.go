@@ -79,6 +79,36 @@ func TestRecallDynamic_UsesSemanticGraphSignal(t *testing.T) {
 	}
 }
 
+func TestRRFFuseScoresIgnoresZeroSignalChannels(t *testing.T) {
+	entries := []Entry{
+		{ID: "matched", Content: "alpha config"},
+		{ID: "silent", Content: "unrelated"},
+	}
+
+	scores := rrfFuseScores([]float64{10, 0}, []float64{0, 0}, entries, "", nil)
+	if len(scores) != 2 {
+		t.Fatalf("expected two scores, got %d", len(scores))
+	}
+	if scores[0] <= 0 {
+		t.Fatalf("positive BM25 signal should produce an RRF score, got %+v", scores)
+	}
+	if scores[1] != 0 {
+		t.Fatalf("zero BM25/vector/tag channels should not create synthetic relevance, got %+v", scores)
+	}
+}
+
+func TestMemoryStreamScoreKeepsProjectAffinityAtFinalScoring(t *testing.T) {
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	project := `D:\workprj\alpha`
+	projectEntry := Entry{ID: "project", Category: CategoryProjectKnowledge, Tags: []string{project}, UpdatedAt: now}
+	globalEntry := Entry{ID: "global", Category: CategoryProjectKnowledge, UpdatedAt: now}
+
+	projectScore := memoryStreamScore(projectEntry, 0, 0, strings.ToLower(project), now)
+	globalScore := memoryStreamScore(globalEntry, 0, 0, strings.ToLower(project), now)
+	if projectScore <= globalScore {
+		t.Fatalf("project-scoped memory should keep its final scoring affinity: project=%v global=%v", projectScore, globalScore)
+	}
+}
 func TestSemanticGraphSearch_ResolvesAliasEntities(t *testing.T) {
 	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	g := NewSemanticGraph()
@@ -872,6 +902,29 @@ func TestStoreLastSemanticHitsIsDefensiveCopy(t *testing.T) {
 	}
 }
 
+func TestStoreLastSemanticHitsReflectsFinalRecallResults(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{
+		Content:  "alpha private fact is injected through the dedicated user fact path.",
+		Category: CategoryUserFact,
+		Entities: []string{"entity:alpha", "relation:config_of", "entity:private-fact"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if hits := store.SemanticRecallDebug("alpha config", ""); len(hits) == 0 {
+		t.Fatal("expected raw semantic debug to expose the semantic-layer hit")
+	}
+
+	_ = store.RecallDynamic("alpha config", "", "")
+	if hits := store.LastSemanticHits(); len(hits) != 0 {
+		t.Fatalf("LastSemanticHits should report semantic hits that survived final recall filtering, got %+v", hits)
+	}
+}
 func TestSemanticGraphSearch_MaxHitsTruncatesAfterSorting(t *testing.T) {
 	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	entries := make([]Entry, 0, 6)
@@ -1876,5 +1929,71 @@ func TestSemanticGraphSearch_AsOfModeRanksBackfilledFactsByEffectiveTime(t *test
 	}
 	if hits[0].EntryID != "newer-effective" {
 		t.Fatalf("as-of ranking should use effective ValidAt instead of future write time, got %+v", hits[:2])
+	}
+}
+
+func TestSemanticDominanceDoesNotBorrowSharedEvidenceForOwnerFact(t *testing.T) {
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	g := NewSemanticGraph()
+	g.Rebuild([]Entry{
+		{ID: "shared-a", Content: "alpha port is 2222.", Category: CategoryProjectKnowledge, UpdatedAt: now, Entities: []string{"entity:alpha", "relation:config_of", "entity:port-2222"}},
+		{ID: "shared-b", Content: "alpha ssh also uses port 2222.", Category: CategoryProjectKnowledge, UpdatedAt: now, Entities: []string{"entity:alpha", "relation:config_of", "entity:port-2222"}},
+		{ID: "user-a", Content: "alpha port is 22 for this user.", Category: CategoryProjectKnowledge, OwnerID: "userA", UpdatedAt: now, Entities: []string{"entity:alpha", "relation:config_of", "entity:port-22"}},
+	})
+
+	factors := g.semanticDominanceFactorsLocked(now, "userA", "", SemanticTemporalCurrent)
+	for idx, fact := range g.facts {
+		if fact.EntryID == "user-a" && factors[idx] != 1.0 {
+			t.Fatalf("owner-specific fact should not be suppressed by shared corroboration, factor=%v facts=%+v", factors[idx], g.facts)
+		}
+	}
+}
+
+func TestSemanticDominanceDoesNotBorrowGlobalEvidenceForProjectFact(t *testing.T) {
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	project := `D:\workprj\alpha`
+	g := NewSemanticGraph()
+	g.Rebuild([]Entry{
+		{ID: "global", Content: "alpha port is 2222 globally.", Category: CategoryProjectKnowledge, UpdatedAt: now, Entities: []string{"entity:alpha", "relation:config_of", "entity:port-2222"}},
+		{ID: "project", Content: "alpha port is 22 in the alpha project.", Category: CategoryProjectKnowledge, Scope: ScopeProject, Tags: []string{project}, UpdatedAt: now, Entities: []string{"entity:alpha", "relation:config_of", "entity:port-22"}},
+	})
+
+	factors := g.semanticDominanceFactorsLocked(now, "", strings.ToLower(project), SemanticTemporalCurrent)
+	for idx, fact := range g.facts {
+		if fact.EntryID == "project" && factors[idx] != 1.0 {
+			t.Fatalf("project fact should not be suppressed by global evidence, factor=%v facts=%+v", factors[idx], g.facts)
+		}
+	}
+}
+
+func TestSemanticGraphRelationOnlyBudgetUsesFinalPriority(t *testing.T) {
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	g := NewSemanticGraph()
+	g.Rebuild([]Entry{
+		{
+			ID:        "old-weak",
+			Content:   "alpha might use port 22.",
+			Category:  CategoryProjectKnowledge,
+			UpdatedAt: now.Add(-180 * 24 * time.Hour),
+			Entities:  []string{"entity:alpha", "relation:config_of", "entity:port-22"},
+		},
+		{
+			ID:         "manual-current",
+			Content:    "confirmed: beta port is 2222.",
+			Category:   CategoryProjectKnowledge,
+			SourceType: "manual",
+			Pinned:     true,
+			UpdatedAt:  now,
+			Entities:   []string{"entity:beta", "relation:config_of", "entity:port-2222"},
+		},
+	})
+
+	hits := g.SearchWithOptions(nil, SemanticSearchOptions{
+		Now:             now,
+		RelationHints:   []string{"config"},
+		MaxVisitedFacts: 1,
+	})
+	if len(hits) != 1 || hits[0].EntryID != "manual-current" {
+		t.Fatalf("relation-only budget should visit highest final-priority fact first, got %+v", hits)
 	}
 }

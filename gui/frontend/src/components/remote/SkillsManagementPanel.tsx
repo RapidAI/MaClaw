@@ -38,6 +38,7 @@ import {
     SelectProjectDir,
     OpenSystemUrl,
     GetHubRecommendations,
+    GetExperienceAuditHealth,
     ListExperienceAudit,
 } from "../../../wailsjs/go/main/App";
 
@@ -114,6 +115,21 @@ interface ExternalSkillDirInfo {
     path: string;
     skill_count: number;
     error?: string;
+}
+
+interface ExperienceAuditHealth {
+    runs: number;
+    completed: number;
+    no_candidates: number;
+    failed: number;
+    total_candidates: number;
+    registered: number;
+    updated: number;
+    skipped: number;
+    avg_duration_ms?: number;
+    latest_timestamp?: string;
+    skip_reasons?: Record<string, number>;
+    unsupported_steps?: Record<string, number>;
 }
 
 interface ExperienceAuditEntry {
@@ -273,6 +289,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [learnedImporting, setLearnedImporting] = useState(false);
     const [importReport, setImportReport] = useState<{ restored: number; skipped: number; failed: number; details: string[] } | null>(null);
     const [experienceAudit, setExperienceAudit] = useState<ExperienceAuditEntry[]>([]);
+    const [experienceAuditHealth, setExperienceAuditHealth] = useState<ExperienceAuditHealth | null>(null);
     const [experienceAuditLoading, setExperienceAuditLoading] = useState(false);
     const [experienceAuditError, setExperienceAuditError] = useState("");
     const [uploadingSkill, setUploadingSkill] = useState<string | null>(null);
@@ -795,11 +812,13 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         setExperienceAuditLoading(true);
         setExperienceAuditError("");
         try {
-            const records = await ListExperienceAudit();
+            const [records, health] = await Promise.all([ListExperienceAudit(), GetExperienceAuditHealth()]);
             setExperienceAudit(Array.isArray(records) ? records : []);
+            setExperienceAuditHealth(health && typeof health === "object" ? health as ExperienceAuditHealth : null);
         } catch (err) {
             setExperienceAuditError(String(err));
             setExperienceAudit([]);
+            setExperienceAuditHealth(null);
         } finally {
             setExperienceAuditLoading(false);
         }
@@ -1315,13 +1334,37 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {/* Experience extraction audit */}
-                    {(experienceAuditError || experienceAudit.length > 0) && (
+                    {(experienceAuditError || experienceAuditHealth || experienceAudit.length > 0) && (
                         <div style={{ ...remoteInfoPanelStyle, padding: "8px 10px", borderRadius: "4px" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
                                 <span style={{ fontWeight: 600, color: colors.text }}>{localizeText("Experience Audit", "Experience Audit", "Experience Audit")}</span>
-                                <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "2px 8px" }} onClick={() => setExperienceAudit([])}>{localizeText("Hide", "Hide", "Hide")}</button>
+                                <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "2px 8px" }} onClick={() => { setExperienceAudit([]); setExperienceAuditHealth(null); }}>{localizeText("Hide", "Hide", "Hide")}</button>
                             </div>
                             {experienceAuditError && <div style={{ color: colors.danger, fontSize: "0.74rem" }}>{experienceAuditError}</div>}
+                            {!experienceAuditError && experienceAuditHealth && (
+                                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "6px", marginBottom: "8px" }}>
+                                    {[
+                                        [localizeText("Runs", "Runs", "Runs"), experienceAuditHealth.runs],
+                                        [localizeText("Completed", "Completed", "Completed"), experienceAuditHealth.completed],
+                                        [localizeText("Failed", "Failed", "Failed"), experienceAuditHealth.failed],
+                                        [localizeText("Registered", "Registered", "Registered"), experienceAuditHealth.registered],
+                                        [localizeText("Updated", "Updated", "Updated"), experienceAuditHealth.updated],
+                                        [localizeText("Skipped", "Skipped", "Skipped"), experienceAuditHealth.skipped],
+                                    ].map(([label, value]) => (
+                                        <div key={String(label)} style={{ border: "1px solid " + colors.borderLight, borderRadius: "4px", padding: "5px 7px", background: colors.surface }}>
+                                            <div style={{ fontSize: "0.66rem", color: colors.textMuted }}>{label}</div>
+                                            <div style={{ fontSize: "0.84rem", fontWeight: 700, color: colors.text }}>{value}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            {!experienceAuditError && experienceAuditHealth && (Object.keys(experienceAuditHealth.skip_reasons || {}).length > 0 || Object.keys(experienceAuditHealth.unsupported_steps || {}).length > 0) && (
+                                <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: "8px" }}>
+                                    {Object.entries(experienceAuditHealth.skip_reasons || {}).slice(0, 3).map(([reason, count]) => String(reason) + " x" + count).join("; ")}
+                                    {Object.keys(experienceAuditHealth.skip_reasons || {}).length > 0 && Object.keys(experienceAuditHealth.unsupported_steps || {}).length > 0 ? " / " : ""}
+                                    {Object.entries(experienceAuditHealth.unsupported_steps || {}).slice(0, 3).map(([step, count]) => String(step) + " x" + count).join("; ")}
+                                </div>
+                            )}
                             {!experienceAuditError && experienceAudit.slice(0, 5).map((record, index) => {
                                 const summary = record.summary || { total_candidates: 0, registered: 0, updated: 0, skipped: 0 };
                                 const skipReasons = Object.entries(summary.skip_reasons || {});

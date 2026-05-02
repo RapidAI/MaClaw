@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SectionCard } from '../components/cards/SectionCard';
-import { fetchCloudStatus, registerCenterToCloud, type CloudLicense, type CloudRegistrationStatus, type CloudRegisterResponse } from '../api/cloud';
+import { fetchCloudConfig, fetchCloudStatus, registerCenterToCloud, updateCloudConfig, type CloudConfig, type CloudLicense, type CloudRegistrationStatus, type CloudRegisterResponse } from '../api/cloud';
 
 type CloudViewState = 'loading' | 'licensed' | 'unregistered' | 'not_configured' | 'pending' | 'offline' | 'error';
 
@@ -23,6 +23,21 @@ function formatDate(value?: string, fallback = '-') {
   return date.toLocaleString();
 }
 
+function normalizeState(status?: string): CloudViewState {
+  switch (status) {
+    case 'licensed':
+    case 'unregistered':
+    case 'not_configured':
+    case 'pending':
+    case 'offline':
+    case 'loading':
+    case 'error':
+      return status;
+    default:
+      return 'error';
+  }
+}
+
 function classifyError(message: string): CloudViewState {
   const normalized = message.toLowerCase();
   if (normalized.includes('not configured')) return 'not_configured';
@@ -34,6 +49,7 @@ function classifyError(message: string): CloudViewState {
 
 export function CloudRegistrationPage() {
   const { t } = useTranslation();
+  const [config, setConfig] = useState<CloudConfig>({ base_url: '', center_base_url: '', registration_name: '', registration_email: '', cloud_control_mode: 'cloud_managed' });
   const [license, setLicense] = useState<CloudLicense | null>(null);
   const [cloudStatus, setCloudStatus] = useState<CloudRegistrationStatus | null>(null);
   const [registerResult, setRegisterResult] = useState<CloudRegisterResponse | null>(null);
@@ -41,6 +57,7 @@ export function CloudRegistrationPage() {
   const [message, setMessage] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [registering, setRegistering] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
 
   const modules = useMemo(() => parseModules(license?.modules), [license]);
 
@@ -48,10 +65,22 @@ export function CloudRegistrationPage() {
     setLoading(true);
     setMessage('');
     try {
-      const next = await fetchCloudStatus();
+      const [nextConfig, next] = await Promise.all([
+        fetchCloudConfig().catch(() => null),
+        fetchCloudStatus(),
+      ]);
+      if (nextConfig) {
+        setConfig({
+          base_url: nextConfig.base_url || '',
+          center_base_url: nextConfig.center_base_url || '',
+          registration_name: nextConfig.registration_name || '',
+          registration_email: nextConfig.registration_email || '',
+          cloud_control_mode: nextConfig.cloud_control_mode || 'cloud_managed',
+        });
+      }
       setCloudStatus(next);
       setLicense(next.license || null);
-      setState((next.status || 'error') as CloudViewState);
+      setState(normalizeState(next.status));
       setMessage(next.license_error || '');
     } catch (err: any) {
       const nextMessage = err?.message || t('cloud.errors.unknown');
@@ -65,6 +94,31 @@ export function CloudRegistrationPage() {
   };
 
   useEffect(() => { load(); }, []);
+
+  const handleConfigChange = (key: keyof CloudConfig, value: string) => {
+    setConfig(current => ({ ...current, [key]: value }));
+  };
+
+  const handleSaveConfig = async () => {
+    setSavingConfig(true);
+    setMessage('');
+    try {
+      const next = await updateCloudConfig(config);
+      setConfig({
+        base_url: next.base_url || '',
+        center_base_url: next.center_base_url || '',
+        registration_name: next.registration_name || '',
+        registration_email: next.registration_email || '',
+        cloud_control_mode: next.cloud_control_mode || 'cloud_managed',
+      });
+      await load();
+    } catch (err: any) {
+      setMessage(err?.message || t('cloud.errors.saveConfigFailed'));
+      setState('error');
+    } finally {
+      setSavingConfig(false);
+    }
+  };
 
   const handleRegister = async () => {
     setRegistering(true);
@@ -111,6 +165,37 @@ export function CloudRegistrationPage() {
             <div className="cloud-detail-item"><span>{t('cloud.fields.expiresAt')}</span><strong>{license?.is_long_term ? t('cloud.longTerm') : formatDate(license?.expires_at)}</strong></div>
             <div className="cloud-detail-item"><span>{t('cloud.fields.createdAt')}</span><strong>{formatDate(license?.created_at)}</strong></div>
           </div>
+        </div>
+      </SectionCard>
+
+      <SectionCard title={t('cloud.configTitle')} desc={t('cloud.configDesc')}>
+        <div className="cloud-config-form">
+          <label>
+            <span>{t('cloud.config.baseUrl')}</span>
+            <input value={config.base_url || ''} onChange={event => handleConfigChange('base_url', event.target.value)} placeholder="https://cloud.example.com" />
+          </label>
+          <label>
+            <span>{t('cloud.config.centerBaseUrl')}</span>
+            <input value={config.center_base_url || ''} onChange={event => handleConfigChange('center_base_url', event.target.value)} placeholder="https://center.example.com" />
+          </label>
+          <label>
+            <span>{t('cloud.config.registrationName')}</span>
+            <input value={config.registration_name || ''} onChange={event => handleConfigChange('registration_name', event.target.value)} placeholder="HQ iWorkerCenter" />
+          </label>
+          <label>
+            <span>{t('cloud.config.registrationEmail')}</span>
+            <input value={config.registration_email || ''} onChange={event => handleConfigChange('registration_email', event.target.value)} placeholder="admin@example.com" />
+          </label>
+          <label>
+            <span>{t('cloud.config.controlMode')}</span>
+            <select value={config.cloud_control_mode || 'cloud_managed'} onChange={event => handleConfigChange('cloud_control_mode', event.target.value)}>
+              <option value="cloud_managed">{t('cloud.config.cloudManaged')}</option>
+              <option value="self_managed">{t('cloud.config.selfManaged')}</option>
+            </select>
+          </label>
+          <button className="btn-primary" type="button" onClick={handleSaveConfig} disabled={savingConfig || registering}>
+            {savingConfig ? t('cloud.config.saving') : t('cloud.config.save')}
+          </button>
         </div>
       </SectionCard>
 

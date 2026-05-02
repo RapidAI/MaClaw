@@ -322,6 +322,32 @@ func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	}
 }
 
+func TestSaveConfigDefaultsPetSizeForClarity(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.PetEnabled = true
+	cfg.PetSize = 0
+
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.PetSize != defaultPetSize {
+		t.Fatalf("PetSize = %d, want %d", reloaded.PetSize, defaultPetSize)
+	}
+}
+
 func TestSaveConfigConcurrentWritesValidJSON(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

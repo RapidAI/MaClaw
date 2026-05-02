@@ -16,6 +16,7 @@ export interface PetSkinOption {
 }
 
 export const defaultPetSkinId: PetSkinId = 'clawmate';
+export const defaultPetSize = 88;
 
 export const petSkinOptions: PetSkinOption[] = [
     {

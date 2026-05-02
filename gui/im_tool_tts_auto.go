@@ -47,7 +47,7 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 // isIMPlatform returns true if the platform is an IM channel (not desktop).
 func isIMPlatform(platform string) bool {
 	switch platform {
-	case "feishu", "wecom", "qqbot", "dingtalk", "telegram", "lansenger",
+	case "qqbot", "dingtalk", "telegram", "lansenger",
 		"qqbot_local", "telegram_local", "weixin", "weixin_local", "lansenger_local":
 		return true
 	}
@@ -65,14 +65,17 @@ func shouldEmitDesktopTTSPlayback(platform string) bool {
 
 func selectTTSVoicePayload(platform string, ogg, wav []byte) ([]byte, string, string) {
 	switch platform {
+	case "feishu", "wecom":
+		return nil, "", ""
 	case "weixin", "weixin_local":
 		if wav != nil {
 			return wav, "voice.wav", "audio/wav"
 		}
-		if ogg != nil {
-			return ogg, "voice.ogg", "audio/ogg"
+	case "qqbot", "qqbot_local":
+		if wav != nil {
+			return wav, "voice.wav", "audio/wav"
 		}
-	case "telegram", "telegram_local", "qqbot", "qqbot_local":
+	case "telegram", "telegram_local", "dingtalk":
 		if ogg != nil {
 			return ogg, "voice.ogg", "audio/ogg"
 		}

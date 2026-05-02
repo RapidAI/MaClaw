@@ -48,10 +48,34 @@ func (r *TenantRepo) GetByID(ctx context.Context, id string) (*Tenant, error) {
 		 FROM tenants WHERE id = ?`, id))
 }
 
+func (r *TenantRepo) GetByCloudCenterID(ctx context.Context, centerID string) (*Tenant, error) {
+	return r.scanOne(r.read.QueryRowContext(ctx,
+		`SELECT id, company_name, legal_person, email, address, status, cloud_center_id, cloud_secret, created_at, updated_at
+		 FROM tenants WHERE cloud_center_id = ?`, centerID))
+}
 func (r *TenantRepo) GetByCompanyName(ctx context.Context, name string) (*Tenant, error) {
 	return r.scanOne(r.read.QueryRowContext(ctx,
 		`SELECT id, company_name, legal_person, email, address, status, cloud_center_id, cloud_secret, created_at, updated_at
 		 FROM tenants WHERE company_name = ?`, name))
+}
+
+func (r *TenantRepo) List(ctx context.Context) ([]*Tenant, error) {
+	rows, err := r.read.QueryContext(ctx,
+		`SELECT id, company_name, legal_person, email, address, status, cloud_center_id, cloud_secret, created_at, updated_at
+		 FROM tenants ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Tenant
+	for rows.Next() {
+		t, err := r.scanRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 func (r *TenantRepo) ListActive(ctx context.Context) ([]*Tenant, error) {
@@ -79,6 +103,17 @@ func (r *TenantRepo) Count(ctx context.Context) (int, error) {
 	return n, err
 }
 
+func (r *TenantRepo) Update(ctx context.Context, t *Tenant) error {
+	_, err := r.write.ExecContext(ctx,
+		`UPDATE tenants SET company_name = ?, legal_person = ?, email = ?, address = ?, status = ?, updated_at = datetime('now') WHERE id = ?`,
+		t.CompanyName, t.LegalPerson, t.Email, t.Address, t.Status, t.ID)
+	return err
+}
+
+func (r *TenantRepo) Delete(ctx context.Context, id string) error {
+	_, err := r.write.ExecContext(ctx, `DELETE FROM tenants WHERE id = ?`, id)
+	return err
+}
 func (r *TenantRepo) UpdateStatus(ctx context.Context, id, status string) error {
 	_, err := r.write.ExecContext(ctx,
 		`UPDATE tenants SET status = ?, updated_at = datetime('now') WHERE id = ?`, status, id)

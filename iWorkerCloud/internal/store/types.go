@@ -6,10 +6,10 @@ import "time"
 type Center struct {
 	ID                        string    `json:"id"`
 	CompanyName               string    `json:"company_name"`
-	AdminEmail                string    `json:"-"`
-	AdminPhone                string    `json:"-"`
-	Address                   string    `json:"-"`
-	LegalPerson               string    `json:"-"`
+	AdminEmail                string    `json:"admin_email"`
+	AdminPhone                string    `json:"admin_phone"`
+	Address                   string    `json:"address"`
+	LegalPerson               string    `json:"legal_person"`
 	BaseURL                   string    `json:"base_url"`
 	SupportsMultiTenant       bool      `json:"-"`
 	TenantCount               int       `json:"-"`
@@ -26,6 +26,7 @@ type Center struct {
 	RuntimeStatusJSON         string    `json:"-"`
 	Status                    string    `json:"status"` // pending, active, disabled
 	SecretHash                string    `json:"-"`
+	ManagementSecret          string    `json:"-"`
 	LastHeartbeat             time.Time `json:"last_heartbeat"`
 	CreatedAt                 time.Time `json:"created_at"`
 	UpdatedAt                 time.Time `json:"updated_at"`

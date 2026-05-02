@@ -5,29 +5,6 @@ import (
 	"testing"
 )
 
-func TestInferVoiceEncodeType(t *testing.T) {
-	tests := []struct {
-		name string
-		want int
-	}{
-		{name: "voice.wav", want: 1},
-		{name: "voice.pcm", want: 1},
-		{name: "voice.amr", want: 5},
-		{name: "voice.silk", want: 6},
-		{name: "voice.slk", want: 6},
-		{name: "voice.mp3", want: 7},
-		{name: "voice.ogg", want: 8},
-		{name: "voice.opus", want: 8},
-		{name: "voice", want: 8},
-	}
-
-	for _, tt := range tests {
-		if got := inferVoiceEncodeType(tt.name); got != tt.want {
-			t.Fatalf("inferVoiceEncodeType(%q) = %d, want %d", tt.name, got, tt.want)
-		}
-	}
-}
-
 func TestEstimateVoicePlaytimeMS(t *testing.T) {
 	wav := makeTestWAV(16000, 2, 16000*2*3)
 	if got := estimateVoicePlaytimeMS(wav); got != 3000 {
@@ -39,20 +16,20 @@ func TestEstimateVoicePlaytimeMS(t *testing.T) {
 	}
 }
 
-func TestWAVVoicePayloadStripsContainer(t *testing.T) {
+func TestVoiceUploadPayloadEncodesWAVToSilk(t *testing.T) {
 	wav := makeTestWAV(16000, 2, 16000*2*3)
-	payload, meta, ok := wavVoicePayload(wav)
-	if !ok {
-		t.Fatal("wavVoicePayload() failed")
+	payload, meta, err := voiceUploadPayload("voice.wav", wav)
+	if err != nil {
+		t.Fatalf("voiceUploadPayload(wav) error = %v", err)
 	}
-	if len(payload) != 16000*2*3 {
-		t.Fatalf("payload len = %d, want %d", len(payload), 16000*2*3)
+	if !isSilkVoicePayload(payload) {
+		t.Fatalf("payload is not SILK: %q", payload[:min(len(payload), 10)])
 	}
 	if string(payload[:4]) == "RIFF" {
 		t.Fatal("payload still contains WAV header")
 	}
-	if meta.sampleRate != 16000 || meta.bitsPerSample != 16 || meta.playtimeMS != 3000 {
-		t.Fatalf("meta = sr=%d bits=%d playtime=%d", meta.sampleRate, meta.bitsPerSample, meta.playtimeMS)
+	if meta == nil || meta.sampleRate != weixinVoiceSampleRate || meta.playtimeMS != 3000 {
+		t.Fatalf("meta = %#v, want sample_rate=%d playtime=3000", meta, weixinVoiceSampleRate)
 	}
 }
 
@@ -76,37 +53,26 @@ func TestVoiceUploadPayloadRejectsRawPCMWithoutMetadata(t *testing.T) {
 	}
 }
 
-func TestVoiceUploadPayloadKeepsNonWAVAsIs(t *testing.T) {
-	data := []byte("ogg data")
-	payload, meta, err := voiceUploadPayload("voice.ogg", data)
-	if err != nil {
-		t.Fatalf("voiceUploadPayload(ogg) error = %v", err)
-	}
-	if string(payload) != string(data) || meta != nil {
-		t.Fatalf("voiceUploadPayload(ogg) = %q meta=%v, want original nil", payload, meta)
-	}
-}
-
 func TestVoiceUploadPayloadSniffsWAVWhenFileNameMissing(t *testing.T) {
 	wav := makeTestWAV(16000, 2, 16000*2)
 	payload, meta, err := voiceUploadPayload("", wav)
 	if err != nil {
 		t.Fatalf("voiceUploadPayload(empty wav) error = %v", err)
 	}
-	if len(payload) != 16000*2 || meta == nil || meta.sampleRate != 16000 {
+	if !isSilkVoicePayload(payload) || meta == nil || meta.sampleRate != weixinVoiceSampleRate {
 		t.Fatalf("voiceUploadPayload(empty wav) payload_len=%d meta=%v", len(payload), meta)
 	}
 }
 
-func TestBuildVoiceItemUsesPCMEncodeWhenMetadataPresent(t *testing.T) {
+func TestBuildVoiceItemUsesSilkEncode(t *testing.T) {
 	media := &cdnMedia{EncryptQueryParam: "q", AESKey: "k", EncryptType: 1}
 	_, meta, ok := wavVoicePayload(makeTestWAV(16000, 2, 16000*2))
 	if !ok {
 		t.Fatal("wavVoicePayload() failed")
 	}
-	item := buildVoiceItem(media, "", &meta)
-	if item.EncodeType != 1 {
-		t.Fatalf("buildVoiceItem(empty, meta).EncodeType = %d, want 1", item.EncodeType)
+	item := buildVoiceItem(media, &meta)
+	if item.EncodeType != 6 {
+		t.Fatalf("buildVoiceItem(empty, meta).EncodeType = %d, want 6", item.EncodeType)
 	}
 }
 
@@ -116,14 +82,42 @@ func TestBuildVoiceItemOnlyAddsWAVMetadataWhenKnown(t *testing.T) {
 	if !ok {
 		t.Fatal("wavVoicePayload() failed")
 	}
-	wavItem := buildVoiceItem(media, "voice.wav", &meta)
-	if wavItem.EncodeType != 1 || wavItem.SampleRate != 16000 || wavItem.BitsPerSample != 16 || wavItem.Playtime != 3000 {
+	wavItem := buildVoiceItem(media, &meta)
+	if wavItem.EncodeType != 6 || wavItem.SampleRate != 16000 || wavItem.BitsPerSample != 0 || wavItem.Playtime != 3000 {
 		t.Fatalf("buildVoiceItem(wav) = encode=%d sr=%d bits=%d playtime=%d", wavItem.EncodeType, wavItem.SampleRate, wavItem.BitsPerSample, wavItem.Playtime)
 	}
 
-	oggItem := buildVoiceItem(media, "voice.ogg", nil)
-	if oggItem.EncodeType != 8 || oggItem.SampleRate != 0 || oggItem.BitsPerSample != 0 || oggItem.Playtime != 0 {
-		t.Fatalf("buildVoiceItem(ogg) = encode=%d sr=%d bits=%d playtime=%d", oggItem.EncodeType, oggItem.SampleRate, oggItem.BitsPerSample, oggItem.Playtime)
+	unknownItem := buildVoiceItem(media, nil)
+	if unknownItem.EncodeType != 6 || unknownItem.SampleRate != 0 || unknownItem.BitsPerSample != 0 || unknownItem.Playtime != 0 {
+		t.Fatalf("buildVoiceItem(nil) = encode=%d sr=%d bits=%d playtime=%d", unknownItem.EncodeType, unknownItem.SampleRate, unknownItem.BitsPerSample, unknownItem.Playtime)
+	}
+}
+
+func TestVoiceUploadPayloadKeepsShortWAV(t *testing.T) {
+	wav := makeTestWAV(16000, 2, 16000*2/10)
+	payload, meta, err := voiceUploadPayload("voice.wav", wav)
+	if err != nil {
+		t.Fatalf("voiceUploadPayload(short wav) error = %v", err)
+	}
+	if !isSilkVoicePayload(payload) || estimateSilkPlaytimeMS(payload) == 0 {
+		t.Fatalf("short WAV produced invalid SILK payload_len=%d meta=%v", len(payload), meta)
+	}
+}
+
+func TestVoiceUploadPayloadKeepsValidSilk(t *testing.T) {
+	data := []byte("\x02#!SILK_V3\x01\x00x")
+	payload, meta, err := voiceUploadPayload("voice.silk", data)
+	if err != nil {
+		t.Fatalf("voiceUploadPayload(silk) error = %v", err)
+	}
+	if string(payload) != string(data) || meta == nil || meta.sampleRate != weixinVoiceSampleRate {
+		t.Fatalf("voiceUploadPayload(silk) payload=%q meta=%v", payload, meta)
+	}
+}
+
+func TestVoiceUploadPayloadRejectsNonWAVVoice(t *testing.T) {
+	if _, _, err := voiceUploadPayload("voice.ogg", []byte("ogg data")); err == nil {
+		t.Fatal("voiceUploadPayload(ogg) error = nil, want error")
 	}
 }
 

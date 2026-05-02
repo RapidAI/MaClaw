@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,21 @@ func findWAV(t *testing.T) string {
 	return ""
 }
 
+func findZhouWAV(t *testing.T) string {
+	t.Helper()
+	candidates := []string{
+		filepath.Join("..", "..", "zhou_16k.wav"),
+		filepath.Join("..", "..", "zhou.wav"),
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	t.Skip("zhou_16k.wav not found, skipping test")
+	return ""
+}
+
 func TestLoadModel(t *testing.T) {
 	modelPath := findModel(t)
 	m, err := NewMoonshine(modelPath)
@@ -63,11 +79,21 @@ func TestLoadModel(t *testing.T) {
 		m.hp.EncoderDim, m.hp.EncoderDepth,
 		m.hp.DecoderDim, m.hp.DecoderDepth,
 		m.hp.VocabSize)
+	t.Logf("model rope: theta=%.1f partial_rotary_factor=%.2f", m.hp.RopeTheta, m.hp.PartialRot)
 	if m.hp.VocabSize == 0 {
 		t.Error("vocab size is 0")
 	}
 	if len(m.vocab) == 0 {
 		t.Error("vocab is empty")
+	}
+}
+
+func TestDefaultMoonshinePartialRotaryFactor(t *testing.T) {
+	if got := defaultMoonshinePartialRotaryFactor(416, 416); got != 0.62 {
+		t.Fatalf("base/base-zh default partial rotary = %v, want 0.62", got)
+	}
+	if got := defaultMoonshinePartialRotaryFactor(288, 288); got != 0.9 {
+		t.Fatalf("tiny default partial rotary = %v, want 0.9", got)
 	}
 }
 
@@ -122,6 +148,36 @@ func TestTranscribe(t *testing.T) {
 
 	if text == "" {
 		t.Error("empty transcription")
+	}
+}
+
+func TestTranscribeZhouJayChouAgeQuestion(t *testing.T) {
+	modelPath := findModel(t)
+	wavPath := findZhouWAV(t)
+
+	m, err := NewMoonshine(modelPath)
+	if err != nil {
+		t.Fatalf("load model: %v", err)
+	}
+	defer m.Close()
+
+	pcm, err := LoadWAV(wavPath)
+	if err != nil {
+		t.Fatalf("load wav: %v", err)
+	}
+	text, err := m.Transcribe(pcm)
+	if err != nil {
+		t.Fatalf("transcribe: %v", err)
+	}
+	t.Logf("zhou transcription: %q", text)
+	if !strings.Contains(text, "周杰伦") {
+		t.Fatalf("expected transcription to contain 周杰伦, got %q", text)
+	}
+	if strings.Contains(text, "主角人") || strings.Contains(text, "结论") {
+		t.Fatalf("transcription still has known bad drift, got %q", text)
+	}
+	if text != "我想知道周杰伦多大年纪了" {
+		t.Fatalf("expected clean transcription without decoder tail, got %q", text)
 	}
 }
 

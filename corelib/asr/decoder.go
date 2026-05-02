@@ -82,6 +82,23 @@ func (b *decoderBufs) ensureRoPE(pos int) {
 	}
 }
 
+func matMulLinear(out, a []float32, w linearWeight, M, N, K int) {
+	if w.f32 != nil {
+		tensor.MatMul(out, a, w.f32, M, N, K)
+		return
+	}
+	tensor.MatMulQ8(out, a, w.q8, M, N, K)
+}
+
+// shouldStopNearEOS handles small Go-vs-ggml numeric differences at utterance end.
+func shouldStopNearEOS(logits []float32, eosID int, bestVal float32, generated int) bool {
+	const minGeneratedTokens = 8
+	const eosMargin = 3.0
+	if generated < minGeneratedTokens || eosID < 0 || eosID >= len(logits) {
+		return false
+	}
+	return logits[eosID] >= bestVal-eosMargin
+}
 func (m *MoonshineModel) decode(encOut []float32, encFrames int) ([]int, error) {
 	hp := m.hp
 	dim := hp.DecoderDim
@@ -97,11 +114,11 @@ func (m *MoonshineModel) decode(encOut []float32, encFrames int) ([]int, error) 
 		cache.selfV[li] = make([]float32, 0, hp.MaxSeqLen*dim)
 		cache.crossK[li] = make([]float32, encFrames*dim)
 		cache.crossV[li] = make([]float32, encFrames*dim)
-		tensor.MatMulQ8(cache.crossK[li], encOut, l.crossKW, encFrames, dim, dim)
-		tensor.MatMulQ8(cache.crossV[li], encOut, l.crossVW, encFrames, dim, dim)
+		matMulLinear(cache.crossK[li], encOut, l.crossKW, encFrames, dim, dim)
+		matMulLinear(cache.crossV[li], encOut, l.crossVW, encFrames, dim, dim)
 	}
 
-	ffDim2x := m.w.decLayers[0].ffUpW.Rows
+	ffDim2x := m.w.decLayers[0].ffUpW.Rows()
 	bufs := newDecoderBufs(dim, ffDim2x, hp.VocabSize, hp.MaxSeqLen, encFrames, hp)
 
 	tokens := []int{hp.BOSID}
@@ -121,7 +138,7 @@ func (m *MoonshineModel) decode(encOut []float32, encFrames int) ([]int, error) 
 				bestID = i
 			}
 		}
-		if bestID == hp.EOSID {
+		if bestID == hp.EOSID || shouldStopNearEOS(bufs.logits, hp.EOSID, bestVal, len(tokens)-1) {
 			break
 		}
 		tokens = append(tokens, bestID)
@@ -151,9 +168,9 @@ func (m *MoonshineModel) decoderStep(cache *kvCache, b *decoderBufs, step, curTo
 		// Self-attention
 		copy(b.residual, x)
 		tensor.LayerNorm(x, x, l.selfNormW, 1e-5)
-		tensor.MatMulQ8(b.q, x, l.selfQW, 1, dim, dim)
-		tensor.MatMulQ8(b.kNew, x, l.selfKW, 1, dim, dim)
-		tensor.MatMulQ8(b.vNew, x, l.selfVW, 1, dim, dim)
+		matMulLinear(b.q, x, l.selfQW, 1, dim, dim)
+		matMulLinear(b.kNew, x, l.selfKW, 1, dim, dim)
+		matMulLinear(b.vNew, x, l.selfVW, 1, dim, dim)
 
 		// RoPE with precomputed tables (lazy-grow if needed)
 		if step+1 > len(b.ropeCos) {
@@ -167,31 +184,31 @@ func (m *MoonshineModel) decoderStep(cache *kvCache, b *decoderBufs, step, curTo
 		seqK := step + 1
 
 		sdpaSingleOpt(b.q, cache.selfK[li], cache.selfV[li], x, b.selfScores[:seqK], seqK, nHeads, headDim)
-		tensor.MatMulQ8(b.projOut, x, l.selfOutW, 1, dim, dim)
+		matMulLinear(b.projOut, x, l.selfOutW, 1, dim, dim)
 		tensor.Add(x, b.residual, b.projOut)
 
 		// Cross-attention
 		copy(b.residual, x)
 		tensor.LayerNorm(x, x, l.crossNormW, 1e-5)
-		tensor.MatMulQ8(b.cq, x, l.crossQW, 1, dim, dim)
+		matMulLinear(b.cq, x, l.crossQW, 1, dim, dim)
 		sdpaSingleOpt(b.cq, cache.crossK[li], cache.crossV[li], x, b.crossScores[:encFrames], encFrames, nHeads, headDim)
-		tensor.MatMulQ8(b.crossProj, x, l.crossOutW, 1, dim, dim)
+		matMulLinear(b.crossProj, x, l.crossOutW, 1, dim, dim)
 		tensor.Add(x, b.residual, b.crossProj)
 
-		// SwiGLU FFN — fused SiLU+Mul
+		// SwiGLU FFN: fused SiLU+Mul
 		copy(b.residual, x)
 		tensor.LayerNorm(x, x, l.ffNormW, 1e-5)
-		ffDim2x := l.ffUpW.Rows
-		tensor.MatMulQ8(b.fc1Out[:ffDim2x], x, l.ffUpW, 1, ffDim2x, dim)
+		ffDim2x := l.ffUpW.Rows()
+		matMulLinear(b.fc1Out[:ffDim2x], x, l.ffUpW, 1, ffDim2x, dim)
 		if l.ffUpB != nil {
 			tensor.Add(b.fc1Out[:ffDim2x], b.fc1Out[:ffDim2x], l.ffUpB)
 		}
 		intermediate := ffDim2x / 2
 		gatePart := b.fc1Out[intermediate:ffDim2x]
 		valuePart := b.fc1Out[:intermediate]
-		// Fused SiLU(gate) * value — single pass, halves memory traffic
+		// Fused SiLU(gate) * value in place
 		tensor.SiLUMul(gatePart, valuePart)
-		tensor.MatMulQ8(b.downOut, gatePart, l.ffDownW, 1, dim, intermediate)
+		matMulLinear(b.downOut, gatePart, l.ffDownW, 1, dim, intermediate)
 		if l.ffDownB != nil {
 			tensor.Add(b.downOut, b.downOut, l.ffDownB)
 		}

@@ -141,6 +141,14 @@ func TestLLMProviderUpstreamHTTPClientUsesConfiguredTimeout(t *testing.T) {
 	if defaultClient.Timeout != time.Duration(corelib.DefaultLLMTimeoutSec)*time.Second {
 		t.Fatalf("default client.Timeout = %s, want %ds", defaultClient.Timeout, corelib.DefaultLLMTimeoutSec)
 	}
+
+	streamClient := llmProviderUpstreamStreamHTTPClient(corelib.MaclawLLMConfig{TimeoutSec: 7})
+	if streamClient == nil {
+		t.Fatal("stream client is nil")
+	}
+	if streamClient.Timeout != 0 {
+		t.Fatalf("stream client Timeout = %s, want 0 to avoid cutting off long streams", streamClient.Timeout)
+	}
 }
 func TestParseUsageStatsIncludesPromptCache(t *testing.T) {
 	payload := []byte(`{"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":48},"cache_creation_input_tokens":12}}`)
@@ -355,6 +363,199 @@ func TestLLMV1ChatCompletionsHandlerAllowsFreeServiceWithoutCredits(t *testing.T
 	}
 	if upstreamHits.Load() != 1 {
 		t.Fatalf("expected upstream to be called once, hits = %d", upstreamHits.Load())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerStreamsOpenAICompatResponse(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "stream-binding@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "stream-binding@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["stream"] != true {
+			t.Fatalf("upstream stream = %#v, want true", upstreamBody["stream"])
+		}
+		if upstreamBody["model"] != "test-model" {
+			t.Fatalf("upstream model = %#v, want test-model", upstreamBody["model"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(": keepalive\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hel\"}}]}\n\n"))
+		_, _ = w.Write([]byte("event: message\nid: chunk-2\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-2\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	globalLLMUsageAccumulator.mu.Lock()
+	savedPending := globalLLMUsageAccumulator.pending
+	globalLLMUsageAccumulator.pending = map[store.SystemSettingsRepository]*pendingSystemUsage{}
+	globalLLMUsageAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMUsageAccumulator.mu.Lock()
+		globalLLMUsageAccumulator.pending = savedPending
+		globalLLMUsageAccumulator.mu.Unlock()
+	}()
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": true, "stream_options": map[string]any{"include_usage": true}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("content-type = %q, want text/event-stream", rr.Header().Get("Content-Type"))
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("expected upstream to be called once, hits = %d", upstreamHits.Load())
+	}
+	if !strings.Contains(rr.Body.String(), `"model":"auto"`) || !strings.Contains(rr.Body.String(), "data: [DONE]") || !strings.Contains(rr.Body.String(), "event: message") || !strings.Contains(rr.Body.String(), ": keepalive") {
+		t.Fatalf("unexpected stream body: %s", rr.Body.String())
+	}
+
+	globalLLMUsageAccumulator.flush(ctx)
+	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load provider registry: %v", err)
+	}
+	stat := providerReg.TokenUsage["provider-a"]
+	if stat == nil || stat.InputTokens != 10 || stat.OutputTokens != 5 || stat.TotalTokens != 15 || stat.Requests != 1 {
+		t.Fatalf("unexpected stream usage: %#v", stat)
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerSynthesizesStreamWhenUpstreamReturnsJSON(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "json-stream-binding@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "json-stream-binding@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     "json-upstream",
+			"object": "chat.completion",
+			"model":  "test-model",
+			"choices": []any{map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "json fallback",
+					"tool_calls": []any{map[string]any{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "lookup",
+							"arguments": `{"q":"hello"}`,
+						},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}},
+			"usage": map[string]any{"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+		})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	globalLLMUsageAccumulator.mu.Lock()
+	savedPending := globalLLMUsageAccumulator.pending
+	globalLLMUsageAccumulator.pending = map[store.SystemSettingsRepository]*pendingSystemUsage{}
+	globalLLMUsageAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMUsageAccumulator.mu.Lock()
+		globalLLMUsageAccumulator.pending = savedPending
+		globalLLMUsageAccumulator.mu.Unlock()
+	}()
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": true})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("content-type = %q, want text/event-stream", rr.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rr.Body.String(), "json fallback") || !strings.Contains(rr.Body.String(), "data: [DONE]") || !strings.Contains(rr.Body.String(), `"model":"auto"`) || !strings.Contains(rr.Body.String(), `"index":0`) || !strings.Contains(rr.Body.String(), `"finish_reason":"tool_calls"`) {
+		t.Fatalf("unexpected synthesized stream body: %s", rr.Body.String())
+	}
+
+	globalLLMUsageAccumulator.flush(ctx)
+	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load provider registry: %v", err)
+	}
+	stat := providerReg.TokenUsage["provider-a"]
+	if stat == nil || stat.InputTokens != 8 || stat.OutputTokens != 4 || stat.TotalTokens != 12 || stat.Requests != 1 {
+		t.Fatalf("unexpected synthesized stream usage: %#v", stat)
 	}
 }
 

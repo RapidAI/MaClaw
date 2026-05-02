@@ -155,15 +155,33 @@ func (m *IntentUnderstandingManager) HandleInput(userID, text string) (reply str
 	// Parse response
 	replyText, parsedIntent, isReady, parseOK := parseLLMIntentResponse(raw)
 
-	// JSON parse failure — LLM returned malformed output. Don't display
-	// the raw LLM output (which may be JSON gibberish) to the user.
-	// Return an error so the caller falls through to the normal agent loop.
-	// The caller's err != nil path already handles cleanup and fall-through.
+	// JSON parse failure means the clarification model drifted from the
+	// structured contract. Keep the understanding session alive so the user's
+	// follow-up remains attached to the workflow task instead of falling through
+	// to the normal agent loop and being reclassified against unrelated history.
 	if !parseOK {
-		log.Printf("[IntentUnderstanding] parse failed for user %s, cleaning up session. raw=%s",
+		log.Printf("[IntentUnderstanding] parse failed for user %s, preserving session. raw=%s",
 			userID, truncateForLog(raw, 200))
-		m.cleanupSession(userID)
-		return "", false, false, nil, fmt.Errorf("LLM returned unparseable response")
+
+		fallbackReply := buildIntentParseFailureReply(raw)
+		now := time.Now()
+		m.mu.Lock()
+		if current := m.sessions[userID]; current != nil {
+			current.Rounds = append(current.Rounds, UnderstandingRound{
+				UserText:      text,
+				AssistantText: fallbackReply,
+				Timestamp:     now,
+			})
+			current.UpdatedAt = now
+			sess = current
+		}
+		m.mu.Unlock()
+
+		if m.store != nil && sess != nil {
+			_ = m.store.SaveUnderstandingSession(sess)
+		}
+
+		return fallbackReply, false, false, nil, nil
 	}
 
 	// Update session
@@ -321,8 +339,8 @@ func (m *IntentUnderstandingManager) buildConversationMessages(sess *Understandi
 // buildSystemPrompt constructs the system prompt for intent understanding.
 // Includes all registered template descriptions so the LLM can classify intent.
 // The LLM must decide TWO things in one shot:
-//   1. Is this a workflow task at all? (category="none" if not)
-//   2. If yes, which workflow template? (category=template type)
+//  1. Is this a workflow task at all? (category="none" if not)
+//  2. If yes, which workflow template? (category=template type)
 func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	var b strings.Builder
 	b.Grow(4096) // pre-allocate to avoid repeated buffer growth
@@ -494,6 +512,32 @@ func parseLLMIntentResponse(raw string) (reply string, intent StructuredIntent, 
 	isReady := result.Ready || result.Intent.Ready
 
 	return result.Reply, result.Intent, isReady, true
+}
+
+func buildIntentParseFailureReply(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" || looksLikeStructuredGarbage(text) {
+		return "我收到了你的补充，但刚才内部结构化解析失败了。请继续补充需求，或者直接说“开工”，我会接着当前任务推进。"
+	}
+
+	// If the model accidentally returned a natural-language clarification,
+	// surface a bounded version of it instead of discarding the active session.
+	return truncateForLog(text, 500)
+}
+
+func looksLikeStructuredGarbage(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return true
+	}
+	if strings.HasPrefix(lower, "```json") || strings.HasPrefix(lower, "```") {
+		return true
+	}
+	return strings.Contains(trimmed, `"intent"`) && (strings.Contains(trimmed, "{") || strings.Contains(trimmed, "["))
 }
 
 // extractJSON attempts to extract a JSON object from text that may be

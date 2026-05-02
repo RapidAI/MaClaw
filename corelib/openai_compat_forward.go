@@ -44,6 +44,180 @@ func ForwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 	}
 }
 
+// ForwardOpenAICompatStreamRequest forwards an OpenAI chat/completions style
+// streaming request to the configured upstream and returns the live response
+// body to the caller. The caller owns closing resp.Body.
+func ForwardOpenAICompatStreamRequest(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client) (*http.Response, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	clean := make(map[string]interface{}, len(body))
+	for k, v := range body {
+		clean[k] = v
+	}
+	delete(clean, "provider")
+	delete(clean, "model_provider")
+
+	if wireAPI := strings.ToLower(strings.TrimSpace(cfg.WireAPI)); wireAPI == "responses" || wireAPI == "responses-ws" {
+		return nil, fmt.Errorf("streaming passthrough is not supported for responses wire api")
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
+		return nil, fmt.Errorf("streaming passthrough is not supported for anthropic protocol")
+	}
+	return forwardOpenAICompatStreamRequest(ctx, cfg, clean, client)
+}
+
+func forwardOpenAICompatStreamRequest(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client) (*http.Response, error) {
+	fwd := make(map[string]interface{}, len(body))
+	for k, v := range body {
+		fwd[k] = v
+	}
+	fwd["model"] = cfg.Model
+	fwd["stream"] = true
+	ensureOpenAIStreamUsage(fwd)
+
+	jsonBody, err := json.Marshal(fwd)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request body: %w", err)
+	}
+	upstreamURL := openAIChatCompletionsEndpoint(cfg.URL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("User-Agent", cfg.UserAgent())
+	if cfg.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	}
+	return client.Do(req)
+}
+
+// RewriteOpenAIStreamDataModel rewrites a single SSE data payload's model
+// field when it contains JSON. Non-JSON payloads such as [DONE] pass through.
+func RewriteOpenAIStreamDataModel(payload []byte, model string) []byte {
+	if strings.TrimSpace(model) == "" {
+		return payload
+	}
+	trimmed := strings.TrimSpace(string(payload))
+	if trimmed == "" || trimmed == "[DONE]" || !json.Valid([]byte(trimmed)) {
+		return payload
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+		return payload
+	}
+	obj["model"] = model
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return payload
+	}
+	return data
+}
+
+// OpenAIStreamUsageFromData extracts usage from an SSE data JSON payload.
+func OpenAIStreamUsageFromData(payload []byte) TokenUsageStat {
+	trimmed := strings.TrimSpace(string(payload))
+	if trimmed == "" || trimmed == "[DONE]" || !json.Valid([]byte(trimmed)) {
+		return TokenUsageStat{}
+	}
+	return parseOpenAIUsageJSON([]byte(trimmed))
+}
+
+func parseOpenAIUsageJSON(body []byte) TokenUsageStat {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return TokenUsageStat{}
+	}
+	usage, _ := payload["usage"].(map[string]interface{})
+	if usage == nil {
+		return TokenUsageStat{}
+	}
+	stat := TokenUsageStat{
+		InputTokens:       int64(numberToInt64(firstOpenAICompatNonNil(usage["prompt_tokens"], usage["input_tokens"]))),
+		OutputTokens:      int64(numberToInt64(firstOpenAICompatNonNil(usage["completion_tokens"], usage["output_tokens"]))),
+		TotalTokens:       int64(numberToInt64(usage["total_tokens"])),
+		CachedInputTokens: int64(numberToInt64(openAICompatCachedUsageValue(usage))),
+		CacheWriteTokens:  int64(numberToInt64(openAICompatCacheWriteUsageValue(usage))),
+		Requests:          1,
+	}
+	if stat.TotalTokens <= 0 {
+		stat.TotalTokens = stat.InputTokens + stat.OutputTokens
+	}
+	if stat.CachedInputTokens > 0 || stat.CacheWriteTokens > 0 {
+		stat.CachedRequests = 1
+	}
+	return stat
+}
+
+func firstOpenAICompatNonNil(values ...interface{}) interface{} {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func openAICompatCachedUsageValue(usage map[string]interface{}) interface{} {
+	return firstOpenAICompatNonNil(
+		openAICompatLookupMapValue(usage, "prompt_tokens_details", "cached_tokens"),
+		openAICompatLookupMapValue(usage, "input_tokens_details", "cached_tokens"),
+		usage["cache_read_input_tokens"],
+		usage["cached_input_tokens"],
+	)
+}
+
+func openAICompatCacheWriteUsageValue(usage map[string]interface{}) interface{} {
+	return firstOpenAICompatNonNil(
+		usage["cache_creation_input_tokens"],
+		usage["cache_write_input_tokens"],
+		openAICompatLookupMapValue(usage, "prompt_tokens_details", "cache_write_tokens"),
+		openAICompatLookupMapValue(usage, "input_tokens_details", "cache_write_tokens"),
+	)
+}
+
+func openAICompatLookupMapValue(root map[string]interface{}, key string, nested string) interface{} {
+	child, _ := root[key].(map[string]interface{})
+	if child == nil {
+		return nil
+	}
+	return child[nested]
+}
+
+func ensureOpenAIStreamUsage(body map[string]interface{}) {
+	if body == nil {
+		return
+	}
+	if opts, ok := body["stream_options"].(map[string]interface{}); ok && opts != nil {
+		opts["include_usage"] = true
+		return
+	}
+	if opts, ok := body["stream_options"].(map[string]any); ok && opts != nil {
+		opts["include_usage"] = true
+		return
+	}
+	body["stream_options"] = map[string]interface{}{"include_usage": true}
+}
+
+func numberToInt64(v interface{}) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case json.Number:
+		value, _ := n.Int64()
+		return value
+	default:
+		return 0
+	}
+}
+
 func forwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client, responseModel string) ([]byte, int, error) {
 	fwd := make(map[string]interface{}, len(body))
 	for k, v := range body {

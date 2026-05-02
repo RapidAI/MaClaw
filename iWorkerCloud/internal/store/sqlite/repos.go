@@ -34,24 +34,24 @@ type CenterRepo struct{ w, r *sql.DB }
 
 func (repo *CenterRepo) Create(ctx context.Context, c *store.Center) error {
 	_, err := repo.w.ExecContext(ctx,
-		`INSERT INTO centers (id, company_name, admin_email, admin_phone, address, legal_person, base_url, supports_multi_tenant, tenant_count, cloud_control_mode, last_sync_status, iworker_ready, iworker_readiness_status, iworker_tenant_count, iworker_role_count, iworker_colleague_count, iworker_local_account_count, iworker_agent_instance_count, iworker_readiness_json, runtime_status_json, status, secret_hash, last_heartbeat, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO centers (id, company_name, admin_email, admin_phone, address, legal_person, base_url, supports_multi_tenant, tenant_count, cloud_control_mode, last_sync_status, iworker_ready, iworker_readiness_status, iworker_tenant_count, iworker_role_count, iworker_colleague_count, iworker_local_account_count, iworker_agent_instance_count, iworker_readiness_json, runtime_status_json, status, secret_hash, management_secret, last_heartbeat, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.CompanyName, c.AdminEmail, c.AdminPhone, c.Address, c.LegalPerson,
 		c.BaseURL, boolToInt(c.SupportsMultiTenant), c.TenantCount, normalizeRepoControlMode(c.CloudControlMode), c.LastSyncStatus,
 		boolToInt(c.IWorkerReady), c.IWorkerReadinessStatus, c.IWorkerTenantCount, c.IWorkerRoleCount, c.IWorkerColleagueCount, c.IWorkerLocalAccountCount, c.IWorkerAgentInstanceCount, c.IWorkerReadinessJSON, c.RuntimeStatusJSON,
-		c.Status, c.SecretHash, c.LastHeartbeat.Format(time.RFC3339), c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339))
+		c.Status, c.SecretHash, c.ManagementSecret, c.LastHeartbeat.Format(time.RFC3339), c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339))
 	return err
 }
 
 func (repo *CenterRepo) GetByID(ctx context.Context, id string) (*store.Center, error) {
 	row := repo.r.QueryRowContext(ctx,
-		`SELECT id, company_name, admin_email, admin_phone, address, legal_person, base_url, supports_multi_tenant, tenant_count, cloud_control_mode, last_sync_status, iworker_ready, iworker_readiness_status, iworker_tenant_count, iworker_role_count, iworker_colleague_count, iworker_local_account_count, iworker_agent_instance_count, iworker_readiness_json, runtime_status_json, status, secret_hash, last_heartbeat, created_at, updated_at FROM centers WHERE id=?`, id)
+		`SELECT id, company_name, admin_email, admin_phone, address, legal_person, base_url, supports_multi_tenant, tenant_count, cloud_control_mode, last_sync_status, iworker_ready, iworker_readiness_status, iworker_tenant_count, iworker_role_count, iworker_colleague_count, iworker_local_account_count, iworker_agent_instance_count, iworker_readiness_json, runtime_status_json, status, secret_hash, management_secret, last_heartbeat, created_at, updated_at FROM centers WHERE id=?`, id)
 	return scanCenter(row)
 }
 
 func (repo *CenterRepo) List(ctx context.Context) ([]*store.Center, error) {
 	rows, err := repo.r.QueryContext(ctx,
-		`SELECT id, company_name, admin_email, admin_phone, address, legal_person, base_url, supports_multi_tenant, tenant_count, cloud_control_mode, last_sync_status, iworker_ready, iworker_readiness_status, iworker_tenant_count, iworker_role_count, iworker_colleague_count, iworker_local_account_count, iworker_agent_instance_count, iworker_readiness_json, runtime_status_json, status, secret_hash, last_heartbeat, created_at, updated_at FROM centers ORDER BY created_at DESC`)
+		`SELECT id, company_name, admin_email, admin_phone, address, legal_person, base_url, supports_multi_tenant, tenant_count, cloud_control_mode, last_sync_status, iworker_ready, iworker_readiness_status, iworker_tenant_count, iworker_role_count, iworker_colleague_count, iworker_local_account_count, iworker_agent_instance_count, iworker_readiness_json, runtime_status_json, status, secret_hash, management_secret, last_heartbeat, created_at, updated_at FROM centers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func scanCenter(row *sql.Row) (*store.Center, error) {
 	var c store.Center
 	var hb, ca, ua string
 	var supportsMultiTenant, iworkerReady int
-	if err := row.Scan(&c.ID, &c.CompanyName, &c.AdminEmail, &c.AdminPhone, &c.Address, &c.LegalPerson, &c.BaseURL, &supportsMultiTenant, &c.TenantCount, &c.CloudControlMode, &c.LastSyncStatus, &iworkerReady, &c.IWorkerReadinessStatus, &c.IWorkerTenantCount, &c.IWorkerRoleCount, &c.IWorkerColleagueCount, &c.IWorkerLocalAccountCount, &c.IWorkerAgentInstanceCount, &c.IWorkerReadinessJSON, &c.RuntimeStatusJSON, &c.Status, &c.SecretHash, &hb, &ca, &ua); err != nil {
+	if err := row.Scan(&c.ID, &c.CompanyName, &c.AdminEmail, &c.AdminPhone, &c.Address, &c.LegalPerson, &c.BaseURL, &supportsMultiTenant, &c.TenantCount, &c.CloudControlMode, &c.LastSyncStatus, &iworkerReady, &c.IWorkerReadinessStatus, &c.IWorkerTenantCount, &c.IWorkerRoleCount, &c.IWorkerColleagueCount, &c.IWorkerLocalAccountCount, &c.IWorkerAgentInstanceCount, &c.IWorkerReadinessJSON, &c.RuntimeStatusJSON, &c.Status, &c.SecretHash, &c.ManagementSecret, &hb, &ca, &ua); err != nil {
 		return nil, err
 	}
 	c.SupportsMultiTenant = supportsMultiTenant == 1
@@ -115,7 +115,7 @@ func scanCenterRows(rows *sql.Rows) (*store.Center, error) {
 	var c store.Center
 	var hb, ca, ua string
 	var supportsMultiTenant, iworkerReady int
-	if err := rows.Scan(&c.ID, &c.CompanyName, &c.AdminEmail, &c.AdminPhone, &c.Address, &c.LegalPerson, &c.BaseURL, &supportsMultiTenant, &c.TenantCount, &c.CloudControlMode, &c.LastSyncStatus, &iworkerReady, &c.IWorkerReadinessStatus, &c.IWorkerTenantCount, &c.IWorkerRoleCount, &c.IWorkerColleagueCount, &c.IWorkerLocalAccountCount, &c.IWorkerAgentInstanceCount, &c.IWorkerReadinessJSON, &c.RuntimeStatusJSON, &c.Status, &c.SecretHash, &hb, &ca, &ua); err != nil {
+	if err := rows.Scan(&c.ID, &c.CompanyName, &c.AdminEmail, &c.AdminPhone, &c.Address, &c.LegalPerson, &c.BaseURL, &supportsMultiTenant, &c.TenantCount, &c.CloudControlMode, &c.LastSyncStatus, &iworkerReady, &c.IWorkerReadinessStatus, &c.IWorkerTenantCount, &c.IWorkerRoleCount, &c.IWorkerColleagueCount, &c.IWorkerLocalAccountCount, &c.IWorkerAgentInstanceCount, &c.IWorkerReadinessJSON, &c.RuntimeStatusJSON, &c.Status, &c.SecretHash, &c.ManagementSecret, &hb, &ca, &ua); err != nil {
 		return nil, err
 	}
 	c.SupportsMultiTenant = supportsMultiTenant == 1
