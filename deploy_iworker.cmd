@@ -60,10 +60,6 @@ if not exist "%ROOT_DIR%iWorkerCenter\cmd\iworkercenter\web" (
   echo [ERROR] Missing iWorkerCenter web assets
   goto :fail
 )
-if not exist "%ROOT_DIR%iWorkerCloud\web\admin\dist\index.html" (
-  echo [ERROR] Missing iWorkerCloud web/admin/dist. Build it first: npm run build --prefix iWorkerCloud/web/admin
-  goto :fail
-)
 
 call :resolve_tool GO_EXE go.exe
 if errorlevel 1 goto :fail
@@ -73,6 +69,8 @@ call :resolve_tool PSCP_EXE pscp.exe
 if errorlevel 1 goto :fail
 call :resolve_tool TAR_EXE tar.exe
 if errorlevel 1 goto :fail
+call :resolve_tool NPM_EXE npm.cmd
+if errorlevel 1 goto :fail
 
 call :prompt_password
 if errorlevel 1 goto :fail
@@ -81,13 +79,46 @@ set "HOSTKEY_ARG="
 if defined REMOTE_HOSTKEY set HOSTKEY_ARG=-hostkey "%REMOTE_HOSTKEY%"
 
 echo.
-echo [1/6] Connection info
+echo [1/8] Connection info
 echo        Host: %REMOTE_USER%@%REMOTE_HOST%:%REMOTE_PORT%
 echo        iWorkerCenter -^> %IWORKERCENTER_DEPLOY_DIR%  port %IWORKERCENTER_PORT%
 echo        iWorkerCloud  -^> %IWORKERCLOUD_DEPLOY_DIR%  port %IWORKERCLOUD_PORT%
 echo.
 
-echo [2/6] Building Linux binaries locally...
+echo [2/8] Building and syncing web assets...
+pushd "%ROOT_DIR%iWorkerCenter\frontend"
+"%NPM_EXE%" run build
+if errorlevel 1 (
+  popd
+  echo [ERROR] Failed to build iWorkerCenter frontend.
+  goto :fail
+)
+popd
+"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$src=Join-Path '%ROOT_DIR_TRIM%' 'iWorkerCenter/frontend/dist';$dst=Join-Path '%ROOT_DIR_TRIM%' 'iWorkerCenter/cmd/iworkercenter/web/admin';" ^
+  "if(!(Test-Path (Join-Path $src 'index.html'))){ throw 'Missing iWorkerCenter frontend dist/index.html' };" ^
+  "if(Test-Path $dst){ Get-ChildItem -LiteralPath $dst -Force | Remove-Item -Recurse -Force } else { New-Item -ItemType Directory -Force $dst | Out-Null };" ^
+  "Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force;" ^
+  "Remove-Item -LiteralPath $src -Recurse -Force;"
+if errorlevel 1 (
+  echo [ERROR] Failed to sync iWorkerCenter web assets.
+  goto :fail
+)
+pushd "%ROOT_DIR%iWorkerCloud\web\admin"
+"%NPM_EXE%" run build
+if errorlevel 1 (
+  popd
+  echo [ERROR] Failed to build iWorkerCloud admin frontend.
+  goto :fail
+)
+popd
+
+if not exist "%ROOT_DIR%iWorkerCloud\web\admin\dist\index.html" (
+  echo [ERROR] Missing iWorkerCloud web/admin/dist after build.
+  goto :fail
+)
+
+echo [3/8] Building Linux binaries locally...
 if exist "%BUILD_ROOT%" rmdir /s /q "%BUILD_ROOT%"
 mkdir "%STAGE_ROOT%\bin" >nul 2>nul
 
@@ -105,7 +136,7 @@ set "GOOS=%OLD_GOOS%"
 set "GOARCH=%OLD_GOARCH%"
 set "CGO_ENABLED=%OLD_CGO_ENABLED%"
 
-echo [3/6] Staging web assets...
+echo [4/8] Staging web assets...
 "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command ^
   "$src='%ROOT_DIR_TRIM%';$dst='%STAGE_ROOT%';" ^
   "New-Item -ItemType Directory -Force (Join-Path $dst 'iWorkerCenter') | Out-Null;" ^
@@ -117,18 +148,18 @@ if errorlevel 1 (
   goto :fail
 )
 
-echo [3/6] Creating archive...
+echo [5/8] Creating archive...
 "%TAR_EXE%" -czf "%ARCHIVE_PATH%" -C "%STAGE_ROOT%" .
 if errorlevel 1 (
   echo [ERROR] Failed to create archive.
   goto :fail
 )
 
-echo [4/6] Writing remote script...
+echo [6/8] Writing remote script...
 call :write_remote_script
 if errorlevel 1 goto :fail
 
-echo [5/6] Uploading...
+echo [7/8] Uploading...
 "%PLINK_EXE%" -batch %HOSTKEY_ARG% -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "mkdir -p %REMOTE_TMP_DIR%"
 if errorlevel 1 goto :upload_fail
 "%PSCP_EXE%" -batch %HOSTKEY_ARG% -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%ARCHIVE_PATH%" "%REMOTE_USER%@%REMOTE_HOST%:%REMOTE_TMP_DIR%/iworker-services-deploy.tar.gz"
@@ -136,7 +167,7 @@ if errorlevel 1 goto :upload_fail
 "%PSCP_EXE%" -batch %HOSTKEY_ARG% -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_SCRIPT%" "%REMOTE_USER%@%REMOTE_HOST%:%REMOTE_TMP_DIR%/remote_deploy_iworker_services.sh"
 if errorlevel 1 goto :upload_fail
 
-echo [6/6] Remote deploy and restart...
+echo [8/8] Remote deploy and restart...
 "%PLINK_EXE%" -batch %HOSTKEY_ARG% -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "sed -i 's/\r$//' %REMOTE_TMP_DIR%/remote_deploy_iworker_services.sh && chmod +x %REMOTE_TMP_DIR%/remote_deploy_iworker_services.sh && REMOTE_TMP_DIR=%REMOTE_TMP_DIR% IWORKERCENTER_DEPLOY_DIR=%IWORKERCENTER_DEPLOY_DIR% IWORKERCLOUD_DEPLOY_DIR=%IWORKERCLOUD_DEPLOY_DIR% IWORKERCENTER_PORT=%IWORKERCENTER_PORT% IWORKERCLOUD_PORT=%IWORKERCLOUD_PORT% IWORKERCLOUD_PUBLIC_BASE_URL=%IWORKERCLOUD_PUBLIC_BASE_URL% %REMOTE_TMP_DIR%/remote_deploy_iworker_services.sh"
 if errorlevel 1 (
   echo [ERROR] Remote deployment failed.

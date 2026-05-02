@@ -97,6 +97,39 @@ func TestDefaultMoonshinePartialRotaryFactor(t *testing.T) {
 	}
 }
 
+func TestActiveVocabSizeClampsToAvailableLogitRows(t *testing.T) {
+	m := &MoonshineModel{
+		hp: HParams{VocabSize: 32768, DecoderDim: 4, BOSID: 1, EOSID: 2},
+		w:  weights{lmHeadF32: make([]float32, 10*4)},
+	}
+	if got := m.activeVocabSize(); got != 10 {
+		t.Fatalf("active vocab with f32 lm_head = %d, want 10", got)
+	}
+
+	m.vocab = make([]string, 8)
+	if got := m.activeVocabSize(); got != 8 {
+		t.Fatalf("active vocab with shorter tokenizer = %d, want 8", got)
+	}
+
+	m.hp.EOSID = 9
+	if got := m.activeVocabSize(); got != 10 {
+		t.Fatalf("active vocab should include EOS within logit rows = %d, want 10", got)
+	}
+
+	m.hp.EOSID = 11
+	if got := m.activeVocabSize(); got != 8 {
+		t.Fatalf("active vocab should not exceed logit rows for EOS = %d, want 8", got)
+	}
+
+	m = &MoonshineModel{
+		hp: HParams{VocabSize: 32768, BOSID: 1, EOSID: 2},
+		w:  weights{lmHeadW: &tensor.Q8Tensor{Rows: 12, Cols: 4}},
+	}
+	if got := m.activeVocabSize(); got != 12 {
+		t.Fatalf("active vocab with q8 lm_head = %d, want 12", got)
+	}
+}
+
 func TestLoadWAV(t *testing.T) {
 	wavPath := findWAV(t)
 	pcm, err := LoadWAV(wavPath)

@@ -1034,7 +1034,7 @@ export default function App() {
       scope: workerMemoryDraftScope,
       content,
       category: workerMemoryDraftCategory.trim() || 'note',
-      tags: workerMemoryDraftTags.split(/[?,]/).map((item) => item.trim()).filter(Boolean),
+      tags: workerMemoryDraftTags.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
       sourceType: 'iworker-gui',
     };
     setWorkerMemorySaving(true);
@@ -1316,7 +1316,7 @@ export default function App() {
             onRoutingDefaultProviderChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, defaultProvider: value } }))}
             onRoutingAllowFallbackChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, allowFallback: value } }))}
             onProviderChange={updateProvider}
-            onProviderFeaturesChange={(providerId, value) => updateProvider(providerId, { features: value.split(/[?,]/).map((item) => item.trim()).filter(Boolean) })}
+            onProviderFeaturesChange={(providerId, value) => updateProvider(providerId, { features: value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) })}
             onCheckCenterHealth={handleCheckCenterHealth}
             onDiscoverCenterEnrollment={handleDiscoverCenterEnrollment}
             onApplyCenterEnrollment={handleApplyCenterEnrollment}

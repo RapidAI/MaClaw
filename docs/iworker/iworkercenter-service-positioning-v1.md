@@ -125,7 +125,7 @@
 ## 对当前开发的直接影响
 
 - `iWorkerCenter/main.go` 保持 HTTP server 形态。
-- `iWorkerCenter/web/admin` 是嵌入式 Admin Web Console，不是桌面 GUI。
+- `iWorkerCenter/frontend` 是 Admin Web Console 源码，`iWorkerCenter/cmd/iworkercenter/web/admin` 是部署用内嵌产物，不是桌面 GUI。
 - `iWorker` GUI 中的 `IWorkerCenterPanel` 只保留为本地连接与 watcher 控制面板。
 - 所有组织级记忆、任务、workflow、push、skill 和审计接口继续放在 `iWorkerCenter` 服务端。
 - 后续不要在 `iWorkerCenter` 目录引入 Wails / Electron / 桌面 GUI 主程序。

@@ -39,6 +39,10 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 		log.Printf("[tts-tool] voice payload: %s %d bytes", voiceName, len(voiceData))
 		return fmt.Sprintf("[voice_base64|%s|%s]%s", voiceName, voiceMime, base64.StdEncoding.EncodeToString(voiceData))
 	}
+	if err == nil {
+		log.Printf("[tts-tool] no native voice payload for platform=%s", platform)
+		return "当前通道不支持原生语音消息"
+	}
 
 	log.Printf("[tts-tool] error: %v", err)
 	return fmt.Sprintf("语音合成失败: %v", err)

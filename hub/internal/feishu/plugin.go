@@ -240,6 +240,9 @@ func (p *FeishuPlugin) SendAudio(ctx context.Context, target im.UserTarget, audi
 	if openID == "" {
 		return fmt.Errorf("feishu: PlatformUID (open_id) is required for audio")
 	}
+	if !isOggOpus(audioData) {
+		return fmt.Errorf("feishu: voice payload must be OGG Opus")
+	}
 
 	bot := p.notifier.Bot()
 	if bot == nil {
@@ -275,6 +278,23 @@ func (p *FeishuPlugin) SendAudio(ctx context.Context, target im.UserTarget, audi
 	}
 
 	return nil
+}
+
+// SendVoice implements im.VoiceSender for the IM adapter. Feishu native audio
+// messages require OGG Opus uploaded with file_type=opus.
+func (p *FeishuPlugin) SendVoice(ctx context.Context, target im.UserTarget, voiceData, fileName, mimeType string) error {
+	raw, err := base64.StdEncoding.DecodeString(voiceData)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(voiceData)
+		if err != nil {
+			return fmt.Errorf("feishu: voice base64 decode failed: %w", err)
+		}
+	}
+	return p.SendAudio(ctx, target, raw)
+}
+
+func isOggOpus(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("OggS")) && bytes.Contains(data, []byte("OpusHead"))
 }
 
 // SendFile sends a file to the target user via Feishu.

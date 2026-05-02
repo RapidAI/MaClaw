@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -92,6 +94,101 @@ func (g *Gateway) SendText(ctx context.Context, target cim.UserTarget, text stri
 func (g *Gateway) SendMarkdown(ctx context.Context, target cim.UserTarget, markdown string) error {
 	// Feishu doesn't support raw markdown in messages, fall back to text
 	return g.SendText(ctx, target, markdown)
+}
+
+// SendAudio sends a native Feishu audio message. audioData must be OGG Opus.
+func (g *Gateway) SendAudio(ctx context.Context, target cim.UserTarget, audioData []byte, durationMs int) error {
+	if len(audioData) == 0 {
+		return fmt.Errorf("feishu: empty audio data")
+	}
+	if !isOggOpus(audioData) {
+		return fmt.Errorf("feishu: voice payload must be OGG Opus")
+	}
+	token, err := g.ensureToken()
+	if err != nil {
+		return err
+	}
+	if durationMs <= 0 {
+		durationMs = estimateOpusDurationMS(audioData)
+	}
+	fileKey, err := g.uploadAudio(ctx, token, audioData, durationMs)
+	if err != nil {
+		return fmt.Errorf("feishu: upload audio: %w", err)
+	}
+	content, _ := json.Marshal(map[string]any{
+		"file_key": fileKey,
+		"duration": durationMs,
+	})
+	body := map[string]any{
+		"receive_id": target.PlatformUID,
+		"msg_type":   "audio",
+		"content":    string(content),
+	}
+	return g.postAPI(token, "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id", body)
+}
+
+func (g *Gateway) uploadAudio(ctx context.Context, token string, audioData []byte, durationMs int) (string, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("file_type", "opus")
+	_ = writer.WriteField("file_name", "voice.ogg")
+	if durationMs > 0 {
+		_ = writer.WriteField("duration", strconv.Itoa(durationMs))
+	}
+	part, err := writer.CreateFormFile("file", "voice.ogg")
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(audioData); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://open.feishu.cn/open-apis/im/v1/files", body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("upload API %d: %s", resp.StatusCode, string(respBody))
+	}
+	var result struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			FileKey string `json:"file_key"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", err
+	}
+	if result.Code != 0 {
+		return "", fmt.Errorf("upload code=%d: %s", result.Code, result.Msg)
+	}
+	if result.Data.FileKey == "" {
+		return "", fmt.Errorf("upload returned empty file_key")
+	}
+	return result.Data.FileKey, nil
+}
+
+func estimateOpusDurationMS(data []byte) int {
+	duration := len(data) * 1000 / 4000
+	if duration < 1000 {
+		return 1000
+	}
+	return duration
+}
+
+func isOggOpus(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("OggS")) && bytes.Contains(data, []byte("OpusHead"))
 }
 
 // WebhookHandler returns an http.HandlerFunc that processes Feishu event callbacks.

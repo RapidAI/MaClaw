@@ -258,6 +258,23 @@ func TestFormatScanReport_Dangerous(t *testing.T) {
 	}
 }
 
+func TestValidateExternalSkillDirAcceptsLowercaseReadmeSkill(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "lower-readme-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "readme.md"), []byte("# readme skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	count, err := ValidateExternalSkillDir(root)
+	if err != nil {
+		t.Fatalf("ValidateExternalSkillDir() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+}
 func TestValidateExternalSkillDirAcceptsReadmeSkill(t *testing.T) {
 	root := t.TempDir()
 	skillDir := filepath.Join(root, "readme-skill")

@@ -404,6 +404,35 @@ func (p *Plugin) SendFile(ctx context.Context, target im.UserTarget, fileData, f
 	return p.sendMedia(userID, mediaType, mediaID)
 }
 
+// SendVoice implements im.VoiceSender for native WeCom voice bubbles. The
+// WeCom bot protocol accepts voice media only as AMR/AMR-WB, so other formats
+// fail locally instead of being uploaded as an unusable voice item.
+func (p *Plugin) SendVoice(ctx context.Context, target im.UserTarget, voiceData, fileName, mimeType string) error {
+	userID := target.PlatformUID
+	if userID == "" {
+		return fmt.Errorf("wecom: PlatformUID (userid) is required")
+	}
+	raw, err := base64.StdEncoding.DecodeString(voiceData)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(voiceData)
+		if err != nil {
+			return fmt.Errorf("wecom: voice base64 decode failed: %w", err)
+		}
+	}
+	if !isAMR(raw) {
+		return fmt.Errorf("wecom: voice payload must be AMR")
+	}
+	mediaID, err := p.uploadMedia(raw, "voice", "voice.amr")
+	if err != nil {
+		return fmt.Errorf("wecom: upload voice: %w", err)
+	}
+	return p.sendMedia(userID, "voice", mediaID)
+}
+
+func isAMR(data []byte) bool {
+	return strings.HasPrefix(string(data), "#!AMR\n") || strings.HasPrefix(string(data), "#!AMR-WB\n")
+}
+
 func (p *Plugin) ResolveUser(ctx context.Context, platformUID string) (string, error) {
 	p.bindMu.RLock()
 	email, ok := p.bindings[platformUID]

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"sort"
 	"strings"
@@ -24,8 +25,8 @@ type Config struct {
 	CorpID     string `json:"corp_id"`
 	CorpSecret string `json:"corp_secret"`
 	AgentID    int    `json:"agent_id"`
-	Token      string `json:"token"`       // for callback verification
-	AESKey     string `json:"aes_key"`     // for callback encryption
+	Token      string `json:"token"`   // for callback verification
+	AESKey     string `json:"aes_key"` // for callback encryption
 }
 
 // Gateway implements corelib/im.Plugin for WeCom.
@@ -96,6 +97,76 @@ func (g *Gateway) SendMarkdown(ctx context.Context, target cim.UserTarget, markd
 		"markdown": map[string]string{"content": markdown},
 	}
 	return g.postAPI(token, "https://qyapi.weixin.qq.com/cgi-bin/message/send", body)
+}
+
+// SendAudio sends a native WeCom voice message. WeCom requires AMR audio.
+func (g *Gateway) SendAudio(ctx context.Context, target cim.UserTarget, audioData []byte, durationMs int) error {
+	if len(audioData) == 0 {
+		return fmt.Errorf("wecom: empty audio data")
+	}
+	if !isAMR(audioData) {
+		return fmt.Errorf("wecom: voice payload must be AMR")
+	}
+	token, err := g.getAccessToken()
+	if err != nil {
+		return err
+	}
+	mediaID, err := g.uploadVoice(ctx, token, audioData)
+	if err != nil {
+		return fmt.Errorf("wecom: upload voice: %w", err)
+	}
+	body := map[string]any{
+		"touser":  target.PlatformUID,
+		"msgtype": "voice",
+		"agentid": g.config.AgentID,
+		"voice":   map[string]string{"media_id": mediaID},
+	}
+	return g.postAPI(token, "https://qyapi.weixin.qq.com/cgi-bin/message/send", body)
+}
+
+func (g *Gateway) uploadVoice(ctx context.Context, token string, audioData []byte) (string, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("media", "voice.amr")
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(audioData); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	url := "https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=" + token + "&type=voice"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		ErrCode int    `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+		MediaID string `json:"media_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if result.ErrCode != 0 {
+		return "", fmt.Errorf("upload err=%d: %s", result.ErrCode, result.ErrMsg)
+	}
+	if result.MediaID == "" {
+		return "", fmt.Errorf("upload returned empty media_id")
+	}
+	return result.MediaID, nil
+}
+
+func isAMR(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("#!AMR\n")) || bytes.HasPrefix(data, []byte("#!AMR-WB\n"))
 }
 
 // WebhookHandler returns an http.HandlerFunc for WeCom callback.

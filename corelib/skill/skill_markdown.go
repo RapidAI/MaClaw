@@ -638,7 +638,7 @@ func skillMarkdownPath(skillDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("无法读取 skill.md: %v", err)
 	}
-	for _, candidate := range []string{"skill.md", "SKILL.md"} {
+	for _, candidate := range []string{"skill.md", "SKILL.md", "README.md", "readme.md"} {
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue

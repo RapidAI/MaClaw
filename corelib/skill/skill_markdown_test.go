@@ -48,6 +48,53 @@ func TestImportMarkdownSkillDir_CreatesCraftToolWhenNoScripts(t *testing.T) {
 	}
 }
 
+func TestImportMarkdownSkillDir_AcceptsReadmeMarkdown(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "readme-tool")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "---\nname: README Tool\ndescription: Runs from README docs\n---\n\n# README Tool\n\n```bash\necho from-readme\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "README.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if entry.Name != "README Tool" {
+		t.Fatalf("Name = %q, want %q", entry.Name, "README Tool")
+	}
+	if len(entry.Steps) != 1 || entry.Steps[0].Action != "bash" {
+		t.Fatalf("unexpected steps: %+v", entry.Steps)
+	}
+	if got := entry.Steps[0].Params["command"]; got != "echo from-readme" {
+		t.Fatalf("command = %#v, want %q", got, "echo from-readme")
+	}
+}
+func TestImportMarkdownSkillDir_AcceptsLowercaseReadmeMarkdown(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "lower-readme-tool")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Lower README Tool\n\n```bash\necho lower-readme\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "readme.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(readme.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 || entry.Steps[0].Action != "bash" {
+		t.Fatalf("unexpected steps: %+v", entry.Steps)
+	}
+	if got := entry.Steps[0].Params["command"]; got != "echo lower-readme" {
+		t.Fatalf("command = %#v, want %q", got, "echo lower-readme")
+	}
+}
 func TestImportMarkdownSkillDir_AcceptsUppercaseSkillMarkdown(t *testing.T) {
 	root := t.TempDir()
 	skillDir := filepath.Join(root, "rapidocr")

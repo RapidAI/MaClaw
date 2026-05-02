@@ -38,7 +38,11 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 		resp.VoiceFileName = voiceName
 		resp.VoiceMimeType = voiceMime
 	} else {
-		log.Printf("[tts-auto] error: %v", err)
+		if err != nil {
+			log.Printf("[tts-auto] error: %v", err)
+		} else {
+			log.Printf("[tts-auto] no native voice payload for platform=%s", platform)
+		}
 		return
 	}
 	log.Printf("[tts-auto] attached voice: %s %d bytes", resp.VoiceFileName, len(resp.VoiceData))
@@ -47,7 +51,7 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 // isIMPlatform returns true if the platform is an IM channel (not desktop).
 func isIMPlatform(platform string) bool {
 	switch platform {
-	case "qqbot", "dingtalk", "telegram", "lansenger",
+	case "feishu", "qqbot", "dingtalk", "telegram", "lansenger",
 		"qqbot_local", "telegram_local", "weixin", "weixin_local", "lansenger_local":
 		return true
 	}
@@ -65,7 +69,7 @@ func shouldEmitDesktopTTSPlayback(platform string) bool {
 
 func selectTTSVoicePayload(platform string, ogg, wav []byte) ([]byte, string, string) {
 	switch platform {
-	case "feishu", "wecom":
+	case "wecom":
 		return nil, "", ""
 	case "weixin", "weixin_local":
 		if wav != nil {
@@ -75,7 +79,7 @@ func selectTTSVoicePayload(platform string, ogg, wav []byte) ([]byte, string, st
 		if wav != nil {
 			return wav, "voice.wav", "audio/wav"
 		}
-	case "telegram", "telegram_local", "dingtalk":
+	case "feishu", "telegram", "telegram_local", "dingtalk":
 		if ogg != nil {
 			return ogg, "voice.ogg", "audio/ogg"
 		}

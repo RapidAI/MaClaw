@@ -914,3 +914,27 @@ textarea { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px sol
 .notice.ok { color: var(--ok, #1f8f6a); background: rgba(31, 143, 106, 0.10); }
 .notice.info { color: var(--primary, #2c6fca); background: rgba(47, 128, 237, 0.10); }
 .notice.danger { color: var(--danger, #bf5648); background: rgba(199, 90, 74, 0.10); }
+
+.cloud-license-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 280px) 1fr;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.cloud-license-panel label {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+.cloud-license-panel strong { color: var(--text); }
+.cloud-license-panel span { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.cloud-license-controls { display: grid; gap: 10px; }
+.cloud-license-controls input[type="number"] { width: 160px; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.cloud-license-modules { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 900px) { .cloud-license-panel { grid-template-columns: 1fr; } }

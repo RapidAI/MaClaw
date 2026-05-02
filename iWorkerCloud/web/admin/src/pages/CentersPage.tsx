@@ -11,10 +11,6 @@ import {
   probeCenter,
   fetchCenterRuntimeSnapshot,
   getServiceReadiness,
-  listCenterTenants,
-  createCenterTenant,
-  updateCenterTenant,
-  deleteCenterTenant,
   type Center,
   type CenterManagement,
   type CenterIntegrationPatch,
@@ -22,10 +18,12 @@ import {
   type CenterServiceReadiness,
   type CenterProbeResult,
   type CenterRuntimeStatus,
-  type CenterTenant,
 } from '../api/centers';
 
 type IntegrationDraft = CenterIntegrationPatch;
+type ManualLicenseDraft = { days: string; modules: string[] };
+
+const licenseModuleOptions = ['compute', 'skill_market', 'upgrade', 'support', 'all'];
 const postureLabels: Record<string, string> = {
   ready: 'Ready',
   needs_setup: 'Needs setup',
@@ -111,6 +109,10 @@ const runtimeContinuityClass = (runtime?: CenterRuntimeStatus) => {
   return runtime.ok ? 'ready' : 'watch';
 };
 
+function createManualLicenseDraft(): ManualLicenseDraft {
+  return { days: '30', modules: ['compute'] };
+}
+
 function createDraft(center: Center): IntegrationDraft {
   return {
     base_url: center.base_url ?? '',
@@ -131,9 +133,8 @@ export function CentersPage() {
   const [readinessResult, setReadinessResult] = useState<Record<string, CenterServiceReadiness>>({});
   const [checkingReadiness, setCheckingReadiness] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
-  const [tenantLists, setTenantLists] = useState<Record<string, CenterTenant[]>>({});
-  const [loadingTenants, setLoadingTenants] = useState<Record<string, boolean>>({});
-  const [savingTenant, setSavingTenant] = useState<string | null>(null);
+  const [manualLicenseDrafts, setManualLicenseDrafts] = useState<Record<string, ManualLicenseDraft>>({});
+  const [licensing, setLicensing] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
 
   const refreshRuntimeSnapshots = async (items = centers) => {
@@ -173,6 +174,13 @@ export function CentersPage() {
         setCenters(nextCenters);
         setManagement(Object.fromEntries(nextItems.map(item => [item.center.id, item])));
         setDrafts(Object.fromEntries(nextCenters.map(center => [center.id, createDraft(center)])));
+        setManualLicenseDrafts(prev => {
+          const next = { ...prev };
+          for (const center of nextCenters) {
+            if (!next[center.id]) next[center.id] = createManualLicenseDraft();
+          }
+          return next;
+        });
         void refreshRuntimeSnapshots(nextCenters);
       })
       .catch(err => setError(err instanceof Error ? err.message : String(err)));
@@ -208,97 +216,36 @@ export function CentersPage() {
     }
   };
 
-  const handleConfirmManual = async (id: string) => {
-    const days = prompt('Days (0=long-term):', '30');
-    if (days === null) return;
-    await confirmManual(id, ['compute'], parseInt(days, 10) || 30);
-    load();
+  const patchManualLicenseDraft = (centerID: string, patch: Partial<ManualLicenseDraft>) => {
+    setManualLicenseDrafts(prev => ({
+      ...prev,
+      [centerID]: { ...(prev[centerID] ?? createManualLicenseDraft()), ...patch },
+    }));
   };
 
+  const toggleManualLicenseModule = (centerID: string, module: string) => {
+    const current = manualLicenseDrafts[centerID] ?? createManualLicenseDraft();
+    const modules = current.modules.includes(module)
+      ? current.modules.filter(item => item !== module)
+      : [...current.modules, module];
+    patchManualLicenseDraft(centerID, { modules: modules.length > 0 ? modules : ['compute'] });
+  };
 
-  const loadCenterTenants = async (center: Center) => {
-    setLoadingTenants(prev => ({ ...prev, [center.id]: true }));
+  const handleConfirmManual = async (center: Center) => {
+    const draft = manualLicenseDrafts[center.id] ?? createManualLicenseDraft();
+    const days = Number.parseInt(draft.days, 10);
+    setLicensing(center.id);
     setError('');
     try {
-      const response = await listCenterTenants(center.id);
-      setTenantLists(prev => ({ ...prev, [center.id]: response.tenants ?? [] }));
+      await confirmManual(center.id, draft.modules.length > 0 ? draft.modules : ['compute'], Number.isFinite(days) ? days : 30);
+      load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoadingTenants(prev => ({ ...prev, [center.id]: false }));
+      setLicensing(null);
     }
   };
 
-  const handleCreateTenant = async (center: Center) => {
-    const companyName = prompt('Company name:');
-    if (!companyName?.trim()) return;
-    const email = prompt('Admin email:');
-    if (!email?.trim()) return;
-    const legalPerson = prompt('Legal person:', '') ?? '';
-    const address = prompt('Company address:', '') ?? '';
-    const adminUsername = prompt('Tenant admin username:', 'admin');
-    if (!adminUsername?.trim()) return;
-    const adminPassword = prompt('Tenant admin password:');
-    if (!adminPassword) return;
-    setSavingTenant(center.id);
-    setError('');
-    try {
-      await createCenterTenant(center.id, {
-        company_name: companyName.trim(),
-        email: email.trim(),
-        legal_person: legalPerson.trim(),
-        address: address.trim(),
-        admin_username: adminUsername.trim(),
-        admin_password: adminPassword,
-        status: 'active',
-      });
-      await loadCenterTenants(center);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingTenant(null);
-    }
-  };
-
-  const handleEditTenant = async (center: Center, tenant: CenterTenant) => {
-    const companyName = prompt('Company name:', tenant.company_name);
-    if (!companyName?.trim()) return;
-    const email = prompt('Admin email:', tenant.email);
-    if (!email?.trim()) return;
-    const legalPerson = prompt('Legal person:', tenant.legal_person ?? '') ?? '';
-    const address = prompt('Company address:', tenant.address ?? '') ?? '';
-    const status = prompt('Status:', tenant.status || 'active') || tenant.status || 'active';
-    setSavingTenant(tenant.id);
-    setError('');
-    try {
-      await updateCenterTenant(center.id, tenant.id, {
-        company_name: companyName.trim(),
-        email: email.trim(),
-        legal_person: legalPerson.trim(),
-        address: address.trim(),
-        status: status.trim(),
-      });
-      await loadCenterTenants(center);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingTenant(null);
-    }
-  };
-
-  const handleDeleteTenant = async (center: Center, tenant: CenterTenant) => {
-    if (!confirm(`Delete tenant ${tenant.company_name}?`)) return;
-    setSavingTenant(tenant.id);
-    setError('');
-    try {
-      await deleteCenterTenant(center.id, tenant.id);
-      await loadCenterTenants(center);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingTenant(null);
-    }
-  };
   const handleCheckServiceReadiness = async (center: Center) => {
     setCheckingReadiness(center.id);
     setError('');
@@ -347,7 +294,7 @@ export function CentersPage() {
         await handleProbeCenter(center);
         return;
       case 'issue_license':
-        await handleConfirmManual(center.id);
+        await handleConfirmManual(center);
         return;
       default:
         setError('Use the service action buttons below.');
@@ -395,9 +342,7 @@ export function CentersPage() {
           const serviceReadiness = readinessResult[center.id];
           const runtime = probeRuntime[center.id] || managementItem?.runtime_status;
           const workload = managementItem?.iworker_readiness?.workload_summary;
-          const tenants = tenantLists[center.id];
-          const isLoadingTenants = loadingTenants[center.id] === true;
-          const tenantActionsDisabled = center.status !== 'active' || !center.base_url;
+          const manualLicenseDraft = manualLicenseDrafts[center.id] ?? createManualLicenseDraft();
           const isRuntimeRefreshing = runtimeRefreshing[center.id] === true;
           return (
             <div key={center.id} className="item cloud-center-card">
@@ -441,36 +386,14 @@ export function CentersPage() {
               <div className="cloud-tenant-panel">
                 <div className="cloud-tenant-head">
                   <div>
-                    <label>Remote tenant management</label>
-                    <strong>{center.supports_multi_tenant === true ? 'Multi-tenant enabled' : center.supports_multi_tenant === false ? 'Dedicated mode reported' : 'Center decides current mode'}</strong>
-                    <span>Cloud can manage tenants only after the Center is active, reachable, and set to multi-tenant mode.</span>
+                    <label>Tenant boundary</label>
+                    <strong>{center.supports_multi_tenant === true ? 'Multi-tenant Center reported' : center.supports_multi_tenant === false ? 'Dedicated Center reported' : 'Tenant mode not reported'}</strong>
+                    <span>Cloud records the Center-level service posture only. Company tenant creation, tenant administrators, and business workspace management stay inside iWorkerCenter.</span>
                   </div>
                   <div className="cloud-tenant-actions">
-                    <button className="btn-ghost" disabled={isLoadingTenants || tenantActionsDisabled} onClick={() => loadCenterTenants(center)}>
-                      {isLoadingTenants ? 'Loading...' : 'View tenants'}
-                    </button>
-                    <button className="btn-secondary" disabled={savingTenant === center.id || tenantActionsDisabled} onClick={() => handleCreateTenant(center)}>
-                      {savingTenant === center.id ? 'Adding...' : 'Add tenant'}
-                    </button>
+                    {typeof center.tenant_count === 'number' ? <span className="badge info">{center.tenant_count} tenant{center.tenant_count === 1 ? '' : 's'} reported</span> : <span className="badge warn">No tenant count</span>}
                   </div>
                 </div>
-                {tenantActionsDisabled && <div className="hint">Set Base URL and activate this Center before remote tenant operations. If Center is dedicated mode, it will reject the request.</div>}
-                {tenants && tenants.length === 0 && <div className="hint">No tenants returned by this iWorkerCenter.</div>}
-                {tenants && tenants.length > 0 && <div className="cloud-tenant-list">
-                  {tenants.map(tenant => (
-                    <div key={tenant.id} className="cloud-tenant-row">
-                      <div>
-                        <strong>{tenant.company_name}</strong>
-                        <span>{tenant.email || 'no admin email'} · {tenant.legal_person || 'no legal person'} · {tenant.status || 'active'}</span>
-                        {tenant.address ? <small>{tenant.address}</small> : null}
-                      </div>
-                      <div className="cloud-tenant-row-actions">
-                        <button className="btn-ghost" disabled={savingTenant === tenant.id} onClick={() => handleEditTenant(center, tenant)}>Edit</button>
-                        <button className="btn-danger" disabled={savingTenant === tenant.id} onClick={() => handleDeleteTenant(center, tenant)}>Delete</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>}
               </div>
 
               {managementItem && <div className={`cloud-posture-panel ${managementItem.ready ? 'ready' : 'watch'}`}>
@@ -589,6 +512,40 @@ export function CentersPage() {
                 </div>
               </div>}
 
+              <div className="cloud-license-panel">
+                <div>
+                  <label>Manual authorization</label>
+                  <strong>Issue modules without entering enterprise operations</strong>
+                  <span>Use this for small deployments or manual commercial approval. Authorization grants Cloud service modules only.</span>
+                </div>
+                <div className="cloud-license-controls">
+                  <label>
+                    <span>Days</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={manualLicenseDraft.days}
+                      onChange={event => patchManualLicenseDraft(center.id, { days: event.target.value })}
+                    />
+                  </label>
+                  <div className="cloud-license-modules">
+                    {licenseModuleOptions.map(module => (
+                      <label key={module} className="module-check">
+                        <input
+                          type="checkbox"
+                          checked={manualLicenseDraft.modules.includes(module)}
+                          onChange={() => toggleManualLicenseModule(center.id, module)}
+                        />
+                        {module}
+                      </label>
+                    ))}
+                  </div>
+                  <button className="btn-secondary" disabled={licensing === center.id} onClick={() => handleConfirmManual(center)}>
+                    {licensing === center.id ? 'Issuing...' : 'Issue manual authorization'}
+                  </button>
+                </div>
+              </div>
+
               <div className="actions">
                 <button className="btn-primary" disabled={saving === center.id} onClick={() => handleSaveIntegration(center)}>
                   {saving === center.id ? 'Saving...' : 'Save integration'}
@@ -614,10 +571,7 @@ export function CentersPage() {
                 >
                   {checkingReadiness === center.id ? 'Checking...' : 'Check service gate'}
                 </button>
-                {center.status === 'pending' && <>
-                  <button className="btn-secondary" onClick={() => { confirmTrial(center.id).then(load); }}>{t('centers.confirmTrial')}</button>
-                  <button className="btn-secondary" onClick={() => handleConfirmManual(center.id)}>{t('centers.confirmManual')}</button>
-                </>}
+                {center.status === 'pending' && <button className="btn-secondary" onClick={() => { confirmTrial(center.id).then(load); }}>{t('centers.confirmTrial')}</button>}
                 {center.status === 'active' && <button className="btn-danger" onClick={() => { disableCenter(center.id).then(load); }}>{t('centers.disable')}</button>}
                 {center.status === 'disabled' && <button className="btn-secondary" onClick={() => { enableCenter(center.id).then(load); }}>{t('centers.enable')}</button>}
                 <button className="btn-danger" onClick={() => handleDelete(center.id)}>{t('centers.delete')}</button>

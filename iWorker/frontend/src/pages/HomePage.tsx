@@ -150,11 +150,11 @@ const needsHumanIntervention = (push: CenterGoalPush) => {
   return push.recommendedAction === 'ask_human' || kind === 'review' || kind === 'blocked' || ['human', 'manual', 'approval', 'approve', 'missing', 'clarify', 'blocked'].some((token) => combined.includes(token));
 };
 
-const workStatusCopy: Record<WorkStatusKind, string> = {
-  active: 'In progress',
-  done: 'Completed',
-  review: 'Needs review',
-  blocked: 'Blocked',
+const workStatusCopyKey: Record<WorkStatusKind, string> = {
+  active: 'home.active',
+  done: 'home.completed',
+  review: 'home.review',
+  blocked: 'home.blocked',
 };
 const formatRuntimeName = (instance: CenterAgentInstance) => {
   const role = instance.role || 'worker';
@@ -459,7 +459,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const centerSyncIssue = centerEnabled && Boolean(centerHealthError || agentInstancesError || goalPushError || workerMemoryStatsError || installedToolsError);
   const hasCachedContinuity = cachedAgentInstances.length > 0 || cachedGoalPushes.length > 0 || Boolean(workerMemoryStats?.stale || installedTools.stale);
   const showContinuityNotice = !centerEnabled || centerSyncIssue || hasCachedContinuity;
-  const continuityTitle = !centerEnabled ? 'Local continuity active' : centerSyncIssue ? 'Center reconnecting' : 'Cached continuity active';
+  const continuityTitle = !centerEnabled ? t('home.localContinuity', 'Local continuity active') : centerSyncIssue ? t('home.centerReconnecting', 'Center reconnecting') : t('home.cachedContinuity', 'Cached continuity active');
   const continuityDetail = !centerEnabled
     ? 'This iWorker can keep local conversations, drafts, attachments, and task history running without Cloud or Center.'
     : centerSyncIssue
@@ -656,9 +656,9 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       <section className="iw-workbuddy-stage" aria-label="iWorker workspace">
         <header className="iw-stage-topline">
           <div>
-            <span className="iw-kicker">iWorker workspace</span>
-            <h2>Digital coworker workbench</h2>
-            <p>Work from Center-assigned tasks, human handoffs, and local instructions while keeping status, memory, and tools visible.</p>
+            <span className="iw-kicker">{t('home.workspaceKicker', 'iWorker workspace')}</span>
+            <h2 aria-label="Digital coworker workbench">{t('home.workbenchTitle', 'Digital coworker workbench')}</h2>
+            <p>{t('home.workbenchDesc', 'Work from Center-assigned tasks, human handoffs, and local instructions while keeping status, memory, and tools visible.')}</p>
           </div>
           <div className="iw-stage-snapshot" aria-label="runtime snapshot">
             <span>{centerSnapshotState}</span>
@@ -668,11 +668,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
         </header>
 
         <section className="iw-ops-strip" aria-label="Operating summary">
-          <div><span>Current</span><strong>{currentWorkTitle}</strong></div>
-          <div><span>Inbox</span><strong>{pendingPushes} push{pendingPushes === 1 ? '' : 'es'}</strong></div>
-          <div><span>Availability</span><strong>{availabilityState}</strong></div>
+          <div><span>{t('home.current', 'Current')}</span><strong>{currentWorkTitle}</strong></div>
+          <div><span>{t('home.inbox', 'Inbox')}</span><strong>{pendingPushes} push{pendingPushes === 1 ? '' : 'es'}</strong></div>
+          <div><span>{t('home.availability', 'Availability')}</span><strong>{availabilityState}</strong></div>
           <div><span>{t('home.memory', 'Memory')}</span><strong>{workerMemoryStats?.total ?? 0} items</strong></div>
-          <div><span>Tools</span><strong>{toolSummaryLabel}</strong></div>
+          <div><span>{t('home.tools', 'Tools')}</span><strong>{toolSummaryLabel}</strong></div>
         </section>
 
         {showContinuityNotice ? (
@@ -691,19 +691,19 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
         {interventionPush ? (
           <section className={"iw-intervention-banner " + (isCachedPush(interventionPush) ? 'is-cached' : '')} aria-label="Human input needed" role="status">
             <div className="iw-intervention-main">
-              <span>{isCachedPush(interventionPush) ? 'Cached notice' : 'Human input needed'}</span>
+              <span>{isCachedPush(interventionPush) ? t('home.cachedNotice', 'Cached notice') : t('home.humanInputNeeded', 'Human input needed')}</span>
               <strong>{interventionPush.title || interventionPush.taskId}</strong>
-              <p>{isCachedPush(interventionPush) ? 'This Center push is from a cached snapshot. Reconnect iWorkerCenter before resuming, blocking, or auto-running it.' : (interventionPush.reason || interventionPush.status || 'The autonomous run needs a human decision.') + ' / ' + formatPushAge(interventionPush.ageSeconds)}</p>
+              <p>{isCachedPush(interventionPush) ? t('home.cachedPushDetail', 'This Center push is from a cached snapshot. Reconnect iWorkerCenter before resuming, blocking, or auto-running it.') : (interventionPush.reason || interventionPush.status || 'The autonomous run needs a human decision.') + ' / ' + formatPushAge(interventionPush.ageSeconds)}</p>
             </div>
             <div className="iw-intervention-meta">
               <span>{interventionPush.toRoleCode || interventionPush.toColleagueId || 'assigned iWorker'}</span>
               <span>{runtimeSnapshotSourceCopy(interventionPush.source, interventionPush.stale)}</span>
             </div>
             <div className="iw-intervention-actions">
-              <button type="button" onClick={() => onOpenGoalPushTask(interventionPush)}>Open task</button>
-              <button type="button" onClick={() => handleHumanHandoff(interventionPush)}>Take over</button>
-              <button type="button" disabled={!interventionPushActionable || goalPushAckingId === interventionPush.eventId} onClick={() => { void onAckGoalPush(interventionPush.eventId || '', 'resumed'); }}>Resume</button>
-              <button type="button" disabled={!interventionPushActionable || goalPushAckingId === interventionPush.eventId} onClick={() => { void onAckGoalPush(interventionPush.eventId || '', 'blocked'); }}>Block</button>
+              <button type="button" onClick={() => onOpenGoalPushTask(interventionPush)}>{t('home.openTask', 'Open task')}</button>
+              <button type="button" onClick={() => handleHumanHandoff(interventionPush)}>{t('home.takeOver', 'Take over')}</button>
+              <button type="button" disabled={!interventionPushActionable || goalPushAckingId === interventionPush.eventId} onClick={() => { void onAckGoalPush(interventionPush.eventId || '', 'resumed'); }}>{t('home.resume', 'Resume')}</button>
+              <button type="button" disabled={!interventionPushActionable || goalPushAckingId === interventionPush.eventId} onClick={() => { void onAckGoalPush(interventionPush.eventId || '', 'blocked'); }}>{t('home.block', 'Block')}</button>
               <button type="button" onClick={() => { void onRefreshGoalPushes(); }} disabled={goalPushLoading}>{goalPushLoading ? t('home.syncing', 'Syncing') : t('home.refresh', 'Refresh')}</button>
             </div>
           </section>
@@ -718,7 +718,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
               {primaryPush?.eventId ? (
                 <>
                   <button type="button" disabled={primaryRunDisabled} onClick={() => { primaryPushOpensTask ? onOpenGoalPushTask(primaryPush) : void onAutoHandleGoalPush(primaryPush.eventId || ''); }}>{primaryActionLabel}</button>
-                  <button type="button" disabled={goalPushAckingId === primaryPush.eventId} onClick={() => handleHumanHandoff(primaryPush)}>Ask human</button>
+                  <button type="button" disabled={goalPushAckingId === primaryPush.eventId} onClick={() => handleHumanHandoff(primaryPush)}>{t('home.askHuman', 'Ask human')}</button>
                 </>
               ) : (
                 <button type="button" onClick={() => { void onRefreshGoalPushes(); }} disabled={goalPushLoading}>{goalPushLoading ? 'Syncing' : primaryActionLabel}</button>
@@ -731,8 +731,8 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <strong>{humanQueueLabel}</strong>
             <p>{laneCopy.human.detail}</p>
             <div className="iw-command-actions">
-              <button type="button" onClick={() => handleHumanHandoff()}>Start handoff</button>
-              <button type="button" onClick={() => handleComposerTool('mention')}>Mention</button>
+              <button type="button" onClick={() => handleHumanHandoff()}>{t('home.startHandoff', 'Start handoff')}</button>
+              <button type="button" onClick={() => handleComposerTool('mention')}>{t('home.mention', 'Mention')}</button>
             </div>
           </article>
 
@@ -767,7 +767,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
                 <span className={`iw-work-status-dot is-${item.kind}`} aria-hidden="true" />
                 <span className="iw-work-status-copy">
                   <strong>{item.title}</strong>
-                  <small>{workStatusCopy[item.kind]} / {item.owner} / {item.updatedAt}</small>
+                  <small>{t(workStatusCopyKey[item.kind])} / {item.owner} / {item.updatedAt}</small>
                 </span>
                 <em>{item.source}</em>
               </button>
@@ -950,7 +950,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <article>
               <span>{t('home.people', 'People')}</span>
               <strong>{t('home.callableSkill', 'Callable skill')}</strong>
-              <p>Human staff remain available as skills without becoming the control center.</p>
+              <p>{t('home.peopleModelDetail', 'Human staff remain available as skills without becoming the control center.')}</p>
             </article>
           </div>
         </section>
@@ -1025,9 +1025,9 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
                 {push.eventId ? (
                   <div className="iw-goal-actions">
                     <button type="button" onClick={() => onOpenGoalPushTask(push)}>Open task</button>
-                    <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push) || needsHumanIntervention(push)} onClick={() => { void onAutoHandleGoalPush(push.eventId || ''); }}>Run</button>
-                    <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push)} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>Resume</button>
-                    <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push)} onClick={() => { void onAckGoalPush(push.eventId || '', 'blocked'); }}>Block</button>
+                    <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push) || needsHumanIntervention(push)} onClick={() => { void onAutoHandleGoalPush(push.eventId || ''); }}>{t('home.run', 'Run')}</button>
+                    <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push)} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>{t('home.resume', 'Resume')}</button>
+                    <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push)} onClick={() => { void onAckGoalPush(push.eventId || '', 'blocked'); }}>{t('home.block', 'Block')}</button>
                   </div>
                 ) : null}
               </article>

@@ -179,9 +179,6 @@ export function enableCenter(id: string): Promise<void> {
 export function deleteCenter(id: string): Promise<void> {
   return apiDelete(`/api/admin/centers/${id}`);
 }
-
-
-
 export interface CenterTenant {
   id: string;
   company_name: string;

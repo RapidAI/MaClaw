@@ -213,6 +213,30 @@ func TestValidateSkillPortabilityAcceptsReadmeDocumentation(t *testing.T) {
 	}
 }
 
+func TestValidateSkillPortabilityAcceptsLowercaseReadmeDocumentation(t *testing.T) {
+	dir := t.TempDir()
+	absPath := filepath.ToSlash(filepath.Join(dir, "scripts", "run.py"))
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# readme skill\n\n```bash\npython " + absPath + "\n```\n"
+	if err := os.WriteFile(filepath.Join(dir, "readme.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	var found bool
+	for _, issue := range report.Issues {
+		if issue.File == "readme.md" && issue.Category == "missing_basedir" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("readme.md portability issue not reported with readme.md file name: %+v", report.Issues)
+	}
+}
 func TestAutoFixPortabilityIgnoresJSONDefinition(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "skill.json"), []byte(`{"name":"json-portability"}`), 0o644); err != nil {
@@ -227,5 +251,68 @@ func TestAutoFixPortabilityIgnoresJSONDefinition(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "skill.json.bak")); !os.IsNotExist(err) {
 		t.Fatalf("AutoFixPortability should not back up skill.json; stat err=%v", err)
+	}
+}
+
+func TestAutoFixPortabilityPreservesYMLDefinitionFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absScript := filepath.ToSlash(filepath.Join(dir, "scripts", "run.py"))
+	data := []byte("name: yml-portability\ndescription: A YML skill with a local script path.\ntriggers:\n  - yml-portability\nsteps:\n  - action: run\n    params:\n      command: python " + absScript + "\n")
+	ymlPath := filepath.Join(dir, "skill.yml")
+	if err := os.WriteFile(ymlPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := AutoFixPortability(dir)
+	if err != nil {
+		t.Fatalf("AutoFixPortability() error = %v", err)
+	}
+	if len(changes) == 0 {
+		t.Fatal("AutoFixPortability() made no changes for skill.yml")
+	}
+	for _, change := range changes {
+		if change.File != "skill.yml" {
+			t.Fatalf("change file = %q, want skill.yml (change=%+v)", change.File, change)
+		}
+	}
+	fixed := mustReadFile(t, ymlPath)
+	if !strings.Contains(string(fixed), "{baseDir}/scripts/run.py") {
+		t.Fatalf("skill.yml was not fixed with baseDir: %s", fixed)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "skill.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("AutoFixPortability should not create skill.yaml for skill.yml definitions; stat err=%v", err)
+	}
+	if _, err := os.Stat(ymlPath + ".bak"); err != nil {
+		t.Fatalf("skill.yml backup missing: %v", err)
+	}
+}
+
+func TestValidateSkillPortabilityReportsYMLMetadataFile(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("name: yml-metadata\ndescription: short\nsteps:\n  - action: bash\n    params:\n      command: echo ok\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	var found bool
+	for _, issue := range report.Issues {
+		if issue.File == "skill.yml" && issue.Category == "missing_platforms" {
+			found = true
+		}
+		if issue.File == "skill.yaml" {
+			t.Fatalf("issue should report actual skill.yml file, got %+v", issue)
+		}
+	}
+	if !found {
+		t.Fatalf("missing_platforms was not reported for skill.yml: %+v", report.Issues)
 	}
 }

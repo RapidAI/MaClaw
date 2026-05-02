@@ -149,7 +149,7 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 			continue
 		}
 		subDir := filepath.Join(dir, entry.Name())
-		for _, name := range []string{"skill.yaml", "skill.yml", "skill.md", "SKILL.md", "README.md"} {
+		for _, name := range []string{"skill.yaml", "skill.yml", "skill.md", "SKILL.md", "README.md", "readme.md"} {
 			if _, err := os.Stat(filepath.Join(subDir, name)); err == nil {
 				count++
 				break
@@ -157,7 +157,7 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 		}
 	}
 	if count == 0 {
-		return 0, fmt.Errorf("no valid skill subdirectories found (need skill.yaml, skill.yml, skill.md, SKILL.md, or README.md)")
+		return 0, fmt.Errorf("no valid skill subdirectories found (need skill.yaml, skill.yml, skill.md, SKILL.md, README.md, or readme.md)")
 	}
 	return count, nil
 }

@@ -11,7 +11,7 @@ func TestIsIMPlatformIncludesLocalGateways(t *testing.T) {
 }
 
 func TestIsIMPlatformExcludesUnsupportedVoiceGateways(t *testing.T) {
-	for _, platform := range []string{"feishu", "wecom"} {
+	for _, platform := range []string{"wecom"} {
 		if isIMPlatform(platform) {
 			t.Fatalf("isIMPlatform(%q) = true, want false for auto voice", platform)
 		}
@@ -50,6 +50,11 @@ func TestSelectTTSVoicePayloadIsPlatformAware(t *testing.T) {
 	data, name, mime = selectTTSVoicePayload("wecom", ogg, wav)
 	if data != nil || name != "" || mime != "" {
 		t.Fatalf("wecom payload = %q %q %q, want no native voice payload", data, name, mime)
+	}
+
+	data, name, mime = selectTTSVoicePayload("feishu", ogg, wav)
+	if string(data) != "ogg" || name != "voice.ogg" || mime != "audio/ogg" {
+		t.Fatalf("feishu payload = %q %q %q, want ogg voice.ogg audio/ogg", data, name, mime)
 	}
 }
 

@@ -574,7 +574,7 @@ func (e *SkillExecutor) readSkillBody(entry corelib.NLSkillEntry) string {
 }
 
 func readSkillMarkdownBody(skillDir, skillName string) string {
-	for _, name := range []string{"skill.md", "SKILL.md", "README.md"} {
+	for _, name := range []string{"skill.md", "SKILL.md", "README.md", "readme.md"} {
 		mdPath := filepath.Join(skillDir, name)
 		data, err := os.ReadFile(mdPath)
 		if err == nil {

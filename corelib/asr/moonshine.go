@@ -1,10 +1,10 @@
-// corelib/asr/moonshine.go — Pure Go Moonshine ASR model (GGUF, mmap-backed).
+// corelib/asr/moonshine.go - Pure Go Moonshine ASR model (GGUF, mmap-backed).
 //
 // Encoder-decoder transformer with RoPE, ported from RapidSpeech.cpp.
-// Architecture: Audio → Conv frontend → Encoder (LayerNorm + RoPE + GELU FFN)
+// Architecture: Audio -> Conv frontend -> Encoder (LayerNorm + RoPE + GELU FFN)
 //
-//	→ Decoder (LayerNorm + RoPE + SwiGLU FFN + cross-attn)
-//	→ Token logits → text
+//	-> Decoder (LayerNorm + RoPE + SwiGLU FFN + cross-attn)
+//	-> Token logits -> text
 //
 // Memory optimization: the GGUF file is memory-mapped. Tensors stored as Q8_0
 // in the GGUF are used via zero-copy (Q8Tensor.Data points into the mmap region).
@@ -17,6 +17,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/gguf"
@@ -86,7 +87,7 @@ type weights struct {
 	encFinalNormW  []float32
 	decLayers      []decoderLayer
 	decFinalNormW  []float32
-	tokenEmb       []float32        // [vocabSize, dim] — keep f32 for embedding lookup
+	tokenEmb       []float32        // [vocabSize, dim] - keep f32 for embedding lookup
 	lmHeadW        *tensor.Q8Tensor // [vocabSize, dim] quantized; nil = weight tying
 	lmHeadF32      []float32        // fallback when weight-tied (points to tokenEmb)
 }
@@ -109,6 +110,34 @@ func defaultMoonshinePartialRotaryFactor(encoderDim, decoderDim int) float32 {
 		return 0.62
 	}
 	return 0.9
+}
+
+func useMoonshineF32LinearWeights() bool {
+	return strings.EqualFold(os.Getenv("MACLAW_ASR_PRECISION"), "f32")
+}
+
+func (m *MoonshineModel) activeVocabSize() int {
+	limit := m.hp.VocabSize
+	if m.w.lmHeadW != nil && m.w.lmHeadW.Rows > 0 && m.w.lmHeadW.Rows < limit {
+		limit = m.w.lmHeadW.Rows
+	} else if m.w.lmHeadF32 != nil && m.hp.DecoderDim > 0 {
+		rows := len(m.w.lmHeadF32) / m.hp.DecoderDim
+		if rows > 0 && rows < limit {
+			limit = rows
+		}
+	}
+
+	n := limit
+	if len(m.vocab) > 0 && len(m.vocab) < n {
+		n = len(m.vocab)
+	}
+	if m.hp.EOSID >= n && m.hp.EOSID < limit {
+		n = m.hp.EOSID + 1
+	}
+	if m.hp.BOSID >= n && m.hp.BOSID < limit {
+		n = m.hp.BOSID + 1
+	}
+	return n
 }
 
 // NewMoonshine loads a Moonshine model from a GGUF file using memory mapping.
@@ -158,6 +187,8 @@ func (m *MoonshineModel) Close() {
 }
 
 func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
+	useF32Linear := useMoonshineF32LinearWeights()
+
 	// getF32 reads a tensor as float32 from the mmap region.
 	getF32 := func(name string) ([]float32, error) {
 		d, err := mf.TensorF32("model." + name)
@@ -170,6 +201,12 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 		d, _ := getF32(name)
 		return d
 	}
+	linearFromF32 := func(data []float32, rows, cols int) linearWeight {
+		if useF32Linear {
+			return linearWeight{f32: data, rows: rows}
+		}
+		return linearWeight{q8: tensor.QuantizeToQ8(data, rows, cols), rows: rows}
+	}
 	getLinear := func(name string, rows, cols int) linearWeight {
 		for _, prefix := range []string{"model.", ""} {
 			_, ti, err := mf.TensorRawBytes(prefix + name)
@@ -179,7 +216,10 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 			if ti.Type == gguf.TypeF32 || ti.Type == gguf.TypeF16 {
 				d, err := mf.TensorF32(prefix + name)
 				if err == nil && len(d) > 0 {
-					return linearWeight{f32: d, rows: rows}
+					if useF32Linear {
+						return linearWeight{f32: d, rows: rows}
+					}
+					return linearWeight{q8: tensor.QuantizeToQ8(d, rows, cols), rows: rows}
 				}
 			}
 			if ti.Type == gguf.TypeQ8_0 {
@@ -193,7 +233,10 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 		if err != nil || len(d) == 0 {
 			return linearWeight{}
 		}
-		return linearWeight{f32: d, rows: rows}
+		if useF32Linear {
+			return linearWeight{f32: d, rows: rows}
+		}
+		return linearWeight{q8: tensor.QuantizeToQ8(d, rows, cols), rows: rows}
 	}
 
 	w := &m.w
@@ -226,11 +269,11 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 			continue // skip layer if weights missing
 		}
 		ffDim := len(ffUpF32) / dim
-		l.ffUpW = linearWeight{f32: ffUpF32, rows: ffDim}
+		l.ffUpW = linearFromF32(ffUpF32, ffDim, dim)
 		l.ffUpB = tryGetF32(p + "mlp.fc1.bias")
 		ffDownF32, _ := getF32(p + "mlp.fc2.weight")
 		if len(ffDownF32) > 0 {
-			l.ffDownW = linearWeight{f32: ffDownF32, rows: dim}
+			l.ffDownW = linearFromF32(ffDownF32, dim, ffDim)
 		}
 		l.ffDownB = tryGetF32(p + "mlp.fc2.bias")
 		l.ffNormW, _ = getF32(p + "post_attention_layernorm.weight")
@@ -257,11 +300,11 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 			continue
 		}
 		ffDim2x := len(ffUpF32) / ddim
-		l.ffUpW = linearWeight{f32: ffUpF32, rows: ffDim2x}
+		l.ffUpW = linearFromF32(ffUpF32, ffDim2x, ddim)
 		l.ffUpB = tryGetF32(p + "mlp.fc1.bias")
 		ffDownF32, _ := getF32(p + "mlp.fc2.weight")
 		if len(ffDownF32) > 0 {
-			l.ffDownW = linearWeight{f32: ffDownF32, rows: ddim}
+			l.ffDownW = linearFromF32(ffDownF32, ddim, ffDim2x/2)
 		}
 		l.ffDownB = tryGetF32(p + "mlp.fc2.bias")
 		l.ffNormW, _ = getF32(p + "final_layernorm.weight")
@@ -275,10 +318,13 @@ func (m *MoonshineModel) loadWeights(mf *gguf.MmapFile) error {
 		return fmt.Errorf("asr: token embedding: %w", err)
 	}
 	lmHeadF32 := tryGetF32("lm_head.weight")
-	if lmHeadF32 != nil {
-		w.lmHeadW = tensor.QuantizeToQ8(lmHeadF32, m.hp.VocabSize, ddim)
+	if lmHeadF32 != nil && !useF32Linear {
+		lmHeadRows := len(lmHeadF32) / ddim
+		w.lmHeadW = tensor.QuantizeToQ8(lmHeadF32, lmHeadRows, ddim)
+	} else if lmHeadF32 != nil {
+		w.lmHeadF32 = lmHeadF32
 	} else {
-		w.lmHeadF32 = w.tokenEmb // weight tying — keep f32
+		w.lmHeadF32 = w.tokenEmb // weight tying - keep f32; Q8 loses close Chinese-name logits
 	}
 	return nil
 }
@@ -317,7 +363,7 @@ func (m *MoonshineModel) Transcribe(pcm []float32) (string, error) {
 }
 
 // LoadWAV reads a WAV file and returns 16kHz mono float32 PCM normalized to [-1,1].
-// Handles resampling and stereo→mono conversion.
+// Handles resampling and stereo to mono conversion.
 func LoadWAV(path string) ([]float32, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

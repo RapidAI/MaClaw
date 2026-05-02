@@ -121,18 +121,19 @@ func (m *MoonshineModel) decode(encOut []float32, encFrames int) ([]int, error) 
 	ffDim2x := m.w.decLayers[0].ffUpW.Rows()
 	bufs := newDecoderBufs(dim, ffDim2x, hp.VocabSize, hp.MaxSeqLen, encFrames, hp)
 
+	vocabN := m.activeVocabSize()
 	tokens := []int{hp.BOSID}
 	for step := 0; step < hp.MaxSeqLen; step++ {
-		m.decoderStep(cache, bufs, step, tokens[len(tokens)-1], encFrames)
+		m.decoderStep(cache, bufs, step, tokens[len(tokens)-1], encFrames, vocabN)
 
 		bufs.logits[0] = float32(math.Inf(-1))
-		if hp.BOSID >= 0 && hp.BOSID < len(bufs.logits) {
+		if hp.BOSID >= 0 && hp.BOSID < vocabN {
 			bufs.logits[hp.BOSID] = float32(math.Inf(-1))
 		}
 
 		bestID := 0
 		bestVal := bufs.logits[0]
-		for i := 1; i < len(bufs.logits); i++ {
+		for i := 1; i < vocabN; i++ {
 			if bufs.logits[i] > bestVal {
 				bestVal = bufs.logits[i]
 				bestID = i
@@ -146,7 +147,7 @@ func (m *MoonshineModel) decode(encOut []float32, encFrames int) ([]int, error) 
 	return tokens, nil
 }
 
-func (m *MoonshineModel) decoderStep(cache *kvCache, b *decoderBufs, step, curToken, encFrames int) {
+func (m *MoonshineModel) decoderStep(cache *kvCache, b *decoderBufs, step, curToken, encFrames, vocabN int) {
 	hp := m.hp
 	dim := hp.DecoderDim
 	nHeads := hp.DecoderHeads
@@ -154,7 +155,8 @@ func (m *MoonshineModel) decoderStep(cache *kvCache, b *decoderBufs, step, curTo
 	rotaryDim := b.rotaryDim
 
 	x := b.x
-	if curToken >= 0 && curToken < hp.VocabSize {
+	tokenRows := len(m.w.tokenEmb) / dim
+	if curToken >= 0 && curToken < tokenRows {
 		copy(x, m.w.tokenEmb[curToken*dim:(curToken+1)*dim])
 	} else {
 		for i := range x {
@@ -217,9 +219,9 @@ func (m *MoonshineModel) decoderStep(cache *kvCache, b *decoderBufs, step, curTo
 
 	tensor.LayerNorm(x, x, m.w.decFinalNormW, 1e-5)
 	if m.w.lmHeadW != nil {
-		tensor.MatMulQ8(b.logits, x, m.w.lmHeadW, 1, hp.VocabSize, dim)
+		tensor.MatMulQ8(b.logits[:vocabN], x, m.w.lmHeadW, 1, vocabN, dim)
 	} else {
-		tensor.MatMul(b.logits, x, m.w.lmHeadF32, 1, hp.VocabSize, dim)
+		tensor.MatMul(b.logits[:vocabN], x, m.w.lmHeadF32, 1, vocabN, dim)
 	}
 }
 
