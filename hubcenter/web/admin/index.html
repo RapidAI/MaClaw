@@ -1509,6 +1509,40 @@ if (token()) restoreTab();
         };
       }).sort(function(a, b){ return a.node_id.localeCompare(b.node_id) || a.base_url.localeCompare(b.base_url); });
     }
+    function normalizeHAFQDN(value){
+      const raw = String(value || '').replace(/\/+$/, '').trim();
+      if(!raw) return '';
+      try {
+        const parsed = new URL(raw.indexOf('://') >= 0 ? raw : 'https://' + raw);
+        return parsed.hostname.replace(/\.$/, '').toLowerCase();
+      } catch (_) {
+        return raw.replace(/^https?:\/\//i, '').split('/')[0].split(':')[0].replace(/\.$/, '').toLowerCase();
+      }
+    }
+    function buildHANodesFromPeers(cfg){
+      const data = cfg || {};
+      const selfFQDN = normalizeHAFQDN(data.self_fqdn || data.suggested_self_fqdn || data.advertise_url);
+      const nodes = [];
+      if(selfFQDN || data.node_id || data.node_name || data.advertise_url){
+        nodes.push({
+          enabled: true,
+          fqdn: selfFQDN,
+          node_id: String(data.node_id || '').trim(),
+          node_name: String(data.node_name || '').trim(),
+          advertise_url: String(data.advertise_url || '').replace(/\/+$/, '').trim()
+        });
+      }
+      normalizedPeerSummary(data.peers).forEach(function(peer){
+        nodes.push({
+          enabled: !!peer.enabled,
+          fqdn: normalizeHAFQDN(peer.base_url),
+          node_id: peer.node_id,
+          node_name: peer.name,
+          advertise_url: peer.base_url
+        });
+      });
+      return nodes.filter(function(node){ return node.enabled || node.fqdn || node.node_id || node.node_name || node.advertise_url; });
+    }
     function renderHAConfigReadiness(cfg){
       const el = document.getElementById('haConfigReadinessHint');
       const card = document.getElementById('haConfigReadinessBadge');
@@ -1591,6 +1625,7 @@ if (token()) restoreTab();
       if(!template) return null;
       return {
         enabled: true,
+        self_fqdn: normalizeHAFQDN(template.advertise_url),
         node_id: template.node_id,
         node_name: haNodeDisplayName(template.node_id),
         advertise_url: template.advertise_url,
@@ -1927,6 +1962,7 @@ if (token()) restoreTab();
       const current = haConfigCache || {};
       const merged = {
         enabled: true,
+        self_fqdn: normalizeHAFQDN(template.advertise_url),
         node_id: template.node_id,
         node_name: haNodeDisplayName(template.node_id),
         advertise_url: template.advertise_url,
@@ -1988,6 +2024,7 @@ if (token()) restoreTab();
       }).filter(function(peer){ return peer.enabled || peer.node_id || peer.name || peer.base_url; });
       const payload = {
         enabled: !!document.getElementById('haEnabled').checked,
+        self_fqdn: normalizeHAFQDN(document.getElementById('haAdvertiseURL').value.trim() || (haConfigCache && (haConfigCache.self_fqdn || haConfigCache.suggested_self_fqdn))),
         node_id: document.getElementById('haNodeID').value.trim(),
         node_name: document.getElementById('haNodeName').value.trim(),
         advertise_url: document.getElementById('haAdvertiseURL').value.trim(),
@@ -1997,6 +2034,7 @@ if (token()) restoreTab();
         heartbeat_sync_min_interval_seconds: Number(document.getElementById('haHeartbeatSyncMinIntervalSeconds').value || '0'),
         peers: peerNodes
       };
+      payload.nodes = buildHANodesFromPeers(payload);
       if(payload.enabled){
         const enabledPeers = peerNodes.filter(function(peer){ return peer.enabled && peer.node_id && peer.base_url; });
         if(!payload.node_id || !payload.advertise_url || !payload.cluster_secret || !enabledPeers.length){

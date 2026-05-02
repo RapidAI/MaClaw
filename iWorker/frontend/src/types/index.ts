@@ -127,6 +127,9 @@ export type WorkerMemoryStats = {
   byScope: Record<string, number>;
   byCategory: Record<string, number>;
   visibleScopes: string[];
+  source?: string;
+  cachedAt?: string;
+  stale?: boolean;
 };
 
 export type WorkerMemoryEntry = {
@@ -228,6 +231,44 @@ export type HistoryTaskItem = TaskItem & {
 };
 
 
+export type CenterRuntimeSkillEntry = {
+  name: string;
+  description: string;
+  triggers: string[];
+};
+
+export type CenterRuntimeCapability = {
+  capabilityId: string;
+  name: string;
+  source: string;
+  version: string;
+  riskLevel: string;
+  entry: CenterRuntimeSkillEntry;
+};
+
+export type CenterMCPServer = {
+  id: string;
+  name: string;
+  description: string;
+  serverType: string;
+  endpoint: string;
+  command?: string;
+  args: string[];
+  envKeys: string[];
+  departmentId: string;
+  riskLevel: string;
+  status: string;
+  installedAt: string;
+};
+
+export type CenterInstalledTools = {
+  skills: CenterRuntimeCapability[];
+  mcpServers: CenterMCPServer[];
+  source: string;
+  cachedAt: string;
+  stale: boolean;
+};
+
 export type CenterGoalPush = {
   eventId?: string;
   taskId: string;
@@ -241,6 +282,9 @@ export type CenterGoalPush = {
   executorStatus?: string;
   executorHeartbeatAgeSeconds?: number;
   createdAt: string;
+  source?: string;
+  cachedAt?: string;
+  stale?: boolean;
 };
 export type CenterWorkStatusSummary = {
   currentTask?: string;
@@ -269,6 +313,9 @@ export type CenterAgentInstance = {
   lastHeartbeatAt: string;
   heartbeatAgeSeconds: number;
   effectiveStatus: string;
+  source?: string;
+  cachedAt?: string;
+  stale?: boolean;
 };
 
 export type GoalWatchAutoHandleStatus = {

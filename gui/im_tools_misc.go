@@ -4,14 +4,14 @@ package main
 // LLM provider switch, scheduled tasks, AgentNet, audit log, web search/fetch.
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/remote"
-	"github.com/RapidAI/CodeClaw/corelib/config"
-	"github.com/RapidAI/CodeClaw/corelib/scheduler"
-	"github.com/RapidAI/CodeClaw/corelib/security"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"log"
 	"net/http"
 	"os"
@@ -504,6 +504,11 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		}
 		entry.SkillDir = finalDir
 	}
+
+	// Normalize downloaded skills before registration: repair portable paths,
+	// remove packaging-only backups, and reload the disk definition so runtime
+	// uses the improved version rather than the raw download snapshot.
+	entry = h.app.normalizeInstalledSkill(entry)
 
 	// Register locally.
 	if err := h.getSkillExecutor().Register(*entry); err != nil {
@@ -1017,14 +1022,17 @@ func (h *IMMessageHandler) toolPatchSkill(args map[string]interface{}) string {
 	}
 }
 
-// toolPatchSkillStructured performs a structured modification of a specific
-// step field in the skill definition. This is more robust than text-level
-// find-and-replace because it operates on the parsed YAML structure, not
-// raw text — immune to formatting differences (indentation, quoting).
-func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[string]interface{}) string {
+func (h *IMMessageHandler) toolPatchSkillText(skillName string, args map[string]interface{}) string {
+	find := stringVal(args, "find")
+	if find == "" {
+		return "text patch requires find"
+	}
+	replaceStr := stringVal(args, "replace")
+	reason := stringVal(args, "reason")
+
 	exec := h.getSkillExecutor()
 	if exec == nil {
-		return "Skill Executor 未初始化"
+		return "Skill Executor is not initialized"
 	}
 
 	exec.mu.RLock()
@@ -1039,32 +1047,98 @@ func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[s
 		}
 	}
 	if target == nil {
-		return fmt.Sprintf("未找到 Skill「%s」", skillName)
+		return fmt.Sprintf("skill %q not found", skillName)
 	}
 	if target.SkillDir == "" {
-		return fmt.Sprintf("Skill「%s」没有关联的目录，无法执行 patch", skillName)
+		return fmt.Sprintf("skill %q has no backing directory", skillName)
 	}
 
 	defPath, defFormat := findSkillDefinitionFile(target.SkillDir)
-	if defPath == "" || defFormat != "yaml" {
-		return fmt.Sprintf("结构化 patch 仅支持 skill.yaml 格式（当前: %s）", defFormat)
+	if defPath == "" {
+		return fmt.Sprintf("skill definition not found in %s", target.SkillDir)
 	}
 
 	content, err := os.ReadFile(defPath)
 	if err != nil {
-		return fmt.Sprintf("读取 Skill 定义文件失败: %s", err.Error())
+		return fmt.Sprintf("read skill definition failed: %s", err.Error())
 	}
 
-	// Parse YAML into a generic map.
+	count := strings.Count(string(content), find)
+	if count == 0 {
+		return fmt.Sprintf("no match found in skill definition: %q", find)
+	}
+	if count > 1 {
+		return fmt.Sprintf("ambiguous match: found %d occurrences of %q", count, find)
+	}
+
+	modified := strings.Replace(string(content), find, replaceStr, 1)
+	if validationErr := validateSkillFileContent([]byte(modified), defFormat); validationErr != "" {
+		return fmt.Sprintf("patched skill definition is invalid; refused to save: %s", validationErr)
+	}
+
+	if err := fileutil.AtomicWriteFile(defPath, []byte(modified), 0644); err != nil {
+		return fmt.Sprintf("save skill definition failed: %s", err.Error())
+	}
+
+	log.Printf("[skill-patch] patched %s in %s", skillName, defPath)
+	if auditErr := appendPatchRecord(target.SkillDir, patchRecord{
+		Timestamp: time.Now().Format(time.RFC3339),
+		Find:      find,
+		Replace:   replaceStr,
+		Reason:    reason,
+	}); auditErr != nil {
+		log.Printf("[skill-patch] warning: failed to write audit trail: %v", auditErr)
+	}
+
+	return fmt.Sprintf("skill %q patched successfully", skillName)
+}
+
+// toolPatchSkillStructured performs a structured modification of a specific
+// step field in the skill definition. This is more robust than text-level
+// find-and-replace because it operates on the parsed YAML structure, not
+// raw text — immune to formatting differences (indentation, quoting).
+func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[string]interface{}) string {
+	exec := h.getSkillExecutor()
+	if exec == nil {
+		return "Skill Executor is not initialized"
+	}
+
+	exec.mu.RLock()
+	skills := exec.loadSkills()
+	exec.mu.RUnlock()
+
+	var target *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].MatchesName(skillName) {
+			target = &skills[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Sprintf("skill %q not found", skillName)
+	}
+	if target.SkillDir == "" {
+		return fmt.Sprintf("skill %q has no backing directory", skillName)
+	}
+
+	defPath, defFormat := findSkillDefinitionFile(target.SkillDir)
+	if defPath == "" {
+		return fmt.Sprintf("structured patch requires skill.yaml or skill.yml in %s", target.SkillDir)
+	}
+
+	content, err := os.ReadFile(defPath)
+	if err != nil {
+		return fmt.Sprintf("read skill definition failed: %s", err.Error())
+	}
+
 	var doc map[string]interface{}
 	if err := yaml.Unmarshal(content, &doc); err != nil {
-		return fmt.Sprintf("解析 skill.yaml 失败: %s", err.Error())
+		return fmt.Sprintf("parse skill.yaml/skill.yml failed: %s", err.Error())
 	}
 
-	// Extract step_index and field.
 	stepIdxRaw, ok := args["step_index"]
 	if !ok {
-		return "结构化 patch 缺少 step_index 参数"
+		return "structured patch requires step_index"
 	}
 	stepIdx := 0
 	switch v := stepIdxRaw.(type) {
@@ -1075,35 +1149,32 @@ func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[s
 	case string:
 		fmt.Sscanf(v, "%d", &stepIdx)
 	default:
-		return fmt.Sprintf("step_index 类型无效: %T", stepIdxRaw)
+		return fmt.Sprintf("invalid step_index type: %T", stepIdxRaw)
 	}
 
 	field := stringVal(args, "field")
 	if field == "" {
-		return "结构化 patch 缺少 field 参数（支持: command/on_error/action/working_dir/timeout/preferred_shell）"
+		return "structured patch requires field"
 	}
 	value := stringVal(args, "value")
 	reason := stringVal(args, "reason")
 
-	// Navigate to steps[step_index].
 	stepsRaw, ok := doc["steps"]
 	if !ok {
-		return "skill.yaml 中没有 steps 字段"
+		return fmt.Sprintf("%s has no steps field", filepath.Base(defPath))
 	}
 	steps, ok := stepsRaw.([]interface{})
 	if !ok {
-		return "skill.yaml 中 steps 字段格式无效"
+		return fmt.Sprintf("%s steps field has invalid format", filepath.Base(defPath))
 	}
 	if stepIdx < 0 || stepIdx >= len(steps) {
-		return fmt.Sprintf("step_index %d 超出范围（共 %d 个步骤）", stepIdx, len(steps))
+		return fmt.Sprintf("step_index %d out of range (steps=%d)", stepIdx, len(steps))
 	}
 	step, ok := steps[stepIdx].(map[string]interface{})
 	if !ok {
-		return fmt.Sprintf("步骤 %d 格式无效", stepIdx)
+		return fmt.Sprintf("step %d has invalid format", stepIdx)
 	}
 
-	// Modify the field.
-	// For fields nested under "params" (command, working_dir, timeout), navigate into params.
 	paramsFields := map[string]bool{"command": true, "working_dir": true, "timeout": true}
 	if paramsFields[field] {
 		params, ok := step["params"].(map[string]interface{})
@@ -1113,28 +1184,28 @@ func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[s
 		}
 		oldValue := fmt.Sprintf("%v", params[field])
 		params[field] = value
-		log.Printf("[skill-patch-step] step %d params.%s: %q → %q", stepIdx, field, oldValue, value)
+		log.Printf("[skill-patch-step] step %d params.%s: %q -> %q", stepIdx, field, oldValue, value)
 	} else {
-		// Top-level step fields: action, on_error, preferred_shell, etc.
 		oldValue := fmt.Sprintf("%v", step[field])
 		step[field] = value
-		log.Printf("[skill-patch-step] step %d .%s: %q → %q", stepIdx, field, oldValue, value)
+		log.Printf("[skill-patch-step] step %d .%s: %q -> %q", stepIdx, field, oldValue, value)
 	}
 
-	// Serialize back to YAML.
-	modified, err := yaml.Marshal(doc)
+	var modified []byte
+	modified, err = yaml.Marshal(doc)
 	if err != nil {
-		return fmt.Sprintf("序列化 YAML 失败: %s", err.Error())
+		return fmt.Sprintf("serialize skill definition failed: %s", err.Error())
+	}
+	if validationErr := validateSkillFileContent(modified, defFormat); validationErr != "" {
+		return fmt.Sprintf("patched skill definition is invalid: %s", validationErr)
 	}
 
-	// Save.
 	if err := fileutil.AtomicWriteFile(defPath, modified, 0644); err != nil {
-		return fmt.Sprintf("保存 Skill 定义文件失败: %s", err.Error())
+		return fmt.Sprintf("save skill definition failed: %s", err.Error())
 	}
 
 	log.Printf("[skill-patch-step] patched %s step %d field %s in %s", skillName, stepIdx, field, defPath)
 
-	// Audit trail.
 	if auditErr := appendPatchRecord(target.SkillDir, patchRecord{
 		Timestamp: time.Now().Format(time.RFC3339),
 		Find:      fmt.Sprintf("step[%d].%s", stepIdx, field),
@@ -1144,95 +1215,7 @@ func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[s
 		log.Printf("[skill-patch-step] warning: failed to write audit trail: %v", auditErr)
 	}
 
-	return fmt.Sprintf("✅ Skill「%s」步骤 %d 的 %s 已修改为 %q", skillName, stepIdx, field, value)
-}
-
-// toolPatchSkillText performs the original text-level find-and-replace patch.
-func (h *IMMessageHandler) toolPatchSkillText(skillName string, args map[string]interface{}) string {
-	find := stringVal(args, "find")
-	if find == "" {
-		return "缺少 find 参数"
-	}
-	replace, hasReplace := args["replace"]
-	if !hasReplace {
-		return "缺少 replace 参数"
-	}
-	replaceStr, _ := replace.(string) // empty string is valid (deletion)
-	reason := stringVal(args, "reason")
-
-	exec := h.getSkillExecutor()
-	if exec == nil {
-		return "Skill Executor 未初始化"
-	}
-
-	// Locate the skill entry to find its directory.
-	exec.mu.RLock()
-	skills := exec.loadSkills()
-	exec.mu.RUnlock()
-
-	var target *corelib.NLSkillEntry
-	for i := range skills {
-		if skills[i].MatchesName(skillName) {
-			target = &skills[i]
-			break
-		}
-	}
-	if target == nil {
-		return fmt.Sprintf("未找到 Skill「%s」", skillName)
-	}
-	if target.SkillDir == "" {
-		return fmt.Sprintf("Skill「%s」没有关联的目录，无法执行 patch", skillName)
-	}
-
-	// Locate the skill definition file (skill.yaml or skill.json).
-	defPath, defFormat := findSkillDefinitionFile(target.SkillDir)
-	if defPath == "" {
-		return fmt.Sprintf("在 Skill 目录中未找到 skill.yaml 或 skill.json: %s", target.SkillDir)
-	}
-
-	// Read the file content.
-	content, err := os.ReadFile(defPath)
-	if err != nil {
-		return fmt.Sprintf("读取 Skill 定义文件失败: %s", err.Error())
-	}
-
-	// Count occurrences of the find string.
-	count := strings.Count(string(content), find)
-	if count == 0 {
-		return fmt.Sprintf("no match found: 在 Skill 定义文件中未找到「%s」", find)
-	}
-	if count > 1 {
-		return fmt.Sprintf("ambiguous match, provide more context: 找到 %d 处匹配「%s」，请提供更多上下文以精确定位", count, find)
-	}
-
-	// Exactly one match — perform replacement.
-	modified := strings.Replace(string(content), find, replaceStr, 1)
-
-	// Validate the modified content is still valid YAML/JSON.
-	if validationErr := validateSkillFileContent([]byte(modified), defFormat); validationErr != "" {
-		return fmt.Sprintf("patch 后的文件格式无效，已拒绝保存: %s", validationErr)
-	}
-
-	// Save using AtomicWriteFile.
-	if err := fileutil.AtomicWriteFile(defPath, []byte(modified), 0644); err != nil {
-		return fmt.Sprintf("保存 Skill 定义文件失败: %s", err.Error())
-	}
-
-	// Re-scan the modified skill directory to update in-memory registry.
-	// loadSkills() always re-reads from disk, so the next call will pick up changes.
-	log.Printf("[skill-patch] patched %s in %s", skillName, defPath)
-
-	// Append patch record to .patches.json audit trail.
-	if auditErr := appendPatchRecord(target.SkillDir, patchRecord{
-		Timestamp: time.Now().Format(time.RFC3339),
-		Find:      find,
-		Replace:   replaceStr,
-		Reason:    reason,
-	}); auditErr != nil {
-		log.Printf("[skill-patch] warning: failed to write audit trail: %v", auditErr)
-	}
-
-	return fmt.Sprintf("✅ Skill「%s」已成功 patch（替换了 1 处匹配）", skillName)
+	return fmt.Sprintf("skill %q step %d field %s updated to %q", skillName, stepIdx, field, value)
 }
 
 // toolSkillPatchHistory returns the patch history for a skill from .patches.json.
@@ -1301,13 +1284,17 @@ func (h *IMMessageHandler) toolSkillPatchHistory(args map[string]interface{}) st
 // findSkillDefinitionFile locates the skill definition file in a skill directory.
 // Returns the path and format ("yaml" or "json"), or empty strings if not found.
 func findSkillDefinitionFile(skillDir string) (string, string) {
-	yamlPath := filepath.Join(skillDir, "skill.yaml")
-	if _, err := os.Stat(yamlPath); err == nil {
-		return yamlPath, "yaml"
-	}
-	jsonPath := filepath.Join(skillDir, "skill.json")
-	if _, err := os.Stat(jsonPath); err == nil {
-		return jsonPath, "json"
+	for _, candidate := range []struct {
+		name   string
+		format string
+	}{
+		{name: "skill.yaml", format: "yaml"},
+		{name: "skill.yml", format: "yaml"},
+	} {
+		defPath := filepath.Join(skillDir, candidate.name)
+		if _, err := os.Stat(defPath); err == nil {
+			return defPath, candidate.format
+		}
 	}
 	return "", ""
 }
@@ -1318,16 +1305,11 @@ func findSkillDefinitionFile(skillDir string) (string, string) {
 func validateSkillFileContent(data []byte, format string) string {
 	switch format {
 	case "yaml":
-		var m map[string]interface{}
-		if err := yaml.Unmarshal(data, &m); err != nil {
-			return fmt.Sprintf("YAML 验证失败: %s", err.Error())
-		}
-	case "json":
-		if !json.Valid(data) {
-			return "JSON 验证失败: 内容不是有效的 JSON"
+		if _, err := cskill.ParseSkillDefinitionFile(data, format); err != nil {
+			return fmt.Sprintf("skill definition validation failed: %s", err.Error())
 		}
 	default:
-		return fmt.Sprintf("未知文件格式: %s", format)
+		return fmt.Sprintf("unknown file format: %s", format)
 	}
 	return ""
 }

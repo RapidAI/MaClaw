@@ -38,12 +38,21 @@ var globalLLMUsageAccumulator = &llmUsageAccumulator{
 	interval: 20 * time.Second,
 }
 
+var llmCreditChargeMu sync.Mutex
+
 func enqueueLLMUsage(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) {
 	if system == nil {
 		return
 	}
 	globalLLMUsageAccumulator.start()
-	globalLLMUsageAccumulator.enqueue(system, providerID, usage, email, serviceGroupIDs, userGroupIDs, credits)
+	charge := globalLLMUsageAccumulator.enqueue(system, providerID, usage, email, serviceGroupIDs, userGroupIDs, credits)
+	if charge == nil {
+		return
+	}
+	if err := flushCreditCharges(context.Background(), system, map[string]*pendingCreditCharge{"immediate": charge}); err != nil {
+		log.Printf("[llm-usage] immediate credit charge failed: %v", err)
+		globalLLMUsageAccumulator.requeue(system, &pendingSystemUsage{creditCharges: map[string]*pendingCreditCharge{"immediate": charge}})
+	}
 }
 
 func (a *llmUsageAccumulator) start() {
@@ -58,7 +67,7 @@ func (a *llmUsageAccumulator) start() {
 	})
 }
 
-func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) {
+func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) *pendingCreditCharge {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	buf := a.pending[system]
@@ -83,19 +92,15 @@ func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, pro
 	}
 	serviceGroupIDs = normalizeUsageStringSlice(serviceGroupIDs)
 	email = strings.ToLower(strings.TrimSpace(email))
+	var charge *pendingCreditCharge
 	if email != "" && len(serviceGroupIDs) > 0 && credits > 0 {
-		key := email + "|" + strings.Join(serviceGroupIDs, ",")
-		charge := buf.creditCharges[key]
-		if charge == nil {
-			charge = &pendingCreditCharge{email: email, serviceGroupIDs: append([]string(nil), serviceGroupIDs...)}
-			buf.creditCharges[key] = charge
-		}
-		charge.credits += credits
+		charge = &pendingCreditCharge{email: email, serviceGroupIDs: append([]string(nil), serviceGroupIDs...), credits: credits}
 	}
 	if buf.reports == nil {
 		buf.reports = &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
 	}
 	buf.reports.addUsage(time.Now(), email, userGroupIDs, usage, credits)
+	return charge
 }
 
 func (a *llmUsageAccumulator) flush(ctx context.Context) {
@@ -211,6 +216,8 @@ func flushCreditCharges(ctx context.Context, system store.SystemSettingsReposito
 	if len(chargeMap) == 0 {
 		return nil
 	}
+	llmCreditChargeMu.Lock()
+	defer llmCreditChargeMu.Unlock()
 	reg, err := loadCachedLLMServiceRegistry(ctx, system)
 	if err != nil {
 		return err

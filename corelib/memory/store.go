@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -21,28 +22,31 @@ import (
 
 // Store provides persistent long-term memory storage.
 type Store struct {
-	mu       sync.RWMutex
-	entries  []Entry
-	path     string
-	dirty    bool
-	saveCh   chan struct{}
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	maxItems int
-	bm25     *bm25Index
-	vecIndex *vectorIndex
-	graph    *memoryGraph
-	embedder embedding.Embedder // nil until SetEmbedder is called
-	archive  *ArchiveStore      // cold storage for evicted entries
-	tmt      *TemporalTree
-	gating   *RecallGating
-	partMgr  *partitionManager // category-based partitioned persistence
+	mu               sync.RWMutex
+	entries          []Entry
+	path             string
+	dirty            bool
+	dirtyGen         uint64
+	saveCh           chan struct{}
+	stopCh           chan struct{}
+	stopOnce         sync.Once
+	maxItems         int
+	bm25             *bm25Index
+	vecIndex         *vectorIndex
+	graph            *memoryGraph
+	embedder         embedding.Embedder // nil until SetEmbedder is called
+	archive          *ArchiveStore      // cold storage for evicted entries
+	tmt              *TemporalTree
+	gating           *RecallGating
+	partMgr          *partitionManager            // category-based partitioned persistence
+	lastSemanticHits map[string]SemanticSearchHit // debug: last semantic recall explanation by entry ID
 
 	// --- Project index ---
-	projIndex *ProjectIndex // aggregated project metadata for search
+	projIndex     *ProjectIndex  // aggregated project metadata for search
+	semanticGraph *SemanticGraph // typed Entity/Fact/Memory graph for relation-aware recall
 
 	// --- Entity index (inspired by Graphiti Semantic Entity Subgraph) ---
-	entityIndex *EntityIndex // entity name → entry ID mapping for entity-centric queries
+	entityIndex *EntityIndex // entity name -> entry ID mapping for entity-centric queries
 
 	// --- Topic clusterer (inspired by Graphiti Community Subgraph) ---
 	topicClusterer *TopicClusterer // tag-based topic clustering
@@ -77,6 +81,7 @@ func NewStore(path string) (*Store, error) {
 		tmt:            NewTemporalTree(),
 		partMgr:        newPartitionManager(filepath.Dir(absPath)),
 		projIndex:      NewProjectIndex(filepath.Dir(absPath)),
+		semanticGraph:  NewSemanticGraph(),
 		entityIndex:    NewEntityIndex(),
 		topicClusterer: NewTopicClusterer(),
 	}
@@ -86,18 +91,7 @@ func NewStore(path string) (*Store, error) {
 	}
 
 	// Build indices from loaded entries.
-	s.bm25.rebuild(s.entries)
-	s.vecIndex.rebuild(s.entries)
-	s.graph.rebuild(s.entries)
-	if s.tmt != nil {
-		s.tmt.Rebuild(s.entries)
-	}
-	if s.projIndex != nil {
-		s.projIndex.Rebuild(s.entries)
-	}
-	if s.entityIndex != nil {
-		s.entityIndex.Rebuild(s.entries)
-	}
+	s.rebuildDerivedIndexesLocked(false)
 
 	// Initialize archive store in the same directory.
 	archivePath := filepath.Join(filepath.Dir(absPath), "archive.json")
@@ -204,16 +198,23 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 			s.entries[i].UpdatedAt = now
 			s.entries[i].AccessCount++
 			s.entries[i].Tags = mergeTags(s.entries[i].Tags, entry.Tags)
+			s.entries[i].Entities = mergeStringSlice(s.entries[i].Entities, entry.Entities)
 			if s.entries[i].ContentHash == "" {
 				s.entries[i].ContentHash = hash
 			}
 			s.bm25.updateEntry(s.entries[i])
+			if s.entityIndex != nil {
+				s.entityIndex.IndexEntry(&s.entries[i])
+			}
+			// Tags may change project membership; rebuild because ProjectIndex is an aggregate.
+			if s.projIndex != nil {
+				s.projIndex.Rebuild(s.entries)
+			}
+			if s.semanticGraph != nil {
+				s.semanticGraph.IndexEntry(&s.entries[i])
+			}
 			s.dirty = true
 			s.signalSave()
-			// Update project index: tags may have changed via merge.
-			if s.projIndex != nil {
-				s.projIndex.IndexEntry(&s.entries[i])
-			}
 			return nil
 		}
 	}
@@ -225,25 +226,39 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	// write latency. When a match is found, merge tags into the existing entry
 	// instead of creating a duplicate.
 	// Multi-tenant isolation: only dedup within the same owner (or shared entries).
-	if substringDupIdx := s.findSubstringDuplicate(entry.Content, entry.OwnerID); substringDupIdx >= 0 {
+	if substringDupIdx := s.findSubstringDuplicateForEntry(entry); substringDupIdx >= 0 {
 		s.entries[substringDupIdx].UpdatedAt = now
 		s.entries[substringDupIdx].AccessCount++
 		s.entries[substringDupIdx].Tags = mergeTags(s.entries[substringDupIdx].Tags, entry.Tags)
+		s.entries[substringDupIdx].Entities = mergeStringSlice(s.entries[substringDupIdx].Entities, entry.Entities)
 		// If the new content is a superset (contains the existing content),
 		// update to the longer version to preserve more information.
 		existingLen := len([]rune(s.entries[substringDupIdx].Content))
 		newLen := len([]rune(entry.Content))
 		if newLen > existingLen {
 			s.entries[substringDupIdx].Content = entry.Content
+			s.entries[substringDupIdx].CompactForm = ""
 			s.entries[substringDupIdx].ContentHash = hash
+			if len(entry.Embedding) > 0 {
+				s.entries[substringDupIdx].Embedding = append([]float32(nil), entry.Embedding...)
+			}
 		}
 		s.bm25.updateEntry(s.entries[substringDupIdx])
+		if len(s.entries[substringDupIdx].Embedding) > 0 {
+			s.vecIndex.add(s.entries[substringDupIdx].ID, s.entries[substringDupIdx].Embedding)
+		}
+		if s.entityIndex != nil {
+			s.entityIndex.IndexEntry(&s.entries[substringDupIdx])
+		}
+		// Tags/content may change project membership; rebuild the aggregate index.
+		if s.projIndex != nil {
+			s.projIndex.Rebuild(s.entries)
+		}
+		if s.semanticGraph != nil {
+			s.semanticGraph.IndexEntry(&s.entries[substringDupIdx])
+		}
 		s.dirty = true
 		s.signalSave()
-		// Update project index: tags/content may have changed via merge.
-		if s.projIndex != nil {
-			s.projIndex.IndexEntry(&s.entries[substringDupIdx])
-		}
 		log.Printf("[memory_store] merged substring duplicate into entry %s (kept longer: %v)", s.entries[substringDupIdx].ID, newLen > existingLen)
 		return nil
 	}
@@ -255,7 +270,7 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 
 	// --- Embedding semantic candidate recall (under lock, <1ms) ---
 	// The embedding was computed above (outside the lock). Here we only
-	// query the vector index for candidates — this is a fast dot-product
+	// query the vector index for candidates; this is a fast dot-product
 	// scan over the in-memory index, not a model inference call.
 	if len(entry.Embedding) > 0 {
 		if candidate := s.findSemanticDupCandidate(entry.Embedding, entry.Category, entry.OwnerID); candidate != nil {
@@ -289,8 +304,8 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	s.dirty = true
 	s.signalSave()
 
-	// Update project index. Called under s.mu.Lock — ProjectIndex has its own
-	// mutex so this is a nested lock (Store.mu → ProjectIndex.mu). The lock
+	// Update project index. Called under s.mu.Lock; ProjectIndex has its own
+	// mutex so this is a nested lock (Store.mu -> ProjectIndex.mu). The lock
 	// order is consistent across all call sites, no deadlock risk.
 	if s.projIndex != nil {
 		s.projIndex.IndexEntry(&entry)
@@ -299,6 +314,9 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	// Update entity index for entity-centric recall.
 	if s.entityIndex != nil {
 		s.entityIndex.IndexEntry(&entry)
+	}
+	if s.semanticGraph != nil {
+		s.semanticGraph.IndexEntry(&entry)
 	}
 
 	return nil
@@ -351,7 +369,10 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 				s.entityIndex.IndexEntry(&s.entries[i])
 			}
 			if s.projIndex != nil {
-				s.projIndex.IndexEntry(&s.entries[i])
+				s.projIndex.Rebuild(s.entries)
+			}
+			if s.semanticGraph != nil {
+				s.semanticGraph.IndexEntry(&s.entries[i])
 			}
 			s.dirty = true
 			s.signalSave()
@@ -372,8 +393,12 @@ func (s *Store) Delete(id string) error {
 			s.bm25.removeEntry(id)
 			s.vecIndex.remove(id)
 			s.graph.remove(id)
+			s.syncGraphLinksLocked()
 			if s.entityIndex != nil {
 				s.entityIndex.RemoveEntry(id)
+			}
+			if s.semanticGraph != nil {
+				s.semanticGraph.RemoveEntry(id)
 			}
 			s.dirty = true
 			s.signalSave()
@@ -416,7 +441,7 @@ type CategoryStat struct {
 }
 
 // CategoryStats returns a summary of all entries grouped by canonical category.
-// This is a store-level index — it reflects the full memory contents, not just
+// This is a store-level index; it reflects the full memory contents, not just
 // what was recalled for a specific query. Used by the memory index layer to
 // give the LLM a "table of contents" of available knowledge.
 func (s *Store) CategoryStats() []CategoryStat {
@@ -929,9 +954,10 @@ func rrfFuseScores(bm25Scores, vecScores []float64, entries []Entry, projectLowe
 //   - Exact match (case-insensitive): +2.0
 //   - Containment match (tag contains token or vice versa, min 3 runes): +1.0
 //   - Cap: 6.0
+//
 // tagExactMatchBoost returns a score boost when any query entity exactly
 // matches (case-insensitive) one of the entry's tags. This is a stronger
-// signal than tagCrossScore's containment matching — it means the user is
+// signal than tagCrossScore's containment matching; it means the user is
 // querying with the exact same term that was stored as a tag (possibly from
 // conversation context via SaveWithContext).
 func tagExactMatchBoost(entry Entry, entities []string) float64 {
@@ -1003,7 +1029,7 @@ func tagCrossScore(entry Entry, queryTokens []string) float64 {
 //
 // Weight tuning rationale (2026-04-21):
 //   Relevance (1.5) > Recency (1.0) > Importance (0.8)
-//   Relevance is the primary signal — a query-specific BM25 match should
+//   Relevance is the primary signal; a query-specific BM25 match should
 //   outweigh a frequently-accessed but irrelevant entry. Importance is
 //   capped and down-weighted to prevent high-accessCount entries from
 //   dominating (e.g. GPU server at 104 accesses vs API server at 1).
@@ -1070,8 +1096,8 @@ func memoryStreamScore(e Entry, rrfScore float64, rawBM25 float64, projectLower 
 
 	// --- Relevance ---
 	// RRF scores are rank-based (~0.01-0.15) and flatten score differences.
-	// Raw BM25 scores preserve magnitude differences (e.g. 2.07 vs 0.39 for
-	// "api服务器" matching API vs GPU server). Combine both signals:
+	// Raw BM25 scores preserve magnitude differences for exact term matches.
+	// Combine both signals:
 	// - RRF provides robust multi-signal fusion (BM25 + Vec + Tag)
 	// - Raw BM25 preserves the actual term-match strength
 	relevance := rrfScore*50.0 + rawBM25
@@ -1179,6 +1205,141 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 	return candidates
 }
 
+// syncGraphLinksLocked mirrors the in-memory graph onto each entry's persisted
+// relationship fields. Caller MUST hold s.mu write lock.
+func (s *Store) syncGraphLinksLocked(ids ...string) bool {
+	if s.graph == nil {
+		return false
+	}
+	filter := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			filter[id] = struct{}{}
+		}
+	}
+	changed := false
+	for i := range s.entries {
+		if len(filter) > 0 {
+			if _, ok := filter[s.entries[i].ID]; !ok {
+				continue
+			}
+		}
+		newIDs := s.graph.relatedIDsFor(s.entries[i].ID)
+		newEdges := s.graph.relatedEdgesFor(s.entries[i].ID)
+		if !sameStringSlice(newIDs, s.entries[i].RelatedIDs) || !sameRelatedEdges(newEdges, s.entries[i].RelatedEdges) {
+			s.entries[i].RelatedIDs = newIDs
+			s.entries[i].RelatedEdges = newEdges
+			changed = true
+		}
+	}
+	return changed
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameRelatedEdges(a, b []RelatedEdge) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Strength != b[i].Strength || a[i].LinkType != b[i].LinkType || !a[i].UpdatedAt.Equal(b[i].UpdatedAt) {
+			return false
+		}
+	}
+	return true
+}
+
+// rebuildDerivedIndexesLocked rebuilds every index derived from s.entries.
+// Caller MUST hold s.mu write lock, or be in Store construction before sharing.
+func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
+	s.bm25.rebuild(s.entries)
+	s.vecIndex.rebuild(s.entries)
+	s.graph.rebuild(s.entries)
+	graphLinksChanged := false
+	if syncGraphLinks {
+		graphLinksChanged = s.syncGraphLinksLocked()
+	}
+	if s.tmt != nil {
+		s.tmt.Rebuild(s.entries)
+	}
+	if s.entityIndex != nil {
+		s.entityIndex.Rebuild(s.entries)
+	}
+	if s.semanticGraph != nil {
+		s.semanticGraph.Rebuild(s.entries)
+	}
+	if s.projIndex != nil {
+		s.projIndex.Rebuild(s.entries)
+	}
+	return graphLinksChanged
+}
+
+func firstOwnerID(ownerID ...string) string {
+	if len(ownerID) == 0 {
+		return ""
+	}
+	return ownerID[0]
+}
+
+// supersedeEntryLocked invalidates a fact at the memory lifecycle level and
+// synchronizes every derived index that can expose active facts. Caller MUST
+// hold s.mu write lock.
+func (s *Store) supersedeEntryLocked(id string, invalidAt time.Time) bool {
+	for i := range s.entries {
+		if s.entries[i].ID != id {
+			continue
+		}
+		changed := false
+		if s.entries[i].Status != StatusSuperseded {
+			s.entries[i].Status = StatusSuperseded
+			changed = true
+		}
+		if !s.entries[i].Stale {
+			s.entries[i].Stale = true
+			changed = true
+		}
+		if s.entries[i].InvalidAt == nil {
+			t := invalidAt
+			if !s.entries[i].CreatedAt.IsZero() && !t.After(s.entries[i].CreatedAt) {
+				t = s.entries[i].CreatedAt.Add(time.Nanosecond)
+			}
+			s.entries[i].InvalidAt = &t
+			changed = true
+		}
+		if !changed {
+			return false
+		}
+		s.bm25.updateEntry(s.entries[i])
+		s.vecIndex.remove(id)
+		if s.graph != nil {
+			s.graph.remove(id)
+			s.syncGraphLinksLocked()
+		}
+		if s.entityIndex != nil {
+			s.entityIndex.RemoveEntry(id)
+		}
+		if s.semanticGraph != nil {
+			s.semanticGraph.IndexEntry(&s.entries[i])
+		}
+		if s.projIndex != nil {
+			s.projIndex.Rebuild(s.entries)
+		}
+		s.dirty = true
+		return true
+	}
+	return false
+}
+
 // RecallDynamic retrieves memory entries matching the given query, excluding
 // user_fact entries (which are injected separately as a compressed summary).
 // Uses RRF (Reciprocal Rank Fusion) with Memory Stream scoring.
@@ -1187,12 +1348,34 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 // ownerID is optional (variadic). When provided and non-empty, only entries
 // with matching OwnerID or empty OwnerID (shared) are returned. This enables
 // multi-tenant isolation in maclawsrv. In GUI/TUI (single-user), omit ownerID
-// or pass empty string — all entries are returned.
+// or pass empty string; all entries are returned.
 func (s *Store) RecallDynamic(query string, category Category, projectPath string, ownerID ...string) []Entry {
 	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
 	expanded := ExpandQuery(query)
 	bm25Scores := s.multiQueryBM25(query, expanded.Entities)
 	vecScores := s.vecIndex.score(s.queryEmbeddingCached(query))
+	semanticScores := map[string]float64{}
+	semanticHitDebug := map[string]SemanticSearchHit{}
+	if s.semanticGraph != nil {
+		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
+		for _, hit := range s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
+			Now:             time.Now(),
+			AsOf:            asOf,
+			OwnerID:         firstOwnerID(ownerID...),
+			ProjectPath:     projectPath,
+			RelationHints:   semanticRelationHintsFromQuery(query, expanded),
+			SeedWeights:     semanticSeedWeightsFromEntities(expanded.Entities),
+			MaxHits:         30,
+			MaxVisitedFacts: 500,
+			TemporalMode:    temporalMode,
+		}) {
+			semanticScores[hit.EntryID] = hit.Score
+			semanticHitDebug[hit.EntryID] = hit
+		}
+	}
+	s.mu.Lock()
+	s.lastSemanticHits = semanticHitDebug
+	s.mu.Unlock()
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1213,6 +1396,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		entry Entry
 		bm25  float64
 		vec   float64
+		sem   float64
 	}
 	var raw []rawCandidate
 
@@ -1248,7 +1432,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		if vs, ok := vecScores[e.ID]; ok {
 			v = vs
 		}
-		raw = append(raw, rawCandidate{entry: e, bm25: b, vec: v})
+		raw = append(raw, rawCandidate{entry: e, bm25: b, vec: v, sem: semanticScores[e.ID]})
 	}
 
 	// Three-way RRF fusion (BM25 + Vec + Tag).
@@ -1264,14 +1448,18 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 
 	var candidates []recallScored
 	for i, c := range raw {
-		sc := memoryStreamScore(c.entry, rrfScores[i], c.bm25, "", now)
+		fusedRelevance := rrfScores[i]
+		if c.sem > 0 {
+			fusedRelevance += c.sem
+		}
+		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, "", now)
 		candidates = append(candidates, recallScored{entry: c.entry, score: sc})
 	}
 
 	// Tag exact match boost: when a query entity exactly matches an entry's
 	// tag, give a significant score boost. This bridges the "write-recall
-	// semantic gap" — e.g. user saved SSH info with tag "4090服务器" from
-	// conversation context, and later queries "查看 4090 服务器 GPU".
+	// semantic gap: e.g. user saved SSH info with tag "4090-server" from
+	// conversation context, and later queries "4090 GPU server".
 	// The BM25/Vec channels may miss this because the content doesn't contain
 	// "4090", but the tag does.
 	if len(expanded.Entities) > 0 {
@@ -1290,7 +1478,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 
 	// Post-expansion OwnerID filter: graphExpand may pull in entries from
 	// other users via graph edges. Re-apply the OwnerID filter.
-	// Also re-apply the category exclusion for the same reason — graph
+	// Also re-apply the category exclusion for the same reason: graph
 	// edges can link project_knowledge to session_checkpoint, pulling
 	// excluded categories back into the results.
 	if filterOwner != "" || category == "" {
@@ -1605,14 +1793,9 @@ func (s *Store) discoverMissingLinks() int {
 	}
 
 	if created > 0 {
-		// Update RelatedIDs on affected entries.
+		// Update persisted graph links on affected entries.
 		s.mu.Lock()
-		for i := range s.entries {
-			newRels := s.graph.relatedIDsFor(s.entries[i].ID)
-			if len(newRels) != len(s.entries[i].RelatedIDs) {
-				s.entries[i].RelatedIDs = newRels
-			}
-		}
+		s.syncGraphLinksLocked()
 		s.dirty = true
 		s.mu.Unlock()
 		s.signalSave()
@@ -1726,8 +1909,14 @@ func (s *Store) backfillTags() int {
 		if newTags, ok := enrichByID[s.entries[i].ID]; ok {
 			s.entries[i].Tags = mergeTags(s.entries[i].Tags, newTags)
 			s.bm25.updateEntry(s.entries[i])
+			if s.semanticGraph != nil {
+				s.semanticGraph.IndexEntry(&s.entries[i])
+			}
 			count++
 		}
+	}
+	if count > 0 && s.projIndex != nil {
+		s.projIndex.Rebuild(s.entries)
 	}
 	if count > 0 {
 		s.dirty = true
@@ -1797,10 +1986,13 @@ func (s *Store) RestoreFromArchive(id string) error {
 	s.bm25.addEntry(*entry)
 	s.vecIndex.add(entry.ID, entry.Embedding)
 	if s.projIndex != nil {
-		s.projIndex.IndexEntry(entry)
+		s.projIndex.Rebuild(s.entries)
 	}
 	if s.entityIndex != nil {
 		s.entityIndex.IndexEntry(entry)
+	}
+	if s.semanticGraph != nil {
+		s.semanticGraph.IndexEntry(entry)
 	}
 	s.evictLRU()
 	s.dirty = true
@@ -1832,15 +2024,7 @@ func (s *Store) Entries() []Entry { return s.entries }
 // SetEntries replaces the internal entries slice. Caller MUST hold the write lock.
 func (s *Store) SetEntries(entries []Entry) {
 	s.entries = entries
-	s.bm25.rebuild(entries)
-	s.vecIndex.rebuild(entries)
-	s.graph.rebuild(entries)
-	if s.entityIndex != nil {
-		s.entityIndex.Rebuild(entries)
-	}
-	if s.projIndex != nil {
-		s.projIndex.Rebuild(entries)
-	}
+	s.rebuildDerivedIndexesLocked(false)
 }
 
 // MarkDirty marks the store as needing a flush.
@@ -1928,12 +2112,10 @@ func (s *Store) autoLink(entry Entry) {
 		}
 	}
 
-	// Build entryByID map and pre-compute tag overlap counts in one pass.
+	// Pre-compute tag overlap counts in one pass.
 	tagOverlapByID := make(map[string]int)
-	entryByID := make(map[string]*Entry, len(s.entries))
 	for i := range s.entries {
 		e := &s.entries[i]
-		entryByID[e.ID] = e
 		if e.ID == entry.ID || !e.IsActive() {
 			continue
 		}
@@ -2027,22 +2209,13 @@ func (s *Store) autoLink(entry Entry) {
 		s.graph.link(entry.ID, c.id, strength)
 	}
 
-	// Update RelatedIDs on the new entry.
-	relIDs := s.graph.relatedIDsFor(entry.ID)
-	for i := range s.entries {
-		if s.entries[i].ID == entry.ID {
-			s.entries[i].RelatedIDs = relIDs
-			break
-		}
-	}
-
-	// Also update RelatedIDs on the linked entries (bidirectional).
+	// Update persisted graph links on the new entry and linked entries.
+	ids := make([]string, 0, len(candidates)+1)
+	ids = append(ids, entry.ID)
 	for _, c := range candidates {
-		neighborRels := s.graph.relatedIDsFor(c.id)
-		if e, ok := entryByID[c.id]; ok {
-			e.RelatedIDs = neighborRels
-		}
+		ids = append(ids, c.id)
 	}
+	s.syncGraphLinksLocked(ids...)
 }
 
 // SetEmbedder wires an Embedder into the store. If the embedder is real
@@ -2111,7 +2284,9 @@ func (s *Store) backfillEmbeddings() {
 		for i := range s.entries {
 			if s.entries[i].ID == p.id && len(s.entries[i].Embedding) == 0 {
 				s.entries[i].Embedding = emb
-				s.vecIndex.add(p.id, emb)
+				if s.entries[i].IsActive() {
+					s.vecIndex.add(p.id, emb)
+				}
 				updated++
 				break
 			}
@@ -2132,6 +2307,48 @@ func (s *Store) Graph() *memoryGraph { return s.graph }
 
 // EntityIndex returns the entity index for entity-centric queries.
 func (s *Store) EntityIndex() *EntityIndex { return s.entityIndex }
+
+// SemanticGraph returns the typed Entity/Fact/Memory graph for relation-aware recall.
+func (s *Store) SemanticGraph() *SemanticGraph { return s.semanticGraph }
+
+// LastSemanticHits returns the semantic graph explanations from the most recent RecallDynamic call.
+func (s *Store) LastSemanticHits() map[string]SemanticSearchHit {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]SemanticSearchHit, len(s.lastSemanticHits))
+	for id, hit := range s.lastSemanticHits {
+		paths := append([]string(nil), hit.Paths...)
+		hit.Paths = paths
+		out[id] = hit
+	}
+	return out
+}
+
+// SemanticRecallDebug runs only the semantic graph recall layer and returns path explanations.
+func (s *Store) SemanticRecallDebug(query string, ownerID string) []SemanticSearchHit {
+	return s.SemanticRecallDebugForProject(query, "", ownerID)
+}
+
+// SemanticRecallDebugForProject runs the semantic graph recall layer with the same
+// project scope used by RecallDynamic.
+func (s *Store) SemanticRecallDebugForProject(query string, projectPath string, ownerID string) []SemanticSearchHit {
+	if s.semanticGraph == nil {
+		return nil
+	}
+	expanded := ExpandQuery(query)
+	temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
+	return s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
+		Now:             time.Now(),
+		AsOf:            asOf,
+		OwnerID:         ownerID,
+		ProjectPath:     projectPath,
+		RelationHints:   semanticRelationHintsFromQuery(query, expanded),
+		SeedWeights:     semanticSeedWeightsFromEntities(expanded.Entities),
+		MaxHits:         30,
+		MaxVisitedFacts: 500,
+		TemporalMode:    temporalMode,
+	})
+}
 
 // TopicClusterer returns the topic clusterer for community-like summaries.
 func (s *Store) TopicClusterer() *TopicClusterer { return s.topicClusterer }
@@ -2176,7 +2393,7 @@ func (s *Store) FindByEntity(entityName string) []Entry {
 
 // RecallWithBFS performs a BFS-based graph traversal search starting from
 // seed entries found by the standard recall, expanding to n-hop neighbors.
-// Inspired by Graphiti's breadth-first search (φ_bfs) which discovers
+// Inspired by Graphiti's breadth-first search, which discovers
 // contextually similar entries through graph proximity.
 func (s *Store) RecallWithBFS(query string, category Category, projectPath string, hops int, ownerID ...string) []Entry {
 	// First, get seed entries from standard recall.
@@ -2258,6 +2475,12 @@ func (s *Store) PinEntry(id string) error {
 		if e.ID == id {
 			s.entries[i].Pinned = true
 			s.entries[i].UpdatedAt = time.Now()
+			if s.semanticGraph != nil {
+				s.semanticGraph.IndexEntry(&s.entries[i])
+			}
+			if s.projIndex != nil {
+				s.projIndex.Rebuild(s.entries)
+			}
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -2275,6 +2498,12 @@ func (s *Store) UnpinEntry(id string) error {
 		if e.ID == id {
 			s.entries[i].Pinned = false
 			s.entries[i].UpdatedAt = time.Now()
+			if s.semanticGraph != nil {
+				s.semanticGraph.IndexEntry(&s.entries[i])
+			}
+			if s.projIndex != nil {
+				s.projIndex.Rebuild(s.entries)
+			}
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -2445,12 +2674,7 @@ func (s *Store) evictLRU() {
 		}
 	}
 	s.entries = kept
-	s.bm25.rebuild(kept)
-	s.vecIndex.rebuild(kept)
-	s.graph.rebuild(kept)
-	if s.entityIndex != nil {
-		s.entityIndex.Rebuild(kept)
-	}
+	s.rebuildDerivedIndexesLocked(false)
 
 	// Archive evicted entries instead of discarding them.
 	if s.archive != nil && len(evicted) > 0 {
@@ -2500,7 +2724,7 @@ func (s *Store) load() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// No legacy file either — fresh install. Keep using legacy mode
+			// No legacy file either; fresh install. Keep using legacy mode
 			// (partitions will be enabled on first migration when the store
 			// grows large enough).
 			return nil
@@ -2523,7 +2747,7 @@ func (s *Store) load() error {
 	s.entries = entries
 
 	// Migrate legacy file to partitions when the store is large enough.
-	// Small stores (<100 entries) stay as single files — no overhead.
+	// Small stores (<100 entries) stay as single files; no overhead.
 	const migrationThreshold = 100
 	if s.partMgr != nil && len(entries) >= migrationThreshold {
 		if err := s.partMgr.migrateFromLegacy(entries, s.path); err != nil {
@@ -2536,6 +2760,7 @@ func (s *Store) load() error {
 
 func (s *Store) flush() error {
 	s.mu.RLock()
+	flushGen := atomic.LoadUint64(&s.dirtyGen)
 
 	// Partitioned flush: write all partitions when dirty.
 	if s.partMgr != nil && s.partMgr.isEnabled() && s.dirty {
@@ -2544,13 +2769,15 @@ func (s *Store) flush() error {
 		copy(entries, s.entries)
 		s.mu.RUnlock()
 
-		// flushDirty operates on the copied slice — no lock needed.
+		// flushDirty operates on the copied slice; no lock needed.
 		_, err := s.partMgr.flushDirty(entries)
 		if err != nil {
 			return fmt.Errorf("memory_store: partition flush: %w", err)
 		}
 		s.mu.Lock()
-		s.dirty = false
+		if atomic.LoadUint64(&s.dirtyGen) == flushGen {
+			s.dirty = false
+		}
 		s.mu.Unlock()
 		return nil
 	}
@@ -2570,12 +2797,15 @@ func (s *Store) flush() error {
 		return fmt.Errorf("memory_store: write file: %w", err)
 	}
 	s.mu.Lock()
-	s.dirty = false
+	if atomic.LoadUint64(&s.dirtyGen) == flushGen {
+		s.dirty = false
+	}
 	s.mu.Unlock()
 	return nil
 }
 
 func (s *Store) signalSave() {
+	atomic.AddUint64(&s.dirtyGen, 1)
 	select {
 	case s.saveCh <- struct{}{}:
 	default:
@@ -2603,8 +2833,12 @@ func containsKeyword(e Entry, kw string) bool {
 // shared entries (empty OwnerID). Different users' entries are never
 // considered duplicates of each other.
 func (s *Store) findSubstringDuplicate(content string, ownerID string) int {
-	lower := strings.ToLower(strings.TrimSpace(content))
-	if len(lower) < minSubstringLen {
+	return s.findSubstringDuplicateForEntry(Entry{Content: content, OwnerID: ownerID})
+}
+
+func (s *Store) findSubstringDuplicateForEntry(entry Entry) int {
+	lower := strings.ToLower(strings.TrimSpace(entry.Content))
+	if len(lower) == 0 {
 		return -1
 	}
 
@@ -2618,19 +2852,49 @@ func (s *Store) findSubstringDuplicate(content string, ownerID string) int {
 		// Multi-tenant isolation: skip entries from different users.
 		// Empty OwnerID (shared) can match with any user.
 		existingOwner := s.entries[i].OwnerID
-		if ownerID != "" && existingOwner != "" && existingOwner != ownerID {
+		if entry.OwnerID != "" && existingOwner != "" && existingOwner != entry.OwnerID {
 			continue
 		}
-
-		existing := strings.ToLower(strings.TrimSpace(s.entries[i].Content))
-		if len(existing) < minSubstringLen {
-			continue
-		}
-		if strings.Contains(existing, lower) || strings.Contains(lower, existing) {
+		if isDuplicateContentCandidate(lower, entry.Entities, s.entries[i]) {
 			return i
 		}
 	}
 	return -1
+}
+
+func isDuplicateContentCandidate(lowerContent string, incomingEntities []string, existing Entry) bool {
+	existingContent := strings.ToLower(strings.TrimSpace(existing.Content))
+	if len(existingContent) == 0 {
+		return false
+	}
+	if len(lowerContent) >= minSubstringLen && len(existingContent) >= minSubstringLen {
+		return strings.Contains(existingContent, lowerContent) || strings.Contains(lowerContent, existingContent)
+	}
+	if !strings.Contains(existingContent, lowerContent) && !strings.Contains(lowerContent, existingContent) {
+		return false
+	}
+	return entityOverlapEvidence(incomingEntities, existing.Entities) >= 1
+}
+
+func entityOverlapEvidence(a, b []string) int {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, token := range a {
+		if name, ok := semanticEntityTokenName(token); ok {
+			seen[normalizeEntityName(name)] = struct{}{}
+		}
+	}
+	overlap := 0
+	for _, token := range b {
+		if name, ok := semanticEntityTokenName(token); ok {
+			if _, ok := seen[normalizeEntityName(name)]; ok {
+				overlap++
+			}
+		}
+	}
+	return overlap
 }
 
 // MergeTags combines two tag slices, removing duplicates.

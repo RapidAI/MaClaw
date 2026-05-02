@@ -48,6 +48,7 @@ const LLM_SERVICE_I18N = {
     addGroup: 'Add / Update Group',
     saveAll: 'Save Service Config',
     issueCard: 'Issue Service Exchange Card',
+    issueCardPlansHint: 'Plan defaults: day 300 credits / 5h 150; week 1200 / 5h 300 / daily 600; month 5000 / 5h 600 / daily 1200 / weekly 2400; quarter 17000 / 5h 1200 / daily 2400 / weekly 4800 / monthly 10000; year 70000 / 5h 2400 / daily 4800 / weekly 9600 / monthly 40000.',
     systemDefaults: 'New User Benefits',
     systemDesc: 'Grant credits and bind a model-service group automatically for new users.',
     systemHint: 'New users receive 30% of the configured credits after registration, and the remaining 70% after email confirmation. The built-in default group is Default (No Model Access) and is used as the fallback when no group is selected.',
@@ -62,6 +63,12 @@ const LLM_SERVICE_I18N = {
     monthlyCredits: 'Monthly Credits',
     periodLimits: 'Limits',
     count: 'Quantity',
+    cardDuration: 'Validity',
+    cardDurationDay: 'Day (1 day)',
+    cardDurationWeek: 'Week (7 days)',
+    cardDurationMonth: 'Month (30 days)',
+    cardDurationQuarter: 'Quarter (91 days)',
+    cardDurationYear: 'Year (365 days)',
     diagnoseTitle: 'Entitlement Diagnostic',
     diagnoseDesc: 'Explain why a user can or cannot access model services.',
     diagnoseEmail: 'Email',
@@ -307,6 +314,7 @@ const LLM_SERVICE_I18N = {
     addGroup: '\u65b0\u5efa / \u66f4\u65b0\u670d\u52a1\u7ec4',
     saveAll: '\u4fdd\u5b58\u670d\u52a1\u914d\u7f6e',
     issueCard: '\u53d1\u884c\u670d\u52a1\u5151\u6362\u5361',
+    issueCardPlansHint: '\u9ed8\u8ba4\u89c4\u5219\uff1a\u5929\u5361 300 / 5\u5c0f\u65f6 150\uff1b\u5468\u5361 1200 / 5\u5c0f\u65f6 300 / \u6bcf\u65e5 600\uff1b\u6708\u5361 5000 / 5\u5c0f\u65f6 600 / \u6bcf\u65e5 1200 / \u6bcf\u5468 2400\uff1b\u5b63\u5361 17000 / 5\u5c0f\u65f6 1200 / \u6bcf\u65e5 2400 / \u6bcf\u5468 4800 / \u6bcf\u6708 10000\uff1b\u5e74\u5361 70000 / 5\u5c0f\u65f6 2400 / \u6bcf\u65e5 4800 / \u6bcf\u5468 9600 / \u6bcf\u6708 40000\u3002',
     systemDefaults: '\u65b0\u7528\u6237\u798f\u5229',
     systemDesc: '\u4e3a\u65b0\u7528\u6237\u81ea\u52a8\u53d1\u653e credits \u5e76\u7ed1\u5b9a\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
     systemHint: '\u65b0\u7528\u6237\u6ce8\u518c\u540e\u5148\u53d1\u653e\u914d\u7f6e credits \u7684 30%\uff0c\u90ae\u4ef6\u786e\u8ba4\u540e\u518d\u53d1\u653e\u5269\u4f59 70%\u3002\u5982\u679c\u672a\u9009\u62e9\u670d\u52a1\u7ec4\uff0c\u5c06\u56de\u9000\u5230\u5185\u7f6e Default\uff08\u65e0\u6a21\u578b\u6743\u9650\uff09\u3002',
@@ -321,6 +329,12 @@ const LLM_SERVICE_I18N = {
     monthlyCredits: '\u6bcf\u6708\u989d\u5ea6',
     periodLimits: '\u9650\u989d',
     count: '\u751f\u6210\u6570\u91cf',
+    cardDuration: '\u6709\u6548\u671f',
+    cardDurationDay: '\u5929\uff081 \u5929\uff09',
+    cardDurationWeek: '\u5468\uff087 \u5929\uff09',
+    cardDurationMonth: '\u6708\uff0830 \u5929\uff09',
+    cardDurationQuarter: '\u5b63\uff0891 \u5929\uff09',
+    cardDurationYear: '\u5e74\uff08365 \u5929\uff09',
     diagnoseTitle: '\u6388\u6743\u8bca\u65ad',
     diagnoseDesc: '\u8bf4\u660e\u67d0\u4e2a\u7528\u6237\u4e3a\u4ec0\u4e48\u80fd\u6216\u4e0d\u80fd\u8bbf\u95ee\u6a21\u578b\u670d\u52a1\u3002',
     diagnoseEmail: '\u90ae\u7bb1',
@@ -526,6 +540,13 @@ const llmServiceCapabilityOptions = ['document', 'reasoning', 'tools'];
 const llmServicePriorityOptions = [0, 10, 30, 50, 80, 100];
 const llmServiceResolutionOptions = [0, 1, 2, 3];
 const llmServiceMultiplierOptions = [1, 1.2, 1.5, 2, 3];
+const llmServiceCardDefaultPlansByDuration = {
+  1: { credits: 300, fiveHour: 150, daily: 0, weekly: 0, monthly: 0 },
+  7: { credits: 1200, fiveHour: 300, daily: 600, weekly: 0, monthly: 0 },
+  30: { credits: 5000, fiveHour: 600, daily: 1200, weekly: 2400, monthly: 0 },
+  91: { credits: 17000, fiveHour: 1200, daily: 2400, weekly: 4800, monthly: 10000 },
+  365: { credits: 70000, fiveHour: 2400, daily: 4800, weekly: 9600, monthly: 40000 }
+};
 const BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID = 'default';
 function isBuiltinLLMServiceGroup(id) { return String(id || '').trim().toLowerCase() === BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID; }
 function parseCSV(value) { return String(value || '').split(/[\n\r,\uff0c;\uff1b]+/).map(function(v) { return v.trim(); }).filter(Boolean); }
@@ -796,8 +817,25 @@ async function triggerLLMServiceModelDownload() {
 }
 function llmServiceCardsPanelMarkup() {
   return '' +
-    '<div class="item" style="padding:14px 16px"><div class="item-title" id="llmServiceCardsTitle"></div><div style="display:grid;grid-template-columns:minmax(150px,1fr) minmax(220px,1.4fr) repeat(7,minmax(78px,.55fr)) auto;gap:10px;align-items:end;margin-top:10px"><div><label id="llmServiceCardLabelLabel"></label><input id="llmServiceCardLabel"></div><div><label id="llmServiceCardGroupsLabel"></label><input id="llmServiceCardGroups" list="llmServiceGroupOptions"></div><div><label id="llmServiceCardDaysLabel"></label><input id="llmServiceCardDays" type="number" min="1" max="365" value="30"></div><div><label id="llmServiceCardCreditsLabel"></label><input id="llmServiceCardCredits" type="number" min="0" step="1" value="1000"></div><div><label id="llmServiceCardFiveHourCreditsLabel"></label><input id="llmServiceCardFiveHourCredits" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceCardDailyCreditsLabel"></label><input id="llmServiceCardDailyCredits" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceCardWeeklyCreditsLabel"></label><input id="llmServiceCardWeeklyCredits" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceCardMonthlyCreditsLabel"></label><input id="llmServiceCardMonthlyCredits" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceCardCountLabel"></label><input id="llmServiceCardCount" type="number" min="1" max="1000" value="1"></div><div style="display:flex;align-items:flex-end"><button class="btn-primary" onclick="issueLLMServiceCard()" id="llmServiceIssueBtn" style="height:36px;padding:0 14px;white-space:nowrap"></button></div></div><div id="llmServiceIssuedCodes" class="hint" style="margin-top:8px;padding:8px 10px;min-height:0"></div></div>' +
+    '<div class="item" style="padding:14px 16px"><div class="item-title" id="llmServiceCardsTitle"></div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:10px;align-items:end;margin-top:10px"><div style="min-width:0;grid-column:span 2"><label id="llmServiceCardLabelLabel"></label><input id="llmServiceCardLabel"></div><div style="min-width:0;grid-column:span 2"><label id="llmServiceCardGroupsLabel"></label><input id="llmServiceCardGroups" list="llmServiceGroupOptions"></div><div style="min-width:0"><label id="llmServiceCardDaysLabel"></label><select id="llmServiceCardDays" style="height:36px" onchange="llmServiceApplyCardDurationDefaults()"><option value="1" id="llmServiceCardDurationDayOption"></option><option value="7" id="llmServiceCardDurationWeekOption"></option><option value="30" id="llmServiceCardDurationMonthOption" selected></option><option value="91" id="llmServiceCardDurationQuarterOption"></option><option value="365" id="llmServiceCardDurationYearOption"></option></select></div><div style="min-width:0"><label id="llmServiceCardCreditsLabel"></label><input id="llmServiceCardCredits" type="number" min="0" step="1" value="5000"></div><div style="min-width:0"><label id="llmServiceCardFiveHourCreditsLabel"></label><input id="llmServiceCardFiveHourCredits" type="number" min="0" step="1" value="600"></div><div style="min-width:0"><label id="llmServiceCardDailyCreditsLabel"></label><input id="llmServiceCardDailyCredits" type="number" min="0" step="1" value="1200"></div><div style="min-width:0"><label id="llmServiceCardWeeklyCreditsLabel"></label><input id="llmServiceCardWeeklyCredits" type="number" min="0" step="1" value="2400"></div><div style="min-width:0"><label id="llmServiceCardMonthlyCreditsLabel"></label><input id="llmServiceCardMonthlyCredits" type="number" min="0" step="1" value="0"></div><div style="min-width:0"><label id="llmServiceCardCountLabel"></label><input id="llmServiceCardCount" type="number" min="1" max="1000" value="1"></div><div style="display:flex;align-items:flex-end;min-width:0;grid-column:span 2"><button class="btn-primary" onclick="issueLLMServiceCard()" id="llmServiceIssueBtn" style="width:100%;height:36px;padding:0 14px;white-space:nowrap"></button></div></div><div id="llmServiceIssuePlansHint" class="hint" style="margin-top:8px"></div><div id="llmServiceIssuedCodes" class="hint" style="margin-top:8px;padding:8px 10px;min-height:0"></div></div>' +
     '<div class="item"><div class="item-title" id="llmServiceCardsListTitle"></div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceCardSearchLabel"></label><input id="llmServiceCardSearch" oninput="llmServiceSetCardSearch(this.value)"></div><div></div></div><div class="actions" style="margin-top:10px"><button class="btn-ghost" type="button" onclick="llmServiceSetCardFilter(\'all\')" id="llmServiceFilterAllBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceSetCardFilter(\'unused\')" id="llmServiceFilterUnusedBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceSetCardFilter(\'redeemed\')" id="llmServiceFilterRedeemedBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceSelectCurrentPage()" id="llmServiceSelectPageBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceSelectFilteredCards()" id="llmServiceSelectFilteredBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceClearSelectedCards()" id="llmServiceClearSelectedBtn"></button><button class="btn-danger" type="button" onclick="llmServiceDeleteSelectedCards()" id="llmServiceDeleteSelectedBtn"></button><button class="btn-danger" type="button" onclick="llmServiceDeleteFilteredUnusedCards()" id="llmServiceDeleteFilteredBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceDownloadSelectedCards(\'txt\')" id="llmServiceExportSelectedTxtBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceDownloadSelectedCards(\'csv\')" id="llmServiceExportSelectedCsvBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceExportCurrentCards(\'txt\')" id="llmServiceExportCurrentTxtBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceExportCurrentCards(\'csv\')" id="llmServiceExportCurrentCsvBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceExportAllCards(\'all\',\'csv\')" id="llmServiceExportAllCsvBtn"></button></div><div id="llmServiceCardsList"></div><div id="llmServiceCardsPager" class="actions hidden" style="margin-top:10px"><div id="llmServiceCardsPagerMeta" class="hint" style="margin-right:auto"></div><button class="btn-ghost" type="button" onclick="llmServiceChangeCardPage(-1)" id="llmServiceCardsPrevBtn"></button><button class="btn-ghost" type="button" onclick="llmServiceChangeCardPage(1)" id="llmServiceCardsNextBtn"></button></div><div style="margin-top:10px" class="item-title" id="llmServiceGrantsTitle"></div><div id="llmServiceGrantsList"></div></div>';
+}
+function llmServiceApplyCardDurationDefaults() {
+  const daysEl = document.getElementById('llmServiceCardDays');
+  const durationDays = Number(daysEl && daysEl.value || 30) || 30;
+  const plan = llmServiceCardDefaultPlansByDuration[durationDays];
+  if (!plan) return;
+  const applyValue = function(id, value, enabled) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = String(value || 0);
+    el.disabled = enabled === false;
+  };
+  applyValue('llmServiceCardCredits', plan.credits, true);
+  applyValue('llmServiceCardFiveHourCredits', plan.fiveHour, true);
+  applyValue('llmServiceCardDailyCredits', plan.daily, durationDays >= 7);
+  applyValue('llmServiceCardWeeklyCredits', plan.weekly, durationDays >= 30);
+  applyValue('llmServiceCardMonthlyCredits', plan.monthly, durationDays >= 91);
 }
 function applyLLMServiceI18n() {
   _s('llmServiceAdminTitle', 'textContent', lsx('adminTitle'));
@@ -825,7 +863,12 @@ function applyLLMServiceI18n() {
   _s('llmServiceCardsTitle', 'textContent', lsx('cards'));
   _s('llmServiceCardLabelLabel', 'textContent', lsx('label'));
   _s('llmServiceCardGroupsLabel', 'textContent', lsx('serviceGroups'));
-  _s('llmServiceCardDaysLabel', 'textContent', lsx('days'));
+  _s('llmServiceCardDaysLabel', 'textContent', lsx('cardDuration'));
+  _s('llmServiceCardDurationDayOption', 'textContent', lsx('cardDurationDay'));
+  _s('llmServiceCardDurationWeekOption', 'textContent', lsx('cardDurationWeek'));
+  _s('llmServiceCardDurationMonthOption', 'textContent', lsx('cardDurationMonth'));
+  _s('llmServiceCardDurationQuarterOption', 'textContent', lsx('cardDurationQuarter'));
+  _s('llmServiceCardDurationYearOption', 'textContent', lsx('cardDurationYear'));
   _s('llmServiceCardCountLabel', 'textContent', lsx('count'));
   _s('llmServiceCardFiveHourCreditsLabel', 'textContent', lsx('fiveHourCredits'));
   _s('llmServiceCardDailyCreditsLabel', 'textContent', lsx('dailyCredits'));
@@ -836,6 +879,7 @@ function applyLLMServiceI18n() {
   _s('llmServiceAddGroupBtn', 'textContent', lsx('addGroup'));
   _s('llmServiceSaveBtn', 'textContent', lsx('saveAll'));
   _s('llmServiceIssueBtn', 'textContent', lsx('issueCard'));
+  _s('llmServiceIssuePlansHint', 'textContent', lsx('issueCardPlansHint'));
   _s('llmServiceFilterAllBtn', 'textContent', lsx('filterAll'));
   _s('llmServiceFilterUnusedBtn', 'textContent', lsx('filterUnused'));
   _s('llmServiceFilterRedeemedBtn', 'textContent', lsx('filterRedeemed'));
@@ -2048,6 +2092,7 @@ function ensureLLMServiceCardsTab() {
   host.innerHTML = llmServiceCardsPanelMarkup();
   tab.appendChild(host);
   applyLLMServiceI18n();
+  llmServiceApplyCardDurationDefaults();
   bindLLMServiceCardGridResize();
 }
 function applyLLMServiceTabI18n() {

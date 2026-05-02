@@ -220,11 +220,22 @@ type CenterMCPServer struct {
 type CenterInstalledTools struct {
 	Skills     []CenterRuntimeCapability `json:"skills"`
 	MCPServers []CenterMCPServer         `json:"mcp_servers"`
+	Source     string                    `json:"source,omitempty"`
+	CachedAt   string                    `json:"cached_at,omitempty"`
+	Stale      bool                      `json:"stale,omitempty"`
 }
 
 func fetchCenterRuntimeCapabilities(centerBaseURL string, tenantID string, colleagueID string, timeoutSec int) []CenterRuntimeCapability {
-	if centerBaseURL == "" || strings.TrimSpace(colleagueID) == "" {
+	items, err := fetchCenterRuntimeCapabilitiesResult(centerBaseURL, tenantID, colleagueID, timeoutSec)
+	if err != nil {
 		return nil
+	}
+	return items
+}
+
+func fetchCenterRuntimeCapabilitiesResult(centerBaseURL string, tenantID string, colleagueID string, timeoutSec int) ([]CenterRuntimeCapability, error) {
+	if centerBaseURL == "" || strings.TrimSpace(colleagueID) == "" {
+		return nil, fmt.Errorf("center base URL and colleague_id are required")
 	}
 	if timeoutSec <= 0 {
 		timeoutSec = 10
@@ -236,36 +247,44 @@ func fetchCenterRuntimeCapabilities(centerBaseURL string, tenantID string, colle
 	endpoint := strings.TrimRight(centerBaseURL, "/") + "/client/capabilities?" + values.Encode()
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	setCenterTenantHeader(req, tenantID)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return nil
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("iWorkerCenter runtime capabilities failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var result struct {
 		RuntimeEntries []CenterRuntimeCapability `json:"runtime_entries"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil
+		return nil, err
 	}
 	if result.RuntimeEntries == nil {
 		result.RuntimeEntries = []CenterRuntimeCapability{}
 	}
-	return result.RuntimeEntries
+	return result.RuntimeEntries, nil
 }
 
 func fetchCenterMCPServers(centerBaseURL string, tenantID string, departmentID string, timeoutSec int) []CenterMCPServer {
-	if centerBaseURL == "" {
+	items, err := fetchCenterMCPServersResult(centerBaseURL, tenantID, departmentID, timeoutSec)
+	if err != nil {
 		return nil
+	}
+	return items
+}
+
+func fetchCenterMCPServersResult(centerBaseURL string, tenantID string, departmentID string, timeoutSec int) ([]CenterMCPServer, error) {
+	if centerBaseURL == "" {
+		return nil, fmt.Errorf("center base URL is required")
 	}
 	if timeoutSec <= 0 {
 		timeoutSec = 10
@@ -281,31 +300,31 @@ func fetchCenterMCPServers(centerBaseURL string, tenantID string, departmentID s
 	}
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	setCenterTenantHeader(req, tenantID)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return nil
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("iWorkerCenter MCP servers failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var result struct {
 		MCPServers []CenterMCPServer `json:"mcp_servers"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil
+		return nil, err
 	}
 	if result.MCPServers == nil {
 		result.MCPServers = []CenterMCPServer{}
 	}
-	return result.MCPServers
+	return result.MCPServers, nil
 }
 
 // CenterCollabTask represents a collaboration task fetched from iWorkerCenter.
@@ -594,6 +613,9 @@ type CenterGoalPush struct {
 	ExecutorStatus              string `json:"executor_status,omitempty"`
 	ExecutorHeartbeatAgeSeconds int64  `json:"executor_heartbeat_age_seconds,omitempty"`
 	CreatedAt                   string `json:"created_at"`
+	Source                      string `json:"source,omitempty"`
+	CachedAt                    string `json:"cached_at,omitempty"`
+	Stale                       bool   `json:"stale,omitempty"`
 }
 
 type CenterGoalPushAckRequest struct {
@@ -1071,6 +1093,9 @@ type CenterAgentInstance struct {
 	LastHeartbeatAt     string                   `json:"last_heartbeat_at"`
 	HeartbeatAgeSeconds int64                    `json:"heartbeat_age_seconds"`
 	EffectiveStatus     string                   `json:"effective_status"`
+	Source              string                   `json:"source,omitempty"`
+	CachedAt            string                   `json:"cached_at,omitempty"`
+	Stale               bool                     `json:"stale,omitempty"`
 }
 
 type CenterAgentInstanceHeartbeatResult struct {

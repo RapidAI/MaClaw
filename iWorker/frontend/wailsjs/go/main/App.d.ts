@@ -20,6 +20,8 @@ export function FetchAgentInstances():Promise<Array<main.CenterAgentInstance>>;
 
 export function FetchGoalPushes(arg1:number):Promise<Array<main.CenterGoalPush>>;
 
+export function FetchInstalledTools():Promise<main.CenterInstalledTools>;
+
 export function FetchWorkerMemoryStats():Promise<main.WorkerMemoryStats>;
 
 export function GetAgentRuntimeSnapshot():Promise<main.AgentRuntimeSnapshot>;

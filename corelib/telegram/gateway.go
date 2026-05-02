@@ -362,10 +362,10 @@ type tgMessage struct {
 	Text      string `json:"text"`
 	Caption   string `json:"caption,omitempty"`
 	// Media fields
-	Document *tgDocument  `json:"document,omitempty"`
+	Document *tgDocument   `json:"document,omitempty"`
 	Photo    []tgPhotoSize `json:"photo,omitempty"`
-	Voice    *tgVoice     `json:"voice,omitempty"`
-	Video    *tgVideo     `json:"video,omitempty"`
+	Voice    *tgVoice      `json:"voice,omitempty"`
+	Video    *tgVideo      `json:"video,omitempty"`
 }
 
 type tgDocument struct {
@@ -494,6 +494,9 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	case "photo":
 		method = "sendPhoto"
 		fieldName = "photo"
+	case "video":
+		method = "sendVideo"
+		fieldName = "video"
 	case "voice":
 		method = "sendVoice"
 		fieldName = "voice"

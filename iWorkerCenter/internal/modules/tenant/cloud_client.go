@@ -225,11 +225,35 @@ func (c *CloudClient) FetchCenterComputeProviders(ctx context.Context, centerID,
 
 // CenterHeartbeatRequest identifies this runtime as an iWorkerCenter service.
 type CenterHeartbeatRequest struct {
-	Secret           string                 `json:"secret"`
-	RuntimeType      string                 `json:"runtime_type"`
-	ProductKind      string                 `json:"product_kind"`
-	AdminConsole     string                 `json:"admin_console"`
-	IWorkerReadiness *CloudIWorkerReadiness `json:"iworker_readiness,omitempty"`
+	Secret              string                  `json:"secret"`
+	RuntimeType         string                  `json:"runtime_type"`
+	ProductKind         string                  `json:"product_kind"`
+	AdminConsole        string                  `json:"admin_console"`
+	ProviderCount       int                     `json:"provider_count,omitempty"`
+	RuntimeProviderMode string                  `json:"runtime_provider_mode,omitempty"`
+	ComputeSource       string                  `json:"compute_source,omitempty"`
+	ComputePermission   bool                    `json:"compute_permission,omitempty"`
+	CloudProviderCount  int                     `json:"cloud_provider_count,omitempty"`
+	ComputeSyncStatus   *CloudComputeSyncStatus `json:"compute_sync_status,omitempty"`
+	IWorkerReadiness    *CloudIWorkerReadiness  `json:"iworker_readiness,omitempty"`
+}
+
+type CloudComputeSyncStatus struct {
+	LastSyncAt    string `json:"last_sync_at"`
+	Status        string `json:"status"`
+	Error         string `json:"error,omitempty"`
+	ProviderCount int    `json:"provider_count"`
+	NonBlocking   bool   `json:"non_blocking,omitempty"`
+	RuntimeImpact string `json:"runtime_impact,omitempty"`
+}
+
+type CloudCenterRuntime struct {
+	ProviderCount       int                     `json:"provider_count,omitempty"`
+	RuntimeProviderMode string                  `json:"runtime_provider_mode,omitempty"`
+	ComputeSource       string                  `json:"compute_source,omitempty"`
+	ComputePermission   bool                    `json:"compute_permission,omitempty"`
+	CloudProviderCount  int                     `json:"cloud_provider_count,omitempty"`
+	ComputeSyncStatus   *CloudComputeSyncStatus `json:"compute_sync_status,omitempty"`
 }
 
 // CloudIWorkerReadiness is the customer-side iWorker operating readiness sent to Cloud.
@@ -255,14 +279,22 @@ func NewCenterHeartbeatRequest(centerSecret string) CenterHeartbeatRequest {
 	return CenterHeartbeatRequest{Secret: centerSecret, RuntimeType: "service", ProductKind: "iworkercenter", AdminConsole: "web_console"}
 }
 
-func NewCenterHeartbeatRequestWithReadiness(centerSecret string, readiness *CloudIWorkerReadiness) CenterHeartbeatRequest {
+func NewCenterHeartbeatRequestWithReadiness(centerSecret string, readiness *CloudIWorkerReadiness, runtime *CloudCenterRuntime) CenterHeartbeatRequest {
 	req := NewCenterHeartbeatRequest(centerSecret)
 	req.IWorkerReadiness = readiness
+	if runtime != nil {
+		req.ProviderCount = runtime.ProviderCount
+		req.RuntimeProviderMode = runtime.RuntimeProviderMode
+		req.ComputeSource = runtime.ComputeSource
+		req.ComputePermission = runtime.ComputePermission
+		req.CloudProviderCount = runtime.CloudProviderCount
+		req.ComputeSyncStatus = runtime.ComputeSyncStatus
+	}
 	return req
 }
 
 // SendCenterHeartbeat reports that this iWorkerCenter service instance is alive.
-func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerSecret string, readiness *CloudIWorkerReadiness) error {
+func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerSecret string, readiness *CloudIWorkerReadiness, runtime *CloudCenterRuntime) error {
 	if c.cfg.BaseURL == "" {
 		return fmt.Errorf("cloud base_url not configured")
 	}
@@ -275,7 +307,7 @@ func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerS
 	}
 
 	url := fmt.Sprintf("%s/api/centers/%s/heartbeat", strings.TrimRight(c.cfg.BaseURL, "/"), centerID)
-	body, err := json.Marshal(NewCenterHeartbeatRequestWithReadiness(centerSecret, readiness))
+	body, err := json.Marshal(NewCenterHeartbeatRequestWithReadiness(centerSecret, readiness, runtime))
 	if err != nil {
 		return err
 	}

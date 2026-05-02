@@ -276,12 +276,15 @@ func inferSecurityLabels(steps []skill.SkillYAMLStep) []string {
 	for _, step := range steps {
 		action := strings.ToLower(step.Action)
 		if strings.Contains(action, "exec") || strings.Contains(action, "cmd") ||
-			strings.Contains(action, "shell") || strings.Contains(action, "run") {
+			strings.Contains(action, "shell") || strings.Contains(action, "run") ||
+			strings.Contains(action, "bash") || strings.Contains(action, "powershell") ||
+			strings.Contains(action, "terminal") || strings.Contains(action, "script") {
 			labelSet["shell_exec"] = true
 		}
 		if strings.Contains(action, "http") || strings.Contains(action, "api") ||
 			strings.Contains(action, "fetch") || strings.Contains(action, "request") ||
-			strings.Contains(action, "network") || strings.Contains(action, "url") {
+			strings.Contains(action, "network") || strings.Contains(action, "url") ||
+			strings.Contains(action, "curl") || strings.Contains(action, "wget") {
 			labelSet["network_access"] = true
 		}
 		if strings.Contains(action, "file") || strings.Contains(action, "read") ||
@@ -447,75 +450,120 @@ func RunAutoUpload(
 	skillExec *SkillExecutor,
 	client *SkillMarketClient,
 ) error {
-	// 1. Record execution (empty localHash for new skill).
-	trigger.RecordExecution(skillName, score, "")
-
-	// 2. Package skill into a temp zip.
-	tmpFile, err := os.CreateTemp("", "skill-upload-*.zip")
-	if err != nil {
-		return fmt.Errorf("auto-upload: create temp zip: %w", err)
+	if trigger == nil || skillExec == nil {
+		log.Printf("[auto-upload] dependencies missing, skipping upload for skill %s", skillName)
+		return nil
 	}
-	zipPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(zipPath)
 
-	if err := skillExec.ExportLearnedSkillsZip([]string{skillName}, zipPath); err != nil {
-		return fmt.Errorf("auto-upload: export zip: %w", err)
+	if score < 1 {
+		log.Printf("[auto-upload] quality score too low, skipping upload for skill %s", skillName)
+		return nil
 	}
+
+	localHash := ""
 	if strings.TrimSpace(skillDir) != "" {
-		if _, err := os.Stat(filepath.Join(skillDir, "skill.yaml")); err == nil {
-			report, err := skill.ValidateSkillPortability(skillDir)
-			if err != nil {
-				return fmt.Errorf("auto-upload: portability validation failed: %w", err)
-			}
-			if report.Summary.Errors > 0 {
-				return fmt.Errorf("auto-upload blocked: %d portability error(s) found", report.Summary.Errors)
-			}
-		} else if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
-			report, err := skill.ValidateSkillPortability(skillDir)
-			if err != nil {
-				return fmt.Errorf("auto-upload: portability validation failed: %w", err)
-			}
-			if report.Summary.Errors > 0 {
-				return fmt.Errorf("auto-upload blocked: %d portability error(s) found", report.Summary.Errors)
+		if !skillDefinitionExists(skillDir) {
+			return runLegacyLearnedSkillAutoUpload(ctx, skillName, skillDir, score, trigger, skillExec, client)
+		}
+		_, report, err := prepareSkillDirForMarket(skillDir, true)
+		if err != nil {
+			return fmt.Errorf("auto-upload: portability preparation failed: %w", err)
+		}
+		entry, loadErr := loadImportedSkillEntry(skillDir)
+		if loadErr == nil {
+			quality := evaluateSkillQuality(entry, report, false)
+			writeSkillQualityStatus(skillDir, entry, quality, "generated_upload", false)
+			if !quality.MarketReady {
+				return fmt.Errorf("auto-upload blocked by quality gate: score=%d reasons=%s", quality.Score, strings.Join(quality.Reasons, "; "))
 			}
 		}
+		localHash = skillDirHash(skillDir)
 	}
 
-	// 3. Check if upload conditions are met.
-	if !trigger.ShouldUpload(skillName) {
-		return nil
-	}
+	// 1. Record the verified generated skill. RunAutoUpload is used after the
+	// quality gate, so it uploads immediately when SkillMarket is reachable while
+	// still recording the hash to avoid future duplicate uploads.
+	trigger.RecordExecution(skillName, score, localHash)
 
-	// 4. Check if any HubCenter node is currently reachable.
+	// 2. Hand off to the lifecycle queue. The queue keeps the "timely upload"
+	// promise without losing good skills when HubCenter, email config, or the
+	// network is temporarily unavailable.
 	if client == nil || client.app == nil {
-		log.Printf("[auto-upload] HubCenter client not initialized, skipping upload for skill %s", skillName)
+		log.Printf("[auto-upload] HubCenter client not initialized, queued upload unavailable for skill %s", skillName)
 		return nil
 	}
-	if _, _, err := client.app.resolveHubCenterBaseURL(ctx, hubHTTPClient); err != nil {
-		log.Printf("[auto-upload] HubCenter not configured or reachable, skipping upload for skill %s: %v", skillName, err)
+	ensureLifecycleUploadEmail(client.app, trigger)
+	client.app.ensureSkillLifecycleManager()
+	if client.app.skillLifecycle == nil {
+		log.Printf("[auto-upload] lifecycle manager not initialized, skipping upload for skill %s", skillName)
 		return nil
 	}
-
-	// 5. Submit to SkillMarket.
-	submissionID, err := client.SubmitSkill(ctx, zipPath, "")
-	if err != nil {
-		log.Printf("[auto-upload] upload failed for skill %s: %v", skillName, err)
-		return fmt.Errorf("auto-upload: submit skill: %w", err)
+	if _, err := client.app.skillLifecycle.EnqueueUpload(ctx, skillName, skillDir, "generated_upload", false, true); err != nil {
+		return fmt.Errorf("auto-upload: enqueue skill: %w", err)
 	}
+	log.Printf("[auto-upload] skill %s queued for SkillMarket upload", skillName)
+	return nil
+}
 
-	// 6. Write upload_status.json in skillDir.
-	status := map[string]string{"submission_id": submissionID}
-	statusData, err := json.Marshal(status)
-	if err != nil {
-		return fmt.Errorf("auto-upload: marshal status: %w", err)
+func ensureLifecycleUploadEmail(app *App, trigger *AutoUploadTrigger) {
+	if app == nil || trigger == nil || trigger.emailFn == nil {
+		return
 	}
-	statusPath := filepath.Join(skillDir, "upload_status.json")
-	if err := os.WriteFile(statusPath, statusData, 0o644); err != nil {
-		return fmt.Errorf("auto-upload: write upload_status.json: %w", err)
+	email := strings.TrimSpace(trigger.emailFn())
+	if email == "" {
+		return
 	}
+	cfg, err := app.LoadConfig()
+	if err != nil || strings.TrimSpace(cfg.RemoteEmail) != "" {
+		return
+	}
+	cfg.RemoteEmail = email
+	if err := app.SaveConfig(cfg); err != nil {
+		log.Printf("[auto-upload] persist upload email failed: %v", err)
+	}
+}
 
-	log.Printf("[auto-upload] skill %s uploaded, submission_id=%s", skillName, submissionID)
+func skillDefinitionExists(skillDir string) bool {
+	if strings.TrimSpace(skillDir) == "" {
+		return false
+	}
+	if defPath, _ := findSkillDefinitionFile(skillDir); defPath != "" {
+		return true
+	}
+	for _, name := range []string{"skill.md", "SKILL.md", "README.md"} {
+		if _, err := os.Stat(filepath.Join(skillDir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func runLegacyLearnedSkillAutoUpload(ctx context.Context, skillName, skillDir string, score int, trigger *AutoUploadTrigger, skillExec *SkillExecutor, client *SkillMarketClient) error {
+	// Legacy learned skills may not have a file-backed skill.yaml/SKILL.md yet.
+	// Record usage history, but let the lifecycle quality gate decide whether the
+	// registered skill is market-ready instead of requiring three prior runs here.
+	trigger.RecordExecution(skillName, score, skillDirHash(skillDir))
+
+	var app *App
+	if client != nil && client.app != nil {
+		app = client.app
+	} else if skillExec != nil {
+		app = skillExec.app
+	}
+	if app == nil {
+		log.Printf("[auto-upload] app not initialized, queued upload unavailable for learned skill %s", skillName)
+		return nil
+	}
+	ensureLifecycleUploadEmail(app, trigger)
+	app.ensureSkillLifecycleManager()
+	if app.skillLifecycle == nil {
+		log.Printf("[auto-upload] lifecycle manager not initialized, skipping learned skill upload for %s", skillName)
+		return nil
+	}
+	if _, err := app.skillLifecycle.EnqueueUpload(ctx, skillName, "", "generated_upload", false, true); err != nil {
+		return fmt.Errorf("auto-upload: enqueue learned skill: %w", err)
+	}
+	log.Printf("[auto-upload] learned skill %s queued for SkillMarket upload", skillName)
 	return nil
 }
 
@@ -616,10 +664,14 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 			} else {
 				log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate backed_up=v%d", sid, ver)
 				// Write new version.
-				data, fmtErr := skill.FormatSkillYAMLFile(draft)
+				defPath, defFormat := findSkillDefinitionFile(existing.SkillDir)
+				if defPath == "" {
+					defPath = filepath.Join(existing.SkillDir, "skill.yaml")
+					defFormat = "yaml"
+				}
+				data, fmtErr := skill.FormatSkillDefinitionFile(draft, defFormat)
 				if fmtErr == nil {
-					yamlPath := filepath.Join(existing.SkillDir, "skill.yaml")
-					if writeErr := os.WriteFile(yamlPath, data, 0o644); writeErr != nil {
+					if writeErr := os.WriteFile(defPath, data, 0o644); writeErr != nil {
 						log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate write_error=%v", sid, writeErr)
 					} else {
 						log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate result=ok", sid)

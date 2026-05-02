@@ -4,38 +4,40 @@
     "title": "数字员工中心"
   },
   "nav": {
-    "bootstrap": "Enterprise Bootstrap",
+    "bootstrap": "企业初始化",
     "overview": "总览",
     "employees": "数字员工",
-    "communications": "员工通讯",
-    "workflows": "流程设计",
-    "knowledge": "经验共享",
+    "communications": "通讯",
+    "workflows": "流程",
+    "knowledge": "知识",
     "packages": "能力包",
-    "models": "模型调度",
+    "models": "模型路由",
     "compute": "算力管理",
-    "security": "安全规则",
+    "security": "安全",
     "delivery": "下发管理",
-    "usage": "使用情况",
-    "im": "IM 管理",
-    "auth": "认证管理",
-    "settings": "账户设置"
+    "usage": "用量",
+    "im": "IM 设置",
+    "auth": "认证",
+    "settings": "账号",
+    "cloud": "云端注册"
   },
   "subtitle": {
-    "bootstrap": "Launch a new customer company into an autonomous iWorker organization.",
-    "overview": "帮助管理员快速了解数字员工中心的整体运行情况。",
-    "employees": "管理身份、角色、能力偏好和模型策略。",
+    "bootstrap": "将新的客户企业初始化为可自治的 iWorker 组织。",
+    "overview": "快速了解数字员工中心的整体运行状态。",
+    "employees": "管理身份、角色、能力和模型策略。",
     "communications": "查看数字员工之间的协作记录和请求流转。",
-    "workflows": "配置事务如何在不同数字员工之间流转。",
-    "knowledge": "沉淀经验并支持不同员工复用。",
+    "workflows": "配置任务如何在不同数字员工之间流转。",
+    "knowledge": "沉淀经验并支持跨员工复用。",
     "packages": "管理能力包来源、版本和分发状态。",
-    "models": "统一配置默认模型、备用模型与路由规则。",
-    "compute": "管理 LLM 算力来源、服务商配置与用量统计。",
+    "models": "配置默认模型、备用模型和路由规则。",
+    "compute": "管理 LLM 算力来源、服务商配置和用量统计。",
     "security": "下发统一治理规则并保留审计入口。",
     "delivery": "查看配置和能力向客户端下发的状态。",
-    "usage": "跟踪数字员工使用量和趋势变化。",
+    "usage": "跟踪数字员工用量和趋势。",
     "im": "配置飞书、钉钉、企业微信网关接入。",
-    "auth": "管理数字员工的 LDAP 和本地账户认证方式。",
-    "settings": "管理邮箱和登录密码。"
+    "auth": "管理数字员工的 LDAP 和本地账号认证方式。",
+    "settings": "管理邮箱和登录密码。",
+    "cloud": "将本中心注册到 iWorkerCloud，并确认授权状态。"
   },
   "usage": {
     "title": "用量统计",
@@ -65,15 +67,15 @@
   },
   "setup": {
     "title": "初始化设置",
-    "description": "首次使用，请设置管理员账户。"
+    "description": "首次使用，请设置管理员账号。"
   },
   "im": {
     "feishu": "飞书",
-    "feishuDesc": "配置飞书机器人的 App ID 和密钥。",
+    "feishuDesc": "配置飞书机器人 App ID 和密钥。",
     "dingtalk": "钉钉",
-    "dingtalkDesc": "配置钉钉机器人的 App Key 和密钥。",
+    "dingtalkDesc": "配置钉钉机器人 App Key 和密钥。",
     "wecom": "企业微信",
-    "wecomDesc": "配置企业微信的 Corp ID、Agent ID 和密钥。"
+    "wecomDesc": "配置企业微信 Corp ID、Agent ID 和密钥。"
   },
   "compute": {
     "title": "算力管理",
@@ -92,13 +94,13 @@
     "model": "模型",
     "enabled": "启用",
     "source": "来源",
-    "test": "测试连通性",
+    "test": "测试连接",
     "addProvider": "添加服务商",
-    "confirmDelete": "确定删除此 Provider？",
+    "confirmDelete": "确定删除此服务商？",
     "priority": "优先级",
     "description": "描述",
-    "inputPrice": "输入单价(每MToken)",
-    "outputPrice": "输出单价(每MToken)",
+    "inputPrice": "输入单价（每 MToken）",
+    "outputPrice": "输出单价（每 MToken）",
     "status": "状态",
     "actions": "操作",
     "typeGeneral": "通用",
@@ -117,7 +119,57 @@
     "back": "返回",
     "loading": "加载中...",
     "noData": "暂无数据",
-    "success": "操作成功",
-    "error": "操作失败"
+    "success": "成功",
+    "error": "错误"
+  },
+  "cloud": {
+    "title": "iWorkerCloud 注册",
+    "description": "连接到 iWorkerCloud 协调平面，用于注册、授权和算力分发。",
+    "statusTitle": "注册与授权状态",
+    "registerAction": "注册到 iWorkerCloud",
+    "registering": "注册中...",
+    "refresh": "刷新状态",
+    "longTerm": "长期有效",
+    "noModules": "暂未返回已授权模块。",
+    "modulesTitle": "已授权模块",
+    "modulesDesc": "iWorkerCloud 授权给当前中心使用的模块。",
+    "boundaryTitle": "运行边界",
+    "boundaryDesc": "云端协调能力与中心业务执行保持隔离。",
+    "states": {
+      "loading": "检查中",
+      "licensed": "已授权",
+      "unregistered": "未注册",
+      "not_configured": "未配置云端",
+      "pending": "等待确认",
+      "offline": "云端不可达",
+      "error": "需要处理"
+    },
+    "stateHelp": {
+      "loading": "正在检查当前云端注册状态。",
+      "licensed": "当前中心已经获得 iWorkerCloud 有效授权。",
+      "unregistered": "请先注册当前中心，获得云端凭证后才能同步云端托管服务。",
+      "not_configured": "请先在中心配置中设置 iWorkerCloud base URL，再进行注册。",
+      "pending": "注册已提交，但仍需要云端确认或签发有效授权。",
+      "offline": "当前无法连接 iWorkerCloud。本地 iWorkerCenter 与 iWorker 运行不受阻断。",
+      "error": "暂时无法确认云端注册状态。"
+    },
+    "fields": {
+      "centerId": "中心 ID",
+      "licenseType": "授权类型",
+      "expiresAt": "到期时间",
+      "createdAt": "签发时间"
+    },
+    "boundary": {
+      "controlTitle": "Cloud 负责控制平面协调",
+      "controlDesc": "注册、确认、授权和算力分配由 iWorkerCloud 协调。",
+      "businessTitle": "Center 负责企业业务闭环",
+      "businessDesc": "员工协作、任务流转、MCP/Skill 安装和本地数字员工运行仍在 iWorkerCenter 与 iWorker 内完成。",
+      "offlineTitle": "Cloud 故障不阻断本地工作",
+      "offlineDesc": "Cloud 临时不可用时，Center 与 iWorker 继续使用本地状态和可用缓存配置运行。"
+    },
+    "errors": {
+      "unknown": "未知云端状态错误",
+      "registerFailed": "云端注册失败"
+    }
   }
 }

@@ -142,7 +142,7 @@ export function TTSConfigPanel({ lang }: Props) {
                 {t(
                     'TTS uses the local Kokoro-82M q8 model for voice playback. The model and selected voice files are downloaded from GitHub first, with Hub as fallback.',
                     'TTS 使用本地 Kokoro-82M q8 模型进行语音播报。模型和音色文件会优先从 GitHub 下载，无法访问时从 Hub 回退下载。',
-                    'TTS 使用本地 Kokoro-82M q8 模型進行語音播報。模型和音色文件會優先從 GitHub 下載，無法存取時從 Hub 回退下載。'
+                    'TTS 使用本地 Kokoro-82M q8 模型進行語音播報。模型和音色檔案會優先從 GitHub 下載，無法存取時從 Hub 回退下載。'
                 )}
             </p>
             {enabled && (

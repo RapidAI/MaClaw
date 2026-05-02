@@ -148,3 +148,62 @@ func TestEntityIndex_ReindexUpdatesMapping(t *testing.T) {
 		t.Fatal("expected Beijing to be indexed after reindex")
 	}
 }
+
+func TestEntityIndex_IndexesCanonicalEntityTokens(t *testing.T) {
+	idx := NewEntityIndex()
+	idx.IndexEntry(&Entry{
+		ID:       "dirty-entity",
+		Entities: []string{" Entity: Alpha Host ", " Relation: HAS-PORT ", " Entity: Port 2222 "},
+	})
+
+	if got := idx.FindByEntity("alpha host"); len(got) != 1 || got[0] != "dirty-entity" {
+		t.Fatalf("expected dirty alpha host entity to be indexed, got %v", got)
+	}
+	if got := idx.FindByEntity("port 2222"); len(got) != 1 || got[0] != "dirty-entity" {
+		t.Fatalf("expected dirty object entity to be indexed, got %v", got)
+	}
+}
+
+func TestEntityIndex_StatusAndEmptyEntityUpdatesRemoveMappings(t *testing.T) {
+	idx := NewEntityIndex()
+	e := &Entry{ID: "e1", Entities: []string{"entity:Alpha", "relation:about", "entity:Beta"}}
+	idx.IndexEntry(e)
+	if got := idx.FindByEntity("alpha"); len(got) != 1 {
+		t.Fatalf("expected alpha before status change, got %v", got)
+	}
+
+	e.Status = StatusSuperseded
+	idx.IndexEntry(e)
+	if got := idx.FindByEntity("alpha"); len(got) != 0 {
+		t.Fatalf("expected superseded entry to be removed, got %v", got)
+	}
+
+	e.Status = StatusActive
+	idx.IndexEntry(e)
+	if got := idx.FindByEntity("alpha"); len(got) != 1 {
+		t.Fatalf("expected alpha after reactivation, got %v", got)
+	}
+
+	e.Entities = nil
+	idx.IndexEntry(e)
+	if got := idx.FindByEntity("alpha"); len(got) != 0 {
+		t.Fatalf("expected entity deletion to remove old mapping, got %v", got)
+	}
+}
+
+func TestEntityIndex_RebuildSkipsInactiveAndMalformedEntries(t *testing.T) {
+	idx := NewEntityIndex()
+	idx.Rebuild([]Entry{
+		{ID: "active", Entities: []string{"entity:Alpha"}},
+		{ID: "dormant", Status: StatusDormant, Entities: []string{"entity:Beta"}},
+		{ID: "malformed", Entities: []string{"relation:about"}},
+	})
+
+	entities, entries := idx.Stats()
+	if entities != 1 || entries != 1 {
+		t.Fatalf("expected only one active well-formed entity entry, got entities=%d entries=%d", entities, entries)
+	}
+	if got := idx.FindByEntity("beta"); len(got) != 0 {
+		t.Fatalf("dormant entity should not be indexed, got %v", got)
+	}
+}

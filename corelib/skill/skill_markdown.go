@@ -243,25 +243,36 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		requiresGUI = *parsed.requiresGUI
 	}
 	return &corelib.NLSkillEntry{
-		Name:             parsed.name,
-		Description:      parsed.description,
-		Triggers:         triggers,
-		Steps:            []corelib.NLSkillStep{{Action: "craft_tool", Params: params}},
-		Status:           "active",
-		CreatedAt:        time.Now().Format(time.RFC3339),
-		Source:           source,
-		SourceProject:    sourceProject,
-		TrustLevel:       strings.TrimSpace(opts.TrustLevel),
-		SkillDir:         strings.TrimSpace(opts.SkillDir),
-		Platforms:        platforms,
-		RequiresGUI:      requiresGUI,
-		Mode:             parsed.mode,
-		ProducesArtifact: producesArtifact,
-		RequiredArgs:     parsed.requiredArgs,
-		RequiredEnv:      parsed.requiredEnv,
-		PreferredShell:   parsed.preferredShell,
-		RequiresPython:   parsed.requiresPython,
-		RequiresNode:     parsed.requiresNode,
+		Name:                    parsed.name,
+		Description:             parsed.description,
+		Triggers:                triggers,
+		Steps:                   []corelib.NLSkillStep{{Action: "craft_tool", Params: params}},
+		Status:                  "active",
+		CreatedAt:               time.Now().Format(time.RFC3339),
+		Source:                  source,
+		SourceProject:           sourceProject,
+		TrustLevel:              strings.TrimSpace(opts.TrustLevel),
+		SkillDir:                strings.TrimSpace(opts.SkillDir),
+		Platforms:               platforms,
+		RequiresGUI:             requiresGUI,
+		Mode:                    parsed.mode,
+		ExecMode:                parsed.execMode,
+		GlobalTimeout:           parsed.timeout,
+		ProducesArtifact:        producesArtifact,
+		RequiredArgs:            parsed.requiredArgs,
+		RequiredEnv:             parsed.requiredEnv,
+		PreferredShell:          parsed.preferredShell,
+		RequiresPython:          parsed.requiresPython,
+		RequiresNode:            parsed.requiresNode,
+		Operations:              parsed.operations,
+		Params:                  parsed.params,
+		Pipeline:                parsed.pipeline,
+		RequiresTools:           parsed.requiresTools,
+		FallbackForTools:        parsed.fallbackForTools,
+		RequiresToolsets:        parsed.requiresToolsets,
+		FallbackForToolsets:     parsed.fallbackForToolsets,
+		RequiredCredentialFiles: parsed.requiredCredentialFiles,
+		Stateful:                parsed.stateful,
 	}, nil
 }
 
@@ -481,27 +492,36 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	}
 
 	entry := &corelib.NLSkillEntry{
-		Name:             parsed.name,
-		Description:      parsed.description,
-		Triggers:         triggers,
-		Steps:            steps,
-		Status:           "active",
-		CreatedAt:        fileModTime(mdPath),
-		Source:           firstNonEmpty(strings.TrimSpace(opts.Source), "file"),
-		SourceProject:    firstNonEmpty(strings.TrimSpace(opts.SourceProject), parsed.compatibility),
-		TrustLevel:       strings.TrimSpace(opts.TrustLevel),
-		SkillDir:         firstNonEmpty(strings.TrimSpace(opts.SkillDir), skillDir),
-		Platforms:        platforms,
-		RequiresGUI:      requiresGUI,
-		Mode:             parsed.mode,
-		ExecMode:         parsed.execMode,
-		GlobalTimeout:    parsed.timeout,
-		ProducesArtifact: producesArtifact,
-		RequiredArgs:     parsed.requiredArgs,
-		RequiredEnv:      parsed.requiredEnv,
-		PreferredShell:   parsed.preferredShell,
-		RequiresPython:   parsed.requiresPython,
-		RequiresNode:     parsed.requiresNode,
+		Name:                    parsed.name,
+		Description:             parsed.description,
+		Triggers:                triggers,
+		Steps:                   steps,
+		Status:                  "active",
+		CreatedAt:               fileModTime(mdPath),
+		Source:                  firstNonEmpty(strings.TrimSpace(opts.Source), "file"),
+		SourceProject:           firstNonEmpty(strings.TrimSpace(opts.SourceProject), parsed.compatibility),
+		TrustLevel:              strings.TrimSpace(opts.TrustLevel),
+		SkillDir:                firstNonEmpty(strings.TrimSpace(opts.SkillDir), skillDir),
+		Platforms:               platforms,
+		RequiresGUI:             requiresGUI,
+		Mode:                    parsed.mode,
+		ExecMode:                parsed.execMode,
+		GlobalTimeout:           parsed.timeout,
+		ProducesArtifact:        producesArtifact,
+		RequiredArgs:            parsed.requiredArgs,
+		RequiredEnv:             parsed.requiredEnv,
+		PreferredShell:          parsed.preferredShell,
+		RequiresPython:          parsed.requiresPython,
+		RequiresNode:            parsed.requiresNode,
+		Operations:              parsed.operations,
+		Params:                  parsed.params,
+		Pipeline:                parsed.pipeline,
+		RequiresTools:           parsed.requiresTools,
+		FallbackForTools:        parsed.fallbackForTools,
+		RequiresToolsets:        parsed.requiresToolsets,
+		FallbackForToolsets:     parsed.fallbackForToolsets,
+		RequiredCredentialFiles: parsed.requiredCredentialFiles,
+		Stateful:                parsed.stateful,
 	}
 	return entry, nil
 }
@@ -644,13 +664,22 @@ type parsedSkillMarkdown struct {
 	execMode       string   // from frontmatter exec_mode: "all" (default), "first", "named"
 	timeout        int      // from frontmatter timeout (seconds), 0 = use default
 	// Extended fields from YAML frontmatter (list/bool/struct types)
-	triggers         []string // from frontmatter triggers (YAML list)
-	platforms        []string // from frontmatter platforms (YAML list)
-	requiresGUI      *bool    // from frontmatter requires_gui (YAML bool)
-	mode             string   // from frontmatter mode (e.g. "sequential", "api_workflow")
-	producesArtifact *bool    // from frontmatter produces_artifact (YAML bool)
-	requiresPython   []string // from frontmatter requires.python (YAML list)
-	requiresNode     []string // from frontmatter requires.node (YAML list)
+	triggers                []string // from frontmatter triggers (YAML list)
+	platforms               []string // from frontmatter platforms (YAML list)
+	requiresGUI             *bool    // from frontmatter requires_gui (YAML bool)
+	mode                    string   // from frontmatter mode (e.g. "sequential", "api_workflow")
+	producesArtifact        *bool    // from frontmatter produces_artifact (YAML bool)
+	requiresPython          []string // from frontmatter requires.python (YAML list)
+	requiresNode            []string // from frontmatter requires.node (YAML list)
+	operations              []corelib.NLSkillOperation
+	params                  []corelib.NLSkillParam
+	pipeline                []corelib.SkillPipelineStep
+	requiresTools           []string
+	fallbackForTools        []string
+	requiresToolsets        []string
+	fallbackForToolsets     []string
+	requiredCredentialFiles []string
+	stateful                bool
 }
 
 func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback string) (*parsedSkillMarkdown, error) {
@@ -690,24 +719,33 @@ func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback strin
 	simpleFM, _ := ParseMarkdownFrontmatter(skillMD)
 
 	return &parsedSkillMarkdown{
-		markdown:         skillMD,
-		body:             body,
-		name:             name,
-		description:      description,
-		compatibility:    strings.TrimSpace(yamlString(yamlFM["compatibility"])),
-		frontmatter:      simpleFM,
-		requiredArgs:     meta.requiredArgs,
-		requiredEnv:      meta.requiredEnv,
-		preferredShell:   meta.preferredShell,
-		execMode:         meta.execMode,
-		timeout:          meta.timeout,
-		triggers:         meta.triggers,
-		platforms:        meta.platforms,
-		requiresGUI:      meta.requiresGUI,
-		mode:             meta.mode,
-		producesArtifact: meta.producesArtifact,
-		requiresPython:   meta.requiresPython,
-		requiresNode:     meta.requiresNode,
+		markdown:                skillMD,
+		body:                    body,
+		name:                    name,
+		description:             description,
+		compatibility:           strings.TrimSpace(yamlString(yamlFM["compatibility"])),
+		frontmatter:             simpleFM,
+		requiredArgs:            meta.requiredArgs,
+		requiredEnv:             meta.requiredEnv,
+		preferredShell:          meta.preferredShell,
+		execMode:                meta.execMode,
+		timeout:                 meta.timeout,
+		triggers:                meta.triggers,
+		platforms:               meta.platforms,
+		requiresGUI:             meta.requiresGUI,
+		mode:                    meta.mode,
+		producesArtifact:        meta.producesArtifact,
+		requiresPython:          meta.requiresPython,
+		requiresNode:            meta.requiresNode,
+		operations:              meta.operations,
+		params:                  meta.params,
+		pipeline:                meta.pipeline,
+		requiresTools:           meta.requiresTools,
+		fallbackForTools:        meta.fallbackForTools,
+		requiresToolsets:        meta.requiresToolsets,
+		fallbackForToolsets:     meta.fallbackForToolsets,
+		requiredCredentialFiles: meta.requiredCredentialFiles,
+		stateful:                meta.stateful,
 	}, nil
 }
 
@@ -806,18 +844,27 @@ func ParseMarkdownFrontmatterYAML(content string) (map[string]interface{}, strin
 // parseSkillMarkdownDocument and buildCraftToolFallback call
 // extractSkillMetadata instead of duplicating field extraction logic.
 type skillFrontmatterMetadata struct {
-	requiredArgs     []string
-	requiredEnv      []string
-	preferredShell   string
-	execMode         string
-	timeout          int
-	triggers         []string
-	platforms        []string
-	requiresGUI      *bool
-	mode             string
-	producesArtifact *bool
-	requiresPython   []string
-	requiresNode     []string
+	requiredArgs            []string
+	requiredEnv             []string
+	preferredShell          string
+	execMode                string
+	timeout                 int
+	triggers                []string
+	platforms               []string
+	requiresGUI             *bool
+	mode                    string
+	producesArtifact        *bool
+	requiresPython          []string
+	requiresNode            []string
+	operations              []corelib.NLSkillOperation
+	params                  []corelib.NLSkillParam
+	pipeline                []corelib.SkillPipelineStep
+	requiresTools           []string
+	fallbackForTools        []string
+	requiresToolsets        []string
+	fallbackForToolsets     []string
+	requiredCredentialFiles []string
+	stateful                bool
 }
 
 // extractSkillMetadata extracts all typed skill metadata from a YAML
@@ -827,22 +874,49 @@ func extractSkillMetadata(yamlFM map[string]interface{}) skillFrontmatterMetadat
 	if yamlFM == nil {
 		return skillFrontmatterMetadata{}
 	}
-	var m skillFrontmatterMetadata
-	m.requiredArgs = yamlStringList(yamlFM["required_args"])
-	m.requiredEnv = yamlStringList(yamlFM["required_env"])
-	m.preferredShell = yamlString(yamlFM["shell"])
-	m.execMode = yamlString(yamlFM["exec_mode"])
-	m.timeout = yamlInt(yamlFM["timeout"])
-	m.triggers = yamlStringList(yamlFM["triggers"])
-	m.platforms = yamlStringList(yamlFM["platforms"])
-	m.requiresGUI = yamlBool(yamlFM["requires_gui"])
-	m.mode = yamlString(yamlFM["mode"])
-	m.producesArtifact = yamlBool(yamlFM["produces_artifact"])
-	if reqMap, ok := yamlFM["requires"].(map[string]interface{}); ok {
-		m.requiresPython = yamlStringList(reqMap["python"])
-		m.requiresNode = yamlStringList(reqMap["node"])
+	normalized := normalizeSkillYAMLRaw(yamlFM)
+	var sf SkillYAMLFile
+	if data, err := yaml.Marshal(normalized); err == nil {
+		_ = yaml.Unmarshal(data, &sf)
 	}
+	var m skillFrontmatterMetadata
+	m.requiredArgs = firstNonEmptyStringList(sf.RequiredArgs, yamlStringList(normalized["required_args"]))
+	m.requiredEnv = firstNonEmptyStringList(sf.RequiredEnv, yamlStringList(normalized["required_env"]))
+	m.preferredShell = firstNonEmpty(strings.TrimSpace(sf.PreferredShell), yamlString(normalized["shell"]))
+	m.execMode = firstNonEmpty(strings.TrimSpace(sf.ExecMode), yamlString(normalized["exec_mode"]))
+	m.timeout = sf.GlobalTimeout
+	if m.timeout == 0 {
+		m.timeout = yamlInt(firstNonNil(normalized["timeout"], normalized["global_timeout"]))
+	}
+	m.triggers = firstNonEmptyStringList(sf.Triggers, yamlStringList(normalized["triggers"]))
+	m.platforms = firstNonEmptyStringList(sf.Platforms, yamlStringList(normalized["platforms"]))
+	if sf.RequiresGUI {
+		requiresGUI := true
+		m.requiresGUI = &requiresGUI
+	} else {
+		m.requiresGUI = yamlBool(normalized["requires_gui"])
+	}
+	m.mode = firstNonEmpty(strings.TrimSpace(sf.Mode), yamlString(normalized["mode"]))
+	m.producesArtifact = yamlBool(normalized["produces_artifact"])
+	m.requiresPython = requiresPythonFromYAML(sf.Requires)
+	m.requiresNode = requiresNodeFromYAML(sf.Requires)
+	m.operations = convertSkillYAMLOperations(sf.Operations)
+	m.params = convertSkillYAMLParams(sf.Params)
+	m.pipeline = convertPipelineSteps(sf.Pipeline)
+	m.requiresTools = sf.RequiresTools
+	m.fallbackForTools = sf.FallbackForTools
+	m.requiresToolsets = sf.RequiresToolsets
+	m.fallbackForToolsets = sf.FallbackForToolsets
+	m.requiredCredentialFiles = sf.RequiredCredentialFiles
+	m.stateful = sf.Stateful
 	return m
+}
+
+func firstNonEmptyStringList(primary, fallback []string) []string {
+	if len(primary) > 0 {
+		return primary
+	}
+	return fallback
 }
 
 // yamlStringList extracts a []string from a YAML value that may be:

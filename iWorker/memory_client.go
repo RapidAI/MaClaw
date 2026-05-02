@@ -163,6 +163,9 @@ type WorkerMemoryStats struct {
 	ByScope       map[string]int `json:"by_scope"`
 	ByCategory    map[string]int `json:"by_category"`
 	VisibleScopes []string       `json:"visible_scopes"`
+	Source        string         `json:"source,omitempty"`
+	CachedAt      string         `json:"cached_at,omitempty"`
+	Stale         bool           `json:"stale,omitempty"`
 }
 type SaveWorkerMemoryRequest struct {
 	Scope      string   `json:"scope"`
@@ -221,8 +224,77 @@ func fetchWorkerMemoryStats(centerBaseURL, tenantID, departmentID, workerID stri
 	if stats.ByCategory == nil {
 		stats.ByCategory = map[string]int{}
 	}
+	if stats.VisibleScopes == nil {
+		stats.VisibleScopes = []string{}
+	}
+	stats.Source = "center"
+	stats.CachedAt = time.Now().UTC().Format(time.RFC3339)
 	return stats, nil
 }
+
+func workerMemoryStatsFromCache(tenantID, departmentID, workerID string) (WorkerMemoryStats, bool) {
+	memories := readWorkerMemoryCache(tenantID, departmentID, workerID)
+	if len(memories) == 0 {
+		return WorkerMemoryStats{}, false
+	}
+	stats := WorkerMemoryStats{
+		TenantID:     firstNonEmptyString(strings.TrimSpace(tenantID), "default"),
+		DepartmentID: strings.TrimSpace(departmentID),
+		WorkerID:     strings.TrimSpace(workerID),
+		Total:        len(memories),
+		ByScope:      map[string]int{},
+		ByCategory:   map[string]int{},
+		Source:       "cache",
+		Stale:        true,
+	}
+	scopeSeen := map[string]bool{}
+	for _, memory := range memories {
+		scope := firstNonEmptyString(strings.TrimSpace(memory.Scope), "personal")
+		category := firstNonEmptyString(strings.TrimSpace(memory.Category), "note")
+		stats.ByScope[scope]++
+		stats.ByCategory[category]++
+		scopeSeen[scope] = true
+	}
+	for _, scope := range []string{"company", "department", "personal"} {
+		if scopeSeen[scope] {
+			stats.VisibleScopes = append(stats.VisibleScopes, scope)
+			delete(scopeSeen, scope)
+		}
+	}
+	for scope := range scopeSeen {
+		stats.VisibleScopes = append(stats.VisibleScopes, scope)
+	}
+	if cachedAt, ok := workerMemoryCacheModifiedAt(tenantID, departmentID, workerID); ok {
+		stats.CachedAt = cachedAt
+	}
+	return stats, true
+}
+
+func unavailableWorkerMemoryStats(tenantID, departmentID, workerID string) WorkerMemoryStats {
+	return WorkerMemoryStats{
+		TenantID:      firstNonEmptyString(strings.TrimSpace(tenantID), "default"),
+		DepartmentID:  strings.TrimSpace(departmentID),
+		WorkerID:      strings.TrimSpace(workerID),
+		ByScope:       map[string]int{},
+		ByCategory:    map[string]int{},
+		VisibleScopes: []string{},
+		Source:        "unavailable",
+		Stale:         true,
+	}
+}
+
+func workerMemoryCacheModifiedAt(tenantID, departmentID, workerID string) (string, bool) {
+	path, err := workerMemoryCachePath(tenantID, departmentID, workerID)
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	return info.ModTime().UTC().Format(time.RFC3339), true
+}
+
 func fetchWorkerMemories(centerBaseURL, tenantID, departmentID, workerID, query string, limit int, timeoutSec int) []WorkerMemoryEntry {
 	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
 	tenantID = firstNonEmptyString(strings.TrimSpace(tenantID), "default")

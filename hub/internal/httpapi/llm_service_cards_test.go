@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -130,39 +131,41 @@ func TestCreateLLMServiceCardHandlerGeneratesBatchCodes(t *testing.T) {
 	}
 }
 
-func TestCreateLLMServiceCardHandlerClampsNegativeCredits(t *testing.T) {
+func TestCreateLLMServiceCardHandlerAppliesDefaultCreditsWhenMissingOrInvalid(t *testing.T) {
 	ctx := context.Background()
-	system := newTestLLMServiceSystemSettings()
-	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
-		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
-	}); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name string
+		body string
+		want float64
+	}{
+		{name: "missing", body: `{"service_group_ids":["coding-basic"],"duration_days":30,"count":1}`, want: 5000},
+		{name: "negative", body: `{"service_group_ids":["coding-basic"],"duration_days":7,"credits":-10,"count":1}`, want: 1200},
+		{name: "zero", body: `{"service_group_ids":["coding-basic"],"duration_days":1,"credits":0,"count":1}`, want: 300},
+		{name: "override", body: `{"service_group_ids":["coding-basic"],"duration_days":30,"credits":1234,"count":1}`, want: 1234},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			system := newTestLLMServiceSystemSettings()
+			if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+				ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
 
-	body := []byte(`{"service_group_ids":["coding-basic"],"duration_days":30,"credits":-10,"count":1}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	CreateLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Cards []struct {
-			Credits float64 `json:"credits"`
-		} `json:"cards"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-	if len(resp.Cards) != 1 || resp.Cards[0].Credits != 0 {
-		t.Fatalf("expected response credits to be clamped to 0, got %#v", resp.Cards)
-	}
-	saved, err := llmservice.LoadRegistry(ctx, system)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(saved.Cards) != 1 || saved.Cards[0].Credits != 0 {
-		t.Fatalf("expected saved credits to be clamped to 0, got %#v", saved.Cards)
+			req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader([]byte(tc.body)))
+			rec := httptest.NewRecorder()
+			CreateLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			saved, err := llmservice.LoadRegistry(ctx, system)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(saved.Cards) != 1 || saved.Cards[0].Credits != tc.want {
+				t.Fatalf("credits = %#v, want %v", saved.Cards, tc.want)
+			}
+		})
 	}
 }
 
@@ -201,12 +204,82 @@ func TestCreateLLMServiceCardHandlerPersistsPeriodLimitsAndCapsDuration(t *testi
 		t.Fatalf("unexpected saved period limits: %#v", saved.Cards)
 	}
 
-	body = []byte(`{"service_group_ids":["coding-basic"],"duration_days":366,"credits":100,"count":1}`)
+	body = []byte(`{"service_group_ids":["coding-basic"],"duration_days":2,"credits":100,"count":1}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	CreateLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected duration cap rejection, status = %d, body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected unsupported duration rejection, status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateLLMServiceCardHandlerAllowsFixedDurations(t *testing.T) {
+	ctx := context.Background()
+	allowed := []int{1, 7, 30, 91, 365}
+	for _, days := range allowed {
+		t.Run(fmt.Sprintf("%d_days", days), func(t *testing.T) {
+			system := newTestLLMServiceSystemSettings()
+			if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+				ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			body := []byte(fmt.Sprintf(`{"service_group_ids":["coding-basic"],"duration_days":%d,"credits":100,"count":1}`, days))
+			req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			CreateLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("duration %d rejected: status = %d, body = %s", days, rec.Code, rec.Body.String())
+			}
+			saved, err := llmservice.LoadRegistry(ctx, system)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(saved.Cards) != 1 || saved.Cards[0].DurationDays != days {
+				t.Fatalf("unexpected saved duration for %d: %#v", days, saved.Cards)
+			}
+		})
+	}
+}
+
+func TestCreateLLMServiceCardHandlerClearsInapplicablePeriodLimits(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		days int
+		want llmservice.CreditPeriodLimits
+	}{
+		{name: "day", days: 1, want: llmservice.CreditPeriodLimits{FiveHour: 50}},
+		{name: "week", days: 7, want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100}},
+		{name: "month", days: 30, want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200}},
+		{name: "quarter", days: 91, want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
+		{name: "year", days: 365, want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			system := newTestLLMServiceSystemSettings()
+			if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+				ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			body := []byte(fmt.Sprintf(`{"service_group_ids":["coding-basic"],"duration_days":%d,"credits":100,"five_hour_credits":50,"daily_credits":100,"weekly_credits":200,"monthly_credits":300,"count":1}`, tc.days))
+			req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			CreateLLMServiceCardHandler(system, nil).ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			saved, err := llmservice.LoadRegistry(ctx, system)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(saved.Cards) != 1 || saved.Cards[0].PeriodLimits != tc.want {
+				t.Fatalf("period limits = %#v, want %#v", saved.Cards, tc.want)
+			}
+		})
 	}
 }
 

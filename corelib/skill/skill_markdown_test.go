@@ -233,7 +233,7 @@ func TestScanSkillDir_FallsBackToMarkdownWhenYAMLHasNoSteps(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: pptx-generator\ndescription: yaml metadata only\nversion: \"1.0\"\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("---\nname: PPTX Generator\ndescription: Build decks\n---\n\n# PPTX Generator\n\nGenerate slides."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("---\nname: PPTX Generator\ndescription: Build decks\nmode: api_workflow\nproduces_artifact: false\nrequires_gui: true\nparams:\n  - name: input\n    required: true\n---\n\n# PPTX Generator\n\nGenerate slides."), 0o644); err != nil {
 		t.Fatalf("WriteFile(skill.md) error = %v", err)
 	}
 
@@ -246,6 +246,15 @@ func TestScanSkillDir_FallsBackToMarkdownWhenYAMLHasNoSteps(t *testing.T) {
 	}
 	if got := skills[0].Steps[0].Params["working_dir"]; got != skillDir {
 		t.Fatalf("working_dir = %#v, want %q", got, skillDir)
+	}
+	if skills[0].Mode != "api_workflow" || skills[0].ProducesArtifact {
+		t.Fatalf("markdown frontmatter was overwritten: mode=%q produces=%v", skills[0].Mode, skills[0].ProducesArtifact)
+	}
+	if !skills[0].RequiresGUI {
+		t.Fatalf("RequiresGUI = false, want markdown frontmatter true")
+	}
+	if len(skills[0].Params) != 1 || skills[0].Params[0].Name != "input" || !skills[0].Params[0].Required {
+		t.Fatalf("Params = %+v, want markdown frontmatter param", skills[0].Params)
 	}
 }
 
@@ -513,7 +522,6 @@ func TestSplitCSV(t *testing.T) {
 		}
 	}
 }
-
 
 // --- P0-3.1: Step ordering — blocks should execute in markdown order ---
 

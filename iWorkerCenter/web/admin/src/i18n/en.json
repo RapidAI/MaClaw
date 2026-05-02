@@ -18,7 +18,8 @@
     "usage": "Usage",
     "im": "IM Settings",
     "auth": "Authentication",
-    "settings": "Account"
+    "settings": "Account",
+    "cloud": "Cloud Registration"
   },
   "subtitle": {
     "bootstrap": "Launch a new customer company into an autonomous iWorker organization.",
@@ -35,7 +36,8 @@
     "usage": "Track digital worker usage and trends.",
     "im": "Configure Feishu, DingTalk, WeCom gateway integration.",
     "auth": "Manage LDAP and local account authentication for workers.",
-    "settings": "Manage email and login credentials."
+    "settings": "Manage email and login credentials.",
+    "cloud": "Register this Center with iWorkerCloud and verify authorization status."
   },
   "usage": {
     "title": "Usage Statistics",
@@ -119,5 +121,55 @@
     "noData": "No data",
     "success": "Success",
     "error": "Error"
+  },
+  "cloud": {
+    "title": "iWorkerCloud Registration",
+    "description": "Connect this Center to the iWorkerCloud coordination plane for registration, authorization and compute distribution.",
+    "statusTitle": "Registration and authorization status",
+    "registerAction": "Register with iWorkerCloud",
+    "registering": "Registering...",
+    "refresh": "Refresh status",
+    "longTerm": "Long-term",
+    "noModules": "No licensed modules returned yet.",
+    "modulesTitle": "Licensed Modules",
+    "modulesDesc": "Modules authorized by iWorkerCloud for this Center.",
+    "boundaryTitle": "Operational Boundary",
+    "boundaryDesc": "Cloud coordination is isolated from Center business execution.",
+    "states": {
+      "loading": "Checking",
+      "licensed": "Authorized",
+      "unregistered": "Not registered",
+      "not_configured": "Cloud not configured",
+      "pending": "Waiting for confirmation",
+      "offline": "Cloud unreachable",
+      "error": "Needs attention"
+    },
+    "stateHelp": {
+      "loading": "Checking current Cloud registration.",
+      "licensed": "This Center has active iWorkerCloud authorization.",
+      "unregistered": "Register this Center to obtain Cloud credentials before Cloud-managed services can sync.",
+      "not_configured": "Configure the iWorkerCloud base URL in Center settings before registration.",
+      "pending": "Registration exists, but Cloud still needs confirmation or an active license.",
+      "offline": "Cloud is currently unreachable. Local Center and iWorker operations can continue.",
+      "error": "The Cloud registration status could not be confirmed."
+    },
+    "fields": {
+      "centerId": "Center ID",
+      "licenseType": "License type",
+      "expiresAt": "Expires at",
+      "createdAt": "Issued at"
+    },
+    "boundary": {
+      "controlTitle": "Cloud handles control-plane coordination",
+      "controlDesc": "Registration, confirmation, authorization and compute assignments are coordinated through iWorkerCloud.",
+      "businessTitle": "Center owns enterprise business flow",
+      "businessDesc": "Employee collaboration, tasks, MCP/skill installation and local worker operation remain inside iWorkerCenter and iWorker.",
+      "offlineTitle": "Cloud outage is non-blocking",
+      "offlineDesc": "If Cloud is temporarily unavailable, Center and iWorker keep using local state and cached assignments where available."
+    },
+    "errors": {
+      "unknown": "Unknown Cloud status error",
+      "registerFailed": "Cloud registration failed"
+    }
   }
 }

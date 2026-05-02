@@ -16,14 +16,21 @@ func newBM25Index() *bm25Index {
 }
 
 func (b *bm25Index) rebuild(entries []Entry) {
-	docs := make([]bm25.Doc, len(entries))
-	for i, e := range entries {
-		docs[i] = entryToDoc(e)
+	docs := make([]bm25.Doc, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsActive() {
+			continue
+		}
+		docs = append(docs, entryToDoc(e))
 	}
 	b.idx.Rebuild(docs)
 }
 
 func (b *bm25Index) addEntry(e Entry) {
+	if !e.IsActive() {
+		b.removeEntry(e.ID)
+		return
+	}
 	b.idx.Add(entryToDoc(e))
 }
 
@@ -32,6 +39,10 @@ func (b *bm25Index) removeEntry(id string) {
 }
 
 func (b *bm25Index) updateEntry(e Entry) {
+	if !e.IsActive() {
+		b.removeEntry(e.ID)
+		return
+	}
 	b.idx.Update(entryToDoc(e))
 }
 
@@ -41,7 +52,7 @@ func (b *bm25Index) score(query string) map[string]float64 {
 
 func entryToDoc(e Entry) bm25.Doc {
 	text := e.Content
-	// Include CompactForm in the index — it may contain refined keywords
+	// Include CompactForm in the index; it may contain refined keywords
 	// that the LLM compressor extracted from the original content.
 	if e.CompactForm != "" && e.CompactForm != e.Content {
 		text += " " + e.CompactForm
@@ -59,11 +70,8 @@ func entryToDoc(e Entry) bm25.Doc {
 	// of their prefix and added to the searchable text.
 	if len(e.Entities) > 0 {
 		for _, ent := range e.Entities {
-			if strings.HasPrefix(ent, "entity:") {
-				name := strings.TrimPrefix(ent, "entity:")
-				if name != "" {
-					text += " " + name
-				}
+			if name, ok := semanticEntityTokenName(ent); ok {
+				text += " " + name
 			}
 		}
 	}

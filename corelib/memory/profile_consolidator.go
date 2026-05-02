@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -12,15 +13,23 @@ import (
 // it periodically by synthesizing weekly behavioral summaries (L4) with
 // the existing profile.
 type ProfileConsolidator struct {
+	mu      sync.RWMutex
 	store   *Store
 	tree    *TemporalTree
 	llm     LLMChatCaller
-	lastRun time.Time
+	lastRun map[string]time.Time
 }
 
 // NewProfileConsolidator creates a ProfileConsolidator.
 func NewProfileConsolidator(store *Store, tree *TemporalTree, llm LLMChatCaller) *ProfileConsolidator {
-	return &ProfileConsolidator{store: store, tree: tree, llm: llm}
+	return &ProfileConsolidator{store: store, tree: tree, llm: llm, lastRun: make(map[string]time.Time)}
+}
+
+// SetLLM rewires the LLM used by profile consolidation.
+func (pc *ProfileConsolidator) SetLLM(llm LLMChatCaller) {
+	pc.mu.Lock()
+	pc.llm = llm
+	pc.mu.Unlock()
 }
 
 // Consolidate runs one L5 profile consolidation cycle.
@@ -36,10 +45,20 @@ func NewProfileConsolidator(store *Store, tree *TemporalTree, llm LLMChatCaller)
 //   - No weekly summaries exist
 //   - Less than 7 days since last consolidation
 func (pc *ProfileConsolidator) Consolidate(ctx context.Context) (*ConsolidationResult, error) {
-	if pc.llm == nil || !pc.llm.IsConfigured() {
+	return pc.ConsolidateForOwner(ctx, "")
+}
+
+// ConsolidateForOwner runs one owner-scoped L5 profile consolidation cycle.
+// Empty ownerID is single-user/shared mode.
+func (pc *ProfileConsolidator) ConsolidateForOwner(ctx context.Context, ownerID string) (*ConsolidationResult, error) {
+	pc.mu.RLock()
+	llm := pc.llm
+	lastRun := pc.lastRun[ownerID]
+	pc.mu.RUnlock()
+	if llm == nil || !llm.IsConfigured() {
 		return &ConsolidationResult{Level: LevelProfile}, nil
 	}
-	if !pc.lastRun.IsZero() && time.Since(pc.lastRun) < 7*24*time.Hour {
+	if !lastRun.IsZero() && time.Since(lastRun) < 7*24*time.Hour {
 		return &ConsolidationResult{Level: LevelProfile}, nil
 	}
 
@@ -52,22 +71,22 @@ func (pc *ProfileConsolidator) Consolidate(ctx context.Context) (*ConsolidationR
 	start := time.Now()
 
 	// Gather weekly summaries (L4).
-	weeklySummaries := pc.gatherWeeklySummaries()
+	weeklySummaries := pc.gatherWeeklySummaries(ownerID)
 
 	// Gather recent reflections and promoted insights as additional signal.
-	recentInsights := pc.gatherRecentInsights()
+	recentInsights := pc.gatherRecentInsights(ownerID)
 
 	if len(weeklySummaries) == 0 && len(recentInsights) == 0 {
 		return &ConsolidationResult{Level: LevelProfile}, nil
 	}
 
 	// Get current profile (if exists).
-	currentProfile := pc.getCurrentProfile()
+	currentProfile := pc.getCurrentProfile(ownerID)
 
 	// Build prompt.
 	prompt := pc.buildProfilePrompt(currentProfile, weeklySummaries, recentInsights)
 
-	resp, err := pc.llm.ChatCall(prompt)
+	resp, err := llm.ChatCall(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("profile_consolidator: %w", err)
 	}
@@ -78,11 +97,13 @@ func (pc *ProfileConsolidator) Consolidate(ctx context.Context) (*ConsolidationR
 	}
 
 	// Update or create the profile entry.
-	if err := pc.upsertProfile(newProfile); err != nil {
+	if err := pc.upsertProfile(newProfile, ownerID); err != nil {
 		return nil, fmt.Errorf("profile_consolidator: upsert: %w", err)
 	}
 
-	pc.lastRun = time.Now()
+	pc.mu.Lock()
+	pc.lastRun[ownerID] = time.Now()
+	pc.mu.Unlock()
 
 	return &ConsolidationResult{
 		Level:        LevelProfile,
@@ -92,12 +113,15 @@ func (pc *ProfileConsolidator) Consolidate(ctx context.Context) (*ConsolidationR
 }
 
 // gatherWeeklySummaries collects L4 entries from the tree or store.
-func (pc *ProfileConsolidator) gatherWeeklySummaries() []string {
+func (pc *ProfileConsolidator) gatherWeeklySummaries(ownerID string) []string {
 	// Try TMT first.
 	if pc.tree != nil {
 		weeklyIDs := pc.tree.RecentAtLevel(LevelWeek, 4) // last 4 weeks
 		if len(weeklyIDs) > 0 {
-			return pc.contentsByIDs(weeklyIDs)
+			contents := pc.contentsByIDs(weeklyIDs, ownerID)
+			if len(contents) > 0 {
+				return contents
+			}
 		}
 	}
 
@@ -107,7 +131,7 @@ func (pc *ProfileConsolidator) gatherWeeklySummaries() []string {
 
 	var results []string
 	for _, e := range pc.store.entries {
-		if e.Level == LevelWeek && e.IsActive() {
+		if e.Level == LevelWeek && e.IsActive() && ownerMatches(e.OwnerID, ownerID) {
 			results = append(results, e.Content)
 			if len(results) >= 4 {
 				break
@@ -118,7 +142,7 @@ func (pc *ProfileConsolidator) gatherWeeklySummaries() []string {
 }
 
 // gatherRecentInsights collects recent reflection/promoted entries.
-func (pc *ProfileConsolidator) gatherRecentInsights() []string {
+func (pc *ProfileConsolidator) gatherRecentInsights(ownerID string) []string {
 	pc.store.mu.RLock()
 	defer pc.store.mu.RUnlock()
 
@@ -126,7 +150,7 @@ func (pc *ProfileConsolidator) gatherRecentInsights() []string {
 	cutoff := time.Now().Add(-30 * 24 * time.Hour) // last 30 days
 
 	for _, e := range pc.store.entries {
-		if !e.IsActive() || e.CreatedAt.Before(cutoff) {
+		if !e.IsActive() || e.CreatedAt.Before(cutoff) || !ownerMatches(e.OwnerID, ownerID) {
 			continue
 		}
 		for _, tag := range e.Tags {
@@ -143,12 +167,12 @@ func (pc *ProfileConsolidator) gatherRecentInsights() []string {
 }
 
 // getCurrentProfile finds the active CategoryProfile entry.
-func (pc *ProfileConsolidator) getCurrentProfile() string {
+func (pc *ProfileConsolidator) getCurrentProfile(ownerID string) string {
 	pc.store.mu.RLock()
 	defer pc.store.mu.RUnlock()
 
 	for _, e := range pc.store.entries {
-		if e.Category == CategoryProfile && e.IsActive() {
+		if e.Category == CategoryProfile && e.IsActive() && e.OwnerID == ownerID {
 			return e.Content
 		}
 	}
@@ -156,12 +180,12 @@ func (pc *ProfileConsolidator) getCurrentProfile() string {
 }
 
 // upsertProfile updates the existing profile entry or creates a new one.
-func (pc *ProfileConsolidator) upsertProfile(newContent string) error {
+func (pc *ProfileConsolidator) upsertProfile(newContent string, ownerID string) error {
 	now := time.Now()
 
 	pc.store.mu.Lock()
 	for i := range pc.store.entries {
-		if pc.store.entries[i].Category == CategoryProfile && pc.store.entries[i].IsActive() {
+		if pc.store.entries[i].Category == CategoryProfile && pc.store.entries[i].IsActive() && pc.store.entries[i].OwnerID == ownerID {
 			// Update existing: snapshot old version.
 			old := pc.store.entries[i].Content
 			if len(pc.store.entries[i].Versions) >= 3 {
@@ -176,7 +200,7 @@ func (pc *ProfileConsolidator) upsertProfile(newContent string) error {
 			pc.store.entries[i].Level = LevelProfile
 			pc.store.entries[i].ContentHash = computeContentHash(newContent)
 			pc.store.entries[i].AccessCount++
-			pc.store.bm25.updateEntry(pc.store.entries[i])
+			pc.store.rebuildDerivedIndexesLocked(false)
 			pc.store.dirty = true
 			pc.store.mu.Unlock()
 			pc.store.signalSave()
@@ -193,6 +217,7 @@ func (pc *ProfileConsolidator) upsertProfile(newContent string) error {
 		Level:    LevelProfile,
 		Scope:    ScopeGlobal,
 		Interval: &TimeInterval{Start: now, End: now},
+		OwnerID:  ownerID,
 	}
 	return pc.store.Save(entry)
 }
@@ -235,7 +260,7 @@ Rules:
 	}
 }
 
-func (pc *ProfileConsolidator) contentsByIDs(ids []string) []string {
+func (pc *ProfileConsolidator) contentsByIDs(ids []string, ownerID string) []string {
 	pc.store.mu.RLock()
 	defer pc.store.mu.RUnlock()
 
@@ -246,9 +271,16 @@ func (pc *ProfileConsolidator) contentsByIDs(ids []string) []string {
 
 	var contents []string
 	for _, e := range pc.store.entries {
-		if idSet[e.ID] {
+		if idSet[e.ID] && ownerMatches(e.OwnerID, ownerID) {
 			contents = append(contents, e.Content)
 		}
 	}
 	return contents
+}
+
+func ownerMatches(entryOwner, filterOwner string) bool {
+	if filterOwner == "" {
+		return entryOwner == ""
+	}
+	return entryOwner == filterOwner || entryOwner == ""
 }

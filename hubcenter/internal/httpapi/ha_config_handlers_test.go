@@ -53,6 +53,45 @@ func TestHAConfigEndpointsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHAConfigEndpointExpandsLegacyPeersWhenSelfFQDNIsPosted(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+	haCfgSvc := ha.NewConfigService(config.HAConfig{SyncIntervalSeconds: 3, PullBatchSize: 200, HeartbeatSyncMinIntervalSeconds: 10}, svc.store.System)
+	svc.handler = NewRouter(svc.admins, svc.hubs, svc.entry, nil, nil, svc.store.FailureLogs, nil, nil, nil, svc.store.System, svc.store.News, haCfgSvc)
+
+	payload := map[string]any{
+		"enabled":                             true,
+		"self_fqdn":                           "hubs.maclaw.top",
+		"node_id":                             "hc-2",
+		"node_name":                           "HubCenter 2",
+		"advertise_url":                       "https://hubs.maclaw.top",
+		"cluster_secret":                      "shared-secret",
+		"sync_interval_seconds":               4,
+		"pull_batch_size":                     180,
+		"heartbeat_sync_min_interval_seconds": 8,
+		"peers": []map[string]any{
+			{"enabled": true, "node_id": "hc-1", "name": "HubCenter 1", "base_url": "https://hubs.mypapers.top"},
+			{"enabled": true, "node_id": "hc-3", "name": "HubCenter 3", "base_url": "https://hubs2.maclaw.top"},
+		},
+	}
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/ha/config", payload, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("save status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	body := decodeJSON(t, resp.Body.Bytes())
+	nodes, _ := body["nodes"].([]any)
+	if len(nodes) != 3 {
+		t.Fatalf("nodes = %d body=%s", len(nodes), resp.Body.String())
+	}
+	if body["node_id"] != "hc-2" {
+		t.Fatalf("node_id = %v", body["node_id"])
+	}
+	peers, _ := body["peers"].([]any)
+	if len(peers) != 2 {
+		t.Fatalf("peers = %d body=%s", len(peers), resp.Body.String())
+	}
+}
+
 func TestHAConfigSaveAutoBackfillsSelfNodePublicKey(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 	token := issueAdminToken(t, svc)

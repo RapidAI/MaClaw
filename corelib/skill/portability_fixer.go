@@ -10,11 +10,11 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// AutoFixPortability — main entry point
+// AutoFixPortability 鈥?main entry point
 // ---------------------------------------------------------------------------
 
 // AutoFixPortability applies safe, reversible fixes to a skill directory.
-// It reads skill.yaml (and optionally SKILL.md), detects fixable issues
+// It reads structured skill definitions (and optional skill docs), detects fixable issues
 // internally (does not require a pre-computed report), applies fixes for
 // hardcoded paths, missing metadata, and path separators, then writes
 // the modified files back. Creates .bak backups before modifying.
@@ -31,41 +31,45 @@ func AutoFixPortability(skillDir string) ([]PortabilityChange, error) {
 
 	var changes []PortabilityChange
 
-	// --- Fix skill.yaml ---
-	yamlPath := filepath.Join(skillDir, "skill.yaml")
-	yamlData, err := os.ReadFile(yamlPath)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("cannot read skill.yaml: %w", err)
+	// --- Fix structured skill definition ---
+	defPath, defFormat, defErr := skillDefinitionPath(skillDir)
+	if defErr != nil && !os.IsNotExist(defErr) {
+		return nil, fmt.Errorf("cannot locate skill definition: %w", defErr)
 	}
 
-	if err == nil {
-		sf, parseErr := ParseSkillYAMLFile(yamlData)
+	if defErr == nil {
+		defFile := filepath.Base(defPath)
+		defData, err := os.ReadFile(defPath)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read %s: %w", defFile, err)
+		}
+		sf, parseErr := ParseSkillDefinitionFile(defData, defFormat)
 		if parseErr != nil {
-			return nil, fmt.Errorf("failed to parse skill.yaml: %w", parseErr)
+			return nil, fmt.Errorf("failed to parse %s: %w", defFile, parseErr)
 		}
 
 		yamlChanged := false
 
 		// Fix missing_basedir: replace absolute paths inside skill dir with {baseDir}/relative.
-		if fixBaseDirChanges := fixMissingBaseDir(sf, skillDir); len(fixBaseDirChanges) > 0 {
+		if fixBaseDirChanges := fixMissingBaseDir(sf, skillDir, defFile); len(fixBaseDirChanges) > 0 {
 			changes = append(changes, fixBaseDirChanges...)
 			yamlChanged = true
 		}
 
 		// Fix hardcoded_path (home dir): replace home dir paths with $HOME.
-		if fixHomeChanges := fixHardcodedHomePaths(sf); len(fixHomeChanges) > 0 {
+		if fixHomeChanges := fixHardcodedHomePaths(sf, defFile); len(fixHomeChanges) > 0 {
 			changes = append(changes, fixHomeChanges...)
 			yamlChanged = true
 		}
 
 		// Fix missing_platforms: set platforms to ["universal"] when empty.
-		if fixPlatformChanges := fixMissingPlatforms(sf); len(fixPlatformChanges) > 0 {
+		if fixPlatformChanges := fixMissingPlatforms(sf, defFile); len(fixPlatformChanges) > 0 {
 			changes = append(changes, fixPlatformChanges...)
 			yamlChanged = true
 		}
 
 		// Fix path_separator: replace backslashes with forward slashes.
-		if fixSepChanges := fixPathSeparators(sf); len(fixSepChanges) > 0 {
+		if fixSepChanges := fixPathSeparators(sf, defFile); len(fixSepChanges) > 0 {
 			changes = append(changes, fixSepChanges...)
 			yamlChanged = true
 		}
@@ -73,18 +77,18 @@ func AutoFixPortability(skillDir string) ([]PortabilityChange, error) {
 		// Write back if any changes were made.
 		if yamlChanged {
 			// Create backup first.
-			bakPath := yamlPath + ".bak"
-			if writeErr := fileutil.AtomicWriteFile(bakPath, yamlData, 0644); writeErr != nil {
+			bakPath := defPath + ".bak"
+			if writeErr := fileutil.AtomicWriteFile(bakPath, defData, 0644); writeErr != nil {
 				return nil, fmt.Errorf("cannot create backup %s: %w", bakPath, writeErr)
 			}
 
-			// Format and write modified skill.yaml.
-			newData, fmtErr := FormatSkillYAMLFile(sf)
+			// Format and write the modified definition in its original format.
+			newData, fmtErr := FormatSkillDefinitionFile(sf, defFormat)
 			if fmtErr != nil {
-				return nil, fmt.Errorf("cannot format skill.yaml: %w", fmtErr)
+				return nil, fmt.Errorf("cannot format %s: %w", defFile, fmtErr)
 			}
-			if writeErr := fileutil.AtomicWriteFile(yamlPath, newData, 0644); writeErr != nil {
-				return nil, fmt.Errorf("cannot write skill.yaml: %w", writeErr)
+			if writeErr := fileutil.AtomicWriteFile(defPath, newData, 0644); writeErr != nil {
+				return nil, fmt.Errorf("cannot write %s: %w", defFile, writeErr)
 			}
 		}
 	}
@@ -94,7 +98,7 @@ func AutoFixPortability(skillDir string) ([]PortabilityChange, error) {
 	if mdErr == nil {
 		mdChanges, mdFixErr := fixSkillMD(mdPath, skillDir)
 		if mdFixErr != nil {
-			return changes, fmt.Errorf("cannot fix SKILL.md: %w", mdFixErr)
+			return changes, fmt.Errorf("cannot fix skill documentation: %w", mdFixErr)
 		}
 		changes = append(changes, mdChanges...)
 	}
@@ -102,25 +106,117 @@ func AutoFixPortability(skillDir string) ([]PortabilityChange, error) {
 	return changes, nil
 }
 
+func editableStepCommand(step SkillYAMLStep) (string, string, bool) {
+	return portabilityStepCommand(step)
+}
+
+func isPortableCommandStep(action string) bool {
+	switch normalizeActionName(action) {
+	case "", "bash", "run", "exec", "execute", "command", "shell", "sh", "cmd", "script", "python", "python3", "node", "js", "javascript", "powershell", "pwsh", "poll":
+		return true
+	default:
+		return false
+	}
+}
+
+type portabilityReplacement struct {
+	Original    string
+	Replacement string
+}
+
+func applyPortabilityReplacements(raw interface{}, replacements []portabilityReplacement, fallback string) interface{} {
+	if len(replacements) == 0 {
+		return fallback
+	}
+	switch value := raw.(type) {
+	case string:
+		return applyStringPortabilityReplacements(value, replacements)
+	case []string:
+		out := make([]string, len(value))
+		for i, item := range value {
+			out[i] = applyStringPortabilityReplacements(item, replacements)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(value))
+		for i, item := range value {
+			out[i] = applyPortabilityReplacements(item, replacements, fallback)
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(value))
+		for k, item := range value {
+			out[k] = applyPortabilityReplacements(item, replacements, fallback)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(value))
+		for k, item := range value {
+			out[k] = applyStringPortabilityReplacements(item, replacements)
+		}
+		return out
+	default:
+		return raw
+	}
+}
+
+func applyStringPortabilityReplacements(value string, replacements []portabilityReplacement) string {
+	for _, replacement := range replacements {
+		value = strings.ReplaceAll(value, replacement.Original, replacement.Replacement)
+	}
+	return value
+}
+
+func applyBackslashPathFix(raw interface{}, fallback string) interface{} {
+	switch value := raw.(type) {
+	case string:
+		return replaceBackslashPaths(value)
+	case []string:
+		out := make([]string, len(value))
+		for i, item := range value {
+			out[i] = replaceBackslashPaths(item)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(value))
+		for i, item := range value {
+			out[i] = applyBackslashPathFix(item, fallback)
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(value))
+		for k, item := range value {
+			out[k] = applyBackslashPathFix(item, fallback)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(value))
+		for k, item := range value {
+			out[k] = replaceBackslashPaths(item)
+		}
+		return out
+	default:
+		return raw
+	}
+}
+
 // ---------------------------------------------------------------------------
-// fixMissingBaseDir — replace absolute paths inside skill dir with {baseDir}
+// fixMissingBaseDir 鈥?replace absolute paths inside skill dir with {baseDir}
 // ---------------------------------------------------------------------------
 
-func fixMissingBaseDir(sf *SkillYAMLFile, skillDir string) []PortabilityChange {
+func fixMissingBaseDir(sf *SkillYAMLFile, skillDir, file string) []PortabilityChange {
 	var changes []PortabilityChange
 	normalizedDir := filepath.ToSlash(filepath.Clean(skillDir))
 	normalizedDir = strings.TrimRight(normalizedDir, "/")
 
 	for i := range sf.Steps {
-		if sf.Steps[i].Action != "bash" {
-			continue
-		}
-		cmd, ok := sf.Steps[i].Params["command"].(string)
+		cmd, key, ok := editableStepCommand(sf.Steps[i])
 		if !ok || cmd == "" {
 			continue
 		}
 
 		newCmd := cmd
+		var replacements []portabilityReplacement
 		paths := extractAbsolutePaths(cmd)
 		for _, p := range paths {
 			normalizedPath := filepath.ToSlash(p)
@@ -128,35 +224,37 @@ func fixMissingBaseDir(sf *SkillYAMLFile, skillDir string) []PortabilityChange {
 				relPath := strings.TrimPrefix(normalizedPath, normalizedDir+"/")
 				replacement := "{baseDir}/" + relPath
 				newCmd = strings.ReplaceAll(newCmd, p, replacement)
+				replacements = append(replacements, portabilityReplacement{Original: p, Replacement: replacement})
 				changes = append(changes, PortabilityChange{
-					File:        "skill.yaml",
-					Field:       fmt.Sprintf("steps[%d].params.command", i),
+					File:        file,
+					Field:       fmt.Sprintf("steps[%d].params.%s", i, key),
 					Original:    p,
 					Replacement: replacement,
 				})
 			} else if normalizedPath == normalizedDir {
 				replacement := "{baseDir}"
 				newCmd = strings.ReplaceAll(newCmd, p, replacement)
+				replacements = append(replacements, portabilityReplacement{Original: p, Replacement: replacement})
 				changes = append(changes, PortabilityChange{
-					File:        "skill.yaml",
-					Field:       fmt.Sprintf("steps[%d].params.command", i),
+					File:        file,
+					Field:       fmt.Sprintf("steps[%d].params.%s", i, key),
 					Original:    p,
 					Replacement: replacement,
 				})
 			}
 		}
 		if newCmd != cmd {
-			sf.Steps[i].Params["command"] = newCmd
+			sf.Steps[i].Params[key] = applyPortabilityReplacements(sf.Steps[i].Params[key], replacements, newCmd)
 		}
 	}
 	return changes
 }
 
 // ---------------------------------------------------------------------------
-// fixHardcodedHomePaths — replace home dir paths with $HOME
+// fixHardcodedHomePaths 鈥?replace home dir paths with $HOME
 // ---------------------------------------------------------------------------
 
-func fixHardcodedHomePaths(sf *SkillYAMLFile) []PortabilityChange {
+func fixHardcodedHomePaths(sf *SkillYAMLFile, file string) []PortabilityChange {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil
@@ -171,15 +269,13 @@ func fixHardcodedHomePaths(sf *SkillYAMLFile) []PortabilityChange {
 	homeNative := filepath.Clean(homeDir)
 
 	for i := range sf.Steps {
-		if sf.Steps[i].Action != "bash" {
-			continue
-		}
-		cmd, ok := sf.Steps[i].Params["command"].(string)
+		cmd, key, ok := editableStepCommand(sf.Steps[i])
 		if !ok || cmd == "" {
 			continue
 		}
 
 		newCmd := cmd
+		var replacements []portabilityReplacement
 		paths := extractAbsolutePaths(cmd)
 		for _, p := range paths {
 			normalizedPath := filepath.ToSlash(p)
@@ -196,9 +292,10 @@ func fixHardcodedHomePaths(sf *SkillYAMLFile) []PortabilityChange {
 				rest := strings.TrimPrefix(normalizedPath, homeSlash)
 				replacement := "$HOME" + rest
 				newCmd = strings.ReplaceAll(newCmd, p, replacement)
+				replacements = append(replacements, portabilityReplacement{Original: p, Replacement: replacement})
 				changes = append(changes, PortabilityChange{
-					File:        "skill.yaml",
-					Field:       fmt.Sprintf("steps[%d].params.command", i),
+					File:        file,
+					Field:       fmt.Sprintf("steps[%d].params.%s", i, key),
 					Original:    p,
 					Replacement: replacement,
 				})
@@ -210,9 +307,10 @@ func fixHardcodedHomePaths(sf *SkillYAMLFile) []PortabilityChange {
 					rest := filepath.ToSlash(strings.TrimPrefix(nativePath, homeNativeSlash))
 					replacement := "$HOME" + rest
 					newCmd = strings.ReplaceAll(newCmd, p, replacement)
+					replacements = append(replacements, portabilityReplacement{Original: p, Replacement: replacement})
 					changes = append(changes, PortabilityChange{
-						File:        "skill.yaml",
-						Field:       fmt.Sprintf("steps[%d].params.command", i),
+						File:        file,
+						Field:       fmt.Sprintf("steps[%d].params.%s", i, key),
 						Original:    p,
 						Replacement: replacement,
 					})
@@ -220,24 +318,24 @@ func fixHardcodedHomePaths(sf *SkillYAMLFile) []PortabilityChange {
 			}
 		}
 		if newCmd != cmd {
-			sf.Steps[i].Params["command"] = newCmd
+			sf.Steps[i].Params[key] = applyPortabilityReplacements(sf.Steps[i].Params[key], replacements, newCmd)
 		}
 	}
 	return changes
 }
 
 // ---------------------------------------------------------------------------
-// fixMissingPlatforms — set platforms to ["universal"] when empty
+// fixMissingPlatforms 鈥?set platforms to ["universal"] when empty
 // ---------------------------------------------------------------------------
 
-func fixMissingPlatforms(sf *SkillYAMLFile) []PortabilityChange {
+func fixMissingPlatforms(sf *SkillYAMLFile, file string) []PortabilityChange {
 	if len(sf.Platforms) > 0 {
 		return nil
 	}
 	sf.Platforms = []string{"universal"}
 	return []PortabilityChange{
 		{
-			File:        "skill.yaml",
+			File:        file,
 			Field:       "platforms",
 			Original:    "[]",
 			Replacement: `["universal"]`,
@@ -246,17 +344,14 @@ func fixMissingPlatforms(sf *SkillYAMLFile) []PortabilityChange {
 }
 
 // ---------------------------------------------------------------------------
-// fixPathSeparators — replace backslashes with forward slashes in commands
+// fixPathSeparators 鈥?replace backslashes with forward slashes in commands
 // ---------------------------------------------------------------------------
 
-func fixPathSeparators(sf *SkillYAMLFile) []PortabilityChange {
+func fixPathSeparators(sf *SkillYAMLFile, file string) []PortabilityChange {
 	var changes []PortabilityChange
 
 	for i := range sf.Steps {
-		if sf.Steps[i].Action != "bash" {
-			continue
-		}
-		cmd, ok := sf.Steps[i].Params["command"].(string)
+		cmd, key, ok := editableStepCommand(sf.Steps[i])
 		if !ok || cmd == "" {
 			continue
 		}
@@ -267,10 +362,10 @@ func fixPathSeparators(sf *SkillYAMLFile) []PortabilityChange {
 
 		newCmd := replaceBackslashPaths(cmd)
 		if newCmd != cmd {
-			sf.Steps[i].Params["command"] = newCmd
+			sf.Steps[i].Params[key] = applyBackslashPathFix(sf.Steps[i].Params[key], newCmd)
 			changes = append(changes, PortabilityChange{
-				File:        "skill.yaml",
-				Field:       fmt.Sprintf("steps[%d].params.command", i),
+				File:        file,
+				Field:       fmt.Sprintf("steps[%d].params.%s", i, key),
 				Original:    cmd,
 				Replacement: newCmd,
 			})
@@ -354,7 +449,7 @@ func replaceBackslashesInLine(line string) string {
 }
 
 // ---------------------------------------------------------------------------
-// fixSkillMD — fix absolute paths in SKILL.md bash blocks
+// fixSkillMD 鈥?fix absolute paths in SKILL.md bash blocks
 // ---------------------------------------------------------------------------
 
 func fixSkillMD(mdPath, skillDir string) ([]PortabilityChange, error) {

@@ -358,7 +358,7 @@ func prioritizeFiles(files []StagedFile) []StagedFile {
 		lower := strings.ToLower(f.RelPath)
 
 		switch {
-		case base == "skill.md" || base == "skill.yaml" || base == "skill.json" || base == "skill.yml":
+		case base == "skill.md" || base == "skill.yaml" || base == "skill.yml" || base == "readme.md":
 			s = 1
 		case strings.HasSuffix(lower, ".py") || strings.HasSuffix(lower, ".sh") ||
 			strings.HasSuffix(lower, ".js") || strings.HasSuffix(lower, ".ts") ||

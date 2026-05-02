@@ -433,49 +433,166 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 		anthropicReq["max_tokens"] = 4096
 	}
 
-	// Extract messages array
 	messages, _ := body["messages"].([]interface{})
-	if messages == nil {
-		anthropicReq["messages"] = []interface{}{}
-		return anthropicReq
+	converted := convertOpenAIToAnthropicMessages(messages)
+	if converted.SystemText != "" {
+		anthropicReq["system"] = converted.SystemText
+	}
+	if converted.Messages == nil {
+		converted.Messages = []interface{}{}
+	}
+	anthropicReq["messages"] = converted.Messages
+	if tools, ok := body["tools"].([]interface{}); ok && len(tools) > 0 {
+		anthropicReq["tools"] = convertAnthropicToolsAny(tools)
+	} else if tools, ok := body["tools"].([]map[string]interface{}); ok && len(tools) > 0 {
+		anthropicReq["tools"] = convertAnthropicTools(tools)
 	}
 
-	// Separate system messages from non-system messages
-	var systemParts []string
-	var nonSystemMessages []interface{}
+	return anthropicReq
+}
 
+func convertAnthropicToolsAny(tools []interface{}) []map[string]interface{} {
+	typed := make([]map[string]interface{}, 0, len(tools))
+	for _, item := range tools {
+		if m, ok := item.(map[string]interface{}); ok {
+			typed = append(typed, m)
+		}
+	}
+	return convertAnthropicTools(typed)
+}
+
+type anthropicConvertedMessages struct {
+	SystemText string
+	Messages   []interface{}
+}
+
+func convertOpenAIToAnthropicMessages(messages []interface{}) anthropicConvertedMessages {
+	var result anthropicConvertedMessages
 	for _, m := range messages {
-		msg, ok := m.(map[string]interface{})
+		mm := mapFromAny(m)
+		if mm == nil {
+			continue
+		}
+		role, _ := mm["role"].(string)
+		switch role {
+		case "system":
+			if content, _ := mm["content"].(string); content != "" {
+				if result.SystemText != "" {
+					result.SystemText += "\n"
+				}
+				result.SystemText += content
+			}
+		case "assistant":
+			var blocks []interface{}
+			if text, _ := mm["content"].(string); text != "" {
+				blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
+			}
+			for _, tc := range extractOpenAIToolCalls(mm) {
+				var input interface{}
+				_ = json.Unmarshal([]byte(tc.Arguments), &input)
+				if input == nil {
+					input = map[string]interface{}{}
+				}
+				blocks = append(blocks, map[string]interface{}{"type": "tool_use", "id": tc.ID, "name": tc.Name, "input": input})
+			}
+			if len(blocks) > 0 {
+				result.Messages = append(result.Messages, map[string]interface{}{"role": "assistant", "content": blocks})
+			}
+		case "tool":
+			callID, _ := mm["tool_call_id"].(string)
+			content, _ := mm["content"].(string)
+			block := map[string]interface{}{"type": "tool_result", "tool_use_id": callID, "content": content}
+			if callID != "" {
+				block["id"] = "toolrslt_" + callID
+			}
+			if len(result.Messages) > 0 {
+				if last, ok := result.Messages[len(result.Messages)-1].(map[string]interface{}); ok {
+					if role, _ := last["role"].(string); role == "user" {
+						if blocks, ok := last["content"].([]interface{}); ok && len(blocks) > 0 {
+							if first, ok := blocks[0].(map[string]interface{}); ok && first["type"] == "tool_result" {
+								last["content"] = append(blocks, block)
+								continue
+							}
+						}
+					}
+				}
+			}
+			result.Messages = append(result.Messages, map[string]interface{}{"role": "user", "content": []interface{}{block}})
+		default:
+			result.Messages = append(result.Messages, map[string]interface{}{"role": role, "content": mm["content"]})
+		}
+	}
+	return result
+}
+
+func convertAnthropicTools(tools []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, t := range tools {
+		fn, _ := t["function"].(map[string]interface{})
+		if fn == nil {
+			continue
+		}
+		tool := map[string]interface{}{"name": fn["name"]}
+		if desc, ok := fn["description"]; ok {
+			tool["description"] = desc
+		}
+		if params, ok := fn["parameters"]; ok {
+			tool["input_schema"] = params
+		}
+		out = append(out, tool)
+	}
+	return out
+}
+
+type openAIToolCallParts struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
+func extractOpenAIToolCalls(mm map[string]interface{}) []openAIToolCallParts {
+	raw := mm["tool_calls"]
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]openAIToolCallParts, 0, len(items))
+	for _, item := range items {
+		call, ok := item.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		role, _ := msg["role"].(string)
-		content, _ := msg["content"].(string)
+		fn, _ := call["function"].(map[string]interface{})
+		out = append(out, openAIToolCallParts{
+			ID:        stringFromMap(call, "id"),
+			Name:      stringFromMap(fn, "name"),
+			Arguments: stringFromMap(fn, "arguments"),
+		})
+	}
+	return out
+}
 
-		if role == "system" {
-			if content != "" {
-				systemParts = append(systemParts, content)
-			}
-		} else {
-			nonSystemMessages = append(nonSystemMessages, map[string]interface{}{
-				"role":    role,
-				"content": content,
-			})
+func mapFromAny(v interface{}) map[string]interface{} {
+	switch m := v.(type) {
+	case map[string]interface{}:
+		return m
+	case map[string]string:
+		out := make(map[string]interface{}, len(m))
+		for k, val := range m {
+			out[k] = val
 		}
+		return out
+	default:
+		return nil
 	}
+}
 
-	// Set system field if there are system messages
-	if len(systemParts) > 0 {
-		anthropicReq["system"] = strings.Join(systemParts, "\n")
+func stringFromMap(m map[string]interface{}, key string) string {
+	if m == nil {
+		return ""
 	}
-
-	// Set messages (non-system)
-	if nonSystemMessages == nil {
-		nonSystemMessages = []interface{}{}
-	}
-	anthropicReq["messages"] = nonSystemMessages
-
-	return anthropicReq
+	s, _ := m[key].(string)
+	return s
 }
 
 // anthropicToOpenAI converts an Anthropic Messages API response body
@@ -483,6 +600,7 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]interface{} {
 	// Extract and concatenate text content blocks
 	var contentBuilder strings.Builder
+	var toolCalls []interface{}
 	if contentArr, ok := resp["content"].([]interface{}); ok {
 		for _, block := range contentArr {
 			blockMap, ok := block.(map[string]interface{})
@@ -490,18 +608,46 @@ func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]int
 				continue
 			}
 			blockType, _ := blockMap["type"].(string)
-			if blockType == "text" {
+			switch blockType {
+			case "text":
 				text, _ := blockMap["text"].(string)
 				contentBuilder.WriteString(text)
+			case "tool_use":
+				id, _ := blockMap["id"].(string)
+				name, _ := blockMap["name"].(string)
+				input := blockMap["input"]
+				argsBytes, _ := json.Marshal(input)
+				if string(argsBytes) == "null" || len(argsBytes) == 0 {
+					argsBytes = []byte("{}")
+				}
+				if id != "" && name != "" {
+					toolCalls = append(toolCalls, map[string]interface{}{
+						"id":   id,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      name,
+							"arguments": string(argsBytes),
+						},
+					})
+				}
 			}
 		}
 	}
 	contentText := contentBuilder.String()
+	message := map[string]interface{}{
+		"role":    "assistant",
+		"content": contentText,
+	}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+	}
 
 	// Map stop_reason to finish_reason
 	stopReason, _ := resp["stop_reason"].(string)
 	var finishReason string
 	switch stopReason {
+	case "tool_use":
+		finishReason = "tool_calls"
 	case "end_turn":
 		finishReason = "stop"
 	case "max_tokens":
@@ -531,11 +677,8 @@ func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]int
 		"model":  model,
 		"choices": []interface{}{
 			map[string]interface{}{
-				"index": 0,
-				"message": map[string]interface{}{
-					"role":    "assistant",
-					"content": contentText,
-				},
+				"index":         0,
+				"message":       message,
 				"finish_reason": finishReason,
 			},
 		},

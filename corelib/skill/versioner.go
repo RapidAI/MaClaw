@@ -14,21 +14,21 @@ import (
 // Versioner manages skill version history within a skill directory.
 type Versioner struct{}
 
-// BackupCurrent backs up the current skill.yaml to skill.yaml.v{N}.
-// Returns the version number assigned, or error if skill.yaml doesn't exist.
+// BackupCurrent backs up the current structured skill definition to <name>.v{N}.
+// Returns the version number assigned, or error if no structured definition exists.
 func (v *Versioner) BackupCurrent(skillDir string) (int, error) {
-	src := filepath.Join(skillDir, "skill.yaml")
-	if _, err := os.Stat(src); err != nil {
-		return 0, fmt.Errorf("skill.yaml not found in %s: %w", skillDir, err)
+	src, baseName, err := currentDefinitionFile(skillDir)
+	if err != nil {
+		return 0, err
 	}
 
 	data, err := os.ReadFile(src)
 	if err != nil {
-		return 0, fmt.Errorf("read skill.yaml: %w", err)
+		return 0, fmt.Errorf("read %s: %w", baseName, err)
 	}
 
 	nextVer := v.LatestVersion(skillDir) + 1
-	dst := filepath.Join(skillDir, fmt.Sprintf("skill.yaml.v%d", nextVer))
+	dst := filepath.Join(skillDir, fmt.Sprintf("%s.v%d", baseName, nextVer))
 	if err := fileutil.AtomicWriteFile(dst, data, 0o644); err != nil {
 		return 0, fmt.Errorf("write backup %s: %w", dst, err)
 	}
@@ -43,7 +43,6 @@ func (v *Versioner) CleanOldVersions(skillDir string, maxVersions int) error {
 	if len(versions) <= maxVersions {
 		return nil
 	}
-	// versions is sorted ascending; remove the oldest.
 	toRemove := versions[:len(versions)-maxVersions]
 	for _, vf := range toRemove {
 		path := filepath.Join(skillDir, vf.filename)
@@ -77,10 +76,16 @@ func (v *Versioner) listVersionFiles(skillDir string) []versionFile {
 	var versions []versionFile
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasPrefix(name, "skill.yaml.v") {
+		numStr := ""
+		for _, prefix := range []string{"skill.yaml.v", "skill.yml.v"} {
+			if strings.HasPrefix(name, prefix) {
+				numStr = strings.TrimPrefix(name, prefix)
+				break
+			}
+		}
+		if numStr == "" {
 			continue
 		}
-		numStr := strings.TrimPrefix(name, "skill.yaml.v")
 		num, err := strconv.Atoi(numStr)
 		if err != nil {
 			continue
@@ -91,4 +96,14 @@ func (v *Versioner) listVersionFiles(skillDir string) []versionFile {
 		return versions[i].version < versions[j].version
 	})
 	return versions
+}
+
+func currentDefinitionFile(skillDir string) (string, string, error) {
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		path := filepath.Join(skillDir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path, name, nil
+		}
+	}
+	return "", "", fmt.Errorf("skill definition not found in %s", skillDir)
 }

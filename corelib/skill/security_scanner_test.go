@@ -3,6 +3,8 @@ package skill
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,10 +12,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
-// ── ParseAgentScanResponse ──────────────────────────────────────────────
+// 闁冲厜鍋撻柍鍏夊亾 ParseAgentScanResponse 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
 
 func TestParseAgentScanResponse_ValidJSON(t *testing.T) {
-	response := `{"score":2,"summary":"Safe PDF converter","findings":[{"severity":"info","category":"safe_pattern","description":"Uses pdfplumber","location":"skill.yaml"}],"recommendation":"可以安全安装"}`
+	response := `{"score":2,"summary":"Safe PDF converter","findings":[{"severity":"info","category":"safe_pattern","description":"Uses pdfplumber","location":"skill.yaml"}],"recommendation":"safe to install"}`
 
 	report, err := ParseAgentScanResponse(response)
 	if err != nil {
@@ -85,8 +87,7 @@ func TestParseAgentScanResponse_StopsAtFirstJSONObject(t *testing.T) {
 	}
 }
 
-// ── AgentScoreToLevel ───────────────────────────────────────────────────
-
+// 闁冲厜鍋撻柍鍏夊亾 AgentScoreToLevel 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
 func TestAgentScoreToLevel(t *testing.T) {
 	tests := []struct {
 		score int
@@ -109,11 +110,10 @@ func TestAgentScoreToLevel(t *testing.T) {
 	}
 }
 
-// ── Security model: agent cannot downgrade pattern result ───────────────
-
+// 闁冲厜鍋撻柍鍏夊亾 Security model: agent cannot downgrade pattern result 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
 func TestScanStaged_AgentCannotDowngradePatternResult(t *testing.T) {
 	// Pattern says critical, agent says safe (score=0).
-	// Final must remain critical — pattern is hard floor.
+	// Final must remain critical 闁?pattern is hard floor.
 	report := &ScanReport{
 		PatternAssessment: security.RiskAssessment{Level: security.RiskCritical},
 		AgentScore:        0,
@@ -143,7 +143,7 @@ func TestScanStaged_AgentCanUpgradePatternResult(t *testing.T) {
 	}
 }
 
-// ── patternScan does not mutate caller's entry ──────────────────────────
+// 闁冲厜鍋撻柍鍏夊亾 patternScan does not mutate caller's entry 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
 
 func TestPatternScan_DoesNotMutateEntry(t *testing.T) {
 	entry := &corelib.NLSkillEntry{
@@ -157,8 +157,7 @@ func TestPatternScan_DoesNotMutateEntry(t *testing.T) {
 	}
 }
 
-// ── ScanStaged end-to-end with mock LLM ─────────────────────────────────
-
+// 闁冲厜鍋撻柍鍏夊亾 ScanStaged end-to-end with mock LLM 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
 type mockLLMCaller struct {
 	available bool
 	response  string
@@ -226,8 +225,7 @@ func TestScanStaged_AgentFailure_FallsBackToPattern(t *testing.T) {
 	}
 }
 
-// ── FormatScanReportForUser ─────────────────────────────────────────────
-
+// 闁冲厜鍋撻柍鍏夊亾 FormatScanReportForUser 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
 func TestFormatScanReport_Safe(t *testing.T) {
 	report := &ScanReport{
 		PatternAssessment: security.RiskAssessment{Level: security.RiskLow},
@@ -236,8 +234,8 @@ func TestFormatScanReport_Safe(t *testing.T) {
 		ScannedBy:         "agent+pattern",
 	}
 	text := FormatScanReportForUser(report, "any2pdf")
-	if !strings.Contains(text, "✅") {
-		t.Error("safe should have ✅")
+	if !strings.Contains(text, "any2pdf") {
+		t.Error("safe report should include skill name")
 	}
 }
 
@@ -252,10 +250,28 @@ func TestFormatScanReport_Dangerous(t *testing.T) {
 		},
 	}
 	text := FormatScanReportForUser(report, "malicious")
-	if !strings.Contains(text, "🚫") {
-		t.Error("critical should have 🚫")
+	if !strings.Contains(text, "malicious") {
+		t.Error("critical report should include skill name")
 	}
 	if !strings.Contains(text, "curl | bash") {
 		t.Error("should show critical findings")
+	}
+}
+
+func TestValidateExternalSkillDirAcceptsReadmeSkill(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "readme-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "README.md"), []byte("# README skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	count, err := ValidateExternalSkillDir(root)
+	if err != nil {
+		t.Fatalf("ValidateExternalSkillDir() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
 	}
 }

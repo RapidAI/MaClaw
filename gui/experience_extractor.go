@@ -1,341 +1,212 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
-	"encoding/json"
-	"fmt"
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	experience "github.com/RapidAI/CodeClaw/corelib/experience"
 )
 
-// ExperienceExtractor analyses completed remote sessions and extracts
-// reusable operation patterns, registering them as NL Skills.
+// ExperienceExtractor adapts GUI remote sessions to the corelib experience pipeline.
 type ExperienceExtractor struct {
-	app           *App
-	skillExecutor *SkillExecutor
-	llmConfig     corelib.MaclawLLMConfig
-	client        *http.Client
+	llmConfig corelib.MaclawLLMConfig
+	client    *http.Client
+	core      *experience.Extractor
+	audit     *experience.AuditTrail
 }
+
+// ExperienceAuditEntry is the Wails-facing audit record for one experience extraction run.
+type ExperienceAuditEntry = experience.AuditEntry
 
 // NewExperienceExtractor creates a new ExperienceExtractor.
 func NewExperienceExtractor(app *App, skillExecutor *SkillExecutor, cfg corelib.MaclawLLMConfig) *ExperienceExtractor {
-	return &ExperienceExtractor{
-		app:           app,
-		skillExecutor: skillExecutor,
-		llmConfig:     cfg,
-		client:        &http.Client{Timeout: 30 * time.Second},
+	e := &ExperienceExtractor{
+		llmConfig: cfg,
+		client:    &http.Client{Timeout: 30 * time.Second},
+		audit:     experience.NewAuditTrail(50),
 	}
+	e.core = experience.NewExtractor(experienceLLMClient{cfg: cfg, client: e.client}, experienceSkillStore{executor: skillExecutor})
+	return e
 }
 
-// extractedPattern is the JSON structure returned by the LLM.
-type extractedPattern struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Triggers    []string        `json:"triggers"`
-	Steps       []extractedStep `json:"steps"`
-}
-
-type extractedStep struct {
-	Action  string                 `json:"action"`
-	Params  map[string]interface{} `json:"params"`
-	OnError string                 `json:"on_error"`
-}
-
-// Extract analyses the session history via LLM and registers any discovered
-// patterns as NL Skills.  It silently returns nil when the LLM is not
-// configured, the session has no meaningful output, or the session exited
-// with a non-zero code (failed sessions are poor pattern candidates).
+// Extract analyses the session history via the core experience pipeline and
+// registers any discovered reusable patterns as NL Skills.
 func (e *ExperienceExtractor) Extract(session *RemoteSession) error {
-	// Skip when LLM is not configured.
-	if !e.isConfigured() {
+	if e == nil || e.core == nil || !e.isConfigured() || session == nil {
 		return nil
 	}
-
-	if session == nil {
+	snapshot := e.snapshot(session)
+	if !experience.Eligible(snapshot) {
 		return nil
 	}
-
-	// Skip sessions that exited with errors — they're unlikely to contain
-	// good reusable patterns.
-	session.mu.RLock()
-	var exitCodeVal int
-	hasExitCode := session.ExitCode != nil
-	if hasExitCode {
-		exitCodeVal = *session.ExitCode
-	}
-	eventCount := len(session.Events)
-	session.mu.RUnlock()
-	if hasExitCode && exitCodeVal != 0 {
-		// Structured sessions (Claude Code, Gemini, Codex, iFlow) normally
-		// exit with code 1 — still extract experience from them.
-		if !(session.isStructuredSession() && exitCodeVal == 1) {
-			return nil
-		}
-	}
-	// Skip sessions with no events — too little signal to extract from.
-	if eventCount == 0 {
-		return nil
-	}
-
-	// Build a textual summary of the session history.
-	history := e.buildSessionHistory(session)
-	if strings.TrimSpace(history) == "" {
-		return nil
-	}
-
-	patterns, err := e.callLLM(history)
+	started := time.Now()
+	result, err := e.core.ExtractDetailed(context.Background(), snapshot)
+	duration := time.Since(started)
 	if err != nil {
-		// LLM errors are non-fatal; we simply skip extraction.
-		return fmt.Errorf("experience extraction LLM call failed: %w", err)
+		log.Printf("[experience] extraction failed: %v", experience.RedactExperienceText(err.Error()))
+		e.recordAuditError(session, snapshot, err, duration)
+		return err
 	}
-
-	for _, p := range patterns {
-		if err := e.registerPattern(p, session); err != nil {
-			// Log but continue with remaining patterns.
-			continue
-		}
-	}
+	summary := result.Summary()
+	log.Printf("[experience] candidates=%d registered=%d updated=%d skipped=%d skip_reasons=%v unsupported_steps=%v",
+		summary.TotalCandidates, summary.Registered, summary.Updated, summary.Skipped, summary.SkipReasons, summary.UnsupportedSteps)
+	e.recordAudit(session, snapshot, result, duration)
 	return nil
 }
 
-// isConfigured returns true when the LLM endpoint and model are set.
 func (e *ExperienceExtractor) isConfigured() bool {
-	return strings.TrimSpace(e.llmConfig.URL) != "" &&
-		strings.TrimSpace(e.llmConfig.Model) != ""
+	return strings.TrimSpace(e.llmConfig.URL) != "" && strings.TrimSpace(e.llmConfig.Model) != ""
 }
 
-// buildSessionHistory constructs a textual representation of the session
-// for the LLM prompt, combining important events and a filtered subset of
-// raw output. Events are prioritized over raw output for better signal.
-func (e *ExperienceExtractor) buildSessionHistory(session *RemoteSession) string {
+func (e *ExperienceExtractor) snapshot(session *RemoteSession) experience.SessionSnapshot {
 	session.mu.RLock()
+	defer session.mu.RUnlock()
+
 	rawLines := make([]string, len(session.RawOutputLines))
 	copy(rawLines, session.RawOutputLines)
-	events := make([]ImportantEvent, len(session.Events))
-	copy(events, session.Events)
-	tool := session.Tool
-	title := session.Title
-	projectPath := session.ProjectPath
+	events := make([]experience.ImportantEvent, 0, len(session.Events))
+	for _, ev := range session.Events {
+		events = append(events, experience.ImportantEvent{
+			Type:    ev.Type,
+			Title:   ev.Title,
+			Summary: ev.Summary,
+		})
+	}
+
 	var exitCode *int
 	if session.ExitCode != nil {
 		cp := *session.ExitCode
 		exitCode = &cp
 	}
-	session.mu.RUnlock()
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Tool: %s\n", tool))
-	sb.WriteString(fmt.Sprintf("Title: %s\n", title))
-	sb.WriteString(fmt.Sprintf("Project: %s\n", projectPath))
-	if exitCode != nil {
-		sb.WriteString(fmt.Sprintf("Exit Code: %d\n", *exitCode))
+	return experience.SessionSnapshot{
+		Tool:              session.Tool,
+		Title:             session.Title,
+		ProjectPath:       session.ProjectPath,
+		ExitCode:          exitCode,
+		StructuredSession: session.isStructuredSession(),
+		Events:            events,
+		RawOutputLines:    rawLines,
 	}
-	sb.WriteString("\n")
-
-	// Events are the most valuable signal for pattern extraction.
-	if len(events) > 0 {
-		sb.WriteString("=== Important Events ===\n")
-		for _, ev := range events {
-			sb.WriteString(fmt.Sprintf("[%s] %s: %s\n", ev.Type, ev.Title, ev.Summary))
-		}
-		sb.WriteString("\n")
-	}
-
-	// For raw output, only include the last 100 lines (reduced from 200)
-	// and skip empty/whitespace-only lines to reduce noise.
-	if len(rawLines) > 0 {
-		sb.WriteString("=== Session Output (filtered) ===\n")
-		start := 0
-		if len(rawLines) > 100 {
-			start = len(rawLines) - 100
-		}
-		lineCount := 0
-		for _, line := range rawLines[start:] {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" {
-				continue
-			}
-			sb.WriteString(line)
-			sb.WriteString("\n")
-			lineCount++
-		}
-		if lineCount == 0 {
-			sb.WriteString("(no meaningful output)\n")
-		}
-	}
-
-	return sb.String()
 }
 
-// callLLM sends the session history to the configured LLM and parses the
-// response into a list of extracted patterns.
-func (e *ExperienceExtractor) callLLM(history string) ([]extractedPattern, error) {
-	systemPrompt := `You are an expert at analysing coding session histories and extracting reusable operation patterns.
-Given a session history, identify patterns that are GENUINELY reusable — not one-off tasks.
+func (e *ExperienceExtractor) recordAuditError(session *RemoteSession, snapshot experience.SessionSnapshot, err error, duration time.Duration) {
+	if e == nil || session == nil || err == nil {
+		return
+	}
+	e.ensureAuditTrail().RecordError(experience.AuditContext{
+		SessionID:  session.ID,
+		Snapshot:   snapshot,
+		DurationMS: duration.Milliseconds(),
+	}, err)
+}
 
-A good reusable pattern:
-- Solves a recurring problem (e.g. "deploy to staging", "run test suite with coverage")
-- Has clear, parameterizable steps (not hardcoded to one specific file/project)
-- Would save time if automated
+func (e *ExperienceExtractor) recordAudit(session *RemoteSession, snapshot experience.SessionSnapshot, result experience.Result, duration time.Duration) {
+	if e == nil || session == nil {
+		return
+	}
+	e.ensureAuditTrail().RecordResult(experience.AuditContext{
+		SessionID:  session.ID,
+		Snapshot:   snapshot,
+		DurationMS: duration.Milliseconds(),
+	}, result)
+}
 
-A bad pattern (DO NOT extract):
-- One-off debugging sessions with no repeatable structure
-- Simple single-command operations (e.g. just "git pull")
-- Patterns too specific to one project's file paths
+func (e *ExperienceExtractor) appendAudit(entry ExperienceAuditEntry) {
+	if e == nil {
+		return
+	}
+	e.ensureAuditTrail().Append(entry)
+}
 
-Return a JSON array. Each pattern must have:
-- "name": a short, descriptive kebab-case name (e.g. "deploy-staging", "run-coverage-tests")
-- "description": what the pattern does and when to use it
-- "triggers": list of 3-5 keywords or phrases that would trigger this pattern
-- "steps": list of steps, each with "action" (create_session/send_input/send_and_observe/call_mcp_tool/bash), "params" (key-value map), and optional "on_error" ("stop" or "continue")
+func (e *ExperienceExtractor) ensureAuditTrail() *experience.AuditTrail {
+	if e.audit == nil {
+		e.audit = experience.NewAuditTrail(50)
+	}
+	return e.audit
+}
 
-Return ONLY a JSON array. If no genuinely reusable patterns are found, return [].
-Quality over quantity — only extract patterns you're confident are reusable.`
+func (e *ExperienceExtractor) ListAudit() []ExperienceAuditEntry {
+	if e == nil || e.audit == nil {
+		return nil
+	}
+	return e.audit.List()
+}
 
-	userPrompt := fmt.Sprintf("Analyse the following session history and extract reusable operation patterns:\n\n%s", history)
+func (e *ExperienceExtractor) AuditHealth() experience.AuditHealth {
+	if e == nil || e.audit == nil {
+		return experience.AuditHealth{}
+	}
+	return e.audit.Health()
+}
 
+// GetExperienceAuditHealth returns aggregate health for recent experience extraction runs.
+func (a *App) GetExperienceAuditHealth() experience.AuditHealth {
+	if a == nil {
+		return experience.AuditHealth{}
+	}
+	a.ensureExperienceExtractor()
+	if a.experienceExtractor == nil {
+		return experience.AuditHealth{}
+	}
+	return a.experienceExtractor.AuditHealth()
+}
+
+// ListExperienceAudit returns recent experience extraction audit records.
+func (a *App) ListExperienceAudit() []ExperienceAuditEntry {
+	if a == nil {
+		return nil
+	}
+	a.ensureExperienceExtractor()
+	if a.experienceExtractor == nil {
+		return nil
+	}
+	return a.experienceExtractor.ListAudit()
+}
+
+type experienceLLMClient struct {
+	cfg    corelib.MaclawLLMConfig
+	client *http.Client
+}
+
+func (c experienceLLMClient) Generate(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
 	messages := []interface{}{
 		map[string]string{"role": "system", "content": systemPrompt},
 		map[string]string{"role": "user", "content": userPrompt},
 	}
-
-	result, err := doSimpleLLMRequest(context.Background(), e.llmConfig, messages, e.client, 30*time.Second)
+	result, err := doSimpleLLMRequest(ctx, c.cfg, messages, c.client, 30*time.Second)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-
-	content := strings.TrimSpace(result.Content)
-	content = stripCodeFences(content)
-
-	var patterns []extractedPattern
-	if err := json.Unmarshal([]byte(content), &patterns); err != nil {
-		return nil, fmt.Errorf("parse patterns JSON: %w", err)
-	}
-	return patterns, nil
+	return result.Content, nil
 }
 
-// stripCodeFences removes optional ```json ... ``` wrapping from LLM output.
-func stripCodeFences(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		// Remove opening fence line.
-		if idx := strings.Index(s, "\n"); idx >= 0 {
-			s = s[idx+1:]
-		}
-		// Remove closing fence.
-		if idx := strings.LastIndex(s, "```"); idx >= 0 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
-	}
-	return s
+type experienceSkillStore struct {
+	executor *SkillExecutor
 }
 
-// registerPattern converts an extracted pattern to an NLSkillEntry and
-// registers or updates it via the SkillExecutor.
-// Quality assessment: compares step count, description detail, and trigger
-// coverage to decide whether to update an existing skill.
-func (e *ExperienceExtractor) registerPattern(p extractedPattern, session *RemoteSession) error {
-	name := strings.TrimSpace(p.Name)
-	if name == "" || len(p.Steps) == 0 {
-		return nil // skip invalid patterns
+func (s experienceSkillStore) List() []corelib.NLSkillEntry {
+	if s.executor == nil {
+		return nil
 	}
-
-	// Validate step actions — reject patterns with unknown actions.
-	validActions := map[string]bool{
-		"create_session": true, "send_input": true, "send_and_observe": true,
-		"call_mcp_tool": true, "bash": true, "skill_md": true,
-	}
-	for _, s := range p.Steps {
-		if !validActions[s.Action] {
-			return nil // skip patterns with unknown actions
-		}
-	}
-
-	steps := make([]corelib.NLSkillStep, 0, len(p.Steps))
-	for _, s := range p.Steps {
-		step := corelib.NLSkillStep{
-			Action:  s.Action,
-			Params:  s.Params,
-			OnError: s.OnError,
-		}
-		if step.OnError == "" {
-			step.OnError = "stop"
-		}
-		steps = append(steps, step)
-	}
-
-	session.mu.RLock()
-	projectPath := session.ProjectPath
-	session.mu.RUnlock()
-
-	entry := corelib.NLSkillEntry{
-		Name:          name,
-		Description:   p.Description,
-		Triggers:      p.Triggers,
-		Steps:         steps,
-		Status:        "active",
-		CreatedAt:     time.Now().Format(time.RFC3339),
-		Source:        "learned",
-		SourceProject: projectPath,
-	}
-
-	// Check if a skill with the same name already exists.
-	existing := e.findSkillByName(name)
-	if existing != nil {
-		// Quality comparison: new pattern must be meaningfully better.
-		if !e.isPatternBetter(p, existing) {
-			return nil
-		}
-		entry.CreatedAt = existing.CreatedAt // preserve original creation time
-		entry.UsageCount = existing.UsageCount
-		entry.SuccessCount = existing.SuccessCount
-		entry.LastUsedAt = existing.LastUsedAt
-		return e.skillExecutor.Update(entry)
-	}
-
-	return e.skillExecutor.Register(entry)
+	return s.executor.loadSkills()
 }
 
-// isPatternBetter returns true if the new pattern is meaningfully better
-// than the existing skill. Considers step count, description detail, and
-// trigger keyword coverage.
-func (e *ExperienceExtractor) isPatternBetter(newP extractedPattern, existing *corelib.NLSkillEntry) bool {
-	score := 0
-
-	// More steps = more detailed workflow.
-	if len(newP.Steps) > len(existing.Steps) {
-		score += 2
+func (s experienceSkillStore) Register(entry corelib.NLSkillEntry) error {
+	if s.executor == nil {
+		return errors.New("experience skill store is not configured")
 	}
-
-	// Longer description = more context.
-	if len(newP.Description) > len(existing.Description)+20 {
-		score++
-	}
-
-	// More trigger keywords = better discoverability.
-	if len(newP.Triggers) > len(existing.Triggers) {
-		score++
-	}
-
-	// If existing skill has a poor success rate, prefer the new pattern.
-	if existing.UsageCount >= 3 && existing.SuccessCount*2 < existing.UsageCount {
-		score += 2
-	}
-
-	return score >= 2
+	return s.executor.Register(entry)
 }
 
-// findSkillByName looks up an existing skill by name.
-func (e *ExperienceExtractor) findSkillByName(name string) *corelib.NLSkillEntry {
-	skills := e.skillExecutor.loadSkills()
-	for _, s := range skills {
-		if s.Name == name {
-			cp := s
-			return &cp
-		}
+func (s experienceSkillStore) Update(entry corelib.NLSkillEntry) error {
+	if s.executor == nil {
+		return errors.New("experience skill store is not configured")
 	}
-	return nil
+	return s.executor.Update(entry)
 }

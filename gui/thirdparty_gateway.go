@@ -836,7 +836,7 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: resp.VoiceMimeType, FileName: resp.VoiceFileName, Data: resp.VoiceData})
 	}
 	paths := resp.LocalFilePaths
-	if resp.LocalFilePath != "" && !containsThirdPartyString(paths, resp.LocalFilePath) {
+	if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
 		paths = append([]string{resp.LocalFilePath}, paths...)
 	}
 	for _, p := range paths {
@@ -1025,15 +1025,6 @@ func thirdPartyPlatform(clientID string) string {
 
 func thirdPartySessionUserID(clientID, conversationID string) string {
 	return "thirdparty:" + normalizeThirdPartyID(clientID) + ":" + strings.TrimSpace(conversationID)
-}
-
-func containsThirdPartyString(list []string, needle string) bool {
-	for _, item := range list {
-		if item == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // App integration.

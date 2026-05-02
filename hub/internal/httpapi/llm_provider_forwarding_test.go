@@ -555,6 +555,14 @@ func TestLLMV1ChatCompletionsHandlerMissEnqueuesUsageAndCredits(t *testing.T) {
 		t.Fatalf("expected upstream to be called once, hits = %d", upstreamHits.Load())
 	}
 
+	serviceReg, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load service registry before usage flush: %v", err)
+	}
+	if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 5 {
+		t.Fatalf("expected credits to be charged immediately, got %#v", serviceReg.Grants)
+	}
+
 	globalLLMUsageAccumulator.flush(ctx)
 
 	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
@@ -572,7 +580,7 @@ func TestLLMV1ChatCompletionsHandlerMissEnqueuesUsageAndCredits(t *testing.T) {
 		t.Fatalf("unexpected provider display cost: %#v", stat)
 	}
 
-	serviceReg, err := llmservice.LoadRegistry(ctx, system)
+	serviceReg, err = llmservice.LoadRegistry(ctx, system)
 	if err != nil {
 		t.Fatalf("load service registry: %v", err)
 	}

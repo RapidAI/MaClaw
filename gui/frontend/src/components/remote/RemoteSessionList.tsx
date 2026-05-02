@@ -97,6 +97,7 @@ export function RemoteSessionList(props: Props) {
     const [consoleReadOnly, setConsoleReadOnly] = useState(false);
     const [previewSessionIds, setPreviewSessionIds] = useState<Set<string>>(new Set());
     const [bgLoops, setBgLoops] = useState<BackgroundLoopView[]>([]);
+    const [scheduledRefreshKey, setScheduledRefreshKey] = useState(0);
     // SSH/background loop output lines (polled when console is open for a non-remote session)
     const [bgLoopOutputLines, setBgLoopOutputLines] = useState<string[]>([]);
 
@@ -561,6 +562,12 @@ export function RemoteSessionList(props: Props) {
     const remoteLiveCount = useMemo(() => remoteSess.filter(isLiveSession).length, [remoteSess]);
     const bgTotalCount = bgLoops.filter(l => l.status === "running" || l.status === "paused").length + aiSessions.filter(isLiveSession).length;
 
+    const openScheduledTab = () => {
+        setSessionTab("scheduled");
+        setShowHistory(false);
+        setScheduledRefreshKey((key) => key + 1);
+    };
+
     return (
         <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, background: colors.surface, overflow: "hidden" }}>
             {/* Header with tabs */}
@@ -609,7 +616,7 @@ export function RemoteSessionList(props: Props) {
                         )}
                     </button>
                     <button
-                        onClick={() => { setSessionTab("scheduled"); setShowHistory(false); }}
+                        onClick={openScheduledTab}
                         style={{
                             border: "none",
                             background: sessionTab === "scheduled" ? colors.surface : "transparent",
@@ -696,7 +703,7 @@ export function RemoteSessionList(props: Props) {
             {/* Scheduled tab content */}
             {isScheduledTab && (
                 <div style={{ padding: "8px 14px" }}>
-                    <ScheduledTasksPanel lang={lang} />
+                    <ScheduledTasksPanel lang={lang} refreshKey={scheduledRefreshKey} />
                 </div>
             )}
 

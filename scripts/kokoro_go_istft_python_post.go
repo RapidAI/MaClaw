@@ -1,4 +1,6 @@
-﻿package main
+//go:build ignore
+
+package main
 import (
  "encoding/binary"; "fmt"; "log"; "math"; "os"; "path/filepath"
  "github.com/RapidAI/CodeClaw/corelib/tts/kokoro"

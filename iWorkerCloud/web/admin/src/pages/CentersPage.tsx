@@ -17,6 +17,7 @@ import {
   type CloudControlMode,
   type CenterServiceReadiness,
   type CenterProbeResult,
+  type CenterRuntimeStatus,
 } from '../api/centers';
 
 type IntegrationDraft = CenterIntegrationPatch;
@@ -67,6 +68,42 @@ const serviceBadgeClass = (status?: string) => {
   if (status === 'heartbeat_ok' || status === 'probe_ok') return 'ok';
   if (status === 'registered' || status === 'configured' || status === 'probe_missing_base_url' || !status) return 'warn';
   return 'danger';
+};
+
+const runtimeModeLabel = (mode?: CenterRuntimeStatus['runtime_provider_mode']) => {
+  switch (mode) {
+    case 'cloud_sync':
+      return 'Cloud-managed compute';
+    case 'local_self_managed':
+      return 'Center self-managed compute';
+    case 'local_settings_fallback':
+      return 'Local provider fallback';
+    default:
+      return 'Runtime not reported';
+  }
+};
+
+const runtimeContinuityText = (runtime?: CenterRuntimeStatus) => {
+  if (!runtime) return 'Runtime snapshot has not been loaded yet.';
+  if (runtime.runtime_provider_mode === 'local_settings_fallback') {
+    return 'Center reports Cloud compute sync trouble, but requests can continue through local provider settings.';
+  }
+  if (runtime.compute_sync_status?.status === 'failure' && runtime.compute_sync_status.non_blocking) {
+    return 'Cloud coordination has a sync issue, and Center marked the impact as non-blocking for runtime execution.';
+  }
+  if (runtime.runtime_provider_mode === 'cloud_sync') {
+    return 'Center is currently using Cloud-synchronized provider routing.';
+  }
+  if (runtime.runtime_provider_mode === 'local_self_managed') {
+    return 'Center is intentionally managing its compute provider routing locally.';
+  }
+  return runtime.message || 'Runtime status is available for platform coordination only.';
+};
+
+const runtimeContinuityClass = (runtime?: CenterRuntimeStatus) => {
+  if (!runtime) return 'watch';
+  if (runtime.compute_sync_status?.status === 'failure' && !runtime.compute_sync_status.non_blocking) return 'watch';
+  return runtime.ok ? 'ready' : 'watch';
 };
 
 function createDraft(center: Center): IntegrationDraft {
@@ -265,7 +302,7 @@ export function CentersPage() {
           const draft = drafts[center.id] ?? createDraft(center);
           const managementItem = management[center.id];
           const serviceReadiness = readinessResult[center.id];
-          const runtime = probeRuntime[center.id];
+          const runtime = probeRuntime[center.id] || managementItem?.runtime_status;
           const workload = managementItem?.iworker_readiness?.workload_summary;
           const isRuntimeRefreshing = runtimeRefreshing[center.id] === true;
           return (
@@ -325,15 +362,17 @@ export function CentersPage() {
                 </div>
               </div>}
 
-              {runtime && <div className={`cloud-posture-panel ${runtime.ok ? 'ready' : 'watch'}`}>
+              {runtime && <div className={`cloud-posture-panel ${runtimeContinuityClass(runtime)}`}>
                 <div>
                   <label>Platform runtime snapshot</label>
-                  <strong>{runtime.runtime_provider_mode || 'unknown runtime'}</strong>
-                  <span>{runtime.message}</span>
+                  <strong>{runtimeModeLabel(runtime.runtime_provider_mode)}</strong>
+                  <span>{runtimeContinuityText(runtime)}</span>
                 </div>
                 <div className="cloud-issue-list">
                   <span className={runtime.compute_source === 'cloud' ? 'ok' : 'warn'}>compute source: {runtime.compute_source || 'unknown'}</span>
-                  <span className={runtime.compute_sync_status?.status === 'success' ? 'ok' : 'warn'}>sync: {runtime.compute_sync_status?.status || 'unknown'}</span>
+                  <span className={runtime.compute_sync_status?.status === 'success' ? 'ok' : runtime.compute_sync_status?.non_blocking ? 'warn' : 'danger'}>sync: {runtime.compute_sync_status?.status || 'unknown'}</span>
+                  {runtime.compute_sync_status?.non_blocking ? <span className="ok">non-blocking</span> : null}
+                  {runtime.compute_sync_status?.runtime_impact ? <span>impact: {runtime.compute_sync_status.runtime_impact}</span> : null}
                   <span>runtime providers: {runtime.provider_count ?? 0}</span>
                   <span>cloud providers: {runtime.cloud_provider_count ?? runtime.compute_sync_status?.provider_count ?? 0}</span>
                   <span>{runtime.compute_permission ? 'self-management allowed' : 'cloud-managed'}</span>

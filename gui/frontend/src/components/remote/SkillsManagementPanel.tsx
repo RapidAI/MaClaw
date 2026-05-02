@@ -38,6 +38,7 @@ import {
     SelectProjectDir,
     OpenSystemUrl,
     GetHubRecommendations,
+    ListExperienceAudit,
 } from "../../../wailsjs/go/main/App";
 
 interface NLSkillStep {
@@ -113,6 +114,41 @@ interface ExternalSkillDirInfo {
     path: string;
     skill_count: number;
     error?: string;
+}
+
+interface ExperienceAuditEntry {
+    timestamp: string;
+    session_id?: string;
+    tool?: string;
+    title?: string;
+    project_path?: string;
+    status?: string;
+    duration_ms?: number;
+    error?: string;
+    summary?: {
+        total_candidates: number;
+        registered: number;
+        updated: number;
+        skipped: number;
+        skip_reasons?: Record<string, number>;
+        unsupported_steps?: Record<string, number>;
+    };
+    decisions?: Array<{
+        pattern_name: string;
+        action: string;
+        reason?: string;
+        matched_skill_name?: string;
+        quality?: {
+            score?: number;
+            reasons?: string[];
+        };
+        evidence?: {
+            score?: number;
+            reasons?: string[];
+            unsupported_steps?: string[];
+        };
+    }>;
+    upserted?: string[];
 }
 
 const emptySkill: NLSkillDefinition = {
@@ -236,6 +272,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [learnedExporting, setLearnedExporting] = useState(false);
     const [learnedImporting, setLearnedImporting] = useState(false);
     const [importReport, setImportReport] = useState<{ restored: number; skipped: number; failed: number; details: string[] } | null>(null);
+    const [experienceAudit, setExperienceAudit] = useState<ExperienceAuditEntry[]>([]);
+    const [experienceAuditLoading, setExperienceAuditLoading] = useState(false);
+    const [experienceAuditError, setExperienceAuditError] = useState("");
     const [uploadingSkill, setUploadingSkill] = useState<string | null>(null);
 
     // Diagnose state
@@ -752,6 +791,26 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     };
 
+    const loadExperienceAudit = useCallback(async () => {
+        setExperienceAuditLoading(true);
+        setExperienceAuditError("");
+        try {
+            const records = await ListExperienceAudit();
+            setExperienceAudit(Array.isArray(records) ? records : []);
+        } catch (err) {
+            setExperienceAuditError(String(err));
+            setExperienceAudit([]);
+        } finally {
+            setExperienceAuditLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (activeTab === "learned") {
+            loadExperienceAudit();
+        }
+    }, [activeTab, loadExperienceAudit]);
+
     const getExecutionClassLabel = (executionClass?: string) => {
         switch (executionClass) {
             case "agent_markdown_skill":
@@ -1228,6 +1287,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             {learnedSelected.size > 0 && ` (${localizeText("selected", "已选", "已選")} ${learnedSelected.size})`}
                         </span>
                         <div style={{ display: "flex", gap: "6px" }}>
+                            <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={loadExperienceAudit} disabled={experienceAuditLoading}>
+                                {experienceAuditLoading ? localizeText("Refreshing...", "Refreshing...", "Refreshing...") : localizeText("Audit", "Audit", "Audit")}
+                            </button>
                             <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleLearnedImport} disabled={learnedImporting}>
                                 {learnedImporting ? localizeText("Importing...", "导入中...", "匯入中...") : localizeText("📦 Import", "📦 导入", "📦 匯入")}
                             </button>
@@ -1252,6 +1314,76 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         </div>
                     )}
 
+                    {/* Experience extraction audit */}
+                    {(experienceAuditError || experienceAudit.length > 0) && (
+                        <div style={{ ...remoteInfoPanelStyle, padding: "8px 10px", borderRadius: "4px" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                                <span style={{ fontWeight: 600, color: colors.text }}>{localizeText("Experience Audit", "Experience Audit", "Experience Audit")}</span>
+                                <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "2px 8px" }} onClick={() => setExperienceAudit([])}>{localizeText("Hide", "Hide", "Hide")}</button>
+                            </div>
+                            {experienceAuditError && <div style={{ color: colors.danger, fontSize: "0.74rem" }}>{experienceAuditError}</div>}
+                            {!experienceAuditError && experienceAudit.slice(0, 5).map((record, index) => {
+                                const summary = record.summary || { total_candidates: 0, registered: 0, updated: 0, skipped: 0 };
+                                const skipReasons = Object.entries(summary.skip_reasons || {});
+                                const unsupported = Object.entries(summary.unsupported_steps || {});
+                                const status = record.status || (record.error ? "failed" : summary.total_candidates > 0 ? "completed" : "no_candidates");
+                                const statusColor = status === "failed" ? colors.danger : status === "no_candidates" ? colors.textMuted : colors.success;
+                                const durationLabel = typeof record.duration_ms === "number" && record.duration_ms > 0 ? `${record.duration_ms}ms` : "";
+                                return (
+                                    <div key={`${record.timestamp}-${index}`} style={{ padding: "6px 0", borderTop: index > 0 ? `1px solid ${colors.borderLight}` : undefined }}>
+                                        <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", alignItems: "baseline" }}>
+                                            <span style={{ fontWeight: 600, fontSize: "0.76rem", color: colors.text }}>{record.title || record.tool || localizeText("Untitled session", "Untitled session", "Untitled session")}</span>
+                                            <span style={{ fontSize: "0.68rem", color: statusColor, marginLeft: "auto" }}>{localizeText("Status", "Status", "Status")}: {status}{durationLabel ? ` / ${durationLabel}` : ""}</span>
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>{record.timestamp ? new Date(record.timestamp).toLocaleString() : ""}</span>
+                                        </div>
+                                        <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginTop: "3px" }}>
+                                            {localizeText("Candidates", "Candidates", "Candidates")}: {summary.total_candidates} / {localizeText("Registered", "Registered", "Registered")}: {summary.registered} / {localizeText("Updated", "Updated", "Updated")}: {summary.updated} / {localizeText("Skipped", "Skipped", "Skipped")}: {summary.skipped}
+                                        </div>
+                                        {record.error && (
+                                            <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: "3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={record.error}>
+                                                {localizeText("Extraction error", "Extraction error", "Extraction error")}: {record.error}
+                                            </div>
+                                        )}
+                                        {record.upserted && record.upserted.length > 0 && (
+                                            <div style={{ fontSize: "0.72rem", color: colors.success, marginTop: "3px" }}>{localizeText("Upserted", "Upserted", "Upserted")}: {record.upserted.join(", ")}</div>
+                                        )}
+                                        {skipReasons.length > 0 && (
+                                            <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginTop: "3px" }}>
+                                                {localizeText("Skip reasons", "Skip reasons", "Skip reasons")}: {skipReasons.map(([reason, count]) => `${reason} x${count}`).join("; ")}
+                                            </div>
+                                        )}
+                                        {unsupported.length > 0 && (
+                                            <div style={{ fontSize: "0.72rem", color: colors.warning, marginTop: "3px" }}>
+                                                {localizeText("Unsupported evidence", "Unsupported evidence", "Unsupported evidence")}: {unsupported.map(([step, count]) => `${step} x${count}`).join("; ")}
+                                            </div>
+                                        )}
+                                        {record.decisions && record.decisions.length > 0 && (
+                                            <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginTop: "5px" }}>
+                                                {record.decisions.slice(0, 3).map((decision, decisionIndex) => {
+                                                    const qualityScore = decision.quality?.score;
+                                                    const evidenceScore = decision.evidence?.score;
+                                                    const detail = [
+                                                        decision.reason,
+                                                        decision.matched_skill_name ? `${localizeText("matched", "matched", "matched")}: ${decision.matched_skill_name}` : "",
+                                                        typeof qualityScore === "number" ? `Q:${qualityScore}` : "",
+                                                        typeof evidenceScore === "number" ? `E:${evidenceScore}` : "",
+                                                    ].filter(Boolean).join(" / ");
+                                                    return (
+                                                        <div key={`${record.timestamp}-${decisionIndex}-${decision.pattern_name}`} style={{ fontSize: "0.7rem", color: decision.action === "skipped" ? colors.textMuted : colors.success, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={detail || undefined}>
+                                                            {decision.action}: {decision.pattern_name || localizeText("unnamed", "unnamed", "unnamed")}{detail ? ` - ${detail}` : ""}
+                                                        </div>
+                                                    );
+                                                })}
+                                                {record.decisions.length > 3 && (
+                                                    <div style={{ fontSize: "0.68rem", color: colors.textMuted }}>{localizeText("More decisions", "More decisions", "More decisions")}: {record.decisions.length - 3}</div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
                     {/* Error */}
                     {error && (
                         <div style={remoteErrorStateStyle}>

@@ -1395,3 +1395,30 @@ func TestCreateMCPServerValidatesTransportConfig(t *testing.T) {
 		t.Fatalf("server = %+v", server)
 	}
 }
+
+func TestNormalizeMCPServerPayloadRejectsSecretValues(t *testing.T) {
+	_, err := normalizeMCPServerPayload(mcpServerPayload{
+		Name:       "CRM MCP",
+		ServerType: "http",
+		Endpoint:   "https://mcp.example.com",
+		EnvKeys:    []string{"CRM_TOKEN=secret-value"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "env_keys") {
+		t.Fatalf("normalizeMCPServerPayload error = %v, want env key validation error", err)
+	}
+}
+
+func TestNormalizeMCPServerPayloadSanitizesEnvKeyNames(t *testing.T) {
+	server, err := normalizeMCPServerPayload(mcpServerPayload{
+		Name:       "CRM MCP",
+		ServerType: "http",
+		Endpoint:   "https://mcp.example.com",
+		EnvKeys:    []string{" CRM_TOKEN ", "CRM_TOKEN", "CRM_TOKEN_2"},
+	})
+	if err != nil {
+		t.Fatalf("normalizeMCPServerPayload returned error: %v", err)
+	}
+	if len(server.EnvKeys) != 2 || server.EnvKeys[0] != "CRM_TOKEN" || server.EnvKeys[1] != "CRM_TOKEN_2" {
+		t.Fatalf("EnvKeys = %+v", server.EnvKeys)
+	}
+}

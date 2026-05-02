@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
@@ -60,15 +61,11 @@ func (d *ConflictDetector) Check(newEntry Entry) (*ConflictResult, error) {
 
 // Supersede marks the entry with the given ID as superseded.
 func (d *ConflictDetector) Supersede(id string) {
+	now := time.Now()
 	d.store.mu.Lock()
 	defer d.store.mu.Unlock()
-	for i := range d.store.entries {
-		if d.store.entries[i].ID == id {
-			d.store.entries[i].Status = StatusSuperseded
-			d.store.dirty = true
-			d.store.signalSave()
-			return
-		}
+	if d.store.supersedeEntryLocked(id, now) {
+		d.store.signalSave()
 	}
 }
 

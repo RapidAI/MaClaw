@@ -74,11 +74,17 @@ func (c *Center) RuntimeStatusSnapshot() RuntimeStatus {
 	}
 	if c.ComputeSourceManager != nil {
 		status.ComputeSource = c.ComputeSourceManager.GetSource()
-		switch status.ComputeSource {
+		providers, effectiveSource, fallback := c.ComputeSourceManager.GetActiveProviderSnapshot()
+		switch effectiveSource {
 		case "cloud":
 			status.RuntimeProviderMode = "cloud_sync"
 		case "local":
 			status.RuntimeProviderMode = "local_self_managed"
+		case "local_fallback":
+			status.RuntimeProviderMode = "local_settings_fallback"
+		}
+		if fallback || effectiveSource == "local" || effectiveSource == "local_fallback" {
+			status.ProviderCount = len(providers)
 		}
 	}
 	if c.ComputeSyncManager != nil {
@@ -175,6 +181,28 @@ func (c *Center) IWorkerReadinessSnapshot() IWorkerReadiness {
 		readiness.Status = "ready"
 	}
 	return readiness
+}
+
+func (c *Center) CloudRuntimeStatusSnapshot() *tenant.CloudCenterRuntime {
+	status := c.RuntimeStatusSnapshot()
+	runtime := &tenant.CloudCenterRuntime{
+		ProviderCount:       status.ProviderCount,
+		RuntimeProviderMode: status.RuntimeProviderMode,
+		ComputeSource:       status.ComputeSource,
+		ComputePermission:   status.ComputePermission,
+		CloudProviderCount:  status.CloudProviderCount,
+	}
+	if status.ComputeSyncStatus != nil {
+		runtime.ComputeSyncStatus = &tenant.CloudComputeSyncStatus{
+			LastSyncAt:    status.ComputeSyncStatus.LastSyncAt,
+			Status:        status.ComputeSyncStatus.Status,
+			Error:         status.ComputeSyncStatus.Error,
+			ProviderCount: status.ComputeSyncStatus.ProviderCount,
+			NonBlocking:   status.ComputeSyncStatus.NonBlocking,
+			RuntimeImpact: status.ComputeSyncStatus.RuntimeImpact,
+		}
+	}
+	return runtime
 }
 
 func (c *Center) CloudIWorkerReadinessSnapshot() *tenant.CloudIWorkerReadiness {

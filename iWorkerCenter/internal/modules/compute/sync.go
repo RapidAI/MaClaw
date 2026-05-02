@@ -48,6 +48,9 @@ type ComputeSyncStatus struct {
 // CredentialResolver resolves the current Cloud center credentials before each sync.
 type CredentialResolver func() (centerID, centerSecret string)
 
+// StatusObserver is called after compute sync state changes.
+type StatusObserver func(ComputeSyncStatus)
+
 // syncResponse is the JSON shape returned by the Cloud compute-providers API.
 type syncResponse struct {
 	Providers         []ComputeProvider `json:"providers"`
@@ -69,6 +72,7 @@ type SyncManager struct {
 	syncStatus        ComputeSyncStatus
 	computePermission bool
 	forceSync         bool
+	statusObserver    StatusObserver
 
 	stopCh   chan struct{}
 	client   *http.Client
@@ -125,6 +129,15 @@ func (sm *SyncManager) Stop() {
 // SyncNow triggers an immediate sync and returns any error.
 func (sm *SyncManager) SyncNow() error {
 	return sm.doSync()
+}
+
+func (sm *SyncManager) SetStatusObserver(observer StatusObserver) {
+	if sm == nil {
+		return
+	}
+	sm.mu.Lock()
+	sm.statusObserver = observer
+	sm.mu.Unlock()
 }
 
 // GetProviders returns the current provider list (thread-safe copy).
@@ -186,6 +199,15 @@ func (sm *SyncManager) loop() {
 	}
 }
 
+func (sm *SyncManager) notifyStatusChange(status ComputeSyncStatus) {
+	sm.mu.RLock()
+	observer := sm.statusObserver
+	sm.mu.RUnlock()
+	if observer != nil {
+		observer(status)
+	}
+}
+
 func (sm *SyncManager) currentCredentials() (string, string) {
 	if sm.resolveCredentials != nil {
 		centerID, centerSecret := sm.resolveCredentials()
@@ -244,13 +266,7 @@ func (sm *SyncManager) doSync() error {
 		return fmt.Errorf("decode sync response: %w", err)
 	}
 
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	sm.providers = sr.Providers
-	sm.computePermission = sr.ComputePermission
-	sm.forceSync = sr.ForceSync
-	sm.syncStatus = ComputeSyncStatus{
+	status := ComputeSyncStatus{
 		LastSyncAt:    time.Now().UTC().Format(time.RFC3339),
 		Status:        "success",
 		ProviderCount: len(sr.Providers),
@@ -258,14 +274,21 @@ func (sm *SyncManager) doSync() error {
 		RuntimeImpact: "cloud_sync_current",
 	}
 
+	sm.mu.Lock()
+	sm.providers = sr.Providers
+	sm.computePermission = sr.ComputePermission
+	sm.forceSync = sr.ForceSync
+	sm.syncStatus = status
+	sm.mu.Unlock()
+	sm.notifyStatusChange(status)
+
 	log.Printf("[compute/sync] synced %d providers from cloud", len(sr.Providers))
 	return nil
 }
 
 func (sm *SyncManager) recordWaitingForCredentials(err error) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	sm.syncStatus = ComputeSyncStatus{
+	status := ComputeSyncStatus{
 		LastSyncAt:    time.Now().UTC().Format(time.RFC3339),
 		Status:        "waiting_for_credentials",
 		Error:         err.Error(),
@@ -273,14 +296,16 @@ func (sm *SyncManager) recordWaitingForCredentials(err error) {
 		NonBlocking:   true,
 		RuntimeImpact: runtimeImpactForProviderCount(len(sm.providers)),
 	}
+	sm.syncStatus = status
+	sm.mu.Unlock()
+	sm.notifyStatusChange(status)
 }
 
 // recordFailure updates syncStatus with an error while preserving existing providers.
 func (sm *SyncManager) recordFailure(err error) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	providerCount := len(sm.providers)
-	sm.syncStatus = ComputeSyncStatus{
+	status := ComputeSyncStatus{
 		LastSyncAt:    time.Now().UTC().Format(time.RFC3339),
 		Status:        "failure",
 		Error:         err.Error(),
@@ -288,6 +313,9 @@ func (sm *SyncManager) recordFailure(err error) {
 		NonBlocking:   true,
 		RuntimeImpact: runtimeImpactForProviderCount(providerCount),
 	}
+	sm.syncStatus = status
+	sm.mu.Unlock()
+	sm.notifyStatusChange(status)
 }
 
 func runtimeImpactForProviderCount(providerCount int) string {

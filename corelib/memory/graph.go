@@ -3,6 +3,7 @@ package memory
 import (
 	"sort"
 	"sync"
+	"time"
 )
 
 // maxRelatedPerEntry is the maximum number of related entries per node.
@@ -10,8 +11,9 @@ const maxRelatedPerEntry = 5
 
 // graphEdge represents a weighted, typed edge in the memory graph.
 type graphEdge struct {
-	Strength float64  `json:"strength"`
-	LinkType LinkType `json:"link_type,omitempty"`
+	Strength  float64   `json:"strength"`
+	LinkType  LinkType  `json:"link_type,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 // memoryGraph maintains bidirectional weighted edges between memory entries.
@@ -33,8 +35,9 @@ func (g *memoryGraph) link(id1, id2 string, strength float64) {
 func (g *memoryGraph) linkTyped(id1, id2 string, strength float64, lt LinkType) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.linkOneSided(id1, id2, graphEdge{Strength: strength, LinkType: lt})
-	g.linkOneSided(id2, id1, graphEdge{Strength: strength, LinkType: lt})
+	edge := graphEdge{Strength: strength, LinkType: lt, UpdatedAt: time.Now()}
+	g.linkOneSided(id1, id2, edge)
+	g.linkOneSided(id2, id1, edge)
 }
 
 func (g *memoryGraph) linkOneSided(from, to string, edge graphEdge) {
@@ -140,9 +143,31 @@ func (g *memoryGraph) rebuild(entries []Entry) {
 	g.edges = make(map[string]map[string]graphEdge, len(entries))
 	idSet := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		idSet[e.ID] = true
+		if e.IsActive() {
+			idSet[e.ID] = true
+		}
 	}
 	for _, e := range entries {
+		if !e.IsActive() {
+			continue
+		}
+		if len(e.RelatedEdges) > 0 {
+			for _, rel := range e.RelatedEdges {
+				if rel.ID == "" || !idSet[rel.ID] {
+					continue
+				}
+				if g.edges[e.ID] == nil {
+					g.edges[e.ID] = make(map[string]graphEdge)
+				}
+				strength := rel.Strength
+				if strength <= 0 {
+					strength = 1.0
+				}
+				g.edges[e.ID][rel.ID] = graphEdge{Strength: strength, LinkType: rel.LinkType, UpdatedAt: rel.UpdatedAt}
+			}
+			continue
+		}
+
 		for _, relID := range e.RelatedIDs {
 			if !idSet[relID] {
 				continue
@@ -150,7 +175,7 @@ func (g *memoryGraph) rebuild(entries []Entry) {
 			if g.edges[e.ID] == nil {
 				g.edges[e.ID] = make(map[string]graphEdge)
 			}
-			g.edges[e.ID][relID] = graphEdge{Strength: 1.0} // default from persisted data
+			g.edges[e.ID][relID] = graphEdge{Strength: 1.0} // legacy default from persisted data
 		}
 	}
 }
@@ -169,4 +194,25 @@ func (g *memoryGraph) relatedIDsFor(id string) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// relatedEdgesFor returns stable, persistent edge metadata for a node.
+func (g *memoryGraph) relatedEdgesFor(id string) []RelatedEdge {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	neighbors := g.edges[id]
+	if len(neighbors) == 0 {
+		return nil
+	}
+	edges := make([]RelatedEdge, 0, len(neighbors))
+	for relatedID, edge := range neighbors {
+		edges = append(edges, RelatedEdge{
+			ID:        relatedID,
+			Strength:  edge.Strength,
+			LinkType:  edge.LinkType,
+			UpdatedAt: edge.UpdatedAt,
+		})
+	}
+	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
+	return edges
 }

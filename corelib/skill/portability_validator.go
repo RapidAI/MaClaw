@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // ---------------------------------------------------------------------------
@@ -19,8 +21,8 @@ var unixAbsPathRe = regexp.MustCompile(`/(home|usr|opt|tmp|var|etc)/`)
 // macosUsersPathRe matches macOS /Users/ paths.
 var macosUsersPathRe = regexp.MustCompile(`/Users/`)
 
-// windowsDrivePathRe matches Windows drive-letter paths like C:\ or D:\.
-var windowsDrivePathRe = regexp.MustCompile(`[A-Za-z]:\\`)
+// windowsDrivePathRe matches Windows drive-letter paths like C:\, D:\, or JSON-friendly C:/.
+var windowsDrivePathRe = regexp.MustCompile(`[A-Za-z]:[\\/]`)
 
 // systemBinaryPrefixes are path prefixes for well-known system binaries
 // that should NOT be flagged as hardcoded paths.
@@ -75,11 +77,11 @@ type commandSource struct {
 }
 
 // ---------------------------------------------------------------------------
-// ValidateSkillPortability — main entry point
+// ValidateSkillPortability 閳?main entry point
 // ---------------------------------------------------------------------------
 
 // ValidateSkillPortability scans a skill directory for portability issues.
-// It reads skill.yaml and optionally SKILL.md, checking bash step commands
+// It reads skill.yaml/skill.yml and optional skill docs, checking bash step commands
 // for hardcoded paths, platform-specific syntax, missing metadata, and
 // undeclared dependencies. Returns a PortabilityReport.
 func ValidateSkillPortability(skillDir string) (*PortabilityReport, error) {
@@ -95,17 +97,22 @@ func ValidateSkillPortability(skillDir string) (*PortabilityReport, error) {
 		return nil, fmt.Errorf("path is not a directory: %s", skillDir)
 	}
 
-	// Try to parse skill.yaml.
-	yamlPath := filepath.Join(skillDir, "skill.yaml")
+	// Try to parse a structured skill definition.
+	defPath, defFormat, defErr := skillDefinitionPath(skillDir)
 	var sf *SkillYAMLFile
-	var yamlExists bool
+	var defExists bool
+	defFile := "skill definition"
 
-	yamlData, err := os.ReadFile(yamlPath)
-	if err == nil {
-		yamlExists = true
-		parsed, parseErr := ParseSkillYAMLFile(yamlData)
+	if defErr == nil {
+		defExists = true
+		defFile = filepath.Base(defPath)
+		defData, err := os.ReadFile(defPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", defFile, err)
+		}
+		parsed, parseErr := ParseSkillDefinitionFile(defData, defFormat)
 		if parseErr != nil {
-			return nil, fmt.Errorf("failed to parse skill.yaml: %w", parseErr)
+			return nil, fmt.Errorf("failed to parse %s: %w", defFile, parseErr)
 		}
 		sf = parsed
 	}
@@ -114,32 +121,24 @@ func ValidateSkillPortability(skillDir string) (*PortabilityReport, error) {
 	mdPath, mdErr := findSkillMD(skillDir)
 	mdExists := mdErr == nil
 
-	// If neither skill.yaml nor SKILL.md exists, return error.
-	if !yamlExists && !mdExists {
-		return nil, fmt.Errorf("skill directory contains neither skill.yaml nor SKILL.md: %s", skillDir)
+	// If neither structured definition nor skill docs exist, return error.
+	if !defExists && !mdExists {
+		return nil, fmt.Errorf("skill directory contains no skill definition or documentation: %s", skillDir)
 	}
 
-	// If no skill.yaml, create a minimal struct for metadata checks.
+	// If no structured definition exists, create a minimal struct for metadata checks.
 	if sf == nil {
 		sf = &SkillYAMLFile{}
 	}
 
 	var issues []PortabilityIssue
 
-	// Collect bash commands from skill.yaml steps.
-	var yamlCommands []commandSource
-	for _, step := range sf.Steps {
-		if step.Action != "bash" {
-			continue
-		}
-		cmd, _ := step.Params["command"].(string)
-		if cmd == "" {
-			continue
-		}
-		yamlCommands = append(yamlCommands, commandSource{command: cmd, file: "skill.yaml"})
-	}
+	// Collect executable commands from skill.yaml steps using the same
+	// compatibility aliases as the runner. Downloaded skills often use action
+	// names such as run/shell/python rather than native bash.
+	yamlCommands := commandSourcesFromYAMLSteps(sf.Steps, defFile)
 
-	// --- Run checkers on skill.yaml commands ---
+	// --- Run checkers on structured-definition commands ---
 
 	// checkMissingBaseDir runs FIRST and returns matched paths to exclude.
 	baseDirMatched := checkMissingBaseDir(&issues, yamlCommands, skillDir)
@@ -147,9 +146,9 @@ func ValidateSkillPortability(skillDir string) (*PortabilityReport, error) {
 	// checkHardcodedPaths excludes paths already reported by checkMissingBaseDir.
 	checkHardcodedPaths(&issues, yamlCommands, baseDirMatched)
 
-	// Metadata checks (only meaningful if skill.yaml exists).
-	if yamlExists {
-		checkMetadata(&issues, sf)
+	// Metadata checks (only meaningful if a structured definition exists).
+	if defExists {
+		checkMetadata(&issues, sf, defFile)
 	}
 
 	// Path separator checks.
@@ -159,7 +158,7 @@ func ValidateSkillPortability(skillDir string) (*PortabilityReport, error) {
 	checkPlatformCompat(&issues, yamlCommands, sf)
 
 	// Shell mismatch checks.
-	checkShellMismatch(&issues, sf)
+	checkShellMismatch(&issues, sf, defFile)
 
 	// Dependency checks.
 	checkDependencies(&issues, yamlCommands, sf)
@@ -177,12 +176,111 @@ func ValidateSkillPortability(skillDir string) (*PortabilityReport, error) {
 	return NewPortabilityReport(skillName, skillDir, issues), nil
 }
 
+func commandSourcesFromYAMLSteps(steps []SkillYAMLStep, file string) []commandSource {
+	commands := make([]commandSource, 0, len(steps))
+	for _, step := range steps {
+		if cmd, _, ok := portabilityStepCommand(step); ok {
+			commands = append(commands, commandSource{command: cmd, file: file})
+			continue
+		}
+		normalized := NormalizeStepForRunner(corelib.NLSkillStep{
+			Action: step.Action,
+			Params: copyStepParams(step.Params),
+		}, "")
+		if normalized.Action != "bash" && normalized.Action != "poll" {
+			continue
+		}
+		cmd, _ := normalized.Params["command"].(string)
+		if strings.TrimSpace(cmd) == "" {
+			continue
+		}
+		commands = append(commands, commandSource{command: cmd, file: file})
+	}
+	return commands
+}
+
+func portabilityStepCommand(step SkillYAMLStep) (string, string, bool) {
+	if !isPortableCommandStep(step.Action) || step.Params == nil {
+		return "", "", false
+	}
+	for _, key := range []string{"command", "cmd", "run", "script", "shell_command"} {
+		raw, ok := step.Params[key]
+		if !ok || raw == nil {
+			continue
+		}
+		if command, ok := portabilityCommandValueString(raw); ok && strings.TrimSpace(command) != "" {
+			return command, key, true
+		}
+	}
+	return "", "", false
+}
+
+func portabilityCommandValueString(raw interface{}) (string, bool) {
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v), true
+	case []string:
+		return strings.Join(nonEmptyStringItems(v), " "), true
+	case []interface{}:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", item)); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, " "), true
+	case map[string]interface{}:
+		return portabilityCommandMapString(v)
+	case map[string]string:
+		converted := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			converted[key] = value
+		}
+		return portabilityCommandMapString(converted)
+	default:
+		return "", false
+	}
+}
+
+func portabilityCommandMapString(m map[string]interface{}) (string, bool) {
+	program := firstStringParam(m, "program", "cmd", "command", "executable", "binary")
+	if program == "" {
+		return "", false
+	}
+	parts := []string{program}
+	if args, ok := portabilityCommandValueString(firstNonNil(m["args"], m["argv"], m["arguments"])); ok && args != "" {
+		parts = append(parts, args)
+	}
+	return strings.Join(parts, " "), true
+}
+
+func nonEmptyStringItems(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if s := strings.TrimSpace(item); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func copyStepParams(params map[string]interface{}) map[string]interface{} {
+	if len(params) == 0 {
+		return map[string]interface{}{}
+	}
+	copy := make(map[string]interface{}, len(params))
+	for k, v := range params {
+		copy[k] = v
+	}
+	return copy
+}
+
 // ---------------------------------------------------------------------------
 // findSkillMD locates SKILL.md or skill.md in the skill directory.
 // ---------------------------------------------------------------------------
 
 func findSkillMD(skillDir string) (string, error) {
-	for _, name := range []string{"SKILL.md", "skill.md"} {
+	for _, name := range []string{"SKILL.md", "skill.md", "README.md"} {
 		p := filepath.Join(skillDir, name)
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
@@ -192,7 +290,7 @@ func findSkillMD(skillDir string) (string, error) {
 }
 
 // ---------------------------------------------------------------------------
-// checkMissingBaseDir — detect absolute paths pointing inside the skill dir
+// checkMissingBaseDir 閳?detect absolute paths pointing inside the skill dir
 // ---------------------------------------------------------------------------
 
 func checkMissingBaseDir(issues *[]PortabilityIssue, commands []commandSource, skillDir string) map[string]bool {
@@ -231,7 +329,7 @@ func checkMissingBaseDir(issues *[]PortabilityIssue, commands []commandSource, s
 }
 
 // ---------------------------------------------------------------------------
-// checkHardcodedPaths — detect absolute paths in bash commands
+// checkHardcodedPaths 閳?detect absolute paths in bash commands
 // ---------------------------------------------------------------------------
 
 func checkHardcodedPaths(issues *[]PortabilityIssue, commands []commandSource, excludePaths map[string]bool) {
@@ -258,16 +356,16 @@ func checkHardcodedPaths(issues *[]PortabilityIssue, commands []commandSource, e
 }
 
 // ---------------------------------------------------------------------------
-// checkMetadata — check for missing/incomplete metadata
+// checkMetadata 閳?check for missing/incomplete metadata
 // ---------------------------------------------------------------------------
 
-func checkMetadata(issues *[]PortabilityIssue, sf *SkillYAMLFile) {
+func checkMetadata(issues *[]PortabilityIssue, sf *SkillYAMLFile, file string) {
 	if len(sf.Platforms) == 0 {
 		*issues = append(*issues, PortabilityIssue{
 			Severity:   SeverityWarning,
 			Category:   "missing_platforms",
-			Message:    "No platforms declared in skill.yaml",
-			File:       "skill.yaml",
+			Message:    fmt.Sprintf("No platforms declared in %s", file),
+			File:       file,
 			Suggestion: `Add platforms: ["universal"] or specify target platforms`,
 		})
 	}
@@ -277,7 +375,7 @@ func checkMetadata(issues *[]PortabilityIssue, sf *SkillYAMLFile) {
 			Severity:   SeverityWarning,
 			Category:   "incomplete_metadata",
 			Message:    "Description is missing or too short (less than 10 characters)",
-			File:       "skill.yaml",
+			File:       file,
 			Suggestion: "Add a descriptive description of at least 10 characters",
 		})
 	}
@@ -286,15 +384,15 @@ func checkMetadata(issues *[]PortabilityIssue, sf *SkillYAMLFile) {
 		*issues = append(*issues, PortabilityIssue{
 			Severity:   SeverityWarning,
 			Category:   "incomplete_metadata",
-			Message:    "No triggers declared in skill.yaml",
-			File:       "skill.yaml",
+			Message:    fmt.Sprintf("No triggers declared in %s", file),
+			File:       file,
 			Suggestion: "Add at least one trigger keyword",
 		})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// checkPathSeparators — detect backslash path separators in bash commands
+// checkPathSeparators 閳?detect backslash path separators in bash commands
 // ---------------------------------------------------------------------------
 
 func checkPathSeparators(issues *[]PortabilityIssue, commands []commandSource) {
@@ -312,14 +410,14 @@ func checkPathSeparators(issues *[]PortabilityIssue, commands []commandSource) {
 }
 
 // ---------------------------------------------------------------------------
-// checkPlatformCompat — detect platform-specific constructs
+// checkPlatformCompat 閳?detect platform-specific constructs
 // ---------------------------------------------------------------------------
 
 func checkPlatformCompat(issues *[]PortabilityIssue, commands []commandSource, sf *SkillYAMLFile) {
 	platforms := sf.Platforms
 
 	for _, cs := range commands {
-		// python3 without fallback → info (only relevant when targeting non-Windows)
+		// python3 without fallback 閳?info (only relevant when targeting non-Windows)
 		if strings.Contains(cs.command, "python3") && platformIncludesWindows(platforms) {
 			*issues = append(*issues, PortabilityIssue{
 				Severity:   SeverityInfo,
@@ -330,7 +428,7 @@ func checkPlatformCompat(issues *[]PortabilityIssue, commands []commandSource, s
 			})
 		}
 
-		// %VAR% Windows env vars → warning
+		// %VAR% Windows env vars 閳?warning
 		if windowsEnvVarRe.MatchString(cs.command) {
 			*issues = append(*issues, PortabilityIssue{
 				Severity:   SeverityWarning,
@@ -341,7 +439,7 @@ func checkPlatformCompat(issues *[]PortabilityIssue, commands []commandSource, s
 			})
 		}
 
-		// Shebangs → info
+		// Shebangs 閳?info
 		for _, line := range strings.Split(cs.command, "\n") {
 			line = strings.TrimSpace(line)
 			if shebangRe.MatchString(line) {
@@ -389,10 +487,10 @@ func checkPlatformCompat(issues *[]PortabilityIssue, commands []commandSource, s
 }
 
 // ---------------------------------------------------------------------------
-// checkShellMismatch — detect preferred_shell conflicts with platforms
+// checkShellMismatch 閳?detect preferred_shell conflicts with platforms
 // ---------------------------------------------------------------------------
 
-func checkShellMismatch(issues *[]PortabilityIssue, sf *SkillYAMLFile) {
+func checkShellMismatch(issues *[]PortabilityIssue, sf *SkillYAMLFile, file string) {
 	shell := strings.ToLower(strings.TrimSpace(sf.PreferredShell))
 	if shell == "" {
 		return
@@ -409,7 +507,7 @@ func checkShellMismatch(issues *[]PortabilityIssue, sf *SkillYAMLFile) {
 					Severity:   SeverityWarning,
 					Category:   "shell_mismatch",
 					Message:    fmt.Sprintf("Preferred shell %q is not available on platform %q", shell, p),
-					File:       "skill.yaml",
+					File:       file,
 					Suggestion: "Use bash for cross-platform compatibility or adjust platforms",
 				})
 			}
@@ -431,7 +529,7 @@ func checkShellMismatch(issues *[]PortabilityIssue, sf *SkillYAMLFile) {
 				Severity:   SeverityWarning,
 				Category:   "shell_mismatch",
 				Message:    fmt.Sprintf("Preferred shell %q may not be available on Windows without Git Bash or WSL", shell),
-				File:       "skill.yaml",
+				File:       file,
 				Suggestion: "Consider using cmd or powershell for Windows-only skills",
 			})
 		}
@@ -439,7 +537,7 @@ func checkShellMismatch(issues *[]PortabilityIssue, sf *SkillYAMLFile) {
 }
 
 // ---------------------------------------------------------------------------
-// checkDependencies — detect undeclared runtime dependencies
+// checkDependencies 閳?detect undeclared runtime dependencies
 // ---------------------------------------------------------------------------
 
 func checkDependencies(issues *[]PortabilityIssue, commands []commandSource, sf *SkillYAMLFile) {
@@ -454,7 +552,7 @@ func checkDependencies(issues *[]PortabilityIssue, commands []commandSource, sf 
 	}
 
 	for _, cs := range commands {
-		// Check for pip install / npm install → info "runtime_install"
+		// Check for pip install / npm install 閳?info "runtime_install"
 		cmdLower := strings.ToLower(cs.command)
 		if strings.Contains(cmdLower, "pip install") || strings.Contains(cmdLower, "npm install") {
 			*issues = append(*issues, PortabilityIssue{
@@ -510,13 +608,13 @@ func checkDependencies(issues *[]PortabilityIssue, commands []commandSource, sf 
 }
 
 // ---------------------------------------------------------------------------
-// validateSkillMD — extract bash blocks from SKILL.md and run checks
+// validateSkillMD 閳?extract bash blocks from SKILL.md and run checks
 // ---------------------------------------------------------------------------
 
 func validateSkillMD(issues *[]PortabilityIssue, mdPath, skillDir string, sf *SkillYAMLFile) {
 	data, err := os.ReadFile(mdPath)
 	if err != nil {
-		log.Printf("[portability-validator] warning: cannot read SKILL.md: %v", err)
+		log.Printf("[portability-validator] warning: cannot read %s: %v", filepath.Base(mdPath), err)
 		return
 	}
 
@@ -528,7 +626,7 @@ func validateSkillMD(issues *[]PortabilityIssue, mdPath, skillDir string, sf *Sk
 	// Build command sources from SKILL.md bash blocks.
 	var mdCommands []commandSource
 	for _, block := range blocks {
-		mdCommands = append(mdCommands, commandSource{command: block, file: "SKILL.md"})
+		mdCommands = append(mdCommands, commandSource{command: block, file: filepath.Base(mdPath)})
 	}
 
 	// Run path and platform checks on SKILL.md commands.

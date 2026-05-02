@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -412,8 +414,8 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 		// Lanxin (蓝信) does not support interactive buttons/cards.
 		// Degrade resp.Actions to numbered text options appended to the message.
 		if len(resp.Actions) > 0 {
-			// FormatAskUserForDisplay appends input hints like "请输入：确认 或 取消"
-			// or "请输入：选项编号或内容" or "请输入：确认 或 修改意见".
+			// FormatAskUserForDisplay may append generic input hints.
+			// Strip those hints and replace them with concrete numbered options.
 			// Strip these generic hints and replace with the concrete numbered
 			// options so the user sees one clear instruction.
 			for _, hint := range []string{
@@ -479,16 +481,47 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 		}
 	}
 
-	// Send voice message (as file — 蓝信 doesn't support native voice type).
+	// Send voice message as a file because Lansenger does not expose a native voice type.
 	if resp.VoiceData != "" {
 		voiceBytes, err := base64.StdEncoding.DecodeString(resp.VoiceData)
-		if err == nil && len(voiceBytes) > 0 {
-			_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
-				ToUserID:  toUserID,
-				FileData:  voiceBytes,
-				FileName:  resp.VoiceFileName,
-				MediaType: "file",
-			})
+		if err != nil || len(voiceBytes) == 0 {
+			log.Printf("[lansenger-mgr] decode voice data failed (to=%s): %v", toUserID, err)
+		} else if err := gw.SendMedia(ctx, lansenger.OutgoingMedia{
+			ToUserID:  toUserID,
+			FileData:  voiceBytes,
+			FileName:  resp.VoiceFileName,
+			MediaType: "file",
+		}); err != nil {
+			log.Printf("[lansenger-mgr] SendMedia voice file failed (to=%s): %v", toUserID, err)
+		}
+	}
+
+	m.sendLocalFiles(gw, toUserID, resp)
+}
+
+func (m *lansengerGatewayManager) sendLocalFiles(gw *lansenger.Gateway, toUserID string, resp *IMAgentResponse) {
+	paths := resp.LocalFilePaths
+	if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
+		paths = append([]string{resp.LocalFilePath}, paths...)
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			log.Printf("[lansenger-mgr] read local file %s error: %v", p, err)
+			continue
+		}
+		name := filepath.Base(p)
+		mediaType := mediaTypeFromFileName(name)
+		if mediaType == "voice" || mediaType == "audio" {
+			mediaType = "file"
+		}
+		if err := gw.SendMedia(context.Background(), lansenger.OutgoingMedia{
+			ToUserID:  toUserID,
+			FileData:  data,
+			FileName:  name,
+			MediaType: mediaType,
+		}); err != nil {
+			log.Printf("[lansenger-mgr] SendMedia local file failed (to=%s file=%s): %v", toUserID, p, err)
 		}
 	}
 }
@@ -525,6 +558,17 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 			MediaType: "image",
 		})
 	case "file":
+		data, err := base64.StdEncoding.DecodeString(reply.FileData)
+		if err != nil {
+			return
+		}
+		_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
+			ToUserID:  reply.PlatformUID,
+			FileData:  data,
+			FileName:  reply.FileName,
+			MediaType: "file",
+		})
+	case "voice":
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil {
 			return

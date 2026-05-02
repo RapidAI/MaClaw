@@ -32,18 +32,8 @@ func ForwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 	wireAPI := strings.ToLower(strings.TrimSpace(cfg.WireAPI))
 	switch {
 	case wireAPI == "responses" || wireAPI == "responses-ws":
-		// Responses API has its own message format — sanitize tool messages
-		// before protocol conversion since the converter doesn't handle them.
-		if msgs, ok := clean["messages"]; ok {
-			clean["messages"] = sanitizeToolMessages(msgs)
-		}
 		return forwardResponsesCompat(ctx, cfg, clean, client, responseModel)
 	case strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic"):
-		// Anthropic Messages API doesn't support OpenAI tool message format —
-		// sanitize before protocol conversion.
-		if msgs, ok := clean["messages"]; ok {
-			clean["messages"] = sanitizeToolMessages(msgs)
-		}
 		return forwardAnthropicCompatRequest(ctx, cfg, clean, client, responseModel)
 	default:
 		// OpenAI-compatible path: pass through as-is. Most OpenAI-compatible
@@ -153,18 +143,117 @@ func openaiToResponses(body map[string]interface{}, model string) map[string]int
 		"stream": false,
 	}
 	messages, _ := body["messages"].([]interface{})
-	if messages == nil {
-		responsesReq["input"] = []interface{}{}
-	} else {
-		responsesReq["input"] = messages
+	converted := convertOpenAIToResponsesInput(messages)
+	responsesReq["input"] = converted.Input
+	if converted.Instructions != "" {
+		responsesReq["instructions"] = converted.Instructions
+	}
+	if tools, ok := body["tools"].([]interface{}); ok && len(tools) > 0 {
+		responsesReq["tools"] = convertResponsesToolsAny(tools)
+	} else if tools, ok := body["tools"].([]map[string]interface{}); ok && len(tools) > 0 {
+		responsesReq["tools"] = convertResponsesTools(tools)
 	}
 	return responsesReq
+}
+
+func convertResponsesToolsAny(tools []interface{}) []map[string]interface{} {
+	typed := make([]map[string]interface{}, 0, len(tools))
+	for _, item := range tools {
+		if m, ok := item.(map[string]interface{}); ok {
+			typed = append(typed, m)
+		}
+	}
+	return convertResponsesTools(typed)
+}
+
+type responsesConvertedInput struct {
+	Instructions string
+	Input        []interface{}
+}
+
+func convertOpenAIToResponsesInput(messages []interface{}) responsesConvertedInput {
+	var result responsesConvertedInput
+	for _, m := range messages {
+		mm := mapFromAny(m)
+		if mm == nil {
+			continue
+		}
+		role, _ := mm["role"].(string)
+		switch role {
+		case "system":
+			if content, _ := mm["content"].(string); content != "" {
+				if result.Instructions != "" {
+					result.Instructions += "\n"
+				}
+				result.Instructions += content
+			}
+		case "user":
+			result.Input = append(result.Input, map[string]interface{}{
+				"type": "message",
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{"type": "input_text", "text": stringFromMap(mm, "content")},
+				},
+			})
+		case "assistant":
+			if text := stringFromMap(mm, "content"); text != "" {
+				result.Input = append(result.Input, map[string]interface{}{
+					"type": "message",
+					"role": "assistant",
+					"content": []interface{}{
+						map[string]interface{}{"type": "output_text", "text": text},
+					},
+				})
+			}
+			for _, tc := range extractOpenAIToolCalls(mm) {
+				result.Input = append(result.Input, map[string]interface{}{
+					"type":      "function_call",
+					"call_id":   tc.ID,
+					"name":      tc.Name,
+					"arguments": tc.Arguments,
+				})
+			}
+		case "tool":
+			result.Input = append(result.Input, map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": stringFromMap(mm, "tool_call_id"),
+				"output":  stringFromMap(mm, "content"),
+			})
+		}
+	}
+	if result.Input == nil {
+		result.Input = []interface{}{}
+	}
+	return result
+}
+
+func convertResponsesTools(tools []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, t := range tools {
+		fn, _ := t["function"].(map[string]interface{})
+		if fn == nil {
+			continue
+		}
+		tool := map[string]interface{}{"type": "function"}
+		if name, ok := fn["name"]; ok {
+			tool["name"] = name
+		}
+		if desc, ok := fn["description"]; ok {
+			tool["description"] = desc
+		}
+		if params, ok := fn["parameters"]; ok {
+			tool["parameters"] = params
+		}
+		out = append(out, tool)
+	}
+	return out
 }
 
 // responsesToOpenAI converts a Responses API response body
 // to an OpenAI Chat Completions response body.
 func responsesToOpenAI(resp map[string]interface{}, model string) map[string]interface{} {
 	var contentBuilder strings.Builder
+	var toolCalls []interface{}
 	if outputArr, ok := resp["output"].([]interface{}); ok {
 		for _, item := range outputArr {
 			itemMap, ok := item.(map[string]interface{})
@@ -172,27 +261,53 @@ func responsesToOpenAI(resp map[string]interface{}, model string) map[string]int
 				continue
 			}
 			itemType, _ := itemMap["type"].(string)
-			if itemType != "message" {
-				continue
-			}
-			contentArr, ok := itemMap["content"].([]interface{})
-			if !ok {
-				continue
-			}
-			for _, block := range contentArr {
-				blockMap, ok := block.(map[string]interface{})
+			switch itemType {
+			case "message":
+				contentArr, ok := itemMap["content"].([]interface{})
 				if !ok {
 					continue
 				}
-				blockType, _ := blockMap["type"].(string)
-				if blockType == "output_text" {
-					text, _ := blockMap["text"].(string)
-					contentBuilder.WriteString(text)
+				for _, block := range contentArr {
+					blockMap, ok := block.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					blockType, _ := blockMap["type"].(string)
+					if blockType == "output_text" {
+						text, _ := blockMap["text"].(string)
+						contentBuilder.WriteString(text)
+					}
+				}
+			case "function_call":
+				callID, _ := itemMap["call_id"].(string)
+				if callID == "" {
+					callID, _ = itemMap["id"].(string)
+				}
+				name, _ := itemMap["name"].(string)
+				args, _ := itemMap["arguments"].(string)
+				if callID != "" && name != "" {
+					toolCalls = append(toolCalls, map[string]interface{}{
+						"id":   callID,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      name,
+							"arguments": args,
+						},
+					})
 				}
 			}
 		}
 	}
 	contentText := contentBuilder.String()
+	message := map[string]interface{}{
+		"role":    "assistant",
+		"content": contentText,
+	}
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+		finishReason = "tool_calls"
+	}
 	var promptTokens, completionTokens float64
 	if usage, ok := resp["usage"].(map[string]interface{}); ok {
 		promptTokens, _ = usage["input_tokens"].(float64)
@@ -209,12 +324,9 @@ func responsesToOpenAI(resp map[string]interface{}, model string) map[string]int
 		"model":  model,
 		"choices": []interface{}{
 			map[string]interface{}{
-				"index": 0,
-				"message": map[string]interface{}{
-					"role":    "assistant",
-					"content": contentText,
-				},
-				"finish_reason": "stop",
+				"index":         0,
+				"message":       message,
+				"finish_reason": finishReason,
 			},
 		},
 		"usage": map[string]interface{}{

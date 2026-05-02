@@ -73,12 +73,7 @@ type AppConfig struct {
 	RemoteHeartbeatSec  int      `json:"remote_heartbeat_sec"`
 	RemoteNickname      string   `json:"remote_nickname,omitempty"`
 	RemoteClientID      string   `json:"remote_client_id"`
-	// iWorkerCenter is an independent organization runtime, not HubCenter.
-	IWorkerCenterURL                  string `json:"iworkercenter_url,omitempty"`
-	IWorkerCenterTenantID             string `json:"iworkercenter_tenant_id,omitempty"`
-	IWorkerCenterColleagueID          string `json:"iworkercenter_colleague_id,omitempty"`
-	IWorkerCenterGoalWatchIntervalSec int    `json:"iworkercenter_goalwatch_interval_sec,omitempty"`
-	DefaultLaunchMode                 string `json:"default_launch_mode"`
+	DefaultLaunchMode   string   `json:"default_launch_mode"`
 	// MaClaw LLM configuration
 	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
 	MaclawLLMKey             string              `json:"maclaw_llm_key"`
@@ -120,6 +115,20 @@ type AppConfig struct {
 	MaclawDebugToolCalls bool   `json:"maclaw_debug_tool_calls,omitempty"`
 	ShowAITraceEntry     bool   `json:"show_ai_trace_entry,omitempty"`
 	ShowAssistantEntry   bool   `json:"show_assistant_entry"`
+	PetEnabled           bool   `json:"pet_enabled,omitempty"`
+	PetSkin              string `json:"pet_skin,omitempty"`
+	PetSize              int    `json:"pet_size,omitempty"`
+	PetMotionEnabled     *bool  `json:"pet_motion_enabled,omitempty"`
+	PetTextInteraction   *bool  `json:"pet_text_interaction_enabled,omitempty"`
+	PetVoiceInput        bool   `json:"pet_voice_input_enabled,omitempty"`
+	PetVoiceReadback     bool   `json:"pet_voice_readback_enabled,omitempty"`
+	PetFileDropEnabled   *bool  `json:"pet_file_drop_enabled,omitempty"`
+	PetInteractionMode   string `json:"pet_interaction_mode,omitempty"`
+	PetConversationMode  string `json:"pet_conversation_mode,omitempty"`
+	PetReadbackMode      string `json:"pet_readback_mode,omitempty"`
+	PetAutoRetryOnNoHear bool   `json:"pet_auto_retry_on_no_hear,omitempty"`
+	PetContinuousTimeout int    `json:"pet_continuous_timeout_sec,omitempty"`
+	PetQuietMode         bool   `json:"pet_quiet_mode,omitempty"`
 	FloatingBtnX         int    `json:"floating_btn_x,omitempty"`
 	FloatingBtnY         int    `json:"floating_btn_y,omitempty"`
 	LogDetailEnabled     bool   `json:"log_detail_enabled,omitempty"`

@@ -19,8 +19,8 @@ import (
 // TopicCluster represents a group of related memory entries.
 type TopicCluster struct {
 	ID       string   `json:"id"`
-	Name     string   `json:"name"`     // human-readable cluster name
-	Tags     []string `json:"tags"`     // defining tags for this cluster
+	Name     string   `json:"name"` // human-readable cluster name
+	Tags     []string `json:"tags"` // defining tags for this cluster
 	EntryIDs []string `json:"entry_ids"`
 	Summary  string   `json:"summary,omitempty"` // LLM-generated summary
 }
@@ -37,18 +37,18 @@ func NewTopicClusterer() *TopicClusterer {
 	return &TopicClusterer{}
 }
 
-// Cluster groups entries by tag co-occurrence. Entries sharing ≥2 non-trivial
+// Cluster groups entries by tag co-occurrence. Entries sharing non-trivial
 // tags are placed in the same cluster. Returns the discovered clusters.
 //
 // This is a lightweight alternative to graph community detection:
 // - No external dependencies (no Neo4j, no label propagation library)
-// - O(n × t) where n=entries, t=avg tags per entry
+// - O(n*t) where n=entries, t=avg tags per entry
 // - Sufficient for 500-2000 entries
 func (tc *TopicClusterer) Cluster(entries []Entry) []TopicCluster {
-	// Build tag → entry ID mapping (skip trivial tags).
+	// Build tag -> entry ID mapping (skip trivial tags).
 	// Use a set per tag to avoid duplicate entry IDs when the same tag
 	// appears in both Tags and Entities.
-	tagEntrySet := make(map[string]map[string]bool) // tag → set of entryIDs
+	tagEntrySet := make(map[string]map[string]bool) // tag -> set of entryIDs
 	for _, e := range entries {
 		if !e.IsActive() {
 			continue
@@ -67,11 +67,8 @@ func (tc *TopicClusterer) Cluster(entries []Entry) []TopicCluster {
 			addTagEntry(tag, e.ID)
 		}
 		for _, ent := range e.Entities {
-			if strings.HasPrefix(ent, "entity:") {
-				name := strings.TrimPrefix(ent, "entity:")
-				if name != "" {
-					addTagEntry(name, e.ID)
-				}
+			if name, ok := semanticEntityTokenName(ent); ok {
+				addTagEntry(name, e.ID)
 			}
 		}
 	}
@@ -86,7 +83,7 @@ func (tc *TopicClusterer) Cluster(entries []Entry) []TopicCluster {
 		tagEntries[tag] = ids
 	}
 
-	// Find significant tags (appearing in ≥3 entries).
+	// Find significant tags (appearing in at least 3 entries).
 	type tagInfo struct {
 		tag   string
 		count int
@@ -104,7 +101,7 @@ func (tc *TopicClusterer) Cluster(entries []Entry) []TopicCluster {
 	})
 
 	// Build clusters from significant tags, merging overlapping clusters.
-	entryCluster := make(map[string]int) // entryID → cluster index
+	entryCluster := make(map[string]int) // entryID -> cluster index
 	var clusters []TopicCluster
 	clusterIdx := 0
 
@@ -162,7 +159,7 @@ func (tc *TopicClusterer) Cluster(entries []Entry) []TopicCluster {
 			clusterIdx++
 		}
 		// If < 3 unique entries, skip this tag entirely.
-		// Do NOT increment clusterIdx — it must stay in sync with len(clusters).
+		// Do NOT increment clusterIdx; it must stay in sync with len(clusters).
 	}
 
 	// Generate cluster names from top tags.
@@ -191,7 +188,7 @@ func (tc *TopicClusterer) GenerateSummaries(clusters []TopicCluster, entries []E
 		return clusters
 	}
 
-	// Build entry ID → content map.
+	// Build entry ID -> content map.
 	entryMap := make(map[string]string, len(entries))
 	for _, e := range entries {
 		entryMap[e.ID] = e.Content

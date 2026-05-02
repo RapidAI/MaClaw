@@ -82,7 +82,7 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 	}
 
 	oldGw := m.gateway
-	// Keep old gateway in place until new one is ready — avoids a nil window
+	// Keep old gateway in place until new one is ready ->avoids a nil window
 	// where HandleGatewayReply would silently drop messages.
 	m.mu.Unlock()
 
@@ -168,7 +168,7 @@ func (m *weixinGatewayManager) onStatusChange(status string) {
 	}
 
 	if status == "session_expired" {
-		wl.Log("mgr.status", "---", "-", "session expired — tearing down gateway and releasing hub claim")
+		wl.Log("mgr.status", "---", "-", "session expired ->tearing down gateway and releasing hub claim")
 		log.Printf("[weixin-mgr] session expired, tearing down gateway")
 
 		// Release Hub gateway claim so Hub doesn't route replies to a dead gateway.
@@ -178,8 +178,8 @@ func (m *weixinGatewayManager) onStatusChange(status string) {
 
 		// Tear down the gateway instance so HandleGatewayReply won't try to use it.
 		// NOTE: we must NOT call gw.Stop() synchronously here because this
-		// callback runs inside pollLoop → emitStatus, and Stop() waits for
-		// pollLoop to finish — that would deadlock. Instead, nil out the
+		// callback runs inside pollLoop ->emitStatus, and Stop() waits for
+		// pollLoop to finish ->that would deadlock. Instead, nil out the
 		// gateway reference (so no new messages are dispatched) and let
 		// pollLoop's natural return + wg.Done() handle the cleanup.
 		m.mu.Lock()
@@ -282,7 +282,7 @@ func (m *weixinGatewayManager) notifyHubUnavailable(msg weixin.IncomingMessage) 
 	}
 	_ = gw.SendText(context.Background(), weixin.OutgoingText{
 		ToUserID:     msg.FromUserID,
-		Text:         "⚠️ 当前为多机模式，但 Hub 未连接。消息已回退到本地处理。\n请检查 Hub 连接状态，或切换回单机模式。",
+		Text:         "Hub is not connected; message fell back to local handling.",
 		ContextToken: msg.ContextToken,
 	})
 }
@@ -488,7 +488,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		return
 	}
 
-	// Progress callback — send intermediate status to the WeChat user.
+	// Progress callback -> send intermediate status to the WeChat user.
 	// Use a rate limiter to avoid flooding: at most one progress message per 5s.
 	var lastProgress time.Time
 	var lastProgressText string
@@ -644,6 +644,28 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 				FileName:     resp.FileName,
 				MediaType:    "file",
 			})
+		}
+	}
+
+	// Send voice if present (base64-encoded TTS audio).
+	if resp.VoiceData != "" {
+		voiceFileName := resp.VoiceFileName
+		if voiceFileName == "" {
+			voiceFileName = "voice.wav"
+		}
+		voiceBytes, err := base64.StdEncoding.DecodeString(resp.VoiceData)
+		if err != nil || len(voiceBytes) == 0 {
+			log.Printf("[weixin-mgr] decode voice data failed (to=%s): %v", toUserID, err)
+		} else if err := gw.SendMedia(ctx, weixin.OutgoingMedia{
+			ToUserID:     toUserID,
+			ContextToken: contextToken,
+			FileData:     voiceBytes,
+			FileName:     voiceFileName,
+			MediaType:    "voice",
+		}); err != nil {
+			log.Printf("[weixin-mgr] SendMedia voice failed (to=%s size=%d): %v", toUserID, len(voiceBytes), err)
+		} else {
+			log.Printf("[weixin-mgr] SendMedia voice OK (to=%s size=%d name=%s)", toUserID, len(voiceBytes), voiceFileName)
 		}
 	}
 
@@ -871,6 +893,29 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 		} else {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendMedia(video) size=%d", len(data))
 		}
+	case "voice":
+		data, err := base64.StdEncoding.DecodeString(reply.FileData)
+		if err != nil || len(data) == 0 {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR voice base64 decode: %v", err)
+			log.Printf("[weixin-mgr] voice base64 decode error: %v", err)
+			return
+		}
+		voiceFileName := reply.FileName
+		if voiceFileName == "" {
+			voiceFileName = "voice.wav"
+		}
+		if err := gw.SendMedia(context.Background(), weixin.OutgoingMedia{
+			ToUserID:     reply.PlatformUID,
+			ContextToken: contextToken,
+			FileData:     data,
+			FileName:     voiceFileName,
+			MediaType:    "voice",
+		}); err != nil {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendMedia(voice): %v", err)
+			log.Printf("[weixin-mgr] SendMedia(voice) error (to=%s): %v", reply.PlatformUID, err)
+		} else {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendMedia(voice) name=%s size=%d", voiceFileName, len(data))
+		}
 	default:
 		wl.Log("mgr.hubReply", "---", reply.PlatformUID, "WARN unknown reply_type=%s", reply.ReplyType)
 	}
@@ -936,7 +981,7 @@ func (a *App) SetWeixinLocalMode(enabled bool) error {
 	}
 	// Switching to hub mode requires prior Hub registration.
 	if !enabled && cfg.RemoteMachineID == "" {
-		return fmt.Errorf("请先注册到 Hub（设置 Hub 地址并完成注册），再开启多机模式")
+		return fmt.Errorf("please register this machine to Hub before enabling multi-machine mode")
 	}
 	cfg.SetWeixinLocal(enabled)
 	if err := a.SaveConfig(cfg); err != nil {
@@ -981,7 +1026,7 @@ func (a *App) StartWeixinQRLogin() map[string]string {
 
 	qrcodeURL, qrcodeToken, err := weixin.StartQRLogin(context.Background(), baseURL, weixin.DefaultBotType)
 	if err != nil {
-		return map[string]string{"error": "获取二维码失败: " + err.Error()}
+		return map[string]string{"error": "获取二维码失败 " + err.Error()}
 	}
 	return map[string]string{
 		"qrcode_url":   qrcodeURL,
@@ -1031,7 +1076,7 @@ func (a *App) PollWeixinQRStatus(qrcodeToken string) map[string]string {
 			log.Printf("[weixin-mgr] first-time binding: auto-setting local mode")
 		}
 		if err := a.SaveConfig(cfg); err != nil {
-			resp["error"] = "登录成功但保存配置失败: " + err.Error()
+			resp["error"] = "登录成功但保存配置失败 " + err.Error()
 			return resp
 		}
 		go a.ensureWeixinGateway()
@@ -1079,7 +1124,7 @@ func (a *App) WaitWeixinQRLogin(qrcodeToken string) map[string]string {
 	if err := a.SaveConfig(cfg); err != nil {
 		return map[string]string{
 			"status": "connected",
-			"error":  "登录成功但保存配置失败: " + err.Error(),
+			"error":  "登录成功但保存配置失败 " + err.Error(),
 		}
 	}
 

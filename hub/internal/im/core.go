@@ -191,15 +191,15 @@ type Adapter struct {
 	mu      sync.RWMutex
 	plugins map[string]IMPlugin
 
-	messageRouter        *MessageRouter
-	coordinator          *Coordinator          // optional; nil = passthrough to messageRouter
-	deviceNotifier       *DeviceNotifier       // optional; nil = no device notifications
-	outboundInterceptor  *OutboundInterceptor  // optional; nil = no outbound interception
-	contentAuditor       *ContentAuditor       // optional; nil = no content audit
+	messageRouter       *MessageRouter
+	coordinator         *Coordinator         // optional; nil = passthrough to messageRouter
+	deviceNotifier      *DeviceNotifier      // optional; nil = no device notifications
+	outboundInterceptor *OutboundInterceptor // optional; nil = no outbound interception
+	contentAuditor      *ContentAuditor      // optional; nil = no content audit
 	// workflowEngine removed — /workflow commands are forwarded to device.
-	identity             IdentityResolver
-	limiter              *rateLimiter
-	taskDispatcher       *IMTaskDispatcher     // optional; nil = synchronous processing (legacy)
+	identity       IdentityResolver
+	limiter        *rateLimiter
+	taskDispatcher *IMTaskDispatcher // optional; nil = synchronous processing (legacy)
 }
 
 // NewAdapter creates a new IM Adapter with the given MessageRouter.
@@ -964,9 +964,17 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 	defer func() {
 		if resp.VoiceData != "" && resp.VoiceFileName != "" {
 			caps := plugin.Capabilities()
+			if caps.SupportsVoice {
+				if voicePlugin, ok := plugin.(VoiceSender); ok {
+					if err := voicePlugin.SendVoice(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
+						log.Printf("[IM Adapter] SendVoice failed for %s: %v", plugin.Name(), err)
+					}
+					return
+				}
+			}
 			if caps.SupportsFile {
 				if err := plugin.SendFile(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
-					log.Printf("[IM Adapter] SendFile (voice) failed for %s: %v", plugin.Name(), err)
+					log.Printf("[IM Adapter] SendFile (voice fallback) failed for %s: %v", plugin.Name(), err)
 				}
 			}
 		}

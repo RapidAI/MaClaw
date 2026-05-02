@@ -1,11 +1,11 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/config"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"io"
 	"log"
 	"net/http"
@@ -31,7 +31,7 @@ const zhipuCodingProviderName = "智谱编程"
 // obsoleteProviderNames lists provider names that have been permanently removed.
 // They are stripped from the persisted provider list on load.
 var obsoleteProviderNames = map[string]bool{
-	"免费":              true,
+	"免费":                             true,
 	"MaClaw\u6a21\u578b\u670d\u52a1": true, // "MaClaw模型服务" — renamed to "MaClaw官方"
 }
 
@@ -69,14 +69,14 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 // GetMaclawLLMProviders returns the provider list and current selection.
 func (a *App) GetMaclawLLMProviders() struct {
 	Providers []corelib.MaclawLLMProvider `json:"providers"`
-	Current   string              `json:"current"`
+	Current   string                      `json:"current"`
 } {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		defaults := defaultMaclawLLMProviders()
 		return struct {
 			Providers []corelib.MaclawLLMProvider `json:"providers"`
-			Current   string              `json:"current"`
+			Current   string                      `json:"current"`
 		}{Providers: defaults, Current: defaults[0].Name}
 	}
 	providers := a.syncedMaclawLLMProviders(cfg)
@@ -221,7 +221,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 	}
 	return struct {
 		Providers []corelib.MaclawLLMProvider `json:"providers"`
-		Current   string              `json:"current"`
+		Current   string                      `json:"current"`
 	}{Providers: providers, Current: current}
 }
 
@@ -230,20 +230,20 @@ func (a *App) GetMaclawLLMProviders() struct {
 // Wails calls contending on configMu.
 func (a *App) GetMaclawLLMPanelState() struct {
 	Providers           []corelib.MaclawLLMProvider `json:"providers"`
-	Current             string              `json:"current"`
-	MaxIterations       int                 `json:"max_iterations"`
-	TrajectoryLogging   bool                `json:"trajectory_logging"`
-	TrialReflectEnabled bool                `json:"trial_reflect_enabled"`
+	Current             string                      `json:"current"`
+	MaxIterations       int                         `json:"max_iterations"`
+	TrajectoryLogging   bool                        `json:"trajectory_logging"`
+	TrialReflectEnabled bool                        `json:"trial_reflect_enabled"`
 } {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		defaults := defaultMaclawLLMProviders()
 		return struct {
 			Providers           []corelib.MaclawLLMProvider `json:"providers"`
-			Current             string              `json:"current"`
-			MaxIterations       int                 `json:"max_iterations"`
-			TrajectoryLogging   bool                `json:"trajectory_logging"`
-			TrialReflectEnabled bool                `json:"trial_reflect_enabled"`
+			Current             string                      `json:"current"`
+			MaxIterations       int                         `json:"max_iterations"`
+			TrajectoryLogging   bool                        `json:"trajectory_logging"`
+			TrialReflectEnabled bool                        `json:"trial_reflect_enabled"`
 		}{
 			Providers:           defaults,
 			Current:             defaults[0].Name,
@@ -257,10 +257,10 @@ func (a *App) GetMaclawLLMPanelState() struct {
 	maxIter := config.EffectiveMaxIterations(cfg.MaclawAgentMaxIterations)
 	return struct {
 		Providers           []corelib.MaclawLLMProvider `json:"providers"`
-		Current             string              `json:"current"`
-		MaxIterations       int                 `json:"max_iterations"`
-		TrajectoryLogging   bool                `json:"trajectory_logging"`
-		TrialReflectEnabled bool                `json:"trial_reflect_enabled"`
+		Current             string                      `json:"current"`
+		MaxIterations       int                         `json:"max_iterations"`
+		TrajectoryLogging   bool                        `json:"trajectory_logging"`
+		TrialReflectEnabled bool                        `json:"trial_reflect_enabled"`
 	}{
 		Providers:           providerState.Providers,
 		Current:             providerState.Current,
@@ -314,6 +314,7 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	// Immediately notify Hub of the LLM configuration change via heartbeat
 	// so the Hub-side llm_configured flag is updated without waiting for the
 	// next periodic heartbeat cycle.
+	a.refreshMemoryEvolutionLLM()
 	go a.notifyHubLLMConfigChanged()
 	log.Printf("[LLM] SaveMaclawLLMProviders:done total=%s", time.Since(start))
 	return nil
@@ -416,6 +417,7 @@ func (a *App) SaveMaclawLLMConfig(llm corelib.MaclawLLMConfig) error {
 	if err := a.SaveConfig(cfg); err != nil {
 		return err
 	}
+	a.refreshMemoryEvolutionLLM()
 	a.notifyHubLLMConfigChanged()
 	return nil
 }

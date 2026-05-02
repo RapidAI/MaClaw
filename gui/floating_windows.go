@@ -25,7 +25,7 @@ import (
 //go:embed build/appicon.png
 var floatingLogoPNG []byte
 
-// ── Win32 constants ─────────────────────────────────────────────────────────
+// Win32 constants
 
 const (
 	wsExTopmost    = 0x00000008
@@ -70,44 +70,44 @@ const (
 	timerIdHalo = 1
 )
 
-// ── Win32 API bindings ──────────────────────────────────────────────────────
+// Win32 API bindings
 
 var (
 	floatUser32   = syscall.NewLazyDLL("user32.dll")
 	floatKernel32 = syscall.NewLazyDLL("kernel32.dll")
 	floatGdi32    = syscall.NewLazyDLL("gdi32.dll")
 
-	procRegisterClassExW    = floatUser32.NewProc("RegisterClassExW")
-	procCreateWindowExW     = floatUser32.NewProc("CreateWindowExW")
-	procShowWindowFloat     = floatUser32.NewProc("ShowWindow")
-	procDestroyWindowProc   = floatUser32.NewProc("DestroyWindow")
-	procMoveWindowProc      = floatUser32.NewProc("MoveWindow")
-	procDefWindowProcW      = floatUser32.NewProc("DefWindowProcW")
-	procLoadCursorW         = floatUser32.NewProc("LoadCursorW")
-	procGetSystemMetricsF   = floatUser32.NewProc("GetSystemMetrics")
-	procGetModuleHandleW    = floatKernel32.NewProc("GetModuleHandleW")
-	procUpdateLayeredWindow = floatUser32.NewProc("UpdateLayeredWindow")
-	procSetCapture          = floatUser32.NewProc("SetCapture")
-	procReleaseCapture      = floatUser32.NewProc("ReleaseCapture")
-	procGetCursorPos        = floatUser32.NewProc("GetCursorPos")
-	procCreatePopupMenu     = floatUser32.NewProc("CreatePopupMenu")
-	procAppendMenuW         = floatUser32.NewProc("AppendMenuW")
-	procTrackPopupMenu      = floatUser32.NewProc("TrackPopupMenu")
-	procDestroyMenu         = floatUser32.NewProc("DestroyMenu")
-	procSetForegroundWindow = floatUser32.NewProc("SetForegroundWindow")
-	procGetMessageW         = floatUser32.NewProc("GetMessageW")
-	procTranslateMessage    = floatUser32.NewProc("TranslateMessage")
-	procDispatchMessageW    = floatUser32.NewProc("DispatchMessageW")
-	procPostQuitMessage     = floatUser32.NewProc("PostQuitMessage")
-	procSetTimer            = floatUser32.NewProc("SetTimer")
-	procKillTimer           = floatUser32.NewProc("KillTimer")
-	procPostMessageW        = floatUser32.NewProc("PostMessageW")
+	procRegisterClassExW      = floatUser32.NewProc("RegisterClassExW")
+	procCreateWindowExW       = floatUser32.NewProc("CreateWindowExW")
+	procShowWindowFloat       = floatUser32.NewProc("ShowWindow")
+	procDestroyWindowProc     = floatUser32.NewProc("DestroyWindow")
+	procMoveWindowProc        = floatUser32.NewProc("MoveWindow")
+	procDefWindowProcW        = floatUser32.NewProc("DefWindowProcW")
+	procLoadCursorW           = floatUser32.NewProc("LoadCursorW")
+	procGetSystemMetricsF     = floatUser32.NewProc("GetSystemMetrics")
+	procGetModuleHandleW      = floatKernel32.NewProc("GetModuleHandleW")
+	procUpdateLayeredWindow   = floatUser32.NewProc("UpdateLayeredWindow")
+	procSetCapture            = floatUser32.NewProc("SetCapture")
+	procReleaseCapture        = floatUser32.NewProc("ReleaseCapture")
+	procGetCursorPos          = floatUser32.NewProc("GetCursorPos")
+	procCreatePopupMenu       = floatUser32.NewProc("CreatePopupMenu")
+	procAppendMenuW           = floatUser32.NewProc("AppendMenuW")
+	procTrackPopupMenu        = floatUser32.NewProc("TrackPopupMenu")
+	procDestroyMenu           = floatUser32.NewProc("DestroyMenu")
+	procSetForegroundWindow   = floatUser32.NewProc("SetForegroundWindow")
+	procGetMessageW           = floatUser32.NewProc("GetMessageW")
+	procTranslateMessage      = floatUser32.NewProc("TranslateMessage")
+	procDispatchMessageW      = floatUser32.NewProc("DispatchMessageW")
+	procPostQuitMessage       = floatUser32.NewProc("PostQuitMessage")
+	procSetTimer              = floatUser32.NewProc("SetTimer")
+	procKillTimer             = floatUser32.NewProc("KillTimer")
+	procPostMessageW          = floatUser32.NewProc("PostMessageW")
 	procSystemParametersInfoW = floatUser32.NewProc("SystemParametersInfoW")
 
 	procCreateDIBSection = floatGdi32.NewProc("CreateDIBSection")
 )
 
-// ── Win32 structures ────────────────────────────────────────────────────────
+// Win32 structures
 
 type wndClassExW struct {
 	CbSize        uint32
@@ -145,15 +145,14 @@ type msgW struct {
 	Pt      point
 }
 
-// ── windowsFloatingWindow ───────────────────────────────────────────────────
-
-const floatWinSize = 72 // total window size including glow margin
+// windowsFloatingWindow
 
 type windowsFloatingWindow struct {
 	app     *App
 	hwnd    uintptr
 	created bool
 	mu      sync.Mutex
+	size    int
 
 	// Drag state (accessed only from the message loop goroutine)
 	dragging     bool
@@ -164,7 +163,7 @@ type windowsFloatingWindow struct {
 	dragMoved    bool
 
 	// Halo animation
-	haloPhase float64 // 0..2π, advances each timer tick
+	haloPhase float64 // 0..2*pi, advances each timer tick
 
 	// Pre-rendered base image (logo + circle clip, without halo)
 	baseImg *image.NRGBA
@@ -184,7 +183,7 @@ var globalFloatingWin *windowsFloatingWindow
 
 func init() {
 	// Use SPI_GETWORKAREA to get the usable desktop area (excludes taskbar,
-	// and returns DPI-scaled logical pixels — not physical pixels).
+	// and returns DPI-scaled logical pixels - not physical pixels).
 	// This fixes the issue where GetSystemMetrics returns 3840 on a 4K display
 	// with 150% scaling, but the actual usable area is only 2560 logical pixels.
 	const spiGetworkarea = 0x0030
@@ -208,7 +207,7 @@ func init() {
 	}
 }
 
-// ── floatingWindow interface ────────────────────────────────────────────────
+// floatingWindow interface
 
 func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.mu.Lock()
@@ -218,19 +217,29 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	}
 	w.mu.Unlock()
 
-	// Pre-render the circular logo with glow.
-	base, err := renderCircularLogo(floatWinSize)
+	sz := normalizeFloatingNativeSize(width)
+	petEnabled := false
+	petSkin := "clawmate"
+	if w.app != nil {
+		if cfg, err := w.app.LoadConfig(); err == nil {
+			petEnabled = cfg.PetEnabled
+			if cfg.PetSkin != "" {
+				petSkin = cfg.PetSkin
+			}
+		}
+	}
+
+	base, err := renderFloatingBase(sz, petEnabled, petSkin)
 	if err != nil {
-		return fmt.Errorf("renderCircularLogo: %w", err)
+		return fmt.Errorf("renderFloatingBase: %w", err)
 	}
 
 	w.mu.Lock()
 	w.baseImg = base
+	w.size = sz
 	w.haloPhase = 0
 	w.stopCh = make(chan struct{})
 
-	// Pre-compute distance map for animation.
-	sz := floatWinSize
 	w.distMap = make([]float64, sz*sz)
 	cx, cy := float64(sz)/2, float64(sz)/2
 	for py := 0; py < sz; py++ {
@@ -249,7 +258,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	go func() {
 		runtime.LockOSThread()
 
-		hwnd, err2 := createFloatingWin32Window(x, y, floatWinSize, floatWinSize)
+		hwnd, err2 := createFloatingWin32Window(x, y, sz, sz)
 		if err2 != nil {
 			errCh <- err2
 			return
@@ -270,13 +279,12 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 
 		errCh <- nil
 
-		// Message loop — runs until WM_DESTROY posts WM_QUIT.
+		// Message loop runs until WM_DESTROY posts WM_QUIT.
 		w.messageLoop()
 	}()
 
 	return <-errCh
 }
-
 func (w *windowsFloatingWindow) Show() {
 	w.mu.Lock()
 	hwnd := w.hwnd
@@ -332,7 +340,8 @@ func (w *windowsFloatingWindow) MoveTo(x, y int) {
 	if hwnd == 0 {
 		return
 	}
-	procMoveWindowProc.Call(hwnd, uintptr(x), uintptr(y), floatWinSize, floatWinSize, 1)
+	sz := w.currentSize()
+	procMoveWindowProc.Call(hwnd, uintptr(x), uintptr(y), uintptr(sz), uintptr(sz), 1)
 	w.mu.Lock()
 	w.windowStartX = x
 	w.windowStartY = y
@@ -345,7 +354,7 @@ func (w *windowsFloatingWindow) IsCreated() bool {
 	return w.created
 }
 
-// ── Message loop ────────────────────────────────────────────────────────────
+// Message loop
 
 func (w *windowsFloatingWindow) messageLoop() {
 	defer func() {
@@ -377,7 +386,36 @@ func (w *windowsFloatingWindow) messageLoop() {
 	}
 }
 
-// ── Circular logo rendering with glow ───────────────────────────────────────
+// Circular logo rendering with glow
+
+func normalizeFloatingNativeSize(sz int) int {
+	if sz <= 0 {
+		return 72
+	}
+	if sz < 72 {
+		return 72
+	}
+	if sz > 136 {
+		return 136
+	}
+	return sz
+}
+
+func (w *windowsFloatingWindow) currentSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.size <= 0 {
+		return 72
+	}
+	return w.size
+}
+
+func renderFloatingBase(sz int, petEnabled bool, petSkin string) (*image.NRGBA, error) {
+	if petEnabled {
+		return renderClawMatePet(sz, petSkin), nil
+	}
+	return renderCircularLogo(sz)
+}
 
 // renderCircularLogo creates a circular-clipped logo with a soft glow border.
 // The output image is `sz x sz` with transparent background.
@@ -405,7 +443,7 @@ func renderCircularLogo(sz int) (*image.NRGBA, error) {
 			dist := math.Sqrt(dx*dx + dy*dy)
 
 			if dist <= logoRadius {
-				// Inside logo circle — dark background + logo overlay.
+				// Inside logo circle - dark background + logo overlay.
 				sx := x - (sz-logoSize)/2
 				sy := y - (sz-logoSize)/2
 				// Start with dark circle background.
@@ -422,9 +460,9 @@ func renderCircularLogo(sz int) (*image.NRGBA, error) {
 					out.SetNRGBA(x, y, bg)
 				}
 			} else if dist <= glowOuter {
-				// Glow ring — soft blue-purple gradient fading outward.
+				// Glow ring - soft blue-purple gradient fading outward.
 				t := (dist - logoRadius) / (glowOuter - logoRadius) // 0 at inner, 1 at outer
-				alpha := uint8(float64(120) * (1 - t*t))          // quadratic falloff
+				alpha := uint8(float64(120) * (1 - t*t))            // quadratic falloff
 				out.SetNRGBA(x, y, color.NRGBA{R: 100, G: 140, B: 255, A: alpha})
 			}
 			// Outside glowOuter: transparent (default zero)
@@ -432,6 +470,121 @@ func renderCircularLogo(sz int) (*image.NRGBA, error) {
 	}
 
 	return out, nil
+}
+
+func renderClawMatePet(sz int, skin string) *image.NRGBA {
+	out := image.NewNRGBA(image.Rect(0, 0, sz, sz))
+	cx, cy := float64(sz)/2, float64(sz)*0.47
+	headR := float64(sz) * 0.31
+	bodyY := float64(sz) * 0.67
+	accent := color.NRGBA{R: 99, G: 102, B: 241, A: 245}
+	body := color.NRGBA{R: 111, G: 125, B: 92, A: 230}
+	eye := color.NRGBA{R: 45, G: 55, B: 72, A: 255}
+	head := color.NRGBA{R: 248, G: 250, B: 252, A: 250}
+	glow := color.NRGBA{R: 99, G: 102, B: 241, A: 0}
+
+	switch skin {
+	case "mini-claw":
+		accent = color.NRGBA{R: 37, G: 99, B: 235, A: 245}
+		body = color.NRGBA{R: 191, G: 219, B: 254, A: 235}
+		glow = color.NRGBA{R: 37, G: 99, B: 235, A: 0}
+		headR = float64(sz) * 0.34
+		bodyY = float64(sz) * 0.68
+	case "dev-claw":
+		accent = color.NRGBA{R: 34, G: 211, B: 238, A: 245}
+		body = color.NRGBA{R: 30, G: 41, B: 59, A: 240}
+		eye = color.NRGBA{R: 15, G: 23, B: 42, A: 255}
+		glow = color.NRGBA{R: 34, G: 211, B: 238, A: 0}
+	case "focus-claw":
+		accent = color.NRGBA{R: 95, G: 139, B: 104, A: 235}
+		body = color.NRGBA{R: 155, G: 184, B: 161, A: 225}
+		eye = color.NRGBA{R: 51, G: 65, B: 85, A: 255}
+		head = color.NRGBA{R: 251, G: 253, B: 251, A: 248}
+		glow = color.NRGBA{R: 95, G: 139, B: 104, A: 0}
+	default:
+		glow = color.NRGBA{R: 99, G: 102, B: 241, A: 0}
+	}
+
+	for y := 0; y < sz; y++ {
+		for x := 0; x < sz; x++ {
+			dx := float64(x) - cx
+			dy := float64(y) - cy
+			d := math.Sqrt(dx*dx + dy*dy)
+			if d < float64(sz)*0.48 && d > headR+2 {
+				alpha := uint8(math.Max(0, 80*(1-(d-headR)/(float64(sz)*0.18))))
+				glow.A = alpha
+				out.SetNRGBA(x, y, glow)
+			}
+			if d <= headR {
+				out.SetNRGBA(x, y, head)
+			}
+			bodyDx := math.Abs(float64(x)-cx) / (float64(sz) * 0.32)
+			bodyDy := math.Abs(float64(y)-bodyY) / (float64(sz) * 0.18)
+			if bodyDx*bodyDx+bodyDy*bodyDy <= 1 {
+				out.SetNRGBA(x, y, body)
+			}
+		}
+	}
+
+	drawCircle(out, int(cx-float64(sz)*0.12), int(cy-float64(sz)*0.04), int(float64(sz)*0.045), eye)
+	drawCircle(out, int(cx+float64(sz)*0.12), int(cy-float64(sz)*0.04), int(float64(sz)*0.045), eye)
+	drawCircle(out, int(cx-float64(sz)*0.105), int(cy-float64(sz)*0.055), int(float64(sz)*0.014), color.NRGBA{R: 255, G: 255, B: 255, A: 245})
+	drawCircle(out, int(cx+float64(sz)*0.135), int(cy-float64(sz)*0.055), int(float64(sz)*0.014), color.NRGBA{R: 255, G: 255, B: 255, A: 245})
+	drawLine(out, int(cx-float64(sz)*0.09), int(cy+float64(sz)*0.16), int(cx+float64(sz)*0.09), int(cy+float64(sz)*0.16), accent, int(math.Max(2, float64(sz)*0.035)))
+	drawLine(out, int(cx-float64(sz)*0.3), int(bodyY+float64(sz)*0.08), int(cx-float64(sz)*0.13), int(bodyY+float64(sz)*0.13), color.NRGBA{R: 45, G: 55, B: 72, A: 235}, int(math.Max(3, float64(sz)*0.045)))
+	drawLine(out, int(cx+float64(sz)*0.3), int(bodyY+float64(sz)*0.08), int(cx+float64(sz)*0.13), int(bodyY+float64(sz)*0.13), color.NRGBA{R: 45, G: 55, B: 72, A: 235}, int(math.Max(3, float64(sz)*0.045)))
+	drawLine(out, int(cx), int(cy-headR-float64(sz)*0.11), int(cx), int(cy-headR+float64(sz)*0.02), accent, int(math.Max(3, float64(sz)*0.04)))
+	drawLine(out, int(cx-float64(sz)*0.1), int(cy-headR-float64(sz)*0.06), int(cx+float64(sz)*0.1), int(cy-headR-float64(sz)*0.06), accent, int(math.Max(3, float64(sz)*0.04)))
+
+	switch skin {
+	case "mini-claw":
+		drawLine(out, int(cx-float64(sz)*0.22), int(bodyY+float64(sz)*0.18), int(cx+float64(sz)*0.22), int(bodyY+float64(sz)*0.18), accent, int(math.Max(3, float64(sz)*0.05)))
+	case "dev-claw":
+		drawLine(out, int(cx-float64(sz)*0.28), int(cy-float64(sz)*0.03), int(cx+float64(sz)*0.28), int(cy-float64(sz)*0.03), color.NRGBA{R: 15, G: 23, B: 42, A: 245}, int(math.Max(4, float64(sz)*0.08)))
+		drawLine(out, int(cx-float64(sz)*0.12), int(bodyY), int(cx-float64(sz)*0.03), int(bodyY+float64(sz)*0.07), accent, int(math.Max(2, float64(sz)*0.03)))
+		drawLine(out, int(cx+float64(sz)*0.12), int(bodyY), int(cx+float64(sz)*0.03), int(bodyY+float64(sz)*0.07), accent, int(math.Max(2, float64(sz)*0.03)))
+	case "focus-claw":
+		drawLine(out, int(cx-float64(sz)*0.17), int(cy-float64(sz)*0.02), int(cx-float64(sz)*0.07), int(cy-float64(sz)*0.02), eye, int(math.Max(3, float64(sz)*0.04)))
+		drawLine(out, int(cx+float64(sz)*0.07), int(cy-float64(sz)*0.02), int(cx+float64(sz)*0.17), int(cy-float64(sz)*0.02), eye, int(math.Max(3, float64(sz)*0.04)))
+	}
+	return out
+}
+
+func drawCircle(img *image.NRGBA, cx, cy, r int, c color.NRGBA) {
+	if r <= 0 {
+		return
+	}
+	b := img.Bounds()
+	for y := cy - r; y <= cy+r; y++ {
+		if y < b.Min.Y || y >= b.Max.Y {
+			continue
+		}
+		for x := cx - r; x <= cx+r; x++ {
+			if x < b.Min.X || x >= b.Max.X {
+				continue
+			}
+			dx, dy := x-cx, y-cy
+			if dx*dx+dy*dy <= r*r {
+				img.SetNRGBA(x, y, c)
+			}
+		}
+	}
+}
+
+func drawLine(img *image.NRGBA, x0, y0, x1, y1 int, c color.NRGBA, width int) {
+	dx := float64(x1 - x0)
+	dy := float64(y1 - y0)
+	steps := int(math.Max(math.Abs(dx), math.Abs(dy)))
+	if steps <= 0 {
+		drawCircle(img, x0, y0, width/2, c)
+		return
+	}
+	for i := 0; i <= steps; i++ {
+		t := float64(i) / float64(steps)
+		x := int(float64(x0) + dx*t)
+		y := int(float64(y0) + dy*t)
+		drawCircle(img, x, y, width/2, c)
+	}
 }
 
 // renderFrame composites the base image with the current halo animation phase
@@ -448,11 +601,11 @@ func (w *windowsFloatingWindow) renderFrame() {
 		return
 	}
 
-	sz := floatWinSize
+	sz := w.currentSize()
 	frame := image.NewNRGBA(image.Rect(0, 0, sz, sz))
 	copy(frame.Pix, base.Pix)
 
-	// Animated pulsing glow overlay — modulate the glow ring alpha.
+	// Animated pulsing glow overlay - modulate the glow ring alpha.
 	logoRadius := float64(sz)/2 - 8
 	glowOuter := float64(sz) / 2
 	glowRange := glowOuter - logoRadius
@@ -482,7 +635,7 @@ func (w *windowsFloatingWindow) renderFrame() {
 	applyNRGBAToLayeredWindow(hwnd, frame, sz)
 }
 
-// ── UpdateLayeredWindow helper ──────────────────────────────────────────────
+// UpdateLayeredWindow helper
 
 func applyNRGBAToLayeredWindow(hwnd uintptr, img *image.NRGBA, sz int) {
 	screenDC := uintptr(0)
@@ -490,7 +643,7 @@ func applyNRGBAToLayeredWindow(hwnd uintptr, img *image.NRGBA, sz int) {
 	if memDC == 0 {
 		return
 	}
-	defer procDeleteDC.Call(memDC)
+	defer procScreenshotDeleteDC.Call(memDC)
 
 	bmi := bitmapInfo{
 		BmiHeader: bitmapInfoHeader{
@@ -511,12 +664,12 @@ func applyNRGBAToLayeredWindow(hwnd uintptr, img *image.NRGBA, sz int) {
 	if hBitmap == 0 {
 		return
 	}
-	defer procDeleteObject.Call(hBitmap)
+	defer procScreenshotDeleteObject.Call(hBitmap)
 
-	oldBmp, _, _ := procSelectObject.Call(memDC, hBitmap)
-	defer procSelectObject.Call(memDC, oldBmp)
+	oldBmp, _, _ := procScreenshotSelectObject.Call(memDC, hBitmap)
+	defer procScreenshotSelectObject.Call(memDC, oldBmp)
 
-	// Copy NRGBA → pre-multiplied BGRA.
+	// Copy NRGBA to pre-multiplied BGRA.
 	pixelSlice := unsafe.Slice((*byte)(bits), sz*sz*4)
 	for i := 0; i < sz*sz; i++ {
 		si := i * 4
@@ -543,7 +696,7 @@ func applyNRGBAToLayeredWindow(hwnd uintptr, img *image.NRGBA, sz int) {
 	)
 }
 
-// ── Win32 window procedure ──────────────────────────────────────────────────
+// Win32 window procedure
 
 func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	w := globalFloatingWin
@@ -594,7 +747,8 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		}
 		newX := w.windowStartX + int(dx)
 		newY := w.windowStartY + int(dy)
-		procMoveWindowProc.Call(hwnd, uintptr(newX), uintptr(newY), floatWinSize, floatWinSize, 1)
+		sz := w.currentSize()
+		procMoveWindowProc.Call(hwnd, uintptr(newX), uintptr(newY), uintptr(sz), uintptr(sz), 1)
 		return 0
 
 	case wmLbuttonup:
@@ -637,10 +791,10 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		if hMenu == 0 {
 			break
 		}
-		hideText, _ := syscall.UTF16PtrFromString("隐藏")
+		hideText, _ := syscall.UTF16PtrFromString("\u9690\u85cf")
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdHide), uintptr(unsafe.Pointer(hideText)))
 		procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
-		quitText, _ := syscall.UTF16PtrFromString("退出")
+		quitText, _ := syscall.UTF16PtrFromString("\u9000\u51fa")
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdQuit), uintptr(unsafe.Pointer(quitText)))
 		procSetForegroundWindow.Call(hwnd)
 		cmd, _, _ := procTrackPopupMenu.Call(hMenu, uintptr(tpmReturncmd), uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
@@ -690,7 +844,7 @@ func alphaOver(dst, src color.NRGBA) color.NRGBA {
 	return color.NRGBA{R: uint8(outR), G: uint8(outG), B: uint8(outB), A: uint8(outA)}
 }
 
-// ── Win32 window creation ───────────────────────────────────────────────────
+// Win32 window creation
 
 var classRegistered bool
 

@@ -49,12 +49,14 @@ func (v *vectorIndex) update(id string, emb []float32) {
 func (v *vectorIndex) rebuild(entries []Entry) {
 	v.mu.Lock()
 	v.embeddings = make(map[string][]float32, len(entries))
+	v.dim = 0
 	for _, e := range entries {
-		if len(e.Embedding) > 0 {
-			v.embeddings[e.ID] = e.Embedding
-			if v.dim == 0 {
-				v.dim = len(e.Embedding)
-			}
+		if !e.IsActive() || len(e.Embedding) == 0 {
+			continue
+		}
+		v.embeddings[e.ID] = e.Embedding
+		if v.dim == 0 {
+			v.dim = len(e.Embedding)
 		}
 	}
 	v.mu.Unlock()

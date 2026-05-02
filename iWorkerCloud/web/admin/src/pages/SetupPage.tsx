@@ -15,14 +15,14 @@ export function SetupPage({ onDone }: { onDone: () => void }) {
   };
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#f0f2f5' }}>
-      <div className="card" style={{ width: 400, padding: 32 }}>
+    <div className="auth-shell">
+      <div className="auth-card">
         <h2>{t('setup.title')}</h2>
-        <p style={{ color: '#888' }}>{t('setup.description')}</p>
+        <p className="auth-description">{t('setup.description')}</p>
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
           <div><label>{t('login.username')}</label><input value={username} onChange={e => setUsername(e.target.value)} /></div>
           <div><label>{t('login.password')}</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} /></div>
-          {error && <p style={{ color: '#c33', fontSize: 13, margin: 0 }}>{error}</p>}
+          {error && <p className="auth-error auth-error-tight">{error}</p>}
           <button type="submit" className="btn-primary">{t('common.confirm')}</button>
         </form>
       </div>

@@ -111,6 +111,141 @@ func TestAnthropicMessagesEndpoint(t *testing.T) {
 	}
 }
 
+func TestForwardOpenAICompatRequestAnthropicPreservesToolProtocol(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		messages := body["messages"].([]any)
+		assistant := messages[1].(map[string]any)
+		blocks := assistant["content"].([]any)
+		toolUse := blocks[0].(map[string]any)
+		if toolUse["type"] != "tool_use" || toolUse["name"] != "ssh" || toolUse["id"] != "call_1" {
+			t.Fatalf("unexpected anthropic tool_use block: %#v", toolUse)
+		}
+		toolResultMsg := messages[2].(map[string]any)
+		resultBlocks := toolResultMsg["content"].([]any)
+		toolResult := resultBlocks[0].(map[string]any)
+		if toolResult["type"] != "tool_result" || toolResult["tool_use_id"] != "call_1" {
+			t.Fatalf("unexpected anthropic tool_result block: %#v", toolResult)
+		}
+		if tools, ok := body["tools"].([]any); !ok || len(tools) != 1 {
+			t.Fatalf("tools not converted: %#v", body["tools"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "msg_1",
+			"stop_reason": "tool_use",
+			"content": []any{map[string]any{
+				"type":  "tool_use",
+				"id":    "call_2",
+				"name":  "ssh",
+				"input": map[string]any{"action": "check_task"},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	body := toolRoundTripBody()
+	respBody, status, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: server.URL, Model: "claude", Protocol: "anthropic"}, body, server.Client(), "auto")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("ForwardOpenAICompatRequest status=%d err=%v body=%s", status, err, respBody)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	choice := resp["choices"].([]any)[0].(map[string]any)
+	if choice["finish_reason"] != "tool_calls" {
+		t.Fatalf("finish_reason = %v", choice["finish_reason"])
+	}
+	message := choice["message"].(map[string]any)
+	if strings.Contains(message["content"].(string), "[Tool Call:") {
+		t.Fatalf("response leaked textual tool call: %#v", message)
+	}
+	if calls := message["tool_calls"].([]any); len(calls) != 1 {
+		t.Fatalf("tool_calls = %#v", calls)
+	}
+}
+
+func TestForwardOpenAICompatRequestResponsesPreservesToolProtocol(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		input := body["input"].([]any)
+		if input[1].(map[string]any)["type"] != "function_call" {
+			t.Fatalf("assistant tool call was not converted: %#v", input[1])
+		}
+		if input[2].(map[string]any)["type"] != "function_call_output" {
+			t.Fatalf("tool result was not converted: %#v", input[2])
+		}
+		if tools, ok := body["tools"].([]any); !ok || len(tools) != 1 {
+			t.Fatalf("tools not converted: %#v", body["tools"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "resp_1",
+			"output": []any{map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_2",
+				"name":      "ssh",
+				"arguments": `{"action":"check_task"}`,
+			}},
+		})
+	}))
+	defer server.Close()
+
+	body := toolRoundTripBody()
+	respBody, status, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: server.URL, Model: "gpt", WireAPI: "responses"}, body, server.Client(), "auto")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("ForwardOpenAICompatRequest status=%d err=%v body=%s", status, err, respBody)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	choice := resp["choices"].([]any)[0].(map[string]any)
+	if choice["finish_reason"] != "tool_calls" {
+		t.Fatalf("finish_reason = %v", choice["finish_reason"])
+	}
+	message := choice["message"].(map[string]any)
+	if strings.Contains(message["content"].(string), "[Tool Call:") {
+		t.Fatalf("response leaked textual tool call: %#v", message)
+	}
+	if calls := message["tool_calls"].([]any); len(calls) != 1 {
+		t.Fatalf("tool_calls = %#v", calls)
+	}
+}
+
+func toolRoundTripBody() map[string]any {
+	return map[string]any{
+		"model": "auto",
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "ssh",
+				"description": "SSH tool",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		}},
+		"messages": []any{
+			map[string]any{"role": "user", "content": "check task"},
+			map[string]any{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{
+				"id":   "call_1",
+				"type": "function",
+				"function": map[string]any{
+					"name":      "ssh",
+					"arguments": `{"action":"check_task"}`,
+				},
+			}}},
+			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "still running"},
+		},
+	}
+}
+
 func TestAppendV1Path(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -1,25 +1,5 @@
 export namespace main {
-	
-	export class IWorkerCenterConfigRequest {
-	    url: string;
-	    tenant_id: string;
-	    colleague_id: string;
-	    goalwatch_interval_sec: number;
-	    auto_start: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new IWorkerCenterConfigRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.url = source["url"];
-	        this.tenant_id = source["tenant_id"];
-	        this.colleague_id = source["colleague_id"];
-	        this.goalwatch_interval_sec = source["goalwatch_interval_sec"];
-	        this.auto_start = source["auto_start"];
-	    }
-	}
+
 	export class ProjectSearchResult {
 	    id: string;
 	    name: string;
@@ -30,11 +10,11 @@ export namespace main {
 	    last_activity: string;
 	    entry_count: number;
 	    pinned: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ProjectSearchResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -63,11 +43,11 @@ export namespace main {
 	    proxy_port: string;
 	    proxy_username: string;
 	    proxy_password: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ProjectConfig(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -92,11 +72,11 @@ export namespace main {
 	    api_key: string;
 	    wire_api: string;
 	    is_custom: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ModelConfig(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.model_name = source["model_name"];
@@ -110,17 +90,17 @@ export namespace main {
 	export class ToolConfig {
 	    current_model: string;
 	    models: ModelConfig[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ToolConfig(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.current_model = source["current_model"];
 	        this.models = this.convertValues(source["models"], ModelConfig);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -199,10 +179,6 @@ export namespace main {
 	    remote_heartbeat_sec: number;
 	    remote_nickname: string;
 	    remote_client_id: string;
-	    iworkercenter_url: string;
-	    iworkercenter_tenant_id: string;
-	    iworkercenter_colleague_id: string;
-	    iworkercenter_goalwatch_interval_sec: number;
 	    default_launch_mode: string;
 	    maclaw_llm_url: string;
 	    maclaw_llm_key: string;
@@ -263,6 +239,20 @@ export namespace main {
 	    gossip_auto_publish: boolean;
 	    llm_trajectory_logging: boolean;
         show_assistant_entry: boolean;
+	    pet_enabled?: boolean;
+	    pet_skin?: string;
+	    pet_size?: number;
+	    pet_motion_enabled?: boolean;
+	    pet_text_interaction_enabled?: boolean;
+	    pet_voice_input_enabled?: boolean;
+	    pet_voice_readback_enabled?: boolean;
+	    pet_file_drop_enabled?: boolean;
+	    pet_interaction_mode?: string;
+	    pet_conversation_mode?: string;
+	    pet_readback_mode?: string;
+	    pet_auto_retry_on_no_hear?: boolean;
+	    pet_continuous_timeout_sec?: number;
+	    pet_quiet_mode?: boolean;
 	    trial_reflect_enabled: boolean;
 	    llm_token_usage: Record<string, any>;
 	    onboarding_done: boolean;
@@ -280,11 +270,11 @@ export namespace main {
 	    speech_level_calibrated?: number;
 	    audio_input_device_id?: string;
 	    audio_output_device_id?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.claude = this.convertValues(source["claude"], ToolConfig);
@@ -346,10 +336,6 @@ export namespace main {
 	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
 	        this.remote_nickname = source["remote_nickname"];
 	        this.remote_client_id = source["remote_client_id"];
-	        this.iworkercenter_url = source["iworkercenter_url"];
-	        this.iworkercenter_tenant_id = source["iworkercenter_tenant_id"];
-	        this.iworkercenter_colleague_id = source["iworkercenter_colleague_id"];
-	        this.iworkercenter_goalwatch_interval_sec = source["iworkercenter_goalwatch_interval_sec"];
 	        this.default_launch_mode = source["default_launch_mode"];
 	        this.maclaw_llm_url = source["maclaw_llm_url"];
 	        this.maclaw_llm_key = source["maclaw_llm_key"];
@@ -409,6 +395,20 @@ export namespace main {
 	        this.skill_purchase_mode = source["skill_purchase_mode"];
 	        this.gossip_auto_publish = source["gossip_auto_publish"];
             this.show_assistant_entry = source["show_assistant_entry"];
+	        this.pet_enabled = source["pet_enabled"];
+	        this.pet_skin = source["pet_skin"];
+	        this.pet_size = source["pet_size"];
+	        this.pet_motion_enabled = source["pet_motion_enabled"];
+	        this.pet_text_interaction_enabled = source["pet_text_interaction_enabled"];
+	        this.pet_voice_input_enabled = source["pet_voice_input_enabled"];
+	        this.pet_voice_readback_enabled = source["pet_voice_readback_enabled"];
+	        this.pet_file_drop_enabled = source["pet_file_drop_enabled"];
+	        this.pet_interaction_mode = source["pet_interaction_mode"];
+	        this.pet_conversation_mode = source["pet_conversation_mode"];
+	        this.pet_readback_mode = source["pet_readback_mode"];
+	        this.pet_auto_retry_on_no_hear = source["pet_auto_retry_on_no_hear"];
+	        this.pet_continuous_timeout_sec = source["pet_continuous_timeout_sec"];
+	        this.pet_quiet_mode = source["pet_quiet_mode"];
 	        this.llm_trajectory_logging = source["llm_trajectory_logging"];
 	        this.trial_reflect_enabled = source["trial_reflect_enabled"];
 	        this.llm_token_usage = source["llm_token_usage"];
@@ -428,7 +428,7 @@ export namespace main {
 	        this.audio_input_device_id = source["audio_input_device_id"];
 	        this.audio_output_device_id = source["audio_output_device_id"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -467,11 +467,11 @@ export namespace main {
 	    name: string;
 	    path: string;
 	    type: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PythonEnvironment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -485,11 +485,11 @@ export namespace main {
 	    type: string;
 	    value: string;
 	    installed: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Skill(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -503,11 +503,11 @@ export namespace main {
 	    os: string;
 	    arch: string;
 	    os_version: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SystemInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.os = source["os"];
@@ -526,11 +526,11 @@ export namespace main {
 	    websiteURL: string;
 	    githubURL: string;
 	    iconPath: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BrandInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -544,17 +544,17 @@ export namespace main {
 	        this.iconPath = source["iconPath"];
 	    }
 	}
-	
+
 	export class ToolStatus {
 	    name: string;
 	    installed: boolean;
 	    version: string;
 	    path: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ToolStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -569,11 +569,11 @@ export namespace main {
 	    release_url: string;
 	    tag_name: string;
 	    download_url: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UpdateResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.has_update = source["has_update"];
@@ -583,7 +583,23 @@ export namespace main {
 	        this.download_url = source["download_url"];
 	    }
 	}
+	export class VoiceCommandNormalizationResult {
+	    is_command: boolean;
+	    corrected_text: string;
+	    confidence: number;
+	    reason?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new VoiceCommandNormalizationResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.is_command = source["is_command"];
+	        this.corrected_text = source["corrected_text"];
+	        this.confidence = source["confidence"];
+	        this.reason = source["reason"];
+	    }
+	}
 
 }
-
-

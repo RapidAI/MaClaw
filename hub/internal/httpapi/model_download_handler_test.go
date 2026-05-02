@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestModelDownloadHandlerServesFromModelsDirKeepingPublicURL(t *testing.T) {
@@ -65,6 +67,35 @@ func TestModelDownloadHandlerServesKokoroArtifacts(t *testing.T) {
 		if got := rr.Body.String(); got != body {
 			t.Fatalf("%s body=%q want %q", name, got, body)
 		}
+	}
+}
+
+func TestModelDownloadHandlerRejectsInvalidPathAndUnsupportedExtension(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "configs")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	h := ModelDownloadHandler(filepath.Join(configDir, "config.yaml"))
+
+	for _, tc := range []struct {
+		name     string
+		filename string
+		wantCode int
+	}{
+		{name: "path traversal", filename: "../moonshine-base-zh.gguf", wantCode: http.StatusBadRequest},
+		{name: "nested path", filename: "nested/moonshine-base-zh.gguf", wantCode: http.StatusBadRequest},
+		{name: "unsupported extension", filename: "notes.txt", wantCode: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/models/"+tc.filename, nil)
+			req.SetPathValue("filename", tc.filename)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != tc.wantCode {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+		})
 	}
 }
 
@@ -169,10 +200,232 @@ func TestPublicModelDownloadStatusHandlerHidesAdminOnlyFields(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	if strings.Contains(body, "model-download.log") || strings.Contains(body, "secret log") {
+	if strings.Contains(body, "model-download.log") || strings.Contains(body, "secret log") || strings.Contains(body, "legacy_data_dir") || strings.Contains(body, "model_dir") {
 		t.Fatalf("public payload leaked admin-only fields: %s", body)
 	}
 	if !strings.Contains(body, `"public_models_url":"https://hub.example.com/api/v1/models/{filename}"`) {
 		t.Fatalf("unexpected body=%s", body)
+	}
+}
+
+func TestAdminModelDownloadStatusTriggerSupportedWithoutExistingScript(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "configs")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	h := GetAdminModelDownloadStatusHandler(filepath.Join(configDir, "config.yaml"))
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/model_download/status", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body hubModelRuntimeStatus
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		if body.TriggerSupported {
+			t.Fatalf("trigger_supported=true on windows")
+		}
+		return
+	}
+	if !body.TriggerSupported {
+		t.Fatalf("trigger_supported=false without pre-existing script")
+	}
+}
+
+func TestEnsureModelDownloadScriptCreatesExecutableScript(t *testing.T) {
+	root := t.TempDir()
+	scriptPath := filepath.Join(root, "data", "download-models.sh")
+	if err := ensureModelDownloadScript(scriptPath); err != nil {
+		t.Fatalf("ensure script: %v", err)
+	}
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatalf("stat script: %v", err)
+	}
+	if info.IsDir() {
+		t.Fatalf("script path is dir")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+		t.Fatalf("script is not executable: mode=%v", info.Mode().Perm())
+	}
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	text := string(content)
+	for _, want := range []string{modelDownloadScriptVersion, "is_allowed_model_file()", "Skip unsafe model filename", "curl -L --fail", "--retry-delay 2", "wget --tries=3", "rm -f \"$tmp\"", "touch \"$SENTINEL\"", "cleanup() { rm -f \"$LOCK_FILE\"; }"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("script missing %q in:\n%s", want, text)
+		}
+	}
+}
+
+func TestEnsureModelDownloadScriptUpgradesOldScript(t *testing.T) {
+	root := t.TempDir()
+	scriptPath := filepath.Join(root, "data", "download-models.sh")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0755); err != nil {
+		t.Fatalf("mkdir script dir: %v", err)
+	}
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho old\n"), 0644); err != nil {
+		t.Fatalf("write old script: %v", err)
+	}
+	if err := ensureModelDownloadScript(scriptPath); err != nil {
+		t.Fatalf("ensure script: %v", err)
+	}
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, modelDownloadScriptVersion) || strings.Contains(text, "echo old") {
+		t.Fatalf("script was not upgraded:\n%s", text)
+	}
+}
+
+func TestEnsureModelDownloadScriptFixesExistingScriptPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod semantics are not useful on windows")
+	}
+	root := t.TempDir()
+	scriptPath := filepath.Join(root, "data", "download-models.sh")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0755); err != nil {
+		t.Fatalf("mkdir script dir: %v", err)
+	}
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n# "+modelDownloadScriptVersion+"\n"), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	if err := ensureModelDownloadScript(scriptPath); err != nil {
+		t.Fatalf("ensure script: %v", err)
+	}
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatalf("stat script: %v", err)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		t.Fatalf("script remained non-executable: mode=%v", info.Mode().Perm())
+	}
+}
+
+func TestModelDownloadURLNormalizesForwardedHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/public/model_download/status", nil)
+	req.Host = "internal.local"
+	req.Header.Set("X-Forwarded-Proto", "javascript, https")
+	req.Header.Set("X-Forwarded-Host", "hub.example.com, proxy.local")
+	if got := modelDownloadURL(req, "a.gguf"); got != "http://hub.example.com/api/v1/models/a.gguf" {
+		t.Fatalf("url=%q", got)
+	}
+
+	req.Header.Set("X-Forwarded-Proto", "https, http")
+	if got := modelDownloadURL(req, "a.gguf"); got != "https://hub.example.com/api/v1/models/a.gguf" {
+		t.Fatalf("url=%q", got)
+	}
+
+	req.Header.Set("X-Forwarded-Host", "bad host")
+	req.Host = "also/bad"
+	if got := modelDownloadURL(req, "a.gguf"); got != "/api/v1/models/a.gguf" {
+		t.Fatalf("url=%q", got)
+	}
+}
+
+func TestModelDownloadExpectedFilesFiltersUnsafeNames(t *testing.T) {
+	oldFiles := os.Getenv("HUB_MODEL_FILES")
+	defer func() { _ = os.Setenv("HUB_MODEL_FILES", oldFiles) }()
+	_ = os.Setenv("HUB_MODEL_FILES", "safe.gguf ../escape.gguf nested/file.gguf safe.gguf note.txt voice.zip")
+
+	got := modelDownloadExpectedFiles()
+	want := []string{"safe.gguf", "voice.zip"}
+	if len(got) != len(want) {
+		t.Fatalf("files=%v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("files=%v want %v", got, want)
+		}
+	}
+}
+
+func TestTriggerAdminModelDownloadRejectsWhenNoValidFilesConfigured(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("trigger is unsupported on windows")
+	}
+	oldFiles := os.Getenv("HUB_MODEL_FILES")
+	defer func() { _ = os.Setenv("HUB_MODEL_FILES", oldFiles) }()
+	_ = os.Setenv("HUB_MODEL_FILES", "../escape.gguf notes.txt nested/model.gguf")
+
+	root := t.TempDir()
+	configDir := filepath.Join(root, "configs")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	h := TriggerAdminModelDownloadHandler(filepath.Join(configDir, "config.yaml"))
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/model_download/trigger", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "no valid hub model files configured") {
+		t.Fatalf("body=%s", rr.Body.String())
+	}
+}
+
+func TestCollectHubModelRuntimeStatusReadyWhenFilesExistWithoutSentinel(t *testing.T) {
+	oldFiles := os.Getenv("HUB_MODEL_FILES")
+	defer func() { _ = os.Setenv("HUB_MODEL_FILES", oldFiles) }()
+	_ = os.Setenv("HUB_MODEL_FILES", "a.gguf b.zip")
+
+	root := t.TempDir()
+	modelsDir := filepath.Join(root, "data", "models")
+	if err := os.MkdirAll(modelsDir, 0755); err != nil {
+		t.Fatalf("mkdir models dir: %v", err)
+	}
+	for _, name := range []string{"a.gguf", "b.zip"} {
+		if err := os.WriteFile(filepath.Join(modelsDir, name), []byte("x"), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	status := collectHubModelRuntimeStatus(nil, filepath.Join(root, "data"), modelsDir, filepath.Join(root, "data", "logs", "model-download.log"), filepath.Join(root, "data", "download-models.sh"))
+	if !status.Ready || status.Status != "ready" {
+		t.Fatalf("status=%q ready=%v missing=%v", status.Status, status.Ready, status.MissingFiles)
+	}
+	if status.Initialized {
+		t.Fatalf("initialized=true without sentinel")
+	}
+}
+
+func TestCollectHubModelRuntimeStatusIgnoresStaleDownloadLock(t *testing.T) {
+	oldFiles := os.Getenv("HUB_MODEL_FILES")
+	oldTTL := os.Getenv("HUB_MODEL_LOCK_TTL")
+	defer func() {
+		_ = os.Setenv("HUB_MODEL_FILES", oldFiles)
+		_ = os.Setenv("HUB_MODEL_LOCK_TTL", oldTTL)
+	}()
+	_ = os.Setenv("HUB_MODEL_FILES", "a.gguf")
+	_ = os.Setenv("HUB_MODEL_LOCK_TTL", "1ms")
+
+	root := t.TempDir()
+	modelsDir := filepath.Join(root, "data", "models")
+	if err := os.MkdirAll(modelsDir, 0755); err != nil {
+		t.Fatalf("mkdir models dir: %v", err)
+	}
+	lockPath := filepath.Join(modelsDir, ".models-downloading")
+	if err := os.WriteFile(lockPath, []byte("old"), 0644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	oldTime := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(lockPath, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes lock: %v", err)
+	}
+
+	status := collectHubModelRuntimeStatus(nil, filepath.Join(root, "data"), modelsDir, filepath.Join(root, "data", "logs", "model-download.log"), filepath.Join(root, "data", "download-models.sh"))
+	if status.Downloading || status.Status == "downloading" {
+		t.Fatalf("stale lock reported downloading: status=%q downloading=%v", status.Status, status.Downloading)
 	}
 }

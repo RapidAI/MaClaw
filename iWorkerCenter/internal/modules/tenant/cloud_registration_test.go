@@ -161,3 +161,82 @@ func TestAdminCloudRegisterRouteRegistersTenant(t *testing.T) {
 		t.Fatalf("response = %+v", resp)
 	}
 }
+
+func TestAdminCloudStatusRouteReturnsLocalRegistrationState(t *testing.T) {
+	svc, _ := newTestService(t)
+	tenant, err := svc.SetupFirstTenant(context.Background(), CreateTenantRequest{
+		CompanyName:   "Status Route Inc",
+		Email:         "status@example.com",
+		AdminUsername: "admin",
+		AdminPassword: "pass1234",
+	})
+	if err != nil {
+		t.Fatalf("setup tenant: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(svc).RegisterAdminRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/admin/cloud/status?tenant_id="+tenant.ID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["configured"] != false || resp["registered"] != false || resp["status"] != "not_configured" || resp["non_blocking"] != true {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestAdminCloudStatusRouteKeepsPendingRegistrationVisible(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/centers/center-pending-1/license" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Center-Secret"); got != "secret-pending-1" {
+			t.Fatalf("center secret header = %q", got)
+		}
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no active license"})
+	}))
+	defer srv.Close()
+
+	svc, _ := newTestService(t)
+	svc.cloudClient = NewCloudClient(CloudConfig{BaseURL: srv.URL})
+	tenant, err := svc.SetupFirstTenant(context.Background(), CreateTenantRequest{
+		CompanyName:   "Pending Route Inc",
+		Email:         "pending@example.com",
+		AdminUsername: "admin",
+		AdminPassword: "pass1234",
+	})
+	if err != nil {
+		t.Fatalf("setup tenant: %v", err)
+	}
+	if err := svc.tenantRepo.UpdateCloudInfo(context.Background(), tenant.ID, "center-pending-1", "secret-pending-1"); err != nil {
+		t.Fatalf("update cloud info: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(svc).RegisterAdminRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/admin/cloud/status?tenant_id="+tenant.ID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "secret-pending-1") {
+		t.Fatalf("status leaked cloud secret: %s", body)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["configured"] != true || resp["registered"] != true || resp["center_id"] != "center-pending-1" || resp["status"] != "pending" || resp["non_blocking"] != true {
+		t.Fatalf("response = %+v", resp)
+	}
+}

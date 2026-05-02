@@ -45,6 +45,13 @@ type UrgentSender interface {
 	SendUrgentText(ctx context.Context, target UserTarget, text string) error
 }
 
+// VoiceSender is an optional interface that IM plugins can implement to
+// support native voice delivery (voice bubble, not a generic file).
+type VoiceSender interface {
+	// SendVoice sends a base64-encoded voice message to the target user.
+	SendVoice(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string) error
+}
+
 // CapabilityDeclaration declares the message types supported by an IM platform.
 type CapabilityDeclaration struct {
 	SupportsRichCard    bool // Supports rich text cards
@@ -71,15 +78,15 @@ const MaxAttachmentSize = 10 * 1024 * 1024
 
 // IncomingMessage represents a standardized inbound message from any IM platform.
 type IncomingMessage struct {
-	PlatformName  string              `json:"platform_name"`       // IM platform name (e.g. "feishu", "qbot")
-	PlatformUID   string              `json:"platform_uid"`        // Platform-specific user ID (e.g. Feishu open_id)
-	UnifiedUserID string              `json:"unified_user_id"`     // Unified internal user ID (populated by IM Adapter)
-	MessageID     string              `json:"message_id,omitempty"` // Platform message ID for dedup (optional)
-	MessageType   string              `json:"message_type"`        // "text", "image", "file", "audio", "interactive"
-	Text          string              `json:"text"`                // Text content
-	Lang          string              `json:"lang,omitempty"`      // User language ("zh", "en"); empty defaults to "zh"
+	PlatformName  string              `json:"platform_name"`         // IM platform name (e.g. "feishu", "qbot")
+	PlatformUID   string              `json:"platform_uid"`          // Platform-specific user ID (e.g. Feishu open_id)
+	UnifiedUserID string              `json:"unified_user_id"`       // Unified internal user ID (populated by IM Adapter)
+	MessageID     string              `json:"message_id,omitempty"`  // Platform message ID for dedup (optional)
+	MessageType   string              `json:"message_type"`          // "text", "image", "file", "audio", "interactive"
+	Text          string              `json:"text"`                  // Text content
+	Lang          string              `json:"lang,omitempty"`        // User language ("zh", "en"); empty defaults to "zh"
 	Attachments   []MessageAttachment `json:"attachments,omitempty"` // File/image attachments
-	RawPayload    json.RawMessage     `json:"raw_payload"`         // Raw platform message for plugin-specific handling
+	RawPayload    json.RawMessage     `json:"raw_payload"`           // Raw platform message for plugin-specific handling
 	Timestamp     time.Time           `json:"timestamp"`
 }
 
@@ -91,7 +98,7 @@ type OutgoingMessage struct {
 	Actions      []MessageAction `json:"actions,omitempty"`
 	StatusCode   int             `json:"status_code"`
 	StatusIcon   string          `json:"status_icon"`
-	FallbackText string          `json:"fallback_text"` // Plain text fallback
+	FallbackText string          `json:"fallback_text"`    // Plain text fallback
 	Urgent       bool            `json:"urgent,omitempty"` // When true, send with platform-specific urgent/buzz notification
 }
 

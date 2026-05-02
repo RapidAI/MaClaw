@@ -1,8 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -13,7 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/gorilla/websocket"
 )
@@ -64,8 +64,8 @@ type RemoteHubClient struct {
 	lastSummary map[string]string // sessionID → JSON of last sent summary
 
 	// IM message handler for Agent Passthrough.
-	imHandlerMu       sync.Mutex
-	imHandler         *IMMessageHandler
+	imHandlerMu        sync.Mutex
+	imHandler          *IMMessageHandler
 	configureIMHandler func(*IMMessageHandler)
 
 	// IO relay for multi-device session roaming cleanup on disconnect.
@@ -1144,6 +1144,14 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			_ = c.app.qqBotGateway.SendQQBotMedia(qqbot.OutgoingMedia{
 				OpenID:   reply.PlatformUID,
 				FileType: 4,
+				FileData: reply.FileData,
+				FileName: reply.FileName,
+				MimeType: reply.MimeType,
+			})
+		case "voice":
+			_ = c.app.qqBotGateway.SendQQBotMedia(qqbot.OutgoingMedia{
+				OpenID:   reply.PlatformUID,
+				FileType: 3,
 				FileData: reply.FileData,
 				FileName: reply.FileName,
 				MimeType: reply.MimeType,

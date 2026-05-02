@@ -334,13 +334,13 @@ func TestExtractSkillMetadata_UsesCanonicalKeys(t *testing.T) {
 	// extractSkillMetadata only needs to check canonical key names.
 	// Alias normalization already happened in ParseMarkdownFrontmatterYAML.
 	yamlFM := map[string]interface{}{
-		"required_env":  []interface{}{"API_KEY"},
-		"required_args": []interface{}{"input", "output"},
-		"shell":         "bash",
-		"mode":          "api_workflow",
-		"triggers":      []interface{}{"天气", "weather"},
-		"platforms":     []interface{}{"windows"},
-		"requires_gui":  true,
+		"required_env":      []interface{}{"API_KEY"},
+		"required_args":     []interface{}{"input", "output"},
+		"shell":             "bash",
+		"mode":              "api_workflow",
+		"triggers":          []interface{}{"天气", "weather"},
+		"platforms":         []interface{}{"windows"},
+		"requires_gui":      true,
 		"produces_artifact": false,
 		"requires": map[string]interface{}{
 			"python": []interface{}{"requests"},
@@ -384,5 +384,72 @@ func TestExtractSkillMetadata_NilMap(t *testing.T) {
 	meta := extractSkillMetadata(nil)
 	if len(meta.requiredEnv) != 0 || len(meta.triggers) != 0 || meta.mode != "" {
 		t.Fatalf("expected zero-value metadata from nil map, got %+v", meta)
+	}
+}
+
+func TestParseMarkdownSkill_YAMLFrontmatterSkillLevelCompatibility(t *testing.T) {
+	content := `---
+name: fm-compat
+requires_gui: "true"
+global_timeout: "180"
+pip: requests
+npm: playwright
+params:
+  input:
+    desc: Input file
+    required: yes
+operations:
+  generate:
+    steps: create, verify
+pipeline:
+  - extract
+---
+
+# FM Compat
+
+Use this skill.
+`
+
+	entry, err := ParseMarkdownSkill(content, MarkdownSkillOptions{})
+	if err != nil {
+		t.Fatalf("ParseMarkdownSkill error: %v", err)
+	}
+	if entry.Name != "fm-compat" || !entry.RequiresGUI || entry.GlobalTimeout != 180 {
+		t.Fatalf("frontmatter scalar metadata not normalized: name=%q gui=%v timeout=%d", entry.Name, entry.RequiresGUI, entry.GlobalTimeout)
+	}
+	if len(entry.RequiresPython) != 1 || entry.RequiresPython[0] != "requests" || len(entry.RequiresNode) != 1 || entry.RequiresNode[0] != "playwright" {
+		t.Fatalf("frontmatter requires aliases not preserved: python=%#v node=%#v", entry.RequiresPython, entry.RequiresNode)
+	}
+	if len(entry.Params) != 1 || entry.Params[0].Name != "input" || !entry.Params[0].Required || entry.Params[0].Description != "Input file" {
+		t.Fatalf("frontmatter params not normalized: %#v", entry.Params)
+	}
+	if entry.Mode != "api_workflow" || len(entry.Operations) != 1 || entry.Operations[0].Name != "generate" || len(entry.Operations[0].Labels) != 2 {
+		t.Fatalf("frontmatter operations not normalized: mode=%q ops=%#v", entry.Mode, entry.Operations)
+	}
+	if len(entry.Pipeline) != 1 || entry.Pipeline[0].Skill != "extract" {
+		t.Fatalf("frontmatter pipeline not preserved: %#v", entry.Pipeline)
+	}
+}
+
+func TestImportMarkdownSkillDir_YAMLFrontmatterSkillLevelCompatibility(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "fm-dir")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll error: %v", err)
+	}
+	content := "---\nname: fm-dir\nstateful: \"true\"\nrequires_tools: shell, browser\npipeline:\n  - load:\n      target: warehouse\n---\n\n# FM Dir\n\n```bash\necho ok\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir error: %v", err)
+	}
+	if !entry.Stateful || len(entry.RequiresTools) != 2 || entry.RequiresTools[0] != "shell" {
+		t.Fatalf("frontmatter stateful/requires_tools not normalized: stateful=%v tools=%#v", entry.Stateful, entry.RequiresTools)
+	}
+	if entry.Mode != "pipeline" || len(entry.Pipeline) != 1 || entry.Pipeline[0].Skill != "load" || entry.Pipeline[0].Params["target"] != "warehouse" {
+		t.Fatalf("frontmatter pipeline not normalized: mode=%q pipeline=%#v", entry.Mode, entry.Pipeline)
 	}
 }

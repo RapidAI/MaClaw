@@ -77,6 +77,7 @@ func (m *memoryCenterRepo) UpdateHeartbeat(_ context.Context, c *store.Center) e
 	current.IWorkerLocalAccountCount = c.IWorkerLocalAccountCount
 	current.IWorkerAgentInstanceCount = c.IWorkerAgentInstanceCount
 	current.IWorkerReadinessJSON = c.IWorkerReadinessJSON
+	current.RuntimeStatusJSON = c.RuntimeStatusJSON
 	current.UpdatedAt = current.LastHeartbeat
 	return nil
 }
@@ -99,6 +100,7 @@ func (m *memoryCenterRepo) UpdateIntegration(_ context.Context, c *store.Center)
 	current.IWorkerLocalAccountCount = c.IWorkerLocalAccountCount
 	current.IWorkerAgentInstanceCount = c.IWorkerAgentInstanceCount
 	current.IWorkerReadinessJSON = c.IWorkerReadinessJSON
+	current.RuntimeStatusJSON = c.RuntimeStatusJSON
 	current.UpdatedAt = time.Now()
 	return nil
 }
@@ -224,6 +226,49 @@ func TestProbeVerifiesIWorkerCenterServiceIdentity(t *testing.T) {
 	}
 }
 
+func TestProbeCapturesNonBlockingLocalFallbackStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/center/status" {
+			t.Fatalf("probe path = %q, want /api/center/status", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console","provider_count":1,"runtime_provider_mode":"local_settings_fallback","compute_source":"cloud","compute_permission":false,"cloud_provider_count":0,"compute_sync_status":{"status":"failure","error":"cloud unavailable","provider_count":0,"non_blocking":true,"runtime_impact":"local_settings_fallback"},"iworker_readiness":{"ready":true,"status":"ready","agent_instance_count":2,"workload_summary":{"agent_instance_count":2,"active_count":1,"completed_count":3,"review_count":1,"blocked_count":0}}}`))
+	}))
+	defer server.Close()
+
+	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", BaseURL: server.URL, Status: "active", SupportsMultiTenant: true})
+	svc := NewService(repo, nil)
+
+	result, center, err := svc.Probe(context.Background(), "ctr_1")
+	if err != nil {
+		t.Fatalf("Probe() error: %v", err)
+	}
+	if !result.OK || center.LastSyncStatus != "probe_ok" {
+		t.Fatalf("probe result=%+v center=%+v", result, center)
+	}
+	if result.RuntimeProviderMode != "local_settings_fallback" || result.CloudProviderCount != 0 {
+		t.Fatalf("runtime fallback not captured: %+v", result)
+	}
+	if result.ComputeSyncStatus == nil || !result.ComputeSyncStatus.NonBlocking || result.ComputeSyncStatus.RuntimeImpact != "local_settings_fallback" {
+		t.Fatalf("ComputeSyncStatus = %+v, want non-blocking local fallback", result.ComputeSyncStatus)
+	}
+	if center.RuntimeStatusJSON == "" {
+		t.Fatal("probe did not persist runtime status")
+	}
+	management := buildCenterManagement(center, &store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
+	if management.RuntimeStatus == nil || management.RuntimeStatus.RuntimeProviderMode != "local_settings_fallback" || management.RuntimeStatus.ComputeSyncStatus == nil || !management.RuntimeStatus.ComputeSyncStatus.NonBlocking {
+		t.Fatalf("management runtime status = %+v", management.RuntimeStatus)
+	}
+	rawResult, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal probe result: %v", err)
+	}
+	for _, forbidden := range []string{"current_task", "current_detail", "task_title", "business_payload"} {
+		if strings.Contains(string(rawResult), forbidden) {
+			t.Fatalf("fallback probe leaked business field %q: %s", forbidden, rawResult)
+		}
+	}
+}
+
 func TestRuntimeSnapshotDoesNotMutateCenterStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console","provider_count":1,"runtime_provider_mode":"cloud_sync","compute_source":"cloud","cloud_provider_count":1,"compute_sync_status":{"status":"success","provider_count":1}}`))
@@ -324,6 +369,39 @@ func TestHeartbeatAcceptsIWorkerCenterServiceIdentity(t *testing.T) {
 	}
 }
 
+func TestHeartbeatStoresRuntimeContinuityWithoutBusinessData(t *testing.T) {
+	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", SecretHash: hashSecret("secret-abc"), LastSyncStatus: "configured"})
+	svc := NewService(repo, nil)
+
+	err := svc.Heartbeat(context.Background(), "ctr_1", HeartbeatRequest{
+		Secret:              "secret-abc",
+		RuntimeType:         "service",
+		ProductKind:         "iworkercenter",
+		AdminConsole:        "web_console",
+		ProviderCount:       1,
+		RuntimeProviderMode: "local_settings_fallback",
+		ComputeSource:       "cloud",
+		CloudProviderCount:  0,
+		ComputeSyncStatus:   &centerComputeSyncStatus{Status: "failure", Error: "cloud unavailable", ProviderCount: 0, NonBlocking: true, RuntimeImpact: "local_settings_fallback"},
+	})
+	if err != nil {
+		t.Fatalf("Heartbeat() error: %v", err)
+	}
+	center, _ := repo.GetByID(context.Background(), "ctr_1")
+	if center.RuntimeStatusJSON == "" {
+		t.Fatal("RuntimeStatusJSON was not stored")
+	}
+	management := buildCenterManagement(center, &store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
+	if management.RuntimeStatus == nil || management.RuntimeStatus.RuntimeProviderMode != "local_settings_fallback" || management.RuntimeStatus.ComputeSyncStatus == nil || !management.RuntimeStatus.ComputeSyncStatus.NonBlocking {
+		t.Fatalf("management runtime status = %+v", management.RuntimeStatus)
+	}
+	for _, forbidden := range []string{"current_task", "current_detail", "tenant_count", "role_count", "business_payload"} {
+		if strings.Contains(center.RuntimeStatusJSON, forbidden) {
+			t.Fatalf("runtime heartbeat leaked %q: %s", forbidden, center.RuntimeStatusJSON)
+		}
+	}
+}
+
 func TestHeartbeatStoresIWorkerReadiness(t *testing.T) {
 	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", SecretHash: hashSecret("secret-abc"), LastSyncStatus: "configured"})
 	svc := NewService(repo, nil)
@@ -377,6 +455,36 @@ func TestManagementDoesNotRequireIWorkerBusinessReadinessAfterServiceIdentityVer
 	}
 	if containsIssue(management.Issues, "iworker_readiness_not_reported") || containsIssue(management.Issues, "multi_tenant_not_confirmed") {
 		t.Fatalf("business readiness leaked into Cloud management issues: %+v", management.Issues)
+	}
+}
+
+func TestManagementSummaryCountsRuntimeFallbackWithoutBusinessLeak(t *testing.T) {
+	runtimeJSON := `{"provider_count":1,"runtime_provider_mode":"local_settings_fallback","compute_source":"cloud","cloud_provider_count":0,"compute_sync_status":{"status":"failure","provider_count":0,"non_blocking":true,"runtime_impact":"local_settings_fallback"}}`
+	repo := newMemoryCenterRepo(&store.Center{
+		ID:                "ctr_1",
+		Status:            "active",
+		BaseURL:           "https://center.example",
+		LastSyncStatus:    "heartbeat_ok",
+		RuntimeStatusJSON: runtimeJSON,
+	})
+	licenses := newMemoryLicenseRepo(&store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
+	svc := NewService(repo, license.NewService(licenses, nil))
+
+	report, err := svc.Management(context.Background())
+	if err != nil {
+		t.Fatalf("Management() error: %v", err)
+	}
+	if report.Summary.RuntimeFallbackCenters != 1 || report.Summary.RuntimeNonBlockingIssues != 1 || report.Summary.RuntimeBlockingIssues != 0 {
+		t.Fatalf("runtime summary = %+v", report.Summary)
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	for _, forbidden := range []string{"current_task", "current_detail", "tenant_count", "role_count", "business_payload"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("management report leaked %q: %s", forbidden, raw)
+		}
 	}
 }
 

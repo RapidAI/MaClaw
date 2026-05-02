@@ -241,6 +241,9 @@ const PROGRESS_EVENT = "ai-assistant-progress";
 // ---------------------------------------------------------------------------
 export const AI_ASSISTANT_HISTORY_STORAGE_KEY = "ai-assistant-history";
 export const AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY = "ai-assistant-prompt-history";
+const AI_ASSISTANT_CONTEXT_BOUNDARY_STORAGE_KEY = "ai-assistant-context-boundary-message-id";
+const AI_ASSISTANT_CONTEXT_BOUNDARY_END = "__maclaw_context_boundary_end__";
+const AI_ASSISTANT_CONTEXT_BOUNDARY_AFTER_PREFIX = "__maclaw_context_boundary_after__:";
 const MAX_PERSISTED_MESSAGES = 200;
 const MAX_CONTEXT_MESSAGES_TO_SEND = 80;
 const MAX_PERSISTED_PROMPTS = 100;
@@ -375,6 +378,54 @@ function loadPersistedPrompts(): string[] {
     }
 }
 
+function loadPersistedContextBoundaryMessageID(): string | null {
+    try {
+        const value = localStorage.getItem(AI_ASSISTANT_CONTEXT_BOUNDARY_STORAGE_KEY);
+        return value && value.trim() ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+function persistContextBoundaryMessageID(messageID: string | null) {
+    try {
+        if (messageID && messageID.trim()) {
+            localStorage.setItem(AI_ASSISTANT_CONTEXT_BOUNDARY_STORAGE_KEY, messageID);
+        } else {
+            localStorage.removeItem(AI_ASSISTANT_CONTEXT_BOUNDARY_STORAGE_KEY);
+        }
+    } catch {
+        // localStorage full or unavailable — silently ignore
+    }
+}
+
+function resolveContextStartIndex(messages: ChatMessage[], boundaryMessageID: string | null): number {
+    if (!boundaryMessageID) return 0;
+    if (boundaryMessageID === AI_ASSISTANT_CONTEXT_BOUNDARY_END) return messages.length;
+    const afterPrefix = AI_ASSISTANT_CONTEXT_BOUNDARY_AFTER_PREFIX;
+    const startAfterBoundary = boundaryMessageID.startsWith(afterPrefix);
+    const targetMessageID = startAfterBoundary ? boundaryMessageID.slice(afterPrefix.length) : boundaryMessageID;
+    const index = messages.findIndex(message => message.id === targetMessageID);
+    if (index < 0) return 0;
+    return startAfterBoundary ? index + 1 : index;
+}
+
+function isExplicitHistoryResetCommand(text: string): boolean {
+    const trimmed = text.trim().toLowerCase();
+    return trimmed === "/new" || trimmed === "/reset" || trimmed === "/clear";
+}
+
+function buildResetConfirmationMessages(response: any): ChatMessage[] {
+    const resetText = response?.text || response?.error || '';
+    if (!resetText) return [];
+    return [{
+        id: nextId(),
+        role: 'assistant' as const,
+        content: resetText,
+        timestamp: Date.now(),
+    }];
+}
+
 function serializePersistedMessages(msgs: ChatMessage[]): string | null {
     // Only persist meaningful messages; skip progress, system, and empty content.
     // Strip thumbnailBase64 to avoid blowing up localStorage (5MB limit).
@@ -389,8 +440,9 @@ function serializePersistedMessages(msgs: ChatMessage[]): string | null {
     return toSave.length === 0 ? null : JSON.stringify(toSave);
 }
 
-function buildClientContextMessages(messages: ChatMessage[]): AIAssistantContextMessage[] {
+function buildClientContextMessages(messages: ChatMessage[], startIndex = 0): AIAssistantContextMessage[] {
     return messages
+        .slice(Math.max(0, startIndex))
         .filter((message): message is ChatMessage & { role: 'user' | 'assistant' } =>
             (message.role === 'user' || message.role === 'assistant') && message.content.trim() !== ''
         )
@@ -1218,18 +1270,6 @@ function removeRoundMessage(messages: ChatMessage[], assistantMessageId: string 
 }
 
 function resolveSendResult(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences, errorText?: string): ChatMessage[] {
-    if (!errorText && response?.clear_ui) {
-        // Backend signaled a conversation reset (/new, /reset, /clear).
-        // Clear all existing messages and show only the reset confirmation.
-        const resetText = response.text || response.error || '';
-        if (!resetText) return [];
-        return [{
-            id: nextId(),
-            role: 'assistant' as const,
-            content: resetText,
-            timestamp: Date.now(),
-        }];
-    }
     return errorText
         ? replaceRoundWithError(messages, assistantMessageId, requestId, errorText)
         : response?.error
@@ -1721,6 +1761,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const lastPersistedPayloadRef = useRef<string | null>(null);
     const lastPersistedPromptsPayloadRef = useRef<string | null>(null);
     const persistOnUnmountRef = useRef(true);
+    const contextBoundaryMessageIDRef = useRef<string | null>(loadPersistedContextBoundaryMessageID());
     useEffect(() => {
         latestMessagesRef.current = messages;
         const nextPayload = serializePersistedMessages(messages);
@@ -1900,7 +1941,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             timestamp: Date.now(),
         };
         const approvalMessage = options?.markConfirmationRunning === true;
-        const recentMessages = buildClientContextMessages(latestMessagesRef.current);
+        const contextStartIndex = resolveContextStartIndex(latestMessagesRef.current, contextBoundaryMessageIDRef.current);
+        const recentMessages = buildClientContextMessages(latestMessagesRef.current, contextStartIndex);
 
         setRoundState({
             generation,
@@ -1920,7 +1962,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(response);
             const effectiveRequestId = responseRequestId || requestId;
-            if (activeRoundRef.current.generation !== generation && activeRoundRef.current.requestId !== effectiveRequestId) {
+            const currentRound = activeRoundRef.current;
+            if (currentRound.generation !== generation || currentRound.phase === 'idle') {
                 return true;
             }
             if (responseRequestId && responseRequestId !== requestId) {
@@ -1931,18 +1974,34 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                     requestId: responseRequestId,
                 });
             }
-            setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
-            if (response.clear_ui) {
-                // Backend signaled conversation reset — clear transient UI state
-                // and immediately flush persistence to avoid stale debounced writes.
+            const explicitReset = response.clear_ui && isExplicitHistoryResetCommand(outgoingText);
+            if (explicitReset) {
+                const resetMessages = buildResetConfirmationMessages(response);
+                const nextBoundary = resetMessages[0]
+                    ? `${AI_ASSISTANT_CONTEXT_BOUNDARY_AFTER_PREFIX}${resetMessages[0].id}`
+                    : AI_ASSISTANT_CONTEXT_BOUNDARY_END;
                 if (persistTimerRef.current) {
                     clearTimeout(persistTimerRef.current);
                     persistTimerRef.current = null;
                 }
+                latestMessagesRef.current = resetMessages;
                 lastPersistedPayloadRef.current = null;
+                contextBoundaryMessageIDRef.current = nextBoundary;
+                persistContextBoundaryMessageID(nextBoundary);
                 localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
                 progressTailRef.current = null;
                 setProgressMessages([]);
+                setMessages(resetMessages);
+            } else {
+                setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
+                if (response.clear_ui) {
+                    // Backend reset its working context. Keep the visible chat intact,
+                    // but start future client-side context from this turn.
+                    contextBoundaryMessageIDRef.current = userMsg.id;
+                    persistContextBoundaryMessageID(userMsg.id);
+                    progressTailRef.current = null;
+                    setProgressMessages([]);
+                }
             }
             if (response.deferred) {
                 setPendingTaskState(await resolvePendingAITask(effectiveRequestId, response) ?? { requestId: effectiveRequestId, jobID: response.job_id || undefined, runID: response.run_id || undefined });
@@ -2109,6 +2168,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         latestMessagesRef.current = [];
         lastPersistedPayloadRef.current = null;
         persistOnUnmountRef.current = false;
+        foregroundSendTailRef.current = Promise.resolve(true);
+        contextBoundaryMessageIDRef.current = null;
+        persistContextBoundaryMessageID(null);
         localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
         setMessages([]);
         setDraftInputValue("");
@@ -2255,6 +2317,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         if (canceledRound.assistantMessageId) {
             setMessages(prev => removeRoundMessage(prev, canceledRound.assistantMessageId, canceledRound.requestId));
         }
+        foregroundSendTailRef.current = Promise.resolve(true);
         resetActiveRound(nextGeneration);
         setPendingTaskState(null);
         try {

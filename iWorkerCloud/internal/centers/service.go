@@ -37,11 +37,17 @@ type RegisterRequest struct {
 }
 
 type HeartbeatRequest struct {
-	Secret           string                  `json:"secret"`
-	RuntimeType      string                  `json:"runtime_type"`
-	ProductKind      string                  `json:"product_kind"`
-	AdminConsole     string                  `json:"admin_console"`
-	IWorkerReadiness *IWorkerReadinessReport `json:"iworker_readiness,omitempty"`
+	Secret              string                   `json:"secret"`
+	RuntimeType         string                   `json:"runtime_type"`
+	ProductKind         string                   `json:"product_kind"`
+	AdminConsole        string                   `json:"admin_console"`
+	ProviderCount       int                      `json:"provider_count,omitempty"`
+	RuntimeProviderMode string                   `json:"runtime_provider_mode,omitempty"`
+	ComputeSource       string                   `json:"compute_source,omitempty"`
+	ComputePermission   bool                     `json:"compute_permission,omitempty"`
+	CloudProviderCount  int                      `json:"cloud_provider_count,omitempty"`
+	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status,omitempty"`
+	IWorkerReadiness    *IWorkerReadinessReport  `json:"iworker_readiness,omitempty"`
 }
 
 type IWorkerReadinessReport struct {
@@ -83,7 +89,17 @@ type AuthItem struct {
 }
 
 func (r HeartbeatRequest) serviceStatus() centerServiceStatus {
-	return centerServiceStatus{RuntimeType: r.RuntimeType, ProductKind: r.ProductKind, AdminConsole: r.AdminConsole}
+	return centerServiceStatus{
+		RuntimeType:         r.RuntimeType,
+		ProductKind:         r.ProductKind,
+		AdminConsole:        r.AdminConsole,
+		ProviderCount:       r.ProviderCount,
+		RuntimeProviderMode: r.RuntimeProviderMode,
+		ComputeSource:       r.ComputeSource,
+		ComputePermission:   r.ComputePermission,
+		CloudProviderCount:  r.CloudProviderCount,
+		ComputeSyncStatus:   r.ComputeSyncStatus,
+	}
 }
 
 type RegisterResult struct {
@@ -94,18 +110,21 @@ type RegisterResult struct {
 }
 
 type ManagementSummary struct {
-	TotalCenters           int `json:"total_centers"`
-	PendingCenters         int `json:"pending_centers"`
-	ActiveLicenses         int `json:"active_licenses"`
-	ReadyCenters           int `json:"ready_centers"`
-	NeedsSetup             int `json:"needs_setup"`
-	ProbeFailures          int `json:"probe_failures"`
-	UnlicensedCenters      int `json:"unlicensed_centers"`
-	WorkloadAgentInstances int `json:"workload_agent_instances"`
-	WorkloadActiveTasks    int `json:"workload_active_tasks"`
-	WorkloadCompletedTasks int `json:"workload_completed_tasks"`
-	WorkloadReviewTasks    int `json:"workload_review_tasks"`
-	WorkloadBlockedTasks   int `json:"workload_blocked_tasks"`
+	TotalCenters             int `json:"total_centers"`
+	PendingCenters           int `json:"pending_centers"`
+	ActiveLicenses           int `json:"active_licenses"`
+	ReadyCenters             int `json:"ready_centers"`
+	NeedsSetup               int `json:"needs_setup"`
+	ProbeFailures            int `json:"probe_failures"`
+	UnlicensedCenters        int `json:"unlicensed_centers"`
+	WorkloadAgentInstances   int `json:"workload_agent_instances"`
+	WorkloadActiveTasks      int `json:"workload_active_tasks"`
+	WorkloadCompletedTasks   int `json:"workload_completed_tasks"`
+	WorkloadReviewTasks      int `json:"workload_review_tasks"`
+	WorkloadBlockedTasks     int `json:"workload_blocked_tasks"`
+	RuntimeFallbackCenters   int `json:"runtime_fallback_centers"`
+	RuntimeNonBlockingIssues int `json:"runtime_non_blocking_issues"`
+	RuntimeBlockingIssues    int `json:"runtime_blocking_issues"`
 }
 
 type CenterManagement struct {
@@ -120,6 +139,16 @@ type CenterManagement struct {
 	IWorkerOperationalReady bool                    `json:"iworker_operational_ready"`
 	IWorkerReadinessStatus  string                  `json:"iworker_readiness_status,omitempty"`
 	IWorkerReadiness        *IWorkerReadinessReport `json:"iworker_readiness,omitempty"`
+	RuntimeStatus           *CenterRuntimeStatus    `json:"runtime_status,omitempty"`
+}
+
+type CenterRuntimeStatus struct {
+	ProviderCount       int                      `json:"provider_count,omitempty"`
+	RuntimeProviderMode string                   `json:"runtime_provider_mode,omitempty"`
+	ComputeSource       string                   `json:"compute_source,omitempty"`
+	ComputePermission   bool                     `json:"compute_permission,omitempty"`
+	CloudProviderCount  int                      `json:"cloud_provider_count,omitempty"`
+	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status,omitempty"`
 }
 
 type RecommendedAction struct {
@@ -262,7 +291,44 @@ func (s *Service) Heartbeat(ctx context.Context, centerID string, req HeartbeatR
 	}
 	c.LastSyncStatus = "heartbeat_ok"
 	applyIWorkerReadiness(c, req.IWorkerReadiness)
+	applyRuntimeStatus(c, req.runtimeStatus())
 	return s.centers.UpdateHeartbeat(ctx, c)
+}
+
+func (r HeartbeatRequest) runtimeStatus() *CenterRuntimeStatus {
+	if strings.TrimSpace(r.RuntimeProviderMode) == "" && strings.TrimSpace(r.ComputeSource) == "" && r.ProviderCount == 0 && r.CloudProviderCount == 0 && r.ComputeSyncStatus == nil {
+		return nil
+	}
+	return &CenterRuntimeStatus{
+		ProviderCount:       r.ProviderCount,
+		RuntimeProviderMode: strings.TrimSpace(r.RuntimeProviderMode),
+		ComputeSource:       strings.TrimSpace(r.ComputeSource),
+		ComputePermission:   r.ComputePermission,
+		CloudProviderCount:  r.CloudProviderCount,
+		ComputeSyncStatus:   r.ComputeSyncStatus,
+	}
+}
+func (r *ProbeResult) runtimeStatus() *CenterRuntimeStatus {
+	if r == nil || (strings.TrimSpace(r.RuntimeProviderMode) == "" && strings.TrimSpace(r.ComputeSource) == "" && r.ProviderCount == 0 && r.CloudProviderCount == 0 && r.ComputeSyncStatus == nil) {
+		return nil
+	}
+	return &CenterRuntimeStatus{
+		ProviderCount:       r.ProviderCount,
+		RuntimeProviderMode: strings.TrimSpace(r.RuntimeProviderMode),
+		ComputeSource:       strings.TrimSpace(r.ComputeSource),
+		ComputePermission:   r.ComputePermission,
+		CloudProviderCount:  r.CloudProviderCount,
+		ComputeSyncStatus:   r.ComputeSyncStatus,
+	}
+}
+
+func applyRuntimeStatus(center *store.Center, runtime *CenterRuntimeStatus) {
+	if center == nil || runtime == nil {
+		return
+	}
+	if raw, err := json.Marshal(runtime); err == nil {
+		center.RuntimeStatusJSON = string(raw)
+	}
 }
 
 func applyIWorkerReadiness(center *store.Center, readiness *IWorkerReadinessReport) {
@@ -360,6 +426,18 @@ func (s *Service) Management(ctx context.Context) (*ManagementReport, error) {
 		if containsIssue(managementItem.Issues, "no_active_license") {
 			report.Summary.UnlicensedCenters++
 		}
+		if managementItem.RuntimeStatus != nil {
+			if managementItem.RuntimeStatus.RuntimeProviderMode == "local_settings_fallback" || (managementItem.RuntimeStatus.ComputeSyncStatus != nil && managementItem.RuntimeStatus.ComputeSyncStatus.RuntimeImpact == "local_settings_fallback") {
+				report.Summary.RuntimeFallbackCenters++
+			}
+			if managementItem.RuntimeStatus.ComputeSyncStatus != nil && managementItem.RuntimeStatus.ComputeSyncStatus.Status == "failure" {
+				if managementItem.RuntimeStatus.ComputeSyncStatus.NonBlocking {
+					report.Summary.RuntimeNonBlockingIssues++
+				} else {
+					report.Summary.RuntimeBlockingIssues++
+				}
+			}
+		}
 		if managementItem.IWorkerReadiness != nil && managementItem.IWorkerReadiness.WorkloadSummary != nil {
 			workload := managementItem.IWorkerReadiness.WorkloadSummary
 			report.Summary.WorkloadAgentInstances += workload.AgentInstanceCount
@@ -408,6 +486,8 @@ type centerComputeSyncStatus struct {
 	Status        string `json:"status"`
 	Error         string `json:"error,omitempty"`
 	ProviderCount int    `json:"provider_count"`
+	NonBlocking   bool   `json:"non_blocking,omitempty"`
+	RuntimeImpact string `json:"runtime_impact,omitempty"`
 }
 
 type centerServiceStatus struct {
@@ -500,6 +580,7 @@ func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *st
 	} else if result.OK {
 		center.LastSyncStatus = "probe_ok"
 		applyIWorkerReadiness(center, result.IWorkerReadiness)
+		applyRuntimeStatus(center, result.runtimeStatus())
 	} else if result.StatusCode == 0 && result.BaseURL != "" {
 		center.LastSyncStatus = "probe_failed"
 	} else if result.RuntimeType != "" || result.ProductKind != "" || result.AdminConsole != "" {
@@ -628,7 +709,20 @@ func buildCenterManagement(center *store.Center, activeLicense *store.License) C
 		IWorkerOperationalReady: center.IWorkerReady,
 		IWorkerReadinessStatus:  center.IWorkerReadinessStatus,
 		IWorkerReadiness:        parseIWorkerReadiness(center.IWorkerReadinessJSON),
+		RuntimeStatus:           parseRuntimeStatus(center.RuntimeStatusJSON),
 	}
+}
+
+func parseRuntimeStatus(raw string) *CenterRuntimeStatus {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var runtime CenterRuntimeStatus
+	if err := json.Unmarshal([]byte(raw), &runtime); err != nil {
+		return nil
+	}
+	return &runtime
 }
 
 func parseIWorkerReadiness(raw string) *IWorkerReadinessReport {

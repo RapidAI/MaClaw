@@ -375,7 +375,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 
 	// --- TTS voice synthesis ---
 	reg("tts", "将文本转换为语音消息发送给用户。IM 通道以语音气泡形式发送，桌面面板播放语音。",
-		ToolCategoryBuiltin, []string{"tts", "voice", "speech", "语音", "朗读"},
+		ToolCategoryBuiltin, []string{"tts", "voice", "speech", "语音"},
 		map[string]interface{}{
 			"text": map[string]string{"type": "string", "description": "要转换为语音的文本内容（中文，最长 300 字）"},
 		}, []string{"text"},

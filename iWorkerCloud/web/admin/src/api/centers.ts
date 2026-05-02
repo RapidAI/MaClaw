@@ -48,9 +48,22 @@ export interface CenterComputeSyncStatus {
   status: 'success' | 'failure' | 'pending' | 'waiting_for_credentials';
   error?: string;
   provider_count: number;
+  non_blocking?: boolean;
+  runtime_impact?: string;
 }
 
-export interface CenterProbeResult {
+export interface CenterRuntimeStatus {
+  ok?: boolean;
+  message?: string;
+  provider_count?: number;
+  runtime_provider_mode?: 'settings' | 'cloud_sync' | 'local_self_managed' | 'local_settings_fallback';
+  compute_source?: 'cloud' | 'local';
+  compute_permission?: boolean;
+  cloud_provider_count?: number;
+  compute_sync_status?: CenterComputeSyncStatus;
+}
+
+export interface CenterProbeResult extends CenterRuntimeStatus {
   ok: boolean;
   status_code: number;
   message: string;
@@ -58,12 +71,6 @@ export interface CenterProbeResult {
   runtime_type?: string;
   product_kind?: string;
   admin_console?: string;
-  provider_count?: number;
-  runtime_provider_mode?: 'settings' | 'cloud_sync' | 'local_self_managed';
-  compute_source?: 'cloud' | 'local';
-  compute_permission?: boolean;
-  cloud_provider_count?: number;
-  compute_sync_status?: CenterComputeSyncStatus;
   iworker_readiness?: CenterIWorkerReadiness;
 }
 
@@ -92,6 +99,9 @@ export interface ManagementSummary {
   workload_completed_tasks?: number;
   workload_review_tasks?: number;
   workload_blocked_tasks?: number;
+  runtime_fallback_centers?: number;
+  runtime_non_blocking_issues?: number;
+  runtime_blocking_issues?: number;
 }
 
 export interface CenterManagement {
@@ -105,6 +115,7 @@ export interface CenterManagement {
   iworker_operational_ready?: boolean;
   iworker_readiness_status?: string;
   iworker_readiness?: CenterIWorkerReadiness;
+  runtime_status?: CenterRuntimeStatus;
 }
 
 export interface RecommendedAction {

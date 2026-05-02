@@ -6,7 +6,7 @@ package memory
 //
 // This is Phase B of the entity-relation improvement plan:
 // - Phase A (done): entity triples stored as Entry.Entities tags
-// - Phase B (this file): entity name → entry ID index for fast lookup
+// - Phase B (this file): entity name -> entry ID index for fast lookup
 // - Phase C (future): full entity-relation graph with typed edges
 
 import (
@@ -19,8 +19,8 @@ import (
 // Thread-safe for concurrent read/write.
 type EntityIndex struct {
 	mu      sync.RWMutex
-	byName  map[string][]string // normalized entity name → []entryID
-	byEntry map[string][]string // entryID → []entity names
+	byName  map[string][]string // normalized entity name -> []entryID
+	byEntry map[string][]string // entryID -> []entity names
 }
 
 // NewEntityIndex creates an empty EntityIndex.
@@ -31,35 +31,40 @@ func NewEntityIndex() *EntityIndex {
 	}
 }
 
-// IndexEntry adds an entry's entities to the index.
+// IndexEntry adds an active entry's entities to the index.
 func (ei *EntityIndex) IndexEntry(e *Entry) {
-	if e == nil || len(e.Entities) == 0 {
+	if e == nil || e.ID == "" {
 		return
 	}
 
 	ei.mu.Lock()
 	defer ei.mu.Unlock()
 
-	// Remove old mappings for this entry.
+	// Remove old mappings first so status changes and entity deletions cannot
+	// leave stale entity-to-entry links behind.
 	if oldNames, ok := ei.byEntry[e.ID]; ok {
 		for _, name := range oldNames {
 			ei.removeFromSlice(name, e.ID)
 		}
+		delete(ei.byEntry, e.ID)
+	}
+	if !e.IsActive() || len(e.Entities) == 0 {
+		return
 	}
 
 	// Add new mappings.
 	var names []string
 	for _, ent := range e.Entities {
-		if strings.HasPrefix(ent, "entity:") {
-			name := normalizeEntityName(strings.TrimPrefix(ent, "entity:"))
-			if name == "" {
-				continue
-			}
-			names = append(names, name)
-			ei.byName[name] = appendUnique(ei.byName[name], e.ID)
+		name, ok := semanticEntityTokenName(ent)
+		if !ok {
+			continue
 		}
+		names = append(names, name)
+		ei.byName[name] = appendUnique(ei.byName[name], e.ID)
 	}
-	ei.byEntry[e.ID] = names
+	if len(names) > 0 {
+		ei.byEntry[e.ID] = names
+	}
 }
 
 // RemoveEntry removes an entry from the index.
@@ -89,7 +94,7 @@ func (ei *EntityIndex) FindByEntity(entityName string) []string {
 
 // FindRelatedEntities returns entities that co-occur with the given entity
 // in the same entries. This enables simple multi-hop reasoning:
-// "Alice" → entries mentioning Alice → other entities in those entries.
+// "Alice" -> entries mentioning Alice -> other entities in those entries.
 func (ei *EntityIndex) FindRelatedEntities(entityName string) []string {
 	ei.mu.RLock()
 	defer ei.mu.RUnlock()
@@ -101,7 +106,7 @@ func (ei *EntityIndex) FindRelatedEntities(entityName string) []string {
 	}
 
 	// Collect all entities from entries that mention the target entity.
-	related := make(map[string]int) // entity name → co-occurrence count
+	related := make(map[string]int) // entity name -> co-occurrence count
 	for _, eid := range entryIDs {
 		for _, ename := range ei.byEntry[eid] {
 			if ename != name {
@@ -140,21 +145,21 @@ func (ei *EntityIndex) Rebuild(entries []Entry) {
 
 	for i := range entries {
 		e := &entries[i]
-		if len(e.Entities) == 0 {
+		if !e.IsActive() || len(e.Entities) == 0 {
 			continue
 		}
 		var names []string
 		for _, ent := range e.Entities {
-			if strings.HasPrefix(ent, "entity:") {
-				name := normalizeEntityName(strings.TrimPrefix(ent, "entity:"))
-				if name == "" {
-					continue
-				}
-				names = append(names, name)
-				ei.byName[name] = appendUnique(ei.byName[name], e.ID)
+			name, ok := semanticEntityTokenName(ent)
+			if !ok {
+				continue
 			}
+			names = append(names, name)
+			ei.byName[name] = appendUnique(ei.byName[name], e.ID)
 		}
-		ei.byEntry[e.ID] = names
+		if len(names) > 0 {
+			ei.byEntry[e.ID] = names
+		}
 	}
 }
 

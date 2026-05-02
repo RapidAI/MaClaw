@@ -200,7 +200,7 @@ func (oe *OnlineExtractor) extractFacts(
 For each fact, provide:
 1. "content": A concise, self-contained statement (1-2 sentences)
 2. "category": One of "user_fact", "project_knowledge", "preference", "instruction"
-3. "entities": Entity-relation triples in the format ["entity:Name", "relation:relationship", "entity:Name2"]. Extract key entities (people, places, tools, projects) and their relationships.
+3. "entities": Entity-relation triples in the format ["entity:Name", "relation:relationship", "entity:Name2"]. Extract key entities (people, places, tools, projects) and their relationships. Use only canonical relationship names from this schema: ` + semanticRelationSchemaPrompt() + `
 4. "valid_at": ISO 8601 datetime if the fact has a specific start time (use the reference timestamp to resolve relative dates like "last week", "yesterday"). Leave empty if not applicable.
 5. "invalid_at": ISO 8601 datetime if the fact has a known end time. Leave empty if still true or unknown.
 
@@ -245,10 +245,10 @@ Reference timestamp: ` + refTimeStr
 
 // classifyAndApply determines the correct operation for a fact and executes it.
 // Steps:
-//   1. Find top-5 similar existing memories (vector + BM25)
-//   2. If no similar memories -> ADD
-//   3. If similar memories exist -> LLM classifies ADD/UPDATE/DELETE/NOOP
-//   4. Execute the operation
+//  1. Find top-5 similar existing memories (vector + BM25)
+//  2. If no similar memories -> ADD
+//  3. If similar memories exist -> LLM classifies ADD/UPDATE/DELETE/NOOP
+//  4. Execute the operation
 //
 // All mutations go through Store's public API (Save/Update/Delete) to ensure
 // all indices (BM25, vector, graph, entity, project) are updated consistently.
@@ -353,7 +353,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 					Content:  content,
 					Category: cat,
 					Tags:     tags,
-					Entities:  fact.ParsedEntities(),
+					Entities: fact.ParsedEntities(),
 					ValidAt:  validAt,
 					OwnerID:  ownerID,
 				}
@@ -362,21 +362,27 @@ func (oe *OnlineExtractor) classifyAndApply(
 			}
 
 			// Update entities on the target entry (Store.Update doesn't handle Entities).
-			if parsedEnts := fact.ParsedEntities(); len(parsedEnts) > 0 {
+			if parsedEnts := fact.ParsedEntities(); len(parsedEnts) > 0 || validAt != nil {
+				changed := false
 				oe.store.mu.Lock()
 				for i := range oe.store.entries {
 					if oe.store.entries[i].ID == classified.TargetID {
-						oe.store.entries[i].Entities = mergeStringSlice(oe.store.entries[i].Entities, parsedEnts)
+						if len(parsedEnts) > 0 {
+							oe.store.entries[i].Entities = mergeStringSlice(oe.store.entries[i].Entities, parsedEnts)
+						}
 						if validAt != nil {
 							oe.store.entries[i].ValidAt = validAt
 						}
-						if oe.store.entityIndex != nil {
-							oe.store.entityIndex.IndexEntry(&oe.store.entries[i])
-						}
+						oe.store.rebuildDerivedIndexesLocked(false)
+						oe.store.dirty = true
+						changed = true
 						break
 					}
 				}
 				oe.store.mu.Unlock()
+				if changed {
+					oe.store.signalSave()
+				}
 			}
 			return OpUpdate, nil
 		}
@@ -385,7 +391,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 			Content:  content,
 			Category: cat,
 			Tags:     tags,
-			Entities:  fact.ParsedEntities(),
+			Entities: fact.ParsedEntities(),
 			ValidAt:  validAt,
 			OwnerID:  ownerID,
 		}
@@ -399,19 +405,11 @@ func (oe *OnlineExtractor) classifyAndApply(
 			// hard-deleting. This preserves history for temporal reasoning.
 			now := time.Now()
 			oe.store.mu.Lock()
-			for i := range oe.store.entries {
-				if oe.store.entries[i].ID == classified.TargetID {
-					oe.store.entries[i].Status = StatusSuperseded
-					oe.store.entries[i].InvalidAt = &now
-					oe.store.entries[i].Stale = true
-					// Update BM25 so superseded entries rank lower in recall.
-					oe.store.bm25.updateEntry(oe.store.entries[i])
-					oe.store.dirty = true
-					break
-				}
-			}
+			changed := oe.store.supersedeEntryLocked(classified.TargetID, now)
 			oe.store.mu.Unlock()
-			oe.store.signalSave()
+			if changed {
+				oe.store.signalSave()
+			}
 
 			// Also ADD the new fact (the contradicting information).
 			entry := Entry{
@@ -623,11 +621,8 @@ func buildFactTags(fact ExtractedFact) []string {
 	tags := []string{"online_extracted"}
 	// Add entity names as tags (strip "entity:" prefix for BM25 matching).
 	for _, e := range fact.ParsedEntities() {
-		if strings.HasPrefix(e, "entity:") {
-			name := strings.TrimPrefix(e, "entity:")
-			if name != "" {
-				tags = append(tags, name)
-			}
+		if name, ok := semanticEntityTokenName(e); ok {
+			tags = append(tags, name)
 		}
 	}
 	return tags

@@ -10,6 +10,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/agentruntime"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/goalwatch"
+	centercompute "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/compute"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/db"
 )
 
@@ -45,6 +46,34 @@ func TestRuntimeStatusSnapshotIncludesProviderConfigMetadata(t *testing.T) {
 	}
 	if status.ProviderCount != 2 {
 		t.Fatalf("ProviderCount = %d, want 2", status.ProviderCount)
+	}
+}
+
+func TestRuntimeStatusSnapshotReportsLocalFallbackWhenCloudUnavailable(t *testing.T) {
+	center := newReadinessTestCenter(t)
+	syncMgr := centercompute.NewSyncManager("http://127.0.0.1:1", "center-1", "secret")
+	sourceMgr := centercompute.NewSourceManager(syncMgr)
+	sourceMgr.SetFallbackProvidersResolver(func() []centercompute.ComputeProvider {
+		return []centercompute.ComputeProvider{{ID: "local-1", Name: "Local Backup", BaseURL: "https://local.example/v1", Protocol: "openai", Model: "gpt-local", Enabled: true}}
+	})
+	center.ComputeSyncManager = syncMgr
+	center.ComputeSourceManager = sourceMgr
+
+	if err := syncMgr.SyncNow(); err == nil {
+		t.Fatal("SyncNow should fail for unreachable cloud")
+	}
+	status := center.RuntimeStatusSnapshot()
+	if status.ComputeSource != "cloud" {
+		t.Fatalf("ComputeSource = %q, want configured cloud", status.ComputeSource)
+	}
+	if status.RuntimeProviderMode != "local_settings_fallback" {
+		t.Fatalf("RuntimeProviderMode = %q, want local_settings_fallback", status.RuntimeProviderMode)
+	}
+	if status.ProviderCount != 1 || status.CloudProviderCount != 0 {
+		t.Fatalf("provider counts = provider:%d cloud:%d, want 1/0", status.ProviderCount, status.CloudProviderCount)
+	}
+	if status.ComputeSyncStatus == nil || status.ComputeSyncStatus.Status != "failure" || !status.ComputeSyncStatus.NonBlocking {
+		t.Fatalf("ComputeSyncStatus = %+v, want non-blocking failure", status.ComputeSyncStatus)
 	}
 }
 

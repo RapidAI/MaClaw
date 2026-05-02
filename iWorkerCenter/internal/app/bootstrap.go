@@ -213,6 +213,12 @@ func Bootstrap() (*Center, error) {
 	// --- wire compute module ---
 	computeSyncMgr, computeSourceMgr, _, computeHandler := wireCompute(cloudCfg, tenantSvc)
 
+	if cloudHeartbeatMonitor != nil && computeSyncMgr != nil {
+		computeSyncMgr.SetStatusObserver(func(compute.ComputeSyncStatus) {
+			cloudHeartbeatMonitor.TriggerNow()
+		})
+	}
+
 	// Start compute sync background loop (only if cloud URL is configured)
 	if computeSyncMgr != nil && computeSyncMgr.IsConfigured() {
 		computeSyncMgr.Start()
@@ -223,8 +229,24 @@ func Bootstrap() (*Center, error) {
 
 	// health
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		snapshotCenter := &Center{
+			DB:                    provider,
+			Mux:                   mux,
+			Roles:                 rSvc,
+			Colleagues:            colSvc,
+			TenantService:         tenantSvc,
+			WorkerMemory:          workerMemoryStore,
+			A2A:                   a2aSvc,
+			GoalWatch:             goalWatchSvc,
+			AgentRuntime:          agentRuntimeSvc,
+			GoalMonitor:           goalMonitor,
+			SkillEvolutionMonitor: skillEvolutionMonitor,
+			CloudHeartbeatMonitor: cloudHeartbeatMonitor,
+			ComputeSyncManager:    computeSyncMgr,
+			ComputeSourceManager:  computeSourceMgr,
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode((&Center{DB: provider, Mux: mux, Roles: rSvc, Colleagues: colSvc, TenantService: tenantSvc, WorkerMemory: workerMemoryStore, A2A: a2aSvc, GoalWatch: goalWatchSvc, AgentRuntime: agentRuntimeSvc, GoalMonitor: goalMonitor, SkillEvolutionMonitor: skillEvolutionMonitor, CloudHeartbeatMonitor: cloudHeartbeatMonitor}).RuntimeStatusSnapshot())
+		_ = json.NewEncoder(w).Encode(snapshotCenter.RuntimeStatusSnapshot())
 	})
 	mux.HandleFunc("/client/center/readiness", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -307,6 +329,9 @@ func Bootstrap() (*Center, error) {
 	if cloudHeartbeatMonitor != nil {
 		cloudHeartbeatMonitor.SetReadinessResolver(func(context.Context) *tenant.CloudIWorkerReadiness {
 			return center.CloudIWorkerReadinessSnapshot()
+		})
+		cloudHeartbeatMonitor.SetRuntimeResolver(func(context.Context) *tenant.CloudCenterRuntime {
+			return center.CloudRuntimeStatusSnapshot()
 		})
 		agentRuntimeHandler.SetHeartbeatObserver(func() {
 			cloudHeartbeatMonitor.TriggerNow()

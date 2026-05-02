@@ -215,6 +215,9 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	// versions may reference scripts in the old directory structure.
 	migrateLegacyCceasyPaths(target)
 
+	// Normalize community/imported skill shapes before pre-checks and execution.
+	cskill.NormalizeSkillForRunner(target)
+
 	// ── Unified requirement pre-check ──
 	// ExtractRequirements bridges the old per-field declarations to the unified
 	// Requirement model. CheckContext carries caller-specific information
@@ -1350,11 +1353,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			if resolvedStep.Params == nil {
 				resolvedStep.Params = map[string]interface{}{}
 			}
-			envList := make([]interface{}, len(skill.RequiredEnv))
-			for idx, e := range skill.RequiredEnv {
-				envList[idx] = e
-			}
-			resolvedStep.Params["required_env"] = envList
+			mergeRequiredEnvParam(resolvedStep.Params, skill.RequiredEnv)
 		}
 		// Propagate caller-supplied extra env vars to subprocess steps.
 		// For bash steps, inject via params["extra_env"] (read by runBashStepWithContextFull).
@@ -1364,11 +1363,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			if resolvedStep.Params == nil {
 				resolvedStep.Params = map[string]interface{}{}
 			}
-			extra := make(map[string]interface{}, len(run.extraEnv))
-			for k, v := range run.extraEnv {
-				extra[k] = v
-			}
-			resolvedStep.Params["extra_env"] = extra
+			mergeExtraEnvParam(resolvedStep.Params, run.extraEnv)
 		}
 		// For non-bash steps (craft_tool, call_mcp_tool, etc.), use os.Setenv
 		// so that any subprocess spawned during execution inherits the env vars.
@@ -1475,6 +1470,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr error) {
 	shouldEmit := false
 	var updatedEntry *corelib.NLSkillEntry
+	successfulSkillName := ""
 
 	r.executor.mu.Lock()
 	skills := r.executor.loadSkills()
@@ -1485,6 +1481,7 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 			if execErr == nil {
 				skills[i].SuccessCount++
 				skills[i].LastError = ""
+				successfulSkillName = skills[i].Name
 				// Skill succeeded after a previous repair — the fix worked.
 				if skills[i].RepairAttemptCount > 0 {
 					cskill.ResetRepairCount(&skills[i])
@@ -1518,6 +1515,19 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 	// Notify frontend to refresh skill list with updated stats (outside lock).
 	if shouldEmit && r.executor.app != nil {
 		r.executor.app.emitEvent("skill:usage_updated")
+	}
+
+	// A successful verified run is runtime proof for previously blocked uploads.
+	if successfulSkillName != "" && r.executor.app != nil {
+		go func(skillName string) {
+			r.executor.app.ensureSkillLifecycleManager()
+			if r.executor.app.skillLifecycle == nil {
+				return
+			}
+			if err := r.executor.app.skillLifecycle.RetryBlockedAndProcess(context.Background(), skillName, 1); err != nil {
+				log.Printf("[auto-upload] blocked upload reevaluation failed for %s: %v", skillName, err)
+			}
+		}(successfulSkillName)
 	}
 
 	// Trigger async self-repair for failed skills (outside lock, non-blocking).
@@ -1585,14 +1595,30 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 	// Store repair notification for LLM context injection.
 	r.recentRepairs.Store(entry.Name, result.Explanation)
 
-	// Notify frontend.
+	// Notify frontend and re-check any quality-blocked upload for this skill.
 	if r.executor.app != nil {
 		r.executor.app.emitEvent("skill:repaired")
+		go func(skillName string) {
+			r.executor.app.ensureSkillLifecycleManager()
+			if r.executor.app.skillLifecycle == nil {
+				return
+			}
+			if err := r.executor.app.skillLifecycle.RetryBlockedAndProcess(context.Background(), skillName, 1); err != nil {
+				log.Printf("[skill-repair-gui] blocked upload reevaluation failed for %s: %v", skillName, err)
+			}
+		}(entry.Name)
 	}
 }
 
-// persistRepairResult writes the repaired skill entry back to the config.
+// persistRepairResult writes the repaired skill entry back to the config and,
+// for file-backed skills, to the authoritative skill.yaml definition.
 func (r *SkillRunner) persistRepairResult(entry *corelib.NLSkillEntry) {
+	if strings.TrimSpace(entry.SkillDir) != "" {
+		if err := writeSkillYAMLForEntry(entry.SkillDir, entry); err != nil {
+			log.Printf("[skill-repair-gui] persist repaired skill.yaml for %q failed: %v", entry.Name, err)
+		}
+	}
+
 	r.executor.mu.Lock()
 	defer r.executor.mu.Unlock()
 
@@ -1778,16 +1804,21 @@ func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) 
 	}
 
 	localHash := skillDirHash(skill.SkillDir)
-	r.uploadTrigger.RecordExecution(skill.Name, EvaluateSkillExecution(result), localHash)
-	if !r.uploadTrigger.ShouldUpload(skill.Name) {
+	score := EvaluateSkillExecution(result)
+	r.uploadTrigger.RecordExecution(skill.Name, score, localHash)
+	if status != "success" || hasErr || score < 1 {
 		return
 	}
 
-	if _, err := r.executor.app.UploadNLSkillToMarket(skill.Name); err != nil {
-		log.Printf("[auto-upload] upload failed for %s: %v", skill.Name, err)
+	r.executor.app.ensureSkillLifecycleManager()
+	if r.executor.app.skillLifecycle == nil {
+		log.Printf("[auto-upload] lifecycle manager unavailable for %s", skill.Name)
 		return
 	}
-	r.uploadTrigger.MarkUploadedHash(skill.Name, localHash)
+	if _, err := r.executor.app.skillLifecycle.EnqueueUpload(context.Background(), skill.Name, skill.SkillDir, "auto_upload", true, true); err != nil {
+		log.Printf("[auto-upload] enqueue failed for %s: %v", skill.Name, err)
+		return
+	}
 }
 
 // skillDirHash 计算 skill 目录内容的简单 hash（用于变更检测）。
@@ -1795,6 +1826,10 @@ func skillDirHash(dir string) string {
 	h := sha256.New()
 	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
+			return nil
+		}
+		base := filepath.Base(path)
+		if strings.HasSuffix(base, ".bak") || base == "upload_status.json" || base == "quality_status.json" || base == "skill_package_manifest.json" {
 			return nil
 		}
 		rel, _ := filepath.Rel(dir, path)
@@ -1946,6 +1981,100 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 
 // ── bash step 执行（带 context + skillDir 作为默认 working_dir） ────────
 
+func mergeRequiredEnvParam(params map[string]interface{}, required []string) {
+	if params == nil || len(required) == 0 {
+		return
+	}
+	seen := map[string]struct{}{}
+	var merged []interface{}
+	appendName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		merged = append(merged, name)
+	}
+	switch existing := params["required_env"].(type) {
+	case []interface{}:
+		for _, item := range existing {
+			if name, ok := item.(string); ok {
+				appendName(name)
+			}
+		}
+	case []string:
+		for _, name := range existing {
+			appendName(name)
+		}
+	case string:
+		for _, name := range strings.Split(existing, ",") {
+			appendName(name)
+		}
+	}
+	for _, name := range required {
+		appendName(name)
+	}
+	if len(merged) > 0 {
+		params["required_env"] = merged
+	}
+}
+
+func mergeExtraEnvParam(params map[string]interface{}, extraEnv map[string]string) {
+	if params == nil || len(extraEnv) == 0 {
+		return
+	}
+	merged := map[string]interface{}{}
+	switch existing := params["extra_env"].(type) {
+	case map[string]interface{}:
+		for k, v := range existing {
+			if strings.TrimSpace(k) != "" {
+				merged[k] = v
+			}
+		}
+	case map[string]string:
+		for k, v := range existing {
+			if strings.TrimSpace(k) != "" {
+				merged[k] = v
+			}
+		}
+	}
+	for k, v := range extraEnv {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		if _, exists := merged[k]; !exists {
+			merged[k] = v
+		}
+	}
+	if len(merged) > 0 {
+		params["extra_env"] = merged
+	}
+}
+
+func skillParamSeconds(params map[string]interface{}, key string) (int, bool) {
+	if params == nil {
+		return 0, false
+	}
+	switch v := params[key].(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case string:
+		var parsed float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(v), "%f", &parsed); err == nil {
+			return int(parsed), true
+		}
+	}
+	return 0, false
+}
 func runBashStepWithContext(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App) (string, error) {
 	return runBashStepWithContextFull(ctx, command, params, skillDir, app)
 }
@@ -1957,15 +2086,24 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	command = strings.TrimPrefix(command, "\xef\xbb\xbf")
 
 	timeout := 120 // default 120 seconds per step
-	if t, ok := params["timeout"].(float64); ok && t > 0 {
-		timeout = int(t)
+	if t, ok := skillParamSeconds(params, "timeout"); ok && t > 0 {
+		timeout = t
 		if timeout > 600 {
 			timeout = 600
 		}
 	}
 	// Allow skill-level global_timeout to raise the per-step cap.
-	if gt, ok := params["global_timeout"].(float64); ok && gt > 0 && int(gt) > timeout {
-		timeout = int(gt)
+	if gt, ok := skillParamSeconds(params, "global_timeout"); ok && gt > timeout {
+		timeout = gt
+	}
+
+	// Expand portable home placeholders before Windows shell dispatch.
+	// AutoFixPortability intentionally writes $HOME to keep skill.yaml portable,
+	// but cmd.exe does not expand POSIX-style variables at runtime.
+	if runtime.GOOS == "windows" {
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			command = expandPortableHomeVars(command, home)
+		}
 	}
 
 	// [Fix] On Windows, map `python3` to `python` since Windows Python
@@ -1988,6 +2126,16 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	if runtime.GOOS == "windows" && workDir != "" {
 		workDir = normalizeWindowsShortPathGUI(workDir)
 	}
+	if workDir != "" {
+		if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
+			if skillDir != "" {
+				if skillInfo, skillErr := os.Stat(skillDir); skillErr == nil && skillInfo.IsDir() {
+					log.Printf("[skill-runner] working_dir %q is unavailable; falling back to skill_dir %q", workDir, skillDir)
+					workDir = skillDir
+				}
+			}
+		}
+	}
 
 	stepCtx, stepCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer stepCancel()
@@ -2007,19 +2155,28 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	if runtime.GOOS == "windows" {
 		// On Windows, prefer cmd.exe for direct script execution to avoid
 		// Git Bash subprocess restrictions that can block nested execFileSync.
-		// Only use sh.exe when the command contains shell-specific features
-		// or when the skill explicitly requests bash via preferred_shell.
+		// Explicit preferred_shell metadata wins; otherwise detect bash-only syntax.
+		preferredShell, _ := params["preferred_shell"].(string)
+		preferredShell = strings.ToLower(strings.TrimSpace(preferredShell))
 		useBash := needsBashShell(command)
+		usePowerShell := false
 		shellReason := "default (cmd.exe)"
 		if useBash {
 			shellReason = "detected Unix-specific syntax in command"
 		}
-		if !useBash {
-			// Check if preferred shell is set via skill metadata (passed in params)
-			if pref, _ := params["preferred_shell"].(string); strings.EqualFold(pref, "bash") {
-				useBash = true
-				shellReason = "skill metadata preferred_shell=bash"
-			}
+		switch preferredShell {
+		case "bash", "sh", "zsh":
+			useBash = true
+			usePowerShell = false
+			shellReason = "skill metadata preferred_shell=bash"
+		case "powershell", "pwsh", "ps", "ps1":
+			useBash = false
+			usePowerShell = true
+			shellReason = "skill metadata preferred_shell=powershell"
+		case "cmd", "cmd.exe", "windows", "win_cmd":
+			useBash = false
+			usePowerShell = false
+			shellReason = "skill metadata preferred_shell=cmd"
 		}
 		if useBash {
 			if app != nil {
@@ -2056,6 +2213,29 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 			// Use script file path (convert to forward slashes for bash)
 			shellArgs = []string{filepath.ToSlash(tmpScript)}
 			log.Printf("[skill-runner] bash step: using temp script %s", tmpScript)
+		} else if usePowerShell {
+			if psPath, err := exec.LookPath("pwsh.exe"); err == nil {
+				shellName = psPath
+			} else if psPath, err := exec.LookPath("powershell.exe"); err == nil {
+				shellName = psPath
+			} else {
+				return "", fmt.Errorf("PowerShell not found for skill step execution")
+			}
+			log.Printf("[skill-runner] shell selection: %s -> reason: %s", filepath.Base(shellName), shellReason)
+			scriptFile, err := os.CreateTemp("", "skill-step-*.ps1")
+			if err != nil {
+				return "", fmt.Errorf("create temp script failed: %v", err)
+			}
+			tmpScript = scriptFile.Name()
+			scriptContent := command + "\n"
+			if _, err := scriptFile.WriteString(scriptContent); err != nil {
+				scriptFile.Close()
+				os.Remove(tmpScript)
+				return "", fmt.Errorf("write temp script failed: %v", err)
+			}
+			scriptFile.Close()
+			shellArgs = []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmpScript}
+			log.Printf("[skill-runner] bash step: using temp powershell script %s", tmpScript)
 		} else {
 			// Direct command — use cmd.exe with a temp .cmd script.
 			// We must NOT pass the command as exec.Command args because Go's
@@ -2128,10 +2308,17 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	// Inject caller-supplied extra env vars (from run_skill env parameter).
 	// These take precedence over process-level env vars, allowing the agent
 	// to pass API keys etc. that were set in a previous bash tool call.
-	if extraEnv, ok := params["extra_env"].(map[string]interface{}); ok {
+	switch extraEnv := params["extra_env"].(type) {
+	case map[string]interface{}:
 		for k, v := range extraEnv {
 			if s, ok := v.(string); ok && k != "" {
 				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, s))
+			}
+		}
+	case map[string]string:
+		for k, v := range extraEnv {
+			if k != "" {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 			}
 		}
 	}
@@ -2242,6 +2429,51 @@ func (e *bashStepError) Stderr() string  { return e.stderr }
 // failure patterns. Delegates to the unified error classifier in
 // corelib/skill/error_classifier.go — single source of truth for all
 // error patterns across GUI, TUI, and self-repair.
+func expandPortableHomeVars(command, home string) string {
+	command = strings.TrimPrefix(command, "\xef\xbb\xbf")
+	home = filepath.ToSlash(strings.TrimSpace(home))
+	if command == "" || home == "" {
+		return command
+	}
+	for _, replacement := range []struct {
+		from string
+		to   string
+	}{
+		{from: "${HOME}/", to: home + "/"},
+		{from: "${HOME}\\", to: home + "/"},
+		{from: "${HOME}", to: home},
+	} {
+		command = strings.ReplaceAll(command, replacement.from, replacement.to)
+	}
+	var b strings.Builder
+	for i := 0; i < len(command); {
+		if strings.HasPrefix(command[i:], "$HOME") && isPortableHomeBoundary(command, i+len("$HOME")) {
+			b.WriteString(home)
+			if i+len("$HOME") < len(command) && (command[i+len("$HOME")] == '/' || command[i+len("$HOME")] == '\\') {
+				b.WriteByte('/')
+				i += len("$HOME") + 1
+			} else {
+				i += len("$HOME")
+			}
+			continue
+		}
+		b.WriteByte(command[i])
+		i++
+	}
+	return b.String()
+}
+
+func isPortableHomeBoundary(command string, idx int) bool {
+	if idx >= len(command) {
+		return true
+	}
+	switch command[idx] {
+	case '/', '\\', ' ', '\t', '\r', '\n', '"', '\'', ';', '&', '|', ')', '<', '>':
+		return true
+	default:
+		return false
+	}
+}
 func classifyBashError(errMsg, command string, exitCode int) string {
 	result := cskill.ClassifyStepError(exitCode, "", errMsg, command)
 	return result.UserMessage
@@ -2834,11 +3066,11 @@ func (r *SkillRunner) executePollStep(ctx context.Context, step corelib.NLSkillS
 	}
 
 	interval := 8 * time.Second
-	if v, ok := step.Params["interval_seconds"].(float64); ok && v > 0 {
+	if v, ok := skillParamSeconds(step.Params, "interval_seconds"); ok && v > 0 {
 		interval = time.Duration(v) * time.Second
 	}
 	timeout := 180 * time.Second
-	if v, ok := step.Params["timeout_seconds"].(float64); ok && v > 0 {
+	if v, ok := skillParamSeconds(step.Params, "timeout_seconds"); ok && v > 0 {
 		timeout = time.Duration(v) * time.Second
 	}
 

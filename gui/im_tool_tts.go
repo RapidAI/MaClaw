@@ -16,7 +16,7 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 		return "缺少 text 参数"
 	}
 	if h.app == nil || h.app.ttsManager == nil {
-		return "语音合成不可用（TTS 模型未加载）。请在设置中启用 TTS 并等待模型下载完成。"
+		return "语音合成不可用（TTS 模型未加载）。请在设置中启用 TTS，并等待模型下载完成。"
 	}
 	cfg, err := h.app.LoadConfig()
 	if err != nil || !cfg.TTSEnabled {
@@ -25,19 +25,19 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 
 	ogg, wav, err := tts.SynthesizeVoiceOGG(h.app.ttsManager, text, 300)
 
-	// Desktop panel: emit WAV for frontend playback (reuse the WAV from synthesis).
-	if h.app.ctx != nil && wav != nil {
-		runtime.EventsEmit(h.app.ctx, "tts:audio", base64.StdEncoding.EncodeToString(wav))
+	platform := ""
+	if h.currentLoopCtx != nil {
+		platform = h.currentLoopCtx.Platform
 	}
 
-	if ogg != nil {
-		log.Printf("[tts-tool] OGG Opus: %d bytes", len(ogg))
-		return fmt.Sprintf("[voice_base64|voice.ogg|audio/ogg]%s", base64.StdEncoding.EncodeToString(ogg))
+	// Desktop panel: emit WAV for frontend playback only for non-IM contexts.
+	if shouldEmitDesktopTTSPlayback(platform) && h.app.ctx != nil && wav != nil {
+		runtime.EventsEmit(h.app.ctx, "tts:audio", base64.StdEncoding.EncodeToString(wav))
 	}
-	if wav != nil {
-		// Opus failed, fall back to WAV.
-		log.Printf("[tts-tool] Opus failed (%v), using WAV: %d bytes", err, len(wav))
-		return fmt.Sprintf("[voice_base64|voice.wav|audio/wav]%s", base64.StdEncoding.EncodeToString(wav))
+	voiceData, voiceName, voiceMime := selectTTSVoicePayload(platform, ogg, wav)
+	if voiceData != nil {
+		log.Printf("[tts-tool] voice payload: %s %d bytes", voiceName, len(voiceData))
+		return fmt.Sprintf("[voice_base64|%s|%s]%s", voiceName, voiceMime, base64.StdEncoding.EncodeToString(voiceData))
 	}
 
 	log.Printf("[tts-tool] error: %v", err)

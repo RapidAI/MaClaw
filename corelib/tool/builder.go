@@ -15,15 +15,15 @@ import (
 // filled by the most relevant dynamic tools based on keyword similarity.
 type DynamicToolBuilder struct {
 	registry       *Registry
-	maxDirectTools int             // threshold before filtering kicks in (default 20)
-	maxDynamic     int             // max non-builtin tools when filtering (default 15)
-	bm25Index      *bm25.Index     // cached BM25 index, reused across Build calls
+	maxDirectTools int              // threshold before filtering kicks in (default 20)
+	maxDynamic     int              // max non-builtin tools when filtering (default 15)
+	bm25Index      *bm25.Index      // cached BM25 index, reused across Build calls
 	hybrid         *HybridRetriever // nil when no embedder set
 	enrichStore    *EnrichmentStore
 	tracker        *UsageTracker
-	reranker       Reranker         // nil when reranking is disabled
+	reranker       Reranker // nil when reranking is disabled
 	skillProvider  SkillProvider
-	skillBM25      *bm25.Index      // separate index for skill trigger matching
+	skillBM25      *bm25.Index // separate index for skill trigger matching
 }
 
 // NewDynamicToolBuilder creates a builder backed by the given registry.
@@ -232,7 +232,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		bm25Scores = b.hybrid.FuseScores(userMessage, bm25Scores, embeddingTexts)
 	}
 
-	// Three-signal scoring: retrieval + experience + priority + skill_match.
+	// Multi-signal scoring: retrieval + contextual experience + outcome + priority + skill_match.
 	queryTokens := bm25.Tokenize(userMessage)
 	normScores := minMaxNormalize(bm25Scores)
 
@@ -254,6 +254,10 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		if b.tracker != nil {
 			expScore = b.tracker.ExperienceScore(t.Name, queryTokens)
 		}
+		var outcomeScore float64
+		if b.tracker != nil {
+			outcomeScore = b.tracker.ContextOutcomeScore(t.Name, queryTokens)
+		}
 		priorityBonus := clampFloat(float64(t.Priority)*0.1, 0, 1)
 
 		// Skill match bonus: only applies to manage_skill tool.
@@ -264,9 +268,9 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 
 		var s float64
 		if b.skillProvider != nil && b.tracker != nil {
-			s = 0.5*retrievalScore + 0.25*expScore + 0.15*skillBonus + 0.1*priorityBonus
+			s = 0.45*retrievalScore + 0.20*expScore + 0.15*skillBonus + 0.10*outcomeScore + 0.10*priorityBonus
 		} else if b.tracker != nil {
-			s = 0.6*retrievalScore + 0.3*expScore + 0.1*priorityBonus
+			s = 0.50*retrievalScore + 0.25*expScore + 0.15*outcomeScore + 0.10*priorityBonus
 		} else {
 			s = 0.9*retrievalScore + 0.1*priorityBonus
 		}
@@ -374,41 +378,41 @@ func RegisteredToolToDef(t RegisteredTool) map[string]interface{} {
 
 // GroupKeywords maps user-facing group names (Chinese and English) to tag sets.
 var GroupKeywords = map[string][]string{
-	"数据库":      {"database", "sql", "query", "db"},
-	"database":  {"database", "sql", "query", "db"},
-	"git":       {"git", "vcs", "version"},
-	"版本控制":     {"git", "vcs", "version"},
-	"文件":       {"file", "read", "write", "directory"},
-	"file":      {"file", "read", "write", "directory"},
-	"mcp":       {"mcp"},
-	"skill":     {"skill"},
-	"技能":       {"skill"},
-	"会话":       {"session"},
-	"session":   {"session"},
-	"配置":       {"config", "settings"},
-	"config":    {"config", "settings"},
-	"记忆":       {"memory"},
-	"memory":    {"memory"},
-	"定时":       {"schedule", "task", "cron", "timer"},
-	"schedule":  {"schedule", "task", "cron", "timer"},
-	"网络":       {"network", "agentnet", "p2p", "web", "search", "fetch"},
-	"network":   {"network", "agentnet", "p2p", "web", "search", "fetch"},
-	"搜索":       {"web", "search", "internet", "fetch"},
-	"search":    {"web", "search", "internet", "fetch"},
-	"网页":       {"web", "fetch", "browse", "url"},
-	"web":       {"web", "fetch", "browse", "url", "search"},
-	"浏览器":      {"browser", "web", "automation", "test"},
-	"browser":   {"browser", "web", "automation", "test"},
-	"自动化":      {"browser", "automation", "test"},
+	"数据库":        {"database", "sql", "query", "db"},
+	"database":   {"database", "sql", "query", "db"},
+	"git":        {"git", "vcs", "version"},
+	"版本控制":       {"git", "vcs", "version"},
+	"文件":         {"file", "read", "write", "directory"},
+	"file":       {"file", "read", "write", "directory"},
+	"mcp":        {"mcp"},
+	"skill":      {"skill"},
+	"技能":         {"skill"},
+	"会话":         {"session"},
+	"session":    {"session"},
+	"配置":         {"config", "settings"},
+	"config":     {"config", "settings"},
+	"记忆":         {"memory"},
+	"memory":     {"memory"},
+	"定时":         {"schedule", "task", "cron", "timer"},
+	"schedule":   {"schedule", "task", "cron", "timer"},
+	"网络":         {"network", "agentnet", "p2p", "web", "search", "fetch"},
+	"network":    {"network", "agentnet", "p2p", "web", "search", "fetch"},
+	"搜索":         {"web", "search", "internet", "fetch"},
+	"search":     {"web", "search", "internet", "fetch"},
+	"网页":         {"web", "fetch", "browse", "url"},
+	"web":        {"web", "fetch", "browse", "url", "search"},
+	"浏览器":        {"browser", "web", "automation", "test"},
+	"browser":    {"browser", "web", "automation", "test"},
+	"自动化":        {"browser", "automation", "test"},
 	"automation": {"browser", "automation", "test"},
-	"测试":       {"browser", "automation", "test", "web"},
-	"test":      {"browser", "automation", "test", "web"},
-	"登录":       {"browser", "web", "automation"},
-	"下单":       {"browser", "web", "automation"},
-	"gui":       {"gui", "test", "automation", "desktop"},
-	"桌面":       {"gui", "test", "automation", "desktop"},
-	"录制":       {"gui", "test", "automation", "desktop", "录制"},
-	"desktop":   {"gui", "test", "automation", "desktop"},
+	"测试":         {"browser", "automation", "test", "web"},
+	"test":       {"browser", "automation", "test", "web"},
+	"登录":         {"browser", "web", "automation"},
+	"下单":         {"browser", "web", "automation"},
+	"gui":        {"gui", "test", "automation", "desktop"},
+	"桌面":         {"gui", "test", "automation", "desktop"},
+	"录制":         {"gui", "test", "automation", "desktop", "录制"},
+	"desktop":    {"gui", "test", "automation", "desktop"},
 }
 
 // DetectGroupTags checks if the user message contains any group activation
@@ -425,5 +429,3 @@ func DetectGroupTags(userMessage string) map[string]bool {
 	}
 	return tags
 }
-
-

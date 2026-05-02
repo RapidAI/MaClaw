@@ -550,39 +550,40 @@ func (e *SkillExecutor) AsRegisteredTools() []tool.RegisteredTool {
 	return result
 }
 
-// readSkillBody reads the skill.md content for a skill entry.
-// For file-based skills with a SkillDir, it reads skill.md from that directory.
+// readSkillBody reads the skill.md/SKILL.md content for a skill entry.
+// For file-based skills with a SkillDir, it reads Markdown docs from that directory.
 // For hub/other skills without SkillDir, it checks the primary skills directory.
 // Errors are logged as warnings and do not prevent skill registration.
 func (e *SkillExecutor) readSkillBody(entry corelib.NLSkillEntry) string {
 	// Try SkillDir first (file-based skills).
 	if entry.SkillDir != "" {
-		mdPath := filepath.Join(entry.SkillDir, "skill.md")
-		data, err := os.ReadFile(mdPath)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				log.Printf("[SkillRegister] WARN: cannot read skill.md for %s: %v", entry.Name, err)
-			}
-			return ""
-		}
-		return string(data)
+		return readSkillMarkdownBody(entry.SkillDir, entry.Name)
 	}
 
 	// For hub-installed skills, check the primary skills directory where
-	// extractFiles writes skill.md during installation.
+	// extractFiles writes skill.md/SKILL.md during installation.
 	if entry.Source == "hub" || entry.Source == "agent_skill" {
 		primaryDir, err := skill.PrimarySkillsDir()
 		if err != nil {
 			return ""
 		}
-		mdPath := filepath.Join(primaryDir, entry.Name, "skill.md")
-		data, err := os.ReadFile(mdPath)
-		if err != nil {
-			return ""
-		}
-		return string(data)
+		return readSkillMarkdownBody(filepath.Join(primaryDir, entry.Name), entry.Name)
 	}
 
+	return ""
+}
+
+func readSkillMarkdownBody(skillDir, skillName string) string {
+	for _, name := range []string{"skill.md", "SKILL.md", "README.md"} {
+		mdPath := filepath.Join(skillDir, name)
+		data, err := os.ReadFile(mdPath)
+		if err == nil {
+			return string(data)
+		}
+		if !os.IsNotExist(err) {
+			log.Printf("[SkillRegister] WARN: cannot read %s for %s: %v", name, skillName, err)
+		}
+	}
 	return ""
 }
 
@@ -1521,7 +1522,7 @@ func (a *App) DeleteNLSkill(name string) error {
 }
 
 // ImportNLSkillZip opens a file dialog to select a zip file, validates it as a
-// file-backed skill package using skill.yaml or skill.md, and imports it.
+// file-backed skill package using skill.yaml, skill.yml, or skill.md, and imports it.
 // Returns the imported skill name on success.
 func (a *App) ImportNLSkillZip() (string, error) {
 	a.ensureRemoteInfra()
@@ -1546,7 +1547,7 @@ func (a *App) importNLSkillZipPath(selection string) (string, error) {
 	if name, err := a.importFileBackedSkillZipPath(selection); err == nil {
 		return name, nil
 	}
-	return "", fmt.Errorf("zip 包中未找到可识别的 Skill 定义文件（仅支持 skill.yaml 或 skill.md；旧格式 SKILL.md/_meta.json 需先升级）")
+	return "", fmt.Errorf("zip 包中未找到可识别的 Skill 定义文件（支持 skill.yaml、skill.yml 或 skill.md；旧格式 SKILL.md/_meta.json 需先升级）")
 }
 
 func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
@@ -1633,7 +1634,7 @@ func resolveImportedSkillPackageRoots(sandboxDir string) ([]string, error) {
 		}
 	}
 	if len(roots) == 0 {
-		return nil, fmt.Errorf("zip 包中未找到可识别的 Skill 定义文件（仅支持 skill.yaml 或 skill.md）")
+		return nil, fmt.Errorf("zip 包中未找到可识别的 Skill 定义文件（支持 skill.yaml、skill.yml 或 skill.md）")
 	}
 	return roots, nil
 }
@@ -1643,24 +1644,33 @@ func importedSkillDefinitionExists(dir string) bool {
 	if err != nil {
 		return false
 	}
+	hasLegacySkillMD := false
+	hasLegacyMeta := false
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		if entry.Name() == "skill.yaml" || entry.Name() == "skill.md" {
+		switch entry.Name() {
+		case "skill.yaml", "skill.yml", "skill.md":
 			return true
+		case "SKILL.md":
+			hasLegacySkillMD = true
+		case "_meta.json":
+			hasLegacyMeta = true
 		}
 	}
-	return false
+	return hasLegacySkillMD && !hasLegacyMeta
 }
 
 func loadImportedSkillEntry(skillDir string) (*corelib.NLSkillEntry, error) {
-	yamlPath := filepath.Join(skillDir, "skill.yaml")
-	data, err := os.ReadFile(yamlPath)
-	if err == nil {
-		var sf skill.SkillYAMLFile
-		if err := yaml.Unmarshal(data, &sf); err != nil {
-			return nil, fmt.Errorf("skill.yaml 格式无效: %v", err)
+	if defPath, defFormat := importedStructuredSkillDefinitionPath(skillDir); defPath != "" {
+		data, err := os.ReadFile(defPath)
+		if err != nil {
+			return nil, fmt.Errorf("读取 Skill 定义文件失败: %v", err)
+		}
+		sf, err := skill.ParseSkillDefinitionFile(data, defFormat)
+		if err != nil {
+			return nil, fmt.Errorf("%s 格式无效: %v", filepath.Base(defPath), err)
 		}
 		name := strings.TrimSpace(sf.Name)
 		if name == "" {
@@ -1672,7 +1682,22 @@ func loadImportedSkillEntry(skillDir string) (*corelib.NLSkillEntry, error) {
 		}
 		steps := make([]corelib.NLSkillStep, 0, len(sf.Steps))
 		for _, s := range sf.Steps {
-			steps = append(steps, corelib.NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError})
+			params := s.Params
+			if params == nil {
+				params = map[string]interface{}{}
+			}
+			if s.TimeoutSeconds > 0 {
+				params["timeout"] = float64(s.TimeoutSeconds)
+			}
+			onError := s.OnError
+			if onError == "" {
+				if s.ContinueOnErr {
+					onError = "continue"
+				} else {
+					onError = "stop"
+				}
+			}
+			steps = append(steps, corelib.NLSkillStep{Action: s.Action, Params: params, OnError: onError, Name: s.Name, Condition: s.Condition, When: s.When, Label: s.Label, Capture: s.Capture})
 		}
 		if len(steps) == 0 {
 			parsed, err := skill.ImportMarkdownSkillDir(skillDir, skill.MarkdownSkillOptions{
@@ -1683,23 +1708,14 @@ func loadImportedSkillEntry(skillDir string) (*corelib.NLSkillEntry, error) {
 				SkillDir:            skillDir,
 			})
 			if err == nil {
-				parsed.Platforms = sf.Platforms
-				parsed.RequiresGUI = sf.RequiresGUI
+				applyImportedSkillDefinitionFields(parsed, sf, defPath)
+				skill.NormalizeSkillForRunner(parsed)
 				return parsed, nil
 			}
 		}
-		return &corelib.NLSkillEntry{
-			Name:        name,
-			Description: sf.Description,
-			Triggers:    sf.Triggers,
-			Steps:       steps,
-			Status:      status,
-			Source:      "file",
-			Platforms:   sf.Platforms,
-			RequiresGUI: sf.RequiresGUI,
-			SkillDir:    skillDir,
-			CreatedAt:   time.Now().Format(time.RFC3339),
-		}, nil
+		entry := importedSkillEntryFromDefinition(sf, name, status, skillDir, steps, defPath)
+		skill.NormalizeSkillForRunner(entry)
+		return entry, nil
 	}
 	parsed, err := skill.ImportMarkdownSkillDir(skillDir, skill.MarkdownSkillOptions{
 		NameFallback: filepath.Base(skillDir),
@@ -1707,9 +1723,174 @@ func loadImportedSkillEntry(skillDir string) (*corelib.NLSkillEntry, error) {
 		SkillDir:     skillDir,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("技能包中未找到可导入的 skill.md，也未找到兼容的 skill.yaml: %v", err)
+		return nil, fmt.Errorf("技能包中未找到可导入的 skill.md，也未找到兼容的 skill.yaml/skill.yml: %v", err)
 	}
 	return parsed, nil
+}
+
+func importedSkillEntryFromDefinition(sf *skill.SkillYAMLFile, name, status, skillDir string, steps []corelib.NLSkillStep, defPath string) *corelib.NLSkillEntry {
+	entry := &corelib.NLSkillEntry{
+		Name:             name,
+		Description:      sf.Description,
+		Triggers:         sf.Triggers,
+		Steps:            steps,
+		Status:           status,
+		Source:           "file",
+		SkillDir:         skillDir,
+		ProducesArtifact: true,
+	}
+	applyImportedSkillDefinitionFields(entry, sf, defPath)
+	return entry
+}
+
+func applyImportedSkillDefinitionFields(entry *corelib.NLSkillEntry, sf *skill.SkillYAMLFile, defPath string) {
+	if entry == nil || sf == nil {
+		return
+	}
+	if sf.Description != "" {
+		entry.Description = sf.Description
+	}
+	if len(sf.Triggers) > 0 {
+		entry.Triggers = sf.Triggers
+	}
+	if len(sf.Platforms) > 0 {
+		entry.Platforms = sf.Platforms
+	}
+	if sf.RequiresGUI {
+		entry.RequiresGUI = true
+	}
+	entry.CreatedAt = importedSkillFileModTime(defPath)
+	if sf.Type != "" {
+		entry.Type = sf.Type
+	}
+	if sf.Content != "" {
+		entry.Content = sf.Content
+	}
+	if sf.Mode != "" {
+		entry.Mode = sf.Mode
+	}
+	if sf.ExecMode != "" {
+		entry.ExecMode = sf.ExecMode
+	}
+	if sf.GlobalTimeout > 0 {
+		entry.GlobalTimeout = sf.GlobalTimeout
+	}
+	if sf.ProducesArtifact != nil {
+		entry.ProducesArtifact = *sf.ProducesArtifact
+	}
+	if len(sf.Operations) > 0 {
+		entry.Operations = importedSkillOperations(sf.Operations)
+	}
+	if len(sf.Params) > 0 {
+		entry.Params = importedSkillParams(sf.Params)
+	}
+	if len(sf.RequiredArgs) > 0 {
+		entry.RequiredArgs = sf.RequiredArgs
+	}
+	if len(sf.RequiredEnv) > 0 {
+		entry.RequiredEnv = sf.RequiredEnv
+	}
+	if sf.PreferredShell != "" {
+		entry.PreferredShell = sf.PreferredShell
+	}
+	if len(sf.RequiresTools) > 0 {
+		entry.RequiresTools = sf.RequiresTools
+	}
+	if len(sf.FallbackForTools) > 0 {
+		entry.FallbackForTools = sf.FallbackForTools
+	}
+	if len(sf.RequiresToolsets) > 0 {
+		entry.RequiresToolsets = sf.RequiresToolsets
+	}
+	if len(sf.FallbackForToolsets) > 0 {
+		entry.FallbackForToolsets = sf.FallbackForToolsets
+	}
+	if len(sf.RequiredCredentialFiles) > 0 {
+		entry.RequiredCredentialFiles = sf.RequiredCredentialFiles
+	}
+	if reqs := importedRequiresPython(sf.Requires); len(reqs) > 0 {
+		entry.RequiresPython = reqs
+	}
+	if reqs := importedRequiresNode(sf.Requires); len(reqs) > 0 {
+		entry.RequiresNode = reqs
+	}
+	if sf.Stateful {
+		entry.Stateful = true
+	}
+	if len(sf.Pipeline) > 0 {
+		entry.Pipeline = importedSkillPipeline(sf.Pipeline)
+	}
+}
+
+func importedSkillFileModTime(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Now().Format(time.RFC3339)
+	}
+	return info.ModTime().Format(time.RFC3339)
+}
+
+func importedSkillOperations(yamlOps []skill.SkillYAMLOperation) []corelib.NLSkillOperation {
+	if len(yamlOps) == 0 {
+		return nil
+	}
+	operations := make([]corelib.NLSkillOperation, 0, len(yamlOps))
+	for _, op := range yamlOps {
+		operations = append(operations, corelib.NLSkillOperation{Name: op.Name, Description: op.Description, Params: op.Params, Labels: op.Labels})
+	}
+	return operations
+}
+
+func importedSkillParams(yamlParams []skill.SkillYAMLParam) []corelib.NLSkillParam {
+	if len(yamlParams) == 0 {
+		return nil
+	}
+	params := make([]corelib.NLSkillParam, 0, len(yamlParams))
+	for _, p := range yamlParams {
+		params = append(params, corelib.NLSkillParam{Name: p.Name, Description: p.Description, Aliases: p.Aliases, CLIFlag: p.CLIFlag, Default: p.Default, Required: p.Required})
+	}
+	return params
+}
+
+func importedRequiresPython(req *skill.SkillYAMLRequires) []string {
+	if req == nil {
+		return nil
+	}
+	return req.Python
+}
+
+func importedRequiresNode(req *skill.SkillYAMLRequires) []string {
+	if req == nil {
+		return nil
+	}
+	return req.Node
+}
+
+func importedSkillPipeline(yamlSteps []skill.SkillYAMLPipelineStep) []corelib.SkillPipelineStep {
+	if len(yamlSteps) == 0 {
+		return nil
+	}
+	steps := make([]corelib.SkillPipelineStep, 0, len(yamlSteps))
+	for _, s := range yamlSteps {
+		steps = append(steps, corelib.SkillPipelineStep{Skill: s.Skill, Params: s.Params, Checkpoint: s.Checkpoint, CheckpointMessage: s.CheckpointMessage, ContinueOnFail: s.ContinueOnFail, TimeImpactOnReject: s.TimeImpactOnReject})
+	}
+	return steps
+}
+
+func importedStructuredSkillDefinitionPath(skillDir string) (string, string) {
+	for _, candidate := range []struct {
+		name   string
+		format string
+	}{
+		{name: "skill.yaml", format: "yaml"},
+		{name: "skill.yml", format: "yaml"},
+	} {
+		defPath := filepath.Join(skillDir, candidate.name)
+		if _, err := os.Stat(defPath); err == nil {
+			return defPath, candidate.format
+		}
+	}
+	return "", ""
 }
 
 // CleanupStaleSkills disables learned/crafted Skills that have been unused
@@ -1797,53 +1978,51 @@ func (a *App) CancelNLSkillRun(runID string) error {
 
 // UploadNLSkillToMarket 手动打包并上传 skill 到 SkillMarket（Wails binding）。
 func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
-	a.ensureInteractionInfra()
-	if a.skillExecutor == nil {
-		return "", fmt.Errorf("skill executor not initialized")
+	a.ensureSkillLifecycleManager()
+	if a.skillLifecycle == nil {
+		return "", fmt.Errorf("skill lifecycle manager not initialized")
 	}
-	a.ensureSkillMarketClient()
-	if a.skillMarketClient == nil {
-		return "", fmt.Errorf("skill market client not initialized")
-	}
+	return a.skillLifecycle.UploadNow(context.Background(), skillName, "manual_upload", true)
 
-	// 打包 skill（获取 tmpDir 用于验证）
-	zipPath, tmpDir, err := a.packageSkillForMarketWithDir(skillName)
-	if err != nil {
-		return "", fmt.Errorf("打包失败: %w", err)
-	}
-	defer os.Remove(zipPath)
-	defer os.RemoveAll(tmpDir)
+}
 
-	// Pre-upload portability validation on the packaged copy
-	report, err := skill.ValidateSkillPortability(tmpDir)
-	if err != nil {
-		return "", fmt.Errorf("portability validation failed: %w", err)
+// AuditInstalledSkillQuality normalizes and scores installed skills, writing quality_status.json for file-backed skills.
+func (a *App) AuditInstalledSkillQuality(requireRuntimeProof bool) ([]SkillQualityStatus, error) {
+	a.ensureSkillLifecycleManager()
+	if a.skillLifecycle == nil {
+		return nil, fmt.Errorf("skill lifecycle manager not initialized")
 	}
-	if report.Summary.Errors > 0 {
-		return "", fmt.Errorf("upload blocked: %d portability error(s) found.\n%s\n\n💡 Run manage_skill(action=\"validate\", name=\"%s\", auto_fix=true) to attempt automatic fixes",
-			report.Summary.Errors, skill.FormatPortabilityReport(report), skillName)
-	}
+	return a.skillLifecycle.EvaluateInstalledSkills(requireRuntimeProof)
+}
 
-	// 获取用户 email
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return "", fmt.Errorf("加载配置失败: %w", err)
+// ListSkillUploadQueue returns the persisted SkillMarket upload queue.
+func (a *App) ListSkillUploadQueue() ([]SkillUploadQueueItem, error) {
+	a.ensureSkillLifecycleManager()
+	if a.skillLifecycle == nil {
+		return nil, fmt.Errorf("skill lifecycle manager not initialized")
 	}
-	email := strings.TrimSpace(cfg.RemoteEmail)
-	if email == "" {
-		return "", fmt.Errorf("未配置 remote_email，无法上传到 SkillMarket")
+	return a.skillLifecycle.ListUploadQueue()
+}
+
+// RetryBlockedSkillUpload moves blocked upload items back to pending after a skill is repaired or verified.
+func (a *App) RetryBlockedSkillUpload(skillName string) error {
+	a.ensureSkillLifecycleManager()
+	if a.skillLifecycle == nil {
+		return fmt.Errorf("skill lifecycle manager not initialized")
 	}
-
-	// 上传
-	submissionID, err := a.skillMarketClient.SubmitSkill(context.Background(), zipPath, email)
-	if err != nil {
-		return "", fmt.Errorf("上传失败: %w", err)
+	if err := a.skillLifecycle.RetryBlocked(skillName); err != nil {
+		return err
 	}
+	return a.skillLifecycle.ProcessPendingUploads(context.Background(), 0)
+}
 
-	// 上传成功后，标记 skill 已上传
-	_ = a.skillExecutor.MarkUploaded(skillName, submissionID)
-
-	return submissionID, nil
+// RetrySkillUploadQueue asks the lifecycle manager to process pending uploads now.
+func (a *App) RetrySkillUploadQueue() error {
+	a.ensureSkillLifecycleManager()
+	if a.skillLifecycle == nil {
+		return fmt.Errorf("skill lifecycle manager not initialized")
+	}
+	return a.skillLifecycle.ProcessPendingUploads(context.Background(), 0)
 }
 
 // packageSkillForMarket 将 skill 打包为 SkillMarket 规范的 zip 文件。
@@ -1932,6 +2111,23 @@ func (a *App) packageSkillForMarketWithDir(skillName string) (string, string, er
 	}
 
 	// 打包为 zip
+
+	_, report, err := prepareSkillDirForMarket(tmpDir, true)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", "", fmt.Errorf("prepare skill package for market: %w", err)
+	}
+	quality := evaluateSkillQualityForDir(target, report, false, tmpDir)
+	writeSkillQualityStatus(tmpDir, target, quality, "package", false)
+	if err := writeSkillPackageManifest(tmpDir, target, quality, "package", false); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", "", fmt.Errorf("write skill package manifest: %w", err)
+	}
+	if !quality.MarketReady {
+		os.RemoveAll(tmpDir)
+		return "", "", fmt.Errorf("skill quality gate blocked upload: score=%d reasons=%s", quality.Score, strings.Join(quality.Reasons, "; "))
+	}
+
 	zipPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("skill-%s-%d.zip", toKebabCase(skillName), time.Now().UnixMilli()))
 	if err := zipDirectory(tmpDir, zipPath); err != nil {
 		os.RemoveAll(tmpDir)
@@ -2117,6 +2313,10 @@ func zipDirectory(srcDir, zipPath string) error {
 			return err
 		}
 		if rel == "." {
+			return nil
+		}
+		base := filepath.Base(path)
+		if !entry.IsDir() && (strings.HasSuffix(base, ".bak") || base == "upload_status.json" || base == "quality_status.json") {
 			return nil
 		}
 		zipName := filepath.ToSlash(rel)

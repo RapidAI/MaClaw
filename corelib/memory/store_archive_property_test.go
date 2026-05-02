@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,7 +58,7 @@ func TestProperty_LRUArchives(t *testing.T) {
 		// Fill store to max capacity.
 		for i := 0; i < 500; i++ {
 			e := Entry{
-				Content:     rapid.StringMatching(`[a-zA-Z]{5,20}`).Draw(rt, "fill") + string(rune(i%26+'a')),
+				Content:     fmt.Sprintf("fill-%03d-%s", i, rapid.StringMatching(`[a-zA-Z]{5,20}`).Draw(rt, "fill")),
 				Category:    CategoryProjectKnowledge,
 				AccessCount: rapid.IntRange(1, 50).Draw(rt, "fillAccess"),
 			}

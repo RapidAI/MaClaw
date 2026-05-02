@@ -26,6 +26,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 // RegisterAdminRoutes registers tenant-related admin routes.
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/admin/cloud/status", h.handleCloudStatus)
 	mux.HandleFunc("/admin/cloud/register", h.handleCloudRegister)
 	mux.HandleFunc("/admin/cloud/license", h.handleCloudLicense)
 }
@@ -103,6 +104,24 @@ func (h *Handler) handleSetupTenant(w http.ResponseWriter, r *http.Request) {
 		"status":    t.Status,
 		"message":   "tenant created",
 	})
+}
+
+func (h *Handler) handleCloudStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	status, err := h.svc.CloudStatus(r.Context(), RequestTenantID(r))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrTenantNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "tenant not found"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (h *Handler) handleCloudRegister(w http.ResponseWriter, r *http.Request) {

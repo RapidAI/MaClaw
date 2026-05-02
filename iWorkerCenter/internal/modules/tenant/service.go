@@ -76,6 +76,74 @@ func (s *TenantService) TenantCount(ctx context.Context) (int, error) {
 	return s.tenantRepo.Count(ctx)
 }
 
+// CloudRegistrationStatus summarizes local Cloud registration state without exposing secrets.
+type CloudRegistrationStatus struct {
+	Configured    bool          `json:"configured"`
+	Registered    bool          `json:"registered"`
+	CenterID      string        `json:"center_id,omitempty"`
+	Status        string        `json:"status"`
+	License       *CloudLicense `json:"license,omitempty"`
+	LicenseError  string        `json:"license_error,omitempty"`
+	NonBlocking   bool          `json:"non_blocking"`
+	ControlPlane  string        `json:"control_plane"`
+	BusinessScope string        `json:"business_scope"`
+}
+
+// CloudStatus returns local Cloud registration state and best-effort license status.
+func (s *TenantService) CloudStatus(ctx context.Context, tenantID string) (*CloudRegistrationStatus, error) {
+	t, err := s.tenantRepo.GetByID(ctx, strings.TrimSpace(tenantID))
+	if err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, ErrTenantNotFound
+	}
+
+	status := &CloudRegistrationStatus{
+		Configured:    s.cloudClient != nil && strings.TrimSpace(s.cloudClient.cfg.BaseURL) != "",
+		Registered:    strings.TrimSpace(t.CloudCenterID) != "" && strings.TrimSpace(t.CloudSecret) != "",
+		CenterID:      strings.TrimSpace(t.CloudCenterID),
+		Status:        "unregistered",
+		NonBlocking:   true,
+		ControlPlane:  "registration_authorization_compute_distribution",
+		BusinessScope: "isolated_in_iworkercenter_and_iworker",
+	}
+	if !status.Configured {
+		status.Status = "not_configured"
+		return status, nil
+	}
+	if !status.Registered {
+		return status, nil
+	}
+
+	license, err := s.cloudClient.FetchCenterLicense(ctx, t.CloudCenterID, t.CloudSecret)
+	if err != nil {
+		status.Status = classifyCloudLicenseError(err)
+		status.LicenseError = err.Error()
+		return status, nil
+	}
+	status.Status = "licensed"
+	status.License = license
+	return status, nil
+}
+
+func classifyCloudLicenseError(err error) string {
+	if err == nil {
+		return "licensed"
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "status 404") || strings.Contains(message, "no active license") || strings.Contains(message, "not found") {
+		return "pending"
+	}
+	if strings.Contains(message, "status 401") || strings.Contains(message, "status 403") || strings.Contains(message, "unauthorized") || strings.Contains(message, "forbidden") {
+		return "pending"
+	}
+	if strings.Contains(message, "connection") || strings.Contains(message, "timeout") || strings.Contains(message, "no such host") || strings.Contains(message, "refused") {
+		return "offline"
+	}
+	return "error"
+}
+
 // CloudCredentials returns the cloud registration credentials for a tenant.
 func (s *TenantService) CloudCredentials(ctx context.Context, tenantID string) (string, string, error) {
 	t, err := s.tenantRepo.GetByID(ctx, strings.TrimSpace(tenantID))

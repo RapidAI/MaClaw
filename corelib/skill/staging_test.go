@@ -243,3 +243,18 @@ func TestScanReport_IsDangerous(t *testing.T) {
 		t.Error("high should not be dangerous")
 	}
 }
+
+func TestCollectScanContent_IncludesReadmeOnlySkillDocs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# docs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.txt"), []byte("other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := BuildFileManifest(dir)
+	contents := CollectScanContent(dir, manifest, 100)
+	if _, ok := contents["README.md"]; !ok {
+		t.Fatalf("README.md should be collected as skill documentation: %#v", contents)
+	}
+}

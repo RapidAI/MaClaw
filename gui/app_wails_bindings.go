@@ -1085,7 +1085,7 @@ func sanitizeAIAssistantClientHistory(messages []AIAssistantContextMessage) []ag
 		}
 		entries = append(entries, agent.ConversationEntry{Role: role, Content: content})
 	}
-	return entries
+	return agent.DeduplicateAdjacentAssistantEntries(entries)
 }
 
 func conversationTextSuffixMatches(shorter, longer []agent.ConversationEntry) bool {

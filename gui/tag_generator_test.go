@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
-
 )
 
 // ── Task 32.3: TagGenerator 单元测试 ────────────────────────────────────
@@ -188,5 +187,16 @@ description: data analysis
 	}
 	if !tagSet["data-analysis"] {
 		t.Error("missing domain tag: data-analysis")
+	}
+}
+
+func TestTagGeneratorIgnoresJSONDefinition(t *testing.T) {
+	gen := NewTagGenerator()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.json"), []byte(`{"name":"json-tool"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gen.GenerateTags(dir); err == nil {
+		t.Fatal("GenerateTags should reject directories with only retired skill.json definitions")
 	}
 }

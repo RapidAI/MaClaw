@@ -117,6 +117,30 @@ func mediaExtension(mediaType string) string {
 	}
 }
 
+func mediaTypeFromFileName(fileName string) string {
+	switch strings.ToLower(filepath.Ext(fileName)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return "image"
+	case ".mp4", ".avi", ".mov", ".mkv", ".webm":
+		return "video"
+	case ".ogg", ".oga", ".opus", ".amr", ".silk", ".slk":
+		return "voice"
+	case ".wav", ".mp3", ".m4a", ".aac", ".flac":
+		return "audio"
+	default:
+		return "file"
+	}
+}
+
+func containsString(list []string, needle string) bool {
+	for _, item := range list {
+		if item == needle {
+			return true
+		}
+	}
+	return false
+}
+
 // guessMimeFromMedia returns a MIME type based on the media category and file name.
 func guessMimeFromMedia(mediaType, fileName string) string {
 	if fileName != "" {
@@ -153,6 +177,8 @@ func guessMimeFromMedia(mediaType, fileName string) string {
 		return "image/jpeg"
 	case "video":
 		return "video/mp4"
+	case "audio":
+		return "audio/mpeg"
 	case "voice":
 		return "audio/wav"
 	default:

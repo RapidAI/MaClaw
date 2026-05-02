@@ -189,12 +189,10 @@ func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[strin
 
 // ExperienceScore returns a [0,1] score for a tool given the current query tokens.
 //
-// Algorithm:
-//  1. Filter records matching toolName
-//  2. For each: compute Jaccard similarity with queryTokens
-//  3. Weight by recency: exp(-0.01 * hours_since)
-//  4. Weight by outcome: success=1.0, failure=-0.3
-//  5. Aggregate weighted sum, normalize, clamp to [0,1]
+// The score estimates contextual utility, not global popularity. Only records
+// with query-token overlap contribute evidence, each record is weighted by
+// similarity and recency, and the final utility is shrunk by evidence volume so
+// one lucky call cannot dominate routing.
 func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) float64 {
 	if len(queryTokens) == 0 {
 		return 0
@@ -204,8 +202,10 @@ func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) fl
 	defer t.mu.RUnlock()
 
 	now := time.Now()
-	var weightedSum float64
-	var count int
+	var utilitySum float64
+	var evidenceWeight float64
+	var matched int
+	var scanned int
 
 	querySet := make(map[string]bool, len(queryTokens))
 	for _, tok := range queryTokens {
@@ -217,9 +217,9 @@ func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) fl
 		if r.ToolName != toolName {
 			continue
 		}
-		count++
+		scanned++
 		// Stop scanning after 200 matches to bound computation.
-		if count > 200 {
+		if scanned > 200 {
 			break
 		}
 
@@ -228,6 +228,7 @@ func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) fl
 		if overlap == 0 {
 			continue
 		}
+		matched++
 
 		// Recency decay.
 		hours := now.Sub(r.Timestamp).Hours()
@@ -236,28 +237,46 @@ func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) fl
 		}
 		recency := math.Exp(-0.01 * hours)
 
-		// Success weight.
-		successW := 1.0
-		if !r.Success {
-			successW = -0.3
+		evidence := overlap * recency
+		evidenceWeight += evidence
+		utilitySum += evidence * usageOutcomeWeight(r)
+	}
+
+	if matched == 0 || evidenceWeight == 0 {
+		return 0
+	}
+
+	utility := utilitySum / evidenceWeight
+	if utility <= 0 {
+		return 0
+	}
+
+	// Confidence rises with corroborating, similar, recent evidence. The curve is
+	// intentionally conservative: one exact recent success scores about 0.28,
+	// while repeated consistent successes approach 1.0.
+	confidence := 1 - math.Exp(-evidenceWeight/3.0)
+	return clampFloat(utility*confidence, 0, 1)
+}
+
+func usageOutcomeWeight(r UsageRecord) float64 {
+	if r.Success {
+		switch r.FollowUp {
+		case "retry":
+			return 0.6
+		case "abandon":
+			return 0.2
+		default:
+			return 1.0
 		}
-
-		weightedSum += overlap * recency * successW
 	}
-
-	if count == 0 {
-		return 0
+	switch r.FollowUp {
+	case "retry":
+		return -0.45
+	case "abandon":
+		return -0.6
+	default:
+		return -0.3
 	}
-
-	// Normalize by count and clamp.
-	score := weightedSum / float64(count)
-	if score < 0 {
-		return 0
-	}
-	if score > 1 {
-		return 1
-	}
-	return score
 }
 
 // jaccardTokens computes Jaccard similarity between a set and a token slice.

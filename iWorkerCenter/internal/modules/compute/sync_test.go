@@ -387,3 +387,79 @@ func TestSyncNowFailureWithoutCacheMarksLocalFallback(t *testing.T) {
 		t.Fatalf("status = %+v, want non-blocking local fallback failure", status)
 	}
 }
+
+func TestSyncStatusObserverReceivesUpdatedStatusWithoutDeadlock(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			_ = json.NewEncoder(w).Encode(syncResponse{Providers: []ComputeProvider{{ID: "p1", Name: "Cloud GPT"}}})
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("cloud down"))
+	}))
+	defer srv.Close()
+
+	sm := NewSyncManager(srv.URL, "center-1", "secret-abc")
+	observed := make(chan ComputeSyncStatus, 2)
+	sm.SetStatusObserver(func(status ComputeSyncStatus) {
+		latest := sm.GetSyncStatus()
+		if latest.Status != status.Status || latest.ProviderCount != status.ProviderCount || latest.RuntimeImpact != status.RuntimeImpact {
+			t.Errorf("observer saw stale status: callback=%+v latest=%+v", status, latest)
+		}
+		observed <- status
+	})
+
+	if err := sm.SyncNow(); err != nil {
+		t.Fatalf("first SyncNow() error: %v", err)
+	}
+	first := waitObservedStatus(t, observed)
+	if first.Status != "success" || first.ProviderCount != 1 || first.RuntimeImpact != "cloud_sync_current" {
+		t.Fatalf("first observed status = %+v, want cloud sync success", first)
+	}
+
+	if err := sm.SyncNow(); err == nil {
+		t.Fatal("second SyncNow() should fail")
+	}
+	second := waitObservedStatus(t, observed)
+	if second.Status != "failure" || !second.NonBlocking || second.ProviderCount != 1 || second.RuntimeImpact != "using_cached_cloud_providers" {
+		t.Fatalf("second observed status = %+v, want non-blocking cached provider failure", second)
+	}
+}
+
+func TestSyncStatusObserverReceivesLocalFallbackFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	sm := NewSyncManager(srv.URL, "center-1", "secret-abc")
+	observed := make(chan ComputeSyncStatus, 1)
+	sm.SetStatusObserver(func(status ComputeSyncStatus) {
+		latest := sm.GetSyncStatus()
+		if latest.Status != status.Status || latest.ProviderCount != status.ProviderCount || latest.RuntimeImpact != status.RuntimeImpact {
+			t.Errorf("observer saw stale status: callback=%+v latest=%+v", status, latest)
+		}
+		observed <- status
+	})
+
+	if err := sm.SyncNow(); err == nil {
+		t.Fatal("SyncNow() should fail")
+	}
+	status := waitObservedStatus(t, observed)
+	if status.Status != "failure" || !status.NonBlocking || status.ProviderCount != 0 || status.RuntimeImpact != "local_settings_fallback" {
+		t.Fatalf("observed status = %+v, want non-blocking local fallback failure", status)
+	}
+}
+
+func waitObservedStatus(t *testing.T, observed <-chan ComputeSyncStatus) ComputeSyncStatus {
+	t.Helper()
+	select {
+	case status := <-observed:
+		return status
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for sync status observer")
+	}
+	return ComputeSyncStatus{}
+}

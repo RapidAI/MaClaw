@@ -23,6 +23,7 @@ type Center struct {
 	IWorkerLocalAccountCount  int       `json:"-"`
 	IWorkerAgentInstanceCount int       `json:"iworker_agent_instance_count"`
 	IWorkerReadinessJSON      string    `json:"-"`
+	RuntimeStatusJSON         string    `json:"-"`
 	Status                    string    `json:"status"` // pending, active, disabled
 	SecretHash                string    `json:"-"`
 	LastHeartbeat             time.Time `json:"last_heartbeat"`

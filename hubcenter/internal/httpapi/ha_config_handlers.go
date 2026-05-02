@@ -116,6 +116,7 @@ func UpdateHAConfigHandler(svc *ha.ConfigService, keySvc haKeyProvider) http.Han
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
+		req = expandLegacyHAPeersToNodes(req)
 		req = applySelfHAKeyMaterial(req, keySvc)
 		saved, err := svc.SaveConfig(r.Context(), req.toConfig())
 		if err != nil {
@@ -126,6 +127,35 @@ func UpdateHAConfigHandler(svc *ha.ConfigService, keySvc haKeyProvider) http.Han
 		resp.SuggestedSelfFQDN = requestHAFQDNHint(r)
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func expandLegacyHAPeersToNodes(req haConfigRequest) haConfigRequest {
+	if len(req.Nodes) > 0 || strings.TrimSpace(req.SelfFQDN) == "" || len(req.Peers) == 0 {
+		return req
+	}
+	nodes := make([]haNodeRequest, 0, len(req.Peers)+1)
+	nodes = append(nodes, haNodeRequest{
+		FQDN:         req.SelfFQDN,
+		NodeID:       req.NodeID,
+		NodeName:     req.NodeName,
+		AdvertiseURL: req.AdvertiseURL,
+		Enabled:      true,
+	})
+	for _, peer := range req.Peers {
+		if !peer.Enabled && strings.TrimSpace(peer.NodeID) == "" && strings.TrimSpace(peer.Name) == "" && strings.TrimSpace(peer.BaseURL) == "" && strings.TrimSpace(peer.PublicKeyPEM) == "" {
+			continue
+		}
+		nodes = append(nodes, haNodeRequest{
+			FQDN:         peer.BaseURL,
+			NodeID:       peer.NodeID,
+			NodeName:     peer.Name,
+			AdvertiseURL: peer.BaseURL,
+			PublicKeyPEM: peer.PublicKeyPEM,
+			Enabled:      peer.Enabled,
+		})
+	}
+	req.Nodes = nodes
+	return req
 }
 
 func HAKeyMaterialHandler(cfgSvc *ha.ConfigService, keySvc haKeyProvider) http.HandlerFunc {

@@ -3,7 +3,7 @@ import type { CenterTab } from '../../types';
 
 const tabIds: CenterTab[] = [
   'overview', 'bootstrap', 'employees', 'communications', 'workflows',
-  'knowledge', 'packages', 'models', 'compute', 'security',
+  'knowledge', 'packages', 'models', 'compute', 'cloud', 'security',
   'delivery', 'usage', 'im', 'auth', 'settings',
 ];
 

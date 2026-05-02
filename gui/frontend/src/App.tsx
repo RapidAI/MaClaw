@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from 'react';
+import { useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
 import { appVersion, buildNumber } from './version';
 import appIcon from './assets/images/maclaw2.png';
@@ -21,7 +21,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
-import { IWorkerCenterPanel } from './components/remote/IWorkerCenterPanel';
 import { SecurityPolicyPanel } from './components/remote/SecurityPolicyPanel';
 import { RemoteSessionList } from './components/remote/RemoteSessionList';
 import { useRemotePanel } from './components/remote/useRemotePanel';
@@ -43,6 +42,7 @@ import { AgentNetTabContainer } from './components/remote/AgentNetTabContainer';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
 import { AboutPanel } from './components/AboutPanel';
+import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { GossipPanel } from './components/gossip/GossipPanel';
 import { useDialog } from './components/CustomDialog';
@@ -1798,6 +1798,9 @@ const ToolConfiguration = ({
 function App() {
     const { showAlert, showConfirm } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
+    const defaultLaunchModeSaveSeq = useRef(0);
+    const defaultLaunchModeSaveQueue = useRef<Promise<void>>(Promise.resolve());
+    const pendingDefaultLaunchMode = useRef<'local' | 'remote' | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
     const audioDevices = useAudioDevices();
     const [sidebarExpanded, setSidebarExpanded] = useState(false);
@@ -1899,7 +1902,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'iworkercenter' | 'skills' | 'mcp' | 'llm' | 'serviceRedeem' | 'search' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'security' | 'im' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'pet' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'serviceRedeem' | 'search' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'security' | 'im' | 'system'>('general');
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
@@ -1941,6 +1944,8 @@ function App() {
     const [showStartupPopup, setShowStartupPopup] = useState(false);
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
+    const [petVoiceStartSeq, setPetVoiceStartSeq] = useState(0);
+    const [petFocusInputSeq, setPetFocusInputSeq] = useState(0);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
     const [uiZoom, setUiZoom] = useState<number>(1.0);
@@ -2788,6 +2793,19 @@ function App() {
         }
     }, [navTab]);
 
+    useEffect(() => {
+        const handler = (payload?: { voice?: boolean; source?: string }) => {
+            setNavTab('ai');
+            setToolDropdownOpen(false);
+            setPetFocusInputSeq(seq => seq + 1);
+            if (payload?.voice) {
+                setPetVoiceStartSeq(seq => seq + 1);
+            }
+        };
+        EventsOn("switch-to-ai-panel", handler);
+        return () => { EventsOff("switch-to-ai-panel"); };
+    }, []);
+
     const switchTool = (tool: string) => {
         setNavTab(tool);
         setToolDropdownOpen(false);
@@ -2932,6 +2950,19 @@ function App() {
         });
     };
 
+    const setConfigFromRemotePanel = useCallback((nextConfig: main.AppConfig) => {
+        const pendingMode = pendingDefaultLaunchMode.current;
+        if (!pendingMode) {
+            setConfig(nextConfig);
+            return;
+        }
+        setConfig(new main.AppConfig({
+            ...nextConfig,
+            default_launch_mode: pendingMode,
+            remote_enabled: pendingMode === 'remote',
+        }));
+    }, []);
+
 
     const {
         remoteActivationStatus,
@@ -2984,7 +3015,8 @@ function App() {
         setSelectedProvider,
     } = useRemotePanel({
         config,
-        setConfig,
+        setConfig: setConfigFromRemotePanel,
+        getPendingDefaultLaunchMode: () => pendingDefaultLaunchMode.current,
         setToolStatuses,
         getSelectedProjectForRemote,
         selectedProjectForLaunch,
@@ -3486,6 +3518,53 @@ function App() {
         SaveConfig(newConfig);
     };
 
+    const saveDefaultLaunchMode = (mode: 'local' | 'remote') => {
+        if (!config) return;
+        const saveSeq = ++defaultLaunchModeSaveSeq.current;
+        const patch = {
+            default_launch_mode: mode,
+            remote_enabled: mode === 'remote',
+        };
+        pendingDefaultLaunchMode.current = mode;
+        const optimisticConfig = new main.AppConfig({ ...config, ...patch });
+        setConfig(optimisticConfig);
+
+        const runSave = async () => {
+            if (saveSeq !== defaultLaunchModeSaveSeq.current) return;
+            let baseConfig = config;
+            try {
+                baseConfig = await LoadConfig();
+            } catch {
+                // Keep the user's click responsive even if a refresh races with this save.
+            }
+            if (saveSeq !== defaultLaunchModeSaveSeq.current) return;
+            const nextConfig = new main.AppConfig({ ...baseConfig, ...patch });
+            await SaveConfig(nextConfig);
+            if (saveSeq === defaultLaunchModeSaveSeq.current) {
+                pendingDefaultLaunchMode.current = null;
+                setConfig(nextConfig);
+            }
+        };
+
+        defaultLaunchModeSaveQueue.current = defaultLaunchModeSaveQueue.current
+            .catch(() => {})
+            .then(runSave)
+            .catch(async (err) => {
+                if (saveSeq !== defaultLaunchModeSaveSeq.current) return;
+                showToastMessage(formatText("remoteSaveFailed", { error: String(err) }), 4000);
+                try {
+                    const freshConfig = await LoadConfig();
+                    if (saveSeq === defaultLaunchModeSaveSeq.current) {
+                        pendingDefaultLaunchMode.current = null;
+                        setConfig(freshConfig);
+                    }
+                } catch {
+                    pendingDefaultLaunchMode.current = null;
+                    setConfig(config);
+                }
+            });
+    };
+
     const openRemoteActivationModal = (toolName: string) => {
         const nextHubCenterURL = config?.remote_hubcenter_url || "";
         const nextEmail = config?.remote_email || "";
@@ -3799,6 +3878,11 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '语言、项目与运行环境' : lang === 'zh-Hant' ? '語言、專案與執行環境' : 'Language, projects, and environment',
         },
         {
+            id: 'pet' as const,
+            label: lang === 'zh-Hans' ? '宠物' : lang === 'zh-Hant' ? '寵物' : 'Pet',
+            desc: lang === 'zh-Hans' ? '桌面宠物形象、动作与交互设置' : lang === 'zh-Hant' ? '桌面寵物形象、動作與互動設定' : 'Desktop pet skin, motion, and interaction settings',
+        },
+        {
             id: 'proxy' as const,
             label: lang === 'zh-Hans' ? '代理设置' : lang === 'zh-Hant' ? '代理設定' : 'Proxy',
             desc: lang === 'zh-Hans' ? '全局网络代理配置' : lang === 'zh-Hant' ? '全域網路代理配置' : 'Global network proxy configuration',
@@ -3817,11 +3901,6 @@ ${instruction}`;
             id: 'remote' as const,
             label: lang === 'zh-Hans' ? '远程连接' : lang === 'zh-Hant' ? '遠端連線' : 'Remote',
             desc: lang === 'zh-Hans' ? '远程服务器地址与连接入口' : lang === 'zh-Hant' ? '遠端伺服器位址與連線入口' : 'Server addresses only',
-        },
-        {
-            id: 'iworkercenter' as const,
-            label: 'Center Service',
-            desc: lang === 'zh-Hans' ? '企业组织运行时与 GoalWatch watcher' : lang === 'zh-Hant' ? '企業組織執行時與 GoalWatch watcher' : 'Organization runtime and GoalWatch watcher',
         },
         {
             id: 'llm' as const,
@@ -4059,7 +4138,6 @@ ${instruction}`;
                                         const msg = await ResumeProject(proj.project_path);
                                         if (msg) {
                                             switchTool('ai');
-                                            await aiAssistant.clearHistory();
                                             await aiAssistant.sendMessage(msg);
                                         }
                                     }}
@@ -4224,6 +4302,8 @@ ${instruction}`;
                         }}
                         audioInputDeviceId={(config as any)?.audio_input_device_id || ''}
                         audioOutputDeviceId={(config as any)?.audio_output_device_id || ''}
+                        petVoiceStartSeq={petVoiceStartSeq}
+                        petFocusInputSeq={petFocusInputSeq}
                     />
                     </div>
                 ) : (
@@ -4738,11 +4818,11 @@ ${instruction}`;
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
                                     <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("defaultLaunchModeLabel")}</label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                        <input type="radio" name="launchMode" checked={!config?.default_launch_mode || config.default_launch_mode === 'local'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'local', remote_enabled: false }); setConfig(c); SaveConfig(c); } }} />
+                                        <input type="radio" name="launchMode" checked={!config?.default_launch_mode || config.default_launch_mode === 'local'} onChange={() => { void saveDefaultLaunchMode('local'); }} />
                                         {t("localModeLabel")}
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                        <input type="radio" name="launchMode" checked={config?.default_launch_mode === 'remote'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true }); setConfig(c); SaveConfig(c); } }} />
+                                        <input type="radio" name="launchMode" checked={config?.default_launch_mode === 'remote'} onChange={() => { void saveDefaultLaunchMode('remote'); }} />
                                         {t("remoteModeLabel")}
                                     </label>
                                 </div>
@@ -4855,14 +4935,14 @@ ${instruction}`;
                                     invitationCodeError={invitationCodeError}
                                 />
                             </div>
-                            <div className="settings-panel" style={{ display: settingsTab === 'iworkercenter' ? 'block' : 'none' }}>
-                                <IWorkerCenterPanel
+                            <div className="settings-panel" style={{ display: settingsTab === 'pet' ? 'block' : 'none' }}>
+                                <PetSettingsPanel
                                     config={config}
                                     lang={lang}
-                                    onConfigSaved={(patch) => setConfig(new main.AppConfig({ ...config, ...patch }))}
+                                    setConfig={setConfig}
+                                    saveConfig={SaveConfig}
                                 />
                             </div>
-
                             <div className="settings-panel" style={{ display: settingsTab === 'proxy' ? 'block' : 'none' }}>
                                 {/* Enable toggle */}
                                 <div style={{ marginBottom: '15px', display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -6431,11 +6511,7 @@ ${instruction}`;
                                     <div style={{ display: 'inline-flex', padding: '3px', borderRadius: '999px', border: '1px solid var(--theme-border-subtle)', background: 'var(--theme-info-bg)' }}>
                                         <button
                                             type="button"
-                                            onClick={() => {
-                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: false, default_launch_mode: 'local' });
-                                                setConfig(newConfig);
-                                                SaveConfig(newConfig);
-                                            }}
+                                            onClick={() => { void saveDefaultLaunchMode('local'); }}
                                             style={{
                                                 border: 'none',
                                                 borderRadius: '999px',
@@ -6453,9 +6529,7 @@ ${instruction}`;
                                             type="button"
                                             onClick={() => {
                                                 if (!isRemoteCapableActiveTool) return;
-                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: true, default_launch_mode: 'remote' });
-                                                setConfig(newConfig);
-                                                SaveConfig(newConfig);
+                                                void saveDefaultLaunchMode('remote');
                                             }}
                                             style={{
                                                 border: 'none',

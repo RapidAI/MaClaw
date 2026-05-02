@@ -8,6 +8,7 @@ export type CenterTab =
   | 'packages'
   | 'models'
   | 'compute'
+  | 'cloud'
   | 'security'
   | 'delivery'
   | 'usage'
@@ -215,7 +216,7 @@ export interface CenterStatus {
   compute_permission?: boolean;
   compute_sync_status?: CenterComputeSyncStatus;
   cloud_provider_count?: number;
-  runtime_provider_mode?: 'settings' | 'cloud_sync' | 'local_self_managed';
+  runtime_provider_mode?: 'settings' | 'cloud_sync' | 'local_self_managed' | 'local_settings_fallback';
   cloud_heartbeat?: CenterCloudHeartbeat;
   iworker_readiness?: CenterIWorkerReadiness;
 }

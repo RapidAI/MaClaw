@@ -337,6 +337,7 @@ func (cm *ConversationMemory) Load(userID string) []ConversationEntry {
 
 // Save stores conversation entries for a user.
 func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
+	entries = DeduplicateAdjacentAssistantEntries(entries)
 	copied := make([]ConversationEntry, len(entries))
 	copy(copied, entries)
 	sh := cm.shard(userID)
@@ -360,6 +361,10 @@ func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry
 	if len(entries) == 0 {
 		return
 	}
+	entries = DeduplicateAdjacentAssistantEntries(entries)
+	if len(entries) == 0 {
+		return
+	}
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
@@ -367,10 +372,43 @@ func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry
 		s = &conversationSession{}
 		sh.sessions[userID] = s
 	}
-	s.entries = append(s.entries, entries...)
+	s.entries = DeduplicateAdjacentAssistantEntries(append(s.entries, entries...))
 	s.lastAccess = time.Now()
 	sh.mu.Unlock()
 	cm.markDirtyAndScheduleFlush()
+}
+
+// DeduplicateAdjacentAssistantEntries removes exact adjacent assistant text
+// duplicates. Streaming UI reconciliation and final response persistence can
+// occasionally race and hand the same completed message back twice; keeping both
+// pollutes future prompts and makes the assistant repeat stale task summaries.
+func DeduplicateAdjacentAssistantEntries(entries []ConversationEntry) []ConversationEntry {
+	if len(entries) < 2 {
+		return entries
+	}
+	result := make([]ConversationEntry, 0, len(entries))
+	for _, entry := range entries {
+		if len(result) > 0 && isDuplicateAssistantEntry(result[len(result)-1], entry) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
+func isDuplicateAssistantEntry(left, right ConversationEntry) bool {
+	if left.Role != "assistant" || right.Role != "assistant" {
+		return false
+	}
+	if left.ToolCalls != nil || right.ToolCalls != nil || left.ToolCallID != "" || right.ToolCallID != "" {
+		return false
+	}
+	leftText, leftOK := left.Content.(string)
+	rightText, rightOK := right.Content.(string)
+	if !leftOK || !rightOK {
+		return false
+	}
+	return strings.TrimSpace(leftText) != "" && strings.TrimSpace(leftText) == strings.TrimSpace(rightText)
 }
 
 // Clear removes all conversation data for a user.
@@ -627,11 +665,11 @@ func (cm *ConversationMemory) saveToDisk() error {
 			entries := make([]ConversationEntry, len(session.entries))
 			copy(entries, session.entries)
 			snapshot.Sessions[userID] = persistedSession{
-				Entries:        entries,
-				LastAccess:     session.lastAccess,
-				UnfinishedSlot: CloneUnfinishedTaskSlot(session.unfinishedSlot),
-				ActiveSlotID:   session.activeSlotID,
-				InFlightTask:   session.inFlightTask,
+				Entries:             entries,
+				LastAccess:          session.lastAccess,
+				UnfinishedSlot:      CloneUnfinishedTaskSlot(session.unfinishedSlot),
+				ActiveSlotID:        session.activeSlotID,
+				InFlightTask:        session.inFlightTask,
 				InFlightProjectPath: session.inFlightProjectPath,
 			}
 		}
@@ -686,15 +724,22 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			entries = repaired
 			needsRewrite = true
 		}
+		deduped := DeduplicateAdjacentAssistantEntries(entries)
+		if len(deduped) != len(entries) {
+			log.Printf("[ConversationMemory] removed %d duplicate assistant entries for user=%s on load",
+				len(entries)-len(deduped), userID)
+			entries = deduped
+			needsRewrite = true
+		}
 
 		sh := cm.shard(userID)
 		sh.mu.Lock()
 		sh.sessions[userID] = &conversationSession{
-			entries:        entries,
-			lastAccess:     session.LastAccess,
-			unfinishedSlot: CloneUnfinishedTaskSlot(session.UnfinishedSlot),
-			activeSlotID:   session.ActiveSlotID,
-			inFlightTask:   session.InFlightTask,
+			entries:             entries,
+			lastAccess:          session.LastAccess,
+			unfinishedSlot:      CloneUnfinishedTaskSlot(session.UnfinishedSlot),
+			activeSlotID:        session.ActiveSlotID,
+			inFlightTask:        session.InFlightTask,
 			inFlightProjectPath: session.InFlightProjectPath,
 		}
 		sh.mu.Unlock()

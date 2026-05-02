@@ -49,6 +49,9 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if cfg.ActiveTool != "claude" {
 		t.Fatalf("ActiveTool = %q, want %q", cfg.ActiveTool, "claude")
 	}
+	if !cfg.CheckUpdateOnStartup {
+		t.Fatal("CheckUpdateOnStartup = false, want true for first-run default config")
+	}
 
 	matches, err := filepath.Glob(configPath + ".tmp*")
 	if err != nil {
@@ -56,6 +59,25 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temp files remain: %v", matches)
+	}
+}
+
+func TestUpdateToastTranslationUsesReadableText(t *testing.T) {
+	app := &App{}
+
+	app.SetLanguage("en")
+	if got, want := app.tr("New version %s is available. Open About to download the update.", "V9.9.9"), "New version V9.9.9 is available. Open About to download the update."; got != want {
+		t.Fatalf("en update toast = %q, want %q", got, want)
+	}
+
+	app.SetLanguage("zh-Hans")
+	if got, want := app.tr("New version %s is available. Open About to download the update.", "V9.9.9"), "发现新版本 V9.9.9，可前往关于页面下载更新。"; got != want {
+		t.Fatalf("zh-Hans update toast = %q, want %q", got, want)
+	}
+
+	app.SetLanguage("zh-Hant")
+	if got, want := app.tr("New version %s is available. Open About to download the update.", "V9.9.9"), "發現新版本 V9.9.9，可前往關於頁面下載更新。"; got != want {
+		t.Fatalf("zh-Hant update toast = %q, want %q", got, want)
 	}
 }
 
@@ -247,6 +269,56 @@ func TestSaveConfigPersistsLogDetailEnabled(t *testing.T) {
 	}
 	if !reloaded.LogDetailEnabled {
 		t.Fatal("expected LogDetailEnabled to persist as true")
+	}
+}
+
+func TestSaveConfigSanitizesPetSettings(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.PetEnabled = true
+	cfg.PetSkin = "unknown-skin"
+	cfg.PetSize = 999
+	cfg.PetInteractionMode = "noisy"
+	cfg.PetConversationMode = "free-chat"
+	cfg.PetReadbackMode = "everything"
+	cfg.PetVoiceReadback = true
+	cfg.PetContinuousTimeout = 1
+
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.PetSkin != "clawmate" {
+		t.Fatalf("PetSkin = %q, want clawmate", reloaded.PetSkin)
+	}
+	if reloaded.PetSize != 120 {
+		t.Fatalf("PetSize = %d, want 120", reloaded.PetSize)
+	}
+	if reloaded.PetInteractionMode != "balanced" {
+		t.Fatalf("PetInteractionMode = %q, want balanced", reloaded.PetInteractionMode)
+	}
+	if reloaded.PetConversationMode != "text-first" {
+		t.Fatalf("PetConversationMode = %q, want text-first", reloaded.PetConversationMode)
+	}
+	if reloaded.PetReadbackMode != "summary" {
+		t.Fatalf("PetReadbackMode = %q, want summary", reloaded.PetReadbackMode)
+	}
+	if !reloaded.PetVoiceReadback {
+		t.Fatal("PetVoiceReadback = false, want true for summary readback")
+	}
+	if reloaded.PetContinuousTimeout != 5 {
+		t.Fatalf("PetContinuousTimeout = %d, want 5", reloaded.PetContinuousTimeout)
 	}
 }
 

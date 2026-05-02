@@ -112,3 +112,15 @@ func TestVersioner_CleanOldVersions_UnderLimit(t *testing.T) {
 		t.Errorf("expected 2 remaining (under limit), got %d", len(remaining))
 	}
 }
+
+func TestVersioner_BackupCurrentIgnoresJSONDefinition(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.json"), []byte(`{"name":"json-skill"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v := &Versioner{}
+	if _, err := v.BackupCurrent(dir); err == nil {
+		t.Fatal("BackupCurrent should reject retired skill.json definitions")
+	}
+}

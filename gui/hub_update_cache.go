@@ -198,8 +198,11 @@ type hubSkillForUpdateCheck struct {
 // ────────────────────────────────────────────────────────────────────────────
 
 func (a *App) rememberHubCenterSelectionThrottled(base string, discovered []string) {
-	if a == nil || a.hubCenterCache == nil {
+	if a == nil {
 		return
+	}
+	if a.hubCenterCache == nil {
+		a.hubCenterCache = remote.NewHubCenterSelectionCache(60 * time.Second)
 	}
 	// Ensure persister is initialized (lazy init to avoid circular dependency).
 	if a.hubCenterPersister == nil {

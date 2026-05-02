@@ -48,6 +48,70 @@ func TestCloudHeartbeatMonitorSendsImmediateServiceHeartbeat(t *testing.T) {
 	}
 }
 
+func TestCloudHeartbeatMonitorSendsRuntimeContinuity(t *testing.T) {
+	seen := make(chan CenterHeartbeatRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CenterHeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seen <- req
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer srv.Close()
+
+	monitor := NewCloudHeartbeatMonitor(NewCloudClient(CloudConfig{BaseURL: srv.URL}), func(context.Context) (string, string, error) {
+		return "center-1", "secret-abc", nil
+	}, time.Hour)
+	monitor.SetRuntimeResolver(func(context.Context) *CloudCenterRuntime {
+		return &CloudCenterRuntime{
+			ProviderCount:       1,
+			RuntimeProviderMode: "local_settings_fallback",
+			ComputeSource:       "cloud",
+			CloudProviderCount:  0,
+			ComputeSyncStatus:   &CloudComputeSyncStatus{Status: "failure", ProviderCount: 0, NonBlocking: true, RuntimeImpact: "local_settings_fallback"},
+		}
+	})
+	monitor.TriggerNow()
+
+	select {
+	case req := <-seen:
+		if req.RuntimeProviderMode != "local_settings_fallback" || req.ComputeSyncStatus == nil || !req.ComputeSyncStatus.NonBlocking {
+			t.Fatalf("runtime heartbeat = %+v", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("triggered heartbeat was not sent")
+	}
+}
+
+func TestCloudHeartbeatMonitorTriggerNowIsNonBlocking(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestStarted <- struct{}{}
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	monitor := NewCloudHeartbeatMonitor(NewCloudClient(CloudConfig{BaseURL: srv.URL}), func(context.Context) (string, string, error) {
+		return "center-1", "secret-abc", nil
+	}, time.Hour)
+	monitor.timeout = time.Second
+
+	start := time.Now()
+	monitor.TriggerNow()
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("TriggerNow blocked for %s", elapsed)
+	}
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat request was not started asynchronously")
+	}
+}
 func TestCloudHeartbeatMonitorSkipsMissingCredentials(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

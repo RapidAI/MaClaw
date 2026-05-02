@@ -1,23 +1,25 @@
 /**
- * FloatingButton.tsx — Floating assistant button component (rendered in the second window).
+ * FloatingButton.tsx - Floating assistant button component (rendered in the second window).
  *
- * Renders a 56×56px circular button with the maclaw logo and a pulsing halo animation.
+ * Renders a 56x56px circular button with the maclaw logo and a pulsing halo animation.
  * Supports:
- *   - Left-click → calls OnFloatingButtonClicked() via Wails binding
- *   - Drag (displacement > 5px) → calls OnFloatingButtonDragged(x, y) with rAF throttling
- *   - Right-click → custom context menu with "隐藏" (Hide) option
+ *   - Left-click calls OnFloatingButtonClicked() via Wails binding
+ *   - Drag (displacement > 5px) calls OnFloatingButtonDragged(x, y) with rAF throttling
+ *   - Right-click opens a custom context menu
  *
  * Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 3.1, 3.2, 4.1, 4.2, 4.3, 4.4, 11.3
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
+import { EventsOn } from '../../wailsjs/runtime';
 import './FloatingButton.css';
 import logoSrc from '../assets/images/maclaw2.png';
+import { defaultPetSkinId, getPetSkinOption, normalizePetSkinId, type PetSkinId } from './petSkins';
 
-// ── Wails Go binding bridge ─────────────────────────────────────────────────
+// Wails Go binding bridge
 // The floating window's WebView will have Wails bindings injected.
-// We declare the expected shape and provide safe fallbacks so the component
-// renders correctly even before the Go backend is wired up.
+// Safe fallbacks keep the component renderable before the Go backend is ready.
 
 declare global {
     interface Window {
@@ -28,6 +30,7 @@ declare global {
                     OnFloatingButtonDragged(x: number, y: number): Promise<void>;
                     HideFloatingButton(): Promise<void>;
                     QuitApp(): Promise<void>;
+                    LoadConfig(): Promise<Record<string, unknown>>;
                 };
             };
         };
@@ -51,14 +54,71 @@ function callGoBinding(method: string, ...args: unknown[]): void {
     }
 }
 
-// ── Drag threshold (pixels) ─────────────────────────────────────────────────
+// Drag threshold (pixels)
 const DRAG_THRESHOLD = 5;
 
-// ── Component ───────────────────────────────────────────────────────────────
+type PetState = 'idle' | 'listening' | 'thinking' | 'speaking';
+type PetInteractionMode = 'quiet' | 'balanced' | 'active';
+
+type PetStateEvent = {
+    state?: PetState;
+    source?: string;
+    ttlMs?: number;
+};
+
+interface FloatingPetConfig {
+    petEnabled: boolean;
+    petSkin: PetSkinId;
+    petSize: number;
+    motionEnabled: boolean;
+    quietMode: boolean;
+    interactionMode: PetInteractionMode;
+}
+
+const defaultPetConfig: FloatingPetConfig = {
+    petEnabled: false,
+    petSkin: defaultPetSkinId,
+    petSize: 72,
+    motionEnabled: true,
+    quietMode: false,
+    interactionMode: 'balanced',
+};
+
+function clampPetSize(value: unknown): number {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 72;
+    return Math.min(120, Math.max(56, Math.round(n)));
+}
+
+function normalizeInteractionMode(value: unknown): PetInteractionMode {
+    return value === 'quiet' || value === 'active' || value === 'balanced'
+        ? value
+        : 'balanced';
+}
+
+function isPetState(value: unknown): value is PetState {
+    return value === 'idle' || value === 'listening' || value === 'thinking' || value === 'speaking';
+}
+
+function readPetConfig(cfg: Record<string, unknown>): FloatingPetConfig {
+    return {
+        petEnabled: !!cfg.pet_enabled,
+        petSkin: normalizePetSkinId(cfg.pet_skin),
+        petSize: clampPetSize(cfg.pet_size),
+        motionEnabled: cfg.pet_motion_enabled !== false,
+        quietMode: !!cfg.pet_quiet_mode,
+        interactionMode: normalizeInteractionMode(cfg.pet_interaction_mode),
+    };
+}
+
+// Component
 
 export function FloatingButton() {
     const [showMenu, setShowMenu] = useState(false);
     const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+    const [petConfig, setPetConfig] = useState<FloatingPetConfig>(defaultPetConfig);
+    const [petState, setPetState] = useState<PetState>('idle');
+    const petSkin = getPetSkinOption(petConfig.petSkin);
 
     // Drag state tracked via ref to avoid re-renders during drag.
     const dragRef = useRef({
@@ -68,9 +128,77 @@ export function FloatingButton() {
         rafId: 0,
     });
 
-    // ── Left-click / Drag handling ──────────────────────────────────────────
+    useEffect(() => {
+        let cancelled = false;
+        const load = async () => {
+            try {
+                const cfg = await window.go?.main?.App?.LoadConfig?.();
+                if (!cfg || cancelled) return;
+                setPetConfig(readPetConfig(cfg));
+            } catch (err) {
+                console.warn('[FloatingButton] LoadConfig failed:', err);
+            }
+        };
+        void load();
+        const handleConfigChange = (cfg?: Record<string, unknown>) => {
+            if (!cfg || cancelled) {
+                void load();
+                return;
+            }
+            setPetConfig(readPetConfig(cfg));
+        };
+        const offConfigChanged = EventsOn('config-changed', handleConfigChange);
+        const offConfigUpdated = EventsOn('config-updated', handleConfigChange);
+        const timer = window.setInterval(load, 5000);
+        return () => {
+            cancelled = true;
+            offConfigChanged();
+            offConfigUpdated();
+            window.clearInterval(timer);
+        };
+    }, []);
 
-    const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    useEffect(() => {
+        if (!petConfig.petEnabled || petConfig.quietMode) {
+            setPetState('idle');
+            return;
+        }
+
+        let idleTimer: number | undefined;
+        const clearIdleTimer = () => {
+            if (idleTimer) {
+                window.clearTimeout(idleTimer);
+                idleTimer = undefined;
+            }
+        };
+        const scheduleIdle = (ttlMs?: number) => {
+            clearIdleTimer();
+            if (!ttlMs || ttlMs <= 0) return;
+            idleTimer = window.setTimeout(() => setPetState('idle'), ttlMs);
+        };
+        const handler = (payload?: PetStateEvent | PetState) => {
+            const nextState = typeof payload === 'string' ? payload : payload?.state;
+            if (!isPetState(nextState)) return;
+            setPetState(nextState);
+            scheduleIdle(typeof payload === 'object' ? payload.ttlMs : undefined);
+        };
+
+        const offPetState = EventsOn('pet:state', handler);
+        return () => {
+            clearIdleTimer();
+            offPetState();
+        };
+    }, [petConfig.petEnabled, petConfig.quietMode]);
+
+    useEffect(() => {
+        if (!petConfig.petEnabled || petConfig.quietMode || !petConfig.motionEnabled || petState !== 'idle') return;
+        const timer = window.setInterval(() => setPetState('idle'), 4200);
+        return () => window.clearInterval(timer);
+    }, [petConfig.petEnabled, petConfig.quietMode, petConfig.motionEnabled, petState]);
+
+    // Left-click / drag handling
+
+    const handleMouseDown = useCallback((e: ReactMouseEvent) => {
         if (e.button !== 0) return; // only left button
         e.preventDefault();
 
@@ -119,7 +247,7 @@ export function FloatingButton() {
             }
 
             if (!drag.isDragging) {
-                // Displacement ≤ threshold → treat as left-click.
+                // Displacement <= threshold: treat as left-click.
                 callGoBinding('OnFloatingButtonClicked');
             }
         };
@@ -128,9 +256,9 @@ export function FloatingButton() {
         document.addEventListener('mouseup', onMouseUp);
     }, []);
 
-    // ── Right-click context menu ────────────────────────────────────────────
+    // Right-click context menu
 
-    const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    const handleContextMenu = useCallback((e: ReactMouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
         setMenuPos({ x: e.clientX, y: e.clientY });
@@ -173,17 +301,35 @@ export function FloatingButton() {
 
     return (
         <div
-            className="floating-assistant-container"
+            className={`floating-assistant-container ${petConfig.petEnabled ? 'floating-assistant-container--pet' : ''}`}
             onMouseDown={handleMouseDown}
             onContextMenu={handleContextMenu}
+            data-pet-state={petState}
+            data-pet-skin={petConfig.petSkin}
+            data-interaction-mode={petConfig.interactionMode}
+            data-motion={petConfig.motionEnabled ? 'on' : 'off'}
+            data-quiet={petConfig.quietMode ? 'on' : 'off'}
+            style={petConfig.petEnabled ? { width: petConfig.petSize, height: petConfig.petSize } : undefined}
         >
             <div className="floating-assistant-halo" />
-            <img
-                src={logoSrc}
-                className="floating-assistant-logo"
-                alt="MaClaw Assistant"
-                draggable={false}
-            />
+            {petConfig.petEnabled ? (
+                <>
+                    <img
+                        src={petSkin.image}
+                        className="floating-assistant-pet"
+                        alt={petSkin.alt}
+                        draggable={false}
+                    />
+                    <div className="floating-assistant-pet-status" />
+                </>
+            ) : (
+                <img
+                    src={logoSrc}
+                    className="floating-assistant-logo"
+                    alt="MaClaw Assistant"
+                    draggable={false}
+                />
+            )}
             {showMenu && (
                 <div
                     className="floating-context-menu"
@@ -192,16 +338,12 @@ export function FloatingButton() {
                     <div
                         className="floating-context-menu-item"
                         onClick={handleHide}
-                    >
-                        隐藏
-                    </div>
+                    >{"\u9690\u85cf"}</div>
                     <div className="floating-context-menu-separator" />
                     <div
                         className="floating-context-menu-item"
                         onClick={handleQuit}
-                    >
-                        退出
-                    </div>
+                    >{"\u9000\u51fa"}</div>
                 </div>
             )}
         </div>

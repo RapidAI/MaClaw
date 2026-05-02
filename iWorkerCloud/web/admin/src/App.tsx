@@ -53,10 +53,16 @@ export default function App() {
         <nav className="nav">
           {tabs.map(id => (
             <button key={id} className={id === activeTab ? 'active' : ''} onClick={() => setActiveTab(id)}>
-              {t(`nav.${id}`)}
+              <span>{t(`nav.${id}`)}</span>
+              <small>{t(`subtitle.${id}`)}</small>
             </button>
           ))}
         </nav>
+        <div className="side-note">
+          <strong>{t('app.title')}</strong>
+          <br />
+          <span>iWorkerCloud Admin</span>
+        </div>
       </aside>
       <main className="main">
         <div className="top-bar">

@@ -91,6 +91,7 @@ func TestOnlineExtractor_ExtractAndIntegrate_UpdateExisting(t *testing.T) {
 		Content:  "User lives in Beijing, China. User's home city is Beijing.",
 		Category: CategoryUserFact,
 		Tags:     []string{"user", "location", "beijing", "city"},
+		Entities: []string{"entity:User", "relation:lives_in", "entity:Beijing"},
 	}
 	if err := store.Save(existing); err != nil {
 		t.Fatal(err)
@@ -122,7 +123,7 @@ func TestOnlineExtractor_ExtractAndIntegrate_UpdateExisting(t *testing.T) {
 
 	if result.Deleted != 1 {
 		// If BM25 didn't find the similar entry (no embedder), it would ADD instead.
-		// This is acceptable behavior — the async semantic dedup will clean up later.
+		// This is acceptable behavior; the async semantic dedup will clean up later.
 		// But let's verify at least something happened.
 		if result.Added == 0 && result.Deleted == 0 {
 			t.Fatalf("expected either add or delete, got added=%d deleted=%d", result.Added, result.Deleted)
@@ -145,6 +146,16 @@ func TestOnlineExtractor_ExtractAndIntegrate_UpdateExisting(t *testing.T) {
 		}
 	}
 	store.mu.RUnlock()
+
+	if got := store.FindByEntity("Beijing"); len(got) != 0 {
+		t.Fatalf("superseded entity fact should be removed from active entity lookup, got %+v", got)
+	}
+	currentHits := store.SemanticGraph().SearchWithOptions([]string{"user"}, SemanticSearchOptions{Now: time.Now()})
+	for _, hit := range currentHits {
+		if hit.EntryID == existingID {
+			t.Fatalf("superseded entity fact should be hidden from current semantic recall, got %+v", currentHits)
+		}
+	}
 
 	// Verify the new entry was added.
 	newEntries := store.List(CategoryUserFact, "Shanghai")
@@ -186,10 +197,10 @@ func TestOnlineExtractor_SkipsWhenAgentAlreadyWroteMemories(t *testing.T) {
 	// First verify HasRecentMemoryWrites works as expected.
 	testMsgs := []ConversationMessage{
 		{Role: "user", Content: "remember this"},
-		{Role: "assistant", Content: "已保存到记忆"},
+		{Role: "assistant", Content: "saved to memory"},
 	}
 	if !HasRecentMemoryWrites(testMsgs) {
-		t.Fatal("HasRecentMemoryWrites should detect '已保存到记忆'")
+		t.Fatal("HasRecentMemoryWrites should detect saved-to-memory text")
 	}
 
 	store := newTestStore(t)
@@ -204,7 +215,7 @@ func TestOnlineExtractor_SkipsWhenAgentAlreadyWroteMemories(t *testing.T) {
 
 	messages := []ConversationMessage{
 		{Role: "user", Content: "remember this"},
-		{Role: "assistant", Content: "好的，已保存到记忆中了。"},
+		{Role: "assistant", Content: "saved to memory"},
 	}
 
 	result := oe.ExtractAndIntegrate(context.Background(), messages, "", time.Now(), "")
@@ -244,5 +255,21 @@ func TestOnlineExtractor_TemporalAnnotation(t *testing.T) {
 	}
 	if entries[0].ValidAt.Month() != time.April || entries[0].ValidAt.Day() != 1 {
 		t.Fatalf("expected ValidAt to be April 1, got %v", entries[0].ValidAt)
+	}
+}
+
+func TestBuildFactTagsUsesCanonicalEntityParser(t *testing.T) {
+	fact := ExtractedFact{
+		Content:     "Alpha host uses port 2222.",
+		RawEntities: []byte(`[" Entity: Alpha Host ", " Relation: HAS-PORT ", " Entity: Port 2222 "]`),
+	}
+
+	tags := buildFactTags(fact)
+	want := map[string]bool{"online_extracted": true, "alpha host": true, "port 2222": true}
+	for _, tag := range tags {
+		delete(want, tag)
+	}
+	if len(want) != 0 {
+		t.Fatalf("expected canonical entity tags to be generated, missing=%v tags=%v", want, tags)
 	}
 }

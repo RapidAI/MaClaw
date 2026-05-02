@@ -76,6 +76,14 @@ type redeemLLMServiceCardRequest struct {
 	Code string `json:"code"`
 }
 
+var llmServiceCardDefaultCreditsByDuration = map[int]float64{
+	1:   300,
+	7:   1200,
+	30:  5000,
+	91:  17000,
+	365: 70000,
+}
+
 type llmServiceAccountResponse struct {
 	Email  string                    `json:"email"`
 	Status *llmservice.ServiceStatus `json:"status,omitempty"`
@@ -405,13 +413,13 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 		if days <= 0 {
 			days = 30
 		}
-		if days > 365 {
-			writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_DURATION_INVALID", "duration_days must be no more than 365")
+		if !isAllowedLLMServiceCardDuration(days) {
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_DURATION_INVALID", "duration_days must be one of: "+allowedLLMServiceCardDurationsLabel())
 			return
 		}
 		credits := req.Credits
-		if credits < 0 {
-			credits = 0
+		if credits <= 0 {
+			credits = defaultLLMServiceCardCredits(days)
 		}
 		periodLimits := llmservice.CreditPeriodLimits{
 			FiveHour: req.FiveHourCredits,
@@ -419,7 +427,7 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 			Weekly:   req.WeeklyCredits,
 			Monthly:  req.MonthlyCredits,
 		}
-		periodLimits = sanitizeLLMServicePeriodLimits(periodLimits)
+		periodLimits = sanitizeLLMServiceCardPeriodLimits(days, periodLimits)
 		existingHashes := make(map[string]struct{}, len(reg.Cards)+count)
 		for _, card := range reg.Cards {
 			if hash := strings.TrimSpace(card.CodeHash); hash != "" {
@@ -1819,6 +1827,45 @@ func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.Rechar
 	default:
 		writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_FORMAT_INVALID", "format must be one of: txt, csv")
 	}
+}
+
+func isAllowedLLMServiceCardDuration(days int) bool {
+	_, ok := llmServiceCardDefaultCreditsByDuration[days]
+	return ok
+}
+
+func defaultLLMServiceCardCredits(days int) float64 {
+	if credits, ok := llmServiceCardDefaultCreditsByDuration[days]; ok {
+		return credits
+	}
+	return llmServiceCardDefaultCreditsByDuration[30]
+}
+
+func allowedLLMServiceCardDurationsLabel() string {
+	durations := make([]int, 0, len(llmServiceCardDefaultCreditsByDuration))
+	for days := range llmServiceCardDefaultCreditsByDuration {
+		durations = append(durations, days)
+	}
+	sort.Ints(durations)
+	parts := make([]string, 0, len(durations))
+	for _, days := range durations {
+		parts = append(parts, strconv.Itoa(days))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func sanitizeLLMServiceCardPeriodLimits(days int, limits llmservice.CreditPeriodLimits) llmservice.CreditPeriodLimits {
+	limits = sanitizeLLMServicePeriodLimits(limits)
+	if days < 7 {
+		limits.Daily = 0
+	}
+	if days < 30 {
+		limits.Weekly = 0
+	}
+	if days < 91 {
+		limits.Monthly = 0
+	}
+	return limits
 }
 
 func sanitizeLLMServicePeriodLimits(limits llmservice.CreditPeriodLimits) llmservice.CreditPeriodLimits {

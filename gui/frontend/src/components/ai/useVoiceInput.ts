@@ -1,5 +1,5 @@
 /**
- * useVoiceInput — Toggle-mode voice input for the AI assistant panel.
+ * useVoiceInput 鈥?Toggle-mode voice input for the AI assistant panel.
  *
  * Toggle ON: microphone opens, continuously listens. When a speech segment
  * is detected (adaptive energy-based VAD), it's automatically sent to the
@@ -12,11 +12,11 @@
  * for headset/earbuds (0.006 RMS). Auto-calibration tracks the minimum RMS
  * across the first few chunks to refine this. If the user has run manual
  * calibration (settings panel), those values take priority and EMA adaptation
- * is disabled — the user's calibration is authoritative.
+ * is disabled 鈥?the user's calibration is authoritative.
  *
  * Speech threshold calculation:
  *   - With two-phase calibration: noise + 30% of (speech - noise) gap
- *   - Without: noise floor × 3.0 multiplier
+ *   - Without: noise floor 脳 3.0 multiplier
  * The 30% bias toward noise is intentional: false positives (noise sent to ASR)
  * are cheap (backend Silero VAD filters them), false negatives (missed speech)
  * are expensive (user's words are lost).
@@ -25,7 +25,8 @@
  * layer of noise filtering.
  */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { TranscribeAudioBase64, IsASRReady, LoadConfig } from "../../../wailsjs/go/main/App";
+import { TranscribeAudioBase64, IsASRReady, LoadConfig, SpeakPlainText } from "../../../wailsjs/go/main/App";
+import { EventsEmit, EventsOn } from "../../../wailsjs/runtime";
 
 export type VoiceInputState = "idle" | "listening" | "transcribing";
 export type VoiceInputSource = "hold" | "continuous";
@@ -57,16 +58,16 @@ export interface UseVoiceInputResult {
     onAudioLevelRef: React.MutableRefObject<((level: number) => void) | null>;
 }
 
-// ── Constants ──
+// 鈹€鈹€ Constants 鈹€鈹€
 const TARGET_SAMPLE_RATE = 16000;
 const CHUNK_SIZE = 4096; // ~256ms at 16kHz
 
 // Energy VAD thresholds for speech segmentation
-const SILENCE_THRESHOLD_FLOOR = 0.003; // absolute minimum RMS — below this is always silence (near-zero signal)
+const SILENCE_THRESHOLD_FLOOR = 0.003; // absolute minimum RMS 鈥?below this is always silence (near-zero signal)
 const NOISE_CALIBRATION_CHUNKS = 4;    // first N chunks used to calibrate noise floor (~1s at 256ms/chunk)
 const NOISE_FLOOR_MULTIPLIER = 3.0;    // speech threshold = noiseFloor * multiplier (SNR requirement)
 const NOISE_FLOOR_ADAPT_RATE = 0.05;   // EMA alpha for noise floor adaptation during silence
-const NOISE_FLOOR_MAX = 0.08;          // cap noise floor — above this the environment is too loud
+const NOISE_FLOOR_MAX = 0.08;          // cap noise floor 鈥?above this the environment is too loud
 const NOISE_FLOOR_DEFAULT = 0.0025;    // conservative default; backend VAD catches false positives better than missed speech
 const SPEECH_START_CHUNKS = 2;         // consecutive speech chunks to start collecting a segment
 const SILENCE_END_CHUNKS = 6;          // consecutive silence chunks to end a segment (~1.5s)
@@ -101,6 +102,18 @@ const ASR_DESPIKE_NEIGHBOR_MAX = 0.35;
 const ASR_ADVANCED_CLEANUP_ENABLED = false;
 const VOICE_INPUT_DEBUG = true;
 
+function petRetryPromptText(): string {
+    return "\u6ca1\u542c\u6e05\uff0c\u8bf7\u518d\u8bf4\u4e00\u904d\u3002";
+}
+
+function emitPetState(state: "idle" | "listening" | "thinking" | "speaking", source: string, ttlMs?: number) {
+    try {
+        EventsEmit("pet:state", { state, source, ttlMs });
+    } catch {
+        // Runtime events are best-effort; voice input should never fail because the pet view is absent.
+    }
+}
+
 function voiceDebug(event: string, detail?: Record<string, unknown>) {
     if (!VOICE_INPUT_DEBUG) return;
     if (detail) {
@@ -110,7 +123,7 @@ function voiceDebug(event: string, detail?: Record<string, unknown>) {
     }
 }
 
-// ── WAV encoding utilities ──
+// 鈹€鈹€ WAV encoding utilities 鈹€鈹€
 
 function encodeWAV(samples: Float32Array, sampleRate: number): ArrayBuffer {
     const bitsPerSample = 16;
@@ -519,10 +532,10 @@ function isStableContinuousSpeech(segment: Pick<PendingSpeechSegment, "sampleRat
         segment.sampleCount / segment.sampleRate >= MIN_CONTINUOUS_SPEECH_SEC;
 }
 
-// ── Hook ──
+// 鈹€鈹€ Hook 鈹€鈹€
 
 export function useVoiceInput(
-    onTranscribed: (text: string, source: VoiceInputSource) => void,
+    onTranscribed: (text: string, source: VoiceInputSource) => void | Promise<void>,
     inputDeviceId?: string,
 ): UseVoiceInputResult {
     const [state, setState] = useState<VoiceInputState>("idle");
@@ -550,7 +563,7 @@ export function useVoiceInput(
 
     // Segment accumulation state (refs to avoid re-renders on every chunk)
     const segmentChunksRef = useRef<Float32Array[]>([]);
-    const segmentSamplesRef = useRef(0); // incremental counter — avoids O(N) reduce per chunk
+    const segmentSamplesRef = useRef(0); // incremental counter 鈥?avoids O(N) reduce per chunk
     const segmentSpeechChunksRef = useRef(0); // count of speech chunks in current segment
     const speechChunkCountRef = useRef(0);
     const silenceChunkCountRef = useRef(0);
@@ -564,7 +577,7 @@ export function useVoiceInput(
     const pendingTranscriptionsRef = useRef(0); // count of in-flight transcription promises
     const transcriptionQueueRef = useRef<Promise<void>>(Promise.resolve());
     const activeRef = useRef(false); // true while mic is open
-    const startingRef = useRef(false); // true during getUserMedia — prevents double-start
+    const startingRef = useRef(false); // true during getUserMedia 鈥?prevents double-start
     const audioLevelCallbackRef = useRef<((level: number) => void) | null>(null);
     const inputDeviceIdRef = useRef(inputDeviceId);
     inputDeviceIdRef.current = inputDeviceId;
@@ -578,25 +591,39 @@ export function useVoiceInput(
     const noiseCalibDoneRef = useRef(false);   // true after calibration phase completes
     const persistedNoiseFloorRef = useRef(0);  // user-calibrated value from config (0 = not calibrated)
     const persistedSpeechLevelRef = useRef(0); // user-calibrated speech energy from config (0 = not calibrated)
-    const configLoadedRef = useRef(false);     // true after LoadConfig completes — prevents race with early mic open
+    const petAutoRetryOnNoHearRef = useRef(false);
+    const petVoiceReadbackEnabledRef = useRef(false);
+    const lastPetRetryPromptAtRef = useRef(0);
+    const configLoadedRef = useRef(false);     // true after LoadConfig completes 鈥?prevents race with early mic open
 
     // Load persisted calibration from config on mount.
     // configLoadedRef gates processChunk's calibration path to prevent the race
     // where auto-calibration completes before LoadConfig returns.
     useEffect(() => {
-        LoadConfig().then(cfg => {
-            const nf = (cfg as any).noise_floor_calibrated;
-            if (typeof nf === 'number' && nf > 0) {
-                persistedNoiseFloorRef.current = nf;
-            }
-            const sl = (cfg as any).speech_level_calibrated;
-            if (typeof sl === 'number' && sl > 0) {
-                persistedSpeechLevelRef.current = sl;
-            }
-            configLoadedRef.current = true;
-        }).catch(() => {
-            configLoadedRef.current = true; // proceed with defaults on error
-        });
+        const loadVoiceConfig = () => {
+            LoadConfig().then(cfg => {
+                const nf = (cfg as any).noise_floor_calibrated;
+                if (typeof nf === 'number' && nf > 0) {
+                    persistedNoiseFloorRef.current = nf;
+                }
+                const sl = (cfg as any).speech_level_calibrated;
+                if (typeof sl === 'number' && sl > 0) {
+                    persistedSpeechLevelRef.current = sl;
+                }
+                petAutoRetryOnNoHearRef.current = !!(cfg as any).pet_auto_retry_on_no_hear;
+                petVoiceReadbackEnabledRef.current = !!(cfg as any).pet_voice_readback_enabled && ((cfg as any).pet_readback_mode || 'summary') !== 'off';
+                configLoadedRef.current = true;
+            }).catch(() => {
+                configLoadedRef.current = true; // proceed with defaults on error
+            });
+        };
+        loadVoiceConfig();
+        const offConfigChanged = EventsOn('config-changed', loadVoiceConfig);
+        const offConfigUpdated = EventsOn('config-updated', loadVoiceConfig);
+        return () => {
+            if (typeof offConfigChanged === 'function') offConfigChanged();
+            if (typeof offConfigUpdated === 'function') offConfigUpdated();
+        };
     }, []);
 
     // Check ASR readiness
@@ -609,6 +636,15 @@ export function useVoiceInput(
         check();
         const iv = setInterval(check, 30000);
         return () => { cancelled = true; clearInterval(iv); };
+    }, []);
+
+    const promptPetRetryOnNoHear = useCallback((reason: string) => {
+        if (!petAutoRetryOnNoHearRef.current || !petVoiceReadbackEnabledRef.current) return;
+        const now = Date.now();
+        if (now - lastPetRetryPromptAtRef.current < 5000) return;
+        lastPetRetryPromptAtRef.current = now;
+        emitPetState("speaking", `asr:no-hear:${reason}`, 3200);
+        SpeakPlainText(petRetryPromptText()).catch(() => {});
     }, []);
 
     /** Send a completed speech segment for transcription. */
@@ -632,7 +668,7 @@ export function useVoiceInput(
         const pcm = normalized.pcm;
         const durationSec = pcm.length / TARGET_SAMPLE_RATE;
 
-        // Too short — skip
+        // Too short 鈥?skip
         if (durationSec < ASR_MIN_DURATION_SEC) {
             voiceDebug("skip transcribe: audio too short", {
                 chunks: chunks.length,
@@ -640,6 +676,7 @@ export function useVoiceInput(
                 samples: pcm.length,
                 durationSec: Number(durationSec.toFixed(3)),
             });
+            promptPetRetryOnNoHear("too-short");
             return;
         }
 
@@ -654,6 +691,7 @@ export function useVoiceInput(
                 requiredRMS: ASR_MIN_RMS,
                 requiredPeak: ASR_MIN_PEAK,
             });
+            promptPetRetryOnNoHear("quality-gate");
             return;
         }
 
@@ -665,6 +703,7 @@ export function useVoiceInput(
                 dynamicRangeRatio: Number(voiceShape.dynamicRangeRatio.toFixed(2)),
                 durationSec: Number(durationSec.toFixed(3)),
             });
+            promptPetRetryOnNoHear("voice-shape");
             return;
         }
 
@@ -711,6 +750,7 @@ export function useVoiceInput(
         pendingTranscriptionsRef.current++;
         if (!activeRef.current) {
             setState("transcribing");
+        emitPetState("thinking", `asr:${source}`, 15000);
         }
 
         const runTranscription = async () => {
@@ -729,10 +769,11 @@ export function useVoiceInput(
                 });
                 if (trimmed) {
                     voiceDebug("dispatch transcribed text", { text: trimmed, source });
-                    onTranscribedRef.current(trimmed, source);
+                    await Promise.resolve(onTranscribedRef.current(trimmed, source));
                     setSegmentCount(c => c + 1);
                 } else {
                     voiceDebug("ASR returned empty text");
+                    promptPetRetryOnNoHear("empty-result");
                 }
             } catch (err: any) {
                 console.warn("[voice-input] ASR failed", err);
@@ -742,12 +783,13 @@ export function useVoiceInput(
                 if (!activeRef.current && pendingTranscriptionsRef.current <= 0) {
                     pendingTranscriptionsRef.current = 0;
                     setState("idle");
+                    emitPetState("idle", "asr:done");
                 }
             }
         };
 
         transcriptionQueueRef.current = transcriptionQueueRef.current.then(runTranscription, runTranscription);
-    }, [setErrorAuto]);
+    }, [promptPetRetryOnNoHear, setErrorAuto]);
 
     const resetFallbackBuffer = useCallback(() => {
         fallbackChunksRef.current = [];
@@ -808,12 +850,12 @@ export function useVoiceInput(
     const processChunk = useCallback((data: Float32Array) => {
         const energy = rms(data);
 
-        // ── Adaptive noise floor calibration & tracking ──
+        // 鈹€鈹€ Adaptive noise floor calibration & tracking 鈹€鈹€
         //
         // Three-tier priority:
-        //   1. User-calibrated value (from settings) — highest trust, no EMA adaptation
-        //   2. Auto-calibrated value (from first N chunks) — uses minimum RMS, not average
-        //   3. NOISE_FLOOR_DEFAULT (low headset/earbuds baseline) — works immediately
+        //   1. User-calibrated value (from settings) 鈥?highest trust, no EMA adaptation
+        //   2. Auto-calibrated value (from first N chunks) 鈥?uses minimum RMS, not average
+        //   3. NOISE_FLOOR_DEFAULT (low headset/earbuds baseline) 鈥?works immediately
         //
         // Auto-calibration uses the MINIMUM RMS across the calibration window, not the
         // average. This is robust to the user speaking during calibration: the quietest
@@ -824,7 +866,7 @@ export function useVoiceInput(
         // is true, so persisted values always take priority even if LoadConfig is slow.
         if (!noiseCalibDoneRef.current) {
             if (configLoadedRef.current && persistedNoiseFloorRef.current > 0) {
-                // Tier 1: user-calibrated — use directly, no auto-calibration needed
+                // Tier 1: user-calibrated 鈥?use directly, no auto-calibration needed
                 noiseFloorRef.current = persistedNoiseFloorRef.current;
                 noiseCalibDoneRef.current = true;
             } else {
@@ -848,9 +890,9 @@ export function useVoiceInput(
 
         // Dynamic speech threshold:
         //   - With speech calibration: noise + 30% of the gap to speech level
-        //     (biased toward noise side — better to send noise to backend Silero VAD
+        //     (biased toward noise side 鈥?better to send noise to backend Silero VAD
         //      than to miss user speech)
-        //   - Without: noise floor × multiplier (fallback)
+        //   - Without: noise floor 脳 multiplier (fallback)
         //   - Always at least SILENCE_THRESHOLD_FLOOR
         let speechThreshold: number;
         if (persistedSpeechLevelRef.current > 0 && persistedNoiseFloorRef.current > 0) {
@@ -942,7 +984,7 @@ export function useVoiceInput(
             setIsSpeaking(true);
         }
 
-        // Accumulate during speech (copy buffer — AudioBuffer reuses the underlying array)
+        // Accumulate during speech (copy buffer 鈥?AudioBuffer reuses the underlying array)
         if (inSpeechRef.current) {
             if (!startedSpeechThisChunk || segmentChunksRef.current.length === 0) {
                 segmentChunksRef.current.push(new Float32Array(data));
@@ -1016,6 +1058,9 @@ export function useVoiceInput(
         cleanup();
         if (pendingTranscriptionsRef.current <= 0) {
             setState("idle");
+            emitPetState("idle", "asr:hold-stop");
+        } else {
+            emitPetState("thinking", "asr:hold-transcribing", 15000);
         }
         setDuration(0);
     }, [cleanup, flushHoldBuffer]);
@@ -1046,7 +1091,7 @@ export function useVoiceInput(
         silenceChunkCountRef.current = 0;
         resetFallbackBuffer();
         inSpeechRef.current = false;
-        // Reset adaptive noise floor — start with default, auto-calibration will refine
+        // Reset adaptive noise floor 鈥?start with default, auto-calibration will refine
         noiseFloorRef.current = NOISE_FLOOR_DEFAULT;
         noiseCalibCountRef.current = 0;
         noiseCalibMinRef.current = Infinity;
@@ -1088,6 +1133,7 @@ export function useVoiceInput(
             }, 500);
 
             setState("listening");
+            emitPetState("listening", holdModeRef.current ? "asr:hold" : "asr:continuous");
             voiceDebug("listening started", {
                 sampleRate: ctx.sampleRate,
                 trackSampleRate: trackSettings?.sampleRate,
@@ -1206,8 +1252,10 @@ export function useVoiceInput(
         cleanup();
         if (pendingTranscriptionsRef.current > 0) {
             setState("transcribing");
+            emitPetState("thinking", "asr:continuous-transcribing", 15000);
         } else {
             setState("idle");
+            emitPetState("idle", "asr:continuous-stop");
         }
         setDuration(0);
     }, [cleanup, flushFallbackBuffer, stopHold, transcribeSegment]);
@@ -1221,7 +1269,7 @@ export function useVoiceInput(
             resetHoldBuffer();
             await startListening();
         }
-        // If transcribing (after stop), ignore — will go idle when done
+        // If transcribing (after stop), ignore 鈥?will go idle when done
     }, [resetHoldBuffer, state, startListening, stopListening]);
 
     return {

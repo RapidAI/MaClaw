@@ -45,7 +45,7 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 
 	log.Printf("[floating-assistant] ShowFloatingButton: enter, app=%v", m.app != nil)
 
-	// Check config — do not show if disabled.
+	// Check config - do not show if disabled.
 	config, err := m.app.LoadConfig()
 	if err != nil {
 		log.Printf("[floating-assistant] ShowFloatingButton: LoadConfig failed: %v", err)
@@ -56,7 +56,7 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 		return
 	}
 
-	// Idempotent — no-op if already visible.
+	// Idempotent - no-op if already visible.
 	if m.visible {
 		log.Printf("[floating-assistant] ShowFloatingButton: already visible, skipping")
 		return
@@ -75,7 +75,7 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 		return
 	}
 
-	winSize := 72 // must match floatWinSize on Windows
+	winSize := floatingWindowSize(config)
 	log.Printf("[floating-assistant] ShowFloatingButton: calling window.Create(%d,%d,%d,%d)", m.posX, m.posY, winSize, winSize)
 	if err := m.window.Create(m.posX, m.posY, winSize, winSize); err != nil {
 		log.Printf("[floating-assistant] ShowFloatingButton: window.Create FAILED: %v", err)
@@ -99,6 +99,35 @@ func (m *FloatingAssistantManager) HideFloatingButton() {
 	m.visible = false
 }
 
+// RefreshAppearance recreates the floating window so native renderers pick up
+// pet skin, size, and logo/pet mode changes immediately.
+func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.visible || m.window == nil {
+		return
+	}
+	if !config.ShowAssistantEntry {
+		m.window.Destroy()
+		m.visible = false
+		return
+	}
+
+	winSize := floatingWindowSize(config)
+	if m.posX == 0 && m.posY == 0 {
+		m.posX, m.posY = m.loadOrDefaultPosition(config)
+	}
+	m.window.Destroy()
+	if err := m.window.Create(m.posX, m.posY, winSize, winSize); err != nil {
+		log.Printf("[floating-assistant] RefreshAppearance: window.Create FAILED: %v", err)
+		m.visible = false
+		return
+	}
+	m.window.Show()
+	m.visible = true
+}
+
 // IsVisible returns whether the floating button is currently shown.
 func (m *FloatingAssistantManager) IsVisible() bool {
 	m.mu.Lock()
@@ -114,7 +143,7 @@ func (m *FloatingAssistantManager) UpdatePosition(x, y int) {
 
 	screenW := getScreenWidth()
 	screenH := getScreenHeight()
-	buttonSize := 64
+	buttonSize := floatingWindowSizeForCurrentConfig(m.app)
 
 	if x < 0 {
 		x = 0
@@ -178,8 +207,18 @@ func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfi
 
 // OnFloatingButtonClicked handles a left-click on the floating button.
 // It shows the main window, switches to the AI panel, and hides the
-// floating button (mutual exclusivity — Requirement 7).
+// floating button (mutual exclusivity - Requirement 7).
 func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
+	voiceRequested := false
+	if m.app != nil {
+		if config, err := m.app.LoadConfig(); err == nil && config.PetEnabled && config.PetVoiceInput {
+			switch config.PetConversationMode {
+			case "voice-turn", "continuous":
+				voiceRequested = true
+			}
+		}
+	}
+
 	// Hide floating button first (Requirement 7: never simultaneously visible).
 	m.HideFloatingButton()
 
@@ -188,8 +227,12 @@ func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
 	runtime.WindowSetAlwaysOnTop(m.app.ctx, true)
 	runtime.WindowSetAlwaysOnTop(m.app.ctx, false)
 
-	// Tell frontend to switch to AI assistant panel.
-	runtime.EventsEmit(m.app.ctx, "switch-to-ai-panel")
+	// Tell frontend to switch to AI assistant panel. When the pet is configured
+	// for voice conversation, also request the panel to open voice input.
+	runtime.EventsEmit(m.app.ctx, "switch-to-ai-panel", map[string]any{
+		"source": "pet",
+		"voice":  voiceRequested,
+	})
 }
 
 // OnFloatingButtonDragged moves the floating window to the given screen
@@ -200,7 +243,7 @@ func (m *FloatingAssistantManager) OnFloatingButtonDragged(x, y int) {
 	// Clamp position to screen bounds (Requirement 3.4)
 	screenW := getScreenWidth()
 	screenH := getScreenHeight()
-	buttonSize := 64
+	buttonSize := floatingWindowSizeForCurrentConfig(m.app)
 
 	if x < 0 {
 		x = 0
@@ -226,8 +269,97 @@ func (m *FloatingAssistantManager) OnFloatingButtonDragged(x, y int) {
 	m.UpdatePosition(x, y)
 }
 
+func floatingWindowSize(config corelib.AppConfig) int {
+	if !config.PetEnabled {
+		return 72
+	}
+	size := config.PetSize
+	if size <= 0 {
+		size = 72
+	}
+	if size < 56 {
+		size = 56
+	}
+	if size > 120 {
+		size = 120
+	}
+	return size + 16
+}
+
+func sanitizePetConfig(config *corelib.AppConfig) {
+	if config == nil {
+		return
+	}
+	switch config.PetSkin {
+	case "", "clawmate":
+		config.PetSkin = "clawmate"
+	case "mini-claw", "dev-claw", "focus-claw":
+	default:
+		config.PetSkin = "clawmate"
+	}
+
+	if config.PetSize == 0 {
+		config.PetSize = 72
+	} else if config.PetSize < 56 {
+		config.PetSize = 56
+	} else if config.PetSize > 120 {
+		config.PetSize = 120
+	}
+
+	switch config.PetInteractionMode {
+	case "quiet", "balanced", "active":
+	default:
+		config.PetInteractionMode = "balanced"
+	}
+	switch config.PetConversationMode {
+	case "text-first", "voice-turn", "continuous":
+	default:
+		config.PetConversationMode = "text-first"
+	}
+	switch config.PetReadbackMode {
+	case "off", "summary", "full", "done-only":
+	default:
+		if config.PetVoiceReadback {
+			config.PetReadbackMode = "summary"
+		} else {
+			config.PetReadbackMode = "off"
+		}
+	}
+	if config.PetReadbackMode == "off" {
+		config.PetVoiceReadback = false
+	} else if config.PetReadbackMode != "" {
+		config.PetVoiceReadback = true
+	}
+
+	if config.PetContinuousTimeout == 0 {
+		config.PetContinuousTimeout = 30
+	} else if config.PetContinuousTimeout < 5 {
+		config.PetContinuousTimeout = 5
+	} else if config.PetContinuousTimeout > 120 {
+		config.PetContinuousTimeout = 120
+	}
+}
+
+func floatingAppearanceChanged(oldConfig, newConfig corelib.AppConfig) bool {
+	return oldConfig.ShowAssistantEntry != newConfig.ShowAssistantEntry ||
+		oldConfig.PetEnabled != newConfig.PetEnabled ||
+		oldConfig.PetSkin != newConfig.PetSkin ||
+		oldConfig.PetSize != newConfig.PetSize
+}
+
+func floatingWindowSizeForCurrentConfig(app *App) int {
+	if app == nil {
+		return 72
+	}
+	config, err := app.LoadConfig()
+	if err != nil {
+		return 72
+	}
+	return floatingWindowSize(config)
+}
+
 // QuitApp terminates the application. Called from the floating button's
-// right-click context menu "退出" item.
+// right-click context menu "Quit" item.
 func (m *FloatingAssistantManager) QuitApp() {
 	log.Println("[floating-assistant] QuitApp: user requested exit from floating button")
 
@@ -240,11 +372,11 @@ func (m *FloatingAssistantManager) QuitApp() {
 	m.visible = false
 	m.mu.Unlock()
 
-	// Quit on a separate goroutine — runtime.Quit triggers the Wails
+	// Quit on a separate goroutine - runtime.Quit triggers the Wails
 	// shutdown sequence which must not run on the WebView's JS callback
 	// goroutine (same pattern as the system tray quit handler).
 	// After runtime.Quit, also call quitSystray() to terminate the
-	// systray event loop — otherwise the process stays alive in the
+	// systray event loop - otherwise the process stays alive in the
 	// background even though the Wails window is gone.
 	go func() {
 		if m.app != nil && m.app.ctx != nil {
@@ -255,10 +387,10 @@ func (m *FloatingAssistantManager) QuitApp() {
 	}()
 }
 
-// ── Screen dimension helpers ────────────────────────────────────────────────
+// Screen dimension helpers
 // Platform-specific implementations can override these via build-tag files
 // (e.g. floating_assistant_windows.go, floating_assistant_darwin.go).
-// Defaults to 1920×1080 when no platform hook is set.
+// Defaults to 1920x1080 when no platform hook is set.
 
 var platformGetScreenWidth func() int
 var platformGetScreenHeight func() int

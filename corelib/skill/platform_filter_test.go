@@ -99,3 +99,18 @@ func TestScanSkillDir_PlatformFiltering(t *testing.T) {
 		t.Error("expected universal-skill to be included")
 	}
 }
+
+func TestScanSkillDirIgnoresJSONDefinition(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "json-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.json"), []byte(`{"name":"json-skill"}`), 0644); err != nil {
+		t.Fatalf("WriteFile(skill.json) error: %v", err)
+	}
+	results := ScanSkillDir(root)
+	if len(results) != 0 {
+		t.Fatalf("skill.json should not be scanned as a skill definition: %+v", results)
+	}
+}

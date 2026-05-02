@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // PromoteResult holds the outcome of an episodic→semantic promotion run.
@@ -17,6 +18,7 @@ type PromoteResult struct {
 // to semantic memories (preference/instruction) when they appear ≥ threshold
 // times. This implements the MemGPT-style episodic→semantic transition.
 type Promoter struct {
+	mu        sync.RWMutex
 	store     *Store
 	llm       LLMChatCaller
 	threshold int // minimum occurrences to trigger promotion (default 3)
@@ -27,11 +29,23 @@ func NewPromoter(store *Store, llm LLMChatCaller) *Promoter {
 	return &Promoter{store: store, llm: llm, threshold: 3}
 }
 
+// SetLLM rewires the LLM used by the promotion cycle. The App constructs the
+// memory pipeline before model configuration is always available, so evolution
+// components must be able to receive the caller later without being recreated.
+func (p *Promoter) SetLLM(llm LLMChatCaller) {
+	p.mu.Lock()
+	p.llm = llm
+	p.mu.Unlock()
+}
+
 // Promote runs one promotion cycle. It groups episodic memories by
 // content similarity, identifies recurring themes, and asks the LLM
 // to confirm promotion to semantic memory.
 func (p *Promoter) Promote(ctx context.Context) (*PromoteResult, error) {
-	if p.llm == nil || !p.llm.IsConfigured() {
+	p.mu.RLock()
+	llm := p.llm
+	p.mu.RUnlock()
+	if llm == nil || !llm.IsConfigured() {
 		return &PromoteResult{}, nil
 	}
 
@@ -82,7 +96,7 @@ Rules:
 	default:
 	}
 
-	resp, err := p.llm.ChatCall(messages)
+	resp, err := llm.ChatCall(messages)
 	if err != nil {
 		return &PromoteResult{Error: err.Error()}, nil
 	}

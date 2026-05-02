@@ -577,14 +577,80 @@ func (a *App) FetchRoles() []CenterRole {
 func (a *App) FetchInstalledTools() CenterInstalledTools {
 	settings, _ := readDiWorkerSettings()
 	settings = normalizeDiWorkerSettings(settings)
+	return fetchInstalledToolsForSettings(settings, 5)
+}
+
+func fetchInstalledToolsForSettings(settings DiWorkerSettings, timeoutSec int) CenterInstalledTools {
+	settings = normalizeDiWorkerSettings(settings)
 	if !settings.Center.Enabled {
-		return CenterInstalledTools{Skills: []CenterRuntimeCapability{}, MCPServers: []CenterMCPServer{}}
+		return CenterInstalledTools{Skills: []CenterRuntimeCapability{}, MCPServers: []CenterMCPServer{}, Source: "local"}
 	}
 	baseURL := resolvedCenterBaseURL(settings)
 	tenantID := resolvedTenantID(settings)
+	workerID := resolvedWorkerID(settings)
+	departmentID := resolvedDepartmentID(settings)
+
+	type skillsFetchResult struct {
+		items []CenterRuntimeCapability
+		err   error
+	}
+	type mcpFetchResult struct {
+		items []CenterMCPServer
+		err   error
+	}
+	skillsCh := make(chan skillsFetchResult, 1)
+	mcpCh := make(chan mcpFetchResult, 1)
+	go func() {
+		items, err := fetchCenterRuntimeCapabilitiesResult(baseURL, tenantID, workerID, timeoutSec)
+		skillsCh <- skillsFetchResult{items: items, err: err}
+	}()
+	go func() {
+		items, err := fetchCenterMCPServersResult(baseURL, tenantID, departmentID, timeoutSec)
+		mcpCh <- mcpFetchResult{items: items, err: err}
+	}()
+	skillsResult := <-skillsCh
+	mcpResult := <-mcpCh
+
+	if skillsResult.err == nil && mcpResult.err == nil {
+		tools := CenterInstalledTools{Skills: skillsResult.items, MCPServers: mcpResult.items, Source: "center", CachedAt: time.Now().UTC().Format(time.RFC3339)}
+		_ = writeInstalledToolsCache(tenantID, departmentID, workerID, tools)
+		return tools
+	}
+	if skillsResult.err == nil || mcpResult.err == nil {
+		tools := mergePartialInstalledToolsSnapshot(tenantID, departmentID, workerID, skillsResult.items, skillsResult.err, mcpResult.items, mcpResult.err)
+		_ = writeInstalledToolsCache(tenantID, departmentID, workerID, tools)
+		return tools
+	}
+	if cached, ok := readInstalledToolsCache(tenantID, departmentID, workerID); ok {
+		cached.Source = "cache"
+		cached.Stale = true
+		return cached
+	}
+	return CenterInstalledTools{Skills: []CenterRuntimeCapability{}, MCPServers: []CenterMCPServer{}, Source: "unavailable", Stale: true}
+}
+func mergePartialInstalledToolsSnapshot(tenantID, departmentID, workerID string, skills []CenterRuntimeCapability, skillErr error, mcpServers []CenterMCPServer, mcpErr error) CenterInstalledTools {
+	cached, hasCache := readInstalledToolsCache(tenantID, departmentID, workerID)
+	if !hasCache {
+		cached = CenterInstalledTools{Skills: []CenterRuntimeCapability{}, MCPServers: []CenterMCPServer{}}
+	}
+	if skillErr != nil {
+		skills = cached.Skills
+	}
+	if mcpErr != nil {
+		mcpServers = cached.MCPServers
+	}
+	if skills == nil {
+		skills = []CenterRuntimeCapability{}
+	}
+	if mcpServers == nil {
+		mcpServers = []CenterMCPServer{}
+	}
 	return CenterInstalledTools{
-		Skills:     fetchCenterRuntimeCapabilities(baseURL, tenantID, resolvedWorkerID(settings), 5),
-		MCPServers: fetchCenterMCPServers(baseURL, tenantID, resolvedDepartmentID(settings), 5),
+		Skills:     skills,
+		MCPServers: mcpServers,
+		Source:     "partial-cache",
+		CachedAt:   time.Now().UTC().Format(time.RFC3339),
+		Stale:      true,
 	}
 }
 
@@ -602,6 +668,63 @@ func (a *App) FetchCapabilities(colleagueID string) []CenterCapability {
 		}
 	}
 	return nil
+}
+
+func installedToolsCachePath(tenantID, departmentID, workerID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	tenantID = sanitizeCacheName(firstNonEmptyString(tenantID, "default"))
+	departmentID = sanitizeCacheName(firstNonEmptyString(departmentID, "default"))
+	workerID = sanitizeCacheName(firstNonEmptyString(workerID, "default"))
+	return filepath.Join(home, ".iworker", "cache", "installed_tools", strings.Join([]string{tenantID, departmentID, workerID}, "__")+".json"), nil
+}
+
+func readInstalledToolsCache(tenantID, departmentID, workerID string) (CenterInstalledTools, bool) {
+	path, err := installedToolsCachePath(tenantID, departmentID, workerID)
+	if err != nil {
+		return CenterInstalledTools{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CenterInstalledTools{}, false
+	}
+	var tools CenterInstalledTools
+	if err := json.Unmarshal(data, &tools); err != nil {
+		return CenterInstalledTools{}, false
+	}
+	if tools.Skills == nil {
+		tools.Skills = []CenterRuntimeCapability{}
+	}
+	if tools.MCPServers == nil {
+		tools.MCPServers = []CenterMCPServer{}
+	}
+	return tools, true
+}
+
+func writeInstalledToolsCache(tenantID, departmentID, workerID string, tools CenterInstalledTools) error {
+	path, err := installedToolsCachePath(tenantID, departmentID, workerID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if tools.Skills == nil {
+		tools.Skills = []CenterRuntimeCapability{}
+	}
+	if tools.MCPServers == nil {
+		tools.MCPServers = []CenterMCPServer{}
+	}
+	if strings.TrimSpace(tools.CachedAt) == "" {
+		tools.CachedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	data, err := json.MarshalIndent(tools, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
 }
 
 func defaultColleagues() []Colleague {
@@ -687,14 +810,14 @@ func (a *App) LoadTaskHistory() ([]HistoryTaskItem, error) {
 		if os.IsNotExist(err) {
 			return []HistoryTaskItem{}, nil
 		}
-		return nil, fmt.Errorf("闂佽崵濮村ú鈺咁敋瑜戦妵鎰板炊閵娧屾祫闁荤姴娲﹁ぐ鍐綖閵堝鐓曟俊顖滃劋椤ユ粎鎲搁幏灞界厫鐎垫澘瀚蹇涱敃閵? %w", err)
+		return nil, fmt.Errorf("load task history failed: %w", err)
 	}
 	return items, nil
 }
 
 func (a *App) SaveTaskHistory(items []HistoryTaskItem) error {
 	if err := writeTaskHistory(items); err != nil {
-		return fmt.Errorf("濠电儑绲藉ú锔炬崲閸岀偞鍋ら柕濠忓椤╃兘鎮归崶銊ョ祷妞ゎ偁鍊濋弻娑樜熼悜姗嗘閻熸粍濯介崺鏍ь嚗閸曨剚缍囨い鎰╁剾? %w", err)
+		return fmt.Errorf("save DiWorker settings failed: %w", err)
 	}
 	a.heartbeatAgentRuntimeBestEffort(2 * time.Second)
 	return nil
@@ -738,10 +861,28 @@ func (a *App) FetchWorkerMemoryStats() (WorkerMemoryStats, error) {
 	if err != nil {
 		return WorkerMemoryStats{}, err
 	}
+	settings = normalizeDiWorkerSettings(settings)
+	tenantID := resolvedTenantID(settings)
+	departmentID := resolvedDepartmentID(settings)
+	workerID := resolvedWorkerID(settings)
 	if !settings.Center.Enabled {
-		return WorkerMemoryStats{}, fmt.Errorf("iWorkerCenter is disabled; memory stats require the registered center")
+		stats, ok := workerMemoryStatsFromCache(tenantID, departmentID, workerID)
+		if ok {
+			stats.Source = "local"
+			return stats, nil
+		}
+		local := unavailableWorkerMemoryStats(tenantID, departmentID, workerID)
+		local.Source = "local"
+		return local, nil
 	}
-	return fetchWorkerMemoryStats(resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), settings.Center.TimeoutSec)
+	stats, err := fetchWorkerMemoryStats(resolvedCenterBaseURL(settings), tenantID, departmentID, workerID, settings.Center.TimeoutSec)
+	if err == nil {
+		return stats, nil
+	}
+	if cached, ok := workerMemoryStatsFromCache(tenantID, departmentID, workerID); ok {
+		return cached, nil
+	}
+	return unavailableWorkerMemoryStats(tenantID, departmentID, workerID), nil
 }
 func (a *App) SaveWorkerMemory(req SaveWorkerMemoryRequest) (WorkerMemoryEntry, error) {
 	settings, err := readDiWorkerSettings()
@@ -1564,7 +1705,7 @@ func defaultProviderMaxContext(providerID string, providers []UpstreamProvider) 
 func loadMaclawLLMConfig() (corelib.MaclawLLMConfig, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return corelib.MaclawLLMConfig{}, fmt.Errorf("闂佽崵濮村ú鈺咁敋瑜戦妵鎰板炊椤掍礁浠洪梺闈涱煭缁犳垿鎮￠弴銏＄厽闁冲搫锕ら弸娑氱磽瀹ュ懐校鐎垫澘瀚蹇涱敃閵? %w", err)
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("resolve user home for LLM config failed: %w", err)
 	}
 
 	configPath := filepath.Join(home, ".maclaw", "config.json")
@@ -1627,6 +1768,208 @@ func currentProviderConfig(cfgFile maclawConfigFile) (corelib.MaclawLLMConfig, b
 	return corelib.MaclawLLMConfig{}, false
 }
 
+func enrichAgentRuntimeSnapshotWithInstalledTools(snapshot AgentRuntimeSnapshot, tools CenterInstalledTools) AgentRuntimeSnapshot {
+	toolCaps := installedToolCapabilityLabels(tools)
+	if len(toolCaps) == 0 {
+		return snapshot
+	}
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Role != AgentRoleExecutor {
+			continue
+		}
+		snapshot.Instances[i].Capabilities = mergeCapabilityLabels(snapshot.Instances[i].Capabilities, toolCaps)
+	}
+	return snapshot
+}
+
+func installedToolCapabilityLabels(tools CenterInstalledTools) []string {
+	labels := []string{}
+	for _, skill := range tools.Skills {
+		id := strings.TrimSpace(skill.CapabilityID)
+		if id == "" {
+			id = strings.TrimSpace(skill.Name)
+		}
+		if id == "" {
+			continue
+		}
+		labels = append(labels, "skill:"+sanitizeCapabilityLabel(id))
+	}
+	for _, server := range tools.MCPServers {
+		id := strings.TrimSpace(server.ID)
+		if id == "" {
+			id = strings.TrimSpace(server.Name)
+		}
+		if id == "" {
+			continue
+		}
+		labels = append(labels, "mcp:"+sanitizeCapabilityLabel(id))
+	}
+	return mergeCapabilityLabels(nil, labels)
+}
+
+func mergeCapabilityLabels(base []string, extra []string) []string {
+	out := make([]string, 0, len(base)+len(extra))
+	seen := map[string]bool{}
+	for _, value := range append(base, extra...) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func sanitizeCapabilityLabel(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case r == '_' || r == '-' || r == '.' || r == ':' || r == '/':
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				b.WriteRune('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func runtimeSnapshotCachePath(kind, tenantID, departmentID, workerID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	kind = sanitizeCacheName(firstNonEmptyString(kind, "runtime"))
+	tenantID = sanitizeCacheName(firstNonEmptyString(tenantID, "default"))
+	departmentID = sanitizeCacheName(firstNonEmptyString(departmentID, "default"))
+	workerID = sanitizeCacheName(firstNonEmptyString(workerID, "default"))
+	return filepath.Join(home, ".iworker", "cache", kind, strings.Join([]string{tenantID, departmentID, workerID}, "__")+".json"), nil
+}
+
+func readAgentInstancesCache(tenantID, departmentID, workerID string) ([]CenterAgentInstance, bool) {
+	path, err := runtimeSnapshotCachePath("agent_instances", tenantID, departmentID, workerID)
+	if err != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var instances []CenterAgentInstance
+	if err := json.Unmarshal(data, &instances); err != nil {
+		return nil, false
+	}
+	cachedAt := cacheFileModifiedAt(path)
+	for i := range instances {
+		instances[i].Source = "cache"
+		instances[i].CachedAt = cachedAt
+		instances[i].Stale = true
+		if instances[i].EffectiveStatus == "" {
+			instances[i].EffectiveStatus = instances[i].Status
+		}
+	}
+	return instances, true
+}
+
+func writeAgentInstancesCache(tenantID, departmentID, workerID string, instances []CenterAgentInstance) error {
+	path, err := runtimeSnapshotCachePath("agent_instances", tenantID, departmentID, workerID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	cachedAt := time.Now().UTC().Format(time.RFC3339)
+	for i := range instances {
+		instances[i].Source = "center"
+		instances[i].CachedAt = cachedAt
+		instances[i].Stale = false
+	}
+	data, err := json.MarshalIndent(instances, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func readGoalPushesCache(tenantID, departmentID, workerID string) ([]CenterGoalPush, bool) {
+	path, err := runtimeSnapshotCachePath("goal_pushes", tenantID, departmentID, workerID)
+	if err != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var pushes []CenterGoalPush
+	if err := json.Unmarshal(data, &pushes); err != nil {
+		return nil, false
+	}
+	cachedAt := cacheFileModifiedAt(path)
+	for i := range pushes {
+		pushes[i].Source = "cache"
+		pushes[i].CachedAt = cachedAt
+		pushes[i].Stale = true
+	}
+	return pushes, true
+}
+
+func writeGoalPushesCache(tenantID, departmentID, workerID string, pushes []CenterGoalPush) error {
+	path, err := runtimeSnapshotCachePath("goal_pushes", tenantID, departmentID, workerID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	cachedAt := time.Now().UTC().Format(time.RFC3339)
+	for i := range pushes {
+		pushes[i].Source = "center"
+		pushes[i].CachedAt = cachedAt
+		pushes[i].Stale = false
+	}
+	data, err := json.MarshalIndent(pushes, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func removeGoalPushCacheItem(tenantID, departmentID, workerID, eventID string) {
+	pushes, ok := readGoalPushesCache(tenantID, departmentID, workerID)
+	if !ok {
+		return
+	}
+	eventID = strings.TrimSpace(eventID)
+	filtered := pushes[:0]
+	for _, push := range pushes {
+		if eventID != "" && strings.TrimSpace(push.EventID) == eventID {
+			continue
+		}
+		push.Source = "center"
+		push.Stale = false
+		filtered = append(filtered, push)
+	}
+	_ = writeGoalPushesCache(tenantID, departmentID, workerID, filtered)
+}
+
+func cacheFileModifiedAt(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return info.ModTime().UTC().Format(time.RFC3339)
+}
+
 // HeartbeatAgentRuntime sends all local iWorker agent instances to iWorkerCenter.
 func (a *App) HeartbeatAgentRuntime() ([]CenterAgentInstance, error) {
 	return a.HeartbeatAgentRuntimeContext(context.Background())
@@ -1642,6 +1985,8 @@ func (a *App) HeartbeatAgentRuntimeContext(ctx context.Context) ([]CenterAgentIn
 		return nil, fmt.Errorf("iWorkerCenter is disabled; agent runtime heartbeat requires the registered center")
 	}
 	snapshot := BuildDefaultAgentRuntimeSnapshot(settings)
+	installedTools := fetchInstalledToolsForSettings(settings, 3)
+	snapshot = enrichAgentRuntimeSnapshotWithInstalledTools(snapshot, installedTools)
 	hostID, _ := os.Hostname()
 	workStatus := buildLocalWorkStatusSummary()
 	if err := ctxErr(ctx); err != nil {
@@ -1671,6 +2016,7 @@ func (a *App) HeartbeatAgentRuntimeContext(ctx context.Context) ([]CenterAgentIn
 		}
 		results = append(results, result.Instance)
 	}
+	_ = writeAgentInstancesCache(resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), results)
 	return results, nil
 }
 
@@ -1688,7 +2034,18 @@ func (a *App) FetchAgentInstancesContext(ctx context.Context) ([]CenterAgentInst
 	if !settings.Center.Enabled {
 		return nil, fmt.Errorf("iWorkerCenter is disabled; fetching agent instances requires the registered center")
 	}
-	return fetchCenterAgentInstancesContext(ctx, resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedWorkerID(settings), settings.Center.TimeoutSec)
+	tenantID := resolvedTenantID(settings)
+	departmentID := resolvedDepartmentID(settings)
+	workerID := resolvedWorkerID(settings)
+	instances, err := fetchCenterAgentInstancesContext(ctx, resolvedCenterBaseURL(settings), tenantID, workerID, settings.Center.TimeoutSec)
+	if err == nil {
+		_ = writeAgentInstancesCache(tenantID, departmentID, workerID, instances)
+		return instances, nil
+	}
+	if cached, ok := readAgentInstancesCache(tenantID, departmentID, workerID); ok {
+		return cached, nil
+	}
+	return nil, err
 }
 
 // FetchGoalPushes returns pending GoalWatch pushes for the registered iWorker.
@@ -1705,7 +2062,18 @@ func (a *App) FetchGoalPushesContext(ctx context.Context, limit int) ([]CenterGo
 	if !settings.Center.Enabled {
 		return nil, fmt.Errorf("iWorkerCenter is disabled; goal pushes require the registered center")
 	}
-	return fetchCenterGoalPushesContext(ctx, resolvedCenterBaseURL(settings), resolvedTenantID(settings), resolvedWorkerID(settings), limit, settings.Center.TimeoutSec)
+	tenantID := resolvedTenantID(settings)
+	departmentID := resolvedDepartmentID(settings)
+	workerID := resolvedWorkerID(settings)
+	pushes, err := fetchCenterGoalPushesContext(ctx, resolvedCenterBaseURL(settings), tenantID, workerID, limit, settings.Center.TimeoutSec)
+	if err == nil {
+		_ = writeGoalPushesCache(tenantID, departmentID, workerID, pushes)
+		return pushes, nil
+	}
+	if cached, ok := readGoalPushesCache(tenantID, departmentID, workerID); ok {
+		return cached, nil
+	}
+	return nil, err
 }
 
 type AutoHandleGoalPushResult struct {
@@ -1740,6 +2108,9 @@ func (a *App) AutoHandleGoalPushContext(ctx context.Context, eventID string) (Au
 		}
 		if strings.TrimSpace(push.EventID) != eventID {
 			continue
+		}
+		if push.Stale || push.Source == "cache" {
+			return AutoHandleGoalPushResult{}, fmt.Errorf("goal push %s is a cached snapshot; reconnect iWorkerCenter before auto-handling", eventID)
 		}
 		ackStatus, note, heartbeat := autoGoalPushAckFor(push)
 		if heartbeat {
@@ -1879,12 +2250,19 @@ func (a *App) AckGoalPushContext(ctx context.Context, eventID, status, note stri
 	if !settings.Center.Enabled {
 		return CenterGoalPushAckResult{}, fmt.Errorf("iWorkerCenter is disabled; goal push ack requires the registered center")
 	}
-	return ackCenterGoalPushContext(ctx, resolvedCenterBaseURL(settings), resolvedTenantID(settings), CenterGoalPushAckRequest{
+	tenantID := resolvedTenantID(settings)
+	departmentID := resolvedDepartmentID(settings)
+	workerID := resolvedWorkerID(settings)
+	result, err := ackCenterGoalPushContext(ctx, resolvedCenterBaseURL(settings), tenantID, CenterGoalPushAckRequest{
 		EventID:     eventID,
-		ColleagueID: resolvedWorkerID(settings),
+		ColleagueID: workerID,
 		Status:      status,
 		Note:        note,
 	}, settings.Center.TimeoutSec)
+	if err == nil {
+		removeGoalPushCacheItem(tenantID, departmentID, workerID, eventID)
+	}
+	return result, err
 }
 
 // --- Collaboration Wails bindings ---

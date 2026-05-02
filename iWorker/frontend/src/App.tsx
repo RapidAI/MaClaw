@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import './i18n';
 import { AckGoalPush, ApplyCenterEnrollment, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, DiscoverCenterEnrollment, FetchAgentInstances, FetchGoalPushes, FetchInstalledTools, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { colleagues } from './mock/colleagues';
@@ -11,28 +13,20 @@ import { TaskHistoryPage } from './pages/TaskHistoryPage';
 import { recentTasks as mockRecentTasks } from './mock/tasks';
 import type { CenterAgentInstance, CenterEnrollmentDiscovery, CenterGoalPush, CenterHealthStatus, CenterInstalledTools, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
 
-const pageMeta: Record<DiWorkerTab, { title: string; subtitle: string }> = {
-  home: { title: '新建任务', subtitle: '输入任务内容，快速开始处理。' },
-  colleagues: { title: '同事', subtitle: '按分类浏览同事，可呼叫他们为你服务。' },
-  'new-task': { title: '任务编辑', subtitle: '编辑任务内容、补充材料并提交处理。' },
-  history: { title: '工具', subtitle: '赋予 iWorker 更强大的能力。' },
-  settings: { title: '配置中心', subtitle: '管理角色信息、中心连接和上游服务调度。' },
-};
-
-const statusCopy: Record<DiWorkerTab, { focus: string }> = {
-  home: { focus: '新建任务' },
-  colleagues: { focus: '同事' },
-  'new-task': { focus: '任务编辑' },
-  history: { focus: '工具' },
-  settings: { focus: '中心与路由配置' },
+const pageMeta: Record<DiWorkerTab, { titleKey: string; subtitleKey: string; fallbackTitle: string; fallbackSubtitle: string; focusKey: string; fallbackFocus: string }> = {
+  home: { titleKey: 'pages.home.title', subtitleKey: 'pages.home.subtitle', fallbackTitle: 'Talk', fallbackSubtitle: 'Start from a conversation, Center push, or human handoff.', focusKey: 'status.home', fallbackFocus: 'New work' },
+  colleagues: { titleKey: 'pages.colleagues.title', subtitleKey: 'pages.colleagues.subtitle', fallbackTitle: 'Partners', fallbackSubtitle: 'Browse digital coworkers and human collaboration routes.', focusKey: 'status.colleagues', fallbackFocus: 'Partners' },
+  'new-task': { titleKey: 'pages.newTask.title', subtitleKey: 'pages.newTask.subtitle', fallbackTitle: 'Task Space', fallbackSubtitle: 'Edit task context, evidence, output format, and routing.', focusKey: 'status.newTask', fallbackFocus: 'Task editing' },
+  history: { titleKey: 'pages.history.title', subtitleKey: 'pages.history.subtitle', fallbackTitle: 'Skills & Work', fallbackSubtitle: 'Review completed work, installed skills, MCP, and evidence.', focusKey: 'status.history', fallbackFocus: 'Tools' },
+  settings: { titleKey: 'pages.settings.title', subtitleKey: 'pages.settings.subtitle', fallbackTitle: 'Configuration', fallbackSubtitle: 'Manage role profile, Center connection, memory, and routing.', focusKey: 'status.settings', fallbackFocus: 'Center and routing' },
 };
 
 const hasWailsBridge = () => typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
 
 const defaultSettings: DiWorkerSettings = {
   roleProfile: {
-    name: '小迪',
-    description: '你的数字办公助理，擅长通知、纪要与汇报整理。',
+    name: 'Xiao Di',
+    description: 'Your digital office assistant for notices, minutes, and report organization.',
   },
   center: {
     enabled: false,
@@ -55,15 +49,15 @@ const defaultSettings: DiWorkerSettings = {
   providers: [
     {
       id: 'office-openai',
-      name: '办公写作服务',
+      name: 'Office writing service',
       enabled: true,
       protocol: 'openai',
       baseUrl: 'https://office.example.com/v1',
       apiKey: '',
       model: 'gpt-4.1',
       priority: 100,
-      features: ['公文', '纪要', '中文'],
-      description: '适合通知、纪要、日报与正式文档。',
+      features: ['documents', 'minutes', 'Chinese'],
+      description: 'Good for notices, meeting minutes, daily reports, and formal documents.',
       capabilities: {
         supportsStream: true,
         supportsVision: false,
@@ -72,15 +66,15 @@ const defaultSettings: DiWorkerSettings = {
     },
     {
       id: 'analysis-anthropic',
-      name: '分析归因服务',
+      name: 'Analysis service',
       enabled: true,
       protocol: 'anthropic',
       baseUrl: 'https://analysis.example.com',
       apiKey: '',
       model: 'claude-sonnet-4-6',
       priority: 90,
-      features: ['分析', '归因', '质量'],
-      description: '适合异常说明、质量分析与整改建议。',
+      features: ['analysis', 'root cause', 'quality'],
+      description: 'Good for exception explanation, quality analysis, and improvement suggestions.',
       capabilities: {
         supportsStream: true,
         supportsVision: false,
@@ -177,6 +171,9 @@ const fromWailsMemoryStats = (item: main.WorkerMemoryStats | null | undefined): 
   byScope: item?.by_scope || {},
   byCategory: item?.by_category || {},
   visibleScopes: item?.visible_scopes || [],
+  source: (item as main.WorkerMemoryStats & { source?: string })?.source || 'center',
+  cachedAt: (item as main.WorkerMemoryStats & { cached_at?: string })?.cached_at || '',
+  stale: Boolean((item as main.WorkerMemoryStats & { stale?: boolean })?.stale),
 });
 
 const fromWailsMemoryEntry = (item: main.WorkerMemoryEntry): WorkerMemoryEntry => ({
@@ -202,6 +199,9 @@ type WailsAgentInstanceWithWorkStatus = main.CenterAgentInstance & {
     blocked_count: number;
     updated_at?: string;
   };
+  source?: string;
+  cached_at?: string;
+  stale?: boolean;
 };
 
 const fromWailsAgentInstance = (item: main.CenterAgentInstance): CenterAgentInstance => {
@@ -231,23 +231,69 @@ const fromWailsAgentInstance = (item: main.CenterAgentInstance): CenterAgentInst
     lastHeartbeatAt: source.last_heartbeat_at,
     heartbeatAgeSeconds: source.heartbeat_age_seconds || 0,
     effectiveStatus: source.effective_status || source.status,
+    source: source.source,
+    cachedAt: source.cached_at,
+    stale: Boolean(source.stale),
   };
 };
 
-const fromWailsGoalPush = (item: main.CenterGoalPush): CenterGoalPush => ({
-  eventId: item.event_id,
-  taskId: item.task_id,
-  title: item.title,
-  toColleagueId: item.to_colleague_id,
-  toRoleCode: item.to_role_code,
-  status: item.status,
-  reason: item.reason,
-  recommendedAction: item.recommended_action,
-  ageSeconds: item.age_seconds || 0,
-  executorStatus: item.executor_status,
-  executorHeartbeatAgeSeconds: item.executor_heartbeat_age_seconds,
-  createdAt: item.created_at,
+const fromWailsGoalPush = (item: main.CenterGoalPush): CenterGoalPush => {
+  const source = item as main.CenterGoalPush & { source?: string; cached_at?: string; stale?: boolean };
+  return {
+  eventId: source.event_id,
+  taskId: source.task_id,
+  title: source.title,
+  toColleagueId: source.to_colleague_id,
+  toRoleCode: source.to_role_code,
+  status: source.status,
+  reason: source.reason,
+  recommendedAction: source.recommended_action,
+  ageSeconds: source.age_seconds || 0,
+  executorStatus: source.executor_status,
+  executorHeartbeatAgeSeconds: source.executor_heartbeat_age_seconds,
+  createdAt: source.created_at,
+  source: source.source,
+  cachedAt: source.cached_at,
+  stale: Boolean(source.stale),
+};
+};
+
+const isCachedGoalPush = (push: CenterGoalPush) => push.source === 'cache' || Boolean(push.stale);
+
+const staleSnapshotTime = () => new Date().toISOString();
+
+const markAgentInstancesStale = (items: CenterAgentInstance[]) => items.map((item) => ({
+  ...item,
+  source: 'cache',
+  stale: true,
+  cachedAt: item.cachedAt || staleSnapshotTime(),
+}));
+
+const markGoalPushesStale = (items: CenterGoalPush[]) => items.map((item) => ({
+  ...item,
+  source: 'cache',
+  stale: true,
+  cachedAt: item.cachedAt || staleSnapshotTime(),
+}));
+
+const markInstalledToolsStale = (tools: CenterInstalledTools): CenterInstalledTools => ({
+  ...tools,
+  source: tools.source || 'cache',
+  stale: true,
+  cachedAt: tools.cachedAt || staleSnapshotTime(),
 });
+
+const markWorkerMemoryStatsStale = (stats: WorkerMemoryStats): WorkerMemoryStats => ({
+  ...stats,
+  source: stats.source || 'cache',
+  stale: true,
+  cachedAt: stats.cachedAt || staleSnapshotTime(),
+});
+
+const isHumanInterventionGoalPush = (push: CenterGoalPush) => {
+  const combined = [push.status, push.recommendedAction, push.reason].filter(Boolean).join(' ').toLowerCase();
+  return push.recommendedAction === 'ask_human' || ['review', 'waiting', 'approval', 'approve', 'human', 'manual', 'missing', 'clarify', 'blocked', 'block'].some((token) => combined.includes(token));
+};
 
 const fromWailsGoalWatchAutoHandleStatus = (item: main.GoalWatchAutoHandleStatus): GoalWatchAutoHandleStatus => ({
   enabled: Boolean(item.enabled),
@@ -394,21 +440,21 @@ const isTextFile = (file: File) => {
 
 const buildAttachmentSummary = (content: string, isText: boolean) => {
   if (!isText) {
-    return '非文本材料已上传，可结合文件类型和文件名一起处理。';
+    return 'Non-text material uploaded. Use the file type and name as context.';
   }
   const normalized = content.replace(/\s+/g, ' ').trim();
   if (!normalized) {
-    return '文本材料已上传，可结合文件内容一起处理。';
+    return 'Text material uploaded. Use the file content as context.';
   }
   const excerpt = normalized.slice(0, 80);
   return normalized.length > 80 ? `${excerpt}...` : excerpt;
 };
 
 const buildAttachmentPayload = (item: TaskAttachment, index: number) => {
-  const meta = `${index + 1}. ${item.name}（${item.type}，${item.sizeLabel}）`;
+  const meta = `${index + 1}. ${item.name}, ${item.type}, ${item.sizeLabel}`;
   return item.isText
-    ? `${meta}：${item.summary}\n${item.content}`
-    : `${meta}：${item.summary}`;
+    ? `${meta}, ${item.summary}\n${item.content}`
+    : `${meta}, ${item.summary}`;
 };
 
 const readFileContent = async (file: File) => {
@@ -418,7 +464,7 @@ const readFileContent = async (file: File) => {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(new Error(`读取材料失败：${file.name}`));
+    reader.onerror = () => reject(new Error(`Failed to read attachment: ${file.name}`));
     reader.readAsText(file);
   });
 };
@@ -430,9 +476,12 @@ const formatTimestamp = () => {
 
 const settingsSnapshot = (item: DiWorkerSettings) => JSON.stringify(item);
 
-const emptyInstalledTools: CenterInstalledTools = { skills: [], mcpServers: [] };
+const emptyInstalledTools: CenterInstalledTools = { skills: [], mcpServers: [], source: 'local', cachedAt: '', stale: false };
 
 type WailsInstalledTools = {
+  source?: string;
+  cached_at?: string;
+  stale?: boolean;
   skills?: Array<{
     capability_id: string;
     name: string;
@@ -458,6 +507,9 @@ type WailsInstalledTools = {
 };
 
 const fromWailsInstalledTools = (item: WailsInstalledTools | null | undefined): CenterInstalledTools => ({
+  source: item?.source || 'center',
+  cachedAt: item?.cached_at || '',
+  stale: Boolean(item?.stale),
   skills: (item?.skills || []).map((skill) => ({
     capabilityId: skill.capability_id,
     name: skill.name || skill.entry?.name || skill.capability_id,
@@ -488,6 +540,7 @@ const fromWailsInstalledTools = (item: WailsInstalledTools | null | undefined): 
 
 
 export default function App() {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<DiWorkerTab>('home');
   const [selectedTask, setSelectedTask] = useState('');
   const [selectedColleagueName, setSelectedColleagueName] = useState('');
@@ -540,6 +593,9 @@ export default function App() {
   const [installedTools, setInstalledTools] = useState<CenterInstalledTools>(emptyInstalledTools);
   const [installedToolsLoading, setInstalledToolsLoading] = useState(false);
   const [installedToolsError, setInstalledToolsError] = useState('');
+  const installedToolsRefreshInFlight = useRef(false);
+  const agentInstancesRefreshInFlight = useRef(false);
+  const goalPushRefreshInFlight = useRef(false);
 
   useEffect(() => {
     if (!hasWailsBridge()) {
@@ -575,16 +631,25 @@ export default function App() {
     if (!hasWailsBridge() || !settings.center.enabled) {
       setInstalledTools(emptyInstalledTools);
       setInstalledToolsError('');
-      return;
+      return emptyInstalledTools;
     }
+    if (installedToolsRefreshInFlight.current) {
+      return installedTools;
+    }
+    installedToolsRefreshInFlight.current = true;
     setInstalledToolsLoading(true);
     setInstalledToolsError('');
     try {
       const tools = await FetchInstalledTools();
-      setInstalledTools(fromWailsInstalledTools(tools as unknown as WailsInstalledTools));
+      const nextTools = fromWailsInstalledTools(tools as unknown as WailsInstalledTools);
+      setInstalledTools(nextTools);
+      return nextTools;
     } catch (error) {
       setInstalledToolsError(error instanceof Error ? error.message : 'Failed to fetch installed tools.');
+      setInstalledTools((current) => current.skills.length || current.mcpServers.length ? markInstalledToolsStale(current) : current);
+      return undefined;
     } finally {
+      installedToolsRefreshInFlight.current = false;
       setInstalledToolsLoading(false);
     }
   };
@@ -629,11 +694,25 @@ export default function App() {
     setAgentInstancesLoading(true);
     setAgentInstancesError('');
     try {
-      await HeartbeatAgentRuntime();
+      let heartbeatError = '';
+      try {
+        await HeartbeatAgentRuntime();
+      } catch (error) {
+        heartbeatError = error instanceof Error ? error.message : 'Failed to send agent runtime heartbeat.';
+      }
       const instances = await FetchAgentInstances();
-      setAgentInstances((instances || []).map(fromWailsAgentInstance));
+      const nextInstances = (instances || []).map(fromWailsAgentInstance);
+      setAgentInstances(nextInstances);
+      if (heartbeatError && nextInstances.some((item) => item.source === 'cache' || item.stale)) {
+        setAgentInstancesError(heartbeatError + ' Showing cached runtime snapshot.');
+      } else if (heartbeatError) {
+        setAgentInstancesError(heartbeatError);
+      }
+      return nextInstances;
     } catch (error) {
       setAgentInstancesError(error instanceof Error ? error.message : 'Failed to sync agent runtime.');
+      setAgentInstances((current) => current.length ? markAgentInstancesStale(current) : current);
+      return undefined;
     } finally {
       setAgentInstancesLoading(false);
     }
@@ -663,9 +742,13 @@ export default function App() {
     setGoalPushError('');
     try {
       const pushes = await FetchGoalPushes(20);
-      setGoalPushes((pushes || []).map(fromWailsGoalPush));
+      const nextPushes = (pushes || []).map(fromWailsGoalPush);
+      setGoalPushes(nextPushes);
+      return nextPushes;
     } catch (error) {
       setGoalPushError(error instanceof Error ? error.message : 'Failed to fetch GoalWatch pushes.');
+      setGoalPushes((current) => current.length ? markGoalPushesStale(current) : current);
+      return undefined;
     } finally {
       setGoalPushLoading(false);
     }
@@ -744,6 +827,32 @@ export default function App() {
     setActiveTab('new-task');
   };
 
+  const handleOpenGoalPushTask = (push: CenterGoalPush) => {
+    const title = push.title || push.taskId || 'Center push intervention';
+    const reason = push.reason || push.status || 'needs human input';
+    const source = push.source === 'cache' || push.stale ? 'cached Center snapshot' : 'live Center push';
+    const draftLines = [
+      'Task: ' + title,
+      '',
+      'Source: ' + source + (push.eventId ? ' / event ' + push.eventId : ''),
+      'Reason: ' + reason,
+      'Recommended action: ' + (push.recommendedAction || 'human review'),
+      'Assigned to: ' + (push.toRoleCode || push.toColleagueId || 'this iWorker'),
+      '',
+      'Human intervention needed: review the pushed work, provide missing context or approval, then decide whether to resume or block the Center push.',
+      push.source === 'cache' || push.stale ? 'This push is cached. Reconnect iWorkerCenter before any Resume, Block, or Run action.' : 'When the decision is clear, return to the iWorker workbench and use Resume or Block on the push.',
+    ];
+    setSelectedTask(title);
+    setSelectedColleagueName(push.toRoleCode || push.toColleagueId || '');
+    setDraft(draftLines.join('\n'));
+    setExpectedOutput('summary');
+    setAttachments([]);
+    setViewedHistoryTask(null);
+    setSubmitResult(null);
+    setSubmitError('');
+    setActiveTab('new-task');
+  };
+
   const handleAddAttachment = async (files: FileList | null) => {
     if (!files || files.length === 0) {
       return;
@@ -755,7 +864,7 @@ export default function App() {
         return {
           id: createAttachmentId(index),
           name: file.name,
-          type: file.type || '未知类型',
+          type: file.type || 'unknown type',
           sizeLabel: formatFileSize(file.size),
           isText: textFile,
           summary: buildAttachmentSummary(content, textFile),
@@ -766,7 +875,7 @@ export default function App() {
       setSubmitError('');
       setSubmitResult(null);
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : '璇诲彇鏉愭枡澶辫触锛岃绋嶅悗鍐嶈瘯');
+      setSubmitError(error instanceof Error ? error.message : 'Failed to read attachment. Please try again.');
     }
   };
 
@@ -844,11 +953,11 @@ export default function App() {
 
   const handleSubmitTask = async () => {
     const attachmentSummary = attachments.length > 0
-      ? `\n\n补充材料：\n${attachments.map(buildAttachmentPayload).join('\n\n')}`
+      ? `\n\nAdditional material:\n${attachments.map(buildAttachmentPayload).join('\n\n')}`
       : '';
     const effectiveDraft = `${draft}${attachmentSummary}`.trim();
     const payload: SubmitTaskRequest = {
-      task_type: selectedTask || '自由输入',
+      task_type: selectedTask || 'Free input',
       selected_colleague_name: selectedColleagueName,
       draft: effectiveDraft,
       expected_output: expectedOutput,
@@ -865,7 +974,7 @@ export default function App() {
           id: `task-${Date.now()}`,
           title: result.task_title || result.task_type,
           owner: result.colleague_name,
-          status: '已完成',
+          status: 'completed',
           updatedAt: formatTimestamp(),
           description: draft.trim() || result.content.slice(0, 60),
           draft: effectiveDraft,
@@ -880,7 +989,7 @@ export default function App() {
       await persistHistoryTasks(nextHistory);
       setActiveTab('history');
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : '鎻愪氦澶辫触锛岃绋嶅悗鍐嶈瘯');
+      setSubmitError(error instanceof Error ? error.message : 'Submit failed. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -896,10 +1005,13 @@ export default function App() {
     setWorkerMemoryStatsLoading(true);
     try {
       const stats = await FetchWorkerMemoryStats();
-      setWorkerMemoryStats(fromWailsMemoryStats(stats as main.WorkerMemoryStats));
+      const nextStats = fromWailsMemoryStats(stats as main.WorkerMemoryStats);
+      setWorkerMemoryStats(nextStats);
+      return nextStats;
     } catch (error) {
-      setWorkerMemoryStats(null);
       setWorkerMemoryStatsError(error instanceof Error ? error.message : 'Failed to load memory stats');
+      setWorkerMemoryStats((current) => current ? markWorkerMemoryStatsStale(current) : current);
+      return undefined;
     } finally {
       setWorkerMemoryStatsLoading(false);
     }
@@ -922,7 +1034,7 @@ export default function App() {
       scope: workerMemoryDraftScope,
       content,
       category: workerMemoryDraftCategory.trim() || 'note',
-      tags: workerMemoryDraftTags.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
+      tags: workerMemoryDraftTags.split(/[?,]/).map((item) => item.trim()).filter(Boolean),
       sourceType: 'iworker-gui',
     };
     setWorkerMemorySaving(true);
@@ -990,25 +1102,24 @@ export default function App() {
     setSettingsError('');
     setSettingsSaveMessage('');
     if (!hasWailsBridge()) {
-      setSettingsSaveMessage('当前未连接 Wails，配置仅保留在当前界面。');
+      setSettingsSaveMessage('Wails bridge is not connected. Settings are kept in the current UI only.');
       return;
     }
     setSettingsSaving(true);
     try {
       await SaveDiWorkerSettings(toWailsSettings(settings) as never);
       setSavedSettingsSnapshot(settingsSnapshot(settings));
-      setSettingsSaveMessage('配置已保存');
+      setSettingsSaveMessage('Settings saved.');
       try {
         const status = await CheckCenterHealth();
         setCenterHealthError('');
         setCenterHealthStatus(fromWailsCenterHealth(status as main.CenterHealthStatus, 'auto-after-save'));
         void handleRefreshWorkerMemoryStats();
       } catch (error) {
-        setCenterHealthStatus(null);
-        setCenterHealthError(error instanceof Error ? error.message : '中心连接检测失败');
+        setCenterHealthError(error instanceof Error ? error.message : 'Center health check failed.');
       }
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : '淇濆瓨閰嶇疆澶辫触');
+      setSettingsError(error instanceof Error ? error.message : 'Failed to save settings.');
     } finally {
       setSettingsSaving(false);
     }
@@ -1061,8 +1172,7 @@ export default function App() {
         void handleRefreshWorkerMemoryStats();
         void refreshAgentInstances();
       } catch (error) {
-        setCenterHealthStatus(null);
-        setCenterHealthError(error instanceof Error ? error.message : 'Center health check failed after enrollment.');
+        setCenterHealthError(error instanceof Error ? error.message : 'Center health check failed.');
       }
     } catch (error) {
       setCenterEnrollmentError(error instanceof Error ? error.message : 'Center enrollment apply failed.');
@@ -1073,9 +1183,8 @@ export default function App() {
 
   const handleCheckCenterHealth = async (): Promise<CenterHealthStatus | undefined> => {
     setCenterHealthError('');
-    setCenterHealthStatus(null);
     if (!hasWailsBridge()) {
-      setCenterHealthError('当前未连接 Wails，无法测试中心连接。');
+      setCenterHealthError('Wails bridge is not connected. Cannot check Center connection.');
       return undefined;
     }
     setCenterHealthChecking(true);
@@ -1086,7 +1195,7 @@ export default function App() {
       void handleRefreshWorkerMemoryStats();
       return nextStatus;
     } catch (error) {
-      setCenterHealthError(error instanceof Error ? error.message : '中心连接检测失败');
+        setCenterHealthError(error instanceof Error ? error.message : 'Center health check failed.');
       return undefined;
     } finally {
       setCenterHealthChecking(false);
@@ -1207,7 +1316,7 @@ export default function App() {
             onRoutingDefaultProviderChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, defaultProvider: value } }))}
             onRoutingAllowFallbackChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, allowFallback: value } }))}
             onProviderChange={updateProvider}
-            onProviderFeaturesChange={(providerId, value) => updateProvider(providerId, { features: value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) })}
+            onProviderFeaturesChange={(providerId, value) => updateProvider(providerId, { features: value.split(/[?,]/).map((item) => item.trim()).filter(Boolean) })}
             onCheckCenterHealth={handleCheckCenterHealth}
             onDiscoverCenterEnrollment={handleDiscoverCenterEnrollment}
             onApplyCenterEnrollment={handleApplyCenterEnrollment}
@@ -1242,9 +1351,11 @@ export default function App() {
           submitting={submitting}
           onRefreshGoalPushes={refreshGoalPushes}
           onRefreshMemoryStats={handleRefreshWorkerMemoryStats}
+          onRefreshInstalledTools={refreshInstalledTools}
           onCheckCenterHealth={handleCheckCenterHealth}
           onAutoHandleGoalPush={handleAutoHandleGoalPush}
           onAckGoalPush={handleAckGoalPush}
+          onOpenGoalPushTask={handleOpenGoalPushTask}
           onDraftChange={setDraft}
           onExpectedOutputChange={setExpectedOutput}
           onPickTask={handlePickTask}
@@ -1253,14 +1364,30 @@ export default function App() {
           onOpenSettings={() => setActiveTab('settings')}
         />;
     }
-  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask, centerEnrollmentDiscovery, centerEnrollmentDiscovering, centerEnrollmentApplyingId, centerEnrollmentMessage, centerEnrollmentError]);
+  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, installedTools, installedToolsLoading, installedToolsError, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask, centerEnrollmentDiscovery, centerEnrollmentDiscovering, centerEnrollmentApplyingId, centerEnrollmentMessage, centerEnrollmentError]);
 
-  const meta = pageMeta[activeTab];
-  const status = statusCopy[activeTab];
+  const interventionSummary = useMemo(() => {
+    const items = goalPushes.filter(isHumanInterventionGoalPush);
+    if (items.length === 0) {
+      return undefined;
+    }
+    return {
+      count: items.length,
+      cachedCount: items.filter(isCachedGoalPush).length,
+      title: items[0]?.title || items[0]?.taskId || 'Center push needs review',
+    };
+  }, [goalPushes]);
+
+  const metaConfig = pageMeta[activeTab];
+  const meta = {
+    title: t(metaConfig.titleKey, metaConfig.fallbackTitle),
+    subtitle: t(metaConfig.subtitleKey, metaConfig.fallbackSubtitle),
+  };
+  const status = { focus: t(metaConfig.focusKey, metaConfig.fallbackFocus) };
 
   return (
     <div className="dw-shell">
-      <SideNav activeTab={activeTab} roleName={currentRole.name} roleDescription={currentRole.description} recentTasks={historyTasks} onChange={setActiveTab} />
+      <SideNav activeTab={activeTab} roleName={currentRole.name} roleDescription={currentRole.description} recentTasks={historyTasks} interventionSummary={interventionSummary} onChange={setActiveTab} />
       <main className="dw-main">
         <div className="dw-main-shell">
           {activeTab !== 'home' && (
@@ -1276,12 +1403,12 @@ export default function App() {
                   <div className="dw-topbar-heading-copy dw-topbar-heading-copy-compact">
                     <h1>{meta.title}</h1>
                     <span className="dw-toolbar-meta">{status.focus}</span>
-                    {settings.center.enabled ? <span className="dw-toolbar-meta is-online">中心路由已启用</span> : null}
-                    {hasWailsBridge() ? <span className="dw-toolbar-meta is-online">本地链路已连接</span> : <span className="dw-toolbar-meta">等待 Wails 绑定</span>}
+                    {settings.center.enabled ? <span className="dw-toolbar-meta is-online">{t('status.centerRoutingEnabled')}</span> : null}
+                    {hasWailsBridge() ? <span className="dw-toolbar-meta is-online">{t('status.localBridgeConnected')}</span> : <span className="dw-toolbar-meta">{t('status.waitingWails')}</span>}
                   </div>
                   <div className="dw-top-actions">
-                    <button type="button" className="secondary" aria-label="切换同事" onClick={handleSwitchColleague}>同事</button>
-                    <button type="button" className="primary" aria-label="开始新任务" onClick={handleOpenNewTask}>新任务</button>
+                    <button type="button" className="secondary" aria-label={t('actions.colleagues')} onClick={handleSwitchColleague}>{t('actions.colleagues')}</button>
+                    <button type="button" className="primary" aria-label={t('actions.newTask')} onClick={handleOpenNewTask}>{t('actions.newTask')}</button>
                   </div>
                 </div>
               </div>

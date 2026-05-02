@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"io"
 	"log"
 	"net/http"
@@ -90,15 +90,15 @@ func (a *App) GetVectorSearchEnabled() bool {
 
 // VectorSearchStatus describes the runtime state of vector search for the frontend.
 type VectorSearchStatus struct {
-	Enabled      bool   `json:"enabled"`       // config toggle
-	ModelExists  bool   `json:"model_exists"`  // GGUF file on disk
-	ModelPath    string `json:"model_path"`    // full path to model file
-	ModelSize    int64  `json:"model_size"`    // file size in bytes
-	EmbedderOK   bool   `json:"embedder_ok"`   // embedder loaded and functional
-	EmbedderDim  int    `json:"embedder_dim"`  // embedding dimension (0 if not loaded)
-	EntryCount   int    `json:"entry_count"`   // total memory entries
-	EmbeddedCount int   `json:"embedded_count"` // entries with embeddings
-	HybridToolRetrievalActive bool `json:"hybrid_tool_retrieval_active"` // hybrid tool retrieval enabled
+	Enabled                   bool   `json:"enabled"`                      // config toggle
+	ModelExists               bool   `json:"model_exists"`                 // GGUF file on disk
+	ModelPath                 string `json:"model_path"`                   // full path to model file
+	ModelSize                 int64  `json:"model_size"`                   // file size in bytes
+	EmbedderOK                bool   `json:"embedder_ok"`                  // embedder loaded and functional
+	EmbedderDim               int    `json:"embedder_dim"`                 // embedding dimension (0 if not loaded)
+	EntryCount                int    `json:"entry_count"`                  // total memory entries
+	EmbeddedCount             int    `json:"embedded_count"`               // entries with embeddings
+	HybridToolRetrievalActive bool   `json:"hybrid_tool_retrieval_active"` // hybrid tool retrieval enabled
 }
 
 // GetVectorSearchStatus returns the full runtime status of vector search.
@@ -517,21 +517,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	// Wire embedder into memory store (triggers backfillEmbeddings in background).
 	if a.memoryStore != nil {
 		a.memoryStore.SetEmbedder(emb)
-
-		// Wire LLM for async semantic dedup (Stage 2: LLM precise judgment).
-		// Reuses the same archiverLLMCaller adapter used by KnowledgeExtractor.
-		if a.isMaclawLLMConfigured() {
-			a.memoryStore.SetLLMDedup(&archiverLLMCaller{app: a})
-		}
-
-		// Wire LLM into the Mem0-style online extraction pipeline.
-		// The OnlineExtractor was created with nil LLM in ensureMemoryStore;
-		// now that the LLM config is available, wire it in.
-		if a.isMaclawLLMConfigured() {
-			if oe := a.memoryStore.OnlineExtractor(); oe != nil {
-				oe.SetLLM(&archiverLLMCaller{app: a})
-			}
-		}
+		a.refreshMemoryEvolutionLLM()
 	}
 
 	// Wire embedder into tool router (enables hybrid retrieval).

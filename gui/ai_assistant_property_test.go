@@ -306,3 +306,23 @@ func TestAIAssistantClientHistoryReconciliationSkipsDivergentHistory(t *testing.
 		t.Fatalf("divergent history should not be overwritten: %#v", loaded)
 	}
 }
+
+func TestAIAssistantClientHistorySanitizesAdjacentAssistantDuplicates(t *testing.T) {
+	clientHistory := []AIAssistantContextMessage{
+		{Role: "user", Content: "weather"},
+		{Role: "assistant", Content: "sunny"},
+		{Role: "assistant", Content: " sunny\n"},
+		{Role: "user", Content: "thanks"},
+	}
+
+	got := sanitizeAIAssistantClientHistory(clientHistory)
+	if len(got) != 3 {
+		t.Fatalf("history length = %d, want 3", len(got))
+	}
+	if got[1].Role != "assistant" || got[1].Content != "sunny" {
+		t.Fatalf("assistant entry was not preserved cleanly: %#v", got[1])
+	}
+	if got[2].Role != "user" || got[2].Content != "thanks" {
+		t.Fatalf("unexpected trailing entry after dedup: %#v", got[2])
+	}
+}

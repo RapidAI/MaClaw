@@ -673,6 +673,45 @@ func TestFetchWorkerMemoryStatsUsesCenterContext(t *testing.T) {
 	}
 }
 
+func TestFetchWorkerMemoryStatsFallsBackToLocalCache(t *testing.T) {
+	setTestHome(t)
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 1}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if err := writeWorkerMemoryCache("tenant-a", "sales", "worker-a", []WorkerMemoryEntry{
+		{ID: "mem-company", TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", Scope: "company", Category: "policy", Content: "company rule"},
+		{ID: "mem-personal", TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", Scope: "personal", Category: "preference", Content: "personal note"},
+	}); err != nil {
+		t.Fatalf("write memory cache: %v", err)
+	}
+
+	stats, err := (&App{}).FetchWorkerMemoryStats()
+	if err != nil {
+		t.Fatalf("FetchWorkerMemoryStats returned error: %v", err)
+	}
+	if stats.Source != "cache" || !stats.Stale || stats.Total != 2 || stats.ByScope["company"] != 1 || stats.ByScope["personal"] != 1 || stats.ByCategory["policy"] != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if stats.CachedAt == "" {
+		t.Fatalf("CachedAt should be set for cache stats: %+v", stats)
+	}
+}
+
+func TestFetchWorkerMemoryStatsUnavailableWhenCenterAndCacheMissing(t *testing.T) {
+	setTestHome(t)
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 1}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	stats, err := (&App{}).FetchWorkerMemoryStats()
+	if err != nil {
+		t.Fatalf("FetchWorkerMemoryStats returned error: %v", err)
+	}
+	if stats.Source != "unavailable" || !stats.Stale || stats.Total != 0 || stats.TenantID != "tenant-a" || stats.DepartmentID != "sales" || stats.WorkerID != "worker-a" {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
 func TestDeleteWorkerMemorySendsCenterContextAndClearsCache(t *testing.T) {
 	setTestHome(t)
 
@@ -963,5 +1002,284 @@ func TestGenerateSubmitTaskTitleFallsBackFromGenericLLMTitle(t *testing.T) {
 	title := generateSubmitTaskTitle("free input", "Please prepare a daily operating brief. Include risks and next steps.", "summary", "brief body", corelib.MaclawLLMConfig{URL: "http://llm", Model: "test", TimeoutSec: 5}, nil)
 	if title != "prepare a daily operating brief" {
 		t.Fatalf("title = %q, want local fallback", title)
+	}
+}
+
+func TestInstalledToolsEnrichExecutorHeartbeatCapabilities(t *testing.T) {
+	settings := normalizeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, TenantID: "tenant-a", DepartmentID: "finance", WorkerID: "worker-a"}})
+	snapshot := BuildDefaultAgentRuntimeSnapshot(settings)
+	enriched := enrichAgentRuntimeSnapshotWithInstalledTools(snapshot, CenterInstalledTools{
+		Skills:     []CenterRuntimeCapability{{CapabilityID: "cap-finance-close", Name: "Finance Close"}},
+		MCPServers: []CenterMCPServer{{ID: "mcp-ledger", Name: "Ledger MCP"}},
+	})
+
+	var executor AgentInstance
+	for _, instance := range enriched.Instances {
+		if instance.Role == AgentRoleExecutor {
+			executor = instance
+		}
+		if instance.Role != AgentRoleExecutor && (testContainsString(instance.Capabilities, "skill:cap-finance-close") || testContainsString(instance.Capabilities, "mcp:mcp-ledger")) {
+			t.Fatalf("non-executor instance got runtime tools: %+v", instance)
+		}
+	}
+	if !testContainsString(executor.Capabilities, "business_task_execution") || !testContainsString(executor.Capabilities, "skill:cap-finance-close") || !testContainsString(executor.Capabilities, "mcp:mcp-ledger") {
+		t.Fatalf("executor capabilities = %+v", executor.Capabilities)
+	}
+}
+
+func TestInstalledToolCapabilityLabelsSanitizeAndDedupe(t *testing.T) {
+	labels := installedToolCapabilityLabels(CenterInstalledTools{
+		Skills:     []CenterRuntimeCapability{{CapabilityID: "Finance Close"}, {CapabilityID: "Finance Close"}},
+		MCPServers: []CenterMCPServer{{Name: "Ledger MCP"}},
+	})
+	if len(labels) != 2 || labels[0] != "skill:finance-close" || labels[1] != "mcp:ledger-mcp" {
+		t.Fatalf("labels = %+v", labels)
+	}
+}
+
+func testContainsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestFetchInstalledToolsFetchesSkillsAndMCPConcurrently(t *testing.T) {
+	setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		time.Sleep(250 * time.Millisecond)
+		switch r.URL.Path {
+		case "/client/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{"runtime_entries": []map[string]any{{"capability_id": "cap-fast", "name": "Fast Skill"}}})
+		case "/client/mcp-servers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"mcp_servers": []map[string]any{{"id": "mcp-fast", "name": "Fast MCP", "server_type": "http", "endpoint": "https://mcp.example"}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	startedAt := time.Now()
+	tools := fetchInstalledToolsForSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}, 5)
+	elapsed := time.Since(startedAt)
+
+	if tools.Source != "center" || tools.Stale || len(tools.Skills) != 1 || len(tools.MCPServers) != 1 {
+		t.Fatalf("tools = %+v", tools)
+	}
+	if elapsed > 450*time.Millisecond {
+		t.Fatalf("installed tools fetch took %s; expected skill and MCP requests to run concurrently", elapsed)
+	}
+}
+func TestFetchInstalledToolsFallsBackToScopedCache(t *testing.T) {
+	setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/client/capabilities":
+			if r.URL.Query().Get("runtime") != "1" || r.URL.Query().Get("colleague_id") != "worker-a" {
+				t.Fatalf("capability query = %s", r.URL.RawQuery)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"runtime_entries": []map[string]any{{"capability_id": "cap-a", "name": "Skill A"}}})
+		case "/client/mcp-servers":
+			if r.URL.Query().Get("department_id") != "sales" {
+				t.Fatalf("department_id = %q", r.URL.Query().Get("department_id"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"mcp_servers": []map[string]any{{"id": "mcp-a", "name": "MCP A", "server_type": "http", "endpoint": "https://mcp.example"}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	settings := DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}
+	fresh := fetchInstalledToolsForSettings(settings, 5)
+	if fresh.Source != "center" || fresh.Stale || len(fresh.Skills) != 1 || len(fresh.MCPServers) != 1 {
+		t.Fatalf("fresh tools = %+v", fresh)
+	}
+
+	settings.Center.BaseURL = "http://127.0.0.1:1"
+	cached := fetchInstalledToolsForSettings(settings, 1)
+	if cached.Source != "cache" || !cached.Stale || len(cached.Skills) != 1 || cached.Skills[0].CapabilityID != "cap-a" || len(cached.MCPServers) != 1 || cached.MCPServers[0].ID != "mcp-a" {
+		t.Fatalf("cached tools = %+v", cached)
+	}
+}
+
+func TestFetchInstalledToolsMergesFreshSkillsWithCachedMCP(t *testing.T) {
+	setTestHome(t)
+	if err := writeInstalledToolsCache("tenant-a", "sales", "worker-a", CenterInstalledTools{
+		Skills:     []CenterRuntimeCapability{{CapabilityID: "old-skill", Name: "Old Skill"}},
+		MCPServers: []CenterMCPServer{{ID: "mcp-old", Name: "Old MCP", Status: "enabled"}},
+		Source:     "center",
+	}); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/client/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{"runtime_entries": []map[string]any{{"capability_id": "fresh-skill", "name": "Fresh Skill"}}})
+		case "/client/mcp-servers":
+			http.Error(w, "mcp temporarily unavailable", http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	tools := fetchInstalledToolsForSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}, 5)
+	if tools.Source != "partial-cache" || !tools.Stale || tools.CachedAt == "" {
+		t.Fatalf("tools source = %+v, want partial stale snapshot", tools)
+	}
+	if len(tools.Skills) != 1 || tools.Skills[0].CapabilityID != "fresh-skill" {
+		t.Fatalf("skills = %+v, want fresh skill", tools.Skills)
+	}
+	if len(tools.MCPServers) != 1 || tools.MCPServers[0].ID != "mcp-old" {
+		t.Fatalf("mcp = %+v, want cached MCP", tools.MCPServers)
+	}
+}
+
+func TestFetchInstalledToolsMergesFreshMCPWithCachedSkills(t *testing.T) {
+	setTestHome(t)
+	if err := writeInstalledToolsCache("tenant-a", "sales", "worker-a", CenterInstalledTools{
+		Skills:     []CenterRuntimeCapability{{CapabilityID: "old-skill", Name: "Old Skill"}},
+		MCPServers: []CenterMCPServer{{ID: "mcp-old", Name: "Old MCP", Status: "enabled"}},
+		Source:     "center",
+	}); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/client/capabilities":
+			http.Error(w, "skills temporarily unavailable", http.StatusServiceUnavailable)
+		case "/client/mcp-servers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"mcp_servers": []map[string]any{{"id": "mcp-fresh", "name": "Fresh MCP", "server_type": "http", "endpoint": "https://mcp.example"}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	tools := fetchInstalledToolsForSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}, 5)
+	if tools.Source != "partial-cache" || !tools.Stale || tools.CachedAt == "" {
+		t.Fatalf("tools source = %+v, want partial stale snapshot", tools)
+	}
+	if len(tools.Skills) != 1 || tools.Skills[0].CapabilityID != "old-skill" {
+		t.Fatalf("skills = %+v, want cached skill", tools.Skills)
+	}
+	if len(tools.MCPServers) != 1 || tools.MCPServers[0].ID != "mcp-fresh" {
+		t.Fatalf("mcp = %+v, want fresh MCP", tools.MCPServers)
+	}
+}
+
+func TestFetchInstalledToolsCenterEmptyOverridesStaleCache(t *testing.T) {
+	setTestHome(t)
+	if err := writeInstalledToolsCache("tenant-a", "sales", "worker-a", CenterInstalledTools{Skills: []CenterRuntimeCapability{{CapabilityID: "old-skill"}}, Source: "center"}); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/client/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{"runtime_entries": []any{}})
+		case "/client/mcp-servers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"mcp_servers": []any{}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	tools := fetchInstalledToolsForSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}, 5)
+	if tools.Source != "center" || tools.Stale || len(tools.Skills) != 0 || len(tools.MCPServers) != 0 {
+		t.Fatalf("tools = %+v", tools)
+	}
+}
+
+func TestFetchAgentInstancesFallsBackToCache(t *testing.T) {
+	setTestHome(t)
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 1}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if err := writeAgentInstancesCache("tenant-a", "sales", "worker-a", []CenterAgentInstance{{TenantID: "tenant-a", WorkerID: "worker-a", InstanceID: "worker-a:executor", Role: "executor", Status: "online", EffectiveStatus: "online"}}); err != nil {
+		t.Fatalf("write agent cache: %v", err)
+	}
+
+	instances, err := (&App{}).FetchAgentInstances()
+	if err != nil {
+		t.Fatalf("FetchAgentInstances returned error: %v", err)
+	}
+	if len(instances) != 1 || instances[0].Source != "cache" || !instances[0].Stale || instances[0].CachedAt == "" || instances[0].InstanceID != "worker-a:executor" {
+		t.Fatalf("instances = %+v", instances)
+	}
+}
+
+func TestFetchGoalPushesFallsBackToCache(t *testing.T) {
+	setTestHome(t)
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 1}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if err := writeGoalPushesCache("tenant-a", "sales", "worker-a", []CenterGoalPush{{EventID: "event-a", TaskID: "task-a", Title: "Recover stalled task", Status: "open", RecommendedAction: "restart_executor", CreatedAt: "2026-05-02T00:00:00Z"}}); err != nil {
+		t.Fatalf("write push cache: %v", err)
+	}
+
+	pushes, err := (&App{}).FetchGoalPushes(20)
+	if err != nil {
+		t.Fatalf("FetchGoalPushes returned error: %v", err)
+	}
+	if len(pushes) != 1 || pushes[0].Source != "cache" || !pushes[0].Stale || pushes[0].CachedAt == "" || pushes[0].EventID != "event-a" {
+		t.Fatalf("pushes = %+v", pushes)
+	}
+}
+
+func TestAutoHandleGoalPushRejectsCachedSnapshot(t *testing.T) {
+	setTestHome(t)
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 1}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if err := writeGoalPushesCache("tenant-a", "sales", "worker-a", []CenterGoalPush{{EventID: "event-a", TaskID: "task-a", Title: "Recover stalled task", Status: "open", RecommendedAction: "restart_executor", CreatedAt: "2026-05-02T00:00:00Z"}}); err != nil {
+		t.Fatalf("write push cache: %v", err)
+	}
+
+	_, err := (&App{}).AutoHandleGoalPush("event-a")
+	if err == nil || !strings.Contains(err.Error(), "cached snapshot") {
+		t.Fatalf("AutoHandleGoalPush error = %v, want cached snapshot rejection", err)
+	}
+}
+
+func TestAckGoalPushRemovesCachedPush(t *testing.T) {
+	setTestHome(t)
+	if err := writeGoalPushesCache("tenant-a", "sales", "worker-a", []CenterGoalPush{
+		{EventID: "event-a", TaskID: "task-a", Title: "A", Status: "open", CreatedAt: "2026-05-02T00:00:00Z"},
+		{EventID: "event-b", TaskID: "task-b", Title: "B", Status: "open", CreatedAt: "2026-05-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("write push cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/goalwatch/pushes/event-a/ack" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CenterGoalPushAckResult{EventID: "event-a", TaskID: "task-a", AckEventID: "ack-a", Status: "resumed", CreatedAt: "2026-05-02T00:00:00Z"})
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	result, err := (&App{}).AckGoalPush("event-a", "resumed", "ok")
+	if err != nil {
+		t.Fatalf("AckGoalPush returned error: %v", err)
+	}
+	if result.AckEventID != "ack-a" {
+		t.Fatalf("result = %+v", result)
+	}
+	cached, ok := readGoalPushesCache("tenant-a", "sales", "worker-a")
+	if !ok || len(cached) != 1 || cached[0].EventID != "event-b" {
+		t.Fatalf("cached pushes = %+v ok=%v", cached, ok)
 	}
 }

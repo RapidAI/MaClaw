@@ -72,6 +72,7 @@ type App struct {
 	skillRunner       *SkillRunner
 	sessionStarter    *CodingSessionStarter
 	skillMarketClient *SkillMarketClient
+	skillLifecycle    *SkillLifecycleManager
 	gossipClient      *GossipClient
 	autoUploadTrigger *AutoUploadTrigger
 	gossipAutoPublish *AutoPublishTrigger
@@ -458,6 +459,7 @@ func (a *App) ensureMemoryStore() {
 		// LLM is nil/unconfigured.
 		onlineExtractor := memory.NewOnlineExtractor(ms, nil)
 		ms.SetOnlineExtractor(onlineExtractor)
+		a.refreshMemoryEvolutionLLM()
 		// Load embedding model asynchronously so it doesn't block the first
 		// AI assistant message. Vector search will become available once
 		// the model finishes loading in the background. Tool embedding
@@ -570,6 +572,14 @@ func (a *App) ensureAutoUploadTrigger() {
 	})
 }
 
+func (a *App) ensureSkillLifecycleManager() {
+	a.ensureAutoUploadTrigger()
+	if a.skillLifecycle != nil {
+		return
+	}
+	a.skillLifecycle = NewSkillLifecycleManager(a)
+}
+
 func (a *App) ensureSkillRunner() {
 	a.ensureInteractionInfra()
 	if a.skillRunner != nil || a.skillExecutor == nil {
@@ -588,6 +598,27 @@ func (a *App) ensureLLMSecurityReview() {
 	}
 	cfg := a.GetMaclawLLMConfig()
 	a.llmSecurityReview = NewLLMSecurityReview(cfg)
+}
+
+// refreshMemoryEvolutionLLM wires the current MaClaw LLM caller into every
+// memory component that can evolve or filter long-term memory. This is kept
+// independent from embedding activation: text-only memory extraction and
+// reflection should work even when vector search is disabled or unavailable.
+func (a *App) refreshMemoryEvolutionLLM() {
+	if a.memoryStore == nil || !a.isMaclawLLMConfigured() {
+		return
+	}
+	caller := &archiverLLMCaller{app: a}
+	a.memoryStore.SetLLMDedup(caller)
+	if oe := a.memoryStore.OnlineExtractor(); oe != nil {
+		oe.SetLLM(caller)
+	}
+	if a.memPipeline != nil {
+		a.memPipeline.SetLLM(caller)
+	}
+	if gating := memory.NewRecallGating(caller); gating != nil {
+		a.memoryStore.SetRecallGating(gating)
+	}
 }
 
 func (a *App) ensureExperienceExtractor() {
@@ -687,8 +718,30 @@ func (a *App) buildTrajectoryRecorderFactory() func() *TrajectoryRecorder {
 		if err != nil || !cfg.LLMTrajectoryLogging {
 			return nil
 		}
-		return NewTrajectoryRecorder()
+		recorder := NewTrajectoryRecorder()
+		recorder.SetPipeline(a.buildSkillAutoSummaryPipeline())
+		return recorder
 	}
+}
+
+func (a *App) buildSkillAutoSummaryPipeline() *SkillAutoSummaryPipeline {
+	a.ensureInteractionInfra()
+	if a.skillExecutor == nil {
+		return nil
+	}
+	a.ensureSkillLifecycleManager()
+	checker := NewSecurityPolicyChecker(DefaultSkillSecurityPolicy(), func(label, skillName string) bool {
+		log.Printf("[skill-auto-summary] background policy requires explicit approval: skill=%s label=%s", skillName, label)
+		return false
+	})
+	return NewSkillAutoSummaryPipeline(
+		NewTagGenerator(),
+		checker,
+		a.autoUploadTrigger,
+		a.skillExecutor,
+		a.skillMarketClient,
+		nil,
+	)
 }
 
 func (a *App) ensureAITrace() {
@@ -1261,10 +1314,13 @@ func (a *App) domReady(ctx context.Context) {
 	// Trigger environment check on startup
 	// IsInitMode and PauseEnvCheck logic is handled inside CheckEnvironment
 	a.CheckEnvironment(false)
+	if cfg, err := a.LoadConfig(); err == nil && !cfg.CheckUpdateOnStartup {
+		return
+	}
 
-	// Background update check 闂?non-blocking, toast notification if new version available.
+	// Background update check: non-blocking, toast notification if new version available.
 	go func() {
-		// Wait for startup to settle 闂?avoid competing with other network
+		// Wait for startup to settle: avoid competing with other network
 		// requests and ensure the UI is fully interactive before showing toast.
 		time.Sleep(60 * time.Second)
 		result, err := a.CheckUpdate(remoteAppVersion())
@@ -1274,7 +1330,7 @@ func (a *App) domReady(ctx context.Context) {
 		}
 		if result.HasUpdate {
 			a.emitEvent("show-toast", map[string]interface{}{
-				"message":  fmt.Sprintf("??????%s???????????", result.LatestVersion),
+				"message":  a.tr("New version %s is available. Open About to download the update.", result.LatestVersion),
 				"type":     "info",
 				"duration": 8000,
 			})
@@ -3952,6 +4008,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			ShowKilo:             true,
 			ShowCursor:           true,
 			PowerOptimization:    true,
+			CheckUpdateOnStartup: true,
 			EnvCheckInterval:     7,    // Default to 7 days
 			UseWindowsTerminal:   true, // Default to true, will only work if Windows Terminal is installed
 			RemoteEnabled:        false,
@@ -3981,16 +4038,17 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		return defaultConfig, err
 	}
 	config := corelib.AppConfig{
-		ShowGemini:         true,
-		ShowCodex:          true,
-		ShowOpenCode:       true,
-		ShowCursor:         true,
-		ShowCodeBuddy:      true,
-		ShowIFlow:          true,
-		ShowKilo:           true,
-		PowerOptimization:  true,
-		RemoteHubCenterURL: defaultRemoteHubCenterURL,
-		RemoteHeartbeatSec: 10,
+		ShowGemini:           true,
+		ShowCodex:            true,
+		ShowOpenCode:         true,
+		ShowCursor:           true,
+		ShowCodeBuddy:        true,
+		ShowIFlow:            true,
+		ShowKilo:             true,
+		PowerOptimization:    true,
+		CheckUpdateOnStartup: true,
+		RemoteHubCenterURL:   defaultRemoteHubCenterURL,
+		RemoteHeartbeatSec:   10,
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -4621,6 +4679,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	sanitizeCustomNames(config.CodeBuddy.Models)
 	sanitizeCustomNames(config.IFlow.Models)
 	sanitizeCustomNames(config.Kilo.Models)
+	sanitizePetConfig(&config)
 	// Load old config to compare for sync logic
 	var oldConfig corelib.AppConfig
 	if data, err := os.ReadFile(path); err == nil {
@@ -4647,6 +4706,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	// getWorkflowEngine(), so no per-consumer guards are needed.
 	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
 	policyModeChanged := a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode
+	floatingChanged := floatingAppearanceChanged(oldConfig, config)
 	hubClient := (*RemoteHubClient)(nil)
 	if a.remoteSessions != nil {
 		hubClient = a.remoteSessions.hubClient
@@ -4668,6 +4728,9 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	}
 	if OnConfigChanged != nil {
 		go OnConfigChanged(config)
+	}
+	if floatingChanged && a.floatingAssistant != nil {
+		go a.floatingAssistant.RefreshAppearance(config)
 	}
 	if hubClient != nil {
 		go func(client *RemoteHubClient) {
@@ -5953,10 +6016,11 @@ func (a *App) validateSkillZip(path string) error {
 			}
 			rootFileCount++
 			switch parts[0] {
-			case "skill.md":
+			case "skill.md", "SKILL.md":
 				validRootMarkdown = true
-			case "SKILL.md":
-				rootHasLegacyMD = true
+				if parts[0] == "SKILL.md" {
+					rootHasLegacyMD = true
+				}
 			case "_meta.json":
 				rootHasLegacyMeta = true
 			}
@@ -5970,16 +6034,17 @@ func (a *App) validateSkillZip(path string) error {
 		}
 		if len(parts) == 2 {
 			switch parts[1] {
-			case "skill.md":
+			case "skill.md", "SKILL.md":
 				layout.hasMarkdown = true
-			case "SKILL.md":
-				layout.hasLegacyMD = true
+				if parts[1] == "SKILL.md" {
+					layout.hasLegacyMD = true
+				}
 			case "_meta.json":
 				layout.hasLegacyMeta = true
 			}
 		}
 	}
-	if validRootMarkdown {
+	if validRootMarkdown && !rootHasLegacyMeta {
 		return nil
 	}
 	if rootHasLegacyMD || rootHasLegacyMeta {
@@ -5987,16 +6052,16 @@ func (a *App) validateSkillZip(path string) error {
 	}
 	if len(layouts) == 0 {
 		if rootFileCount > 0 {
-			return fmt.Errorf("skill package root must contain skill.md")
+			return fmt.Errorf("skill package root must contain skill.md or SKILL.md")
 		}
 		return fmt.Errorf("skill package is empty or contains no valid directories")
 	}
 	for dir, layout := range layouts {
-		if layout.hasLegacyMD || layout.hasLegacyMeta {
+		if layout.hasLegacyMeta {
 			return fmt.Errorf("directory '%s' uses legacy skill format (SKILL.md/_meta.json); please migrate to skill.yaml or skill.md", dir)
 		}
 		if !layout.hasMarkdown {
-			return fmt.Errorf("directory '%s' is missing skill.md", dir)
+			return fmt.Errorf("directory '%s' is missing skill.md or SKILL.md", dir)
 		}
 	}
 	return nil
@@ -6350,6 +6415,10 @@ var translations = map[string]map[string]string{
 	"Security": {
 		"zh-Hans": "瀹夊叏绠＄悊",
 		"zh-Hant": "瀹夊叏绠＄悊",
+	},
+	"New version %s is available. Open About to download the update.": {
+		"zh-Hans": "发现新版本 %s，可前往关于页面下载更新。",
+		"zh-Hant": "發現新版本 %s，可前往關於頁面下載更新。",
 	},
 }
 

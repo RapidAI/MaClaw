@@ -120,6 +120,7 @@ func (gs *GitHubSearcher) SearchGitHub(query string) ([]GitHubSkillCandidate, er
 			{filename: "skill.md", definitionType: githubDefinitionSkillMD},
 			{filename: "SKILL.md", definitionType: githubDefinitionSkillMD},
 			{filename: "skill.yaml", definitionType: githubDefinitionYAML},
+			{filename: "skill.yml", definitionType: githubDefinitionYAML},
 		}
 		for _, target := range targets {
 			resp, err := gs.searchGitHubByFilename(sanitized, target)
@@ -234,12 +235,13 @@ func (gs *GitHubSearcher) ImportFromCandidate(c GitHubSkillCandidate) (*corelib.
 	// Fallback: try common skill definition file paths.
 	baseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/", c.RepoFullName, c.Branch)
 	fallbackPaths := []struct {
-		path string
+		path    string
 		defType string
 	}{
 		{"SKILL.md", githubDefinitionSkillMD},
 		{"skill.md", githubDefinitionSkillMD},
 		{"skill.yaml", githubDefinitionYAML},
+		{"skill.yml", githubDefinitionYAML},
 	}
 	for _, fb := range fallbackPaths {
 		fbURL := baseURL + fb.path
@@ -371,7 +373,7 @@ func (gs *GitHubSearcher) scanRepoTree(owner, repo, branch, subPath, sourceURL s
 
 func definitionTypeForPath(filePath, fallback string) string {
 	switch path.Base(filePath) {
-	case "skill.yaml":
+	case "skill.yaml", "skill.yml":
 		return githubDefinitionYAML
 	case "skill.md", "SKILL.md":
 		return githubDefinitionSkillMD
@@ -393,45 +395,66 @@ func (gs *GitHubSearcher) parseCandidateData(data []byte, c GitHubSkillCandidate
 
 // ── YAML / Markdown parsing ────────────────────────────────────────────
 
-// parseSkillYAML uses raw map parsing (like hubcenter's RemoteImporter)
-// to avoid losing fields such as author, tags, version, permissions that
-// are not present in the SkillYAMLFile struct.
+// parseSkillYAML uses the local definition parser so GitHub imports get the
+// same compatibility behavior as file-based skills.
 func (gs *GitHubSearcher) parseSkillYAML(data []byte, c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
-	var raw map[string]interface{}
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("invalid YAML: %w", err)
+	sf, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		return nil, err
 	}
-	if raw == nil {
-		return nil, fmt.Errorf("empty YAML document")
-	}
+	return gs.skillEntryFromDefinition(sf, c)
+}
 
-	name := strings.TrimSpace(strVal(raw, "name"))
+func (gs *GitHubSearcher) skillEntryFromDefinition(sf *SkillYAMLFile, c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
+
+	name := strings.TrimSpace(sf.Name)
 	if name == "" {
 		name = inferSkillName(c)
 	}
 
-	status := strVal(raw, "status")
+	status := sf.Status
 	if status == "" {
 		status = "active"
 	}
 
-	steps := parseRawSteps(raw)
-	requiresGUI, _ := raw["requires_gui"].(bool)
-
+	producesArtifact := true
+	if sf.ProducesArtifact != nil && !*sf.ProducesArtifact {
+		producesArtifact = false
+	}
 	now := time.Now().Format(time.RFC3339)
-	return &corelib.NLSkillEntry{
-		Name:          name,
-		Description:   strVal(raw, "description"),
-		Triggers:      strSlice(raw, "triggers"),
-		Steps:         steps,
-		Status:        status,
-		Source:        "github",
-		SourceProject: c.RepoURL,
-		Platforms:     strSlice(raw, "platforms"),
-		RequiresGUI:   requiresGUI,
-		TrustLevel:    "community",
-		CreatedAt:     now,
-	}, nil
+	entry := &corelib.NLSkillEntry{
+		Name:                    name,
+		Description:             sf.Description,
+		Triggers:                sf.Triggers,
+		Steps:                   convertSkillYAMLSteps(sf.Steps),
+		Status:                  status,
+		Source:                  "github",
+		SourceProject:           c.RepoURL,
+		Platforms:               sf.Platforms,
+		RequiresGUI:             sf.RequiresGUI,
+		Mode:                    sf.Mode,
+		ExecMode:                sf.ExecMode,
+		GlobalTimeout:           sf.GlobalTimeout,
+		ProducesArtifact:        producesArtifact,
+		Operations:              convertSkillYAMLOperations(sf.Operations),
+		Params:                  convertSkillYAMLParams(sf.Params),
+		RequiredArgs:            sf.RequiredArgs,
+		RequiredEnv:             sf.RequiredEnv,
+		PreferredShell:          sf.PreferredShell,
+		RequiresTools:           sf.RequiresTools,
+		FallbackForTools:        sf.FallbackForTools,
+		RequiresToolsets:        sf.RequiresToolsets,
+		FallbackForToolsets:     sf.FallbackForToolsets,
+		RequiredCredentialFiles: sf.RequiredCredentialFiles,
+		RequiresPython:          requiresPythonFromYAML(sf.Requires),
+		RequiresNode:            requiresNodeFromYAML(sf.Requires),
+		Stateful:                sf.Stateful,
+		Pipeline:                convertPipelineSteps(sf.Pipeline),
+		TrustLevel:              "community",
+		CreatedAt:               now,
+	}
+	NormalizeSkillForRunner(entry)
+	return entry, nil
 }
 
 func (gs *GitHubSearcher) parseSkillMarkdown(data []byte, c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
@@ -452,10 +475,22 @@ func (gs *GitHubSearcher) parseSkillMarkdown(data []byte, c GitHubSkillCandidate
 	if err != nil {
 		return nil, err
 	}
-	return &corelib.NLSkillEntry{
+	triggers := inferSkillTriggers(parsed.name, c)
+	if len(parsed.triggers) > 0 {
+		triggers = parsed.triggers
+	}
+	producesArtifact := true
+	if parsed.producesArtifact != nil {
+		producesArtifact = *parsed.producesArtifact
+	}
+	requiresGUI := false
+	if parsed.requiresGUI != nil {
+		requiresGUI = *parsed.requiresGUI
+	}
+	entry := &corelib.NLSkillEntry{
 		Name:        parsed.name,
 		Description: parsed.description,
-		Triggers:    inferSkillTriggers(parsed.name, c),
+		Triggers:    triggers,
 		Steps: []corelib.NLSkillStep{
 			{
 				Action: "craft_tool",
@@ -466,12 +501,34 @@ func (gs *GitHubSearcher) parseSkillMarkdown(data []byte, c GitHubSkillCandidate
 				},
 			},
 		},
-		Status:        "active",
-		CreatedAt:     time.Now().Format(time.RFC3339),
-		Source:        "github",
-		SourceProject: c.RepoURL,
-		TrustLevel:    "community",
-	}, nil
+		Status:                  "active",
+		CreatedAt:               time.Now().Format(time.RFC3339),
+		Source:                  "github",
+		SourceProject:           c.RepoURL,
+		TrustLevel:              "community",
+		Platforms:               parsed.platforms,
+		RequiresGUI:             requiresGUI,
+		Mode:                    parsed.mode,
+		ExecMode:                parsed.execMode,
+		GlobalTimeout:           parsed.timeout,
+		ProducesArtifact:        producesArtifact,
+		RequiredArgs:            parsed.requiredArgs,
+		RequiredEnv:             parsed.requiredEnv,
+		PreferredShell:          parsed.preferredShell,
+		RequiresPython:          parsed.requiresPython,
+		RequiresNode:            parsed.requiresNode,
+		Operations:              parsed.operations,
+		Params:                  parsed.params,
+		Pipeline:                parsed.pipeline,
+		RequiresTools:           parsed.requiresTools,
+		FallbackForTools:        parsed.fallbackForTools,
+		RequiresToolsets:        parsed.requiresToolsets,
+		FallbackForToolsets:     parsed.fallbackForToolsets,
+		RequiredCredentialFiles: parsed.requiredCredentialFiles,
+		Stateful:                parsed.stateful,
+	}
+	NormalizeSkillForRunner(entry)
+	return entry, nil
 }
 
 func inferSkillName(c GitHubSkillCandidate) string {
@@ -510,7 +567,7 @@ func inferSkillTriggers(name string, c GitHubSkillCandidate) []string {
 	return triggers
 }
 
-// ── raw YAML helpers (mirrors hubcenter/internal/skill/remote_import.go) ──
+// GitHub search helpers.
 
 // ghQualifierRe matches GitHub search qualifiers like "repo:", "path:", etc.
 var ghQualifierRe = regexp.MustCompile(`\b\w+:`)
@@ -529,58 +586,6 @@ func sanitizeGitHubQuery(q string) string {
 	).Replace(q)
 	return strings.TrimSpace(q)
 }
-
-func strVal(m map[string]interface{}, key string) string {
-	v, _ := m[key].(string)
-	return v
-}
-
-func strSlice(m map[string]interface{}, key string) []string {
-	raw, ok := m[key]
-	if !ok {
-		return nil
-	}
-	list, ok := raw.([]interface{})
-	if !ok {
-		return nil
-	}
-	var result []string
-	for _, item := range list {
-		if s, ok := item.(string); ok {
-			result = append(result, s)
-		}
-	}
-	return result
-}
-
-func parseRawSteps(m map[string]interface{}) []corelib.NLSkillStep {
-	raw, ok := m["steps"]
-	if !ok {
-		return nil
-	}
-	list, ok := raw.([]interface{})
-	if !ok {
-		return nil
-	}
-	var steps []corelib.NLSkillStep
-	for _, item := range list {
-		sm, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		step := corelib.NLSkillStep{
-			Action:  strVal(sm, "action"),
-			OnError: strVal(sm, "on_error"),
-		}
-		if params, ok := sm["params"].(map[string]interface{}); ok {
-			step.Params = params
-		}
-		steps = append(steps, step)
-	}
-	return steps
-}
-
-// ── HTTP helper ────────────────────────────────────────────────────────
 
 func (gs *GitHubSearcher) httpGet(reqURL string) ([]byte, error) {
 	req, err := http.NewRequest("GET", reqURL, nil)

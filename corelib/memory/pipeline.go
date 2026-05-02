@@ -17,13 +17,14 @@ type PipelineResult struct {
 	Reflect       *ReflectResult        `json:"reflect,omitempty"`
 	Consolidation []ConsolidationResult `json:"consolidation,omitempty"`
 	Profile       *ConsolidationResult  `json:"profile,omitempty"`
+	Profiles      []ConsolidationResult `json:"profiles,omitempty"`
 	Dormant       int                   `json:"dormant_marked"`
 	Duration      string                `json:"duration"`
 }
 
 // Pipeline orchestrates the background memory maintenance cycle:
 //
-//	decay strengths → compress → promote → reflect
+//	decay strengths -> compress -> promote -> reflect
 //
 // It runs every 6 hours when started.
 type Pipeline struct {
@@ -62,6 +63,7 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 	p.store.mu.Lock()
 	result.Dormant = batchDecayAndMark(p.store.entries, time.Now())
 	if result.Dormant > 0 {
+		p.store.rebuildDerivedIndexesLocked(true)
 		p.store.dirty = true
 	}
 	p.store.mu.Unlock()
@@ -69,7 +71,7 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		p.store.signalSave()
 	}
 
-	// Step 1: Process pending semantic dedup pairs (embedding recall → LLM judgment).
+	// Step 1: Process pending semantic dedup pairs (embedding recall -> LLM judgment).
 	if ctx.Err() == nil {
 		merged := p.store.ProcessPendingDedup(ctx)
 		if merged > 0 {
@@ -85,7 +87,7 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		}
 	}
 
-	// Step 2: Promote (episodic → semantic).
+	// Step 2: Promote (episodic -> semantic).
 	if p.promoter != nil && ctx.Err() == nil {
 		pr, err := p.promoter.Promote(ctx)
 		if err == nil {
@@ -129,11 +131,25 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		}
 	}
 
-	// Step 5: Profile consolidation (L5 persona).
+	// Step 5: Profile consolidation (L5 persona). In multi-tenant mode, profile
+	// synthesis is also owner-scoped; otherwise one user's persona can absorb
+	// another user's summaries and reflections.
 	if p.profiler != nil && ctx.Err() == nil {
-		pr, err := p.profiler.Consolidate(ctx)
-		if err == nil && pr != nil && pr.NodesCreated > 0 {
-			result.Profile = pr
+		ownerIDs := p.store.UniqueOwnerIDs()
+		if len(ownerIDs) == 0 {
+			ownerIDs = []string{""}
+		}
+		for _, ownerID := range ownerIDs {
+			if ctx.Err() != nil {
+				break
+			}
+			pr, err := p.profiler.ConsolidateForOwner(ctx, ownerID)
+			if err == nil && pr != nil && pr.NodesCreated > 0 {
+				if result.Profile == nil {
+					result.Profile = pr
+				}
+				result.Profiles = append(result.Profiles, *pr)
+			}
 		}
 	}
 
@@ -225,4 +241,33 @@ func (p *Pipeline) SetConsolidator(consolidator *Consolidator, profiler *Profile
 	defer p.mu.Unlock()
 	p.consolidator = consolidator
 	p.profiler = profiler
+}
+
+// SetLLM rewires every LLM-backed evolution component owned by the pipeline.
+// The pipeline is created during memory-store initialization, while user LLM
+// configuration may arrive later or change at runtime.
+func (p *Pipeline) SetLLM(llm LLMChatCaller) {
+	p.mu.Lock()
+	compressor := p.compressor
+	promoter := p.promoter
+	reflector := p.reflector
+	consolidator := p.consolidator
+	profiler := p.profiler
+	p.mu.Unlock()
+
+	if compressor != nil {
+		compressor.SetLLM(llm)
+	}
+	if promoter != nil {
+		promoter.SetLLM(llm)
+	}
+	if reflector != nil {
+		reflector.SetLLM(llm)
+	}
+	if consolidator != nil {
+		consolidator.SetLLM(llm)
+	}
+	if profiler != nil {
+		profiler.SetLLM(llm)
+	}
 }

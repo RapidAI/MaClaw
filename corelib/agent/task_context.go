@@ -74,10 +74,10 @@ type ArchivedTask struct {
 	ID          string    `json:"id"`
 	UserID      string    `json:"user_id"`
 	Summary     string    `json:"summary"`      // one-line task description
-	LastRequest string    `json:"last_request"`  // original user request text
-	FilePaths   []string  `json:"file_paths"`    // key files involved
-	ProjectPath string    `json:"project_path"`  // workspace directory
-	Status      string    `json:"status"`        // "completed", "abandoned", "interrupted"
+	LastRequest string    `json:"last_request"` // original user request text
+	FilePaths   []string  `json:"file_paths"`   // key files involved
+	ProjectPath string    `json:"project_path"` // workspace directory
+	Status      string    `json:"status"`       // "completed", "abandoned", "interrupted"
 	CreatedAt   time.Time `json:"created_at"`
 	ArchivedAt  time.Time `json:"archived_at"`
 
@@ -92,9 +92,8 @@ type TaskContextConfig struct {
 	// MaxArchivedTasks is the maximum number of archived tasks to keep per user.
 	MaxArchivedTasks int
 
-	// ActiveConversationWindow is the time window within which a conversation
-	// is considered "active". Messages within this window strongly favor
-	// TaskContinue.
+	// ActiveConversationWindow is retained for config compatibility. Task
+	// continuity is resolved by explicit state or the classifier, not by recency.
 	ActiveConversationWindow time.Duration
 
 	// LLMTimeout is the maximum time to wait for the LLM classification call.
@@ -168,10 +167,10 @@ type ResolveInput struct {
 // starts a new task, or recalls a past task.
 //
 // Decision hierarchy (highest priority first):
-//  1. Explicit signals (frontend flags, ask_user response, confirmed resume)
-//  2. Structural signals (empty history = new task, no ambiguity)
-//  3. LLM classification (when structural signals are ambiguous)
-//  4. Conservative fallback (when LLM unavailable: prefer continue if history exists)
+//  1. Explicit bound-state signals (frontend flags, ask_user response, confirmed resume)
+//  2. Structural signals that need no interpretation (empty history = new task)
+//  3. LLM classification for every ambiguous message with history
+//  4. Conservative fallback when the classifier is unavailable
 func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 	trimmed := strings.TrimSpace(input.UserMessage)
 
@@ -212,35 +211,10 @@ func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 		}
 	}
 
-	// Very short messages (< 4 words) with existing history are almost
-	// always continuations ("好的", "ok", "然后呢", "next").
-	if CountWords(trimmed) < 4 {
+	if trimmed == "" {
 		return TaskContextDecision{
 			Action: TaskContinue,
-			Reason: "short message with active conversation",
-			Source: "structural",
-		}
-	}
-
-	// Stale incomplete task: if the conversation has an incomplete task
-	// marker (max rounds reached, session still running), and the user
-	// sends a substantive message that isn't "继续", they likely want
-	// to move on. Treat as new task without needing LLM.
-	if input.HasIncompleteTaskMarker {
-		return TaskContextDecision{
-			Action: TaskNew,
-			Reason: "incomplete task marker present, new substantive message",
-			Source: "structural",
-		}
-	}
-
-	// Active conversation protection: if the last interaction was very
-	// recent, strongly favor continuation. No LLM call needed — within
-	// the active window, the structural signal is strong enough.
-	if !input.LastAccess.IsZero() && time.Since(input.LastAccess) < m.config.ActiveConversationWindow {
-		return TaskContextDecision{
-			Action: TaskContinue,
-			Reason: "active conversation (within time window)",
+			Reason: "empty message with existing history",
 			Source: "structural",
 		}
 	}
@@ -262,8 +236,8 @@ func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 }
 
 // classifyWithLLM uses a lightweight LLM call to determine the task action.
-// Only called when the conversation is NOT active (outside the time window),
-// so there's no active-conversation protection needed here.
+// It is the only path for ambiguous messages with existing history; recency
+// and message length must not decide task continuity by themselves.
 func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDecision {
 	// Build a compact context summary for the LLM.
 	currentTaskSummary := buildCurrentTaskSummary(input.History)
@@ -273,6 +247,9 @@ func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDeci
 
 	var userMsg strings.Builder
 	fmt.Fprintf(&userMsg, "当前任务摘要：%s\n", currentTaskSummary)
+	if input.HasIncompleteTaskMarker {
+		userMsg.WriteString("当前任务状态：上一轮可能未完成或被中断。若用户明确要求继续/恢复则判为 continue；若用户提出无关新请求则判为 new。\n")
+	}
 	if archivedSummaries != "" {
 		fmt.Fprintf(&userMsg, "\n历史任务：\n%s\n", archivedSummaries)
 	}

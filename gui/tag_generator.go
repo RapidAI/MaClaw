@@ -9,7 +9,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
-// GeneratedMetadata 自动生成的元数据。
 type GeneratedMetadata struct {
 	Name        string   `yaml:"name,omitempty"`
 	Description string   `yaml:"description,omitempty"`
@@ -18,42 +17,33 @@ type GeneratedMetadata struct {
 	Price       int      `yaml:"price,omitempty"`
 }
 
-// TagGenerator 自动 Tag 生成器。
 type TagGenerator struct{}
 
-// NewTagGenerator 创建 TagGenerator。
 func NewTagGenerator() *TagGenerator {
 	return &TagGenerator{}
 }
 
 func readSkillYAMLFile(skillDir string) (*skill.SkillYAMLFile, string, error) {
-	yamlPath, err := skillYAMLFilePath(skillDir)
-	if err != nil {
-		return nil, "", err
-	}
-	data, err := os.ReadFile(yamlPath)
-	if err != nil {
-		return nil, "", fmt.Errorf("read %s: %w", filepath.Base(yamlPath), err)
-	}
-	parsed, err := skill.ParseSkillYAMLFile(data)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse %s: %w", filepath.Base(yamlPath), err)
-	}
-	return parsed, yamlPath, nil
+	parsed, defPath, _, err := readSkillDefinitionForTags(skillDir)
+	return parsed, defPath, err
 }
 
-func skillYAMLFilePath(skillDir string) (string, error) {
-	for _, name := range []string{"skill.yaml", "skill.yml"} {
-		path := filepath.Join(skillDir, name)
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
-		}
+func readSkillDefinitionForTags(skillDir string) (*skill.SkillYAMLFile, string, string, error) {
+	defPath, defFormat := findSkillDefinitionFile(skillDir)
+	if defPath == "" {
+		return nil, "", "", os.ErrNotExist
 	}
-	return "", os.ErrNotExist
+	data, err := os.ReadFile(defPath)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("read %s: %w", filepath.Base(defPath), err)
+	}
+	parsed, err := skill.ParseSkillDefinitionFile(data, defFormat)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("parse %s: %w", filepath.Base(defPath), err)
+	}
+	return parsed, defPath, defFormat, nil
 }
 
-// GenerateTags 分析 Skill 目录，生成/补全元数据。
-// 保留已有非空字段，仅补全缺失字段。
 func (g *TagGenerator) GenerateTags(skillDir string) (*GeneratedMetadata, error) {
 	existing, _, err := readSkillYAMLFile(skillDir)
 	if err != nil {
@@ -62,7 +52,6 @@ func (g *TagGenerator) GenerateTags(skillDir string) (*GeneratedMetadata, error)
 
 	result := &GeneratedMetadata{}
 
-	// 保留已有字段
 	if existing.Name != "" {
 		result.Name = existing.Name
 	}
@@ -84,12 +73,9 @@ func (g *TagGenerator) GenerateTags(skillDir string) (*GeneratedMetadata, error)
 		}
 	}
 
-	// 扫描脚本文件推断缺失的 tags
 	if len(result.Tags) == 0 {
 		result.Tags = g.inferTags(skillDir)
 	}
-
-	// 推断 price（简单启发式）
 	if result.Price == 0 {
 		result.Price = g.inferPrice(skillDir)
 	}
@@ -97,7 +83,6 @@ func (g *TagGenerator) GenerateTags(skillDir string) (*GeneratedMetadata, error)
 	return result, nil
 }
 
-// inferTags 从脚本文件内容推断 tags。
 func (g *TagGenerator) inferTags(skillDir string) []string {
 	tagSet := make(map[string]bool)
 
@@ -128,18 +113,17 @@ func (g *TagGenerator) inferTags(skillDir string) []string {
 	return tags
 }
 
-// scanContentTags 从文件内容推断领域 tags。
 func (g *TagGenerator) scanContentTags(content string, tagSet map[string]bool) {
 	lower := strings.ToLower(content)
 	patterns := map[string][]string{
-		"web-scraping":   {"requests.get", "beautifulsoup", "scrapy", "selenium"},
-		"data-analysis":  {"pandas", "numpy", "matplotlib", "seaborn"},
+		"web-scraping":    {"requests.get", "beautifulsoup", "scrapy", "selenium"},
+		"data-analysis":   {"pandas", "numpy", "matplotlib", "seaborn"},
 		"file-management": {"shutil", "os.path", "pathlib", "glob"},
-		"automation":     {"subprocess", "os.system", "schedule"},
-		"api":            {"flask", "fastapi", "django", "http.server"},
-		"database":       {"sqlite3", "sqlalchemy", "pymongo"},
-		"ai-ml":          {"torch", "tensorflow", "sklearn", "openai"},
-		"network":        {"socket", "paramiko", "ftplib", "smtplib"},
+		"automation":      {"subprocess", "os.system", "schedule"},
+		"api":             {"flask", "fastapi", "django", "http.server"},
+		"database":        {"sqlite3", "sqlalchemy", "pymongo"},
+		"ai-ml":           {"torch", "tensorflow", "sklearn", "openai"},
+		"network":         {"socket", "paramiko", "ftplib", "smtplib"},
 	}
 	for tag, keywords := range patterns {
 		for _, kw := range keywords {
@@ -151,7 +135,6 @@ func (g *TagGenerator) scanContentTags(content string, tagSet map[string]bool) {
 	}
 }
 
-// inferPrice 根据 Skill 复杂度推断价格。
 func (g *TagGenerator) inferPrice(skillDir string) int {
 	fileCount := 0
 	totalLines := 0
@@ -168,7 +151,6 @@ func (g *TagGenerator) inferPrice(skillDir string) int {
 		return nil
 	})
 
-	// 极简 → 0, 普通 → 5~15, 复杂 → 20~50
 	if fileCount <= 1 && totalLines < 30 {
 		return 0
 	}
@@ -181,9 +163,8 @@ func (g *TagGenerator) inferPrice(skillDir string) int {
 	return 40
 }
 
-// WriteBackToYAML 将生成的元数据写回 skill.yaml（仅补全缺失字段）。
 func (g *TagGenerator) WriteBackToYAML(skillDir string, meta *GeneratedMetadata) error {
-	existing, yamlPath, err := readSkillYAMLFile(skillDir)
+	existing, defPath, defFormat, err := readSkillDefinitionForTags(skillDir)
 	if err != nil {
 		return err
 	}
@@ -191,7 +172,6 @@ func (g *TagGenerator) WriteBackToYAML(skillDir string, meta *GeneratedMetadata)
 		existing.Extra = make(map[string]any)
 	}
 
-	// 仅补全缺失字段
 	if _, ok := existing.Extra["tags"]; !ok && len(meta.Tags) > 0 {
 		existing.Extra["tags"] = meta.Tags
 	}
@@ -199,9 +179,9 @@ func (g *TagGenerator) WriteBackToYAML(skillDir string, meta *GeneratedMetadata)
 		existing.Extra["price"] = meta.Price
 	}
 
-	out, err := skill.FormatSkillYAMLFile(existing)
+	out, err := skill.FormatSkillDefinitionFile(existing, defFormat)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(yamlPath, out, 0o644)
+	return os.WriteFile(defPath, out, 0o644)
 }

@@ -89,6 +89,9 @@ func (s *Store) findSemanticDupCandidate(queryEmb []float32, category Category, 
 	for i := range s.entries {
 		e := &s.entries[i]
 
+		if !e.IsActive() {
+			continue
+		}
 		// Same canonical category.
 		if MapToCanonical(e.Category) != canonicalCat {
 			continue
@@ -224,11 +227,15 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 					if mergedText != "" {
 						s.entries[i].Content = mergedText
 						s.entries[i].ContentHash = computeContentHash(mergedText)
+						s.entries[i].CompactForm = ""
+						if mergedText == newEntry.Content && len(newEntry.Embedding) > 0 {
+							s.entries[i].Embedding = append([]float32(nil), newEntry.Embedding...)
+						}
 					}
 					s.entries[i].Tags = mergeTags(s.entries[i].Tags, newEntry.Tags)
+					s.entries[i].Entities = mergeTags(s.entries[i].Entities, newEntry.Entities)
 					s.entries[i].UpdatedAt = time.Now()
 					s.entries[i].AccessCount++
-					s.bm25.updateEntry(s.entries[i])
 					break
 				}
 			}
@@ -240,12 +247,9 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 				}
 			}
 			s.entries = kept
+			s.rebuildDerivedIndexesLocked(true)
 			s.dirty = true
 			s.mu.Unlock()
-			s.bm25.rebuild(kept)
-			if s.entityIndex != nil {
-				s.entityIndex.Rebuild(kept)
-			}
 			s.signalSave()
 			merged++
 			log.Printf("[semantic_dedup] merged: %q into %q",

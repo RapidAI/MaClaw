@@ -2,10 +2,10 @@ import { useTranslation } from 'react-i18next';
 
 export function LanguageSwitcher() {
   const { i18n } = useTranslation();
-
+  const current = i18n.resolvedLanguage || i18n.language || 'zh';
+  const isChinese = current.startsWith('zh');
   const toggle = () => {
-    const next = i18n.language === 'zh' ? 'en' : 'zh';
-    i18n.changeLanguage(next);
+    void i18n.changeLanguage(isChinese ? 'en' : 'zh');
   };
 
   return (
@@ -25,7 +25,7 @@ export function LanguageSwitcher() {
         zIndex: 100,
       }}
     >
-      {i18n.language === 'zh' ? 'EN' : '中文'}
+      {isChinese ? 'EN' : '\u4e2d\u6587'}
     </button>
   );
 }

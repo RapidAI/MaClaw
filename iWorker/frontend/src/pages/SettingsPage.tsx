@@ -1,5 +1,13 @@
-import { useEffect, useState } from 'react';
-import type { CenterEnrollmentDiscovery, CenterHealthStatus, DiWorkerSettings, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from '../types';
+import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type {
+  CenterEnrollmentDiscovery,
+  CenterHealthStatus,
+  DiWorkerSettings,
+  UpstreamProvider,
+  WorkerMemoryEntry,
+  WorkerMemoryStats,
+} from "../types";
 
 type Props = {
   settings: DiWorkerSettings;
@@ -45,14 +53,20 @@ type Props = {
   onGoalWatchAutoHandleEnabledChange: (value: boolean) => void;
   onGoalWatchIntervalChange: (value: string) => void;
   onGoalWatchMaxDurationChange: (value: string) => void;
-  onRoutingModeChange: (value: DiWorkerSettings['routing']['mode']) => void;
+  onRoutingModeChange: (value: DiWorkerSettings["routing"]["mode"]) => void;
   onRoutingDefaultProviderChange: (value: string) => void;
   onRoutingAllowFallbackChange: (value: boolean) => void;
-  onProviderChange: (providerId: string, patch: Partial<UpstreamProvider>) => void;
+  onProviderChange: (
+    providerId: string,
+    patch: Partial<UpstreamProvider>,
+  ) => void;
   onProviderFeaturesChange: (providerId: string, value: string) => void;
   onCheckCenterHealth: () => void;
   onDiscoverCenterEnrollment: () => void;
-  onApplyCenterEnrollment: (workerId: string, auth: { method: string; username: string; password: string }) => void;
+  onApplyCenterEnrollment: (
+    workerId: string,
+    auth: { method: string; username: string; password: string },
+  ) => void;
   onRefreshMemoryStats: () => void;
   onMemoryDraftScopeChange: (value: string) => void;
   onMemoryDraftContentChange: (value: string) => void;
@@ -65,29 +79,44 @@ type Props = {
   onSave: () => void;
 };
 
-const SectionIcon = ({ children }: { children: string }) => <span className="dw-inline-icon" aria-hidden="true">{children}</span>;
+const SectionIcon = ({ children }: { children: string }) => (
+  <span className="dw-inline-icon" aria-hidden="true">
+    {children}
+  </span>
+);
 
-const healthBadgeLabel = (healthStatus: CenterHealthStatus | null, healthError: string) => {
-  if (healthError) {
-    return '探测异常';
-  }
-  if (!healthStatus) {
-    return '未检测';
-  }
-  return healthStatus.reachable ? '连接正常' : '连接不可达';
-};
+const defaultAuthMethods = [
+  {
+    method: "local",
+    label: "Local account",
+    enabled: true,
+    implemented: true,
+    status: "ready",
+    description: "Manual or imported username/password account.",
+  },
+  {
+    method: "ldap",
+    label: "LDAP",
+    enabled: true,
+    implemented: true,
+    status: "available",
+    description: "Enterprise directory account.",
+  },
+  {
+    method: "oidc",
+    label: "OIDC / OAuth SSO",
+    enabled: false,
+    implemented: false,
+    status: "reserved",
+    description: "Reserved for zero-trust SSO.",
+  },
+];
 
-const healthSummaryTitle = (healthStatus: CenterHealthStatus | null, healthError: string) => {
-  if (healthError) {
-    return '检测返回异常';
-  }
-  if (!healthStatus) {
-    return '尚未获取中心快照';
-  }
-  return healthStatus.reachable ? '中心连接正常' : '中心暂不可达';
-};
-
-const healthSourceLabel = (source: CenterHealthStatus['source']) => source === 'manual' ? '手动检测' : '保存后自动检测';
+const statusText = (
+  enabled: boolean,
+  enabledText: string,
+  disabledText: string,
+) => (enabled ? enabledText : disabledText);
 
 export function SettingsPage({
   settings,
@@ -152,203 +181,496 @@ export function SettingsPage({
   onDeleteWorkerMemory,
   onSave,
 }: Props) {
-  const [expandedProviderId, setExpandedProviderId] = useState<string | null>(null);
-  const [enrollmentAuthMethod, setEnrollmentAuthMethod] = useState('local');
-  const [enrollmentAuthUsername, setEnrollmentAuthUsername] = useState('');
-  const [enrollmentAuthPassword, setEnrollmentAuthPassword] = useState('');
+  const { t } = useTranslation();
+  const st = (
+    key: string,
+    fallback: string,
+    options?: Record<string, unknown>,
+  ) => t(`settings.${key}`, { defaultValue: fallback, ...options });
+  const [expandedProviderId, setExpandedProviderId] = useState<string | null>(
+    null,
+  );
+  const [enrollmentAuthMethod, setEnrollmentAuthMethod] = useState("local");
+  const [enrollmentAuthUsername, setEnrollmentAuthUsername] = useState("");
+  const [enrollmentAuthPassword, setEnrollmentAuthPassword] = useState("");
+
   const discoveredAuthMethods = enrollmentDiscovery?.authMethods?.length
     ? enrollmentDiscovery.authMethods
-    : [
-      { method: 'local', label: 'Local account', enabled: true, implemented: true, status: 'ready', description: 'Manual or imported username/password account.' },
-      { method: 'ldap', label: 'LDAP', enabled: true, implemented: true, status: 'available', description: 'Enterprise directory account.' },
-      { method: 'oidc', label: 'OIDC / OAuth SSO', enabled: false, implemented: false, status: 'reserved', description: 'Reserved for zero-trust SSO.' },
-    ];
-  const selectedAuthMethod = discoveredAuthMethods.find((item) => item.method === enrollmentAuthMethod);
+    : defaultAuthMethods;
+  const selectedAuthMethod = discoveredAuthMethods.find(
+    (item) => item.method === enrollmentAuthMethod,
+  );
   const centerReadiness = healthStatus?.iWorkerReadiness;
+  const enabledLabel = st("enabled", "Enabled");
+  const disabledLabel = st("disabled", "Disabled");
+  const healthBadgeLabel = healthError
+    ? st("healthError", "Check error")
+    : !healthStatus
+      ? st("healthUnknown", "Not checked")
+      : healthStatus.reachable
+        ? st("healthOk", "Connected")
+        : st("healthUnreachable", "Unreachable");
+  const healthSummaryTitle = healthError
+    ? st("healthErrorTitle", "Health check returned an error")
+    : !healthStatus
+      ? st("healthUnknownTitle", "No Center snapshot yet")
+      : healthStatus.reachable
+        ? st("healthOkTitle", "Center connection is healthy")
+        : st("healthUnreachableTitle", "Center is currently unreachable");
+  const healthSourceLabel = (source: CenterHealthStatus["source"]) =>
+    source === "manual"
+      ? st("manualCheck", "Manual check")
+      : st("autoCheck", "Auto check after save");
 
   useEffect(() => {
-    if (expandedProviderId && !settings.providers.some((provider) => provider.id === expandedProviderId)) {
+    if (
+      expandedProviderId &&
+      !settings.providers.some((provider) => provider.id === expandedProviderId)
+    ) {
       setExpandedProviderId(null);
     }
   }, [expandedProviderId, settings.providers]);
+
+  const enabledOptions = (
+    <>
+      <option value="enabled">{enabledLabel}</option>
+      <option value="disabled">{disabledLabel}</option>
+    </>
+  );
 
   return (
     <div className="dw-page-stack">
       <section className="card dw-page-panel">
         <div className="dw-panel-header dw-panel-header-compact">
           <div>
-            <span className="eyebrow">配置</span>
-            <h2>数字员工中心配置</h2>
+            <span className="eyebrow">{st("eyebrow", "Configuration")}</span>
+            <h2>{st("title", "Center configuration")}</h2>
           </div>
           <div className="dw-settings-header-meta">
-            {dirty ? <span className="dw-settings-dirty-badge">有未保存更改</span> : <span className="dw-settings-clean-badge">当前已保存</span>}
-            <small>管理左下角角色信息、中心地址与多上游服务调度策略。</small>
+            {dirty ? (
+              <span className="dw-settings-dirty-badge">
+                {st("dirty", "Unsaved changes")}
+              </span>
+            ) : (
+              <span className="dw-settings-clean-badge">
+                {st("clean", "Saved")}
+              </span>
+            )}
+            <small>
+              {st(
+                "intro",
+                "Manage role profile, Center enrollment, authentication, memory, routing, and upstream model services.",
+              )}
+            </small>
           </div>
         </div>
         <div className="dw-task-layout dw-settings-layout">
           <div className="dw-task-main dw-editor-main">
             <section className="card-subtle dw-editor-section dw-settings-section dw-settings-section-compact">
               <div className="dw-pane-head">
-                <strong><SectionIcon>①</SectionIcon>角色信息</strong>
-                <span>用于左下角展示</span>
+                <strong>
+                  <SectionIcon>1</SectionIcon>
+                  {st("roleProfile", "Role profile")}
+                </strong>
+                <span>
+                  {st(
+                    "roleProfileHint",
+                    "Used as the visible identity and default working persona for this iWorker.",
+                  )}
+                </span>
               </div>
               <div className="dw-form-grid">
                 <label>
-                  角色名
-                  <input value={settings.roleProfile.name} onChange={(event) => onRoleNameChange(event.target.value)} placeholder="例如：小迪" />
+                  {st("roleName", "Role name")}
+                  <input
+                    value={settings.roleProfile.name}
+                    onChange={(event) => onRoleNameChange(event.target.value)}
+                    placeholder={st("roleNamePlaceholder", "Example: Xiao Di")}
+                  />
                 </label>
                 <label>
-                  特点描述
-                  <input value={settings.roleProfile.description} onChange={(event) => onRoleDescriptionChange(event.target.value)} placeholder="例如：擅长纪要、通知与汇报整理" />
+                  {st("roleDescription", "Role description")}
+                  <input
+                    value={settings.roleProfile.description}
+                    onChange={(event) =>
+                      onRoleDescriptionChange(event.target.value)
+                    }
+                    placeholder={st(
+                      "roleDescriptionPlaceholder",
+                      "Example: good at minutes, notices, and reporting",
+                    )}
+                  />
                 </label>
               </div>
             </section>
 
             <section className="card-subtle dw-editor-section dw-settings-section dw-settings-section-compact">
               <div className="dw-pane-head">
-                <strong><SectionIcon>②</SectionIcon>中心连接</strong>
-                <span>Wails 提交任务优先走这里</span>
+                <strong>
+                  <SectionIcon>2</SectionIcon>
+                  {st("centerConnection", "Center connection")}
+                </strong>
+                <span>
+                  {st(
+                    "centerConnectionHint",
+                    "Registration, authorization, and Center push are connected here.",
+                  )}
+                </span>
               </div>
               <div className="dw-settings-group-list">
                 <section className="dw-settings-group">
                   <div className="dw-settings-group-head">
-                    <strong>基础连接</strong>
-                    <span>中心地址与请求超时</span>
+                    <strong>{st("baseConnection", "Base connection")}</strong>
+                    <span>
+                      {st(
+                        "baseConnectionHint",
+                        "Center address, tenant, department, and local iWorker identity.",
+                      )}
+                    </span>
                   </div>
                   <div className="dw-form-grid">
                     <label>
-                      启用中心
-                      <select value={settings.center.enabled ? 'enabled' : 'disabled'} onChange={(event) => onCenterEnabledChange(event.target.value === 'enabled')}>
-                        <option value="enabled">启用</option>
-                        <option value="disabled">关闭</option>
+                      {st("enableCenter", "Enable Center")}
+                      <select
+                        value={settings.center.enabled ? "enabled" : "disabled"}
+                        onChange={(event) =>
+                          onCenterEnabledChange(
+                            event.target.value === "enabled",
+                          )
+                        }
+                      >
+                        {enabledOptions}
                       </select>
                     </label>
                     <label>
-                      地址
-                      <input value={settings.center.host} onChange={(event) => onCenterHostChange(event.target.value)} placeholder="127.0.0.1" />
+                      {st("host", "Host")}
+                      <input
+                        value={settings.center.host}
+                        onChange={(event) =>
+                          onCenterHostChange(event.target.value)
+                        }
+                        placeholder="127.0.0.1"
+                      />
                     </label>
                     <label>
-                      端口
-                      <input value={String(settings.center.port)} onChange={(event) => onCenterPortChange(event.target.value)} placeholder="9377" />
+                      {st("port", "Port")}
+                      <input
+                        value={String(settings.center.port)}
+                        onChange={(event) =>
+                          onCenterPortChange(event.target.value)
+                        }
+                        placeholder="9377"
+                      />
                     </label>
                     <label>
                       Base URL
-                      <input value={settings.center.baseUrl} onChange={(event) => onCenterBaseUrlChange(event.target.value)} placeholder="http://127.0.0.1:9377" />
+                      <input
+                        value={settings.center.baseUrl}
+                        onChange={(event) =>
+                          onCenterBaseUrlChange(event.target.value)
+                        }
+                        placeholder="http://127.0.0.1:9377"
+                      />
                     </label>
                     <label>
                       Tenant ID
-                      <input value={settings.center.tenantId} onChange={(event) => onCenterTenantIdChange(event.target.value)} placeholder="default" />
+                      <input
+                        value={settings.center.tenantId}
+                        onChange={(event) =>
+                          onCenterTenantIdChange(event.target.value)
+                        }
+                        placeholder="default"
+                      />
                     </label>
                     <label>
                       Department ID
-                      <input value={settings.center.departmentId} onChange={(event) => onCenterDepartmentIdChange(event.target.value)} placeholder="default" />
+                      <input
+                        value={settings.center.departmentId}
+                        onChange={(event) =>
+                          onCenterDepartmentIdChange(event.target.value)
+                        }
+                        placeholder="default"
+                      />
                     </label>
                     <label>
                       Worker ID
-                      <input value={settings.center.workerId} onChange={(event) => onCenterWorkerIdChange(event.target.value)} placeholder="local-iworker" />
+                      <input
+                        value={settings.center.workerId}
+                        onChange={(event) =>
+                          onCenterWorkerIdChange(event.target.value)
+                        }
+                        placeholder="local-iworker"
+                      />
                     </label>
                     <label>
-                      超时（秒）
-                      <input value={String(settings.center.timeoutSec)} onChange={(event) => onCenterTimeoutChange(event.target.value)} placeholder="60" />
+                      {st("timeoutSec", "Timeout (sec)")}
+                      <input
+                        value={String(settings.center.timeoutSec)}
+                        onChange={(event) =>
+                          onCenterTimeoutChange(event.target.value)
+                        }
+                        placeholder="60"
+                      />
                     </label>
                     <label>
-                      自动守护
-                      <select value={settings.center.goalWatchAutoHandleEnabled ? 'enabled' : 'disabled'} onChange={(event) => onGoalWatchAutoHandleEnabledChange(event.target.value === 'enabled')}>
-                        <option value="enabled">启用</option>
-                        <option value="disabled">关闭</option>
+                      {st("autoGuardian", "Auto guardian")}
+                      <select
+                        value={
+                          settings.center.goalWatchAutoHandleEnabled
+                            ? "enabled"
+                            : "disabled"
+                        }
+                        onChange={(event) =>
+                          onGoalWatchAutoHandleEnabledChange(
+                            event.target.value === "enabled",
+                          )
+                        }
+                      >
+                        {enabledOptions}
                       </select>
                     </label>
                     <label>
-                      守护周期（秒）
-                      <input value={String(settings.center.goalWatchIntervalSec)} onChange={(event) => onGoalWatchIntervalChange(event.target.value)} placeholder="30" />
+                      {st("guardIntervalSec", "Guardian interval (sec)")}
+                      <input
+                        value={String(settings.center.goalWatchIntervalSec)}
+                        onChange={(event) =>
+                          onGoalWatchIntervalChange(event.target.value)
+                        }
+                        placeholder="30"
+                      />
                     </label>
                     <label>
-                      卡死超时（秒）
-                      <input value={String(settings.center.goalWatchMaxDurationSec)} onChange={(event) => onGoalWatchMaxDurationChange(event.target.value)} placeholder="120" />
+                      {st("stuckTimeoutSec", "Stuck timeout (sec)")}
+                      <input
+                        value={String(settings.center.goalWatchMaxDurationSec)}
+                        onChange={(event) =>
+                          onGoalWatchMaxDurationChange(event.target.value)
+                        }
+                        placeholder="120"
+                      />
                     </label>
                   </div>
-                  <div className="dw-settings-enrollment-card">
-                    <div className="dw-settings-group-head">
-                      <strong>Center Enrollment</strong>
-                      <span>Discover tenants and bind this local body to a Center iWorker.</span>
-                    </div>
-                    <div className="dw-settings-enrollment-actions">
-                      <button type="button" className="secondary" onClick={onDiscoverCenterEnrollment} disabled={loading || enrollmentDiscovering || !settings.center.baseUrl.trim()}>
-                        {enrollmentDiscovering ? 'Discovering...' : 'Discover Center'}
-                      </button>
-                      <small>{settings.center.baseUrl || 'Set Base URL first'}</small>
-                    </div>
-                    <div className="dw-settings-enrollment-auth">
-                      <label>
-                        Human identity
-                        <select value={enrollmentAuthMethod} onChange={(event) => setEnrollmentAuthMethod(event.target.value)}>
-                          {discoveredAuthMethods.map((method) => (
-                            <option key={method.method} value={method.method} disabled={!method.enabled && method.implemented}>
-                              {method.label}{method.implemented ? '' : ' (reserved)'}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Username / email / phone
-                        <input value={enrollmentAuthUsername} onChange={(event) => setEnrollmentAuthUsername(event.target.value)} placeholder="alice@example.com" />
-                      </label>
-                      <label>
-                        Password / verification code
-                        <input type="password" value={enrollmentAuthPassword} onChange={(event) => setEnrollmentAuthPassword(event.target.value)} placeholder="Required before binding" />
-                      </label>
-                    </div>
-                    {enrollmentMessage ? <p>{enrollmentMessage}</p> : null}
-                    {enrollmentError ? <p>{enrollmentError}</p> : null}
-                    {enrollmentDiscovery ? (
-                      <div className="dw-settings-enrollment-results">
-                        <div className="dw-settings-kv-list">
-                          <div className="dw-settings-kv-item"><span>Tenant</span><strong>{enrollmentDiscovery.selectedTenantId || '-'}</strong></div>
-                          <div className="dw-settings-kv-item"><span>Companies</span><strong>{enrollmentDiscovery.tenants.length}</strong></div>
-                          <div className="dw-settings-kv-item"><span>Roles</span><strong>{enrollmentDiscovery.roles.length}</strong></div>
-                          <div className="dw-settings-kv-item"><span>iWorkers</span><strong>{enrollmentDiscovery.colleagues.length}</strong></div>
+                </section>
+
+                <section className="dw-settings-group dw-settings-enrollment-card">
+                  <div className="dw-settings-group-head">
+                    <strong>
+                      {st("enrollmentTitle", "Center Enrollment")}
+                    </strong>
+                    <span>
+                      {st(
+                        "enrollmentHint",
+                        "Discover tenants and bind this local body to a Center iWorker.",
+                      )}
+                    </span>
+                  </div>
+                  <div className="dw-settings-enrollment-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={onDiscoverCenterEnrollment}
+                      disabled={
+                        loading ||
+                        enrollmentDiscovering ||
+                        !settings.center.baseUrl.trim()
+                      }
+                    >
+                      {enrollmentDiscovering
+                        ? st("discovering", "Discovering...")
+                        : st("discoverCenter", "Discover Center")}
+                    </button>
+                    <small>
+                      {settings.center.baseUrl ||
+                        st("setBaseUrlFirst", "Set Base URL first")}
+                    </small>
+                  </div>
+                  <div className="dw-settings-enrollment-auth">
+                    <label>
+                      {st("humanIdentity", "Human identity")}
+                      <select
+                        value={enrollmentAuthMethod}
+                        onChange={(event) =>
+                          setEnrollmentAuthMethod(event.target.value)
+                        }
+                      >
+                        {discoveredAuthMethods.map((method) => (
+                          <option
+                            key={method.method}
+                            value={method.method}
+                            disabled={!method.enabled && method.implemented}
+                          >
+                            {method.label}
+                            {method.implemented ? "" : " (reserved)"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Username / email / phone
+                      <input
+                        value={enrollmentAuthUsername}
+                        onChange={(event) =>
+                          setEnrollmentAuthUsername(event.target.value)
+                        }
+                        placeholder={st("userPlaceholder", "alice@example.com")}
+                      />
+                    </label>
+                    <label>
+                      Password / verification code
+                      <input
+                        type="password"
+                        value={enrollmentAuthPassword}
+                        onChange={(event) =>
+                          setEnrollmentAuthPassword(event.target.value)
+                        }
+                        placeholder={st(
+                          "passwordPlaceholder",
+                          "Required before binding",
+                        )}
+                      />
+                    </label>
+                  </div>
+                  {selectedAuthMethod ? (
+                    <p>{selectedAuthMethod.description}</p>
+                  ) : null}
+                  {enrollmentMessage ? <p>{enrollmentMessage}</p> : null}
+                  {enrollmentError ? <p>{enrollmentError}</p> : null}
+                  {enrollmentDiscovery ? (
+                    <div className="dw-settings-enrollment-results">
+                      <div className="dw-settings-kv-list">
+                        <div className="dw-settings-kv-item">
+                          <span>Tenant</span>
+                          <strong>
+                            {enrollmentDiscovery.selectedTenantId || "-"}
+                          </strong>
                         </div>
-                        <div className="dw-settings-enrollment-list">
-                          {enrollmentDiscovery.colleagues.length > 0 ? enrollmentDiscovery.colleagues.map((worker) => (
-                            <article key={worker.id} className="dw-settings-enrollment-worker">
-                              <div>
-                                <strong>{worker.name}</strong>
-                                <span>{worker.roleName || worker.roleCode || 'iWorker'}</span>
-                                <p>{worker.description || 'No description from Center yet.'}</p>
-                              </div>
-                              <button type="button" className="primary" onClick={() => onApplyCenterEnrollment(worker.id, { method: enrollmentAuthMethod, username: enrollmentAuthUsername, password: enrollmentAuthPassword })} disabled={Boolean(enrollmentApplyingId) || !enrollmentAuthUsername.trim() || !enrollmentAuthPassword.trim()}>
-                                {enrollmentApplyingId === worker.id ? 'Binding...' : 'Bind here'}
-                              </button>
-                            </article>
-                          )) : <p>No active iWorkers discovered. Apply the enterprise bootstrap plan in iWorkerCenter first.</p>}
+                        <div className="dw-settings-kv-item">
+                          <span>Companies</span>
+                          <strong>{enrollmentDiscovery.tenants.length}</strong>
+                        </div>
+                        <div className="dw-settings-kv-item">
+                          <span>Roles</span>
+                          <strong>{enrollmentDiscovery.roles.length}</strong>
+                        </div>
+                        <div className="dw-settings-kv-item">
+                          <span>iWorkers</span>
+                          <strong>
+                            {enrollmentDiscovery.colleagues.length}
+                          </strong>
                         </div>
                       </div>
-                    ) : null}
-                  </div>
+                      <div className="dw-settings-enrollment-list">
+                        {enrollmentDiscovery.colleagues.length > 0 ? (
+                          enrollmentDiscovery.colleagues.map((worker) => (
+                            <article
+                              key={worker.id}
+                              className="dw-settings-enrollment-worker"
+                            >
+                              <div>
+                                <strong>{worker.name}</strong>
+                                <span>
+                                  {worker.roleName ||
+                                    worker.roleCode ||
+                                    "iWorker"}
+                                </span>
+                                <p>
+                                  {worker.description ||
+                                    "No description from Center yet."}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                className="primary"
+                                onClick={() =>
+                                  onApplyCenterEnrollment(worker.id, {
+                                    method: enrollmentAuthMethod,
+                                    username: enrollmentAuthUsername,
+                                    password: enrollmentAuthPassword,
+                                  })
+                                }
+                                disabled={
+                                  Boolean(enrollmentApplyingId) ||
+                                  !enrollmentAuthUsername.trim() ||
+                                  !enrollmentAuthPassword.trim()
+                                }
+                              >
+                                {enrollmentApplyingId === worker.id
+                                  ? st("binding", "Binding...")
+                                  : st("bindHere", "Bind here")}
+                              </button>
+                            </article>
+                          ))
+                        ) : (
+                          <p>
+                            {st(
+                              "noWorkers",
+                              "No active iWorkers discovered. Apply the enterprise bootstrap plan in iWorkerCenter first.",
+                            )}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                 </section>
+
                 <section className="dw-settings-group">
                   <div className="dw-settings-group-head">
-                    <strong>路由策略</strong>
-                    <span>控制默认上游与失败回退</span>
+                    <strong>{st("routing", "Routing")}</strong>
+                    <span>
+                      {st(
+                        "routingHint",
+                        "Controls default upstream service, priority, and failure fallback.",
+                      )}
+                    </span>
                   </div>
                   <div className="dw-form-grid">
                     <label>
-                      路由模式
-                      <select value={settings.routing.mode} onChange={(event) => onRoutingModeChange(event.target.value as DiWorkerSettings['routing']['mode'])}>
-                        <option value="smart">智能调度</option>
-                        <option value="priority">优先级优选</option>
-                        <option value="manual">手动默认</option>
+                      {st("routingMode", "Routing mode")}
+                      <select
+                        value={settings.routing.mode}
+                        onChange={(event) =>
+                          onRoutingModeChange(
+                            event.target
+                              .value as DiWorkerSettings["routing"]["mode"],
+                          )
+                        }
+                      >
+                        <option value="smart">
+                          {st("smartRouting", "Smart routing")}
+                        </option>
+                        <option value="priority">
+                          {st("priorityRouting", "Priority first")}
+                        </option>
+                        <option value="manual">
+                          {st("manualRouting", "Manual default")}
+                        </option>
                       </select>
                     </label>
                     <label>
-                      默认服务
-                      <input value={settings.routing.defaultProvider} onChange={(event) => onRoutingDefaultProviderChange(event.target.value)} placeholder="office-openai" />
+                      {st("defaultProvider", "Default provider")}
+                      <input
+                        value={settings.routing.defaultProvider}
+                        onChange={(event) =>
+                          onRoutingDefaultProviderChange(event.target.value)
+                        }
+                        placeholder="office-openai"
+                      />
                     </label>
                     <label className="dw-settings-field-span-2">
-                      失败回退
-                      <select value={settings.routing.allowFallback ? 'enabled' : 'disabled'} onChange={(event) => onRoutingAllowFallbackChange(event.target.value === 'enabled')}>
-                        <option value="enabled">允许</option>
-                        <option value="disabled">关闭</option>
+                      {st("fallback", "Failure fallback")}
+                      <select
+                        value={
+                          settings.routing.allowFallback
+                            ? "enabled"
+                            : "disabled"
+                        }
+                        onChange={(event) =>
+                          onRoutingAllowFallbackChange(
+                            event.target.value === "enabled",
+                          )
+                        }
+                      >
+                        {enabledOptions}
                       </select>
                     </label>
                   </div>
@@ -358,47 +680,89 @@ export function SettingsPage({
 
             <section className="card-subtle dw-editor-section dw-settings-section dw-settings-section-compact">
               <div className="dw-pane-head">
-                <strong><SectionIcon>③</SectionIcon>上游服务</strong>
-                <span>{settings.providers.length} 个服务</span>
+                <strong>
+                  <SectionIcon>3</SectionIcon>
+                  {st("providers", "Providers")}
+                </strong>
+                <span>
+                  {st("servicesCount", "{{count}} services", {
+                    count: settings.providers.length,
+                  })}
+                </span>
               </div>
               <div className="dw-provider-list">
                 {settings.providers.map((provider) => {
                   const isExpanded = expandedProviderId === provider.id;
                   const detailsId = `provider-details-${provider.id}`;
-
                   return (
-                    <article key={provider.id} className={`dw-provider-card${isExpanded ? ' is-expanded' : ''}`}>
+                    <article
+                      key={provider.id}
+                      className={`dw-provider-card${isExpanded ? " is-expanded" : ""}`}
+                    >
                       <div className="dw-provider-summary">
                         <div className="dw-provider-card-head">
                           <div className="dw-provider-card-title">
                             <strong>{provider.name}</strong>
-                            <p>{provider.description || '未设置说明'}</p>
+                            <p>
+                              {provider.description ||
+                                "No description configured."}
+                            </p>
                           </div>
                           <div className="dw-provider-card-badges">
                             <span>{provider.protocol.toUpperCase()}</span>
-                            <span>{provider.enabled ? '已启用' : '已关闭'}</span>
+                            <span>
+                              {statusText(
+                                provider.enabled,
+                                enabledLabel,
+                                disabledLabel,
+                              )}
+                            </span>
                           </div>
                         </div>
                         <div className="dw-provider-meta-row">
-                          <span>模型：{provider.model || '未设置'}</span>
-                          <span>优先级：{provider.priority}</span>
-                          <span>上下文：{provider.capabilities.maxContext || 0}</span>
+                          <span>Model: {provider.model || "-"}</span>
+                          <span>Priority: {provider.priority}</span>
+                          <span>
+                            Context: {provider.capabilities.maxContext || 0}
+                          </span>
                         </div>
                         <div className="dw-provider-feature-row">
-                          <span>{provider.capabilities.supportsStream ? '流式输出' : '非流式'}</span>
-                          <span>{provider.capabilities.supportsVision ? '支持视觉' : '纯文本'}</span>
-                          <span>{provider.features.length ? provider.features.join(' / ') : '未设置特点'}</span>
+                          <span>
+                            {provider.capabilities.supportsStream
+                              ? "Streaming"
+                              : "Non-streaming"}
+                          </span>
+                          <span>
+                            {provider.capabilities.supportsVision
+                              ? "Vision"
+                              : "Text only"}
+                          </span>
+                          <span>
+                            {provider.features.length
+                              ? provider.features.join(" / ")
+                              : "No features configured"}
+                          </span>
                         </div>
                         <div className="dw-provider-summary-foot">
-                          <span>{isExpanded ? '正在编辑当前服务' : '默认仅显示摘要'}</span>
+                          <span>
+                            {isExpanded
+                              ? "Editing this provider"
+                              : "Summary view"}
+                          </span>
                           <button
                             type="button"
                             className="secondary dw-provider-toggle"
                             aria-expanded={isExpanded}
                             aria-controls={detailsId}
-                            onClick={() => setExpandedProviderId((current) => current === provider.id ? null : provider.id)}
+                            onClick={() =>
+                              setExpandedProviderId((current) =>
+                                current === provider.id ? null : provider.id,
+                              )
+                            }
                           >
-                            {isExpanded ? `收起编辑 ${provider.name}` : `展开编辑 ${provider.name}`}
+                            {isExpanded
+                              ? `Collapse ${provider.name}`
+                              : `Edit ${provider.name}`}
                           </button>
                         </div>
                       </div>
@@ -406,67 +770,173 @@ export function SettingsPage({
                         <div id={detailsId} className="dw-provider-details">
                           <div className="dw-form-grid dw-provider-grid">
                             <label>
-                              启用
-                              <select value={provider.enabled ? 'enabled' : 'disabled'} onChange={(event) => onProviderChange(provider.id, { enabled: event.target.value === 'enabled' })}>
-                                <option value="enabled">启用</option>
-                                <option value="disabled">关闭</option>
+                              {st("enabled", "Enabled")}
+                              <select
+                                value={
+                                  provider.enabled ? "enabled" : "disabled"
+                                }
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    enabled: event.target.value === "enabled",
+                                  })
+                                }
+                              >
+                                {enabledOptions}
                               </select>
                             </label>
                             <label>
-                              名称
-                              <input value={provider.name} onChange={(event) => onProviderChange(provider.id, { name: event.target.value })} />
+                              Name
+                              <input
+                                value={provider.name}
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    name: event.target.value,
+                                  })
+                                }
+                              />
                             </label>
                             <label>
-                              协议
-                              <select value={provider.protocol} onChange={(event) => onProviderChange(provider.id, { protocol: event.target.value as UpstreamProvider['protocol'] })}>
+                              Protocol
+                              <select
+                                value={provider.protocol}
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    protocol: event.target
+                                      .value as UpstreamProvider["protocol"],
+                                  })
+                                }
+                              >
                                 <option value="openai">openai</option>
                                 <option value="anthropic">anthropic</option>
                               </select>
                             </label>
                             <label className="dw-provider-field-span-3">
                               Base URL
-                              <input value={provider.baseUrl} onChange={(event) => onProviderChange(provider.id, { baseUrl: event.target.value })} />
+                              <input
+                                value={provider.baseUrl}
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    baseUrl: event.target.value,
+                                  })
+                                }
+                              />
                             </label>
                             <label className="dw-provider-field-span-3">
                               API Key
-                              <input value={provider.apiKey} onChange={(event) => onProviderChange(provider.id, { apiKey: event.target.value })} />
+                              <input
+                                value={provider.apiKey}
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    apiKey: event.target.value,
+                                  })
+                                }
+                              />
                             </label>
                           </div>
                           <div className="dw-provider-form-divider" />
                           <div className="dw-form-grid dw-provider-grid dw-provider-grid-secondary">
                             <label>
-                              模型
-                              <input value={provider.model} onChange={(event) => onProviderChange(provider.id, { model: event.target.value })} />
+                              Model
+                              <input
+                                value={provider.model}
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    model: event.target.value,
+                                  })
+                                }
+                              />
                             </label>
                             <label>
-                              优先级
-                              <input value={String(provider.priority)} onChange={(event) => onProviderChange(provider.id, { priority: Number(event.target.value) || 0 })} />
+                              Priority
+                              <input
+                                value={String(provider.priority)}
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    priority: Number(event.target.value) || 0,
+                                  })
+                                }
+                              />
                             </label>
                             <label>
-                              最大上下文
-                              <input value={String(provider.capabilities.maxContext)} onChange={(event) => onProviderChange(provider.id, { capabilities: { ...provider.capabilities, maxContext: Number(event.target.value) || 0 } })} />
+                              Max context
+                              <input
+                                value={String(provider.capabilities.maxContext)}
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    capabilities: {
+                                      ...provider.capabilities,
+                                      maxContext:
+                                        Number(event.target.value) || 0,
+                                    },
+                                  })
+                                }
+                              />
                             </label>
                             <label className="dw-provider-field-span-3">
-                              服务特点
-                              <input value={provider.features.join('，')} onChange={(event) => onProviderFeaturesChange(provider.id, event.target.value)} placeholder="公文，中文，结构化" />
+                              Features
+                              <input
+                                value={provider.features.join(", ")}
+                                onChange={(event) =>
+                                  onProviderFeaturesChange(
+                                    provider.id,
+                                    event.target.value,
+                                  )
+                                }
+                                placeholder="documents, Chinese, structured"
+                              />
                             </label>
                             <label>
-                              支持流式
-                              <select value={provider.capabilities.supportsStream ? 'enabled' : 'disabled'} onChange={(event) => onProviderChange(provider.id, { capabilities: { ...provider.capabilities, supportsStream: event.target.value === 'enabled' } })}>
-                                <option value="enabled">支持</option>
-                                <option value="disabled">关闭</option>
+                              Streaming
+                              <select
+                                value={
+                                  provider.capabilities.supportsStream
+                                    ? "enabled"
+                                    : "disabled"
+                                }
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    capabilities: {
+                                      ...provider.capabilities,
+                                      supportsStream:
+                                        event.target.value === "enabled",
+                                    },
+                                  })
+                                }
+                              >
+                                {enabledOptions}
                               </select>
                             </label>
                             <label>
-                              支持视觉
-                              <select value={provider.capabilities.supportsVision ? 'enabled' : 'disabled'} onChange={(event) => onProviderChange(provider.id, { capabilities: { ...provider.capabilities, supportsVision: event.target.value === 'enabled' } })}>
-                                <option value="enabled">支持</option>
-                                <option value="disabled">关闭</option>
+                              Vision
+                              <select
+                                value={
+                                  provider.capabilities.supportsVision
+                                    ? "enabled"
+                                    : "disabled"
+                                }
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    capabilities: {
+                                      ...provider.capabilities,
+                                      supportsVision:
+                                        event.target.value === "enabled",
+                                    },
+                                  })
+                                }
+                              >
+                                {enabledOptions}
                               </select>
                             </label>
                             <label>
-                              说明
-                              <input value={provider.description} onChange={(event) => onProviderChange(provider.id, { description: event.target.value })} />
+                              Description
+                              <input
+                                value={provider.description}
+                                onChange={(event) =>
+                                  onProviderChange(provider.id, {
+                                    description: event.target.value,
+                                  })
+                                }
+                              />
                             </label>
                           </div>
                         </div>
@@ -482,138 +952,258 @@ export function SettingsPage({
             <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
               <div className="dw-settings-summary-head">
                 <div>
-                  <label>记忆沉淀</label>
-                  <strong>{memoryStats ? `${memoryStats.total} 条` : '未加载'}</strong>
+                  <label>{st("memoryStats", "Memory records")}</label>
+                  <strong>
+                    {memoryStats
+                      ? `${memoryStats.total} records`
+                      : st("notLoaded", "Not loaded")}
+                  </strong>
                 </div>
-                <button type="button" className="secondary" onClick={onRefreshMemoryStats} disabled={loading || memoryStatsLoading || !settings.center.enabled}>
-                  {memoryStatsLoading ? '刷新中...' : '刷新记忆'}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={onRefreshMemoryStats}
+                  disabled={
+                    loading || memoryStatsLoading || !settings.center.enabled
+                  }
+                >
+                  {memoryStatsLoading
+                    ? st("refreshing", "Refreshing...")
+                    : st("refreshMemory", "Refresh memory")}
                 </button>
               </div>
-              <p>记忆源存放在注册的 iWorkerCenter，本地只作为访问缓存。</p>
+              <p>
+                {st(
+                  "memoryCanonical",
+                  "Memory is canonical in the registered iWorkerCenter; local storage is only an access cache.",
+                )}
+              </p>
               <div className="dw-settings-kv-list">
                 <div className="dw-settings-kv-item">
-                  <span>公司记忆</span>
+                  <span>{st("companyMemory", "Company memory")}</span>
                   <strong>{memoryStats?.byScope.company ?? 0}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>部门记忆</span>
+                  <span>{st("departmentMemory", "Department memory")}</span>
                   <strong>{memoryStats?.byScope.department ?? 0}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>个人记忆</span>
+                  <span>{st("personalMemory", "Personal memory")}</span>
                   <strong>{memoryStats?.byScope.personal ?? 0}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>当前上下文</span>
-                  <strong>{`${settings.center.tenantId || '-'} / ${settings.center.departmentId || '-'} / ${settings.center.workerId || '-'}`}</strong>
+                  <span>{st("currentContext", "Current context")}</span>
+                  <strong>{`${settings.center.tenantId || "-"} / ${settings.center.departmentId || "-"} / ${settings.center.workerId || "-"}`}</strong>
                 </div>
               </div>
               {memoryStatsError ? <p>{memoryStatsError}</p> : null}
               <div className="dw-settings-save-row">
                 <label>
-                  Memory Capture
-                  <select value={memoryDraftScope} onChange={(event) => onMemoryDraftScopeChange(event.target.value)} disabled={!settings.center.enabled || memorySaving}>
+                  {st("memoryScope", "Memory Capture")}
+                  <select
+                    value={memoryDraftScope}
+                    onChange={(event) =>
+                      onMemoryDraftScopeChange(event.target.value)
+                    }
+                    disabled={!settings.center.enabled || memorySaving}
+                  >
                     <option value="personal">Personal memory</option>
                     <option value="department">Department memory</option>
                     <option value="company">Company memory</option>
                   </select>
                 </label>
                 <label>
-                  Category
-                  <input value={memoryDraftCategory} onChange={(event) => onMemoryDraftCategoryChange(event.target.value)} placeholder="note" disabled={!settings.center.enabled || memorySaving} />
+                  {st("category", "Category")}
+                  <input
+                    value={memoryDraftCategory}
+                    onChange={(event) =>
+                      onMemoryDraftCategoryChange(event.target.value)
+                    }
+                    placeholder="note"
+                    disabled={!settings.center.enabled || memorySaving}
+                  />
                 </label>
                 <label>
-                  Tags
-                  <input value={memoryDraftTags} onChange={(event) => onMemoryDraftTagsChange(event.target.value)} placeholder="policy, preference" disabled={!settings.center.enabled || memorySaving} />
+                  {st("tags", "Tags")}
+                  <input
+                    value={memoryDraftTags}
+                    onChange={(event) =>
+                      onMemoryDraftTagsChange(event.target.value)
+                    }
+                    placeholder="policy, preference"
+                    disabled={!settings.center.enabled || memorySaving}
+                  />
                 </label>
                 <label>
-                  Content
-                  <textarea value={memoryDraftContent} onChange={(event) => onMemoryDraftContentChange(event.target.value)} placeholder="Write a reusable fact, rule, preference, or handoff note." disabled={!settings.center.enabled || memorySaving} rows={4} />
+                  {st("content", "Content")}
+                  <textarea
+                    value={memoryDraftContent}
+                    onChange={(event) =>
+                      onMemoryDraftContentChange(event.target.value)
+                    }
+                    placeholder="Write a reusable fact, rule, preference, or handoff note."
+                    disabled={!settings.center.enabled || memorySaving}
+                    rows={4}
+                  />
                 </label>
-                <button type="button" className="primary" onClick={onSaveWorkerMemory} disabled={!settings.center.enabled || memorySaving || !memoryDraftContent.trim()}>
-                  {memorySaving ? 'Saving memory...' : 'Save memory'}
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={onSaveWorkerMemory}
+                  disabled={
+                    !settings.center.enabled ||
+                    memorySaving ||
+                    !memoryDraftContent.trim()
+                  }
+                >
+                  {memorySaving
+                    ? st("savingMemory", "Saving memory...")
+                    : st("saveMemory", "Save memory")}
                 </button>
-                <p>{memorySaveMessage || memorySaveError || 'Saved memories are canonical in iWorkerCenter; this computer keeps cache only.'}</p>
+                <p>
+                  {memorySaveMessage ||
+                    memorySaveError ||
+                    st(
+                      "memorySavedHint",
+                      "Saved memories are canonical in iWorkerCenter; this computer keeps cache only.",
+                    )}
+                </p>
               </div>
               <div className="dw-settings-save-row">
                 <label>
-                  Memory Browser
-                  <input value={memoryRecallQuery} onChange={(event) => onMemoryRecallQueryChange(event.target.value)} placeholder="Search registered center memory" disabled={!settings.center.enabled || memoryRecallLoading} />
+                  {st("memoryBrowser", "Memory Browser")}
+                  <input
+                    value={memoryRecallQuery}
+                    onChange={(event) =>
+                      onMemoryRecallQueryChange(event.target.value)
+                    }
+                    placeholder="Search registered center memory"
+                    disabled={!settings.center.enabled || memoryRecallLoading}
+                  />
                 </label>
-                <button type="button" className="secondary" onClick={onRecallWorkerMemories} disabled={!settings.center.enabled || memoryRecallLoading}>
-                  {memoryRecallLoading ? 'Recalling...' : 'Recall memories'}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={onRecallWorkerMemories}
+                  disabled={!settings.center.enabled || memoryRecallLoading}
+                >
+                  {memoryRecallLoading
+                    ? st("recalling", "Recalling...")
+                    : st("recallMemories", "Recall memories")}
                 </button>
                 {memoryRecallError ? <p>{memoryRecallError}</p> : null}
                 {memoryDeleteError ? <p>{memoryDeleteError}</p> : null}
                 {memoryRecallItems.length > 0 ? (
                   <div className="dw-settings-kv-list">
                     {memoryRecallItems.map((item) => (
-                      <div key={item.id || `${item.scope}-${item.content}`} className="dw-settings-kv-item">
-                        <span>{`${item.scope || 'memory'} / ${item.category || 'note'}`}</span>
+                      <div
+                        key={item.id || `${item.scope}-${item.content}`}
+                        className="dw-settings-kv-item"
+                      >
+                        <span>{`${item.scope || "memory"} / ${item.category || "note"}`}</span>
                         <strong>{item.content}</strong>
-                        <button type="button" className="secondary" onClick={() => onDeleteWorkerMemory(item.id)} disabled={!item.id || memoryDeletingId === item.id}>
-                          {memoryDeletingId === item.id ? 'Forgetting...' : 'Forget'}
-                        </button>                      </div>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => onDeleteWorkerMemory(item.id)}
+                          disabled={!item.id || memoryDeletingId === item.id}
+                        >
+                          {memoryDeletingId === item.id
+                            ? st("forgetting", "Forgetting...")
+                            : st("forget", "Forget")}
+                        </button>
+                      </div>
                     ))}
                   </div>
-                ) : <p>No recalled memories yet.</p>}
-              </div>            </div>
+                ) : (
+                  <p>{st("noRecalledMemory", "No recalled memories yet.")}</p>
+                )}
+              </div>
+            </div>
+
             <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
               <div className="dw-settings-summary-head">
                 <div>
-                  <label>连接与状态</label>
-                  <strong>{healthBadgeLabel(healthStatus, healthError)}</strong>
+                  <label>
+                    {st("connectionStatus", "Connection and status")}
+                  </label>
+                  <strong>{healthBadgeLabel}</strong>
                 </div>
-                <button type="button" className="secondary" onClick={onCheckCenterHealth} disabled={loading || healthChecking}>
-                  {healthChecking ? '检测中...' : '测试中心连接'}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={onCheckCenterHealth}
+                  disabled={loading || healthChecking}
+                >
+                  {healthChecking
+                    ? st("checking", "Checking...")
+                    : st("checkCenter", "Test Center connection")}
                 </button>
               </div>
-              <p>{loading ? '正在加载配置…' : settings.center.enabled ? '中心路由已启用' : '当前使用本地直连链路'}</p>
+              <p>
+                {loading
+                  ? st("loadingConfig", "Loading configuration...")
+                  : settings.center.enabled
+                    ? st("centerRoutingEnabled", "Center routing enabled")
+                    : st("localDirectMode", "Using local direct mode")}
+              </p>
               <div className="dw-settings-kv-list">
                 <div className="dw-settings-kv-item">
-                  <span>状态</span>
-                  <strong>{healthSummaryTitle(healthStatus, healthError)}</strong>
+                  <span>{st("status", "Status")}</span>
+                  <strong>{healthSummaryTitle}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>地址</span>
-                  <strong>{healthStatus?.resolvedBaseUrl || settings.center.baseUrl || '未设置中心地址'}</strong>
+                  <span>{st("address", "Address")}</span>
+                  <strong>
+                    {healthStatus?.resolvedBaseUrl ||
+                      settings.center.baseUrl ||
+                      "No Center address configured"}
+                  </strong>
                 </div>
                 {healthStatus ? (
                   <>
                     <div className="dw-settings-kv-item">
-                      <span>来源</span>
+                      <span>{st("source", "Source")}</span>
                       <strong>{healthSourceLabel(healthStatus.source)}</strong>
                     </div>
                     <div className="dw-settings-kv-item">
-                      <span>最近检测</span>
+                      <span>{st("lastChecked", "Last checked")}</span>
                       <strong>{healthStatus.checkedAt}</strong>
                     </div>
                     <div className="dw-settings-kv-item">
-                      <span>Provider 数量</span>
+                      <span>{st("providerCount", "Provider count")}</span>
                       <strong>{healthStatus.providerCount}</strong>
                     </div>
                     {healthStatus.configPath ? (
                       <div className="dw-settings-kv-item">
-                        <span>配置文件</span>
+                        <span>{st("configFile", "Config file")}</span>
                         <strong>{healthStatus.configPath}</strong>
                       </div>
                     ) : null}
-                    {centerReadiness ? (
-                      <>
-                        <div className="dw-settings-kv-item">
-                          <span>iWorker readiness</span>
-                          <strong>{centerReadiness.ready ? 'ready' : centerReadiness.status || 'needs setup'}</strong>
-                        </div>
-                        <div className="dw-settings-kv-item">
-                          <span>Center assets</span>
-                          <strong>{`${centerReadiness.tenantCount} tenants / ${centerReadiness.roleCount} roles / ${centerReadiness.colleagueCount} iWorkers`}</strong>
-                        </div>
-                        <div className="dw-settings-kv-item">
-                          <span>Human auth</span>
-                          <strong>{centerReadiness.authMethods.map((item) => `${item.method}:${item.status}`).join(' / ') || 'not reported'}</strong>
-                        </div>
-                      </>
-                    ) : null}
+                  </>
+                ) : null}
+                {centerReadiness ? (
+                  <>
+                    <div className="dw-settings-kv-item">
+                      <span>iWorker readiness</span>
+                      <strong>
+                        {centerReadiness.ready
+                          ? "ready"
+                          : centerReadiness.status || "needs setup"}
+                      </strong>
+                    </div>
+                    <div className="dw-settings-kv-item">
+                      <span>Center assets</span>
+                      <strong>{`${centerReadiness.tenantCount} tenants / ${centerReadiness.roleCount} roles / ${centerReadiness.colleagueCount} iWorkers`}</strong>
+                    </div>
+                    <div className="dw-settings-kv-item">
+                      <span>Human auth</span>
+                      <strong>
+                        {centerReadiness.authMethods
+                          .map((item) => `${item.method}:${item.status}`)
+                          .join(" / ") || "not reported"}
+                      </strong>
+                    </div>
                   </>
                 ) : null}
               </div>
@@ -622,7 +1212,12 @@ export function SettingsPage({
                   {centerReadiness.checks.map((check) => (
                     <div key={check.name} className="dw-settings-kv-item">
                       <span>{check.name}</span>
-                      <strong>{check.ready ? 'ready' : check.status}{typeof check.count === 'number' ? ` / ${check.count}` : ''}</strong>
+                      <strong>
+                        {check.ready ? "ready" : check.status}
+                        {typeof check.count === "number"
+                          ? ` / ${check.count}`
+                          : ""}
+                      </strong>
                     </div>
                   ))}
                 </div>
@@ -630,33 +1225,61 @@ export function SettingsPage({
               {healthStatus?.message ? <p>{healthStatus.message}</p> : null}
               {healthError ? <p>{healthError}</p> : null}
             </div>
+
             <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
-              <label>当前配置</label>
+              <label>{st("currentConfig", "Current configuration")}</label>
               <div className="dw-settings-kv-list">
                 <div className="dw-settings-kv-item">
-                  <span>保存状态</span>
-                  <strong>{dirty ? '有未保存更改' : '当前已保存'}</strong>
+                  <span>{st("saveStatus", "Save status")}</span>
+                  <strong>
+                    {dirty
+                      ? st("dirty", "Unsaved changes")
+                      : st("clean", "Saved")}
+                  </strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>角色</span>
-                  <strong>{settings.roleProfile.name || '未设置角色名'}</strong>
+                  <span>{st("role", "Role")}</span>
+                  <strong>{settings.roleProfile.name || "-"}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>特点</span>
-                  <strong>{settings.roleProfile.description || '未设置特点描述'}</strong>
+                  <span>{st("traits", "Traits")}</span>
+                  <strong>{settings.roleProfile.description || "-"}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>默认服务</span>
-                  <strong>{settings.routing.defaultProvider || '未设置'}</strong>
+                  <span>{st("defaultProvider", "Default provider")}</span>
+                  <strong>{settings.routing.defaultProvider || "-"}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>上游数量</span>
-                  <strong>{settings.providers.length} 个</strong>
+                  <span>{st("providerTotal", "Provider count")}</span>
+                  <strong>{settings.providers.length}</strong>
                 </div>
               </div>
               <div className="dw-settings-save-row">
-                <button type="button" className="primary" onClick={onSave} disabled={loading || saving || !dirty}>{saving ? '保存中...' : dirty ? '保存配置' : '已保存'}</button>
-                <p>{saveMessage || error || (dirty ? '当前修改尚未保存。' : '当前配置与已保存版本一致。')}</p>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={onSave}
+                  disabled={loading || saving || !dirty}
+                >
+                  {saving
+                    ? st("saving", "Saving...")
+                    : dirty
+                      ? st("saveConfig", "Save configuration")
+                      : st("saved", "Saved")}
+                </button>
+                <p>
+                  {saveMessage ||
+                    error ||
+                    (dirty
+                      ? st(
+                          "unsavedHint",
+                          "Current changes have not been saved.",
+                        )
+                      : st(
+                          "savedHint",
+                          "Current configuration matches the saved version.",
+                        ))}
+                </p>
               </div>
             </div>
           </aside>

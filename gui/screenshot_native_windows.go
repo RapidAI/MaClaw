@@ -13,27 +13,27 @@ import (
 )
 
 var (
-	user32               = syscall.NewLazyDLL("user32.dll")
-	gdi32                = syscall.NewLazyDLL("gdi32.dll")
-	procGetDesktopWindow   = user32.NewProc("GetDesktopWindow")
-	procGetWindowDC        = user32.NewProc("GetWindowDC")
-	procReleaseDC          = user32.NewProc("ReleaseDC")
-	procGetSystemMetrics   = user32.NewProc("GetSystemMetrics")
-	procCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
+	user32                     = syscall.NewLazyDLL("user32.dll")
+	gdi32                      = syscall.NewLazyDLL("gdi32.dll")
+	procGetDesktopWindow       = user32.NewProc("GetDesktopWindow")
+	procGetWindowDC            = user32.NewProc("GetWindowDC")
+	procReleaseDC              = user32.NewProc("ReleaseDC")
+	procGetSystemMetrics       = user32.NewProc("GetSystemMetrics")
+	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
 	procCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
-	procSelectObject       = gdi32.NewProc("SelectObject")
-	procBitBlt             = gdi32.NewProc("BitBlt")
-	procDeleteDC           = gdi32.NewProc("DeleteDC")
-	procDeleteObject       = gdi32.NewProc("DeleteObject")
-	procGetDIBits          = gdi32.NewProc("GetDIBits")
+	procScreenshotSelectObject = gdi32.NewProc("SelectObject")
+	procBitBlt                 = gdi32.NewProc("BitBlt")
+	procScreenshotDeleteDC     = gdi32.NewProc("DeleteDC")
+	procScreenshotDeleteObject = gdi32.NewProc("DeleteObject")
+	procGetDIBits              = gdi32.NewProc("GetDIBits")
 )
 
 const (
-	smCxScreen    = 0  // SM_CXSCREEN
-	smCyScreen    = 1  // SM_CYSCREEN
-	srcCopy       = 0x00CC0020
-	biRGB         = 0
-	dibRGBColors  = 0
+	smCxScreen   = 0 // SM_CXSCREEN
+	smCyScreen   = 1 // SM_CYSCREEN
+	srcCopy      = 0x00CC0020
+	biRGB        = 0
+	dibRGBColors = 0
 )
 
 type bitmapInfoHeader struct {
@@ -80,16 +80,16 @@ func nativeScreenshot() (string, error) {
 	if memDC == 0 {
 		return "", fmt.Errorf("CreateCompatibleDC failed")
 	}
-	defer procDeleteDC.Call(memDC)
+	defer procScreenshotDeleteDC.Call(memDC)
 
 	hBitmap, _, _ := procCreateCompatibleBitmap.Call(hDC, uintptr(w), uintptr(h))
 	if hBitmap == 0 {
 		return "", fmt.Errorf("CreateCompatibleBitmap failed")
 	}
-	defer procDeleteObject.Call(hBitmap)
+	defer procScreenshotDeleteObject.Call(hBitmap)
 
-	old, _, _ := procSelectObject.Call(memDC, hBitmap)
-	defer procSelectObject.Call(memDC, old)
+	old, _, _ := procScreenshotSelectObject.Call(memDC, hBitmap)
+	defer procScreenshotSelectObject.Call(memDC, old)
 
 	ret, _, _ := procBitBlt.Call(memDC, 0, 0, uintptr(w), uintptr(h), hDC, 0, 0, srcCopy)
 	if ret == 0 {

@@ -10,9 +10,11 @@ import (
 type mockLLMClassifier struct {
 	response string
 	err      error
+	calls    int
 }
 
 func (m *mockLLMClassifier) Classify(systemPrompt, userMessage string, timeoutSec int) (string, error) {
+	m.calls++
 	return m.response, m.err
 }
 
@@ -93,6 +95,24 @@ func TestResolve_ShortMessage_IsContinue(t *testing.T) {
 	}
 }
 
+func TestResolve_ShortMessageWithClassifierUsesLLM(t *testing.T) {
+	llm := &mockLLMClassifier{response: "new"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "天气",
+		History:     []ConversationEntry{{Role: "user", Content: "之前的任务"}},
+		LastAccess:  time.Now().Add(-30 * time.Second),
+	})
+	if d.Action != TaskNew {
+		t.Fatalf("expected TaskNew from classifier for short message, got %s", d.Action)
+	}
+	if d.Source != "llm" {
+		t.Fatalf("expected source=llm, got %s", d.Source)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("expected classifier to be called once, got %d", llm.calls)
+	}
+}
 func TestResolve_ActiveConversation_NoLLM_IsContinue(t *testing.T) {
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
 	d := mgr.Resolve(ResolveInput{
@@ -195,30 +215,48 @@ func TestResolve_LLM_Failure_FallbackToContinue(t *testing.T) {
 	}
 }
 
-func TestResolve_ActiveConversation_LLM_AmbiguousNew_FallbackToContinue(t *testing.T) {
-	// When conversation is active, TCM returns continue structurally
-	// without calling LLM at all.
-	llm := &mockLLMClassifier{response: "new"}
+func TestResolve_ActiveConversation_UsesLLMForFollowUp(t *testing.T) {
+	llm := &mockLLMClassifier{response: "continue"}
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
 	d := mgr.Resolve(ResolveInput{
-		UserMessage: "生成markdown版本",
+		UserMessage: "上面的内容生成markdown版本",
 		History: []ConversationEntry{
-			{Role: "user", Content: "安装skill"},
+			{Role: "user", Content: "安装 skill"},
 			{Role: "assistant", Content: "已完成"},
 		},
 		LastAccess: time.Now().Add(-30 * time.Second), // very recent
 	})
 	if d.Action != TaskContinue {
-		t.Fatalf("expected TaskContinue for active conversation, got %s", d.Action)
+		t.Fatalf("expected TaskContinue for classifier-approved follow-up, got %s", d.Action)
 	}
-	if d.Source != "structural" {
-		t.Fatalf("expected source=structural, got %s", d.Source)
+	if d.Source != "llm" {
+		t.Fatalf("expected source=llm, got %s", d.Source)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("expected classifier to be called once, got %d", llm.calls)
 	}
 }
-
-
-func TestResolve_IncompleteTaskMarker_IsNewTask(t *testing.T) {
-	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
+func TestResolve_ActiveConversation_SubstantiveNewTaskUsesLLM(t *testing.T) {
+	llm := &mockLLMClassifier{response: "new"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "帮我查一下北京天气",
+		History: []ConversationEntry{
+			{Role: "user", Content: "帮我整理 Hugging Face Agent 论文并生成 PDF"},
+			{Role: "assistant", Content: "PDF 已经生成并发送，重点论文包括 GLM-5V-Turbo。"},
+		},
+		LastAccess: time.Now().Add(-30 * time.Second),
+	})
+	if d.Action != TaskNew {
+		t.Fatalf("expected TaskNew for unrelated active message, got %s", d.Action)
+	}
+	if d.Source != "llm" {
+		t.Fatalf("expected source=llm, got %s", d.Source)
+	}
+}
+func TestResolve_IncompleteTaskMarker_UsesLLM(t *testing.T) {
+	llm := &mockLLMClassifier{response: "new"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
 	d := mgr.Resolve(ResolveInput{
 		UserMessage: "帮我搜索最新的AI论文",
 		History: []ConversationEntry{
@@ -228,11 +266,13 @@ func TestResolve_IncompleteTaskMarker_IsNewTask(t *testing.T) {
 		HasIncompleteTaskMarker: true,
 		LastAccess:              time.Now().Add(-30 * time.Second), // even if active
 	})
-	// Incomplete task marker overrides active conversation protection.
 	if d.Action != TaskNew {
-		t.Fatalf("expected TaskNew for incomplete task marker, got %s", d.Action)
+		t.Fatalf("expected TaskNew for classifier-identified new task, got %s", d.Action)
 	}
-	if d.Source != "structural" {
-		t.Fatalf("expected source=structural, got %s", d.Source)
+	if d.Source != "llm" {
+		t.Fatalf("expected source=llm, got %s", d.Source)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("expected classifier to be called once, got %d", llm.calls)
 	}
 }

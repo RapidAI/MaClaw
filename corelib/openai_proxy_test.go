@@ -791,12 +791,29 @@ func TestOpenaiToResponses(t *testing.T) {
 				t.Fatal("input field missing")
 			}
 
-			// Verify messages are mapped to input
+			// Verify messages are converted to Responses input items. System
+			// messages move to instructions and are not counted as input items.
 			if tt.body["messages"] != nil {
 				msgs := tt.body["messages"].([]interface{})
 				inputArr := input.([]interface{})
-				if len(inputArr) != len(msgs) {
-					t.Errorf("input length = %d, want %d", len(inputArr), len(msgs))
+				wantInput := 0
+				for _, raw := range msgs {
+					msg := raw.(map[string]interface{})
+					if msg["role"] != "system" {
+						wantInput++
+					}
+				}
+				if len(inputArr) != wantInput {
+					t.Errorf("input length = %d, want %d", len(inputArr), wantInput)
+				}
+				if tt.name == "basic conversion with messages" {
+					if result["instructions"] != "You are helpful." {
+						t.Errorf("instructions = %v", result["instructions"])
+					}
+					first := inputArr[0].(map[string]interface{})
+					if first["type"] != "message" || first["role"] != "user" {
+						t.Errorf("first input = %#v", first)
+					}
 				}
 			} else {
 				inputArr := input.([]interface{})

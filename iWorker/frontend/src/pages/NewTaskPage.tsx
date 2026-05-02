@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { TaskAttachment } from '../types';
 
 type SubmitTaskResult = {
@@ -29,17 +30,13 @@ type Props = {
   onOpenColleagues: () => void;
 };
 
-const suggestions = ['日报整理', '异常说明', '会议纪要'];
+const suggestions = ['Daily brief', 'Exception note', 'Meeting summary'];
 const suggestionDrafts: Record<string, string> = {
-  日报整理: '请根据今天的工作进展整理一份日报，突出已完成事项、当前风险和明日计划。',
-  异常说明: '请说明本次异常的现象、影响范围、初步原因、当前处理进度和后续建议。',
-  会议纪要: '请整理本次会议纪要，包含核心结论、责任人、时间节点和待办事项。',
+  'Daily brief': "Prepare a concise daily work brief. Include completed work, current risks, blockers, and tomorrow's plan.",
+  'Exception note': 'Explain the exception, business impact, likely cause, current handling progress, and recommended next step.',
+  'Meeting summary': 'Summarize the meeting decisions, owners, due dates, unresolved questions, and follow-up actions.',
 };
-const handoffSteps = [
-  { title: '理解任务', detail: '先识别目标、材料和预期输出' },
-  { title: '分派同事', detail: '按任务类型分配给合适的数字化同事' },
-  { title: '生成结果', detail: '输出摘要、文档或结构化表格' },
-];
+const handoffSteps = ['understand', 'assign', 'return'] as const;
 
 export function NewTaskPage({
   selectedTask,
@@ -59,32 +56,46 @@ export function NewTaskPage({
   onSubmit,
   onOpenColleagues,
 }: Props) {
+  const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const isInterventionTask = draft.includes('Human intervention needed:') || draft.includes('This push is cached.');
+  const isCachedInterventionTask = draft.includes('This push is cached.');
+  const outputLabel = t(`newTask.output.${expectedOutput}`, expectedOutput);
 
   return (
     <div className="dw-page-stack">
       <section className="card dw-page-panel">
         <div className="dw-panel-header">
           <div>
-            <span className="eyebrow">新建任务</span>
-            <h2>新建任务</h2>
+            <span className="eyebrow">{t('newTask.eyebrow', 'Task space')}</span>
+            <h2>{t('newTask.title', 'New task')}</h2>
           </div>
-          <small>像编辑器一样补全任务内容、材料和输出格式，再交给数字化同事处理。</small>
+          <small>{t('newTask.subtitle', 'Collect the request, evidence, output format, and coworker handoff in one focused workspace.')}</small>
         </div>
+        {isInterventionTask ? (
+          <section className={`dw-center-push-context ${isCachedInterventionTask ? 'is-cached' : ''}`} aria-label={t('newTask.centerPushAria', 'Center push intervention task')}>
+            <div>
+              <span>{isCachedInterventionTask ? t('newTask.cachedPush', 'Cached Center push') : t('newTask.livePush', 'Live Center push')}</span>
+              <strong>{selectedTask || t('newTask.humanTask', 'Human intervention task')}</strong>
+              <p>{isCachedInterventionTask ? t('newTask.cachedPushDetail', 'This is a cached Center push. Reconnect iWorkerCenter before Resume, Block, or Run actions so the decision is applied to the live task.') : t('newTask.livePushDetail', 'Capture the human decision here, then return to the workbench to Resume or Block the live Center push.')}</p>
+            </div>
+            <span className="dw-center-push-context-badge">{isCachedInterventionTask ? t('newTask.displayOnly', 'Display only') : t('newTask.decisionNeeded', 'Decision needed')}</span>
+          </section>
+        ) : null}
         <div className="dw-task-layout">
           <div className="dw-task-main dw-editor-main">
             <div className="dw-editor-toolbar card-subtle">
               <div className="dw-form-grid">
                 <label>
-                  任务类型
-                  <input value={selectedTask || '自由输入'} readOnly />
+                  {t('newTask.taskType', 'Task type')}
+                  <input value={selectedTask || t('newTask.freeInput', 'Free input')} readOnly />
                 </label>
                 <label>
-                  预期输出
+                  {t('newTask.expectedOutput', 'Expected output')}
                   <select value={expectedOutput} onChange={(event) => onExpectedOutputChange(event.target.value)}>
-                    <option value="summary">摘要 / 汇报</option>
-                    <option value="document">正式文档</option>
-                    <option value="table">结构化表格</option>
+                    <option value="summary">{t('newTask.output.summary', 'Summary / brief')}</option>
+                    <option value="document">{t('newTask.output.document', 'Formal document')}</option>
+                    <option value="table">{t('newTask.output.table', 'Structured table')}</option>
                   </select>
                 </label>
               </div>
@@ -92,61 +103,52 @@ export function NewTaskPage({
             <section className="card-subtle dw-editor-section">
               <div className="section-head with-gap">
                 <div>
-                  <span className="eyebrow">任务内容</span>
-                  <h3>编辑需求描述</h3>
+                  <span className="eyebrow">{t('newTask.contentEyebrow', 'Task content')}</span>
+                  <h3>{t('newTask.editRequest', 'Edit request')}</h3>
                 </div>
-                <small>{draft.trim() ? '已输入任务内容，可继续补充细节。' : '先输入任务目标，再补充材料和输出要求。'}</small>
+                <small>{draft.trim() ? t('newTask.readyHint', 'Request content is ready. Add evidence or clarify the human decision if needed.') : t('newTask.emptyHint', 'Start with the goal, then add evidence and output requirements.')}</small>
               </div>
               <label>
-                需求描述
-                <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} rows={8} placeholder="请告诉我你想完成什么工作" />
+                {t('newTask.request', 'Request')}
+                <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} rows={8} placeholder={t('newTask.requestPlaceholder', 'Describe the work you want this digital coworker to complete.')} />
               </label>
               <div className="dw-composer-toolbar">
                 {suggestions.map((item) => (
-                  <button key={item} type="button" className="chip-button" onClick={() => onApplySuggestion(suggestionDrafts[item])}>{item}</button>
+                  <button key={item} type="button" className="chip-button" onClick={() => onApplySuggestion(suggestionDrafts[item])}>{t(`newTask.suggestions.${item}`, item)}</button>
                 ))}
               </div>
             </section>
             <section className="card-subtle dw-editor-section">
               <div className="section-head with-gap">
                 <div>
-                  <span className="eyebrow">任务操作</span>
-                  <h3>处理入口</h3>
+                  <span className="eyebrow">{t('newTask.actionsEyebrow', 'Task actions')}</span>
+                  <h3>{t('newTask.handoffControls', 'Handoff controls')}</h3>
                 </div>
-                <small>支持补充材料、切换协作同事或直接提交处理。</small>
+                <small>{t('newTask.actionsHint', 'Add evidence, choose a partner, clear the draft, or start work.')}</small>
               </div>
               <div className="dw-composer-actions">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  className="dw-hidden-file-input"
-                  onChange={(event) => {
-                    onAddAttachment(event.target.files);
-                    event.target.value = '';
-                  }}
-                />
-                <button type="button" className="light-button" onClick={() => fileInputRef.current?.click()}>上传材料</button>
-                <button type="button" className="light-button" onClick={onOpenColleagues}>选择同事</button>
-                <button type="button" className="secondary" onClick={onClearTask}>清空当前任务</button>
-                <button type="button" className="primary" onClick={onSubmit} disabled={submitting || !draft.trim()}>{submitting ? '处理中...' : '开始处理'}</button>
+                <input ref={fileInputRef} type="file" multiple className="dw-hidden-file-input" onChange={(event) => { onAddAttachment(event.target.files); event.target.value = ''; }} />
+                <button type="button" className="light-button" onClick={() => fileInputRef.current?.click()}>{t('newTask.uploadEvidence', 'Upload evidence')}</button>
+                <button type="button" className="light-button" onClick={onOpenColleagues}>{t('newTask.choosePartner', 'Choose partner')}</button>
+                <button type="button" className="secondary" onClick={onClearTask}>{t('newTask.clearTask', 'Clear task')}</button>
+                <button type="button" className="primary" onClick={onSubmit} disabled={submitting || !draft.trim()}>{submitting ? t('newTask.working', 'Working...') : t('newTask.startWork', 'Start work')}</button>
               </div>
             </section>
             {attachments.length > 0 ? (
               <section className="dw-attachment-list card-subtle dw-editor-section">
                 <div className="dw-attachment-summary">
-                  <label>已添加材料</label>
-                  <strong>共 {attachments.length} 份材料</strong>
+                  <label>{t('newTask.attachedEvidence', 'Attached evidence')}</label>
+                  <strong>{t('newTask.itemCount', { count: attachments.length, defaultValue: '{{count}} item' })}</strong>
                 </div>
                 <div className="dw-attachment-items">
                   {attachments.map((attachment) => (
                     <div key={attachment.id} className="dw-attachment-item">
                       <div>
                         <strong>{attachment.name}</strong>
-                        <span className="dw-attachment-meta">{attachment.type} · {attachment.sizeLabel}</span>
+                        <span className="dw-attachment-meta">{attachment.type} / {attachment.sizeLabel}</span>
                         <p>{attachment.summary}</p>
                       </div>
-                      <button type="button" className="secondary" onClick={() => onRemoveAttachment(attachment.id)}>移除</button>
+                      <button type="button" className="secondary" onClick={() => onRemoveAttachment(attachment.id)}>{t('newTask.remove', 'Remove')}</button>
                     </div>
                   ))}
                 </div>
@@ -156,32 +158,32 @@ export function NewTaskPage({
             {submitResult ? (
               <div className="dw-feedback-card dw-feedback-success">
                 <div className="dw-feedback-meta">
-                  <span className="dw-status-pill">任务：{submitResult.task_title || submitResult.task_type}</span>
-                  <span className="dw-status-pill">同事：{submitResult.colleague_name}</span>
-                  <span className="dw-status-pill">模型：{submitResult.model}</span>
+                  <span className="dw-status-pill">{t('newTask.resultTask', 'Task')}: {submitResult.task_title || submitResult.task_type}</span>
+                  <span className="dw-status-pill">{t('newTask.resultCoworker', 'Coworker')}: {submitResult.colleague_name}</span>
+                  <span className="dw-status-pill">{t('newTask.resultModel', 'Model')}: {submitResult.model}</span>
                 </div>
-                <strong>处理结果</strong>
+                <strong>{t('newTask.result', 'Result')}</strong>
                 <pre>{submitResult.content}</pre>
               </div>
             ) : null}
           </div>
           <aside className="dw-task-side">
             <div className="card-subtle dw-side-panel-block">
-              <label>当前已选同事</label>
-              <strong>{selectedColleagueName ? `已选同事：${selectedColleagueName}` : '暂未指定，按任务自动匹配'}</strong>
-              <p>如果你已经从首页或找同事页选了人，会在这里继续带入。</p>
+              <label>{t('newTask.selectedPartner', 'Selected partner')}</label>
+              <strong>{selectedColleagueName ? selectedColleagueName : t('newTask.autoMatch', 'Auto-match from task context')}</strong>
+              <p>{t('newTask.partnerHint', 'Selections from the workbench or colleague view stay attached to this task.')}</p>
             </div>
             <div className="card-subtle dw-side-panel-block">
-              <label>推荐接手</label>
-              <strong>{selectedTask ? '按当前任务自动匹配同事' : '先输入任务后自动推荐'}</strong>
-              <p>根据任务类型、材料和输出格式，给出合适同事组合。</p>
+              <label>{t('newTask.outputContract', 'Output contract')}</label>
+              <strong>{outputLabel}</strong>
+              <p>{t('newTask.outputHint', 'The digital coworker should return a result that is ready for review, handoff, or direct use.')}</p>
             </div>
             <div className="card-subtle dw-handoff-list dw-side-panel-block">
-              <label>处理接力</label>
+              <label>{t('newTask.handoffFlow', 'Handoff flow')}</label>
               {handoffSteps.map((item) => (
-                <div key={item.title} className="dw-handoff-item">
-                  <strong>{item.title}</strong>
-                  <p>{item.detail}</p>
+                <div key={item} className="dw-handoff-item">
+                  <strong>{t(`newTask.handoff.${item}.title`)}</strong>
+                  <p>{t(`newTask.handoff.${item}.detail`)}</p>
                 </div>
               ))}
             </div>

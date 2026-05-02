@@ -330,6 +330,9 @@ export namespace main {
 	export class CenterInstalledTools {
 	    skills: CenterRuntimeCapability[];
 	    mcp_servers: CenterMCPServer[];
+	    source: string;
+	    cached_at: string;
+	    stale: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new CenterInstalledTools(source);
@@ -339,6 +342,9 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.skills = this.convertValues(source["skills"], CenterRuntimeCapability);
 	        this.mcp_servers = this.convertValues(source["mcp_servers"], CenterMCPServer);
+	        this.source = source["source"];
+	        this.cached_at = source["cached_at"];
+	        this.stale = source["stale"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -372,6 +378,9 @@ export namespace main {
 	    last_heartbeat_at: string;
 	    heartbeat_age_seconds: number;
 	    effective_status: string;
+    source?: string;
+    cached_at?: string;
+    stale?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new CenterAgentInstance(source);
@@ -395,6 +404,9 @@ export namespace main {
 	        this.last_heartbeat_at = source["last_heartbeat_at"];
 	        this.heartbeat_age_seconds = source["heartbeat_age_seconds"];
 	        this.effective_status = source["effective_status"];
+        this.source = source["source"];
+        this.cached_at = source["cached_at"];
+        this.stale = source["stale"];
 	    }
 	}
 
@@ -411,6 +423,9 @@ export namespace main {
 	    executor_status?: string;
 	    executor_heartbeat_age_seconds?: number;
 	    created_at: string;
+    source?: string;
+    cached_at?: string;
+    stale?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new CenterGoalPush(source);
@@ -430,6 +445,9 @@ export namespace main {
 	        this.executor_status = source["executor_status"];
 	        this.executor_heartbeat_age_seconds = source["executor_heartbeat_age_seconds"];
 	        this.created_at = source["created_at"];
+        this.source = source["source"];
+        this.cached_at = source["cached_at"];
+        this.stale = source["stale"];
 	    }
 	}
 	export class CenterGoalPushAckResult {
@@ -762,6 +780,9 @@ export namespace main {
 	    by_scope: {[key: string]: number};
 	    by_category: {[key: string]: number};
 	    visible_scopes: string[];
+    source?: string;
+    cached_at?: string;
+    stale?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new WorkerMemoryStats(source);
@@ -776,6 +797,9 @@ export namespace main {
 	        this.by_scope = source["by_scope"];
 	        this.by_category = source["by_category"];
 	        this.visible_scopes = source["visible_scopes"];
+        this.source = source["source"];
+        this.cached_at = source["cached_at"];
+        this.stale = source["stale"];
 	    }
 	}
 	export class SaveWorkerMemoryRequest {

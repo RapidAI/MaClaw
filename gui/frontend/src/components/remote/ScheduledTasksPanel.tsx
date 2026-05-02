@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
     ListScheduledTasks,
     CreateScheduledTask,
@@ -47,7 +47,7 @@ const labelStyle: React.CSSProperties = {
     fontSize: "0.76rem", color: colors.textSecondary, marginBottom: 4, display: "block",
 };
 
-type Props = { lang: string };
+type Props = { lang: string; refreshKey?: number };
 
 function getWeekdays(lang: string): readonly string[] {
     const key = lang === 'zh-Hant' ? 'zh-Hant' : lang === 'zh-Hans' ? 'zh-Hans' : 'en';
@@ -125,7 +125,7 @@ const STATUS_COLORS: Record<string, string> = {
     expired: "var(--theme-text-muted)",
 };
 
-export function ScheduledTasksPanel({ lang }: Props) {
+export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
 
@@ -150,20 +150,30 @@ export function ScheduledTasksPanel({ lang }: Props) {
     const [fScheduleMode, setFScheduleMode] = useState<"fixed" | "interval">("fixed");
     const [saving, setSaving] = useState(false);
     const [triggering, setTriggering] = useState<string | null>(null);
+    const mountedRef = useRef(true);
+    const loadRequestSeq = useRef(0);
+
+    useEffect(() => () => { mountedRef.current = false; }, []);
 
     const loadTasks = useCallback(async () => {
+        const requestSeq = ++loadRequestSeq.current;
         setLoading(true); setError("");
         try {
             const list = await ListScheduledTasks();
             const all = Array.isArray(list) ? list : [];
             // Filter out expired tasks — they are auto-deleted on the backend,
             // but hide them immediately on the frontend as well.
-            setTasks(all.filter((t: ScheduledTask) => t.status !== "expired"));
-        } catch (e) { setError(String(e)); }
-        setLoading(false);
+            if (mountedRef.current && requestSeq === loadRequestSeq.current) {
+                setTasks(all.filter((t: ScheduledTask) => t.status !== "expired"));
+            }
+        } catch (e) {
+            if (mountedRef.current && requestSeq === loadRequestSeq.current) setError(String(e));
+        } finally {
+            if (mountedRef.current && requestSeq === loadRequestSeq.current) setLoading(false);
+        }
     }, []);
 
-    useEffect(() => { loadTasks(); }, [loadTasks]);
+    useEffect(() => { loadTasks(); }, [loadTasks, refreshKey]);
 
     // Refresh when tasks are changed from the agent chat side.
     useEffect(() => {
@@ -253,12 +263,21 @@ export function ScheduledTasksPanel({ lang }: Props) {
                 <span style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
                     {tasks.length} {t("scheduled task(s)", "个定时任务")}
                 </span>
-                <button onClick={openCreate} style={{
-                    ...remotePrimaryActionButtonStyle,
-                    padding: "4px 14px", fontSize: "0.76rem",
-                }}>
-                    + {t("New", "新建")}
-                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button onClick={loadTasks} disabled={loading} style={{
+                        ...remoteActionButtonStyle,
+                        padding: "4px 12px", fontSize: "0.76rem",
+                        opacity: loading ? 0.6 : 1,
+                    }}>
+                        {t("Refresh", "刷新")}
+                    </button>
+                    <button onClick={openCreate} style={{
+                        ...remotePrimaryActionButtonStyle,
+                        padding: "4px 14px", fontSize: "0.76rem",
+                    }}>
+                        + {t("New", "新建")}
+                    </button>
+                </div>
             </div>
 
             {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.76rem", marginBottom: 8 }}>{error}</div>}

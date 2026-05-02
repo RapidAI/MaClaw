@@ -60,6 +60,7 @@ type ShowToast = (message: string, duration?: number) => void;
 type UseRemotePanelParams = {
     config: main.AppConfig | null;
     setConfig: (config: main.AppConfig) => void;
+    getPendingDefaultLaunchMode?: () => 'local' | 'remote' | null;
     setToolStatuses: (statuses: any[]) => void;
     getSelectedProjectForRemote: () => string;
     selectedProjectForLaunch: string;
@@ -76,6 +77,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     const {
         config,
         setConfig,
+        getPendingDefaultLaunchMode,
         setToolStatuses,
         getSelectedProjectForRemote,
         selectedProjectForLaunch,
@@ -178,8 +180,15 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         if (!config || !selectedRemoteTool) return;
         const currentToolConfig = (config as any)[selectedRemoteTool] as main.ToolConfig | undefined;
         if (!currentToolConfig || currentToolConfig.current_model === normalizedProvider) return;
+        const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
         const newConfig = new main.AppConfig({
             ...config,
+            ...(pendingLaunchMode
+                ? {
+                    default_launch_mode: pendingLaunchMode,
+                    remote_enabled: pendingLaunchMode === 'remote',
+                }
+                : {}),
             [selectedRemoteTool]: {
                 ...currentToolConfig,
                 current_model: normalizedProvider,
@@ -190,7 +199,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             console.error("Failed to sync remote provider selection:", err);
             showToastMessage(formatText("remoteSaveFailed", { error: String(err) }), 4000);
         });
-    }, [config, formatText, selectedRemoteTool, setConfig, showToastMessage]);
+    }, [config, formatText, getPendingDefaultLaunchMode, selectedRemoteTool, setConfig, showToastMessage]);
 
     // Lightweight refresh: only fetches session list (used for high-frequency events)
     const refreshSessionsOnly = useCallback(async () => {
@@ -517,7 +526,20 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             if (!config) return;
             base = config;
         }
-        const newConfig = new main.AppConfig({ ...base, ...patch });
+        const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
+        const hasRemoteEnabledPatch = Object.prototype.hasOwnProperty.call(patch, 'remote_enabled');
+        const hasDefaultLaunchModePatch = Object.prototype.hasOwnProperty.call(patch, 'default_launch_mode');
+        const launchMode = pendingLaunchMode
+            || (hasDefaultLaunchModePatch ? (patch.default_launch_mode === 'remote' ? 'remote' : 'local') : null)
+            || (hasRemoteEnabledPatch ? (patch.remote_enabled ? 'remote' : 'local') : null);
+        const launchModeSyncPatch = launchMode
+            ? { default_launch_mode: launchMode, remote_enabled: launchMode === 'remote' }
+            : {};
+        const newConfig = new main.AppConfig({
+            ...base,
+            ...patch,
+            ...launchModeSyncPatch,
+        });
         setConfig(newConfig);
         try {
             await SaveConfig(newConfig);

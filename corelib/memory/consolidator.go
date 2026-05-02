@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,7 @@ const historyWindowSize = 3
 //   - Online (L1): invoked after each dialog turn via ConsolidateSegment
 //   - Scheduled (L2-L5): invoked when temporal windows close via ConsolidateLevel
 type Consolidator struct {
+	mu    sync.RWMutex
 	store *Store
 	tree  *TemporalTree
 	llm   LLMChatCaller
@@ -30,11 +32,21 @@ func NewConsolidator(store *Store, tree *TemporalTree, llm LLMChatCaller) *Conso
 	return &Consolidator{store: store, tree: tree, llm: llm}
 }
 
+// SetLLM rewires the LLM used by online and scheduled consolidation.
+func (c *Consolidator) SetLLM(llm LLMChatCaller) {
+	c.mu.Lock()
+	c.llm = llm
+	c.mu.Unlock()
+}
+
 // ConsolidateSegment performs online L1 consolidation for a single dialog turn.
 // It creates a segment-level memory from the raw user-assistant exchange.
 // ownerID is used for multi-tenant isolation (empty string for single-user mode).
 func (c *Consolidator) ConsolidateSegment(ctx context.Context, userMsg, assistantMsg string, turnTime time.Time, ownerID string) (*ConsolidationResult, error) {
-	if c.llm == nil || !c.llm.IsConfigured() {
+	c.mu.RLock()
+	llm := c.llm
+	c.mu.RUnlock()
+	if llm == nil || !llm.IsConfigured() {
 		return &ConsolidationResult{Level: LevelSegment}, nil
 	}
 
@@ -50,7 +62,7 @@ func (c *Consolidator) ConsolidateSegment(ctx context.Context, userMsg, assistan
 	history := c.getHistoryContext(LevelSegment)
 	prompt := c.buildSegmentPrompt(userMsg, assistantMsg, history)
 
-	resp, err := c.llm.ChatCall(prompt)
+	resp, err := llm.ChatCall(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("consolidator: L1 segment: %w", err)
 	}
@@ -97,7 +109,10 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 	if level < LevelSession || level > LevelProfile {
 		return nil, fmt.Errorf("consolidator: invalid level %d for scheduled consolidation", level)
 	}
-	if c.llm == nil || !c.llm.IsConfigured() {
+	c.mu.RLock()
+	llm := c.llm
+	c.mu.RUnlock()
+	if llm == nil || !llm.IsConfigured() {
 		return &ConsolidationResult{Level: level}, nil
 	}
 
@@ -136,7 +151,7 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 	// Build level-specific prompt.
 	prompt := c.buildLevelPrompt(level, childContents, history)
 
-	resp, err := c.llm.ChatCall(prompt)
+	resp, err := llm.ChatCall(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("consolidator: L%d: %w", level, err)
 	}

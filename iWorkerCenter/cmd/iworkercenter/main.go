@@ -14,12 +14,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/apiroutes"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/app"
 	llmcompute "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/compute"
+	centercompute "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/compute"
 )
 
 //go:embed web
@@ -154,11 +156,47 @@ type centerComputeProviderSource struct {
 	center *app.Center
 }
 
-func (s centerComputeProviderSource) ActiveProviders() []llmcompute.ProviderConfig {
-	if s.center == nil || s.center.ComputeSourceManager == nil {
+type v1FallbackProvider struct {
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	Protocol string `json:"protocol"`
+	Model    string `json:"model"`
+	Enabled  bool   `json:"enabled"`
+	Priority int    `json:"priority"`
+}
+
+func loadV1FallbackProviders() []v1FallbackProvider {
+	home, err := os.UserHomeDir()
+	if err != nil {
 		return nil
 	}
-	providers := s.center.ComputeSourceManager.GetActiveProviders()
+	path := filepath.Join(home, ".iworkercenter", "settings.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		Providers []v1FallbackProvider `json:"providers"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	return cfg.Providers
+}
+
+func (s centerComputeProviderSource) ActiveProviders() []llmcompute.ProviderConfig {
+	if s.center == nil || s.center.ComputeSourceManager == nil {
+		return centerProvidersToLLMConfigs(loadV1FallbackProviders())
+	}
+	providers := computeProvidersToLLMConfigs(s.center.ComputeSourceManager.GetActiveProviders())
+	if len(providers) > 0 {
+		return providers
+	}
+	return centerProvidersToLLMConfigs(loadV1FallbackProviders())
+}
+
+func computeProvidersToLLMConfigs(providers []centercompute.ComputeProvider) []llmcompute.ProviderConfig {
 	out := make([]llmcompute.ProviderConfig, 0, len(providers))
 	for _, provider := range providers {
 		if !provider.Enabled || strings.TrimSpace(provider.BaseURL) == "" {
@@ -175,6 +213,25 @@ func (s centerComputeProviderSource) ActiveProviders() []llmcompute.ProviderConf
 			Priority:             provider.Priority,
 			InputPricePerMToken:  provider.InputPricePerMToken,
 			OutputPricePerMToken: provider.OutputPricePerMToken,
+		})
+	}
+	return out
+}
+
+func centerProvidersToLLMConfigs(providers []v1FallbackProvider) []llmcompute.ProviderConfig {
+	out := make([]llmcompute.ProviderConfig, 0, len(providers))
+	for _, provider := range providers {
+		if !provider.Enabled || strings.TrimSpace(provider.BaseURL) == "" {
+			continue
+		}
+		out = append(out, llmcompute.ProviderConfig{
+			Name:     provider.Name,
+			BaseURL:  provider.BaseURL,
+			APIKey:   provider.APIKey,
+			Protocol: provider.Protocol,
+			Model:    provider.Model,
+			Enabled:  provider.Enabled,
+			Priority: provider.Priority,
 		})
 	}
 	return out

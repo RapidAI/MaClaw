@@ -40,6 +40,7 @@ func ResolveStep(
 	params []corelib.NLSkillParam,
 	quoteFunc func(string) string,
 ) (ResolveStepResult, error) {
+	step = NormalizeStepForRunner(step, skillDir)
 	result := ResolveStepResult{Step: step}
 
 	// Phase 1: Parameter binding.

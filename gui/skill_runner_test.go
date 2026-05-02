@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 func TestSkillRunnerExecuteStepWithContext_CallMCPToolResolvesName(t *testing.T) {
@@ -46,6 +51,64 @@ func TestSkillRunnerExecuteStepWithContext_CallMCPToolResolvesName(t *testing.T)
 	}
 	if strings.TrimSpace(result) != "{}" {
 		t.Fatalf("unexpected result: %s", result)
+	}
+}
+
+func TestExpandPortableHomeVarsUsesSlashHome(t *testing.T) {
+	home := `C:\Users\tester`
+	cmd := `python "$HOME/scripts/run.py" --config=${HOME}\config\skill.json --root $HOME --name=$HOME_CONFIG`
+	got := expandPortableHomeVars(cmd, home)
+	wantHome := filepath.ToSlash(home)
+	withoutUnrelatedVar := strings.ReplaceAll(got, "$HOME_CONFIG", "")
+	if strings.Contains(withoutUnrelatedVar, "$HOME") || strings.Contains(withoutUnrelatedVar, "${HOME}") {
+		t.Fatalf("portable HOME placeholders were not expanded: %q", got)
+	}
+	for _, want := range []string{wantHome + "/scripts/run.py", wantHome + "/config\\skill.json", "--root " + wantHome} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expanded command %q missing %q", got, want)
+		}
+	}
+	if !strings.Contains(got, "$HOME_CONFIG") {
+		t.Fatalf("unrelated HOME-prefixed variable should be preserved: %q", got)
+	}
+}
+
+func TestMergeRequiredEnvParamPreservesStepEnv(t *testing.T) {
+	params := map[string]interface{}{
+		"required_env": []interface{}{"STEP_KEY", "SHARED_KEY"},
+	}
+	mergeRequiredEnvParam(params, []string{"SHARED_KEY", "SKILL_KEY"})
+
+	got, ok := params["required_env"].([]interface{})
+	if !ok {
+		t.Fatalf("required_env type = %T, want []interface{}", params["required_env"])
+	}
+	want := []string{"STEP_KEY", "SHARED_KEY", "SKILL_KEY"}
+	if len(got) != len(want) {
+		t.Fatalf("required_env = %#v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Fatalf("required_env[%d] = %#v, want %q; all=%#v", i, got[i], name, got)
+		}
+	}
+}
+
+func TestMergeExtraEnvParamPreservesStepValues(t *testing.T) {
+	params := map[string]interface{}{
+		"extra_env": map[string]interface{}{
+			"STEP_ONLY": "1",
+			"SHARED":    "from-step",
+		},
+	}
+	mergeExtraEnvParam(params, map[string]string{"SHARED": "from-run", "RUN_ONLY": "2"})
+
+	got, ok := params["extra_env"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("extra_env type = %T, want map[string]interface{}", params["extra_env"])
+	}
+	if got["SHARED"] != "from-step" || got["STEP_ONLY"] != "1" || got["RUN_ONLY"] != "2" {
+		t.Fatalf("extra_env merge = %#v", got)
 	}
 }
 
@@ -514,5 +577,195 @@ func TestResolveSkillStep_NilParams_BackwardCompatible(t *testing.T) {
 	command, _ := resolved.Params["command"].(string)
 	if !strings.Contains(command, "world") {
 		t.Fatalf("command = %q, want substituted value", command)
+	}
+}
+
+func TestSkillRunnerPersistRepairResultWritesFileBackedYAML(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	dir := filepath.Join(tempHome, "skills", "repair-file-skill")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	data := []byte("name: repair-file-skill\ndescription: A file backed skill that should persist repairs.\ntriggers:\n  - repair-file-skill\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: echo old\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "repair-file-skill", Source: "file", SkillDir: dir, FailureCount: 1}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runner.persistRepairResult(&corelib.NLSkillEntry{
+		Name:               "repair-file-skill",
+		Description:        "A file backed skill that should persist repairs.",
+		Triggers:           []string{"repair-file-skill"},
+		Source:             "file",
+		SkillDir:           dir,
+		Status:             "active",
+		Platforms:          []string{"universal"},
+		Steps:              []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo repaired"}}},
+		FailureCount:       1,
+		RepairAttemptCount: 1,
+	})
+
+	reloaded, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	if len(reloaded.Steps) != 1 {
+		t.Fatalf("reloaded steps = %+v", reloaded.Steps)
+	}
+	cmd, _ := reloaded.Steps[0].Params["command"].(string)
+	if cmd != "echo repaired" {
+		t.Fatalf("command = %q, want repaired yaml", cmd)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "skill.yaml.bak")); err != nil {
+		t.Fatalf("expected skill.yaml.bak, stat err = %v", err)
+	}
+}
+
+func TestSkillRunnerTryAutoUploadUsesQualityGateAfterSingleSuccess(t *testing.T) {
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	var submitCount int
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "urls": []string{server.URL}})
+		case "/api/v1/skills/submit":
+			submitCount++
+			_ = json.NewEncoder(w).Encode(map[string]any{"submission_id": "sub-quality"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	dir := filepath.Join(tempHome, "skills", "quality-upload-skill")
+	writeLifecycleTestSkill(t, dir, "quality-upload-skill")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Quality upload skill\n\nA verified portable skill.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "user@example.com"
+	cfg.RemoteViewerToken = "test-token"
+	cfg.RemoteHubCenterURL = server.URL
+	cfg.RemoteHubCenterURLs = []string{server.URL}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:         "quality-upload-skill",
+		SkillDir:     dir,
+		Source:       "file",
+		Status:       "active",
+		SuccessCount: 1,
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillMarketClient = NewSkillMarketClient(app)
+	app.autoUploadTrigger = NewAutoUploadTrigger(app.skillMarketClient, func() string { return "user@example.com" })
+	app.skillLifecycle = NewSkillLifecycleManager(app)
+	runner := NewSkillRunner(app.skillExecutor)
+	runner.uploadTrigger = app.autoUploadTrigger
+
+	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "quality-upload-skill", SkillDir: dir}, &skillRun{status: SkillRunStatus{
+		Skill:  "quality-upload-skill",
+		Status: "success",
+		Steps:  []StepResult{{Status: "success"}},
+	}})
+	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "quality-upload-skill", SkillDir: dir}, &skillRun{status: SkillRunStatus{
+		Skill:  "quality-upload-skill",
+		Status: "success",
+		Steps:  []StepResult{{Status: "success"}},
+	}})
+
+	items, err := app.skillLifecycle.ListUploadQueue()
+	if err != nil {
+		t.Fatalf("ListUploadQueue() error = %v", err)
+	}
+	if len(items) != 1 || items[0].Status != skillUploadStatusUploaded || items[0].SubmissionID != "sub-quality" {
+		t.Fatalf("upload queue = %+v", items)
+	}
+	if submitCount != 1 {
+		t.Fatalf("submitCount = %d, want exactly one upload for unchanged hash", submitCount)
+	}
+}
+
+func TestSkillRunnerTryAutoUploadBlocksWhenQualityGateFails(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	dir := filepath.Join(tempHome, "skills", "quality-blocked-skill")
+	writeLifecycleTestSkill(t, dir, "quality-blocked-skill")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Quality blocked skill\n\nA portable skill that still needs runtime proof.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "user@example.com"
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:     "quality-blocked-skill",
+		SkillDir: dir,
+		Source:   "file",
+		Status:   "active",
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillMarketClient = NewSkillMarketClient(app)
+	app.autoUploadTrigger = NewAutoUploadTrigger(app.skillMarketClient, func() string { return "user@example.com" })
+	app.skillLifecycle = NewSkillLifecycleManager(app)
+	runner := NewSkillRunner(app.skillExecutor)
+	runner.uploadTrigger = app.autoUploadTrigger
+
+	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "quality-blocked-skill", SkillDir: dir}, &skillRun{status: SkillRunStatus{
+		Skill:  "quality-blocked-skill",
+		Status: "success",
+		Steps:  []StepResult{{Status: "success"}},
+	}})
+
+	items, err := app.skillLifecycle.ListUploadQueue()
+	if err != nil {
+		t.Fatalf("ListUploadQueue() error = %v", err)
+	}
+	if len(items) != 1 || items[0].Status != skillUploadStatusBlocked || items[0].QualityScore >= 70 {
+		t.Fatalf("upload queue = %+v", items)
+	}
+	if !strings.Contains(items[0].LastError, "successful verification run") {
+		t.Fatalf("LastError = %q, want verification quality reason", items[0].LastError)
 	}
 }

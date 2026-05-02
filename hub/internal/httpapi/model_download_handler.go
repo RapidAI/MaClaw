@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
+const defaultHubModelBaseURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release"
 const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip"
+const defaultHubModelLockTTL = 24 * time.Hour
+const modelDownloadScriptVersion = "maclaw-model-download-v2"
 
 type hubModelFileView struct {
 	Name        string `json:"name"`
@@ -25,8 +28,8 @@ type hubModelFileView struct {
 
 type hubModelRuntimeStatus struct {
 	Status            string             `json:"status"`
-	ModelDir          string             `json:"model_dir"`
-	LegacyDataDir     string             `json:"legacy_data_dir"`
+	ModelDir          string             `json:"model_dir,omitempty"`
+	LegacyDataDir     string             `json:"legacy_data_dir,omitempty"`
 	PublicModelsURL   string             `json:"public_models_url"`
 	LogPath           string             `json:"log_path"`
 	DownloadScript    string             `json:"download_script"`
@@ -90,6 +93,9 @@ func modelDownloadExpectedFiles() []string {
 		if part == "" {
 			continue
 		}
+		if !isAllowedModelFilename(part) {
+			continue
+		}
 		if _, ok := seen[part]; ok {
 			continue
 		}
@@ -110,6 +116,10 @@ func resolveModelPublicPath(modelsDir string, legacyDataDir string, filename str
 		}
 	}
 	return candidates[0]
+}
+
+func isAllowedModelFilename(filename string) bool {
+	return filename != "" && !strings.Contains(filename, "/") && !strings.Contains(filename, "\\") && !strings.Contains(filename, "..") && isAllowedModelExtension(filename)
 }
 
 // isAllowedModelExtension checks if a filename has a permitted model file extension.
@@ -158,6 +168,8 @@ func PublicModelDownloadStatusHandler(configPath string) http.HandlerFunc {
 	legacyDataDir, modelsDir, logPath, scriptPath := resolveHubModelDirs(configPath)
 	return func(w http.ResponseWriter, r *http.Request) {
 		status := collectHubModelRuntimeStatus(r, legacyDataDir, modelsDir, logPath, scriptPath)
+		status.ModelDir = ""
+		status.LegacyDataDir = ""
 		status.TriggerSupported = false
 		status.DownloadScript = ""
 		status.LogPath = ""
@@ -191,12 +203,17 @@ func TriggerAdminModelDownloadHandler(configPath string) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model download trigger is not available on this host"})
 			return
 		}
+		expectedFiles := modelDownloadExpectedFiles()
+		if len(expectedFiles) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no valid hub model files configured"})
+			return
+		}
 
 		lockPath := filepath.Join(modelsDir, ".models-downloading")
 		sentinelPath := filepath.Join(modelsDir, ".models-initialized")
-		args := append([]string{strings.TrimSpace(os.Getenv("HUB_MODEL_BASE_URL")), modelsDir, filepath.Join(os.Getenv("HOME"), ".maclaw", "models"), sentinelPath, lockPath}, modelDownloadExpectedFiles()...)
+		args := append([]string{strings.TrimSpace(os.Getenv("HUB_MODEL_BASE_URL")), modelsDir, resolveUserModelDir(), sentinelPath, lockPath}, expectedFiles...)
 		if strings.TrimSpace(args[0]) == "" {
-			args[0] = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release"
+			args[0] = defaultHubModelBaseURL
 		}
 		if err := os.MkdirAll(modelsDir, 0755); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -206,7 +223,31 @@ func TriggerAdminModelDownloadHandler(configPath string) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		if err := ensureModelDownloadScript(scriptPath); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if isStaleModelDownloadLock(lockPath, time.Now()) {
+			_ = os.Remove(lockPath)
+		}
+		lockFile, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if err != nil {
+			if os.IsExist(err) {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"ok":      true,
+					"started": false,
+					"status":  collectHubModelRuntimeStatus(r, legacyDataDir, modelsDir, logPath, scriptPath),
+					"message": "model download is already running",
+				})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		_, _ = lockFile.WriteString(time.Now().UTC().Format(time.RFC3339))
+		_ = lockFile.Close()
 		if err := startModelDownload(scriptPath, logPath, args...); err != nil {
+			_ = os.Remove(lockPath)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -238,13 +279,13 @@ func collectHubModelRuntimeStatus(r *http.Request, legacyDataDir string, modelsD
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 	initialized := fileExists(filepath.Join(modelsDir, ".models-initialized"))
-	downloading := fileExists(filepath.Join(modelsDir, ".models-downloading"))
+	downloading := fileExists(filepath.Join(modelsDir, ".models-downloading")) && !isStaleModelDownloadLock(filepath.Join(modelsDir, ".models-downloading"), time.Now())
 	ready := len(expected) > 0 && len(missing) == 0
 	status := "missing"
 	switch {
 	case downloading:
 		status = "downloading"
-	case ready && initialized:
+	case ready:
 		status = "ready"
 	case len(files) != len(missing):
 		status = "partial"
@@ -265,7 +306,7 @@ func collectHubModelRuntimeStatus(r *http.Request, legacyDataDir string, modelsD
 			}
 		}
 	}
-	triggerSupported := runtime.GOOS != "windows" && fileExists(scriptPath)
+	triggerSupported := runtime.GOOS != "windows"
 	return hubModelRuntimeStatus{
 		Status:            status,
 		ModelDir:          modelsDir,
@@ -286,6 +327,126 @@ func collectHubModelRuntimeStatus(r *http.Request, legacyDataDir string, modelsD
 	}
 }
 
+func resolveUserModelDir() string {
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".maclaw", "models")
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		return filepath.Join(home, ".maclaw", "models")
+	}
+	return filepath.Join(".", ".maclaw", "models")
+}
+
+func modelDownloadLockTTL() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("HUB_MODEL_LOCK_TTL"))
+	if raw == "" {
+		return defaultHubModelLockTTL
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultHubModelLockTTL
+	}
+	return d
+}
+
+func isStaleModelDownloadLock(path string, now time.Time) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return now.Sub(info.ModTime()) > modelDownloadLockTTL()
+}
+
+func ensureModelDownloadScript(scriptPath string) error {
+	if fileExists(scriptPath) {
+		content, err := os.ReadFile(scriptPath)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(content), modelDownloadScriptVersion) {
+			return ensureExecutable(scriptPath)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0755); err != nil {
+		return err
+	}
+	const script = `#!/bin/sh
+# maclaw-model-download-v2
+set -eu
+BASE_URL="$1"
+TARGET_DIR="$2"
+HOME_DIR="$3"
+SENTINEL="$4"
+LOCK_FILE="$5"
+shift 5
+mkdir -p "$TARGET_DIR" "$HOME_DIR"
+touch "$LOCK_FILE"
+cleanup() { rm -f "$LOCK_FILE"; }
+trap cleanup EXIT INT TERM
+is_allowed_model_file() {
+  case "$1" in
+    ""|*/*|*\\*|*..*) return 1 ;;
+    *.gguf|*.yolow|*.koro|*.zip) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+download_one() {
+  name="$1"
+  url="$BASE_URL/$name"
+  target="$TARGET_DIR/$name"
+  tmp="$target.part"
+  if [ -f "$target" ]; then
+    cp -f "$target" "$HOME_DIR/$name"
+    return 0
+  fi
+  rm -f "$tmp"
+  if command -v curl >/dev/null 2>&1; then
+    if ! curl -L --fail --retry 3 --retry-delay 2 --connect-timeout 15 -o "$tmp" "$url"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if ! wget --tries=3 --timeout=30 -O "$tmp" "$url"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  else
+    echo "[ERROR] Neither curl nor wget is available" >&2
+    exit 1
+  fi
+  mv -f "$tmp" "$target"
+  cp -f "$target" "$HOME_DIR/$name"
+}
+for file in "$@"; do
+  if ! is_allowed_model_file "$file"; then
+    echo "[WARN] Skip unsafe model filename: $file" >&2
+    continue
+  fi
+  download_one "$file"
+done
+touch "$SENTINEL"
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return err
+	}
+	return ensureExecutable(scriptPath)
+}
+
+func ensureExecutable(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return err
+	}
+	mode := info.Mode().Perm()
+	if mode&0111 != 0 {
+		return nil
+	}
+	return os.Chmod(path, mode|0111)
+}
+
 func modelDownloadURL(r *http.Request, filename string) string {
 	if r == nil {
 		return "/api/v1/models/" + filename
@@ -293,14 +454,44 @@ func modelDownloadURL(r *http.Request, filename string) string {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
-	} else if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+	} else if forwarded := normalizeForwardedProto(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
 		scheme = forwarded
 	}
-	host := strings.TrimSpace(r.Host)
+	host := cleanModelDownloadHost(firstForwardedValue(r.Header.Get("X-Forwarded-Host")))
+	if host == "" {
+		host = cleanModelDownloadHost(strings.TrimSpace(r.Host))
+	}
 	if host == "" {
 		return "/api/v1/models/" + filename
 	}
 	return scheme + "://" + host + "/api/v1/models/" + filename
+}
+
+func normalizeForwardedProto(value string) string {
+	proto := strings.ToLower(firstForwardedValue(value))
+	if proto == "http" || proto == "https" {
+		return proto
+	}
+	return ""
+}
+
+func firstForwardedValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if idx := strings.Index(value, ","); idx >= 0 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
+}
+
+func cleanModelDownloadHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" || strings.ContainsAny(host, " \t\r\n/\\") {
+		return ""
+	}
+	return host
 }
 
 func readLogTail(path string, limit int) []string {

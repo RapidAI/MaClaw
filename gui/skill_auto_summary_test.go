@@ -831,7 +831,8 @@ func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
 	cfg.RemoteHubCenterURLs = []string{backup.URL}
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "auto-upload-skill",
-		Description: "demo",
+		Description: "Uploads a learned skill through the lifecycle quality gate.",
+		Triggers:    []string{"auto upload skill"},
 		Source:      "learned",
 		Status:      "active",
 		Steps:       []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{"instructions": "hello"}}},
@@ -842,9 +843,6 @@ func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
 
 	client := NewSkillMarketClient(app)
 	trigger := NewAutoUploadTrigger(client, func() string { return "user@example.com" })
-	for i := 0; i < 3; i++ {
-		trigger.RecordExecution("auto-upload-skill", 1, "hash-1")
-	}
 
 	skillDir := filepath.Join(tempHome, "auto-upload-skill")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -854,17 +852,12 @@ func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
 		t.Fatalf("RunAutoUpload() error = %v", err)
 	}
 
-	statusPath := filepath.Join(skillDir, "upload_status.json")
-	data, err := os.ReadFile(statusPath)
+	items, err := app.skillLifecycle.ListUploadQueue()
 	if err != nil {
-		t.Fatalf("ReadFile(upload_status.json) error = %v", err)
+		t.Fatalf("ListUploadQueue() error = %v", err)
 	}
-	var status map[string]string
-	if err := json.Unmarshal(data, &status); err != nil {
-		t.Fatalf("Unmarshal(upload_status.json) error = %v", err)
-	}
-	if status["submission_id"] != "sub-123" {
-		t.Fatalf("submission_id = %q, want sub-123", status["submission_id"])
+	if len(items) != 1 || items[0].Status != skillUploadStatusUploaded || items[0].SubmissionID != "sub-123" {
+		t.Fatalf("upload queue = %+v", items)
 	}
 
 	saved, err := app.LoadConfig()
@@ -873,6 +866,9 @@ func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
 	}
 	if saved.RemoteHubCenterURL != backup.URL {
 		t.Fatalf("RemoteHubCenterURL = %q, want %q", saved.RemoteHubCenterURL, backup.URL)
+	}
+	if len(saved.NLSkills) != 1 || saved.NLSkills[0].HubSkillID != "sub-123" {
+		t.Fatalf("HubSkillID not recorded in config: %+v", saved.NLSkills)
 	}
 	if !containsString(saved.RemoteHubCenterURLs, "https://upload-backup.example") {
 		t.Fatalf("RemoteHubCenterURLs = %#v", saved.RemoteHubCenterURLs)
@@ -914,9 +910,6 @@ func TestRunAutoUpload_SkipsWhenNoHubCenterReachable(t *testing.T) {
 
 	client := NewSkillMarketClient(app)
 	trigger := NewAutoUploadTrigger(client, func() string { return "user@example.com" })
-	for i := 0; i < 3; i++ {
-		trigger.RecordExecution("skip-upload-skill", 1, "hash-2")
-	}
 
 	skillDir := filepath.Join(tempHome, "skip-upload-skill")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -927,5 +920,23 @@ func TestRunAutoUpload_SkipsWhenNoHubCenterReachable(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(skillDir, "upload_status.json")); !os.IsNotExist(err) {
 		t.Fatalf("upload_status.json should not exist, stat err = %v", err)
+	}
+}
+
+func TestSkillDefinitionExistsIgnoresJSONAndAcceptsReadme(t *testing.T) {
+	jsonDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(jsonDir, "skill.json"), []byte(`{"name":"json"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if skillDefinitionExists(jsonDir) {
+		t.Fatal("skillDefinitionExists should ignore retired skill.json definitions")
+	}
+
+	readmeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(readmeDir, "README.md"), []byte("# Readme skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !skillDefinitionExists(readmeDir) {
+		t.Fatal("skillDefinitionExists should accept README.md")
 	}
 }

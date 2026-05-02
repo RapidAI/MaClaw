@@ -1,8 +1,10 @@
 package memory
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -30,8 +32,8 @@ func (d *deterministicEmbedder) EmbedBatch(texts []string) ([][]float32, error) 
 	return out, nil
 }
 
-func (d *deterministicEmbedder) Dim() int  { return d.dim }
-func (d *deterministicEmbedder) Close()    {}
+func (d *deterministicEmbedder) Dim() int { return d.dim }
+func (d *deterministicEmbedder) Close()   {}
 
 // highSimVector returns a vector that has high cosine similarity with base.
 func highSimVector(base []float32, offset float32) []float32 {
@@ -54,7 +56,7 @@ func TestAutoLink_WithEmbedder_LinksHighCosine(t *testing.T) {
 	// Create vectors: A and B are very similar, C is orthogonal.
 	vecA := []float32{1, 0, 0, 0}
 	vecB := []float32{0.98, 0.1, 0, 0} // high cosine with A
-	vecC := []float32{0, 0, 0, 1}       // orthogonal to A
+	vecC := []float32{0, 0, 0, 1}      // orthogonal to A
 
 	emb := &deterministicEmbedder{
 		dim: 4,
@@ -401,6 +403,60 @@ func TestAutoLink_GraphEdgeStrength(t *testing.T) {
 	}
 }
 
+func TestGraphEdgesPersistStrengthAndType(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mem.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vecA := []float32{1, 0, 0, 0}
+	vecB := []float32{0.95, 0.1, 0, 0}
+	store.embedder = &deterministicEmbedder{dim: 4}
+
+	if err := store.Save(Entry{Content: "persistent graph alpha", Category: CategoryProjectKnowledge, Embedding: vecA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Entry{Content: "persistent graph beta", Category: CategoryProjectKnowledge, Embedding: vecB}); err != nil {
+		t.Fatal(err)
+	}
+
+	store.mu.RLock()
+	var idA, idB string
+	for _, e := range store.entries {
+		switch e.Content {
+		case "persistent graph alpha":
+			idA = e.ID
+		case "persistent graph beta":
+			idB = e.ID
+		}
+	}
+	before := store.graph.neighborsTypedOf(idB)[idA]
+	store.mu.RUnlock()
+	if idA == "" || idB == "" || before.Strength <= 0 {
+		t.Fatalf("expected graph edge before reload, ids=(%q,%q) edge=%+v", idA, idB, before)
+	}
+	if err := store.flush(); err != nil {
+		t.Fatal(err)
+	}
+	store.Stop()
+
+	reloaded, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Stop()
+
+	after := reloaded.graph.neighborsTypedOf(idB)[idA]
+	if after.Strength != before.Strength {
+		t.Fatalf("edge strength was not persisted: before=%f after=%f", before.Strength, after.Strength)
+	}
+	if after.LinkType != before.LinkType {
+		t.Fatalf("edge link type was not persisted: before=%q after=%q", before.LinkType, after.LinkType)
+	}
+}
+
 func TestAutoLink_DuplicateContent_NoAutoLink(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(filepath.Join(dir, "mem.json"))
@@ -562,5 +618,67 @@ func TestAutoLink_RelatedIDs_Sorted(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestDeleteSynchronizesPersistedGraphEdges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mem.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	vecA := []float32{1, 0, 0, 0}
+	vecB := []float32{0.95, 0.1, 0, 0}
+	store.embedder = &deterministicEmbedder{dim: 4}
+
+	if err := store.Save(Entry{Content: "delete graph alpha", Category: CategoryProjectKnowledge, Embedding: vecA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Entry{Content: "delete graph beta", Category: CategoryProjectKnowledge, Embedding: vecB}); err != nil {
+		t.Fatal(err)
+	}
+
+	store.mu.RLock()
+	var keepID, deleteID string
+	for _, e := range store.entries {
+		switch e.Content {
+		case "delete graph alpha":
+			deleteID = e.ID
+		case "delete graph beta":
+			keepID = e.ID
+		}
+	}
+	store.mu.RUnlock()
+	if keepID == "" || deleteID == "" {
+		t.Fatalf("expected saved entry IDs, keep=%q delete=%q", keepID, deleteID)
+	}
+
+	if err := store.Delete(deleteID); err != nil {
+		t.Fatal(err)
+	}
+
+	store.mu.RLock()
+	for _, e := range store.entries {
+		if e.ID == keepID {
+			if len(e.RelatedIDs) != 0 || len(e.RelatedEdges) != 0 {
+				store.mu.RUnlock()
+				t.Fatalf("delete left stale persisted graph links: ids=%v edges=%+v", e.RelatedIDs, e.RelatedEdges)
+			}
+		}
+	}
+	store.mu.RUnlock()
+
+	if err := store.flush(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), deleteID) {
+		t.Fatalf("deleted entry ID %q remained in persisted memory JSON: %s", deleteID, string(data))
 	}
 }

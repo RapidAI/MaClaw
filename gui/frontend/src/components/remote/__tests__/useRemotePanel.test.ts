@@ -6,6 +6,7 @@ const runtimeHandlers = new Map<string, (payload?: unknown) => void>();
 const startRemoteSessionMock = vi.fn();
 const startRemoteHandoffSessionMock = vi.fn();
 const listValidProvidersMock = vi.fn();
+const loadConfigMock = vi.fn();
 const listRemoteToolMetadataMock = vi.fn();
 const listRemoteSessionsMock = vi.fn();
 const getRemoteActivationStatusMock = vi.fn();
@@ -38,6 +39,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetRemoteToolLaunchProbe: (...args: unknown[]) => getRemoteToolLaunchProbeMock(...args),
     GetRemoteToolReadiness: (...args: unknown[]) => getRemoteToolReadinessMock(...args),
     InstallToolOnDemand: (...args: unknown[]) => installToolOnDemandMock(...args),
+    LoadConfig: (...args: unknown[]) => loadConfigMock(...args),
     ListRemoteSessions: (...args: unknown[]) => listRemoteSessionsMock(...args),
     ListRemoteToolMetadata: (...args: unknown[]) => listRemoteToolMetadataMock(...args),
     ListValidProviders: (...args: unknown[]) => listValidProvidersMock(...args),
@@ -96,6 +98,7 @@ describe('useRemotePanel provider sync', () => {
         vi.clearAllMocks();
         startRemoteSessionMock.mockResolvedValue(undefined);
         startRemoteHandoffSessionMock.mockResolvedValue(undefined);
+        loadConfigMock.mockResolvedValue(buildConfig());
         listValidProvidersMock.mockResolvedValue([
             { name: 'Original', model_id: '', is_default: false },
             { name: '王', model_id: 'model-wang', is_default: true },
@@ -190,5 +193,191 @@ describe('useRemotePanel provider sync', () => {
 
         const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
         expect(savedConfig.codex.current_model).toBe('Original');
+    });
+
+    it('preserves pending default launch mode when saving selected provider', async () => {
+        const config = buildConfig({
+            active_tool: 'codex',
+            default_launch_mode: 'local',
+            remote_enabled: false,
+        });
+        listValidProvidersMock.mockResolvedValue([
+            { name: 'Original', model_id: '', is_default: false },
+            { name: 'DeepSeek', model_id: 'deepseek-chat', is_default: true },
+        ]);
+
+        const { result } = renderHook(() => useRemotePanel({
+            config,
+            setConfig: vi.fn(),
+            getPendingDefaultLaunchMode: () => 'remote',
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await waitFor(() => {
+            expect(result.current.selectedProvider).toBe('DeepSeek');
+        });
+
+        act(() => {
+            result.current.setSelectedProvider('Original');
+        });
+
+        await waitFor(() => {
+            expect(saveConfigMock).toHaveBeenCalled();
+        });
+
+        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
+        expect(savedConfig.codex.current_model).toBe('Original');
+        expect(savedConfig.default_launch_mode).toBe('remote');
+        expect(savedConfig.remote_enabled).toBe(true);
+    });
+
+    it('preserves pending default launch mode when saving another remote field', async () => {
+        const setConfig = vi.fn();
+        loadConfigMock.mockResolvedValue(buildConfig({
+            default_launch_mode: 'local',
+            remote_enabled: false,
+            remote_email: 'old@example.com',
+        }));
+
+        const { result } = renderHook(() => useRemotePanel({
+            config: buildConfig({
+                default_launch_mode: 'local',
+                remote_enabled: false,
+                remote_email: 'old@example.com',
+            }),
+            setConfig,
+            getPendingDefaultLaunchMode: () => 'remote',
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await act(async () => {
+            await result.current.saveRemoteConfigField({ remote_email: 'new@example.com' });
+        });
+
+        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
+        expect(savedConfig.remote_email).toBe('new@example.com');
+        expect(savedConfig.default_launch_mode).toBe('remote');
+        expect(savedConfig.remote_enabled).toBe(true);
+    });
+
+    it('leaves default launch mode untouched when no pending mode exists', async () => {
+        loadConfigMock.mockResolvedValue(buildConfig({
+            default_launch_mode: 'local',
+            remote_enabled: false,
+            remote_email: 'old@example.com',
+        }));
+
+        const { result } = renderHook(() => useRemotePanel({
+            config: buildConfig({
+                default_launch_mode: 'local',
+                remote_enabled: false,
+                remote_email: 'old@example.com',
+            }),
+            setConfig: vi.fn(),
+            getPendingDefaultLaunchMode: () => null,
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await act(async () => {
+            await result.current.saveRemoteConfigField({ remote_email: 'new@example.com' });
+        });
+
+        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
+        expect(savedConfig.remote_email).toBe('new@example.com');
+        expect(savedConfig.default_launch_mode).toBe('local');
+        expect(savedConfig.remote_enabled).toBe(false);
+    });
+
+    it('keeps remote_enabled and default_launch_mode synchronized when saving remote mode directly', async () => {
+        loadConfigMock.mockResolvedValue(buildConfig({
+            default_launch_mode: 'local',
+            remote_enabled: false,
+        }));
+
+        const { result } = renderHook(() => useRemotePanel({
+            config: buildConfig({
+                default_launch_mode: 'local',
+                remote_enabled: false,
+            }),
+            setConfig: vi.fn(),
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await act(async () => {
+            await result.current.saveRemoteConfigField({ remote_enabled: true });
+        });
+
+        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
+        expect(savedConfig.remote_enabled).toBe(true);
+        expect(savedConfig.default_launch_mode).toBe('remote');
+    });
+
+    it('normalizes conflicting launch mode fields using default_launch_mode as canonical', async () => {
+        loadConfigMock.mockResolvedValue(buildConfig({
+            default_launch_mode: 'remote',
+            remote_enabled: true,
+        }));
+
+        const { result } = renderHook(() => useRemotePanel({
+            config: buildConfig({
+                default_launch_mode: 'remote',
+                remote_enabled: true,
+            }),
+            setConfig: vi.fn(),
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await act(async () => {
+            await result.current.saveRemoteConfigField({ default_launch_mode: 'local', remote_enabled: true });
+        });
+
+        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
+        expect(savedConfig.default_launch_mode).toBe('local');
+        expect(savedConfig.remote_enabled).toBe(false);
     });
 });

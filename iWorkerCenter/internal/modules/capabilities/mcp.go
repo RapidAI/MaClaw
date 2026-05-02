@@ -200,7 +200,11 @@ func normalizeMCPServerPayload(req mcpServerPayload) (MCPServer, error) {
 	if departmentID == "" {
 		departmentID = "all"
 	}
-	return MCPServer{Name: name, Description: strings.TrimSpace(req.Description), ServerType: serverType, Endpoint: endpoint, Command: command, Args: sanitizeStringList(req.Args), EnvKeys: sanitizeStringList(req.EnvKeys), DepartmentID: departmentID, RiskLevel: riskLevel, Status: status}, nil
+	envKeys, err := sanitizeEnvKeyList(req.EnvKeys)
+	if err != nil {
+		return MCPServer{}, err
+	}
+	return MCPServer{Name: name, Description: strings.TrimSpace(req.Description), ServerType: serverType, Endpoint: endpoint, Command: command, Args: sanitizeStringList(req.Args), EnvKeys: envKeys, DepartmentID: departmentID, RiskLevel: riskLevel, Status: status}, nil
 }
 
 func sanitizeStringList(values []string) []string {
@@ -215,6 +219,43 @@ func sanitizeStringList(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func sanitizeEnvKeyList(values []string) ([]string, error) {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if !isEnvKeyName(value) {
+			return nil, fmt.Errorf("env_keys must contain environment variable names only: %s", value)
+		}
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out, nil
+}
+
+func isEnvKeyName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i, r := range value {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r == '_':
+			continue
+		case i > 0 && r >= '0' && r <= '9':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) listRuntimeMCPServers(ctx context.Context, tenantID, departmentID string) ([]MCPServer, error) {

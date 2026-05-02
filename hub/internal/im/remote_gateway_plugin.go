@@ -58,8 +58,8 @@ type RemoteGatewayPlugin struct {
 	system   store.SystemSettingsRepository
 
 	mu             sync.RWMutex
-	owner          *gatewayOwner          // current gateway holder
-	claimSeq       uint64                 // monotonic counter for claim generations
+	owner          *gatewayOwner             // current gateway holder
+	claimSeq       uint64                    // monotonic counter for claim generations
 	messageHandler func(msg IncomingMessage) // set by IM Adapter via ReceiveMessage
 
 	// email↔platformUID bindings (persisted in system_settings)
@@ -83,17 +83,16 @@ type pendingRemoteBind struct {
 	Attempts  int
 }
 
-
 // NewRemoteGatewayPlugin creates a new remote gateway plugin for the given
 // platform name (e.g. "qqbot", "telegram").
 func NewRemoteGatewayPlugin(platform string, sender MachineMessageSender, users store.UserRepository, system store.SystemSettingsRepository) *RemoteGatewayPlugin {
 	p := &RemoteGatewayPlugin{
-		platform: platform,
-		sender:   sender,
-		users:    users,
-		system:   system,
-		bindings: make(map[string]string),
-		pending:  make(map[string]*pendingRemoteBind),
+		platform:  platform,
+		sender:    sender,
+		users:     users,
+		system:    system,
+		bindings:  make(map[string]string),
+		pending:   make(map[string]*pendingRemoteBind),
 		ctxTokens: make(map[string]string),
 	}
 	p.loadBindings()
@@ -145,6 +144,15 @@ func (p *RemoteGatewayPlugin) SendFile(ctx context.Context, target UserTarget, f
 	})
 }
 
+func (p *RemoteGatewayPlugin) SendVoice(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string) error {
+	return p.sendToGatewayOwner("voice", map[string]any{
+		"platform_uid": target.PlatformUID,
+		"file_data":    voiceData,
+		"file_name":    fileName,
+		"mime_type":    mimeType,
+	})
+}
+
 func (p *RemoteGatewayPlugin) ResolveUser(ctx context.Context, platformUID string) (string, error) {
 	p.bindMu.RLock()
 	email, ok := p.bindings[platformUID]
@@ -165,15 +173,24 @@ func (p *RemoteGatewayPlugin) Capabilities() CapabilityDeclaration {
 		SupportsMarkdown:    false,
 		SupportsImage:       true,
 		SupportsFile:        true,
+		SupportsVoice:       remoteGatewaySupportsVoice(p.platform),
 		SupportsButton:      false,
 		SupportsMessageEdit: false,
 		MaxTextLength:       4000,
 	}
 }
 
+func remoteGatewaySupportsVoice(platform string) bool {
+	switch platform {
+	case "qqbot", "qqbot_remote", "telegram", "weixin", "thirdparty":
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *RemoteGatewayPlugin) Start(ctx context.Context) error { return nil }
 func (p *RemoteGatewayPlugin) Stop(ctx context.Context) error  { return nil }
-
 
 // ---------------------------------------------------------------------------
 // Gateway claim / release — lock management
@@ -384,7 +401,6 @@ func (p *RemoteGatewayPlugin) sendToGatewayOwner(replyType string, payload map[s
 	return err
 }
 
-
 // ---------------------------------------------------------------------------
 // Auto-bind gateway owner
 // ---------------------------------------------------------------------------
@@ -449,7 +465,6 @@ func (p *RemoteGatewayPlugin) handleBindingFlow(platformUID, text string) bool {
 	}
 	return false
 }
-
 
 func (p *RemoteGatewayPlugin) handleEmailSubmit(platformUID, email string) {
 	// Check if already bound

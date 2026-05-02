@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -61,6 +64,83 @@ func TestRegisterV1RoutesListsCloudComputeModels(t *testing.T) {
 	}
 	if len(body.Data) != 1 || body.Data[0].ID != "gpt-cloud" {
 		t.Fatalf("models = %+v, want gpt-cloud", body.Data)
+	}
+}
+
+func TestRegisterV1RoutesFallsBackToCenterSettingsModels(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	settingsPath := filepath.Join(home, ".iworkercenter", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("mkdir settings dir: %v", err)
+	}
+	settings := `{"providers":[{"id":"local-openai","name":"Local OpenAI","base_url":"https://local.example/v1","api_key":"sk-local","protocol":"openai","model":"gpt-local","enabled":true,"priority":50}]}`
+	if err := os.WriteFile(settingsPath, []byte(settings), 0o644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	syncMgr := centercompute.NewSyncManager("http://127.0.0.1:1", "center-1", "secret-1")
+	_ = syncMgr.SyncNow()
+	registerV1Routes(mux, &app.Center{ComputeSourceManager: centercompute.NewSourceManager(syncMgr)})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Data) != 1 || body.Data[0].ID != "gpt-local" {
+		t.Fatalf("models = %+v, want gpt-local", body.Data)
+	}
+}
+
+func TestRegisterV1RoutesFallsBackToCenterSettingsChat(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	var upstreamCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("upstream path = %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chat-local", "object": "chat.completion", "model": "gpt-local",
+			"choices": []map[string]any{{"index": 0, "message": map[string]string{"role": "assistant", "content": "local ok"}, "finish_reason": "stop"}},
+		})
+	}))
+	defer upstream.Close()
+	settingsPath := filepath.Join(home, ".iworkercenter", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("mkdir settings dir: %v", err)
+	}
+	settings := fmt.Sprintf(`{"providers":[{"id":"local-openai","name":"Local OpenAI","base_url":%q,"api_key":"sk-local","protocol":"openai","model":"gpt-local","enabled":true,"priority":50}]}`, upstream.URL)
+	if err := os.WriteFile(settingsPath, []byte(settings), 0o644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	syncMgr := centercompute.NewSyncManager("http://127.0.0.1:1", "center-1", "secret-1")
+	_ = syncMgr.SyncNow()
+	registerV1Routes(mux, &app.Center{ComputeSourceManager: centercompute.NewSourceManager(syncMgr)})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-local","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req.WithContext(context.Background()))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !upstreamCalled {
+		t.Fatal("local settings upstream was not called")
 	}
 }
 

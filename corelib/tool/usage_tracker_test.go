@@ -52,6 +52,102 @@ func TestUsageTracker_FailurePenalty(t *testing.T) {
 	}
 }
 
+func TestUsageTracker_IgnoresUnrelatedSameToolHistory(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	now := time.Now()
+
+	tracker.mu.Lock()
+	for i := 0; i < 50; i++ {
+		tracker.records = append(tracker.records, UsageRecord{
+			ToolName:    "ssh",
+			QueryTokens: []string{"database", "query"},
+			Success:     true,
+			Timestamp:   now,
+		})
+	}
+	for i := 0; i < 5; i++ {
+		tracker.records = append(tracker.records, UsageRecord{
+			ToolName:    "ssh",
+			QueryTokens: []string{"server", "logs"},
+			Success:     true,
+			Timestamp:   now,
+		})
+	}
+	tracker.mu.Unlock()
+
+	scoreWithNoise := tracker.ExperienceScore("ssh", []string{"server", "logs"})
+
+	clean, _ := NewUsageTracker("")
+	clean.mu.Lock()
+	for i := 0; i < 5; i++ {
+		clean.records = append(clean.records, UsageRecord{
+			ToolName:    "ssh",
+			QueryTokens: []string{"server", "logs"},
+			Success:     true,
+			Timestamp:   now,
+		})
+	}
+	clean.mu.Unlock()
+	scoreClean := clean.ExperienceScore("ssh", []string{"server", "logs"})
+
+	if diff := scoreWithNoise - scoreClean; diff < -0.001 || diff > 0.001 {
+		t.Errorf("unrelated same-tool history should not dilute contextual score: noisy %.4f clean %.4f", scoreWithNoise, scoreClean)
+	}
+}
+
+func TestUsageTracker_EvidenceConfidenceShrinksSingleSuccess(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	tracker.mu.Lock()
+	tracker.records = append(tracker.records, UsageRecord{
+		ToolName:    "bash",
+		QueryTokens: []string{"run", "test"},
+		Success:     true,
+		Timestamp:   time.Now(),
+	})
+	tracker.mu.Unlock()
+
+	single := tracker.ExperienceScore("bash", []string{"run", "test"})
+	if single <= 0 || single >= 0.5 {
+		t.Fatalf("single success should help but stay conservative, got %.4f", single)
+	}
+
+	for i := 0; i < 9; i++ {
+		tracker.mu.Lock()
+		tracker.records = append(tracker.records, UsageRecord{
+			ToolName:    "bash",
+			QueryTokens: []string{"run", "test"},
+			Success:     true,
+			Timestamp:   time.Now(),
+		})
+		tracker.mu.Unlock()
+	}
+
+	repeated := tracker.ExperienceScore("bash", []string{"run", "test"})
+	if repeated <= single {
+		t.Errorf("repeated successes should build confidence: single %.4f repeated %.4f", single, repeated)
+	}
+}
+
+func TestUsageTracker_FollowUpAffectsExperience(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	tracker.mu.Lock()
+	for i := 0; i < 6; i++ {
+		tracker.records = append(tracker.records, UsageRecord{
+			ToolName:    "fragile_tool",
+			QueryTokens: []string{"deploy"},
+			Success:     false,
+			FollowUp:    "abandon",
+			Timestamp:   time.Now(),
+		})
+	}
+	tracker.mu.Unlock()
+
+	score := tracker.ExperienceScore("fragile_tool", []string{"deploy"})
+	if score != 0 {
+		t.Errorf("abandoned failures should clamp experience to zero, got %.4f", score)
+	}
+}
+
 func TestUsageTracker_RingBuffer(t *testing.T) {
 	tracker, _ := NewUsageTracker("")
 	tracker.maxItems = 10

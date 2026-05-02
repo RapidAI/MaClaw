@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { OpenFileOrShowInFolder, SelectProjectDir, SetWorkflowWorkingDir, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask, GetTTSEnabled, SetTTSEnabled, SpeakText } from "../../../wailsjs/go/main/App";
-import { BrowserOpenURL, EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { OpenFileOrShowInFolder, SelectProjectDir, SetWorkflowWorkingDir, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask, GetTTSEnabled, SetTTSEnabled, SpeakText, NormalizeVoiceCommand, LoadConfig } from "../../../wailsjs/go/main/App";
+import { BrowserOpenURL, EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus, ChatConfirmation, ChatUnfinishedSlot } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti } from "./useAIAssistant";
 import { useWorkflowState } from "./useWorkflowState";
@@ -55,6 +55,16 @@ interface AIAssistantPanelWindowProps {
     onHideWindow?: () => void;
 }
 
+type PetPanelState = "idle" | "listening" | "thinking" | "speaking";
+
+function emitPetPanelState(state: PetPanelState, source: string, ttlMs?: number) {
+    try {
+        EventsEmit("pet:state", { state, source, ttlMs });
+    } catch {
+        // Pet state updates are optional UI hints.
+    }
+}
+
 interface AIAssistantPanelProps {
     onClose: () => void;
     lang: string; // 'zh-Hans' | 'zh-Hant' | 'en'
@@ -67,6 +77,10 @@ interface AIAssistantPanelProps {
     audioInputDeviceId?: string;
     /** Selected audio output device ID (empty = system default) */
     audioOutputDeviceId?: string;
+    /** Increments when the desktop pet asks to start voice input. */
+    petVoiceStartSeq?: number;
+    /** Increments when the desktop pet asks to focus text input. */
+    petFocusInputSeq?: number;
 }
 
 const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
@@ -74,6 +88,44 @@ const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
+
+const statusLabelsZhHans: Record<string, string> = {
+    pending: "待处理",
+    pending_resume: "待继续",
+    resumed: "已恢复",
+    running: "执行中",
+    busy: "执行中",
+    completed: "已完成",
+    failed: "失败",
+    exited: "已退出",
+    cancelled: "已取消",
+    canceled: "已取消",
+};
+
+const statusLabelsZhHant: Record<string, string> = {
+    pending: "待處理",
+    pending_resume: "待繼續",
+    resumed: "已恢復",
+    running: "執行中",
+    busy: "執行中",
+    completed: "已完成",
+    failed: "失敗",
+    exited: "已退出",
+    cancelled: "已取消",
+    canceled: "已取消",
+};
+
+const localizeStatus = (lang: string | undefined, status: string): string => {
+    const normalized = status.trim().toLowerCase();
+    if (lang === "zh-Hans") return statusLabelsZhHans[normalized] || status;
+    if (lang === "zh-Hant") return statusLabelsZhHant[normalized] || status;
+    return status.replace(/_/g, " ");
+};
+
+const localizeStatusLine = (lang: string | undefined, status: string): string => {
+    const label = localizeStatus(lang, status);
+    return localizeText(lang, `Status: ${label}`, `状态：${label}`, `狀態：${label}`);
+};
 export function appendVoiceTextToDraft(current: string, recognized: string): string {
     const text = normalizeVoiceTextForDraft(recognized);
     if (!text) return current;
@@ -198,23 +250,6 @@ export function isObviousVoiceRecognitionNoise(rawText: string): boolean {
     return lowInfo.some(item => compact === item || (compact.includes(item) && compact.length <= item.length + 2));
 }
 
-export function isLikelyVoiceCommandText(rawText: string): boolean {
-    const text = normalizeVoiceTextForDraft(rawText);
-    if (!text || isObviousVoiceRecognitionNoise(text)) return false;
-    const compact = text.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
-    if (!compact) return false;
-    const cjkOnly = compact.replace(/[^\u3400-\u9fff\uf900-\ufaff]/g, "");
-    if (cjkOnly.length > 0 && cjkOnly.length * 2 >= compact.length) {
-        const commandAnchors = ["\u7ee7\u7eed", "\u505c\u6b62", "\u6682\u505c", "\u53d6\u6d88", "\u91cd\u8bd5", "\u6253\u5f00", "\u5173\u95ed", "\u5f00\u59cb", "\u65b0\u5efa", "\u521b\u5efa", "\u751f\u6210", "\u622a\u56fe", "\u4fdd\u5b58", "\u53d1\u9001", "\u641c\u7d22", "\u67e5\u627e", "\u8fd0\u884c", "\u6267\u884c", "\u4fee\u590d", "\u4f18\u5316", "\u89e3\u91ca", "\u603b\u7ed3", "\u7ffb\u8bd1", "\u5206\u6790", "\u68c0\u67e5", "\u6d4b\u8bd5", "\u63d0\u4ea4", "\u90e8\u7f72", "\u544a\u8bc9", "\u56de\u7b54", "\u8bfb\u53d6", "\u64ad\u62a5", "\u5220\u9664", "\u6e05\u7a7a", "\u590d\u5236", "\u7c98\u8d34", "\u8f93\u5165", "\u5e2e\u6211", "\u7ed9\u6211", "\u6211\u8981", "\u6211\u60f3", "\u8bf7\u4f60"];
-        if (commandAnchors.some(anchor => compact.includes(anchor))) return true;
-        const questionAnchors = ["\u600e\u4e48", "\u4e3a\u4ec0\u4e48", "\u54ea\u91cc", "\u54ea\u4e2a", "\u591a\u5c11", "\u662f\u5426", "\u80fd\u5426", "\u53ef\u4ee5\u5417", "\u597d\u4e86\u5417", "\u7ed3\u679c", "\u8fdb\u5ea6", "\u72b6\u6001", "\u62a5\u9519", "\u9519\u8bef", "\u95ee\u9898"];
-        return questionAnchors.some(anchor => compact.includes(anchor));
-    }
-    if (/^(open|close|start|stop|pause|continue|cancel|retry|run|execute|search|find|save|send|create|generate|fix|optimize|explain|summarize|translate|test|deploy|delete|clear|copy|paste|upload|download|show|tell|read)\b/i.test(text)) return true;
-    if (/\b(please|can you|could you|would you|help me|i want|i need)\b/i.test(text)) return true;
-    return text.trim().split(/\s+/).length >= 4;
-}
-
 /** Map raw workflow_type strings to user-friendly display labels. */
 const workflowTypeLabelMap: Record<string, { en: string; zh: string }> = {
     coding: { en: "Coding", zh: "编程" },
@@ -255,6 +290,55 @@ function messageHasStructuredTaskSignal(message: ChatMessage | undefined): boole
     if ((message.fields?.length ?? 0) > 0 || (message.actions?.length ?? 0) > 0) return true;
     if (message.thumbnailBase64) return true;
     return false;
+}
+
+type PetReadbackMode = "off" | "summary" | "full" | "done-only";
+
+function getRoundStatus(messages: ChatMessage[]): 'success' | 'error' | 'paused' | 'needs_confirmation' {
+    let status: 'success' | 'error' | 'paused' | 'needs_confirmation' = 'success';
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (status === 'success' && msg.role === 'error') {
+            status = 'error';
+        }
+        if (msg.role === 'user') break;
+    }
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg?.confirmation && lastMsg.confirmation.status !== 'running') {
+        status = 'needs_confirmation';
+    }
+    return status;
+}
+
+function getLastUserText(messages: ChatMessage[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg.role === 'user' && msg.content) return msg.content;
+    }
+    return '';
+}
+
+function getLastAssistantText(messages: ChatMessage[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if ((msg.role === 'assistant' || msg.role === 'error') && msg.content?.trim()) {
+            return msg.content;
+        }
+        if (msg.role === 'user') break;
+    }
+    return '';
+}
+
+function buildPetReadbackInput(messages: ChatMessage[], mode: PetReadbackMode): string {
+    const status = getRoundStatus(messages);
+    if (mode === 'done-only') {
+        return JSON.stringify({ userText: '', status });
+    }
+    if (mode === 'full') {
+        const assistantText = getLastAssistantText(messages);
+        if (assistantText) return assistantText;
+    }
+    return JSON.stringify({ userText: getLastUserText(messages), status });
 }
 
 function shouldSpeakTaskResult(messages: ChatMessage[], _progressMessages: ChatMessage[]): boolean {
@@ -586,6 +670,18 @@ const baseInputBtnStyle: React.CSSProperties = {
     boxSizing: "border-box",
     transition: "background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
     userSelect: "none",
+};
+
+const actionBtnStyle: React.CSSProperties = {
+    ...baseInputBtnStyle,
+    width: "auto",
+    height: "auto",
+    minWidth: "96px",
+    minHeight: "32px",
+    padding: "5px 12px",
+    fontSize: "1em",
+    lineHeight: 1.35,
+    whiteSpace: "nowrap",
 };
 
 type AssistantInputIconName = "paperclip" | "mic" | "cornerDownLeft" | "stop";
@@ -1124,12 +1220,9 @@ function renderActions(
                     data-testid="action-button"
                     onClick={() => executeAction(a.command)}
                     style={{
-                        ...baseInputBtnStyle,
+                        ...actionBtnStyle,
                         color: a.style === "danger" ? t.errorText : t.btnColor,
                         borderColor: a.style === "danger" ? t.errorText : t.btnBorder,
-                        fontSize: "1em",
-                        padding: "4px 10px",
-                        minHeight: "28px",
                     }}
                 >
                     {a.label}
@@ -1187,7 +1280,7 @@ function renderConfirmationCard(
             </div>
             {status && (
                 <div data-testid="confirmation-status" style={{ color: t.fieldLabel, fontSize: "0.917em", marginBottom: "6px" }}>
-                    {localizeText(lang, `Status: ${status}`, `状态：${status}`)}
+                    {localizeStatusLine(lang, status)}
                 </div>
             )}
             <div data-testid="confirmation-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
@@ -1225,7 +1318,7 @@ function renderUnfinishedSlotCard(
             </div>
             {slot.status && (
                 <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "0.917em", marginBottom: "6px" }}>
-                    {localizeText(lang, `Status: ${slot.status}`, `状态：${slot.status}`)}
+                    {localizeStatusLine(lang, slot.status)}
                 </div>
             )}
             {slot.title && (
@@ -1644,7 +1737,7 @@ function VoiceLevelVisualizer({ onAudioLevelRef, isSpeaking, themeColor, speakin
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, actions, window: panelWindow, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, actions, window: panelWindow, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0 }: AIAssistantPanelProps) {
     const {
         messages,
         progressMessages = [],
@@ -1701,6 +1794,14 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         }
     });
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
+    const handledPetFocusInputSeqRef = useRef(0);
+    useEffect(() => {
+        if (!petFocusInputSeq || handledPetFocusInputSeqRef.current === petFocusInputSeq) return;
+        handledPetFocusInputSeqRef.current = petFocusInputSeq;
+        const timer = window.setTimeout(() => inputRef.current?.focus(), 80);
+        return () => window.clearTimeout(timer);
+    }, [petFocusInputSeq]);
+
     const cancelRestoreSeqRef = useRef(0);
     const outputEndRef = useRef<HTMLDivElement | null>(null);
     const outputContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1714,10 +1815,30 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
 
     // TTS voice readback state
     const [ttsEnabled, setTtsEnabled] = useState(false);
+    const [petReadbackMode, setPetReadbackMode] = useState<PetReadbackMode>('off');
+    const petReadbackModeRef = useRef<PetReadbackMode>('off');
     const ttsEnabledRef = useRef(false);
     useEffect(() => { ttsEnabledRef.current = ttsEnabled; }, [ttsEnabled]);
+    useEffect(() => { petReadbackModeRef.current = petReadbackMode; }, [petReadbackMode]);
     // Load initial TTS state from backend
     useEffect(() => { GetTTSEnabled().then(v => setTtsEnabled(!!v)).catch(() => {}); }, []);
+    const loadPetReadbackConfig = useCallback(() => {
+        LoadConfig().then(cfg => {
+            const enabled = !!(cfg as any).pet_voice_readback_enabled;
+            const mode = ((cfg as any).pet_readback_mode || 'summary') as PetReadbackMode;
+            setPetReadbackMode(enabled ? (mode === 'off' ? 'summary' : mode) : 'off');
+        }).catch(() => setPetReadbackMode('off'));
+    }, []);
+
+    useEffect(() => {
+        loadPetReadbackConfig();
+        const offConfigChanged = EventsOn('config-changed', loadPetReadbackConfig);
+        const offConfigUpdated = EventsOn('config-updated', loadPetReadbackConfig);
+        return () => {
+            if (typeof offConfigChanged === 'function') offConfigChanged();
+            if (typeof offConfigUpdated === 'function') offConfigUpdated();
+        };
+    }, [loadPetReadbackConfig]);
     // Listen for TTS audio events and play them
     const audioOutputDeviceIdRef = useRef(audioOutputDeviceId);
     audioOutputDeviceIdRef.current = audioOutputDeviceId;
@@ -1736,6 +1857,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         if (!b64wav) return;
 
         ttsAudioPlayingRef.current = true;
+        emitPetPanelState("speaking", "tts:audio");
         try {
             const audio = new Audio("data:audio/wav;base64," + b64wav);
             ttsCurrentAudioRef.current = audio;
@@ -1747,6 +1869,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
                     ttsCurrentAudioRef.current = null;
                 }
                 ttsAudioPlayingRef.current = false;
+                emitPetPanelState(ttsAudioQueueRef.current.length > 0 ? "speaking" : "idle", "tts:ended", ttsAudioQueueRef.current.length > 0 ? undefined : 1200);
                 playNextTTSAudio();
             };
 
@@ -1763,6 +1886,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         } catch {
             ttsCurrentAudioRef.current = null;
             ttsAudioPlayingRef.current = false;
+            emitPetPanelState("idle", "tts:error", 1200);
             playNextTTSAudio();
         }
     }, []);
@@ -1777,6 +1901,7 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             audio.src = "";
             ttsCurrentAudioRef.current = null;
         }
+        emitPetPanelState("idle", "tts:disabled");
     }, [ttsEnabled]);
 
     useEffect(() => {
@@ -1800,29 +1925,15 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             ttsRoundProgressStartRef.current = progressMessages.length;
         }
         const roundProgressMessages = progressMessages.slice(ttsRoundProgressStartRef.current);
-        if (wasSending && !sending && ttsEnabled && messages.length > 0 && shouldSpeakTaskResult(messages, roundProgressMessages)) {
-            // Find the last user message (= task description) and last assistant/error message (= status)
-            let userText = '';
-            let status: 'success' | 'error' | 'paused' | 'needs_confirmation' = 'success';
-            for (let i = messages.length - 1; i >= 0; i--) {
-                const msg = messages[i];
-                if (!userText && msg.role === 'user' && msg.content) {
-                    userText = msg.content;
-                }
-                if (status === 'success' && msg.role === 'error') {
-                    status = 'error';
-                }
-                if (msg.role === 'user') break; // stop at the user message that triggered this round
-            }
-            // Check if the response was a cancellation
-            const lastMsg = messages[messages.length - 1];
-            if (lastMsg?.confirmation && lastMsg.confirmation.status !== 'running') {
-                status = 'needs_confirmation';
-            }
-            // Send structured data to backend for summary generation
-            SpeakText(JSON.stringify({ userText, status })).catch(() => {});
+        const readbackMode = petReadbackModeRef.current;
+        if (wasSending && !sending && ttsEnabled && readbackMode !== 'off' && messages.length > 0 && shouldSpeakTaskResult(messages, roundProgressMessages)) {
+            SpeakText(buildPetReadbackInput(messages, readbackMode)).catch(() => {});
         }
     }, [sending, ttsEnabled, messages, progressMessages]);
+
+    useEffect(() => {
+        emitPetPanelState(sending ? "thinking" : "idle", sending ? "assistant:sending" : "assistant:done", sending ? undefined : 1800);
+    }, [sending]);
 
     const { queue, addEntry, removeEntry, updateEntry, reorderEntry, extractEntry, clearQueue, restoreQueue } = useBufferQueue();
 
@@ -1945,8 +2056,8 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
         }
     }, [inputAreaHeight]);
 
-    const submitRecognizedVoiceText = useCallback((rawText: string, source: VoiceInputSource) => {
-        const text = normalizeVoiceTextForDraft(rawText);
+    const submitRecognizedVoiceText = useCallback(async (rawText: string, source: VoiceInputSource) => {
+        let text = normalizeVoiceTextForDraft(rawText);
         console.info("[ai-panel][voice] recognized text received", {
             source,
             rawLength: rawText.length,
@@ -1963,11 +2074,25 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             console.info("[ai-panel][voice] ignored obvious recognition noise", { source, text });
             return;
         }
-        if (source === "continuous" && !isLikelyVoiceCommandText(text)) {
-            console.info("[ai-panel][voice] ignored non-command continuous speech", { text });
-            return;
+        if (source === "continuous") {
+            try {
+                const normalized = await NormalizeVoiceCommand(text) as {
+                    is_command?: boolean;
+                    corrected_text?: string;
+                    confidence?: number;
+                    reason?: string;
+                };
+                console.info("[ai-panel][voice] normalized continuous speech", { text, normalized });
+                if (normalized && normalized.is_command === false) {
+                    console.info("[ai-panel][voice] ignored non-command continuous speech", { text, normalized });
+                    return;
+                }
+                const corrected = normalizeVoiceTextForDraft(normalized?.corrected_text || "");
+                if (corrected) text = corrected;
+            } catch (err) {
+                console.warn("[ai-panel][voice] voice command normalization failed; sending original text", err);
+            }
         }
-
         setHistoryIndex(-1);
         setDraftBeforeHistory(null);
         setHistoryEdits({});
@@ -1991,6 +2116,14 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
             });
     }, [addEntry, ready, recordSubmittedPrompt, sendMessage, submitLocked]);
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId);
+    const handledPetVoiceStartSeqRef = useRef(0);
+    useEffect(() => {
+        if (!petVoiceStartSeq || handledPetVoiceStartSeqRef.current === petVoiceStartSeq) return;
+        if (!ready || voiceInput.state !== "idle") return;
+        handledPetVoiceStartSeqRef.current = petVoiceStartSeq;
+        void voiceInput.toggle();
+    }, [petVoiceStartSeq, ready, voiceInput]);
+
 
     const clearVoiceHoldTimer = useCallback(() => {
         if (voiceHoldTimerRef.current) {

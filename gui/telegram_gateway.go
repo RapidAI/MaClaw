@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -432,7 +435,7 @@ func (m *telegramGatewayManager) sendAgentResponse(gw *telegram.Gateway, chatID 
 		})
 	}
 
-	// Send voice message (OGG Opus → Telegram voice bubble).
+	// Send voice message (OGG Opus for Telegram voice bubble).
 	if resp.VoiceData != "" {
 		if err := gw.SendMedia(ctx, telegram.OutgoingMedia{
 			ChatID:   chatID,
@@ -441,6 +444,44 @@ func (m *telegramGatewayManager) sendAgentResponse(gw *telegram.Gateway, chatID 
 			FileName: resp.VoiceFileName,
 		}); err != nil {
 			log.Printf("[telegram-mgr] local SendMedia (voice) error (to=%d): %v", chatID, err)
+		}
+	}
+
+	m.sendLocalFiles(gw, chatID, resp)
+}
+
+func (m *telegramGatewayManager) sendLocalFiles(gw *telegram.Gateway, chatID int64, resp *IMAgentResponse) {
+	paths := resp.LocalFilePaths
+	if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
+		paths = append([]string{resp.LocalFilePath}, paths...)
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			log.Printf("[telegram-mgr] read local file %s error: %v", p, err)
+			continue
+		}
+		name := filepath.Base(p)
+		mediaType := mediaTypeFromFileName(name)
+		fileType := "document"
+		switch mediaType {
+		case "image":
+			fileType = "photo"
+		case "voice":
+			fileType = "voice"
+		case "audio":
+			fileType = "audio"
+		case "video":
+			fileType = "video"
+		}
+		if err := gw.SendMedia(context.Background(), telegram.OutgoingMedia{
+			ChatID:   chatID,
+			FileType: fileType,
+			FileData: base64.StdEncoding.EncodeToString(data),
+			FileName: name,
+			MimeType: guessMimeFromMedia(mediaType, name),
+		}); err != nil {
+			log.Printf("[telegram-mgr] SendMedia local file failed (to=%d file=%s): %v", chatID, p, err)
 		}
 	}
 }
@@ -494,6 +535,13 @@ func (m *telegramGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			FileData: reply.FileData,
 			FileName: reply.FileName,
 			MimeType: reply.MimeType,
+		})
+	case "voice":
+		_ = gw.SendMedia(context.Background(), telegram.OutgoingMedia{
+			ChatID:   chatID,
+			FileType: "voice",
+			FileData: reply.FileData,
+			FileName: reply.FileName,
 		})
 	}
 }
@@ -556,7 +604,7 @@ func (a *App) SetTelegramLocalMode(enabled bool) error {
 	}
 	// Switching to hub mode requires prior Hub registration.
 	if !enabled && cfg.RemoteMachineID == "" {
-		return fmt.Errorf("请先注册到 Hub（设置 Hub 地址并完成注册），再开启多机模式")
+		return fmt.Errorf("please register this machine to Hub before enabling multi-machine mode")
 	}
 	cfg.SetTelegramLocal(enabled)
 	if err := a.SaveConfig(cfg); err != nil {

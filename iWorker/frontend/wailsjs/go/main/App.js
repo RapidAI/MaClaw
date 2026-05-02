@@ -38,6 +38,10 @@ export function FetchGoalPushes(arg1) {
   return window['go']['main']['App']['FetchGoalPushes'](arg1);
 }
 
+export function FetchInstalledTools() {
+  return window['go']['main']['App']['FetchInstalledTools']();
+}
+
 export function FetchWorkerMemoryStats() {
   return window['go']['main']['App']['FetchWorkerMemoryStats']();
 }

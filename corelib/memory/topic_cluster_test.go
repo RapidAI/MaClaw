@@ -105,3 +105,22 @@ func TestTopicClusterer_EmptyInput(t *testing.T) {
 		t.Fatalf("expected 0 clusters for nil input, got %d", len(clusters))
 	}
 }
+
+func TestTopicClusterer_IndexesCanonicalEntityTokens(t *testing.T) {
+	tc := NewTopicClusterer()
+	entries := []Entry{
+		{ID: "e1", Content: "alpha one", Entities: []string{" Entity: Alpha Host "}, Status: StatusActive},
+		{ID: "e2", Content: "alpha two", Entities: []string{" entity:alpha host "}, Status: StatusActive},
+		{ID: "e3", Content: "alpha three", Entities: []string{" ENTITY: Alpha Host "}, Status: StatusActive},
+	}
+
+	clusters := tc.Cluster(entries)
+	for _, c := range clusters {
+		for _, tag := range c.Tags {
+			if tag == "alpha host" && len(c.EntryIDs) == 3 {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected dirty entity tokens to form alpha host cluster, got %+v", clusters)
+}

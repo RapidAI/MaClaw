@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // recallGatingThreshold is the minimum candidate count to trigger LLM gating.
@@ -17,12 +18,20 @@ const recallGatingThreshold = 15
 // Gating is only activated when the candidate count exceeds
 // recallGatingThreshold to avoid unnecessary LLM calls on small result sets.
 type RecallGating struct {
+	mu  sync.RWMutex
 	llm LLMChatCaller
 }
 
 // NewRecallGating creates a RecallGating instance.
 func NewRecallGating(llm LLMChatCaller) *RecallGating {
 	return &RecallGating{llm: llm}
+}
+
+// SetLLM rewires the LLM used by post-retrieval recall gating.
+func (rg *RecallGating) SetLLM(llm LLMChatCaller) {
+	rg.mu.Lock()
+	rg.llm = llm
+	rg.mu.Unlock()
 }
 
 // gatingDecision represents the LLM's judgment on a single candidate.
@@ -39,7 +48,10 @@ type gatingDecision struct {
 // If the LLM is not configured, returns an error, or the candidate count is
 // below the threshold, the original candidates are returned unchanged.
 func (rg *RecallGating) Filter(query string, candidates []recallScored) []recallScored {
-	if rg.llm == nil || !rg.llm.IsConfigured() {
+	rg.mu.RLock()
+	llm := rg.llm
+	rg.mu.RUnlock()
+	if llm == nil || !llm.IsConfigured() {
 		return candidates
 	}
 	if len(candidates) <= recallGatingThreshold {
@@ -70,7 +82,7 @@ Rules:
 - Return ONLY a JSON array: [{"id":"...","keep":true/false}]
 - Do NOT add any commentary outside the JSON`
 
-	resp, err := rg.llm.ChatCall([]map[string]string{
+	resp, err := llm.ChatCall([]map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": sb.String()},
 	})

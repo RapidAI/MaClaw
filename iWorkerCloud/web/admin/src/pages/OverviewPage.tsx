@@ -38,6 +38,9 @@ export function OverviewPage() {
     workload_completed_tasks: 0,
     workload_review_tasks: 0,
     workload_blocked_tasks: 0,
+    runtime_fallback_centers: 0,
+    runtime_non_blocking_issues: 0,
+    runtime_blocking_issues: 0,
   };
 
   const cloudStats = useMemo<CloudStat[]>(() => [
@@ -99,13 +102,28 @@ export function OverviewPage() {
       value: String((summary.workload_blocked_tasks ?? 0) + (summary.workload_review_tasks ?? 0)),
       hint: 'Aggregate work needing attention, without customer business payloads.',
     },
+    {
+      label: 'Local fallback',
+      value: String(summary.runtime_fallback_centers ?? 0),
+      hint: 'Centers continuing through local provider settings because Cloud compute sync is unavailable or empty.',
+    },
+    {
+      label: 'Non-blocking runtime',
+      value: String(summary.runtime_non_blocking_issues ?? 0),
+      hint: 'Runtime sync issues explicitly marked non-blocking for existing Center/iWorker execution.',
+    },
+    {
+      label: 'Blocking runtime',
+      value: String(summary.runtime_blocking_issues ?? 0),
+      hint: 'Platform runtime sync issues not marked as safe fallback and requiring operator attention.',
+    },
   ], [summary]);
 
   const pillars = useMemo<CloudPillar[]>(() => [
     {
       eyebrow: t('cloudOverview.computeEyebrow'),
       title: t('cloudOverview.computeTitle'),
-      tone: summary.probe_failures > 0 ? 'warn' : 'info',
+      tone: (summary.runtime_blocking_issues ?? 0) > 0 || summary.probe_failures > 0 ? 'warn' : (summary.runtime_fallback_centers ?? 0) > 0 ? 'info' : 'ok',
       summary: t('cloudOverview.computeSummary'),
       detail: t('cloudOverview.computeDetail'),
       stats: [t('cloudOverview.computePoint1'), t('cloudOverview.computePoint2'), t('cloudOverview.computePoint3')],
@@ -158,8 +176,8 @@ export function OverviewPage() {
             <span className="mini">Service control radar</span>
             <h3>Center service readiness</h3>
           </div>
-          <span className={`badge ${summary.probe_failures || summary.needs_setup || summary.unlicensed_centers ? 'warn' : 'ok'}`}>
-            {summary.probe_failures || summary.needs_setup || summary.unlicensed_centers ? 'Watch' : 'Ready'}
+          <span className={`badge ${summary.probe_failures || summary.needs_setup || summary.unlicensed_centers || summary.runtime_blocking_issues ? 'warn' : 'ok'}`}>
+            {summary.probe_failures || summary.needs_setup || summary.unlicensed_centers || summary.runtime_blocking_issues ? 'Watch' : 'Ready'}
           </span>
         </div>
         <p>Cloud should know which connected iWorkerCenters are commercially authorized, reachable, identity-verified, and ready for platform service coordination. It does not participate in customer company management, tenant administration, or enterprise operations.</p>

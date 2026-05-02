@@ -37,7 +37,7 @@ func main() {
 			x = tts.EncoderLayerForwardExported(x, hidden, T, &w.TextEnc.Layers[i], meloHP)
 		}
 
-		durs, tMel := tts.PiperSDPForward(x, hidden, T, &w.SDP, hp, 0.0)
+		durs, tMel := tts.PiperSDPForward(x, hidden, T, &w.SDP, hp, 0.0, g2p.PhonemeIDs)
 		fmt.Printf("\n%s (T=%d, tMel=%d):\n", text, T, tMel)
 		fmt.Printf("  PIDs: %v\n", g2p.PhonemeIDs)
 		fmt.Printf("  Durs: %v\n", durs)

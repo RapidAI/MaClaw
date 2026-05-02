@@ -67,6 +67,13 @@ func NewCompressor(store *Store, llm LLMChatCaller, emitter corelib.EventEmitter
 	}
 }
 
+// SetLLM rewires the LLM used by compression and semantic merge passes.
+func (mc *Compressor) SetLLM(llm LLMChatCaller) {
+	mc.mu.Lock()
+	mc.llm = llm
+	mc.mu.Unlock()
+}
+
 // SetGCThreshold sets the active entry count threshold that triggers GC.
 func (mc *Compressor) SetGCThreshold(n int) {
 	mc.gcThreshold = n
@@ -296,18 +303,14 @@ func (mc *Compressor) dedup() int {
 		}
 	}
 	mc.store.entries = kept
+	mc.store.rebuildDerivedIndexesLocked(true)
 	mc.store.dirty = true
 	mc.store.signalSave()
-	mc.store.bm25.rebuild(kept)
-	if mc.store.entityIndex != nil {
-		mc.store.entityIndex.Rebuild(kept)
-	}
 	return len(remove)
 }
 
 func isDuplicateLower(a, b Entry, ca, cb string) bool {
-	// 多租户隔离：不同用户的记忆不视为重复
-	// 空 OwnerID 表示共享记忆，可以与任何用户的记忆去重
+	// Different non-empty owners are isolated; shared memories can dedup with any owner.
 	if a.OwnerID != "" && b.OwnerID != "" && a.OwnerID != b.OwnerID {
 		return false
 	}
@@ -316,8 +319,8 @@ func isDuplicateLower(a, b Entry, ca, cb string) bool {
 		return true
 	}
 	// Use canonical category mapping so Claude-style categories dedup against
-	// their legacy equivalents (e.g. "project" ↔ "project_knowledge",
-	// "feedback" ↔ "instruction", "user" ↔ "user_fact").
+	// their legacy equivalents (e.g. "project" -> "project_knowledge",
+	// "feedback" -> "instruction", "user" -> "user_fact").
 	if MapToCanonical(a.Category) == MapToCanonical(b.Category) {
 		runeA, runeB := len([]rune(ca)), len([]rune(cb))
 		shorter := runeA
@@ -332,7 +335,6 @@ func isDuplicateLower(a, b Entry, ca, cb string) bool {
 	}
 	return false
 }
-
 func pickLoser(entries []Entry, i, j int) int {
 	ei, ej := entries[i], entries[j]
 	li := len([]rune(ei.Content))
@@ -547,13 +549,10 @@ Rules:
 			}
 		}
 		mc.store.entries = kept
+		mc.store.rebuildDerivedIndexesLocked(true)
 		mc.store.dirty = true
 		mc.store.mu.Unlock()
 		mc.store.signalSave()
-		mc.store.bm25.rebuild(kept)
-		if mc.store.entityIndex != nil {
-			mc.store.entityIndex.Rebuild(kept)
-		}
 	}
 
 	return removed, nil
@@ -795,13 +794,8 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 	newEntries = append(newEntries, protected...)
 	newEntries = append(newEntries, kept...)
 	mc.store.entries = newEntries
+	mc.store.rebuildDerivedIndexesLocked(false)
 	mc.store.dirty = true
-	mc.store.bm25.rebuild(newEntries)
-	mc.store.vecIndex.rebuild(newEntries)
-	mc.store.graph.rebuild(newEntries)
-	if mc.store.entityIndex != nil {
-		mc.store.entityIndex.Rebuild(newEntries)
-	}
 
 	mc.store.mu.Unlock()
 	mc.store.signalSave()
@@ -857,7 +851,7 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 			if len(revived) >= 10 {
 				break
 			}
-			// 多租户隔离：二次验证 revive 的记忆属于该用户
+			// Re-check owner isolation before reviving archived entries.
 			if filterOwner != "" && re.OwnerID != "" && re.OwnerID != filterOwner {
 				continue
 			}
@@ -874,9 +868,8 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 			mc.store.mu.Lock()
 			for _, r := range revived {
 				mc.store.entries = append(mc.store.entries, r)
-				mc.store.bm25.addEntry(r)
-				mc.store.vecIndex.add(r.ID, r.Embedding)
 			}
+			mc.store.rebuildDerivedIndexesLocked(true)
 			mc.store.dirty = true
 			mc.store.mu.Unlock()
 			mc.store.signalSave()
@@ -893,7 +886,7 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 		mc.emitter.Emit("memory:gc", result)
 	}
 
-	log.Printf("[memory_gc] archived=%d revived=%d active: %d→%d skipped_pinned=%d",
+	log.Printf("[memory_gc] archived=%d revived=%d active: %d->%d skipped_pinned=%d",
 		result.ArchivedCount, result.RevivedCount, result.ActiveBefore, result.ActiveAfter, result.SkippedPinned)
 
 	return result, nil
@@ -1052,12 +1045,9 @@ func (mc *Compressor) RestoreBackup(backupName string) error {
 	}
 	mc.store.mu.Lock()
 	mc.store.entries = restored
+	mc.store.rebuildDerivedIndexesLocked(false)
 	mc.store.dirty = false
 	mc.store.mu.Unlock()
-	mc.store.bm25.rebuild(restored)
-	if mc.store.entityIndex != nil {
-		mc.store.entityIndex.Rebuild(restored)
-	}
 	return nil
 }
 

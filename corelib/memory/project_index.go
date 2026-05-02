@@ -46,8 +46,8 @@ type ProjectRecord struct {
 
 	// seenIDs tracks entry IDs already counted to prevent double-counting
 	// when the same entry is re-indexed (e.g. after tag merge in dedup paths).
-	seenIDs       map[string]bool `json:"-"`
-	nameExplicit  bool            `json:"-"` // true if Name was set from Entry.Title (not content heuristic)
+	seenIDs      map[string]bool `json:"-"`
+	nameExplicit bool            `json:"-"` // true if Name was set from Entry.Title (not content heuristic)
 }
 
 // ProjectIndex maintains a lightweight in-memory index that maps
@@ -207,7 +207,7 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 		case !candidateIsExplicit && !rec.nameExplicit && isHeadingTitle(candidateName) && !isHeadingTitle(rec.Name):
 			// Among content-extracted names: heading beats first-line fallback.
 			better = true
-		// When both are explicit (or both are heuristic and same quality): keep first.
+			// When both are explicit (or both are heuristic and same quality): keep first.
 		}
 		if better {
 			rec.Name = candidateName

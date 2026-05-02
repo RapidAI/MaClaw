@@ -128,6 +128,13 @@ func (a *App) SetTTSEnabled(enabled bool) error {
 		if !info["exists"].(bool) {
 			go a.DownloadTTSModel()
 		}
+	} else {
+		ttsSpeakMu.Lock()
+		if a.ttsManager != nil {
+			a.ttsManager.Unload()
+			a.ttsManager = nil
+		}
+		ttsSpeakMu.Unlock()
 	}
 	return nil
 }
@@ -142,7 +149,7 @@ func (a *App) CheckTTSModel() map[string]interface{} {
 	zipPath, _ := ttsVoiceZipPath()
 	fi, err := os.Stat(modelPath)
 	if err != nil {
-		return map[string]interface{}{"exists": false, "size": 0, "voices_exists": kokoroVoicesReady(voiceDir), "voice_zip_exists": fileExistsLocal(zipPath)}
+		return map[string]interface{}{"exists": false, "size": 0, "voices_exists": kokoroVoicesReady(voiceDir), "voice_zip_exists": fileExistsLocal(zipPath), "voice_id": a.GetTTSVoiceID()}
 	}
 	voicesReady := kokoroVoicesReady(voiceDir)
 	return map[string]interface{}{"exists": voicesReady, "model_exists": true, "size": fi.Size(), "voices_exists": voicesReady, "voice_zip_exists": fileExistsLocal(zipPath), "path": modelPath, "voice_id": a.GetTTSVoiceID()}
@@ -251,8 +258,8 @@ func kokoroVoicesReady(voiceDir string) bool {
 	if voiceDir == "" {
 		return false
 	}
-	for _, name := range []string{"zm_yunxi.koro", "zm_yunyang.koro", "zf_xiaoxiao.koro", "zf_xiaoyi.koro"} {
-		if !fileExistsLocal(filepath.Join(voiceDir, name)) {
+	for _, voiceID := range tts.SupportedTTSVoiceIDs {
+		if !fileExistsLocal(filepath.Join(voiceDir, voiceID+".koro")) {
 			return false
 		}
 	}
@@ -312,6 +319,9 @@ func (a *App) emitTTSProgress(pct int, downloaded, total int64, errMsg string) {
 
 // initTTSManager creates the TTS manager if model exists.
 func (a *App) initTTSManager() {
+	if a.ttsManager != nil {
+		return
+	}
 	modelPath, err := ttsModelPath()
 	if err != nil || !fileExistsLocal(modelPath) {
 		return // model not downloaded yet
@@ -356,6 +366,48 @@ func (a *App) SpeakText(input string) {
 		return
 	}
 	go a.speakTextAsync(input)
+}
+
+// SpeakPlainText synthesizes a short sentence directly without task-summary wrapping.
+func (a *App) SpeakPlainText(input string) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return
+	}
+	go a.speakPlainTextAsync(input)
+}
+
+func (a *App) speakPlainTextAsync(input string) {
+	if !ttsSpeakMu.TryLock() {
+		return
+	}
+	defer ttsSpeakMu.Unlock()
+
+	cfg, err := a.LoadConfig()
+	if err != nil || !cfg.TTSEnabled {
+		return
+	}
+	if err := a.ensureTTSAssetsForUse(cfg.RemoteHubURL, false); err != nil {
+		fmt.Printf("[tts] on-demand asset preparation failed: %v\n", err)
+		return
+	}
+	if a.ttsManager == nil {
+		a.initTTSManager()
+		if a.ttsManager == nil {
+			fmt.Println("[tts] manager unavailable after asset preparation")
+			return
+		}
+	}
+
+	if len([]rune(input)) > 80 {
+		input = string([]rune(input)[:80])
+	}
+	wav, err := a.ttsManager.SynthesizeText(input)
+	if err != nil {
+		fmt.Printf("[tts] synthesize error: %v\n", err)
+		return
+	}
+	runtime.EventsEmit(a.ctx, "tts:audio", base64EncodeWAV(wav))
 }
 
 func (a *App) speakTextAsync(input string) {

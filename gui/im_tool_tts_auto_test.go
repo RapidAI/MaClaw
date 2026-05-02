@@ -2,30 +2,41 @@ package main
 
 import "testing"
 
-func TestWantsTTSPlaybackDetectsReadRequests(t *testing.T) {
-	cases := []string{
-		"读笑话给我听",
-		"把这段内容读给我听",
-		"这个新闻朗读一下",
-		"念给我听",
-		"read this to me",
-	}
-	for _, tc := range cases {
-		if !wantsTTSPlayback(tc) {
-			t.Fatalf("wantsTTSPlayback(%q) = false, want true", tc)
+func TestIsIMPlatformIncludesLocalGateways(t *testing.T) {
+	for _, platform := range []string{"weixin_local", "telegram_local", "qqbot_local", "lansenger_local"} {
+		if !isIMPlatform(platform) {
+			t.Fatalf("isIMPlatform(%q) = false, want true", platform)
 		}
 	}
 }
 
-func TestWantsTTSPlaybackHonorsNegation(t *testing.T) {
-	cases := []string{
-		"不要读出来，文字发我就行",
-		"别念了",
-		"不用朗读",
+func TestSelectTTSVoicePayloadIsPlatformAware(t *testing.T) {
+	ogg := []byte("ogg")
+	wav := []byte("wav")
+
+	data, name, mime := selectTTSVoicePayload("weixin_local", ogg, wav)
+	if string(data) != "wav" || name != "voice.wav" || mime != "audio/wav" {
+		t.Fatalf("weixin payload = %q %q %q, want wav voice.wav audio/wav", data, name, mime)
 	}
-	for _, tc := range cases {
-		if wantsTTSPlayback(tc) {
-			t.Fatalf("wantsTTSPlayback(%q) = true, want false", tc)
+
+	data, name, mime = selectTTSVoicePayload("telegram_local", ogg, wav)
+	if string(data) != "ogg" || name != "voice.ogg" || mime != "audio/ogg" {
+		t.Fatalf("telegram payload = %q %q %q, want ogg voice.ogg audio/ogg", data, name, mime)
+	}
+}
+
+func TestShouldEmitDesktopTTSPlaybackSkipsIMPlatforms(t *testing.T) {
+	for _, platform := range []string{"weixin", "weixin_local", "telegram_local", "qqbot_local", "lansenger_local", "scheduler", "agentnet"} {
+		if shouldEmitDesktopTTSPlayback(platform) {
+			t.Fatalf("shouldEmitDesktopTTSPlayback(%q) = true, want false", platform)
+		}
+	}
+}
+
+func TestShouldEmitDesktopTTSPlaybackAllowsDesktopContexts(t *testing.T) {
+	for _, platform := range []string{"", "desktop", "tui"} {
+		if !shouldEmitDesktopTTSPlayback(platform) {
+			t.Fatalf("shouldEmitDesktopTTSPlayback(%q) = false, want true", platform)
 		}
 	}
 }

@@ -446,6 +446,90 @@ describe('useAIAssistant property tests', () => {
         expect(contents).not.toContain('old answer');
     });
 
+    it('keeps visible history when backend resets context and excludes older turns from later context', async () => {
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify([
+            { id: 'old-user', role: 'user', content: 'old question', timestamp: 1 },
+            { id: 'old-assistant', role: 'assistant', content: 'old answer', timestamp: 2 },
+        ]));
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({ text: 'new answer', clear_ui: true, request_id: req.request_id }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({ text: 'follow answer', request_id: req.request_id }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('new task');
+        });
+
+        expect(messageContents(result.current.messages)).toEqual([
+            'old question',
+            'old answer',
+            'new task',
+            'new answer',
+        ]);
+        expect(localStorage.getItem(AI_ASSISTANT_HISTORY_STORAGE_KEY)).not.toBeNull();
+
+        await act(async () => {
+            await result.current.sendMessage('follow up');
+        });
+
+        const followRequest = parseSentRequest(1) as any;
+        expect(followRequest.recent_messages?.map((m: any) => m.content)).toEqual([
+            'new task',
+            'new answer',
+        ]);
+    });
+
+    it('clears visible history for explicit reset commands without reusing old context', async () => {
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify([
+            { id: 'old-user', role: 'user', content: 'old question', timestamp: 1 },
+            { id: 'old-assistant', role: 'assistant', content: 'old answer', timestamp: 2 },
+        ]));
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({ text: 'history cleared', clear_ui: true, request_id: req.request_id }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({ text: 'fresh answer', request_id: req.request_id }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('/clear');
+        });
+
+        expect(messageContents(result.current.messages)).toEqual(['history cleared']);
+        expect(localStorage.getItem(AI_ASSISTANT_HISTORY_STORAGE_KEY)).toBeNull();
+
+        await act(async () => {
+            await result.current.sendMessage('fresh start');
+        });
+
+        const freshRequest = parseSentRequest(1) as any;
+        expect(freshRequest.recent_messages?.map((m: any) => m.content) ?? []).toEqual([]);
+    });
+
+    it('ignores stale foreground responses after clearHistory resets the active round', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id?: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('will be cleared');
+        });
+        const req = parseSentRequest();
+
+        await act(async () => {
+            await result.current.clearHistory();
+        });
+        expect(result.current.messages).toEqual([]);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: 'stale error', fields: null, actions: null, request_id: req.request_id });
+            await pending.promise;
+        });
+
+        expect(messageContents(result.current.messages)).not.toContain('stale error');
+        expect(result.current.messages).toEqual([]);
+    });
     it('rerender-only message changes do not rewrite persisted history', async () => {
         const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
         const removeItemSpy = vi.spyOn(Storage.prototype, 'removeItem');

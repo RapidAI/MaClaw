@@ -582,6 +582,9 @@ const iWorkerRuntimeTone = (status?: string): 'ok' | 'info' | 'warn' => {
   }
 };
 
+const iWorkerRuntimeToolLabels = (item: IWorkerAgentInstance) => (item.capabilities || [])
+  .filter((capability) => capability.startsWith('skill:') || capability.startsWith('mcp:'));
+
 const cloudHeartbeatTone = (status?: string): 'ok' | 'info' | 'warn' => {
   switch (status) {
     case 'online':
@@ -594,6 +597,51 @@ const cloudHeartbeatTone = (status?: string): 'ok' | 'info' | 'warn' => {
     default:
       return 'info';
   }
+};
+
+const runtimeProviderModeLabel = (mode?: CenterStatus['runtime_provider_mode']) => {
+  switch (mode) {
+    case 'cloud_sync':
+      return 'Cloud-managed compute';
+    case 'local_self_managed':
+      return 'Center self-managed compute';
+    case 'local_settings_fallback':
+      return 'Local provider fallback';
+    default:
+      return 'Local settings';
+  }
+};
+
+const computeRuntimeTone = (status: CenterStatus | null): 'ok' | 'info' | 'warn' => {
+  if (!status) {
+    return 'info';
+  }
+  if (status.runtime_provider_mode === 'local_settings_fallback') {
+    return 'info';
+  }
+  if (status.compute_sync_status?.status === 'failure' && !status.compute_sync_status?.non_blocking) {
+    return 'warn';
+  }
+  if (status.compute_sync_status?.status === 'failure') {
+    return 'info';
+  }
+  return 'ok';
+};
+
+const computeContinuitySummary = (status: CenterStatus | null) => {
+  if (!status) {
+    return 'Waiting for the local Center status endpoint.';
+  }
+  if (status.runtime_provider_mode === 'cloud_sync') {
+    return 'Provider routing is currently synchronized from Cloud control plane.';
+  }
+  if (status.runtime_provider_mode === 'local_self_managed') {
+    return 'This Center is intentionally managing compute providers locally.';
+  }
+  if (status.runtime_provider_mode === 'local_settings_fallback') {
+    return 'Cloud provider sync is unavailable, so runtime requests continue through local settings.';
+  }
+  return 'Runtime requests use local Center settings until Cloud-managed compute is configured.';
 };
 
 const badgeClass = (status: string) => {
@@ -1972,6 +2020,13 @@ export function OverviewPage({
   const cloudHeartbeat = centerStatus?.cloud_heartbeat;
   const cloudTone = cloudHeartbeatTone(cloudHeartbeat?.status);
   const cloudStatusLabel = cloudHeartbeat?.status || (centerStatus ? 'not_configured' : 'unknown');
+  const computeTone = computeRuntimeTone(centerStatus);
+  const providerModeLabel = runtimeProviderModeLabel(centerStatus?.runtime_provider_mode);
+  const computeSummary = computeContinuitySummary(centerStatus);
+  const cloudControlState = cloudHeartbeat?.status === 'online'
+    ? 'Cloud control plane is connected for authorization, compute distribution, and entitlement sync.'
+    : 'Cloud control plane is not required for existing Center/iWorker business execution.';
+  const businessIsolationState = 'Business tasks, task titles, user collaboration, and detailed runtime state remain inside iWorkerCenter.';
   const iWorkerReadiness = centerStatus?.iworker_readiness;
   const iWorkerReadinessChecks = iWorkerReadiness?.checks || [];
   const iWorkerAuthMethods = iWorkerReadiness?.auth_methods || [];
@@ -1999,6 +2054,9 @@ export function OverviewPage({
     .filter((item) => item.work_status?.current_task)
     .sort((left, right) => (left.heartbeat_age_seconds || 0) - (right.heartbeat_age_seconds || 0))
     .slice(0, 4), [iWorkerInstances]);
+  const visibleIWorkerRuntime = useMemo(() => iWorkerInstances
+    .sort((left, right) => (left.heartbeat_age_seconds || 0) - (right.heartbeat_age_seconds || 0))
+    .slice(0, 6), [iWorkerInstances]);
   const readinessTargetFor = (name: string): CenterTab => {
     switch (name) {
       case 'tenant':
@@ -2559,6 +2617,24 @@ export function OverviewPage({
           <span className={badgeClass(cloudTone)}>Cloud heartbeat: {cloudStatusLabel}</span>
           {cloudHeartbeat?.center_id ? <span className="badge info">Center ID: {cloudHeartbeat.center_id}</span> : null}
         </div>
+        <div className="center-runtime-continuity-grid">
+          <article className="center-runtime-continuity-card">
+            <span className={badgeClass(computeTone)}>{providerModeLabel}</span>
+            <strong>Runtime continuity</strong>
+            <p>{computeSummary}</p>
+          </article>
+          <article className="center-runtime-continuity-card">
+            <span className={badgeClass(cloudTone)}>Cloud {cloudStatusLabel}</span>
+            <strong>Cloud coordination boundary</strong>
+            <p>{cloudControlState}</p>
+          </article>
+          <article className="center-runtime-continuity-card">
+            <span className="badge ok">Business isolated</span>
+            <strong>Center owns execution</strong>
+            <p>{businessIsolationState}</p>
+          </article>
+        </div>
+
         <div className="item-row">
           <strong>Center -&gt; Cloud connectivity</strong>
           <p>{cloudHeartbeat
@@ -2603,6 +2679,7 @@ export function OverviewPage({
               <span className={badgeClass((iWorkerRuntimeCounts.offline || iWorkerRuntimeCounts.error) ? 'warn' : 'ok')}>Online/busy/idle: {(iWorkerRuntimeCounts.online || 0) + (iWorkerRuntimeCounts.busy || 0) + (iWorkerRuntimeCounts.idle || 0)}</span>
               <span className={badgeClass(iWorkerRuntimeCounts.degraded ? 'info' : 'ok')}>Degraded: {iWorkerRuntimeCounts.degraded || 0}</span>
               <span className={badgeClass((iWorkerRuntimeCounts.offline || 0) > 0 ? 'warn' : 'ok')}>Offline: {iWorkerRuntimeCounts.offline || 0}</span>
+              <span className="badge info">Runtime tools loaded: {iWorkerInstances.reduce((sum, item) => sum + iWorkerRuntimeToolLabels(item).length, 0)}</span>
             </div>
             <div className="executive-action-row">
               <span className="badge info">Active tasks: {iWorkerWorkTotals.active}</span>
@@ -2610,6 +2687,23 @@ export function OverviewPage({
               <span className={badgeClass(iWorkerWorkTotals.review > 0 ? 'warn' : 'ok')}>Needs review: {iWorkerWorkTotals.review}</span>
               <span className={badgeClass(iWorkerWorkTotals.blocked > 0 ? 'warn' : 'ok')}>Blocked: {iWorkerWorkTotals.blocked}</span>
             </div>
+            {visibleIWorkerRuntime.length > 0 ? (
+              <div className="item-list">
+                {visibleIWorkerRuntime.map((item) => {
+                  const toolLabels = iWorkerRuntimeToolLabels(item);
+                  const toolSummary = toolLabels.length > 0 ? 'Loaded tools: ' + toolLabels.slice(0, 5).join(', ') : 'No Center-managed MCP/Skill reported yet.';
+                  return (
+                    <div key={item.instance_id} className="item-row">
+                      <strong>{item.worker_id} / {item.role}</strong>
+                      <span className={badgeClass(iWorkerRuntimeTone(item.effective_status || item.status))}>{item.effective_status || item.status}</span>
+                      <p>Heartbeat {item.heartbeat_age_seconds || 0}s ago{item.host_id ? ' on ' + item.host_id : ''}. {toolSummary}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p>No iWorker runtime heartbeat has been reported yet.</p>
+            )}
             {visibleIWorkerTasks.length > 0 ? (
               <div className="item-list">
                 {visibleIWorkerTasks.map((item) => (

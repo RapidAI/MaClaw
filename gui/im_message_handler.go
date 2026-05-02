@@ -1309,12 +1309,8 @@ func buildResumeSlotActions(slot *agent.UnfinishedTaskSlot) []IMResponseAction {
 	if slot == nil || strings.TrimSpace(slot.SlotID) == "" {
 		return nil
 	}
-	resumeLabel := "继续上次任务"
-	if title := strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary)); title != "" {
-		resumeLabel = "继续：" + truncateRunes(title, 20)
-	}
 	return []IMResponseAction{
-		{Label: resumeLabel, Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
+		{Label: "继续上次任务", Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
 		{Label: "执行新任务", Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "primary"},
 	}
 }

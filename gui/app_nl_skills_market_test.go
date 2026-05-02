@@ -567,6 +567,99 @@ func TestImportNLSkillZipPathImportsStandardOpenClawYamlPackage(t *testing.T) {
 	}
 }
 
+func TestImportNLSkillZipPathPreservesStructuredMetadataWithMarkdownSteps(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	zipPath := filepath.Join(t.TempDir(), "md-meta.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"md-meta/skill.yaml": "name: md-meta\ndescription: metadata plus markdown steps\nmode: api_workflow\nproduces_artifact: false\nrequired_env:\n  - API_KEY\nrequires:\n  python:\n    - requests\nparams:\n  - name: input\n    required: true\n",
+		"md-meta/skill.md":   "# md-meta\n\necho from markdown\n",
+	})
+
+	name, err := app.importNLSkillZipPath(zipPath)
+	if err != nil {
+		t.Fatalf("importNLSkillZipPath() error = %v", err)
+	}
+	if name != "md-meta" {
+		t.Fatalf("name = %q, want md-meta", name)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	var found *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].Name == "md-meta" {
+			found = &skills[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected imported skill, skills = %#v", skills)
+	}
+	if len(found.Steps) != 1 || found.Steps[0].Action == "" {
+		t.Fatalf("unexpected markdown-derived steps: %+v", found.Steps)
+	}
+	if found.Mode != "api_workflow" || found.ProducesArtifact {
+		t.Fatalf("structured metadata not preserved: mode=%q produces=%v", found.Mode, found.ProducesArtifact)
+	}
+	if len(found.RequiredEnv) != 1 || found.RequiredEnv[0] != "API_KEY" || len(found.RequiresPython) != 1 || found.RequiresPython[0] != "requests" {
+		t.Fatalf("runtime metadata not preserved: env=%+v python=%+v", found.RequiredEnv, found.RequiresPython)
+	}
+	if len(found.Params) != 1 || found.Params[0].Name != "input" || !found.Params[0].Required {
+		t.Fatalf("params metadata not preserved: %+v", found.Params)
+	}
+}
+
+func TestImportNLSkillZipPathPreservesMarkdownFrontmatterWhenStructuredMetadataIsSparse(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	zipPath := filepath.Join(t.TempDir(), "md-frontmatter.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"md-frontmatter/skill.yaml": "name: md-frontmatter\ndescription: sparse metadata\n",
+		"md-frontmatter/skill.md":   "---\nmode: api_workflow\nproduces_artifact: false\nrequires_gui: true\nparams:\n  - name: input\n    required: true\n---\n\n# md-frontmatter\n\necho from markdown\n",
+	})
+
+	name, err := app.importNLSkillZipPath(zipPath)
+	if err != nil {
+		t.Fatalf("importNLSkillZipPath() error = %v", err)
+	}
+	if name != "md-frontmatter" {
+		t.Fatalf("name = %q, want md-frontmatter", name)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	var found *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].Name == "md-frontmatter" {
+			found = &skills[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected imported skill, skills = %#v", skills)
+	}
+	if found.Mode != "api_workflow" || found.ProducesArtifact {
+		t.Fatalf("markdown frontmatter was overwritten: mode=%q produces=%v", found.Mode, found.ProducesArtifact)
+	}
+	if !found.RequiresGUI {
+		t.Fatalf("RequiresGUI = false, want markdown frontmatter true")
+	}
+	if len(found.Params) != 1 || found.Params[0].Name != "input" || !found.Params[0].Required {
+		t.Fatalf("Params = %+v, want markdown frontmatter param", found.Params)
+	}
+}
+
 func TestImportNLSkillZipPathImportsMultipleStandardSkillDirs(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -634,6 +727,34 @@ func TestImportNLSkillZipPathRejectsInvalidZipWithoutKnownSkillFormat(t *testing
 	}
 }
 
+func TestValidateSkillZipAcceptsUppercaseSkillMarkdownPackage(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "uppercase-md.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"upper-md/SKILL.md": "# upper-md\n\n```bash\necho uppercase\n```\n",
+	})
+
+	app := &App{}
+	if err := app.validateSkillZip(zipPath); err != nil {
+		t.Fatalf("validateSkillZip() error = %v", err)
+	}
+}
+
+func TestValidateSkillZipRejectsLegacyUppercaseSkillMarkdownPackage(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "legacy-md.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"legacy/SKILL.md":   "# legacy\n",
+		"legacy/_meta.json": `{"description":"legacy"}`,
+	})
+
+	app := &App{}
+	err := app.validateSkillZip(zipPath)
+	if err == nil {
+		t.Fatalf("expected validateSkillZip() error")
+	}
+	if !strings.Contains(err.Error(), "SKILL.md/_meta.json") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 func TestImportNLSkillZipPathRejectsLegacySkillPackage(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -655,6 +776,56 @@ func TestImportNLSkillZipPathRejectsLegacySkillPackage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SKILL.md/_meta.json") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImportNLSkillZipPathImportsUppercaseSkillMarkdownPackage(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	zipPath := filepath.Join(t.TempDir(), "uppercase-md.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"upper-md/SKILL.md": "# upper-md\n\n```bash\necho uppercase\n```\n",
+	})
+
+	name, err := app.importNLSkillZipPath(zipPath)
+	if err != nil {
+		t.Fatalf("importNLSkillZipPath() error = %v", err)
+	}
+	if name != "upper-md" {
+		t.Fatalf("name = %q, want upper-md", name)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	var found *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].Name == "upper-md" {
+			found = &skills[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected imported SKILL.md skill, skills = %#v", skills)
+	}
+	if len(found.Steps) != 1 || found.Steps[0].Action != "bash" {
+		t.Fatalf("unexpected steps: %+v", found.Steps)
+	}
+
+	tools := app.skillExecutor.AsRegisteredTools()
+	var body string
+	for _, rt := range tools {
+		if rt.Name == "upper-md" {
+			body = rt.Body
+			break
+		}
+	}
+	if !strings.Contains(body, "echo uppercase") {
+		t.Fatalf("registered tool body did not include SKILL.md content: %q", body)
 	}
 }
 
@@ -798,5 +969,24 @@ func TestInstallMixedSkillSkillMarketFailsOver(t *testing.T) {
 	}
 	if found.HubSkillID != "failover-skill" {
 		t.Fatalf("HubSkillID = %q, want failover-skill", found.HubSkillID)
+	}
+}
+
+func TestImportNLSkillZipPathRejectsJSONSkillPackage(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	zipPath := filepath.Join(t.TempDir(), "json-skill.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"json-skill/skill.json": `{"name":"json-skill","steps":[{"run":"echo imported"}]}`,
+	})
+
+	if _, err := app.importNLSkillZipPath(zipPath); err == nil {
+		t.Fatal("importNLSkillZipPath should reject retired skill.json packages")
 	}
 }

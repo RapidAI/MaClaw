@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -453,6 +456,56 @@ func (m *qqBotGatewayManager) sendAgentResponse(gw *qqbot.Gateway, openID string
 			FileName: resp.FileName,
 			MimeType: mimeType,
 		})
+	}
+
+	if resp.VoiceData != "" {
+		if err := gw.SendMedia(ctx, qqbot.OutgoingMedia{
+			OpenID:   openID,
+			FileType: 3, // voice
+			FileData: resp.VoiceData,
+			FileName: resp.VoiceFileName,
+			MimeType: resp.VoiceMimeType,
+		}); err != nil {
+			log.Printf("[qqbot-mgr] SendMedia voice failed (to=%s): %v", openID, err)
+		}
+	}
+
+	m.sendLocalFiles(gw, openID, resp)
+}
+
+func (m *qqBotGatewayManager) sendLocalFiles(gw *qqbot.Gateway, openID string, resp *IMAgentResponse) {
+	paths := resp.LocalFilePaths
+	if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
+		paths = append([]string{resp.LocalFilePath}, paths...)
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			log.Printf("[qqbot-mgr] read local file %s error: %v", p, err)
+			continue
+		}
+		name := filepath.Base(p)
+		mediaType := mediaTypeFromFileName(name)
+		fileType := 4
+		switch mediaType {
+		case "image":
+			fileType = 1
+		case "video":
+			fileType = 2
+		case "voice":
+			fileType = 3
+		case "audio":
+			mediaType = "file"
+		}
+		if err := gw.SendMedia(context.Background(), qqbot.OutgoingMedia{
+			OpenID:   openID,
+			FileType: fileType,
+			FileData: base64.StdEncoding.EncodeToString(data),
+			FileName: name,
+			MimeType: guessMimeFromMedia(mediaType, name),
+		}); err != nil {
+			log.Printf("[qqbot-mgr] SendMedia local file failed (to=%s file=%s): %v", openID, p, err)
+		}
 	}
 }
 

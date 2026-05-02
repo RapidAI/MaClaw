@@ -30,8 +30,8 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
   };
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#f0f2f5' }}>
-      <div className="card" style={{ width: 400, padding: 32 }}>
+    <div className="auth-shell">
+      <div className="auth-card">
         <div className="mini">iWorkerCloud</div>
         <h2>{t('login.title')}</h2>
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
@@ -41,7 +41,7 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
             <label>{captchaQ || '...'} <button type="button" onClick={refreshCaptcha} style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}>🔄</button></label>
             <input value={answer} onChange={e => setAnswer(e.target.value)} placeholder="Answer" />
           </div>
-          {error && <p style={{ color: '#c33', fontSize: 13, margin: 0 }}>{error}</p>}
+          {error && <p className="auth-error auth-error-tight">{error}</p>}
           <button type="submit" className="btn-primary">{t('login.submit')}</button>
         </form>
       </div>

@@ -64,7 +64,7 @@ func TestFetchNews_FailsOverAndPersistsHubCenterList(t *testing.T) {
 	if saved.RemoteHubCenterURL != backup.URL {
 		t.Fatalf("RemoteHubCenterURL = %q, want %q", saved.RemoteHubCenterURL, backup.URL)
 	}
-	if !containsString(saved.RemoteHubCenterURLs, backup.URL) || !containsString(saved.RemoteHubCenterURLs, "https://third.example") {
+	if !containsFailoverString(saved.RemoteHubCenterURLs, backup.URL) || !containsFailoverString(saved.RemoteHubCenterURLs, "https://third.example") {
 		t.Fatalf("RemoteHubCenterURLs = %#v", saved.RemoteHubCenterURLs)
 	}
 }
@@ -120,7 +120,7 @@ func TestSkillHubSearch_FailsOverAndPersistsHubCenterList(t *testing.T) {
 	if saved.RemoteHubCenterURL != backup.URL {
 		t.Fatalf("RemoteHubCenterURL = %q, want %q", saved.RemoteHubCenterURL, backup.URL)
 	}
-	if !containsString(saved.RemoteHubCenterURLs, "https://fourth.example") {
+	if !containsFailoverString(saved.RemoteHubCenterURLs, "https://fourth.example") {
 		t.Fatalf("RemoteHubCenterURLs = %#v", saved.RemoteHubCenterURLs)
 	}
 }
@@ -176,12 +176,12 @@ func TestGossipBrowsePosts_FailsOverAndPersistsHubCenterList(t *testing.T) {
 	if saved.RemoteHubCenterURL != backup.URL {
 		t.Fatalf("RemoteHubCenterURL = %q, want %q", saved.RemoteHubCenterURL, backup.URL)
 	}
-	if !containsString(saved.RemoteHubCenterURLs, "https://fifth.example") {
+	if !containsFailoverString(saved.RemoteHubCenterURLs, "https://fifth.example") {
 		t.Fatalf("RemoteHubCenterURLs = %#v", saved.RemoteHubCenterURLs)
 	}
 }
 
-func containsString(values []string, want string) bool {
+func containsFailoverString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
 			return true

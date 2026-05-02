@@ -98,7 +98,7 @@ func TestSendCenterHeartbeatUsesServiceIdentity(t *testing.T) {
 	defer srv.Close()
 
 	client := NewCloudClient(CloudConfig{BaseURL: srv.URL + "/"})
-	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", nil); err != nil {
+	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", nil, nil); err != nil {
 		t.Fatalf("SendCenterHeartbeat() error: %v", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestSendCenterHeartbeatIncludesOnlyCloudSafeIWorkerReadiness(t *testing.T) 
 
 	client := NewCloudClient(CloudConfig{BaseURL: srv.URL})
 	readiness := &CloudIWorkerReadiness{Ready: true, Status: "ready", AgentInstanceCount: 4, AgentRuntimeReady: true, GoalWatchReady: true, WorkloadSummary: &CloudWorkloadSummary{AgentInstanceCount: 4, ActiveCount: 2, CompletedCount: 8, ReviewCount: 1, BlockedCount: 0}}
-	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", readiness); err != nil {
+	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", readiness, nil); err != nil {
 		t.Fatalf("SendCenterHeartbeat() error: %v", err)
 	}
 	req := <-seen
@@ -140,10 +140,10 @@ func TestSendCenterHeartbeatIncludesOnlyCloudSafeIWorkerReadiness(t *testing.T) 
 
 func TestSendCenterHeartbeatRequiresCenterCredentials(t *testing.T) {
 	client := NewCloudClient(CloudConfig{BaseURL: "https://cloud.example.com"})
-	if err := client.SendCenterHeartbeat(context.Background(), "", "secret-abc", nil); err == nil || !strings.Contains(err.Error(), "center_id") {
+	if err := client.SendCenterHeartbeat(context.Background(), "", "secret-abc", nil, nil); err == nil || !strings.Contains(err.Error(), "center_id") {
 		t.Fatalf("empty center id error = %v, want center_id error", err)
 	}
-	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "", nil); err == nil || !strings.Contains(err.Error(), "center_secret") {
+	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "", nil, nil); err == nil || !strings.Contains(err.Error(), "center_secret") {
 		t.Fatalf("empty secret error = %v, want center_secret error", err)
 	}
 }
@@ -155,7 +155,7 @@ func TestSendCenterHeartbeatReturnsStatusError(t *testing.T) {
 	defer srv.Close()
 
 	client := NewCloudClient(CloudConfig{BaseURL: srv.URL})
-	err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", nil)
+	err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "status 401") {
 		t.Fatalf("error = %v, want status 401", err)
 	}

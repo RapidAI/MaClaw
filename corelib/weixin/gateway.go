@@ -21,6 +21,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,7 +102,7 @@ type imageItem struct {
 type voiceItem struct {
 	Media         *cdnMedia `json:"media,omitempty"`
 	EncodeType    int       `json:"encode_type,omitempty"`
-	BitsPerSample int      `json:"bits_per_sample,omitempty"`
+	BitsPerSample int       `json:"bits_per_sample,omitempty"`
 	SampleRate    int       `json:"sample_rate,omitempty"`
 	Playtime      int       `json:"playtime,omitempty"`
 	Text          string    `json:"text,omitempty"`
@@ -131,17 +132,17 @@ type refMessage struct {
 }
 
 type messageItem struct {
-	Type         int        `json:"type,omitempty"`
-	CreateTimeMs int64      `json:"create_time_ms,omitempty"`
-	UpdateTimeMs int64      `json:"update_time_ms,omitempty"`
-	IsCompleted  bool       `json:"is_completed,omitempty"`
-	MsgID        string     `json:"msg_id,omitempty"`
+	Type         int         `json:"type,omitempty"`
+	CreateTimeMs int64       `json:"create_time_ms,omitempty"`
+	UpdateTimeMs int64       `json:"update_time_ms,omitempty"`
+	IsCompleted  bool        `json:"is_completed,omitempty"`
+	MsgID        string      `json:"msg_id,omitempty"`
 	RefMsg       *refMessage `json:"ref_msg,omitempty"`
-	TextItem     *textItem  `json:"text_item,omitempty"`
-	ImageItem    *imageItem `json:"image_item,omitempty"`
-	VoiceItem    *voiceItem `json:"voice_item,omitempty"`
-	FileItem     *fileItem  `json:"file_item,omitempty"`
-	VideoItem    *videoItem `json:"video_item,omitempty"`
+	TextItem     *textItem   `json:"text_item,omitempty"`
+	ImageItem    *imageItem  `json:"image_item,omitempty"`
+	VoiceItem    *voiceItem  `json:"voice_item,omitempty"`
+	FileItem     *fileItem   `json:"file_item,omitempty"`
+	VideoItem    *videoItem  `json:"video_item,omitempty"`
 }
 
 // MessageItemType constants
@@ -177,20 +178,20 @@ const (
 )
 
 type weixinMessage struct {
-	Seq          int64          `json:"seq,omitempty"`
-	MessageID    int64          `json:"message_id,omitempty"`
-	FromUserID   string         `json:"from_user_id,omitempty"`
-	ToUserID     string         `json:"to_user_id,omitempty"`
-	ClientID     string         `json:"client_id,omitempty"`
-	CreateTimeMs int64          `json:"create_time_ms,omitempty"`
-	UpdateTimeMs int64          `json:"update_time_ms,omitempty"`
-	DeleteTimeMs int64          `json:"delete_time_ms,omitempty"`
-	SessionID    string         `json:"session_id,omitempty"`
-	GroupID      string         `json:"group_id,omitempty"`
-	MessageType  int            `json:"message_type,omitempty"`
-	MessageState int            `json:"message_state,omitempty"`
-	ItemList     []messageItem  `json:"item_list,omitempty"`
-	ContextToken string         `json:"context_token,omitempty"`
+	Seq          int64         `json:"seq,omitempty"`
+	MessageID    int64         `json:"message_id,omitempty"`
+	FromUserID   string        `json:"from_user_id,omitempty"`
+	ToUserID     string        `json:"to_user_id,omitempty"`
+	ClientID     string        `json:"client_id,omitempty"`
+	CreateTimeMs int64         `json:"create_time_ms,omitempty"`
+	UpdateTimeMs int64         `json:"update_time_ms,omitempty"`
+	DeleteTimeMs int64         `json:"delete_time_ms,omitempty"`
+	SessionID    string        `json:"session_id,omitempty"`
+	GroupID      string        `json:"group_id,omitempty"`
+	MessageType  int           `json:"message_type,omitempty"`
+	MessageState int           `json:"message_state,omitempty"`
+	ItemList     []messageItem `json:"item_list,omitempty"`
+	ContextToken string        `json:"context_token,omitempty"`
 }
 
 type getUpdatesReq struct {
@@ -199,11 +200,11 @@ type getUpdatesReq struct {
 }
 
 type getUpdatesResp struct {
-	Ret                 int              `json:"ret,omitempty"`
-	Errcode             int              `json:"errcode,omitempty"`
-	Errmsg              string           `json:"errmsg,omitempty"`
-	Msgs                []weixinMessage  `json:"msgs,omitempty"`
-	GetUpdatesBuf       string           `json:"get_updates_buf,omitempty"`
+	Ret                  int             `json:"ret,omitempty"`
+	Errcode              int             `json:"errcode,omitempty"`
+	Errmsg               string          `json:"errmsg,omitempty"`
+	Msgs                 []weixinMessage `json:"msgs,omitempty"`
+	GetUpdatesBuf        string          `json:"get_updates_buf,omitempty"`
 	LongpollingTimeoutMs int64           `json:"longpolling_timeout_ms,omitempty"`
 }
 
@@ -213,15 +214,15 @@ type sendMessageReq struct {
 }
 
 type getUploadURLReq struct {
-	Filekey        string   `json:"filekey,omitempty"`
-	MediaType      int      `json:"media_type,omitempty"`
-	ToUserID       string   `json:"to_user_id,omitempty"`
-	Rawsize        int      `json:"rawsize,omitempty"`
-	Rawfilemd5     string   `json:"rawfilemd5,omitempty"`
-	Filesize       int      `json:"filesize,omitempty"`
-	NoNeedThumb    bool     `json:"no_need_thumb,omitempty"`
-	AESKey         string   `json:"aeskey,omitempty"`
-	BaseInfo       baseInfo `json:"base_info"`
+	Filekey     string   `json:"filekey,omitempty"`
+	MediaType   int      `json:"media_type,omitempty"`
+	ToUserID    string   `json:"to_user_id,omitempty"`
+	Rawsize     int      `json:"rawsize,omitempty"`
+	Rawfilemd5  string   `json:"rawfilemd5,omitempty"`
+	Filesize    int      `json:"filesize,omitempty"`
+	NoNeedThumb bool     `json:"no_need_thumb,omitempty"`
+	AESKey      string   `json:"aeskey,omitempty"`
+	BaseInfo    baseInfo `json:"base_info"`
 }
 
 type getUploadURLResp struct {
@@ -275,7 +276,7 @@ type OutgoingMedia struct {
 	ContextToken string
 	FileData     []byte
 	FileName     string
-	MediaType    string // "image", "video", "file"
+	MediaType    string // "image", "video", "voice", "file"
 }
 
 // MessageHandler is called when a message arrives from WeChat.
@@ -349,11 +350,11 @@ func (c *contextTokenCache) Get(userID string) string {
 
 // Gateway manages the WeChat long-polling loop on the client side.
 type Gateway struct {
-	config       Config
-	handler      MessageHandler
-	onStatus     StatusCallback
-	client       *http.Client
-	ctxTokens    *contextTokenCache
+	config    Config
+	handler   MessageHandler
+	onStatus  StatusCallback
+	client    *http.Client
+	ctxTokens *contextTokenCache
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -972,8 +973,8 @@ func extractTextBody(items []messageItem) string {
 func (g *Gateway) extractMedia(ctx context.Context, items []messageItem) (mediaType string, data []byte, name string) {
 	// Single pass: collect first candidate per type, then try in priority order.
 	type candidate struct {
-		mtype string
-		param string // encrypt_query_param
+		mtype  string
+		param  string // encrypt_query_param
 		aesB64 string
 		name   string
 	}
@@ -1133,7 +1134,20 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		return fmt.Errorf("weixin: empty file data")
 	}
 
-	wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "media=%s size=%d name=%s", msg.MediaType, len(msg.FileData), msg.FileName)
+	uploadData := msg.FileData
+	var voiceMeta *voiceMetadata
+	if msg.MediaType == "voice" {
+		payload, meta, err := voiceUploadPayload(msg.FileName, msg.FileData)
+		if err != nil {
+			return err
+		}
+		uploadData = payload
+		if meta != nil {
+			voiceMeta = meta
+		}
+	}
+
+	wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "media=%s size=%d upload_size=%d name=%s", msg.MediaType, len(msg.FileData), len(uploadData), msg.FileName)
 
 	// Determine upload media type
 	uploadType := UploadMediaFile
@@ -1142,10 +1156,12 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		uploadType = UploadMediaImage
 	case "video":
 		uploadType = UploadMediaVideo
+	case "voice":
+		uploadType = UploadMediaVoice
 	}
 
 	// Upload to CDN
-	uploaded, err := g.uploadToCDN(ctx, msg.FileData, msg.ToUserID, uploadType)
+	uploaded, err := g.uploadToCDN(ctx, uploadData, msg.ToUserID, uploadType)
 	if err != nil {
 		return fmt.Errorf("weixin: CDN upload failed: %w", err)
 	}
@@ -1188,6 +1204,15 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 				VideoSize: uploaded.ciphertextSize,
 			},
 		}
+	case "voice":
+		item = messageItem{
+			Type: ItemTypeVoice,
+			VoiceItem: buildVoiceItem(&cdnMedia{
+				EncryptQueryParam: uploaded.downloadParam,
+				AESKey:            aesKeyForMedia,
+				EncryptType:       1,
+			}, msg.FileName, voiceMeta),
+		}
 	default: // file
 		item = messageItem{
 			Type: ItemTypeFile,
@@ -1219,6 +1244,142 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	body, _ := json.Marshal(req)
 	_, err = g.apiPost(ctx, "ilink/bot/sendmessage", body, apiTimeout)
 	return err
+}
+
+func buildVoiceItem(media *cdnMedia, fileName string, meta *voiceMetadata) *voiceItem {
+	encodeType := inferVoiceEncodeType(fileName)
+	if meta != nil {
+		encodeType = 1
+	}
+	item := &voiceItem{
+		Media:      media,
+		EncodeType: encodeType,
+	}
+	if meta != nil {
+		item.SampleRate = meta.sampleRate
+		item.BitsPerSample = meta.bitsPerSample
+		item.Playtime = meta.playtimeMS
+	}
+	return item
+}
+
+func inferVoiceEncodeType(fileName string) int {
+	switch strings.ToLower(filepath.Ext(fileName)) {
+	case ".wav", ".pcm":
+		return 1
+	case ".amr":
+		return 5
+	case ".silk", ".slk":
+		return 6
+	case ".mp3":
+		return 7
+	case ".ogg", ".opus":
+		return 8
+	default:
+		return 8
+	}
+}
+
+type voiceMetadata struct {
+	sampleRate    int
+	bitsPerSample int
+	playtimeMS    int
+	dataStart     int
+	dataSize      int
+}
+
+func estimateVoicePlaytimeMS(data []byte) int {
+	meta, ok := parseWAVVoiceMetadata(data)
+	if !ok {
+		return 0
+	}
+	return meta.playtimeMS
+}
+
+func wavVoiceMetadata(data []byte) (sampleRate, bitsPerSample, playtimeMS int, ok bool) {
+	meta, ok := parseWAVVoiceMetadata(data)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	return meta.sampleRate, meta.bitsPerSample, meta.playtimeMS, true
+}
+
+func wavVoicePayload(data []byte) ([]byte, voiceMetadata, bool) {
+	meta, ok := parseWAVVoiceMetadata(data)
+	if !ok {
+		return nil, voiceMetadata{}, false
+	}
+	return data[meta.dataStart : meta.dataStart+meta.dataSize], meta, true
+}
+
+func voiceUploadPayload(fileName string, data []byte) ([]byte, *voiceMetadata, error) {
+	switch strings.ToLower(filepath.Ext(fileName)) {
+	case ".wav":
+		payload, meta, ok := wavVoicePayload(data)
+		if !ok {
+			return nil, nil, fmt.Errorf("weixin: invalid PCM WAV voice payload")
+		}
+		return payload, &meta, nil
+	case ".pcm":
+		return nil, nil, fmt.Errorf("weixin: raw PCM voice payload requires WAV metadata")
+	default:
+		if payload, meta, ok := wavVoicePayload(data); ok {
+			return payload, &meta, nil
+		}
+		return data, nil, nil
+	}
+}
+
+func parseWAVVoiceMetadata(data []byte) (voiceMetadata, bool) {
+	if len(data) < 44 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
+		return voiceMetadata{}, false
+	}
+	var sr, byteRate uint32
+	var audioFormat, channels, bits uint16
+	meta := voiceMetadata{}
+	for off := 12; off+8 <= len(data); {
+		chunkID := string(data[off : off+4])
+		chunkSize := int(binary.LittleEndian.Uint32(data[off+4 : off+8]))
+		chunkStart := off + 8
+		chunkEnd := chunkStart + chunkSize
+		if chunkSize < 0 || chunkEnd > len(data) {
+			break
+		}
+		switch chunkID {
+		case "fmt ":
+			if chunkSize >= 16 {
+				audioFormat = binary.LittleEndian.Uint16(data[chunkStart : chunkStart+2])
+				channels = binary.LittleEndian.Uint16(data[chunkStart+2 : chunkStart+4])
+				sr = binary.LittleEndian.Uint32(data[chunkStart+4 : chunkStart+8])
+				byteRate = binary.LittleEndian.Uint32(data[chunkStart+8 : chunkStart+12])
+				bits = binary.LittleEndian.Uint16(data[chunkStart+14 : chunkStart+16])
+			}
+		case "data":
+			meta.dataStart = chunkStart
+			meta.dataSize = chunkSize
+		}
+		if sr > 0 && bits > 0 && meta.dataSize > 0 {
+			break
+		}
+		off = chunkEnd
+		if off%2 == 1 {
+			off++
+		}
+	}
+	if audioFormat != 1 || sr == 0 || bits == 0 || meta.dataSize == 0 || meta.dataStart == 0 {
+		return voiceMetadata{}, false
+	}
+	rate := uint64(byteRate)
+	if rate == 0 && channels > 0 {
+		rate = uint64(sr) * uint64(channels) * uint64(bits) / 8
+	}
+	if rate == 0 {
+		return voiceMetadata{}, false
+	}
+	meta.sampleRate = int(sr)
+	meta.bitsPerSample = int(bits)
+	meta.playtimeMS = int((uint64(meta.dataSize) * 1000) / rate)
+	return meta, true
 }
 
 // ---------------------------------------------------------------------------

@@ -380,3 +380,426 @@ label { display: block; font-size: 12px; font-weight: 800; color: var(--muted); 
     grid-template-columns: 1fr;
   }
 }
+
+/* HubCenter-aligned neutral admin theme */
+:root {
+  --bg: #f6f7f9;
+  --bg-2: #fafbfc;
+  --text: #59636f;
+  --muted: #98a1ab;
+  --line: #e5e8ef;
+  --primary: #ef6a7c;
+  --primary-strong: #e8566a;
+  --primary-soft: rgba(239, 106, 124, 0.12);
+  --ok: #1d9365;
+  --warn: #a67820;
+  --danger: #c44e4e;
+  --shadow-soft: 0 6px 18px rgba(35, 41, 55, 0.028);
+}
+
+html,
+body {
+  background: var(--bg);
+}
+
+body {
+  color: var(--text);
+  background: linear-gradient(180deg, #fafbfc 0%, #f6f7f9 100%);
+}
+
+.card,
+.metric,
+.item,
+.stage-card,
+.cloud-brief,
+.cloud-brief-note,
+.cloud-ops-card,
+.cloud-ops-metric,
+.cloud-pillar-card,
+.cloud-center-card,
+.cloud-posture-panel,
+.cloud-action-panel,
+.cloud-action-card,
+.cloud-integration-panel {
+  background: #fff;
+  border-color: var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow-soft);
+}
+
+.mini {
+  color: var(--muted);
+  background: #fff;
+  border: 1px solid #e6e8ef;
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.badge {
+  padding: 7px 12px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.ok { color: var(--ok); background: rgba(35, 162, 109, 0.11); }
+.warn { color: var(--warn); background: rgba(194, 139, 44, 0.12); }
+.danger { color: var(--danger); background: rgba(214, 93, 87, 0.12); }
+.info { color: #596170; background: #f3f5f8; }
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+  box-shadow: 0 8px 18px rgba(239, 106, 124, 0.14);
+}
+
+.btn-secondary,
+.btn-ghost,
+.cloud-action-button {
+  color: #68717d;
+  background: #fff;
+  border: 1px solid #dfe3eb;
+  box-shadow: none;
+  font-weight: 650;
+}
+
+input,
+select {
+  border-color: #dfe3eb;
+  color: #303541;
+  border-radius: 12px;
+}
+
+input:focus,
+select:focus {
+  border-color: #aab2c1;
+  box-shadow: 0 0 0 3px rgba(116, 123, 136, 0.12);
+}
+
+label,
+.metric label,
+.cloud-ops-metric label {
+  color: #9aa3ad;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 288px minmax(0, 1fr);
+  background: var(--bg);
+}
+
+.side {
+  position: relative;
+  padding: 18px 18px 20px;
+  background: #f2f3f7;
+  border-right: 1px solid #e4e7ee;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.side::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, #f7f8fb 0%, #eef0f5 100%);
+  pointer-events: none;
+}
+
+.side > * {
+  position: relative;
+  z-index: 1;
+}
+
+.brand {
+  padding: 8px 10px 14px;
+  border-bottom: 1px solid #e6e8ef;
+}
+
+.brand h1 {
+  color: #5b6470;
+  margin: 10px 0 4px;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.brand p,
+.nav small,
+.top-bar p,
+.item-meta,
+.hint,
+.metric span,
+.cloud-brief p,
+.cloud-brief-note span,
+.cloud-pillar-card p,
+.cloud-ops-card p,
+.cloud-ops-metric span,
+.cloud-posture-panel span,
+.cloud-action-card p {
+  color: var(--muted);
+}
+
+.nav {
+  gap: 8px;
+}
+
+.nav button {
+  position: relative;
+  min-height: 62px;
+  padding: 13px 14px 13px 18px;
+  color: #6c7581;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 14px;
+  box-shadow: none;
+  font-size: 15px;
+  font-weight: 650;
+  display: grid;
+  gap: 4px;
+}
+
+.nav button::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 12px;
+  bottom: 12px;
+  width: 4px;
+  border-radius: 999px;
+  background: var(--primary);
+  opacity: 0;
+  transform: scaleY(0.72);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.nav button:hover {
+  background: #fff;
+  border-color: #e1e5ed;
+}
+
+.nav button.active {
+  color: #5b6470;
+  background: #fff0f2;
+  border-color: #f3cfd5;
+  box-shadow: 0 8px 20px rgba(37, 42, 54, 0.05);
+}
+
+.nav button:hover::before,
+.nav button.active::before {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.nav small {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 500;
+}
+
+.side-note {
+  margin-top: auto;
+  padding: 16px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.main {
+  padding: 26px 34px 34px;
+  background: linear-gradient(180deg, #fafbfc 0%, #f6f7f9 100%);
+}
+
+.top-bar {
+  max-width: 1180px;
+  margin: 0 auto 16px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: var(--shadow-soft);
+}
+
+.top-bar h2 {
+  color: #5b6470;
+  font-size: 26px;
+  line-height: 1.12;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.metrics,
+.cloud-metrics,
+.cloud-pillar-grid,
+.cloud-market-grid,
+.cloud-center-stack,
+.cloud-overview-stack,
+.cloud-brief,
+.cloud-ops-card,
+.section-card,
+.card:not(.top-bar) {
+  max-width: 1180px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.metrics,
+.cloud-pillar-grid,
+.cloud-market-grid,
+.cloud-ops-grid,
+.cloud-action-panel,
+.cloud-integration-panel {
+  gap: 12px;
+}
+
+.metric {
+  padding: 16px 18px;
+}
+
+.metric strong,
+.item-title,
+.item strong,
+.cloud-brief h3,
+.cloud-brief-note strong,
+.cloud-ops-card h3,
+.cloud-ops-metric strong,
+.cloud-pillar-card h3,
+.cloud-pillar-card strong,
+.cloud-posture-panel strong,
+.cloud-action-card strong {
+  color: #5b6470;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.metric strong,
+.cloud-ops-metric strong {
+  font-size: 24px;
+}
+
+.head {
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e7eaf0;
+}
+
+.head h3 {
+  color: #5b6470;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.item {
+  padding: 16px 18px;
+  gap: 8px;
+}
+
+.hint,
+.cloud-pill-list span,
+.cloud-center-facts span {
+  background: #fbfcfd;
+  border-color: #e5e8ef;
+}
+
+.cloud-ops-card {
+  background: #fff;
+}
+
+.cloud-action-card span {
+  color: #596170;
+  background: #f3f5f8;
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .side {
+    border-right: 0;
+    border-bottom: 1px solid #e4e7ee;
+  }
+
+  .nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .main,
+  .side {
+    padding: 18px;
+  }
+
+  .nav,
+  .metrics,
+  .cloud-pillar-grid,
+  .cloud-market-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .top-bar,
+  .head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+.auth-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #f6f7f9;
+}
+
+.auth-card {
+  width: min(400px, 100%);
+  padding: 32px 28px;
+  background: #fff;
+  border: 1px solid #e5e8ef;
+  border-radius: 14px;
+  box-shadow: var(--shadow-soft);
+}
+
+.auth-card-narrow {
+  width: min(360px, 100%);
+}
+
+.auth-title {
+  margin: 0 0 4px;
+  color: #5b6470;
+  font-size: 20px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.auth-subtitle {
+  margin: 0 0 24px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.auth-description {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.auth-error {
+  color: var(--danger, #c44e4e);
+  font-size: 13px;
+}
+
+.auth-error-tight {
+  margin: 0;
+}

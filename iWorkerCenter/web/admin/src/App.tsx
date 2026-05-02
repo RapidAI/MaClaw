@@ -14,6 +14,7 @@ import { KnowledgePage } from './pages/KnowledgePage';
 import { LoginPage } from './pages/LoginPage';
 import { ModelRoutingPage } from './pages/ModelRoutingPage';
 import { ComputePowerPage } from './pages/ComputePowerPage';
+import { CloudRegistrationPage } from './pages/CloudRegistrationPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { PackagesPage } from './pages/PackagesPage';
 import { SecurityPage } from './pages/SecurityPage';
@@ -83,6 +84,7 @@ export default function App() {
       case 'employees': return <EmployeesPage />;
       case 'models': return <ModelRoutingPage />;
       case 'compute': return <ComputePowerPage />;
+      case 'cloud': return <CloudRegistrationPage />;
       case 'overview': return <OverviewPage navigationTarget={overviewTarget} onNavigationHandled={() => setOverviewTarget(null)} onNavigateToCommunications={handleNavigateToCommunications} onNavigateToTab={handleNavigateToTab} />;
       case 'communications': return <CommunicationsPage navigationTarget={communicationsTarget} onNavigationHandled={() => setCommunicationsTarget(null)} onNavigateToOverview={handleNavigateToOverview} />;
       case 'workflows': return <WorkflowsPage navigationTarget={workflowsTarget} onNavigationHandled={() => setWorkflowsTarget(null)} onNavigateToOverview={handleNavigateBackToOverview} onNavigateToTab={handleNavigateToTab} />;

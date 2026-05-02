@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -23,10 +24,10 @@ const (
 
 	// Claude-style four-type taxonomy (inspired by Claude Code memdir).
 	// These map to the original categories but provide a cleaner semantic model:
-	//   user     — user role, goals, knowledge (maps to user_fact)
-	//   feedback — corrections and confirmations on approach (maps to instruction)
-	//   project  — non-derivable project context, decisions, deadlines (maps to project_knowledge)
-	//   reference — pointers to external systems (maps to project_knowledge)
+	//   user      - user role, goals, knowledge (maps to user_fact)
+	//   feedback  - corrections and confirmations on approach (maps to instruction)
+	//   project   - non-derivable project context, decisions, deadlines (maps to project_knowledge)
+	//   reference - pointers to external systems (maps to project_knowledge)
 	CategoryUser      Category = "user"
 	CategoryFeedback  Category = "feedback"
 	CategoryProject   Category = "project"
@@ -80,9 +81,9 @@ const (
 type Status string
 
 const (
-	StatusActive     Status = ""           // default — participates in recall
+	StatusActive     Status = ""           // default - participates in recall
 	StatusSuperseded Status = "superseded" // replaced by a newer conflicting entry
-	StatusDormant    Status = "dormant"    // forgotten — below strength threshold
+	StatusDormant    Status = "dormant"    // forgotten - below strength threshold
 )
 
 // InferScope returns the default scope for a given category.
@@ -121,12 +122,22 @@ func (c Category) Tier() MemoryTier {
 type LinkType string
 
 const (
-	LinkRelated     LinkType = ""             // default — generic relatedness
+	LinkRelated     LinkType = ""             // default - generic relatedness
 	LinkReferences  LinkType = "references"   // A references B
 	LinkSupersedes  LinkType = "supersedes"   // A supersedes B
 	LinkDerivedFrom LinkType = "derived_from" // A was derived from B
 	LinkConflicts   LinkType = "conflicts"    // A conflicts with B
 )
+
+// RelatedEdge is the persistent representation of a memory graph edge.
+// RelatedIDs is kept for backward compatibility and quick legacy inspection;
+// RelatedEdges preserves the relationship semantics needed for graph-aware recall.
+type RelatedEdge struct {
+	ID        string    `json:"id"`
+	Strength  float64   `json:"strength,omitempty"`
+	LinkType  LinkType  `json:"link_type,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
 
 // VersionSnapshot records a previous version of an entry's content.
 type VersionSnapshot struct {
@@ -181,9 +192,9 @@ func (ti TimeInterval) Overlaps(other TimeInterval) bool {
 type QueryComplexity int
 
 const (
-	ComplexitySimple  QueryComplexity = iota // factual lookup → L1-L3
-	ComplexityHybrid                         // moderate reasoning → L1-L4
-	ComplexityComplex                        // deep analysis → L1-L5
+	ComplexitySimple  QueryComplexity = iota // factual lookup -> L1-L3
+	ComplexityHybrid                         // moderate reasoning -> L1-L4
+	ComplexityComplex                        // deep analysis -> L1-L5
 )
 
 func (c QueryComplexity) String() string {
@@ -223,8 +234,8 @@ type ConsolidationResult struct {
 
 // Entry represents a single memory record.
 type Entry struct {
-	ID          string    `json:"id"`
-	Content     string    `json:"content"`
+	ID      string `json:"id"`
+	Content string `json:"content"`
 	// Title is a short human-readable label for this entry, set by the writer
 	// at creation time. Used by ProjectIndex for task list display names.
 	// When empty, ProjectIndex falls back to extracting a title from Content.
@@ -237,7 +248,8 @@ type Entry struct {
 	// --- F1: Vector embedding ---
 	Embedding []float32 `json:"embedding,omitempty"`
 	// --- F3: Memory graph ---
-	RelatedIDs []string `json:"related_ids,omitempty"`
+	RelatedIDs   []string      `json:"related_ids,omitempty"`
+	RelatedEdges []RelatedEdge `json:"related_edges,omitempty"`
 	// --- F5: Forgetting curve ---
 	Strength float64 `json:"strength,omitempty"`
 	// --- F6: Conflict detection ---
@@ -278,7 +290,7 @@ type Entry struct {
 	Entities []string `json:"entities,omitempty"`
 	// --- Multi-tenant ownership (maclawsrv only) ---
 	// OwnerID identifies the user who owns this memory entry.
-	// Empty string means "shared" — visible to all users.
+	// Empty string means "shared" - visible to all users.
 	// In GUI/TUI (single-user): always empty, all memories belong to the same user.
 	// In maclawsrv (multi-tenant): set to the IM user ID (e.g. feishu_ou_xxx).
 	OwnerID string `json:"owner_id,omitempty"`
@@ -378,7 +390,7 @@ func EstimateTextTokens(text string) int {
 // ---------------------------------------------------------------------------
 
 // MemoryOperation represents the action to take when integrating a new fact
-// into the memory store. Inspired by Mem0's extraction→update pipeline.
+// into the memory store. Inspired by Mem0's extraction/update pipeline.
 type MemoryOperation string
 
 const (
@@ -405,11 +417,11 @@ type OnlineExtractionResult struct {
 // ExtractedFact represents a single fact extracted from conversation by the
 // online extraction pipeline, with optional temporal and entity annotations.
 type ExtractedFact struct {
-	Content      string          `json:"content"`
-	Category     string          `json:"category"`            // "user_fact", "project_knowledge", "preference", "instruction"
-	RawEntities  json.RawMessage `json:"entities,omitempty"`  // tolerates flat ["a","b"] and nested [["a","b"]]
-	ValidAt      string          `json:"valid_at,omitempty"`  // ISO 8601 datetime or empty
-	InvalidAt    string          `json:"invalid_at,omitempty"` // ISO 8601 datetime or empty
+	Content     string          `json:"content"`
+	Category    string          `json:"category"`             // "user_fact", "project_knowledge", "preference", "instruction"
+	RawEntities json.RawMessage `json:"entities,omitempty"`   // tolerates flat ["a","b"] and nested [["a","b"]]
+	ValidAt     string          `json:"valid_at,omitempty"`   // ISO 8601 datetime or empty
+	InvalidAt   string          `json:"invalid_at,omitempty"` // ISO 8601 datetime or empty
 }
 
 // ParsedEntities returns the entities as a flat []string, tolerating three
@@ -424,7 +436,7 @@ func (f ExtractedFact) ParsedEntities() []string {
 	// Try flat array first (most common).
 	var flat []string
 	if err := json.Unmarshal(f.RawEntities, &flat); err == nil {
-		return flat
+		return canonicalizeExtractedEntities(flat)
 	}
 	// Try nested array: LLM wraps each triple in its own array.
 	var nested [][]string
@@ -433,20 +445,90 @@ func (f ExtractedFact) ParsedEntities() []string {
 		for _, arr := range nested {
 			result = append(result, arr...)
 		}
-		return result
+		return canonicalizeExtractedEntities(result)
 	}
 	// Try single string.
 	var single string
 	if err := json.Unmarshal(f.RawEntities, &single); err == nil && single != "" {
-		return []string{single}
+		return canonicalizeExtractedEntities([]string{single})
 	}
 	return nil
 }
 
+func canonicalizeExtractedEntities(raw []string) []string {
+	if len(raw) == 0 {
+		return raw
+	}
+	out := make([]string, 0, len(raw))
+	for i := 0; i < len(raw); i += 3 {
+		end := i + 3
+		if end > len(raw) {
+			end = len(raw)
+		}
+		chunk := canonicalizeExtractedEntityChunk(raw[i:end])
+		out = append(out, chunk...)
+	}
+	return out
+}
+
+func canonicalizeExtractedEntityChunk(raw []string) []string {
+	if len(raw) == 3 {
+		subj, subjOK := canonicalEntityToken(raw[0])
+		rel, reverse, relOK := canonicalRelationToken(raw[1])
+		obj, objOK := canonicalEntityToken(raw[2])
+		if subjOK && relOK && objOK {
+			if reverse {
+				subj, obj = obj, subj
+			}
+			return []string{subj, rel, obj}
+		}
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if ent, ok := canonicalEntityToken(item); ok {
+			out = append(out, ent)
+			continue
+		}
+		if rel, _, ok := canonicalRelationToken(item); ok {
+			out = append(out, rel)
+			continue
+		}
+		trimmed := strings.TrimSpace(item)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func canonicalEntityToken(item string) (string, bool) {
+	trimmed := strings.TrimSpace(item)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "entity:") {
+		return "", false
+	}
+	name := strings.TrimSpace(trimmed[len("entity:"):])
+	if name == "" {
+		return "", false
+	}
+	return "entity:" + name, true
+}
+
+func canonicalRelationToken(item string) (string, bool, bool) {
+	trimmed := strings.TrimSpace(item)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "relation:") {
+		return "", false, false
+	}
+	rel, reverse := normalizeRelationNameWithDirection(strings.TrimSpace(trimmed[len("relation:"):]))
+	if rel == "" {
+		return "", false, false
+	}
+	return "relation:" + rel, reverse, true
+}
+
 // ClassifiedOperation is the LLM's decision on how to integrate a new fact.
 type ClassifiedOperation struct {
-	Operation    MemoryOperation `json:"operation"`     // add, update, delete, noop
-	TargetID     string          `json:"target_id"`     // entry ID for update/delete
-	MergedText   string          `json:"merged_text"`   // merged content for update
-	Reason       string          `json:"reason"`        // brief explanation
+	Operation  MemoryOperation `json:"operation"`   // add, update, delete, noop
+	TargetID   string          `json:"target_id"`   // entry ID for update/delete
+	MergedText string          `json:"merged_text"` // merged content for update
+	Reason     string          `json:"reason"`      // brief explanation
 }

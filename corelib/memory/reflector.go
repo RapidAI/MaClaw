@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,8 +19,9 @@ type ReflectResult struct {
 // insights (preferences, habits, decision patterns) stored as semantic
 // memories. Inspired by the Generative Agents "reflection" mechanism.
 type Reflector struct {
-	store   *Store
-	llm     LLMChatCaller
+	mu         sync.RWMutex
+	store      *Store
+	llm        LLMChatCaller
 	minEntries int
 	lastRun    time.Time
 }
@@ -29,12 +31,22 @@ func NewReflector(store *Store, llm LLMChatCaller) *Reflector {
 	return &Reflector{store: store, llm: llm, minEntries: 50}
 }
 
+// SetLLM rewires the LLM used by reflection without rebuilding the pipeline.
+func (r *Reflector) SetLLM(llm LLMChatCaller) {
+	r.mu.Lock()
+	r.llm = llm
+	r.mu.Unlock()
+}
+
 // Reflect runs one reflection cycle. It skips if:
 //   - fewer than minEntries total entries
 //   - less than 24h since last reflection
 //   - LLM is not configured
 func (r *Reflector) Reflect(ctx context.Context) (*ReflectResult, error) {
-	if r.llm == nil || !r.llm.IsConfigured() {
+	r.mu.RLock()
+	llm := r.llm
+	r.mu.RUnlock()
+	if llm == nil || !llm.IsConfigured() {
 		return &ReflectResult{}, nil
 	}
 
@@ -103,7 +115,7 @@ Rules:
 	default:
 	}
 
-	resp, err := r.llm.ChatCall(messages)
+	resp, err := llm.ChatCall(messages)
 	if err != nil {
 		return &ReflectResult{Error: err.Error()}, nil
 	}
