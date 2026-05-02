@@ -252,6 +252,109 @@ export namespace main {
 	    }
 	}
 
+	export class CenterRuntimeSkillEntry {
+	    name: string;
+	    description: string;
+	    triggers: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new CenterRuntimeSkillEntry(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.triggers = source["triggers"];
+	    }
+	}
+
+	export class CenterRuntimeCapability {
+	    capability_id: string;
+	    name: string;
+	    source: string;
+	    version: string;
+	    risk_level: string;
+	    entry: CenterRuntimeSkillEntry;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterRuntimeCapability(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.capability_id = source["capability_id"];
+	        this.name = source["name"];
+	        this.source = source["source"];
+	        this.version = source["version"];
+	        this.risk_level = source["risk_level"];
+	        this.entry = source["entry"] ? new CenterRuntimeSkillEntry(source["entry"]) : undefined as any;
+	    }
+	}
+
+	export class CenterMCPServer {
+	    id: string;
+	    name: string;
+	    description: string;
+	    server_type: string;
+	    endpoint: string;
+	    command?: string;
+	    args: string[];
+	    env_keys: string[];
+	    department_id: string;
+	    risk_level: string;
+	    status: string;
+	    installed_at: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterMCPServer(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.server_type = source["server_type"];
+	        this.endpoint = source["endpoint"];
+	        this.command = source["command"];
+	        this.args = source["args"];
+	        this.env_keys = source["env_keys"];
+	        this.department_id = source["department_id"];
+	        this.risk_level = source["risk_level"];
+	        this.status = source["status"];
+	        this.installed_at = source["installed_at"];
+	    }
+	}
+
+	export class CenterInstalledTools {
+	    skills: CenterRuntimeCapability[];
+	    mcp_servers: CenterMCPServer[];
+
+	    static createFrom(source: any = {}) {
+	        return new CenterInstalledTools(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.skills = this.convertValues(source["skills"], CenterRuntimeCapability);
+	        this.mcp_servers = this.convertValues(source["mcp_servers"], CenterMCPServer);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) { return a; }
+		    if (a.slice && a.map) { return (a as any[]).map(elem => this.convertValues(elem, classs)); }
+		    if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) { a[key] = new classs(a[key]); }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
 	export class CenterAgentInstance {
 	    tenant_id: string;
 	    worker_id: string;

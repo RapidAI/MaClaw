@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AckGoalPush, ApplyCenterEnrollment, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, DiscoverCenterEnrollment, FetchAgentInstances, FetchGoalPushes, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
+import { AckGoalPush, ApplyCenterEnrollment, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, DiscoverCenterEnrollment, FetchAgentInstances, FetchGoalPushes, FetchInstalledTools, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { colleagues } from './mock/colleagues';
 import { SideNav } from './components/layout/SideNav';
@@ -9,7 +9,7 @@ import { NewTaskPage } from './pages/NewTaskPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskHistoryPage } from './pages/TaskHistoryPage';
 import { recentTasks as mockRecentTasks } from './mock/tasks';
-import type { CenterAgentInstance, CenterEnrollmentDiscovery, CenterGoalPush, CenterHealthStatus, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
+import type { CenterAgentInstance, CenterEnrollmentDiscovery, CenterGoalPush, CenterHealthStatus, CenterInstalledTools, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
 
 const pageMeta: Record<DiWorkerTab, { title: string; subtitle: string }> = {
   home: { title: '新建任务', subtitle: '输入任务内容，快速开始处理。' },
@@ -430,6 +430,63 @@ const formatTimestamp = () => {
 
 const settingsSnapshot = (item: DiWorkerSettings) => JSON.stringify(item);
 
+const emptyInstalledTools: CenterInstalledTools = { skills: [], mcpServers: [] };
+
+type WailsInstalledTools = {
+  skills?: Array<{
+    capability_id: string;
+    name: string;
+    source: string;
+    version: string;
+    risk_level: string;
+    entry?: { name?: string; description?: string; triggers?: string[] };
+  }>;
+  mcp_servers?: Array<{
+    id: string;
+    name: string;
+    description: string;
+    server_type: string;
+    endpoint: string;
+    command?: string;
+    args?: string[];
+    env_keys?: string[];
+    department_id: string;
+    risk_level: string;
+    status: string;
+    installed_at: string;
+  }>;
+};
+
+const fromWailsInstalledTools = (item: WailsInstalledTools | null | undefined): CenterInstalledTools => ({
+  skills: (item?.skills || []).map((skill) => ({
+    capabilityId: skill.capability_id,
+    name: skill.name || skill.entry?.name || skill.capability_id,
+    source: skill.source || 'iWorkerCenter',
+    version: skill.version || '',
+    riskLevel: skill.risk_level || 'low',
+    entry: {
+      name: skill.entry?.name || skill.name || '',
+      description: skill.entry?.description || '',
+      triggers: skill.entry?.triggers || [],
+    },
+  })),
+  mcpServers: (item?.mcp_servers || []).map((server) => ({
+    id: server.id,
+    name: server.name,
+    description: server.description,
+    serverType: server.server_type,
+    endpoint: server.endpoint,
+    command: server.command,
+    args: server.args || [],
+    envKeys: server.env_keys || [],
+    departmentId: server.department_id || 'all',
+    riskLevel: server.risk_level || 'medium',
+    status: server.status || 'enabled',
+    installedAt: server.installed_at || '',
+  })),
+});
+
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<DiWorkerTab>('home');
   const [selectedTask, setSelectedTask] = useState('');
@@ -480,6 +537,9 @@ export default function App() {
   const [agentInstancesLoading, setAgentInstancesLoading] = useState(false);
   const [agentInstancesError, setAgentInstancesError] = useState('');
   const [goalWatchAutoStatus, setGoalWatchAutoStatus] = useState<GoalWatchAutoHandleStatus | null>(null);
+  const [installedTools, setInstalledTools] = useState<CenterInstalledTools>(emptyInstalledTools);
+  const [installedToolsLoading, setInstalledToolsLoading] = useState(false);
+  const [installedToolsError, setInstalledToolsError] = useState('');
 
   useEffect(() => {
     if (!hasWailsBridge()) {
@@ -510,6 +570,32 @@ export default function App() {
         setSettingsLoading(false);
       });
   }, []);
+
+  const refreshInstalledTools = async () => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setInstalledTools(emptyInstalledTools);
+      setInstalledToolsError('');
+      return;
+    }
+    setInstalledToolsLoading(true);
+    setInstalledToolsError('');
+    try {
+      const tools = await FetchInstalledTools();
+      setInstalledTools(fromWailsInstalledTools(tools as unknown as WailsInstalledTools));
+    } catch (error) {
+      setInstalledToolsError(error instanceof Error ? error.message : 'Failed to fetch installed tools.');
+    } finally {
+      setInstalledToolsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setInstalledTools(emptyInstalledTools);
+      return;
+    }
+    void refreshInstalledTools();
+  }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.departmentId, settings.center.baseUrl]);
 
   const refreshGoalWatchAutoStatus = async () => {
     if (!hasWailsBridge()) {
@@ -562,6 +648,7 @@ export default function App() {
     const timer = window.setInterval(() => {
       void refreshAgentInstances();
       void refreshGoalWatchAutoStatus();
+      void refreshInstalledTools();
     }, 30000);
     return () => window.clearInterval(timer);
   }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.baseUrl, settings.center.goalWatchAutoHandleEnabled, settings.center.goalWatchIntervalSec, settings.center.goalWatchMaxDurationSec]);
@@ -1149,6 +1236,9 @@ export default function App() {
           goalPushError={goalPushError}
           goalPushAckingId={goalPushAckingId}
           goalWatchAutoStatus={goalWatchAutoStatus}
+          installedTools={installedTools}
+          installedToolsLoading={installedToolsLoading}
+          installedToolsError={installedToolsError}
           submitting={submitting}
           onRefreshGoalPushes={refreshGoalPushes}
           onRefreshMemoryStats={handleRefreshWorkerMemoryStats}
