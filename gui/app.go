@@ -4762,6 +4762,18 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 // ApiKeys, and post-save side effects (refreshWorkstationMode, etc.) because
 // those are only relevant when the corresponding fields change. Callers that
 // modify model/API-key/workspace fields should use SaveConfig instead.
+func (a *App) SetDefaultLaunchMode(mode string) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "local" && mode != "remote" {
+		return fmt.Errorf("invalid default launch mode: %s", mode)
+	}
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.DefaultLaunchMode = mode
+		if mode == "remote" {
+			cfg.RemoteEnabled = true
+		}
+	})
+}
 func (a *App) PatchConfig(patchFn func(cfg *corelib.AppConfig)) error {
 	a.configMu.Lock()
 	cfg, err := a.loadConfigLocked()

@@ -143,14 +143,10 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	// Ensure stable client_id.
 	if enrollCfg.ClientID == "" {
 		enrollCfg.ClientID = remote.GenerateClientID()
-		// Persist client_id immediately — reload config to avoid overwriting
-		// concurrent changes (same pattern as #11 CodeGen SSO fix).
-		cidCfg, cidErr := a.LoadConfig()
-		if cidErr != nil {
-			cidCfg = cfg
-		}
-		cidCfg.RemoteClientID = enrollCfg.ClientID
-		if err := a.SaveConfig(cidCfg); err != nil {
+		// Persist only client_id so concurrent settings edits are not overwritten.
+		if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+			cfg.RemoteClientID = enrollCfg.ClientID
+		}); err != nil {
 			return RemoteActivationResult{}, err
 		}
 	}
@@ -175,7 +171,6 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		cfg.RemoteMachineToken = enrollResult.MachineToken
 		cfg.RemoteHubURL = enrollResult.HubURL
 		cfg.RemoteEnabled = true
-		cfg.DefaultLaunchMode = "remote"
 		if enrollResult.ViewerToken != "" {
 			cfg.RemoteViewerToken = enrollResult.ViewerToken
 		}

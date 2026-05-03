@@ -1074,6 +1074,10 @@ jobs:
 
           token = os.environ["GITEE_TOKEN"]
           print(f"GITEE_TOKEN length={len(token)} sha256_prefix={hashlib.sha256(token.encode()).hexdigest()[:12]}")
+          user_url = "https://gitee.com/api/v5/user?" + urllib.parse.urlencode({"access_token": token})
+          with urllib.request.urlopen(user_url, timeout=30) as resp:
+              user = json.loads(resp.read().decode("utf-8"))
+          print(f"Verified Gitee token user: {user.get('login') or user.get('name') or user.get('id')}")
           url = "https://gitee.com/api/v5/repos/znsoft/maclaw?" + urllib.parse.urlencode({"access_token": token})
           try:
               with urllib.request.urlopen(url, timeout=30) as resp:
@@ -1092,13 +1096,51 @@ jobs:
             echo "GITEE_TOKEN secret is required for Gitee sync" >&2
             exit 1
           fi
+          python3 - <<'PY'
+          import hashlib
+          import os
+
+          token = os.environ["GITEE_TOKEN"]
+          print(f"Push step GITEE_TOKEN length={len(token)} sha256_prefix={hashlib.sha256(token.encode()).hexdigest()[:12]}")
+          PY
           tag="${{ github.ref_name }}"
-          git remote add gitee "https://znsoft:${GITEE_TOKEN}@gitee.com/znsoft/maclaw.git"
+          gitee_login="$(python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ["GITEE_TOKEN"]
+          url = "https://gitee.com/api/v5/user?" + urllib.parse.urlencode({"access_token": token})
+          with urllib.request.urlopen(url, timeout=30) as resp:
+              user = json.loads(resp.read().decode("utf-8"))
+          print(user.get("login") or user.get("name") or "")
+          PY
+          )"
+          if [ -z "$gitee_login" ]; then
+            echo "Unable to resolve Gitee token username" >&2
+            exit 1
+          fi
+          export GITEE_LOGIN="$gitee_login"
+          gitee_login_encoded="$(python3 - <<'PY'
+          import os
+          import urllib.parse
+          print(urllib.parse.quote(os.environ["GITEE_LOGIN"], safe=""))
+          PY
+          )"
+          gitee_token_encoded="$(python3 - <<'PY'
+          import os
+          import urllib.parse
+          print(urllib.parse.quote(os.environ["GITEE_TOKEN"], safe=""))
+          PY
+          )"
+          git remote add gitee "https://${gitee_login_encoded}:${gitee_token_encoded}@gitee.com/znsoft/maclaw.git"
           echo "GitHub ref: ${{ github.ref }}"
           echo "GitHub ref_name: ${tag}"
           echo "GitHub sha: ${{ github.sha }}"
           echo "Local HEAD: $(git rev-parse HEAD)"
-          echo "Gitee remote: https://znsoft:***@gitee.com/znsoft/maclaw.git"
+          echo "Gitee token user: ${gitee_login}"
+          echo "Gitee remote: https://${gitee_login}:***@gitee.com/znsoft/maclaw.git"
           git fetch origin main --tags --force
           echo "Origin main: $(git rev-parse refs/remotes/origin/main)"
           echo "Release tag object: $(git rev-parse refs/tags/${tag})"

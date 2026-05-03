@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, IsNativeRoundedCorners, IsWebviewTransparent, GetFramelessTopInset, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, GetThirdPartyGatewayStatus, RestartThirdPartyGateway, StopThirdPartyGateway, GetThirdPartyGatewayLocalMode, SetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton, FetchProviderModels, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, IsNativeRoundedCorners, IsWebviewTransparent, GetFramelessTopInset, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, GetThirdPartyGatewayStatus, RestartThirdPartyGateway, StopThirdPartyGateway, GetThirdPartyGatewayLocalMode, SetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton, SetDefaultLaunchMode, FetchProviderModels, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -215,18 +215,18 @@ const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
         "iFlytek": "iFlytek"
     },
     "zh-Hans": {
-        "Tencent Cloud": "腾讯云",
+        "Tencent Cloud": "腾讯�?,
         "Moore Threads": "摩尔线程",
         "Kuaishou": "快手",
-        "Aliyun": "阿里云",
+        "Aliyun": "阿里�?,
         "Baidu Qianfan": "百度千帆",
         "iFlytek": "讯飞星辰"
     },
     "zh-Hant": {
-        "Tencent Cloud": "騰訊雲",
+        "Tencent Cloud": "騰訊�?,
         "Moore Threads": "摩爾線程",
         "Kuaishou": "快手",
-        "Aliyun": "阿里雲",
+        "Aliyun": "阿里�?,
         "Baidu Qianfan": "百度千帆",
         "iFlytek": "訊飛星辰"
     }
@@ -372,8 +372,8 @@ const translations: any = {
         "maclawDebugHint": "When enabled, tool call progress is shown during remote sessions. When disabled, only final results and errors are displayed.",
         "refreshMessage": "Refresh",
         "refreshing": "🔄 Fetching latest messages...",
-        "refreshSuccess": "✅ Refresh successful!",
-        "refreshFailed": "❌ Refresh failed: ",
+        "refreshSuccess": "�?Refresh successful!",
+        "refreshFailed": "�?Refresh failed: ",
         "lastUpdate": "Last Update: ",
         "startupTitle": "Welcome to MaClaw",
 
@@ -717,7 +717,7 @@ const translations: any = {
         "mcpHealthy": "Healthy",
         "mcpSlow": "Slow",
         "mcpUnavailable": "Unavailable",
-        "mcpChecking": "Checking…",
+        "mcpChecking": "Checking�?,
         "mcpNotChecked": "Not checked",
         "mcpCollapse": "Collapse",
         "mcpTools": "Tools",
@@ -747,7 +747,7 @@ const translations: any = {
         "mcpNoTools": "No tools"
     },
     "zh-Hans": {
-        "title": "码卡龙",
+        "title": "码卡�?,
         "about": "关于",
         "help": "帮助",
         "manual": "文档指南",
@@ -755,16 +755,16 @@ const translations: any = {
         "introVideo": "入门视频",
         "thanks": "鸣谢",
         "hide": "隐藏",
-        "launch": "开始编程",
+        "launch": "开始编�?,
         "project": "项目",
         "projectDir": "项目目录",
         "change": "更改",
         "browse": "浏览",
         "yoloMode": "Yolo 模式",
-        "dangerouslySkip": "(危险：跳过权限检查)",
+        "dangerouslySkip": "(危险：跳过权限检�?",
         "launchBtn": "启动工具",
-        "modelSettings": "服务商配置",
-        "providerName": "服务商名称",
+        "modelSettings": "服务商配�?,
+        "providerName": "服务商名�?,
         "modelName": "模型名称/ID",
         "apiKey": "API Key",
         "personalToken": "个人令牌",
@@ -772,26 +772,26 @@ const translations: any = {
         "getKey": "获取 API Key",
         "enterKey": "输入 API Key",
         "apiEndpoint": "API 端点",
-        "saveChanges": "保存并关闭",
-        "saving": "保存中...",
-        "saved": "保存成功！",
+        "saveChanges": "保存并关�?,
+        "saving": "保存�?..",
+        "saved": "保存成功�?,
         "close": "关闭",
         "manageProjects": "项目管理",
         "projectManagement": "项目管理",
         "projectName": "项目名称",
         "delete": "删除",
-        "addNewProject": "+ 添加新项目",
-        "projectDirError": "请设置有效的项目目录！",
+        "addNewProject": "+ 添加新项�?,
+        "projectDirError": "请设置有效的项目目录�?,
         "initializing": "初始化中...",
-        "loadingConfig": "加载配置中...",
+        "loadingConfig": "加载配置�?..",
         "syncing": "正在同步...",
         "switched": "服务商已切换并同步！",
         "projectSwitched": "任务已切换！",
         "dirUpdated": "目录已更新！",
-        "langName": "简体中文",
-        "custom": "自定义",
-        "checkUpdate": "检查更新",
-        "noUpdate": "无可用更新",
+        "langName": "简体中�?,
+        "custom": "自定�?,
+        "checkUpdate": "检查更�?,
+        "noUpdate": "无可用更�?,
         "updateAvailable": "检查新版本: ",
         "foundNewVersion": "检查新版本",
         "downloadNow": "立即下载",
@@ -803,7 +803,7 @@ const translations: any = {
         "language": "界面语言",
         "runnerStatus": "环境",
         "yoloModeLabel": "Yolo 模式",
-        "adminModeLabel": "管理员权限",
+        "adminModeLabel": "管理员权�?,
         "rootModeLabel": "Root 权限",
         "teamModeLabel": "团队模式",
         "pythonProjectLabel": "Python 项目",
@@ -811,27 +811,27 @@ const translations: any = {
         "customProviderPlaceholder": "自定义服务商名称",
         "addCustomProvider": "添加自定义服务商",
         "removeCustomProvider": "删除此服务商",
-        "maxCustomProviders": "最多只能添加6个自定义服务商",
-        "cannotRemoveLastCustom": "不能删除最后一个自定义服务商",
+        "maxCustomProviders": "最多只能添�?个自定义服务�?,
+        "cannotRemoveLastCustom": "不能删除最后一个自定义服务�?,
         "version": "版本",
-        "author": "作者",
+        "author": "作�?,
         "aboutSectionTag": "关于",
-        "aboutProductName": "码卡龙·琢光 MaClaw",
+        "aboutProductName": "码卡龙·琢�?MaClaw",
         "buildLabel": "构建",
         "quickActionsTitle": "快捷操作",
-        "quickActionsDesc": "打开官网资源、检查更新或反馈问题。",
+        "quickActionsDesc": "打开官网资源、检查更新或反馈问题�?,
         "codeRepository": "代码仓库",
-        "checkingUpdate": "正在检查更新...",
+        "checkingUpdate": "正在检查更�?..",
         "downloading": "正在下载...",
-        "downloadCancelled": "下载已取消",
+        "downloadCancelled": "下载已取�?,
         "downloadError": "下载错误: {error}",
         "toolRepairTitle": "安装工具",
         "toolRepairInstalling": "正在安装 {tool}...",
-        "toolRepairSuccess": "{tool} 安装成功！",
+        "toolRepairSuccess": "{tool} 安装成功�?,
         "toolRepairFailed": "安装 {tool} 失败",
         "toolRepairVersion": "版本: {version}",
         "installNow": "立即安装",
-        "downloadAndUpdate": "下载并更新",
+        "downloadAndUpdate": "下载并更�?,
         "cancelDownload": "取消下载",
         "downloadComplete": "下载完成",
         "onlineUpdate": "在线更新",
@@ -847,7 +847,7 @@ const translations: any = {
         "kilo": "Kilo Code CLI",
         "kiloDesc": "Kilo Code AI 辅助编程",
         "bugReport": "问题反馈",
-        "businessCooperation": "联系信息：微信 znsoft",
+        "businessCooperation": "联系信息：微�?znsoft",
         "original": "原厂",
         "message": "消息",
         "tutorial": "教程",
@@ -857,14 +857,14 @@ const translations: any = {
         "getApiKey": "获取API Key",
         "subscription": "包月",
         "danger": "危险",
-        "selectAll": "全选",
+        "selectAll": "全�?,
         "copy": "复制",
         "cut": "剪切",
         "contextPaste": "粘贴",
         "refreshMessage": "刷新",
-        "refreshing": "🔄 正在从服务器获取最新消息...",
-        "refreshSuccess": "✅ 获取新消息成功",
-        "refreshFailed": "❌ 刷新失败：",
+        "refreshing": "🔄 正在从服务器获取最新消�?..",
+        "refreshSuccess": "�?获取新消息成�?,
+        "refreshFailed": "�?刷新失败�?,
         "lastUpdate": "最后更新：",
         "forward": "转发",
         "customized": "定制",
@@ -874,16 +874,16 @@ const translations: any = {
         "quickStart": "新手教学",
         "officialWebsite": "官方网站",
         "dontShowAgain": "下次不再显示",
-        "showWelcomePage": "显示欢迎页",
-        "showWelcomePageHint": "启用后，程序启动时会显示包含教程链接的欢迎弹窗。",
+        "showWelcomePage": "显示欢迎�?,
+        "showWelcomePageHint": "启用后，程序启动时会显示包含教程链接的欢迎弹窗�?,
         "showAssistantEntryLabel": "显示 AI助手按钮",
-        "showAssistantEntryHint": "主窗口隐藏时显示悬浮 AI助手按钮。",
+        "showAssistantEntryHint": "主窗口隐藏时显示悬浮 AI助手按钮�?,
         "detailedLogsLabel": "日志详情",
-        "detailedLogsHint": "开启后显示更完整的运行日志；关闭时仅保留错误日志。",
+        "detailedLogsHint": "开启后显示更完整的运行日志；关闭时仅保留错误日志�?,
         "llmTrajectoryLoggingLabel": "记录 LLM 轨迹",
-        "llmTrajectoryLoggingHint": "保存 LLM 交互轨迹，用于分析与训练。",
-        "maclawDebugHint": "启用后，远程会话中会显示工具调用过程；关闭后仅显示最终结果和错误信息。",
-        "startupTitle": "欢迎使用码卡龙",
+        "llmTrajectoryLoggingHint": "保存 LLM 交互轨迹，用于分析与训练�?,
+        "maclawDebugHint": "启用后，远程会话中会显示工具调用过程；关闭后仅显示最终结果和错误信息�?,
+        "startupTitle": "欢迎使用码卡�?,
         "showMore": "更多",
         "showLess": "收起",
         "installLog": "查看日志",
@@ -891,80 +891,80 @@ const translations: any = {
         "securityEvents": "安全事件",
         "errorLog": "错误日志",
         "errorLogTitle": "错误日志",
-        "errorLogEmpty": "日志中未发现错误信息。",
-        "memoryHealthTitle": "记忆健康仪表盘",
+        "errorLogEmpty": "日志中未发现错误信息�?,
+        "memoryHealthTitle": "记忆健康仪表�?,
         "memHealthCapacity": "容量",
-        "memHealthArchived": "已归档",
+        "memHealthArchived": "已归�?,
         "memHealthStale": "可能过时",
-        "memHealthOrphan": "孤立（无关联）",
-        "memHealthNoEmbed": "无向量",
-        "memHealthPinned": "已固定",
-        "memHealthVersioned": "有历史版本",
+        "memHealthOrphan": "孤立（无关联�?,
+        "memHealthNoEmbed": "无向�?,
+        "memHealthPinned": "已固�?,
+        "memHealthVersioned": "有历史版�?,
         "memHealthEmbedder": "向量引擎",
         "memHealthAvgAccess": "平均访问",
-        "memHealthOldest": "最早",
-        "memHealthNewest": "最新",
+        "memHealthOldest": "最�?,
+        "memHealthNewest": "最�?,
         "memHealthCategories": "分类分布",
-        "memHealthUnavailable": "记忆系统未初始化。",
-        "loading": "加载中",
+        "memHealthUnavailable": "记忆系统未初始化�?,
+        "loading": "加载�?,
         "installLogTitle": "环境检查与安装日志",
-        "sendLog": "发送日志",
+        "sendLog": "发送日�?,
         "sendLogSubject": "MaClaw环境安装日志",
         "confirmDelete": "确认删除",
         "confirmDeleteMessage": "确定要删除服务商 \"{name}\" 吗？",
-        "confirmSendLog": "确认发送",
+        "confirmSendLog": "确认发�?,
         "confirmSendLogMessage": "日志中没有检测到错误，是否仍要发送日志？",
         "cancel": "取消",
         "confirm": "确定",
-        "slogan": "让远程编程像品尝甜点一样丝滑。",
-        "maclawLLMPopupTitle": "来，配置一下 MaClaw 吧",
-        "maclawLLMPopupDesc": "两步开启远程编程。",
+        "slogan": "让远程编程像品尝甜点一样丝滑�?,
+        "maclawLLMPopupTitle": "来，配置一�?MaClaw �?,
+        "maclawLLMPopupDesc": "两步开启远程编程�?,
         "maclawLLMStep1Title": "配置 LLM",
-        "maclawLLMStep1Desc": "连接 LLM 服务商，让 MaClaw 能思考。",
-        "maclawLLMGoSettings": "我已有 API Key",
-        "maclawLLMStep2Title": "移动端注册 & 绑定飞书",
-        "maclawLLMStep2Desc": "注册设备并绑定飞书，即可通过移动端操控。",
+        "maclawLLMStep1Desc": "连接 LLM 服务商，�?MaClaw 能思考�?,
+        "maclawLLMGoSettings": "我已�?API Key",
+        "maclawLLMStep2Title": "移动端注�?& 绑定飞书",
+        "maclawLLMStep2Desc": "注册设备并绑定飞书，即可通过移动端操控�?,
         "maclawLLMGoRemote": "前往远程设置",
-        "maclawLLMReadyHint": "左侧 AI 助手圆圈全亮，说明一切就绪。",
+        "maclawLLMReadyHint": "左侧 AI 助手圆圈全亮，说明一切就绪�?,
         "proxySettings": "代理设置",
         "proxyHost": "代理主机",
         "proxyPort": "代理端口",
-        "proxyUsername": "用户名 (可选)",
-        "proxyPassword": "密码 (可选)",
+        "proxyUsername": "用户�?(可�?",
+        "proxyPassword": "密码 (可�?",
         "proxyMode": "代理",
-        "proxyNotConfigured": "代理未配置。请先配置代理设置。",
+        "proxyNotConfigured": "代理未配置。请先配置代理设置�?,
         "useDefaultProxy": "使用默认代理设置",
-        "proxyHostPlaceholder": "例如：192.168.1.1 或 proxy.company.com",
-        "proxyPortPlaceholder": "例如：8080",
+        "proxyHostPlaceholder": "例如�?92.168.1.1 �?proxy.company.com",
+        "proxyPortPlaceholder": "例如�?080",
         "proxyProtocol": "协议",
         "proxyBypass": "绕过地址",
         "proxyBypassPlaceholder": "例如：localhost;127.*;10.*;192.168.*",
-        "proxyBypassHint": "分号分隔。匹配的地址将绕过代理。",
+        "proxyBypassHint": "分号分隔。匹配的地址将绕过代理�?,
         "proxyEnabled": "启用代理",
-        "proxyScopeMaclaw": "MacClaw（大模型 API 调用）",
-        "proxyScopeCodingTools": "编程工具（仅 macOS/Linux 生效）",
-        "proxyScopeAgent": "智能体（web_search / web_fetch）",
+        "proxyScopeMaclaw": "MacClaw（大模型 API 调用�?,
+        "proxyScopeCodingTools": "编程工具（仅 macOS/Linux 生效�?,
+        "proxyScopeAgent": "智能体（web_search / web_fetch�?,
         "proxyScopeTitle": "使用范围",
-        "remoteControl": "移动端注册",
-        "remoteControlDesc": "配置 MaClaw 远程诊断、Hub 连接和远程会话控制。",
+        "remoteControl": "移动端注�?,
+        "remoteControlDesc": "配置 MaClaw 远程诊断、Hub 连接和远程会话控制�?,
         "remoteRefresh": "刷新",
-        "remoteRunReadiness": "运行就绪检查",
-        "remoteRunConpty": "运行 ConPTY 检测",
+        "remoteRunReadiness": "运行就绪检�?,
+        "remoteRunConpty": "运行 ConPTY 检�?,
         "remoteRunLaunchProbe": "运行 {tool} 启动探测",
         "remoteRunFullSmoke": "运行完整冒烟测试",
-        "remoteActivation": "注册状态",
-        "remoteActivated": "已注册",
-        "remoteNotActivated": "未注册",
+        "remoteActivation": "注册状�?,
+        "remoteActivated": "已注�?,
+        "remoteNotActivated": "未注�?,
         "remoteRegister": "注册",
         "remoteEmailNotConfigured": "尚未配置远程邮箱",
         "remoteHub": "Hub 连接",
-        "remoteConnected": "已连接",
-        "remoteDisconnected": "未连接",
-        "remoteNoHubUrl": "未配置 Hub 地址",
-        "remoteReadiness": "就绪状态",
-        "remoteReady": "已就绪",
-        "remoteNeedsAttention": "需要处理",
-        "remoteNotRun": "未运行",
+        "remoteConnected": "已连�?,
+        "remoteDisconnected": "未连�?,
+        "remoteNoHubUrl": "未配�?Hub 地址",
+        "remoteReadiness": "就绪状�?,
+        "remoteReady": "已就�?,
+        "remoteNeedsAttention": "需要处�?,
+        "remoteNotRun": "未运�?,
         "remoteLaunch": "启动探测",
         "remotePassed": "通过",
         "remoteFailed": "失败",
@@ -975,91 +975,91 @@ const translations: any = {
         "remoteHubCenterUrl": "Hub Center 地址",
         "remoteEmail": "远程邮箱",
         "remoteBindEmail": "绑定邮件",
-        "remoteNotInstalled": "未安装",
-        "remoteActivating": "注册中...",
-        "remoteActivate": "注册移动端",
-        "remoteStarting": "启动中...",
+        "remoteNotInstalled": "未安�?,
+        "remoteActivating": "注册�?..",
+        "remoteActivate": "注册移动�?,
+        "remoteStarting": "启动�?..",
         "remoteStartTool": "启动远程",
         "remoteStopTool": "停止远程",
         "remoteUnavailable": "不可用：{reason}",
         "remoteInstallingTool": "正在安装 {tool}...",
         "remoteInstallTool": "安装 {tool}",
-        "remoteReconnecting": "重连中...",
+        "remoteReconnecting": "重连�?..",
         "remoteReconnectHub": "重连 Hub",
-        "remoteClearing": "清除中...",
-        "remoteClearActivation": "清除注册状态",
+        "remoteClearing": "清除�?..",
+        "remoteClearActivation": "清除注册状�?,
         "remoteReRegister": "重新注册",
         "remoteToolPath": "工具路径",
-        "remoteNextStep": "下一步",
+        "remoteNextStep": "下一�?,
         "remoteLaunchProject": "启动项目",
         "remoteNoProjectSelected": "未选择项目",
-        "remoteReadinessWarnings": "就绪检查提示",
-        "remoteNoReadinessIssues": "未检测到就绪问题。",
-        "remoteProbeNotRun": "尚未运行检测。",
-        "remoteConptyAvailable": "{tool} 远程会话已支持 ConPTY。",
-        "remoteConptyUnavailable": "ConPTY 不可用。",
+        "remoteReadinessWarnings": "就绪检查提�?,
+        "remoteNoReadinessIssues": "未检测到就绪问题�?,
+        "remoteProbeNotRun": "尚未运行检测�?,
+        "remoteConptyAvailable": "{tool} 远程会话已支�?ConPTY�?,
+        "remoteConptyUnavailable": "ConPTY 不可用�?,
         "remoteLaunchProbeTitle": "{tool} 启动探测",
         "remoteLaunchProbePending": "{tool} 启动探测尚未运行",
         "remoteCommandReady": "命令已就绪：{value}",
         "remoteLaunchProbeFailed": "启动探测失败",
         "remoteFullSmoke": "完整冒烟测试",
-        "remoteFullSmokeNotRun": "尚未运行完整冒烟测试。",
+        "remoteFullSmokeNotRun": "尚未运行完整冒烟测试�?,
         "remoteTool": "工具",
-        "remoteProviderLabel": "服务商",
+        "remoteProviderLabel": "服务�?,
         "remoteProviderDefault": "默认",
         "remotePty": "PTY",
         "remoteSupported": "支持",
-        "remoteUnavailableShort": "不可用",
+        "remoteUnavailableShort": "不可�?,
         "remoteSession": "会话",
-        "remoteHubVisibility": "Hub 可见性",
-        "remoteVerified": "已验证",
-        "remoteNotVerified": "未验证",
-        "remoteNoImportantEvents": "暂时没有重要事件。",
-        "remoteSendInstructionPlaceholder": "向远程会话发送指令...",
-        "remoteSend": "发送",
+        "remoteHubVisibility": "Hub 可见�?,
+        "remoteVerified": "已验�?,
+        "remoteNotVerified": "未验�?,
+        "remoteNoImportantEvents": "暂时没有重要事件�?,
+        "remoteSendInstructionPlaceholder": "向远程会话发送指�?..",
+        "remoteSend": "发�?,
         "remoteInterrupt": "中断",
-        "remoteInterruptSent": "已发送中断",
+        "remoteInterruptSent": "已发送中�?,
         "remoteInterruptFailed": "中断失败：{error}",
         "remoteKillSession": "结束会话",
-        "remoteKillSent": "已发送结束信号",
+        "remoteKillSent": "已发送结束信�?,
         "remoteKillFailed": "结束失败：{error}",
         "remoteReadinessFailed": "远程就绪检查失败：{error}",
         "remoteConptyFailed": "ConPTY 检测失败：{error}",
         "remoteLaunchProbeFailedToast": "{tool} 启动探测失败：{error}",
-        "remoteSmokeCompleted": "远程 {tool} 冒烟测试已完成",
+        "remoteSmokeCompleted": "远程 {tool} 冒烟测试已完�?,
         "remoteSmokeFailed": "远程 {tool} 冒烟测试失败：{error}",
         "remoteEmailRequired": "必须填写远程邮箱",
         "remoteServerRequired": "必须先配置远程服务器地址",
-        "remoteActivateFirst": "请先完成移动端注册",
-        "remoteActivationDialogTitle": "移动端注册",
-        "remoteActivationDialogDesc": "你可以直接输入 Hub 地址，或者先从 HubCenter 加载已注册的 Hub 再选择一个。",
-        "remoteActivateAndLaunch": "注册并启动",
-        "remoteLoadRegisteredHubs": "加载已注册 Hub",
+        "remoteActivateFirst": "请先完成移动端注�?,
+        "remoteActivationDialogTitle": "移动端注�?,
+        "remoteActivationDialogDesc": "你可以直接输�?Hub 地址，或者先�?HubCenter 加载已注册的 Hub 再选择一个�?,
+        "remoteActivateAndLaunch": "注册并启�?,
+        "remoteLoadRegisteredHubs": "加载已注�?Hub",
         "remoteLoadingRegisteredHubs": "正在加载 Hub...",
-        "remoteSelectRegisteredHub": "已注册 Hub",
+        "remoteSelectRegisteredHub": "已注�?Hub",
         "remoteNoRegisteredHubs": "没有可用的已注册 Hub",
         "remoteLoadHubListFailed": "加载 Hub 列表失败：{error}",
-        "remoteHubManualOrSelect": "你可以直接粘贴 Hub 地址，也可以从上面的 HubCenter 列表中选择。",
+        "remoteHubManualOrSelect": "你可以直接粘�?Hub 地址，也可以从上面的 HubCenter 列表中选择�?,
         "remoteActivationCompleted": "移动端注册已完成",
         "remoteActivationFailed": "移动端注册失败：{error}",
         "remoteReconnectFailed": "重连失败：{error}",
-        "remoteSelectProjectFirst": "请先选择一个启动项目",
+        "remoteSelectProjectFirst": "请先选择一个启动项�?,
         "remoteStartFailed": "启动失败：{error}",
         "remoteInstallFailed": "安装失败：{error}",
         "remoteSaveFailed": "保存失败：{error}",
         "remoteSendFailed": "发送失败：{error}",
         "remoteActivationCleared": "移动端注册状态已清除",
         "remoteClearFailed": "清除失败：{error}",
-        "remoteActivateStep": "移动端注册",
-        "remoteActivateStepDesc": "启动远程会话前，先登记邮箱和设备信息。",
+        "remoteActivateStep": "移动端注�?,
+        "remoteActivateStepDesc": "启动远程会话前，先登记邮箱和设备信息�?,
         "remoteReconnectStep": "重连 Hub",
-        "remoteReconnectStepDesc": "已配置 Hub 地址，但当前连接处于离线状态。",
+        "remoteReconnectStepDesc": "已配�?Hub 地址，但当前连接处于离线状态�?,
         "remoteConfigureModelStep": "配置模型",
-        "remoteConfigureModelStepDesc": "先打开服务商配置，保存 API Key 和模型后再远程启动。",
-        "remoteRunReadinessStep": "运行就绪检查",
-        "remoteRunReadinessStepDesc": "为当前工具和项目采集最新诊断信息。",
-        "remoteRunReadinessAgain": "重新运行就绪检查",
-        "remoteRunReadinessAgainDesc": "修复问题后重新刷新诊断结果。",
+        "remoteConfigureModelStepDesc": "先打开服务商配置，保存 API Key 和模型后再远程启动�?,
+        "remoteRunReadinessStep": "运行就绪检�?,
+        "remoteRunReadinessStepDesc": "为当前工具和项目采集最新诊断信息�?,
+        "remoteRunReadinessAgain": "重新运行就绪检�?,
+        "remoteRunReadinessAgainDesc": "修复问题后重新刷新诊断结果�?,
         "remoteModeLabel": "远程",
         "remoteModeDesc": "通过 Hub 启动此工具，便于手机控制",
         "localModeLabel": "本地",
@@ -1067,73 +1067,73 @@ const translations: any = {
         "defaultLaunchModeLabel": "编程工具默认工作模式",
         "defaultLaunchModeDesc": "选择工具启动区的默认工作模式",
         "workingDirLabel": "工作目录",
-        "workingDirHint": "Agent 任务的默认工作目录，留空则使用 ~/.maclaw/workspace",
+        "workingDirHint": "Agent 任务的默认工作目录，留空则使�?~/.maclaw/workspace",
         "workingDirBrowse": "浏览",
         "workingDirReset": "重置",
-        "freeload": "白嫖中",
+        "freeload": "白嫖�?,
         "bigSpender": "大力氪金",
-        "skills": "技能",
-        "addSkill": "添加技能",
-        "skillName": "技能名称",
+        "skills": "技�?,
+        "addSkill": "添加技�?,
+        "skillName": "技能名�?,
         "skillDesc": "描述",
         "skillType": "类型",
         "skillAddress": "Skill ID",
-        "skillZip": "Zip包",
+        "skillZip": "Zip�?,
         "skillPath": "路径",
-        "skillValue": "值/路径",
-        "skillAdded": "技能添加成功",
-        "skillDeleted": "技能删除成功",
-        "confirmDeleteSkill": "确定要删除此技能吗？",
-        "noSkills": "暂无技能。",
-        "installSkills": "安装技能",
+        "skillValue": "�?路径",
+        "skillAdded": "技能添加成�?,
+        "skillDeleted": "技能删除成�?,
+        "confirmDeleteSkill": "确定要删除此技能吗�?,
+        "noSkills": "暂无技能�?,
+        "installSkills": "安装技�?,
         "installLocation": "安装位置:",
         "userLocation": "用户",
         "projectLocation": "项目",
-        "selectSkillsToInstall": "技能安装",
+        "selectSkillsToInstall": "技能安�?,
         "installDefaultMarketplace": "安装默认市场",
         "install": "安装",
-        "installed": "已安装",
+        "installed": "已安�?,
         "installing": "正在安装...",
-        "installNotImplemented": "安装功能暂未实现。",
-        "pauseEnvCheck": "跳过环境检测",
+        "installNotImplemented": "安装功能暂未实现�?,
+        "pauseEnvCheck": "跳过环境检�?,
         "useWindowsTerminal": "使用 Windows Terminal",
         "envCheckIntervalPrefix": "每隔",
-        "envCheckIntervalSuffix": "日提醒检测环境",
-        "envCheckDueTitle": "环境检测提醒",
+        "envCheckIntervalSuffix": "日提醒检测环�?,
+        "envCheckDueTitle": "环境检测提�?,
         "envCheckDueMessage": "距离上次环境检测已过{days}天，是否现在检测？",
-        "recheckEnv": "手动检测更新运行环境",
-        "skillRequiredError": "名称和地址/路径是必填项！",
-        "skillZipOnlyError": "Gemini 和 Codex 仅支持 Zip 包式技能。",
-        "skillAddError": "添加技能出错: {error}",
-        "skillDeleteError": "删除技能出错: {error}",
+        "recheckEnv": "手动检测更新运行环�?,
+        "skillRequiredError": "名称和地址/路径是必填项�?,
+        "skillZipOnlyError": "Gemini �?Codex 仅支�?Zip 包式技能�?,
+        "skillAddError": "添加技能出�? {error}",
+        "skillDeleteError": "删除技能出�? {error}",
         "copyLog": "复制日志",
-        "logsCopied": "日志已复制到剪贴板",
+        "logsCopied": "日志已复制到剪贴�?,
         "currentVersion": "当前版本",
-        "latestVersion": "最新版本",
-        "foundNewVersionMsg": "检查到新版本，是否立即下载更新？",
-        "packageUnavailable": "该版本的安装包尚未发布，请前往发布页面查看，或稍后再试。",
+        "latestVersion": "最新版�?,
+        "foundNewVersionMsg": "检查到新版本，是否立即下载更新�?,
+        "packageUnavailable": "该版本的安装包尚未发布，请前往发布页面查看，或稍后再试�?,
         "visitReleasePage": "前往发布页面",
-        "isLatestVersion": "已是最新版本",
+        "isLatestVersion": "已是最新版�?,
         "billing": "计费",
-        "placeholderName": "例如：前端设计",
+        "placeholderName": "例如：前端设�?,
         "placeholderDesc": "描述...",
         "placeholderAddress": "@anthropics/...",
         "placeholderZip": "选择 .zip 文件",
-        "cannotDeleteSystemSkill": "系统技能包不能删除。",
+        "cannotDeleteSystemSkill": "系统技能包不能删除�?,
         "systemDefault": "系统默认",
-        "envCheckTitle": "MaClaw 运行环境检测安装",
-        "envCheckExitWarningTitle": "警告：退出环境安装",
-        "envCheckExitWarningMessage": "退出将导致环境安装不完整，程序无法正常运行。\n\n只有在程序死循环等极端情况下才建议退出。\n\n确定要退出吗？",
-        "envCheckExitConfirm": "是的，退出",
+        "envCheckTitle": "MaClaw 运行环境检测安�?,
+        "envCheckExitWarningTitle": "警告：退出环境安�?,
+        "envCheckExitWarningMessage": "退出将导致环境安装不完整，程序无法正常运行。\n\n只有在程序死循环等极端情况下才建议退出。\n\n确定要退出吗�?,
+        "envCheckExitConfirm": "是的，退�?,
         "envCheckExitCancel": "否，继续安装",
-        "selectProvider": "选择服务商",
-        "knownProviders": "已知服务商",
-        "providerList": "服务商列表",
-        "selectProviderTitle": "选择 API 服务商",
-        "chinaProviders": "国内服务商",
-        "globalProviders": "国外服务商",
-        "allProviders": "全部服务商",
-        "filterByRegion": "按地区筛选",
+        "selectProvider": "选择服务�?,
+        "knownProviders": "已知服务�?,
+        "providerList": "服务商列�?,
+        "selectProviderTitle": "选择 API 服务�?,
+        "chinaProviders": "国内服务�?,
+        "globalProviders": "国外服务�?,
+        "allProviders": "全部服务�?,
+        "filterByRegion": "按地区筛�?,
         "projectSearch": "搜索",
         "projectSearchPlaceholder": "按名称或路径搜索",
         "projectSortDefault": "默认顺序",
@@ -1141,100 +1141,100 @@ const translations: any = {
         "projectSortNameDesc": "名称 Z-A",
         "projectSortPathAsc": "路径 A-Z",
         "projectSortPathDesc": "路径 Z-A",
-        "projectNoResults": "没有匹配的项目",
+        "projectNoResults": "没有匹配的项�?,
         "projectShowing": "显示",
         "projectTotal": "总计",
-        "prevPage": "上一页",
-        "nextPage": "下一页",
+        "prevPage": "上一�?,
+        "nextPage": "下一�?,
         "mcpTabLocal": "本地 (Stdio)",
         "mcpTabRemote": "远程 (HTTP)",
-        "mcpLocalCount": "个本地 MCP Server",
+        "mcpLocalCount": "个本�?MCP Server",
         "mcpImportJson": "导入 JSON",
         "mcpAdd": "+ 添加",
-        "mcpLoading": "加载中...",
-        "mcpNoLocalServers": "暂无本地 MCP Server，点击「+ 添加」或「导入 JSON」来配置",
-        "mcpDisabled": "已禁用",
-        "mcpRunning": "运行中",
-        "mcpNotRunning": "未运行",
+        "mcpLoading": "加载�?..",
+        "mcpNoLocalServers": "暂无本地 MCP Server，点击�? 添加」或「导�?JSON」来配置",
+        "mcpDisabled": "已禁�?,
+        "mcpRunning": "运行�?,
+        "mcpNotRunning": "未运�?,
         "mcpEnable": "启用",
         "mcpDisable": "禁用",
         "mcpEdit": "编辑",
         "mcpDelete": "删除",
         "mcpEnvVars": "环境变量",
         "mcpConfirmDelete": "确认删除",
-        "mcpConfirmDeleteLocal": "确定要删除本地 MCP Server「{name}」吗？",
-        "mcpDeleting": "删除中...",
+        "mcpConfirmDeleteLocal": "确定要删除本�?MCP Server「{name}」吗�?,
+        "mcpDeleting": "删除�?..",
         "mcpImportJsonTitle": "导入 JSON 配置",
-        "mcpImportJsonDesc": "粘贴标准 MCP JSON 配置，支持格式如：",
+        "mcpImportJsonDesc": "粘贴标准 MCP JSON 配置，支持格式如�?,
         "mcpImportJsonPlaceholder": "粘贴 JSON 配置...",
         "mcpJsonFormatError": "JSON 格式错误",
-        "mcpJsonStructureError": "格式不正确，需要 { mcpServers: { name: { command, args, env } } }",
-        "mcpImporting": "导入中...",
+        "mcpJsonStructureError": "格式不正确，需�?{ mcpServers: { name: { command, args, env } } }",
+        "mcpImporting": "导入�?..",
         "mcpImport": "导入",
         "mcpRemoteImportJsonTitle": "导入远程 MCP 配置",
-        "mcpRemoteImportJsonDesc": "粘贴 MCP JSON 配置代码（支持 Kiro / Cursor / Claude Desktop 格式）：",
-        "mcpRemoteJsonStructureError": "格式不正确，需要 { mcpServers: { name: { url, headers } } } 或 { name: { endpoint_url } }",
-        "mcpRemoteJsonMissingUrl": "服务器「{name}」缺少 url 或 endpoint_url 字段",
+        "mcpRemoteImportJsonDesc": "粘贴 MCP JSON 配置代码（支�?Kiro / Cursor / Claude Desktop 格式）：",
+        "mcpRemoteJsonStructureError": "格式不正确，需�?{ mcpServers: { name: { url, headers } } } �?{ name: { endpoint_url } }",
+        "mcpRemoteJsonMissingUrl": "服务器「{name}」缺�?url �?endpoint_url 字段",
         "mcpEditLocalServer": "编辑本地 MCP Server",
         "mcpAddLocalServer": "添加本地 MCP Server",
         "mcpNameLabel": "名称",
         "mcpNameRequired": "名称不能为空",
         "mcpCommandLabel": "命令 (command)",
         "mcpCommandRequired": "命令不能为空",
-        "mcpArgsLabel": "参数 (args)，每行一个",
+        "mcpArgsLabel": "参数 (args)，每行一�?,
         "mcpEnvLabel": "环境变量 (env)",
         "mcpAddEnvVar": "+ 添加环境变量",
-        "mcpSubmitting": "提交中...",
+        "mcpSubmitting": "提交�?..",
         "mcpSave": "保存",
         "mcpAutoStartOn": "开机自启开",
         "mcpAutoStartOff": "开机自启关",
-        "mcpAutoStartStatus": "启动时",
-        "mcpAutoStartEnabled": "启动时自动启动",
+        "mcpAutoStartStatus": "启动�?,
+        "mcpAutoStartEnabled": "启动时自动启�?,
         "mcpAutoStartDisabled": "启动时不自动启动",
-        "mcpAutoStartDisabledHint": "请先启用该服务，再设置自动启动",
+        "mcpAutoStartDisabledHint": "请先启用该服务，再设置自动启�?,
         "mcpAutoStartCheckbox": "程序启动时自动启动该服务",
         "mcpServersRegistered": "个已注册 MCP Server",
         "mcpRegisterServer": "+ 注册 MCP Server",
         "mcpNoRemoteServers": "暂无已注册的 MCP Server",
         "mcpColName": "名称",
         "mcpColEndpoint": "端点 URL",
-        "mcpColHealth": "健康状态",
-        "mcpColTools": "工具数",
+        "mcpColHealth": "健康状�?,
+        "mcpColTools": "工具�?,
         "mcpColActions": "操作",
         "mcpHealthy": "健康",
         "mcpSlow": "缓慢",
-        "mcpUnavailable": "不可用",
-        "mcpChecking": "检测中…",
-        "mcpNotChecked": "未检测",
+        "mcpUnavailable": "不可�?,
+        "mcpChecking": "检测中�?,
+        "mcpNotChecked": "未检�?,
         "mcpCollapse": "收起",
         "mcpTools": "工具",
-        "mcpConfirmDeleteRemote": "确定要注销 MCP Server「{name}」吗？此操作不可撤销。",
+        "mcpConfirmDeleteRemote": "确定要注销 MCP Server「{name}」吗？此操作不可撤销�?,
         "mcpEditServer": "编辑 MCP Server",
         "mcpRegisterServerTitle": "注册 MCP Server",
         "mcpEndpointLabel": "端点 URL",
         "mcpEndpointRequired": "端点 URL 不能为空",
         "mcpAuthType": "认证方式",
-        "mcpAuthNone": "无认证",
+        "mcpAuthNone": "无认�?,
         "mcpAuthApiKey": "API Key",
         "mcpAuthBearer": "Bearer Token",
         "mcpEnterApiKey": "输入 API Key",
         "mcpEnterBearer": "输入 Bearer Token",
-        "mcpCustomHeaders": "自定义 Headers",
+        "mcpCustomHeaders": "自定�?Headers",
         "mcpAddHeader": "添加",
         "mcpNoCustomHeaders": "无自定义 Headers",
         "mcpRegister": "注册",
-        "mcpHealthRecord": "健康检查记录",
-        "mcpHealthStatus": "状态",
+        "mcpHealthRecord": "健康检查记�?,
+        "mcpHealthStatus": "状�?,
         "mcpFailCount": "失败次数",
-        "mcpLastCheck": "最近检查",
-        "mcpCheckNow": "立即检查",
+        "mcpLastCheck": "最近检�?,
+        "mcpCheckNow": "立即检�?,
         "mcpLoadingTools": "加载工具列表...",
         "mcpToolList": "工具列表",
-        "mcpNoDescription": "无描述",
+        "mcpNoDescription": "无描�?,
         "mcpNoTools": "暂无工具"
     },
     "zh-Hant": {
-        "title": "碼卡龍",
+        "title": "碼卡�?,
         "about": "關於",
         "help": "幫助",
         "manual": "文檔指南",
@@ -1248,10 +1248,10 @@ const translations: any = {
         "change": "變更",
         "browse": "瀏覽",
         "yoloMode": "Yolo 模式",
-        "dangerouslySkip": "(危險：跳過權限檢查)",
+        "dangerouslySkip": "(危險：跳過權限檢�?",
         "launchBtn": "啟動工具",
-        "modelSettings": "服務商設定",
-        "providerName": "服務商名稱",
+        "modelSettings": "服務商設�?,
+        "providerName": "服務商名�?,
         "modelName": "模型名稱/ID",
         "apiKey": "API Key",
         "personalToken": "個人令牌",
@@ -1259,26 +1259,26 @@ const translations: any = {
         "getKey": "獲取 API Key",
         "enterKey": "輸入 API Key",
         "apiEndpoint": "API 端點",
-        "saveChanges": "儲存並關閉",
-        "saving": "儲存中...",
-        "saved": "儲存成功！",
+        "saveChanges": "儲存並關�?,
+        "saving": "儲存�?..",
+        "saved": "儲存成功�?,
         "close": "關閉",
         "manageProjects": "專案管理",
         "projectManagement": "專案管理",
         "projectName": "專案名稱",
         "delete": "刪除",
         "addNewProject": "+ 新增專案",
-        "projectDirError": "請設置有效的專案目錄！",
+        "projectDirError": "請設置有效的專案目錄�?,
         "initializing": "初始化中...",
-        "loadingConfig": "載入設定中...",
+        "loadingConfig": "載入設定�?..",
         "syncing": "正在同步...",
         "switched": "服務商已切換並同步！",
         "langName": "繁體中文",
-        "custom": "自定義",
+        "custom": "自定�?,
         "checkUpdate": "檢查更新",
-        "noUpdate": "無可用更新",
-        "updateAvailable": "發現新版本: ",
-        "foundNewVersion": "發現新版本",
+        "noUpdate": "無可用更�?,
+        "updateAvailable": "發現新版�? ",
+        "foundNewVersion": "發現新版�?,
         "downloadNow": "立即下載",
         "paste": "貼上",
         "hideConfig": "配置",
@@ -1288,7 +1288,7 @@ const translations: any = {
         "language": "界面語言",
         "runnerStatus": "目前環境",
         "yoloModeLabel": "Yolo 模式",
-        "adminModeLabel": "管理員權限",
+        "adminModeLabel": "管理員權�?,
         "rootModeLabel": "Root 權限",
         "teamModeLabel": "團隊模式",
         "pythonProjectLabel": "Python 項目",
@@ -1296,27 +1296,27 @@ const translations: any = {
         "customProviderPlaceholder": "自定義服務商名稱",
         "addCustomProvider": "添加自定義服務商",
         "removeCustomProvider": "刪除此服務商",
-        "maxCustomProviders": "最多只能添加6個自定義服務商",
-        "cannotRemoveLastCustom": "不能刪除最後一個自定義服務商",
+        "maxCustomProviders": "最多只能添�?個自定義服務�?,
+        "cannotRemoveLastCustom": "不能刪除最後一個自定義服務�?,
         "version": "版本",
-        "author": "作者",
+        "author": "作�?,
         "aboutSectionTag": "關於",
-        "aboutProductName": "碼卡龍·蜕變 MaClaw",
+        "aboutProductName": "碼卡龍·蜕�?MaClaw",
         "buildLabel": "構建",
         "quickActionsTitle": "快捷操作",
-        "quickActionsDesc": "打開官網資源、檢查更新或反饋問題。",
+        "quickActionsDesc": "打開官網資源、檢查更新或反饋問題�?,
         "codeRepository": "代碼倉庫",
         "checkingUpdate": "正在檢查更新...",
         "downloading": "正在下載...",
-        "downloadCancelled": "下載已取消",
+        "downloadCancelled": "下載已取�?,
         "downloadError": "下載錯誤: {error}",
         "toolRepairTitle": "安裝工具",
         "toolRepairInstalling": "正在安裝 {tool}...",
-        "toolRepairSuccess": "{tool} 安裝成功！",
+        "toolRepairSuccess": "{tool} 安裝成功�?,
         "toolRepairFailed": "安裝 {tool} 失敗",
         "toolRepairVersion": "版本: {version}",
         "installNow": "立即安裝",
-        "downloadAndUpdate": "下載並更新",
+        "downloadAndUpdate": "下載並更�?,
         "cancelDownload": "取消下載",
         "downloadComplete": "下載完成",
         "onlineUpdate": "線上更新",
@@ -1332,7 +1332,7 @@ const translations: any = {
         "kilo": "Kilo Code CLI",
         "kiloDesc": "Kilo Code AI 輔助編程",
         "bugReport": "問題反饋",
-        "businessCooperation": "聯繫信息：微信 znsoft",
+        "businessCooperation": "聯繫信息：微�?znsoft",
         "original": "原廠",
         "message": "消息",
         "tutorial": "教程",
@@ -1347,9 +1347,9 @@ const translations: any = {
         "cut": "剪切",
         "contextPaste": "粘貼",
         "refreshMessage": "刷新",
-        "refreshing": "🔄 正在从服务器获取最新消息...",
-        "refreshSuccess": "✅ 獲取新消息成功",
-        "refreshFailed": "❌ 刷新失敗：",
+        "refreshing": "🔄 正在从服务器获取最新消�?..",
+        "refreshSuccess": "�?獲取新消息成�?,
+        "refreshFailed": "�?刷新失敗�?,
         "lastUpdate": "最後更新：",
         "forward": "轉發",
         "customized": "定制",
@@ -1359,16 +1359,16 @@ const translations: any = {
         "quickStart": "新手教學",
         "officialWebsite": "官方網站",
         "dontShowAgain": "下次不再顯示",
-        "showWelcomePage": "顯示歡迎頁",
-        "showWelcomePageHint": "啟用後，程式啟動時會顯示包含教學連結的歡迎彈窗。",
+        "showWelcomePage": "顯示歡迎�?,
+        "showWelcomePageHint": "啟用後，程式啟動時會顯示包含教學連結的歡迎彈窗�?,
         "showAssistantEntryLabel": "顯示 AI助手按鈕",
-        "showAssistantEntryHint": "主視窗隱藏時顯示懸浮 AI助手按鈕。",
+        "showAssistantEntryHint": "主視窗隱藏時顯示懸浮 AI助手按鈕�?,
         "detailedLogsLabel": "日誌詳情",
-        "detailedLogsHint": "開啟後顯示更完整的執行日誌；關閉時僅保留錯誤日誌。",
+        "detailedLogsHint": "開啟後顯示更完整的執行日誌；關閉時僅保留錯誤日誌�?,
         "llmTrajectoryLoggingLabel": "記錄 LLM 軌跡",
-        "llmTrajectoryLoggingHint": "保存 LLM 互動軌跡，用於分析與訓練。",
-        "maclawDebugHint": "啟用後，遠端會話中會顯示工具呼叫過程；關閉後僅顯示最終結果和錯誤資訊。",
-        "startupTitle": "歡迎使用碼卡龍",
+        "llmTrajectoryLoggingHint": "保存 LLM 互動軌跡，用於分析與訓練�?,
+        "maclawDebugHint": "啟用後，遠端會話中會顯示工具呼叫過程；關閉後僅顯示最終結果和錯誤資訊�?,
+        "startupTitle": "歡迎使用碼卡�?,
         "showMore": "更多",
         "showLess": "收起",
         "installLog": "查看日誌",
@@ -1376,80 +1376,80 @@ const translations: any = {
         "securityEvents": "安全事件",
         "errorLog": "錯誤日誌",
         "errorLogTitle": "錯誤日誌",
-        "errorLogEmpty": "日誌中未發現錯誤信息。",
+        "errorLogEmpty": "日誌中未發現錯誤信息�?,
         "memoryHealthTitle": "記憶健康儀表盤",
         "memHealthCapacity": "容量",
-        "memHealthArchived": "已歸檔",
+        "memHealthArchived": "已歸�?,
         "memHealthStale": "可能過時",
-        "memHealthOrphan": "孤立（無關聯）",
-        "memHealthNoEmbed": "無向量",
-        "memHealthPinned": "已固定",
-        "memHealthVersioned": "有歷史版本",
+        "memHealthOrphan": "孤立（無關聯�?,
+        "memHealthNoEmbed": "無向�?,
+        "memHealthPinned": "已固�?,
+        "memHealthVersioned": "有歷史版�?,
         "memHealthEmbedder": "向量引擎",
         "memHealthAvgAccess": "平均訪問",
-        "memHealthOldest": "最早",
-        "memHealthNewest": "最新",
+        "memHealthOldest": "最�?,
+        "memHealthNewest": "最�?,
         "memHealthCategories": "分類分佈",
-        "memHealthUnavailable": "記憶系統未初始化。",
-        "loading": "載入中",
-        "installLogTitle": "環境檢查與安裝日誌",
-        "sendLog": "發送日誌",
+        "memHealthUnavailable": "記憶系統未初始化�?,
+        "loading": "載入�?,
+        "installLogTitle": "環境檢查與安裝日�?,
+        "sendLog": "發送日�?,
         "sendLogSubject": "MaClaw環境安裝日誌",
         "confirmDelete": "確認刪除",
         "confirmDeleteMessage": "確定要刪除服務商 \"{name}\" 嗎？",
-        "confirmSendLog": "確認發送",
+        "confirmSendLog": "確認發�?,
         "confirmSendLogMessage": "日誌中沒有檢測到錯誤，是否仍要發送日誌？",
         "cancel": "取消",
         "confirm": "確定",
-        "slogan": "讓遠程編程像品嚐甜點一樣絲滑。",
-        "maclawLLMPopupTitle": "來，配置一下 MaClaw 吧",
-        "maclawLLMPopupDesc": "兩步開啟遠端編程。",
+        "slogan": "讓遠程編程像品嚐甜點一樣絲滑�?,
+        "maclawLLMPopupTitle": "來，配置一�?MaClaw �?,
+        "maclawLLMPopupDesc": "兩步開啟遠端編程�?,
         "maclawLLMStep1Title": "配置 LLM",
-        "maclawLLMStep1Desc": "連接 LLM 服務商，讓 MaClaw 能思考。",
-        "maclawLLMGoSettings": "我已有 API Key",
-        "maclawLLMStep2Title": "行動端註冊 & 綁定飛書",
-        "maclawLLMStep2Desc": "註冊裝置並綁定飛書，即可透過行動端操控。",
+        "maclawLLMStep1Desc": "連接 LLM 服務商，�?MaClaw 能思考�?,
+        "maclawLLMGoSettings": "我已�?API Key",
+        "maclawLLMStep2Title": "行動端註�?& 綁定飛書",
+        "maclawLLMStep2Desc": "註冊裝置並綁定飛書，即可透過行動端操控�?,
         "maclawLLMGoRemote": "前往遠端設定",
-        "maclawLLMReadyHint": "左側 AI 助手圓圈全亮，說明一切就緒。",
+        "maclawLLMReadyHint": "左側 AI 助手圓圈全亮，說明一切就緒�?,
         "proxySettings": "代理設置",
         "proxyHost": "代理主機",
         "proxyPort": "代理端口",
-        "proxyUsername": "使用者名稱 (可選)",
+        "proxyUsername": "使用者名�?(可選)",
         "proxyPassword": "密碼 (可選)",
         "proxyMode": "代理",
-        "proxyNotConfigured": "代理未配置。請先配置代理設置。",
+        "proxyNotConfigured": "代理未配置。請先配置代理設置�?,
         "useDefaultProxy": "使用預設代理設置",
-        "proxyHostPlaceholder": "例如：192.168.1.1 或 proxy.company.com",
-        "proxyPortPlaceholder": "例如：8080",
+        "proxyHostPlaceholder": "例如�?92.168.1.1 �?proxy.company.com",
+        "proxyPortPlaceholder": "例如�?080",
         "proxyProtocol": "協議",
         "proxyBypass": "繞過地址",
         "proxyBypassPlaceholder": "例如：localhost;127.*;10.*;192.168.*",
-        "proxyBypassHint": "分號分隔。匹配的地址將繞過代理。",
+        "proxyBypassHint": "分號分隔。匹配的地址將繞過代理�?,
         "proxyEnabled": "啟用代理",
-        "proxyScopeMaclaw": "MacClaw（大模型 API 調用）",
-        "proxyScopeCodingTools": "編程工具（僅 macOS/Linux 生效）",
-        "proxyScopeAgent": "智能體（web_search / web_fetch）",
+        "proxyScopeMaclaw": "MacClaw（大模型 API 調用�?,
+        "proxyScopeCodingTools": "編程工具（僅 macOS/Linux 生效�?,
+        "proxyScopeAgent": "智能體（web_search / web_fetch�?,
         "proxyScopeTitle": "使用範圍",
-        "remoteControl": "行動端註冊",
-        "remoteControlDesc": "設定 MaClaw 遠端診斷、Hub 連線與遠端會話控制。",
+        "remoteControl": "行動端註�?,
+        "remoteControlDesc": "設定 MaClaw 遠端診斷、Hub 連線與遠端會話控制�?,
         "remoteRefresh": "重新整理",
         "remoteRunReadiness": "執行就緒檢查",
         "remoteRunConpty": "執行 ConPTY 檢測",
         "remoteRunLaunchProbe": "執行 {tool} 啟動探測",
         "remoteRunFullSmoke": "執行完整冒煙測試",
-        "remoteActivation": "註冊狀態",
-        "remoteActivated": "已註冊",
-        "remoteNotActivated": "未註冊",
+        "remoteActivation": "註冊狀�?,
+        "remoteActivated": "已註�?,
+        "remoteNotActivated": "未註�?,
         "remoteRegister": "註冊",
         "remoteEmailNotConfigured": "尚未設定遠端信箱",
         "remoteHub": "Hub 連線",
         "remoteConnected": "已連線",
         "remoteDisconnected": "未連線",
-        "remoteNoHubUrl": "未設定 Hub 位址",
-        "remoteReadiness": "就緒狀態",
-        "remoteReady": "已就緒",
-        "remoteNeedsAttention": "需要處理",
-        "remoteNotRun": "未執行",
+        "remoteNoHubUrl": "未設�?Hub 位址",
+        "remoteReadiness": "就緒狀�?,
+        "remoteReady": "已就�?,
+        "remoteNeedsAttention": "需要處�?,
+        "remoteNotRun": "未執�?,
         "remoteLaunch": "啟動探測",
         "remotePassed": "通過",
         "remoteFailed": "失敗",
@@ -1460,48 +1460,48 @@ const translations: any = {
         "remoteHubCenterUrl": "Hub Center 位址",
         "remoteEmail": "遠端信箱",
         "remoteBindEmail": "綁定郵件",
-        "remoteNotInstalled": "未安裝",
-        "remoteActivating": "註冊中...",
-        "remoteActivate": "註冊行動端",
-        "remoteStarting": "啟動中...",
+        "remoteNotInstalled": "未安�?,
+        "remoteActivating": "註冊�?..",
+        "remoteActivate": "註冊行動�?,
+        "remoteStarting": "啟動�?..",
         "remoteStartTool": "啟動遠端",
         "remoteStopTool": "停止遠端",
         "remoteUnavailable": "不可用：{reason}",
         "remoteInstallingTool": "正在安裝 {tool}...",
         "remoteInstallTool": "安裝 {tool}",
-        "remoteReconnecting": "重新連線中...",
+        "remoteReconnecting": "重新連線�?..",
         "remoteReconnectHub": "重新連線 Hub",
-        "remoteClearing": "清除中...",
-        "remoteClearActivation": "清除註冊狀態",
+        "remoteClearing": "清除�?..",
+        "remoteClearActivation": "清除註冊狀�?,
         "remoteReRegister": "重新註冊",
         "remoteToolPath": "工具路徑",
-        "remoteNextStep": "下一步",
+        "remoteNextStep": "下一�?,
         "remoteLaunchProject": "啟動專案",
-        "remoteNoProjectSelected": "未選擇專案",
+        "remoteNoProjectSelected": "未選擇專�?,
         "remoteReadinessWarnings": "就緒檢查提示",
-        "remoteNoReadinessIssues": "未檢測到就緒問題。",
-        "remoteProbeNotRun": "尚未執行檢測。",
-        "remoteConptyAvailable": "{tool} 遠端會話已支援 ConPTY。",
-        "remoteConptyUnavailable": "ConPTY 不可用。",
+        "remoteNoReadinessIssues": "未檢測到就緒問題�?,
+        "remoteProbeNotRun": "尚未執行檢測�?,
+        "remoteConptyAvailable": "{tool} 遠端會話已支�?ConPTY�?,
+        "remoteConptyUnavailable": "ConPTY 不可用�?,
         "remoteLaunchProbeTitle": "{tool} 啟動探測",
         "remoteLaunchProbePending": "{tool} 啟動探測尚未執行",
         "remoteCommandReady": "指令已就緒：{value}",
         "remoteLaunchProbeFailed": "啟動探測失敗",
         "remoteFullSmoke": "完整冒煙測試",
-        "remoteFullSmokeNotRun": "尚未執行完整冒煙測試。",
+        "remoteFullSmokeNotRun": "尚未執行完整冒煙測試�?,
         "remoteTool": "工具",
-        "remoteProviderLabel": "服務商",
+        "remoteProviderLabel": "服務�?,
         "remoteProviderDefault": "預設",
         "remotePty": "PTY",
         "remoteSupported": "支援",
-        "remoteUnavailableShort": "不可用",
+        "remoteUnavailableShort": "不可�?,
         "remoteSession": "會話",
-        "remoteHubVisibility": "Hub 可見性",
-        "remoteVerified": "已驗證",
-        "remoteNotVerified": "未驗證",
-        "remoteNoImportantEvents": "暫時沒有重要事件。",
-        "remoteSendInstructionPlaceholder": "向遠端會話傳送指令...",
-        "remoteSend": "傳送",
+        "remoteHubVisibility": "Hub 可見�?,
+        "remoteVerified": "已驗�?,
+        "remoteNotVerified": "未驗�?,
+        "remoteNoImportantEvents": "暫時沒有重要事件�?,
+        "remoteSendInstructionPlaceholder": "向遠端會話傳送指�?..",
+        "remoteSend": "傳�?,
         "remoteInterrupt": "中斷",
         "remoteInterruptSent": "已送出中斷",
         "remoteInterruptFailed": "中斷失敗：{error}",
@@ -1511,109 +1511,109 @@ const translations: any = {
         "remoteReadinessFailed": "遠端就緒檢查失敗：{error}",
         "remoteConptyFailed": "ConPTY 檢測失敗：{error}",
         "remoteLaunchProbeFailedToast": "{tool} 啟動探測失敗：{error}",
-        "remoteSmokeCompleted": "遠端 {tool} 冒煙測試已完成",
+        "remoteSmokeCompleted": "遠端 {tool} 冒煙測試已完�?,
         "remoteSmokeFailed": "遠端 {tool} 冒煙測試失敗：{error}",
         "remoteEmailRequired": "必須填寫遠端信箱",
         "remoteServerRequired": "必須先設定遠端伺服器位址",
-        "remoteActivateFirst": "請先完成行動端註冊",
-        "remoteActivationDialogTitle": "行動端註冊",
-        "remoteActivationDialogDesc": "你可以直接輸入 Hub 位址，或先從 HubCenter 載入已註冊的 Hub 再選擇一個。",
-        "remoteActivateAndLaunch": "註冊並啟動",
-        "remoteLoadRegisteredHubs": "載入已註冊 Hub",
+        "remoteActivateFirst": "請先完成行動端註�?,
+        "remoteActivationDialogTitle": "行動端註�?,
+        "remoteActivationDialogDesc": "你可以直接輸�?Hub 位址，或先從 HubCenter 載入已註冊的 Hub 再選擇一個�?,
+        "remoteActivateAndLaunch": "註冊並啟�?,
+        "remoteLoadRegisteredHubs": "載入已註�?Hub",
         "remoteLoadingRegisteredHubs": "正在載入 Hub...",
-        "remoteSelectRegisteredHub": "已註冊 Hub",
+        "remoteSelectRegisteredHub": "已註�?Hub",
         "remoteNoRegisteredHubs": "沒有可用的已註冊 Hub",
         "remoteLoadHubListFailed": "載入 Hub 清單失敗：{error}",
-        "remoteHubManualOrSelect": "你可以直接貼上 Hub 位址，也可以從上方的 HubCenter 清單中選擇。",
+        "remoteHubManualOrSelect": "你可以直接貼�?Hub 位址，也可以從上方的 HubCenter 清單中選擇�?,
         "remoteActivationCompleted": "行動端註冊已完成",
         "remoteActivationFailed": "行動端註冊失敗：{error}",
         "remoteReconnectFailed": "重新連線失敗：{error}",
-        "remoteSelectProjectFirst": "請先選擇一個啟動專案",
+        "remoteSelectProjectFirst": "請先選擇一個啟動專�?,
         "remoteStartFailed": "啟動失敗：{error}",
         "remoteInstallFailed": "安裝失敗：{error}",
         "remoteSaveFailed": "儲存失敗：{error}",
         "remoteSendFailed": "傳送失敗：{error}",
         "remoteActivationCleared": "行動端註冊狀態已清除",
         "remoteClearFailed": "清除失敗：{error}",
-        "remoteActivateStep": "行動端註冊",
-        "remoteActivateStepDesc": "啟動遠端會話前，先登記信箱與裝置資訊。",
+        "remoteActivateStep": "行動端註�?,
+        "remoteActivateStepDesc": "啟動遠端會話前，先登記信箱與裝置資訊�?,
         "remoteReconnectStep": "重新連線 Hub",
-        "remoteReconnectStepDesc": "已設定 Hub 位址，但目前連線處於離線狀態。",
+        "remoteReconnectStepDesc": "已設�?Hub 位址，但目前連線處於離線狀態�?,
         "remoteConfigureModelStep": "設定模型",
-        "remoteConfigureModelStepDesc": "先開啟服務商設定，儲存 API Key 與模型後再遠端啟動。",
+        "remoteConfigureModelStepDesc": "先開啟服務商設定，儲�?API Key 與模型後再遠端啟動�?,
         "remoteRunReadinessStep": "執行就緒檢查",
-        "remoteRunReadinessStepDesc": "為目前工具與專案蒐集最新診斷資訊。",
+        "remoteRunReadinessStepDesc": "為目前工具與專案蒐集最新診斷資訊�?,
         "remoteRunReadinessAgain": "重新執行就緒檢查",
-        "remoteRunReadinessAgainDesc": "修復問題後重新整理診斷結果。",
+        "remoteRunReadinessAgainDesc": "修復問題後重新整理診斷結果�?,
         "remoteModeLabel": "遠端",
         "remoteModeDesc": "透過 Hub 啟動此工具，方便手機控制",
         "localModeLabel": "本機",
         "launchModeLabel": "方式",
         "defaultLaunchModeLabel": "編程工具預設工作模式",
-        "defaultLaunchModeDesc": "選擇工具啟動區的預設工作模式",
+        "defaultLaunchModeDesc": "選擇工具啟動區的預設工作模�?,
         "workingDirLabel": "工作目錄",
-        "workingDirHint": "Agent 任務的預設工作目錄，留空則使用 ~/.maclaw/workspace",
+        "workingDirHint": "Agent 任務的預設工作目錄，留空則使�?~/.maclaw/workspace",
         "workingDirBrowse": "瀏覽",
         "workingDirReset": "重置",
-        "freeload": "白嫖中",
+        "freeload": "白嫖�?,
         "bigSpender": "大力氪金",
-        "skills": "技能",
-        "addSkill": "新增技能",
-        "skillName": "技能名稱",
+        "skills": "技�?,
+        "addSkill": "新增技�?,
+        "skillName": "技能名�?,
         "skillDesc": "描述",
         "skillType": "類型",
         "skillAddress": "Skill ID",
-        "skillZip": "Zip包",
+        "skillZip": "Zip�?,
         "skillPath": "路徑",
-        "skillValue": "值/路徑",
-        "skillAdded": "技能新增成功",
-        "skillDeleted": "技能刪除成功",
-        "confirmDeleteSkill": "確定要刪除此技能嗎？",
-        "noSkills": "暫無技能。",
-        "installSkills": "安裝技能",
+        "skillValue": "�?路徑",
+        "skillAdded": "技能新增成�?,
+        "skillDeleted": "技能刪除成�?,
+        "confirmDeleteSkill": "確定要刪除此技能嗎�?,
+        "noSkills": "暫無技能�?,
+        "installSkills": "安裝技�?,
         "installLocation": "安裝位置:",
         "userLocation": "用戶",
         "projectLocation": "項目",
-        "selectSkillsToInstall": "技能安裝",
+        "selectSkillsToInstall": "技能安�?,
         "installDefaultMarketplace": "安裝默認市場",
         "install": "安裝",
-        "installed": "已安裝",
+        "installed": "已安�?,
         "installing": "正在安裝...",
-        "installNotImplemented": "安裝功能暫未實現。",
+        "installNotImplemented": "安裝功能暫未實現�?,
         "pauseEnvCheck": "跳過環境檢測",
         "useWindowsTerminal": "使用 Windows Terminal",
         "envCheckIntervalPrefix": "每隔",
-        "envCheckIntervalSuffix": "日提醒檢測環境",
+        "envCheckIntervalSuffix": "日提醒檢測環�?,
         "envCheckDueTitle": "環境檢測提醒",
-        "envCheckDueMessage": "距離上次環境檢測已過{days}天，是否現在檢測？",
+        "envCheckDueMessage": "距離上次環境檢測已過{days}天，是否現在檢測�?,
         "recheckEnv": "手動檢測更新運行環境",
-        "skillRequiredError": "名稱和地址/路徑是必填項！",
-        "skillZipOnlyError": "Gemini 和 Codex 僅支持 Zip 包式技能。",
-        "skillAddError": "添加技能出錯: {error}",
-        "skillDeleteError": "刪除技能出錯: {error}",
+        "skillRequiredError": "名稱和地址/路徑是必填項�?,
+        "skillZipOnlyError": "Gemini �?Codex 僅支�?Zip 包式技能�?,
+        "skillAddError": "添加技能出�? {error}",
+        "skillDeleteError": "刪除技能出�? {error}",
         "copyLog": "複製日誌",
-        "logsCopied": "日誌已複製到剪貼板",
+        "logsCopied": "日誌已複製到剪貼�?,
         "currentVersion": "當前版本",
-        "latestVersion": "最新版本",
+        "latestVersion": "最新版�?,
         "foundNewVersionMsg": "檢查到新版本，是否立即下載更新？",
-        "packageUnavailable": "該版本的安裝包尚未發佈，請前往發佈頁面查看，或稍後再試。",
+        "packageUnavailable": "該版本的安裝包尚未發佈，請前往發佈頁面查看，或稍後再試�?,
         "visitReleasePage": "前往發佈頁面",
-        "isLatestVersion": "已是最新版本",
+        "isLatestVersion": "已是最新版�?,
         "billing": "計費",
-        "placeholderName": "例如：前端設計",
+        "placeholderName": "例如：前端設�?,
         "placeholderDesc": "描述...",
         "placeholderAddress": "@anthropics/...",
         "placeholderZip": "選擇 .zip 文件",
-        "cannotDeleteSystemSkill": "系統技能包不能刪除。",
+        "cannotDeleteSystemSkill": "系統技能包不能刪除�?,
         "systemDefault": "系統默認",
         "envCheckTitle": "MaClaw 運行環境檢測安裝",
-        "selectProvider": "選擇服務商",
-        "knownProviders": "已知服務商",
-        "providerList": "服務商列表",
-        "selectProviderTitle": "選擇 API 服務商",
-        "chinaProviders": "國內服務商",
-        "globalProviders": "國外服務商",
-        "allProviders": "全部服務商",
+        "selectProvider": "選擇服務�?,
+        "knownProviders": "已知服務�?,
+        "providerList": "服務商列�?,
+        "selectProviderTitle": "選擇 API 服務�?,
+        "chinaProviders": "國內服務�?,
+        "globalProviders": "國外服務�?,
+        "allProviders": "全部服務�?,
         "filterByRegion": "按地區篩選",
         "projectSearch": "搜尋",
         "projectSearchPlaceholder": "按名稱或路徑搜尋",
@@ -1622,96 +1622,96 @@ const translations: any = {
         "projectSortNameDesc": "名稱 Z-A",
         "projectSortPathAsc": "路徑 A-Z",
         "projectSortPathDesc": "路徑 Z-A",
-        "projectNoResults": "沒有匹配的專案",
+        "projectNoResults": "沒有匹配的專�?,
         "projectShowing": "顯示",
         "projectTotal": "總計",
-        "prevPage": "上一頁",
-        "nextPage": "下一頁",
+        "prevPage": "上一�?,
+        "nextPage": "下一�?,
         "mcpTabLocal": "本機 (Stdio)",
         "mcpTabRemote": "遠端 (HTTP)",
-        "mcpLocalCount": "個本機 MCP Server",
+        "mcpLocalCount": "個本�?MCP Server",
         "mcpImportJson": "匯入 JSON",
         "mcpAdd": "+ 新增",
-        "mcpLoading": "載入中...",
-        "mcpNoLocalServers": "暫無本機 MCP Server，點擊「+ 新增」或「匯入 JSON」來設定",
-        "mcpDisabled": "已停用",
-        "mcpRunning": "執行中",
-        "mcpNotRunning": "未執行",
+        "mcpLoading": "載入�?..",
+        "mcpNoLocalServers": "暫無本機 MCP Server，點擊�? 新增」或「匯�?JSON」來設定",
+        "mcpDisabled": "已停�?,
+        "mcpRunning": "執行�?,
+        "mcpNotRunning": "未執�?,
         "mcpEnable": "啟用",
         "mcpDisable": "停用",
         "mcpEdit": "編輯",
         "mcpDelete": "刪除",
         "mcpEnvVars": "環境變數",
         "mcpConfirmDelete": "確認刪除",
-        "mcpConfirmDeleteLocal": "確定要刪除本機 MCP Server「{name}」嗎？",
-        "mcpDeleting": "刪除中...",
+        "mcpConfirmDeleteLocal": "確定要刪除本�?MCP Server「{name}」嗎�?,
+        "mcpDeleting": "刪除�?..",
         "mcpImportJsonTitle": "匯入 JSON 設定",
-        "mcpImportJsonDesc": "貼上標準 MCP JSON 設定，支援格式如：",
+        "mcpImportJsonDesc": "貼上標準 MCP JSON 設定，支援格式如�?,
         "mcpImportJsonPlaceholder": "貼上 JSON 設定...",
         "mcpJsonFormatError": "JSON 格式錯誤",
-        "mcpJsonStructureError": "格式不正確，需要 { mcpServers: { name: { command, args, env } } }",
-        "mcpImporting": "匯入中...",
+        "mcpJsonStructureError": "格式不正確，需�?{ mcpServers: { name: { command, args, env } } }",
+        "mcpImporting": "匯入�?..",
         "mcpImport": "匯入",
         "mcpRemoteImportJsonTitle": "匯入遠端 MCP 設定",
-        "mcpRemoteImportJsonDesc": "貼上 MCP JSON 設定代碼（支援 Kiro / Cursor / Claude Desktop 格式）：",
-        "mcpRemoteJsonStructureError": "格式不正確，需要 { mcpServers: { name: { url, headers } } } 或 { name: { endpoint_url } }",
-        "mcpRemoteJsonMissingUrl": "伺服器「{name}」缺少 url 或 endpoint_url 欄位",
+        "mcpRemoteImportJsonDesc": "貼上 MCP JSON 設定代碼（支�?Kiro / Cursor / Claude Desktop 格式）：",
+        "mcpRemoteJsonStructureError": "格式不正確，需�?{ mcpServers: { name: { url, headers } } } �?{ name: { endpoint_url } }",
+        "mcpRemoteJsonMissingUrl": "伺服器「{name}」缺�?url �?endpoint_url 欄位",
         "mcpEditLocalServer": "編輯本機 MCP Server",
         "mcpAddLocalServer": "新增本機 MCP Server",
         "mcpNameLabel": "名稱",
         "mcpNameRequired": "名稱不能為空",
         "mcpCommandLabel": "指令 (command)",
         "mcpCommandRequired": "指令不能為空",
-        "mcpArgsLabel": "參數 (args)，每行一個",
+        "mcpArgsLabel": "參數 (args)，每行一�?,
         "mcpEnvLabel": "環境變數 (env)",
         "mcpAddEnvVar": "+ 新增環境變數",
-        "mcpSubmitting": "提交中...",
+        "mcpSubmitting": "提交�?..",
         "mcpSave": "儲存",
-        "mcpAutoStartOn": "開機自啟開",
-        "mcpAutoStartOff": "開機自啟關",
-        "mcpAutoStartStatus": "啟動時",
-        "mcpAutoStartEnabled": "啟動時自動啟動",
+        "mcpAutoStartOn": "開機自啟�?,
+        "mcpAutoStartOff": "開機自啟�?,
+        "mcpAutoStartStatus": "啟動�?,
+        "mcpAutoStartEnabled": "啟動時自動啟�?,
         "mcpAutoStartDisabled": "啟動時不自動啟動",
-        "mcpAutoStartDisabledHint": "請先啟用該服務，再設定自動啟動",
+        "mcpAutoStartDisabledHint": "請先啟用該服務，再設定自動啟�?,
         "mcpAutoStartCheckbox": "程式啟動時自動啟動該服務",
         "mcpServersRegistered": "個已註冊 MCP Server",
         "mcpRegisterServer": "+ 註冊 MCP Server",
         "mcpNoRemoteServers": "暫無已註冊的 MCP Server",
         "mcpColName": "名稱",
         "mcpColEndpoint": "端點 URL",
-        "mcpColHealth": "健康狀態",
-        "mcpColTools": "工具數",
+        "mcpColHealth": "健康狀�?,
+        "mcpColTools": "工具�?,
         "mcpColActions": "操作",
         "mcpHealthy": "健康",
         "mcpSlow": "緩慢",
-        "mcpUnavailable": "不可用",
-        "mcpChecking": "檢測中…",
-        "mcpNotChecked": "未檢測",
+        "mcpUnavailable": "不可�?,
+        "mcpChecking": "檢測中�?,
+        "mcpNotChecked": "未檢�?,
         "mcpCollapse": "收起",
         "mcpTools": "工具",
-        "mcpConfirmDeleteRemote": "確定要註銷 MCP Server「{name}」嗎？此操作不可撤銷。",
+        "mcpConfirmDeleteRemote": "確定要註�?MCP Server「{name}」嗎？此操作不可撤銷�?,
         "mcpEditServer": "編輯 MCP Server",
         "mcpRegisterServerTitle": "註冊 MCP Server",
         "mcpEndpointLabel": "端點 URL",
         "mcpEndpointRequired": "端點 URL 不能為空",
         "mcpAuthType": "認證方式",
-        "mcpAuthNone": "無認證",
+        "mcpAuthNone": "無認�?,
         "mcpAuthApiKey": "API Key",
         "mcpAuthBearer": "Bearer Token",
         "mcpEnterApiKey": "輸入 API Key",
         "mcpEnterBearer": "輸入 Bearer Token",
         "mcpCustomHeaders": "自訂 Headers",
         "mcpAddHeader": "新增",
-        "mcpNoCustomHeaders": "無自訂 Headers",
+        "mcpNoCustomHeaders": "無自�?Headers",
         "mcpRegister": "註冊",
         "mcpHealthRecord": "健康檢查記錄",
-        "mcpHealthStatus": "狀態",
+        "mcpHealthStatus": "狀�?,
         "mcpFailCount": "失敗次數",
-        "mcpLastCheck": "最近檢查",
+        "mcpLastCheck": "最近檢�?,
         "mcpCheckNow": "立即檢查",
         "mcpLoadingTools": "載入工具清單...",
         "mcpToolList": "工具清單",
-        "mcpNoDescription": "無描述",
+        "mcpNoDescription": "無描�?,
         "mcpNoTools": "暫無工具"
     }
 };
@@ -1822,7 +1822,7 @@ function App() {
     //
     // When the webview is transparent (Windows 10), html/body and
     // .app-viewport backgrounds are set to transparent so the CSS
-    // border-radius on #App clips to true transparency — no corner
+    // border-radius on #App clips to true transparency �?no corner
     // artifacts regardless of theme.
     //
     // When the webview is opaque (Windows 11 / macOS / Linux), html/body
@@ -1845,7 +1845,7 @@ function App() {
                 document.body.style.backgroundColor = bg;
             }
         }).catch(() => {
-            // Non-Wails environment — fall back to theme color sync.
+            // Non-Wails environment �?fall back to theme color sync.
             const appEl = document.getElementById('App');
             const bg = appEl
                 ? getComputedStyle(appEl).getPropertyValue('--theme-page-bg').trim()
@@ -1954,7 +1954,7 @@ function App() {
     // Brand info from backend
     const [brandInfo, setBrandInfo] = useState<{id: string, displayName: string, displayNameCN: string, slogan: string, author: string, businessContact: string, websiteURL: string, githubURL: string, iconPath: string} | null>(null);
     const currentIcon = brandInfo?.id === 'qianxin' ? qianxinIcon : appIcon;
-    const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '码卡龙 MaClaw';
+    const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '码卡�?MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';
 
     // MaClaw LLM online status (lobster indicator)
@@ -2398,7 +2398,7 @@ function App() {
                     if (idx !== -1) setActiveTab(idx);
 
                     // NOTE: removed auto-popup of provider config when no API key is set.
-                    // Users can open it manually via the "服务商配置" button.
+                    // Users can open it manually via the "服务商配�? button.
                 }
             }
         }).catch(err => {
@@ -2416,7 +2416,7 @@ function App() {
                 }).catch(err2 => {
                     console.error("Retry load config also failed:", err2);
                     // Last resort: set a minimal default config so the UI is not stuck
-                    // on "加载配置中" forever. User can still use the app and reconfigure.
+                    // on "加载配置�? forever. User can still use the app and reconfigure.
                     setConfig(new main.AppConfig({}));
                 });
             }, 1500);
@@ -2435,7 +2435,7 @@ function App() {
                     setChatFontSize(s);
                 }
             }).catch(() => {});
-            // Sync with tray menu changes — but don't yank the user away from
+            // Sync with tray menu changes �?but don't yank the user away from
             // the AI assistant panel.  'ai' is never persisted as active_tool,
             // so a config-changed event would always overwrite it.
             if (navTabRef.current !== 'ai') {
@@ -2532,7 +2532,7 @@ function App() {
 
         // Listen for background tool installation events
         EventsOn("tool-checking", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `检查 ${toolName}...` : `Checking ${toolName}...`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `检�?${toolName}...` : `Checking ${toolName}...`);
             setBackgroundInstallingTool("");  // Clear previous tool's installing state
         });
 
@@ -2548,7 +2548,7 @@ function App() {
 
         EventsOn("tool-installed", (toolName: string) => {
             console.log("Tool installed in background:", toolName);
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `✓ ${toolName} 安装完成` : `✓ ${toolName} installed`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `�?${toolName} 安装完成` : `�?${toolName} installed`);
             setBackgroundInstallingTool("");
             setTimeout(() => setBackgroundInstallStatus(""), 3000);
             // Refresh tool statuses
@@ -2559,7 +2559,7 @@ function App() {
 
         EventsOn("tool-updated", (toolName: string) => {
             console.log("Tool updated in background:", toolName);
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `✓ ${toolName} 已更新` : `✓ ${toolName} updated`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `�?${toolName} 已更新` : `�?${toolName} updated`);
             setBackgroundInstallingTool("");
             setTimeout(() => setBackgroundInstallStatus(""), 3000);
             // Refresh tool statuses
@@ -2586,7 +2586,7 @@ function App() {
 
         // Refresh recent tasks list when ProjectIndex changes.
         // The event fires from ProjectIndex.OnChanged (single source) whenever
-        // any memory entry updates the project index — covers all write paths
+        // any memory entry updates the project index �?covers all write paths
         // (sedimentTaskEntry, workflow_artifact_saver, memorySink, archiver, etc.).
         // Debounce: during an agent loop, Store.Save may fire 10+ times in quick
         // succession. We coalesce into a single refresh 800ms after the last event.
@@ -2624,10 +2624,10 @@ function App() {
 
     // Poll AgentNet running status so the globe indicator lights up without
     // requiring the user to visit the settings panel first.
-    // When the settings tab is active, AgentNetPanel also polls — but the
+    // When the settings tab is active, AgentNetPanel also polls �?but the
     // lightweight AgentNetIsRunning() call is idempotent, so the overlap is
     // harmless and keeps the globe indicator responsive on tab switches.
-    // NOTE: Only poll when agentnet_enabled — if disabled, report as not running.
+    // NOTE: Only poll when agentnet_enabled �?if disabled, report as not running.
     const agentNetAutoStarted = useRef(false);
     const agentNetPrevUp = useRef(false);
     const agentNetEnabledRef = useRef(!!config?.agentnet_enabled);
@@ -2648,7 +2648,7 @@ function App() {
             }
             AgentNetIsRunning().then(up => {
                 if (!up && agentNetPrevUp.current) {
-                    // Was online, now looks offline — quick retry in 2s to
+                    // Was online, now looks offline �?quick retry in 2s to
                     // avoid flashing the icon gray on a transient hiccup.
                     retryTimer = setTimeout(() => {
                         retryTimer = null;
@@ -2680,11 +2680,11 @@ function App() {
     // have to visit the settings panel to light up the globe icon.
     // When disabled, actively stop any residual daemon.
     useEffect(() => {
-        // Skip when config hasn't loaded yet — don't kill a daemon before
+        // Skip when config hasn't loaded yet �?don't kill a daemon before
         // we know the user's preference.
         if (!config) return;
         if (!config.agentnet_enabled) {
-            // Disabled — stop residual daemon if it's still running.
+            // Disabled �?stop residual daemon if it's still running.
             AgentNetIsRunning().then(up => {
                 if (up) {
                     AgentNetStopDaemon().catch(() => {});
@@ -2800,7 +2800,7 @@ function App() {
         }
 
         if (tool === 'message') {
-            // message tab removed — redirect to AI assistant
+            // message tab removed �?redirect to AI assistant
             switchTool('ai');
             return;
         }
@@ -2816,7 +2816,7 @@ function App() {
         }
 
         if (config) {
-            // Don't persist 'ai' as active_tool — it's a UI nav state, not a coding tool
+            // Don't persist 'ai' as active_tool �?it's a UI nav state, not a coding tool
             if (tool !== 'ai') {
                 const newConfig = new main.AppConfig({ ...config, active_tool: tool });
                 setConfig(newConfig);
@@ -3348,7 +3348,7 @@ function App() {
         setShowToolModelList(true);
         setShowModelRecommend(false);
         try {
-            // Detect protocol from wire_api field: "anthropic" → anthropic, else openai
+            // Detect protocol from wire_api field: "anthropic" �?anthropic, else openai
             const protocol = model.wire_api === "anthropic" ? "anthropic" : "openai";
             const models = await FetchProviderModels(model.model_url, model.api_key, protocol);
             setToolModelList(models || []);
@@ -3514,18 +3514,10 @@ function App() {
 
         const runSave = async () => {
             if (saveSeq !== defaultLaunchModeSaveSeq.current) return;
-            let baseConfig = config;
-            try {
-                baseConfig = await LoadConfig();
-            } catch {
-                // Keep the user's click responsive even if a refresh races with this save.
-            }
-            if (saveSeq !== defaultLaunchModeSaveSeq.current) return;
-            const nextConfig = new main.AppConfig({ ...baseConfig, ...patch });
-            await SaveConfig(nextConfig);
+            await SetDefaultLaunchMode(mode);
             if (saveSeq === defaultLaunchModeSaveSeq.current) {
                 pendingDefaultLaunchMode.current = null;
-                setConfig(nextConfig);
+                setConfig((prev) => new main.AppConfig({ ...(prev || optimisticConfig), ...patch }));
             }
         };
 
@@ -3831,7 +3823,7 @@ ${instruction}`;
                             </button>
                         ) : (
                             <button onClick={Quit} className="btn-hide" style={{ borderColor: 'var(--theme-danger)', color: 'var(--theme-danger)', padding: '4px 12px' }}>
-                                {lang === 'zh-Hans' ? '退出程序' : 'Quit'}
+                                {lang === 'zh-Hans' ? '退出程�? : 'Quit'}
                             </button>
                         )
                     )}
@@ -3873,17 +3865,17 @@ ${instruction}`;
         {
             id: 'ui' as const,
             label: lang === 'zh-Hans' ? '界面设置' : lang === 'zh-Hant' ? '介面設定' : 'UI Config',
-            desc: lang === 'zh-Hans' ? '界面缩放与显示行为' : lang === 'zh-Hant' ? '介面縮放與顯示行為' : 'UI scaling and display behavior',
+            desc: lang === 'zh-Hans' ? '界面缩放与显示行�? : lang === 'zh-Hant' ? '介面縮放與顯示行�? : 'UI scaling and display behavior',
         },
         {
             id: 'display' as const,
-            label: lang === 'zh-Hans' ? '开发工具' : lang === 'zh-Hant' ? '開發工具' : 'Dev CLI',
-            desc: lang === 'zh-Hans' ? '工具显示与启动行为' : lang === 'zh-Hant' ? '工具顯示與啟動行為' : 'Tool visibility and startup behavior',
+            label: lang === 'zh-Hans' ? '开发工�? : lang === 'zh-Hant' ? '開發工具' : 'Dev CLI',
+            desc: lang === 'zh-Hans' ? '工具显示与启动行�? : lang === 'zh-Hant' ? '工具顯示與啟動行�? : 'Tool visibility and startup behavior',
         },
         {
             id: 'remote' as const,
             label: lang === 'zh-Hans' ? '远程连接' : lang === 'zh-Hant' ? '遠端連線' : 'Remote',
-            desc: lang === 'zh-Hans' ? '远程服务器地址与连接入口' : lang === 'zh-Hant' ? '遠端伺服器位址與連線入口' : 'Server addresses only',
+            desc: lang === 'zh-Hans' ? '远程服务器地址与连接入�? : lang === 'zh-Hant' ? '遠端伺服器位址與連線入口' : 'Server addresses only',
         },
         {
             id: 'llm' as const,
@@ -3903,7 +3895,7 @@ ${instruction}`;
         {
             id: 'role' as const,
             label: lang === 'zh-Hans' ? 'MaClaw 角色' : lang === 'zh-Hant' ? 'MaClaw 角色' : 'MaClaw Role',
-            desc: lang === 'zh-Hans' ? '自定义 MaClaw Agent 名称与角色描述' : lang === 'zh-Hant' ? '自訂 MaClaw Agent 名稱與角色描述' : 'Customize MaClaw Agent name and role description',
+            desc: lang === 'zh-Hans' ? '自定�?MaClaw Agent 名称与角色描�? : lang === 'zh-Hant' ? '自訂 MaClaw Agent 名稱與角色描�? : 'Customize MaClaw Agent name and role description',
         },
         {
             id: 'memory' as const,
@@ -3913,7 +3905,7 @@ ${instruction}`;
         {
             id: 'embedding' as const,
             label: lang === 'zh-Hans' ? 'AI模型' : lang === 'zh-Hant' ? 'AI模型' : 'AI Model',
-            desc: lang === 'zh-Hans' ? 'AI模型管理（向量搜索、屏幕解析、语音等）' : lang === 'zh-Hant' ? 'AI模型管理（向量搜索、螢幕解析、語音等）' : 'AI model management (vector search, screen parsing, voice, etc.)',
+            desc: lang === 'zh-Hans' ? 'AI模型管理（向量搜索、屏幕解析、语音等�? : lang === 'zh-Hant' ? 'AI模型管理（向量搜索、螢幕解析、語音等�? : 'AI model management (vector search, screen parsing, voice, etc.)',
         },
         {
             id: 'agentnet' as const,
@@ -3928,7 +3920,7 @@ ${instruction}`;
         {
             id: 'security' as const,
             label: lang === 'zh-Hans' ? '安全管理' : lang === 'zh-Hant' ? '安全管理' : 'Security',
-            desc: lang === 'zh-Hans' ? '安全策略模式与审计日志' : lang === 'zh-Hant' ? '安全策略模式與稽核日誌' : 'Security policy mode and audit log',
+            desc: lang === 'zh-Hans' ? '安全策略模式与审计日�? : lang === 'zh-Hant' ? '安全策略模式與稽核日�? : 'Security policy mode and audit log',
         },
         {
             id: 'system' as const,
@@ -3975,7 +3967,7 @@ ${instruction}`;
                         <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '44px', height: '44px', filter: 'drop-shadow(0 3px 10px rgba(217, 75, 61, 0.18))' }} />
                     </div>
 
-                    {/* Primary: AI 助手 — always visible at top */}
+                    {/* Primary: AI 助手 �?always visible at top */}
                     <div
                         className={`sidebar-item left-nav-item left-nav-item--ai ${navTab === 'ai' ? 'active' : ''}`}
                         onClick={() => { switchTool('ai'); }}
@@ -3995,7 +3987,7 @@ ${instruction}`;
                             { id: 'remote', configKey: 'show_nav_monitor', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem', position: 'relative' }}>📡{activeTaskCount > 0 && (<span style={{ position: 'absolute', top: '-5px', right: '-8px', minWidth: '16px', height: '16px', lineHeight: '16px', fontSize: '9px', fontWeight: 700, textAlign: 'center', padding: activeTaskCount > 99 ? '0 2px' : '0 3px', borderRadius: '999px', background: 'var(--theme-danger)', color: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)', zIndex: 10 }}>{activeTaskCount > 99 ? '99+' : activeTaskCount}</span>)}</span>, label: lang === 'zh-Hans' ? '监控' : lang === 'zh-Hant' ? '監控' : 'Monitor' },
                             { id: 'skills', configKey: 'show_nav_skills', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🧩</span>, label: t("skills") },
                             { id: 'mcp', configKey: 'show_nav_mcp', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🔌</span>, label: 'MCP' },
-                            ...(gossipAllowed ? [{ id: 'gossip', configKey: 'show_nav_gossip', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🗣️</span>, label: t("gossip") }] : []),
+                            ...(gossipAllowed ? [{ id: 'gossip', configKey: 'show_nav_gossip', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🗣�?/span>, label: t("gossip") }] : []),
                             { id: 'agentnet', configKey: 'show_nav_agentnet', icon: <img src={agentnetIcon} alt="AgentNet" style={{ width: '22px', height: '22px', margin: 0 }} />, label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet' },
                         ];
                         const isPinned = (item: typeof navItems[0]) => (config as any)?.[item.configKey] !== false;
@@ -4022,7 +4014,7 @@ ${instruction}`;
                                     style={{ flexDirection: 'column', padding: '4px 0', width: '100%', gap: '2px', borderLeft: 'none', borderRight: '3px solid transparent', justifyContent: 'center', cursor: 'pointer', opacity: 0.6 }}
                                     title={sidebarExpanded ? (lang === 'zh-Hans' ? '收起' : 'Collapse') : (lang === 'zh-Hans' ? '更多' : 'More')}
                                 >
-                                    <span style={{ fontSize: '1rem', lineHeight: 1 }}>{sidebarExpanded ? '▴' : '···'}</span>
+                                    <span style={{ fontSize: '1rem', lineHeight: 1 }}>{sidebarExpanded ? '�? : '···'}</span>
                                 </div>
                             )}
 
@@ -4053,10 +4045,10 @@ ${instruction}`;
                     </div>
                 </div>
 
-                {/* Middle column: tool selector + recent tasks — only visible on AI assistant tab */}
+                {/* Middle column: tool selector + recent tasks �?only visible on AI assistant tab */}
                 {navTab === 'ai' && (
                 <div style={{ width: '160px', flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--theme-border)', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
-                    {/* Tool selector — click to expand/collapse tool list */}
+                    {/* Tool selector �?click to expand/collapse tool list */}
                     <div style={{ flexShrink: 0, borderBottom: '1px solid var(--theme-border)' }}>
                         <div onClick={() => setToolDropdownOpen(prev => !prev)}
                             style={{ display: 'flex', alignItems: 'center', height: '32px', padding: '0 8px', gap: '5px', cursor: 'pointer' }}>
@@ -4064,9 +4056,9 @@ ${instruction}`;
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.72rem', fontWeight: 600, color: 'var(--theme-text-primary)', flex: 1 }}>
                                 {activeTool === 'claude' ? 'Claude Code' : activeTool === 'gemini' ? 'Gemini CLI' : activeTool === 'codex' ? 'CodeX' : activeTool === 'opencode' ? 'OpenCode' : activeTool === 'codebuddy' ? 'CodeBuddy' : activeTool === 'cursor' ? 'Cursor Agent' : activeTool === 'iflow' ? 'iFlow CLI' : activeTool === 'kilo' ? 'Kilo Code' : activeTool}
                             </span>
-                            <span style={{ fontSize: '0.55rem', opacity: 0.5, flexShrink: 0 }}>{toolDropdownOpen ? '▲' : '▼'}</span>
+                            <span style={{ fontSize: '0.55rem', opacity: 0.5, flexShrink: 0 }}>{toolDropdownOpen ? '�? : '�?}</span>
                         </div>
-                        {/* Expanded tool list — pushes content down, no overlay needed */}
+                        {/* Expanded tool list �?pushes content down, no overlay needed */}
                         {toolDropdownOpen && (
                             <div style={{ padding: '0 4px 4px' }}>
                                 {([
@@ -4085,7 +4077,7 @@ ${instruction}`;
                                     >
                                         <img src={tool.icon} style={{ width: '14px', height: '14px' }} alt="" />
                                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tool.name}</span>
-                                        {activeTool === tool.id && <span style={{ fontSize: '0.6rem', opacity: 0.5 }}>✓</span>}
+                                        {activeTool === tool.id && <span style={{ fontSize: '0.6rem', opacity: 0.5 }}>�?/span>}
                                     </div>
                                 ))}
                             </div>
@@ -4095,11 +4087,11 @@ ${instruction}`;
                     {/* Recent tasks list */}
                     <div style={{ flex: 1, overflowY: 'auto', padding: '4px' }}>
                         <div style={{ padding: '8px 6px', fontSize: '0.68rem', color: 'var(--theme-text-muted)', fontWeight: 600 }}>
-                            {lang === 'zh-Hans' ? '最近任务' : lang === 'zh-Hant' ? '最近任務' : 'Recent Tasks'}
+                            {lang === 'zh-Hans' ? '最近任�? : lang === 'zh-Hant' ? '最近任�? : 'Recent Tasks'}
                         </div>
                         {recentProjects.length === 0 ? (
                             <div style={{ padding: '16px 8px', textAlign: 'center', fontSize: '0.7rem', color: 'var(--theme-text-muted)', opacity: 0.5 }}>
-                                {lang === 'zh-Hans' ? '暂无最近任务' : lang === 'zh-Hant' ? '暫無最近任務' : 'No recent tasks'}
+                                {lang === 'zh-Hans' ? '暂无最近任�? : lang === 'zh-Hant' ? '暫無最近任�? : 'No recent tasks'}
                             </div>
                         ) : (
                             recentProjects.map(proj => (
@@ -4112,7 +4104,7 @@ ${instruction}`;
                                         // activeRound.phase !== 'idle', leaving the UI stuck.
                                         if (aiAssistant.sending) {
                                             const confirmed = await showConfirm(
-                                                "当前有任务正在执行。是否中止当前任务并切换？",
+                                                "当前有任务正在执行。是否中止当前任务并切换�?,
                                                 "切换任务",
                                             );
                                             if (!confirmed) return;
@@ -4187,9 +4179,9 @@ ${instruction}`;
                                 style={{ position: 'fixed', left: taskContextMenu.x, top: taskContextMenu.y, zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', padding: '4px 0', minWidth: '120px' }}
                             >
                                 {[
-                                    { label: lang === 'zh-Hans' ? '重命名' : 'Rename', icon: '✏️', action: () => { setRenamingTaskPath(taskContextMenu.projectPath); setRenameValue(taskContextMenu.name); setTaskContextMenu(null); } },
+                                    { label: lang === 'zh-Hans' ? '重命�? : 'Rename', icon: '✏️', action: () => { setRenamingTaskPath(taskContextMenu.projectPath); setRenameValue(taskContextMenu.name); setTaskContextMenu(null); } },
                                     { label: taskContextMenu.pinned ? (lang === 'zh-Hans' ? '取消置顶' : 'Unpin') : (lang === 'zh-Hans' ? '置顶' : 'Pin'), icon: '📌', action: async () => { await PinTask(taskContextMenu.projectPath, !taskContextMenu.pinned); SearchProjects("", 10).then(r => setRecentProjects(r || [])).catch(() => {}); setTaskContextMenu(null); } },
-                                    { label: lang === 'zh-Hans' ? '删除' : 'Remove', icon: '🗑️', action: async () => { await HideTask(taskContextMenu.projectPath); SearchProjects("", 10).then(r => setRecentProjects(r || [])).catch(() => {}); setTaskContextMenu(null); } },
+                                    { label: lang === 'zh-Hans' ? '删除' : 'Remove', icon: '🗑�?, action: async () => { await HideTask(taskContextMenu.projectPath); SearchProjects("", 10).then(r => setRecentProjects(r || [])).catch(() => {}); setTaskContextMenu(null); } },
                                 ].map(item => (
                                     <div key={item.label} onClick={item.action}
                                         style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', cursor: 'pointer', fontSize: '0.7rem', color: 'var(--theme-text-primary)', transition: 'background 0.1s' }}
@@ -4222,7 +4214,7 @@ ${instruction}`;
                         </div>
                         {/* Token usage */}
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.5rem', color: 'var(--theme-text-muted)', padding: '0 2px' }}>
-                            <span style={{ fontWeight: 600 }}>{sidebarCurrentProviderTokenUsage.provider || '—'}</span>
+                            <span style={{ fontWeight: 600 }}>{sidebarCurrentProviderTokenUsage.provider || '�?}</span>
                             <span style={{ fontVariantNumeric: 'tabular-nums' }} title={sidebarCurrentProviderTokenUsage.total.toLocaleString() + ' tokens'}>{(() => {
                                 const t = sidebarCurrentProviderTokenUsage.total;
                                 if (t >= 1_000_000_000) return (t / 1_000_000_000).toFixed(1) + 'B';
@@ -4367,7 +4359,7 @@ ${instruction}`;
                                             '--wails-draggable': 'no-drag'
                                         } as any}
                                     >
-                                        {lang === 'zh-Hans' || lang === 'zh-Hant' ? '服务商配置' : 'Provider Config'}
+                                        {lang === 'zh-Hans' || lang === 'zh-Hant' ? '服务商配�? : 'Provider Config'}
                                     </button>
                                     {isSkillTool(navTab) && (
                                         <button
@@ -4439,7 +4431,7 @@ ${instruction}`;
                                         gap: '4px',
                                     }}
                                 >
-                                    ← {lang === 'en' ? 'Back to AI Assistant' : lang === 'zh-Hant' ? '返回 AI 助手' : '返回 AI 助手'}
+                                    �?{lang === 'en' ? 'Back to AI Assistant' : lang === 'zh-Hant' ? '返回 AI 助手' : '返回 AI 助手'}
                                 </button>
                             </div>
                             <div style={{
@@ -4530,7 +4522,7 @@ ${instruction}`;
                                         { name: '智谱编程', url: 'https://bigmodel.cn/glm-coding', isRelay: false, hasSubscription: true },
                                         { name: '月之暗面', url: 'https://www.kimi.com/membership/pricing?from=upgrade_plan&track_id=1d2446f5-f45f-4ae5-961e-c0afe936a115', isRelay: false, hasSubscription: true },
                                         { name: '豆包', url: 'https://www.volcengine.com/activity/codingplan', isRelay: false, hasSubscription: true },
-                                        { name: '腾讯云', url: 'https://cloud.tencent.com/act/pro/codingplan', isRelay: false, hasSubscription: true },
+                                        { name: '腾讯�?, url: 'https://cloud.tencent.com/act/pro/codingplan', isRelay: false, hasSubscription: true },
                                         { name: '讯飞星辰', url: 'https://www.xfyun.cn/doc/spark/CodingPlan.html', isRelay: false, hasSubscription: true },
                                         { name: 'MiniMax', url: 'https://platform.minimaxi.com/user-center/payment/coding-plan', isRelay: false, hasSubscription: true },
                                         { name: '百度千帆', url: 'https://cloud.baidu.com/product/codingplan.html', isRelay: false, hasSubscription: true },
@@ -4538,7 +4530,7 @@ ${instruction}`;
                                         { name: '小米', url: 'https://platform.xiaomimimo.com/#/console/api-keys', isRelay: false, hasSubscription: false, isBilling: true },
                                         { name: '摩尔线程', url: 'https://code.mthreads.com/', isRelay: false, hasSubscription: true },
                                         { name: '快手', url: 'https://www.streamlake.com/marketing/coding-plan', isRelay: false, hasSubscription: true },
-                                        { name: '阿里云', url: 'https://coding.dashscope.aliyuncs.com/', isRelay: false, hasSubscription: true },
+                                        { name: '阿里�?, url: 'https://coding.dashscope.aliyuncs.com/', isRelay: false, hasSubscription: true },
                                     ].map((provider, index) => (
                                         <div
                                             key={index}
@@ -4794,7 +4786,7 @@ ${instruction}`;
                                     <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("language")}</label>
                                     <select value={lang} onChange={handleLangChange} className="form-input" style={{ width: 'auto', fontSize: '0.8rem', padding: '2px 8px', height: '28px' }}>
                                         <option value="en">English</option>
-                                        <option value="zh-Hans">简体中文</option>
+                                        <option value="zh-Hans">简体中�?/option>
                                         <option value="zh-Hant">繁體中文</option>
                                     </select>
                                 </div>
@@ -5092,10 +5084,10 @@ ${instruction}`;
                                 {/* IM sub-tabs */}
                                 <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap' }}>
                                     {([
-                                        { key: 'qq' as const, label: lang === 'zh-Hans' ? 'QQ 机器人' : lang === 'zh-Hant' ? 'QQ 機器人' : 'QQ Bot' },
+                                        { key: 'qq' as const, label: lang === 'zh-Hans' ? 'QQ 机器�? : lang === 'zh-Hant' ? 'QQ 機器�? : 'QQ Bot' },
                                         { key: 'telegram' as const, label: 'Telegram Bot' },
                                         { key: 'weixin' as const, label: lang === 'zh-Hans' ? '微信' : lang === 'zh-Hant' ? '微信' : 'WeChat' },
-                                        { key: 'thirdparty' as const, label: lang === 'zh-Hans' ? '第三方软件接入' : lang === 'zh-Hant' ? '第三方軟體接入' : 'Third-party Access' },
+                                        { key: 'thirdparty' as const, label: lang === 'zh-Hans' ? '第三方软件接�? : lang === 'zh-Hant' ? '第三方軟體接�? : 'Third-party Access' },
                                         ...(brandInfo?.id === 'qianxin' ? [{ key: 'lansenger' as const, label: lang === 'zh-Hans' ? '蓝信' : lang === 'zh-Hant' ? '藍信' : 'Lansenger' }] : []),
                                     ]).map((t) => (
                                         <button
@@ -5124,9 +5116,9 @@ ${instruction}`;
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
-                                            ? '配置你自己的 QQ 机器人，通过 QQ 与 MaClaw Agent 对话。'
+                                            ? '配置你自己的 QQ 机器人，通过 QQ �?MaClaw Agent 对话�?
                                             : lang === 'zh-Hant'
-                                            ? '配置你自己的 QQ 機器人，透過 QQ 與 MaClaw Agent 對話。'
+                                            ? '配置你自己的 QQ 機器人，透過 QQ �?MaClaw Agent 對話�?
                                             : 'Configure your own QQ Bot to chat with MaClaw Agent via QQ.'}
                                     </p>
 
@@ -5151,7 +5143,7 @@ ${instruction}`;
                                                     }
                                                 }}
                                             />
-                                            {lang === 'zh-Hans' ? '启用 QQ 机器人' : lang === 'zh-Hant' ? '啟用 QQ 機器人' : 'Enable QQ Bot'}
+                                            {lang === 'zh-Hans' ? '启用 QQ 机器�? : lang === 'zh-Hant' ? '啟用 QQ 機器�? : 'Enable QQ Bot'}
                                         </label>
                                         <button
                                             type="button"
@@ -5178,7 +5170,7 @@ ${instruction}`;
                                                     background: qqBotStatus === 'connected' ? 'var(--theme-success-bg)' : qqBotStatus === 'connecting' || qqBotStatus === 'reconnecting' ? 'var(--theme-warning-bg)' : 'var(--theme-danger-bg)',
                                                     color: qqBotStatus === 'connected' ? 'var(--theme-success)' : qqBotStatus === 'connecting' || qqBotStatus === 'reconnecting' ? 'var(--theme-warning)' : 'var(--theme-danger)',
                                                 }}>
-                                                    {qqBotStatus === 'connected' ? '● 已连接' : qqBotStatus === 'connecting' ? '◌ 连接中...' : qqBotStatus === 'reconnecting' ? '◌ 重连中...' : qqBotStatus === 'error' ? '✕ 错误' : '○ 未连接'}
+                                                    {qqBotStatus === 'connected' ? '�?已连�? : qqBotStatus === 'connecting' ? '�?连接�?..' : qqBotStatus === 'reconnecting' ? '�?重连�?..' : qqBotStatus === 'error' ? '�?错误' : '�?未连�?}
                                                 </span>
                                                 <button
                                                     type="button"
@@ -5202,7 +5194,7 @@ ${instruction}`;
                                     {/* 单机/多机 mode selector */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
                                         <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>
-                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
+                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道�? : 'Mode:'}
                                         </span>
                                         {[
                                             { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🖥 单机' : '🖥 Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本地 LLM 直连' : 'Direct local LLM' },
@@ -5260,7 +5252,7 @@ ${instruction}`;
                                                 type="password"
                                                 value={config?.qqbot_app_secret || ''}
                                                 onChange={(e) => saveRemoteConfigField({ qqbot_app_secret: e.target.value } as any)}
-                                                placeholder="••••••••"
+                                                placeholder="•••••••�?
                                                 style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }}
                                             />
                                         </div>
@@ -5273,9 +5265,9 @@ ${instruction}`;
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
-                                            ? '配置你自己的 Telegram Bot，通过 Telegram 与 MaClaw Agent 对话。'
+                                            ? '配置你自己的 Telegram Bot，通过 Telegram �?MaClaw Agent 对话�?
                                             : lang === 'zh-Hant'
-                                            ? '配置你自己的 Telegram Bot，透過 Telegram 與 MaClaw Agent 對話。'
+                                            ? '配置你自己的 Telegram Bot，透過 Telegram �?MaClaw Agent 對話�?
                                             : 'Configure your own Telegram Bot to chat with MaClaw Agent via Telegram.'}
                                     </p>
 
@@ -5327,7 +5319,7 @@ ${instruction}`;
                                                     background: telegramStatus === 'connected' ? 'var(--theme-success-bg)' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? 'var(--theme-warning-bg)' : 'var(--theme-danger-bg)',
                                                     color: telegramStatus === 'connected' ? 'var(--theme-success)' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? 'var(--theme-warning)' : 'var(--theme-danger)',
                                                 }}>
-                                                    {telegramStatus === 'connected' ? '● 已连接' : telegramStatus === 'connecting' ? '◌ 连接中...' : telegramStatus === 'reconnecting' ? '◌ 重连中...' : telegramStatus === 'error' ? '✕ 错误' : '○ 未连接'}
+                                                    {telegramStatus === 'connected' ? '�?已连�? : telegramStatus === 'connecting' ? '�?连接�?..' : telegramStatus === 'reconnecting' ? '�?重连�?..' : telegramStatus === 'error' ? '�?错误' : '�?未连�?}
                                                 </span>
                                                 <button
                                                     type="button"
@@ -5351,7 +5343,7 @@ ${instruction}`;
                                     {/* 单机/多机 mode selector */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
                                         <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>
-                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
+                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道�? : 'Mode:'}
                                         </span>
                                         {[
                                             { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🖥 单机' : '🖥 Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本地 LLM 直连' : 'Direct local LLM' },
@@ -5412,7 +5404,7 @@ ${instruction}`;
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans' || lang === 'zh-Hant'
-                                            ? '扫码登录微信，通过微信与 MaClaw Agent 对话。'
+                                            ? '扫码登录微信，通过微信�?MaClaw Agent 对话�?
                                             : 'Scan QR code to log in to WeChat and chat with MaClaw Agent.'}
                                     </p>
 
@@ -5429,7 +5421,7 @@ ${instruction}`;
                                                 : ['connecting', 'reconnecting', 'paused'].includes(weixinStatus) ? 'var(--theme-warning)'
                                                 : 'var(--theme-danger)',
                                         }}>
-                                            {{ connected: '● 已连接', connecting: '◌ 连接中...', reconnecting: '◌ 重连中...', paused: '◌ 已暂停', error: '✕ 错误' }[weixinStatus] || '○ 未连接'}
+                                            {{ connected: '�?已连�?, connecting: '�?连接�?..', reconnecting: '�?重连�?..', paused: '�?已暂�?, error: '�?错误' }[weixinStatus] || '�?未连�?}
                                         </span>
                                         {(config as any)?.weixin_account_id && (
                                             <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
@@ -5461,7 +5453,7 @@ ${instruction}`;
                                     {/* 单机/多机 mode selector */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
                                         <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>
-                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
+                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道�? : 'Mode:'}
                                         </span>
                                         {((() => {
                                             const isCN = lang === 'zh-Hans' || lang === 'zh-Hant';
@@ -5560,7 +5552,7 @@ ${instruction}`;
 
                                         {weixinQRLoading && (
                                             <p style={{ fontSize: '0.75rem', color: 'var(--theme-primary)' }}>
-                                                {lang === 'zh-Hans' ? '正在获取二维码...' : 'Loading QR code...'}
+                                                {lang === 'zh-Hans' ? '正在获取二维�?..' : 'Loading QR code...'}
                                             </p>
                                         )}
 
@@ -5575,11 +5567,11 @@ ${instruction}`;
                                                     style={{ borderRadius: '8px', border: '1px solid var(--theme-border)', padding: '8px', background: '#ffffff' }}
                                                 />
                                                 <p style={{ fontSize: '0.72rem', color: 'var(--theme-primary)', marginTop: '8px' }}>
-                                                    {lang === 'zh-Hans' || lang === 'zh-Hant' ? '请用微信扫描上方二维码' : 'Scan the QR code with WeChat'}
+                                                    {lang === 'zh-Hans' || lang === 'zh-Hant' ? '请用微信扫描上方二维�? : 'Scan the QR code with WeChat'}
                                                 </p>
                                                 {weixinQRWaiting && (
                                                     <p style={{ fontSize: '0.68rem', color: 'var(--theme-text-muted)' }}>
-                                                        {lang === 'zh-Hans' ? '等待扫码确认中...' : 'Waiting for confirmation...'}
+                                                        {lang === 'zh-Hans' ? '等待扫码确认�?..' : 'Waiting for confirmation...'}
                                                     </p>
                                                 )}
                                                 <button
@@ -5607,14 +5599,14 @@ ${instruction}`;
                                 </div>
                                 )}
 
-                                {/* Lansenger tab — only visible for qianxin/TigerClaw OEM */}
+                                {/* Lansenger tab �?only visible for qianxin/TigerClaw OEM */}
                                 {imSubTab === 'lansenger' && brandInfo?.id === 'qianxin' && (
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
-                                            ? '配置蓝信机器人凭证，通过 WebSocket 长连接接入蓝信与 MaClaw Agent 对话。'
+                                            ? '配置蓝信机器人凭证，通过 WebSocket 长连接接入蓝信与 MaClaw Agent 对话�?
                                             : lang === 'zh-Hant'
-                                            ? '配置藍信機器人憑證，透過 WebSocket 長連接接入藍信與 MaClaw Agent 對話。'
+                                            ? '配置藍信機器人憑證，透過 WebSocket 長連接接入藍信�?MaClaw Agent 對話�?
                                             : 'Configure Lansenger bot credentials to connect via WebSocket and chat with MaClaw Agent.'}
                                     </p>
 
@@ -5655,7 +5647,7 @@ ${instruction}`;
                                             background: lansengerStatus === 'connected' ? 'var(--theme-success-bg)' : lansengerStatus === 'disconnected' || lansengerStatus === 'disabled' ? 'var(--theme-surface-muted)' : lansengerStatus === 'error' ? 'var(--theme-danger-bg)' : 'var(--theme-warning-bg)',
                                             color: lansengerStatus === 'connected' ? 'var(--theme-success)' : lansengerStatus === 'disconnected' || lansengerStatus === 'disabled' ? 'var(--theme-text-secondary)' : lansengerStatus === 'error' ? 'var(--theme-danger)' : 'var(--theme-warning)',
                                         }}>
-                                            {{ connected: '● 已连接', connecting: '◌ 连接中...', reconnecting: '◌ 重连中...', disconnected: '○ 未连接', disabled: '○ 未启用', error: '✕ 错误' }[lansengerStatus] || `◌ ${lansengerStatus}`}
+                                            {{ connected: '�?已连�?, connecting: '�?连接�?..', reconnecting: '�?重连�?..', disconnected: '�?未连�?, disabled: '�?未启�?, error: '�?错误' }[lansengerStatus] || `�?${lansengerStatus}`}
                                         </span>
                                         <button
                                             type="button"
@@ -5676,7 +5668,7 @@ ${instruction}`;
 
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
                                         <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>
-                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
+                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道�? : 'Mode:'}
                                         </span>
                                         {[
                                             { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🖥 单机' : '🖥 Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本地 LLM 直连' : 'Direct local LLM' },
@@ -5757,8 +5749,8 @@ ${instruction}`;
                                         </div>
                                         <div style={{ fontSize: '0.68rem', color: 'var(--theme-text-muted)', marginTop: '2px' }}>
                                             {lang === 'zh-Hans'
-                                                ? '在蓝信PC客户端 → 个人机器人 → 创建机器人后获取 AppID 和 AppSecret。API 网关地址一般无需修改。'
-                                                : 'Get AppID and AppSecret from Lansenger PC client → Personal Bot → Create Bot. API Gateway URL usually does not need to be changed.'}
+                                                ? '在蓝信PC客户�?�?个人机器�?�?创建机器人后获取 AppID �?AppSecret。API 网关地址一般无需修改�?
+                                                : 'Get AppID and AppSecret from Lansenger PC client �?Personal Bot �?Create Bot. API Gateway URL usually does not need to be changed.'}
                                         </div>
                                     </div>
                                 </div>
@@ -5769,9 +5761,9 @@ ${instruction}`;
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
-                                            ? '开放本机 HTTP 消息接入端口，第三方软件主动连接 MaClaw，无需提供回调地址。'
+                                            ? '开放本�?HTTP 消息接入端口，第三方软件主动连接 MaClaw，无需提供回调地址�?
                                             : lang === 'zh-Hant'
-                                            ? '開放本機 HTTP 消息接入端口，第三方軟體主動連接 MaClaw，無需提供回調地址。'
+                                            ? '開放本機 HTTP 消息接入端口，第三方軟體主動連接 MaClaw，無需提供回調地址�?
                                             : 'Expose a local HTTP message gateway. Third-party software connects to MaClaw without a callback URL.'}
                                     </p>
 
@@ -5794,10 +5786,10 @@ ${instruction}`;
                                                     setThirdPartyGatewayStatus('disconnected');
                                                 }
                                             }} />
-                                            {lang === 'zh-Hans' ? '开启第三方软件接入' : lang === 'zh-Hant' ? '開啟第三方軟體接入' : 'Enable third-party access'}
+                                            {lang === 'zh-Hans' ? '开启第三方软件接入' : lang === 'zh-Hant' ? '開啟第三方軟體接�? : 'Enable third-party access'}
                                         </label>
                                         <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '10px', background: thirdPartyGatewayStatus === 'connected' ? 'var(--theme-success-bg)' : thirdPartyGatewayStatus === 'disconnected' || thirdPartyGatewayStatus === 'disabled' ? 'var(--theme-surface-muted)' : thirdPartyGatewayStatus === 'error' ? 'var(--theme-danger-bg)' : 'var(--theme-warning-bg)', color: thirdPartyGatewayStatus === 'connected' ? 'var(--theme-success)' : thirdPartyGatewayStatus === 'disconnected' || thirdPartyGatewayStatus === 'disabled' ? 'var(--theme-text-secondary)' : thirdPartyGatewayStatus === 'error' ? 'var(--theme-danger)' : 'var(--theme-warning)' }}>
-                                            {{ connected: '已启动', connecting: '启动中', disconnected: '未连接', disabled: '未启用', error: '错误' }[thirdPartyGatewayStatus] || thirdPartyGatewayStatus}
+                                            {{ connected: '已启�?, connecting: '启动�?, disconnected: '未连�?, disabled: '未启�?, error: '错误' }[thirdPartyGatewayStatus] || thirdPartyGatewayStatus}
                                         </span>
                                         <button type="button" style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-text-secondary)', cursor: 'pointer' }} disabled={!(config as any)?.thirdparty_gateway_enabled} onClick={async () => {
                                             try { const st = await RestartThirdPartyGateway(); setThirdPartyGatewayStatus(typeof st === 'string' ? st : 'disconnected'); }
@@ -5808,10 +5800,10 @@ ${instruction}`;
                                     </div>
 
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
-                                        <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>{lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}</span>
+                                        <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>{lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道�? : 'Mode:'}</span>
                                         {[
                                             { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '单机' : 'Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本机 Agent 直接处理' : 'Handle with local Agent' },
-                                            { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '多机' : 'Hub', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '通过 Hub 转发到在线设备' : 'Forward through Hub' },
+                                            { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '多机' : 'Hub', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '通过 Hub 转发到在线设�? : 'Forward through Hub' },
                                         ].map((opt) => (
                                             <button key={String(opt.value)} type="button" aria-label={opt.desc} title={opt.desc} style={{ padding: '4px 14px', borderRadius: '14px', border: thirdPartyGatewayLocalMode === opt.value ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)', background: thirdPartyGatewayLocalMode === opt.value ? 'var(--theme-info-bg)' : 'transparent', color: thirdPartyGatewayLocalMode === opt.value ? 'var(--theme-primary)' : 'var(--theme-text-secondary)', fontWeight: thirdPartyGatewayLocalMode === opt.value ? 600 : 400, fontSize: '0.75rem', cursor: 'pointer' }} onClick={() => {
                                                 const prev = thirdPartyGatewayLocalMode;
@@ -5845,7 +5837,7 @@ ${instruction}`;
                                                 window.crypto.getRandomValues(bytes);
                                                 const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
                                                 await saveRemoteConfigField({ thirdparty_gateway_token: token } as any);
-                                                showToastMessage(lang === 'zh-Hans' || lang === 'zh-Hant' ? '已生成 Token' : 'Token generated');
+                                                showToastMessage(lang === 'zh-Hans' || lang === 'zh-Hant' ? '已生�?Token' : 'Token generated');
                                             }}>
                                                 {lang === 'zh-Hans' || lang === 'zh-Hant' ? '生成 Token' : 'Generate Token'}
                                             </button>
@@ -5884,7 +5876,7 @@ ${instruction}`;
                                     </h4>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap' }}>{lang === 'zh-Hans' ? '心跳间隔（秒）' : lang === 'zh-Hant' ? '心跳間隔（秒）' : 'Heartbeat Interval (sec)'}</label>
+                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap' }}>{lang === 'zh-Hans' ? '心跳间隔（秒�? : lang === 'zh-Hant' ? '心跳間隔（秒�? : 'Heartbeat Interval (sec)'}</label>
                                             <input
                                                 className="form-input"
                                                 type="number"
@@ -5907,7 +5899,7 @@ ${instruction}`;
                                                 value={(config as any)?.screen_dim_timeout_min ?? 3}
                                                 onChange={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Number(e.target.value || 0) } as any)}
                                                 onBlur={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Math.max(0, Number(e.target.value || 0)) } as any)}
-                                                title={lang === 'zh-Hans' ? '无键鼠操作多少分钟后熄屏节能（0=禁用）。防锁屏开启时有效。' : 'Minutes of inactivity before screen dims (0=disabled). Effective when screen-lock prevention is on.'}
+                                                title={lang === 'zh-Hans' ? '无键鼠操作多少分钟后熄屏节能�?=禁用）。防锁屏开启时有效�? : 'Minutes of inactivity before screen dims (0=disabled). Effective when screen-lock prevention is on.'}
                                             />
                                         </div>
                                     </div>
@@ -5926,14 +5918,14 @@ ${instruction}`;
                                                 style={{ width: '16px', height: '16px' }}
                                             />
                                             <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
-                                                {lang === 'zh-Hans' ? '工作站模式' : lang === 'zh-Hant' ? '工作站模式' : 'Workstation Mode'}
+                                                {lang === 'zh-Hans' ? '工作站模�? : lang === 'zh-Hant' ? '工作站模�? : 'Workstation Mode'}
                                             </span>
                                         </label>
                                         <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '4px', marginLeft: '24px', textAlign: 'left' }}>
                                             {lang === 'zh-Hans'
-                                                ? '开启后不休眠、不锁屏，但允许黑屏。方便截屏测试和调试。'
+                                                ? '开启后不休眠、不锁屏，但允许黑屏。方便截屏测试和调试�?
                                                 : lang === 'zh-Hant'
-                                                ? '開啟後不休眠、不鎖屏，但允許黑屏。方便截屏測試和除錯。'
+                                                ? '開啟後不休眠、不鎖屏，但允許黑屏。方便截屏測試和除錯�?
                                                 : 'Prevents sleep & screen lock while allowing display off. Useful for screenshot testing and debugging.'}
                                         </div>
                                     </div>
@@ -5948,15 +5940,15 @@ ${instruction}`;
                                                 style={{ width: '16px', height: '16px' }}
                                             />
                                             <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
-                                                {lang === 'zh-Hans' ? '打开工作流' : lang === 'zh-Hant' ? '開啟工作流' : 'Enable Workflow'}
+                                                {lang === 'zh-Hans' ? '打开工作�? : lang === 'zh-Hant' ? '開啟工作�? : 'Enable Workflow'}
                                             </span>
                                         </label>
                                         <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '4px', marginLeft: '24px', textAlign: 'left' }}>
                                             {lang === 'zh-Hans'
-                                                ? '开启后，编码、PPT 设计等复杂任务会自动进入多阶段引导工作流（需求→设计→执行）。关闭后所有消息直接进入 Agent 处理。'
+                                                ? '开启后，编码、PPT 设计等复杂任务会自动进入多阶段引导工作流（需求→设计→执行）。关闭后所有消息直接进�?Agent 处理�?
                                                 : lang === 'zh-Hant'
-                                                ? '開啟後，編碼、PPT 設計等複雜任務會自動進入多階段引導工作流（需求→設計→執行）。關閉後所有訊息直接進入 Agent 處理。'
-                                                : 'When enabled, complex tasks (coding, PPT design, etc.) enter a multi-phase guided workflow (requirements → design → execution). When disabled, all messages go directly to the agent.'}
+                                                ? '開啟後，編碼、PPT 設計等複雜任務會自動進入多階段引導工作流（需求→設計→執行）。關閉後所有訊息直接進入 Agent 處理�?
+                                                : 'When enabled, complex tasks (coding, PPT design, etc.) enter a multi-phase guided workflow (requirements �?design �?execution). When disabled, all messages go directly to the agent.'}
                                         </div>
                                     </div>
                                 </div>
@@ -6006,9 +5998,9 @@ ${instruction}`;
                                         <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                                             <span>
                                             {lang === 'zh-Hans'
-                                                ? '选择语音输入和 TTS 播报使用的音频设备。'
+                                                ? '选择语音输入�?TTS 播报使用的音频设备�?
                                                 : lang === 'zh-Hant'
-                                                ? '選擇語音輸入和 TTS 播報使用的音訊裝置。'
+                                                ? '選擇語音輸入�?TTS 播報使用的音訊裝置�?
                                                 : 'Select audio devices for voice input and TTS playback.'}
                                             </span>
                                             {!audioDevices.labelsAvailable && (
@@ -6030,12 +6022,12 @@ ${instruction}`;
                                         {lang === 'zh-Hans' ? '诊断信息' : lang === 'zh-Hant' ? '診斷資訊' : 'Diagnostics'}
                                     </h4>
                                     <div style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--theme-text-secondary)', lineHeight: 1.8, background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '10px 12px', wordBreak: 'break-all', textAlign: 'left' }}>
-                                        <div style={{ textAlign: 'left' }}>Machine ID: {config?.remote_machine_id || '(未激活)'}</div>
-                                        <div style={{ textAlign: 'left' }}>User ID: {config?.remote_user_id || '(未激活)'}</div>
-                                        <div style={{ textAlign: 'left' }}>Client ID: {config?.remote_client_id || '(未生成)'}</div>
-                                        <div style={{ textAlign: 'left' }}>SN: {config?.remote_sn || '(未激活)'}</div>
-                                        <div style={{ textAlign: 'left' }}>Hub URL: {config?.remote_hub_url || '(未设置)'}</div>
-                                        <div style={{ textAlign: 'left' }}>Email: {config?.remote_email || '(未设置)'}</div>
+                                        <div style={{ textAlign: 'left' }}>Machine ID: {config?.remote_machine_id || '(未激�?'}</div>
+                                        <div style={{ textAlign: 'left' }}>User ID: {config?.remote_user_id || '(未激�?'}</div>
+                                        <div style={{ textAlign: 'left' }}>Client ID: {config?.remote_client_id || '(未生�?'}</div>
+                                        <div style={{ textAlign: 'left' }}>SN: {config?.remote_sn || '(未激�?'}</div>
+                                        <div style={{ textAlign: 'left' }}>Hub URL: {config?.remote_hub_url || '(未设�?'}</div>
+                                        <div style={{ textAlign: 'left' }}>Email: {config?.remote_email || '(未设�?'}</div>
                                         <div style={{ textAlign: 'left' }}>WeChat Mode: {(config as any)?.weixin_local_mode === false ? '多机 (Hub)' : '单机 (Local)'}</div>
                                     </div>
                                 </div>
@@ -6063,7 +6055,7 @@ ${instruction}`;
                                         </button>
                                     </div>
                                     <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
-                                        {lang === 'zh-Hans' ? '调整界面整体缩放比例，适配高 DPI 屏幕或个人偏好。' : lang === 'zh-Hant' ? '調整介面整體縮放比例，適配高 DPI 螢幕或個人偏好。' : 'Adjust overall UI scale for HiDPI displays or personal preference.'}
+                                        {lang === 'zh-Hans' ? '调整界面整体缩放比例，适配�?DPI 屏幕或个人偏好�? : lang === 'zh-Hant' ? '調整介面整體縮放比例，適配高 DPI 螢幕或個人偏好�? : 'Adjust overall UI scale for HiDPI displays or personal preference.'}
                                     </p>
                                 </div>
                                 <div className="form-group" style={{ marginBottom: '16px' }}>
@@ -6086,21 +6078,21 @@ ${instruction}`;
                                         </button>
                                     </div>
                                     <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
-                                        {lang === 'zh-Hans' ? '独立调整 AI 助手聊天区的字体大小（12–24px），不影响界面缩放。' : lang === 'zh-Hant' ? '獨立調整 AI 助手聊天區的字體大小（12–24px），不影響介面縮放。' : 'Adjust the AI assistant chat area font size (12–24px) independently from UI zoom.'}
+                                        {lang === 'zh-Hans' ? '独立调整 AI 助手聊天区的字体大小�?2�?4px），不影响界面缩放�? : lang === 'zh-Hant' ? '獨立調整 AI 助手聊天區的字體大小（12�?4px），不影響介面縮放�? : 'Adjust the AI assistant chat area font size (12�?4px) independently from UI zoom.'}
                                     </p>
                                 </div>
 
                                 <div className="form-group" style={{ marginBottom: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '导航栏显示' : lang === 'zh-Hant' ? '導航欄顯示' : 'Sidebar Navigation'}</h4>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '导航栏显�? : lang === 'zh-Hant' ? '導航欄顯�? : 'Sidebar Navigation'}</h4>
                                     <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: 0, marginBottom: '10px' }}>
-                                        {lang === 'zh-Hans' ? '勾选的功能直接显示在导航栏，未勾选的收入「···」折叠菜单中。AI 助手、设置和关于始终显示。' : lang === 'zh-Hant' ? '勾選的功能直接顯示在導航欄，未勾選的收入「···」摺疊選單中。AI 助手、設定和關於始終顯示。' : 'Checked items show directly in the sidebar. Unchecked items are collapsed under "···". AI Assistant, Settings and About are always visible.'}
+                                        {lang === 'zh-Hans' ? '勾选的功能直接显示在导航栏，未勾选的收入「···」折叠菜单中。AI 助手、设置和关于始终显示�? : lang === 'zh-Hant' ? '勾選的功能直接顯示在導航欄，未勾選的收入「···」摺疊選單中。AI 助手、設定和關於始終顯示�? : 'Checked items show directly in the sidebar. Unchecked items are collapsed under "···". AI Assistant, Settings and About are always visible.'}
                                     </p>
                                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
                                         {[
                                             { key: 'show_nav_monitor', label: lang === 'zh-Hans' ? '📡 监控' : lang === 'zh-Hant' ? '📡 監控' : '📡 Monitor' },
-                                            { key: 'show_nav_skills', label: `🧩 ${lang === 'zh-Hans' ? '技能' : lang === 'zh-Hant' ? '技能' : 'Skills'}` },
+                                            { key: 'show_nav_skills', label: `🧩 ${lang === 'zh-Hans' ? '技�? : lang === 'zh-Hant' ? '技�? : 'Skills'}` },
                                             { key: 'show_nav_mcp', label: '🔌 MCP' },
-                                            { key: 'show_nav_gossip', label: `🗣️ ${lang === 'zh-Hans' ? '八卦' : lang === 'zh-Hant' ? '八卦' : 'Gossip'}` },
+                                            { key: 'show_nav_gossip', label: `🗣�?${lang === 'zh-Hans' ? '八卦' : lang === 'zh-Hant' ? '八卦' : 'Gossip'}` },
                                             { key: 'show_nav_agentnet', label: `🌐 ${lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet'}` },
                                         ].map(item => (
                                             <label key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
@@ -6125,7 +6117,7 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
 
-                            {/* Default Coding Tool + Default Provider — same row */}
+                            {/* Default Coding Tool + Default Provider �?same row */}
                             <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                 <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                                     {/* Default Coding Tool */}
@@ -6154,20 +6146,20 @@ ${instruction}`;
                                                     value={tool.name}
                                                     disabled={!tool.installed}
                                                 >
-                                                    {tool.display_name}{!tool.installed ? (lang === 'zh-Hans' ? ' (未安装)' : lang === 'zh-Hant' ? ' (未安裝)' : ' (Not Installed)') : ''}
+                                                    {tool.display_name}{!tool.installed ? (lang === 'zh-Hans' ? ' (未安�?' : lang === 'zh-Hant' ? ' (未安�?' : ' (Not Installed)') : ''}
                                                 </option>
                                             ))}
                                         </select>
                                         <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginTop: '6px' }}>
-                                            {lang === 'zh-Hans' ? '选择 AI 编程会话默认使用的工具。Auto 将使用品牌默认工具。' :
-                                                lang === 'zh-Hant' ? '選擇 AI 編程會話預設使用的工具。Auto 將使用品牌預設工具。' :
+                                            {lang === 'zh-Hans' ? '选择 AI 编程会话默认使用的工具。Auto 将使用品牌默认工具�? :
+                                                lang === 'zh-Hant' ? '選擇 AI 編程會話預設使用的工具。Auto 將使用品牌預設工具�? :
                                                     'Choose the default tool for AI coding sessions. Auto uses the brand default.'}
                                         </p>
                                     </div>
-                                    {/* Default Provider — only visible when a specific tool is selected */}
+                                    {/* Default Provider �?only visible when a specific tool is selected */}
                                     {config?.default_tool ? (
                                     <div style={{ flex: '1 1 0', minWidth: '180px' }}>
-                                        <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '8px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '默认服务商' : lang === 'zh-Hant' ? '預設服務商' : 'Default Provider'}</h4>
+                                        <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '8px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '默认服务�? : lang === 'zh-Hant' ? '預設服務�? : 'Default Provider'}</h4>
                                         <select
                                             className="form-input"
                                             value={config?.default_tool_provider || ''}
@@ -6194,8 +6186,8 @@ ${instruction}`;
                                             ))}
                                         </select>
                                         <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginTop: '6px' }}>
-                                            {lang === 'zh-Hans' ? '选择默认工具使用的服务商。Auto 将自动选择第一个可用的服务商。' :
-                                                lang === 'zh-Hant' ? '選擇預設工具使用的服務商。Auto 將自動選擇第一個可用的服務商。' :
+                                            {lang === 'zh-Hans' ? '选择默认工具使用的服务商。Auto 将自动选择第一个可用的服务商�? :
+                                                lang === 'zh-Hant' ? '選擇預設工具使用的服務商。Auto 將自動選擇第一個可用的服務商�? :
                                                     'Choose the default provider for the selected tool. Auto picks the first available provider.'}
                                         </p>
                                     </div>
@@ -6365,7 +6357,7 @@ ${instruction}`;
                                     setStatus("");
                                 }).catch(err => {
                                     console.error("CheckUpdate error:", err);
-                                    setStatus("检查更新失败: " + err);
+                                    setStatus("检查更新失�? " + err);
                                     setUpdateResult({
                                         has_update: false,
                                         latest_version: "获取失败",
@@ -6653,7 +6645,7 @@ ${instruction}`;
                                         </button>
                                     </div>
                                 </div>
-                                {/* Handoff: local → remote icon button */}
+                                {/* Handoff: local �?remote icon button */}
                                 {!config?.remote_enabled && isRemoteCapableActiveTool && (
                                     <button
                                         type="button"
@@ -6701,8 +6693,7 @@ ${instruction}`;
                                             }
                                         }}
                                     >
-                                        ☁
-                                    </button>
+                                        �?                                    </button>
                                 )}
                                 <button
                                     className="btn-launch"
@@ -6713,7 +6704,7 @@ ${instruction}`;
                                         if (config?.remote_enabled && hasActiveRemoteSessionForTool && activeRemoteSessionForTool?.id) {
                                             setLaunchingTool(activeTool);
                                             await killRemoteSession(activeRemoteSessionForTool.id);
-                                            setStatus(lang === 'zh-Hans' ? '远程已停止' : lang === 'zh-Hant' ? '遠端已停止' : 'Remote stopped');
+                                            setStatus(lang === 'zh-Hans' ? '远程已停�? : lang === 'zh-Hant' ? '遠端已停�? : 'Remote stopped');
                                             setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                             return;
                                         }
@@ -6746,7 +6737,7 @@ ${instruction}`;
                                                 const isBeingInstalled = await IsToolBeingInstalled(activeTool);
                                                 if (isBeingInstalled) {
                                                     // Tool is being installed in background, just wait
-                                                    setStatus(lang === 'zh-Hans' ? `${activeTool} 正在后台安装中，请稍候...` : `${activeTool} is being installed in background, please wait...`);
+                                                    setStatus(lang === 'zh-Hans' ? `${activeTool} 正在后台安装中，请稍�?..` : `${activeTool} is being installed in background, please wait...`);
                                                     setOnDemandInstallingTool(activeTool);
                                                     try {
                                                         await InstallToolOnDemand(activeTool);
@@ -6833,7 +6824,7 @@ ${instruction}`;
                                         }
                                     }}
                                 >
-                                    <span style={{ marginRight: '6px' }}>{config?.remote_enabled ? '☁' : '➤'}</span>
+                                    <span style={{ marginRight: '6px' }}>{config?.remote_enabled ? '�? : '�?}</span>
                                     {config?.remote_enabled
                                         ? (hasActiveRemoteSessionForTool ? t("remoteStopTool") : t("remoteStartTool"))
                                         : t("launch")}
@@ -6866,13 +6857,13 @@ ${instruction}`;
                                 })()} alt="" style={{ width: '14px', height: '14px' }} />
                                 {!maclawLLMOnline
                                     ? (maclawLLMConfigured
-                                        ? localizeText('LLM unreachable, remote commands unavailable', 'LLM 无法连接，无法响应远程命令', 'LLM 無法連接，無法響應遠程命令')
-                                        : localizeText('LLM not configured, remote commands unavailable', 'MaClaw 未配置 LLM，无法响应远程命令', 'MaClaw 未配置 LLM，無法響應遠程命令'))
+                                        ? localizeText('LLM unreachable, remote commands unavailable', 'LLM 无法连接，无法响应远程命�?, 'LLM 無法連接，無法響應遠程命�?)
+                                        : localizeText('LLM not configured, remote commands unavailable', 'MaClaw 未配�?LLM，无法响应远程命�?, 'MaClaw 未配�?LLM，無法響應遠程命�?))
                                     : !remoteActivationStatus?.activated
                                         ? localizeText('Mobile not registered', '移动端未注册', '移動端未註冊')
                                         : !agentNetRunning
-                                            ? localizeText('AgentNet not connected', '智网未连接', '智網未連接')
-                                            : localizeText('IM not connected', 'IM 未连接', 'IM 未連接')}
+                                            ? localizeText('AgentNet not connected', '智网未连�?, '智網未連接')
+                                            : localizeText('IM not connected', 'IM 未连�?, 'IM 未連接')}
                             </span>
                                 );
                             }
@@ -6881,12 +6872,12 @@ ${instruction}`;
                         {backgroundInstallStatus && (
                         <span style={{ 
                             fontSize: '0.75rem', 
-                            color: backgroundInstallStatus.startsWith('✓') ? 'var(--theme-success)' : 'var(--theme-text-muted)',
+                            color: backgroundInstallStatus.startsWith('�?) ? 'var(--theme-success)' : 'var(--theme-text-muted)',
                             display: 'flex',
                             alignItems: 'center',
                             gap: '4px'
                         }}>
-                            {!backgroundInstallStatus.startsWith('✓') && (
+                            {!backgroundInstallStatus.startsWith('�?) && (
                                 <span style={{ 
                                     display: 'inline-block', 
                                     width: '10px', 
@@ -7055,11 +7046,9 @@ ${instruction}`;
                                     const hasError = envLogs.some(log => /error|failed/i.test(log));
 
                                     if (hasError) {
-                                        // 有错误，直接发送
-                                        await performSendLog();
+                                        // 有错误，直接发�?                                        await performSendLog();
                                     } else {
-                                        // 没有错误，询问用户
-                                        setConfirmDialog({
+                                        // 没有错误，询问用�?                                        setConfirmDialog({
                                             show: true,
                                             title: t("confirmSendLog"),
                                             message: t("confirmSendLogMessage"),
@@ -7120,7 +7109,7 @@ ${instruction}`;
                                     justifyContent: 'center',
                                     flexShrink: 0
                                 }}>
-                                    <span style={{ color: 'var(--theme-success)', fontSize: '16px' }}>✓</span>
+                                    <span style={{ color: 'var(--theme-success)', fontSize: '16px' }}>�?/span>
                                 </div>
                                 <span style={{ color: 'var(--theme-success)', fontSize: '0.9rem', fontWeight: 500 }}>
                                     {t("toolRepairSuccess").replace("{tool}", toolRepairStatus.toolName)}
@@ -7140,7 +7129,7 @@ ${instruction}`;
                                         justifyContent: 'center',
                                         flexShrink: 0
                                     }}>
-                                        <span style={{ color: 'var(--theme-danger)', fontSize: '14px' }}>✕</span>
+                                        <span style={{ color: 'var(--theme-danger)', fontSize: '14px' }}>�?/span>
                                     </div>
                                     <span style={{ color: 'var(--theme-danger)', fontSize: '0.9rem', fontWeight: 500 }}>
                                         {t("toolRepairFailed").replace("{tool}", toolRepairStatus.toolName)}
@@ -7245,7 +7234,7 @@ ${instruction}`;
                                 <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-primary)', marginBottom: '12px' }}>v{appVersion}</div>
                                 <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-muted)', marginBottom: '8px' }}>{t("latestVersion")}</div>
                                 <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-success)', marginBottom: '12px' }}>{updateResult.latest_version}</div>
-                                <p style={{ margin: '0', fontSize: '0.9rem', color: 'var(--theme-success)', fontWeight: '500' }}>✓ {t("isLatestVersion")}</p>
+                                <p style={{ margin: '0', fontSize: '0.9rem', color: 'var(--theme-success)', fontWeight: '500' }}>�?{t("isLatestVersion")}</p>
                             </div>
                         )}
                         <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '20px' }}>
@@ -7362,8 +7351,7 @@ ${instruction}`;
                                                             padding: '6px 4px', color: 'var(--theme-text-muted)', fontSize: '1rem'
                                                         }}
                                                     >
-                                                        ▶
-                                                    </button>
+                                                        �?                                                    </button>
                                                 )}
                                             </div>
                                         )}
@@ -7408,7 +7396,7 @@ ${instruction}`;
                                                 spellCheck={false}
                                                 autoComplete="off"
                                             />
-                                            {/* "List" button — fetch models from provider's /models endpoint */}
+                                            {/* "List" button �?fetch models from provider's /models endpoint */}
                                             {(config as any)[activeTool].models[activeTab].model_url && (config as any)[activeTool].models[activeTab].api_key && (
                                                 <button
                                                     data-tool-model-dropdown
@@ -7418,7 +7406,7 @@ ${instruction}`;
                                                     title="从服务商获取可用模型列表"
                                                 >{toolModelListFetching ? '...' : 'List'}</button>
                                             )}
-                                            {/* "..." button — static recommended models */}
+                                            {/* "..." button �?static recommended models */}
                                             {(() => {
                                                 const providerName = (config as any)[activeTool].models[activeTab].model_name;
                                                 const models = (activeTool === 'claude' || (providerName !== 'Aliyun' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;
@@ -7454,8 +7442,7 @@ ${instruction}`;
                                                 ))}
                                                 {toolModelList.length > 0 && (
                                                     <div style={{ padding: '4px 12px', fontSize: '0.68rem', color: 'var(--theme-text-muted)', borderTop: '1px solid var(--theme-border)', marginTop: '4px' }}>
-                                                        共 {toolModelList.length} 个模型
-                                                    </div>
+                                                        �?{toolModelList.length} 个模�?                                                    </div>
                                                 )}
                                             </div>
                                         )}
@@ -8223,7 +8210,7 @@ ${instruction}`;
                                 }}
                                 title={t("skills")}
                             >
-                                🛠️ {t("skills")}
+                                🛠�?{t("skills")}
                             </button>
 
                             <button onClick={() => setShowInstallSkillModal(false)} className="btn-close" style={{ marginLeft: 'auto' }}>&times;</button>

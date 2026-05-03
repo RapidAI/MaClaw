@@ -511,3 +511,56 @@ func TestConfigManagerDefaultLaunchModeDoesNotChangeRemoteEnabled(t *testing.T) 
 		t.Fatal("RemoteEnabled = false, want true")
 	}
 }
+
+func TestSetDefaultLaunchMode(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.DefaultLaunchMode = "remote"
+	cfg.RemoteEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.SetDefaultLaunchMode(" local "); err != nil {
+		t.Fatalf("SetDefaultLaunchMode(local) error = %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after local error = %v", err)
+	}
+	if saved.DefaultLaunchMode != "local" {
+		t.Fatalf("DefaultLaunchMode = %q, want local", saved.DefaultLaunchMode)
+	}
+	if !saved.RemoteEnabled {
+		t.Fatal("RemoteEnabled = false after local mode, want true")
+	}
+
+	saved.RemoteEnabled = false
+	if err := app.SaveConfig(saved); err != nil {
+		t.Fatalf("SaveConfig(disable remote) error = %v", err)
+	}
+	if err := app.SetDefaultLaunchMode("REMOTE"); err != nil {
+		t.Fatalf("SetDefaultLaunchMode(remote) error = %v", err)
+	}
+	saved, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after remote error = %v", err)
+	}
+	if saved.DefaultLaunchMode != "remote" {
+		t.Fatalf("DefaultLaunchMode = %q, want remote", saved.DefaultLaunchMode)
+	}
+	if !saved.RemoteEnabled {
+		t.Fatal("RemoteEnabled = false after remote mode, want true")
+	}
+
+	if err := app.SetDefaultLaunchMode("cloud"); err == nil {
+		t.Fatal("SetDefaultLaunchMode(invalid) error = nil, want error")
+	}
+}
