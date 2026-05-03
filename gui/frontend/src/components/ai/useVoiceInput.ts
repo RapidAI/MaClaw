@@ -1,5 +1,5 @@
 /**
- * useVoiceInput 鈥?Toggle-mode voice input for the AI assistant panel.
+ * useVoiceInput -Toggle-mode voice input for the AI assistant panel.
  *
  * Toggle ON: microphone opens, continuously listens. When a speech segment
  * is detected (adaptive energy-based VAD), it's automatically sent to the
@@ -12,7 +12,7 @@
  * for headset/earbuds (0.006 RMS). Auto-calibration tracks the minimum RMS
  * across the first few chunks to refine this. If the user has run manual
  * calibration (settings panel), those values take priority and EMA adaptation
- * is disabled 鈥?the user's calibration is authoritative.
+ * is disabled -the user's calibration is authoritative.
  *
  * Speech threshold calculation:
  *   - With two-phase calibration: noise + 30% of (speech - noise) gap
@@ -63,15 +63,16 @@ const TARGET_SAMPLE_RATE = 16000;
 const CHUNK_SIZE = 4096; // ~256ms at 16kHz
 
 // Energy VAD thresholds for speech segmentation
-const SILENCE_THRESHOLD_FLOOR = 0.003; // absolute minimum RMS 鈥?below this is always silence (near-zero signal)
+const SILENCE_THRESHOLD_FLOOR = 0.003; // absolute minimum RMS -below this is always silence (near-zero signal)
 const NOISE_CALIBRATION_CHUNKS = 4;    // first N chunks used to calibrate noise floor (~1s at 256ms/chunk)
 const NOISE_FLOOR_MULTIPLIER = 3.0;    // speech threshold = noiseFloor * multiplier (SNR requirement)
 const NOISE_FLOOR_ADAPT_RATE = 0.05;   // EMA alpha for noise floor adaptation during silence
-const NOISE_FLOOR_MAX = 0.08;          // cap noise floor 鈥?above this the environment is too loud
+const NOISE_FLOOR_MAX = 0.08;          // cap noise floor -above this the environment is too loud
 const NOISE_FLOOR_DEFAULT = 0.0025;    // conservative default; backend VAD catches false positives better than missed speech
 const SPEECH_START_CHUNKS = 2;         // consecutive speech chunks to start collecting a segment
 const SILENCE_END_CHUNKS = 6;          // consecutive silence chunks to end a segment (~1.5s)
 const SILENCE_FALLBACK_FLUSH_CHUNKS = 12; // prolonged silence drops low-level pre-roll audio (~3s)
+const CONTINUOUS_PREROLL_CHUNKS = 6;         // keep ~1.5s of raw audio before VAD confirms speech
 const MIN_SPEECH_CHUNKS = 2;           // continuous mode should accept short voice commands
 const MIN_CONTINUOUS_SPEECH_SEC = 0.45; // avoid tiny blips, but do not drop short Chinese commands
 const MAX_SEGMENT_SEC = 30;            // max segment duration before forced cut
@@ -456,11 +457,14 @@ function normalizePCMForASR(pcm: Float32Array): { pcm: Float32Array; gain: numbe
     return { pcm: normalized, gain, ...audioStats(normalized) };
 }
 
+function pushContinuousPrerollChunk(chunks: Float32Array[], data: Float32Array) {
+    chunks.push(new Float32Array(data));
+    while (chunks.length > CONTINUOUS_PREROLL_CHUNKS) chunks.shift();
+}
+
 function prepareContinuousPrerollChunks(chunks: Float32Array[]): Float32Array[] {
     if (chunks.length === 0) return [];
-    // Default is fidelity-first: keep a small raw pre-roll instead of denoising
-    // or dropping low-energy chunks, so short Chinese syllable edges survive.
-    return chunks.slice(Math.max(0, chunks.length - 3));
+    return chunks.slice(Math.max(0, chunks.length - CONTINUOUS_PREROLL_CHUNKS));
 }
 
 function prepareHoldChunks(chunks: Float32Array[], noiseFloor: number): { chunks: Float32Array[]; reason?: string; stats: Record<string, number> } {
@@ -563,12 +567,13 @@ export function useVoiceInput(
 
     // Segment accumulation state (refs to avoid re-renders on every chunk)
     const segmentChunksRef = useRef<Float32Array[]>([]);
-    const segmentSamplesRef = useRef(0); // incremental counter 鈥?avoids O(N) reduce per chunk
+    const segmentSamplesRef = useRef(0); // incremental counter -avoids O(N) reduce per chunk
     const segmentSpeechChunksRef = useRef(0); // count of speech chunks in current segment
     const speechChunkCountRef = useRef(0);
     const silenceChunkCountRef = useRef(0);
     const inSpeechRef = useRef(false);
     const fallbackChunksRef = useRef<Float32Array[]>([]);
+    const continuousPrerollChunksRef = useRef<Float32Array[]>([]);
     const fallbackSpeechLikeChunksRef = useRef(0);
     const fallbackSilenceChunksRef = useRef(0);
     const holdModeRef = useRef(false);
@@ -577,7 +582,7 @@ export function useVoiceInput(
     const pendingTranscriptionsRef = useRef(0); // count of in-flight transcription promises
     const transcriptionQueueRef = useRef<Promise<void>>(Promise.resolve());
     const activeRef = useRef(false); // true while mic is open
-    const startingRef = useRef(false); // true during getUserMedia 鈥?prevents double-start
+    const startingRef = useRef(false); // true during getUserMedia -prevents double-start
     const audioLevelCallbackRef = useRef<((level: number) => void) | null>(null);
     const inputDeviceIdRef = useRef(inputDeviceId);
     inputDeviceIdRef.current = inputDeviceId;
@@ -594,7 +599,7 @@ export function useVoiceInput(
     const petAutoRetryOnNoHearRef = useRef(false);
     const petVoiceReadbackEnabledRef = useRef(false);
     const lastPetRetryPromptAtRef = useRef(0);
-    const configLoadedRef = useRef(false);     // true after LoadConfig completes 鈥?prevents race with early mic open
+    const configLoadedRef = useRef(false);     // true after LoadConfig completes -prevents race with early mic open
 
     // Load persisted calibration from config on mount.
     // configLoadedRef gates processChunk's calibration path to prevent the race
@@ -668,7 +673,7 @@ export function useVoiceInput(
         const pcm = normalized.pcm;
         const durationSec = pcm.length / TARGET_SAMPLE_RATE;
 
-        // Too short 鈥?skip
+        // Too short -skip
         if (durationSec < ASR_MIN_DURATION_SEC) {
             voiceDebug("skip transcribe: audio too short", {
                 chunks: chunks.length,
@@ -797,6 +802,10 @@ export function useVoiceInput(
         fallbackSilenceChunksRef.current = 0;
     }, []);
 
+    const resetContinuousPreroll = useCallback(() => {
+        continuousPrerollChunksRef.current = [];
+    }, []);
+
     const resetHoldBuffer = useCallback(() => {
         holdChunksRef.current = [];
     }, []);
@@ -853,9 +862,9 @@ export function useVoiceInput(
         // 鈹€鈹€ Adaptive noise floor calibration & tracking 鈹€鈹€
         //
         // Three-tier priority:
-        //   1. User-calibrated value (from settings) 鈥?highest trust, no EMA adaptation
-        //   2. Auto-calibrated value (from first N chunks) 鈥?uses minimum RMS, not average
-        //   3. NOISE_FLOOR_DEFAULT (low headset/earbuds baseline) 鈥?works immediately
+        //   1. User-calibrated value (from settings) -highest trust, no EMA adaptation
+        //   2. Auto-calibrated value (from first N chunks) -uses minimum RMS, not average
+        //   3. NOISE_FLOOR_DEFAULT (low headset/earbuds baseline) -works immediately
         //
         // Auto-calibration uses the MINIMUM RMS across the calibration window, not the
         // average. This is robust to the user speaking during calibration: the quietest
@@ -866,7 +875,7 @@ export function useVoiceInput(
         // is true, so persisted values always take priority even if LoadConfig is slow.
         if (!noiseCalibDoneRef.current) {
             if (configLoadedRef.current && persistedNoiseFloorRef.current > 0) {
-                // Tier 1: user-calibrated 鈥?use directly, no auto-calibration needed
+                // Tier 1: user-calibrated -use directly, no auto-calibration needed
                 noiseFloorRef.current = persistedNoiseFloorRef.current;
                 noiseCalibDoneRef.current = true;
             } else {
@@ -890,7 +899,7 @@ export function useVoiceInput(
 
         // Dynamic speech threshold:
         //   - With speech calibration: noise + 30% of the gap to speech level
-        //     (biased toward noise side 鈥?better to send noise to backend Silero VAD
+        //     (biased toward noise side -better to send noise to backend Silero VAD
         //      than to miss user speech)
         //   - Without: noise floor 脳 multiplier (fallback)
         //   - Always at least SILENCE_THRESHOLD_FLOOR
@@ -940,6 +949,8 @@ export function useVoiceInput(
             return;
         }
 
+        pushContinuousPrerollChunk(continuousPrerollChunksRef.current, data);
+
         if (isSpeech) {
             speechChunkCountRef.current++;
             silenceChunkCountRef.current = 0;
@@ -975,16 +986,20 @@ export function useVoiceInput(
         // Speech start: enough consecutive speech chunks
         if (!inSpeechRef.current && speechChunkCountRef.current >= SPEECH_START_CHUNKS) {
             inSpeechRef.current = true;
-            const preroll = prepareContinuousPrerollChunks(fallbackChunksRef.current);
+            const preroll = prepareContinuousPrerollChunks(continuousPrerollChunksRef.current);
             segmentChunksRef.current = preroll;
             segmentSamplesRef.current = preroll.reduce((sum, chunk) => sum + chunk.length, 0);
+            voiceDebug("continuous speech started", {
+                prerollChunks: preroll.length,
+                prerollSec: Number((segmentSamplesRef.current / rate).toFixed(3)),
+            });
             segmentSpeechChunksRef.current = 0;
             resetFallbackBuffer();
             startedSpeechThisChunk = true;
             setIsSpeaking(true);
         }
 
-        // Accumulate during speech (copy buffer 鈥?AudioBuffer reuses the underlying array)
+        // Accumulate during speech (copy buffer -AudioBuffer reuses the underlying array)
         if (inSpeechRef.current) {
             if (!startedSpeechThisChunk || segmentChunksRef.current.length === 0) {
                 segmentChunksRef.current.push(new Float32Array(data));
@@ -1003,6 +1018,7 @@ export function useVoiceInput(
                 inSpeechRef.current = false;
                 speechChunkCountRef.current = 0;
                 silenceChunkCountRef.current = 0;
+                resetContinuousPreroll();
                 setIsSpeaking(false);
 
                 const segment = {
@@ -1028,7 +1044,7 @@ export function useVoiceInput(
                 }
             }
         }
-    }, [flushFallbackBuffer, resetFallbackBuffer, transcribeSegment]);
+    }, [flushFallbackBuffer, resetContinuousPreroll, resetFallbackBuffer, transcribeSegment]);
 
     const cleanup = useCallback(() => {
         activeRef.current = false;
@@ -1090,8 +1106,9 @@ export function useVoiceInput(
         speechChunkCountRef.current = 0;
         silenceChunkCountRef.current = 0;
         resetFallbackBuffer();
+        resetContinuousPreroll();
         inSpeechRef.current = false;
-        // Reset adaptive noise floor 鈥?start with default, auto-calibration will refine
+        // Reset adaptive noise floor -start with default, auto-calibration will refine
         noiseFloorRef.current = NOISE_FLOOR_DEFAULT;
         noiseCalibCountRef.current = 0;
         noiseCalibMinRef.current = Infinity;
@@ -1154,7 +1171,7 @@ export function useVoiceInput(
         } finally {
             startingRef.current = false;
         }
-    }, [cleanup, processChunk, resetFallbackBuffer, setErrorAuto]);
+    }, [cleanup, processChunk, resetContinuousPreroll, resetFallbackBuffer, setErrorAuto]);
 
     const startHold = useCallback(async () => {
         if (state !== "idle" || startingRef.current || activeRef.current) {
@@ -1218,6 +1235,7 @@ export function useVoiceInput(
             inSpeech: inSpeechRef.current,
             segmentChunks: segmentChunksRef.current.length,
             fallbackChunks: fallbackChunksRef.current.length,
+            prerollChunks: continuousPrerollChunksRef.current.length,
         });
 
         // Finalize in-progress segment if any
@@ -1269,7 +1287,7 @@ export function useVoiceInput(
             resetHoldBuffer();
             await startListening();
         }
-        // If transcribing (after stop), ignore 鈥?will go idle when done
+        // If transcribing (after stop), ignore -will go idle when done
     }, [resetHoldBuffer, state, startListening, stopListening]);
 
     return {
