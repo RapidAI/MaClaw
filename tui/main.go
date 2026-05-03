@@ -165,13 +165,14 @@ Commands:
   policy        安全策略查看（list）
   agentnet      AgentNet P2P 网络
                   status/peers/tasks/credits/knowledge/dm/swarm/prediction
-                  topic/overlay/resume/diagnostics/nutshell
+				  topic/overlay/resume/diagnostics
                   identity (has-identity/export-identity/import-identity/backup-key/restore-key)
                   leaderboard/transactions/credits-audit
                   auto-picker (status/configure/trigger)
                   daemon (ensure/stop/info)
-                  binary (install/update/path)
-                  profile (get/update/set-motto)
+				  binary (install/update/path)
+				  profile (get/update/set-motto)
+				  bundle (pack/unpack/attach/download)
   tool          工具管理（recommend/status）
   skill         技能管理（list/add/delete/backup/restore/import/export）
   skillhub      SkillHub 市场（search/install/rate/check-updates/update）
@@ -202,12 +203,12 @@ func buildKernelOptions(logger corelib.Logger, emitter corelib.EventEmitter) cor
 	}
 
 	return corelib.KernelOptions{
-		DataDir:        dataDir,
-		HubURL:         os.Getenv("MACLAW_HUB_URL"),
-		HubToken:       os.Getenv("MACLAW_TOKEN"),
-		MachineID:      os.Getenv("MACLAW_MACHINE_ID"),
-		Logger:         logger,
-		EventEmitter:   emitter,
+		DataDir:         dataDir,
+		HubURL:          os.Getenv("MACLAW_HUB_URL"),
+		HubToken:        os.Getenv("MACLAW_TOKEN"),
+		MachineID:       os.Getenv("MACLAW_MACHINE_ID"),
+		Logger:          logger,
+		EventEmitter:    emitter,
 		AgentNetEnabled: os.Getenv("MACLAW_AGENTNET") == "1",
 	}
 }

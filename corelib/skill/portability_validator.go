@@ -280,19 +280,11 @@ func copyStepParams(params map[string]interface{}) map[string]interface{} {
 // ---------------------------------------------------------------------------
 
 func findSkillMD(skillDir string) (string, error) {
-	entries, err := os.ReadDir(skillDir)
+	mdPath, err := findSkillMarkdownDocPath(skillDir)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("no skill documentation found")
 	}
-	for _, name := range []string{"SKILL.md", "skill.md", "README.md", "readme.md"} {
-		for _, entry := range entries {
-			if entry.IsDir() || entry.Name() != name {
-				continue
-			}
-			return filepath.Join(skillDir, entry.Name()), nil
-		}
-	}
-	return "", fmt.Errorf("no skill documentation found")
+	return mdPath, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,13 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { HistoryTaskItem } from '../types';
+import type { CenterInstalledTools, HistoryTaskItem } from '../types';
 
 type Props = {
   tasks: HistoryTaskItem[];
+  installedTools: CenterInstalledTools;
+  installedToolsLoading: boolean;
+  installedToolsError: string;
+  onRefreshInstalledTools: () => void | Promise<CenterInstalledTools | undefined>;
   onResumeTask: (task: HistoryTaskItem) => void;
   onViewResult: (task: HistoryTaskItem) => void;
   onCloneTask: (task: HistoryTaskItem) => void;
@@ -13,7 +17,7 @@ type Props = {
 
 type ToolItem = { id: string; nameKey: string; fallbackName: string; icon: string; descKey: string; fallbackDesc: string; badgeKey?: string; fallbackBadge?: string };
 
-const installedTools: ToolItem[] = [
+const fallbackInstalledTools: ToolItem[] = [
   { id: 'capability-evolver', nameKey: 'history.tools.capability.name', fallbackName: 'capability-evolver', icon: 'CE', descKey: 'history.tools.capability.desc', fallbackDesc: 'Evolves organizational capability maps from reusable work evidence.' },
   { id: 'openclaw-assets', nameKey: 'history.tools.assets.name', fallbackName: 'openclaw-assets-to-iworker', icon: 'OA', descKey: 'history.tools.assets.desc', fallbackDesc: 'Migrates personal OpenClaw assets into the matching iWorker directories.' },
   { id: 'libtv-skill', nameKey: 'history.tools.libtv.name', fallbackName: 'libtv-skill', icon: 'LT', descKey: 'history.tools.libtv.desc', fallbackDesc: 'Connects image and video generation capabilities for content production.' },
@@ -29,11 +33,30 @@ const catalogTools: ToolItem[] = [
   { id: 'brand-design', nameKey: 'history.catalog.brand.name', fallbackName: 'Brand design expert', icon: 'BD', descKey: 'history.catalog.brand.desc', fallbackDesc: 'Reuses brand visual assets to generate design proposals quickly.' },
 ];
 
-export function TaskHistoryPage({ tasks, onResumeTask, onViewResult, onCloneTask, onDeleteTask, viewedTask }: Props) {
+export function TaskHistoryPage({ tasks, installedTools, installedToolsLoading, installedToolsError, onRefreshInstalledTools, onResumeTask, onViewResult, onCloneTask, onDeleteTask, viewedTask }: Props) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<typeof catalogTabs[number]>('recommended');
   const [searchQuery, setSearchQuery] = useState('');
   const localizedCatalog = useMemo(() => catalogTools.map((tool) => ({ ...tool, name: t(tool.nameKey, tool.fallbackName), description: t(tool.descKey, tool.fallbackDesc) })), [t]);
+  const centerToolRows = useMemo(() => [
+    ...installedTools.skills.map((skill) => ({
+      id: `skill-${skill.capabilityId}`,
+      kind: 'Skill',
+      name: skill.name || skill.capabilityId,
+      description: skill.entry?.description || (skill.entry?.triggers || []).join(', ') || t('history.centerSkillDesc', 'Center-distributed iWorker skill.'),
+      badge: `${skill.source || 'iWorkerCenter'} / ${skill.version || '-'} / ${skill.riskLevel || 'low'}`,
+      icon: 'SK',
+    })),
+    ...installedTools.mcpServers.map((server) => ({
+      id: `mcp-${server.id}`,
+      kind: 'MCP',
+      name: server.name || server.id,
+      description: server.description || server.endpoint || server.command || t('history.centerMcpDesc', 'Center-installed MCP service.'),
+      badge: `${server.status || 'enabled'} / ${server.departmentId || 'all'} / ${server.riskLevel || 'medium'}`,
+      icon: 'MC',
+    })),
+  ], [installedTools.mcpServers, installedTools.skills, t]);
+  const installedSourceLabel = installedTools.source === 'center' ? (installedTools.stale ? t('history.centerStale', 'Center stale') : t('history.centerLive', 'Center live')) : installedTools.source === 'cache' || installedTools.stale ? t('history.cachedSnapshot', 'Cached snapshot') : installedTools.source === 'unavailable' ? t('history.unavailable', 'Unavailable') : t('history.localFallback', 'Local fallback');
   const filteredCatalog = useMemo(() => {
     if (!searchQuery) return localizedCatalog;
     const query = searchQuery.toLowerCase();
@@ -49,24 +72,27 @@ export function TaskHistoryPage({ tasks, onResumeTask, onViewResult, onCloneTask
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder={t('history.searchTools', 'Search tools')} spellCheck={false} style={{ width: '200px', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dw-tools-input-border)', background: 'var(--dw-tools-input-bg)', color: 'var(--dw-tools-input-text)', fontSize: '12px', outline: 'none' }} />
-          <button type="button" style={{ padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--dw-tools-input-border)', background: 'var(--dw-tools-input-bg)', color: 'var(--dw-tools-button-text)', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>{t('history.addTool', 'Add tool')}</button>
+          <button type="button" onClick={() => { void onRefreshInstalledTools(); }} disabled={installedToolsLoading} style={{ padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--dw-tools-input-border)', background: 'var(--dw-tools-input-bg)', color: 'var(--dw-tools-button-text)', fontSize: '12px', fontWeight: 600, cursor: installedToolsLoading ? 'not-allowed' : 'pointer' }}>{installedToolsLoading ? t('history.syncing', 'Syncing') : t('history.refreshCenterTools', 'Refresh Center tools')}</button>
         </div>
       </div>
       <section>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
           <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--dw-tools-title)' }}>{t('history.installed', 'Installed')}</span>
-          <span style={{ padding: '1px 8px', borderRadius: '10px', background: 'var(--dw-tools-badge-bg)', color: 'var(--dw-tools-badge-text)', fontSize: '11px', fontWeight: 600 }}>{installedTools.length}</span>
+          <span style={{ padding: '1px 8px', borderRadius: '10px', background: 'var(--dw-tools-badge-bg)', color: 'var(--dw-tools-badge-text)', fontSize: '11px', fontWeight: 600 }}>{centerToolRows.length}</span>
+          <span style={{ fontSize: '12px', color: 'var(--dw-tools-muted-text)' }}>{installedSourceLabel}{installedTools.cachedAt ? ` / ${installedTools.cachedAt}` : ''}</span>
         </div>
+        {installedToolsError ? <p style={{ fontSize: '12px', color: '#b91c1c', margin: '0 0 10px' }}>{installedToolsError}</p> : null}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' }}>
-          {installedTools.map((tool) => (
+          {(centerToolRows.length > 0 ? centerToolRows : fallbackInstalledTools.map((tool) => ({ id: tool.id, kind: t('history.localFallback', 'Local fallback'), name: t(tool.nameKey, tool.fallbackName), description: t(tool.descKey, tool.fallbackDesc), badge: tool.badgeKey ? t(tool.badgeKey, tool.fallbackBadge || '') : t('history.displayOnly', 'display only'), icon: tool.icon }))).map((tool) => (
             <div key={tool.id} style={{ display: 'flex', gap: '10px', padding: '12px', borderRadius: '10px', border: '1px solid var(--dw-tools-card-border)', background: 'var(--dw-tools-card-bg)' }}>
-              <div style={{ width: '36px', height: '36px', borderRadius: '8px', background: '#eef2ff', color: '#3730a3', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700, flexShrink: 0 }}>{tool.icon}</div>
+              <div style={{ width: '36px', height: '36px', borderRadius: '8px', background: tool.kind === 'MCP' ? '#ecfdf5' : '#eef2ff', color: tool.kind === 'MCP' ? '#166534' : '#3730a3', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700, flexShrink: 0 }}>{tool.icon}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--dw-tools-title)' }}>{t(tool.nameKey, tool.fallbackName)}</span>
-                  {tool.badgeKey ? <span style={{ padding: '1px 6px', borderRadius: '4px', background: 'var(--dw-tools-official-badge-bg)', color: 'var(--dw-tools-official-badge-text)', fontSize: '10px', fontWeight: 600 }}>{t(tool.badgeKey, tool.fallbackBadge || '')}</span> : null}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--dw-tools-title)' }}>{tool.name}</span>
+                  <span style={{ padding: '1px 6px', borderRadius: '4px', background: 'var(--dw-tools-official-badge-bg)', color: 'var(--dw-tools-official-badge-text)', fontSize: '10px', fontWeight: 600 }}>{tool.kind}</span>
                 </div>
-                <p style={{ fontSize: '11px', color: 'var(--dw-tools-muted-text)', margin: '4px 0 0', lineHeight: '1.5' }}>{t(tool.descKey, tool.fallbackDesc)}</p>
+                <p style={{ fontSize: '11px', color: 'var(--dw-tools-muted-text)', margin: '4px 0 0', lineHeight: '1.5' }}>{tool.description}</p>
+                <p style={{ fontSize: '10px', color: 'var(--dw-tools-muted-text)', margin: '4px 0 0' }}>{tool.badge}</p>
               </div>
             </div>
           ))}

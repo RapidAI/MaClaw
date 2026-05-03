@@ -11,10 +11,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+const minPaidTaskReward = 100
+
+var ansNamePattern = regexp.MustCompile(`^[a-z0-9]{1,32}$`)
 
 // Client wraps the AgentNet daemon REST API (localhost:3998).
 // It manages the daemon lifecycle and provides typed access to all endpoints.
@@ -27,6 +32,29 @@ type Client struct {
 	running bool
 
 	autoUpdateStop chan struct{}
+}
+
+// TaskCreateOptions contains spending-sensitive task publication flags.
+// Deposits are intentionally opt-in because they lock claimant credits.
+type TaskCreateOptions struct {
+	RequireDeposit   bool
+	DepositConfirmed bool
+}
+
+type BundleManifest struct {
+	Intention   string `json:"intention"`
+	Context     string `json:"context"`
+	Constraints string `json:"constraints"`
+	Harness     string `json:"harness"`
+	Acceptance  string `json:"acceptance"`
+	Evidence    string `json:"evidence"`
+}
+
+type IdentityStatus struct {
+	Exists bool   `json:"exists"`
+	Path   string `json:"path"`
+	DID    string `json:"did,omitempty"`
+	PeerID string `json:"peer_id,omitempty"`
 }
 
 // BinPath returns the resolved path to the anet binary.
@@ -223,6 +251,194 @@ func NewClient() *Client {
 	}
 }
 
+func apiTokenPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".anet", "api_token")
+}
+
+func readAPIToken() string {
+	if token := strings.TrimSpace(os.Getenv("AGENTNETWORK_API_TOKEN")); token != "" {
+		return token
+	}
+	p := apiTokenPath()
+	if p == "" {
+		return ""
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, c.baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if token := readAPIToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
+}
+
+func normalizeTaskReward(reward float64) (float64, error) {
+	if reward < 0 {
+		return 0, fmt.Errorf("task reward cannot be negative")
+	}
+	if reward > 0 && reward < minPaidTaskReward {
+		return 0, nil
+	}
+	return reward, nil
+}
+
+func IdentityKeyPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".anet", "anet", "identity.key"), nil
+}
+
+func (c *Client) GetIdentityStatus() (*IdentityStatus, error) {
+	keyPath, err := IdentityKeyPath()
+	if err != nil {
+		return nil, err
+	}
+	st := &IdentityStatus{Path: keyPath}
+	if info, err := os.Stat(keyPath); err == nil && !info.IsDir() && info.Size() > 0 {
+		st.Exists = true
+	}
+	if status, err := c.GetStatus(); err == nil && status != nil {
+		st.DID = status.DID
+		st.PeerID = status.PeerID
+		if status.DID != "" || status.PeerID != "" {
+			st.Exists = true
+		}
+	}
+	return st, nil
+}
+
+func validateANSName(name string) (string, error) {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if !ansNamePattern.MatchString(name) {
+		return "", fmt.Errorf("ANS name must be lowercase alphanumeric and 1-32 characters")
+	}
+	return name, nil
+}
+
+func normalizeServiceName(name string) (string, error) {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if !ansNamePattern.MatchString(name) {
+		return "", fmt.Errorf("service name must be lowercase alphanumeric and 1-32 characters")
+	}
+	return name, nil
+}
+
+func normalizeServiceCall(peer, service, method, requestPath string) (string, string, string, string, error) {
+	peer = strings.TrimSpace(peer)
+	if peer == "" {
+		return "", "", "", "", fmt.Errorf("peer is required")
+	}
+	service, err := normalizeServiceName(service)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		method = http.MethodPost
+	}
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
+	default:
+		return "", "", "", "", fmt.Errorf("unsupported service method: %s", method)
+	}
+	requestPath = strings.TrimSpace(requestPath)
+	if requestPath == "" {
+		requestPath = "/"
+	}
+	if strings.ContainsAny(requestPath, "\r\n") {
+		return "", "", "", "", fmt.Errorf("service path cannot contain newlines")
+	}
+	if strings.HasPrefix(requestPath, "//") {
+		return "", "", "", "", fmt.Errorf("service path must not start with //")
+	}
+	if !strings.HasPrefix(requestPath, "/") {
+		requestPath = "/" + requestPath
+	}
+	return peer, service, method, requestPath, nil
+}
+
+func normalizeOntologyQuery(query string, depth int) (string, int, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", 0, fmt.Errorf("ontology query is required")
+	}
+	if depth <= 0 {
+		depth = 2
+	}
+	if depth > 10 {
+		depth = 10
+	}
+	return query, depth, nil
+}
+func validateServiceRegistration(svc *Service) error {
+	if svc == nil {
+		return fmt.Errorf("service is nil")
+	}
+	name, err := normalizeServiceName(svc.Name)
+	if err != nil {
+		return err
+	}
+	svc.Name = name
+	svc.URL = strings.TrimSpace(svc.URL)
+	parsed, err := url.Parse(svc.URL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("service url must be an absolute localhost HTTP URL")
+	}
+	if parsed.Scheme != "http" {
+		return fmt.Errorf("service url must use http")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return fmt.Errorf("service url must point to localhost or loopback")
+	}
+	svc.Billing = strings.TrimSpace(strings.ToLower(svc.Billing))
+	if svc.Billing == "" {
+		svc.Billing = "free"
+	}
+	switch svc.Billing {
+	case "free", "per_call", "per_kb":
+	default:
+		return fmt.Errorf("billing must be free, per_call, or per_kb")
+	}
+	if svc.Price < 0 {
+		return fmt.Errorf("service price cannot be negative")
+	}
+	if svc.Billing != "free" && svc.Price <= 0 {
+		return fmt.Errorf("paid services require a positive price")
+	}
+	if svc.FreeTier < 0 {
+		return fmt.Errorf("free tier cannot be negative")
+	}
+	if len(svc.Modes) == 0 {
+		svc.Modes = []string{"rr"}
+	}
+	for i, mode := range svc.Modes {
+		mode = strings.TrimSpace(strings.ToLower(mode))
+		svc.Modes[i] = mode
+		switch mode {
+		case "rr", "server-stream", "bidi":
+		default:
+			return fmt.Errorf("unsupported service mode: %s", mode)
+		}
+	}
+	return nil
+}
+
 // ---------- PID lock file (duplicate-process guard) ----------
 
 func pidFilePath() string {
@@ -315,7 +531,7 @@ func (c *Client) EnsureDaemon() error {
 }
 
 func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct int, msg string)) error {
-	logDetail("[agentnet-lifecycle] ▶ EnsureDaemon: checking if daemon is already running...")
+	logDetail("[agentnet-lifecycle] checking if daemon is already running...")
 	if c.ping() {
 		logDetail("[agentnet-lifecycle] daemon already reachable via ping")
 		c.mu.Lock()
@@ -347,7 +563,7 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 			}
 			time.Sleep(1 * time.Second)
 		}
-		log.Printf("[agentnet-lifecycle] ✖ timed out waiting for another process to start daemon")
+		log.Printf("[agentnet-lifecycle] timed out waiting for another process to start daemon")
 		return fmt.Errorf("another process is starting agentnet daemon but it did not become reachable")
 	}
 	defer lockFile.Close()
@@ -370,7 +586,7 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 		logDetail("[agentnet-lifecycle] binary not found locally, downloading...")
 		downloaded, err := Download(emitProgress)
 		if err != nil {
-			log.Printf("[agentnet-lifecycle] ✖ download failed: %v", err)
+			log.Printf("[agentnet-lifecycle] download failed: %v", err)
 			return err
 		}
 		logDetail("[agentnet-lifecycle] binary downloaded to %s", downloaded)
@@ -462,7 +678,7 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 	hideCommandWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		c.mu.Unlock()
-		log.Printf("[agentnet-lifecycle] ✖ failed to start daemon: %v", err)
+		log.Printf("[agentnet-lifecycle] failed to start daemon: %v", err)
 		return fmt.Errorf("failed to start agentnet daemon: %w", err)
 	}
 	c.daemon = cmd
@@ -478,7 +694,7 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if c.ping() {
-			logDetail("[agentnet-lifecycle] ✔ daemon is reachable on %s", c.baseURL)
+			logDetail("[agentnet-lifecycle] daemon is reachable on %s", c.baseURL)
 			c.mu.Lock()
 			c.running = true
 			c.mu.Unlock()
@@ -486,12 +702,12 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	log.Printf("[agentnet-lifecycle] ✖ daemon started but not responding after 15s on %s", c.baseURL)
+	log.Printf("[agentnet-lifecycle] daemon started but not responding after 15s on %s", c.baseURL)
 	return fmt.Errorf("agentnet daemon started but not responding on %s", c.baseURL)
 }
 
 func (c *Client) StopDaemon() {
-	logDetail("[agentnet-lifecycle] ◼ StopDaemon: shutting down daemon...")
+	logDetail("[agentnet-lifecycle] StopDaemon: shutting down daemon...")
 	c.StopAutoUpdate()
 	c.mu.Lock()
 	bin := c.binPath
@@ -527,7 +743,7 @@ func (c *Client) StopDaemon() {
 		_ = daemon.Process.Kill()
 	}
 	removePIDFile()
-	logDetail("[agentnet-lifecycle] ◼ StopDaemon: complete")
+	logDetail("[agentnet-lifecycle] StopDaemon: complete")
 }
 
 func (c *Client) IsRunning() bool {
@@ -539,13 +755,17 @@ func (c *Client) IsRunning() bool {
 }
 
 func (c *Client) ping() bool {
-	resp, err := c.client.Get(c.baseURL + "/api/status")
+	req, err := c.newRequest(http.MethodGet, "/api/status", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode == http.StatusOK
+	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized
 }
 
 func (c *Client) DaemonPID() int {
@@ -561,7 +781,11 @@ func (c *Client) DaemonPID() int {
 // ---------- HTTP helpers ----------
 
 func (c *Client) get(path string, out interface{}) error {
-	resp, err := c.client.Get(c.baseURL + path)
+	req, err := c.newRequest(http.MethodGet, path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("agentnet GET %s: %w", path, err)
 	}
@@ -586,7 +810,12 @@ func (c *Client) post(path string, payload interface{}, out interface{}) error {
 		}
 		body = bytes.NewReader(data)
 	}
-	resp, err := c.client.Post(c.baseURL+path, "application/json", body)
+	req, err := c.newRequest(http.MethodPost, path, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("agentnet POST %s: %w", path, err)
 	}
@@ -603,7 +832,7 @@ func (c *Client) post(path string, payload interface{}, out interface{}) error {
 }
 
 func (c *Client) delete(path string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.baseURL+path, nil)
+	req, err := c.newRequest(http.MethodDelete, path, nil)
 	if err != nil {
 		return err
 	}
@@ -625,7 +854,7 @@ func (c *Client) put(path string, payload interface{}, out interface{}) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPut, c.baseURL+path, bytes.NewReader(data))
+	req, err := c.newRequest(http.MethodPut, path, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -732,7 +961,19 @@ func (c *Client) CreateTask(title string, reward float64) (*Task, error) {
 }
 
 func (c *Client) CreateTaskFull(title, description string, reward float64, tags []string, targetPeer string) (*Task, error) {
+	return c.CreateTaskWithOptions(title, description, reward, tags, targetPeer, TaskCreateOptions{})
+}
+
+func (c *Client) CreateTaskWithOptions(title, description string, reward float64, tags []string, targetPeer string, opts TaskCreateOptions) (*Task, error) {
+	normalizedReward, err := normalizeTaskReward(reward)
+	if err != nil {
+		return nil, err
+	}
+	if opts.RequireDeposit && !opts.DepositConfirmed {
+		return nil, fmt.Errorf("require_deposit needs explicit user confirmation")
+	}
 	payload := map[string]interface{}{"title": title, "reward": reward}
+	payload["reward"] = normalizedReward
 	if description != "" {
 		payload["description"] = description
 	}
@@ -742,39 +983,57 @@ func (c *Client) CreateTaskFull(title, description string, reward float64, tags 
 	if targetPeer != "" {
 		payload["target_peer"] = targetPeer
 	}
+	if opts.RequireDeposit {
+		payload["require_deposit"] = true
+	}
 	var task Task
 	return &task, c.post("/api/tasks", payload, &task)
 }
 
 func (c *Client) GetTask(id string) (*Task, error) {
 	var task Task
-	return &task, c.get("/api/tasks/"+id, &task)
+	return &task, c.get("/api/tasks/"+url.PathEscape(id), &task)
 }
 
 func (c *Client) BidOnTask(id string, amount float64, message string) error {
-	payload := map[string]interface{}{"message": message}
+	if amount < 0 {
+		return fmt.Errorf("bid amount cannot be negative")
+	}
+	payload := map[string]interface{}{"message": strings.TrimSpace(message)}
 	if amount > 0 {
 		payload["amount"] = amount
 	}
-	return c.post("/api/tasks/"+id+"/bid", payload, nil)
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/bid", payload, nil)
 }
 
 func (c *Client) AssignTask(id, peerID string) error {
-	return c.post("/api/tasks/"+id+"/assign", map[string]interface{}{"bidder_id": peerID}, nil)
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return fmt.Errorf("assignee peer ID is required")
+	}
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/assign", map[string]interface{}{"bidder_id": peerID}, nil)
 }
 
-func (c *Client) ClaimTask(id string) error  { return c.post("/api/tasks/"+id+"/claim", nil, nil) }
-func (c *Client) ApproveTask(id string) error { return c.post("/api/tasks/"+id+"/accept", nil, nil) }
-func (c *Client) RejectTask(id string) error  { return c.post("/api/tasks/"+id+"/reject", nil, nil) }
-func (c *Client) CancelTask(id string) error  { return c.post("/api/tasks/"+id+"/cancel", nil, nil) }
+func (c *Client) ClaimTask(id string) error {
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/claim", nil, nil)
+}
+func (c *Client) ApproveTask(id string) error {
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/accept", nil, nil)
+}
+func (c *Client) RejectTask(id string) error {
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/reject", nil, nil)
+}
+func (c *Client) CancelTask(id string) error {
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/cancel", nil, nil)
+}
 
 func (c *Client) SubmitTaskResult(id, result string) error {
-	return c.post("/api/tasks/"+id+"/submit", map[string]interface{}{"result": result}, nil)
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/submit", map[string]interface{}{"evidence": result, "result": result}, nil)
 }
 
 func (c *Client) GetTaskBids(id string) ([]map[string]interface{}, error) {
 	var bids []map[string]interface{}
-	return bids, c.get("/api/tasks/"+id+"/bids", &bids)
+	return bids, c.get("/api/tasks/"+url.PathEscape(id)+"/bids", &bids)
 }
 
 func (c *Client) MatchTasks() ([]Task, error) {
@@ -784,20 +1043,20 @@ func (c *Client) MatchTasks() ([]Task, error) {
 
 func (c *Client) MatchAgentsForTask(taskID string) ([]Resume, error) {
 	var agents []Resume
-	return agents, c.get("/api/tasks/"+taskID+"/match", &agents)
+	return agents, c.get("/api/tasks/"+url.PathEscape(taskID)+"/match", &agents)
 }
 
 func (c *Client) SubmitTaskWork(id, result string) error {
-	return c.post("/api/tasks/"+id+"/work", map[string]interface{}{"result": result}, nil)
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/work", map[string]interface{}{"result": result}, nil)
 }
 
 func (c *Client) GetTaskSubmissions(id string) ([]map[string]interface{}, error) {
 	var subs []map[string]interface{}
-	return subs, c.get("/api/tasks/"+id+"/submissions", &subs)
+	return subs, c.get("/api/tasks/"+url.PathEscape(id)+"/submissions", &subs)
 }
 
 func (c *Client) PickTaskWinner(id, winnerPeerID string) error {
-	return c.post("/api/tasks/"+id+"/pick", map[string]interface{}{"winner": winnerPeerID}, nil)
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/pick", map[string]interface{}{"winner": winnerPeerID}, nil)
 }
 
 // ---------- Shell Economy ----------
@@ -813,6 +1072,13 @@ func (c *Client) GetCreditsHistory() ([]map[string]interface{}, error) {
 }
 
 func (c *Client) TransferCredits(toDID string, amount float64, reason string) error {
+	toDID = strings.TrimSpace(toDID)
+	if toDID == "" {
+		return fmt.Errorf("credit recipient is required")
+	}
+	if amount <= 0 {
+		return fmt.Errorf("credit transfer amount must be positive")
+	}
 	payload := map[string]interface{}{"to": toDID, "amount": amount}
 	if reason != "" {
 		payload["reason"] = reason
@@ -998,6 +1264,23 @@ func (c *Client) SynthesizeSwarm(sessionID string) (map[string]interface{}, erro
 // ---------- Direct Messages ----------
 
 func (c *Client) SendDM(peerID, body string) error {
+	peerID = strings.TrimSpace(peerID)
+	if strings.HasPrefix(peerID, "agent://") {
+		entry, err := c.ResolveANS(strings.TrimPrefix(peerID, "agent://"))
+		if err != nil {
+			return err
+		}
+		peerID = entry.DID
+	} else if !strings.HasPrefix(peerID, "did:") && !strings.HasPrefix(peerID, "12D3") {
+		entry, err := c.ResolveANS(peerID)
+		if err != nil {
+			return err
+		}
+		peerID = entry.DID
+	}
+	if peerID == "" {
+		return fmt.Errorf("DM target is empty")
+	}
 	return c.post("/api/dm/send-plaintext", map[string]interface{}{"to": peerID, "body": body}, nil)
 }
 
@@ -1066,10 +1349,17 @@ func (c *Client) PostTopicMessage(topicName, body string) error {
 // ---------- P2P Service Gateway (new in skill.md) ----------
 
 func (c *Client) RegisterService(svc *Service) error {
+	if err := validateServiceRegistration(svc); err != nil {
+		return err
+	}
 	return c.post("/api/svc/register", svc, nil)
 }
 
 func (c *Client) UnregisterService(name string) error {
+	name, err := normalizeServiceName(name)
+	if err != nil {
+		return err
+	}
 	return c.post("/api/svc/unregister", map[string]interface{}{"name": name}, nil)
 }
 
@@ -1079,6 +1369,10 @@ func (c *Client) ListServices() ([]Service, error) {
 }
 
 func (c *Client) CallService(peer, service, method, path string, headers map[string]string, body string) (map[string]interface{}, error) {
+	peer, service, method, path, err := normalizeServiceCall(peer, service, method, path)
+	if err != nil {
+		return nil, err
+	}
 	payload := map[string]interface{}{
 		"peer":    peer,
 		"service": service,
@@ -1096,6 +1390,10 @@ func (c *Client) CallService(peer, service, method, path string, headers map[str
 }
 
 func (c *Client) DiscoverServices(peer string) ([]Service, error) {
+	peer = strings.TrimSpace(peer)
+	if peer == "" {
+		return nil, fmt.Errorf("peer is required")
+	}
 	var svcs []Service
 	payload := map[string]interface{}{
 		"peer":    peer,
@@ -1107,6 +1405,10 @@ func (c *Client) DiscoverServices(peer string) ([]Service, error) {
 // ---------- ANS (Agent Name Service) ----------
 
 func (c *Client) RegisterANS(name string, tags string) (*ANSEntry, error) {
+	name, err := validateANSName(name)
+	if err != nil {
+		return nil, err
+	}
 	var entry ANSEntry
 	payload := map[string]interface{}{"name": name}
 	if tags != "" {
@@ -1116,6 +1418,11 @@ func (c *Client) RegisterANS(name string, tags string) (*ANSEntry, error) {
 }
 
 func (c *Client) ResolveANS(name string) (*ANSEntry, error) {
+	name = strings.TrimPrefix(strings.TrimSpace(name), "agent://")
+	name, err := validateANSName(name)
+	if err != nil {
+		return nil, err
+	}
 	var entry ANSEntry
 	return &entry, c.get("/api/ans/resolve?name="+url.QueryEscape(name), &entry)
 }
@@ -1154,7 +1461,7 @@ func (c *Client) ListPoIChallenges() ([]map[string]interface{}, error) {
 }
 
 func (c *Client) RespondToPoI(challengeID string, response map[string]interface{}) error {
-	return c.post("/api/poi/challenges/"+challengeID+"/respond", response, nil)
+	return c.post("/api/poi/challenges/"+url.PathEscape(challengeID)+"/respond", response, nil)
 }
 
 func (c *Client) GetPoIScores() ([]map[string]interface{}, error) {
@@ -1283,13 +1590,13 @@ func (c *Client) tryAutoUpdate(logFn func(string)) {
 	}
 	if logFn != nil {
 		if info != nil {
-			logFn(fmt.Sprintf("AgentNet: updated %s → %s", info.LocalVersion, info.RemoteVersion))
+			logFn(fmt.Sprintf("AgentNet: updated %s -> %s", info.LocalVersion, info.RemoteVersion))
 		} else {
 			logFn("AgentNet: auto-update completed successfully")
 		}
 	}
 	if !c.ping() && logFn != nil {
-		logFn("AgentNet: daemon unreachable after update — it may need a manual restart")
+		logFn("AgentNet: daemon unreachable after update - it may need a manual restart")
 	}
 }
 
@@ -1463,7 +1770,7 @@ func (c *Client) BrowseHubTasks(hubURL string) ([]Task, error) {
 	return tasks, nil
 }
 
-// ---------- Agent Card & Init (skill.md §1, §5) ----------
+// ---------- Agent Card & Init ----------
 
 // PublishAgentCard publishes the agent's profile card to the network.
 func (c *Client) PublishAgentCard(name, desc string, skills []string) error {
@@ -1476,17 +1783,34 @@ func (c *Client) PublishAgentCard(name, desc string, skills []string) error {
 
 // InitAgent initializes the agent identity and profile (equivalent to `anet init`).
 func (c *Client) InitAgent(name string, skills []string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("agent name is required")
+	}
+	cleanSkills := make([]string, 0, len(skills))
+	seenSkills := make(map[string]bool)
+	for _, skill := range skills {
+		skill = strings.TrimSpace(strings.ToLower(skill))
+		if skill == "" || seenSkills[skill] {
+			continue
+		}
+		seenSkills[skill] = true
+		cleanSkills = append(cleanSkills, skill)
+	}
+	if len(cleanSkills) == 0 {
+		return fmt.Errorf("at least one skill is required")
+	}
 	return c.post("/api/init", map[string]interface{}{
 		"name":   name,
-		"skills": skills,
+		"skills": cleanSkills,
 	}, nil)
 }
 
-// ---------- Task Bundles (skill.md §Workflow B Step 4-5) ----------
+// ---------- Task Bundles ----------
 
 // AttachBundle attaches a .nut bundle to a task.
 func (c *Client) AttachBundle(taskID string, bundleData []byte) error {
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/tasks/"+taskID+"/bundle", bytes.NewReader(bundleData))
+	req, err := c.newRequest(http.MethodPost, "/api/tasks/"+url.PathEscape(taskID)+"/bundle", bytes.NewReader(bundleData))
 	if err != nil {
 		return err
 	}
@@ -1505,7 +1829,11 @@ func (c *Client) AttachBundle(taskID string, bundleData []byte) error {
 
 // DownloadBundle downloads a .nut bundle from a task.
 func (c *Client) DownloadBundle(taskID string) ([]byte, error) {
-	resp, err := c.client.Get(c.baseURL + "/api/tasks/" + taskID + "/bundle")
+	req, err := c.newRequest(http.MethodGet, "/api/tasks/"+url.PathEscape(taskID)+"/bundle", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET /api/tasks/%s/bundle: %w", taskID, err)
 	}
@@ -1517,19 +1845,76 @@ func (c *Client) DownloadBundle(taskID string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// ---------- Split Tasks (skill.md §8) ----------
+func (c *Client) SubmitTaskDeliverable(task *Task, result string) error {
+	if task == nil {
+		return fmt.Errorf("task is nil")
+	}
+	workDir, err := os.MkdirTemp("", "agentnet-deliverable-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(workDir)
+
+	manifest := BundleManifest{
+		Intention:   firstNonEmpty(task.Title, "Complete AgentNetwork task"),
+		Context:     firstNonEmpty(task.Description, "Task was claimed from AgentNetwork."),
+		Constraints: "Follow the publisher task description and avoid exposing local secrets or private user data.",
+		Harness:     "Publisher reviews the attached result and evidence summary.",
+		Acceptance:  "The deliverable satisfies the requested task description.",
+		Evidence:    "See result.md.",
+	}
+	manifestData, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "manifest.json"), manifestData, 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "result.md"), []byte(result), 0600); err != nil {
+		return err
+	}
+
+	bundlePath := filepath.Join(workDir, "deliverable.nut")
+	manager := NewBundleManager(c.BinPath())
+	if _, err := manager.Pack(workDir, bundlePath, ""); err != nil {
+		return fmt.Errorf("pack deliverable: %w", err)
+	}
+	bundleData, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return err
+	}
+	if err := c.AttachBundle(task.ID, bundleData); err != nil {
+		return err
+	}
+	return c.SubmitTaskResult(task.ID, "Task completed. See attached .nut bundle for manifest.json and result.md.")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// ---------- Split Tasks (skill.md section 8) ----------
 
 // CreateSplitTask creates a multi-slot task.
 func (c *Client) CreateSplitTask(title string, reward float64, slots int) (*Task, error) {
+	normalizedReward, err := normalizeTaskReward(reward)
+	if err != nil {
+		return nil, err
+	}
 	var task Task
 	return &task, c.post("/api/tasks/split", map[string]interface{}{
 		"title":  title,
-		"reward": reward,
+		"reward": normalizedReward,
 		"slots":  slots,
 	}, &task)
 }
 
-// ---------- Disputes (skill.md §8) ----------
+// ---------- Disputes (skill.md section 8) ----------
 
 // FileDispute files a dispute for a rejected task.
 func (c *Client) FileDispute(taskID, reason string) error {
@@ -1539,7 +1924,7 @@ func (c *Client) FileDispute(taskID, reason string) error {
 	}, nil)
 }
 
-// ---------- DAG & Ontology (skill.md §8) ----------
+// ---------- DAG & Ontology (skill.md section 8) ----------
 
 // DAGNode represents a node in a task DAG.
 type DAGNode struct {
@@ -1561,6 +1946,10 @@ func (c *Client) ExtractDAG(intent string, steps []string, outputs []string) ([]
 
 // QueryOntology queries the knowledge graph for a subgraph.
 func (c *Client) QueryOntology(query string, depth int) (map[string]interface{}, error) {
+	query, depth, err := normalizeOntologyQuery(query, depth)
+	if err != nil {
+		return nil, err
+	}
 	path := fmt.Sprintf("/api/ontology/subgraph?q=%s&depth=%d", url.QueryEscape(query), depth)
 	var result map[string]interface{}
 	return result, c.get(path, &result)

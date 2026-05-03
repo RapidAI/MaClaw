@@ -371,6 +371,19 @@ office 工具是统一的文档操作工具，支持以下 action：
 - 如果最近一轮已经证明某种做法无效，下一轮优先换方法、换参数或补充证据。
 `)
 	}
+	b.WriteString(`
+## MaClaw Group Discussion
+- When group discussion is enabled, you may use group_discussion(action="status") to inspect current-Hub experts, active discussions, and pending invites.
+- Group discussion is current Hub only. Never route it through AgentNet, HubCenter, public networks, or cross-Hub discovery.
+- Use group discussion only when it materially helps a complex/stuck task, for example architecture tradeoffs, hard debugging, security review, or needing another MaClaw model's experience.
+- Before starting a discussion, call group_discussion(action="suggest", topic=..., question=..., context_summary=...) if useful, then ask the human for explicit permission in plain text and stop. Do not call start_authorized in the same turn as the permission question.
+- Only call group_discussion(action="start_authorized") after the human has clearly approved, unless local settings explicitly allow same-security-group free discussion and the context is low/medium risk.
+- Share the minimum necessary context. Prefer summaries over raw logs, secrets, private files, credentials, personal data, or large source dumps.
+- If you receive or auto-accept an invite, use group_discussion(action="process_invites") and contribute concise expertise with send_message or submit_result when you have enough information.
+- Use group_discussion(action="readiness") or group_discussion(action="get_detail") to check whether enough expert answers have arrived; use group_discussion(action="summarize_result") to synthesize and optionally submit/inject the result before answering the human.
+- Use group_discussion(action="cleanup_stale", dry_run=true) to inspect stale open discussions; cancel stale discussions only when local policy/user intent makes cleanup safe.
+- When a useful discussion result is available, incorporate it into your answer as supporting input, not as unquestioned truth.
+`)
 	b.WriteString("## 当前设备状态\n")
 	hostname, _ := os.Hostname()
 	if hostname == "" {
@@ -767,19 +780,18 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 	// "GPU", "api服务器") from the user message. When the full message is long
 	// and noisy, BM25 may dilute the score for these entities. Run a focused
 	// recall on top entities and merge results to improve hit rate.
-	// Always run entity supplement when entities are extracted — even if primary
-	// recall returned many results, the token budget inside RecallDynamic may
-	// have excluded relevant entries with exact tag matches.
+	// Keep this bounded: prompt construction is on the interactive path, so a
+	// single user message should not fan out into several full recall pipelines.
 	expanded := corememory.ExpandQuery(msg)
-	if len(expanded.Entities) > 0 {
+	if len(expanded.Entities) > 0 && len(recalled) < 8 {
 		seen := make(map[string]bool, len(recalled))
 		for _, e := range recalled {
 			seen[e.ID] = true
 		}
-		// Limit to top 3 entities to bound latency.
+		// Limit to the strongest entity and only when the primary recall left room.
 		entities := expanded.Entities
-		if len(entities) > 3 {
-			entities = entities[:3]
+		if len(entities) > 1 {
+			entities = entities[:1]
 		}
 		for _, entity := range entities {
 			extra := h.memoryStore.RecallDynamic(entity, "", projectPath)
@@ -787,7 +799,13 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 				if !seen[e.ID] {
 					seen[e.ID] = true
 					recalled = append(recalled, e)
+					if len(recalled) >= 12 {
+						break
+					}
 				}
+			}
+			if len(recalled) >= 12 {
+				break
 			}
 		}
 		log.Printf("[proactive_recall] after entity supplement: %d entries (entities=%v)", len(recalled), entities)

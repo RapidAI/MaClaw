@@ -727,6 +727,39 @@ func TestImportNLSkillZipPathRejectsInvalidZipWithoutKnownSkillFormat(t *testing
 	}
 }
 
+func TestValidateSkillZipAcceptsMixedCaseSkillMarkdownPackage(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "mixed-skill-md.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"mixed-skill-md/Skill.md": "# mixed-skill-md\n\n```bash\necho mixed-skill\n```\n",
+	})
+
+	app := &App{}
+	if err := app.validateSkillZip(zipPath); err != nil {
+		t.Fatalf("validateSkillZip() error = %v", err)
+	}
+}
+func TestValidateSkillZipAcceptsMixedCaseReadmeMarkdownPackage(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "mixed-readme-md.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"mixed-readme-md/Readme.md": "# mixed-readme-md\n\n```bash\necho mixed-readme\n```\n",
+	})
+
+	app := &App{}
+	if err := app.validateSkillZip(zipPath); err != nil {
+		t.Fatalf("validateSkillZip() error = %v", err)
+	}
+}
+func TestValidateSkillZipAcceptsReadmeMarkdownPackage(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "readme-md.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"readme-md/readme.md": "# readme-md\n\n```bash\necho readme\n```\n",
+	})
+
+	app := &App{}
+	if err := app.validateSkillZip(zipPath); err != nil {
+		t.Fatalf("validateSkillZip() error = %v", err)
+	}
+}
 func TestValidateSkillZipAcceptsUppercaseSkillMarkdownPackage(t *testing.T) {
 	zipPath := filepath.Join(t.TempDir(), "uppercase-md.zip")
 	createSkillZip(t, zipPath, map[string]string{
@@ -779,6 +812,79 @@ func TestImportNLSkillZipPathRejectsLegacySkillPackage(t *testing.T) {
 	}
 }
 
+func TestImportNLSkillZipPathImportsMixedCaseReadmeMarkdownPackage(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	zipPath := filepath.Join(t.TempDir(), "mixed-readme-md.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"mixed-readme-md/Readme.md": "# mixed-readme-md\n\n```bash\necho mixed-readme-import\n```\n",
+	})
+
+	name, err := app.importNLSkillZipPath(zipPath)
+	if err != nil {
+		t.Fatalf("importNLSkillZipPath() error = %v", err)
+	}
+	if name != "mixed-readme-md" {
+		t.Fatalf("name = %q, want mixed-readme-md", name)
+	}
+	tools := app.skillExecutor.AsRegisteredTools()
+	var body string
+	for _, rt := range tools {
+		if rt.Name == "mixed-readme-md" {
+			body = rt.Body
+			break
+		}
+	}
+	if !strings.Contains(body, "echo mixed-readme-import") {
+		t.Fatalf("registered tool body did not include Readme.md content: %q", body)
+	}
+}
+func TestImportNLSkillZipPathImportsReadmeMarkdownPackage(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	zipPath := filepath.Join(t.TempDir(), "readme-md.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"readme-md/readme.md": "# readme-md\n\n```bash\necho readme-import\n```\n",
+	})
+
+	name, err := app.importNLSkillZipPath(zipPath)
+	if err != nil {
+		t.Fatalf("importNLSkillZipPath() error = %v", err)
+	}
+	if name != "readme-md" {
+		t.Fatalf("name = %q, want readme-md", name)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	var found *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].Name == "readme-md" {
+			found = &skills[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected imported readme skill, skills = %#v", skills)
+	}
+	if len(found.Steps) != 1 || found.Steps[0].Action != "bash" {
+		t.Fatalf("unexpected steps: %+v", found.Steps)
+	}
+	if body := app.skillExecutor.readSkillBody(*found); !strings.Contains(body, "echo readme-import") {
+		t.Fatalf("registered tool body did not include readme.md content: %q", body)
+	}
+}
 func TestImportNLSkillZipPathImportsUppercaseSkillMarkdownPackage(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

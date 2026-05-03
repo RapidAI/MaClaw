@@ -20,12 +20,12 @@ type AutoTaskPicker struct {
 	executor AutoTaskExecutor
 	onChange func()
 
-	pollInterval   time.Duration
-	maxConcurrent  int
-	minReward      float64
-	autoEnabled    bool
-	preferredTags  []string
-	lang           string // "zh" or "en" for error localisation
+	pollInterval  time.Duration
+	maxConcurrent int
+	minReward     float64
+	autoEnabled   bool
+	preferredTags []string
+	lang          string // "zh" or "en" for error localisation
 
 	activeTasks    map[string]*autoTaskRun
 	completedCount int
@@ -61,9 +61,13 @@ func NewAutoTaskPicker(client *Client, hubURL string) *AutoTaskPicker {
 	}
 }
 
-func (p *AutoTaskPicker) SetExecutor(fn AutoTaskExecutor)  { p.mu.Lock(); defer p.mu.Unlock(); p.executor = fn }
-func (p *AutoTaskPicker) SetOnChange(fn func())            { p.mu.Lock(); defer p.mu.Unlock(); p.onChange = fn }
-func (p *AutoTaskPicker) SetLang(lang string)              { p.mu.Lock(); defer p.mu.Unlock(); p.lang = lang }
+func (p *AutoTaskPicker) SetExecutor(fn AutoTaskExecutor) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.executor = fn
+}
+func (p *AutoTaskPicker) SetOnChange(fn func()) { p.mu.Lock(); defer p.mu.Unlock(); p.onChange = fn }
+func (p *AutoTaskPicker) SetLang(lang string)   { p.mu.Lock(); defer p.mu.Unlock(); p.lang = lang }
 
 func (p *AutoTaskPicker) Configure(enabled bool, pollMinutes int, minReward float64, tags []string) {
 	p.mu.Lock()
@@ -80,7 +84,10 @@ func (p *AutoTaskPicker) IsEnabled() bool { p.mu.Lock(); defer p.mu.Unlock(); re
 
 func (p *AutoTaskPicker) Start() {
 	p.mu.Lock()
-	if p.running { p.mu.Unlock(); return }
+	if p.running {
+		p.mu.Unlock()
+		return
+	}
 	p.running = true
 	p.stopCh = make(chan struct{})
 	p.mu.Unlock()
@@ -89,7 +96,10 @@ func (p *AutoTaskPicker) Start() {
 
 func (p *AutoTaskPicker) Stop() {
 	p.mu.Lock()
-	if !p.running { p.mu.Unlock(); return }
+	if !p.running {
+		p.mu.Unlock()
+		return
+	}
 	p.running = false
 	close(p.stopCh)
 	p.mu.Unlock()
@@ -116,30 +126,38 @@ func (p *AutoTaskPicker) GetStatus() map[string]interface{} {
 }
 
 func formatTimeOrEmpty(t time.Time) string {
-	if t.IsZero() { return "" }
+	if t.IsZero() {
+		return ""
+	}
 	return t.Format(time.RFC3339)
 }
 
 func (p *AutoTaskPicker) loop() {
 	select {
 	case <-time.After(30 * time.Second):
-	case <-p.stopCh: return
+	case <-p.stopCh:
+		return
 	}
 	for {
 		p.mu.Lock()
 		enabled := p.autoEnabled
 		interval := p.pollInterval
 		p.mu.Unlock()
-		if enabled { p.pollAndPickTask() }
+		if enabled {
+			p.pollAndPickTask()
+		}
 		select {
 		case <-time.After(interval):
-		case <-p.stopCh: return
+		case <-p.stopCh:
+			return
 		}
 	}
 }
 
 func (p *AutoTaskPicker) pollAndPickTask() {
-	if !p.pollMu.TryLock() { return }
+	if !p.pollMu.TryLock() {
+		return
+	}
 	defer p.pollMu.Unlock()
 
 	p.mu.Lock()
@@ -147,9 +165,14 @@ func (p *AutoTaskPicker) pollAndPickTask() {
 	p.lastError = ""
 	activeCount := 0
 	for _, r := range p.activeTasks {
-		if r.Status == "executing" || r.Status == "claiming" || r.Status == "submitting" { activeCount++ }
+		if r.Status == "executing" || r.Status == "claiming" || r.Status == "submitting" {
+			activeCount++
+		}
 	}
-	if activeCount >= p.maxConcurrent { p.mu.Unlock(); return }
+	if activeCount >= p.maxConcurrent {
+		p.mu.Unlock()
+		return
+	}
 	client := p.client
 	hubURL := p.hubURL
 	executor := p.executor
@@ -157,15 +180,27 @@ func (p *AutoTaskPicker) pollAndPickTask() {
 	preferredTags := append([]string{}, p.preferredTags...)
 	p.mu.Unlock()
 
-	if executor == nil { p.setError("executor not configured"); return }
-	if !client.IsRunning() { return }
+	if executor == nil {
+		p.setError("executor not configured")
+		return
+	}
+	if !client.IsRunning() {
+		return
+	}
 
 	tasks, err := p.discoverTasks(client, hubURL)
-	if err != nil { p.setError(fmt.Sprintf("task discovery failed: %v", err)); return }
-	if len(tasks) == 0 { return }
+	if err != nil {
+		p.setError(fmt.Sprintf("task discovery failed: %v", err))
+		return
+	}
+	if len(tasks) == 0 {
+		return
+	}
 
 	selected := p.selectTask(tasks, minReward, preferredTags)
-	if selected == nil { return }
+	if selected == nil {
+		return
+	}
 	go p.executeTask(client, selected, executor)
 }
 
@@ -173,46 +208,89 @@ func (p *AutoTaskPicker) discoverTasks(client *Client, hubURL string) ([]Task, e
 	matched, err := client.MatchTasks()
 	if err == nil && len(matched) > 0 {
 		var open []Task
-		for _, t := range matched { s := strings.ToLower(t.TaskStatus); if s == "open" || s == "created" { open = append(open, t) } }
-		if len(open) > 0 { return open, nil }
+		for _, t := range matched {
+			s := strings.ToLower(t.TaskStatus)
+			if s == "open" || s == "created" {
+				open = append(open, t)
+			}
+		}
+		if len(open) > 0 {
+			return open, nil
+		}
 	}
-	if hubURL == "" { return nil, nil }
+	if hubURL == "" {
+		return nil, nil
+	}
 	netTasks, err := client.BrowseHubTasks(hubURL)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	var open []Task
-	for _, t := range netTasks { s := strings.ToLower(t.TaskStatus); if s == "open" || s == "created" { open = append(open, t) } }
+	for _, t := range netTasks {
+		s := strings.ToLower(t.TaskStatus)
+		if s == "open" || s == "created" {
+			open = append(open, t)
+		}
+	}
 	return open, nil
 }
 
 func (p *AutoTaskPicker) selectTask(tasks []Task, minReward float64, preferredTags []string) *Task {
-	if len(tasks) == 0 { return nil }
+	if len(tasks) == 0 {
+		return nil
+	}
 	var candidates []Task
-	for _, t := range tasks { if t.Reward >= minReward { candidates = append(candidates, t) } }
-	if len(candidates) == 0 { return nil }
+	for _, t := range tasks {
+		if t.Reward >= minReward {
+			candidates = append(candidates, t)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
 
 	p.mu.Lock()
 	activeIDs := make(map[string]bool)
-	for id := range p.activeTasks { activeIDs[id] = true }
+	for id := range p.activeTasks {
+		activeIDs[id] = true
+	}
 	p.mu.Unlock()
 
 	var filtered []Task
-	for _, t := range candidates { if !activeIDs[t.ID] { filtered = append(filtered, t) } }
-	if len(filtered) == 0 { return nil }
+	for _, t := range candidates {
+		if !activeIDs[t.ID] {
+			filtered = append(filtered, t)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
 
 	tagSet := make(map[string]bool)
-	for _, tag := range preferredTags { tagSet[strings.ToLower(tag)] = true }
+	for _, tag := range preferredTags {
+		tagSet[strings.ToLower(tag)] = true
+	}
 
-	type scored struct { task Task; score float64 }
+	type scored struct {
+		task  Task
+		score float64
+	}
 	var scoredTasks []scored
 	for _, t := range filtered {
 		s := t.Reward
-		for _, tag := range t.Tags { if tagSet[strings.ToLower(tag)] { s += 50 } }
+		for _, tag := range t.Tags {
+			if tagSet[strings.ToLower(tag)] {
+				s += 50
+			}
+		}
 		scoredTasks = append(scoredTasks, scored{task: t, score: s})
 	}
 
 	best := scoredTasks[0]
 	for _, st := range scoredTasks[1:] {
-		if st.score > best.score || (st.score == best.score && rand.Float64() > 0.5) { best = st }
+		if st.score > best.score || (st.score == best.score && rand.Float64() > 0.5) {
+			best = st
+		}
 	}
 	result := best.task
 	return &result
@@ -257,7 +335,7 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 	p.mu.Unlock()
 
 	p.setRunStatus(run, "submitting")
-	if err := client.SubmitTaskResult(task.ID, result); err != nil {
+	if err := client.SubmitTaskDeliverable(task, result); err != nil {
 		p.failTask(run, FormatTaskError("submit", err, lang))
 		return
 	}
@@ -269,7 +347,7 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 	delete(p.activeTasks, task.ID)
 	p.mu.Unlock()
 	p.notifyChange()
-	fmt.Printf("[auto-task-picker] ✅ completed task %q (reward: %.0f🐚)\n", task.Title, task.Reward)
+	fmt.Printf("[auto-task-picker] completed task %q (reward: %.0f shell)\n", task.Title, task.Reward)
 }
 
 // PickAndExecuteTask manually picks a specific task by ID.
@@ -343,7 +421,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 	p.mu.Unlock()
 
 	p.setRunStatus(run, "submitting")
-	if submitErr := client.SubmitTaskResult(task.ID, execResult); submitErr != nil {
+	if submitErr := client.SubmitTaskDeliverable(task, execResult); submitErr != nil {
 		msg := FormatTaskError("submit", submitErr, lang)
 		p.failTask(run, msg)
 		return map[string]interface{}{"ok": false, "error": msg, "result": execResult}
@@ -356,26 +434,36 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 	delete(p.activeTasks, task.ID)
 	p.mu.Unlock()
 	p.notifyChange()
-	fmt.Printf("[manual-task-picker] ✅ completed task %q (reward: %.0f🐚)\n", task.Title, task.Reward)
+	fmt.Printf("[manual-task-picker] completed task %q (reward: %.0f shell)\n", task.Title, task.Reward)
 	return map[string]interface{}{"ok": true, "result": execResult}
 }
 
 func (p *AutoTaskPicker) setRunStatus(run *autoTaskRun, status string) {
-	p.mu.Lock(); run.Status = status; p.mu.Unlock(); p.notifyChange()
+	p.mu.Lock()
+	run.Status = status
+	p.mu.Unlock()
+	p.notifyChange()
 }
 
 func (p *AutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 	p.mu.Lock()
-	run.Status = "failed"; run.Error = errMsg; p.failedCount++
-	delete(p.activeTasks, run.TaskID); p.lastError = errMsg
+	run.Status = "failed"
+	run.Error = errMsg
+	p.failedCount++
+	delete(p.activeTasks, run.TaskID)
+	p.lastError = errMsg
 	p.mu.Unlock()
 	p.notifyChange()
-	fmt.Printf("[auto-task-picker] ❌ task %q failed: %s\n", run.Title, errMsg)
+	fmt.Printf("[auto-task-picker] task %q failed: %s\n", run.Title, errMsg)
 }
 
 func (p *AutoTaskPicker) setError(msg string) { p.mu.Lock(); p.lastError = msg; p.mu.Unlock() }
 
 func (p *AutoTaskPicker) notifyChange() {
-	p.mu.Lock(); fn := p.onChange; p.mu.Unlock()
-	if fn != nil { fn() }
+	p.mu.Lock()
+	fn := p.onChange
+	p.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }

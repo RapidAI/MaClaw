@@ -272,6 +272,8 @@ func Bootstrap() (*Center, error) {
 	agentRuntimeHandler.RegisterClientRoutes(mux)
 	agentRuntimeHandler.RegisterAdminRoutes(mux)
 	a2aHandler.RegisterRuntimeRoutes(mux)
+	a2aHandler.RegisterAdminRoutes(mux)
+	a2aHandler.RegisterHubRoutes(mux)
 	wfHandler.RegisterAdminRoutes(mux)
 	wfHandler.RegisterRuntimeRoutes(mux)
 	wfHandler.RegisterClientRoutes(mux)

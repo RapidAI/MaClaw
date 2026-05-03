@@ -159,7 +159,7 @@ func Download(emitProgress func(stage string, pct int, msg string)) (string, err
 		"[agentnet-not-available] 🌐 AgentNet installation failed for %s/%s\n\n"+
 			"All download sources failed (npmmirror, npm, GitHub).\n"+
 			"You can manually install by running:\n"+
-			"  curl -fsSL https://clawnet.cc/install.sh | sh\n\n"+
+			"  curl -fsSL https://agentnet.cc/install.sh | sh\n\n"+
 			"Or place the anet binary at:\n  %s",
 		runtime.GOOS, runtime.GOARCH, targetPath,
 	)

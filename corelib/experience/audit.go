@@ -2,6 +2,7 @@ package experience
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +20,31 @@ const (
 	AuditStatusCompleted    = "completed"
 	AuditStatusNoCandidates = "no_candidates"
 	AuditStatusFailed       = "failed"
+)
+
+const (
+	AuditHealthStatusEmpty          = "empty"
+	AuditHealthStatusHealthy        = "healthy"
+	AuditHealthStatusNeedsAttention = "needs_attention"
+	AuditHealthStatusNoSignal       = "no_signal"
+	AuditHealthStatusFailing        = "failing"
+)
+
+const (
+	AuditIssueNone                  = "none"
+	AuditIssueNoRuns                = "no_runs"
+	AuditIssueExtractionFailed      = "extraction_failed"
+	AuditIssueNoReusableCandidates  = "no_reusable_candidates"
+	AuditIssueNoSkillsLearned       = "no_skills_learned"
+	AuditIssueUnsupportedEvidence   = "unsupported_evidence"
+	AuditIssueHighSkipRate          = "high_skip_rate"
+	AuditIssueSomeRunsFailed        = "some_runs_failed"
+	AuditIssueQualityBelowThreshold = "quality_below_threshold"
+	AuditIssueInsufficientEvidence  = "insufficient_evidence"
+	AuditIssueExistingSkillBetter   = "existing_skill_better"
+	AuditIssuePatternBudgetExceeded = "pattern_budget_exceeded"
+	AuditIssueStoreWriteFailed      = "store_write_failed"
+	AuditIssueUnsupportedStepAction = "unsupported_step_action"
 )
 
 // AuditOptions bounds the detailed extraction data exposed to UI/logging
@@ -181,20 +207,32 @@ type AuditHealth struct {
 	Skipped          int            `json:"skipped"`
 	AvgDurationMS    int64          `json:"avg_duration_ms,omitempty"`
 	LatestTimestamp  string         `json:"latest_timestamp,omitempty"`
+	Status           string         `json:"status"`
+	IssueCode        string         `json:"issue_code,omitempty"`
+	PrimaryIssue     string         `json:"primary_issue,omitempty"`
+	SuggestedAction  string         `json:"suggested_action,omitempty"`
 	SkipReasons      map[string]int `json:"skip_reasons,omitempty"`
 	UnsupportedSteps map[string]int `json:"unsupported_steps,omitempty"`
 }
 
 func (t *AuditTrail) Health() AuditHealth {
 	if t == nil {
-		return AuditHealth{}
+		return EmptyAuditHealth()
 	}
 	return SummarizeAuditEntries(t.List(), t.opts)
 }
 
+func EmptyAuditHealth() AuditHealth {
+	return AuditHealth{
+		Status:          AuditHealthStatusEmpty,
+		IssueCode:       AuditIssueNoRuns,
+		SuggestedAction: "run an eligible successful session before expecting learned skills",
+	}
+}
+
 func SummarizeAuditEntries(entries []AuditEntry, opts AuditOptions) AuditHealth {
 	opts = normalizeAuditOptions(opts)
-	health := AuditHealth{}
+	health := EmptyAuditHealth()
 	var durationTotal int64
 	var durationCount int64
 	skipReasons := map[string]int{}
@@ -226,9 +264,97 @@ func SummarizeAuditEntries(entries []AuditEntry, opts AuditOptions) AuditHealth 
 	if durationCount > 0 {
 		health.AvgDurationMS = durationTotal / durationCount
 	}
+	health.Status, health.IssueCode, health.PrimaryIssue, health.SuggestedAction = diagnoseAuditHealth(health, skipReasons, unsupportedSteps, opts)
 	health.SkipReasons = auditStringIntMap(skipReasons, opts.MaxSummaryItems, opts.MaxStringLength)
 	health.UnsupportedSteps = auditStringIntMap(unsupportedSteps, opts.MaxSummaryItems, opts.MaxStringLength)
 	return health
+}
+
+func diagnoseAuditHealth(health AuditHealth, skipReasons map[string]int, unsupportedSteps map[string]int, opts AuditOptions) (string, string, string, string) {
+	opts = normalizeAuditOptions(opts)
+	if health.Runs == 0 {
+		return AuditHealthStatusEmpty, AuditIssueNoRuns, "", "run an eligible successful session before expecting learned skills"
+	}
+	if health.Failed > 0 && health.Completed == 0 {
+		return AuditHealthStatusFailing, AuditIssueExtractionFailed, "recent extraction runs failed", "check LLM connectivity and skill store write access"
+	}
+	if health.Registered+health.Updated == 0 {
+		if reason, ok := topAuditCount(skipReasons); ok {
+			return AuditHealthStatusNoSignal, auditIssueCodeForReason(reason), "no skills learned: " + AuditText(reason, opts.MaxStringLength), suggestAuditActionForReason(reason)
+		}
+		if step, ok := topAuditCount(unsupportedSteps); ok {
+			return AuditHealthStatusNoSignal, AuditIssueUnsupportedEvidence, "unsupported evidence: " + AuditText(step, opts.MaxStringLength), "prefer supported skill actions or add evidence support for this step type"
+		}
+		if health.TotalCandidates == 0 {
+			return AuditHealthStatusNoSignal, AuditIssueNoReusableCandidates, "no reusable candidates found", "capture a longer successful workflow with repeatable commands or important events"
+		}
+		return AuditHealthStatusNoSignal, AuditIssueNoSkillsLearned, "no skills learned", "inspect skip reasons and evidence coverage before adjusting thresholds"
+	}
+	if health.Failed > 0 {
+		return AuditHealthStatusNeedsAttention, AuditIssueSomeRunsFailed, "some extraction runs failed", "review failed audit entries while keeping successful learned skills"
+	}
+	if health.Skipped > health.Registered+health.Updated {
+		if reason, ok := topAuditCount(skipReasons); ok {
+			return AuditHealthStatusNeedsAttention, auditIssueCodeForReason(reason), "high skip rate: " + AuditText(reason, opts.MaxStringLength), suggestAuditActionForReason(reason)
+		}
+		return AuditHealthStatusNeedsAttention, AuditIssueHighSkipRate, "high skip rate", "review skip reasons and tighten extraction prompts only if useful skills are being missed"
+	}
+	return AuditHealthStatusHealthy, AuditIssueNone, "", ""
+}
+
+func auditIssueCodeForReason(reason string) string {
+	lower := strings.ToLower(reason)
+	switch {
+	case strings.Contains(lower, "quality score below threshold"):
+		return AuditIssueQualityBelowThreshold
+	case strings.Contains(lower, "insufficient session evidence"):
+		return AuditIssueInsufficientEvidence
+	case strings.Contains(lower, "existing skill is equal or better"):
+		return AuditIssueExistingSkillBetter
+	case strings.Contains(lower, "pattern budget exceeded"):
+		return AuditIssuePatternBudgetExceeded
+	case strings.Contains(lower, "register failed"), strings.Contains(lower, "update failed"):
+		return AuditIssueStoreWriteFailed
+	case strings.Contains(lower, "unsupported step action"):
+		return AuditIssueUnsupportedStepAction
+	default:
+		return AuditIssueNoSkillsLearned
+	}
+}
+
+func suggestAuditActionForReason(reason string) string {
+	lower := strings.ToLower(reason)
+	switch {
+	case strings.Contains(lower, "quality score below threshold"):
+		return "capture broader repeatable workflows before learning a skill"
+	case strings.Contains(lower, "insufficient session evidence"):
+		return "keep enough command output and important events to support every learned step"
+	case strings.Contains(lower, "existing skill is equal or better"):
+		return "no action needed unless the existing skill should be replaced"
+	case strings.Contains(lower, "pattern budget exceeded"):
+		return "increase extraction budget only after confirming candidates are high quality"
+	case strings.Contains(lower, "register failed"), strings.Contains(lower, "update failed"):
+		return "check learned skill store permissions and validation errors"
+	case strings.Contains(lower, "unsupported step action"):
+		return "teach extraction to use supported actions or add support for the missing action"
+	default:
+		return "inspect recent audit decisions for the skipped candidate details"
+	}
+}
+
+func topAuditCount(counts map[string]int) (string, bool) {
+	var topKey string
+	var topValue int
+	for key, value := range counts {
+		if key == "" || value == 0 {
+			continue
+		}
+		if topKey == "" || value > topValue || (value == topValue && key < topKey) {
+			topKey = key
+			topValue = value
+		}
+	}
+	return topKey, topKey != ""
 }
 
 func auditTimestampAfter(candidate string, current string) bool {

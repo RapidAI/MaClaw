@@ -3,10 +3,12 @@ import { SideNav } from './components/layout/SideNav';
 import { TopHeader } from './components/layout/TopHeader';
 import { AccountSettingsPage } from './pages/AccountSettingsPage';
 import { AuthPage } from './pages/AuthPage';
+import { BootstrapPage } from './pages/BootstrapPage';
 import { CloudRegistrationPage } from './pages/CloudRegistrationPage';
 import { CommunicationsPage } from './pages/CommunicationsPage';
 import { DeliveryPage } from './pages/DeliveryPage';
 import { EmployeesPage } from './pages/EmployeesPage';
+import { GroupDiscussionPage } from './pages/GroupDiscussionPage';
 import { IMSettingsPage } from './pages/IMSettingsPage';
 import { KnowledgePage } from './pages/KnowledgePage';
 import { LoginPage } from './pages/LoginPage';
@@ -21,8 +23,10 @@ import type { CenterTab } from './types';
 
 const meta: Record<CenterTab, { title: string; subtitle: string }> = {
   overview: { title: '总览', subtitle: '查看数字员工中心的运行状态、告警和关键待办。' },
+  bootstrap: { title: '单位初始化', subtitle: '为新单位/租户创建启动计划、组织骨架、首批 iWorker 和首次运行任务。' },
   employees: { title: '数字员工', subtitle: '管理 iWorker 身份、角色、能力偏好和模型策略。' },
   communications: { title: '员工通讯', subtitle: '查看数字员工之间的协作记录、请求流转和人工介入。' },
+  groupDiscussion: { title: '群组讨论', subtitle: '查看当前 Hub 内 MaClaw 专家、历史讨论主题、参与者和讨论结果。' },
   workflows: { title: '流程设计', subtitle: '编排任务如何在不同数字员工、技能和人工节点之间流转。' },
   knowledge: { title: '经验共享', subtitle: '沉淀组织经验，并按公司、部门和个人范围复用。' },
   packages: { title: '能力包', subtitle: '管理技能与 MCP 能力包的来源、版本、安装和下发状态。' },
@@ -33,10 +37,9 @@ const meta: Record<CenterTab, { title: string; subtitle: string }> = {
   usage: { title: '使用情况', subtitle: '跟踪数字员工调用量、任务量和资源趋势。' },
   im: { title: 'IM 管理', subtitle: '配置飞书、钉钉、企业微信等企业通讯入口。' },
   auth: { title: '认证管理', subtitle: '管理 LDAP、本地账号和预留的 OIDC/OAuth 认证适配器。' },
-  settings: { title: '账户设置', subtitle: '管理管理员邮箱、登录密码和租户模式。' },
+  settings: { title: '账号设置', subtitle: '管理管理员邮箱、登录密码和租户模式。' },
 };
 
-// In Wails mode, skip login (desktop app handles auth).
 const isWails = typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
 
 export default function App() {
@@ -45,38 +48,29 @@ export default function App() {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [activeTab, setActiveTab] = useState<CenterTab>('overview');
 
-  // Check tenant status and existing session on mount (HTTP mode only)
   useEffect(() => {
     if (isWails) return;
     Promise.all([
       fetch('/auth/tenant-status').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/auth/check').then(r => { if (r.ok) setAuthenticated(true); }).catch(() => {}),
     ]).then(([tenantStatus]) => {
-      if (tenantStatus && tenantStatus.needs_setup) {
-        setNeedsSetup(true);
-      }
+      if (tenantStatus && tenantStatus.needs_setup) setNeedsSetup(true);
     }).finally(() => setChecking(false));
   }, []);
 
-  if (checking) {
-    return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>加载中...</div>;
-  }
-
-  if (needsSetup) {
-    return <SetupTenantPage onSetupComplete={() => { setNeedsSetup(false); }} />;
-  }
-
-  if (!authenticated) {
-    return <LoginPage onLogin={() => setAuthenticated(true)} />;
-  }
+  if (checking) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>加载中...</div>;
+  if (needsSetup) return <SetupTenantPage onSetupComplete={() => { setNeedsSetup(false); setAuthenticated(true); setActiveTab('bootstrap'); }} />;
+  if (!authenticated) return <LoginPage onLogin={() => setAuthenticated(true)} />;
 
   const renderContent = () => {
     switch (activeTab) {
+      case 'bootstrap': return <BootstrapPage />;
       case 'employees': return <EmployeesPage />;
       case 'models': return <ModelRoutingPage />;
       case 'cloud': return <CloudRegistrationPage />;
       case 'overview': return <OverviewPage />;
       case 'communications': return <CommunicationsPage />;
+      case 'groupDiscussion': return <GroupDiscussionPage />;
       case 'workflows': return <WorkflowsPage />;
       case 'knowledge': return <KnowledgePage />;
       case 'packages': return <PackagesPage />;

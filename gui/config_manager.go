@@ -270,6 +270,13 @@ func (m *ConfigManager) UpdateConfig(section, key, value string) (string, error)
 	if err := m.validateChange(section, key, value); err != nil {
 		return "", err
 	}
+	if section == "remote" && key == "default_launch_mode" {
+		oldValue := cfg.DefaultLaunchMode
+		if err := m.app.SetDefaultLaunchMode(value); err != nil {
+			return "", fmt.Errorf("failed to save config: %w", err)
+		}
+		return maskIfSensitive(key, oldValue), nil
+	}
 
 	oldValue, err := m.applyChange(&cfg, section, key, value)
 	if err != nil {
@@ -302,7 +309,12 @@ func (m *ConfigManager) BatchUpdate(changes []config.ConfigChange) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	defaultLaunchMode := ""
 	for _, c := range changes {
+		if c.Section == "remote" && c.Key == "default_launch_mode" {
+			defaultLaunchMode = c.Value
+			continue
+		}
 		if _, err := m.applyChange(&cfg, c.Section, c.Key, c.Value); err != nil {
 			return fmt.Errorf("apply failed for %s.%s: %w", c.Section, c.Key, err)
 		}
@@ -311,6 +323,11 @@ func (m *ConfigManager) BatchUpdate(changes []config.ConfigChange) error {
 	// Phase 3: single save
 	if err := m.app.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
+	}
+	if defaultLaunchMode != "" {
+		if err := m.app.SetDefaultLaunchMode(defaultLaunchMode); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
 	}
 	return nil
 }

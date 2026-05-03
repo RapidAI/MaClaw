@@ -23,7 +23,7 @@
         selectedAssignEmails: {},
         contextMenuHideHandler: null,
         membersPage: 1,
-        membersPageSize: 50,
+        membersPageSize: 60,
         membersCache: []
       };
     }
@@ -273,7 +273,7 @@
 
   function renderMembersSection(children, members) {
     var sec = state();
-    var pageSize = Number(sec.membersPageSize || 50);
+    var pageSize = Number(sec.membersPageSize || 60);
     var totalMembers = members.length;
     var totalPages = Math.max(1, Math.ceil(totalMembers / pageSize));
     if (sec.membersPage > totalPages) sec.membersPage = totalPages;
@@ -295,7 +295,7 @@
     }
     if (totalMembers) {
       html += '<div style="margin:10px 0 6px;font-size:11px;color:var(--muted)">' + (st('membersLabel') + ' (' + totalMembers + ')') + '</div>';
-      html += '<div style="display:grid;gap:4px" id="secMembersGrid">';
+      html += '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px" id="secMembersGrid">';
       pageMembers.forEach(function(email, idx) {
         var absoluteIndex = start + idx + 1;
         html += '<div class="item" style="min-height:auto;padding:8px 10px;border-radius:10px;box-shadow:none">';
@@ -750,7 +750,7 @@
     var sec = state();
     if (!sec.selectedGroupId) return;
     var total = (sec.membersCache || []).length;
-    var pageSize = Number(sec.membersPageSize || 50);
+    var pageSize = Number(sec.membersPageSize || 60);
     var totalPages = Math.max(1, Math.ceil(total / pageSize));
     sec.membersPage = Math.max(1, Math.min(totalPages, Number(sec.membersPage || 1) + Number(step || 0)));
     var container = document.getElementById('secMembersList');

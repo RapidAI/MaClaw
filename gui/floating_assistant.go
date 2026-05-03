@@ -11,9 +11,8 @@ import (
 
 const defaultPetSize = 88
 
-// FloatingAssistantManager manages the floating assistant button window lifecycle.
-// It handles creation, display, hiding, and destruction of the floating button
-// that appears when the main window is hidden.
+// FloatingAssistantManager manages the MaClaw desktop pet window lifecycle.
+// The pet is independent from the main window and is configured from Settings > Pet.
 type FloatingAssistantManager struct {
 	app     *App
 	visible bool
@@ -32,8 +31,8 @@ func NewFloatingAssistantManager(app *App) *FloatingAssistantManager {
 	return m
 }
 
-// ShowFloatingButton creates and shows the floating assistant window.
-// No-op if config.ShowAssistantEntry is false or already visible.
+// ShowFloatingButton creates and shows the MaClaw desktop pet window.
+// No-op if the pet is disabled or already visible.
 // On window creation failure, logs error silently and does not affect main window functionality.
 func (m *FloatingAssistantManager) ShowFloatingButton() {
 	m.mu.Lock()
@@ -46,6 +45,10 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 	}()
 
 	log.Printf("[floating-assistant] ShowFloatingButton: enter, app=%v", m.app != nil)
+	if m.app == nil {
+		log.Printf("[floating-assistant] ShowFloatingButton: app is nil")
+		return
+	}
 
 	// Check config - do not show if disabled.
 	config, err := m.app.LoadConfig()
@@ -53,8 +56,8 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 		log.Printf("[floating-assistant] ShowFloatingButton: LoadConfig failed: %v", err)
 		return
 	}
-	if !config.ShowAssistantEntry {
-		log.Printf("[floating-assistant] ShowFloatingButton: disabled in config")
+	if !config.PetEnabled {
+		log.Printf("[floating-assistant] ShowFloatingButton: pet disabled in config")
 		return
 	}
 
@@ -90,7 +93,7 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 	log.Printf("[floating-assistant] ShowFloatingButton: done, visible=true")
 }
 
-// HideFloatingButton hides and destroys the floating assistant window.
+// HideFloatingButton hides and destroys the desktop pet window.
 func (m *FloatingAssistantManager) HideFloatingButton() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -101,26 +104,34 @@ func (m *FloatingAssistantManager) HideFloatingButton() {
 	m.visible = false
 }
 
-// RefreshAppearance recreates the floating window so native renderers pick up
-// pet skin, size, and logo/pet mode changes immediately.
+// RefreshAppearance recreates the desktop pet window so native renderers pick up
+// pet skin, size, and interaction changes immediately.
 func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if !m.visible || m.window == nil {
-		return
-	}
-	if !config.ShowAssistantEntry {
-		m.window.Destroy()
+	if !config.PetEnabled {
+		if m.window != nil {
+			m.window.Destroy()
+		}
 		m.visible = false
 		return
+	}
+	if m.window == nil {
+		if m.app == nil {
+			log.Printf("[floating-assistant] RefreshAppearance: app is nil")
+			return
+		}
+		m.window = newFloatingWindow(m.app)
 	}
 
 	winSize := floatingWindowSize(config)
 	if m.posX == 0 && m.posY == 0 {
 		m.posX, m.posY = m.loadOrDefaultPosition(config)
 	}
-	m.window.Destroy()
+	if m.visible && m.window != nil {
+		m.window.Destroy()
+	}
 	if err := m.window.Create(m.posX, m.posY, winSize, winSize); err != nil {
 		log.Printf("[floating-assistant] RefreshAppearance: window.Create FAILED: %v", err)
 		m.visible = false
@@ -130,7 +141,7 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	m.visible = true
 }
 
-// IsVisible returns whether the floating button is currently shown.
+// IsVisible returns whether the desktop pet is currently shown.
 func (m *FloatingAssistantManager) IsVisible() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -165,7 +176,7 @@ func (m *FloatingAssistantManager) UpdatePosition(x, y int) {
 	go m.persistPosition(x, y)
 }
 
-// persistPosition saves the floating button position to AppConfig.
+// persistPosition saves the desktop pet position to AppConfig.
 func (m *FloatingAssistantManager) persistPosition(x, y int) {
 	if m.app == nil {
 		return
@@ -183,6 +194,10 @@ func (m *FloatingAssistantManager) persistPosition(x, y int) {
 		config.FloatingBtnY = y
 		changed = true
 	}
+	if !config.FloatingBtnPositionSet {
+		config.FloatingBtnPositionSet = true
+		changed = true
+	}
 	if changed {
 		_ = m.app.SaveConfig(config)
 	}
@@ -191,7 +206,7 @@ func (m *FloatingAssistantManager) persistPosition(x, y int) {
 // loadOrDefaultPosition returns the persisted position from config,
 // or the default top-right corner position if not set.
 func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfig) (int, int) {
-	if config.FloatingBtnX > 0 || config.FloatingBtnY > 0 {
+	if config.FloatingBtnPositionSet || config.FloatingBtnX > 0 || config.FloatingBtnY > 0 {
 		log.Printf("[floating-assistant] loadOrDefaultPosition: restored from config (%d, %d)", config.FloatingBtnX, config.FloatingBtnY)
 		return config.FloatingBtnX, config.FloatingBtnY
 	}
@@ -207,10 +222,13 @@ func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfi
 	return x, y
 }
 
-// OnFloatingButtonClicked handles a left-click on the floating button.
-// It shows the main window, switches to the AI panel, and hides the
-// floating button (mutual exclusivity - Requirement 7).
+// OnFloatingButtonClicked handles a left-click on the desktop pet.
+// It shows the main window and switches to the AI panel while keeping the pet visible.
 func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
+	if m == nil || m.app == nil || m.app.ctx == nil {
+		return
+	}
+
 	voiceRequested := false
 	if m.app != nil {
 		if config, err := m.app.LoadConfig(); err == nil && config.PetEnabled && config.PetVoiceInput {
@@ -221,10 +239,7 @@ func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
 		}
 	}
 
-	// Hide floating button first (Requirement 7: never simultaneously visible).
-	m.HideFloatingButton()
-
-	// Show main window and bring to front.
+	// Show main window and bring to front. The desktop pet remains visible.
 	runtime.WindowShow(m.app.ctx)
 	runtime.WindowSetAlwaysOnTop(m.app.ctx, true)
 	runtime.WindowSetAlwaysOnTop(m.app.ctx, false)
@@ -272,9 +287,6 @@ func (m *FloatingAssistantManager) OnFloatingButtonDragged(x, y int) {
 }
 
 func floatingWindowSize(config corelib.AppConfig) int {
-	if !config.PetEnabled {
-		return 72
-	}
 	size := config.PetSize
 	if size <= 0 {
 		size = defaultPetSize
@@ -351,8 +363,7 @@ func sanitizePetConfig(config *corelib.AppConfig) {
 }
 
 func floatingAppearanceChanged(oldConfig, newConfig corelib.AppConfig) bool {
-	return oldConfig.ShowAssistantEntry != newConfig.ShowAssistantEntry ||
-		oldConfig.PetEnabled != newConfig.PetEnabled ||
+	return oldConfig.PetEnabled != newConfig.PetEnabled ||
 		oldConfig.PetSkin != newConfig.PetSkin ||
 		oldConfig.PetSize != newConfig.PetSize ||
 		isPetMotionEnabled(oldConfig) != isPetMotionEnabled(newConfig) ||
@@ -363,19 +374,19 @@ func floatingAppearanceChanged(oldConfig, newConfig corelib.AppConfig) bool {
 
 func floatingWindowSizeForCurrentConfig(app *App) int {
 	if app == nil {
-		return 72
+		return defaultPetSize + 16
 	}
 	config, err := app.LoadConfig()
 	if err != nil {
-		return 72
+		return defaultPetSize + 16
 	}
 	return floatingWindowSize(config)
 }
 
-// QuitApp terminates the application. Called from the floating button's
+// QuitApp terminates the application. Called from the desktop pet's
 // right-click context menu "Quit" item.
 func (m *FloatingAssistantManager) QuitApp() {
-	log.Println("[floating-assistant] QuitApp: user requested exit from floating button")
+	log.Println("[floating-assistant] QuitApp: user requested exit from desktop pet")
 
 	// Destroy the floating window first so the WebView is cleaned up
 	// before the Wails shutdown sequence begins.

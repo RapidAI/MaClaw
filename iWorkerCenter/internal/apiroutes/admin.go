@@ -13,6 +13,7 @@ var adminAPIPrefixes = []string{
 	"/admin/workflow-instances",
 	"/admin/workflow-design",
 	"/admin/audit",
+	"/admin/a2a",
 	"/admin/config-bundles",
 	"/admin/security",
 	"/admin/model-endpoints",

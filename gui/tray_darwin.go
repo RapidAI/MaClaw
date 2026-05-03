@@ -3,8 +3,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"os/exec"
 	"strings"
 
@@ -42,10 +42,6 @@ func setupTrayNative(app *App, appOptions *options.App) {
 
 		setupTahoeTray(icon, t["title"], t["show"], t["quit"],
 			func() {
-				// Hide floating button before showing main window (mutual exclusivity — Requirement 7).
-				if fa := app.ensureFloatingAssistant(); fa != nil {
-					fa.HideFloatingButton()
-				}
 				// Show
 				runtime.WindowShow(app.ctx)
 			},

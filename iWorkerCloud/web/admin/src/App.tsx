@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { checkSetup } from './api/auth';
-import { clearToken } from './api/client';
+import { AUTH_EXPIRED_EVENT, clearToken, getToken } from './api/client';
 import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { OverviewPage } from './pages/OverviewPage';
@@ -15,20 +15,50 @@ import { LanguageSwitcher } from './components/LanguageSwitcher';
 type Tab = 'overview' | 'centers' | 'licenses' | 'compute' | 'skills' | 'settings';
 const tabs: Tab[] = ['overview', 'centers', 'licenses', 'compute', 'skills', 'settings'];
 
+function isTab(value: string): value is Tab {
+  return tabs.includes(value as Tab);
+}
+
+function readTabFromHash(): Tab {
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  return isTab(raw) ? raw : 'overview';
+}
+
 export default function App() {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<'loading' | 'setup' | 'login' | 'app'>('loading');
-  const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const [activeTab, setActiveTab] = useState<Tab>(() => readTabFromHash());
+  const [loginNoticeKey, setLoginNoticeKey] = useState('');
 
   useEffect(() => {
     checkSetup()
-      .then(s => setPhase(s.setup ? 'login' : 'setup'))
+      .then(s => setPhase(s.setup ? (getToken() ? 'app' : 'login') : 'setup'))
       .catch(() => setPhase('login'));
   }, []);
 
+  useEffect(() => {
+    const handleExpired = () => {
+      setLoginNoticeKey('login.sessionExpired');
+      setPhase('login');
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleExpired);
+  }, []);
+
+  useEffect(() => {
+    const handleHashChange = () => setActiveTab(readTabFromHash());
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  const selectTab = (tab: Tab) => {
+    setActiveTab(tab);
+    if (window.location.hash !== '#' + tab) window.location.hash = tab;
+  };
+
   if (phase === 'loading') return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>{t('app.loading')}</div>;
-  if (phase === 'setup') return <SetupPage onDone={() => setPhase('login')} />;
-  if (phase === 'login') return <LoginPage onLogin={() => setPhase('app')} />;
+  if (phase === 'setup') return <SetupPage onDone={() => { setLoginNoticeKey('setup.success'); setPhase('login'); }} />;
+  if (phase === 'login') return <LoginPage noticeKey={loginNoticeKey} onLogin={() => { setLoginNoticeKey(''); setPhase('app'); }} />;
 
   const content = (() => {
     switch (activeTab) {
@@ -41,7 +71,11 @@ export default function App() {
     }
   })();
 
-  const handleLogout = () => { clearToken(); setPhase('login'); };
+  const handleLogout = () => {
+    clearToken();
+    setLoginNoticeKey('login.loggedOut');
+    setPhase('login');
+  };
 
   return (
     <div className="app-shell">
@@ -52,16 +86,16 @@ export default function App() {
         </div>
         <nav className="nav">
           {tabs.map(id => (
-            <button key={id} className={id === activeTab ? 'active' : ''} onClick={() => setActiveTab(id)}>
+            <button key={id} className={id === activeTab ? 'active' : ''} onClick={() => selectTab(id)}>
               <span>{t(`nav.${id}`)}</span>
               <small>{t(`subtitle.${id}`)}</small>
             </button>
           ))}
         </nav>
         <div className="side-note">
-          <strong>{t('app.title')}</strong>
+          <strong>{t('app.sideNoteTitle')}</strong>
           <br />
-          <span>iWorkerCloud Admin</span>
+          <span>{t('app.sideNoteDesc')}</span>
         </div>
       </aside>
       <main className="main">

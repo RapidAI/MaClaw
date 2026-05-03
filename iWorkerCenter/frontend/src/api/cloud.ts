@@ -24,11 +24,11 @@ const normalizeCloudConfig = (raw: RawCloudConfig | null | undefined): CloudConf
 });
 
 const serializeCloudConfig = (config: CloudConfig): CloudConfig => ({
-  base_url: config.base_url || '',
-  center_base_url: config.center_base_url || '',
-  registration_name: config.registration_name || '',
-  registration_email: config.registration_email || '',
-  cloud_control_mode: config.cloud_control_mode || 'cloud_managed',
+  base_url: (config.base_url || '').trim(),
+  center_base_url: (config.center_base_url || '').trim(),
+  registration_name: (config.registration_name || '').trim(),
+  registration_email: (config.registration_email || '').trim(),
+  cloud_control_mode: (config.cloud_control_mode || 'cloud_managed').trim() || 'cloud_managed',
 });
 
 export type CloudStatus = {
@@ -95,11 +95,19 @@ export function fetchCloudStatus() {
   return requestJSON<CloudStatus>('/admin/cloud/status');
 }
 
+const serializeRegisterCloudRequest = (body: RegisterCloudRequest): RegisterCloudRequest => ({
+  company_name: (body.company_name || '').trim(),
+  legal_person: (body.legal_person || '').trim(),
+  admin_phone: (body.admin_phone || '').trim(),
+  admin_email: (body.admin_email || '').trim(),
+  address: (body.address || '').trim(),
+});
+
 export function registerCenterToCloud(body: RegisterCloudRequest) {
   return requestJSON<RegisterCloudResponse>('/admin/cloud/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(serializeRegisterCloudRequest(body)),
   });
 }
 

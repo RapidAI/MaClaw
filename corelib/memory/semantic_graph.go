@@ -266,7 +266,7 @@ func (g *SemanticGraph) Diagnostics(opts SemanticSearchOptions) SemanticGraphDia
 	if opts.AsOf != nil {
 		asOf = *opts.AsOf
 	}
-	projectLower := strings.ToLower(opts.ProjectPath)
+	projectLower := semanticNormalizeProjectPath(opts.ProjectPath)
 	out := SemanticGraphDiagnostics{
 		RelationCounts: make(map[string]int),
 	}
@@ -446,7 +446,7 @@ func (g *SemanticGraph) SearchWithOptions(queryEntities []string, opts SemanticS
 	}
 	temporalMode := opts.TemporalMode
 	relationHints := normalizeRelationHints(opts.RelationHints)
-	projectLower := strings.ToLower(opts.ProjectPath)
+	projectLower := semanticNormalizeProjectPath(opts.ProjectPath)
 	dominance := g.semanticDominanceFactorsLocked(asOf, opts.OwnerID, projectLower, temporalMode)
 
 	seedSet := make(map[string]struct{}, len(queryEntities))
@@ -1598,17 +1598,18 @@ func semanticEntryProjectAllowed(meta semanticEntryMeta, projectLower string) bo
 	return semanticProjectAllowed(meta.Scope, meta.Tags, projectLower)
 }
 
-func semanticProjectAllowed(scope Scope, tags []string, projectLower string) bool {
-	if scope != ScopeProject || projectLower == "" {
+func semanticProjectAllowed(scope Scope, tags []string, projectPath string) bool {
+	projectPath = semanticNormalizeProjectPath(projectPath)
+	if scope != ScopeProject || projectPath == "" {
 		return true
 	}
 	boundToOtherProject := false
 	for _, tag := range tags {
-		tl := strings.ToLower(strings.TrimSpace(tag))
+		tl := semanticNormalizeProjectPath(tag)
 		if !semanticLooksLikePath(tl) {
 			continue
 		}
-		if semanticProjectPathMatches(tl, projectLower) {
+		if semanticProjectPathMatches(tl, projectPath) {
 			return true
 		}
 		boundToOtherProject = true
@@ -1616,13 +1617,26 @@ func semanticProjectAllowed(scope Scope, tags []string, projectLower string) boo
 	return !boundToOtherProject
 }
 
+func semanticNormalizeProjectPath(path string) string {
+	path = strings.ToLower(strings.TrimSpace(path))
+	path = strings.ReplaceAll(path, `\`, `/`)
+	for len(path) > 1 && strings.HasSuffix(path, "/") && !semanticIsDriveRoot(path) {
+		path = strings.TrimSuffix(path, "/")
+	}
+	return path
+}
+
+func semanticIsDriveRoot(path string) bool {
+	return len(path) == 3 && path[1] == ':' && path[2] == '/'
+}
+
 func semanticLooksLikePath(path string) bool {
-	return (len(path) > 1 && path[0] == '/') || (len(path) > 2 && path[1] == ':' && (path[2] == '/' || path[2] == '\\'))
+	return (len(path) > 1 && path[0] == '/') || (len(path) > 2 && path[1] == ':' && path[2] == '/')
 }
 
 func semanticProjectPathMatches(tagPath, projectPath string) bool {
-	tagPath = strings.TrimRight(tagPath, `/\\`)
-	projectPath = strings.TrimRight(projectPath, `/\\`)
+	tagPath = semanticNormalizeProjectPath(tagPath)
+	projectPath = semanticNormalizeProjectPath(projectPath)
 	if tagPath == "" || projectPath == "" {
 		return false
 	}
@@ -1636,8 +1650,10 @@ func semanticPathIsWithin(child, parent string) bool {
 	if len(child) <= len(parent) || !strings.HasPrefix(child, parent) {
 		return false
 	}
-	next := child[len(parent)]
-	return next == '/' || next == '\\'
+	if parent == "/" || semanticIsDriveRoot(parent) {
+		return true
+	}
+	return child[len(parent)] == '/'
 }
 func semanticEntryAllowed(meta semanticEntryMeta, now time.Time, mode SemanticTemporalMode) bool {
 	if mode == SemanticTemporalHistorical {

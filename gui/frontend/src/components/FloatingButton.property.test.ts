@@ -1,186 +1,170 @@
-/**
- * Property-based tests for floating assistant button logic.
+﻿/**
+ * Property-based tests for the MaClaw desktop pet entry logic.
  *
- * Tests the state machine and behavior of the floating assistant button
- * using fast-check for property-based testing.
- *
- * Properties tested:
- * - Property 1: State machine consistency under config and operations
- * - Property 2: Click restores main window and switches to AI panel
- * - Property 3: Drag/click threshold classification
- * - Property 4: Drag position round-trip
- * - Property 5: Position clamping within screen bounds
- * - Property 6: Mutual exclusivity invariant
- * - Property 8: Default position calculation
+ * The desktop pet is independent from main window visibility and is controlled
+ * by the Pet tab's pet_enabled setting.
  */
 import { describe, it, expect } from 'vitest';
 import * as fc from 'fast-check';
 
-// ── Pure state machine for floating button ──
+const PET_SIZE = 88 + 16;
+const SCREEN_W = 1920;
+const SCREEN_H = 1080;
 
-interface FloatingButtonState {
+interface DesktopPetState {
     visible: boolean;
     posX: number;
     posY: number;
-    showAssistantEntry: boolean;
+    petEnabled: boolean;
     mainWindowVisible: boolean;
+    hasSavedPosition: boolean;
 }
 
-function initialState(): FloatingButtonState {
+function initialState(): DesktopPetState {
     return {
         visible: false,
         posX: 0,
         posY: 0,
-        showAssistantEntry: true,
+        petEnabled: true,
         mainWindowVisible: true,
+        hasSavedPosition: false,
     };
 }
 
-// Commands for state machine testing
 type Command =
     | { type: 'hide_main_window' }
     | { type: 'show_main_window' }
-    | { type: 'click_floating_button' }
-    | { type: 'hide_floating_button' }
-    | { type: 'set_config'; value: boolean }
+    | { type: 'click_pet' }
+    | { type: 'hide_pet' }
+    | { type: 'set_pet_enabled'; value: boolean }
     | { type: 'drag'; x: number; y: number };
 
-function applyCommand(state: FloatingButtonState, cmd: Command): FloatingButtonState {
+type PetRuntimeState = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+function applyPetRuntimeEvent(
+    current: { state: PetRuntimeState; asrListeningActive: boolean },
+    event: { state: PetRuntimeState; source?: string }
+): { state: PetRuntimeState; asrListeningActive: boolean } {
+    const fromAsr = event.source?.startsWith('asr:') === true;
+    const asrListeningActive = fromAsr
+        ? event.state === 'listening'
+        : current.asrListeningActive;
+
+    if (!fromAsr && event.state === 'idle' && current.asrListeningActive) {
+        return { ...current, asrListeningActive };
+    }
+
+    return { state: event.state, asrListeningActive };
+}
+
+function applyPetStateTtl(current: { state: PetRuntimeState; asrListeningActive: boolean }): { state: PetRuntimeState; asrListeningActive: boolean } {
+    return {
+        ...current,
+        state: current.asrListeningActive ? 'listening' : 'idle',
+    };
+}
+
+function applyCommand(state: DesktopPetState, cmd: Command): DesktopPetState {
     switch (cmd.type) {
         case 'hide_main_window':
-            // When main window is hidden and config allows, show floating button
-            if (state.showAssistantEntry && !state.visible) {
-                return {
-                    ...state,
-                    mainWindowVisible: false,
-                    visible: true,
-                    // Default position if not set
-                    posX: state.posX === 0 && state.posY === 0 ? 1920 / 2 - 28 : state.posX,
-                    posY: state.posX === 0 && state.posY === 0 ? 10 : state.posY,
-                };
-            }
-            return { ...state, mainWindowVisible: false };
+            return {
+                ...state,
+                mainWindowVisible: false,
+                visible: state.petEnabled ? true : state.visible,
+                posX: state.hasSavedPosition ? state.posX : SCREEN_W - 150,
+                posY: state.hasSavedPosition ? state.posY : 100,
+            };
 
         case 'show_main_window':
-            // When main window is shown, hide floating button (mutual exclusivity)
             return {
                 ...state,
                 mainWindowVisible: true,
-                visible: false,
             };
 
-        case 'click_floating_button':
-            // Click restores main window and hides floating button
-            if (state.visible) {
-                return {
-                    ...state,
-                    visible: false,
-                    mainWindowVisible: true,
-                };
-            }
-            return state;
+        case 'click_pet':
+            return state.visible
+                ? { ...state, mainWindowVisible: true }
+                : state;
 
-        case 'hide_floating_button':
+        case 'hide_pet':
             return { ...state, visible: false };
 
-        case 'set_config':
-            // When config changes to false, hide floating button
-            if (!cmd.value && state.visible) {
-                return { ...state, showAssistantEntry: cmd.value, visible: false };
-            }
-            return { ...state, showAssistantEntry: cmd.value };
+        case 'set_pet_enabled':
+            return {
+                ...state,
+                petEnabled: cmd.value,
+                visible: cmd.value ? state.visible : false,
+            };
 
-        case 'drag':
-            // Clamp position to screen bounds
-            const buttonSize = 64;
-            const screenW = 1920;
-            const screenH = 1080;
-            const clampedX = Math.max(0, Math.min(cmd.x, screenW - buttonSize));
-            const clampedY = Math.max(0, Math.min(cmd.y, screenH - buttonSize));
-            return { ...state, posX: clampedX, posY: clampedY };
+        case 'drag': {
+            const clampedX = Math.max(0, Math.min(cmd.x, SCREEN_W - PET_SIZE));
+            const clampedY = Math.max(0, Math.min(cmd.y, SCREEN_H - PET_SIZE));
+            return { ...state, posX: clampedX, posY: clampedY, hasSavedPosition: true };
+        }
     }
 }
 
-// ── Property 1: State machine consistency ──
-
-describe('Property 1: State machine consistency', () => {
-    it('visible is true only when hide-main-window occurred AND config is true AND no subsequent click/hide/config-false', () => {
+describe('Property 1: Desktop pet state consistency', () => {
+    it('visible implies pet_enabled is true', () => {
         fc.assert(
             fc.property(fc.array(commandArbitrary()), (commands) => {
                 let state = initialState();
                 for (const cmd of commands) {
                     state = applyCommand(state, cmd);
-                }
-
-                // Invariant: visible implies showAssistantEntry is true
-                if (state.visible) {
-                    expect(state.showAssistantEntry).toBe(true);
-                }
-
-                // Invariant: visible and mainWindowVisible are mutually exclusive
-                if (state.visible) {
-                    expect(state.mainWindowVisible).toBe(false);
+                    if (state.visible) {
+                        expect(state.petEnabled).toBe(true);
+                    }
                 }
             })
         );
     });
 
-    it('ShowFloatingButton when already visible is idempotent', () => {
+    it('showing the main window does not hide an already-visible pet', () => {
         fc.assert(
-            fc.property(
-                fc.record({
-                    x: fc.integer({ min: 0, max: 1920 }),
-                    y: fc.integer({ min: 0, max: 1080 }),
-                }),
-                ({ x, y }) => {
-                    const state1: FloatingButtonState = {
-                        visible: true,
-                        posX: x,
-                        posY: y,
-                        showAssistantEntry: true,
-                        mainWindowVisible: false,
-                    };
+            fc.property(fc.boolean(), (mainVisible) => {
+                const state: DesktopPetState = {
+                    visible: true,
+                    posX: 120,
+                    posY: 160,
+                    petEnabled: true,
+                    mainWindowVisible: mainVisible,
+                    hasSavedPosition: true,
+                };
 
-                    // Apply hide_main_window again (should be idempotent)
-                    const state2 = applyCommand(state1, { type: 'hide_main_window' });
+                const next = applyCommand(state, { type: 'show_main_window' });
 
-                    expect(state2.visible).toBe(true);
-                    expect(state2.posX).toBe(x);
-                    expect(state2.posY).toBe(y);
-                }
-            )
+                expect(next.visible).toBe(true);
+                expect(next.mainWindowVisible).toBe(true);
+            })
         );
     });
 });
 
-// ── Property 2: Click restores main window ──
-
-describe('Property 2: Click restores main window', () => {
-    it('click on visible floating button shows main window and hides floating button', () => {
+describe('Property 2: Click opens main window without hiding pet', () => {
+    it('click on visible pet shows main window and keeps pet visible', () => {
         fc.assert(
             fc.property(
-                fc.integer({ min: 0, max: 1920 }),
-                fc.integer({ min: 0, max: 1080 }),
+                fc.integer({ min: 0, max: SCREEN_W - PET_SIZE }),
+                fc.integer({ min: 0, max: SCREEN_H - PET_SIZE }),
                 (x, y) => {
-                    let state: FloatingButtonState = {
+                    let state: DesktopPetState = {
                         visible: true,
                         posX: x,
                         posY: y,
-                        showAssistantEntry: true,
+                        petEnabled: true,
                         mainWindowVisible: false,
+                        hasSavedPosition: true,
                     };
 
-                    state = applyCommand(state, { type: 'click_floating_button' });
+                    state = applyCommand(state, { type: 'click_pet' });
 
-                    expect(state.visible).toBe(false);
+                    expect(state.visible).toBe(true);
                     expect(state.mainWindowVisible).toBe(true);
                 }
             )
         );
     });
 });
-
-// ── Property 3: Drag/click threshold classification ──
 
 describe('Property 3: Drag/click threshold classification', () => {
     const THRESHOLD = 5;
@@ -213,23 +197,16 @@ describe('Property 3: Drag/click threshold classification', () => {
     });
 });
 
-// ── Property 4: Drag position round-trip ──
-
 describe('Property 4: Drag position round-trip', () => {
-    it('button appears at saved position after drag', () => {
+    it('pet appears at saved position after drag', () => {
         fc.assert(
             fc.property(
-                fc.integer({ min: 0, max: 1856 }), // 1920 - 64
-                fc.integer({ min: 0, max: 1016 }), // 1080 - 64
+                fc.integer({ min: 0, max: SCREEN_W - PET_SIZE }),
+                fc.integer({ min: 0, max: SCREEN_H - PET_SIZE }),
                 (x, y) => {
                     let state = initialState();
-                    state.showAssistantEntry = true;
-
-                    // Drag to position
                     state = applyCommand(state, { type: 'drag', x, y });
-
-                    // Hide and show again
-                    state = applyCommand(state, { type: 'hide_floating_button' });
+                    state = applyCommand(state, { type: 'hide_pet' });
                     state = applyCommand(state, { type: 'hide_main_window' });
 
                     expect(state.posX).toBe(x);
@@ -240,14 +217,8 @@ describe('Property 4: Drag position round-trip', () => {
     });
 });
 
-// ── Property 5: Position clamping within screen bounds ──
-
 describe('Property 5: Position clamping within screen bounds', () => {
-    const BUTTON_SIZE = 64;
-    const SCREEN_W = 1920;
-    const SCREEN_H = 1080;
-
-    it('clamped position satisfies 0 <= x <= W - buttonWidth and 0 <= y <= H - buttonHeight', () => {
+    it('clamped position satisfies desktop work area bounds', () => {
         fc.assert(
             fc.property(
                 fc.integer({ min: -1000, max: 3000 }),
@@ -257,58 +228,94 @@ describe('Property 5: Position clamping within screen bounds', () => {
                     state = applyCommand(state, { type: 'drag', x, y });
 
                     expect(state.posX).toBeGreaterThanOrEqual(0);
-                    expect(state.posX).toBeLessThanOrEqual(SCREEN_W - BUTTON_SIZE);
+                    expect(state.posX).toBeLessThanOrEqual(SCREEN_W - PET_SIZE);
                     expect(state.posY).toBeGreaterThanOrEqual(0);
-                    expect(state.posY).toBeLessThanOrEqual(SCREEN_H - BUTTON_SIZE);
+                    expect(state.posY).toBeLessThanOrEqual(SCREEN_H - PET_SIZE);
                 }
             )
         );
     });
 });
 
-// ── Property 6: Mutual exclusivity invariant ──
+describe('Property 6: Desktop pet and main window can coexist', () => {
+    it('main window and desktop pet may be simultaneously visible', () => {
+        let state = initialState();
+        state = applyCommand(state, { type: 'hide_main_window' });
+        state = applyCommand(state, { type: 'show_main_window' });
 
-describe('Property 6: Mutual exclusivity invariant', () => {
-    it('floating button and main window are never simultaneously visible', () => {
+        expect(state.visible).toBe(true);
+        expect(state.mainWindowVisible).toBe(true);
+    });
+});
+
+describe('Property 7: Voice listening state priority', () => {
+    it('keeps listening when non-ASR idle events arrive during continuous voice input', () => {
         fc.assert(
-            fc.property(fc.array(commandArbitrary()), (commands) => {
-                let state = initialState();
-                for (const cmd of commands) {
-                    state = applyCommand(state, cmd);
-                    // Invariant check after each command
-                    expect(!(state.visible && state.mainWindowVisible)).toBe(true);
+            fc.property(fc.array(fc.constantFrom('idle', 'thinking', 'speaking') as fc.Arbitrary<PetRuntimeState>), (states) => {
+                let pet = applyPetRuntimeEvent(
+                    { state: 'idle', asrListeningActive: false },
+                    { state: 'listening', source: 'asr:continuous' }
+                );
+
+                for (const state of states) {
+                    const before = pet.state;
+                    pet = applyPetRuntimeEvent(pet, { state, source: `ai:${state}` });
+                    if (state === 'idle') {
+                        expect(pet.state).toBe(before);
+                    }
                 }
             })
         );
     });
+
+    it('allows ASR idle to end the listening priority', () => {
+        let pet = applyPetRuntimeEvent(
+            { state: 'idle', asrListeningActive: false },
+            { state: 'listening', source: 'asr:continuous' }
+        );
+
+        pet = applyPetRuntimeEvent(pet, { state: 'idle', source: 'asr:continuous-stop' });
+
+        expect(pet.state).toBe('idle');
+        expect(pet.asrListeningActive).toBe(false);
+    });
+
+    it('returns to listening when a non-ASR TTL expires during continuous voice input', () => {
+        let pet = applyPetRuntimeEvent(
+            { state: 'idle', asrListeningActive: false },
+            { state: 'listening', source: 'asr:continuous' }
+        );
+        pet = applyPetRuntimeEvent(pet, { state: 'speaking', source: 'ai:token' });
+
+        pet = applyPetStateTtl(pet);
+
+        expect(pet.state).toBe('listening');
+        expect(pet.asrListeningActive).toBe(true);
+    });
 });
 
-// ── Property 8: Default position calculation ──
-
 describe('Property 8: Default position calculation', () => {
-    it('default position is (W/2 - 28, 10)', () => {
+    it('default position keeps the pet near the top-right work area', () => {
         fc.assert(
             fc.property(fc.integer({ min: 800, max: 3840 }), (screenW) => {
-                const defaultX = Math.floor(screenW / 2) - 28;
-                const defaultY = 10;
+                const defaultX = screenW - 150;
+                const defaultY = 100;
 
-                // Verify formula: X should be approximately half of screen width minus 28
                 expect(defaultX).toBeGreaterThanOrEqual(0);
-                expect(defaultY).toBe(10);
+                expect(defaultX + PET_SIZE).toBeLessThanOrEqual(screenW);
+                expect(defaultY).toBe(100);
             })
         );
     });
 });
-
-// ── Arbitraries ──
 
 function commandArbitrary(): fc.Arbitrary<Command> {
     return fc.oneof(
         fc.constant({ type: 'hide_main_window' } as Command),
         fc.constant({ type: 'show_main_window' } as Command),
-        fc.constant({ type: 'click_floating_button' } as Command),
-        fc.constant({ type: 'hide_floating_button' } as Command),
-        fc.record({ type: fc.constant('set_config'), value: fc.boolean() }) as fc.Arbitrary<Command>,
+        fc.constant({ type: 'click_pet' } as Command),
+        fc.constant({ type: 'hide_pet' } as Command),
+        fc.record({ type: fc.constant('set_pet_enabled'), value: fc.boolean() }) as fc.Arbitrary<Command>,
         fc.record({
             type: fc.constant('drag'),
             x: fc.integer({ min: -100, max: 3000 }),

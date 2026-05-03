@@ -145,10 +145,13 @@ func writeSkillPackageManifest(skillDir string, entry *corelib.NLSkillEntry, qua
 			return err
 		}
 		if dirEntry.IsDir() {
+			if isSkillRuntimePackageDir(dirEntry.Name()) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		base := dirEntry.Name()
-		if strings.HasSuffix(base, ".bak") || base == "upload_status.json" || base == "quality_status.json" || base == "skill_package_manifest.json" {
+		if isSkillRuntimePackageFile(base) {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -437,32 +440,117 @@ func evaluateSkillPackageCompleteness(skillDir string, entry *corelib.NLSkillEnt
 }
 
 func isSkillRuntimePackageFile(name string) bool {
-	return strings.HasSuffix(name, ".bak") || name == "upload_status.json" || name == "quality_status.json" || name == "skill_package_manifest.json"
+	base := strings.ToLower(filepath.Base(name))
+	return strings.HasSuffix(base, ".bak") || base == "upload_status.json" || base == "quality_status.json" || base == "skill_package_manifest.json" || base == ".patches.json"
+}
+
+func isSkillRuntimePackageDir(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	switch base {
+	case ".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache", "node_modules":
+		return true
+	default:
+		return false
+	}
 }
 
 func missingReferencedSkillFiles(skillDir string, entry *corelib.NLSkillEntry) []string {
 	seen := map[string]struct{}{}
 	var missing []string
+	addMissing := func(ref string) {
+		if ref == "" {
+			return
+		}
+		if _, ok := seen[ref]; ok {
+			return
+		}
+		seen[ref] = struct{}{}
+		missing = append(missing, ref)
+	}
 	for _, step := range entry.Steps {
+		workingDir, invalidWorkingDir := packageStepWorkingDirForQuality(step)
+		if invalidWorkingDir != "" {
+			addMissing(invalidWorkingDir)
+		}
+		if workingDir != "" {
+			if _, err := os.Stat(filepath.Join(skillDir, filepath.FromSlash(workingDir))); err != nil {
+				addMissing(workingDir)
+			}
+		}
 		for _, command := range commandStringsForPackageRefs(step) {
 			for _, ref := range localFileRefsFromCommand(command) {
 				cleanRef := strings.TrimPrefix(filepath.ToSlash(ref), "./")
 				if cleanRef == "" || strings.HasPrefix(cleanRef, "../") {
 					continue
 				}
-				if _, ok := seen[cleanRef]; ok {
+				if filepath.IsAbs(ref) {
+					addMissing(cleanRef)
 					continue
 				}
-				seen[cleanRef] = struct{}{}
-				if _, err := os.Stat(filepath.Join(skillDir, filepath.FromSlash(cleanRef))); err != nil {
-					missing = append(missing, cleanRef)
+				candidates := packageLocalRefCandidates(cleanRef, workingDir)
+				found := false
+				for _, candidate := range candidates {
+					if _, err := os.Stat(filepath.Join(skillDir, filepath.FromSlash(candidate))); err == nil {
+						found = true
+						break
+					}
 				}
+				if found || len(candidates) == 0 {
+					continue
+				}
+				addMissing(candidates[len(candidates)-1])
 			}
 		}
 	}
 	return missing
 }
 
+func packageStepWorkingDir(step corelib.NLSkillStep) string {
+	wd, _ := packageStepWorkingDirForQuality(step)
+	return wd
+}
+
+func packageStepWorkingDirForQuality(step corelib.NLSkillStep) (string, string) {
+	if len(step.Params) == 0 {
+		return "", ""
+	}
+	wd := normalizePackageRelativePath(firstPackageString(step.Params, "working_dir", "cwd", "workdir", "dir"))
+	if wd == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(wd, "../") || filepath.IsAbs(wd) {
+		return "", wd
+	}
+	return wd, ""
+}
+
+func packageLocalRefCandidates(ref, workingDir string) []string {
+	ref = normalizePackageRelativePath(ref)
+	if ref == "" || filepath.IsAbs(ref) || strings.HasPrefix(ref, "../") {
+		return nil
+	}
+	candidates := []string{ref}
+	if workingDir != "" && ref != workingDir && !strings.HasPrefix(ref, workingDir+"/") {
+		candidates = append(candidates, filepath.ToSlash(filepath.Join(filepath.FromSlash(workingDir), filepath.FromSlash(ref))))
+	}
+	return candidates
+}
+
+func normalizePackageRelativePath(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\\\"'\\;,()[]{}")
+	value = strings.TrimPrefix(value, "./")
+	value = strings.TrimPrefix(value, "{baseDir}/")
+	value = strings.TrimPrefix(value, "{baseDir}\\")
+	value = strings.TrimPrefix(value, "$BASE_DIR/")
+	value = strings.TrimPrefix(value, "$BASE_DIR\\")
+	value = strings.TrimPrefix(value, "${BASE_DIR}/")
+	value = strings.TrimPrefix(value, "${BASE_DIR}\\")
+	if value == "" || value == "." {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Clean(value))
+}
 func commandStringsForPackageRefs(step corelib.NLSkillStep) []string {
 	if len(step.Params) == 0 {
 		return nil
@@ -487,11 +575,20 @@ func commandStringsFromPackageValue(raw interface{}) []string {
 		}
 		return []string{v}
 	case []string:
-		return []string{strings.Join(v, " ")}
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if s := packageCommandTokenString(item); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		if len(parts) == 0 {
+			return nil
+		}
+		return []string{strings.Join(parts, " ")}
 	case []interface{}:
 		parts := make([]string, 0, len(v))
 		for _, item := range v {
-			if s := strings.TrimSpace(fmt.Sprintf("%v", item)); s != "" {
+			if s := packageCommandTokenString(item); s != "" {
 				parts = append(parts, s)
 			}
 		}
@@ -540,11 +637,35 @@ func firstPackageString(m map[string]interface{}, keys ...string) string {
 	return ""
 }
 
+func packageCommandTokenString(value interface{}) string {
+	s := strings.TrimSpace(fmt.Sprintf("%v", value))
+	if s == "" || s == "<nil>" {
+		return ""
+	}
+	if strings.ContainsAny(s, " \t\r\n") && !isPackageQuotedToken(s) {
+		return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+	}
+	return s
+}
+
+func isPackageQuotedToken(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	return (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"')
+}
+
 func localFileRefsFromCommand(command string) []string {
 	var refs []string
-	for _, raw := range strings.Fields(command) {
+	for _, raw := range splitPackageCommandTokens(command) {
 		token := normalizeLocalFileRefToken(raw)
-		if token == "" || filepath.IsAbs(token) {
+		if token == "" || strings.HasPrefix(token, "$") || strings.HasPrefix(token, "%") {
+			continue
+		}
+		if filepath.IsAbs(token) {
+			if looksLikeScriptFile(token) {
+				refs = append(refs, token)
+			}
 			continue
 		}
 		if strings.HasPrefix(token, "./") || strings.HasPrefix(filepath.ToSlash(token), "scripts/") || looksLikeScriptFile(token) {
@@ -554,6 +675,40 @@ func localFileRefsFromCommand(command string) []string {
 	return refs
 }
 
+func splitPackageCommandTokens(command string) []string {
+	var tokens []string
+	var b strings.Builder
+	inSingle := false
+	inDouble := false
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, b.String())
+		b.Reset()
+	}
+	for _, r := range command {
+		switch r {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+				continue
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+				continue
+			}
+		}
+		if !inSingle && !inDouble && (r == ' ' || r == '\t' || r == '\r' || r == '\n') {
+			flush()
+			continue
+		}
+		b.WriteRune(r)
+	}
+	flush()
+	return tokens
+}
 func normalizeLocalFileRefToken(token string) string {
 	token = strings.Trim(token, "\\\"'\\;,()[]{}")
 	if idx := strings.Index(token, "="); idx >= 0 && idx+1 < len(token) {

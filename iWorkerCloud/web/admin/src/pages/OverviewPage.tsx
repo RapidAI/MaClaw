@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getCenterManagement, type CenterManagementReport } from '../api/centers';
+import { getCenterManagement, type CenterManagement, type CenterManagementReport } from '../api/centers';
 
 type CloudStat = {
   label: string;
@@ -16,6 +16,28 @@ type CloudPillar = {
   detail: string;
   stats: string[];
 };
+
+type ActionQueueItem = {
+  center: CenterManagement['center'];
+  tone: 'danger' | 'warn' | 'info';
+  title: string;
+  reason: string;
+  facts: string[];
+};
+
+const CENTER_FOCUS_KEY = 'iworkercloud_focus_center_id';
+
+function goToCenters(centerId?: string) {
+  if (centerId) sessionStorage.setItem(CENTER_FOCUS_KEY, centerId);
+  window.location.hash = 'centers';
+}
+
+function formatRelativeTime(value?: string) {
+  if (!value || value.startsWith('0001-')) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
 
 export function OverviewPage() {
   const { t } = useTranslation();
@@ -63,61 +85,98 @@ export function OverviewPage() {
 
   const managementStats = useMemo<CloudStat[]>(() => [
     {
-      label: 'Ready centers',
+      label: t('cloudOverview.ops.readyCenters'),
       value: String(summary.ready_centers),
-      hint: 'Active, licensed, reachable, identity-verified iWorkerCenter instances ready for Cloud service coordination.',
+      hint: t('cloudOverview.ops.readyCentersHint'),
     },
     {
-      label: 'Needs setup',
+      label: t('cloudOverview.ops.needsSetup'),
       value: String(summary.needs_setup),
-      hint: 'Centers missing base URL, service identity verification, or authorization setup.',
+      hint: t('cloudOverview.ops.needsSetupHint'),
     },
     {
-      label: 'Probe failures',
+      label: t('cloudOverview.ops.probeFailures'),
       value: String(summary.probe_failures),
-      hint: 'Centers whose latest cloud-side health probe failed.',
+      hint: t('cloudOverview.ops.probeFailuresHint'),
     },
     {
-      label: 'Service-capable',
+      label: t('cloudOverview.ops.serviceCapable'),
       value: String(summary.ready_centers),
-      hint: 'Centers ready for authorization, compute distribution, skill entitlement, and connectivity services.',
+      hint: t('cloudOverview.ops.serviceCapableHint'),
     },
     {
-      label: 'Unlicensed',
+      label: t('cloudOverview.ops.unlicensed'),
       value: String(summary.unlicensed_centers),
-      hint: 'Centers without an active commercial or trial entitlement.',
+      hint: t('cloudOverview.ops.unlicensedHint'),
     },
     {
-      label: 'iWorker agents',
+      label: t('cloudOverview.ops.iworkerAgents'),
       value: String(summary.workload_agent_instances ?? 0),
-      hint: 'Aggregate agent instance count reported by Centers. Cloud does not receive task titles, task details, tenants, users, or company workflow data.',
+      hint: t('cloudOverview.ops.iworkerAgentsHint'),
     },
     {
-      label: 'Active work',
+      label: t('cloudOverview.ops.activeWork'),
       value: String(summary.workload_active_tasks ?? 0),
-      hint: 'Privacy-preserving aggregate of running iWorker tasks across connected Centers.',
+      hint: t('cloudOverview.ops.activeWorkHint'),
     },
     {
-      label: 'Blocked or review',
+      label: t('cloudOverview.ops.blockedOrReview'),
       value: String((summary.workload_blocked_tasks ?? 0) + (summary.workload_review_tasks ?? 0)),
-      hint: 'Aggregate work needing attention, without customer business payloads.',
+      hint: t('cloudOverview.ops.blockedOrReviewHint'),
     },
     {
-      label: 'Local fallback',
+      label: t('cloudOverview.ops.localFallback'),
       value: String(summary.runtime_fallback_centers ?? 0),
-      hint: 'Centers continuing through local provider settings because Cloud compute sync is unavailable or empty.',
+      hint: t('cloudOverview.ops.localFallbackHint'),
     },
     {
-      label: 'Non-blocking runtime',
+      label: t('cloudOverview.ops.nonBlockingRuntime'),
       value: String(summary.runtime_non_blocking_issues ?? 0),
-      hint: 'Runtime sync issues explicitly marked non-blocking for existing Center/iWorker execution.',
+      hint: t('cloudOverview.ops.nonBlockingRuntimeHint'),
     },
     {
-      label: 'Blocking runtime',
+      label: t('cloudOverview.ops.blockingRuntime'),
       value: String(summary.runtime_blocking_issues ?? 0),
-      hint: 'Platform runtime sync issues not marked as safe fallback and requiring operator attention.',
+      hint: t('cloudOverview.ops.blockingRuntimeHint'),
     },
   ], [summary]);
+
+  const actionQueue = useMemo<ActionQueueItem[]>(() => {
+    const items = report?.items ?? [];
+    const queued: ActionQueueItem[] = [];
+    for (const item of items) {
+      const center = item.center;
+      const runtimeBlocking = item.runtime_status?.compute_sync_status?.status === 'failure' && !item.runtime_status.compute_sync_status.non_blocking;
+      const workload = item.iworker_readiness?.workload_summary;
+      const facts = [
+        center.last_sync_status ? t('cloudOverview.queue.sync', { status: center.last_sync_status }) : '',
+        center.last_heartbeat ? t('cloudOverview.queue.heartbeat', { time: formatRelativeTime(center.last_heartbeat) }) : '',
+        workload ? t('cloudOverview.queue.workload', { active: workload.active_count, blocked: workload.blocked_count, review: workload.review_count }) : '',
+      ].filter(Boolean);
+
+      if (runtimeBlocking) {
+        queued.push({ center, tone: 'danger', title: t('cloudOverview.queue.runtimeBlocking'), reason: item.runtime_status?.compute_sync_status?.error || t('cloudOverview.queue.runtimeBlockingHint'), facts });
+        continue;
+      }
+      if (center.status === 'pending') {
+        queued.push({ center, tone: 'warn', title: t('cloudOverview.queue.pendingActivation'), reason: t('cloudOverview.queue.pendingActivationHint'), facts });
+        continue;
+      }
+      if (item.issues.includes('no_active_license')) {
+        queued.push({ center, tone: 'warn', title: t('cloudOverview.queue.unlicensed'), reason: t('cloudOverview.queue.unlicensedHint'), facts });
+        continue;
+      }
+      const highPriorityAction = item.recommended_actions?.find(action => action.priority === 'high');
+      if (highPriorityAction) {
+        queued.push({ center, tone: 'warn', title: highPriorityAction.label || t('cloudOverview.queue.highPriority'), reason: highPriorityAction.description || t('cloudOverview.queue.highPriorityHint'), facts });
+        continue;
+      }
+      if (!item.iworker_operational_ready && center.iworker_readiness_status) {
+        queued.push({ center, tone: 'info', title: t('cloudOverview.queue.iworkerSetup'), reason: t('cloudOverview.queue.iworkerSetupHint'), facts });
+      }
+    }
+    return queued.slice(0, 5);
+  }, [report, t]);
 
   const pillars = useMemo<CloudPillar[]>(() => [
     {
@@ -173,14 +232,14 @@ export function OverviewPage() {
       <section className="card cloud-ops-card">
         <div className="item-head">
           <div>
-            <span className="mini">Service control radar</span>
-            <h3>Center service readiness</h3>
+            <span className="mini">{t('cloudOverview.ops.radar')}</span>
+            <h3>{t('cloudOverview.ops.readinessTitle')}</h3>
           </div>
           <span className={`badge ${summary.probe_failures || summary.needs_setup || summary.unlicensed_centers || summary.runtime_blocking_issues ? 'warn' : 'ok'}`}>
-            {summary.probe_failures || summary.needs_setup || summary.unlicensed_centers || summary.runtime_blocking_issues ? 'Watch' : 'Ready'}
+            {summary.probe_failures || summary.needs_setup || summary.unlicensed_centers || summary.runtime_blocking_issues ? t('cloudOverview.watch') : t('cloudOverview.ready')}
           </span>
         </div>
-        <p>Cloud should know which connected iWorkerCenters are commercially authorized, reachable, identity-verified, and ready for platform service coordination. It does not participate in customer company management, tenant administration, or enterprise operations.</p>
+        <p>{t('cloudOverview.ops.readinessDesc')}</p>
         <div className="cloud-ops-grid">
           {managementStats.map(item => (
             <div key={item.label} className="cloud-ops-metric">
@@ -190,6 +249,36 @@ export function OverviewPage() {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="card cloud-action-queue-card">
+        <div className="item-head">
+          <div>
+            <span className="mini">{t('cloudOverview.queue.eyebrow')}</span>
+            <h3>{t('cloudOverview.queue.title')}</h3>
+          </div>
+          <button className="btn-ghost" onClick={() => goToCenters()}>{t('cloudOverview.queue.openCenters')}</button>
+        </div>
+        <p>{t('cloudOverview.queue.desc')}</p>
+        {actionQueue.length === 0 ? (
+          <div className="hint">{t('cloudOverview.queue.empty')}</div>
+        ) : (
+          <div className="cloud-action-queue-list">
+            {actionQueue.map(item => (
+              <button key={item.center.id + item.title} className={`cloud-action-queue-item ${item.tone}`} onClick={() => goToCenters(item.center.id)}>
+                <div>
+                  <span className={`badge ${item.tone}`}>{item.title}</span>
+                  <strong>{item.center.company_name || item.center.id}</strong>
+                  <small>{item.reason}</small>
+                </div>
+                <div className="cloud-action-queue-facts">
+                  <span>ID: {item.center.id}</span>
+                  {item.facts.map(fact => <span key={fact}>{fact}</span>)}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       <div className="cloud-pillar-grid">

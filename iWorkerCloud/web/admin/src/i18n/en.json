@@ -1,7 +1,9 @@
 {
   "app": {
     "title": "iWorkerCloud Admin",
-    "loading": "Loading..."
+    "loading": "Loading...",
+    "sideNoteTitle": "Control-plane boundary",
+    "sideNoteDesc": "Coordinates Center registration, authorization, compute, and skill services only."
   },
   "nav": {
     "overview": "Overview",
@@ -50,7 +52,54 @@
     "tenantPoint3": "Deployment health",
     "watch": "Watch",
     "scale": "Scale",
-    "ready": "Ready"
+    "ready": "Ready",
+    "ops": {
+      "readyCenters": "Ready centers",
+      "readyCentersHint": "Active, licensed, reachable, identity-verified iWorkerCenter instances ready for Cloud service coordination.",
+      "needsSetup": "Needs setup",
+      "needsSetupHint": "Centers missing base URL, service identity verification, or authorization setup.",
+      "probeFailures": "Probe failures",
+      "probeFailuresHint": "Centers whose latest cloud-side health probe failed.",
+      "serviceCapable": "Service-capable",
+      "serviceCapableHint": "Centers ready for authorization, compute distribution, skill entitlement, and connectivity services.",
+      "unlicensed": "Unlicensed",
+      "unlicensedHint": "Centers without an active commercial or trial entitlement.",
+      "iworkerAgents": "iWorker agents",
+      "iworkerAgentsHint": "Aggregate agent instance count reported by Centers. Cloud does not receive task titles, task details, tenants, users, or company workflow data.",
+      "activeWork": "Active work",
+      "activeWorkHint": "Privacy-preserving aggregate of running iWorker tasks across connected Centers.",
+      "blockedOrReview": "Blocked or review",
+      "blockedOrReviewHint": "Aggregate work needing attention, without customer business payloads.",
+      "localFallback": "Local fallback",
+      "localFallbackHint": "Centers continuing through local provider settings because Cloud compute sync is unavailable or empty.",
+      "nonBlockingRuntime": "Non-blocking runtime",
+      "nonBlockingRuntimeHint": "Runtime sync issues explicitly marked non-blocking for existing Center/iWorker execution.",
+      "blockingRuntime": "Blocking runtime",
+      "blockingRuntimeHint": "Platform runtime sync issues not marked as safe fallback and requiring operator attention.",
+      "radar": "Service control radar",
+      "readinessTitle": "Center service readiness",
+      "readinessDesc": "Cloud should know which connected iWorkerCenters are commercially authorized, reachable, identity-verified, and ready for platform service coordination. It does not participate in customer company management, tenant administration, or enterprise operations."
+    },
+    "queue": {
+      "eyebrow": "Action queue",
+      "title": "Center service actions",
+      "desc": "Prioritized by blocking runtime risk, pending activation, missing entitlement, and high-priority recommended actions so Cloud operators can jump directly into Center management.",
+      "openCenters": "Open Centers",
+      "empty": "No Centers need immediate action right now.",
+      "runtimeBlocking": "Runtime blocking risk",
+      "runtimeBlockingHint": "Runtime sync issue is not marked non-blocking. Check Center fallback policy.",
+      "pendingActivation": "Pending activation",
+      "pendingActivationHint": "Registration reached Cloud and is waiting for trial confirmation or commercial authorization.",
+      "unlicensed": "Unlicensed",
+      "unlicensedHint": "Center has no active trial or commercial entitlement.",
+      "highPriority": "High-priority action",
+      "highPriorityHint": "A high-priority service action needs Cloud operator attention.",
+      "iworkerSetup": "iWorker readiness pending",
+      "iworkerSetupHint": "Center reported iWorker status, but it is not yet ready to reliably receive pushed work.",
+      "sync": "sync: {{status}}",
+      "heartbeat": "heartbeat: {{time}}",
+      "workload": "workload: active {{active}} / blocked {{blocked}} / review {{review}}"
+    }
   },
   "skills": {
     "title": "Top-level iWorker Skill Market",
@@ -117,18 +166,57 @@
       "description": "Description",
       "packageFormat": "Package format",
       "packageText": "Package content"
-    }
+    },
+    "filters": {
+      "allStatus": "All status",
+      "allRisk": "All risk"
+    },
+    "stats": {
+      "active": "Published",
+      "activeHint": "Available for Center pull or entitlement",
+      "draft": "Draft",
+      "disabledHint": "disabled",
+      "highRisk": "High risk",
+      "highRiskHint": "Requires stricter installation review",
+      "packaged": "Packaged",
+      "unpackedHint": "without downloadable package"
+    },
+    "marketEyebrow": "Skill Market",
+    "defaultCategory": "general",
+    "status": {
+      "active": "active",
+      "draft": "draft",
+      "disabled": "disabled"
+    },
+    "risk": {
+      "low": "low",
+      "medium": "medium",
+      "high": "high"
+    },
+    "noticeSaved": "Skill saved and market listing refreshed.",
+    "noticeStatusUpdated": "Skill publication status updated.",
+    "noticeDeleted": "Skill deleted from the Cloud market."
   },
   "login": {
     "title": "Admin Login",
     "username": "Username",
     "password": "Password",
     "submit": "Sign In",
-    "error": "Login failed"
+    "error": "Login failed",
+    "refreshCaptcha": "Refresh",
+    "captchaAnswer": "Answer",
+    "description": "Sign in to the iWorkerCloud control plane for Center registration, authorization, compute, and skill-market operations.",
+    "captchaLoading": "Loading captcha...",
+    "captchaLoadFailed": "Captcha failed to load. Please refresh and try again.",
+    "sessionExpired": "Session expired. Please sign in again.",
+    "loggedOut": "Signed out."
   },
   "setup": {
     "title": "Initial Setup",
-    "description": "First time use. Please set up an admin account."
+    "description": "First time use. Please set up an admin account.",
+    "confirmPassword": "Confirm password",
+    "passwordMismatch": "The two passwords do not match.",
+    "success": "Setup complete. Sign in with the admin account."
   },
   "centers": {
     "pending": "Pending",
@@ -139,7 +227,205 @@
     "disable": "Disable",
     "enable": "Enable",
     "delete": "Delete",
-    "empty": "No registered iWorkerCenters."
+    "empty": "No registered iWorkerCenters.",
+    "title": "iWorkerCenter Access Control",
+    "positionDesc": "Handle iWorkerCenter registration review, service probes, authorization state, compute eligibility, and platform readiness without entering enterprise operations.",
+    "boundaryTitle": "Cloud only sees the Center service boundary",
+    "boundaryNote": "Employees, workflows, MCP rollout, human collaboration, and tenant business stay inside iWorkerCenter. Cloud maintains platform service capabilities and entitlement only.",
+    "search": "Search Center, company, email, phone, or service URL",
+    "allStatus": "All status",
+    "noMatch": "No iWorkerCenters match the current filters.",
+    "stats": {
+      "total": "Total Centers",
+      "totalHint": "Registered with Cloud",
+      "pending": "Pending",
+      "pendingHint": "Waiting for trial or commercial approval",
+      "ready": "Service ready",
+      "needsSetup": "still need setup",
+      "licensed": "Active licenses",
+      "unlicensed": "unlicensed"
+    },
+    "confirmDelete": "Delete this iWorkerCenter registration record?",
+    "useServiceActions": "Use the service action buttons below.",
+    "controlPlaneHint": "iWorkerCloud is the iWorkerCenter management control plane. It handles authorization, connectivity, compute distribution, upgrades, and skill entitlement, but does not participate in customer organization, tenant, planning, or enterprise operations.",
+    "refreshingRuntime": "Refreshing platform runtime snapshots...",
+    "unnamedCompany": "Unnamed company",
+    "notProvided": "not provided",
+    "registrationReviewHint": "Review company identity before activating trial or issuing a license.",
+    "tenantBoundaryHint": "Cloud records Center-level service posture only. Company tenant creation, tenant administrators, and business workspace management stay inside iWorkerCenter.",
+    "manualAuthorizationTitle": "Issue module entitlements without entering enterprise operations",
+    "manualAuthorizationHint": "Use this for small deployments or manual commercial approval. Authorization grants Cloud service modules only.",
+    "sections": {
+      "registrationReview": "Registration review",
+      "tenantBoundary": "Tenant boundary",
+      "managementReadiness": "Management readiness",
+      "iworkerReadiness": "iWorker operating readiness",
+      "runtimeSnapshot": "Platform runtime snapshot",
+      "recommendedActions": "Recommended service-control actions",
+      "manualAuthorization": "Manual authorization",
+      "serviceGate": "Service coordination gate"
+    },
+    "fields": {
+      "legal": "Legal",
+      "email": "Email",
+      "phone": "Phone",
+      "address": "Address",
+      "baseUrl": "iWorkerCenter Base URL",
+      "controlMode": "Cloud control mode",
+      "lastSyncStatus": "Last sync status",
+      "service": "Service",
+      "commercial": "Commercial",
+      "connectivity": "Connectivity",
+      "tenantMode": "Tenant mode",
+      "tenants": "Tenants",
+      "lastHeartbeat": "Last heartbeat",
+      "registered": "Registered",
+      "id": "ID"
+    },
+    "actions": {
+      "activateTrial": "Activate trial",
+      "saveIntegration": "Save integration",
+      "testNow": "Test now",
+      "verifyIdentity": "Verify identity",
+      "issueLicense": "Issue license",
+      "reviewServices": "Review services",
+      "review": "Review",
+      "issuing": "Issuing...",
+      "issueManual": "Issue manual authorization",
+      "saving": "Saving...",
+      "testing": "Testing...",
+      "testConnection": "Test connection",
+      "refreshingRuntime": "Refreshing runtime...",
+      "refreshRuntime": "Refresh runtime",
+      "checking": "Checking...",
+      "checkServiceGate": "Check service gate"
+    },
+    "posture": {
+      "ready": "Ready",
+      "needs_setup": "Needs setup",
+      "connectivity_risk": "Connectivity risk",
+      "commercial_hold": "Commercial hold",
+      "watch": "Watch",
+      "unknown": "Unknown"
+    },
+    "issues": {
+      "center_not_active": "Center not active",
+      "missing_base_url": "Missing base URL",
+      "probe_failed": "Probe failed",
+      "probe_missing_base_url": "Probe missing base URL",
+      "probe_not_iworkercenter": "Endpoint is not iWorkerCenter service",
+      "heartbeat_not_iworkercenter": "Heartbeat identity failed",
+      "no_active_license": "No active license",
+      "service_identity_not_verified": "Service identity not verified"
+    },
+    "controlModes": {
+      "cloud_managed": "Cloud managed",
+      "self_managed": "Self managed",
+      "hybrid": "Hybrid"
+    },
+    "syncStatus": {
+      "registered": "Registered",
+      "configured": "Configured",
+      "probe_ok": "Service probe verified",
+      "probe_failed": "Service probe failed",
+      "probe_missing_base_url": "Missing service URL",
+      "probe_not_iworkercenter": "Wrong service endpoint",
+      "heartbeat_ok": "Heartbeat online",
+      "heartbeat_not_iworkercenter": "Heartbeat identity failed",
+      "not_configured": "not configured"
+    },
+    "readiness": {
+      "managementReadyHint": "This Center is ready for iWorkerCenter management services.",
+      "managementSetupHint": "This Center needs management-center setup before Cloud services are enabled smoothly.",
+      "readyForPushedWork": "Ready for pushed work",
+      "needsIWorkerSetup": "Needs iWorker setup",
+      "waitingHeartbeat": "Waiting for heartbeat",
+      "iworkerReadyHint": "This Center reports that iWorker can receive Center-pushed work and collaborate with human employees.",
+      "iworkerSetupHint": "Cloud only tracks platform readiness signals reported by Center, such as agent runtime, GoalWatch, and aggregate workload status. Customer business setup stays inside iWorkerCenter.",
+      "agentRuntime": "agent runtime",
+      "ready": "ready",
+      "notReady": "not ready",
+      "agentInstances": "agent instances",
+      "active": "active",
+      "completed": "completed",
+      "review": "review",
+      "blocked": "blocked",
+      "workloadSync": "workload sync",
+      "notReported": "not reported",
+      "allowed": "Allowed",
+      "blockedGate": "Blocked",
+      "serviceAllowedHint": "Cloud may coordinate platform services for this iWorkerCenter.",
+      "serviceBlockedHint": "Cloud will not enable service coordination until the blocking issues are resolved.",
+      "noServiceBlockers": "No service blockers",
+      "noBlockingIssues": "No blocking issues"
+    },
+    "tenant": {
+      "multiTenant": "Multi-tenant Center reported",
+      "dedicated": "Dedicated Center reported",
+      "notReported": "Tenant mode not reported",
+      "noCount": "No tenant count",
+      "modeMulti": "multi-tenant",
+      "modeDedicated": "dedicated",
+      "countReported": "{{count}} tenants reported"
+    },
+    "runtimeModes": {
+      "cloud_sync": "Cloud-managed compute",
+      "local_self_managed": "Center self-managed compute",
+      "local_settings_fallback": "Local provider fallback",
+      "not_reported": "Runtime not reported"
+    },
+    "clearFocus": "Clear focus",
+    "commercial": {
+      "licensed": "licensed",
+      "unlicensed": "unlicensed",
+      "trial": "trial",
+      "expired": "expired"
+    },
+    "connectivity": {
+      "reachable": "reachable",
+      "unreachable": "unreachable",
+      "unknown": "unknown",
+      "not_configured": "not configured"
+    },
+    "runtime": {
+      "computeSource": "compute source",
+      "sync": "sync",
+      "nonBlocking": "non-blocking",
+      "impact": "impact",
+      "runtimeProviders": "runtime providers",
+      "cloudProviders": "cloud providers",
+      "selfManagementAllowed": "self-management allowed",
+      "cloudManaged": "cloud-managed",
+      "lastSync": "last sync"
+    },
+    "runtimeValues": {
+      "cloud": "cloud",
+      "local": "local",
+      "success": "success",
+      "failure": "failure",
+      "pending": "pending",
+      "waiting_for_credentials": "waiting for credentials",
+      "unknown": "unknown"
+    },
+    "runtimeContinuity": {
+      "notLoaded": "Runtime snapshot has not been loaded yet.",
+      "localFallback": "Center reports Cloud compute sync trouble, but requests can continue through local provider settings.",
+      "nonBlockingSyncIssue": "Cloud coordination has a sync issue, and Center marked the impact as non-blocking for runtime execution.",
+      "cloudSync": "Center is currently using Cloud-synchronized provider routing.",
+      "selfManaged": "Center is intentionally managing its compute provider routing locally.",
+      "platformOnly": "Runtime status is available for platform coordination only and contains no enterprise business payload."
+    },
+    "eyebrow": "Center Control",
+    "noticeIntegrationSaved": "Center integration settings saved.",
+    "noticeManualAuthorized": "Manual service authorization issued for this Center.",
+    "noticeServiceReady": "Service gate passed. Cloud may coordinate platform services for this Center.",
+    "noticeServiceBlocked": "Service gate checked. Blocking items still need attention.",
+    "noticeProbeOk": "Center service probe succeeded.",
+    "noticeProbeFailed": "Center service probe failed. Check the service URL and identity response.",
+    "noticeDeleted": "Center registration record deleted.",
+    "noticeTrialActivated": "Trial activated for this Center.",
+    "noticeDisabled": "Center disabled.",
+    "noticeEnabled": "Center enabled."
   },
   "licenses": {
     "issue": "Issue License",
@@ -155,7 +441,31 @@
     "desc": "Issue and revoke commercial module entitlements for connected iWorkerCenters.",
     "confirmRevoke": "Revoke this license? The Center may lose access to licensed Cloud services.",
     "expiresAt": "Expires",
-    "issuedAt": "Issued"
+    "issuedAt": "Issued",
+    "positionTitle": "Authorize Cloud services only",
+    "positionDesc": "Issue, renew, and revoke Cloud service entitlements for connected iWorkerCenters with a clear operator flow that also works for small teams.",
+    "boundaryNote": "Licenses control platform services such as compute, skill market, upgrades, and support. They do not read or manage enterprise business data.",
+    "selectCenter": "Select an iWorkerCenter to authorize.",
+    "stats": {
+      "total": "Total licenses",
+      "totalHint": "Includes active and revoked records",
+      "active": "Active",
+      "activeHint": "Centers can access licensed Cloud services",
+      "expiring": "Expiring in 30d",
+      "expiringHint": "Renew or convert before interruption",
+      "unlicensed": "Unlicensed Centers",
+      "unlicensedHint": "Registered but not entitled yet"
+    },
+    "eyebrow": "License Control",
+    "noticeIssued": "License issued and entitlement list refreshed.",
+    "noticeRevoked": "License revoked. The Center entitlement list has been refreshed.",
+    "moduleLabels": {
+      "compute": "Compute",
+      "skill_market": "Skill Market",
+      "upgrade": "Upgrade",
+      "support": "Support",
+      "all": "All modules"
+    }
   },
   "common": {
     "save": "Save",
@@ -223,6 +533,42 @@
     "noticeUpdated": "Settings updated.",
     "noticeAssigned": "Provider distribution updated.",
     "testOk": "Connection succeeded",
-    "testFailed": "Connection failed"
+    "testFailed": "Connection failed",
+    "positionDesc": "Operate the Cloud commercial compute pool, provider routes, Center permissions, and usage metering. Centers can consume Cloud capacity or self-manage local routing when authorized.",
+    "boundaryTitle": "Local work survives Cloud outages",
+    "boundaryNote": "Cloud coordinates compute and authorization only. If Cloud is unreachable, iWorkerCenter and iWorker should continue with local policy, cached config, and already-published capabilities.",
+    "stats": {
+      "providers": "Providers",
+      "enabledProviders": "enabled",
+      "centers": "Centers",
+      "cloudManaged": "Cloud-managed",
+      "assignments": "Explicit routes",
+      "assignmentsHint": "Centers limited to selected providers",
+      "cost": "Queried cost"
+    },
+    "eyebrow": "Compute Distribution",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "keepApiKey": "leave blank to keep current key",
+    "userAgent": "User-Agent",
+    "userAgentShort": "UA",
+    "providerRequired": "Provider name, Base URL, and model are required.",
+    "invalidDateRange": "Start date must be earlier than or equal to end date.",
+    "queryFailed": "Usage query failed."
+  },
+  "settings": {
+    "desc": "Maintain the iWorkerCloud admin entry point and control-plane security settings. Customer organizations, employees, and business workflows are not configured here.",
+    "boundaryTitle": "Cloud control-plane account",
+    "boundaryNote": "This account is for iWorkerCloud operations only: Center registration, authorization, compute distribution, and skill-market maintenance.",
+    "oldPassword": "Old password",
+    "newPassword": "New password",
+    "passwordSaved": "Admin password updated.",
+    "adminPolicyTitle": "Operational boundary",
+    "adminPolicyDesc": "Cloud admins maintain platform service capabilities. Enterprise identity, workflows, MCP rollout, and human collaboration remain in iWorkerCenter.",
+    "policyAuth": "Registration and authorization",
+    "policyNoBusiness": "No enterprise business ops",
+    "policyAudit": "Control-plane audit",
+    "eyebrow": "Cloud Admin",
+    "policyEyebrow": "Policy"
   }
 }

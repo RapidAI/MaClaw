@@ -1,7 +1,6 @@
 // Package im defines the unified IM abstraction layer for corelib.
 // It provides standardized message types and plugin interfaces that can be
-// used by any product (hub, iWorkerCenter, DiWorker, gui, tui) without
-// importing hub/internal/im.
+// used by corelib consumers without importing hub/internal/im.
 package im
 
 import (

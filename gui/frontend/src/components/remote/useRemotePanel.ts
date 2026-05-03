@@ -234,7 +234,10 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             // values — the same race pattern as #11 SSO config overwrite.
             try {
                 const freshConfig = await LoadConfig();
-                setConfig(freshConfig);
+                const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
+                setConfig(pendingLaunchMode
+                    ? new main.AppConfig({ ...freshConfig, default_launch_mode: pendingLaunchMode })
+                    : freshConfig);
             } catch {
                 // Config reload failure is non-critical; continue with
                 // stale state rather than blocking the entire panel refresh.

@@ -3,6 +3,8 @@ package main
 import (
 	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // mockFloatingWindow is a mock implementation of floatingWindow for testing.
@@ -79,19 +81,19 @@ func TestFloatingAssistantManager_HideSetsVisibleFalse(t *testing.T) {
 	}
 }
 
-// TestFloatingAssistantManager_ShowWhenConfigFalse tests that ShowFloatingButton
-// is a no-op when config.ShowAssistantEntry is false.
+// TestFloatingAssistantManager_ShowWhenConfigFalse documents that ShowFloatingButton
+// is a no-op when config.PetEnabled is false.
 // Requirement: 1.1
 func TestFloatingAssistantManager_ShowWhenConfigFalse(t *testing.T) {
 	// This test verifies the config check logic in ShowFloatingButton.
-	// When ShowAssistantEntry is false, the method should return early without
+	// When PetEnabled is false, the method should return early without
 	// creating the window.
 	//
 	// Note: We cannot directly test this without a full App mock because
 	// ShowFloatingButton calls m.app.LoadConfig(). The behavior is verified
 	// indirectly through the property tests.
 	//
-	// The implementation checks: if !config.ShowAssistantEntry { return }
+	// The implementation checks: if !config.PetEnabled { return }
 }
 
 // TestFloatingAssistantManager_ShowHideShowCycle tests the full cycle.
@@ -153,12 +155,12 @@ func TestFloatingAssistantManager_OnDraggedClamping(t *testing.T) {
 	// Get actual screen dimensions (may be platform-specific)
 	screenW := getScreenWidth()
 	screenH := getScreenHeight()
-	
+
 	manager := &FloatingAssistantManager{
 		visible: true,
 	}
 	mockWindow := &mockFloatingWindow{created: true}
-	
+
 	// Cast to floatingWindow interface
 	var window floatingWindow = mockWindow
 	manager.window = window
@@ -177,8 +179,8 @@ func TestFloatingAssistantManager_OnDraggedClamping(t *testing.T) {
 	beyondY := screenH + 1000
 	manager.OnFloatingButtonDragged(beyondX, beyondY)
 
-	expectedX := screenW - 64
-	expectedY := screenH - 64
+	expectedX := screenW - (defaultPetSize + 16)
+	expectedY := screenH - (defaultPetSize + 16)
 	if mockWindow.x != expectedX || mockWindow.y != expectedY {
 		t.Errorf("Expected window clamped to (%d, %d), got (%d, %d)", expectedX, expectedY, mockWindow.x, mockWindow.y)
 	}
@@ -220,6 +222,17 @@ func TestFloatingAssistantManager_DefaultPosition(t *testing.T) {
 	}
 }
 
+func TestFloatingAssistantManager_LoadsExplicitZeroPosition(t *testing.T) {
+	manager := &FloatingAssistantManager{}
+	cfg := corelib.AppConfig{FloatingBtnPositionSet: true, FloatingBtnX: 0, FloatingBtnY: 0}
+
+	x, y := manager.loadOrDefaultPosition(cfg)
+
+	if x != 0 || y != 0 {
+		t.Fatalf("expected explicit zero position to round-trip, got (%d,%d)", x, y)
+	}
+}
+
 // TestFloatingAssistantManager_WindowCreationFailure tests silent failure.
 // Requirement: 1.4, 12.1, 12.2
 func TestFloatingAssistantManager_WindowCreationFailure(t *testing.T) {
@@ -246,26 +259,77 @@ func TestFloatingAssistantManager_WindowCreationFailure(t *testing.T) {
 	}
 }
 
-// TestFloatingAssistantManager_MutualExclusivity tests that floating button
-// and main window are never simultaneously visible.
-// Requirement: 7.1, 7.2, 7.3
-func TestFloatingAssistantManager_MutualExclusivity(t *testing.T) {
+// TestFloatingAssistantManager_PetCanStayVisibleWithMainWindow documents that
+// the desktop pet is independent from main window visibility.
+func TestFloatingAssistantManager_PetCanStayVisibleWithMainWindow(t *testing.T) {
 	manager := &FloatingAssistantManager{
 		visible: true,
 	}
 	mockWindow := &mockFloatingWindow{created: true}
 	manager.window = mockWindow
 
-	// When OnFloatingButtonClicked is called, it should:
-	// 1. Hide the floating button first
-	// 2. Then show the main window
-	// This ensures mutual exclusivity
+	// Opening the main window should not implicitly hide the desktop pet.
+	if !manager.IsVisible() {
+		t.Error("Desktop pet should remain visible when main window is shown")
+	}
+}
 
-	// Simulate the first step of OnFloatingButtonClicked
-	manager.HideFloatingButton()
+func TestFloatingAppearanceChangedIgnoresLegacyAssistantEntry(t *testing.T) {
+	oldConfig := corelib.AppConfig{ShowAssistantEntry: true, PetEnabled: true}
+	newConfig := corelib.AppConfig{ShowAssistantEntry: false, PetEnabled: true}
 
-	if manager.IsVisible() {
-		t.Error("Floating button should be hidden before main window is shown")
+	if floatingAppearanceChanged(oldConfig, newConfig) {
+		t.Fatal("legacy show_assistant_entry should not drive desktop pet refresh")
+	}
+}
+
+func TestFloatingAppearanceChangedTracksPetEnabled(t *testing.T) {
+	oldConfig := corelib.AppConfig{ShowAssistantEntry: true, PetEnabled: true}
+	newConfig := corelib.AppConfig{ShowAssistantEntry: true, PetEnabled: false}
+
+	if !floatingAppearanceChanged(oldConfig, newConfig) {
+		t.Fatal("pet_enabled changes should refresh or destroy the desktop pet")
+	}
+}
+
+func TestAppHideFloatingButtonDoesNotCreateManager(t *testing.T) {
+	app := &App{}
+
+	app.HideFloatingButton()
+
+	if app.floatingAssistant != nil {
+		t.Fatal("compatibility HideFloatingButton should not create a desktop pet manager")
+	}
+}
+
+func TestAppEnsureFloatingAssistantConcurrent(t *testing.T) {
+	app := &App{}
+	const workers = 32
+	results := make(chan *FloatingAssistantManager, workers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- app.ensureFloatingAssistant()
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var first *FloatingAssistantManager
+	for result := range results {
+		if result == nil {
+			t.Fatal("ensureFloatingAssistant returned nil")
+		}
+		if first == nil {
+			first = result
+			continue
+		}
+		if result != first {
+			t.Fatal("ensureFloatingAssistant created more than one manager")
+		}
 	}
 }
 

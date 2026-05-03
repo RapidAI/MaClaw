@@ -10,24 +10,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentnet"
 )
+
+const agentNetMinPaidTaskReward = 100
+
+var agentNetANSNamePattern = regexp.MustCompile(`^[a-z0-9]{1,32}$`)
 
 // AgentNetClient wraps the anet daemon REST API (localhost:3998).
 // It manages the daemon lifecycle and provides typed access to all endpoints.
 // The anet daemon is a standalone process that persists across maclaw restarts.
 type AgentNetClient struct {
-	mu       sync.Mutex
-	baseURL  string
-	client   *http.Client
-	binPath  string
-	running  bool
+	mu      sync.Mutex
+	baseURL string
+	client  *http.Client
+	binPath string
+	running bool
 
-	tokenMu      sync.RWMutex // guards apiToken / tokenLoaded
-	apiToken     string       // Bearer token read from ~/.anet/api_token
-	tokenLoaded  bool         // true after first successful or failed load attempt
+	tokenMu     sync.RWMutex // guards apiToken / tokenLoaded
+	apiToken    string       // Bearer token read from ~/.anet/api_token
+	tokenLoaded bool         // true after first successful or failed load attempt
 
 	autoUpdateStop chan struct{} // signals the auto-update goroutine to stop
 }
@@ -50,6 +57,11 @@ type AgentNetStatus struct {
 	UnreadDM int    `json:"unread_dm"`
 	Version  string `json:"version"`
 	Uptime   string `json:"uptime,omitempty"`
+}
+
+type AgentNetTaskCreateOptions struct {
+	RequireDeposit   bool
+	DepositConfirmed bool
 }
 
 type AgentNetPeer struct {
@@ -147,7 +159,7 @@ func (e AgentNetKnowledgeEntry) DisplayTitle() string {
 	if e.ID != "" {
 		return e.ID[:min(len(e.ID), 16)]
 	}
-	return "—"
+	return "Untitled"
 }
 
 type AgentNetPrediction struct {
@@ -193,10 +205,137 @@ func NewAgentNetClient() *AgentNetClient {
 	}
 }
 
+func normalizeAgentNetTaskReward(reward float64) (float64, error) {
+	if reward < 0 {
+		return 0, fmt.Errorf("task reward cannot be negative")
+	}
+	if reward > 0 && reward < agentNetMinPaidTaskReward {
+		return 0, nil
+	}
+	return reward, nil
+}
+
+func normalizeAgentNetANSName(name string) (string, error) {
+	name = strings.TrimSpace(strings.ToLower(strings.TrimPrefix(name, "agent://")))
+	if !agentNetANSNamePattern.MatchString(name) {
+		return "", fmt.Errorf("ANS name must be lowercase alphanumeric and 1-32 characters")
+	}
+	return name, nil
+}
+
+func normalizeAgentNetServiceName(name string) (string, error) {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if !agentNetANSNamePattern.MatchString(name) {
+		return "", fmt.Errorf("service name must be lowercase alphanumeric and 1-32 characters")
+	}
+	return name, nil
+}
+
+func normalizeAgentNetServiceCall(peer, service, method, requestPath string) (string, string, string, string, error) {
+	peer = strings.TrimSpace(peer)
+	if peer == "" {
+		return "", "", "", "", fmt.Errorf("peer is required")
+	}
+	service, err := normalizeAgentNetServiceName(service)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		method = http.MethodPost
+	}
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
+	default:
+		return "", "", "", "", fmt.Errorf("unsupported service method: %s", method)
+	}
+	requestPath = strings.TrimSpace(requestPath)
+	if requestPath == "" {
+		requestPath = "/"
+	}
+	if strings.ContainsAny(requestPath, "\r\n") {
+		return "", "", "", "", fmt.Errorf("service path cannot contain newlines")
+	}
+	if strings.HasPrefix(requestPath, "//") {
+		return "", "", "", "", fmt.Errorf("service path must not start with //")
+	}
+	if !strings.HasPrefix(requestPath, "/") {
+		requestPath = "/" + requestPath
+	}
+	return peer, service, method, requestPath, nil
+}
+
+func normalizeAgentNetOntologyQuery(query string, depth int) (string, int, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", 0, fmt.Errorf("ontology query is required")
+	}
+	if depth <= 0 {
+		depth = 2
+	}
+	if depth > 10 {
+		depth = 10
+	}
+	return query, depth, nil
+}
+func validateAgentNetServiceRegistration(reg *AgentNetServiceRegistration) error {
+	if reg == nil {
+		return fmt.Errorf("service is nil")
+	}
+	name, err := normalizeAgentNetServiceName(reg.Name)
+	if err != nil {
+		return err
+	}
+	reg.Name = name
+	reg.URL = strings.TrimSpace(reg.URL)
+	parsed, err := url.Parse(reg.URL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("service url must be an absolute localhost HTTP URL")
+	}
+	if parsed.Scheme != "http" {
+		return fmt.Errorf("service url must use http")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return fmt.Errorf("service url must point to localhost or loopback")
+	}
+	reg.Billing = strings.TrimSpace(strings.ToLower(reg.Billing))
+	if reg.Billing == "" {
+		reg.Billing = "free"
+	}
+	switch reg.Billing {
+	case "free", "per_call", "per_kb":
+	default:
+		return fmt.Errorf("billing must be free, per_call, or per_kb")
+	}
+	if reg.Price < 0 {
+		return fmt.Errorf("service price cannot be negative")
+	}
+	if reg.Billing != "free" && reg.Price <= 0 {
+		return fmt.Errorf("paid services require a positive price")
+	}
+	if reg.FreeTier < 0 {
+		return fmt.Errorf("free tier cannot be negative")
+	}
+	if len(reg.Modes) == 0 {
+		reg.Modes = []string{"rr"}
+	}
+	for i, mode := range reg.Modes {
+		mode = strings.TrimSpace(strings.ToLower(mode))
+		reg.Modes[i] = mode
+		switch mode {
+		case "rr", "server-stream", "bidi":
+		default:
+			return fmt.Errorf("unsupported service mode: %s", mode)
+		}
+	}
+	return nil
+}
+
 // ---------- Daemon lifecycle ----------
 
 // findBinary locates the anet executable.
-// Search order: install dir → PATH.
+// Search order: install dir -> PATH.
 func (c *AgentNetClient) findBinary() string {
 	binName := anetLocalBinaryName()
 	// 1. Standard install dir
@@ -220,7 +359,7 @@ func (c *AgentNetClient) EnsureDaemon() error {
 }
 
 // EnsureDaemonWithProgress starts the daemon, auto-downloading the binary if needed.
-// The anet daemon is a standalone process — it persists across maclaw restarts.
+// The anet daemon is a standalone process - it persists across maclaw restarts.
 // We only start it if no instance is already running (ping or process check).
 func (c *AgentNetClient) EnsureDaemonWithProgress(emitProgress func(stage string, pct int, msg string)) error {
 	// Fast path: daemon already reachable.
@@ -235,7 +374,7 @@ func (c *AgentNetClient) EnsureDaemonWithProgress(emitProgress func(stage string
 	// racing to start the daemon simultaneously.
 	lockFile, lockErr := acquireGUIDaemonLock()
 	if lockErr != nil {
-		// Another process is starting the daemon — wait for it.
+		// Another process is starting the daemon - wait for it.
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			if c.ping() {
@@ -294,7 +433,7 @@ func (c *AgentNetClient) EnsureDaemonWithProgress(emitProgress func(stage string
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		// Process exists but not responding — kill it before starting fresh.
+		// Process exists but not responding - kill it before starting fresh.
 		if p, err := os.FindProcess(pid); err == nil {
 			_ = p.Kill()
 		}
@@ -410,6 +549,11 @@ func (c *AgentNetClient) loadAPIToken() string {
 		return c.apiToken // another goroutine loaded it while we waited
 	}
 	c.tokenLoaded = true
+
+	if token := strings.TrimSpace(os.Getenv("AGENTNETWORK_API_TOKEN")); token != "" {
+		c.apiToken = token
+		return c.apiToken
+	}
 
 	// Try ~/.anet/api_token first (matches the daemon's error message).
 	if home, err := os.UserHomeDir(); err == nil {
@@ -637,9 +781,20 @@ func (c *AgentNetClient) CreateTask(title string, reward float64) (*AgentNetTask
 
 // CreateTaskFull creates a task with all optional fields: description, tags, target_peer.
 func (c *AgentNetClient) CreateTaskFull(title, description string, reward float64, tags []string, targetPeer string) (*AgentNetTask, error) {
+	return c.CreateTaskWithOptions(title, description, reward, tags, targetPeer, AgentNetTaskCreateOptions{})
+}
+
+func (c *AgentNetClient) CreateTaskWithOptions(title, description string, reward float64, tags []string, targetPeer string, opts AgentNetTaskCreateOptions) (*AgentNetTask, error) {
+	normalizedReward, err := normalizeAgentNetTaskReward(reward)
+	if err != nil {
+		return nil, err
+	}
+	if opts.RequireDeposit && !opts.DepositConfirmed {
+		return nil, fmt.Errorf("require_deposit needs explicit user confirmation")
+	}
 	payload := map[string]interface{}{
 		"title":  title,
-		"reward": reward,
+		"reward": normalizedReward,
 	}
 	if description != "" {
 		payload["description"] = description
@@ -650,45 +805,55 @@ func (c *AgentNetClient) CreateTaskFull(title, description string, reward float6
 	if targetPeer != "" {
 		payload["target_peer"] = targetPeer
 	}
+	if opts.RequireDeposit {
+		payload["require_deposit"] = true
+	}
 	var task AgentNetTask
 	return &task, c.post("/api/tasks", payload, &task)
 }
 
 func (c *AgentNetClient) GetTask(id string) (*AgentNetTask, error) {
 	var task AgentNetTask
-	return &task, c.get("/api/tasks/"+id, &task)
+	return &task, c.get("/api/tasks/"+url.PathEscape(id), &task)
 }
 
 func (c *AgentNetClient) BidOnTask(id string, amount float64, message string) error {
+	if amount < 0 {
+		return fmt.Errorf("bid amount cannot be negative")
+	}
 	payload := map[string]interface{}{
-		"message": message,
+		"message": strings.TrimSpace(message),
 	}
 	if amount > 0 {
 		payload["amount"] = amount
 	}
-	return c.post("/api/tasks/"+id+"/bid", payload, nil)
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/bid", payload, nil)
 }
 
 func (c *AgentNetClient) AssignTask(id, peerID string) error {
-	return c.post("/api/tasks/"+id+"/assign", map[string]interface{}{
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return fmt.Errorf("assignee peer ID is required")
+	}
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/assign", map[string]interface{}{
 		"bidder_id": peerID,
 	}, nil)
 }
 
 func (c *AgentNetClient) ClaimTask(id string) error {
-	return c.post("/api/tasks/"+id+"/claim", nil, nil)
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/claim", nil, nil)
 }
 
 func (c *AgentNetClient) ApproveTask(id string) error {
-	return c.post("/api/tasks/"+id+"/accept", nil, nil)
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/accept", nil, nil)
 }
 
 func (c *AgentNetClient) RejectTask(id string) error {
-	return c.post("/api/tasks/"+id+"/reject", nil, nil)
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/reject", nil, nil)
 }
 
 func (c *AgentNetClient) CancelTask(id string) error {
-	return c.post("/api/tasks/"+id+"/cancel", nil, nil)
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/cancel", nil, nil)
 }
 
 // ---------- Shell Economy ----------
@@ -871,6 +1036,23 @@ func (c *AgentNetClient) SynthesizeSwarm(sessionID string) (map[string]interface
 // ---------- Direct Messages ----------
 
 func (c *AgentNetClient) SendDM(peerID, body string) error {
+	peerID = strings.TrimSpace(peerID)
+	if strings.HasPrefix(peerID, "agent://") {
+		entry, err := c.ANSResolve(peerID)
+		if err != nil {
+			return err
+		}
+		peerID = entry.DID
+	} else if !strings.HasPrefix(peerID, "did:") && !strings.HasPrefix(peerID, "12D3") {
+		entry, err := c.ANSResolve(peerID)
+		if err != nil {
+			return err
+		}
+		peerID = entry.DID
+	}
+	if peerID == "" {
+		return fmt.Errorf("DM target is empty")
+	}
 	return c.post("/api/dm/send", map[string]interface{}{
 		"peer_id": peerID,
 		"body":    body,
@@ -972,14 +1154,15 @@ func (c *AgentNetClient) PostTopicMessage(topicName, body string) error {
 // ---------- Task Bazaar (extended) ----------
 
 func (c *AgentNetClient) SubmitTaskResult(id, result string) error {
-	return c.post("/api/tasks/"+id+"/submit", map[string]interface{}{
-		"result": result,
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/submit", map[string]interface{}{
+		"evidence": result,
+		"result":   result,
 	}, nil)
 }
 
 func (c *AgentNetClient) GetTaskBids(id string) ([]map[string]interface{}, error) {
 	var bids []map[string]interface{}
-	return bids, c.get("/api/tasks/"+id+"/bids", &bids)
+	return bids, c.get("/api/tasks/"+url.PathEscape(id)+"/bids", &bids)
 }
 
 func (c *AgentNetClient) MatchTasks() ([]AgentNetTask, error) {
@@ -989,7 +1172,7 @@ func (c *AgentNetClient) MatchTasks() ([]AgentNetTask, error) {
 
 func (c *AgentNetClient) MatchAgentsForTask(taskID string) ([]AgentNetResume, error) {
 	var agents []AgentNetResume
-	return agents, c.get("/api/tasks/"+taskID+"/match", &agents)
+	return agents, c.get("/api/tasks/"+url.PathEscape(taskID)+"/match", &agents)
 }
 
 // ---------- Credits (extended) ----------
@@ -1018,7 +1201,7 @@ func (c *AgentNetClient) SelfUpdate() error {
 	hideCommandWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("update failed: %w — %s", err, string(out))
+		return fmt.Errorf("update failed: %w - %s", err, string(out))
 	}
 	return nil
 }
@@ -1090,7 +1273,7 @@ func (c *AgentNetClient) tryAutoUpdate(logFn func(string)) {
 	}
 	// SelfUpdate may replace the binary; verify daemon is still alive.
 	if !c.ping() && logFn != nil {
-		logFn("AgentNet: daemon unreachable after update — it may need a manual restart")
+		logFn("AgentNet: daemon unreachable after update - it may need a manual restart")
 	}
 }
 
@@ -1107,7 +1290,7 @@ func (c *AgentNetClient) StartAutoUpdate(logFn func(string)) {
 		// Check if previous goroutine already exited.
 		select {
 		case <-c.autoUpdateStop:
-			// Closed — allow restart below.
+			// Closed - allow restart below.
 		default:
 			return // still running
 		}
@@ -1187,7 +1370,7 @@ func (c *AgentNetClient) GetPredictionLeaderboard() ([]map[string]interface{}, e
 
 // SubmitTaskWork submits work for an auction-style task (multi-worker).
 func (c *AgentNetClient) SubmitTaskWork(id, result string) error {
-	return c.post("/api/tasks/"+id+"/work", map[string]interface{}{
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/work", map[string]interface{}{
 		"result": result,
 	}, nil)
 }
@@ -1195,12 +1378,12 @@ func (c *AgentNetClient) SubmitTaskWork(id, result string) error {
 // GetTaskSubmissions returns all submissions for an auction-style task.
 func (c *AgentNetClient) GetTaskSubmissions(id string) ([]map[string]interface{}, error) {
 	var subs []map[string]interface{}
-	return subs, c.get("/api/tasks/"+id+"/submissions", &subs)
+	return subs, c.get("/api/tasks/"+url.PathEscape(id)+"/submissions", &subs)
 }
 
 // PickTaskWinner selects the winning submission for an auction-style task.
 func (c *AgentNetClient) PickTaskWinner(id, winnerPeerID string) error {
-	return c.post("/api/tasks/"+id+"/pick", map[string]interface{}{
+	return c.post("/api/tasks/"+url.PathEscape(id)+"/pick", map[string]interface{}{
 		"winner": winnerPeerID,
 	}, nil)
 }
@@ -1283,7 +1466,7 @@ func (c *AgentNetClient) PublishTasksToHub(hubURL string) error {
 
 	payload := make([]hubTask, 0, len(tasks))
 	for _, t := range tasks {
-		// Skip the local tutorial task — it's not interesting to others.
+		// Skip the local tutorial task - it's not interesting to others.
 		if t.ID == "tutorial-onboarding" {
 			continue
 		}
@@ -1378,7 +1561,7 @@ func (c *AgentNetClient) BrowseHubTasks(hubURL string) ([]AgentNetTask, error) {
 	return tasks, nil
 }
 
-// ---------- P2P Service Gateway (skill.md §Workflow F) ----------
+// ---------- P2P Service Gateway (skill.md Workflow F) ----------
 
 // AgentNetServiceRegistration describes a local service to expose on the P2P network.
 type AgentNetServiceRegistration struct {
@@ -1410,14 +1593,25 @@ func (c *AgentNetClient) ListServices() ([]AgentNetServiceInfo, error) {
 }
 
 func (c *AgentNetClient) RegisterService(reg *AgentNetServiceRegistration) error {
+	if err := validateAgentNetServiceRegistration(reg); err != nil {
+		return err
+	}
 	return c.post("/api/svc/register", reg, nil)
 }
 
 func (c *AgentNetClient) UnregisterService(name string) error {
+	name, err := normalizeAgentNetServiceName(name)
+	if err != nil {
+		return err
+	}
 	return c.post("/api/svc/unregister", map[string]interface{}{"name": name}, nil)
 }
 
 func (c *AgentNetClient) CallService(peer, service, method, path string, headers map[string]string, body string) (map[string]interface{}, error) {
+	peer, service, method, path, err := normalizeAgentNetServiceCall(peer, service, method, path)
+	if err != nil {
+		return nil, err
+	}
 	payload := map[string]interface{}{
 		"peer":    peer,
 		"service": service,
@@ -1435,6 +1629,10 @@ func (c *AgentNetClient) CallService(peer, service, method, path string, headers
 }
 
 func (c *AgentNetClient) DiscoverServices(peer string) ([]AgentNetServiceInfo, error) {
+	peer = strings.TrimSpace(peer)
+	if peer == "" {
+		return nil, fmt.Errorf("peer is required")
+	}
 	var svcs []AgentNetServiceInfo
 	payload := map[string]interface{}{
 		"peer":    peer,
@@ -1452,6 +1650,10 @@ type AgentNetANSEntry struct {
 }
 
 func (c *AgentNetClient) ANSRegister(name string, tags string) (*AgentNetANSEntry, error) {
+	name, err := normalizeAgentNetANSName(name)
+	if err != nil {
+		return nil, err
+	}
 	var entry AgentNetANSEntry
 	payload := map[string]interface{}{"name": name}
 	if tags != "" {
@@ -1461,6 +1663,10 @@ func (c *AgentNetClient) ANSRegister(name string, tags string) (*AgentNetANSEntr
 }
 
 func (c *AgentNetClient) ANSResolve(name string) (*AgentNetANSEntry, error) {
+	name, err := normalizeAgentNetANSName(name)
+	if err != nil {
+		return nil, err
+	}
 	var entry AgentNetANSEntry
 	return &entry, c.get("/api/ans/resolve?name="+url.QueryEscape(name), &entry)
 }
@@ -1512,7 +1718,7 @@ func (c *AgentNetClient) ListPoIChallenges() ([]map[string]interface{}, error) {
 }
 
 func (c *AgentNetClient) RespondToPoI(challengeID string, response map[string]interface{}) error {
-	return c.post("/api/poi/challenges/"+challengeID+"/respond", response, nil)
+	return c.post("/api/poi/challenges/"+url.PathEscape(challengeID)+"/respond", response, nil)
 }
 
 func (c *AgentNetClient) GetPoIScores() ([]map[string]interface{}, error) {
@@ -1529,14 +1735,38 @@ func (c *AgentNetClient) PublishAgentCard(name, desc string, skills []string) er
 }
 
 func (c *AgentNetClient) InitAgent(name string, skills []string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("agent name is required")
+	}
+	cleanSkills := make([]string, 0, len(skills))
+	seenSkills := make(map[string]bool)
+	for _, skill := range skills {
+		skill = strings.TrimSpace(strings.ToLower(skill))
+		if skill == "" || seenSkills[skill] {
+			continue
+		}
+		seenSkills[skill] = true
+		cleanSkills = append(cleanSkills, skill)
+	}
+	if len(cleanSkills) == 0 {
+		return fmt.Errorf("at least one skill is required")
+	}
 	return c.post("/api/init", map[string]interface{}{
-		"name": name, "skills": skills,
+		"name": name, "skills": cleanSkills,
 	}, nil)
 }
 
 // ---------- Credits Transfer ----------
 
 func (c *AgentNetClient) TransferCredits(toDID string, amount float64, reason string) error {
+	toDID = strings.TrimSpace(toDID)
+	if toDID == "" {
+		return fmt.Errorf("credit recipient is required")
+	}
+	if amount <= 0 {
+		return fmt.Errorf("credit transfer amount must be positive")
+	}
 	payload := map[string]interface{}{"to": toDID, "amount": amount}
 	if reason != "" {
 		payload["reason"] = reason
@@ -1547,7 +1777,7 @@ func (c *AgentNetClient) TransferCredits(toDID string, amount float64, reason st
 // ---------- Task Bundles ----------
 
 func (c *AgentNetClient) AttachBundle(taskID string, bundleData []byte) error {
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/tasks/"+taskID+"/bundle", bytes.NewReader(bundleData))
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/tasks/"+url.PathEscape(taskID)+"/bundle", bytes.NewReader(bundleData))
 	if err != nil {
 		return err
 	}
@@ -1567,7 +1797,7 @@ func (c *AgentNetClient) AttachBundle(taskID string, bundleData []byte) error {
 }
 
 func (c *AgentNetClient) DownloadBundle(taskID string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/tasks/"+taskID+"/bundle", nil)
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/tasks/"+url.PathEscape(taskID)+"/bundle", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1585,12 +1815,69 @@ func (c *AgentNetClient) DownloadBundle(taskID string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+func (c *AgentNetClient) SubmitTaskDeliverable(task *AgentNetTask, result string) error {
+	if task == nil {
+		return fmt.Errorf("task is nil")
+	}
+	workDir, err := os.MkdirTemp("", "agentnet-deliverable-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(workDir)
+
+	manifest := agentnet.BundleManifest{
+		Intention:   firstNonEmpty(task.Title, "Complete AgentNetwork task"),
+		Context:     firstNonEmpty(task.Description, "Task was claimed from AgentNetwork."),
+		Constraints: "Follow the publisher task description and avoid exposing local secrets or private user data.",
+		Harness:     "Publisher reviews the attached result and evidence summary.",
+		Acceptance:  "The deliverable satisfies the requested task description.",
+		Evidence:    "See result.md.",
+	}
+	manifestData, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "manifest.json"), manifestData, 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "result.md"), []byte(result), 0600); err != nil {
+		return err
+	}
+
+	bundlePath := filepath.Join(workDir, "deliverable.nut")
+	manager := agentnet.NewBundleManager(c.BinPath())
+	if _, err := manager.Pack(workDir, bundlePath, ""); err != nil {
+		return fmt.Errorf("pack deliverable: %w", err)
+	}
+	bundleData, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return err
+	}
+	if err := c.AttachBundle(task.ID, bundleData); err != nil {
+		return err
+	}
+	return c.SubmitTaskResult(task.ID, "Task completed. See attached .nut bundle for manifest.json and result.md.")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // ---------- Split Tasks ----------
 
 func (c *AgentNetClient) CreateSplitTask(title string, reward float64, slots int) (*AgentNetTask, error) {
+	normalizedReward, err := normalizeAgentNetTaskReward(reward)
+	if err != nil {
+		return nil, err
+	}
 	var task AgentNetTask
 	return &task, c.post("/api/tasks/split", map[string]interface{}{
-		"title": title, "reward": reward, "slots": slots,
+		"title": title, "reward": normalizedReward, "slots": slots,
 	}, &task)
 }
 
@@ -1612,6 +1899,10 @@ func (c *AgentNetClient) ExtractDAG(intent string, steps []string, outputs []str
 }
 
 func (c *AgentNetClient) QueryOntology(query string, depth int) (map[string]interface{}, error) {
+	query, depth, err := normalizeAgentNetOntologyQuery(query, depth)
+	if err != nil {
+		return nil, err
+	}
 	path := fmt.Sprintf("/api/ontology/subgraph?q=%s&depth=%d", url.QueryEscape(query), depth)
 	var result map[string]interface{}
 	return result, c.get(path, &result)

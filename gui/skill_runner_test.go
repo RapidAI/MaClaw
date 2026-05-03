@@ -15,6 +15,42 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
+func TestSkillDocHelpersAcceptMixedCaseSkillMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Skill.md"), []byte("# mixed skill docs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !hasSkillDocFile(dir) {
+		t.Fatal("hasSkillDocFile should accept Skill.md")
+	}
+	if got := loadSkillDocContent(dir); !strings.Contains(got, "mixed skill docs") {
+		t.Fatalf("loadSkillDocContent() = %q", got)
+	}
+}
+func TestSkillDocHelpersAcceptMixedCaseReadme(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Readme.md"), []byte("# mixed docs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !hasSkillDocFile(dir) {
+		t.Fatal("hasSkillDocFile should accept Readme.md")
+	}
+	if got := loadSkillDocContent(dir); !strings.Contains(got, "mixed docs") {
+		t.Fatalf("loadSkillDocContent() = %q", got)
+	}
+}
+func TestSkillDocHelpersAcceptLowercaseReadme(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "readme.md"), []byte("# lower docs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !hasSkillDocFile(dir) {
+		t.Fatal("hasSkillDocFile should accept readme.md")
+	}
+	if got := loadSkillDocContent(dir); !strings.Contains(got, "lower docs") {
+		t.Fatalf("loadSkillDocContent() = %q", got)
+	}
+}
 func TestSkillRunnerExecuteStepWithContext_CallMCPToolResolvesName(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -767,5 +803,39 @@ func TestSkillRunnerTryAutoUploadBlocksWhenQualityGateFails(t *testing.T) {
 	}
 	if !strings.Contains(items[0].LastError, "successful verification run") {
 		t.Fatalf("LastError = %q, want verification quality reason", items[0].LastError)
+	}
+}
+
+func TestResolveSkillWorkingDirResolvesRelativeToSkillDir(t *testing.T) {
+	skillDir := filepath.Join(t.TempDir(), "skill")
+	got := resolveSkillWorkingDir("scripts", skillDir)
+	want := filepath.Join(skillDir, "scripts")
+	if got != want {
+		t.Fatalf("resolveSkillWorkingDir(relative) = %q, want %q", got, want)
+	}
+	got = resolveSkillWorkingDir("{baseDir}/scripts", skillDir)
+	if got != want {
+		t.Fatalf("resolveSkillWorkingDir(baseDir) = %q, want %q", got, want)
+	}
+	abs := filepath.Join(t.TempDir(), "abs")
+	if got := resolveSkillWorkingDir(abs, skillDir); got != filepath.Clean(abs) {
+		t.Fatalf("resolveSkillWorkingDir(abs) = %q, want %q", got, filepath.Clean(abs))
+	}
+}
+
+func TestFindSkillMarkdownDocPathPrefersCanonicalSkillMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Readme.md"), []byte("# readme docs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte("# skill docs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := findSkillMarkdownDocPath(dir)
+	if filepath.Base(got) != "skill.md" {
+		t.Fatalf("findSkillMarkdownDocPath() = %q, want skill.md", got)
+	}
+	if content := loadSkillDocContent(dir); !strings.Contains(content, "skill docs") {
+		t.Fatalf("loadSkillDocContent() = %q, want skill docs", content)
 	}
 }

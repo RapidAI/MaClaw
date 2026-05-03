@@ -12,7 +12,7 @@ export const alerts: DashboardItem[] = [
 ];
 
 export const recentItems: DashboardItem[] = [
-  { title: '最近活跃数字员工', description: '小迪、阿宁、老陈在最近 1 小时内有任务处理记录。', status: '活跃' },
+  { title: '最近活跃数字员工', description: '办公室 iWorker、运营 iWorker、数据 iWorker 在最近 1 小时内有任务处理记录。', status: '活跃' },
   { title: '最近新增能力包', description: '新增“周报汇总”和“异常归档”两个能力包。', status: '新增' },
-  { title: '最近规则下发', description: '安全规则已下发到 18 个客户端。', status: '成功' },
+  { title: '最近规则下发', description: '安全规则已下发到 18 个 iWorker 客户端。', status: '成功' },
 ];

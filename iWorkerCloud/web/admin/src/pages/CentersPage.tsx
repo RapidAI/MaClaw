@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   getCenterManagement,
@@ -13,6 +13,7 @@ import {
   getServiceReadiness,
   type Center,
   type CenterManagement,
+  type ManagementSummary,
   type CenterIntegrationPatch,
   type CloudControlMode,
   type CenterServiceReadiness,
@@ -22,6 +23,7 @@ import {
 
 type IntegrationDraft = CenterIntegrationPatch;
 type ManualLicenseDraft = { days: string; modules: string[] };
+type Notice = { tone: 'ok' | 'danger' | 'info'; text: string };
 
 const licenseModuleOptions = ['compute', 'skill_market', 'upgrade', 'support', 'all'];
 const postureLabels: Record<string, string> = {
@@ -48,6 +50,8 @@ const controlModeLabels: Record<CloudControlMode, string> = {
   self_managed: 'Self managed',
   hybrid: 'Hybrid',
 };
+
+const CENTER_FOCUS_KEY = 'iworkercloud_focus_center_id';
 
 const syncStatusLabels: Record<string, string> = {
   registered: 'Registered',
@@ -76,31 +80,23 @@ const serviceBadgeClass = (status?: string) => {
 const runtimeModeLabel = (mode?: CenterRuntimeStatus['runtime_provider_mode']) => {
   switch (mode) {
     case 'cloud_sync':
-      return 'Cloud-managed compute';
+      return 'cloud_sync';
     case 'local_self_managed':
-      return 'Center self-managed compute';
+      return 'local_self_managed';
     case 'local_settings_fallback':
-      return 'Local provider fallback';
+      return 'local_settings_fallback';
     default:
-      return 'Runtime not reported';
+      return 'not_reported';
   }
 };
 
-const runtimeContinuityText = (runtime?: CenterRuntimeStatus) => {
-  if (!runtime) return 'Runtime snapshot has not been loaded yet.';
-  if (runtime.runtime_provider_mode === 'local_settings_fallback') {
-    return 'Center reports Cloud compute sync trouble, but requests can continue through local provider settings.';
-  }
-  if (runtime.compute_sync_status?.status === 'failure' && runtime.compute_sync_status.non_blocking) {
-    return 'Cloud coordination has a sync issue, and Center marked the impact as non-blocking for runtime execution.';
-  }
-  if (runtime.runtime_provider_mode === 'cloud_sync') {
-    return 'Center is currently using Cloud-synchronized provider routing.';
-  }
-  if (runtime.runtime_provider_mode === 'local_self_managed') {
-    return 'Center is intentionally managing its compute provider routing locally.';
-  }
-  return runtime.message || 'Runtime status is available for platform coordination only.';
+const runtimeContinuityKey = (runtime?: CenterRuntimeStatus) => {
+  if (!runtime) return 'notLoaded';
+  if (runtime.runtime_provider_mode === 'local_settings_fallback') return 'localFallback';
+  if (runtime.compute_sync_status?.status === 'failure' && runtime.compute_sync_status.non_blocking) return 'nonBlockingSyncIssue';
+  if (runtime.runtime_provider_mode === 'cloud_sync') return 'cloudSync';
+  if (runtime.runtime_provider_mode === 'local_self_managed') return 'selfManaged';
+  return 'platformOnly';
 };
 
 const runtimeContinuityClass = (runtime?: CenterRuntimeStatus) => {
@@ -125,6 +121,11 @@ function createDraft(center: Center): IntegrationDraft {
 export function CentersPage() {
   const { t } = useTranslation();
   const [centers, setCenters] = useState<Center[]>([]);
+  const [summary, setSummary] = useState<ManagementSummary | null>(null);
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [focusedCenterId, setFocusedCenterId] = useState('');
+  const [loading, setLoading] = useState(false);
   const [management, setManagement] = useState<Record<string, CenterManagement>>({});
   const [drafts, setDrafts] = useState<Record<string, IntegrationDraft>>({});
   const [probing, setProbing] = useState<string | null>(null);
@@ -135,7 +136,22 @@ export function CentersPage() {
   const [saving, setSaving] = useState<string | null>(null);
   const [manualLicenseDrafts, setManualLicenseDrafts] = useState<Record<string, ManualLicenseDraft>>({});
   const [licensing, setLicensing] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<string>('');
+
+  const postureLabel = (value?: string) => t(`centers.posture.${value || 'unknown'}`, { defaultValue: postureLabels[value || ''] ?? value ?? '-' });
+  const issueLabel = (value: string) => t(`centers.issues.${value}`, { defaultValue: issueLabels[value] ?? value });
+  const controlModeLabel = (value?: CloudControlMode) => t(`centers.controlModes.${value || 'cloud_managed'}`, { defaultValue: controlModeLabels[value || 'cloud_managed'] });
+  const syncStatusLabel = (value?: string) => t(`centers.syncStatus.${value || 'not_configured'}`, { defaultValue: syncStatusLabels[value || ''] ?? value ?? 'not configured' });
+  const runtimeModeDisplay = (value?: CenterRuntimeStatus['runtime_provider_mode']) => t(`centers.runtimeModes.${runtimeModeLabel(value)}`);
+  const runtimeContinuityText = (runtime?: CenterRuntimeStatus) => runtime?.message || t(`centers.runtimeContinuity.${runtimeContinuityKey(runtime)}`);
+  const runtimeValue = (key: string, value?: string | boolean) => t(`centers.runtimeValues.${String(value || 'unknown')}`, { defaultValue: String(value || t('centers.runtimeValues.unknown')) });
+  const licenseModuleLabel = (module: string) => t(`licenses.moduleLabels.${module}`, { defaultValue: module });
+  const showError = (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    setError(message);
+    setNotice({ tone: 'danger', text: message });
+  };
 
   const refreshRuntimeSnapshots = async (items = centers) => {
     const candidates = items.filter(center => center.base_url && center.status !== 'disabled');
@@ -166,11 +182,13 @@ export function CentersPage() {
   };
 
   const load = () => {
+    setLoading(true);
     setError('');
     getCenterManagement()
       .then(report => {
         const nextItems = report.items ?? [];
         const nextCenters = nextItems.map(item => item.center);
+        setSummary(report.summary ?? null);
         setCenters(nextCenters);
         setManagement(Object.fromEntries(nextItems.map(item => [item.center.id, item])));
         setDrafts(Object.fromEntries(nextCenters.map(center => [center.id, createDraft(center)])));
@@ -183,12 +201,26 @@ export function CentersPage() {
         });
         void refreshRuntimeSnapshots(nextCenters);
       })
-      .catch(err => setError(err instanceof Error ? err.message : String(err)));
+      .catch(err => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setLoading(false));
   };
 
   useEffect(load, []);
 
+  useEffect(() => {
+    const focusId = sessionStorage.getItem(CENTER_FOCUS_KEY);
+    if (!focusId) return;
+    sessionStorage.removeItem(CENTER_FOCUS_KEY);
+    setFocusedCenterId(focusId);
+    setQuery(focusId);
+    setStatusFilter('all');
+    window.setTimeout(() => {
+      document.getElementById('center-' + CSS.escape(focusId))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 150);
+  }, []);
+
   const patchDraft = (id: string, patch: Partial<IntegrationDraft>) => {
+    if (notice) setNotice(null);
     setDrafts(prev => ({
       ...prev,
       [id]: { ...(prev[id] ?? createDraft(centers.find(center => center.id === id)!)), ...patch },
@@ -200,6 +232,7 @@ export function CentersPage() {
     const draft = drafts[center.id] ?? createDraft(center);
     setSaving(center.id);
     setError('');
+    setNotice(null);
     try {
       const updated = await updateCenterIntegration(center.id, {
         ...draft,
@@ -208,9 +241,10 @@ export function CentersPage() {
       });
       setCenters(prev => prev.map(item => item.id === center.id ? updated : item));
       setDrafts(prev => ({ ...prev, [center.id]: createDraft(updated) }));
+      setNotice({ tone: 'ok', text: t('centers.noticeIntegrationSaved') });
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      showError(err);
     } finally {
       setSaving(null);
     }
@@ -236,11 +270,13 @@ export function CentersPage() {
     const days = Number.parseInt(draft.days, 10);
     setLicensing(center.id);
     setError('');
+    setNotice(null);
     try {
-      await confirmManual(center.id, draft.modules.length > 0 ? draft.modules : ['compute'], Number.isFinite(days) ? days : 30);
+      await confirmManual(center.id, draft.modules.length > 0 ? draft.modules : ['compute'], Number.isFinite(days) && days > 0 ? days : 30);
+      setNotice({ tone: 'ok', text: t('centers.noticeManualAuthorized') });
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      showError(err);
     } finally {
       setLicensing(null);
     }
@@ -249,11 +285,13 @@ export function CentersPage() {
   const handleCheckServiceReadiness = async (center: Center) => {
     setCheckingReadiness(center.id);
     setError('');
+    setNotice(null);
     try {
       const readiness = await getServiceReadiness(center.id);
       setReadinessResult(prev => ({ ...prev, [center.id]: readiness }));
+      setNotice({ tone: readiness.allowed ? 'ok' : 'info', text: readiness.allowed ? t('centers.noticeServiceReady') : t('centers.noticeServiceBlocked') });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      showError(err);
     } finally {
       setCheckingReadiness(null);
     }
@@ -261,23 +299,32 @@ export function CentersPage() {
   const handleProbeCenter = async (center: Center) => {
     setProbing(center.id);
     setError('');
+    setNotice(null);
     try {
       const response = await probeCenter(center.id);
       setCenters(prev => prev.map(item => item.id === center.id ? response.center : item));
       setDrafts(prev => ({ ...prev, [center.id]: createDraft(response.center) }));
       setProbeRuntime(prev => ({ ...prev, [center.id]: response.probe }));
+      setNotice({ tone: response.probe.ok ? 'ok' : 'danger', text: response.probe.ok ? t('centers.noticeProbeOk') : t('centers.noticeProbeFailed') });
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      showError(err);
     } finally {
       setProbing(null);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete?')) return;
-    await deleteCenter(id);
-    load();
+    if (!confirm(t('centers.confirmDelete'))) return;
+    setError('');
+    setNotice(null);
+    try {
+      await deleteCenter(id);
+      setNotice({ tone: 'ok', text: t('centers.noticeDeleted') });
+      load();
+    } catch (err) {
+      showError(err);
+    }
   };
 
   const handleRecommendedAction = async (center: Center, code: string) => {
@@ -297,26 +344,26 @@ export function CentersPage() {
         await handleConfirmManual(center);
         return;
       default:
-        setError('Use the service action buttons below.');
+        setError(t('centers.useServiceActions'));
     }
   };
 
   const recommendedActionLabel = (code: string) => {
     switch (code) {
       case 'activate_center':
-        return 'Activate trial';
+        return t('centers.actions.activateTrial');
       case 'configure_base_url':
-        return 'Save integration';
+        return t('centers.actions.saveIntegration');
       case 'test_connection':
-        return 'Test now';
+        return t('centers.actions.testNow');
       case 'verify_center_service_identity':
-        return 'Verify identity';
+        return t('centers.actions.verifyIdentity');
       case 'issue_license':
-        return 'Issue license';
+        return t('centers.actions.issueLicense');
       case 'ready_for_service_management':
-        return 'Review services';
+        return t('centers.actions.reviewServices');
       default:
-        return 'Review';
+        return t('centers.actions.review');
     }
   };
 
@@ -326,17 +373,72 @@ export function CentersPage() {
     return false;
   };
 
-  if (centers.length === 0) return <div className="hint">{t('centers.empty')}</div>;
+  const filteredCenters = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return centers.filter(center => {
+      const matchesStatus = statusFilter === 'all' || center.status === statusFilter;
+      const matchesQuery = !normalized || [center.id, center.company_name, center.admin_email, center.admin_phone, center.base_url, center.last_sync_status]
+        .filter(Boolean)
+        .some(value => String(value).toLowerCase().includes(normalized));
+      return matchesStatus && matchesQuery;
+    });
+  }, [centers, query, statusFilter]);
+
+  const centerStats = summary ?? {
+    total_centers: centers.length,
+    pending_centers: centers.filter(center => center.status === 'pending').length,
+    active_licenses: 0,
+    ready_centers: Object.values(management).filter(item => item.ready).length,
+    needs_setup: Object.values(management).filter(item => !item.ready).length,
+    probe_failures: 0,
+    unlicensed_centers: 0,
+  };
 
   return (
-    <div className="cloud-center-stack">
-      <div className="hint">
-        iWorkerCloud is our iWorkerCenter management center. It manages connected iWorkerCenter service instances for authorization, connectivity, compute distribution, upgrades, and skill entitlement, but it does not participate in customer company management, tenant administration, planning, or enterprise operations.
-        {Object.keys(runtimeRefreshing).length > 0 ? ' Refreshing platform runtime snapshots...' : ''}
+    <div className="cloud-center-stack cloud-page-stack">
+      <section className="cloud-brief card">
+        <div>
+          <div className="mini">{t('centers.eyebrow')}</div>
+          <h3>{t('centers.title')}</h3>
+          <p>{t('centers.positionDesc')}</p>
+        </div>
+        <div className="cloud-brief-note">
+          <strong>{t('centers.boundaryTitle')}</strong>
+          <span>{t('centers.boundaryNote')}</span>
+        </div>
+      </section>
+
+      <div className="metrics cloud-metrics ops-summary-grid">
+        <div className="metric"><label>{t('centers.stats.total')}</label><strong>{centerStats.total_centers}</strong><span>{t('centers.stats.totalHint')}</span></div>
+        <div className="metric"><label>{t('centers.stats.pending')}</label><strong>{centerStats.pending_centers}</strong><span>{t('centers.stats.pendingHint')}</span></div>
+        <div className="metric"><label>{t('centers.stats.ready')}</label><strong>{centerStats.ready_centers}</strong><span>{centerStats.needs_setup} {t('centers.stats.needsSetup')}</span></div>
+        <div className="metric"><label>{t('centers.stats.licensed')}</label><strong>{centerStats.active_licenses}</strong><span>{centerStats.unlicensed_centers} {t('centers.stats.unlicensed')}</span></div>
       </div>
-      {error && <div className="hint danger">{error}</div>}
-      <div className="list">
-        {centers.map(center => {
+
+      <div className="head cloud-toolbar">
+        <div className="cloud-filter-row">
+          <input value={query} onChange={event => { setQuery(event.target.value); if (focusedCenterId) setFocusedCenterId(''); }} placeholder={t('centers.search')} />
+          <select value={statusFilter} onChange={event => { setStatusFilter(event.target.value); if (focusedCenterId) setFocusedCenterId(''); }}>
+            <option value="all">{t('centers.allStatus')}</option>
+            <option value="pending">{t('centers.pending')}</option>
+            <option value="active">{t('centers.active')}</option>
+            <option value="disabled">{t('centers.disabled')}</option>
+          </select>
+        </div>
+        <div className="actions">
+          {focusedCenterId ? <button className="btn-ghost" onClick={() => { setFocusedCenterId(''); setQuery(''); }}>{t('centers.clearFocus')}</button> : null}
+          <button className="btn-ghost" onClick={load}>{loading ? t('common.loading') : t('common.refresh')}</button>
+        </div>
+      </div>
+
+      <div className="hint">
+        {t('centers.controlPlaneHint')}
+        {Object.keys(runtimeRefreshing).length > 0 ? ` ${t('centers.refreshingRuntime')}` : ''}
+      </div>
+      {notice ? <div className={`notice ${notice.tone}`}>{notice.text}</div> : null}
+      {error && !notice ? <div className="hint danger">{error}</div> : null}
+      {filteredCenters.length === 0 ? <div className="hint">{centers.length === 0 ? t('centers.empty') : t('centers.noMatch')}</div> : <div className="list">
+        {filteredCenters.map(center => {
           const draft = drafts[center.id] ?? createDraft(center);
           const managementItem = management[center.id];
           const serviceReadiness = readinessResult[center.id];
@@ -345,11 +447,11 @@ export function CentersPage() {
           const manualLicenseDraft = manualLicenseDrafts[center.id] ?? createManualLicenseDraft();
           const isRuntimeRefreshing = runtimeRefreshing[center.id] === true;
           return (
-            <div key={center.id} className="item cloud-center-card">
+            <div id={'center-' + center.id} key={center.id} className={`item cloud-center-card ${focusedCenterId === center.id ? 'focused' : ''}`}>
               <div className="item-head">
                 <div>
                   <span className="item-title">{center.company_name}</span>
-                  <div className="item-meta">ID: {center.id}</div>
+                  <div className="item-meta">{t('centers.fields.id')}: {center.id}</div>
                 </div>
                 <span className={`badge ${center.status === 'active' ? 'ok' : center.status === 'pending' ? 'warn' : 'danger'}`}>
                   {t(`centers.${center.status}`)}
@@ -357,101 +459,101 @@ export function CentersPage() {
               </div>
 
               <div className="cloud-center-facts">
-                <span>{controlModeLabels[center.cloud_control_mode ?? 'cloud_managed']}</span>
-                <span className={`badge ${serviceBadgeClass(center.last_sync_status)}`}>Service: {syncStatusLabels[center.last_sync_status || ''] ?? center.last_sync_status ?? 'not configured'}</span>
-                {managementItem && <span>Commercial: {managementItem.commercial_status}</span>}
-                {managementItem && <span>Connectivity: {managementItem.connectivity}</span>}
-                <span className={`badge ${center.iworker_ready ? 'ok' : center.iworker_readiness_status ? 'warn' : 'warn'}`}>iWorker: {center.iworker_readiness_status || 'not reported'}</span>
-                <span>Agent instances: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem?.iworker_readiness?.agent_instance_count ?? 0}</span>
-                <span>Tenant mode: {center.supports_multi_tenant === true ? 'multi-tenant' : center.supports_multi_tenant === false ? 'dedicated' : 'reported by Center'}</span>
-                {typeof center.tenant_count === 'number' && <span>Tenants: {center.tenant_count}</span>}
-                <span>Last heartbeat: {formatDateTime(center.last_heartbeat)}</span>
-                {center.created_at && <span>Registered: {new Date(center.created_at).toLocaleString()}</span>}
+                <span>{controlModeLabel(center.cloud_control_mode)}</span>
+                <span className={`badge ${serviceBadgeClass(center.last_sync_status)}`}>{t('centers.fields.service')}: {syncStatusLabel(center.last_sync_status)}</span>
+                {managementItem && <span>{t('centers.fields.commercial')}: {t(`centers.commercial.${managementItem.commercial_status}`, { defaultValue: managementItem.commercial_status })}</span>}
+                {managementItem && <span>{t('centers.fields.connectivity')}: {t(`centers.connectivity.${managementItem.connectivity}`, { defaultValue: managementItem.connectivity })}</span>}
+                <span className={`badge ${center.iworker_ready ? 'ok' : center.iworker_readiness_status ? 'warn' : 'warn'}`}>iWorker: {center.iworker_readiness_status || t('centers.readiness.notReported')}</span>
+                <span>{t('centers.readiness.agentInstances')}: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem?.iworker_readiness?.agent_instance_count ?? 0}</span>
+                <span>{t('centers.fields.tenantMode')}: {center.supports_multi_tenant === true ? t('centers.tenant.modeMulti') : center.supports_multi_tenant === false ? t('centers.tenant.modeDedicated') : t('centers.tenant.notReported')}</span>
+                {typeof center.tenant_count === 'number' && <span>{t('centers.fields.tenants')}: {center.tenant_count}</span>}
+                <span>{t('centers.fields.lastHeartbeat')}: {formatDateTime(center.last_heartbeat)}</span>
+                {center.created_at && <span>{t('centers.fields.registered')}: {new Date(center.created_at).toLocaleString()}</span>}
               </div>
 
               <div className="cloud-review-panel">
                 <div>
-                  <label>Registration review</label>
-                  <strong>{center.company_name || 'Unnamed company'}</strong>
-                  <span>Review company identity before activating trial or issuing a license.</span>
+                  <label>{t('centers.sections.registrationReview')}</label>
+                  <strong>{center.company_name || t('centers.unnamedCompany')}</strong>
+                  <span>{t('centers.registrationReviewHint')}</span>
                 </div>
                 <div className="cloud-issue-list">
-                  <span>Legal: {center.legal_person || 'not provided'}</span>
-                  <span>Email: {center.admin_email || 'not provided'}</span>
-                  <span>Phone: {center.admin_phone || 'not provided'}</span>
-                  <span>Address: {center.address || 'not provided'}</span>
+                  <span>{t('centers.fields.legal')}: {center.legal_person || t('centers.notProvided')}</span>
+                  <span>{t('centers.fields.email')}: {center.admin_email || t('centers.notProvided')}</span>
+                  <span>{t('centers.fields.phone')}: {center.admin_phone || t('centers.notProvided')}</span>
+                  <span>{t('centers.fields.address')}: {center.address || t('centers.notProvided')}</span>
                 </div>
               </div>
 
               <div className="cloud-tenant-panel">
                 <div className="cloud-tenant-head">
                   <div>
-                    <label>Tenant boundary</label>
-                    <strong>{center.supports_multi_tenant === true ? 'Multi-tenant Center reported' : center.supports_multi_tenant === false ? 'Dedicated Center reported' : 'Tenant mode not reported'}</strong>
-                    <span>Cloud records the Center-level service posture only. Company tenant creation, tenant administrators, and business workspace management stay inside iWorkerCenter.</span>
+                    <label>{t('centers.sections.tenantBoundary')}</label>
+                    <strong>{center.supports_multi_tenant === true ? t('centers.tenant.multiTenant') : center.supports_multi_tenant === false ? t('centers.tenant.dedicated') : t('centers.tenant.notReported')}</strong>
+                    <span>{t('centers.tenantBoundaryHint')}</span>
                   </div>
                   <div className="cloud-tenant-actions">
-                    {typeof center.tenant_count === 'number' ? <span className="badge info">{center.tenant_count} tenant{center.tenant_count === 1 ? '' : 's'} reported</span> : <span className="badge warn">No tenant count</span>}
+                    {typeof center.tenant_count === 'number' ? <span className="badge info">{t('centers.tenant.countReported', { count: center.tenant_count })}</span> : <span className="badge warn">{t('centers.tenant.noCount')}</span>}
                   </div>
                 </div>
               </div>
 
               {managementItem && <div className={`cloud-posture-panel ${managementItem.ready ? 'ready' : 'watch'}`}>
                 <div>
-                  <label>Management readiness</label>
-                  <strong>{postureLabels[managementItem.management_posture] ?? managementItem.management_posture}</strong>
-                  <span>{managementItem.ready ? 'This Center is ready for iWorkerCenter management services.' : 'This Center needs management-center setup before cloud services are enabled smoothly.'}</span>
+                  <label>{t('centers.sections.managementReadiness')}</label>
+                  <strong>{postureLabel(managementItem.management_posture)}</strong>
+                  <span>{managementItem.ready ? t('centers.readiness.managementReadyHint') : t('centers.readiness.managementSetupHint')}</span>
                 </div>
                 <div className="cloud-issue-list">
                   {managementItem.issues.length === 0
-                    ? <span className="ok">No blocking issues</span>
-                    : managementItem.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
+                    ? <span className="ok">{t('centers.readiness.noBlockingIssues')}</span>
+                    : managementItem.issues.map(issue => <span key={issue} className="warn">{issueLabel(issue)}</span>)}
                 </div>
               </div>}
 
               {managementItem && <div className={`cloud-posture-panel ${managementItem.iworker_operational_ready ? 'ready' : 'watch'}`}>
                 <div>
-                  <label>iWorker operating readiness</label>
-                  <strong>{managementItem.iworker_operational_ready ? 'Ready for pushed work' : center.iworker_readiness_status ? 'Needs iWorker setup' : 'Waiting for heartbeat'}</strong>
-                  <span>{managementItem.iworker_operational_ready ? 'This Center reports that iWorker can receive Center-pushed work and collaborate with human employees.' : 'Cloud only tracks platform readiness signals reported by Center, such as agent runtime, GoalWatch, and aggregate workload status. Customer business setup stays inside iWorkerCenter.'}</span>
+                  <label>{t('centers.sections.iworkerReadiness')}</label>
+                  <strong>{managementItem.iworker_operational_ready ? t('centers.readiness.readyForPushedWork') : center.iworker_readiness_status ? t('centers.readiness.needsIWorkerSetup') : t('centers.readiness.waitingHeartbeat')}</strong>
+                  <span>{managementItem.iworker_operational_ready ? t('centers.readiness.iworkerReadyHint') : t('centers.readiness.iworkerSetupHint')}</span>
                 </div>
                 <div className="cloud-issue-list">
-                  <span className={(managementItem.iworker_readiness?.agent_runtime_ready ?? false) ? 'ok' : 'warn'}>agent runtime: {(managementItem.iworker_readiness?.agent_runtime_ready ?? false) ? 'ready' : 'not ready'}</span>
-                  <span className={(managementItem.iworker_readiness?.goalwatch_ready ?? false) ? 'ok' : 'warn'}>GoalWatch: {(managementItem.iworker_readiness?.goalwatch_ready ?? false) ? 'ready' : 'not ready'}</span>
-                  <span>agent instances: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem.iworker_readiness?.agent_instance_count ?? 0}</span>
+                  <span className={(managementItem.iworker_readiness?.agent_runtime_ready ?? false) ? 'ok' : 'warn'}>{t('centers.readiness.agentRuntime')}: {(managementItem.iworker_readiness?.agent_runtime_ready ?? false) ? t('centers.readiness.ready') : t('centers.readiness.notReady')}</span>
+                  <span className={(managementItem.iworker_readiness?.goalwatch_ready ?? false) ? 'ok' : 'warn'}>GoalWatch: {(managementItem.iworker_readiness?.goalwatch_ready ?? false) ? t('centers.readiness.ready') : t('centers.readiness.notReady')}</span>
+                  <span>{t('centers.readiness.agentInstances')}: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem.iworker_readiness?.agent_instance_count ?? 0}</span>
                   {workload ? <>
-                    <span className={workload.active_count > 0 ? 'ok' : 'warn'}>active: {workload.active_count}</span>
-                    <span>completed: {workload.completed_count}</span>
-                    <span className={workload.review_count > 0 ? 'warn' : 'ok'}>review: {workload.review_count}</span>
-                    <span className={workload.blocked_count > 0 ? 'danger' : 'ok'}>blocked: {workload.blocked_count}</span>
-                    {workload.updated_at ? <span>workload sync: {formatDateTime(workload.updated_at)}</span> : null}
+                    <span className={workload.active_count > 0 ? 'ok' : 'warn'}>{t('centers.readiness.active')}: {workload.active_count}</span>
+                    <span>{t('centers.readiness.completed')}: {workload.completed_count}</span>
+                    <span className={workload.review_count > 0 ? 'warn' : 'ok'}>{t('centers.readiness.review')}: {workload.review_count}</span>
+                    <span className={workload.blocked_count > 0 ? 'danger' : 'ok'}>{t('centers.readiness.blocked')}: {workload.blocked_count}</span>
+                    {workload.updated_at ? <span>{t('centers.readiness.workloadSync')}: {formatDateTime(workload.updated_at)}</span> : null}
                   </> : null}
-                  <span className={center.iworker_ready ? 'ok' : 'warn'}>status: {center.iworker_readiness_status || 'not reported'}</span>
+                  <span className={center.iworker_ready ? 'ok' : 'warn'}>{t('compute.status')}: {center.iworker_readiness_status || t('centers.readiness.notReported')}</span>
                 </div>
               </div>}
 
               {runtime && <div className={`cloud-posture-panel ${runtimeContinuityClass(runtime)}`}>
                 <div>
-                  <label>Platform runtime snapshot</label>
-                  <strong>{runtimeModeLabel(runtime.runtime_provider_mode)}</strong>
+                  <label>{t('centers.sections.runtimeSnapshot')}</label>
+                  <strong>{runtimeModeDisplay(runtime.runtime_provider_mode)}</strong>
                   <span>{runtimeContinuityText(runtime)}</span>
                 </div>
                 <div className="cloud-issue-list">
-                  <span className={runtime.compute_source === 'cloud' ? 'ok' : 'warn'}>compute source: {runtime.compute_source || 'unknown'}</span>
-                  <span className={runtime.compute_sync_status?.status === 'success' ? 'ok' : runtime.compute_sync_status?.non_blocking ? 'warn' : 'danger'}>sync: {runtime.compute_sync_status?.status || 'unknown'}</span>
-                  {runtime.compute_sync_status?.non_blocking ? <span className="ok">non-blocking</span> : null}
-                  {runtime.compute_sync_status?.runtime_impact ? <span>impact: {runtime.compute_sync_status.runtime_impact}</span> : null}
-                  <span>runtime providers: {runtime.provider_count ?? 0}</span>
-                  <span>cloud providers: {runtime.cloud_provider_count ?? runtime.compute_sync_status?.provider_count ?? 0}</span>
-                  <span>{runtime.compute_permission ? 'self-management allowed' : 'cloud-managed'}</span>
-                  {runtime.compute_sync_status?.last_sync_at ? <span>last sync: {formatDateTime(runtime.compute_sync_status.last_sync_at)}</span> : null}
+                  <span className={runtime.compute_source === 'cloud' ? 'ok' : 'warn'}>{t('centers.runtime.computeSource')}: {runtimeValue('computeSource', runtime.compute_source)}</span>
+                  <span className={runtime.compute_sync_status?.status === 'success' ? 'ok' : runtime.compute_sync_status?.non_blocking ? 'warn' : 'danger'}>{t('centers.runtime.sync')}: {runtimeValue('sync', runtime.compute_sync_status?.status)}</span>
+                  {runtime.compute_sync_status?.non_blocking ? <span className="ok">{t('centers.runtime.nonBlocking')}</span> : null}
+                  {runtime.compute_sync_status?.runtime_impact ? <span>{t('centers.runtime.impact')}: {runtime.compute_sync_status.runtime_impact}</span> : null}
+                  <span>{t('centers.runtime.runtimeProviders')}: {runtime.provider_count ?? 0}</span>
+                  <span>{t('centers.runtime.cloudProviders')}: {runtime.cloud_provider_count ?? runtime.compute_sync_status?.provider_count ?? 0}</span>
+                  <span>{runtime.compute_permission ? t('centers.runtime.selfManagementAllowed') : t('centers.runtime.cloudManaged')}</span>
+                  {runtime.compute_sync_status?.last_sync_at ? <span>{t('centers.runtime.lastSync')}: {formatDateTime(runtime.compute_sync_status.last_sync_at)}</span> : null}
                   {runtime.compute_sync_status?.error ? <span className="warn">{runtime.compute_sync_status.error}</span> : null}
                 </div>
               </div>}
 
               {managementItem && <div className="cloud-action-panel">
                 <div className="field-span-2">
-                  <label>Recommended service-control actions</label>
+                  <label>{t('centers.sections.recommendedActions')}</label>
                 </div>
                 {(managementItem.recommended_actions ?? []).map(action => (
                   <div key={action.code} className={`cloud-action-card ${action.priority}`}>
@@ -471,7 +573,7 @@ export function CentersPage() {
 
               <div className="cloud-integration-panel">
                 <div className="field-span-2">
-                  <label>iWorkerCenter Base URL</label>
+                  <label>{t('centers.fields.baseUrl')}</label>
                   <input
                     value={draft.base_url}
                     placeholder="https://center.example.com"
@@ -479,18 +581,18 @@ export function CentersPage() {
                   />
                 </div>
                 <div>
-                  <label>Cloud control mode</label>
+                  <label>{t('centers.fields.controlMode')}</label>
                   <select
                     value={draft.cloud_control_mode}
                     onChange={event => patchDraft(center.id, { cloud_control_mode: event.target.value as CloudControlMode })}
                   >
-                    {Object.entries(controlModeLabels).map(([value, label]) => (
-                      <option key={value} value={value}>{label}</option>
+                    {Object.keys(controlModeLabels).map(value => (
+                      <option key={value} value={value}>{controlModeLabel(value as CloudControlMode)}</option>
                     ))}
                   </select>
                 </div>
                 <div>
-                  <label>Last sync status</label>
+                  <label>{t('centers.fields.lastSyncStatus')}</label>
                   <input
                     value={draft.last_sync_status}
                     placeholder="configured / probe_ok / heartbeat_ok"
@@ -501,29 +603,29 @@ export function CentersPage() {
 
               {serviceReadiness && <div className={`cloud-posture-panel ${serviceReadiness.allowed ? 'ready' : 'watch'}`}>
                 <div>
-                  <label>Service coordination gate</label>
-                  <strong>{serviceReadiness.allowed ? 'Allowed' : 'Blocked'}</strong>
-                  <span>{serviceReadiness.allowed ? 'Cloud may coordinate platform services for this iWorkerCenter.' : 'Cloud will not enable service coordination until the blocking issues are resolved.'}</span>
+                  <label>{t('centers.sections.serviceGate')}</label>
+                  <strong>{serviceReadiness.allowed ? t('centers.readiness.allowed') : t('centers.readiness.blockedGate')}</strong>
+                  <span>{serviceReadiness.allowed ? t('centers.readiness.serviceAllowedHint') : t('centers.readiness.serviceBlockedHint')}</span>
                 </div>
                 <div className="cloud-issue-list">
                   {serviceReadiness.issues.length === 0
-                    ? <span className="ok">No service blockers</span>
-                    : serviceReadiness.issues.map(issue => <span key={issue} className="warn">{issueLabels[issue] ?? issue}</span>)}
+                    ? <span className="ok">{t('centers.readiness.noServiceBlockers')}</span>
+                    : serviceReadiness.issues.map(issue => <span key={issue} className="warn">{issueLabel(issue)}</span>)}
                 </div>
               </div>}
 
               <div className="cloud-license-panel">
                 <div>
-                  <label>Manual authorization</label>
-                  <strong>Issue modules without entering enterprise operations</strong>
-                  <span>Use this for small deployments or manual commercial approval. Authorization grants Cloud service modules only.</span>
+                  <label>{t('centers.sections.manualAuthorization')}</label>
+                  <strong>{t('centers.manualAuthorizationTitle')}</strong>
+                  <span>{t('centers.manualAuthorizationHint')}</span>
                 </div>
                 <div className="cloud-license-controls">
                   <label>
-                    <span>Days</span>
+                    <span>{t('licenses.days')}</span>
                     <input
                       type="number"
-                      min="0"
+                      min="1"
                       value={manualLicenseDraft.days}
                       onChange={event => patchManualLicenseDraft(center.id, { days: event.target.value })}
                     />
@@ -536,50 +638,50 @@ export function CentersPage() {
                           checked={manualLicenseDraft.modules.includes(module)}
                           onChange={() => toggleManualLicenseModule(center.id, module)}
                         />
-                        {module}
+                        {licenseModuleLabel(module)}
                       </label>
                     ))}
                   </div>
                   <button className="btn-secondary" disabled={licensing === center.id} onClick={() => handleConfirmManual(center)}>
-                    {licensing === center.id ? 'Issuing...' : 'Issue manual authorization'}
+                    {licensing === center.id ? t('centers.actions.issuing') : t('centers.actions.issueManual')}
                   </button>
                 </div>
               </div>
 
               <div className="actions">
                 <button className="btn-primary" disabled={saving === center.id} onClick={() => handleSaveIntegration(center)}>
-                  {saving === center.id ? 'Saving...' : 'Save integration'}
+                  {saving === center.id ? t('centers.actions.saving') : t('centers.actions.saveIntegration')}
                 </button>
                 <button
                   className="btn-ghost"
                   disabled={probing === center.id || !center.base_url}
                   onClick={() => handleProbeCenter(center)}
                 >
-                  {probing === center.id ? 'Testing...' : 'Test connection'}
+                  {probing === center.id ? t('centers.actions.testing') : t('centers.actions.testConnection')}
                 </button>
                 <button
                   className="btn-ghost"
                   disabled={isRuntimeRefreshing || !center.base_url}
                   onClick={() => refreshRuntimeSnapshots([center])}
                 >
-                  {isRuntimeRefreshing ? 'Refreshing runtime...' : 'Refresh runtime'}
+                  {isRuntimeRefreshing ? t('centers.actions.refreshingRuntime') : t('centers.actions.refreshRuntime')}
                 </button>
                 <button
                   className="btn-ghost"
                   disabled={checkingReadiness === center.id}
                   onClick={() => handleCheckServiceReadiness(center)}
                 >
-                  {checkingReadiness === center.id ? 'Checking...' : 'Check service gate'}
+                  {checkingReadiness === center.id ? t('centers.actions.checking') : t('centers.actions.checkServiceGate')}
                 </button>
-                {center.status === 'pending' && <button className="btn-secondary" onClick={() => { confirmTrial(center.id).then(load); }}>{t('centers.confirmTrial')}</button>}
-                {center.status === 'active' && <button className="btn-danger" onClick={() => { disableCenter(center.id).then(load); }}>{t('centers.disable')}</button>}
-                {center.status === 'disabled' && <button className="btn-secondary" onClick={() => { enableCenter(center.id).then(load); }}>{t('centers.enable')}</button>}
+                {center.status === 'pending' && <button className="btn-secondary" onClick={() => { setNotice(null); confirmTrial(center.id).then(() => { setNotice({ tone: 'ok', text: t('centers.noticeTrialActivated') }); load(); }).catch(showError); }}>{t('centers.confirmTrial')}</button>}
+                {center.status === 'active' && <button className="btn-danger" onClick={() => { setNotice(null); disableCenter(center.id).then(() => { setNotice({ tone: 'ok', text: t('centers.noticeDisabled') }); load(); }).catch(showError); }}>{t('centers.disable')}</button>}
+                {center.status === 'disabled' && <button className="btn-secondary" onClick={() => { setNotice(null); enableCenter(center.id).then(() => { setNotice({ tone: 'ok', text: t('centers.noticeEnabled') }); load(); }).catch(showError); }}>{t('centers.enable')}</button>}
                 <button className="btn-danger" onClick={() => handleDelete(center.id)}>{t('centers.delete')}</button>
               </div>
             </div>
           );
         })}
-      </div>
+      </div>}
     </div>
   );
 }

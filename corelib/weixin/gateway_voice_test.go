@@ -2,6 +2,7 @@ package weixin
 
 import (
 	"encoding/binary"
+	"strconv"
 	"testing"
 )
 
@@ -30,6 +31,9 @@ func TestVoiceUploadPayloadEncodesWAVToSilk(t *testing.T) {
 	}
 	if meta == nil || meta.sampleRate != weixinVoiceSampleRate || meta.playtimeMS != 3000 {
 		t.Fatalf("meta = %#v, want sample_rate=%d playtime=3000", meta, weixinVoiceSampleRate)
+	}
+	if meta.payloadSize != len(payload) || meta.payloadMD5 == "" {
+		t.Fatalf("meta payload fields = size %d md5 %q, want size %d and md5", meta.payloadSize, meta.payloadMD5, len(payload))
 	}
 }
 
@@ -90,6 +94,22 @@ func TestBuildVoiceItemOnlyAddsWAVMetadataWhenKnown(t *testing.T) {
 	unknownItem := buildVoiceItem(media, nil)
 	if unknownItem.EncodeType != 6 || unknownItem.SampleRate != 0 || unknownItem.BitsPerSample != 0 || unknownItem.Playtime != 0 {
 		t.Fatalf("buildVoiceItem(nil) = encode=%d sr=%d bits=%d playtime=%d", unknownItem.EncodeType, unknownItem.SampleRate, unknownItem.BitsPerSample, unknownItem.Playtime)
+	}
+}
+
+func TestBuildVoiceItemIncludesPayloadIntegrityMetadata(t *testing.T) {
+	wav := makeTestWAV(16000, 2, 16000*2)
+	payload, meta, err := voiceUploadPayload("voice.wav", wav)
+	if err != nil {
+		t.Fatalf("voiceUploadPayload(wav) error = %v", err)
+	}
+	media := &cdnMedia{EncryptQueryParam: "q", AESKey: "k", EncryptType: 1}
+	item := buildVoiceItem(media, meta)
+	if item.Len != strconv.Itoa(len(payload)) {
+		t.Fatalf("voice item len = %q, want %d", item.Len, len(payload))
+	}
+	if item.VoiceMD5 == "" {
+		t.Fatal("voice item md5 is empty")
 	}
 }
 

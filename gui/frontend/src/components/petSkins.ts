@@ -33,7 +33,7 @@ export const petSkinOptions: PetSkinOption[] = [
         label: 'Mini Claw',
         alt: 'MaClaw Mini Claw',
         tone: 'Compact',
-        desc: 'Minimal entry close to the current floating button',
+        desc: 'Minimal desktop pet companion',
         previewLine: 'Small, fast, and easy to keep near the edge.',
         image: miniClawSrc,
     },

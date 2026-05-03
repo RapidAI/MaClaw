@@ -2904,6 +2904,8 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	registerNonCodeTools(h.registry, app)
 	// Register browser automation tools (CDP-based).
 	registerBrowserTools(h.registry, app)
+	// Register current-Hub MaClaw group discussion tools.
+	registerGroupDiscussionTools(h.registry, app, h)
 	h.toolBuilder = NewDynamicToolBuilder(h.registry)
 
 	// Initialize automatic topic switch detector.

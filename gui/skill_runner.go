@@ -1825,11 +1825,17 @@ func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) 
 func skillDirHash(dir string) string {
 	h := sha256.New()
 	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
 			return nil
 		}
 		base := filepath.Base(path)
-		if strings.HasSuffix(base, ".bak") || base == "upload_status.json" || base == "quality_status.json" || base == "skill_package_manifest.json" {
+		if info.IsDir() {
+			if isSkillRuntimePackageDir(base) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isSkillRuntimePackageFile(base) {
 			return nil
 		}
 		rel, _ := filepath.Rel(dir, path)
@@ -2075,6 +2081,19 @@ func skillParamSeconds(params map[string]interface{}, key string) (int, bool) {
 	}
 	return 0, false
 }
+func resolveSkillWorkingDir(workDir, skillDir string) string {
+	workDir = strings.TrimSpace(workDir)
+	skillDir = strings.TrimSpace(skillDir)
+	if workDir == "" {
+		return skillDir
+	}
+	workDir = strings.TrimPrefix(workDir, "{baseDir}/")
+	workDir = strings.TrimPrefix(workDir, "{baseDir}\\")
+	if !filepath.IsAbs(workDir) && skillDir != "" {
+		workDir = filepath.Join(skillDir, filepath.FromSlash(filepath.ToSlash(workDir)))
+	}
+	return filepath.Clean(workDir)
+}
 func runBashStepWithContext(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App) (string, error) {
 	return runBashStepWithContextFull(ctx, command, params, skillDir, app)
 }
@@ -2118,10 +2137,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	}
 
 	workDir, _ := params["working_dir"].(string)
-	// 如果没有指定 working_dir，使用 skill 目录
-	if workDir == "" && skillDir != "" {
-		workDir = skillDir
-	}
+	workDir = resolveSkillWorkingDir(workDir, skillDir)
 	// BUG-001: Also normalize the working directory path
 	if runtime.GOOS == "windows" && workDir != "" {
 		workDir = normalizeWindowsShortPathGUI(workDir)
@@ -2753,18 +2769,17 @@ var cceasyMigrationPaths = sync.OnceValue(func() cceasyPaths {
 // directory. Returns the content string if found, empty string otherwise.
 // Used as a fallback for documentation-only skills that have no executable steps.
 func loadSkillDocContent(skillDir string) string {
-	if skillDir == "" {
+	mdPath := findSkillMarkdownDocPath(skillDir)
+	if mdPath == "" {
 		return ""
 	}
-	for _, name := range []string{"SKILL.md", "skill.md", "README.md"} {
-		p := filepath.Join(skillDir, name)
-		data, err := os.ReadFile(p)
-		if err == nil {
-			content := strings.TrimSpace(string(data))
-			if content != "" {
-				return content
-			}
-		}
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		return ""
+	}
+	content := strings.TrimSpace(string(data))
+	if content != "" {
+		return content
 	}
 	return ""
 }
@@ -2773,15 +2788,7 @@ func loadSkillDocContent(skillDir string) string {
 // skill directory without reading its content. Used by List() to populate
 // HasDocumentation efficiently — avoids file IO on every frontend refresh.
 func hasSkillDocFile(skillDir string) bool {
-	if skillDir == "" {
-		return false
-	}
-	for _, name := range []string{"SKILL.md", "skill.md", "README.md"} {
-		if _, err := os.Stat(filepath.Join(skillDir, name)); err == nil {
-			return true
-		}
-	}
-	return false
+	return findSkillMarkdownDocPath(skillDir) != ""
 }
 
 // ── 文件引用存在性检查 ──────────────────────────────────────────────────

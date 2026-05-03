@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -27,6 +28,25 @@ func writeLifecycleTestSkill(t *testing.T, dir, name string) {
 	}
 }
 
+func writeRuntimeDirFixtures(t *testing.T, dir string) {
+	t.Helper()
+	fixtures := map[string]string{
+		filepath.Join(".git", "config"):              "[core]\n",
+		filepath.Join("__pycache__", "tool.pyc"):     "cache",
+		filepath.Join(".pytest_cache", "README.md"):  "cache",
+		filepath.Join("node_modules", "pkg", "x.js"): "module",
+	}
+	for rel, content := range fixtures {
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", rel, err)
+		}
+	}
+}
+
 func TestSkillDirHashIgnoresRuntimeStatusFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeLifecycleTestSkill(t, dir, "hash-skill")
@@ -37,12 +57,14 @@ func TestSkillDirHashIgnoresRuntimeStatusFiles(t *testing.T) {
 		"quality_status.json":         `{"score":100}`,
 		"skill_package_manifest.json": `{"files":[]}`,
 		"skill.yaml.bak":              "old backup",
+		".patches.json":               `[{"find":"old"}]`,
 	}
 	for name, content := range ignored {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", name, err)
 		}
 	}
+	writeRuntimeDirFixtures(t, dir)
 	if got := skillDirHash(dir); got != baseHash {
 		t.Fatalf("runtime/status files changed hash: got %s want %s", got, baseHash)
 	}
@@ -99,11 +121,12 @@ func TestEvaluateSkillPackageCompletenessAcceptsReadmeDocumentation(t *testing.T
 func TestWriteSkillPackageManifestExcludesRuntimeFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeLifecycleTestSkill(t, dir, "manifest-skill")
-	for _, name := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", "skill.yaml.bak"} {
+	for _, name := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", "skill.yaml.bak", ".patches.json"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("runtime"), 0o644); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", name, err)
 		}
 	}
+	writeRuntimeDirFixtures(t, dir)
 
 	entry := &corelib.NLSkillEntry{Name: "manifest-skill", SkillDir: dir, SuccessCount: 1}
 	quality := skillQualityReport{Score: 100, MarketReady: true}
@@ -138,9 +161,72 @@ func TestWriteSkillPackageManifestExcludesRuntimeFiles(t *testing.T) {
 	if !seen["skill.yaml"] {
 		t.Fatalf("manifest files = %+v, want skill.yaml", manifest.Files)
 	}
-	for _, ignored := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", "skill.yaml.bak"} {
+	for _, ignored := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", "skill.yaml.bak", ".patches.json", ".git/config", "__pycache__/tool.pyc", ".pytest_cache/README.md", "node_modules/pkg/x.js"} {
 		if seen[ignored] {
 			t.Fatalf("manifest included runtime file %s: %+v", ignored, manifest.Files)
+		}
+	}
+}
+
+func TestCopyDirContentsExcludesRuntimeArtifacts(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	writeLifecycleTestSkill(t, src, "copy-runtime-skill")
+	writeRuntimeDirFixtures(t, src)
+	for _, name := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", "skill.yaml.bak", ".patches.json"} {
+		if err := os.WriteFile(filepath.Join(src, name), []byte("runtime"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("real docs"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) error = %v", err)
+	}
+	if err := copyDirContents(src, dst); err != nil {
+		t.Fatalf("copyDirContents() error = %v", err)
+	}
+	for _, want := range []string{"skill.yaml", "README.md"} {
+		if _, err := os.Stat(filepath.Join(dst, want)); err != nil {
+			t.Fatalf("copied package missing %s: %v", want, err)
+		}
+	}
+	for _, ignored := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", "skill.yaml.bak", ".patches.json", filepath.Join(".git", "config"), filepath.Join("__pycache__", "tool.pyc"), filepath.Join(".pytest_cache", "README.md"), filepath.Join("node_modules", "pkg", "x.js")} {
+		if _, err := os.Stat(filepath.Join(dst, ignored)); !os.IsNotExist(err) {
+			t.Fatalf("copy included runtime artifact %s: %v", ignored, err)
+		}
+	}
+}
+
+func TestZipDirectoryExcludesRuntimeFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeLifecycleTestSkill(t, dir, "zip-runtime-skill")
+	for _, name := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", "skill.yaml.bak", ".patches.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("runtime"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	writeRuntimeDirFixtures(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("real docs"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) error = %v", err)
+	}
+	zipPath := filepath.Join(t.TempDir(), "skill.zip")
+	if err := zipDirectory(dir, zipPath); err != nil {
+		t.Fatalf("zipDirectory() error = %v", err)
+	}
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("OpenReader(zip) error = %v", err)
+	}
+	defer zr.Close()
+	seen := map[string]bool{}
+	for _, f := range zr.File {
+		seen[f.Name] = true
+	}
+	if !seen["skill.yaml"] || !seen["README.md"] {
+		t.Fatalf("zip missing real skill files: %+v", seen)
+	}
+	for _, ignored := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", "skill.yaml.bak", ".patches.json", ".git/config", "__pycache__/tool.pyc", ".pytest_cache/README.md", "node_modules/pkg/x.js"} {
+		if seen[ignored] {
+			t.Fatalf("zip included runtime file %s: %+v", ignored, seen)
 		}
 	}
 }
@@ -444,6 +530,240 @@ func TestSkillQualityAcceptsPackagedStructuredCommandScript(t *testing.T) {
 	quality := evaluateSkillQualityForDir(entry, report, false, dir)
 	if !quality.MarketReady {
 		t.Fatalf("quality should accept packaged structured script reference: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 0 {
+		t.Fatalf("ReferencedMissing = %+v", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityHandlesStructuredCommandScriptPathWithSpaces(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	data := []byte("name: structured-spaced-script\ndescription: A portable skill using a structured command with a spaced script path.\ntriggers:\n  - structured-spaced-script\nplatforms:\n  - universal\nsteps:\n  - action: run\n    params:\n      command:\n        program: python\n        args:\n          - scripts/my script.py\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "my script.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Structured spaced script\n\nRuns a bundled script path with spaces.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality should accept structured spaced script reference: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 0 {
+		t.Fatalf("ReferencedMissing = %+v", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityDetectsMissingStructuredCommandScriptPathWithSpaces(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("name: structured-missing-spaced-script\ndescription: A portable skill with a missing structured spaced script path.\ntriggers:\n  - structured-missing-spaced-script\nplatforms:\n  - universal\nsteps:\n  - action: run\n    params:\n      command:\n        program: python\n        args:\n          - scripts/my script.py\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Missing structured spaced script\n\nReferences a missing script path with spaces.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block missing structured spaced script reference: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "scripts/my script.py" {
+		t.Fatalf("ReferencedMissing = %+v, want scripts/my script.py", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityResolvesReferencesAgainstWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	data := []byte("name: cwd-script\ndescription: A portable skill that runs from a bundled working directory.\ntriggers:\n  - cwd-script\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      working_dir: scripts\n      command: python run.py\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# CWD script\n\nRuns a script from its working directory.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality should resolve run.py against working_dir: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 0 {
+		t.Fatalf("ReferencedMissing = %+v", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityBlocksMissingWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("name: missing-cwd\ndescription: A portable skill that declares a bundled working directory.\ntriggers:\n  - missing-cwd\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      working_dir: scripts\n      command: echo ok\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Missing cwd\n\nUses a bundled working directory.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block missing working_dir: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "scripts" {
+		t.Fatalf("ReferencedMissing = %+v, want scripts", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityBlocksAbsoluteCommandScriptPath(t *testing.T) {
+	dir := t.TempDir()
+	absScript := filepath.Join(t.TempDir(), "external", "run.ps1")
+	data := []byte("name: absolute-script\ndescription: A skill with a hard-coded absolute script path.\ntriggers:\n  - absolute-script\nplatforms:\n  - windows\nsteps:\n  - action: powershell\n    params:\n      command: powershell -File " + absScript + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Absolute script\n\nUses a hard-coded script path.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block absolute command script path: %+v", quality)
+	}
+	want := filepath.ToSlash(absScript)
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != want {
+		t.Fatalf("ReferencedMissing = %+v, want %s", quality.Package.ReferencedMissing, want)
+	}
+}
+
+func TestSkillQualityBlocksEscapingWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("name: escaping-cwd\ndescription: A skill with a non-portable working directory.\ntriggers:\n  - escaping-cwd\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      working_dir: ../shared-scripts\n      command: echo ok\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Escaping cwd\n\nUses a non-portable working directory.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block escaping working_dir: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "../shared-scripts" {
+		t.Fatalf("ReferencedMissing = %+v, want ../shared-scripts", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityHandlesWindowsScriptPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	data := []byte("name: windows-script\ndescription: A portable skill that references a bundled Windows script path.\ntriggers:\n  - windows-script\nplatforms:\n  - windows\nsteps:\n  - action: powershell\n    params:\n      command: powershell -File scripts\\run.ps1\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "run.ps1"), []byte("Write-Output ok\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Windows script\n\nRuns a bundled PowerShell script.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality should accept bundled Windows script reference: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 0 {
+		t.Fatalf("ReferencedMissing = %+v", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityHandlesQuotedScriptPathWithSpaces(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	data := []byte("name: quoted-script\ndescription: A portable skill that references a quoted script path.\ntriggers:\n  - quoted-script\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: python \"scripts/my script.py\"\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "my script.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Quoted script\n\nRuns a quoted bundled script.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality should accept quoted packaged script reference: %+v", quality)
 	}
 	if len(quality.Package.ReferencedMissing) != 0 {
 		t.Fatalf("ReferencedMissing = %+v", quality.Package.ReferencedMissing)

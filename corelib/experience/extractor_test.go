@@ -951,6 +951,84 @@ func TestAuditTrailHealthAggregatesRecentEntries(t *testing.T) {
 	}
 }
 
+func TestAuditHealthDiagnosesActionableStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		entries    []AuditEntry
+		wantStatus string
+		wantIssue  string
+		wantCode   string
+		wantAction string
+	}{
+		{name: "empty", wantStatus: AuditHealthStatusEmpty, wantCode: AuditIssueNoRuns, wantAction: "eligible successful session"},
+		{
+			name:       "failing",
+			entries:    []AuditEntry{{Status: AuditStatusFailed}},
+			wantStatus: AuditHealthStatusFailing,
+			wantIssue:  "failed",
+			wantCode:   AuditIssueExtractionFailed,
+			wantAction: "LLM connectivity",
+		},
+		{
+			name:       "no signal from skips",
+			entries:    []AuditEntry{{Status: AuditStatusCompleted, Summary: ResultSummary{TotalCandidates: 2, Skipped: 2, SkipReasons: map[string]int{"quality score below threshold": 2}}}},
+			wantStatus: AuditHealthStatusNoSignal,
+			wantIssue:  "quality score below threshold",
+			wantCode:   AuditIssueQualityBelowThreshold,
+			wantAction: "broader repeatable workflows",
+		},
+		{
+			name:       "needs attention",
+			entries:    []AuditEntry{{Status: AuditStatusCompleted, Summary: ResultSummary{TotalCandidates: 4, Registered: 1, Skipped: 3, SkipReasons: map[string]int{"insufficient session evidence": 3}}}},
+			wantStatus: AuditHealthStatusNeedsAttention,
+			wantIssue:  "insufficient session evidence",
+			wantCode:   AuditIssueInsufficientEvidence,
+			wantAction: "command output",
+		},
+		{
+			name:       "healthy",
+			entries:    []AuditEntry{{Status: AuditStatusCompleted, Summary: ResultSummary{TotalCandidates: 2, Registered: 1, Updated: 1}}},
+			wantStatus: AuditHealthStatusHealthy,
+			wantCode:   AuditIssueNone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			health := SummarizeAuditEntries(tc.entries, AuditOptions{})
+			if health.Status != tc.wantStatus {
+				t.Fatalf("expected status %q, got %#v", tc.wantStatus, health)
+			}
+			if tc.wantCode != "" && health.IssueCode != tc.wantCode {
+				t.Fatalf("expected issue code %q, got %#v", tc.wantCode, health)
+			}
+			if tc.wantIssue != "" && !strings.Contains(health.PrimaryIssue, tc.wantIssue) {
+				t.Fatalf("expected issue to contain %q, got %#v", tc.wantIssue, health)
+			}
+			if tc.wantAction != "" && !strings.Contains(health.SuggestedAction, tc.wantAction) {
+				t.Fatalf("expected action to contain %q, got %#v", tc.wantAction, health)
+			}
+		})
+	}
+}
+
+func TestAuditHealthIssueCodeUsesRawReasonBeforeTruncation(t *testing.T) {
+	health := SummarizeAuditEntries([]AuditEntry{{
+		Status: AuditStatusCompleted,
+		Summary: ResultSummary{
+			TotalCandidates: 1,
+			Skipped:         1,
+			SkipReasons:     map[string]int{"quality score below threshold with secret sk-12345678901234567890": 1},
+		},
+	}}, AuditOptions{MaxStringLength: 18})
+	if health.IssueCode != AuditIssueQualityBelowThreshold {
+		t.Fatalf("expected raw reason to drive issue code, got %#v", health)
+	}
+	if strings.Contains(health.PrimaryIssue, "sk-12345678901234567890") || len([]rune(health.PrimaryIssue)) > len("no skills learned: ")+18 {
+		t.Fatalf("primary issue should be redacted and bounded, got %q", health.PrimaryIssue)
+	}
+}
+
 func TestSummarizeAuditEntriesRedactsHealthKeys(t *testing.T) {
 	health := SummarizeAuditEntries([]AuditEntry{{
 		Status:  AuditStatusCompleted,
@@ -998,10 +1076,19 @@ func TestAuditTrailAppendSanitizesDirectEntries(t *testing.T) {
 	}
 }
 
-func TestNilAuditTrailHealthIsEmpty(t *testing.T) {
-	var trail *AuditTrail
-	if health := trail.Health(); health.Runs != 0 || health.Completed != 0 || health.Failed != 0 {
-		t.Fatalf("nil trail health should be empty, got %#v", health)
+func TestEmptyAuditHealthIsConsistent(t *testing.T) {
+	var nilTrail *AuditTrail
+	zeroTrail := NewAuditTrail(5)
+	healths := []AuditHealth{
+		EmptyAuditHealth(),
+		nilTrail.Health(),
+		zeroTrail.Health(),
+		SummarizeAuditEntries(nil, AuditOptions{}),
+	}
+	for _, health := range healths {
+		if health.Runs != 0 || health.Completed != 0 || health.Failed != 0 || health.Status != AuditHealthStatusEmpty || health.IssueCode != AuditIssueNoRuns || health.SuggestedAction == "" {
+			t.Fatalf("empty health should be consistent, got %#v", health)
+		}
 	}
 }
 

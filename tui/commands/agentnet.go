@@ -1,4 +1,4 @@
-﻿package commands
+package commands
 
 import (
 	"flag"
@@ -13,7 +13,7 @@ import (
 // RunAgentNet executes AgentNet subcommands.
 func RunAgentNet(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui AgentNet <status|peers|tasks|credits|knowledge|dm|swarm|prediction|topic|overlay|resume|diagnostics|nutshell|identity|leaderboard|credits-audit|auto-picker|daemon|binary|profile|service|ans|poi|reputation|discover|search|transfer|init|bundle|split|dispute|dag|ontology>")
+		return NewUsageError("usage: maclaw-tui AgentNet <status|peers|tasks|credits|knowledge|dm|swarm|prediction|topic|overlay|resume|diagnostics|identity|leaderboard|credits-audit|auto-picker|daemon|binary|profile|service|ans|poi|reputation|discover|search|transfer|init|bundle|split|dispute|dag|ontology>")
 	}
 
 	// Commands that don't require daemon running
@@ -55,8 +55,6 @@ func RunAgentNet(args []string) error {
 		return agentnetResume(client, args[1:])
 	case "diagnostics":
 		return agentnetDiagnostics(client, args[1:])
-	case "nutshell":
-		return agentnetNutshell(client, args[1:])
 	case "leaderboard":
 		return agentnetLeaderboard(client, args[1:])
 	case "credits-audit":
@@ -137,7 +135,9 @@ func agentnetPeers(client *agentnet.Client, args []string) error {
 	fmt.Println(strings.Repeat("-", 65))
 	for _, p := range peers {
 		addr := p.Addr
-		if addr == "" && len(p.Addrs) > 0 { addr = p.Addrs[0] }
+		if addr == "" && len(p.Addrs) > 0 {
+			addr = p.Addrs[0]
+		}
 		fmt.Printf("%-20s %-20s %-10s %s\n",
 			TruncateDisplay(p.PeerID, 20), TruncateDisplay(addr, 20), p.Latency, p.Country)
 	}
@@ -250,10 +250,14 @@ func agentnetTasksubmit(client *agentnet.Client, args []string) error {
 	if *taskID == "" || *result == "" {
 		return fmt.Errorf("submit requires -id and -result flags")
 	}
-	if err := client.SubmitTaskResult(*taskID, *result); err != nil {
+	task, err := client.GetTask(*taskID)
+	if err != nil {
 		return err
 	}
-	fmt.Printf("Task %s result submitted.\n", *taskID)
+	if err := client.SubmitTaskDeliverable(task, *result); err != nil {
+		return err
+	}
+	fmt.Printf("Task %s deliverable submitted.\n", *taskID)
 	return nil
 }
 
@@ -468,8 +472,14 @@ func agentnetDM(client *agentnet.Client, args []string) error {
 			return PrintJSON(msgs)
 		}
 		for _, m := range msgs {
-			ts := m.Timestamp; if ts == "" { ts = m.SentAt }
-			from := m.From; if from == "" { from = m.PeerID }
+			ts := m.Timestamp
+			if ts == "" {
+				ts = m.SentAt
+			}
+			from := m.From
+			if from == "" {
+				from = m.PeerID
+			}
 			fmt.Printf("[%s] %s: %s\n", ts, TruncateDisplay(from, 16), m.Body)
 		}
 	case "send":
@@ -807,120 +817,6 @@ func agentnetDiagnostics(client *agentnet.Client, args []string) error {
 	default:
 		return fmt.Errorf("unknown diagnostics action: %s (use all|matrix|traffic)", *action)
 	}
-}
-
-// ---------- Nutshell ----------
-
-func agentnetNutshell(client *agentnet.Client, args []string) error {
-	mgr := agentnet.NewNutshellManager(client.BinPath())
-	if len(args) == 0 {
-		st := mgr.IsInstalled()
-		if st.Installed {
-			fmt.Printf("Nutshell installed: %s\n", st.Version)
-		} else {
-			fmt.Println("Nutshell not installed. Run: maclaw-tui AgentNet nutshell -action install")
-		}
-		return nil
-	}
-
-	fs := flag.NewFlagSet("AgentNet nutshell", flag.ExitOnError)
-	action := fs.String("action", "status", "action: status|install|init|check|publish|claim|deliver|pack|unpack")
-	dir := fs.String("dir", "", "directory path")
-	reward := fs.Float64("reward", 50, "reward amount")
-	taskID := fs.String("task", "", "task ID (for claim)")
-	output := fs.String("output", "", "output path")
-	peer := fs.String("peer", "", "encryption target Peer ID")
-	file := fs.String("file", "", ".nut file path")
-	fs.Parse(args)
-
-	switch *action {
-	case "status":
-		st := mgr.IsInstalled()
-		if st.Installed {
-			fmt.Printf("Nutshell installed: %s\n", st.Version)
-		} else {
-			fmt.Printf("Nutshell not installed. %s\n", st.Error)
-		}
-	case "install":
-		if err := mgr.Install(); err != nil {
-			return err
-		}
-		fmt.Println("Nutshell installed.")
-	case "init":
-		if *dir == "" {
-			return fmt.Errorf("init requires -dir flag")
-		}
-		out, err := mgr.Init(*dir)
-		if err != nil {
-			return err
-		}
-		fmt.Print(out)
-	case "check":
-		if *dir == "" {
-			return fmt.Errorf("check requires -dir flag")
-		}
-		out, err := mgr.Check(*dir)
-		if err != nil {
-			return err
-		}
-		fmt.Print(out)
-	case "publish":
-		if *dir == "" {
-			return fmt.Errorf("publish requires -dir flag")
-		}
-		out, err := mgr.Publish(*dir, *reward)
-		if err != nil {
-			return err
-		}
-		fmt.Print(out)
-	case "claim":
-		if *taskID == "" {
-			return fmt.Errorf("claim requires -task flag")
-		}
-		outDir := *output
-		if outDir == "" {
-			outDir = "./workspace"
-		}
-		out, err := mgr.Claim(*taskID, outDir)
-		if err != nil {
-			return err
-		}
-		fmt.Print(out)
-	case "deliver":
-		if *dir == "" {
-			return fmt.Errorf("deliver requires -dir flag")
-		}
-		out, err := mgr.Deliver(*dir)
-		if err != nil {
-			return err
-		}
-		fmt.Print(out)
-	case "pack":
-		if *dir == "" || *output == "" {
-			return fmt.Errorf("pack requires -dir and -output flags")
-		}
-		out, err := mgr.Pack(*dir, *output, *peer)
-		if err != nil {
-			return err
-		}
-		fmt.Print(out)
-	case "unpack":
-		if *file == "" {
-			return fmt.Errorf("unpack requires -file flag")
-		}
-		outDir := *output
-		if outDir == "" {
-			outDir = "./output"
-		}
-		out, err := mgr.Unpack(*file, outDir)
-		if err != nil {
-			return err
-		}
-		fmt.Print(out)
-	default:
-		return fmt.Errorf("unknown nutshell action: %s", *action)
-	}
-	return nil
 }
 
 // splitTrim splits a comma-separated string and trims whitespace.
@@ -1671,16 +1567,55 @@ func agentnetInit(client *agentnet.Client, args []string) error {
 
 func agentnetBundle(client *agentnet.Client, args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: AgentNet bundle <attach|download>")
+		return NewUsageError("usage: AgentNet bundle <pack|unpack|attach|download>")
 	}
 	switch args[0] {
+	case "pack":
+		return agentnetBundlePack(client, args[1:])
+	case "unpack":
+		return agentnetBundleUnpack(client, args[1:])
 	case "attach":
 		return agentnetBundleAttach(client, args[1:])
 	case "download":
 		return agentnetBundleDownload(client, args[1:])
 	default:
-		return NewUsageError("unknown bundle action: %s (use attach|download)", args[0])
+		return NewUsageError("unknown bundle action: %s (use pack|unpack|attach|download)", args[0])
 	}
+}
+
+func agentnetBundlePack(client *agentnet.Client, args []string) error {
+	fs := flag.NewFlagSet("bundle pack", flag.ExitOnError)
+	dir := fs.String("dir", "", "source directory")
+	output := fs.String("output", "", "output .nut file path")
+	peer := fs.String("peer", "", "optional encryption target Peer ID")
+	fs.Parse(args)
+	if *dir == "" || *output == "" {
+		return fmt.Errorf("pack requires -dir and -output flags")
+	}
+	mgr := agentnet.NewBundleManager(client.BinPath())
+	out, err := mgr.Pack(*dir, *output, *peer)
+	if err != nil {
+		return err
+	}
+	fmt.Print(out)
+	return nil
+}
+
+func agentnetBundleUnpack(client *agentnet.Client, args []string) error {
+	fs := flag.NewFlagSet("bundle unpack", flag.ExitOnError)
+	file := fs.String("file", "", ".nut file path")
+	output := fs.String("output", "./output", "output directory")
+	fs.Parse(args)
+	if *file == "" {
+		return fmt.Errorf("unpack requires -file flag")
+	}
+	mgr := agentnet.NewBundleManager(client.BinPath())
+	out, err := mgr.Unpack(*file, *output)
+	if err != nil {
+		return err
+	}
+	fmt.Print(out)
+	return nil
 }
 
 func agentnetBundleAttach(client *agentnet.Client, args []string) error {

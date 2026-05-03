@@ -9,7 +9,7 @@ import (
 // migrations is an ordered list of DDL statements. Each entry is applied once.
 // Append new migrations at the end; never reorder or remove existing entries.
 var migrations = []string{
-	// 1: roles 鈥?independent role definitions
+	// 1: roles - independent role definitions
 	`CREATE TABLE IF NOT EXISTS roles (
 		id                 TEXT PRIMARY KEY,
 		name               TEXT NOT NULL UNIQUE,
@@ -23,7 +23,7 @@ var migrations = []string{
 		updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 	);`,
 
-	// 2: colleagues 鈥?digital workers, with role_id FK to roles
+	// 2: colleagues - digital workers, with role_id FK to roles
 	`CREATE TABLE IF NOT EXISTS colleagues (
 		id          TEXT PRIMARY KEY,
 		name        TEXT NOT NULL,
@@ -38,7 +38,7 @@ var migrations = []string{
 		FOREIGN KEY (role_id) REFERENCES roles(id)
 	);`,
 
-	// 3: role_assignment_log 鈥?audit trail for role changes
+	// 3: role_assignment_log - audit trail for role changes
 	`CREATE TABLE IF NOT EXISTS role_assignment_log (
 		id            TEXT PRIMARY KEY,
 		colleague_id  TEXT NOT NULL,
@@ -50,7 +50,7 @@ var migrations = []string{
 		FOREIGN KEY (new_role_id) REFERENCES roles(id)
 	);`,
 
-	// 4: shared_memories 鈥?enterprise/role/team knowledge for context injection
+	// 4: shared_memories - enterprise/role/team knowledge for context injection
 	`CREATE TABLE IF NOT EXISTS shared_memories (
 		id          TEXT PRIMARY KEY,
 		title       TEXT NOT NULL,
@@ -64,7 +64,7 @@ var migrations = []string{
 		updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	);`,
 
-	// 5: capability_packages 鈥?skills / "浼氬仛鐨勪簨" that can be bound to colleagues
+	// 5: capability_packages - skills and MCP packages that can be bound to colleagues
 	`CREATE TABLE IF NOT EXISTS capability_packages (
 		id          TEXT PRIMARY KEY,
 		name        TEXT NOT NULL,
@@ -78,7 +78,7 @@ var migrations = []string{
 		updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	);`,
 
-	// 6: colleague_capability_bindings 鈥?many-to-many between colleagues and capabilities
+	// 6: colleague_capability_bindings - many-to-many between colleagues and capabilities
 	`CREATE TABLE IF NOT EXISTS colleague_capability_bindings (
 		id             TEXT PRIMARY KEY,
 		colleague_id   TEXT NOT NULL,
@@ -89,7 +89,7 @@ var migrations = []string{
 		UNIQUE(colleague_id, capability_id)
 	);`,
 
-	// 7: collaboration_tasks 鈥?point-to-point task delegation between colleagues
+	// 7: collaboration_tasks - point-to-point task delegation between colleagues
 	`CREATE TABLE IF NOT EXISTS collaboration_tasks (
 		id               TEXT PRIMARY KEY,
 		title            TEXT NOT NULL,
@@ -107,7 +107,7 @@ var migrations = []string{
 		FOREIGN KEY (to_colleague_id) REFERENCES colleagues(id)
 	);`,
 
-	// 8: collaboration_task_events 鈥?audit trail for collaboration state changes
+	// 8: collaboration_task_events - audit trail for collaboration state changes
 	`CREATE TABLE IF NOT EXISTS collaboration_task_events (
 		id        TEXT PRIMARY KEY,
 		task_id   TEXT NOT NULL,
@@ -118,7 +118,7 @@ var migrations = []string{
 		FOREIGN KEY (task_id) REFERENCES collaboration_tasks(id)
 	);`,
 
-	// 9: workflow_definitions 鈥?reusable workflow templates
+	// 9: workflow_definitions - reusable workflow templates
 	`CREATE TABLE IF NOT EXISTS workflow_definitions (
 		id          TEXT PRIMARY KEY,
 		name        TEXT NOT NULL,
@@ -129,7 +129,7 @@ var migrations = []string{
 		updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	);`,
 
-	// 10: workflow_step_definitions 鈥?ordered steps within a workflow template
+	// 10: workflow_step_definitions - ordered steps within a workflow template
 	`CREATE TABLE IF NOT EXISTS workflow_step_definitions (
 		id                TEXT PRIMARY KEY,
 		workflow_id       TEXT NOT NULL,
@@ -145,7 +145,7 @@ var migrations = []string{
 		FOREIGN KEY (workflow_id) REFERENCES workflow_definitions(id)
 	);`,
 
-	// 11: workflow_instances 鈥?running instances of a workflow
+	// 11: workflow_instances - running instances of a workflow
 	`CREATE TABLE IF NOT EXISTS workflow_instances (
 		id                TEXT PRIMARY KEY,
 		definition_id     TEXT NOT NULL,
@@ -159,7 +159,7 @@ var migrations = []string{
 		FOREIGN KEY (definition_id) REFERENCES workflow_definitions(id)
 	);`,
 
-	// 12: workflow_step_instances 鈥?individual step execution records
+	// 12: workflow_step_instances - individual step execution records
 	`CREATE TABLE IF NOT EXISTS workflow_step_instances (
 		id                   TEXT PRIMARY KEY,
 		instance_id          TEXT NOT NULL,
@@ -175,7 +175,7 @@ var migrations = []string{
 		FOREIGN KEY (step_definition_id) REFERENCES workflow_step_definitions(id)
 	);`,
 
-	// 13: workflow_instance_events 鈥?audit trail for workflow state changes
+	// 13: workflow_instance_events - audit trail for workflow state changes
 	`CREATE TABLE IF NOT EXISTS workflow_instance_events (
 		id          TEXT PRIMARY KEY,
 		instance_id TEXT NOT NULL,
@@ -206,7 +206,7 @@ var migrations = []string{
 	 CREATE INDEX IF NOT EXISTS idx_cap_bindings_colleague ON colleague_capability_bindings(colleague_id);
 	 CREATE INDEX IF NOT EXISTS idx_cap_bindings_capability ON colleague_capability_bindings(capability_id);`,
 
-	// 15: proxy_audit_log 鈥?records every LLM proxy request for audit
+	// 15: proxy_audit_log - records every LLM proxy request for audit
 	`CREATE TABLE IF NOT EXISTS proxy_audit_log (
 		id           TEXT PRIMARY KEY,
 		request_id   TEXT NOT NULL DEFAULT '',
@@ -224,7 +224,7 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_proxy_audit_created ON proxy_audit_log(created_at);
 	CREATE INDEX IF NOT EXISTS idx_proxy_audit_provider ON proxy_audit_log(provider_id);`,
 
-	// 16: security_policies 鈥?configurable security rules
+	// 16: security_policies - configurable security rules
 	`CREATE TABLE IF NOT EXISTS security_policies (
 		id          TEXT PRIMARY KEY,
 		name        TEXT NOT NULL,
@@ -240,7 +240,7 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_security_policies_status ON security_policies(status);
 	CREATE INDEX IF NOT EXISTS idx_security_policies_type ON security_policies(policy_type);`,
 
-	// 17: security_policy_hit_records 鈥?audit trail for policy triggers
+	// 17: security_policy_hit_records - audit trail for policy triggers
 	`CREATE TABLE IF NOT EXISTS security_policy_hit_records (
 		id          TEXT PRIMARY KEY,
 		policy_id   TEXT NOT NULL,
@@ -254,7 +254,7 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_security_hits_policy ON security_policy_hit_records(policy_id);
 	CREATE INDEX IF NOT EXISTS idx_security_hits_created ON security_policy_hit_records(created_at);`,
 
-	// 18: config_bundles 鈥?configuration packages for delivery to DiWorker clients
+	// 18: config_bundles - configuration packages for delivery to iWorker clients
 	`CREATE TABLE IF NOT EXISTS config_bundles (
 		id           TEXT PRIMARY KEY,
 		version      INTEGER NOT NULL DEFAULT 1,
@@ -267,7 +267,7 @@ var migrations = []string{
 	);
 	CREATE INDEX IF NOT EXISTS idx_config_bundles_status ON config_bundles(status);`,
 
-	// 19: model_endpoints 鈥?DB-managed model provider endpoints
+	// 19: model_endpoints - DB-managed model provider endpoints
 	`CREATE TABLE IF NOT EXISTS model_endpoints (
 		id         TEXT PRIMARY KEY,
 		name       TEXT NOT NULL,
@@ -285,7 +285,7 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_model_endpoints_status ON model_endpoints(status);
 	CREATE INDEX IF NOT EXISTS idx_model_endpoints_tier ON model_endpoints(cost_tier);`,
 
-	// 20: model_routing_policies 鈥?DB-managed routing rules
+	// 20: model_routing_policies - DB-managed routing rules
 	`CREATE TABLE IF NOT EXISTS model_routing_policies (
 		id            TEXT PRIMARY KEY,
 		name          TEXT NOT NULL,
@@ -301,7 +301,7 @@ var migrations = []string{
 	);
 	CREATE INDEX IF NOT EXISTS idx_model_routing_status ON model_routing_policies(status);`,
 
-	// 21: admin_users 鈥?admin accounts for iWorkerCenter login
+	// 21: admin_users - admin accounts for iWorkerCenter login
 	`CREATE TABLE IF NOT EXISTS admin_users (
 		id            TEXT PRIMARY KEY,
 		username      TEXT NOT NULL UNIQUE,
@@ -312,7 +312,7 @@ var migrations = []string{
 		updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 	);`,
 
-	// 22: security_groups 鈥?hierarchical user groups for centralized security management
+	// 22: security_groups - hierarchical user groups for centralized security management
 	`CREATE TABLE IF NOT EXISTS security_groups (
 		id         TEXT PRIMARY KEY,
 		name       TEXT NOT NULL,
@@ -322,7 +322,7 @@ var migrations = []string{
 	);
 	CREATE INDEX IF NOT EXISTS idx_security_groups_parent ON security_groups(parent_id);`,
 
-	// 23: security_group_members 鈥?user-to-group assignment (single group per user)
+	// 23: security_group_members - user-to-group assignment (single group per user)
 	`CREATE TABLE IF NOT EXISTS security_group_members (
 		email      TEXT PRIMARY KEY,
 		group_id   TEXT NOT NULL,
@@ -330,14 +330,14 @@ var migrations = []string{
 	);
 	CREATE INDEX IF NOT EXISTS idx_sgm_group ON security_group_members(group_id);`,
 
-	// 24: security_group_policies 鈥?sparse policy overrides per group
+	// 24: security_group_policies - sparse policy overrides per group
 	`CREATE TABLE IF NOT EXISTS security_group_policies (
 		group_id    TEXT PRIMARY KEY,
 		policy_json TEXT NOT NULL DEFAULT '{}',
 		updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	);`,
 
-	// 25: diworker_accounts 鈥?local authentication accounts for DiWorker
+	// 25: diworker_accounts - local authentication accounts for iWorker
 	`CREATE TABLE IF NOT EXISTS diworker_accounts (
 		id            TEXT PRIMARY KEY,
 		username      TEXT NOT NULL UNIQUE,
@@ -351,14 +351,14 @@ var migrations = []string{
 	);
 	CREATE INDEX IF NOT EXISTS idx_diworker_accounts_username ON diworker_accounts(username);`,
 
-	// 26: system_settings 鈥?generic key-value store for module configs (LDAP, etc.)
+	// 26: system_settings - generic key-value store for module configs (LDAP, etc.)
 	`CREATE TABLE IF NOT EXISTS system_settings (
 		key        TEXT PRIMARY KEY,
 		value_json TEXT NOT NULL DEFAULT '{}',
 		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 	);`,
 
-	// 27: tenants 鈥?multi-tenancy: one row per company
+	// 27: tenants - multi-tenancy: one row per company
 	`CREATE TABLE IF NOT EXISTS tenants (
 		id               TEXT PRIMARY KEY,
 		company_name     TEXT NOT NULL UNIQUE,
@@ -415,7 +415,7 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_config_bundles_tenant ON config_bundles(tenant_id);
 	CREATE INDEX IF NOT EXISTS idx_proxy_audit_tenant ON proxy_audit_log(tenant_id);`,
 
-	// 30: provision_nonces 鈥?replay protection for cloud provision requests
+	// 30: provision_nonces - replay protection for cloud provision requests
 	`CREATE TABLE IF NOT EXISTS provision_nonces (
 		nonce      TEXT PRIMARY KEY,
 		expires_at TEXT NOT NULL

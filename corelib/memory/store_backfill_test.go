@@ -33,8 +33,8 @@ func (f *fakeEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 	return out, nil
 }
 
-func (f *fakeEmbedder) Dim() int  { return f.dim }
-func (f *fakeEmbedder) Close()    {}
+func (f *fakeEmbedder) Dim() int { return f.dim }
+func (f *fakeEmbedder) Close()   {}
 
 func TestSetEmbedder_BackfillMissingEmbeddings(t *testing.T) {
 	dir := t.TempDir()
@@ -330,4 +330,42 @@ func TestBackfill_PersistsAfterReload(t *testing.T) {
 		t.Errorf("expected 4-dim embedding after reload, got %d", len(store2.entries[0].Embedding))
 	}
 	store2.mu.RUnlock()
+}
+
+func TestSetEmbedderCancelsStaleBackfill(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{Content: "needs embedding", Category: CategoryProjectKnowledge}); err != nil {
+		t.Fatal(err)
+	}
+
+	first := &blockingQueryEmbedder{started: make(chan struct{}), release: make(chan struct{}), vec: []float32{1, 0, 0, 0}}
+	store.SetEmbedder(first)
+	<-first.started
+
+	second := &fakeEmbedder{dim: 4}
+	store.SetEmbedder(second)
+	close(first.release)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.RLock()
+		var got []float32
+		if len(store.entries) > 0 {
+			got = append([]float32(nil), store.entries[0].Embedding...)
+		}
+		store.mu.RUnlock()
+		if len(got) > 0 {
+			if got[0] == 1 {
+				t.Fatalf("stale backfill wrote old embedder vector: %v", got)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for replacement embedder backfill")
 }

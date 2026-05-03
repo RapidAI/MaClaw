@@ -1,9 +1,9 @@
 /**
- * floating.tsx — Entry point for the floating assistant button window.
+ * floating.tsx — Entry point for the MaClaw desktop pet companion window.
  *
  * This is a separate, minimal entry point that renders ONLY the FloatingButton
  * component. It does not load the full React app (App.tsx), keeping the bundle
- * size small for the lightweight floating window.
+ * size small for the lightweight companion window.
  *
  * Requirements: 11.1, 11.2
  */

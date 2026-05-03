@@ -35,6 +35,7 @@ type Store struct {
 	vecIndex         *vectorIndex
 	graph            *memoryGraph
 	embedder         embedding.Embedder // nil until SetEmbedder is called
+	embedderGen      uint64             // increments whenever SetEmbedder changes the embedder
 	archive          *ArchiveStore      // cold storage for evicted entries
 	tmt              *TemporalTree
 	gating           *RecallGating
@@ -60,7 +61,28 @@ type Store struct {
 	// s.mu.Lock), consumed by ProcessPendingDedup (acquires its own lock).
 	pendingDedup []pendingDedupPair
 	llmDedup     LLMChatCaller // set via SetLLMDedup; nil = async dedup disabled
+
+	queryEmbMu     sync.Mutex
+	queryEmbCache  map[string]queryEmbeddingCacheEntry
+	queryEmbFlight map[string]*queryEmbeddingFlight
 }
+
+type queryEmbeddingCacheEntry struct {
+	vec        []float32
+	generation uint64
+	createdAt  time.Time
+	lastUsed   time.Time
+}
+
+type queryEmbeddingFlight struct {
+	generation uint64
+	done       chan struct{}
+	vec        []float32
+	err        error
+}
+
+const maxQueryEmbeddingCacheEntries = 256
+const queryEmbeddingCacheTTL = 10 * time.Minute
 
 // NewStore creates a Store that persists to the given path.
 func NewStore(path string) (*Store, error) {
@@ -84,6 +106,8 @@ func NewStore(path string) (*Store, error) {
 		semanticGraph:  NewSemanticGraph(),
 		entityIndex:    NewEntityIndex(),
 		topicClusterer: NewTopicClusterer(),
+		queryEmbCache:  make(map[string]queryEmbeddingCacheEntry),
+		queryEmbFlight: make(map[string]*queryEmbeddingFlight),
 	}
 
 	if err := s.load(); err != nil {
@@ -535,6 +559,12 @@ func (s *Store) Recall(userMessage string) []Entry {
 // Filters out dormant and superseded entries. Respects Scope for project filtering.
 // Performs 1-hop graph expansion on top matches.
 func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
+	result := s.recallForProjectCandidates(userMessage, projectPath)
+	s.touchRecallResultsAsync(result)
+	return result
+}
+
+func (s *Store) recallForProjectCandidates(userMessage, projectPath string) []Entry {
 	// === Phase 1: Query Understanding ===
 	expanded := ExpandQuery(userMessage)
 
@@ -545,18 +575,42 @@ func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
 	vecScores := s.vecIndex.score(s.queryEmbeddingCached(userMessage))
 
 	// Hold RLock for the scoring/assembly phase, then release before TouchAccess.
-	result := s.recallForProjectLocked(userMessage, bm25Scores, vecScores, expanded.QueryTokens, projectPath)
+	return s.recallForProjectLocked(userMessage, bm25Scores, vecScores, expanded.QueryTokens, projectPath)
+}
 
-	// Touch access counts outside the lock to avoid RLock/Lock deadlock.
-	if len(result) > 0 {
-		ids := make([]string, len(result))
-		for i, e := range result {
-			ids[i] = e.ID
-		}
-		go s.TouchAccess(ids)
+func (s *Store) touchRecallResults(result []Entry) {
+	ids := recallResultIDs(result)
+	if len(ids) == 0 {
+		return
 	}
+	s.TouchAccess(ids)
+}
 
-	return result
+func (s *Store) touchRecallResultsAsync(result []Entry) {
+	ids := recallResultIDs(result)
+	if len(ids) == 0 {
+		return
+	}
+	go s.TouchAccess(ids)
+}
+
+func recallResultIDs(result []Entry) []string {
+	if len(result) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(result))
+	ids := make([]string, 0, len(result))
+	for _, e := range result {
+		if e.ID == "" {
+			continue
+		}
+		if _, ok := seen[e.ID]; ok {
+			continue
+		}
+		seen[e.ID] = struct{}{}
+		ids = append(ids, e.ID)
+	}
+	return ids
 }
 
 // recallForProjectLocked performs the scoring and assembly phase of RecallForProject.
@@ -569,7 +623,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	activeCount := s.activeCountLocked()
 	maxTokens, maxEntries := dynamicBudget(activeCount)
 
-	projectLower := strings.ToLower(projectPath)
+	projectLower := semanticNormalizeProjectPath(projectPath)
 	now := time.Now()
 
 	var selfIdentity []Entry
@@ -588,32 +642,8 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 		if !e.IsActive() {
 			continue
 		}
-		// Scope filtering: project-scoped entries are only excluded when they
-		// are explicitly bound to a DIFFERENT project. An entry is considered
-		// bound to a project if it has a tag that looks like a directory path
-		// (starts with / or X:\). Entries without any path-like tags are
-		// treated as globally visible; they may be project_knowledge but
-		// not tied to a specific project (e.g. server credentials).
-		if e.Scope == ScopeProject && projectLower != "" {
-			boundToOtherProject := false
-			for _, tag := range e.Tags {
-				tl := strings.ToLower(tag)
-				// Heuristic: a tag is a project path if it starts with / or drive letter
-				isPath := (len(tl) > 1 && tl[0] == '/') ||
-					(len(tl) > 2 && tl[1] == ':' && (tl[2] == '/' || tl[2] == '\\'))
-				if isPath {
-					if tl != projectLower && !strings.HasPrefix(projectLower, tl) {
-						boundToOtherProject = true
-					} else {
-						// Matches current project; not bound to other
-						boundToOtherProject = false
-						break
-					}
-				}
-			}
-			if boundToOtherProject {
-				continue
-			}
+		if !recallProjectEntryAllowed(e, projectLower) {
+			continue
 		}
 
 		if e.Category == CategorySelfIdentity {
@@ -661,6 +691,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 
 	// 1-hop graph expansion: expand top candidates to discover related entries.
 	others = s.graphExpand(others, graphExpandSeeds)
+	others = filterRecallProjectOthers(others, projectLower)
 
 	// Recall gating: LLM-based post-retrieval filtering.
 	if s.gating != nil {
@@ -711,6 +742,31 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	}
 
 	return result
+}
+
+func recallProjectEntryAllowed(e Entry, projectLower string) bool {
+	return semanticProjectAllowed(e.Scope, e.Tags, projectLower)
+}
+
+func recallProjectOtherAllowed(e Entry, projectLower string) bool {
+	if !e.IsActive() || !recallProjectEntryAllowed(e, projectLower) {
+		return false
+	}
+	canonical := MapToCanonical(e.Category)
+	return e.Category != CategorySelfIdentity && e.Category != CategoryUserFact && canonical != CategoryUserFact
+}
+
+func filterRecallProjectOthers(candidates []recallScored, projectLower string) []recallScored {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	filtered := candidates[:0]
+	for _, c := range candidates {
+		if recallProjectOtherAllowed(c.entry, projectLower) {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
 }
 
 // TouchAccess increments access_count for all entries whose ID is in ids.
@@ -1371,7 +1427,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 	const maxEntries = 15
 	const maxTokens = 2500
 
-	projectLower := strings.ToLower(projectPath)
+	projectLower := semanticNormalizeProjectPath(projectPath)
 	now := time.Now()
 
 	// Extract optional ownerID for multi-tenant filtering.
@@ -1392,27 +1448,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		if !e.IsActive() {
 			continue
 		}
-		// Multi-tenant isolation: when filterOwner is set, only return entries
-		// owned by that user or shared entries (empty OwnerID).
-		if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
-			continue
-		}
-		// When no specific category is requested (category==""), skip categories
-		// that have dedicated injection paths and should not consume recall slots:
-		//   - user_fact: injected via UserFactSummary in appendMemorySection
-		//   - self_identity: injected via appendMemorySection
-		//   - session_checkpoint: progress snapshots, not useful for query answering
-		//   - conversation_summary: injected via conversation history, not recall
-		// When a specific category IS requested (e.g. LLM asks for
-		// category="session_checkpoint"), return all entries of that category.
-		if category == "" {
-			switch e.Category {
-			case CategoryUserFact, CategorySelfIdentity,
-				CategorySessionCheckpoint, CategoryConversationSummary:
-				continue
-			}
-		}
-		if category != "" && e.Category != category {
+		if !recallDynamicEntryAllowed(e, category, projectLower, filterOwner) {
 			continue
 		}
 		b := bm25Scores[e.ID]
@@ -1464,28 +1500,10 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 	// 1-hop graph expansion: expand top candidates to discover related entries.
 	candidates = s.graphExpand(candidates, graphExpandSeeds)
 
-	// Post-expansion OwnerID filter: graphExpand may pull in entries from
-	// other users via graph edges. Re-apply the OwnerID filter.
-	// Also re-apply the category exclusion for the same reason: graph
-	// edges can link project_knowledge to session_checkpoint, pulling
-	// excluded categories back into the results.
-	if filterOwner != "" || category == "" {
-		var filtered []recallScored
-		for _, c := range candidates {
-			if filterOwner != "" && c.entry.OwnerID != "" && c.entry.OwnerID != filterOwner {
-				continue
-			}
-			if category == "" {
-				switch c.entry.Category {
-				case CategoryUserFact, CategorySelfIdentity,
-					CategorySessionCheckpoint, CategoryConversationSummary:
-					continue
-				}
-			}
-			filtered = append(filtered, c)
-		}
-		candidates = filtered
-	}
+	// Re-apply the full dynamic visibility contract after graph expansion: graph
+	// edges can cross owner, project, or category boundaries that the seed set had
+	// already filtered out.
+	candidates = filterRecallDynamicCandidates(candidates, category, projectLower, filterOwner)
 
 	// Recall gating: LLM-based post-retrieval filtering.
 	if s.gating != nil {
@@ -1527,12 +1545,64 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 func (s *Store) SearchByMode(query string, mode SearchMode, category Category, projectPath string, limit int) []Entry {
 	switch mode {
 	case SearchDirect:
-		return s.SearchDirectByID(query)
+		return s.SearchDirectByIDForProject(query, category, projectPath)
 	case SearchKeywordOnly:
-		return s.SearchKeyword(query, category, limit)
+		return s.SearchKeywordForProject(query, category, projectPath, limit)
 	default:
-		return s.RecallDynamic(query, category, projectPath)
+		return limitSearchResults(s.RecallDynamic(query, category, projectPath), limit)
 	}
+}
+
+func recallDynamicEntryAllowed(e Entry, category Category, projectLower, filterOwner string) bool {
+	if !e.IsActive() || !recallProjectEntryAllowed(e, projectLower) {
+		return false
+	}
+	if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+		return false
+	}
+	if category != "" {
+		return recallCategoryMatches(e.Category, category)
+	}
+	switch e.Category {
+	case CategoryUserFact, CategorySelfIdentity, CategorySessionCheckpoint, CategoryConversationSummary:
+		return false
+	default:
+		return true
+	}
+}
+
+func filterRecallDynamicCandidates(candidates []recallScored, category Category, projectLower, filterOwner string) []recallScored {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	filtered := candidates[:0]
+	for _, c := range candidates {
+		if recallDynamicEntryAllowed(c.entry, category, projectLower, filterOwner) {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
+}
+
+func recallCategoryMatches(entryCategory, requested Category) bool {
+	return entryCategory == requested || MapToCanonical(entryCategory) == MapToCanonical(requested)
+}
+
+func limitSearchResults(results []Entry, limit int) []Entry {
+	if limit <= 0 || len(results) <= limit {
+		return results
+	}
+	return append([]Entry(nil), results[:limit]...)
+}
+
+func recallDirectEntryAllowed(e Entry, category Category, projectLower string) bool {
+	if !e.IsActive() || !recallProjectEntryAllowed(e, projectLower) {
+		return false
+	}
+	if category != "" {
+		return recallCategoryMatches(e.Category, category)
+	}
+	return true
 }
 
 // SearchDirectByID returns the entry with the given ID, or nil.
@@ -1547,12 +1617,32 @@ func (s *Store) SearchDirectByID(id string) []Entry {
 	return nil
 }
 
+// SearchDirectByIDForProject returns an exact ID match if it is visible in the requested project/category scope.
+func (s *Store) SearchDirectByIDForProject(id string, category Category, projectPath string) []Entry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	projectLower := semanticNormalizeProjectPath(projectPath)
+	for _, e := range s.entries {
+		if e.ID == id && recallDirectEntryAllowed(e, category, projectLower) {
+			return []Entry{e}
+		}
+	}
+	return nil
+}
+
 // SearchKeyword performs BM25-only search without vector scoring.
 func (s *Store) SearchKeyword(query string, category Category, limit int) []Entry {
+	return s.SearchKeywordForProject(query, category, "", limit)
+}
+
+// SearchKeywordForProject performs BM25-only search within the same project
+// visibility contract used by hybrid recall.
+func (s *Store) SearchKeywordForProject(query string, category Category, projectPath string, limit int) []Entry {
 	if limit <= 0 {
 		limit = 15
 	}
 	scores := s.bm25.score(query)
+	projectLower := semanticNormalizeProjectPath(projectPath)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1563,10 +1653,7 @@ func (s *Store) SearchKeyword(query string, category Category, limit int) []Entr
 	}
 	var candidates []scored
 	for _, e := range s.entries {
-		if !e.IsActive() {
-			continue
-		}
-		if category != "" && e.Category != category {
+		if !recallDynamicEntryAllowed(e, category, projectLower, "") {
 			continue
 		}
 		sc := scores[e.ID]
@@ -2090,14 +2177,104 @@ func (s *Store) UniqueOwnerIDs() []string {
 // queryEmbeddingCached returns the embedding for a query string.
 // Returns nil if no embedder is configured (graceful degradation).
 func (s *Store) queryEmbeddingCached(query string) []float32 {
-	if s.embedder == nil || embedding.IsNoop(s.embedder) {
+	s.mu.RLock()
+	emb := s.embedder
+	gen := s.embedderGen
+	s.mu.RUnlock()
+	if emb == nil || embedding.IsNoop(emb) {
 		return nil
 	}
-	emb, err := s.embedder.Embed(query)
-	if err != nil {
+	key := strings.TrimSpace(query)
+	if key == "" {
 		return nil
 	}
-	return emb
+	now := time.Now()
+	s.queryEmbMu.Lock()
+	if entry, ok := s.queryEmbCache[key]; ok && entry.generation == gen && now.Sub(entry.createdAt) < queryEmbeddingCacheTTL {
+		entry.lastUsed = now
+		s.queryEmbCache[key] = entry
+		vec := append([]float32(nil), entry.vec...)
+		s.queryEmbMu.Unlock()
+		return vec
+	}
+	if flight, ok := s.queryEmbFlight[key]; ok && flight.generation == gen {
+		s.queryEmbMu.Unlock()
+		<-flight.done
+		if flight.err != nil || len(flight.vec) == 0 || s.currentEmbedderGeneration() != gen {
+			return nil
+		}
+		return append([]float32(nil), flight.vec...)
+	}
+	flight := &queryEmbeddingFlight{generation: gen, done: make(chan struct{})}
+	if s.queryEmbFlight == nil {
+		s.queryEmbFlight = make(map[string]*queryEmbeddingFlight)
+	}
+	s.queryEmbFlight[key] = flight
+	s.queryEmbMu.Unlock()
+
+	embVec, err := emb.Embed(query)
+	vec := append([]float32(nil), embVec...)
+	currentGen := s.currentEmbedderGeneration()
+
+	s.queryEmbMu.Lock()
+	flight.err = err
+	if err == nil && len(vec) > 0 {
+		flight.vec = append([]float32(nil), vec...)
+		if currentGen == gen {
+			if s.queryEmbCache == nil {
+				s.queryEmbCache = make(map[string]queryEmbeddingCacheEntry)
+			}
+			s.queryEmbCache[key] = queryEmbeddingCacheEntry{vec: append([]float32(nil), vec...), generation: gen, createdAt: now, lastUsed: now}
+			s.evictQueryEmbeddingCacheLocked(now)
+		}
+	}
+	if s.queryEmbFlight[key] == flight {
+		delete(s.queryEmbFlight, key)
+	}
+	close(flight.done)
+	s.queryEmbMu.Unlock()
+	if err != nil || len(vec) == 0 || currentGen != gen {
+		return nil
+	}
+	return append([]float32(nil), vec...)
+}
+
+func (s *Store) evictQueryEmbeddingCacheLocked(now time.Time) {
+	if len(s.queryEmbCache) == 0 {
+		return
+	}
+	for key, entry := range s.queryEmbCache {
+		if now.Sub(entry.createdAt) >= queryEmbeddingCacheTTL {
+			delete(s.queryEmbCache, key)
+		}
+	}
+	for len(s.queryEmbCache) > maxQueryEmbeddingCacheEntries {
+		oldestKey := ""
+		oldest := now
+		for key, entry := range s.queryEmbCache {
+			if oldestKey == "" || entry.lastUsed.Before(oldest) {
+				oldestKey = key
+				oldest = entry.lastUsed
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		delete(s.queryEmbCache, oldestKey)
+	}
+}
+
+func (s *Store) currentEmbedderGeneration() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.embedderGen
+}
+
+func (s *Store) clearQueryEmbeddingCache() {
+	s.queryEmbMu.Lock()
+	s.queryEmbCache = make(map[string]queryEmbeddingCacheEntry)
+	s.queryEmbFlight = make(map[string]*queryEmbeddingFlight)
+	s.queryEmbMu.Unlock()
 }
 
 // autoLinkThreshold is the minimum cosine similarity required to create a graph link.
@@ -2245,32 +2422,43 @@ func (s *Store) autoLink(entry Entry) {
 // SetEmbedder wires an Embedder into the store. If the embedder is real
 // (not NoopEmbedder), a background goroutine is launched to compute
 // embeddings for any existing entries that are missing them.
-// Safe to call at most once after NewStore.
+// Safe to call repeatedly; changing the embedder invalidates query embedding cache entries.
 func (s *Store) SetEmbedder(e embedding.Embedder) {
+	s.mu.Lock()
 	s.embedder = e
+	s.embedderGen++
+	gen := s.embedderGen
+	s.mu.Unlock()
+	s.clearQueryEmbeddingCache()
 	if e == nil || embedding.IsNoop(e) {
 		return
 	}
-	go s.backfillEmbeddings()
+	go s.backfillEmbeddings(e, gen)
 }
 
 // EmbedderActive returns true if a real (non-noop) embedder is loaded.
 func (s *Store) EmbedderActive() bool {
-	return s.embedder != nil && !embedding.IsNoop(s.embedder)
+	s.mu.RLock()
+	emb := s.embedder
+	s.mu.RUnlock()
+	return emb != nil && !embedding.IsNoop(emb)
 }
 
 // EmbedderDim returns the embedding dimension, or 0 if no embedder is active.
 func (s *Store) EmbedderDim() int {
-	if s.embedder == nil {
+	s.mu.RLock()
+	emb := s.embedder
+	s.mu.RUnlock()
+	if emb == nil {
 		return 0
 	}
-	return s.embedder.Dim()
+	return emb.Dim()
 }
 
 // backfillEmbeddings scans entries missing embeddings and computes them
 // in the background. It processes entries one at a time to avoid blocking
 // the store for extended periods.
-func (s *Store) backfillEmbeddings() {
+func (s *Store) backfillEmbeddings(emb embedding.Embedder, gen uint64) {
 	// Collect IDs and content of entries that need embeddings.
 	type pending struct {
 		id      string
@@ -2299,17 +2487,21 @@ func (s *Store) backfillEmbeddings() {
 		default:
 		}
 
-		emb, err := s.embedder.Embed(p.content)
-		if err != nil || len(emb) == 0 {
+		embVec, err := emb.Embed(p.content)
+		if err != nil || len(embVec) == 0 {
 			continue
 		}
 
 		s.mu.Lock()
+		if s.embedderGen != gen {
+			s.mu.Unlock()
+			return
+		}
 		for i := range s.entries {
 			if s.entries[i].ID == p.id && len(s.entries[i].Embedding) == 0 {
-				s.entries[i].Embedding = emb
+				s.entries[i].Embedding = embVec
 				if s.entries[i].IsActive() {
-					s.vecIndex.add(p.id, emb)
+					s.vecIndex.add(p.id, embVec)
 				}
 				updated++
 				break
@@ -2390,6 +2582,17 @@ func (s *Store) SetOnlineExtractor(oe *OnlineExtractor) {
 // FindByEntity returns all active entries that mention the given entity.
 // Uses the entity index for fast lookup, then filters by active status.
 func (s *Store) FindByEntity(entityName string) []Entry {
+	return s.findByEntity(entityName, "", "", "", false)
+}
+
+// FindByEntityForProject returns active entity matches visible in a requested
+// project/category/owner scope. Empty category, projectPath, or ownerID means
+// that dimension is not restricted.
+func (s *Store) FindByEntityForProject(entityName string, category Category, projectPath string, ownerID string) []Entry {
+	return s.findByEntity(entityName, category, projectPath, ownerID, true)
+}
+
+func (s *Store) findByEntity(entityName string, category Category, projectPath string, ownerID string, scoped bool) []Entry {
 	if s.entityIndex == nil {
 		return nil
 	}
@@ -2402,15 +2605,25 @@ func (s *Store) FindByEntity(entityName string) []Entry {
 	for _, id := range ids {
 		idSet[id] = true
 	}
+	projectLower := semanticNormalizeProjectPath(projectPath)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var result []Entry
 	for _, e := range s.entries {
-		if idSet[e.ID] && e.IsActive() {
-			result = append(result, e)
+		if !idSet[e.ID] || !e.IsActive() {
+			continue
 		}
+		if scoped {
+			if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+				continue
+			}
+			if !recallDirectEntryAllowed(e, category, projectLower) {
+				continue
+			}
+		}
+		result = append(result, e)
 	}
 	return result
 }
@@ -2452,11 +2665,12 @@ func (s *Store) RecallWithBFS(query string, category Category, projectPath strin
 		return seeds
 	}
 
-	// Look up expanded entries.
+	// Look up expanded entries under the same visibility contract used for seeds.
 	filterOwner := ""
 	if len(ownerID) > 0 {
 		filterOwner = ownerID[0]
 	}
+	projectLower := semanticNormalizeProjectPath(projectPath)
 
 	s.mu.RLock()
 	expandedIDSet := make(map[string]bool, len(expandedIDs))
@@ -2465,10 +2679,7 @@ func (s *Store) RecallWithBFS(query string, category Category, projectPath strin
 	}
 	var bfsEntries []Entry
 	for _, e := range s.entries {
-		if !expandedIDSet[e.ID] || !e.IsActive() {
-			continue
-		}
-		if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+		if !expandedIDSet[e.ID] || !recallDynamicEntryAllowed(e, category, projectLower, filterOwner) {
 			continue
 		}
 		bfsEntries = append(bfsEntries, e)
@@ -2483,7 +2694,11 @@ func (s *Store) RecallWithBFS(query string, category Category, projectPath strin
 }
 
 // Embedder returns the configured embedder (may be nil).
-func (s *Store) Embedder() embedding.Embedder { return s.embedder }
+func (s *Store) Embedder() embedding.Embedder {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.embedder
+}
 
 // GraphNeighbors returns the direct neighbors and edge weights for the given entry ID.
 func (s *Store) GraphNeighbors(id string) map[string]float64 {
@@ -2967,7 +3182,7 @@ type MemoryCandidate struct {
 }
 
 // RecallWithLLMFilter performs a two-stage recall:
-//  1. BM25+Vector fusion via RecallForProject (broad candidate set, up to 20)
+//  1. BM25+Vector fusion via the RecallForProject candidate pipeline
 //  2. LLM sideQuery to select the top-N most relevant entries (default 5)
 //
 // If llmFilter is nil or returns an error, falls back to stage-1 results.
@@ -2979,16 +3194,20 @@ func (s *Store) RecallWithLLMFilter(userMessage, projectPath string, llmFilter L
 	}
 
 	// Stage 1: broad recall via existing BM25+Vector+Graph pipeline.
-	candidates := s.RecallForProject(userMessage, projectPath)
+	candidates := s.recallForProjectCandidates(userMessage, projectPath)
 	if len(candidates) == 0 {
 		return candidates
 	}
 
-	// If no LLM filter or too few candidates, return as-is.
+	// If no LLM filter or too few candidates, return as-is and touch only the
+	// entries that are actually returned.
 	if llmFilter == nil || len(candidates) <= maxResults {
 		if len(candidates) > maxResults {
-			return candidates[:maxResults]
+			result := candidates[:maxResults]
+			s.touchRecallResults(result)
+			return result
 		}
+		s.touchRecallResults(candidates)
 		return candidates
 	}
 
@@ -3013,10 +3232,13 @@ func (s *Store) RecallWithLLMFilter(userMessage, projectPath string, llmFilter L
 	// Stage 2: LLM selects the most relevant.
 	selectedIDs, err := llmFilter.SelectRelevant(userMessage, summaries, maxResults)
 	if err != nil || len(selectedIDs) == 0 {
-		// Fallback: return top-N from stage 1.
+		// Fallback: return top-N from stage 1 and touch only that fallback set.
 		if len(candidates) > maxResults {
-			return candidates[:maxResults]
+			result := candidates[:maxResults]
+			s.touchRecallResults(result)
+			return result
 		}
+		s.touchRecallResults(candidates)
 		return candidates
 	}
 
@@ -3032,26 +3254,18 @@ func (s *Store) RecallWithLLMFilter(userMessage, projectPath string, llmFilter L
 		}
 	}
 
-	// Touch access counts for selected entries.
-	if len(result) > 0 {
-		ids := make([]string, len(result))
-		for i, e := range result {
-			ids[i] = e.ID
-		}
-		go s.TouchAccess(ids)
-	}
-
+	s.touchRecallResults(result)
 	return result
 }
 
 // RecallSmart is an enhanced recall entry point that integrates Query Expansion,
 // Tag Fast Lane, dynamic budget, and optional LLM reranking.
-// When llmFilter is nil or unavailable, it is equivalent to RecallForProject.
+// When llmFilter is nil or unavailable, it returns the same candidates as RecallForProject.
 func (s *Store) RecallSmart(userMessage, projectPath string, llmFilter LLMRelevanceFilter) []Entry {
-	candidates := s.RecallForProject(userMessage, projectPath)
-	// Note: RecallForProject already called TouchAccess on all candidates.
+	candidates := s.recallForProjectCandidates(userMessage, projectPath)
 
 	if llmFilter == nil || !llmFilter.IsAvailable() || len(candidates) <= 5 {
+		s.touchRecallResults(candidates)
 		return candidates
 	}
 
@@ -3075,6 +3289,7 @@ func (s *Store) RecallSmart(userMessage, projectPath string, llmFilter LLMReleva
 
 	selectedIDs, err := llmFilter.SelectRelevant(userMessage, summaries, 10)
 	if err != nil || len(selectedIDs) == 0 {
+		s.touchRecallResults(candidates)
 		return candidates // graceful degradation
 	}
 
@@ -3089,6 +3304,7 @@ func (s *Store) RecallSmart(userMessage, projectPath string, llmFilter LLMReleva
 		}
 	}
 
+	s.touchRecallResults(result)
 	return result
 }
 

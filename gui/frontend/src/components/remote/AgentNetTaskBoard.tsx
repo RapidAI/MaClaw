@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
     AgentNetListTasks, AgentNetGetCredits,
-    AgentNetSubmitTaskResult, AgentNetApproveTask,
+    AgentNetSubmitTaskDeliverable, AgentNetApproveTask,
     AgentNetRejectTask,
     AgentNetCreateTask, AgentNetBrowseNetworkTasks, AgentNetPublishTasksToHub,
     AgentNetManualPickTask,
@@ -26,15 +26,15 @@ interface AgentNetTask {
 }
 
 const STATUS_COLORS: Record<string, { bg: string; text: string; label_zh: string; label_en: string }> = {
-    created:   { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "开放", label_en: "Open" },
-    open:      { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "开放", label_en: "Open" },
-    claimed:   { bg: "var(--theme-info-bg)", text: "var(--theme-primary)", label_zh: "已认领", label_en: "Claimed" },
-    assigned:  { bg: "var(--theme-info-bg)", text: "var(--theme-primary)", label_zh: "已分配", label_en: "Assigned" },
-    submitted: { bg: "var(--theme-warning-bg)", text: "var(--theme-warning)", label_zh: "已提交", label_en: "Submitted" },
-    accepted:  { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "已通过", label_en: "Accepted" },
-    approved:  { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "已通过", label_en: "Approved" },
-    rejected:  { bg: "var(--theme-danger-bg)", text: "var(--theme-danger)", label_zh: "已拒绝", label_en: "Rejected" },
-    cancelled: { bg: "var(--theme-surface-muted)", text: "var(--theme-text-muted)", label_zh: "已取消", label_en: "Cancelled" },
+    created:   { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "Open", label_en: "Open" },
+    open:      { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "Open", label_en: "Open" },
+    claimed:   { bg: "var(--theme-info-bg)", text: "var(--theme-primary)", label_zh: "Claimed", label_en: "Claimed" },
+    assigned:  { bg: "var(--theme-info-bg)", text: "var(--theme-primary)", label_zh: "Assigned", label_en: "Assigned" },
+    submitted: { bg: "var(--theme-warning-bg)", text: "var(--theme-warning)", label_zh: "Submitted", label_en: "Submitted" },
+    accepted:  { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "Accepted", label_en: "Accepted" },
+    approved:  { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "Approved", label_en: "Approved" },
+    rejected:  { bg: "var(--theme-danger-bg)", text: "var(--theme-danger)", label_zh: "Rejected", label_en: "Rejected" },
+    cancelled: { bg: "var(--theme-surface-muted)", text: "var(--theme-text-muted)", label_zh: "Cancelled", label_en: "Cancelled" },
 };
 
 const MAX_TASKS_LOCAL = 12;
@@ -128,14 +128,14 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
         return () => clearInterval(timer);
     }, [refresh, agentNetRunning]);
 
-    // (no cleanup needed — toast is global)
+    // No cleanup needed; toast is global.
 
     const doAction = useCallback(async (label: string, fn: () => Promise<any>) => {
         setActionBusy(label);
         try {
             const res = await fn();
             if (res.ok) {
-                showToast(localizeText(lang, "Success", "操作成功"), "success");
+                showToast(localizeText(lang, "Success", "Success"), "success");
                 refresh();
             } else {
                 showToast(res.error || "Failed", "error");
@@ -151,11 +151,11 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
         if (!newTitle.trim()) return;
         const reward = Math.max(0, Math.floor(newReward));
         if (reward !== 0 && reward < 100) {
-            showToast(localizeText(lang, "Minimum reward is 100 🐚 (or 0 for free collaboration)", "赏金最低 100 🐚（或 0 表示免费协作）"), "warning", 4000);
+            showToast(localizeText(lang, "Minimum reward is 100 shell (or 0 for free collaboration)", "Minimum reward is 100 shell (or 0 for free collaboration)"), "warning", 4000);
             return;
         }
         if (reward > 0 && credits && credits.balance < reward) {
-            showToast(localizeText(lang, `Insufficient balance (have ${credits.balance} 🐚, need ${reward} 🐚)`, `余额不足（当前 ${credits.balance} 🐚，需要 ${reward} 🐚）`), "warning", 4000);
+            showToast(localizeText(lang, `Insufficient balance (have ${credits.balance} shell, need ${reward} shell)`, `Insufficient balance (have ${credits.balance} shell, need ${reward} shell)`), "warning", 4000);
             return;
         }
         await doAction("create", () => AgentNetCreateTask(newTitle.trim(), reward));
@@ -166,15 +166,15 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
 
     const handleManualPick = useCallback(async (taskId: string) => {
         setManualPickId(taskId);
-        const pickingToastId = showToast(localizeText(lang, "⏳ Picking up and executing task...", "⏳ 正在接单并执行任务..."), "info", 60000);
+        const pickingToastId = showToast(localizeText(lang, "Picking up and executing task...", "Picking up and executing task..."), "info", 60000);
         try {
             const res = await AgentNetManualPickTask(taskId);
             dismissToast(pickingToastId);
             if (res.ok) {
-                showToast(localizeText(lang, "✅ Task completed and submitted", "✅ 任务已完成并提交"), "success", 5000);
+                showToast(localizeText(lang, "Task completed and submitted as .nut", "Task completed and submitted as .nut"), "success", 5000);
                 refresh();
             } else {
-                showToast(res.error || localizeText(lang, "Failed to pick task", "接单失败"), "error", 6000);
+                showToast(res.error || localizeText(lang, "Failed to pick task", "Failed to pick task"), "error", 6000);
             }
         } catch (e) {
             dismissToast(pickingToastId);
@@ -187,12 +187,12 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
     if (!agentNetRunning) {
         return (
             <div style={{ padding: "40px 20px", textAlign: "center", color: colors.textMuted }}>
-                <div style={{ fontSize: "3rem", marginBottom: "12px" }}>🦞</div>
+                <div style={{ fontSize: "3rem", marginBottom: "12px" }}>AN</div>
                 <div style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "6px", color: colors.text }}>
-                    {localizeText(lang, "AgentNet Not Connected", "智网未连接")}
+                    {localizeText(lang, "AgentNet Not Connected", "AgentNet Not Connected")}
                 </div>
                 <div style={{ fontSize: "0.82rem", color: colors.textSecondary }}>
-                    {localizeText(lang, "Enable AgentNet in Settings → AgentNet", "请在设置 → 智网中启用 AgentNet")}
+                    {localizeText(lang, "Enable AgentNet in Settings -> AgentNet", "Enable AgentNet in Settings -> AgentNet")}
                 </div>
             </div>
         );
@@ -232,22 +232,22 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
                             fontSize: "0.75rem", background: "var(--theme-warning-bg)", color: "var(--theme-warning)",
                             padding: "2px 8px", borderRadius: "10px", fontWeight: 500,
                         }}>
-                            🐚 {credits.balance ?? 0} {credits.tier && `· ${credits.tier}`}
+                            {credits.balance ?? 0} shell {credits.tier && `- ${credits.tier}`}
                         </span>
                     )}
                 </div>
                 <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
                     <button style={btnStyle(viewMode === "all")} onClick={() => setViewMode("all")}>
-                        {localizeText(lang, "All", "全部")}
+                        {localizeText(lang, "All", "All")}
                     </button>
                     <button style={btnStyle(viewMode === "network")} onClick={() => setViewMode("network")}>
-                        {localizeText(lang, "Network", "网络")}
+                        {localizeText(lang, "Network", "Network")}
                     </button>
                     <button style={btnStyle()} onClick={() => setShowCreate(!showCreate)}>
-                        + {localizeText(lang, "Post", "发布")}
+                        + {localizeText(lang, "Post", "Post")}
                     </button>
                     <button onClick={refresh} disabled={loading} style={btnStyle()}>
-                        {loading ? "..." : "↻"}
+                        {loading ? "..." : "Refresh"}
                     </button>
                 </div>
             </div>
@@ -260,11 +260,11 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
                     <input
                         value={newTitle}
                         onChange={(e) => setNewTitle(e.target.value)}
-                        placeholder={localizeText(lang, "Task title...", "任务标题...")}
+                        placeholder={localizeText(lang, "Task title...", "Task title...")}
                         style={{ flex: 1, minWidth: "120px", border: `1px solid ${colors.border}`, borderRadius: "6px", padding: "4px 8px", fontSize: "0.78rem", background: colors.surface, color: colors.text }}
                     />
                     <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ fontSize: "0.75rem" }}>🐚</span>
+                        <span style={{ fontSize: "0.75rem" }}>shell</span>
                         <input
                             type="number" value={newReward} min={0}
                             onChange={(e) => setNewReward(Number(e.target.value))}
@@ -272,7 +272,7 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
                         />
                     </div>
                     <button onClick={handleCreate} disabled={!newTitle.trim() || actionBusy === "create"} className="btn-primary" style={{ padding: "4px 12px", fontSize: "0.72rem" }}>
-                        {localizeText(lang, "Post", "发布")}
+                        {localizeText(lang, "Post", "Post")}
                     </button>
                 </div>
             )}
@@ -286,12 +286,12 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
             {tasks.length === 0 && !loading && !error && (
                 <div style={{ textAlign: "center", color: colors.textMuted, padding: "30px 0", fontSize: "0.85rem" }}>
                     {viewMode === "network"
-                            ? localizeText(lang, "No network tasks (peers haven't published to Hub yet)", "暂无网络任务（其他节点尚未发布任务到 Hub）")
-                            : localizeText(lang, "No tasks available", "暂无任务")}
+                            ? localizeText(lang, "No network tasks (peers have not published to Hub yet)", "No network tasks (peers have not published to Hub yet)")
+                            : localizeText(lang, "No tasks available", "No tasks available")}
                 </div>
             )}
 
-            {/* Task cards – 2 per row */}
+            {/* Task cards - 2 per row */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
                 {tasks.map((rawTask) => {
                     // Wails may serialize Go struct fields with uppercase keys when nested in map[string]interface{}.
@@ -338,28 +338,28 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
                             {/* Row 2: reward + actions (right-aligned) */}
                             <div style={{ display: "flex", alignItems: "center", gap: "4px", marginTop: "auto" }}>
                                 <span style={{ fontSize: "0.7rem", fontWeight: 600, color: "var(--theme-warning)" }}>
-                                    🐚 {task.reward}
+                                    {task.reward} shell
                                 </span>
                                 <span style={{ flex: 1 }} />
                                 {normalizedStatus === "assigned" && (
                                     <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
-                                        onClick={() => doAction("submit-" + task.id, () => AgentNetSubmitTaskResult(task.id, ""))}>
-                                        {localizeText(lang, "Submit", "提交")}
+                                        onClick={() => doAction("submit-" + task.id, () => AgentNetSubmitTaskDeliverable(task.id, ""))}>
+                                        {localizeText(lang, "Submit .nut", "Submit .nut")}
                                     </button>
                                 )}
                                 {normalizedStatus === "submitted" && (
                                     <>
                                         <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                             onClick={() => doAction("approve-" + task.id, () => AgentNetApproveTask(task.id))}>
-                                            ✓
+                                            Approve
                                         </button>
                                         <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                             onClick={() => doAction("reject-" + task.id, () => AgentNetRejectTask(task.id))}>
-                                            ✗
+                                            Reject
                                         </button>
                                     </>
                                 )}
-                                {/* 接单按钮 – 仅开放任务显示 */}
+                                {/* Pick button - only shown for open tasks. */}
                                 {isOpen && (
                                     <button
                                         className="btn-primary"
@@ -379,7 +379,7 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
                                         disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => handleManualPick(task.id)}
                                     >
-                                        {manualPickId === task.id ? localizeText(lang, "Running...", "执行中...") : localizeText(lang, "🤖 Pick", "🤖 接单")}
+                                        {manualPickId === task.id ? localizeText(lang, "Running...", "Running...") : localizeText(lang, "Pick", "Pick")}
                                     </button>
                                 )}
                             </div>

@@ -10,7 +10,7 @@
     "openSettings": "打开设置",
     "intervention": "人工输入",
     "cachedNotice": "{{count}} 条缓存 / 操作前请先重连 Center",
-    "waitingNotice": "{{count}} 条等待审核",
+    "waitingNotice": "{{count}} 条等待复核",
     "navigation": "iWorker 导航",
     "recentWork": "最近工作",
     "emptyRecent": "还没有匹配的工作。",
@@ -36,11 +36,11 @@
   "pages": {
     "home": {
       "title": "对话",
-      "subtitle": "从对话、Center 推送或人工交接开始工作。"
+      "subtitle": "从对话、Center 推送或人工交接开始。"
     },
     "colleagues": {
       "title": "伙伴",
-      "subtitle": "浏览数字同事与人工协作路径。"
+      "subtitle": "浏览数字同事与人类协作路径。"
     },
     "newTask": {
       "title": "任务空间",
@@ -75,7 +75,7 @@
     "currentWork": "当前工作",
     "active": "进行中",
     "completed": "已完成",
-    "review": "待审核",
+    "review": "待复核",
     "blocked": "已阻塞",
     "recentStatus": "最近工作状态",
     "noTaskHistory": "还没有任务历史。",
@@ -125,8 +125,8 @@
     "callableSkill": "可调用技能",
     "ready": "就绪",
     "needsAttention": "需要处理",
-    "checkingReadiness": "正在检查",
-    "readinessNotChecked": "尚未检查",
+    "checkingReadiness": "正在检查就绪状态",
+    "readinessNotChecked": "尚未检查就绪状态",
     "readyToWork": "可以工作",
     "createRepairTask": "创建修复任务",
     "createReadinessTask": "创建就绪任务",
@@ -134,15 +134,17 @@
     "noTools": "此 iWorker 暂未启用 Center 下发的技能或 MCP。",
     "noPush": "没有等待中的 Center 推送，收件箱为空。",
     "noAgent": "Center 还没有看到此 iWorker 本体。",
+    "peopleModelDetail": "人类员工仍可作为可调用技能参与，但不会变成控制中心。",
+    "run": "运行",
     "workspaceKicker": "iWorker 工作区",
     "workbenchTitle": "数字同事工作台",
     "workbenchDesc": "从 Center 分配任务、人工交接和本地指令开始工作，同时保持状态、记忆和工具可见。",
     "current": "当前",
     "inbox": "收件箱",
     "tools": "工具",
-    "localContinuity": "本地连续性启用",
+    "localContinuity": "本地连续性已启用",
     "centerReconnecting": "Center 正在重连",
-    "cachedContinuity": "缓存连续性启用",
+    "cachedContinuity": "缓存连续性已启用",
     "cachedNotice": "缓存提醒",
     "cachedPushDetail": "这是来自缓存快照的 Center 推送。请先重连 iWorkerCenter，再恢复、阻塞或自动运行。",
     "openTask": "打开任务",
@@ -155,9 +157,7 @@
     "availabilitySignals": "运行信号就绪",
     "center": "Center",
     "runtime": "运行时",
-    "watcher": "守护器",
-    "peopleModelDetail": "人类员工仍可作为可调用技能参与，但不会变成控制中心。",
-    "run": "运行"
+    "watcher": "守护器"
   },
   "newTask": {
     "eyebrow": "任务空间",
@@ -228,7 +228,7 @@
     }
   },
   "history": {
-    "title": "工具与任务",
+    "title": "工具和任务",
     "subtitle": "扩展 iWorker 能力，同时保留最近任务的复用入口。",
     "searchTools": "搜索工具",
     "addTool": "添加工具",
@@ -276,7 +276,7 @@
       },
       "tencentIma": {
         "name": "腾讯 ima",
-        "desc": "连接知识库与检索能力。"
+        "desc": "连接知识库与搜索能力。"
       },
       "neodata": {
         "name": "NeoData",
@@ -290,7 +290,17 @@
         "name": "品牌设计专家",
         "desc": "复用品牌视觉资产，快速生成设计方案。"
       }
-    }
+    },
+    "refreshCenterTools": "刷新 Center 工具",
+    "syncing": "同步中",
+    "centerLive": "Center 实时",
+    "centerStale": "Center 已过期",
+    "cachedSnapshot": "缓存快照",
+    "unavailable": "不可用",
+    "localFallback": "本地备用",
+    "displayOnly": "仅展示",
+    "centerSkillDesc": "Center 下发的 iWorker 技能。",
+    "centerMcpDesc": "Center 安装的 MCP 服务。"
   },
   "settings": {
     "eyebrow": "配置",
@@ -394,5 +404,27 @@
     "healthUnreachableTitle": "Center 当前不可达",
     "manualCheck": "手动检查",
     "autoCheck": "保存后自动检查"
+  },
+  "colleaguesPage": {
+    "title": "同事中心",
+    "subtitle": "浏览来自 iWorkerCenter 的数字同事，并快速发起合适的交接。",
+    "refresh": "刷新",
+    "loading": "加载中...",
+    "categoryAria": "同事分类",
+    "gridAria": "数字同事卡片",
+    "empty": "这个分类下还没有同事。",
+    "source": "来源",
+    "sourceCenter": "iWorkerCenter 实时",
+    "sourceFallback": "本地备用",
+    "sourceHint": "Center 可达时使用企业数字员工列表；离线时保留本地备用，确保本体仍可用。",
+    "noCenterWorkers": "没有活跃的 Center iWorker",
+    "quickCall": "快速调用",
+    "categories": {
+      "all": "全部",
+      "office": "办公",
+      "data": "数据",
+      "operations": "运营",
+      "quality": "质量"
+    }
   }
 }

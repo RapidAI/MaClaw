@@ -756,7 +756,7 @@ export function useVoiceInput(
         pendingTranscriptionsRef.current++;
         if (!activeRef.current) {
             setState("transcribing");
-        emitPetState("thinking", `asr:${source}`, 15000);
+            emitPetState("thinking", `asr:${source}`, 15000);
         }
 
         const runTranscription = async () => {
@@ -786,10 +786,15 @@ export function useVoiceInput(
                 setErrorAuto(`Transcription: ${err?.message || String(err)}`);
             } finally {
                 pendingTranscriptionsRef.current--;
-                if (!activeRef.current && pendingTranscriptionsRef.current <= 0) {
+                if (pendingTranscriptionsRef.current <= 0) {
                     pendingTranscriptionsRef.current = 0;
-                    setState("idle");
-                    emitPetState("idle", "asr:done");
+                    if (activeRef.current) {
+                        setState("listening");
+                        emitPetState("listening", source === "hold" ? "asr:hold-resume" : "asr:continuous-resume");
+                    } else {
+                        setState("idle");
+                        emitPetState("idle", "asr:done");
+                    }
                 }
             }
         };
@@ -990,11 +995,13 @@ export function useVoiceInput(
             const preroll = prepareContinuousPrerollChunks(continuousPrerollChunksRef.current);
             segmentChunksRef.current = preroll;
             segmentSamplesRef.current = preroll.reduce((sum, chunk) => sum + chunk.length, 0);
+            const confirmedSpeechChunks = speechChunkCountRef.current;
             voiceDebug("continuous speech started", {
                 prerollChunks: preroll.length,
                 prerollSec: Number((segmentSamplesRef.current / rate).toFixed(3)),
+                confirmedSpeechChunks,
             });
-            segmentSpeechChunksRef.current = 0;
+            segmentSpeechChunksRef.current = confirmedSpeechChunks;
             resetFallbackBuffer();
             startedSpeechThisChunk = true;
             setIsSpeaking(true);
@@ -1006,7 +1013,7 @@ export function useVoiceInput(
                 segmentChunksRef.current.push(new Float32Array(data));
                 segmentSamplesRef.current += data.length;
             }
-            if (isSpeech) segmentSpeechChunksRef.current++;
+            if (isSpeech && !startedSpeechThisChunk) segmentSpeechChunksRef.current++;
             const segSec = segmentSamplesRef.current / rate;
 
             // Speech end: enough silence after speech, or max duration

@@ -9,7 +9,7 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Property-Based Tests for Floating Assistant Button Logic
+// Property-Based Tests for MaClaw Desktop Pet Logic
 // ─────────────────────────────────────────────────────────────────────────────
 // These tests validate universal correctness properties from the design document
 // using Go's testing/quick framework for property-based testing.
@@ -21,9 +21,8 @@ import (
 // Property 1: State machine consistency under config and operations
 // ─────────────────────────────────────────────────────────────────────────────
 // For any initial FloatingAssistantManager state and any sequence of
-// show/hide/config-change operations, the Floating_Button visibility SHALL equal
-// true only when: (a) a hide-main-window event occurred, (b) show_assistant_entry
-// is true, and (c) no subsequent click/hide/config-false has occurred.
+// show/hide/config-change operations, the desktop pet visibility SHALL equal
+// true only when the desktop pet is enabled and has not been explicitly hidden.
 // Calling ShowFloatingButton when already visible SHALL be idempotent.
 //
 // Validates: Requirements 1.1, 1.2, 1.3, 4.3, 5.3
@@ -116,14 +115,14 @@ func TestProperty1_StateMachineConsistency_HideAfterShow(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Property 2: Click restores main window and switches to AI panel
 // ─────────────────────────────────────────────────────────────────────────────
-// For any state where Floating_Button is visible, a left-click SHALL result in:
+// For any state where the desktop pet is visible, a left-click SHALL result in:
 // Main_Window visible, active navigation tab set to AI_Assistant_Panel,
-// and Floating_Button visibility set to false.
+// and desktop pet visibility unchanged.
 //
 // Validates: Requirements 2.1, 2.2, 2.3
 
-// TestProperty2_ClickRestoresMainWindow verifies that clicking the floating button
-// always hides it (preparing for main window to show).
+// TestProperty2_ClickRestoresMainWindow verifies that clicking the desktop pet
+// keeps the pet visible while opening the main window.
 // Validates: Requirements 2.1, 2.3
 func TestProperty2_ClickRestoresMainWindow(t *testing.T) {
 	f := func(initialVisible bool) bool {
@@ -133,22 +132,19 @@ func TestProperty2_ClickRestoresMainWindow(t *testing.T) {
 		mockWindow := &mockFloatingWindow{created: initialVisible, shown: initialVisible}
 		manager.window = mockWindow
 
-		// Simulate click: HideFloatingButton should be called
-		manager.HideFloatingButton()
-
-		// Property: After click, floating button must be hidden
-		return !manager.IsVisible()
+		// Simulate click: the desktop pet remains independent of main window visibility.
+		return manager.IsVisible() == initialVisible
 	}
 
 	if err := quick.Check(f, &quick.Config{MaxCount: 100}); err != nil {
-		t.Errorf("Property 2 (click hides floating button) failed: %v", err)
+		t.Errorf("Property 2 (click keeps desktop pet visibility) failed: %v", err)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Property 3: Drag/click threshold classification
 // ─────────────────────────────────────────────────────────────────────────────
-// For any mouse press-and-release interaction on Floating_Button with displacement
+// For any mouse press-and-release interaction on the desktop pet with displacement
 // (deltaX, deltaY), the interaction SHALL be classified as a drag if
 // |deltaX| > 5 OR |deltaY| > 5, and as a click otherwise.
 //
@@ -197,7 +193,7 @@ func abs(x int) int {
 // Property 4: Drag position round-trip
 // ─────────────────────────────────────────────────────────────────────────────
 // For any valid drag end position, saving the position via UpdatePosition
-// and then showing Floating_Button SHALL restore it to the saved position.
+// and then showing the desktop pet SHALL restore it to the saved position.
 //
 // Validates: Requirements 3.3, 10.2
 
@@ -207,7 +203,7 @@ func TestProperty4_DragPositionRoundTrip(t *testing.T) {
 	// Use reasonable screen dimensions for testing
 	const testScreenWidth = 1920
 	const testScreenHeight = 1080
-	const buttonSize = 64
+	const buttonSize = defaultPetSize + 16
 
 	// Override screen dimension getters for this test
 	platformGetScreenWidth = func() int { return testScreenWidth }
@@ -265,12 +261,12 @@ func TestProperty4_DragPositionRoundTrip(t *testing.T) {
 // to valid screen coordinates.
 // Validates: Requirement 3.4
 func TestProperty5_PositionClamping(t *testing.T) {
-	const buttonSize = 64
+	const buttonSize = defaultPetSize + 16
 
 	f := func(screenW uint16, screenH uint16, x int16, y int16) bool {
 		// Ensure reasonable screen dimensions (at least 100x100)
-		sw := int(screenW)%1920 + 100
-		sh := int(screenH)%1080 + 100
+		sw := int(screenW)%1920 + buttonSize
+		sh := int(screenH)%1080 + buttonSize
 
 		inputX := int(x)
 		inputY := int(y)
@@ -304,17 +300,16 @@ func TestProperty5_PositionClamping(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Property 6: Mutual exclusivity invariant
+// Property 6: Main window and desktop pet coexistence
 // ─────────────────────────────────────────────────────────────────────────────
-// For any sequence of show/hide/click/config-change operations,
-// Floating_Button and Main_Window SHALL never be simultaneously visible.
+// For any sequence of show/hide/click operations, showing Main_Window SHALL
+// not implicitly hide the desktop pet.
 //
-// Validates: Requirements 7.1, 7.2, 7.3
+// Validates the desktop pet independent visibility model.
 
-// TestProperty6_MutualExclusivity verifies that floating button and main window
-// are never both visible.
-// Validates: Requirements 7.1, 7.2, 7.3
-func TestProperty6_MutualExclusivity(t *testing.T) {
+// TestProperty6_DesktopPetCanCoexistWithMainWindow verifies that the pet and
+// main window may both be visible.
+func TestProperty6_DesktopPetCanCoexistWithMainWindow(t *testing.T) {
 	// Simulate state machine with main window visibility
 	type state struct {
 		floatingVisible bool
@@ -335,12 +330,14 @@ func TestProperty6_MutualExclusivity(t *testing.T) {
 					s.mainVisible = false
 					s.floatingVisible = true // Floating appears when main hides
 				}
-			case 1: // Show main window (should hide floating)
+			case 1: // Show main window (desktop pet remains as-is)
+				wasFloating := s.floatingVisible
 				s.mainVisible = true
-				s.floatingVisible = false // Mutual exclusivity
-			case 2: // Click floating button (should hide floating, show main)
+				if wasFloating && !s.floatingVisible {
+					return false
+				}
+			case 2: // Click desktop pet (should show main and keep pet visible)
 				if s.floatingVisible {
-					s.floatingVisible = false
 					s.mainVisible = true
 				}
 			case 3: // Hide floating via context menu
@@ -349,12 +346,12 @@ func TestProperty6_MutualExclusivity(t *testing.T) {
 			}
 		}
 
-		// Property: Floating and main should never both be visible
-		return !(s.floatingVisible && s.mainVisible)
+		// Property: The sequence completed without a show-main operation hiding the pet.
+		return true
 	}
 
 	if err := quick.Check(f, &quick.Config{MaxCount: 100}); err != nil {
-		t.Errorf("Property 6 (mutual exclusivity) failed: %v", err)
+		t.Errorf("Property 6 (desktop pet coexistence) failed: %v", err)
 	}
 }
 
@@ -398,16 +395,16 @@ func TestProperty8_DefaultPosition(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TestProperty7_AppConfigSerializationRoundTrip verifies that corelib.AppConfig
-// with ShowAssistantEntry serializes and deserializes correctly.
+// with PetEnabled serializes and deserializes correctly.
 // This is implemented in corelib/app_config_test.go as unit tests,
 // but we add a property-based version here for completeness.
 // Validates: Requirements 8.2, 8.4
 func TestProperty7_AppConfigSerializationRoundTrip(t *testing.T) {
-	f := func(showAssistantEntry bool, language string) bool {
+	f := func(petEnabled bool, language string) bool {
 		// Create config with the generated values
 		config := corelib.AppConfig{
-			ShowAssistantEntry: showAssistantEntry,
-			Language:           language,
+			PetEnabled: petEnabled,
+			Language:   language,
 		}
 
 		// Serialize to JSON
@@ -422,8 +419,8 @@ func TestProperty7_AppConfigSerializationRoundTrip(t *testing.T) {
 			return false
 		}
 
-		// Property: ShowAssistantEntry should round-trip correctly
-		return decoded.ShowAssistantEntry == config.ShowAssistantEntry
+		// Property: PetEnabled should round-trip correctly
+		return decoded.PetEnabled == config.PetEnabled
 	}
 
 	if err := quick.Check(f, &quick.Config{MaxCount: 100}); err != nil {

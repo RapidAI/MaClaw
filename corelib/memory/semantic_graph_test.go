@@ -79,6 +79,184 @@ func TestRecallDynamic_UsesSemanticGraphSignal(t *testing.T) {
 	}
 }
 
+func TestSearchByModeHybridRespectsLimit(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	for i := 0; i < 5; i++ {
+		if err := store.Save(Entry{
+			Content:  fmt.Sprintf("limit target memory %d", i),
+			Category: CategoryProjectKnowledge,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	results := store.SearchByMode("limit target", SearchHybrid, "", "", 2)
+	if len(results) != 2 {
+		t.Fatalf("hybrid SearchByMode should respect limit, got %d results: %+v", len(results), results)
+	}
+}
+func TestSearchByModeKeywordOnlyRespectsProjectScope(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	alphaProject := `D:\workprj\alpha`
+	betaProject := `D:\workprj\beta`
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{ID: "alpha-keyword", Content: "keyword scope target alpha", Category: CategoryProjectKnowledge, Scope: ScopeProject, Tags: []string{alphaProject}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+		{ID: "beta-keyword", Content: "keyword scope target beta", Category: CategoryProjectKnowledge, Scope: ScopeProject, Tags: []string{betaProject}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+	})
+	store.mu.Unlock()
+
+	results := store.SearchByMode("keyword scope target", SearchKeywordOnly, "", alphaProject, 10)
+	for _, entry := range results {
+		if entry.ID == "beta-keyword" {
+			t.Fatalf("keyword-only SearchByMode leaked beta project entry into alpha recall: %+v", results)
+		}
+	}
+}
+
+func TestSearchByModeDirectRespectsProjectScopeAndCategory(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	alphaProject := `D:\workprj\alpha`
+	betaProject := `D:\workprj\beta`
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{ID: "direct-alpha", Content: "alpha direct", Category: CategoryProjectKnowledge, Scope: ScopeProject, Tags: []string{alphaProject}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+		{ID: "direct-beta", Content: "beta direct", Category: CategoryProjectKnowledge, Scope: ScopeProject, Tags: []string{betaProject}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+		{ID: "direct-instruction", Content: "instruction direct", Category: CategoryInstruction, Scope: ScopeGlobal, CreatedAt: now, UpdatedAt: now, Strength: 1},
+	})
+	store.mu.Unlock()
+
+	if got := store.SearchByMode("direct-beta", SearchDirect, "", alphaProject, 1); len(got) != 0 {
+		t.Fatalf("direct SearchByMode should not bypass project scope, got %+v", got)
+	}
+	if got := store.SearchByMode("direct-alpha", SearchDirect, CategoryProject, alphaProject, 1); len(got) != 1 || got[0].ID != "direct-alpha" {
+		t.Fatalf("direct SearchByMode should allow canonical category match in project scope, got %+v", got)
+	}
+	if got := store.SearchByMode("direct-instruction", SearchDirect, CategoryProject, "", 1); len(got) != 0 {
+		t.Fatalf("direct SearchByMode should respect requested category, got %+v", got)
+	}
+}
+func TestRecallDynamicCategoryUsesCanonicalMatching(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{Content: "canonical project category target", Category: CategoryProjectKnowledge}); err != nil {
+		t.Fatal(err)
+	}
+	results := store.RecallDynamic("canonical project category target", CategoryProject, "")
+	if len(results) == 0 {
+		t.Fatal("Claude-style project category should match canonical project_knowledge entries")
+	}
+	for _, entry := range results {
+		if MapToCanonical(entry.Category) != CategoryProjectKnowledge {
+			t.Fatalf("unexpected non-project result for canonical project category: %+v", results)
+		}
+	}
+}
+
+type selectingLLMFilter struct {
+	ids []string
+}
+
+func (f selectingLLMFilter) SelectRelevant(query string, candidates []MemoryCandidate, maxResults int) ([]string, error) {
+	return f.ids, nil
+}
+
+func (f selectingLLMFilter) IsAvailable() bool { return true }
+
+func TestRecallWithLLMFilterTouchesOnlySelectedResults(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("candidate-%d", i)
+		if i == 5 {
+			id = "selected"
+		}
+		if err := store.Save(Entry{ID: id, Content: fmt.Sprintf("llm touch target memory %d", i), Category: CategoryProjectKnowledge}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	baseline := make(map[string]int)
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("candidate-%d", i)
+		entry := store.SearchDirectByID(id)
+		if len(entry) != 1 {
+			t.Fatalf("missing candidate %s", id)
+		}
+		baseline[id] = entry[0].AccessCount
+	}
+	selectedBefore := store.SearchDirectByID("selected")
+	if len(selectedBefore) != 1 {
+		t.Fatal("missing selected candidate")
+	}
+	baseline["selected"] = selectedBefore[0].AccessCount
+
+	results := store.RecallWithLLMFilter("llm touch target", "", selectingLLMFilter{ids: []string{"selected"}}, 1)
+	if len(results) != 1 || results[0].ID != "selected" {
+		t.Fatalf("expected only selected result, got %+v", results)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		selected := store.SearchDirectByID("selected")
+		if len(selected) == 1 && selected[0].AccessCount > baseline["selected"] {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	selected := store.SearchDirectByID("selected")
+	if len(selected) != 1 || selected[0].AccessCount <= baseline["selected"] {
+		t.Fatalf("selected result should be touched, before=%d after=%+v", baseline["selected"], selected)
+	}
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("candidate-%d", i)
+		entry := store.SearchDirectByID(id)
+		if len(entry) != 1 {
+			t.Fatalf("missing candidate %s", id)
+		}
+		if entry[0].AccessCount != baseline[id] {
+			t.Fatalf("unselected candidate %s should not be touched, before=%d after=%d", id, baseline[id], entry[0].AccessCount)
+		}
+	}
+}
+func TestRecallResultIDsDeduplicatesAndSkipsEmptyIDs(t *testing.T) {
+	ids := recallResultIDs([]Entry{{ID: "a"}, {ID: ""}, {ID: "a"}, {ID: "b"}})
+	want := []string{"a", "b"}
+	if len(ids) != len(want) {
+		t.Fatalf("expected %d ids, got %d: %+v", len(want), len(ids), ids)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("unexpected ids: got %+v want %+v", ids, want)
+		}
+	}
+}
 func TestRRFFuseScoresIgnoresZeroSignalChannels(t *testing.T) {
 	entries := []Entry{
 		{ID: "matched", Content: "alpha config"},
@@ -1995,5 +2173,63 @@ func TestSemanticGraphRelationOnlyBudgetUsesFinalPriority(t *testing.T) {
 	})
 	if len(hits) != 1 || hits[0].EntryID != "manual-current" {
 		t.Fatalf("relation-only budget should visit highest final-priority fact first, got %+v", hits)
+	}
+}
+
+func TestFindByEntityForProjectRespectsScopeCategoryAndOwner(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	alphaProject := `D:\workprj\alpha`
+	betaProject := `D:\workprj\beta`
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{ID: "entity-alpha", Content: "alpha scoped entity", Category: CategoryProjectKnowledge, Scope: ScopeProject, Tags: []string{alphaProject}, OwnerID: "userA", Entities: []string{"entity:alpha-host"}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+		{ID: "entity-beta", Content: "beta scoped entity", Category: CategoryProjectKnowledge, Scope: ScopeProject, Tags: []string{betaProject}, OwnerID: "userA", Entities: []string{"entity:alpha-host"}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+		{ID: "entity-wrong-owner", Content: "foreign owner entity", Category: CategoryProjectKnowledge, Scope: ScopeProject, Tags: []string{alphaProject}, OwnerID: "userB", Entities: []string{"entity:alpha-host"}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+		{ID: "entity-instruction", Content: "instruction entity", Category: CategoryInstruction, Scope: ScopeGlobal, OwnerID: "userA", Entities: []string{"entity:alpha-host"}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+	})
+	store.rebuildDerivedIndexesLocked(false)
+	store.mu.Unlock()
+
+	results := store.FindByEntityForProject("alpha-host", CategoryProject, `d:/workprj/alpha`, "userA")
+	if len(results) != 1 || results[0].ID != "entity-alpha" {
+		t.Fatalf("scoped entity lookup should keep only matching project/category/owner, got %+v", results)
+	}
+
+	raw := store.FindByEntity("alpha-host")
+	if len(raw) != 4 {
+		t.Fatalf("raw FindByEntity should keep backward-compatible active global lookup, got %+v", raw)
+	}
+}
+
+func TestFindByEntityForProjectAllowsSharedOwnerAndGlobalScope(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{ID: "shared-instruction", Content: "shared scoped entity", Category: CategoryInstruction, Scope: ScopeGlobal, Entities: []string{"entity:deploy-policy"}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+		{ID: "owned-instruction", Content: "owned scoped entity", Category: CategoryInstruction, Scope: ScopeGlobal, OwnerID: "userA", Entities: []string{"entity:deploy-policy"}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+		{ID: "foreign-instruction", Content: "foreign scoped entity", Category: CategoryInstruction, Scope: ScopeGlobal, OwnerID: "userB", Entities: []string{"entity:deploy-policy"}, CreatedAt: now, UpdatedAt: now, Strength: 1},
+	})
+	store.rebuildDerivedIndexesLocked(false)
+	store.mu.Unlock()
+
+	results := store.FindByEntityForProject("deploy-policy", CategoryFeedback, `D:\workprj\alpha`, "userA")
+	ids := map[string]bool{}
+	for _, entry := range results {
+		ids[entry.ID] = true
+	}
+	if !ids["shared-instruction"] || !ids["owned-instruction"] || ids["foreign-instruction"] || len(results) != 2 {
+		t.Fatalf("scoped entity lookup should include shared plus owner entries only, got %+v", results)
 	}
 }

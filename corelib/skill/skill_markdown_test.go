@@ -48,6 +48,28 @@ func TestImportMarkdownSkillDir_CreatesCraftToolWhenNoScripts(t *testing.T) {
 	}
 }
 
+func TestImportMarkdownSkillDir_AcceptsMixedCaseSkillMarkdown(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "mixed-skill-md")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Mixed Skill Markdown\n\n```bash\necho mixed-skill\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "Skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(Skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 || entry.Steps[0].Action != "bash" {
+		t.Fatalf("unexpected steps: %+v", entry.Steps)
+	}
+	if got := entry.Steps[0].Params["command"]; got != "echo mixed-skill" {
+		t.Fatalf("command = %#v, want %q", got, "echo mixed-skill")
+	}
+}
 func TestImportMarkdownSkillDir_AcceptsReadmeMarkdown(t *testing.T) {
 	root := t.TempDir()
 	skillDir := filepath.Join(root, "readme-tool")
@@ -93,6 +115,28 @@ func TestImportMarkdownSkillDir_AcceptsLowercaseReadmeMarkdown(t *testing.T) {
 	}
 	if got := entry.Steps[0].Params["command"]; got != "echo lower-readme" {
 		t.Fatalf("command = %#v, want %q", got, "echo lower-readme")
+	}
+}
+func TestImportMarkdownSkillDir_AcceptsMixedCaseReadmeMarkdown(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "mixed-readme-tool")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Mixed README Tool\n\n```bash\necho mixed-readme\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "Readme.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(Readme.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 || entry.Steps[0].Action != "bash" {
+		t.Fatalf("unexpected steps: %+v", entry.Steps)
+	}
+	if got := entry.Steps[0].Params["command"]; got != "echo mixed-readme" {
+		t.Fatalf("command = %#v, want %q", got, "echo mixed-readme")
 	}
 }
 func TestImportMarkdownSkillDir_AcceptsUppercaseSkillMarkdown(t *testing.T) {
@@ -782,5 +826,22 @@ func TestStripBashCommentLines(t *testing.T) {
 				t.Errorf("StripBashCommentLines(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFindSkillMarkdownDocPathPrefersCanonicalSkillMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Readme.md"), []byte("# readme docs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte("# skill docs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := findSkillMarkdownDocPath(dir)
+	if err != nil {
+		t.Fatalf("findSkillMarkdownDocPath() error = %v", err)
+	}
+	if filepath.Base(got) != "skill.md" {
+		t.Fatalf("findSkillMarkdownDocPath() = %q, want skill.md", got)
 	}
 }

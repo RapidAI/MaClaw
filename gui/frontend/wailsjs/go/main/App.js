@@ -70,6 +70,91 @@ export function GetRemoteActivationStatus() {
   return window['go']['main']['App']['GetRemoteActivationStatus']();
 }
 
+export function GetHubSecurityPolicy() {
+  return window['go']['main']['App']['GetHubSecurityPolicy']();
+}
+
+export function IsHubSecurityReadOnly() {
+  return window['go']['main']['App']['IsHubSecurityReadOnly']();
+}
+
+
+export function GroupDiscussionStatus() {
+  return window['go']['main']['App']['GroupDiscussionStatus']();
+}
+
+export function GroupDiscussionPublishProfile() {
+  return window['go']['main']['App']['GroupDiscussionPublishProfile']();
+}
+
+export function GroupDiscussionListExperts() {
+  return window['go']['main']['App']['GroupDiscussionListExperts']();
+}
+
+export function GroupDiscussionListMine(arg1) {
+  return window['go']['main']['App']['GroupDiscussionListMine'](arg1);
+}
+
+export function GroupDiscussionListInvites() {
+  return window['go']['main']['App']['GroupDiscussionListInvites']();
+}
+
+export function GroupDiscussionProcessPendingInvites() {
+  return window['go']['main']['App']['GroupDiscussionProcessPendingInvites']();
+}
+
+export function GroupDiscussionCreateConsultation(arg1) {
+  return window['go']['main']['App']['GroupDiscussionCreateConsultation'](arg1);
+}
+
+export function GroupDiscussionStartAuthorizedConsultation(arg1) {
+  return window['go']['main']['App']['GroupDiscussionStartAuthorizedConsultation'](arg1);
+}
+
+export function GroupDiscussionGetConsultation(arg1) {
+  return window['go']['main']['App']['GroupDiscussionGetConsultation'](arg1);
+}
+
+export function GroupDiscussionGetConsultationDetail(arg1) {
+  return window['go']['main']['App']['GroupDiscussionGetConsultationDetail'](arg1);
+}
+
+export function GroupDiscussionGetReadiness(arg1) {
+  return window['go']['main']['App']['GroupDiscussionGetReadiness'](arg1);
+}
+
+export function GroupDiscussionSummarizeResult(arg1) {
+  return window['go']['main']['App']['GroupDiscussionSummarizeResult'](arg1);
+}
+
+export function GroupDiscussionSendInvitation(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionSendInvitation'](arg1, arg2);
+}
+
+export function GroupDiscussionAcceptInvite(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionAcceptInvite'](arg1, arg2);
+}
+
+export function GroupDiscussionRejectInvite(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionRejectInvite'](arg1, arg2);
+}
+
+export function GroupDiscussionSendMessage(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionSendMessage'](arg1, arg2);
+}
+
+export function GroupDiscussionSubmitResult(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionSubmitResult'](arg1, arg2);
+}
+
+export function GroupDiscussionSetState(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionSetState'](arg1, arg2);
+}
+
+export function GroupDiscussionCleanupStale(arg1) {
+  return window['go']['main']['App']['GroupDiscussionCleanupStale'](arg1);
+}
+
 export function GetRemoteClaudeReadiness(arg1, arg2) {
   return window['go']['main']['App']['GetRemoteClaudeReadiness'](arg1, arg2);
 }
@@ -896,6 +981,50 @@ export function AgentNetSetMotto(arg1) {
   return window['go']['main']['App']['AgentNetSetMotto'](arg1);
 }
 
+export function AgentNetListPoIChallenges() {
+  return window['go']['main']['App']['AgentNetListPoIChallenges']();
+}
+
+export function AgentNetRespondToPoI(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetRespondToPoI'](arg1, arg2);
+}
+
+export function AgentNetGetPoIScores() {
+  return window['go']['main']['App']['AgentNetGetPoIScores']();
+}
+
+export function AgentNetFileDispute(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetFileDispute'](arg1, arg2);
+}
+
+export function AgentNetExtractDAG(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AgentNetExtractDAG'](arg1, arg2, arg3);
+}
+
+export function AgentNetQueryOntology(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetQueryOntology'](arg1, arg2);
+}
+
+export function AgentNetListServices() {
+  return window['go']['main']['App']['AgentNetListServices']();
+}
+
+export function AgentNetRegisterService(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['AgentNetRegisterService'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+}
+
+export function AgentNetUnregisterService(arg1) {
+  return window['go']['main']['App']['AgentNetUnregisterService'](arg1);
+}
+
+export function AgentNetCallService(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['AgentNetCallService'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function AgentNetDiscoverServices(arg1) {
+  return window['go']['main']['App']['AgentNetDiscoverServices'](arg1);
+}
+
 export function AgentNetListTopics() {
   return window['go']['main']['App']['AgentNetListTopics']();
 }
@@ -916,8 +1045,8 @@ export function AgentNetBidOnTask(arg1, arg2, arg3) {
   return window['go']['main']['App']['AgentNetBidOnTask'](arg1, arg2, arg3);
 }
 
-export function AgentNetSubmitTaskResult(arg1, arg2) {
-  return window['go']['main']['App']['AgentNetSubmitTaskResult'](arg1, arg2);
+export function AgentNetSubmitTaskDeliverable(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetSubmitTaskDeliverable'](arg1, arg2);
 }
 
 export function AgentNetApproveTask(arg1) {
@@ -1105,44 +1234,34 @@ export function AgentNetGetPredictionLeaderboard() {
   return window['go']['main']['App']['AgentNetGetPredictionLeaderboard']();
 }
 
-// Nutshell bindings
-export function AgentNetNutshellStatus() {
-  return window['go']['main']['App']['AgentNetNutshellStatus']();
+// AgentNet bundle bindings
+export function AgentNetBundleStatus() {
+  return window['go']['main']['App']['AgentNetBundleStatus']();
 }
 
-export function AgentNetNutshellInstall() {
-  return window['go']['main']['App']['AgentNetNutshellInstall']();
+export function AgentNetBundleInstall() {
+  return window['go']['main']['App']['AgentNetBundleInstall']();
 }
 
-export function AgentNetNutshellInit(arg1) {
-  return window['go']['main']['App']['AgentNetNutshellInit'](arg1);
+export function AgentNetBundlePack(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AgentNetBundlePack'](arg1, arg2, arg3);
 }
 
-export function AgentNetNutshellCheck(arg1) {
-  return window['go']['main']['App']['AgentNetNutshellCheck'](arg1);
+export function AgentNetBundleUnpack(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetBundleUnpack'](arg1, arg2);
 }
 
-export function AgentNetNutshellPublish(arg1, arg2) {
-  return window['go']['main']['App']['AgentNetNutshellPublish'](arg1, arg2);
+
+
+// Backfilled Wails bindings kept in sync with App.d.ts.
+export function GetExperienceAuditHealth() {
+  return window['go']['main']['App']['GetExperienceAuditHealth']();
 }
 
-export function AgentNetNutshellClaim(arg1, arg2) {
-  return window['go']['main']['App']['AgentNetNutshellClaim'](arg1, arg2);
+export function ListExperienceAudit() {
+  return window['go']['main']['App']['ListExperienceAudit']();
 }
 
-export function AgentNetNutshellDeliver(arg1) {
-  return window['go']['main']['App']['AgentNetNutshellDeliver'](arg1);
-}
-
-export function AgentNetNutshellPack(arg1, arg2, arg3) {
-  return window['go']['main']['App']['AgentNetNutshellPack'](arg1, arg2, arg3);
-}
-
-export function AgentNetNutshellUnpack(arg1, arg2) {
-  return window['go']['main']['App']['AgentNetNutshellUnpack'](arg1, arg2);
-}
-
-// AI Assistant bindings
 export function IsAIAssistantReady() {
   return window['go']['main']['App']['IsAIAssistantReady']();
 }
@@ -1203,7 +1322,6 @@ export function GetAIAssistantTrace(arg1) {
   return window['go']['main']['App']['GetAIAssistantTrace'](arg1);
 }
 
-// Background Loop bindings
 export function ListBackgroundLoops() {
   return window['go']['main']['App']['ListBackgroundLoops']();
 }
@@ -1240,7 +1358,6 @@ export function ExportAgentSkillDir(arg1, arg2) {
   return window['go']['main']['App']['ExportAgentSkillDir'](arg1, arg2);
 }
 
-// QQ Bot gateway bindings
 export function GetQQBotStatus() {
   return window['go']['main']['App']['GetQQBotStatus']();
 }
@@ -1249,7 +1366,6 @@ export function RestartQQBot() {
   return window['go']['main']['App']['RestartQQBot']();
 }
 
-// Telegram Bot gateway bindings
 export function GetTelegramStatus() {
   return window['go']['main']['App']['GetTelegramStatus']();
 }
@@ -1258,7 +1374,6 @@ export function RestartTelegram() {
   return window['go']['main']['App']['RestartTelegram']();
 }
 
-// WeChat gateway bindings
 export function GetWeixinStatus() {
   return window['go']['main']['App']['GetWeixinStatus']();
 }
@@ -1307,7 +1422,6 @@ export function SetTelegramLocalMode(arg1) {
   return window['go']['main']['App']['SetTelegramLocalMode'](arg1);
 }
 
-// Lansenger gateway bindings
 export function GetLansengerStatus() {
   return window['go']['main']['App']['GetLansengerStatus']();
 }
@@ -1348,7 +1462,6 @@ export function SetThirdPartyGatewayLocalMode(arg1) {
   return window['go']['main']['App']['SetThirdPartyGatewayLocalMode'](arg1);
 }
 
-// Gossip bindings
 export function GossipSnapshot(arg1) {
   return window['go']['main']['App']['GossipSnapshot'](arg1);
 }
@@ -1373,15 +1486,6 @@ export function IsGossipAllowed() {
   return window['go']['main']['App']['IsGossipAllowed']();
 }
 
-export function GetHubSecurityPolicy() {
-  return window['go']['main']['App']['GetHubSecurityPolicy']();
-}
-
-export function IsHubSecurityReadOnly() {
-  return window['go']['main']['App']['IsHubSecurityReadOnly']();
-}
-
-// NL Skill upload binding
 export function UploadNLSkillToMarket(arg1) {
   return window['go']['main']['App']['UploadNLSkillToMarket'](arg1);
 }
@@ -1446,7 +1550,6 @@ export function IsASRReady() {
   return window['go']['main']['App']['IsASRReady']();
 }
 
-// Screen parsing (OminiParser-V2) bindings
 export function GetScreenParsingEnabled() {
   return window['go']['main']['App']['GetScreenParsingEnabled']();
 }
@@ -1481,13 +1584,5 @@ export function RedeemHubLLMService(arg1) {
 
 export function HideFloatingButton() {
   return window['go']['main']['App']['HideFloatingButton']();
-}
-
-
-export function GetExperienceAuditHealth() {
-  return window['go']['main']['App']['GetExperienceAuditHealth']();
-}
-export function ListExperienceAudit() {
-  return window['go']['main']['App']['ListExperienceAudit']();
 }
 

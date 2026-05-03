@@ -108,6 +108,8 @@ type voiceItem struct {
 	BitsPerSample int       `json:"bits_per_sample,omitempty"`
 	SampleRate    int       `json:"sample_rate,omitempty"`
 	Playtime      int       `json:"playtime,omitempty"`
+	Len           string    `json:"len,omitempty"`
+	VoiceMD5      string    `json:"voice_md5,omitempty"`
 	Text          string    `json:"text,omitempty"`
 }
 
@@ -1305,6 +1307,10 @@ func buildVoiceItem(media *cdnMedia, meta *voiceMetadata) *voiceItem {
 	if meta != nil {
 		item.SampleRate = meta.sampleRate
 		item.Playtime = meta.playtimeMS
+		if meta.payloadSize > 0 {
+			item.Len = strconv.Itoa(meta.payloadSize)
+		}
+		item.VoiceMD5 = meta.payloadMD5
 	}
 	return item
 }
@@ -1316,6 +1322,8 @@ type voiceMetadata struct {
 	playtimeMS    int
 	dataStart     int
 	dataSize      int
+	payloadSize   int
+	payloadMD5    string
 }
 
 func estimateVoicePlaytimeMS(data []byte) int {
@@ -1344,7 +1352,8 @@ func wavVoicePayload(data []byte) ([]byte, voiceMetadata, bool) {
 
 func voiceUploadPayload(fileName string, data []byte) ([]byte, *voiceMetadata, error) {
 	if isSilkVoicePayload(data) {
-		meta := &voiceMetadata{sampleRate: weixinVoiceSampleRate, playtimeMS: estimateSilkPlaytimeMS(data)}
+		h := md5.Sum(data)
+		meta := &voiceMetadata{sampleRate: weixinVoiceSampleRate, playtimeMS: estimateSilkPlaytimeMS(data), payloadSize: len(data), payloadMD5: hex.EncodeToString(h[:])}
 		return data, meta, nil
 	}
 
@@ -1395,6 +1404,9 @@ func encodeWAVVoicePayload(pcm []byte, meta voiceMetadata) ([]byte, *voiceMetada
 	outMeta.sampleRate = weixinVoiceSampleRate
 	outMeta.channels = 1
 	outMeta.bitsPerSample = 0
+	outMeta.payloadSize = len(silkData)
+	h := md5.Sum(silkData)
+	outMeta.payloadMD5 = hex.EncodeToString(h[:])
 	return silkData, &outMeta, nil
 }
 

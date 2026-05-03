@@ -1,20 +1,14 @@
 import type { CenterTab } from '../../types';
 
-type NavItem = {
-  id: CenterTab;
-  label: string;
-  hint: string;
-};
-
-type Props = {
-  activeTab: CenterTab;
-  onChange: (tab: CenterTab) => void;
-};
+type NavItem = { id: CenterTab; label: string; hint: string };
+type Props = { activeTab: CenterTab; onChange: (tab: CenterTab) => void };
 
 const items: NavItem[] = [
   { id: 'overview', label: '总览', hint: '运行概览与告警' },
+  { id: 'bootstrap', label: '单位初始化', hint: '新租户启动计划' },
   { id: 'employees', label: '数字员工', hint: '身份、角色与策略' },
   { id: 'communications', label: '员工通讯', hint: '协作记录与请求流转' },
+  { id: 'groupDiscussion', label: '群组讨论', hint: 'MaClaw 专家会诊' },
   { id: 'workflows', label: '流程设计', hint: '编排任务流转' },
   { id: 'knowledge', label: '经验共享', hint: '经验沉淀与复用' },
   { id: 'packages', label: '能力包', hint: '技能与 MCP 下发' },
@@ -25,7 +19,7 @@ const items: NavItem[] = [
   { id: 'usage', label: '使用情况', hint: '统计与趋势' },
   { id: 'im', label: 'IM 管理', hint: '飞书/钉钉/企微' },
   { id: 'auth', label: '认证管理', hint: 'LDAP/本地/OIDC' },
-  { id: 'settings', label: '账户设置', hint: '资料、密码与租户模式' },
+  { id: 'settings', label: '账号设置', hint: '资料、密码与租户模式' },
 ];
 
 export function SideNav({ activeTab, onChange }: Props) {
@@ -38,12 +32,7 @@ export function SideNav({ activeTab, onChange }: Props) {
       </div>
       <nav className="center-nav">
         {items.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={item.id === activeTab ? 'active' : ''}
-            onClick={() => onChange(item.id)}
-          >
+          <button key={item.id} type="button" className={item.id === activeTab ? 'active' : ''} onClick={() => onChange(item.id)}>
             <span>{item.label}</span>
             <small>{item.hint}</small>
           </button>

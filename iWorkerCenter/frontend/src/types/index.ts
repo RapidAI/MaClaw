@@ -1,7 +1,9 @@
 export type CenterTab =
   | 'overview'
+  | 'bootstrap'
   | 'employees'
   | 'communications'
+  | 'groupDiscussion'
   | 'workflows'
   | 'knowledge'
   | 'packages'

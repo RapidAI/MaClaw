@@ -148,18 +148,32 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 		if err != nil || !subInfo.IsDir() {
 			continue
 		}
-		subDir := filepath.Join(dir, entry.Name())
-		for _, name := range []string{"skill.yaml", "skill.yml", "skill.md", "SKILL.md", "README.md", "readme.md"} {
-			if _, err := os.Stat(filepath.Join(subDir, name)); err == nil {
-				count++
-				break
-			}
+		if externalSkillDirHasDefinition(filepath.Join(dir, entry.Name())) {
+			count++
 		}
 	}
 	if count == 0 {
-		return 0, fmt.Errorf("no valid skill subdirectories found (need skill.yaml, skill.yml, skill.md, SKILL.md, README.md, or readme.md)")
+		return 0, fmt.Errorf("no valid skill subdirectories found (need skill.yaml/skill.yml or markdown docs such as skill.md/SKILL.md/README.md)")
 	}
 	return count, nil
+}
+
+func externalSkillDirHasDefinition(skillDir string) bool {
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		if _, err := os.Stat(filepath.Join(skillDir, name)); err == nil {
+			return true
+		}
+	}
+	entries, err := os.ReadDir(skillDir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && isSkillMarkdownDocName(entry.Name()) {
+			return true
+		}
+	}
+	return false
 }
 
 // ScanAllSkillDirs scans all known skill directories and returns

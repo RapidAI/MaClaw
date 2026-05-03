@@ -74,6 +74,14 @@ type Manager struct {
 	schema []ConfigSection
 }
 
+type defaultLaunchModeSetter interface {
+	SetDefaultLaunchMode(mode string) error
+}
+
+func isDefaultLaunchModeChange(section, key string) bool {
+	return strings.EqualFold(section, "remote") && strings.EqualFold(key, "default_launch_mode")
+}
+
 // NewManager creates a Manager and initialises its schema.
 func NewManager(store ConfigStore) *Manager {
 	m := &Manager{store: store}
@@ -333,6 +341,15 @@ func (m *Manager) UpdateConfig(section, key, value string) (string, error) {
 	if err := m.validateChange(section, key, value); err != nil {
 		return "", err
 	}
+	if isDefaultLaunchModeChange(section, key) {
+		oldValue := cfg.DefaultLaunchMode
+		if setter, ok := m.store.(defaultLaunchModeSetter); ok {
+			if err := setter.SetDefaultLaunchMode(value); err != nil {
+				return "", fmt.Errorf("failed to save config: %w", err)
+			}
+			return maskIfSensitive(key, oldValue), nil
+		}
+	}
 
 	oldValue, err := m.applyChange(&cfg, section, key, value)
 	if err != nil {
@@ -362,7 +379,13 @@ func (m *Manager) BatchUpdate(changes []ConfigChange) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	defaultLaunchMode := ""
+	setter, hasDefaultLaunchModeSetter := m.store.(defaultLaunchModeSetter)
 	for _, c := range changes {
+		if isDefaultLaunchModeChange(c.Section, c.Key) && hasDefaultLaunchModeSetter {
+			defaultLaunchMode = c.Value
+			continue
+		}
 		if _, err := m.applyChange(&cfg, c.Section, c.Key, c.Value); err != nil {
 			return fmt.Errorf("apply failed for %s.%s: %w", c.Section, c.Key, err)
 		}
@@ -370,6 +393,11 @@ func (m *Manager) BatchUpdate(changes []ConfigChange) error {
 
 	if err := m.store.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
+	}
+	if defaultLaunchMode != "" {
+		if err := setter.SetDefaultLaunchMode(defaultLaunchMode); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
 	}
 	return nil
 }

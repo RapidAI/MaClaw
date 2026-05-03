@@ -71,7 +71,14 @@ type SkillExecutor struct {
 	sshMgr      *remote.SSHSessionManager
 	bgTaskMgr   *remote.SSHBackgroundTaskManager
 	mu          sync.RWMutex
+
+	skillCacheMu  sync.Mutex
+	skillCache    []corelib.NLSkillEntry
+	skillCacheAt  time.Time
+	skillCacheKey string
 }
+
+const skillLoadCacheTTL = 30 * time.Second
 
 // NewSkillExecutor creates a new client-side Skill executor.
 func NewSkillExecutor(app *App, mcpRegistry *MCPRegistry, manager *RemoteSessionManager) *SkillExecutor {
@@ -97,6 +104,15 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	if err != nil {
 		return nil
 	}
+	cacheKey := skillLoadCacheKey(cfg.NLSkills, cfg.ExternalSkillDirs)
+	e.skillCacheMu.Lock()
+	if e.skillCache != nil && e.skillCacheKey == cacheKey && time.Since(e.skillCacheAt) < skillLoadCacheTTL {
+		cached := cloneSkillEntries(e.skillCache)
+		e.skillCacheMu.Unlock()
+		return cached
+	}
+	e.skillCacheMu.Unlock()
+
 	skills := append([]corelib.NLSkillEntry(nil), cfg.NLSkills...)
 
 	// Build two indexes: primary by directory path (stable), fallback by Name.
@@ -109,7 +125,7 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		knownByName[s.Name] = i
 	}
 
-	fileSkills := e.scanSkillYAMLFiles()
+	fileSkills := skill.ScanAllSkillDirsWithExternal(cfg.ExternalSkillDirs)
 	for _, fs := range fileSkills {
 		// Primary: match by directory path (stable identity).
 		// Fallback: match by Name (backward compat for config entries without SkillDir).
@@ -155,7 +171,166 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		knownByName[fs.Name] = newIdx
 	}
 
-	return skills
+	e.skillCacheMu.Lock()
+	e.skillCache = cloneSkillEntries(skills)
+	e.skillCacheAt = time.Now()
+	e.skillCacheKey = cacheKey
+	e.skillCacheMu.Unlock()
+
+	return cloneSkillEntries(skills)
+}
+
+func (e *SkillExecutor) invalidateSkillCache() {
+	e.skillCacheMu.Lock()
+	e.skillCache = nil
+	e.skillCacheAt = time.Time{}
+	e.skillCacheKey = ""
+	e.skillCacheMu.Unlock()
+}
+
+func skillLoadCacheKey(skills []corelib.NLSkillEntry, externalDirs []string) string {
+	payload := struct {
+		Skills       []corelib.NLSkillEntry `json:"skills"`
+		ExternalDirs []string               `json:"external_dirs"`
+	}{
+		Skills:       skills,
+		ExternalDirs: externalDirs,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf("skills=%d external=%s", len(skills), strings.Join(externalDirs, string(os.PathListSeparator)))
+	}
+	return string(data)
+}
+
+func cloneSkillEntries(in []corelib.NLSkillEntry) []corelib.NLSkillEntry {
+	out := append([]corelib.NLSkillEntry(nil), in...)
+	for i := range out {
+		out[i].Triggers = cloneStringSlice(out[i].Triggers)
+		out[i].Steps = cloneSkillSteps(out[i].Steps)
+		out[i].Operations = cloneSkillOperations(out[i].Operations)
+		out[i].Params = cloneSkillParams(out[i].Params)
+		out[i].RequiredArgs = cloneStringSlice(out[i].RequiredArgs)
+		out[i].Platforms = cloneStringSlice(out[i].Platforms)
+		out[i].RequiresTools = cloneStringSlice(out[i].RequiresTools)
+		out[i].FallbackForTools = cloneStringSlice(out[i].FallbackForTools)
+		out[i].RequiresToolsets = cloneStringSlice(out[i].RequiresToolsets)
+		out[i].FallbackForToolsets = cloneStringSlice(out[i].FallbackForToolsets)
+		out[i].RequiredCredentialFiles = cloneStringSlice(out[i].RequiredCredentialFiles)
+		out[i].RequiresPython = cloneStringSlice(out[i].RequiresPython)
+		out[i].RequiresNode = cloneStringSlice(out[i].RequiresNode)
+		out[i].RequiredEnv = cloneStringSlice(out[i].RequiredEnv)
+		out[i].RepairHistory = append([]corelib.SkillRepairRecord(nil), out[i].RepairHistory...)
+		out[i].SolidificationCandidates = cloneSolidificationCandidates(out[i].SolidificationCandidates)
+		out[i].References = append([]corelib.SkillReference(nil), out[i].References...)
+		out[i].Pipeline = cloneSkillPipelineSteps(out[i].Pipeline)
+	}
+	return out
+}
+
+func cloneSkillSteps(in []corelib.NLSkillStep) []corelib.NLSkillStep {
+	out := append([]corelib.NLSkillStep(nil), in...)
+	for i := range out {
+		out[i].Params = cloneInterfaceMap(out[i].Params)
+		out[i].Capture = cloneStringMap(out[i].Capture)
+		if out[i].Poll != nil {
+			poll := *out[i].Poll
+			out[i].Poll = &poll
+		}
+		if out[i].Loop != nil {
+			loop := *out[i].Loop
+			out[i].Loop = &loop
+		}
+		if out[i].FallbackStep != nil {
+			fallback := cloneSkillSteps([]corelib.NLSkillStep{*out[i].FallbackStep})[0]
+			out[i].FallbackStep = &fallback
+		}
+	}
+	return out
+}
+
+func cloneSkillOperations(in []corelib.NLSkillOperation) []corelib.NLSkillOperation {
+	out := append([]corelib.NLSkillOperation(nil), in...)
+	for i := range out {
+		out[i].Params = cloneStringSlice(out[i].Params)
+		out[i].Labels = cloneStringSlice(out[i].Labels)
+	}
+	return out
+}
+
+func cloneSkillParams(in []corelib.NLSkillParam) []corelib.NLSkillParam {
+	out := append([]corelib.NLSkillParam(nil), in...)
+	for i := range out {
+		out[i].Aliases = cloneStringSlice(out[i].Aliases)
+	}
+	return out
+}
+
+func cloneSolidificationCandidates(in []corelib.SolidificationCandidate) []corelib.SolidificationCandidate {
+	out := append([]corelib.SolidificationCandidate(nil), in...)
+	for i := range out {
+		out[i].ParamSlots = cloneStringSlice(out[i].ParamSlots)
+	}
+	return out
+}
+
+func cloneSkillPipelineSteps(in []corelib.SkillPipelineStep) []corelib.SkillPipelineStep {
+	out := append([]corelib.SkillPipelineStep(nil), in...)
+	for i := range out {
+		out[i].Params = cloneStringMap(out[i].Params)
+	}
+	return out
+}
+
+func cloneInterfaceMap(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = cloneInterfaceValue(v)
+	}
+	return out
+}
+
+func cloneInterfaceValue(v interface{}) interface{} {
+	switch typed := v.(type) {
+	case map[string]interface{}:
+		return cloneInterfaceMap(typed)
+	case map[interface{}]interface{}:
+		out := make(map[interface{}]interface{}, len(typed))
+		for k, v := range typed {
+			out[k] = cloneInterfaceValue(v)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(typed))
+		for i, v := range typed {
+			out[i] = cloneInterfaceValue(v)
+		}
+		return out
+	case []string:
+		return cloneStringSlice(typed)
+	case map[string]string:
+		return cloneStringMap(typed)
+	default:
+		return v
+	}
+}
+
+func cloneStringSlice(in []string) []string {
+	return append([]string(nil), in...)
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // shouldHydrateSkillFromFile is a predicate that decides whether a config-based
@@ -216,7 +391,11 @@ func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 		filtered = append(filtered, s)
 	}
 	cfg.NLSkills = filtered
-	return e.app.SaveConfig(cfg)
+	if err := e.app.SaveConfig(cfg); err != nil {
+		return err
+	}
+	e.invalidateSkillCache()
+	return nil
 }
 
 // Register adds a new Skill definition.
@@ -574,17 +753,16 @@ func (e *SkillExecutor) readSkillBody(entry corelib.NLSkillEntry) string {
 }
 
 func readSkillMarkdownBody(skillDir, skillName string) string {
-	for _, name := range []string{"skill.md", "SKILL.md", "README.md", "readme.md"} {
-		mdPath := filepath.Join(skillDir, name)
-		data, err := os.ReadFile(mdPath)
-		if err == nil {
-			return string(data)
-		}
-		if !os.IsNotExist(err) {
-			log.Printf("[SkillRegister] WARN: cannot read %s for %s: %v", name, skillName, err)
-		}
+	mdPath := findSkillMarkdownDocPath(skillDir)
+	if mdPath == "" {
+		return ""
 	}
-	return ""
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		log.Printf("[SkillRegister] WARN: cannot read %s for %s: %v", filepath.Base(mdPath), skillName, err)
+		return ""
+	}
+	return string(data)
 }
 
 func (e *SkillExecutor) executeSkillSteps(skill *corelib.NLSkillEntry) (string, error) {
@@ -1547,7 +1725,7 @@ func (a *App) importNLSkillZipPath(selection string) (string, error) {
 	if name, err := a.importFileBackedSkillZipPath(selection); err == nil {
 		return name, nil
 	}
-	return "", fmt.Errorf("zip 包中未找到可识别的 Skill 定义文件（支持 skill.yaml、skill.yml 或 skill.md；旧格式 SKILL.md/_meta.json 需先升级）")
+	return "", fmt.Errorf("zip package contains no recognizable Skill definition file (need skill.yaml/skill.yml or markdown docs such as skill.md/SKILL.md/README.md; legacy SKILL.md/_meta.json must be migrated)")
 }
 
 func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
@@ -1634,7 +1812,7 @@ func resolveImportedSkillPackageRoots(sandboxDir string) ([]string, error) {
 		}
 	}
 	if len(roots) == 0 {
-		return nil, fmt.Errorf("zip 包中未找到可识别的 Skill 定义文件（支持 skill.yaml、skill.yml 或 skill.md）")
+		return nil, fmt.Errorf("zip package contains no recognizable Skill definition file (need skill.yaml/skill.yml or markdown docs such as skill.md/SKILL.md/README.md)")
 	}
 	return roots, nil
 }
@@ -1651,12 +1829,16 @@ func importedSkillDefinitionExists(dir string) bool {
 			continue
 		}
 		switch entry.Name() {
-		case "skill.yaml", "skill.yml", "skill.md":
+		case "skill.yaml", "skill.yml":
 			return true
 		case "SKILL.md":
 			hasLegacySkillMD = true
 		case "_meta.json":
 			hasLegacyMeta = true
+		default:
+			if isSkillMarkdownDocFileName(entry.Name()) {
+				return true
+			}
 		}
 	}
 	return hasLegacySkillMD && !hasLegacyMeta
@@ -1723,7 +1905,7 @@ func loadImportedSkillEntry(skillDir string) (*corelib.NLSkillEntry, error) {
 		SkillDir:     skillDir,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("技能包中未找到可导入的 skill.md，也未找到兼容的 skill.yaml/skill.yml: %v", err)
+		return nil, fmt.Errorf("skill package has no importable markdown docs and no compatible skill.yaml/skill.yml: %v", err)
 	}
 	return parsed, nil
 }
@@ -2245,6 +2427,16 @@ func copyDirContents(src, dst string) error {
 		if err != nil {
 			return err
 		}
+		if rel == "." {
+			return nil
+		}
+		base := filepath.Base(path)
+		if entry.IsDir() && isSkillRuntimePackageDir(base) {
+			return filepath.SkipDir
+		}
+		if !entry.IsDir() && isSkillRuntimePackageFile(base) {
+			return nil
+		}
 		target := filepath.Join(dstAbs, rel)
 		if !pathWithinDir(dstAbs, target) {
 			return fmt.Errorf("illegal copy target: %s", target)
@@ -2316,7 +2508,10 @@ func zipDirectory(srcDir, zipPath string) error {
 			return nil
 		}
 		base := filepath.Base(path)
-		if !entry.IsDir() && (strings.HasSuffix(base, ".bak") || base == "upload_status.json" || base == "quality_status.json") {
+		if entry.IsDir() && isSkillRuntimePackageDir(base) {
+			return filepath.SkipDir
+		}
+		if !entry.IsDir() && isSkillRuntimePackageFile(base) {
 			return nil
 		}
 		zipName := filepath.ToSlash(rel)

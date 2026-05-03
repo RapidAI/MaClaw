@@ -154,6 +154,7 @@ type App struct {
 	steeringStore              *steering.Store          // declarative rule injection (corelib/steering)
 	codeEventEmitter           *CodeEventEmitter        // emits code file events to frontend for code preview panel
 	floatingAssistant          *FloatingAssistantManager
+	floatingAssistantMu        sync.Mutex
 
 	// IM audit store (SQLite-backed IM message audit for review/export).
 	imAuditStore   *IMAuditStore
@@ -1016,6 +1017,8 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		handler.SetBackgroundLoopManager(blm)
 		// Register GUI automation tools with async background replay support.
 		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC)
+		// Keep group discussion available after late tool registration rebuilds.
+		registerGroupDiscussionTools(handler.registry, a, handler)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
 		// Wire skill-aware routing to the tool builder.
@@ -1286,6 +1289,13 @@ func (a *App) startup(ctx context.Context) {
 			}()
 		}
 		go a.startIWorkerGoalWatchIfConfigured(config)
+		if config.PetEnabled {
+			go func(cfg corelib.AppConfig) {
+				if fa := a.ensureFloatingAssistant(); fa != nil {
+					fa.RefreshAppearance(cfg)
+				}
+			}(config)
+		}
 
 		// Initialize workflow engine (SQLite store + registry + cleanup goroutine).
 		go a.initWorkflowEngine()
@@ -4732,8 +4742,18 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	if OnConfigChanged != nil {
 		go OnConfigChanged(config)
 	}
-	if floatingChanged && a.floatingAssistant != nil {
-		go a.floatingAssistant.RefreshAppearance(config)
+	if floatingChanged {
+		go func(cfg corelib.AppConfig) {
+			if cfg.PetEnabled {
+				if fa := a.ensureFloatingAssistant(); fa != nil {
+					fa.RefreshAppearance(cfg)
+				}
+				return
+			}
+			if fa := a.existingFloatingAssistant(); fa != nil {
+				fa.RefreshAppearance(cfg)
+			}
+		}(config)
 	}
 	if hubClient != nil {
 		go func(client *RemoteHubClient) {
@@ -6030,13 +6050,12 @@ func (a *App) validateSkillZip(path string) error {
 				continue
 			}
 			rootFileCount++
-			switch parts[0] {
-			case "skill.md", "SKILL.md":
+			if isSkillMarkdownDocFileName(parts[0]) {
 				validRootMarkdown = true
 				if parts[0] == "SKILL.md" {
 					rootHasLegacyMD = true
 				}
-			case "_meta.json":
+			} else if parts[0] == "_meta.json" {
 				rootHasLegacyMeta = true
 			}
 			continue
@@ -6048,13 +6067,12 @@ func (a *App) validateSkillZip(path string) error {
 			layouts[dir] = layout
 		}
 		if len(parts) == 2 {
-			switch parts[1] {
-			case "skill.md", "SKILL.md":
+			if isSkillMarkdownDocFileName(parts[1]) {
 				layout.hasMarkdown = true
 				if parts[1] == "SKILL.md" {
 					layout.hasLegacyMD = true
 				}
-			case "_meta.json":
+			} else if parts[1] == "_meta.json" {
 				layout.hasLegacyMeta = true
 			}
 		}
@@ -6063,11 +6081,11 @@ func (a *App) validateSkillZip(path string) error {
 		return nil
 	}
 	if rootHasLegacyMD || rootHasLegacyMeta {
-		return fmt.Errorf("婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂佺硶鏅涢惌鍌氼嚕椤旀妲奸梺缁橆殘椤牓顢氶敐鍫㈢杸闁哄倽顕冲Δ鍛厾閻庡湱濮甸ˉ澶愭倵閸偓鑰块柡浣哥Ч瀹曠兘鎮扮徊鈧琇L.md/_meta.json闂備焦瀵х粙鎴βㄩ埀顒傜磼鏉堫偂鍚柟椋庡Т閻ｏ繝寮剁捄顭掔处缂傚倷鑳剁€氬繘宕掑┑鍫Ч skill.yaml 闂?skill.md")
+		return fmt.Errorf("legacy SKILL.md/_meta.json skill packages must be migrated to skill.yaml or skill.md")
 	}
 	if len(layouts) == 0 {
 		if rootFileCount > 0 {
-			return fmt.Errorf("skill package root must contain skill.md or SKILL.md")
+			return fmt.Errorf("skill package root must contain skill.md/SKILL.md or README.md in a common case variant")
 		}
 		return fmt.Errorf("skill package is empty or contains no valid directories")
 	}
@@ -6076,7 +6094,7 @@ func (a *App) validateSkillZip(path string) error {
 			return fmt.Errorf("directory '%s' uses legacy skill format (SKILL.md/_meta.json); please migrate to skill.yaml or skill.md", dir)
 		}
 		if !layout.hasMarkdown {
-			return fmt.Errorf("directory '%s' is missing skill.md or SKILL.md", dir)
+			return fmt.Errorf("directory '%s' is missing skill.md/SKILL.md or README.md in a common case variant", dir)
 		}
 	}
 	return nil

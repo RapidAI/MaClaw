@@ -290,7 +290,17 @@
         "name": "Brand design expert",
         "desc": "Reuses brand visual assets to generate design proposals quickly."
       }
-    }
+    },
+    "refreshCenterTools": "Refresh Center tools",
+    "syncing": "Syncing",
+    "centerLive": "Center live",
+    "centerStale": "Center stale",
+    "cachedSnapshot": "Cached snapshot",
+    "unavailable": "Unavailable",
+    "localFallback": "Local fallback",
+    "displayOnly": "display only",
+    "centerSkillDesc": "Center-distributed iWorker skill.",
+    "centerMcpDesc": "Center-installed MCP service."
   },
   "settings": {
     "eyebrow": "Configuration",
@@ -394,5 +404,27 @@
     "healthUnreachableTitle": "Center is currently unreachable",
     "manualCheck": "Manual check",
     "autoCheck": "Auto check after save"
+  },
+  "colleaguesPage": {
+    "title": "Colleague center",
+    "subtitle": "Browse digital coworkers from iWorkerCenter and start the right handoff quickly.",
+    "refresh": "Refresh",
+    "loading": "Loading...",
+    "categoryAria": "Colleague categories",
+    "gridAria": "Digital coworker cards",
+    "empty": "No colleagues in this category yet.",
+    "source": "Source",
+    "sourceCenter": "iWorkerCenter live",
+    "sourceFallback": "Local fallback",
+    "sourceHint": "When Center is reachable, this page uses the enterprise iWorker list. Local fallback keeps the body usable offline.",
+    "noCenterWorkers": "No active Center iWorkers",
+    "quickCall": "Quick call",
+    "categories": {
+      "all": "All",
+      "office": "Office",
+      "data": "Data",
+      "operations": "Operations",
+      "quality": "Quality"
+    }
   }
 }

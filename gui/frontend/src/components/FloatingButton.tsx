@@ -1,18 +1,13 @@
-/**
- * FloatingButton.tsx - Floating assistant button component (rendered in the second window).
+﻿/**
+ * FloatingButton.tsx - MaClaw desktop pet component rendered in the companion window.
  *
- * Renders a 56x56px circular button with the maclaw logo and a pulsing halo animation.
- * Supports:
- *   - Left-click calls OnFloatingButtonClicked() via Wails binding
- *   - Drag (displacement > 5px) calls OnFloatingButtonDragged(x, y) with rAF throttling
- *   - Right-click opens a custom context menu
- *
- * Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 3.1, 3.2, 4.1, 4.2, 4.3, 4.4, 11.3
+ * Supports click-to-open, drag positioning, animated pet states, motion SFX,
+ * and a minimal context menu for quitting the app.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import type { MouseEvent as ReactMouseEvent } from 'react';
-import { EventsOn } from '../../wailsjs/runtime';
+import type { AnimationEvent as ReactAnimationEvent, MouseEvent as ReactMouseEvent } from 'react';
+import { EventsOff, EventsOn } from '../../wailsjs/runtime';
 import './FloatingButton.css';
 import logoSrc from '../assets/images/maclaw2.png';
 import { defaultPetSize, defaultPetSkinId, getPetSkinOption, normalizePetSkinId, type PetSkinId } from './petSkins';
@@ -28,10 +23,8 @@ declare global {
                 App?: {
                     OnFloatingButtonClicked(): Promise<void>;
                     OnFloatingButtonDragged(x: number, y: number): Promise<void>;
-                    HideFloatingButton(): Promise<void>;
                     QuitApp(): Promise<void>;
                     LoadConfig(): Promise<Record<string, unknown>>;
-                    SaveConfig(config: Record<string, unknown>): Promise<void>;
                 };
             };
         };
@@ -40,7 +33,6 @@ declare global {
 
 function callGoBinding(method: 'OnFloatingButtonClicked'): void;
 function callGoBinding(method: 'OnFloatingButtonDragged', x: number, y: number): void;
-function callGoBinding(method: 'HideFloatingButton'): void;
 function callGoBinding(method: 'QuitApp'): void;
 function callGoBinding(method: string, ...args: unknown[]): void {
     try {
@@ -60,12 +52,23 @@ const DRAG_THRESHOLD = 5;
 
 type PetState = 'idle' | 'listening' | 'thinking' | 'speaking';
 type PetInteractionMode = 'quiet' | 'balanced' | 'active';
+type MotionSoundVariant = 'step' | 'accent' | 'flutter';
+type PetGesture = 'none' | 'wake' | 'drag' | 'menu';
 
 type PetStateEvent = {
     state?: PetState;
     source?: string;
     ttlMs?: number;
 };
+
+function subscribeRuntimeEvent(eventName: string, handler: (...args: any[]) => void): () => void {
+    const unsubscribe = EventsOn(eventName, handler);
+    return typeof unsubscribe === 'function' ? unsubscribe : () => EventsOff(eventName);
+}
+
+function isAsrSource(source: unknown): boolean {
+    return typeof source === 'string' && source.startsWith('asr:');
+}
 
 interface FloatingPetConfig {
     petEnabled: boolean;
@@ -103,6 +106,10 @@ function isPetState(value: unknown): value is PetState {
     return value === 'idle' || value === 'listening' || value === 'thinking' || value === 'speaking';
 }
 
+function isMotionSoundAllowed(config: FloatingPetConfig): boolean {
+    return config.petEnabled && !config.quietMode && config.motionEnabled && config.motionSoundEnabled;
+}
+
 function readPetConfig(cfg: Record<string, unknown>): FloatingPetConfig {
     return {
         petEnabled: !!cfg.pet_enabled,
@@ -115,6 +122,133 @@ function readPetConfig(cfg: Record<string, unknown>): FloatingPetConfig {
     };
 }
 
+type MotionSoundProfile = {
+    firstType: OscillatorType;
+    secondType: OscillatorType;
+    baseHz: number;
+    glideHz: number;
+    accentHz: number;
+    peakGain: number;
+    tailSeconds: number;
+    filterHz: number;
+    delaySeconds: number;
+    delayGain: number;
+    noiseGain: number;
+};
+
+function disconnectAudioNode(node: AudioNode | undefined): void {
+    try {
+        node?.disconnect();
+    } catch {
+        // The node may already have been disconnected by a previous cleanup path.
+    }
+}
+
+function motionSoundGapMs(config: FloatingPetConfig, state: PetState): number {
+    if (config.interactionMode === 'active') {
+        return state === 'speaking' ? 720 : 900;
+    }
+    if (state === 'speaking' || state === 'listening') {
+        return 1200;
+    }
+    if (config.petSkin === 'focus-claw') {
+        return 1900;
+    }
+    return 1500;
+}
+
+function motionCycleMs(config: FloatingPetConfig, state: PetState): number {
+    const base = state === 'speaking' ? 950 : state === 'thinking' ? 1800 : state === 'listening' ? 1200 : 3800;
+    let duration = base;
+    if (config.petSkin === 'mini-claw') {
+        if (state === 'idle') duration = 2600;
+        if (state === 'speaking') duration = 720;
+    } else if (config.petSkin === 'dev-claw') {
+        if (state === 'listening') duration = 1000;
+        if (state === 'thinking') duration = 1100;
+    } else if (config.petSkin === 'focus-claw') {
+        if (state === 'idle') duration = 5200;
+        if (state === 'thinking' || state === 'speaking') duration = 1800;
+    }
+    if (config.interactionMode === 'active') {
+        return state === 'speaking' ? 720 : state === 'thinking' ? 1050 : state === 'listening' ? 850 : 2600;
+    }
+    if (config.interactionMode === 'quiet') {
+        return state === 'speaking' ? 1600 : state === 'thinking' ? 2800 : state === 'listening' ? 2000 : 6000;
+    }
+    return duration;
+}
+
+function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, variant: MotionSoundVariant): MotionSoundProfile {
+    const skinPitch = config.petSkin === 'mini-claw' ? 1.2 : config.petSkin === 'dev-claw' ? 0.92 : config.petSkin === 'focus-claw' ? 0.78 : 1;
+    const statePitch = state === 'listening' ? 1.08 : state === 'thinking' ? 0.94 : state === 'speaking' ? 1.16 : 1;
+    const modePitch = config.interactionMode === 'active' ? 1.18 : 1;
+    const pitch = skinPitch * statePitch * modePitch;
+    const variantPitch = variant === 'accent' ? 1.18 : variant === 'flutter' ? 1.32 : 1;
+    const variantGain = variant === 'accent' ? 0.82 : variant === 'flutter' ? 0.58 : 1;
+    const variantTail = variant === 'flutter' ? 0.72 : 1;
+    const base = (state === 'thinking' ? 660 : state === 'listening' ? 820 : state === 'speaking' ? 920 : 760) * variantPitch;
+
+    if (config.petSkin === 'dev-claw') {
+        return {
+            firstType: 'square',
+            secondType: 'sawtooth',
+            baseHz: base * pitch,
+            glideHz: (base + 260) * pitch,
+            accentHz: (base + 540) * pitch,
+            peakGain: (config.interactionMode === 'active' ? 0.026 : 0.018) * variantGain,
+            tailSeconds: (state === 'thinking' ? 0.13 : 0.105) * variantTail,
+            filterHz: 2600,
+            delaySeconds: 0.035,
+            delayGain: 0.12,
+            noiseGain: 0.006 * variantGain,
+        };
+    }
+    if (config.petSkin === 'mini-claw') {
+        return {
+            firstType: 'triangle',
+            secondType: 'sine',
+            baseHz: base * pitch,
+            glideHz: (base + 360) * pitch,
+            accentHz: (base + 690) * pitch,
+            peakGain: (config.interactionMode === 'active' ? 0.03 : 0.022) * variantGain,
+            tailSeconds: (state === 'speaking' ? 0.11 : 0.088) * variantTail,
+            filterHz: 4200,
+            delaySeconds: 0.028,
+            delayGain: 0.1,
+            noiseGain: 0.003 * variantGain,
+        };
+    }
+    if (config.petSkin === 'focus-claw') {
+        return {
+            firstType: 'sine',
+            secondType: 'triangle',
+            baseHz: base * pitch,
+            glideHz: (base + 140) * pitch,
+            accentHz: (base + 300) * pitch,
+            peakGain: 0.015 * variantGain,
+            tailSeconds: 0.14 * variantTail,
+            filterHz: 1800,
+            delaySeconds: 0.045,
+            delayGain: 0.08,
+            noiseGain: 0.0015 * variantGain,
+        };
+    }
+    return {
+        firstType: 'sine',
+        secondType: 'triangle',
+        baseHz: base * pitch,
+        glideHz: (base + 220) * pitch,
+        accentHz: (base + 460) * pitch,
+        peakGain: (config.interactionMode === 'active' ? 0.028 : 0.02) * variantGain,
+        tailSeconds: (state === 'speaking' ? 0.12 : 0.095) * variantTail,
+        filterHz: 3200,
+        delaySeconds: 0.032,
+        delayGain: 0.09,
+        noiseGain: 0.0025 * variantGain,
+    };
+}
+
 // Component
 
 export function FloatingButton() {
@@ -122,7 +256,12 @@ export function FloatingButton() {
     const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
     const [petConfig, setPetConfig] = useState<FloatingPetConfig>(defaultPetConfig);
     const [petState, setPetState] = useState<PetState>('idle');
+    const [petBurstId, setPetBurstId] = useState(0);
+    const [petBurstActive, setPetBurstActive] = useState(false);
+    const [petGesture, setPetGesture] = useState<PetGesture>('none');
     const petSkin = getPetSkinOption(petConfig.petSkin);
+    const petConfigRef = useRef(petConfig);
+    const petStateRef = useRef(petState);
 
     // Drag state tracked via ref to avoid re-renders during drag.
     const dragRef = useRef({
@@ -132,11 +271,38 @@ export function FloatingButton() {
         rafId: 0,
     });
     const audioCtxRef = useRef<AudioContext | null>(null);
+    const activeMotionSoundCleanupsRef = useRef<Array<() => void>>([]);
+    const activeMotionSoundTimersRef = useRef<number[]>([]);
+    const lastMotionSoundAtRef = useRef(0);
+    const petBurstTimerRef = useRef<number | undefined>(undefined);
+    const petGestureTimerRef = useRef<number | undefined>(undefined);
+    const lastPetHoverAtRef = useRef(0);
+    const asrListeningActiveRef = useRef(false);
+    const resumeSoundRetryRef = useRef(false);
+    const restoreIdleState = useCallback(() => {
+        setPetState(asrListeningActiveRef.current ? 'listening' : 'idle');
+    }, []);
+
+
+    useEffect(() => {
+        petConfigRef.current = petConfig;
+        petStateRef.current = petState;
+    }, [petConfig, petState]);
 
     useEffect(() => {
         return () => {
             const ctx = audioCtxRef.current;
             audioCtxRef.current = null;
+            activeMotionSoundTimersRef.current.splice(0).forEach((timer) => window.clearTimeout(timer));
+            if (petBurstTimerRef.current) {
+                window.clearTimeout(petBurstTimerRef.current);
+                petBurstTimerRef.current = undefined;
+            }
+            if (petGestureTimerRef.current) {
+                window.clearTimeout(petGestureTimerRef.current);
+                petGestureTimerRef.current = undefined;
+            }
+            activeMotionSoundCleanupsRef.current.splice(0).forEach((cleanup) => cleanup());
             if (ctx && ctx.state !== 'closed') {
                 void ctx.close().catch((err) => console.warn('[FloatingButton] Close pet audio failed:', err));
             }
@@ -162,8 +328,8 @@ export function FloatingButton() {
             }
             setPetConfig(readPetConfig(cfg));
         };
-        const offConfigChanged = EventsOn('config-changed', handleConfigChange);
-        const offConfigUpdated = EventsOn('config-updated', handleConfigChange);
+        const offConfigChanged = subscribeRuntimeEvent('config-changed', handleConfigChange);
+        const offConfigUpdated = subscribeRuntimeEvent('config-updated', handleConfigChange);
         const timer = window.setInterval(load, 5000);
         return () => {
             cancelled = true;
@@ -174,7 +340,22 @@ export function FloatingButton() {
     }, []);
 
     useEffect(() => {
+        if (petConfig.petEnabled && !petConfig.quietMode && petConfig.motionEnabled) return;
+        if (petBurstTimerRef.current) {
+            window.clearTimeout(petBurstTimerRef.current);
+            petBurstTimerRef.current = undefined;
+        }
+        if (petGestureTimerRef.current) {
+            window.clearTimeout(petGestureTimerRef.current);
+            petGestureTimerRef.current = undefined;
+        }
+        setPetBurstActive(false);
+        setPetGesture('none');
+    }, [petConfig.petEnabled, petConfig.quietMode, petConfig.motionEnabled]);
+
+    useEffect(() => {
         if (!petConfig.petEnabled || petConfig.quietMode) {
+            asrListeningActiveRef.current = false;
             setPetState('idle');
             return;
         }
@@ -189,74 +370,250 @@ export function FloatingButton() {
         const scheduleIdle = (ttlMs?: number) => {
             clearIdleTimer();
             if (!ttlMs || ttlMs <= 0) return;
-            idleTimer = window.setTimeout(() => setPetState('idle'), ttlMs);
+            idleTimer = window.setTimeout(restoreIdleState, ttlMs);
         };
         const handler = (payload?: PetStateEvent | PetState) => {
             const nextState = typeof payload === 'string' ? payload : payload?.state;
             if (!isPetState(nextState)) return;
+            const source = typeof payload === 'object' ? payload.source : undefined;
+            const fromAsr = isAsrSource(source);
+
+            if (fromAsr) {
+                asrListeningActiveRef.current = nextState === 'listening';
+            } else if (nextState === 'idle' && asrListeningActiveRef.current) {
+                return;
+            }
+
             setPetState(nextState);
+            if (nextState !== 'idle') {
+                setPetBurstId((value) => value + 1);
+                setPetBurstActive(true);
+                if (petBurstTimerRef.current) {
+                    window.clearTimeout(petBurstTimerRef.current);
+                }
+                petBurstTimerRef.current = window.setTimeout(() => {
+                    setPetBurstActive(false);
+                    petBurstTimerRef.current = undefined;
+                }, nextState === 'speaking' ? 460 : 560);
+            } else {
+                setPetBurstActive(false);
+            }
             scheduleIdle(typeof payload === 'object' ? payload.ttlMs : undefined);
         };
 
-        const offPetState = EventsOn('pet:state', handler);
+        const offPetState = subscribeRuntimeEvent('pet:state', handler);
         return () => {
             clearIdleTimer();
             offPetState();
         };
-    }, [petConfig.petEnabled, petConfig.quietMode]);
+    }, [petConfig.petEnabled, petConfig.quietMode, restoreIdleState]);
 
-    useEffect(() => {
-        if (!petConfig.petEnabled || petConfig.quietMode || !petConfig.motionEnabled || petState !== 'idle') return;
-        const timer = window.setInterval(() => setPetState('idle'), 4200);
-        return () => window.clearInterval(timer);
-    }, [petConfig.petEnabled, petConfig.quietMode, petConfig.motionEnabled, petState]);
-
-    const playPetMotionSound = useCallback(() => {
+    const playPetMotionSound = useCallback((variant: MotionSoundVariant = 'step') => {
+        if (!isMotionSoundAllowed(petConfigRef.current)) return;
         try {
             const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
             if (!AudioContextCtor) return;
             const ctx = audioCtxRef.current ?? new AudioContextCtor();
             audioCtxRef.current = ctx;
             if (ctx.state === 'suspended') {
-                void ctx.resume();
+                if (!resumeSoundRetryRef.current) {
+                    resumeSoundRetryRef.current = true;
+                    void ctx.resume()
+                        .then(() => {
+                            if (isMotionSoundAllowed(petConfigRef.current)) playPetMotionSound(variant);
+                        })
+                        .catch((err) => console.warn('[FloatingButton] Resume pet audio failed:', err))
+                        .finally(() => {
+                            resumeSoundRetryRef.current = false;
+                        });
+                } else {
+                    void ctx.resume().catch((err) => console.warn('[FloatingButton] Resume pending pet audio failed:', err));
+                }
                 return;
             }
+
+            const soundConfig = petConfigRef.current;
+            const soundState = petStateRef.current;
+            const profile = getMotionSoundProfile(soundConfig, soundState, variant);
+            const pitchDrift = 0.985 + Math.random() * 0.03;
+            const filterDrift = 0.96 + Math.random() * 0.08;
+            const accentDelay = 0.034 + Math.random() * 0.012;
             const now = ctx.currentTime;
+            const endAt = now + profile.tailSeconds + profile.delaySeconds + 0.08;
+            const output = ctx.createDynamicsCompressor();
+            output.threshold.setValueAtTime(-24, now);
+            output.knee.setValueAtTime(18, now);
+            output.ratio.setValueAtTime(4, now);
+            output.attack.setValueAtTime(0.002, now);
+            output.release.setValueAtTime(0.08, now);
+            output.connect(ctx.destination);
+
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(profile.filterHz * filterDrift, now);
+            filter.Q.setValueAtTime(0.8, now);
+            filter.connect(output);
+
+            const delay = ctx.createDelay(0.12);
+            const delayGain = ctx.createGain();
+            delay.delayTime.setValueAtTime(profile.delaySeconds, now);
+            delayGain.gain.setValueAtTime(profile.delayGain, now);
+            filter.connect(delay);
+            delay.connect(delayGain);
+            delayGain.connect(output);
+
             const gain = ctx.createGain();
             gain.gain.setValueAtTime(0.0001, now);
-            gain.gain.exponentialRampToValueAtTime(petConfig.interactionMode === 'active' ? 0.035 : 0.024, now + 0.012);
-            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
-            gain.connect(ctx.destination);
+            gain.gain.exponentialRampToValueAtTime(profile.peakGain, now + 0.012);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + profile.tailSeconds);
+            gain.connect(filter);
 
             const first = ctx.createOscillator();
             const second = ctx.createOscillator();
-            first.type = 'sine';
-            second.type = 'triangle';
-            first.frequency.setValueAtTime(petConfig.interactionMode === 'active' ? 980 : 760, now);
-            first.frequency.exponentialRampToValueAtTime(petConfig.interactionMode === 'active' ? 1280 : 960, now + 0.05);
-            second.frequency.setValueAtTime(petConfig.interactionMode === 'active' ? 1460 : 1120, now + 0.045);
+            first.type = profile.firstType;
+            second.type = profile.secondType;
+            first.frequency.setValueAtTime(profile.baseHz * pitchDrift, now);
+            first.frequency.exponentialRampToValueAtTime(profile.glideHz * pitchDrift, now + 0.052);
+            second.frequency.setValueAtTime(profile.accentHz * pitchDrift, now + accentDelay);
+            second.frequency.exponentialRampToValueAtTime(profile.accentHz * pitchDrift * 0.84, now + profile.tailSeconds);
             first.connect(gain);
             second.connect(gain);
             first.start(now);
-            first.stop(now + 0.07);
-            second.start(now + 0.045);
-            second.stop(now + 0.1);
-            second.onended = () => {
-                first.disconnect();
-                second.disconnect();
-                gain.disconnect();
+            first.stop(now + Math.min(0.08, profile.tailSeconds));
+            second.start(now + accentDelay);
+            second.stop(now + profile.tailSeconds);
+
+            const noiseBuffer = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * 0.035)), ctx.sampleRate);
+            const samples = noiseBuffer.getChannelData(0);
+            for (let i = 0; i < samples.length; i += 1) {
+                samples[i] = (Math.random() * 2 - 1) * (1 - i / samples.length);
+            }
+            const noise = ctx.createBufferSource();
+            const noiseFilter = ctx.createBiquadFilter();
+            const noiseGain = ctx.createGain();
+            noise.buffer = noiseBuffer;
+            noiseFilter.type = 'highpass';
+            noiseFilter.frequency.setValueAtTime(1800, now);
+            noiseGain.gain.setValueAtTime(0.0001, now);
+            noiseGain.gain.exponentialRampToValueAtTime(profile.noiseGain, now + 0.006);
+            noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
+            noise.connect(noiseFilter);
+            noiseFilter.connect(noiseGain);
+            noiseGain.connect(filter);
+            noise.start(now);
+            noise.stop(now + 0.045);
+
+            let cleaned = false;
+            const cleanup = () => {
+                if (cleaned) return;
+                cleaned = true;
+                disconnectAudioNode(first);
+                disconnectAudioNode(second);
+                disconnectAudioNode(gain);
+                disconnectAudioNode(noise);
+                disconnectAudioNode(noiseFilter);
+                disconnectAudioNode(noiseGain);
+                disconnectAudioNode(delay);
+                disconnectAudioNode(delayGain);
+                disconnectAudioNode(filter);
+                disconnectAudioNode(output);
+                activeMotionSoundCleanupsRef.current = activeMotionSoundCleanupsRef.current.filter((fn) => fn !== cleanup);
             };
+            activeMotionSoundCleanupsRef.current.push(cleanup);
+            while (activeMotionSoundCleanupsRef.current.length > 3) {
+                activeMotionSoundCleanupsRef.current.shift()?.();
+            }
+            second.onended = cleanup;
+            window.setTimeout(cleanup, Math.ceil((endAt - now) * 1000));
         } catch (err) {
             console.warn('[FloatingButton] Pet motion sound failed:', err);
         }
-    }, [petConfig.interactionMode]);
+    }, []);
+
+    const motionSoundReady = isMotionSoundAllowed(petConfig);
+
+    const triggerPetGesture = useCallback((gesture: PetGesture, durationMs = 520) => {
+        if (!petConfig.petEnabled || petConfig.quietMode || !petConfig.motionEnabled) return;
+        setPetGesture(gesture);
+        if (petGestureTimerRef.current) {
+            window.clearTimeout(petGestureTimerRef.current);
+        }
+        petGestureTimerRef.current = window.setTimeout(() => {
+            setPetGesture('none');
+            petGestureTimerRef.current = undefined;
+        }, durationMs);
+    }, [petConfig.petEnabled, petConfig.quietMode, petConfig.motionEnabled]);
 
     useEffect(() => {
-        if (!petConfig.petEnabled || petConfig.quietMode || !petConfig.motionEnabled || !petConfig.motionSoundEnabled) return;
-        const intervalMs = petConfig.interactionMode === 'active' ? 1400 : 2200;
-        const timer = window.setInterval(playPetMotionSound, intervalMs);
-        return () => window.clearInterval(timer);
-    }, [petConfig.petEnabled, petConfig.quietMode, petConfig.motionEnabled, petConfig.motionSoundEnabled, petConfig.interactionMode, playPetMotionSound]);
+        if (motionSoundReady) return;
+        lastMotionSoundAtRef.current = 0;
+        resumeSoundRetryRef.current = false;
+        activeMotionSoundTimersRef.current.splice(0).forEach((timer) => window.clearTimeout(timer));
+        activeMotionSoundCleanupsRef.current.splice(0).forEach((cleanup) => cleanup());
+        const ctx = audioCtxRef.current;
+        audioCtxRef.current = null;
+        if (ctx && ctx.state !== 'closed') {
+            void ctx.close().catch((err) => console.warn('[FloatingButton] Close disabled pet audio failed:', err));
+        }
+    }, [motionSoundReady]);
+
+    const schedulePetMotionSounds = useCallback(() => {
+        const cycleMs = motionCycleMs(petConfig, petState);
+        const at = (ratio: number) => Math.round(cycleMs * ratio);
+        const pattern: Array<[number, MotionSoundVariant]> = [[0, 'step']];
+        if (petState === 'speaking') {
+            pattern.push([at(0.13), 'accent'], [at(0.3), 'step'], [at(0.46), 'flutter']);
+        } else if (petState === 'listening') {
+            pattern.push([at(0.22), 'flutter'], [at(0.48), petConfig.petSkin === 'dev-claw' ? 'accent' : 'step']);
+        } else if (petState === 'thinking') {
+            pattern.push([at(0.2), petConfig.petSkin === 'dev-claw' ? 'flutter' : 'accent']);
+            if (petConfig.petSkin === 'dev-claw' || petConfig.interactionMode === 'active') {
+                pattern.push([at(0.42), 'flutter']);
+            }
+        } else if (petConfig.petSkin === 'mini-claw' || petConfig.interactionMode === 'active') {
+            pattern.push([at(0.2), 'accent']);
+        }
+
+        activeMotionSoundTimersRef.current.splice(0).forEach((timer) => window.clearTimeout(timer));
+        pattern.forEach(([delayMs, variant]) => {
+            if (delayMs <= 0) {
+                playPetMotionSound(variant);
+                return;
+            }
+            const timer = window.setTimeout(() => {
+                activeMotionSoundTimersRef.current = activeMotionSoundTimersRef.current.filter((id) => id !== timer);
+                playPetMotionSound(variant);
+            }, delayMs);
+            activeMotionSoundTimersRef.current.push(timer);
+        });
+    }, [petConfig.interactionMode, petConfig.petSkin, petState, playPetMotionSound]);
+
+    useEffect(() => {
+        if (!petBurstId || !motionSoundReady || petState === 'idle') return;
+        const now = Date.now();
+        const minGapMs = Math.min(360, motionSoundGapMs(petConfig, petState));
+        if (now - lastMotionSoundAtRef.current < minGapMs) return;
+        lastMotionSoundAtRef.current = now;
+        schedulePetMotionSounds();
+    }, [petBurstId, motionSoundReady, petConfig, petState, schedulePetMotionSounds]);
+
+    const handlePetAnimationStart = useCallback((e: ReactAnimationEvent<HTMLImageElement>) => {
+        if (e.currentTarget !== e.target || !motionSoundReady || petState === 'idle') return;
+        const now = Date.now();
+        const minGapMs = Math.min(480, motionSoundGapMs(petConfig, petState));
+        if (now - lastMotionSoundAtRef.current < minGapMs) return;
+        lastMotionSoundAtRef.current = now;
+        schedulePetMotionSounds();
+    }, [motionSoundReady, petConfig, petState, schedulePetMotionSounds]);
+
+    const handlePetAnimationIteration = useCallback((e: ReactAnimationEvent<HTMLImageElement>) => {
+        if (e.currentTarget !== e.target || !motionSoundReady) return;
+        const now = Date.now();
+        const minGapMs = motionSoundGapMs(petConfig, petState);
+        if (now - lastMotionSoundAtRef.current < minGapMs) return;
+        lastMotionSoundAtRef.current = now;
+        schedulePetMotionSounds();
+    }, [motionSoundReady, petConfig, petState, schedulePetMotionSounds]);
 
     // Left-click / drag handling
 
@@ -266,6 +623,8 @@ export function FloatingButton() {
 
         // Close context menu if open.
         setShowMenu(false);
+        triggerPetGesture('wake', 480);
+        if (motionSoundReady) playPetMotionSound('accent');
 
         const drag = dragRef.current;
         drag.startScreenX = e.screenX;
@@ -280,6 +639,7 @@ export function FloatingButton() {
                 // Check if displacement exceeds threshold.
                 if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) {
                     drag.isDragging = true;
+                    triggerPetGesture('drag', 900);
                 } else {
                     return;
                 }
@@ -311,41 +671,32 @@ export function FloatingButton() {
             if (!drag.isDragging) {
                 // Displacement <= threshold: treat as left-click.
                 callGoBinding('OnFloatingButtonClicked');
+            } else {
+                triggerPetGesture('wake', 360);
             }
         };
 
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
-    }, []);
+    }, [motionSoundReady, playPetMotionSound, triggerPetGesture]);
+
+    const handleMouseEnter = useCallback(() => {
+        const now = Date.now();
+        if (now - lastPetHoverAtRef.current < 1800) return;
+        lastPetHoverAtRef.current = now;
+        triggerPetGesture('wake', 420);
+    }, [triggerPetGesture]);
 
     // Right-click context menu
 
     const handleContextMenu = useCallback((e: ReactMouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
+        triggerPetGesture('menu', 760);
+        if (motionSoundReady) playPetMotionSound('flutter');
         setMenuPos({ x: e.clientX, y: e.clientY });
         setShowMenu(true);
-    }, []);
-
-    const handleToggleMotionSound = useCallback(async () => {
-        setShowMenu(false);
-        try {
-            const app = window.go?.main?.App;
-            const cfg = await app?.LoadConfig?.();
-            if (!cfg || !app?.SaveConfig) return;
-            const next = cfg.pet_motion_sound_enabled === false;
-            const nextConfig = { ...cfg, pet_motion_sound_enabled: next };
-            await app.SaveConfig(nextConfig);
-            setPetConfig(readPetConfig(nextConfig));
-        } catch (err) {
-            console.warn('[FloatingButton] Toggle pet motion sound failed:', err);
-        }
-    }, []);
-
-    const handleHide = useCallback(() => {
-        setShowMenu(false);
-        callGoBinding('HideFloatingButton');
-    }, []);
+    }, [motionSoundReady, playPetMotionSound, triggerPetGesture]);
 
     const handleQuit = useCallback(() => {
         setShowMenu(false);
@@ -380,24 +731,39 @@ export function FloatingButton() {
         <div
             className={`floating-assistant-container ${petConfig.petEnabled ? 'floating-assistant-container--pet' : ''}`}
             onMouseDown={handleMouseDown}
+            onMouseEnter={handleMouseEnter}
             onContextMenu={handleContextMenu}
             data-pet-state={petState}
             data-pet-skin={petConfig.petSkin}
             data-interaction-mode={petConfig.interactionMode}
             data-motion={petConfig.motionEnabled ? 'on' : 'off'}
             data-quiet={petConfig.quietMode ? 'on' : 'off'}
+            data-burst={petBurstActive ? 'on' : 'off'}
+            data-gesture={petGesture}
             style={petConfig.petEnabled ? { width: petConfig.petSize, height: petConfig.petSize } : undefined}
         >
             <div className="floating-assistant-halo" />
             {petConfig.petEnabled ? (
                 <>
                     <img
+                        key={petConfig.petSkin + '-' + petState + '-' + petBurstId}
                         src={petSkin.image}
                         className="floating-assistant-pet"
                         alt={petSkin.alt}
                         draggable={false}
+                        onAnimationStart={handlePetAnimationStart}
+                        onAnimationIteration={handlePetAnimationIteration}
                     />
                     <div className="floating-assistant-pet-status" />
+                    {petBurstActive && petConfig.motionEnabled && !petConfig.quietMode && (
+                        <span key={petBurstId} className="floating-assistant-motion-burst" aria-hidden="true" />
+                    )}
+                    <span className="floating-assistant-face floating-assistant-face--eye-left" aria-hidden="true" />
+                    <span className="floating-assistant-face floating-assistant-face--eye-right" aria-hidden="true" />
+                    <span className="floating-assistant-face floating-assistant-face--mouth" aria-hidden="true" />
+                    <span className="floating-assistant-motion-mark floating-assistant-motion-mark--a" aria-hidden="true" />
+                    <span className="floating-assistant-motion-mark floating-assistant-motion-mark--b" aria-hidden="true" />
+                    <span className="floating-assistant-motion-mark floating-assistant-motion-mark--c" aria-hidden="true" />
                 </>
             ) : (
                 <img
@@ -412,20 +778,6 @@ export function FloatingButton() {
                     className="floating-context-menu"
                     style={{ top: menuPos.y, left: menuPos.x }}
                 >
-                    {petConfig.petEnabled && (
-                        <>
-                            <div
-                                className="floating-context-menu-item"
-                                onClick={handleToggleMotionSound}
-                            >{petConfig.motionSoundEnabled ? "\u5173\u95ed\u52a8\u6548\u97f3\u6548" : "\u5f00\u542f\u52a8\u6548\u97f3\u6548"}</div>
-                            <div className="floating-context-menu-separator" />
-                        </>
-                    )}
-                    <div
-                        className="floating-context-menu-item"
-                        onClick={handleHide}
-                    >{"\u9690\u85cf"}</div>
-                    <div className="floating-context-menu-separator" />
                     <div
                         className="floating-context-menu-item"
                         onClick={handleQuit}

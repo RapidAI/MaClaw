@@ -1256,7 +1256,7 @@ export default function App() {
           />
         );
       case 'history':
-        return <TaskHistoryPage tasks={historyTasks} viewedTask={viewedHistoryTask} onResumeTask={handleOpenHistoryTask} onViewResult={handleViewHistoryResult} onCloneTask={handleCloneHistoryTask} onDeleteTask={handleDeleteHistoryTask} />;
+        return <TaskHistoryPage tasks={historyTasks} viewedTask={viewedHistoryTask} installedTools={installedTools} installedToolsLoading={installedToolsLoading} installedToolsError={installedToolsError} onRefreshInstalledTools={refreshInstalledTools} onResumeTask={handleOpenHistoryTask} onViewResult={handleViewHistoryResult} onCloneTask={handleCloneHistoryTask} onDeleteTask={handleDeleteHistoryTask} />;
       case 'settings':
         return (
           <SettingsPage

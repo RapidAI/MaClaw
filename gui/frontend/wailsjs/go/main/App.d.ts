@@ -36,6 +36,44 @@ export function GetLocalCacheDir():Promise<string>;
 
 export function GetRemoteActivationStatus():Promise<any>;
 
+export function GroupDiscussionStatus():Promise<any>;
+
+export function GroupDiscussionPublishProfile():Promise<any>;
+
+export function GroupDiscussionListExperts():Promise<any>;
+
+export function GroupDiscussionListMine(arg1:string):Promise<any>;
+
+export function GroupDiscussionListInvites():Promise<any>;
+
+export function GroupDiscussionProcessPendingInvites():Promise<any>;
+
+export function GroupDiscussionCreateConsultation(arg1:any):Promise<any>;
+
+export function GroupDiscussionStartAuthorizedConsultation(arg1:any):Promise<any>;
+
+export function GroupDiscussionGetConsultation(arg1:string):Promise<any>;
+
+export function GroupDiscussionGetConsultationDetail(arg1:string):Promise<any>;
+
+export function GroupDiscussionGetReadiness(arg1:string):Promise<any>;
+
+export function GroupDiscussionSummarizeResult(arg1:any):Promise<any>;
+
+export function GroupDiscussionSendInvitation(arg1:string,arg2:any):Promise<string>;
+
+export function GroupDiscussionAcceptInvite(arg1:string,arg2:any):Promise<void>;
+
+export function GroupDiscussionRejectInvite(arg1:string,arg2:any):Promise<void>;
+
+export function GroupDiscussionSendMessage(arg1:string,arg2:any):Promise<void>;
+
+export function GroupDiscussionSubmitResult(arg1:string,arg2:any):Promise<void>;
+
+export function GroupDiscussionSetState(arg1:string,arg2:string):Promise<void>;
+
+export function GroupDiscussionCleanupStale(arg1:any):Promise<any>;
+
 export function GetRemoteClaudeReadiness(arg1:string,arg2:boolean):Promise<any>;
 
 export function GetRemoteToolReadiness(arg1:string,arg2:string,arg3:boolean):Promise<any>;
@@ -447,12 +485,23 @@ export function AgentNetListTasks(arg1:string):Promise<any>;
 export function AgentNetGetProfile():Promise<any>;
 export function AgentNetUpdateProfile(arg1:string, arg2:string):Promise<any>;
 export function AgentNetSetMotto(arg1:string):Promise<any>;
+export function AgentNetListPoIChallenges():Promise<any>;
+export function AgentNetRespondToPoI(arg1:string, arg2:string):Promise<any>;
+export function AgentNetGetPoIScores():Promise<any>;
+export function AgentNetFileDispute(arg1:string, arg2:string):Promise<any>;
+export function AgentNetExtractDAG(arg1:string, arg2:string[], arg3:string[]):Promise<any>;
+export function AgentNetQueryOntology(arg1:string, arg2:number):Promise<any>;
+export function AgentNetListServices():Promise<any>;
+export function AgentNetRegisterService(arg1:string, arg2:string, arg3:string, arg4:string[], arg5:string[], arg6:string, arg7:number, arg8:number):Promise<any>;
+export function AgentNetUnregisterService(arg1:string):Promise<any>;
+export function AgentNetCallService(arg1:string, arg2:string, arg3:string, arg4:string, arg5:Record<string, string>, arg6:string):Promise<any>;
+export function AgentNetDiscoverServices(arg1:string):Promise<any>;
 export function AgentNetListTopics():Promise<any>;
 export function AgentNetCreateTopic(arg1:string, arg2:string):Promise<any>;
 export function AgentNetGetTopicMessages(arg1:string):Promise<any>;
 export function AgentNetPostTopicMessage(arg1:string, arg2:string):Promise<any>;
 export function AgentNetBidOnTask(arg1:string, arg2:number, arg3:string):Promise<any>;
-export function AgentNetSubmitTaskResult(arg1:string, arg2:string):Promise<any>;
+export function AgentNetSubmitTaskDeliverable(arg1:string, arg2:string):Promise<any>;
 export function AgentNetApproveTask(arg1:string):Promise<any>;
 export function AgentNetRejectTask(arg1:string):Promise<any>;
 export function AgentNetCancelTask(arg1:string):Promise<any>;
@@ -506,16 +555,11 @@ export function AgentNetResolvePrediction(arg1:string, arg2:string):Promise<any>
 export function AgentNetAppealPrediction(arg1:string, arg2:string):Promise<any>;
 export function AgentNetGetPredictionLeaderboard():Promise<any>;
 
-// Nutshell bindings
-export function AgentNetNutshellStatus():Promise<any>;
-export function AgentNetNutshellInstall():Promise<any>;
-export function AgentNetNutshellInit(arg1:string):Promise<any>;
-export function AgentNetNutshellCheck(arg1:string):Promise<any>;
-export function AgentNetNutshellPublish(arg1:string, arg2:number):Promise<any>;
-export function AgentNetNutshellClaim(arg1:string, arg2:string):Promise<any>;
-export function AgentNetNutshellDeliver(arg1:string):Promise<any>;
-export function AgentNetNutshellPack(arg1:string, arg2:string, arg3:string):Promise<any>;
-export function AgentNetNutshellUnpack(arg1:string, arg2:string):Promise<any>;
+// AgentNet bundle bindings
+export function AgentNetBundleStatus():Promise<any>;
+export function AgentNetBundleInstall():Promise<any>;
+export function AgentNetBundlePack(arg1:string, arg2:string, arg3:string):Promise<any>;
+export function AgentNetBundleUnpack(arg1:string, arg2:string):Promise<any>;
 
 // AI Assistant bindings
 export function IsAIAssistantReady():Promise<boolean>;
@@ -690,6 +734,4 @@ export function ReadErrorLog():Promise<Array<string>>;
 export function GetHubLLMServiceStatus():Promise<any>;
 export function RedeemHubLLMService(arg1:string):Promise<any>;
 export function HideFloatingButton():Promise<void>;
-
-
 

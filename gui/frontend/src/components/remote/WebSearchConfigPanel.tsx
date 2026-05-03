@@ -91,8 +91,9 @@ export function WebSearchConfigPanel({ lang }: Props) {
             <div style={{ marginBottom: 16 }}>
                 <p style={{ fontSize: "0.75rem", color: colors.textSecondary, margin: 0, lineHeight: 1.6 }}>
                     {t(
-                        "选择 AI 助手网页搜索使用的搜索引擎。Brave 和 Serper 需要 API Key；未填写时会回退到默认联网搜索。DuckDuckGo 免费，无需 API Key。",
                         "Choose which search engine AI Assistant uses for web search. Brave and Serper require API keys; without one, requests fall back to the default direct web search. DuckDuckGo is free and needs no API key.",
+                        "选择 AI 助手网页搜索使用的搜索引擎。Brave 和 Serper 需要 API Key；未填写时会回退到默认联网搜索。DuckDuckGo 免费，无需 API Key。",
+                        "選擇 AI 助手網頁搜尋使用的搜尋引擎。Brave 和 Serper 需要 API Key；未填寫時會回退到預設聯網搜尋。DuckDuckGo 免費，無需 API Key。",
                     )}
                 </p>
             </div>
@@ -161,31 +162,31 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                     {t("No extra configuration is needed for this provider.", "当前 provider 无需额外配置。")}
                                 </div>
                             )}
+
+                            <div style={{ display: "flex", justifyContent: "flex-start", marginTop: 16 }}>
+                                <button
+                                    type="button"
+                                    onClick={save}
+                                    disabled={saving}
+                                    style={{
+                                        padding: "8px 16px",
+                                        borderRadius: 4,
+                                        border: `1px solid ${colors.primary}`,
+                                        background: colors.primaryLight,
+                                        color: colors.primaryDark,
+                                        cursor: saving ? "default" : "pointer",
+                                        fontSize: "0.8rem",
+                                    }}
+                                >
+                                    {saving ? t("Saving...", "保存中...") : saved ? t("Saved ✓", "已保存 ✓") : t("Save", "保存")}
+                                </button>
+                            </div>
                         </>
                     )}
                 </div>
             </div>
 
             {error && <div style={{ marginTop: 12, color: colors.danger, fontSize: "0.76rem" }}>{error}</div>}
-
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
-                <button
-                    type="button"
-                    onClick={save}
-                    disabled={saving}
-                    style={{
-                        padding: "8px 16px",
-                        borderRadius: 4,
-                        border: `1px solid ${colors.primary}`,
-                        background: colors.primaryLight,
-                        color: colors.primaryDark,
-                        cursor: saving ? "default" : "pointer",
-                        fontSize: "0.8rem",
-                    }}
-                >
-                    {saving ? t("Saving...", "保存中...") : saved ? t("Saved ✓", "已保存 ✓") : t("Save", "保存")}
-                </button>
-            </div>
         </div>
     );
 }

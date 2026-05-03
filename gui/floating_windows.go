@@ -14,12 +14,13 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	xdraw "golang.org/x/image/draw"
 )
 
-// floatingLogoPNG is the PNG logo used for the floating button.
+// floatingLogoPNG is the PNG logo used for the fallback desktop entry.
 // Embedded separately because the main `icon` variable on Windows is .ico format.
 //
 //go:embed build/appicon.png
@@ -41,6 +42,7 @@ const (
 	csVredraw = 0x0001
 
 	wmDestroy     = 0x0002
+	wmClose       = 0x0010
 	wmLbuttondown = 0x0201
 	wmLbuttonup   = 0x0202
 	wmMousemove   = 0x0200
@@ -60,12 +62,9 @@ const (
 	biRgb = 0
 
 	mfString     = 0x00000000
-	mfSeparator  = 0x00000800
 	tpmReturncmd = 0x0100
 
-	menuIdHide           = 1001
-	menuIdQuit           = 1002
-	menuIdPetMotionSound = 1003
+	menuIdQuit = 1002
 
 	// Timer ID for halo animation
 	timerIdHalo = 1
@@ -171,11 +170,12 @@ const petAnimationFrameBuckets = 72
 // windowsFloatingWindow
 
 type windowsFloatingWindow struct {
-	app     *App
-	hwnd    uintptr
-	created bool
-	mu      sync.Mutex
-	size    int
+	app        *App
+	hwnd       uintptr
+	created    bool
+	destroying bool
+	mu         sync.Mutex
+	size       int
 
 	// Drag state (accessed only from the message loop goroutine)
 	dragging     bool
@@ -284,7 +284,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petEnabled = petEnabled
 	w.petMotionEnabled = petMotionEnabled
 	w.petMotionSound = petMotionSound
-	w.lastPetSoundBucket = -1
+	w.lastPetSoundBucket = 0
 	w.petQuietMode = petQuietMode
 	w.petInteractionMode = petInteractionMode
 	w.petSkin = petSkin
@@ -311,12 +311,25 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 
 		hwnd, err2 := createFloatingWin32Window(x, y, sz, sz)
 		if err2 != nil {
+			w.mu.Lock()
+			w.hwnd = 0
+			w.created = false
+			w.destroying = false
+			if globalFloatingWin == w {
+				globalFloatingWin = nil
+			}
+			if w.stopCh != nil {
+				close(w.stopCh)
+				w.stopCh = nil
+			}
+			w.mu.Unlock()
 			errCh <- err2
 			return
 		}
 
 		w.mu.Lock()
 		w.hwnd = hwnd
+		w.destroying = false
 		w.windowStartX = x
 		w.windowStartY = y
 		w.created = true
@@ -361,27 +374,46 @@ func (w *windowsFloatingWindow) Destroy() {
 	hwnd := w.hwnd
 	created := w.created
 	stopCh := w.stopCh
+	alreadyDestroying := w.destroying
+	if created && hwnd != 0 && !w.destroying {
+		w.destroying = true
+	}
 	w.mu.Unlock()
 
 	if !created || hwnd == 0 {
 		return
 	}
 
-	// Post WM_DESTROY to the window's thread to exit the message loop.
-	procPostMessageW.Call(hwnd, wmDestroy, 0, 0)
+	if !alreadyDestroying {
+		// Ask the owning window thread to close; it will call DestroyWindow and
+		// then WM_DESTROY will terminate the message loop. Posting WM_DESTROY
+		// directly can leave the HWND visible long enough for a new pet window
+		// to overlap it.
+		procPostMessageW.Call(hwnd, wmClose, 0, 0)
+	}
 
-	// Block until the message loop goroutine exits.
+	// Block briefly until the message loop goroutine exits. Avoid hanging the
+	// caller forever if the HWND was already gone or the close message was lost.
 	if stopCh != nil {
-		<-stopCh
+		select {
+		case <-stopCh:
+			w.mu.Lock()
+			w.hwnd = 0
+			w.created = false
+			w.destroying = false
+			if globalFloatingWin == w {
+				globalFloatingWin = nil
+			}
+			w.mu.Unlock()
+		case <-time.After(2 * time.Second):
+			log.Printf("[floating-assistant] Destroy timed out waiting for window thread")
+			w.mu.Lock()
+			if w.hwnd == hwnd {
+				w.destroying = false
+			}
+			w.mu.Unlock()
+		}
 	}
-
-	w.mu.Lock()
-	w.hwnd = 0
-	w.created = false
-	if globalFloatingWin == w {
-		globalFloatingWin = nil
-	}
-	w.mu.Unlock()
 }
 
 func (w *windowsFloatingWindow) MoveTo(x, y int) {
@@ -845,17 +877,30 @@ func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, interactionMode str
 	return frame
 }
 
-func playPetMotionSound(interactionMode string) {
+func playPetMotionSound(interactionMode, skin string) {
 	go func() {
-		switch interactionMode {
-		case "active":
-			procBeep.Call(1047, 18)
-			procBeep.Call(1319, 22)
-		case "quiet":
+		if interactionMode == "quiet" {
 			return
-		default:
-			procBeep.Call(880, 18)
-			procBeep.Call(1175, 20)
+		}
+		type petTone struct {
+			hz uintptr
+			ms uintptr
+		}
+		toneSet := []petTone{{880, 16}, {1175, 20}}
+		switch skin {
+		case "mini-claw":
+			toneSet = []petTone{{1175, 12}, {1568, 16}, {1760, 12}}
+		case "dev-claw":
+			toneSet = []petTone{{988, 12}, {740, 14}, {1175, 16}}
+		case "focus-claw":
+			toneSet = []petTone{{659, 14}, {880, 16}}
+		}
+		pitch := 1.0
+		if interactionMode == "active" {
+			pitch = 1.12
+		}
+		for _, tone := range toneSet {
+			procBeep.Call(uintptr(float64(tone.hz)*pitch), tone.ms)
 		}
 	}()
 }
@@ -884,7 +929,7 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petSkin := w.petSkin
 	w.mu.Unlock()
 	if playPetSound {
-		playPetMotionSound(petInteractionMode)
+		playPetMotionSound(petInteractionMode, petSkin)
 	}
 
 	if hwnd == 0 || base == nil || distMap == nil {
@@ -1106,8 +1151,8 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			w.windowStartX = finalX
 			w.windowStartY = finalY
 			go func() {
-				if w.app != nil && w.app.floatingAssistant != nil {
-					w.app.floatingAssistant.UpdatePosition(finalX, finalY)
+				if fa := w.app.existingFloatingAssistant(); fa != nil {
+					fa.UpdatePosition(finalX, finalY)
 				}
 			}()
 		}
@@ -1123,55 +1168,12 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		if hMenu == 0 {
 			break
 		}
-		petMenuEnabled := false
-		soundEnabled := true
-		w.mu.Lock()
-		petMenuEnabled = w.petEnabled
-		soundEnabled = w.petMotionSound
-		w.mu.Unlock()
-		if petMenuEnabled {
-			soundTextValue := "\u5f00\u542f\u52a8\u6548\u97f3\u6548"
-			if soundEnabled {
-				soundTextValue = "\u5173\u95ed\u52a8\u6548\u97f3\u6548"
-			}
-			soundText, _ := syscall.UTF16PtrFromString(soundTextValue)
-			procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdPetMotionSound), uintptr(unsafe.Pointer(soundText)))
-			procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
-		}
-		hideText, _ := syscall.UTF16PtrFromString("\u9690\u85cf")
-		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdHide), uintptr(unsafe.Pointer(hideText)))
-		procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
 		quitText, _ := syscall.UTF16PtrFromString("\u9000\u51fa")
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdQuit), uintptr(unsafe.Pointer(quitText)))
 		procSetForegroundWindow.Call(hwnd)
 		cmd, _, _ := procTrackPopupMenu.Call(hMenu, uintptr(tpmReturncmd), uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
 		procDestroyMenu.Call(hMenu)
-		if cmd == menuIdPetMotionSound {
-			go func() {
-				if w.app == nil {
-					return
-				}
-				cfg, err := w.app.LoadConfig()
-				if err != nil {
-					return
-				}
-				next := !petMotionSoundEnabled(cfg)
-				cfg.PetMotionSound = &next
-				if err := w.app.SaveConfig(cfg); err != nil {
-					return
-				}
-				w.mu.Lock()
-				w.petMotionSound = next
-				w.lastPetSoundBucket = -1
-				w.mu.Unlock()
-			}()
-		} else if cmd == menuIdHide {
-			go func() {
-				if w.app != nil {
-					w.app.HideFloatingButton()
-				}
-			}()
-		} else if cmd == menuIdQuit {
+		if cmd == menuIdQuit {
 			go func() {
 				if w.app != nil {
 					w.app.QuitApp()
@@ -1180,7 +1182,24 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		}
 		return 0
 
+	case wmClose:
+		procKillTimer.Call(hwnd, timerIdHalo)
+		procDestroyWindowProc.Call(hwnd)
+		return 0
+
 	case wmDestroy:
+		if w != nil {
+			w.mu.Lock()
+			if w.hwnd == hwnd {
+				w.hwnd = 0
+				w.created = false
+				w.destroying = false
+				if globalFloatingWin == w {
+					globalFloatingWin = nil
+				}
+			}
+			w.mu.Unlock()
+		}
 		procPostQuitMessage.Call(0)
 		return 0
 	}

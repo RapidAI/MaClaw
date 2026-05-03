@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
 )
 
 func TestLoadConfigConcurrentFirstRun(t *testing.T) {
@@ -489,10 +490,12 @@ func TestConfigManagerDefaultLaunchModeDoesNotChangeRemoteEnabled(t *testing.T) 
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.DefaultLaunchMode = "remote"
 	cfg.RemoteEnabled = true
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SetDefaultLaunchMode("remote"); err != nil {
+		t.Fatalf("SetDefaultLaunchMode(remote) error = %v", err)
 	}
 
 	mgr := NewConfigManager(app)
@@ -522,10 +525,12 @@ func TestSetDefaultLaunchMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.DefaultLaunchMode = "remote"
 	cfg.RemoteEnabled = true
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SetDefaultLaunchMode("remote"); err != nil {
+		t.Fatalf("SetDefaultLaunchMode(remote) error = %v", err)
 	}
 
 	if err := app.SetDefaultLaunchMode(" local "); err != nil {
@@ -562,5 +567,87 @@ func TestSetDefaultLaunchMode(t *testing.T) {
 
 	if err := app.SetDefaultLaunchMode("cloud"); err == nil {
 		t.Fatal("SetDefaultLaunchMode(invalid) error = nil, want error")
+	}
+}
+
+func TestSaveConfigPreservesDefaultLaunchModeFromStaleSnapshot(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SetDefaultLaunchMode("local"); err != nil {
+		t.Fatalf("SetDefaultLaunchMode(local) error = %v", err)
+	}
+
+	stale := cfg
+	stale.DefaultLaunchMode = "remote"
+	stale.RemoteEmail = "stale@example.com"
+	if err := app.SaveConfig(stale); err != nil {
+		t.Fatalf("SaveConfig(stale) error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after stale save error = %v", err)
+	}
+	if saved.RemoteEmail != "stale@example.com" {
+		t.Fatalf("RemoteEmail = %q, want stale@example.com", saved.RemoteEmail)
+	}
+	if saved.DefaultLaunchMode != "local" {
+		t.Fatalf("DefaultLaunchMode = %q, want local", saved.DefaultLaunchMode)
+	}
+}
+
+func TestCoreConfigManagerDefaultLaunchModeUsesFieldSetter(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SetDefaultLaunchMode("local"); err != nil {
+		t.Fatalf("SetDefaultLaunchMode(local) error = %v", err)
+	}
+
+	mgr := coreconfig.NewManager(app)
+	if _, err := mgr.UpdateConfig("remote", "default_launch_mode", "remote"); err != nil {
+		t.Fatalf("UpdateConfig(default_launch_mode) error = %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after update error = %v", err)
+	}
+	if saved.DefaultLaunchMode != "remote" {
+		t.Fatalf("DefaultLaunchMode = %q, want remote", saved.DefaultLaunchMode)
+	}
+
+	if err := mgr.BatchUpdate([]coreconfig.ConfigChange{
+		{Section: "remote", Key: "remote_enabled", Value: "true"},
+		{Section: "remote", Key: "default_launch_mode", Value: "local"},
+	}); err != nil {
+		t.Fatalf("BatchUpdate(default_launch_mode) error = %v", err)
+	}
+	saved, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after batch update error = %v", err)
+	}
+	if saved.DefaultLaunchMode != "local" {
+		t.Fatalf("DefaultLaunchMode = %q, want local", saved.DefaultLaunchMode)
 	}
 }

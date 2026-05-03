@@ -37,6 +37,9 @@ describe('WebSearchConfigPanel', () => {
             expect(screen.getByDisplayValue('brave-key')).toBeTruthy();
         });
 
+        expect(screen.getByText(/选择 AI 助手网页搜索使用的搜索引擎/)).toBeTruthy();
+        expect(screen.queryByText(/Choose which search engine/)).toBeNull();
+
         fireEvent.click(screen.getByRole('button', { name: '保存' }));
 
         await waitFor(() => {

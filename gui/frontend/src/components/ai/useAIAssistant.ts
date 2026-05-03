@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
-import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -104,6 +104,16 @@ interface AIAssistantPendingTask {
 interface AIAssistantStreamEvent {
     request_id?: string;
     text?: string;
+}
+
+type DesktopPetState = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+function emitDesktopPetState(state: DesktopPetState, source: string, ttlMs?: number) {
+    try {
+        EventsEmit('pet:state', { state, source, ttlMs });
+    } catch {
+        // The desktop pet window may not be open; AI assistant flow should continue unaffected.
+    }
 }
 
 export interface NewsCardData {
@@ -1558,6 +1568,18 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const streamTokenBufferRef = useRef<StreamTokenBuffer | null>(null);
     const scrollOnNextNewsRef = useRef(true);
     const refreshSessionsOnlyRef = useRef(options?.refreshSessionsOnly);
+    const lastPetSpeakingEmitAtRef = useRef(0);
+
+    const emitPetStateForAssistant = useCallback((state: DesktopPetState, source: string, ttlMs?: number) => {
+        if (state === 'speaking') {
+            const now = Date.now();
+            if (now - lastPetSpeakingEmitAtRef.current < 900) return;
+            lastPetSpeakingEmitAtRef.current = now;
+        } else if (state === 'idle') {
+            lastPetSpeakingEmitAtRef.current = 0;
+        }
+        emitDesktopPetState(state, source, ttlMs);
+    }, []);
 
     useEffect(() => {
         refreshSessionsOnlyRef.current = options?.refreshSessionsOnly;
@@ -1764,7 +1786,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const finalizeRound = useCallback((generation: number) => {
         if (activeRoundRef.current.generation !== generation) return;
         resetActiveRound();
-    }, [resetActiveRound]);
+        emitPetStateForAssistant('idle', 'ai:round-done');
+    }, [emitPetStateForAssistant, resetActiveRound]);
 
     const appendTokenToAssistantMessage = useCallback((assistantMessageId: string, text: string) => {
         if (!assistantMessageId || !text) return;
@@ -1952,6 +1975,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const event = normalizeStreamEvent(payload);
             if (!matchesActiveRequest(currentRound, event)) return;
             if (!currentRound.assistantMessageId || !event.text) return;
+            emitPetStateForAssistant('speaking', 'ai:stream-token', 1800);
             queueStreamToken(currentRound, event.text);
         };
 
@@ -1959,6 +1983,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
             if (!matchesActiveRequest(currentRound, event)) return;
+            emitPetStateForAssistant('thinking', 'ai:new-round', 10000);
             ensureRoundPlaceholder(currentRound.generation);
         };
 
@@ -1966,6 +1991,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
             if (!matchesActiveRequest(currentRound, event)) return;
+            emitPetStateForAssistant('thinking', 'ai:stream-done', 2500);
             flushStreamTokenBuffer();
             transitionRound(current => {
                 if (current.phase !== 'streaming') return current;
@@ -1982,7 +2008,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             offStreamDone();
             resetStreamTokenBuffer();
         };
-    }, [ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetStreamTokenBuffer, transitionRound]);
+    }, [emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetStreamTokenBuffer, transitionRound]);
 
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
@@ -2018,6 +2044,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             assistantMessageId,
             requestId,
         });
+        emitPetStateForAssistant('thinking', 'ai:send', 15000);
         setMessages(prev => {
             const nextMessages = approvalMessage ? markLatestConfirmationAsRunning(prev) : prev;
             return [...nextMessages, userMsg, placeholderMsg];
@@ -2086,7 +2113,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             finalizeRound(generation);
         }
         return true;
-    }, [finalizeRound, flushStreamTokenBuffer, preferences, resetStreamTokenBuffer, setRoundState, waitForForegroundIdle]);
+    }, [emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, preferences, resetStreamTokenBuffer, setRoundState, waitForForegroundIdle]);
 
     const sendMessage = useCallback((text: string, options?: SendMessageOptions): Promise<boolean> => {
         const outgoingText = text.trim();
@@ -2110,6 +2137,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             assistantMessageId: null,
             requestId: '',
         });
+        emitPetStateForAssistant('thinking', 'ai:background-send', 15000);
 
         try {
             const response = await StartAIAssistantBackgroundTask({
@@ -2132,7 +2160,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } finally {
             finalizeRound(generation);
         }
-    }, [finalizeRound, setRoundState]);
+    }, [emitPetStateForAssistant, finalizeRound, setRoundState]);
 
     // sendBtwMessage sends a /btw side query via a dedicated backend binding.
     // Unlike sendMessage, this does NOT check activeRound.phase — it can run
@@ -2172,26 +2200,28 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             timestamp: Date.now(),
         };
         setMessages(prev => [...prev, userMsg, placeholderMsg]);
+        emitPetStateForAssistant('thinking', 'ai:btw-send', 10000);
 
         // Listen for streaming tokens on the /btw-specific channel.
         const tokenHandler = (payload: unknown) => {
-            const event = typeof payload === 'string' ? JSON.parse(payload) : (payload as any);
+            const event = normalizeStreamEvent(payload);
             if (event?.request_id !== requestId) return;
             const delta = event?.text || '';
             if (!delta) return;
+            emitPetStateForAssistant('speaking', 'ai:btw-token', 1800);
             setMessages(prev => prev.map(m =>
                 m.id === assistantMsgId ? { ...m, content: m.content + delta } : m
             ));
         };
         const progressHandler = (payload: unknown) => {
-            const event = typeof payload === 'string' ? JSON.parse(payload) : (payload as any);
+            const event = normalizeStreamEvent(payload);
             if (event?.request_id !== requestId) return;
             // Progress is informational — could show in a status bar, but for
             // simplicity we skip it. The streaming tokens provide real-time feedback.
         };
 
-        EventsOn("ai-btw-token", tokenHandler);
-        EventsOn("ai-btw-progress", progressHandler);
+        const offBtwToken = subscribeEvent("ai-btw-token", tokenHandler);
+        const offBtwProgress = subscribeEvent("ai-btw-progress", progressHandler);
 
         try {
             const response = await SendBtwQuery(trimmedQuery, requestId) as any;
@@ -2206,10 +2236,11 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 m.id === assistantMsgId ? { ...m, content: `❌ /btw 查询失败: ${err?.message || String(err)}` } : m
             ));
         } finally {
-            EventsOff("ai-btw-token");
-            EventsOff("ai-btw-progress");
+            offBtwToken();
+            offBtwProgress();
+            emitPetStateForAssistant('idle', 'ai:btw-done');
         }
-    }, []);
+    }, [emitPetStateForAssistant]);
 
     const browseFile = useCallback(async () => {
         try {
@@ -2391,6 +2422,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         foregroundSendTailRef.current = Promise.resolve(true);
         resetActiveRound(nextGeneration);
         setPendingTaskState(null);
+        emitPetStateForAssistant('idle', 'ai:cancel');
         try {
             if (pendingTaskAtCancel?.sessionID) {
                 await CancelAIAssistantTask(pendingTaskAtCancel.sessionID);
@@ -2413,7 +2445,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } catch {
             return { canceledText: "" };
         }
-    }, [resetActiveRound, setPendingTaskState]);
+    }, [emitPetStateForAssistant, resetActiveRound, setPendingTaskState]);
 
     // injectSupplementary sends a supplementary message into the running
     // agent loop without cancelling it. Returns true if the injection was

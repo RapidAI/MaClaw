@@ -1,7 +1,4 @@
-type Props = {
-  title: string;
-  subtitle: string;
-};
+type Props = { title: string; subtitle: string };
 
 export function TopHeader({ title, subtitle }: Props) {
   return (

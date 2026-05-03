@@ -25,12 +25,12 @@ type AgentNetAutoTaskPicker struct {
 	onChange func() // optional callback after state changes
 
 	// Configuration
-	pollInterval   time.Duration // how often to check for tasks (default 5min)
-	maxConcurrent  int           // max tasks to run at once (default 1)
-	minReward      float64       // minimum reward to consider (default 0)
-	autoEnabled    bool          // whether auto-pickup is enabled
-	preferredTags  []string      // preferred task tags for matching
-	lang           string        // "zh" or "en" for error localisation
+	pollInterval  time.Duration // how often to check for tasks (default 5min)
+	maxConcurrent int           // max tasks to run at once (default 1)
+	minReward     float64       // minimum reward to consider (default 0)
+	autoEnabled   bool          // whether auto-pickup is enabled
+	preferredTags []string      // preferred task tags for matching
+	lang          string        // "zh" or "en" for error localisation
 
 	// State
 	activeTasks    map[string]*autoTaskRun // taskID -> run info
@@ -239,7 +239,7 @@ func (p *AgentNetAutoTaskPicker) pollAndPickTask() {
 
 	// Step 1: Check if AgentNet is online.
 	if !client.IsRunning() {
-		// Not an error �?just not online yet. Don't spam lastError.
+		// Not an error - just not online yet. Don't spam lastError.
 		return
 	}
 
@@ -281,7 +281,7 @@ func (p *AgentNetAutoTaskPicker) discoverTasks(client *AgentNetClient, hubURL st
 
 	// Fall back to browsing network tasks via Hub.
 	if hubURL == "" {
-		// No Hub configured �?not an error, just no network tasks available.
+		// No Hub configured - not an error, just no network tasks available.
 		return nil, nil
 	}
 	netTasks, err := client.BrowseHubTasks(hubURL)
@@ -417,7 +417,7 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 	// Step 3: Submit the result.
 	p.setRunStatus(run, "submitting")
 
-	if err := client.SubmitTaskResult(task.ID, result); err != nil {
+	if err := client.SubmitTaskDeliverable(task, result); err != nil {
 		p.failTask(run, agentnet.FormatTaskError("submit", err, lang))
 		return
 	}
@@ -431,7 +431,7 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 	p.mu.Unlock()
 	p.notifyChange()
 
-	fmt.Printf("[auto-task-picker] �?completed task %q (reward: %.0f🐚)\n", task.Title, task.Reward)
+	fmt.Printf("[auto- task-picker] - completed task %q (reward: %.0f shell)\n", task.Title, task.Reward)
 }
 
 // setRunStatus updates a run's status under the lock and notifies.
@@ -453,7 +453,7 @@ func (p *AgentNetAutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 	p.mu.Unlock()
 	p.notifyChange()
 
-	fmt.Printf("[auto-task-picker] �?task %q failed: %s\n", run.Title, errMsg)
+	fmt.Printf("[auto- task-picker] - task %q failed: %s\n", run.Title, errMsg)
 }
 
 // setError records an error without failing a specific task.
@@ -473,7 +473,7 @@ func (p *AgentNetAutoTaskPicker) notifyChange() {
 	}
 }
 
-// PickAndExecuteTask manually picks a specific task by ID: claim �?execute �?submit.
+// PickAndExecuteTask manually picks a specific task by ID: claim -> execute -> submit.
 // Runs synchronously (Wails dispatches each binding call in its own goroutine).
 // Returns a result map with "ok", "error", and progress info suitable for the frontend.
 func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]interface{}) {
@@ -559,7 +559,7 @@ func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[s
 
 	// Step 3: Submit the result.
 	p.setRunStatus(run, "submitting")
-	if submitErr := client.SubmitTaskResult(task.ID, execResult); submitErr != nil {
+	if submitErr := client.SubmitTaskDeliverable(task, execResult); submitErr != nil {
 		msg := agentnet.FormatTaskError("submit", submitErr, lang)
 		p.failTask(run, msg)
 		return map[string]interface{}{"ok": false, "error": msg, "result": execResult}
@@ -574,7 +574,6 @@ func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[s
 	p.mu.Unlock()
 	p.notifyChange()
 
-	fmt.Printf("[manual-task-picker] �?completed task %q (reward: %.0f🐚)\n", task.Title, task.Reward)
+	fmt.Printf("[manual- task-picker] - completed task %q (reward: %.0f shell)\n", task.Title, task.Reward)
 	return map[string]interface{}{"ok": true, "result": execResult}
 }
-

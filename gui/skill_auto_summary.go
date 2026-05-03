@@ -530,12 +530,7 @@ func skillDefinitionExists(skillDir string) bool {
 	if defPath, _ := findSkillDefinitionFile(skillDir); defPath != "" {
 		return true
 	}
-	for _, name := range []string{"skill.md", "SKILL.md", "README.md", "readme.md"} {
-		if _, err := os.Stat(filepath.Join(skillDir, name)); err == nil {
-			return true
-		}
-	}
-	return false
+	return findSkillMarkdownDocPath(skillDir) != ""
 }
 
 func runLegacyLearnedSkillAutoUpload(ctx context.Context, skillName, skillDir string, score int, trigger *AutoUploadTrigger, skillExec *SkillExecutor, client *SkillMarketClient) error {

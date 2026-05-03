@@ -38,10 +38,15 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
     };
 
     const handleSave = () => {
+        const roleName = name.trim() || DEFAULT_NAME;
         saveRemoteConfigField({
-            maclaw_role_name: name.trim() || DEFAULT_NAME,
+            maclaw_role_name: roleName,
             maclaw_role_description: desc.trim() || DEFAULT_DESC,
-        });
+            group_discussion: {
+                ...((config as any)?.group_discussion || {}),
+                display_name: roleName,
+            },
+        } as any);
         showSaved();
     };
 
@@ -51,7 +56,11 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
         saveRemoteConfigField({
             maclaw_role_name: DEFAULT_NAME,
             maclaw_role_description: DEFAULT_DESC,
-        });
+            group_discussion: {
+                ...((config as any)?.group_discussion || {}),
+                display_name: DEFAULT_NAME,
+            },
+        } as any);
         showSaved();
     };
 
@@ -60,12 +69,13 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
             <p style={{ fontSize: "0.78rem", color: colors.textSecondary, marginBottom: "14px", lineHeight: 1.5 }}>
                 {t(
                     "Customize MaClaw Agent's name and role description. Takes effect immediately after saving. You can also redefine the role during chat.",
-                    "自定义 MaClaw Agent 的名字和角色描述。保存后立即生效。用户也可以在聊天中临时重新定义角色。"
+                    "自定义 MaClaw Agent 的名字和角色描述。保存后立即生效。用户也可以在聊天中临时重新定义角色。",
+                    "自訂 MaClaw Agent 的名稱和角色描述。儲存後立即生效。使用者也可以在聊天中臨時重新定義角色。"
                 )}
             </p>
 
             <div className="form-group" style={{ marginBottom: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
-                <label className="form-label" style={{ marginBottom: 0, whiteSpace: "nowrap", minWidth: "60px" }}>{t("角色名称", "Role Name")}</label>
+                <label className="form-label" style={{ marginBottom: 0, whiteSpace: "nowrap", minWidth: "60px" }}>{t("Role Name", "角色名称", "角色名稱")}</label>
                 <input
                     className="form-input"
                     value={name}
@@ -77,7 +87,7 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
             </div>
 
             <div className="form-group" style={{ marginBottom: "14px", display: "flex", alignItems: "flex-start", gap: "10px" }}>
-                <label className="form-label" style={{ marginBottom: 0, whiteSpace: "nowrap", minWidth: "60px", paddingTop: "6px" }}>{t("角色描述", "Role Description")}</label>
+                <label className="form-label" style={{ marginBottom: 0, whiteSpace: "nowrap", minWidth: "60px", paddingTop: "6px" }}>{t("Role Description", "角色描述")}</label>
                 <textarea
                     className="form-input"
                     value={desc}
@@ -91,10 +101,10 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
 
             <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
                 <button className="btn-primary" onClick={handleSave} style={{ minWidth: "90px" }}>
-                    {saved ? t("已保存 ✓", "Saved ✓") : t("保存", "Save")}
+                    {saved ? t("Saved ✓", "已保存 ✓", "已儲存 ✓") : t("Save", "保存", "儲存")}
                 </button>
                 <button className="btn-secondary" onClick={handleReset} style={{ minWidth: "90px" }}>
-                    {t("恢复默认", "Reset Default")}
+                    {t("Reset Default", "恢复默认", "恢復預設")}
                 </button>
             </div>
 
@@ -112,13 +122,14 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
                             }}
                             style={{ width: "16px", height: "16px" }}
                         />
-                        {t("聊天八卦自动发帖", "Auto-post Chat Gossip")}
+                        {t("Auto-post Chat Gossip", "聊天八卦自动发帖", "聊天八卦自動發帖")}
                     </label>
                 </div>
                 <p style={{ fontSize: "0.75rem", color: colors.textMuted, marginTop: "6px", lineHeight: 1.4 }}>
                     {t(
-                        "开启后，MaClaw 在与你聊天时如果发现有趣的内容，会自动提取精华发布到 Gossip 社区。",
-                        "When enabled, MaClaw will automatically extract interesting highlights from your conversations and post them to the Gossip community."
+                        "When enabled, MaClaw will automatically extract interesting highlights from your conversations and post them to the Gossip community.",
+                        "开启后，MaClaw 会自动从你的对话中提取有趣片段，并发布到 Gossip 社区。",
+                        "開啟後，MaClaw 會自動從你的對話中擷取有趣片段，並發布到 Gossip 社群。"
                     )}
                 </p>
             </div>

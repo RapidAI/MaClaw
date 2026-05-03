@@ -213,6 +213,30 @@ func TestValidateSkillPortabilityAcceptsReadmeDocumentation(t *testing.T) {
 	}
 }
 
+func TestValidateSkillPortabilityAcceptsMixedCaseReadmeDocumentation(t *testing.T) {
+	dir := t.TempDir()
+	absPath := filepath.ToSlash(filepath.Join(dir, "scripts", "run.py"))
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# Readme skill\n\n```bash\npython " + absPath + "\n```\n"
+	if err := os.WriteFile(filepath.Join(dir, "Readme.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	var found bool
+	for _, issue := range report.Issues {
+		if issue.File == "Readme.md" && issue.Category == "missing_basedir" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Readme.md portability issue not reported with actual file name: %+v", report.Issues)
+	}
+}
 func TestValidateSkillPortabilityAcceptsLowercaseReadmeDocumentation(t *testing.T) {
 	dir := t.TempDir()
 	absPath := filepath.ToSlash(filepath.Join(dir, "scripts", "run.py"))

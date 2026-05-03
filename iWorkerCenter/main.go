@@ -16,7 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/config"
 )
 
-//go:embed web/admin/dist
+//go:embed cmd/iworkercenter/web/admin
 var adminAssets embed.FS
 
 func main() {
@@ -46,7 +46,7 @@ func run(args []string) error {
 	// Serve the embedded Admin Web Console at /admin/ with SPA fallback.
 	// API routes under /admin/ are handled by center.Mux (registered in buildMux).
 	// Non-API requests serve static files or fall back to index.html for SPA routing.
-	adminFS, err := fs.Sub(adminAssets, "web/admin/dist")
+	adminFS, err := fs.Sub(adminAssets, "cmd/iworkercenter/web/admin")
 	if err != nil {
 		return fmt.Errorf("embed admin assets: %w", err)
 	}

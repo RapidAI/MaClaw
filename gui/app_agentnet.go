@@ -1,6 +1,6 @@
 package main
 
-// app_agentnet.go — Wails bindings for AgentNet integration.
+// app_agentnet.go - Wails bindings for AgentNet integration.
 // Exposes AgentNet P2P network features to the frontend via the App struct.
 
 import (
@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentnet"
@@ -564,9 +565,16 @@ func (a *App) AgentNetBidOnTask(id string, amount float64, message string) map[s
 	return map[string]interface{}{"ok": true}
 }
 
-func (a *App) AgentNetSubmitTaskResult(id, result string) map[string]interface{} {
+func (a *App) AgentNetSubmitTaskDeliverable(id, result string) map[string]interface{} {
 	c := a.initAgentNet()
-	if err := c.SubmitTaskResult(id, result); err != nil {
+	task, err := c.GetTask(id)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	if strings.TrimSpace(result) == "" {
+		result = "Manual submission requested from the AgentNet task board."
+	}
+	if err := c.SubmitTaskDeliverable(task, result); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
@@ -688,15 +696,22 @@ func agentnetIdentityKeyPath() (string, error) {
 
 // AgentNetHasIdentity checks whether an identity.key file exists.
 func (a *App) AgentNetHasIdentity() map[string]interface{} {
-	keyPath, err := agentnetIdentityKeyPath()
+	keyPath, err := agentnet.IdentityKeyPath()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	info, err := os.Stat(keyPath)
-	if err != nil {
-		return map[string]interface{}{"ok": true, "exists": false, "path": keyPath}
+	exists := false
+	if info, err := os.Stat(keyPath); err == nil && !info.IsDir() && info.Size() > 0 {
+		exists = true
 	}
-	return map[string]interface{}{"ok": true, "exists": true, "path": keyPath, "size": info.Size()}
+	peerID := ""
+	if s, err := a.initAgentNet().GetStatus(); err == nil && s != nil {
+		peerID = s.PeerID
+		if peerID != "" {
+			exists = true
+		}
+	}
+	return map[string]interface{}{"ok": true, "exists": exists, "path": keyPath, "peer_id": peerID}
 }
 
 // AgentNetExportIdentity copies identity.key to a user-chosen location via save dialog.
@@ -706,7 +721,7 @@ func (a *App) AgentNetExportIdentity() map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	if _, err := os.Stat(keyPath); err != nil {
-		return map[string]interface{}{"ok": false, "error": "identity.key not found — daemon may not have been initialized"}
+		return map[string]interface{}{"ok": false, "error": "identity.key not found - daemon may not have been initialized"}
 	}
 
 	dest, err := wailsrt.SaveFileDialog(a.ctx, wailsrt.SaveDialogOptions{
@@ -745,13 +760,13 @@ func (a *App) AgentNetImportIdentity() map[string]interface{} {
 
 	info, err := os.Stat(src)
 	if err != nil {
-		a.log(fmt.Sprintf("AgentNet: import identity — cannot read source file: %v", err))
+		a.log(fmt.Sprintf("AgentNet: import identity - cannot read source file: %v", err))
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("cannot read file: %v", err)}
 	}
 	// Sanity check: Ed25519 key files are small (typically < 1KB)
 	if info.Size() > 10*1024 {
-		a.log(fmt.Sprintf("AgentNet: import identity — file too large (%d bytes)", info.Size()))
-		return map[string]interface{}{"ok": false, "error": "file too large — does not look like an identity key"}
+		a.log(fmt.Sprintf("AgentNet: import identity - file too large (%d bytes)", info.Size()))
+		return map[string]interface{}{"ok": false, "error": "file too large - does not look like an identity key"}
 	}
 
 	keyPath, err := agentnetIdentityKeyPath()
@@ -767,21 +782,21 @@ func (a *App) AgentNetImportIdentity() map[string]interface{} {
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0755); err != nil {
-		a.log(fmt.Sprintf("AgentNet: import identity — mkdir failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: import identity - mkdir failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 
 	// Backup existing key if present
 	if _, err := os.Stat(keyPath); err == nil {
 		if renameErr := os.Rename(keyPath, keyPath+".bak"); renameErr != nil {
-			a.log(fmt.Sprintf("AgentNet: import identity — backup rename failed: %v", renameErr))
+			a.log(fmt.Sprintf("AgentNet: import identity - backup rename failed: %v", renameErr))
 		} else {
 			a.log(fmt.Sprintf("AgentNet: existing identity key backed up to %s.bak", keyPath))
 		}
 	}
 
 	if err := agentnetCopyFile(src, keyPath); err != nil {
-		a.log(fmt.Sprintf("AgentNet: import identity — copy failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: import identity - copy failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	a.log(fmt.Sprintf("AgentNet: identity key imported from %s", src))
@@ -842,7 +857,7 @@ func (a *App) AgentNetOnlineBackupKey(password string) map[string]interface{} {
 	email := config.RemoteEmail
 	hubURL := config.RemoteHubURL
 	if email == "" {
-		return map[string]interface{}{"ok": false, "error": "no email configured — please activate remote first"}
+		return map[string]interface{}{"ok": false, "error": "no email configured - please activate remote first"}
 	}
 	if hubURL == "" {
 		return map[string]interface{}{"ok": false, "error": "no hub URL configured"}
@@ -854,7 +869,7 @@ func (a *App) AgentNetOnlineBackupKey(password string) map[string]interface{} {
 	}
 	keyData, err := os.ReadFile(keyPath)
 	if err != nil {
-		return map[string]interface{}{"ok": false, "error": "identity.key not found — daemon may not have been initialized"}
+		return map[string]interface{}{"ok": false, "error": "identity.key not found - daemon may not have been initialized"}
 	}
 
 	payload, _ := json.Marshal(map[string]string{
@@ -895,7 +910,7 @@ func (a *App) AgentNetOnlineRestoreKey(password string) map[string]interface{} {
 	email := config.RemoteEmail
 	hubURL := config.RemoteHubURL
 	if email == "" {
-		return map[string]interface{}{"ok": false, "error": "no email configured — please activate remote first"}
+		return map[string]interface{}{"ok": false, "error": "no email configured - please activate remote first"}
 	}
 	if hubURL == "" {
 		return map[string]interface{}{"ok": false, "error": "no hub URL configured"}
@@ -927,12 +942,12 @@ func (a *App) AgentNetOnlineRestoreKey(password string) map[string]interface{} {
 
 	keyDataB64, _ := result["key_data"].(string)
 	if keyDataB64 == "" {
-		a.log(fmt.Sprintf("AgentNet: online restore — empty key data in response for %s", email))
+		a.log(fmt.Sprintf("AgentNet: online restore - empty key data in response for %s", email))
 		return map[string]interface{}{"ok": false, "error": "empty key data in response"}
 	}
 	keyData, err := base64.StdEncoding.DecodeString(keyDataB64)
 	if err != nil {
-		a.log(fmt.Sprintf("AgentNet: online restore — invalid key encoding for %s: %v", email, err))
+		a.log(fmt.Sprintf("AgentNet: online restore - invalid key encoding for %s: %v", email, err))
 		return map[string]interface{}{"ok": false, "error": "invalid key data encoding"}
 	}
 
@@ -947,19 +962,19 @@ func (a *App) AgentNetOnlineRestoreKey(password string) map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0755); err != nil {
-		a.log(fmt.Sprintf("AgentNet: online restore — mkdir failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: online restore - mkdir failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	// Backup existing key
 	if _, err := os.Stat(keyPath); err == nil {
 		if renameErr := os.Rename(keyPath, keyPath+".bak"); renameErr != nil {
-			a.log(fmt.Sprintf("AgentNet: online restore — backup rename failed: %v", renameErr))
+			a.log(fmt.Sprintf("AgentNet: online restore - backup rename failed: %v", renameErr))
 		} else {
 			a.log(fmt.Sprintf("AgentNet: existing identity key backed up to %s.bak", keyPath))
 		}
 	}
 	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
-		a.log(fmt.Sprintf("AgentNet: online restore — write key failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: online restore - write key failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	a.log(fmt.Sprintf("AgentNet: identity key restored from Hub for %s", email))
@@ -1223,7 +1238,7 @@ func (a *App) AgentNetPublishTasksToHub() map[string]interface{} {
 }
 
 // ---------------------------------------------------------------------------
-// Auto Task Picker — maClaw automatically picks up AgentNet tasks for credits
+// Auto Task Picker - maClaw automatically picks up AgentNet tasks for credits
 // ---------------------------------------------------------------------------
 
 // AgentNetAutoPickerGetStatus returns the current auto-task-picker status.
@@ -1265,7 +1280,7 @@ func (a *App) AgentNetAutoPickerConfigure(enabled bool, pollMinutes int, minRewa
 	if enabled {
 		a.autoTaskPicker.Start()
 		if ShowNotification != nil {
-			ShowNotification("🦐 智网自动接单", "已开启自动接单模式，maClaw 将自动寻找并完成任务赚取 🐚", 1)
+			ShowNotification("AgentNet", "Auto task picker is enabled. maClaw will claim and submit matching tasks.", 1)
 		}
 	} else {
 		a.autoTaskPicker.Stop()
@@ -1294,7 +1309,7 @@ func (a *App) AgentNetAutoPickerTriggerNow() map[string]interface{} {
 	return map[string]interface{}{"ok": true}
 }
 
-// AgentNetManualPickTask manually picks a specific task: claim → execute → submit.
+// AgentNetManualPickTask manually picks a specific task: claim -> execute -> submit.
 // Returns detailed status/error for the frontend to display.
 func (a *App) AgentNetManualPickTask(taskID string) map[string]interface{} {
 	if taskID == "" {
@@ -1308,7 +1323,7 @@ func (a *App) AgentNetManualPickTask(taskID string) map[string]interface{} {
 }
 
 // ensureAutoTaskPicker lazily creates and wires the auto-task-picker.
-// Thread-safe via sync.Once — safe to call from multiple goroutines.
+// Thread- safe via sync.Once - safe to call from multiple goroutines.
 func (a *App) ensureAutoTaskPicker() {
 	a.autoPickerOnce.Do(func() {
 		c := a.initAgentNet()
@@ -1329,7 +1344,7 @@ func (a *App) ensureAutoTaskPicker() {
 			}
 
 			// Prepend a hint so the agent knows this is an autonomous AgentNet task.
-			actionText := fmt.Sprintf("[智网自动接单任务 — 请一次性完成，不要等待用户输入]\n任务: %s\n\n%s", taskTitle, taskDescription)
+			actionText := fmt.Sprintf("[AgentNet autonomous task]\nTask: %s\n\n%s", taskTitle, taskDescription)
 
 			handler := hubClient.ensureIMHandler()
 			resp := handler.HandleIMMessageWithProgress(IMUserMessage{
@@ -1339,8 +1354,8 @@ func (a *App) ensureAutoTaskPicker() {
 				MinIterations: 30,
 				IsBackground:  true,
 			}, func(text string) {
-				// Progress callback — send to IM so user can see live updates.
-				progressMsg := fmt.Sprintf("🦐 智网任务「%s」进度:\n%s", taskTitle, text)
+				// Progress callback sends updates to IM so the user can see live status.
+				progressMsg := fmt.Sprintf("AgentNet task progress: %s\n%s", taskTitle, text)
 				_ = hubClient.SendIMProactiveMessage(progressMsg)
 			})
 
@@ -1356,7 +1371,7 @@ func (a *App) ensureAutoTaskPicker() {
 			// Notify user of completion.
 			resultText := resp.Text
 			if resultText != "" {
-				proactiveMsg := fmt.Sprintf("🦐 智网任务「%s」已完成:\n\n%s", taskTitle, resultText)
+				proactiveMsg := fmt.Sprintf("AgentNet task completed: %s\n\n%s", taskTitle, resultText)
 				_ = hubClient.SendIMProactiveMessage(proactiveMsg)
 			}
 
@@ -1402,100 +1417,55 @@ func (a *App) ensureHubClient() *RemoteHubClient {
 }
 
 // ---------------------------------------------------------------------------
-// Nutshell Integration
+// AgentNet Bundle Integration
 // ---------------------------------------------------------------------------
 
-func (a *App) nutshellMgr() *agentnet.NutshellManager {
+func (a *App) bundleMgr() *agentnet.BundleManager {
 	c := a.initAgentNet()
-	return agentnet.NewNutshellManager(c.BinPath())
+	return agentnet.NewBundleManager(c.BinPath())
 }
 
-// AgentNetNutshellStatus checks if the nutshell CLI is installed.
-func (a *App) AgentNetNutshellStatus() map[string]interface{} {
-	st := a.nutshellMgr().IsInstalled()
+// AgentNetBundleStatus checks whether anet pack/unpack is available.
+func (a *App) AgentNetBundleStatus() map[string]interface{} {
+	st := a.bundleMgr().IsInstalled()
 	return map[string]interface{}{"ok": true, "installed": st.Installed, "version": st.Version, "error": st.Error}
 }
 
-// AgentNetNutshellInstall installs the nutshell CLI via agentnet.
-func (a *App) AgentNetNutshellInstall() map[string]interface{} {
+// AgentNetBundleInstall installs anet when pack/unpack is not available.
+func (a *App) AgentNetBundleInstall() map[string]interface{} {
 	emitter := func(stage string, pct int, msg string) {
-		a.emitEvent("nutshell-install-progress", map[string]interface{}{
+		a.emitEvent("agentnet-bundle-install-progress", map[string]interface{}{
 			"stage":   stage,
 			"percent": pct,
 			"message": msg,
 		})
 	}
-	path, err := a.nutshellMgr().InstallWithProgress(emitter)
+	path, err := a.bundleMgr().InstallWithProgress(emitter)
 	if err != nil {
-		return map[string]interface{}{"ok": false, "error": err.Error(), "manualPath": agentnet.NutshellBinaryPath()}
+		return map[string]interface{}{"ok": false, "error": err.Error(), "manualPath": agentnet.BundleBinaryPath()}
 	}
 	return map[string]interface{}{"ok": true, "path": path}
 }
 
-// AgentNetNutshellInit initializes a new nutshell bundle in the given directory.
-func (a *App) AgentNetNutshellInit(dir string) map[string]interface{} {
-	out, err := a.nutshellMgr().Init(dir)
+// AgentNetBundlePack creates a .nut bundle file. peerID is optional for encryption.
+func (a *App) AgentNetBundlePack(dir, outputFile, peerID string) map[string]interface{} {
+	out, err := a.bundleMgr().Pack(dir, outputFile, peerID)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
 	}
 	return map[string]interface{}{"ok": true, "output": out}
 }
 
-// AgentNetNutshellCheck validates a nutshell bundle directory.
-func (a *App) AgentNetNutshellCheck(dir string) map[string]interface{} {
-	out, err := a.nutshellMgr().Check(dir)
+// AgentNetBundleUnpack extracts a .nut bundle file.
+func (a *App) AgentNetBundleUnpack(nutFile, outputDir string) map[string]interface{} {
+	out, err := a.bundleMgr().Unpack(nutFile, outputDir)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
 	}
 	return map[string]interface{}{"ok": true, "output": out}
 }
 
-// AgentNetNutshellPublish publishes a nutshell bundle with a reward.
-func (a *App) AgentNetNutshellPublish(dir string, reward float64) map[string]interface{} {
-	out, err := a.nutshellMgr().Publish(dir, reward)
-	if err != nil {
-		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
-	}
-	return map[string]interface{}{"ok": true, "output": out}
-}
-
-// AgentNetNutshellClaim claims a task and creates a local workspace.
-func (a *App) AgentNetNutshellClaim(taskID, outputDir string) map[string]interface{} {
-	out, err := a.nutshellMgr().Claim(taskID, outputDir)
-	if err != nil {
-		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
-	}
-	return map[string]interface{}{"ok": true, "output": out}
-}
-
-// AgentNetNutshellDeliver submits completed work from a workspace directory.
-func (a *App) AgentNetNutshellDeliver(dir string) map[string]interface{} {
-	out, err := a.nutshellMgr().Deliver(dir)
-	if err != nil {
-		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
-	}
-	return map[string]interface{}{"ok": true, "output": out}
-}
-
-// AgentNetNutshellPack creates a .nut bundle file. peerID is optional for encryption.
-func (a *App) AgentNetNutshellPack(dir, outputFile, peerID string) map[string]interface{} {
-	out, err := a.nutshellMgr().Pack(dir, outputFile, peerID)
-	if err != nil {
-		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
-	}
-	return map[string]interface{}{"ok": true, "output": out}
-}
-
-// AgentNetNutshellUnpack extracts a .nut bundle file.
-func (a *App) AgentNetNutshellUnpack(nutFile, outputDir string) map[string]interface{} {
-	out, err := a.nutshellMgr().Unpack(nutFile, outputDir)
-	if err != nil {
-		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
-	}
-	return map[string]interface{}{"ok": true, "output": out}
-}
-
-// ========== P2P Service Gateway (skill.md §Workflow F) ==========
+// ========== P2P Service Gateway (skill.md Workflow F) ==========
 
 // AgentNetListServices returns locally registered P2P services.
 func (a *App) AgentNetListServices() map[string]interface{} {

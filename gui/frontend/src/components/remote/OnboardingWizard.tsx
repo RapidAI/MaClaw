@@ -48,6 +48,7 @@ type Props = {
     lang: string;
     hubUrl: string;
     email: string;
+    uiMode?: string;
     brandId?: string;
     brandDisplayName?: string;
     onClose: () => void;

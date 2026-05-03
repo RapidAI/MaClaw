@@ -89,6 +89,8 @@ type AppConfig struct {
 	// MaClaw Role configuration
 	MaclawRoleName        string `json:"maclaw_role_name,omitempty"`
 	MaclawRoleDescription string `json:"maclaw_role_description,omitempty"`
+	// Group Discussion configuration (current-Hub scoped collaboration).
+	GroupDiscussion GroupDiscussionConfig `json:"group_discussion,omitempty"`
 	// MCP Server registry
 	MCPServers      []MCPServerEntry      `json:"mcp_servers,omitempty"`
 	LocalMCPServers []LocalMCPServerEntry `json:"local_mcp_servers,omitempty"`
@@ -105,34 +107,35 @@ type AppConfig struct {
 	AgentNetAutoPickerPollMin   int     `json:"agentnet_auto_picker_poll_min,omitempty"`
 	AgentNetAutoPickerMinReward float64 `json:"agentnet_auto_picker_min_reward,omitempty"`
 	// Security
-	SecurityPolicyMode   string `json:"security_policy_mode,omitempty"`
-	SandboxMode          string `json:"sandbox_mode,omitempty"`  // "none" (default), "os", "docker"
-	NetworkLevel         string `json:"network_level,omitempty"` // "none", "intranet", "full" (default)
-	YoloModeAllowed      bool   `json:"yolo_mode_allowed"`       // default true
-	GossipEnabled        bool   `json:"gossip_enabled"`          // default true (local preference, overridden by Hub)
-	FileOutboundEnabled  bool   `json:"file_outbound_enabled"`   // default true
-	ImageOutboundEnabled bool   `json:"image_outbound_enabled"`  // default true
-	MaclawDebugToolCalls bool   `json:"maclaw_debug_tool_calls,omitempty"`
-	ShowAITraceEntry     bool   `json:"show_ai_trace_entry,omitempty"`
-	ShowAssistantEntry   bool   `json:"show_assistant_entry"`
-	PetEnabled           bool   `json:"pet_enabled,omitempty"`
-	PetSkin              string `json:"pet_skin,omitempty"`
-	PetSize              int    `json:"pet_size,omitempty"`
-	PetMotionEnabled     *bool  `json:"pet_motion_enabled,omitempty"`
-	PetMotionSound       *bool  `json:"pet_motion_sound_enabled,omitempty"`
-	PetTextInteraction   *bool  `json:"pet_text_interaction_enabled,omitempty"`
-	PetVoiceInput        bool   `json:"pet_voice_input_enabled,omitempty"`
-	PetVoiceReadback     bool   `json:"pet_voice_readback_enabled,omitempty"`
-	PetFileDropEnabled   *bool  `json:"pet_file_drop_enabled,omitempty"`
-	PetInteractionMode   string `json:"pet_interaction_mode,omitempty"`
-	PetConversationMode  string `json:"pet_conversation_mode,omitempty"`
-	PetReadbackMode      string `json:"pet_readback_mode,omitempty"`
-	PetAutoRetryOnNoHear bool   `json:"pet_auto_retry_on_no_hear,omitempty"`
-	PetContinuousTimeout int    `json:"pet_continuous_timeout_sec,omitempty"`
-	PetQuietMode         bool   `json:"pet_quiet_mode,omitempty"`
-	FloatingBtnX         int    `json:"floating_btn_x,omitempty"`
-	FloatingBtnY         int    `json:"floating_btn_y,omitempty"`
-	LogDetailEnabled     bool   `json:"log_detail_enabled,omitempty"`
+	SecurityPolicyMode     string `json:"security_policy_mode,omitempty"`
+	SandboxMode            string `json:"sandbox_mode,omitempty"`  // "none" (default), "os", "docker"
+	NetworkLevel           string `json:"network_level,omitempty"` // "none", "intranet", "full" (default)
+	YoloModeAllowed        bool   `json:"yolo_mode_allowed"`       // default true
+	GossipEnabled          bool   `json:"gossip_enabled"`          // default true (local preference, overridden by Hub)
+	FileOutboundEnabled    bool   `json:"file_outbound_enabled"`   // default true
+	ImageOutboundEnabled   bool   `json:"image_outbound_enabled"`  // default true
+	MaclawDebugToolCalls   bool   `json:"maclaw_debug_tool_calls,omitempty"`
+	ShowAITraceEntry       bool   `json:"show_ai_trace_entry,omitempty"`
+	ShowAssistantEntry     bool   `json:"show_assistant_entry"`
+	PetEnabled             bool   `json:"pet_enabled,omitempty"`
+	PetSkin                string `json:"pet_skin,omitempty"`
+	PetSize                int    `json:"pet_size,omitempty"`
+	PetMotionEnabled       *bool  `json:"pet_motion_enabled,omitempty"`
+	PetMotionSound         *bool  `json:"pet_motion_sound_enabled,omitempty"`
+	PetTextInteraction     *bool  `json:"pet_text_interaction_enabled,omitempty"`
+	PetVoiceInput          bool   `json:"pet_voice_input_enabled,omitempty"`
+	PetVoiceReadback       bool   `json:"pet_voice_readback_enabled,omitempty"`
+	PetFileDropEnabled     *bool  `json:"pet_file_drop_enabled,omitempty"`
+	PetInteractionMode     string `json:"pet_interaction_mode,omitempty"`
+	PetConversationMode    string `json:"pet_conversation_mode,omitempty"`
+	PetReadbackMode        string `json:"pet_readback_mode,omitempty"`
+	PetAutoRetryOnNoHear   bool   `json:"pet_auto_retry_on_no_hear,omitempty"`
+	PetContinuousTimeout   int    `json:"pet_continuous_timeout_sec,omitempty"`
+	PetQuietMode           bool   `json:"pet_quiet_mode,omitempty"`
+	FloatingBtnX           int    `json:"floating_btn_x,omitempty"`
+	FloatingBtnY           int    `json:"floating_btn_y,omitempty"`
+	FloatingBtnPositionSet bool   `json:"floating_btn_position_set,omitempty"`
+	LogDetailEnabled       bool   `json:"log_detail_enabled,omitempty"`
 	// IM 闂?per-user QQ Bot (client-side gateway)
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`
@@ -232,6 +235,32 @@ type AppConfig struct {
 	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
 }
 
+// GroupDiscussionConfig controls current-Hub MaClaw-to-MaClaw consultations.
+// The feature is intentionally scoped to the current Hub and does not imply
+// AgentNet, HubCenter, or public discovery participation.
+type GroupDiscussionConfig struct {
+	Enabled                          bool     `json:"enabled"`
+	Discoverable                     bool     `json:"discoverable"`
+	Availability                     string   `json:"availability,omitempty"`
+	SuggestConsultation              bool     `json:"suggest_consultation"`
+	ConfirmBeforeStart               bool     `json:"confirm_before_start"`
+	DisplayName                      string   `json:"display_name,omitempty"`
+	SecurityGroupID                  string   `json:"security_group_id,omitempty"`
+	Skills                           []string `json:"skills,omitempty"`
+	Description                      string   `json:"description,omitempty"`
+	ModelVisibility                  string   `json:"model_visibility,omitempty"`
+	Languages                        []string `json:"languages,omitempty"`
+	InvitePolicy                     string   `json:"invite_policy,omitempty"`
+	AllowSecurityGroupFreeDiscussion bool     `json:"allow_security_group_free_discussion"`
+	AllowedRoles                     []string `json:"allowed_roles,omitempty"`
+	MaxRiskLevel                     string   `json:"max_risk_level,omitempty"`
+	ContextPolicy                    string   `json:"context_policy,omitempty"`
+	RejectWhenDND                    bool     `json:"reject_when_dnd"`
+	MaxRounds                        int      `json:"max_rounds,omitempty"`
+	TimeoutSeconds                   int      `json:"timeout_seconds,omitempty"`
+	ConcurrentLimit                  int      `json:"concurrent_limit,omitempty"`
+}
+
 func (c AppConfig) MarshalJSON() ([]byte, error) {
 	type appConfigAlias AppConfig
 	return json.Marshal(appConfigAlias(c))
@@ -241,11 +270,12 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	type appConfigAlias AppConfig
 	type rawAppConfig struct {
 		appConfigAlias
-		ShowAssistantEntry          *bool    `json:"show_assistant_entry"`
-		AgentNetEnabled             *bool    `json:"agentnet_enabled"`
-		AgentNetAutoPickerEnabled   *bool    `json:"agentnet_auto_picker_enabled,omitempty"`
-		AgentNetAutoPickerPollMin   *int     `json:"agentnet_auto_picker_poll_min,omitempty"`
-		AgentNetAutoPickerMinReward *float64 `json:"agentnet_auto_picker_min_reward,omitempty"`
+		ShowAssistantEntry          *bool                  `json:"show_assistant_entry"`
+		AgentNetEnabled             *bool                  `json:"agentnet_enabled"`
+		AgentNetAutoPickerEnabled   *bool                  `json:"agentnet_auto_picker_enabled,omitempty"`
+		AgentNetAutoPickerPollMin   *int                   `json:"agentnet_auto_picker_poll_min,omitempty"`
+		AgentNetAutoPickerMinReward *float64               `json:"agentnet_auto_picker_min_reward,omitempty"`
+		GroupDiscussion             *GroupDiscussionConfig `json:"group_discussion,omitempty"`
 	}
 
 	var raw rawAppConfig
@@ -270,7 +300,62 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	if raw.AgentNetAutoPickerMinReward != nil {
 		c.AgentNetAutoPickerMinReward = *raw.AgentNetAutoPickerMinReward
 	}
+	if raw.GroupDiscussion == nil {
+		c.GroupDiscussion = defaultGroupDiscussionConfig()
+	} else {
+		c.GroupDiscussion = *raw.GroupDiscussion
+		c.applyGroupDiscussionFieldDefaults()
+	}
 	return nil
+}
+
+func defaultGroupDiscussionConfig() GroupDiscussionConfig {
+	gd := GroupDiscussionConfig{
+		Enabled:             true,
+		Discoverable:        true,
+		SuggestConsultation: true,
+		ConfirmBeforeStart:  true,
+		RejectWhenDND:       true,
+	}
+	applyGroupDiscussionFieldDefaults(&gd)
+	return gd
+}
+
+func (c *AppConfig) applyGroupDiscussionFieldDefaults() {
+	applyGroupDiscussionFieldDefaults(&c.GroupDiscussion)
+}
+
+func applyGroupDiscussionFieldDefaults(gd *GroupDiscussionConfig) {
+	if gd.Availability == "" {
+		gd.Availability = "available"
+	}
+	if gd.InvitePolicy == "" {
+		gd.InvitePolicy = "ask_always"
+	}
+	if gd.ContextPolicy == "" {
+		gd.ContextPolicy = "summary_only"
+	}
+	if gd.MaxRiskLevel == "" {
+		gd.MaxRiskLevel = "medium"
+	}
+	if gd.ModelVisibility == "" {
+		gd.ModelVisibility = "class_only"
+	}
+	if gd.MaxRounds <= 0 {
+		gd.MaxRounds = 3
+	}
+	if gd.TimeoutSeconds <= 0 {
+		gd.TimeoutSeconds = 300
+	}
+	if gd.ConcurrentLimit <= 0 {
+		gd.ConcurrentLimit = 1
+	}
+	if len(gd.AllowedRoles) == 0 {
+		gd.AllowedRoles = []string{"observe", "speak", "review"}
+	}
+	if len(gd.Languages) == 0 {
+		gd.Languages = []string{"zh-Hans"}
+	}
 }
 
 // AuxiliaryLLMConfig holds the configuration for a lightweight LLM used for

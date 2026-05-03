@@ -94,7 +94,7 @@ function skinToneLabel(lang: Lang, tone: string): string {
 function skinDescription(lang: Lang, id: string): string {
     switch (id) {
         case 'mini-claw':
-            return text(lang, '接近当前悬浮按钮的极简入口', '接近目前懸浮按鈕的極簡入口', 'Minimal entry close to the current floating button');
+            return text(lang, '\u684c\u9762\u5ba0\u7269\u7684\u8f7b\u91cf\u5c0f\u4f19\u4f34\u5f62\u8c61', '\u684c\u9762\u5bf5\u7269\u7684\u8f15\u91cf\u5c0f\u5925\u4f34\u5f62\u8c61', 'Minimal desktop pet companion');
         case 'dev-claw':
             return text(lang, '面向开发场景的伙伴形象', '面向開發場景的夥伴形象', 'Developer-focused companion style');
         case 'focus-claw':
@@ -227,9 +227,9 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                     <p className="settings-panel-desc">
                         {text(
                             lang,
-                            '\u628a MaClaw \u6d6e\u52a8\u6309\u94ae\u5347\u7ea7\u4e3a\u53ef\u6362\u5f62\u8c61\u3001\u53ef\u52a8\u4f5c\u3001\u53ef\u6587\u5b57/\u8bed\u97f3\u4ea4\u6d41\u7684\u684c\u9762\u4f19\u4f34\u3002',
-                            '\u628a MaClaw \u6d6e\u52d5\u6309\u9215\u5347\u7d1a\u70ba\u53ef\u63db\u5f62\u8c61\u3001\u53ef\u52d5\u4f5c\u3001\u53ef\u6587\u5b57/\u8a9e\u97f3\u4ea4\u6d41\u7684\u684c\u9762\u5925\u4f34\u3002',
-                            'Turn the MaClaw floating entry into a skinnable desktop companion with motion, chat, and voice.'
+                            '\u5728 MaClaw \u684c\u9762\u5ba0\u7269\u4e2d\u7edf\u4e00\u7ba1\u7406\u5165\u53e3\u3001\u5f62\u8c61\u3001\u52a8\u4f5c\u3001\u6587\u5b57/\u8bed\u97f3\u4ea4\u6d41\u548c\u97f3\u6548\u3002',
+                            '\u5728 MaClaw \u684c\u9762\u5bf5\u7269\u4e2d\u7d71\u4e00\u7ba1\u7406\u5165\u53e3\u3001\u5f62\u8c61\u3001\u52d5\u4f5c\u3001\u6587\u5b57/\u8a9e\u97f3\u4ea4\u6d41\u548c\u97f3\u6548\u3002',
+                            'Manage the MaClaw desktop pet entry, skins, motion, chat, voice, and SFX in one place.'
                         )}
                     </p>
                 </div>
@@ -243,7 +243,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                             checked={!!(config as any).pet_enabled}
                             onChange={(event) => updatePetConfig({ pet_enabled: event.target.checked })}
                         />
-                        <span>{text(lang, '\u542f\u7528\u5ba0\u7269\u5165\u53e3', '\u555f\u7528\u5bf5\u7269\u5165\u53e3', 'Enable Pet Entry')}</span>
+                        <span>{text(lang, '\u542f\u7528\u684c\u9762\u5ba0\u7269', '\u555f\u7528\u684c\u9762\u5bf5\u7269', 'Enable Desktop Pet')}</span>
                     </label>
                 </div>
             </div>
@@ -257,7 +257,14 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                         data-interaction-mode={interactionMode}
                         data-motion={motionEnabled ? 'on' : 'off'}
                     >
-                        <img src={selectedSkinOption.image} alt={selectedSkinOption.label} className="pet-preview-image" style={{ width: petSize * 1.45, height: petSize * 1.45 }} />
+                        <div className="pet-preview-avatar" style={{ width: petSize * 1.45, height: petSize * 1.45 }}>
+                            <img src={selectedSkinOption.image} alt={selectedSkinOption.label} className="pet-preview-image" />
+                            <span className="pet-preview-face pet-preview-face--eye-left" aria-hidden="true" />
+                            <span className="pet-preview-face pet-preview-face--eye-right" aria-hidden="true" />
+                            <span className="pet-preview-face pet-preview-face--mouth" aria-hidden="true" />
+                            <span className="pet-preview-motion-mark pet-preview-motion-mark--a" aria-hidden="true" />
+                            <span className="pet-preview-motion-mark pet-preview-motion-mark--b" aria-hidden="true" />
+                        </div>
                     </div>
                     <div className="pet-preview-state-row" aria-label={text(lang, '宠物动画预览状态', '寵物動畫預覽狀態', 'Pet animation preview state')}>
                         {previewStateOptionIds.map((state) => (

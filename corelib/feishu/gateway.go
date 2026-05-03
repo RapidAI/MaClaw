@@ -1,6 +1,6 @@
 // Package feishu implements a Feishu (Lark) bot gateway for corelib.
 // It receives messages via webhook HTTP handler and sends replies via REST API.
-// This is a lightweight implementation suitable for iWorkerCenter/DiWorker
+// This is a lightweight implementation suitable for standalone products
 // without the full hub IM adapter stack.
 package feishu
 

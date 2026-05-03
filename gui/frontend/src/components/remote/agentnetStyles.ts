@@ -1,4 +1,4 @@
-﻿import type { CSSProperties } from "react";
+import type { CSSProperties } from "react";
 import { colors, radius } from "./styles";
 
 /** Shared card style for AgentNet sub-panels */
@@ -33,7 +33,7 @@ export const cnInput: CSSProperties = {
     width: "100%",
 };
 
-/** Action button factory 鈥?returns CSSProperties */
+/** Action button factory returns CSSProperties */
 export const cnActionBtn = (disabled?: boolean): CSSProperties => ({
     background: "transparent",
     color: disabled ? colors.textMuted : colors.primary,
@@ -57,7 +57,7 @@ export const cnTabStyle = (active: boolean): CSSProperties => ({
     cursor: "pointer",
 });
 
-/** Tab button with icon layout 鈥?used by AgentNetTabContainer */
+/** Tab button with icon layout used by AgentNetTabContainer */
 export const cnTabBtn = (active: boolean): CSSProperties => ({
     background: active ? "var(--primary-dark)" : "transparent",
     color: active ? colors.onPrimary : colors.textSecondary,

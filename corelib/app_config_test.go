@@ -118,3 +118,80 @@ func TestIsWorkflowEnabled(t *testing.T) {
 		t.Error("absent workflow_enabled should default to true")
 	}
 }
+
+func TestAppConfig_GroupDiscussionDefaultsWhenAbsent(t *testing.T) {
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(`{}`), &cfg); err != nil {
+		t.Fatalf("unmarshal empty config: %v", err)
+	}
+
+	gd := cfg.GroupDiscussion
+	if !gd.Enabled {
+		t.Error("absent group_discussion should default enabled")
+	}
+	if !gd.Discoverable {
+		t.Error("absent group_discussion should default discoverable")
+	}
+	if !gd.SuggestConsultation {
+		t.Error("absent group_discussion should default suggest_consultation")
+	}
+	if !gd.ConfirmBeforeStart {
+		t.Error("absent group_discussion should require confirmation before starting")
+	}
+	if !gd.RejectWhenDND {
+		t.Error("absent group_discussion should reject invites while DND by default")
+	}
+	if gd.AllowSecurityGroupFreeDiscussion {
+		t.Error("absent group_discussion should not allow same-security-group free discussion by default")
+	}
+	if gd.InvitePolicy != "ask_always" {
+		t.Errorf("InvitePolicy = %q, want ask_always", gd.InvitePolicy)
+	}
+	if gd.ContextPolicy != "summary_only" {
+		t.Errorf("ContextPolicy = %q, want summary_only", gd.ContextPolicy)
+	}
+	if gd.MaxRounds != 3 {
+		t.Errorf("MaxRounds = %d, want 3", gd.MaxRounds)
+	}
+	if gd.TimeoutSeconds != 300 {
+		t.Errorf("TimeoutSeconds = %d, want 300", gd.TimeoutSeconds)
+	}
+	if gd.ConcurrentLimit != 1 {
+		t.Errorf("ConcurrentLimit = %d, want 1", gd.ConcurrentLimit)
+	}
+}
+
+func TestAppConfig_GroupDiscussionExplicitFalseSurvivesUnmarshal(t *testing.T) {
+	raw := `{
+		"group_discussion": {
+			"enabled": false,
+			"discoverable": false,
+			"suggest_consultation": false,
+			"confirm_before_start": false,
+			"reject_when_dnd": false,
+			"allow_security_group_free_discussion": true
+		}
+	}`
+
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal explicit group_discussion config: %v", err)
+	}
+
+	gd := cfg.GroupDiscussion
+	if gd.Enabled || gd.Discoverable || gd.SuggestConsultation || gd.ConfirmBeforeStart || gd.RejectWhenDND {
+		t.Fatalf("explicit false group_discussion booleans should be preserved: %+v", gd)
+	}
+	if !gd.AllowSecurityGroupFreeDiscussion {
+		t.Fatal("allow_security_group_free_discussion=true should be preserved")
+	}
+	if gd.InvitePolicy != "ask_always" {
+		t.Errorf("InvitePolicy = %q, want ask_always", gd.InvitePolicy)
+	}
+	if gd.ContextPolicy != "summary_only" {
+		t.Errorf("ContextPolicy = %q, want summary_only", gd.ContextPolicy)
+	}
+	if gd.Availability != "available" {
+		t.Errorf("Availability = %q, want available", gd.Availability)
+	}
+}

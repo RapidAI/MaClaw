@@ -634,21 +634,11 @@ func quoteScriptPath(path string) string {
 }
 
 func skillMarkdownPath(skillDir string) (string, error) {
-	entries, err := os.ReadDir(skillDir)
+	mdPath, err := findSkillMarkdownDocPath(skillDir)
 	if err != nil {
-		return "", fmt.Errorf("无法读取 skill.md: %v", err)
+		return "", fmt.Errorf("cannot read skill markdown: %w", err)
 	}
-	for _, candidate := range []string{"skill.md", "SKILL.md", "README.md", "readme.md"} {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			if entry.Name() == candidate {
-				return filepath.Join(skillDir, candidate), nil
-			}
-		}
-	}
-	return "", fmt.Errorf("无法读取 skill.md: file not found")
+	return mdPath, nil
 }
 
 type parsedSkillMarkdown struct {

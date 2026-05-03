@@ -128,6 +128,10 @@ interface ExperienceAuditHealth {
     skipped: number;
     avg_duration_ms?: number;
     latest_timestamp?: string;
+    status?: string;
+    issue_code?: string;
+    primary_issue?: string;
+    suggested_action?: string;
     skip_reasons?: Record<string, number>;
     unsupported_steps?: Record<string, number>;
 }
@@ -1345,6 +1349,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             {!experienceAuditError && experienceAuditHealth && (
                                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "6px", marginBottom: "8px" }}>
                                     {[
+                                        [localizeText("Health", "Health", "Health"), experienceAuditHealth.status || "empty"],
                                         [localizeText("Runs", "Runs", "Runs"), experienceAuditHealth.runs],
                                         [localizeText("Completed", "Completed", "Completed"), experienceAuditHealth.completed],
                                         [localizeText("Failed", "Failed", "Failed"), experienceAuditHealth.failed],
@@ -1357,6 +1362,16 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <div style={{ fontSize: "0.84rem", fontWeight: 700, color: colors.text }}>{value}</div>
                                         </div>
                                     ))}
+                                </div>
+                            )}
+                            {!experienceAuditError && experienceAuditHealth?.primary_issue && (
+                                <div style={{ fontSize: "0.72rem", color: colors.warning, marginBottom: "6px" }}>
+                                    {localizeText("Primary issue", "Primary issue", "Primary issue")}: {experienceAuditHealth.primary_issue}
+                                </div>
+                            )}
+                            {!experienceAuditError && experienceAuditHealth?.suggested_action && (
+                                <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginBottom: "6px" }}>
+                                    {localizeText("Suggested action", "Suggested action", "Suggested action")}: {experienceAuditHealth.suggested_action}
                                 </div>
                             )}
                             {!experienceAuditError && experienceAuditHealth && (Object.keys(experienceAuditHealth.skip_reasons || {}).length > 0 || Object.keys(experienceAuditHealth.unsupported_steps || {}).length > 0) && (

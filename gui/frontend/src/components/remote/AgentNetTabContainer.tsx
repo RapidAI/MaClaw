@@ -2,7 +2,11 @@ import React, { useState, Component, ReactNode } from "react";
 import { AgentNetTaskBoard } from "./AgentNetTaskBoard";
 import { AgentNetKnowledgePanel } from "./AgentNetKnowledgePanel";
 import { AgentNetChatPanel } from "./AgentNetChatPanel";
-import { AgentNetNutshellPanel } from "./AgentNetNutshellPanel";
+import { AgentNetBundlePanel } from "./AgentNetBundlePanel";
+import { AgentNetNetworkPanel } from "./AgentNetNetworkPanel";
+import { AgentNetPoIPanel } from "./AgentNetPoIPanel";
+import { AgentNetServicesPanel } from "./AgentNetServicesPanel";
+import { AgentNetToolsPanel } from "./AgentNetToolsPanel";
 import { colors } from "./styles";
 import { cnTabBtn } from "./agentnetStyles";
 
@@ -12,13 +16,17 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
 
 type Props = { lang: string; agentNetRunning: boolean };
 
-type AgentNetSubTab = "tasks" | "knowledge" | "chat" | "nutshell";
+type AgentNetSubTab = "tasks" | "knowledge" | "chat" | "network" | "poi" | "services" | "tools" | "bundle";
 
 const tabDefs: { id: AgentNetSubTab; icon: string; label: (lang: string) => string }[] = [
-    { id: "tasks", icon: "🏪", label: (lang) => localizeText(lang, "Tasks", "任务集市") },
-    { id: "knowledge", icon: "📚", label: (lang) => localizeText(lang, "Knowledge", "知识网络") },
-    { id: "chat", icon: "💬", label: (lang) => localizeText(lang, "Chat", "聊天") },
-    { id: "nutshell", icon: "📦", label: (lang) => localizeText(lang, "Nutshell", "任务包") },
+    { id: "tasks", icon: "TASK", label: (lang) => localizeText(lang, "Tasks", "Tasks") },
+    { id: "knowledge", icon: "KNOW", label: (lang) => localizeText(lang, "Knowledge", "Knowledge") },
+    { id: "chat", icon: "CHAT", label: (lang) => localizeText(lang, "Chat", "Chat") },
+    { id: "network", icon: "NET", label: (lang) => localizeText(lang, "Network", "Network") },
+    { id: "poi", icon: "POI", label: (lang) => localizeText(lang, "PoI", "PoI") },
+    { id: "services", icon: "SVC", label: (lang) => localizeText(lang, "Services", "Services") },
+    { id: "tools", icon: "TOOL", label: (lang) => localizeText(lang, "Tools", "Tools") },
+    { id: "bundle", icon: "NUT", label: (lang) => localizeText(lang, "Bundle", "Bundle") },
 ];
 
 // ErrorBoundary to prevent a single panel crash from white-screening the entire view
@@ -40,9 +48,9 @@ class AgentNetErrorBoundary extends Component<
         if (this.state.hasError) {
             return (
                 <div style={{ padding: "40px 20px", textAlign: "center", color: colors.textMuted }}>
-                    <div style={{ fontSize: "2.5rem", marginBottom: "12px" }}>⚠️</div>
+                    <div style={{ fontSize: "2.5rem", marginBottom: "12px" }}>!</div>
                     <div style={{ fontSize: "0.9rem", fontWeight: 600, color: colors.danger, marginBottom: "6px" }}>
-                        {localizeText(this.props.lang, "Panel failed to load", "面板加载出错")}
+                        {localizeText(this.props.lang, "Panel failed to load", "Panel failed to load")}
                     </div>
                     <div style={{ fontSize: "0.78rem", color: colors.textSecondary, maxWidth: "360px", margin: "0 auto 12px" }}>
                         {this.state.error}
@@ -54,7 +62,7 @@ class AgentNetErrorBoundary extends Component<
                             background: colors.bg, color: colors.text, cursor: "pointer", fontSize: "0.78rem", fontWeight: 600,
                         }}
                     >
-                        {localizeText(this.props.lang, "Retry", "重试")}
+                        {localizeText(this.props.lang, "Retry", "Retry")}
                     </button>
                 </div>
             );
@@ -68,7 +76,11 @@ function renderSubTab(subTab: AgentNetSubTab, lang: string, agentNetRunning: boo
         case "tasks": return <AgentNetTaskBoard lang={lang} agentNetRunning={agentNetRunning} />;
         case "knowledge": return <AgentNetKnowledgePanel lang={lang} agentNetRunning={agentNetRunning} />;
         case "chat": return <AgentNetChatPanel lang={lang} agentNetRunning={agentNetRunning} />;
-        case "nutshell": return <AgentNetNutshellPanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "network": return <AgentNetNetworkPanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "poi": return <AgentNetPoIPanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "services": return <AgentNetServicesPanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "tools": return <AgentNetToolsPanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "bundle": return <AgentNetBundlePanel lang={lang} agentNetRunning={agentNetRunning} />;
         default: return null;
     }
 }
@@ -94,7 +106,7 @@ export function AgentNetTabContainer({ lang, agentNetRunning }: Props) {
                 ))}
             </div>
 
-            {/* Content – only render the active panel (lazy) to avoid concurrent backend storms */}
+            {/* Content: only render the active panel (lazy) to avoid concurrent backend storms */}
             <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
                 <AgentNetErrorBoundary key={`${subTab}-${retryKey}`} lang={lang} onRetry={() => setRetryKey(k => k + 1)}>
                     {renderSubTab(subTab, lang, agentNetRunning)}

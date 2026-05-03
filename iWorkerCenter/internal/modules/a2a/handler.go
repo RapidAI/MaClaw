@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
 
@@ -20,6 +21,209 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 func (h *Handler) RegisterRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/runtime/a2a/sessions", h.handleSessions)
 	mux.HandleFunc("/runtime/a2a/sessions/", h.handleSessionAction)
+}
+
+func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/admin/a2a/group-discussions", h.handleAdminGroupDiscussions)
+}
+
+func (h *Handler) RegisterHubRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/a2a/experts", h.handleHubExperts)
+	mux.HandleFunc("/api/a2a/expert-profile", h.handleHubExpertProfile)
+	mux.HandleFunc("/api/a2a/discussions/mine", h.handleHubDiscussionsMine)
+	mux.HandleFunc("/api/a2a/invites/mine", h.handleHubInvitesMine)
+	mux.HandleFunc("/api/a2a/consultations", h.handleHubConsultations)
+	mux.HandleFunc("/api/a2a/consultations/", h.handleHubConsultationAction)
+	mux.HandleFunc("/api/a2a/invites/", h.handleHubInviteAction)
+}
+
+func (h *Handler) handleAdminGroupDiscussions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+	snapshot, err := h.svc.AdminGroupDiscussionSnapshot(tenant.RequestTenantID(r))
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
+		return
+	}
+	response.OK(w, snapshot)
+}
+
+func (h *Handler) handleHubExperts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+	experts := h.svc.ListExpertProfiles(tenant.RequestTenantID(r), 10*time.Minute)
+	response.OK(w, map[string]any{"experts": experts})
+}
+
+func (h *Handler) handleHubExpertProfile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PUT")
+		return
+	}
+	var profile corea2a.GroupProfile
+	if !decodeJSON(w, r, &profile) {
+		return
+	}
+	stored, err := h.svc.UpsertExpertProfile(tenant.RequestTenantID(r), profile)
+	if err != nil {
+		response.BadRequest(w, "PROFILE_REJECTED", err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"profile": stored})
+}
+
+func (h *Handler) handleHubDiscussionsMine(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+	items, err := h.svc.ListDiscussionSummaries(tenant.RequestTenantID(r), listFilterFromRequest(r))
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"discussions": items})
+}
+
+func (h *Handler) handleHubInvitesMine(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+	toID := strings.TrimSpace(r.URL.Query().Get("to_id"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	invites := h.svc.ListInvitations(tenant.RequestTenantID(r), toID, status)
+	response.OK(w, map[string]any{"invites": invites})
+}
+
+func (h *Handler) handleHubConsultations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+	var req corea2a.GroupConsultationRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	out, err := h.svc.CreateConsultation(tenant.RequestTenantID(r), req)
+	if err != nil {
+		response.BadRequest(w, "CONSULTATION_REJECTED", err.Error())
+		return
+	}
+	response.Created(w, out)
+}
+
+func (h *Handler) handleHubConsultationAction(w http.ResponseWriter, r *http.Request) {
+	tid := tenant.RequestTenantID(r)
+	id, action := parseHubConsultationAction(r.URL.Path)
+	if id == "" {
+		response.BadRequest(w, "MISSING_CONSULTATION_ID", "consultation id is required")
+		return
+	}
+	if action == "" {
+		if r.Method != http.MethodGet {
+			response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		discussion, err := h.svc.GetDiscussionSummary(tid, id)
+		if err != nil {
+			response.NotFound(w, "CONSULTATION_NOT_FOUND", err.Error())
+			return
+		}
+		response.OK(w, map[string]any{"discussion": discussion})
+		return
+	}
+	if action == "detail" {
+		if r.Method != http.MethodGet {
+			response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		detail, err := h.svc.GetDiscussionDetail(tid, id)
+		if err != nil {
+			response.NotFound(w, "CONSULTATION_NOT_FOUND", err.Error())
+			return
+		}
+		response.OK(w, detail)
+		return
+	}
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+	switch action {
+	case "invites":
+		var inv corea2a.GroupInvitation
+		if !decodeJSON(w, r, &inv) {
+			return
+		}
+		inviteID, err := h.svc.AddInvitation(tid, id, inv)
+		if err != nil {
+			response.BadRequest(w, "INVITE_REJECTED", err.Error())
+			return
+		}
+		response.Created(w, map[string]any{"invite_id": inviteID})
+	case "messages":
+		var msg corea2a.GroupDiscussionMessage
+		if !decodeJSON(w, r, &msg) {
+			return
+		}
+		session, err := h.svc.AddDiscussionMessage(tid, id, msg)
+		if err != nil {
+			response.BadRequest(w, "MESSAGE_REJECTED", err.Error())
+			return
+		}
+		response.OK(w, map[string]any{"discussion": discussionSummaryFromSession(session)})
+	case "result":
+		var result corea2a.GroupDiscussionResult
+		if !decodeJSON(w, r, &result) {
+			return
+		}
+		session, err := h.svc.SubmitDiscussionResult(tid, id, result)
+		if err != nil {
+			response.BadRequest(w, "RESULT_REJECTED", err.Error())
+			return
+		}
+		response.OK(w, map[string]any{"discussion": discussionSummaryFromSession(session)})
+	case "pause", "resume", "cancel":
+		session, err := h.svc.SetDiscussionState(tid, id, action)
+		if err != nil {
+			response.BadRequest(w, "STATE_REJECTED", err.Error())
+			return
+		}
+		response.OK(w, map[string]any{"discussion": discussionSummaryFromSession(session)})
+	default:
+		response.NotFound(w, "ACTION_NOT_FOUND", "unsupported consultation action")
+	}
+}
+
+func (h *Handler) handleHubInviteAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+	inviteID, action := parseHubInviteAction(r.URL.Path)
+	if inviteID == "" || (action != "accept" && action != "reject") {
+		response.NotFound(w, "INVITE_ACTION_NOT_FOUND", "unsupported invite action")
+		return
+	}
+	var resp corea2a.GroupInvitationResponse
+	if !decodeJSON(w, r, &resp) {
+		return
+	}
+	if action == "accept" {
+		resp.Decision = corea2a.GroupInvitationAccept
+	} else {
+		resp.Decision = corea2a.GroupInvitationReject
+	}
+	if err := h.svc.RespondInvitation(tenant.RequestTenantID(r), inviteID, resp); err != nil {
+		response.BadRequest(w, "INVITE_RESPONSE_REJECTED", err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"ok": true})
 }
 
 func (h *Handler) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +353,27 @@ func parseSessionAction(path string) (string, string) {
 	}
 	if len(parts) == 1 {
 		return parts[0], ""
+	}
+	return parts[0], parts[1]
+}
+
+func parseHubConsultationAction(path string) (string, string) {
+	rest := strings.TrimPrefix(path, "/api/a2a/consultations/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return "", ""
+	}
+	if len(parts) == 1 {
+		return parts[0], ""
+	}
+	return parts[0], parts[1]
+}
+
+func parseHubInviteAction(path string) (string, string) {
+	rest := strings.TrimPrefix(path, "/api/a2a/invites/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) < 2 || parts[0] == "" {
+		return "", ""
 	}
 	return parts[0], parts[1]
 }

@@ -1,7 +1,9 @@
 {
   "app": {
     "title": "iWorkerCloud 管理台",
-    "loading": "加载中..."
+    "loading": "加载中...",
+    "sideNoteTitle": "平台控制边界",
+    "sideNoteDesc": "只协调 Center 注册、授权、算力和技能服务。"
   },
   "nav": {
     "overview": "总览",
@@ -50,7 +52,54 @@
     "tenantPoint3": "部署健康",
     "watch": "观察",
     "scale": "扩展",
-    "ready": "就绪"
+    "ready": "就绪",
+    "ops": {
+      "readyCenters": "就绪 Center",
+      "readyCentersHint": "已激活、已授权、可达且身份已验证，可进行 Cloud 服务协调。",
+      "needsSetup": "需要配置",
+      "needsSetupHint": "缺少服务地址、身份验证或授权配置的 Center。",
+      "probeFailures": "探活失败",
+      "probeFailuresHint": "最近一次 Cloud 侧健康探测失败的 Center。",
+      "serviceCapable": "可协调服务",
+      "serviceCapableHint": "已可用于授权、算力分发、技能权益和连通性服务的 Center。",
+      "unlicensed": "未授权",
+      "unlicensedHint": "没有有效商业或试用权益的 Center。",
+      "iworkerAgents": "iWorker 实例",
+      "iworkerAgentsHint": "Center 上报的聚合实例数。Cloud 不接收任务标题、任务细节、租户、用户或公司流程数据。",
+      "activeWork": "进行中工作",
+      "activeWorkHint": "跨 Center 汇总的 iWorker 运行中任务数量，不包含业务载荷。",
+      "blockedOrReview": "阻塞或待审",
+      "blockedOrReviewHint": "需要关注的聚合工作量，不包含客户业务内容。",
+      "localFallback": "本地兜底",
+      "localFallbackHint": "因 Cloud 算力同步不可用或为空，正在通过本地 Provider 设置继续运行的 Center。",
+      "nonBlockingRuntime": "非阻断运行问题",
+      "nonBlockingRuntimeHint": "明确标记为不阻断现有 Center/iWorker 执行的运行同步问题。",
+      "blockingRuntime": "阻断风险",
+      "blockingRuntimeHint": "没有安全兜底标记、需要运营人员处理的平台运行同步问题。",
+      "radar": "服务控制雷达",
+      "readinessTitle": "Center 服务就绪度",
+      "readinessDesc": "Cloud 需要知道接入的 iWorkerCenter 是否已商业授权、可达、身份已验证，并可进行平台服务协调。它不参与客户公司管理、租户管理或企业运营。"
+    },
+    "queue": {
+      "eyebrow": "待处理队列",
+      "title": "Center 服务动作",
+      "desc": "按阻断运行、待激活、未授权和高优先级建议动作整理，帮助 Cloud 操作员直接进入 Center 管理页处理。",
+      "openCenters": "打开 Center 管理",
+      "empty": "当前没有需要立即处理的 Center。",
+      "runtimeBlocking": "运行阻断风险",
+      "runtimeBlockingHint": "运行同步问题未标记为非阻断，需要检查 Center 侧兜底策略。",
+      "pendingActivation": "待激活",
+      "pendingActivationHint": "注册已进入 Cloud，等待试用确认或商业授权。",
+      "unlicensed": "未授权",
+      "unlicensedHint": "Center 没有有效试用或商业权益。",
+      "highPriority": "高优先级动作",
+      "highPriorityHint": "存在需要 Cloud 操作员处理的高优先级服务动作。",
+      "iworkerSetup": "iWorker 就绪待确认",
+      "iworkerSetupHint": "Center 已上报 iWorker 状态，但尚未达到可稳定接收推送任务的条件。",
+      "sync": "同步: {{status}}",
+      "heartbeat": "心跳: {{time}}",
+      "workload": "工作量: 进行中 {{active}} / 阻塞 {{blocked}} / 待审 {{review}}"
+    }
   },
   "skills": {
     "title": "顶层 iWorker 技能市场",
@@ -117,18 +166,57 @@
       "description": "描述",
       "packageFormat": "包格式",
       "packageText": "包内容"
-    }
+    },
+    "filters": {
+      "allStatus": "全部状态",
+      "allRisk": "全部风险"
+    },
+    "stats": {
+      "active": "已发布",
+      "activeHint": "可被 Center 拉取或授权安装",
+      "draft": "草稿",
+      "disabledHint": "个已停用",
+      "highRisk": "高风险",
+      "highRiskHint": "需要更严格的安装审核",
+      "packaged": "已打包",
+      "unpackedHint": "个缺少可下载包"
+    },
+    "marketEyebrow": "技能市场",
+    "defaultCategory": "通用",
+    "status": {
+      "active": "已发布",
+      "draft": "草稿",
+      "disabled": "已停用"
+    },
+    "risk": {
+      "low": "低",
+      "medium": "中",
+      "high": "高"
+    },
+    "noticeSaved": "技能已保存，市场列表已刷新。",
+    "noticeStatusUpdated": "技能发布状态已更新。",
+    "noticeDeleted": "技能已从 Cloud 市场删除。"
   },
   "login": {
     "title": "管理员登录",
     "username": "用户名",
     "password": "密码",
     "submit": "登录",
-    "error": "登录失败"
+    "error": "登录失败",
+    "refreshCaptcha": "刷新",
+    "captchaAnswer": "输入答案",
+    "description": "登录 iWorkerCloud 控制平面，处理 Center 注册、授权、算力和技能市场。",
+    "captchaLoading": "正在加载验证码...",
+    "captchaLoadFailed": "验证码加载失败，请刷新重试。",
+    "sessionExpired": "登录已过期，请重新登录。",
+    "loggedOut": "已退出登录。"
   },
   "setup": {
     "title": "初始化设置",
-    "description": "首次使用，请设置管理员账号。"
+    "description": "首次使用，请设置管理员账号。",
+    "confirmPassword": "确认密码",
+    "passwordMismatch": "两次输入的密码不一致。",
+    "success": "初始化完成，请使用管理员账号登录。"
   },
   "centers": {
     "pending": "待处理",
@@ -139,7 +227,205 @@
     "disable": "停用",
     "enable": "启用",
     "delete": "删除",
-    "empty": "暂无注册的 iWorkerCenter。"
+    "empty": "暂无注册的 iWorkerCenter。",
+    "title": "iWorkerCenter 接入控制",
+    "positionDesc": "集中处理 iWorkerCenter 的注册确认、服务探活、授权状态、算力分发资格和平台就绪度，不进入企业内部业务。",
+    "boundaryTitle": "Cloud 只看 Center 服务边界",
+    "boundaryNote": "员工、流程、MCP 安装下发、人机协作和租户业务都在 iWorkerCenter 内处理。Cloud 只维护平台服务能力和授权。",
+    "search": "搜索 Center、公司、邮箱、电话或服务地址",
+    "allStatus": "全部状态",
+    "noMatch": "没有匹配当前筛选条件的 iWorkerCenter。",
+    "stats": {
+      "total": "接入总数",
+      "totalHint": "已注册到 Cloud 的 Center",
+      "pending": "待确认",
+      "pendingHint": "等待试用或商业授权确认",
+      "ready": "服务就绪",
+      "needsSetup": "个仍需配置",
+      "licensed": "有效授权",
+      "unlicensed": "个未授权"
+    },
+    "confirmDelete": "确定删除这个 iWorkerCenter 注册记录？",
+    "useServiceActions": "请使用下方服务控制按钮处理。",
+    "controlPlaneHint": "iWorkerCloud 是 iWorkerCenter 的管理控制平面，只处理授权、连通性、算力分发、升级和技能权益，不参与客户公司的组织管理、租户管理、计划或企业运营。",
+    "refreshingRuntime": "正在刷新平台运行快照...",
+    "unnamedCompany": "未命名公司",
+    "notProvided": "未提供",
+    "registrationReviewHint": "激活试用或签发授权前，请先核对公司身份信息。",
+    "tenantBoundaryHint": "Cloud 只记录 Center 级服务姿态。公司租户创建、租户管理员和业务工作区管理都留在 iWorkerCenter 内。",
+    "manualAuthorizationTitle": "只签发模块权益，不进入企业运营",
+    "manualAuthorizationHint": "适合小型部署或人工商业审批。授权只授予 Cloud 服务模块。",
+    "sections": {
+      "registrationReview": "注册审核",
+      "tenantBoundary": "租户边界",
+      "managementReadiness": "管理就绪度",
+      "iworkerReadiness": "iWorker 运行就绪度",
+      "runtimeSnapshot": "平台运行快照",
+      "recommendedActions": "推荐服务控制动作",
+      "manualAuthorization": "手工授权",
+      "serviceGate": "服务协调门禁"
+    },
+    "fields": {
+      "legal": "法人",
+      "email": "邮箱",
+      "phone": "电话",
+      "address": "地址",
+      "baseUrl": "iWorkerCenter 服务地址",
+      "controlMode": "Cloud 控制模式",
+      "lastSyncStatus": "最近同步状态",
+      "service": "服务",
+      "commercial": "商业状态",
+      "connectivity": "连通性",
+      "tenantMode": "租户模式",
+      "tenants": "租户数",
+      "lastHeartbeat": "最近心跳",
+      "registered": "注册时间",
+      "id": "ID"
+    },
+    "actions": {
+      "activateTrial": "激活试用",
+      "saveIntegration": "保存接入配置",
+      "testNow": "立即测试",
+      "verifyIdentity": "验证身份",
+      "issueLicense": "签发授权",
+      "reviewServices": "查看服务",
+      "review": "查看",
+      "issuing": "签发中...",
+      "issueManual": "签发手工授权",
+      "saving": "保存中...",
+      "testing": "测试中...",
+      "testConnection": "测试连接",
+      "refreshingRuntime": "刷新运行中...",
+      "refreshRuntime": "刷新运行状态",
+      "checking": "检查中...",
+      "checkServiceGate": "检查服务门禁"
+    },
+    "posture": {
+      "ready": "就绪",
+      "needs_setup": "需要配置",
+      "connectivity_risk": "连通性风险",
+      "commercial_hold": "商业授权待处理",
+      "watch": "观察",
+      "unknown": "未知"
+    },
+    "issues": {
+      "center_not_active": "Center 未激活",
+      "missing_base_url": "缺少服务地址",
+      "probe_failed": "探活失败",
+      "probe_missing_base_url": "探活缺少服务地址",
+      "probe_not_iworkercenter": "端点不是 iWorkerCenter 服务",
+      "heartbeat_not_iworkercenter": "心跳身份验证失败",
+      "no_active_license": "没有有效授权",
+      "service_identity_not_verified": "服务身份未验证"
+    },
+    "controlModes": {
+      "cloud_managed": "Cloud 管理",
+      "self_managed": "自主管理",
+      "hybrid": "混合模式"
+    },
+    "syncStatus": {
+      "registered": "已注册",
+      "configured": "已配置",
+      "probe_ok": "服务探活已验证",
+      "probe_failed": "服务探活失败",
+      "probe_missing_base_url": "缺少服务地址",
+      "probe_not_iworkercenter": "服务端点错误",
+      "heartbeat_ok": "心跳在线",
+      "heartbeat_not_iworkercenter": "心跳身份验证失败",
+      "not_configured": "未配置"
+    },
+    "readiness": {
+      "managementReadyHint": "此 Center 已可使用 iWorkerCenter 管理服务。",
+      "managementSetupHint": "此 Center 需要完成管理中心配置后，Cloud 服务才能顺畅启用。",
+      "readyForPushedWork": "可接收推送任务",
+      "needsIWorkerSetup": "需要 iWorker 配置",
+      "waitingHeartbeat": "等待心跳",
+      "iworkerReadyHint": "此 Center 上报 iWorker 可接收 Center 推送任务，并能与人类员工协作。",
+      "iworkerSetupHint": "Cloud 只跟踪 Center 上报的平台就绪信号，例如 agent runtime、GoalWatch 和聚合工作量。客户业务配置仍留在 iWorkerCenter 内。",
+      "agentRuntime": "agent 运行时",
+      "ready": "就绪",
+      "notReady": "未就绪",
+      "agentInstances": "agent 实例",
+      "active": "进行中",
+      "completed": "已完成",
+      "review": "待审核",
+      "blocked": "阻塞",
+      "workloadSync": "工作量同步",
+      "notReported": "未上报",
+      "allowed": "允许",
+      "blockedGate": "阻断",
+      "serviceAllowedHint": "Cloud 可以为此 iWorkerCenter 协调平台服务。",
+      "serviceBlockedHint": "阻断问题解决前，Cloud 不会启用服务协调。",
+      "noServiceBlockers": "无服务阻断",
+      "noBlockingIssues": "无阻断问题"
+    },
+    "tenant": {
+      "multiTenant": "已上报多租户 Center",
+      "dedicated": "已上报专属 Center",
+      "notReported": "未上报租户模式",
+      "noCount": "无租户数量",
+      "modeMulti": "多租户",
+      "modeDedicated": "专属部署",
+      "countReported": "已上报 {{count}} 个租户"
+    },
+    "runtimeModes": {
+      "cloud_sync": "Cloud 同步算力",
+      "local_self_managed": "Center 自主管理算力",
+      "local_settings_fallback": "本地 Provider 兜底",
+      "not_reported": "未上报运行状态"
+    },
+    "clearFocus": "清除定位",
+    "commercial": {
+      "licensed": "已授权",
+      "unlicensed": "未授权",
+      "trial": "试用",
+      "expired": "已过期"
+    },
+    "connectivity": {
+      "reachable": "可达",
+      "unreachable": "不可达",
+      "unknown": "未知",
+      "not_configured": "未配置"
+    },
+    "runtime": {
+      "computeSource": "算力来源",
+      "sync": "同步",
+      "nonBlocking": "非阻断",
+      "impact": "影响",
+      "runtimeProviders": "运行 Provider",
+      "cloudProviders": "Cloud Provider",
+      "selfManagementAllowed": "允许自主管理",
+      "cloudManaged": "Cloud 管理",
+      "lastSync": "最近同步"
+    },
+    "runtimeValues": {
+      "cloud": "Cloud",
+      "local": "本地",
+      "success": "成功",
+      "failure": "失败",
+      "pending": "等待中",
+      "waiting_for_credentials": "等待凭据",
+      "unknown": "未知"
+    },
+    "runtimeContinuity": {
+      "notLoaded": "尚未加载运行快照。",
+      "localFallback": "Center 上报 Cloud 算力同步异常，但请求可通过本地 Provider 设置继续运行。",
+      "nonBlockingSyncIssue": "Cloud 协调存在同步问题，但 Center 已标记为不阻断运行时执行。",
+      "cloudSync": "Center 当前正在使用 Cloud 同步的 Provider 路由。",
+      "selfManaged": "Center 正在按授权自主管理本地算力 Provider 路由。",
+      "platformOnly": "运行状态仅用于平台协调，不包含企业业务内容。"
+    },
+    "eyebrow": "Center 控制",
+    "noticeIntegrationSaved": "Center 接入配置已保存。",
+    "noticeManualAuthorized": "已为此 Center 签发手工服务授权。",
+    "noticeServiceReady": "服务门禁已通过，Cloud 可以为此 Center 协调平台服务。",
+    "noticeServiceBlocked": "服务门禁已检查，仍有阻断项需要处理。",
+    "noticeProbeOk": "Center 服务探活成功。",
+    "noticeProbeFailed": "Center 服务探活失败，请检查服务地址和身份响应。",
+    "noticeDeleted": "Center 注册记录已删除。",
+    "noticeTrialActivated": "已为此 Center 激活试用。",
+    "noticeDisabled": "Center 已停用。",
+    "noticeEnabled": "Center 已启用。"
   },
   "licenses": {
     "issue": "签发授权",
@@ -155,7 +441,31 @@
     "desc": "为接入的 iWorkerCenter 签发和吊销商业模块权益。",
     "confirmRevoke": "确定吊销此授权？对应 Center 可能失去已授权的 Cloud 服务访问。",
     "expiresAt": "到期",
-    "issuedAt": "签发"
+    "issuedAt": "签发",
+    "positionTitle": "只授权 Cloud 服务",
+    "positionDesc": "面向接入的 iWorkerCenter 签发、续期和吊销 Cloud 服务权益，帮助小团队也能用清晰的授权流程接入平台能力。",
+    "boundaryNote": "授权控制算力、技能市场、升级和支持等平台服务，不读取也不管理企业内部业务数据。",
+    "selectCenter": "请选择要授权的 iWorkerCenter。",
+    "stats": {
+      "total": "授权总数",
+      "totalHint": "包含有效和已吊销记录",
+      "active": "有效授权",
+      "activeHint": "Center 可访问已授权 Cloud 服务",
+      "expiring": "30 天内到期",
+      "expiringHint": "需要提前续期或转长期",
+      "unlicensed": "未授权 Center",
+      "unlicensedHint": "注册后尚未签发权益"
+    },
+    "eyebrow": "授权控制",
+    "noticeIssued": "授权已签发，权益列表已刷新。",
+    "noticeRevoked": "授权已吊销，Center 权益列表已刷新。",
+    "moduleLabels": {
+      "compute": "算力",
+      "skill_market": "技能市场",
+      "upgrade": "升级",
+      "support": "支持",
+      "all": "全部模块"
+    }
   },
   "common": {
     "save": "保存",
@@ -223,6 +533,42 @@
     "noticeUpdated": "已更新设置。",
     "noticeAssigned": "分发设置已更新。",
     "testOk": "连接成功",
-    "testFailed": "连接失败"
+    "testFailed": "连接失败",
+    "positionDesc": "集中维护 Cloud 商业算力池、Provider 路由、Center 权限和用量核算。Center 可消费云端算力，也可以在授权后自主管理本地路由。",
+    "boundaryTitle": "故障不阻断本地运行",
+    "boundaryNote": "Cloud 只协调算力和授权。Cloud 失联时，iWorkerCenter 与 iWorker 应继续使用本地策略、缓存配置和已发布能力运行。",
+    "stats": {
+      "providers": "Provider",
+      "enabledProviders": "个已启用",
+      "centers": "接入 Center",
+      "cloudManaged": "个由 Cloud 分发算力",
+      "assignments": "显式分发",
+      "assignmentsHint": "限制到指定 Provider 的 Center",
+      "cost": "已查询费用"
+    },
+    "eyebrow": "算力分发",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "keepApiKey": "留空则保持现有密钥",
+    "userAgent": "User-Agent",
+    "userAgentShort": "UA",
+    "providerRequired": "请填写服务商名称、Base URL 和模型。",
+    "invalidDateRange": "开始日期不能晚于结束日期。",
+    "queryFailed": "用量查询失败。"
+  },
+  "settings": {
+    "desc": "维护 iWorkerCloud 管理员入口和控制平面安全设置。这里不配置客户企业组织、员工或业务流程。",
+    "boundaryTitle": "Cloud 管理平台账号",
+    "boundaryNote": "该账号只用于 iWorkerCloud 控制平面操作：Center 注册确认、授权、算力分发和技能市场维护。",
+    "oldPassword": "旧密码",
+    "newPassword": "新密码",
+    "passwordSaved": "管理员密码已更新。",
+    "adminPolicyTitle": "运维边界",
+    "adminPolicyDesc": "Cloud 管理员可以维护平台服务能力，但企业内部身份、流程、MCP 安装下发和人机协作由 iWorkerCenter 负责。",
+    "policyAuth": "注册与授权",
+    "policyNoBusiness": "不参与企业业务",
+    "policyAudit": "控制平面审计",
+    "eyebrow": "Cloud 管理员",
+    "policyEyebrow": "策略"
   }
 }

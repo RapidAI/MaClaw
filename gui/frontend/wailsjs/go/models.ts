@@ -185,6 +185,7 @@ export namespace main {
 	    maclaw_llm_model: string;
 	    maclaw_role_name: string;
 	    maclaw_role_description: string;
+	    group_discussion: any;
 	    maclaw_llm_protocol: string;
 	    maclaw_llm_context_length: number;
 	    maclaw_llm_timeout_sec: number;
@@ -243,6 +244,7 @@ export namespace main {
 	    pet_skin?: string;
 	    pet_size?: number;
 	    pet_motion_enabled?: boolean;
+	    pet_motion_sound_enabled?: boolean;
 	    pet_text_interaction_enabled?: boolean;
 	    pet_voice_input_enabled?: boolean;
 	    pet_voice_readback_enabled?: boolean;
@@ -253,6 +255,9 @@ export namespace main {
 	    pet_auto_retry_on_no_hear?: boolean;
 	    pet_continuous_timeout_sec?: number;
 	    pet_quiet_mode?: boolean;
+	    floating_btn_x?: number;
+	    floating_btn_y?: number;
+	    floating_btn_position_set?: boolean;
 	    trial_reflect_enabled: boolean;
 	    llm_token_usage: Record<string, any>;
 	    onboarding_done: boolean;
@@ -342,6 +347,7 @@ export namespace main {
 	        this.maclaw_llm_model = source["maclaw_llm_model"];
 	        this.maclaw_role_name = source["maclaw_role_name"];
 	        this.maclaw_role_description = source["maclaw_role_description"];
+	        this.group_discussion = source["group_discussion"];
 	        this.maclaw_llm_protocol = source["maclaw_llm_protocol"];
 	        this.maclaw_llm_context_length = source["maclaw_llm_context_length"];
 	        this.maclaw_llm_timeout_sec = source["maclaw_llm_timeout_sec"];
@@ -399,6 +405,7 @@ export namespace main {
 	        this.pet_skin = source["pet_skin"];
 	        this.pet_size = source["pet_size"];
 	        this.pet_motion_enabled = source["pet_motion_enabled"];
+	        this.pet_motion_sound_enabled = source["pet_motion_sound_enabled"];
 	        this.pet_text_interaction_enabled = source["pet_text_interaction_enabled"];
 	        this.pet_voice_input_enabled = source["pet_voice_input_enabled"];
 	        this.pet_voice_readback_enabled = source["pet_voice_readback_enabled"];
@@ -409,6 +416,9 @@ export namespace main {
 	        this.pet_auto_retry_on_no_hear = source["pet_auto_retry_on_no_hear"];
 	        this.pet_continuous_timeout_sec = source["pet_continuous_timeout_sec"];
 	        this.pet_quiet_mode = source["pet_quiet_mode"];
+	        this.floating_btn_x = source["floating_btn_x"];
+	        this.floating_btn_y = source["floating_btn_y"];
+	        this.floating_btn_position_set = source["floating_btn_position_set"];
 	        this.llm_trajectory_logging = source["llm_trajectory_logging"];
 	        this.trial_reflect_enabled = source["trial_reflect_enabled"];
 	        this.llm_token_usage = source["llm_token_usage"];
