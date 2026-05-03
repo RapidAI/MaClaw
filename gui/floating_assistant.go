@@ -288,6 +288,14 @@ func floatingWindowSize(config corelib.AppConfig) int {
 	return size + 16
 }
 
+func isPetMotionEnabled(config corelib.AppConfig) bool {
+	return config.PetMotionEnabled == nil || *config.PetMotionEnabled
+}
+
+func petMotionSoundEnabled(config corelib.AppConfig) bool {
+	return config.PetMotionSound == nil || *config.PetMotionSound
+}
+
 func sanitizePetConfig(config *corelib.AppConfig) {
 	if config == nil {
 		return
@@ -346,7 +354,11 @@ func floatingAppearanceChanged(oldConfig, newConfig corelib.AppConfig) bool {
 	return oldConfig.ShowAssistantEntry != newConfig.ShowAssistantEntry ||
 		oldConfig.PetEnabled != newConfig.PetEnabled ||
 		oldConfig.PetSkin != newConfig.PetSkin ||
-		oldConfig.PetSize != newConfig.PetSize
+		oldConfig.PetSize != newConfig.PetSize ||
+		isPetMotionEnabled(oldConfig) != isPetMotionEnabled(newConfig) ||
+		petMotionSoundEnabled(oldConfig) != petMotionSoundEnabled(newConfig) ||
+		oldConfig.PetQuietMode != newConfig.PetQuietMode ||
+		oldConfig.PetInteractionMode != newConfig.PetInteractionMode
 }
 
 func floatingWindowSizeForCurrentConfig(app *App) int {

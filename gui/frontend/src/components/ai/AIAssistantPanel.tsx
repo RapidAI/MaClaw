@@ -1366,7 +1366,7 @@ function openFileInFolder(event: React.MouseEvent, filePath: string) {
 
 /* ── Render a single ChatMessage ── */
 
-function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, lang: string, isLastAssistant: boolean, savedFileLabel: string): React.ReactNode {
+function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, lang: string, isLiveAssistant: boolean, savedFileLabel: string): React.ReactNode {
     const visibleFilePaths = msg.localFilePaths && msg.localFilePaths.length > 0
         ? msg.localFilePaths
         : (msg.localFilePath ? [msg.localFilePath] : []);
@@ -1391,9 +1391,12 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     borderRadius: "8px",
                     boxShadow: `inset 0 0 0 1px ${t.fieldBorder}`,
                 }}>
-                    {/* Streaming: show blinking cursor only on the last assistant message */}
-                    {isLastAssistant && !msg.content && !msg.fields && !msg.thumbnailBase64 && visibleFilePaths.length === 0 && (
-                        <span style={{ opacity: 0.5, animation: "blink 1s step-end infinite" }}>▍</span>
+                    {/* Streaming: show an immediate waiting state until the first visible token arrives. */}
+                    {isLiveAssistant && !msg.content && !msg.fields && !msg.thumbnailBase64 && visibleFilePaths.length === 0 && (
+                        <span style={{ color: t.textMuted, fontStyle: "italic" }}>
+                            {localizeText(lang, "Thinking...", "正在思考...")}
+                            <span style={{ opacity: 0.5, animation: "blink 1s step-end infinite" }}>▍</span>
+                        </span>
                     )}
                     {msg.thumbnailBase64 && msg.localFilePath && (
                         <div style={{ margin: "4px 0 6px 0" }}>
@@ -2594,8 +2597,8 @@ export function AIAssistantPanel({ onClose, lang, chatFontSize = 14, state, acti
 
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => {
-        return otherMessages.map((msg, idx) => renderMessage(msg, executeAction, t, lang, idx === lastAssistantIdx, savedFileLabel));
-    }, [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel]);
+        return otherMessages.map((msg, idx) => renderMessage(msg, executeAction, t, lang, idx === lastAssistantIdx && isBusy, savedFileLabel));
+    }, [otherMessages, executeAction, t, lang, lastAssistantIdx, isBusy, savedFileLabel]);
 
     // Clear dismissed progress IDs when progress messages reset (new request)
     useEffect(() => {

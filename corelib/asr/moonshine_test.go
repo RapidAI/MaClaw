@@ -2,6 +2,7 @@ package asr
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +70,21 @@ func findZhouWAV(t *testing.T) string {
 	return ""
 }
 
+func findBeijingWAV(t *testing.T) string {
+	t.Helper()
+	candidates := []string{
+		filepath.Join("..", "..", "beiing_16k.wav"),
+		filepath.Join("..", "..", "beijing_16k.wav"),
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	t.Skip("beiing_16k.wav not found, skipping test")
+	return ""
+}
+
 func TestLoadModel(t *testing.T) {
 	modelPath := findModel(t)
 	m, err := NewMoonshine(modelPath)
@@ -94,6 +110,20 @@ func TestDefaultMoonshinePartialRotaryFactor(t *testing.T) {
 	}
 	if got := defaultMoonshinePartialRotaryFactor(288, 288); got != 0.9 {
 		t.Fatalf("tiny default partial rotary = %v, want 0.9", got)
+	}
+}
+
+func TestMoonshineEncoderAttentionScale(t *testing.T) {
+	baseScale := moonshineEncoderAttentionScale(52)
+	wantBase := float32(0.9 / math.Sqrt(52))
+	if diff := math.Abs(float64(baseScale - wantBase)); diff > 1e-7 {
+		t.Fatalf("base attention scale = %v, want %v", baseScale, wantBase)
+	}
+
+	tinyScale := moonshineEncoderAttentionScale(36)
+	wantTiny := float32(1.0 / math.Sqrt(36))
+	if diff := math.Abs(float64(tinyScale - wantTiny)); diff > 1e-7 {
+		t.Fatalf("tiny attention scale = %v, want %v", tinyScale, wantTiny)
 	}
 }
 
@@ -214,6 +244,29 @@ func TestTranscribeZhouJayChouAgeQuestion(t *testing.T) {
 	}
 }
 
+func TestTranscribeBeijingQuestion(t *testing.T) {
+	modelPath := findModel(t)
+	wavPath := findBeijingWAV(t)
+
+	m, err := NewMoonshine(modelPath)
+	if err != nil {
+		t.Fatalf("load model: %v", err)
+	}
+	defer m.Close()
+
+	pcm, err := LoadWAV(wavPath)
+	if err != nil {
+		t.Fatalf("load wav: %v", err)
+	}
+	text, err := m.Transcribe(pcm)
+	if err != nil {
+		t.Fatalf("transcribe: %v", err)
+	}
+	t.Logf("beijing transcription: %q", text)
+	if text != "你好呀北京怎么样" {
+		t.Fatalf("expected beijing regression transcription, got %q", text)
+	}
+}
 func TestWAVToFloat32_Resample(t *testing.T) {
 	// Create a synthetic 8kHz mono WAV and verify it gets resampled to 16kHz
 	sampleRate := 8000

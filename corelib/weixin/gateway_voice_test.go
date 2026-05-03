@@ -139,3 +139,12 @@ func makeTestWAV(sampleRate, bytesPerSample, dataBytes int) []byte {
 	binary.LittleEndian.PutUint32(out[40:44], uint32(dataBytes))
 	return out
 }
+
+func TestValidateAPIStatusRejectsSendMessageError(t *testing.T) {
+	if err := validateAPIStatus("sendmessage", []byte(`{"ret":0,"errcode":0}`)); err != nil {
+		t.Fatalf("validateAPIStatus(success) error = %v", err)
+	}
+	if err := validateAPIStatus("sendmessage", []byte(`{"ret":0,"errcode":-1,"errmsg":"bad voice"}`)); err == nil {
+		t.Fatal("validateAPIStatus(error) = nil, want error")
+	}
+}

@@ -3647,7 +3647,10 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 	}
 
-	if config.RemoteEnabled && (strings.ToLower(toolName) == "claude" || strings.ToLower(toolName) == "codex" || strings.ToLower(toolName) == "opencode" || strings.ToLower(toolName) == "iflow" || strings.ToLower(toolName) == "kilo" || findExtraTool(strings.ToLower(toolName)) != nil) {
+	launchMode := strings.ToLower(strings.TrimSpace(config.DefaultLaunchMode))
+	toolKey := strings.ToLower(toolName)
+	remoteCapableTool := toolKey == "claude" || toolKey == "codex" || toolKey == "opencode" || toolKey == "iflow" || toolKey == "kilo" || findExtraTool(toolKey) != nil
+	if launchMode == "remote" && config.RemoteEnabled && remoteCapableTool {
 		spec, err := a.buildRemoteLaunchSpec(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, "")
 		if err != nil {
 			a.log("build remote launch spec failed: " + err.Error())

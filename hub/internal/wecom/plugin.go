@@ -46,9 +46,9 @@ const (
 	cmdSubscribe        = "aibot_subscribe"
 	cmdPing             = "ping"
 	cmdCallback         = "aibot_callback"       // server → client: message
-	cmdEventCallback    = "aibot_event_callback"  // server → client: event
-	cmdRespondMsg       = "aibot_respond_msg"     // client → server: reply
-	cmdSendMsg          = "aibot_send_msg"        // client → server: proactive
+	cmdEventCallback    = "aibot_event_callback" // server → client: event
+	cmdRespondMsg       = "aibot_respond_msg"    // client → server: reply
+	cmdSendMsg          = "aibot_send_msg"       // client → server: proactive
 	cmdUploadMediaInit  = "aibot_upload_media_init"
 	cmdUploadMediaChunk = "aibot_upload_media_chunk"
 	cmdUploadMediaFin   = "aibot_upload_media_finish"
@@ -161,11 +161,11 @@ type wsHeaders struct {
 
 // callbackBody is the body of an aibot_callback message.
 type callbackBody struct {
-	MsgID       string `json:"msgid"`
-	AibotID     string `json:"aibotid"`
-	ChatID      string `json:"chatid,omitempty"`
-	ChatType    string `json:"chattype"` // "single" or "group"
-	From        struct {
+	MsgID    string `json:"msgid"`
+	AibotID  string `json:"aibotid"`
+	ChatID   string `json:"chatid,omitempty"`
+	ChatType string `json:"chattype"` // "single" or "group"
+	From     struct {
 		UserID string `json:"userid"`
 	} `json:"from"`
 	ResponseURL string `json:"response_url,omitempty"`
@@ -455,7 +455,7 @@ func (p *Plugin) Capabilities() im.CapabilityDeclaration {
 		SupportsFile:        true,
 		SupportsButton:      false,
 		SupportsMessageEdit: false,
-		SupportsVoice:       true, // audio/* MIME auto-routes to voice mediaType
+		SupportsVoice:       true, // AMR via SendVoice/native voice media
 		MaxTextLength:       textChunkLimit,
 	}
 }

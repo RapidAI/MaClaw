@@ -57,11 +57,20 @@ func TestSendAudioUploadsOpusAndSendsAudioMessage(t *testing.T) {
 		}
 	})}
 
-	if err := g.SendAudio(context.Background(), cim.UserTarget{PlatformUID: "open-id-1"}, []byte("ogg opus"), 1200); err != nil {
+	if err := g.SendAudio(context.Background(), cim.UserTarget{PlatformUID: "open-id-1"}, []byte("OggS\x00\x02OpusHead"), 1200); err != nil {
 		t.Fatalf("SendAudio() error = %v", err)
 	}
 	if !uploadSeen || !sendSeen {
 		t.Fatalf("uploadSeen=%v sendSeen=%v", uploadSeen, sendSeen)
+	}
+}
+
+func TestSendAudioRejectsNonOpus(t *testing.T) {
+	g := NewGateway(Config{AppID: "app", AppSecret: "secret"})
+	g.tenantToken = "tenant-token"
+	g.tokenExpiry = nowPlusHour()
+	if err := g.SendAudio(context.Background(), cim.UserTarget{PlatformUID: "open-id-1"}, []byte("not opus"), 1200); err == nil {
+		t.Fatal("SendAudio(non-opus) error = nil, want error")
 	}
 }
 

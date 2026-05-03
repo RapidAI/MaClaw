@@ -514,6 +514,16 @@ interface ActiveRound {
     requestId: string;
 }
 
+interface StreamTokenBuffer {
+    requestId: string;
+    assistantMessageId: string;
+    text: string;
+    flushTimer: ReturnType<typeof setTimeout> | null;
+    hasRenderedFirstToken: boolean;
+}
+
+const STREAM_TOKEN_FLUSH_MS = 33;
+
 function createIdleRound(generation: number): ActiveRound {
     return {
         generation,
@@ -1545,6 +1555,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const initStatusRef = useRef<AIAssistantInitStatus>("connecting");
     const latestNewsPayloadRef = useRef<string>("[]");
     const progressTailRef = useRef<string | null>(null);
+    const streamTokenBufferRef = useRef<StreamTokenBuffer | null>(null);
     const scrollOnNextNewsRef = useRef(true);
     const refreshSessionsOnlyRef = useRef(options?.refreshSessionsOnly);
 
@@ -1755,6 +1766,61 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         resetActiveRound();
     }, [resetActiveRound]);
 
+    const appendTokenToAssistantMessage = useCallback((assistantMessageId: string, text: string) => {
+        if (!assistantMessageId || !text) return;
+        setMessages(prev => updateTailMessage(prev, assistantMessageId, message => appendTokenToMessage(message, text))
+            ?? updateMessageById(prev, assistantMessageId, message => appendTokenToMessage(message, text)));
+    }, []);
+
+    const clearStreamTokenFlushTimer = useCallback(() => {
+        const buffer = streamTokenBufferRef.current;
+        if (!buffer?.flushTimer) return;
+        clearTimeout(buffer.flushTimer);
+        buffer.flushTimer = null;
+    }, []);
+
+    const flushStreamTokenBuffer = useCallback(() => {
+        const buffer = streamTokenBufferRef.current;
+        if (!buffer) return;
+        clearStreamTokenFlushTimer();
+        const text = buffer.text;
+        if (!text) return;
+        buffer.text = '';
+        appendTokenToAssistantMessage(buffer.assistantMessageId, text);
+    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer]);
+
+    const resetStreamTokenBuffer = useCallback(() => {
+        clearStreamTokenFlushTimer();
+        streamTokenBufferRef.current = null;
+    }, [clearStreamTokenFlushTimer]);
+
+    const queueStreamToken = useCallback((round: ActiveRound, text: string) => {
+        if (!round.assistantMessageId || !text) return;
+        let buffer = streamTokenBufferRef.current;
+        if (!buffer || buffer.requestId !== round.requestId || buffer.assistantMessageId !== round.assistantMessageId) {
+            clearStreamTokenFlushTimer();
+            buffer = {
+                requestId: round.requestId,
+                assistantMessageId: round.assistantMessageId,
+                text: '',
+                flushTimer: null,
+                hasRenderedFirstToken: false,
+            };
+            streamTokenBufferRef.current = buffer;
+        }
+
+        if (!buffer.hasRenderedFirstToken) {
+            buffer.hasRenderedFirstToken = true;
+            appendTokenToAssistantMessage(round.assistantMessageId, text);
+            return;
+        }
+
+        buffer.text += text;
+        if (!buffer.flushTimer) {
+            buffer.flushTimer = setTimeout(flushStreamTokenBuffer, STREAM_TOKEN_FLUSH_MS);
+        }
+    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, flushStreamTokenBuffer]);
+
     const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const latestMessagesRef = useRef(messages);
     const latestPromptsRef = useRef(submittedPrompts);
@@ -1886,8 +1952,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const event = normalizeStreamEvent(payload);
             if (!matchesActiveRequest(currentRound, event)) return;
             if (!currentRound.assistantMessageId || !event.text) return;
-            setMessages(prev => updateTailMessage(prev, currentRound.assistantMessageId, message => appendTokenToMessage(message, event.text || ''))
-                ?? updateMessageById(prev, currentRound.assistantMessageId, message => appendTokenToMessage(message, event.text || '')));
+            queueStreamToken(currentRound, event.text);
         };
 
         const newRoundHandler = (payload: unknown) => {
@@ -1901,6 +1966,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
             if (!matchesActiveRequest(currentRound, event)) return;
+            flushStreamTokenBuffer();
             transitionRound(current => {
                 if (current.phase !== 'streaming') return current;
                 return { ...current, phase: 'requesting' };
@@ -1914,8 +1980,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             offStreamToken();
             offNewRound();
             offStreamDone();
+            resetStreamTokenBuffer();
         };
-    }, [ensureRoundPlaceholder, transitionRound]);
+    }, [ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetStreamTokenBuffer, transitionRound]);
 
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
@@ -1944,6 +2011,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const contextStartIndex = resolveContextStartIndex(latestMessagesRef.current, contextBoundaryMessageIDRef.current);
         const recentMessages = buildClientContextMessages(latestMessagesRef.current, contextStartIndex);
 
+        resetStreamTokenBuffer();
         setRoundState({
             generation,
             phase: 'requesting',
@@ -1959,6 +2027,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const rawResponse = await SendAIAssistantMessage(
                 buildAIAssistantSendPayload(outgoingText, requestId, recentMessages, options)
             ) as AIAssistantSendResult;
+            flushStreamTokenBuffer();
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(response);
             const effectiveRequestId = responseRequestId || requestId;
@@ -2009,13 +2078,15 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 setPendingTaskState(null);
             }
         } catch (err: any) {
+            resetStreamTokenBuffer();
             setMessages(prev => resolveSendResult(prev, assistantMessageId, requestId, null, preferences, err?.message || String(err)));
             setPendingTaskState(null);
         } finally {
+            resetStreamTokenBuffer();
             finalizeRound(generation);
         }
         return true;
-    }, [finalizeRound, preferences, setRoundState, waitForForegroundIdle]);
+    }, [finalizeRound, flushStreamTokenBuffer, preferences, resetStreamTokenBuffer, setRoundState, waitForForegroundIdle]);
 
     const sendMessage = useCallback((text: string, options?: SendMessageOptions): Promise<boolean> => {
         const outgoingText = text.trim();

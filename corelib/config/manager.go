@@ -49,7 +49,7 @@ type ConfigSection struct {
 type ConfigKeySchema struct {
 	Key         string   `json:"key"`
 	Description string   `json:"description"`
-	Type        string   `json:"type"`                   // string/bool/int/enum/list
+	Type        string   `json:"type"` // string/bool/int/enum/list
 	Default     string   `json:"default,omitempty"`
 	ValidValues []string `json:"valid_values,omitempty"` // for enum type
 }
@@ -648,12 +648,6 @@ func (m *Manager) applyRemoteChange(cfg *corelib.AppConfig, key, value string) (
 	case "remote_enabled":
 		old := fmt.Sprintf("%v", cfg.RemoteEnabled)
 		cfg.RemoteEnabled = strings.EqualFold(value, "true")
-		// Keep default_launch_mode in sync with remote_enabled.
-		if cfg.RemoteEnabled {
-			cfg.DefaultLaunchMode = "remote"
-		} else {
-			cfg.DefaultLaunchMode = "local"
-		}
 		return old, nil
 	case "remote_hub_url":
 		old := cfg.RemoteHubURL
@@ -674,8 +668,6 @@ func (m *Manager) applyRemoteChange(cfg *corelib.AppConfig, key, value string) (
 	case "default_launch_mode":
 		old := cfg.DefaultLaunchMode
 		cfg.DefaultLaunchMode = value
-		// Keep remote_enabled in sync with default_launch_mode.
-		cfg.RemoteEnabled = (value == "remote")
 		return old, nil
 	}
 	return "", fmt.Errorf("unsupported remote key %q", key)

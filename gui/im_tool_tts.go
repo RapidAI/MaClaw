@@ -34,7 +34,8 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 	if shouldEmitDesktopTTSPlayback(platform) && h.app.ctx != nil && wav != nil {
 		runtime.EventsEmit(h.app.ctx, "tts:audio", base64.StdEncoding.EncodeToString(wav))
 	}
-	voiceData, voiceName, voiceMime := selectTTSVoicePayload(platform, ogg, wav)
+	amr := synthesizeAMRForPlatform(platform, wav)
+	voiceData, voiceName, voiceMime := selectTTSVoicePayload(platform, ogg, wav, amr)
 	if voiceData != nil {
 		log.Printf("[tts-tool] voice payload: %s %d bytes", voiceName, len(voiceData))
 		return fmt.Sprintf("[voice_base64|%s|%s]%s", voiceName, voiceMime, base64.StdEncoding.EncodeToString(voiceData))

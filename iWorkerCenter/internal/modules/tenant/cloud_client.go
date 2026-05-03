@@ -14,11 +14,11 @@ import (
 
 // CloudConfig holds iWorkerCloud connection settings.
 type CloudConfig struct {
-	BaseURL           string `yaml:"base_url"`
-	CenterBaseURL     string `yaml:"center_base_url"`
-	RegistrationName  string `yaml:"registration_name"`
-	RegistrationEmail string `yaml:"registration_email"`
-	CloudControlMode  string `yaml:"cloud_control_mode"`
+	BaseURL           string `json:"base_url" yaml:"base_url"`
+	CenterBaseURL     string `json:"center_base_url" yaml:"center_base_url"`
+	RegistrationName  string `json:"registration_name" yaml:"registration_name"`
+	RegistrationEmail string `json:"registration_email" yaml:"registration_email"`
+	CloudControlMode  string `json:"cloud_control_mode" yaml:"cloud_control_mode"`
 }
 
 // CloudClient communicates with iWorkerCloud.

@@ -119,6 +119,7 @@ type AppConfig struct {
 	PetSkin              string `json:"pet_skin,omitempty"`
 	PetSize              int    `json:"pet_size,omitempty"`
 	PetMotionEnabled     *bool  `json:"pet_motion_enabled,omitempty"`
+	PetMotionSound       *bool  `json:"pet_motion_sound_enabled,omitempty"`
 	PetTextInteraction   *bool  `json:"pet_text_interaction_enabled,omitempty"`
 	PetVoiceInput        bool   `json:"pet_voice_input_enabled,omitempty"`
 	PetVoiceReadback     bool   `json:"pet_voice_readback_enabled,omitempty"`

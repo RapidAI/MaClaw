@@ -248,6 +248,7 @@ func (a *Adapter) SetContentAuditor(ca *ContentAuditor) {
 func (a *Adapter) InitTaskDispatcher(capacity int) {
 	executor := func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
 		// Re-stash attachments so routeToSingleMachine can pick them up.
+		a.messageRouter.StashMessageType(task.UserID, task.MessageType)
 		if len(task.Attachments) > 0 {
 			a.messageRouter.StashAttachments(task.UserID, task.Attachments)
 		}
@@ -760,6 +761,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	if text == "/workflow" || strings.HasPrefix(text, "/workflow ") {
 		// Forward as a regular message — the device's handleIMMessageWithLoop
 		// will process it via its workflow engine.
+		a.messageRouter.StashMessageType(unifiedID, msg.MessageType)
 		a.messageRouter.StashAttachments(unifiedID, msg.Attachments)
 		resp, err := a.messageRouter.RouteToAgent(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text)
 		if err != nil {
@@ -838,9 +840,11 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	// When the task dispatcher is active and the Coordinator supports it,
 	// try to answer simple questions directly without queuing.
 	if a.taskDispatcher != nil && a.coordinator != nil {
-		if fastResp := a.coordinator.TryFastAnswer(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text); fastResp != nil {
-			a.sendResponse(ctx, plugin, target, fastResp)
-			return
+		if !isIncomingVoiceMessage(msg) {
+			if fastResp := a.coordinator.TryFastAnswer(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text); fastResp != nil {
+				a.sendResponse(ctx, plugin, target, fastResp)
+				return
+			}
 		}
 
 		// --- Slow-path: queue for background processing ---
@@ -848,6 +852,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			UserID:       unifiedID,
 			PlatformName: msg.PlatformName,
 			PlatformUID:  msg.PlatformUID,
+			MessageType:  msg.MessageType,
 			Text:         text,
 			Attachments:  msg.Attachments,
 		}
@@ -869,8 +874,9 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	}
 
 	// --- Legacy synchronous path (no task dispatcher) ---
-	// Stash attachments so routeToSingleMachine can include them in the
+	// Stash message metadata so routeToSingleMachine can include it in the
 	// WebSocket payload without changing the routing API signatures.
+	a.messageRouter.StashMessageType(unifiedID, msg.MessageType)
 	a.messageRouter.StashAttachments(unifiedID, msg.Attachments)
 
 	var routeResp *GenericResponse
@@ -959,24 +965,10 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		}
 	}
 
-	// Send voice message AFTER text/card/file delivery.
-	// Using defer ensures voice is sent regardless of which return path is taken.
+	voiceDelivered := false
 	defer func() {
-		if resp.VoiceData != "" && resp.VoiceFileName != "" {
-			caps := plugin.Capabilities()
-			if caps.SupportsVoice {
-				if voicePlugin, ok := plugin.(VoiceSender); ok {
-					if err := voicePlugin.SendVoice(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
-						log.Printf("[IM Adapter] SendVoice failed for %s: %v", plugin.Name(), err)
-					}
-					return
-				}
-			}
-			if caps.SupportsFile {
-				if err := plugin.SendFile(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
-					log.Printf("[IM Adapter] SendFile (voice fallback) failed for %s: %v", plugin.Name(), err)
-				}
-			}
+		if !voiceDelivered {
+			a.sendVoiceResponse(ctx, plugin, target, resp)
 		}
 	}()
 
@@ -989,7 +981,9 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		case AuditSanitize:
 			resp = result.Response
 		case AuditDelay:
-			// Send placeholder message immediately.
+			// Send placeholder message immediately. Do not let the deferred voice
+			// sender leak the original response before audit releases it.
+			voiceDelivered = true
 			a.deliverSingleResponse(ctx, plugin, target, result.Response)
 			// Start background polling; deliver final result asynchronously.
 			a.contentAuditor.StartDelayPolling(ctx, target.UnifiedUserID, plugin.Name(), resp, func(bgCtx context.Context, finalResp *GenericResponse) {
@@ -1002,6 +996,13 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 	}
 
 	caps := plugin.Capabilities()
+	if shouldSendVoiceAsPrimary(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
+		if a.sendVoiceResponse(ctx, plugin, target, resp) {
+			voiceDelivered = true
+			log.Printf("[IM Adapter] sent voice as primary response for %s; text suppressed", plugin.Name())
+			return
+		}
+	}
 
 	// If the response contains an image, send it first via SendImage.
 	if resp.ImageKey != "" && caps.SupportsImage {
@@ -1090,10 +1091,67 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 	}
 }
 
+func isIncomingVoiceMessage(msg IncomingMessage) bool {
+	switch msg.MessageType {
+	case "voice", "audio":
+		return true
+	}
+	for _, att := range msg.Attachments {
+		switch att.Type {
+		case "voice", "audio":
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSendVoiceAsPrimary(platform string) bool {
+	switch platform {
+	case "weixin", "weixin_local":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Adapter) sendVoiceResponse(ctx context.Context, plugin IMPlugin, target UserTarget, resp *GenericResponse) bool {
+	if resp == nil || resp.VoiceData == "" || resp.VoiceFileName == "" {
+		return false
+	}
+	caps := plugin.Capabilities()
+	if caps.SupportsVoice {
+		if voicePlugin, ok := plugin.(VoiceSender); ok {
+			if err := voicePlugin.SendVoice(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
+				log.Printf("[IM Adapter] SendVoice failed for %s: %v", plugin.Name(), err)
+				return false
+			}
+			return true
+		}
+	}
+	if caps.SupportsFile {
+		if err := plugin.SendFile(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
+			log.Printf("[IM Adapter] SendFile (voice fallback) failed for %s: %v", plugin.Name(), err)
+			return false
+		}
+		return true
+	}
+	return false
+}
+
 // deliverSingleResponse delivers a GenericResponse through the plugin,
 // reusing the same delivery logic as sendResponse but without interception/audit.
 // Used for async delivery (e.g. delay polling callbacks).
 func (a *Adapter) deliverSingleResponse(ctx context.Context, plugin IMPlugin, target UserTarget, resp *GenericResponse) {
+	if resp == nil {
+		return
+	}
+	if shouldSendVoiceAsPrimary(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
+		if a.sendVoiceResponse(ctx, plugin, target, resp) {
+			return
+		}
+	}
+	defer a.sendVoiceResponse(ctx, plugin, target, resp)
+
 	caps := plugin.Capabilities()
 
 	out := resp.ToOutgoingMessage()

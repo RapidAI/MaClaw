@@ -878,9 +878,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     };
 
     return (
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {/* Tab switcher — sticky so it stays visible while content scrolls */}
-            <div style={{ display: "flex", gap: "0", borderBottom: `1px solid ${colors.border}`, position: "sticky", top: 0, backgroundColor: colors.bg, zIndex: 5, paddingTop: "2px" }}>
+        <div style={skillsPanelShellStyle}>
+            {/* Keep tabs outside the scroll container so the vertical scrollbar starts below them. */}
+            <div style={skillsTabBarStyle}>
                 <button
                     style={{
                         ...tabBtnStyle,
@@ -919,6 +919,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 </button>
             </div>
 
+            <div style={skillsTabContentStyle}>
             {/* === Local Skills Tab === */}
             {activeTab === "local" && (
                 <>
@@ -1675,6 +1676,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
                 </>
             )}
+            </div>
 
             {detailSkill && (
                 <div className="modal-backdrop" onMouseDown={(e) => {
@@ -1876,6 +1878,39 @@ const detailTextBlockStyle: CSSProperties = {
 
 const detailPreStyle: CSSProperties = {
     ...remoteCodeBlockStyle,
+};
+
+const skillsPanelShellStyle: CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    height: "100%",
+    minHeight: 0,
+    minWidth: 0,
+};
+
+const skillsTabBarStyle: CSSProperties = {
+    display: "flex",
+    gap: "0",
+    borderBottom: `1px solid ${colors.border}`,
+    backgroundColor: colors.bg,
+    flexShrink: 0,
+    paddingTop: "2px",
+    overflowX: "auto",
+    overflowY: "hidden",
+};
+
+const skillsTabContentStyle: CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    flex: "1 1 auto",
+    minHeight: 0,
+    minWidth: 0,
+    overflowY: "auto",
+    overflowX: "hidden",
+    scrollbarGutter: "stable",
+    paddingRight: "4px",
 };
 
 const tabBtnStyle: CSSProperties = {

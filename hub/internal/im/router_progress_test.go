@@ -437,3 +437,52 @@ func TestBroadcastProgressDedup_DifferentTextsPass(t *testing.T) {
 		t.Fatalf("expected 2 delivered progress (different texts), got %d: %v", len(deliveredTexts), deliveredTexts)
 	}
 }
+
+func TestRouteToAgent_ForwardsMessageType(t *testing.T) {
+	df := &mockDeviceFinder{machineID: "m1", llmConfigured: true, found: true}
+	router := NewMessageRouter(df)
+	defer router.Stop()
+
+	router.StashMessageType("user1", "voice")
+	resultCh := make(chan *GenericResponse, 1)
+	go func() {
+		resp, _ := router.RouteToAgent(context.Background(), "user1", "weixin", "uid1", "讲个笑话")
+		resultCh <- resp
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	df.mu.Lock()
+	if len(df.sentMessages) != 1 {
+		df.mu.Unlock()
+		t.Fatalf("sentMessages = %d, want 1", len(df.sentMessages))
+	}
+	msg, ok := df.sentMessages[0].(map[string]interface{})
+	df.mu.Unlock()
+	if !ok {
+		t.Fatalf("sent message type = %T, want map", df.sentMessages[0])
+	}
+	payload, ok := msg["payload"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload type = %T, want map", msg["payload"])
+	}
+	if got := payload["message_type"]; got != "voice" {
+		t.Fatalf("message_type = %v, want voice", got)
+	}
+
+	router.mu.Lock()
+	var reqID string
+	for id := range router.pendingReqs {
+		reqID = id
+		break
+	}
+	router.mu.Unlock()
+	if reqID == "" {
+		t.Fatal("expected pending request")
+	}
+	router.HandleAgentResponse(reqID, &AgentResponse{Text: "ok"})
+	select {
+	case <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for response")
+	}
+}

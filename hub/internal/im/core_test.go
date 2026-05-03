@@ -56,6 +56,18 @@ func (m *mockPlugin) SendCard(_ context.Context, _ UserTarget, card OutgoingMess
 	return nil
 }
 
+type mockVoicePlugin struct {
+	mockPlugin
+	sentVoices []string
+}
+
+func (m *mockVoicePlugin) SendVoice(_ context.Context, _ UserTarget, voiceData, _, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sentVoices = append(m.sentVoices, voiceData)
+	return nil
+}
+
 type mockIdentity struct {
 	resolveFunc func(ctx context.Context, platform, uid string) (string, error)
 }
@@ -388,4 +400,96 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestSendResponseSendsWeixinVoiceAsPrimary(t *testing.T) {
+	plugin := &mockVoicePlugin{mockPlugin: mockPlugin{
+		name: "weixin",
+		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
+	}}
+	adapter := &Adapter{}
+	adapter.sendResponse(context.Background(), plugin, UserTarget{PlatformUID: "user-1"}, &GenericResponse{
+		Body:          "读完啦",
+		VoiceData:     "dm9pY2U=",
+		VoiceFileName: "voice.wav",
+		VoiceMimeType: "audio/wav",
+	})
+	if len(plugin.sentVoices) != 1 {
+		t.Fatalf("sentVoices = %d, want 1", len(plugin.sentVoices))
+	}
+	if len(plugin.sentTexts) != 0 {
+		t.Fatalf("sentTexts = %d, want 0", len(plugin.sentTexts))
+	}
+}
+
+func TestSendResponseKeepsVoiceAfterTextForOtherIM(t *testing.T) {
+	plugin := &mockVoicePlugin{mockPlugin: mockPlugin{
+		name: "telegram",
+		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
+	}}
+	adapter := &Adapter{}
+	adapter.sendResponse(context.Background(), plugin, UserTarget{PlatformUID: "user-1"}, &GenericResponse{
+		Body:          "读完啦",
+		VoiceData:     "dm9pY2U=",
+		VoiceFileName: "voice.ogg",
+		VoiceMimeType: "audio/ogg",
+	})
+	if len(plugin.sentTexts) != 1 {
+		t.Fatalf("sentTexts = %d, want 1", len(plugin.sentTexts))
+	}
+	if len(plugin.sentVoices) != 1 {
+		t.Fatalf("sentVoices = %d, want 1", len(plugin.sentVoices))
+	}
+}
+
+func TestDeliverSingleResponseSendsWeixinVoiceAsPrimary(t *testing.T) {
+	plugin := &mockVoicePlugin{mockPlugin: mockPlugin{
+		name: "weixin",
+		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
+	}}
+	adapter := &Adapter{}
+	adapter.deliverSingleResponse(context.Background(), plugin, UserTarget{PlatformUID: "user-1"}, &GenericResponse{
+		Body:          "审核后文本",
+		VoiceData:     "dm9pY2U=",
+		VoiceFileName: "voice.wav",
+		VoiceMimeType: "audio/wav",
+	})
+	if len(plugin.sentVoices) != 1 {
+		t.Fatalf("sentVoices = %d, want 1", len(plugin.sentVoices))
+	}
+	if len(plugin.sentTexts) != 0 {
+		t.Fatalf("sentTexts = %d, want 0", len(plugin.sentTexts))
+	}
+}
+
+func TestDeliverSingleResponseKeepsVoiceAfterTextForOtherIM(t *testing.T) {
+	plugin := &mockVoicePlugin{mockPlugin: mockPlugin{
+		name: "telegram",
+		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
+	}}
+	adapter := &Adapter{}
+	adapter.deliverSingleResponse(context.Background(), plugin, UserTarget{PlatformUID: "user-1"}, &GenericResponse{
+		Body:          "审核后文本",
+		VoiceData:     "dm9pY2U=",
+		VoiceFileName: "voice.ogg",
+		VoiceMimeType: "audio/ogg",
+	})
+	if len(plugin.sentTexts) != 1 {
+		t.Fatalf("sentTexts = %d, want 1", len(plugin.sentTexts))
+	}
+	if len(plugin.sentVoices) != 1 {
+		t.Fatalf("sentVoices = %d, want 1", len(plugin.sentVoices))
+	}
+}
+
+func TestIsIncomingVoiceMessageUsesStructuralModality(t *testing.T) {
+	if !isIncomingVoiceMessage(IncomingMessage{MessageType: "voice"}) {
+		t.Fatal("voice message type was not recognized")
+	}
+	if !isIncomingVoiceMessage(IncomingMessage{Attachments: []MessageAttachment{{Type: "audio"}}}) {
+		t.Fatal("audio attachment was not recognized")
+	}
+	if isIncomingVoiceMessage(IncomingMessage{MessageType: "text", Text: "发我一段语音"}) {
+		t.Fatal("text content must not be treated as voice modality")
+	}
 }

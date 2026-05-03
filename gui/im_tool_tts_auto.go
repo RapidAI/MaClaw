@@ -10,7 +10,7 @@ import (
 
 // maybeAttachVoiceSummary generates a voice summary of the agent response
 // and attaches it to resp for IM channels.
-func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platform string) {
+func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platform string, voiceReply bool) {
 	if resp == nil || resp.Error != "" || resp.Text == "" || resp.VoiceData != "" {
 		return
 	}
@@ -24,15 +24,16 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 	if err != nil || !cfg.TTSEnabled {
 		return
 	}
-	if !cfg.TTSAutoVoiceSummary {
+	if !voiceReply && !cfg.TTSAutoVoiceSummary {
 		return
 	}
-	if utf8.RuneCountInString(resp.Text) < 20 {
+	if !voiceReply && utf8.RuneCountInString(resp.Text) < 20 {
 		return
 	}
 
 	ogg, wav, err := tts.SynthesizeVoiceOGG(h.app.ttsManager, resp.Text, 300)
-	voiceData, voiceName, voiceMime := selectTTSVoicePayload(platform, ogg, wav)
+	amr := synthesizeAMRForPlatform(platform, wav)
+	voiceData, voiceName, voiceMime := selectTTSVoicePayload(platform, ogg, wav, amr)
 	if voiceData != nil {
 		resp.VoiceData = base64.StdEncoding.EncodeToString(voiceData)
 		resp.VoiceFileName = voiceName
@@ -51,7 +52,7 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 // isIMPlatform returns true if the platform is an IM channel (not desktop).
 func isIMPlatform(platform string) bool {
 	switch platform {
-	case "feishu", "qqbot", "dingtalk", "telegram", "lansenger",
+	case "feishu", "wecom", "qqbot", "dingtalk", "telegram", "lansenger",
 		"qqbot_local", "telegram_local", "weixin", "weixin_local", "lansenger_local":
 		return true
 	}
@@ -67,10 +68,12 @@ func shouldEmitDesktopTTSPlayback(platform string) bool {
 	}
 }
 
-func selectTTSVoicePayload(platform string, ogg, wav []byte) ([]byte, string, string) {
+func selectTTSVoicePayload(platform string, ogg, wav, amr []byte) ([]byte, string, string) {
 	switch platform {
 	case "wecom":
-		return nil, "", ""
+		if amr != nil {
+			return amr, "voice.amr", "audio/amr"
+		}
 	case "weixin", "weixin_local":
 		if wav != nil {
 			return wav, "voice.wav", "audio/wav"
@@ -95,4 +98,30 @@ func selectTTSVoicePayload(platform string, ogg, wav []byte) ([]byte, string, st
 		}
 	}
 	return nil, "", ""
+}
+
+func synthesizeAMRForPlatform(platform string, wav []byte) []byte {
+	if platform != "wecom" || wav == nil {
+		return nil
+	}
+	amr, err := tts.EncodeWAVToAMR(wav)
+	if err != nil {
+		log.Printf("[tts-auto] AMR encode failed for platform=%s: %v", platform, err)
+		return nil
+	}
+	return amr
+}
+
+func isVoiceInputMessage(msg IMUserMessage) bool {
+	switch msg.MessageType {
+	case "voice", "audio":
+		return true
+	}
+	for _, att := range msg.Attachments {
+		switch att.Type {
+		case "voice", "audio":
+			return true
+		}
+	}
+	return false
 }

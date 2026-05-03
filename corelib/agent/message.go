@@ -6,10 +6,11 @@ package agent
 // This is the corelib equivalent of gui.IMUserMessage. The gui package
 // defines IMUserMessage as an alias or wrapper around this type.
 type UserMessage struct {
-	UserID   string `json:"user_id"`
-	Platform string `json:"platform"` // "desktop", "feishu", "wechat", "qq", "telegram", "tui"
-	Text     string `json:"text"`
-	Lang     string `json:"lang,omitempty"`
+	UserID      string `json:"user_id"`
+	Platform    string `json:"platform"`               // "desktop", "feishu", "wechat", "qq", "telegram", "tui"
+	MessageType string `json:"message_type,omitempty"` // "text", "voice", "image", "file", "audio", "video"
+	Text        string `json:"text"`
+	Lang        string `json:"lang,omitempty"`
 
 	// Attachments holds images/files attached to the message.
 	Attachments []MessageAttachment `json:"attachments,omitempty"`

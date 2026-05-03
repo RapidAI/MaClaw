@@ -236,6 +236,12 @@ type getUploadURLResp struct {
 	ThumbUploadParam string `json:"thumb_upload_param,omitempty"`
 }
 
+type apiStatusResp struct {
+	Ret     int    `json:"ret,omitempty"`
+	Errcode int    `json:"errcode,omitempty"`
+	ErrMsg  string `json:"errmsg,omitempty"`
+}
+
 type qrCodeResponse struct {
 	QRCode           string `json:"qrcode"`
 	QRCodeImgContent string `json:"qrcode_img_content"`
@@ -633,6 +639,24 @@ func (g *Gateway) buildHeaders() http.Header {
 	return h
 }
 
+func validateAPIStatus(label string, data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if trimmed[0] != '{' {
+		return nil
+	}
+	var status apiStatusResp
+	if err := json.Unmarshal(trimmed, &status); err != nil {
+		return nil
+	}
+	if status.Ret != 0 || status.Errcode != 0 {
+		return fmt.Errorf("weixin: %s API error ret=%d errcode=%d errmsg=%q resp=%s", label, status.Ret, status.Errcode, status.ErrMsg, string(trimmed[:min(len(trimmed), 512)]))
+	}
+	return nil
+}
+
 func (g *Gateway) apiPost(ctx context.Context, endpoint string, body []byte, timeout time.Duration) ([]byte, error) {
 	base := g.config.baseURL()
 	u := base + "/" + endpoint
@@ -794,8 +818,13 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 	// Extract text body
 	text := extractTextBody(msg.ItemList)
 
-	// Extract media (first media item found: image > video > file > voice)
+	// Extract media (first media item found: image > video > file > voice).
+	// Transcribed voice messages may carry voice_item.text without downloadable
+	// media; keep the voice modality so reply selection can preserve it.
 	mediaType, mediaData, mediaName := g.extractMedia(ctx, msg.ItemList)
+	if mediaType == "" && hasVoiceItem(msg.ItemList) {
+		mediaType = "voice"
+	}
 
 	var ts time.Time
 	if msg.CreateTimeMs > 0 {
@@ -954,6 +983,15 @@ func (g *Gateway) shouldSendQueueNotice(userID string) bool {
 	}
 	g.queueNoticeTimes[userID] = now
 	return true
+}
+
+func hasVoiceItem(items []messageItem) bool {
+	for _, item := range items {
+		if item.Type == ItemTypeVoice && item.VoiceItem != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func extractTextBody(items []messageItem) string {
@@ -1118,8 +1156,11 @@ func (g *Gateway) sendTextChunk(ctx context.Context, to, text, contextToken stri
 		BaseInfo: baseInfo{ChannelVersion: "go-maclaw-1.0"},
 	}
 	body, _ := json.Marshal(req)
-	_, err := g.apiPost(ctx, "ilink/bot/sendmessage", body, apiTimeout)
-	return err
+	data, err := g.apiPost(ctx, "ilink/bot/sendmessage", body, apiTimeout)
+	if err != nil {
+		return err
+	}
+	return validateAPIStatus("sendmessage", data)
 }
 
 // SendMedia uploads media to CDN and sends it to a WeChat user.
@@ -1249,8 +1290,11 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		BaseInfo: baseInfo{ChannelVersion: "go-maclaw-1.0"},
 	}
 	body, _ := json.Marshal(req)
-	_, err = g.apiPost(ctx, "ilink/bot/sendmessage", body, apiTimeout)
-	return err
+	data, err := g.apiPost(ctx, "ilink/bot/sendmessage", body, apiTimeout)
+	if err != nil {
+		return err
+	}
+	return validateAPIStatus("sendmessage", data)
 }
 
 func buildVoiceItem(media *cdnMedia, meta *voiceMetadata) *voiceItem {
@@ -1686,6 +1730,9 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 	var uploadResp getUploadURLResp
 	if err := json.Unmarshal(data, &uploadResp); err != nil {
 		return nil, fmt.Errorf("getUploadUrl decode: %w", err)
+	}
+	if uploadResp.Ret != 0 {
+		return nil, fmt.Errorf("getUploadUrl API error: ret=%d errmsg=%q resp=%s", uploadResp.Ret, uploadResp.ErrMsg, string(data))
 	}
 	if uploadResp.UploadParam == "" && uploadResp.UploadFullURL == "" {
 		return nil, fmt.Errorf("getUploadUrl returned no upload_param and no upload_full_url, ret=%d errmsg=%q resp=%s",

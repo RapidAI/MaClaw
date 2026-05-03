@@ -5451,8 +5451,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	resp = h.finalizeTraceResult(loopCtx, resp, firstNonEmptyTraceText(resp.Text, resp.TraceSummary), resp.Error)
 	resp.FinalizeTraceNanos = time.Since(finalizeStartedAt).Nanoseconds()
 
-	// --- Auto voice summary for IM channels ---
-	h.maybeAttachVoiceSummary(resp, msg.Platform)
+	// --- Voice reply for IM channels ---
+	h.maybeAttachVoiceSummary(resp, msg.Platform, isVoiceInputMessage(msg))
 
 	return resp
 }

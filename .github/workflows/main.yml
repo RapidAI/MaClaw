@@ -1066,9 +1066,22 @@ jobs:
           fi
           python3 - <<'PY'
           import hashlib
+          import json
           import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
           token = os.environ["GITEE_TOKEN"]
           print(f"GITEE_TOKEN length={len(token)} sha256_prefix={hashlib.sha256(token.encode()).hexdigest()[:12]}")
+          url = "https://gitee.com/api/v5/repos/znsoft/maclaw?" + urllib.parse.urlencode({"access_token": token})
+          try:
+              with urllib.request.urlopen(url, timeout=30) as resp:
+                  repo = json.loads(resp.read().decode("utf-8"))
+              print(f"Verified Gitee repo access: {repo.get('full_name') or repo.get('path_with_namespace') or 'znsoft/maclaw'}")
+          except urllib.error.HTTPError as exc:
+              payload = exc.read().decode("utf-8", errors="replace")
+              raise SystemExit(f"Gitee token cannot access znsoft/maclaw: HTTP {exc.code} {payload}")
           PY
 
       - name: Push source tags to Gitee
@@ -1079,11 +1092,44 @@ jobs:
             echo "GITEE_TOKEN secret is required for Gitee sync" >&2
             exit 1
           fi
+          tag="${{ github.ref_name }}"
           git remote add gitee "https://znsoft:${GITEE_TOKEN}@gitee.com/znsoft/maclaw.git"
-          git fetch origin main --tags
-          if ! GIT_LFS_SKIP_PUSH=1 git push gitee refs/remotes/origin/main:refs/heads/main --tags; then
-            echo "warning: Gitee git push failed; continuing with Release API asset sync" >&2
+          echo "GitHub ref: ${{ github.ref }}"
+          echo "GitHub ref_name: ${tag}"
+          echo "GitHub sha: ${{ github.sha }}"
+          echo "Local HEAD: $(git rev-parse HEAD)"
+          echo "Gitee remote: https://znsoft:***@gitee.com/znsoft/maclaw.git"
+          git fetch origin main --tags --force
+          echo "Origin main: $(git rev-parse refs/remotes/origin/main)"
+          echo "Release tag object: $(git rev-parse refs/tags/${tag})"
+          echo "Release tag peeled commit: $(git rev-parse refs/tags/${tag}^{})"
+
+          if git ls-remote --exit-code gitee refs/heads/main >/tmp/gitee-main-ref 2>/tmp/gitee-main-err; then
+            echo "Gitee main before push: $(cat /tmp/gitee-main-ref)"
+          else
+            echo "Gitee main before push: not found or inaccessible"
+            cat /tmp/gitee-main-err >&2 || true
           fi
+
+          if git ls-remote --exit-code gitee "refs/tags/${tag}" >/tmp/gitee-tag-ref 2>/tmp/gitee-tag-err; then
+            echo "Gitee tag ${tag} before push: $(cat /tmp/gitee-tag-ref)"
+          else
+            echo "Gitee tag ${tag} before push: not found"
+            cat /tmp/gitee-tag-err >&2 || true
+          fi
+
+          if ! GIT_LFS_SKIP_PUSH=1 git push gitee refs/remotes/origin/main:refs/heads/main; then
+            echo "warning: Gitee main branch push failed; continuing with current tag sync" >&2
+          fi
+
+          if git ls-remote --exit-code gitee "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Gitee tag ${tag} already exists; skip pushing tag"
+          elif ! GIT_LFS_SKIP_PUSH=1 git push gitee "refs/tags/${tag}:refs/tags/${tag}"; then
+            echo "error: failed to push release tag ${tag} to Gitee" >&2
+            exit 1
+          fi
+
+          git ls-remote gitee refs/heads/main "refs/tags/${tag}"
 
       - name: Sync release assets to Gitee
         continue-on-error: true

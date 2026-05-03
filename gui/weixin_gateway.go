@@ -301,7 +301,7 @@ func (m *weixinGatewayManager) forwardToHub(msg weixin.IncomingMessage) {
 	}
 
 	msgType := "text"
-	if msg.MediaType != "" && len(msg.MediaData) > 0 {
+	if msg.MediaType != "" {
 		msgType = msg.MediaType
 	}
 
@@ -518,6 +518,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 	resp := handler.HandleIMMessageWithProgress(IMUserMessage{
 		UserID:      msg.FromUserID,
 		Platform:    "weixin_local",
+		MessageType: msg.MediaType,
 		Text:        text,
 		Lang:        "zh",
 		Attachments: attachments,
@@ -561,8 +562,14 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 		}
 	}
 
-	// Send text response
-	if resp.Text != "" {
+	voiceSent := false
+	if resp.VoiceData != "" {
+		voiceSent = m.sendVoiceResponse(ctx, gw, toUserID, contextToken, resp)
+	}
+
+	// WeChat voice replies must not let a status text consume the reply slot before
+	// the native voice item. When voice exists, it is the primary response.
+	if !voiceSent && resp.Text != "" {
 		text := textutil.StripMarkdown(resp.Text)
 		if err := gw.SendText(ctx, weixin.OutgoingText{
 			ToUserID:     toUserID,
@@ -571,10 +578,12 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 		}); err != nil {
 			log.Printf("[weixin-mgr] local SendText error (to=%s): %v", toUserID, err)
 		}
+	} else if voiceSent && resp.Text != "" {
+		log.Printf("[weixin-mgr] skipped text because voice is primary (to=%s text_len=%d)", toUserID, len([]rune(resp.Text)))
 	}
 
-	// Send error as text if no text was sent
-	if resp.Error != "" && resp.Text == "" {
+	// Send error as text if no text or voice was sent
+	if resp.Error != "" && resp.Text == "" && !voiceSent {
 		_ = gw.SendText(ctx, weixin.OutgoingText{
 			ToUserID:     toUserID,
 			Text:         "❌ " + textutil.StripMarkdown(resp.Error),
@@ -647,30 +656,32 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 		}
 	}
 
-	// Send voice if present (base64-encoded TTS audio).
-	if resp.VoiceData != "" {
-		voiceFileName := resp.VoiceFileName
-		if voiceFileName == "" {
-			voiceFileName = "voice.wav"
-		}
-		voiceBytes, err := base64.StdEncoding.DecodeString(resp.VoiceData)
-		if err != nil || len(voiceBytes) == 0 {
-			log.Printf("[weixin-mgr] decode voice data failed (to=%s): %v", toUserID, err)
-		} else if err := gw.SendMedia(ctx, weixin.OutgoingMedia{
-			ToUserID:     toUserID,
-			ContextToken: contextToken,
-			FileData:     voiceBytes,
-			FileName:     voiceFileName,
-			MediaType:    "voice",
-		}); err != nil {
-			log.Printf("[weixin-mgr] SendMedia voice failed (to=%s size=%d): %v", toUserID, len(voiceBytes), err)
-		} else {
-			log.Printf("[weixin-mgr] SendMedia voice OK (to=%s size=%d name=%s)", toUserID, len(voiceBytes), voiceFileName)
-		}
-	}
-
 	// Send local file(s) if present
 	m.sendLocalFiles(gw, toUserID, contextToken, resp)
+}
+
+func (m *weixinGatewayManager) sendVoiceResponse(ctx context.Context, gw *weixin.Gateway, toUserID, contextToken string, resp *IMAgentResponse) bool {
+	voiceFileName := resp.VoiceFileName
+	if voiceFileName == "" {
+		voiceFileName = "voice.wav"
+	}
+	voiceBytes, err := base64.StdEncoding.DecodeString(resp.VoiceData)
+	if err != nil || len(voiceBytes) == 0 {
+		log.Printf("[weixin-mgr] decode voice data failed (to=%s): %v", toUserID, err)
+		return false
+	}
+	if err := gw.SendMedia(ctx, weixin.OutgoingMedia{
+		ToUserID:     toUserID,
+		ContextToken: contextToken,
+		FileData:     voiceBytes,
+		FileName:     voiceFileName,
+		MediaType:    "voice",
+	}); err != nil {
+		log.Printf("[weixin-mgr] SendMedia voice failed (to=%s size=%d): %v", toUserID, len(voiceBytes), err)
+		return false
+	}
+	log.Printf("[weixin-mgr] SendMedia voice OK (to=%s size=%d name=%s)", toUserID, len(voiceBytes), voiceFileName)
+	return true
 }
 
 // imageDownloadClient is a dedicated HTTP client for downloading markdown

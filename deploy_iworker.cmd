@@ -87,25 +87,27 @@ echo.
 
 echo [2/8] Building and syncing web assets...
 pushd "%ROOT_DIR%iWorkerCenter\frontend"
-"%NPM_EXE%" run build
+call "%NPM_EXE%" run build
 if errorlevel 1 (
   popd
   echo [ERROR] Failed to build iWorkerCenter frontend.
   goto :fail
 )
 popd
-"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$src=Join-Path '%ROOT_DIR_TRIM%' 'iWorkerCenter/frontend/dist';$dst=Join-Path '%ROOT_DIR_TRIM%' 'iWorkerCenter/cmd/iworkercenter/web/admin';" ^
-  "if(!(Test-Path (Join-Path $src 'index.html'))){ throw 'Missing iWorkerCenter frontend dist/index.html' };" ^
-  "if(Test-Path $dst){ Get-ChildItem -LiteralPath $dst -Force | Remove-Item -Recurse -Force } else { New-Item -ItemType Directory -Force $dst | Out-Null };" ^
-  "Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force;" ^
-  "Remove-Item -LiteralPath $src -Recurse -Force;"
-if errorlevel 1 (
+if not exist "%ROOT_DIR%iWorkerCenter\frontend\dist\index.html" (
+  echo [ERROR] Missing iWorkerCenter frontend dist/index.html
+  goto :fail
+)
+if exist "%ROOT_DIR%iWorkerCenter\cmd\iworkercenter\web\admin" rmdir /s /q "%ROOT_DIR%iWorkerCenter\cmd\iworkercenter\web\admin"
+mkdir "%ROOT_DIR%iWorkerCenter\cmd\iworkercenter\web\admin" >nul 2>nul
+robocopy "%ROOT_DIR%iWorkerCenter\frontend\dist" "%ROOT_DIR%iWorkerCenter\cmd\iworkercenter\web\admin" /E /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 (
   echo [ERROR] Failed to sync iWorkerCenter web assets.
   goto :fail
 )
+rmdir /s /q "%ROOT_DIR%iWorkerCenter\frontend\dist"
 pushd "%ROOT_DIR%iWorkerCloud\web\admin"
-"%NPM_EXE%" run build
+call "%NPM_EXE%" run build
 if errorlevel 1 (
   popd
   echo [ERROR] Failed to build iWorkerCloud admin frontend.

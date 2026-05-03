@@ -20,6 +20,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -80,18 +81,18 @@ type streamRegisterResp struct {
 // streamFrame is the DingTalk Stream WebSocket frame.
 type streamFrame struct {
 	SpecVersion string          `json:"specVersion,omitempty"`
-	Type        string          `json:"type"`        // SYSTEM, CALLBACK, PING
+	Type        string          `json:"type"` // SYSTEM, CALLBACK, PING
 	Headers     streamHeaders   `json:"headers"`
 	Data        json.RawMessage `json:"data,omitempty"`
 }
 
 type streamHeaders struct {
-	AppID           string `json:"appId,omitempty"`
-	ConnectionID    string `json:"connectionId,omitempty"`
-	ContentType     string `json:"contentType,omitempty"`
-	MessageID       string `json:"messageId,omitempty"`
-	Time            string `json:"time,omitempty"`
-	Topic           string `json:"topic,omitempty"`
+	AppID        string `json:"appId,omitempty"`
+	ConnectionID string `json:"connectionId,omitempty"`
+	ContentType  string `json:"contentType,omitempty"`
+	MessageID    string `json:"messageId,omitempty"`
+	Time         string `json:"time,omitempty"`
+	Topic        string `json:"topic,omitempty"`
 }
 
 // streamAck is the acknowledgement sent back for CALLBACK frames.
@@ -104,8 +105,8 @@ type streamAck struct {
 
 // botMessageData is the data payload for bot message callbacks.
 type botMessageData struct {
-	ConversationID     string `json:"conversationId"`
-	AtUsers            []struct {
+	ConversationID string `json:"conversationId"`
+	AtUsers        []struct {
 		DingtalkID string `json:"dingtalkId"`
 	} `json:"atUsers,omitempty"`
 	ChatbotCorpID      string `json:"chatbotCorpId,omitempty"`
@@ -125,7 +126,7 @@ type botMessageData struct {
 	Text               *struct {
 		Content string `json:"content"`
 	} `json:"text,omitempty"`
-	Msgtype string `json:"msgtype"` // text, richText, picture, audio, video, file
+	Msgtype  string `json:"msgtype"` // text, richText, picture, audio, video, file
 	RichText *struct {
 		RichText [][]struct {
 			Text    string `json:"text,omitempty"`
@@ -311,6 +312,26 @@ func (p *Plugin) SendFile(ctx context.Context, target im.UserTarget, fileData, f
 	return p.SendText(ctx, target, fmt.Sprintf("📎 %s", fileName))
 }
 
+// SendVoice implements im.VoiceSender using DingTalk's native sampleAudio
+// message. DingTalk accepts OGG or AMR voice payloads for this message type.
+func (p *Plugin) SendVoice(ctx context.Context, target im.UserTarget, voiceData, fileName, mimeType string) error {
+	staffID := target.PlatformUID
+	if staffID == "" {
+		return fmt.Errorf("dingtalk: PlatformUID (staffId) is required")
+	}
+	raw, err := base64.StdEncoding.DecodeString(voiceData)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(voiceData)
+		if err != nil {
+			return fmt.Errorf("dingtalk: voice base64 decode failed: %w", err)
+		}
+	}
+	if !isDingTalkVoicePayload(raw) {
+		return fmt.Errorf("dingtalk: voice payload must be OGG or AMR")
+	}
+	return p.sendProactiveAudio(ctx, staffID, raw)
+}
+
 func (p *Plugin) ResolveUser(ctx context.Context, platformUID string) (string, error) {
 	p.bindMu.RLock()
 	email, ok := p.bindings[platformUID]
@@ -333,6 +354,7 @@ func (p *Plugin) Capabilities() im.CapabilityDeclaration {
 		SupportsFile:        false,
 		SupportsButton:      false,
 		SupportsMessageEdit: false,
+		SupportsVoice:       true,
 		MaxTextLength:       textChunkLimit,
 	}
 }
@@ -1129,6 +1151,104 @@ func (p *Plugin) sendProactive(ctx context.Context, staffID, text string) error 
 		return fmt.Errorf("dingtalk proactive: HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
+}
+
+func (p *Plugin) sendProactiveAudio(ctx context.Context, staffID string, audioData []byte) error {
+	token, err := p.getAccessToken(ctx)
+	if err != nil {
+		return fmt.Errorf("dingtalk audio: get token: %w", err)
+	}
+	mediaID, err := p.uploadAudioMedia(ctx, token, audioData)
+	if err != nil {
+		return fmt.Errorf("dingtalk audio: upload: %w", err)
+	}
+	durationMs := estimateAudioDurationMS(audioData)
+	msgParam, _ := json.Marshal(map[string]string{
+		"mediaId":  mediaID,
+		"duration": fmt.Sprintf("%d", durationMs),
+	})
+	body, _ := json.Marshal(map[string]any{
+		"robotCode": p.configProvider().ClientID,
+		"userIds":   []string{staffID},
+		"msgKey":    "sampleAudio",
+		"msgParam":  string(msgParam),
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, batchSendEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-acs-dingtalk-access-token", token)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("dingtalk audio: send failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("dingtalk audio: HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+func (p *Plugin) uploadAudioMedia(ctx context.Context, token string, audioData []byte) (string, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	filename := "voice.ogg"
+	if isAMR(audioData) {
+		filename = "voice.amr"
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(audioData); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.dingtalk.com/v1.0/robot/messageFiles/upload", body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("x-acs-dingtalk-access-token", token)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("upload HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	var result struct {
+		MediaID string `json:"mediaId"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", err
+	}
+	if result.MediaID == "" {
+		return "", fmt.Errorf("upload returned empty mediaId: %s", string(respBody))
+	}
+	return result.MediaID, nil
+}
+
+func isDingTalkVoicePayload(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("OggS")) || isAMR(data)
+}
+
+func isAMR(data []byte) bool {
+	return strings.HasPrefix(string(data), "#!AMR\n") || strings.HasPrefix(string(data), "#!AMR-WB\n")
+}
+
+func estimateAudioDurationMS(data []byte) int {
+	durationMs := len(data) * 1000 / 4000
+	if durationMs < 1000 {
+		return 1000
+	}
+	return durationMs
 }
 
 // ---------------------------------------------------------------------------

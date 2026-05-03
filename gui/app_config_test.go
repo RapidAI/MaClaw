@@ -289,6 +289,8 @@ func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	cfg.PetConversationMode = "free-chat"
 	cfg.PetReadbackMode = "everything"
 	cfg.PetVoiceReadback = true
+	motionSound := false
+	cfg.PetMotionSound = &motionSound
 	cfg.PetContinuousTimeout = 1
 
 	if err := app.SaveConfig(cfg); err != nil {
@@ -316,6 +318,9 @@ func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	}
 	if !reloaded.PetVoiceReadback {
 		t.Fatal("PetVoiceReadback = false, want true for summary readback")
+	}
+	if petMotionSoundEnabled(reloaded) {
+		t.Fatal("PetMotionSound should remain disabled")
 	}
 	if reloaded.PetContinuousTimeout != 5 {
 		t.Fatalf("PetContinuousTimeout = %d, want 5", reloaded.PetContinuousTimeout)
@@ -345,6 +350,43 @@ func TestSaveConfigDefaultsPetSizeForClarity(t *testing.T) {
 	}
 	if reloaded.PetSize != defaultPetSize {
 		t.Fatalf("PetSize = %d, want %d", reloaded.PetSize, defaultPetSize)
+	}
+}
+
+func TestFloatingAppearanceChangedIncludesPetRuntimeSettings(t *testing.T) {
+	base := corelib.AppConfig{
+		ShowAssistantEntry:   true,
+		PetEnabled:           true,
+		PetSkin:              "clawmate",
+		PetSize:              defaultPetSize,
+		PetInteractionMode:   "balanced",
+		PetContinuousTimeout: 30,
+	}
+
+	motionOff := false
+	withMotionOff := base
+	withMotionOff.PetMotionEnabled = &motionOff
+	if !floatingAppearanceChanged(base, withMotionOff) {
+		t.Fatal("expected motion toggle to refresh floating window")
+	}
+
+	soundOff := false
+	withSoundOff := base
+	withSoundOff.PetMotionSound = &soundOff
+	if !floatingAppearanceChanged(base, withSoundOff) {
+		t.Fatal("expected motion sound toggle to refresh floating window")
+	}
+
+	withQuiet := base
+	withQuiet.PetQuietMode = true
+	if !floatingAppearanceChanged(base, withQuiet) {
+		t.Fatal("expected quiet mode toggle to refresh floating window")
+	}
+
+	withMode := base
+	withMode.PetInteractionMode = "active"
+	if !floatingAppearanceChanged(base, withMode) {
+		t.Fatal("expected interaction mode change to refresh floating window")
 	}
 }
 
@@ -401,5 +443,71 @@ func TestSaveConfigConcurrentWritesValidJSON(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temp files remain: %v", matches)
+	}
+}
+
+func TestConfigManagerRemoteEnabledDoesNotChangeDefaultLaunchMode(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.DefaultLaunchMode = "local"
+	cfg.RemoteEnabled = false
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	mgr := NewConfigManager(app)
+	if _, err := mgr.UpdateConfig("remote", "remote_enabled", "true"); err != nil {
+		t.Fatalf("UpdateConfig(remote_enabled) error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after update error = %v", err)
+	}
+	if !saved.RemoteEnabled {
+		t.Fatal("RemoteEnabled = false, want true")
+	}
+	if saved.DefaultLaunchMode != "local" {
+		t.Fatalf("DefaultLaunchMode = %q, want local", saved.DefaultLaunchMode)
+	}
+}
+
+func TestConfigManagerDefaultLaunchModeDoesNotChangeRemoteEnabled(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.DefaultLaunchMode = "remote"
+	cfg.RemoteEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	mgr := NewConfigManager(app)
+	if _, err := mgr.UpdateConfig("remote", "default_launch_mode", "local"); err != nil {
+		t.Fatalf("UpdateConfig(default_launch_mode) error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after update error = %v", err)
+	}
+	if saved.DefaultLaunchMode != "local" {
+		t.Fatalf("DefaultLaunchMode = %q, want local", saved.DefaultLaunchMode)
+	}
+	if !saved.RemoteEnabled {
+		t.Fatal("RemoteEnabled = false, want true")
 	}
 }

@@ -28,6 +28,7 @@ var adminAPIPrefixes = []string{
 	"/admin/executive",
 	"/admin/profile",
 	"/admin/password",
+	"/admin/system",
 }
 
 func IsAdminAPIPath(path string) bool {

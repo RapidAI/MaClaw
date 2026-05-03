@@ -186,7 +186,6 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             ...(pendingLaunchMode
                 ? {
                     default_launch_mode: pendingLaunchMode,
-                    remote_enabled: pendingLaunchMode === 'remote',
                 }
                 : {}),
             [selectedRemoteTool]: {
@@ -527,18 +526,13 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             base = config;
         }
         const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
-        const hasRemoteEnabledPatch = Object.prototype.hasOwnProperty.call(patch, 'remote_enabled');
-        const hasDefaultLaunchModePatch = Object.prototype.hasOwnProperty.call(patch, 'default_launch_mode');
-        const launchMode = pendingLaunchMode
-            || (hasDefaultLaunchModePatch ? (patch.default_launch_mode === 'remote' ? 'remote' : 'local') : null)
-            || (hasRemoteEnabledPatch ? (patch.remote_enabled ? 'remote' : 'local') : null);
-        const launchModeSyncPatch = launchMode
-            ? { default_launch_mode: launchMode, remote_enabled: launchMode === 'remote' }
+        const launchModePatch = pendingLaunchMode
+            ? { default_launch_mode: pendingLaunchMode }
             : {};
         const newConfig = new main.AppConfig({
             ...base,
             ...patch,
-            ...launchModeSyncPatch,
+            ...launchModePatch,
         });
         setConfig(newConfig);
         try {

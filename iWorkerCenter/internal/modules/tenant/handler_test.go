@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -178,5 +179,28 @@ func TestAdminCloudConfigRouteUpdatesRuntimeConfig(t *testing.T) {
 	}
 	if got := svc.CloudConfig(context.Background()); got.BaseURL != "http://127.0.0.1:9366" {
 		t.Fatalf("runtime config not updated: %+v", got)
+	}
+}
+
+func TestAdminCloudConfigRouteReturnsSnakeCaseJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	svc, _ := newTestService(t)
+	svc.cloudClient = NewCloudClient(CloudConfig{BaseURL: "http://127.0.0.1:9366", CenterBaseURL: "http://127.0.0.1:9377", RegistrationName: "Local Center", RegistrationEmail: "admin@example.com", CloudControlMode: "hybrid"})
+	mux := http.NewServeMux()
+	NewHandler(svc).RegisterAdminRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/cloud/config", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "\"base_url\"") || strings.Contains(body, "\"BaseURL\"") {
+		t.Fatalf("cloud config should use snake_case JSON, body = %s", body)
 	}
 }

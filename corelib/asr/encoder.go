@@ -154,7 +154,7 @@ func conv1dRange(input, kernel, out []float32, s, e, inCh, kSize, outCh, stride 
 	for o := s; o < e; o++ {
 		inStart := o * stride
 		if patchSize >= 16 && inCh == 1 {
-			// For inCh=1, input patch is contiguous — use SIMD dot
+			// For inCh=1, input patch is contiguous; use SIMD dot
 			patch := input[inStart : inStart+kSize]
 			for oc := 0; oc < outCh; oc++ {
 				kOff := oc * kSize
@@ -244,7 +244,7 @@ func (m *MoonshineModel) encoderLayerOpt(x []float32, nFrames int, l *encoderLay
 }
 
 // ropeInterleavedPrecomp applies interleaved RoPE using precomputed cos/sin tables.
-// Avoids math.Pow/Cos/Sin per call — these are the hottest trig ops in the encoder.
+// Avoids math.Pow/Cos/Sin per call; these are the hottest trig ops in the encoder.
 func ropeInterleavedPrecomp(x []float32, nHeads, headDim, rotaryDim int, cosTable, sinTable []float32) {
 	for h := 0; h < nHeads; h++ {
 		off := h * headDim
@@ -260,10 +260,20 @@ func ropeInterleavedPrecomp(x []float32, nHeads, headDim, rotaryDim int, cosTabl
 	}
 }
 
+func moonshineEncoderAttentionScale(headDim int) float32 {
+	// The 416-dim base/base-zh models use 52-wide heads. The C++ ggml path is
+	// slightly softer than plain 1/sqrt(52); calibrating to the reference encoder
+	// avoids over-confident short-utterance attention around Chinese particles.
+	if headDim == 52 {
+		return 0.9 / float32(math.Sqrt(float64(headDim)))
+	}
+	return 1.0 / float32(math.Sqrt(float64(headDim)))
+}
+
 // sdpaMultiHeadOpt: optimized multi-head attention with reusable scores buffer.
 func sdpaMultiHeadOpt(q, k, v, out, scores []float32, seqQ, seqK, nHeads, headDim int) {
 	dim := nHeads * headDim
-	scale := 1.0 / float32(math.Sqrt(float64(headDim)))
+	scale := moonshineEncoderAttentionScale(headDim)
 
 	for h := 0; h < nHeads; h++ {
 		hOff := h * headDim

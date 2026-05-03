@@ -2344,22 +2344,7 @@ function App() {
 
         // Config Logic
         LoadConfig().then((cfg) => {
-            // Reconcile default_launch_mode → remote_enabled on startup.
-            // Persist the reconciled value so that subsequent LoadConfig()
-            // calls (e.g. from useRemotePanel) don't revert to a stale
-            // remote_enabled from disk.
-            let needsPersist = false;
-            if (cfg.default_launch_mode === 'remote' && !cfg.remote_enabled) {
-                cfg.remote_enabled = true;
-                needsPersist = true;
-            } else if ((!cfg.default_launch_mode || cfg.default_launch_mode === 'local') && cfg.remote_enabled) {
-                cfg.remote_enabled = false;
-                needsPersist = true;
-            }
             setConfig(cfg);
-            if (needsPersist) {
-                SaveConfig(new main.AppConfig(cfg)).catch(() => {});
-            }
 
             // Apply saved UI zoom factor
             GetUIZoomFactor().then((z) => {
@@ -2959,7 +2944,6 @@ function App() {
         setConfig(new main.AppConfig({
             ...nextConfig,
             default_launch_mode: pendingMode,
-            remote_enabled: pendingMode === 'remote',
         }));
     }, []);
 
@@ -3521,10 +3505,9 @@ function App() {
     const saveDefaultLaunchMode = (mode: 'local' | 'remote') => {
         if (!config) return;
         const saveSeq = ++defaultLaunchModeSaveSeq.current;
-        const patch = {
-            default_launch_mode: mode,
-            remote_enabled: mode === 'remote',
-        };
+        const patch = mode === 'remote'
+            ? { default_launch_mode: mode, remote_enabled: true }
+            : { default_launch_mode: mode };
         pendingDefaultLaunchMode.current = mode;
         const optimisticConfig = new main.AppConfig({ ...config, ...patch });
         setConfig(optimisticConfig);
@@ -4436,7 +4419,7 @@ ${instruction}`;
                     </div>
                 </div>
 
-                <div className="main-content elegant-scrollbar" style={{ overflowY: navTab === 'projects' ? 'hidden' : 'auto', paddingBottom: '20px', '--wails-draggable': 'no-drag' } as any}>
+                <div className="main-content elegant-scrollbar" style={{ overflowY: navTab === 'projects' || navTab === 'skills' ? 'hidden' : 'auto', paddingBottom: navTab === 'skills' ? 0 : '20px', '--wails-draggable': 'no-drag' } as any}>
                     {navTab === 'tutorial' && (
                         <div style={{
                             width: '100%',
@@ -4779,7 +4762,7 @@ ${instruction}`;
                     )}
 
                     {navTab === 'skills' && (
-                        <div style={{ padding: '10px' }}>
+                        <div style={{ height: '100%', minHeight: 0, padding: '10px', boxSizing: 'border-box' }}>
                             <SkillsManagementPanel localizeText={localizeText} />
                         </div>
                     )}
@@ -6516,8 +6499,8 @@ ${instruction}`;
                                                 border: 'none',
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
-                                                background: !config?.remote_enabled ? 'var(--theme-primary)' : 'transparent',
-                                                color: !config?.remote_enabled ? 'var(--theme-text-primary)' : 'var(--theme-text-secondary)',
+                                                background: (!config?.default_launch_mode || config.default_launch_mode === 'local') ? 'var(--theme-primary)' : 'transparent',
+                                                color: (!config?.default_launch_mode || config.default_launch_mode === 'local') ? 'var(--theme-text-primary)' : 'var(--theme-text-secondary)',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
                                                 cursor: 'pointer'
@@ -6535,8 +6518,8 @@ ${instruction}`;
                                                 border: 'none',
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
-                                                background: config?.remote_enabled ? 'var(--theme-primary)' : 'transparent',
-                                                color: config?.remote_enabled ? 'var(--theme-text-primary)' : 'var(--theme-text-secondary)',
+                                                background: config?.default_launch_mode === 'remote' ? 'var(--theme-primary)' : 'transparent',
+                                                color: config?.default_launch_mode === 'remote' ? 'var(--theme-text-primary)' : 'var(--theme-text-secondary)',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
                                                 cursor: isRemoteCapableActiveTool ? 'pointer' : 'not-allowed',
@@ -6548,7 +6531,7 @@ ${instruction}`;
                                         </button>
                                     </div>
                                 </div>
-                                {config?.remote_enabled && (
+                                {config?.default_launch_mode === 'remote' && (
                                     <div
                                         style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', background: remoteActivationStatus?.activated ? 'var(--theme-success-bg)' : 'var(--theme-warning-bg)', border: `1px solid ${remoteActivationStatus?.activated ? 'var(--theme-success)' : 'var(--theme-warning)'}`, borderRadius: '999px', cursor: remoteActivationStatus?.activated ? 'default' : 'pointer' }}
                                         onClick={() => {

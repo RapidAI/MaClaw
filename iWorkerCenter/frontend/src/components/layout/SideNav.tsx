@@ -17,14 +17,14 @@ const items: NavItem[] = [
   { id: 'communications', label: '员工通讯', hint: '协作记录与请求流转' },
   { id: 'workflows', label: '流程设计', hint: '编排任务流转' },
   { id: 'knowledge', label: '经验共享', hint: '经验沉淀与复用' },
-  { id: 'packages', label: '能力包', hint: '管理能力分发' },
+  { id: 'packages', label: '能力包', hint: '技能与 MCP 下发' },
   { id: 'models', label: '模型调度', hint: '模型策略与路由' },
   { id: 'cloud', label: '云端注册', hint: '连接 iWorkerCloud' },
   { id: 'security', label: '安全规则', hint: '统一治理与审计' },
   { id: 'delivery', label: '下发管理', hint: '配置和能力下发' },
   { id: 'usage', label: '使用情况', hint: '统计与趋势' },
   { id: 'im', label: 'IM 管理', hint: '飞书/钉钉/企微' },
-  { id: 'auth', label: '认证管理', hint: 'LDAP/本地账号' },
+  { id: 'auth', label: '认证管理', hint: 'LDAP/本地/OIDC' },
   { id: 'settings', label: '账户设置', hint: '资料、密码与租户模式' },
 ];
 
@@ -51,7 +51,7 @@ export function SideNav({ activeTab, onChange }: Props) {
       </nav>
       <div className="center-hint">
         <strong>管理提示</strong>
-        <p>先完成云端注册与租户模式配置，再进行远程租户和能力下发测试。</p>
+        <p>Cloud 只负责注册、授权、算力和能力市场协调；企业业务、员工协作和 MCP 下发由本 Center 本地管理。</p>
       </div>
     </aside>
   );

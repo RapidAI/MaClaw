@@ -63,8 +63,9 @@ const (
 	mfSeparator  = 0x00000800
 	tpmReturncmd = 0x0100
 
-	menuIdHide = 1001
-	menuIdQuit = 1002
+	menuIdHide           = 1001
+	menuIdQuit           = 1002
+	menuIdPetMotionSound = 1003
 
 	// Timer ID for halo animation
 	timerIdHalo = 1
@@ -104,6 +105,7 @@ var (
 	procPostMessageW          = floatUser32.NewProc("PostMessageW")
 	procSystemParametersInfoW = floatUser32.NewProc("SystemParametersInfoW")
 
+	procBeep             = floatKernel32.NewProc("Beep")
 	procCreateDIBSection = floatGdi32.NewProc("CreateDIBSection")
 )
 
@@ -145,6 +147,27 @@ type msgW struct {
 	Pt      point
 }
 
+type petFacePose struct {
+	HeadShiftX float64
+	HeadShiftY float64
+	HeadTilt   float64
+	EyeShiftX  float64
+	EyeShiftY  float64
+	EyeOpen    float64
+	MouthOpen  float64
+	ArmWave    float64
+	CheekAlpha float64
+}
+
+type petFrameCacheKey struct {
+	Size   int
+	Skin   string
+	Mode   string
+	Bucket int
+}
+
+const petAnimationFrameBuckets = 72
+
 // windowsFloatingWindow
 
 type windowsFloatingWindow struct {
@@ -166,11 +189,17 @@ type windowsFloatingWindow struct {
 	haloPhase          float64 // 0..2*pi, advances each timer tick
 	petEnabled         bool
 	petMotionEnabled   bool
+	petMotionSound     bool
+	lastPetSoundBucket int
 	petQuietMode       bool
 	petInteractionMode string
+	petSkin            string
 
 	// Pre-rendered base image (logo + circle clip, without halo)
 	baseImg *image.NRGBA
+
+	// Quantized pet animation frames avoid rerasterizing the supersampled pet every timer tick.
+	petFrameCache map[petFrameCacheKey]*image.NRGBA
 
 	// Pre-computed distance from center for each pixel (avoids sqrt per frame)
 	distMap []float64
@@ -224,6 +253,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	sz := normalizeFloatingNativeSize(width)
 	petEnabled := false
 	petMotionEnabled := true
+	petMotionSound := true
 	petQuietMode := false
 	petInteractionMode := "balanced"
 	petSkin := "clawmate"
@@ -231,9 +261,8 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 		if cfg, err := w.app.LoadConfig(); err == nil {
 			petEnabled = cfg.PetEnabled
 			petQuietMode = cfg.PetQuietMode
-			if cfg.PetMotionEnabled != nil {
-				petMotionEnabled = *cfg.PetMotionEnabled
-			}
+			petMotionEnabled = isPetMotionEnabled(cfg)
+			petMotionSound = petMotionSoundEnabled(cfg)
 			if cfg.PetInteractionMode != "" {
 				petInteractionMode = cfg.PetInteractionMode
 			}
@@ -254,8 +283,12 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.haloPhase = 0
 	w.petEnabled = petEnabled
 	w.petMotionEnabled = petMotionEnabled
+	w.petMotionSound = petMotionSound
+	w.lastPetSoundBucket = -1
 	w.petQuietMode = petQuietMode
 	w.petInteractionMode = petInteractionMode
+	w.petSkin = petSkin
+	w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
 	w.stopCh = make(chan struct{})
 
 	w.distMap = make([]float64, sz*sz)
@@ -491,90 +524,161 @@ func renderCircularLogo(sz int) (*image.NRGBA, error) {
 }
 
 func renderClawMatePet(sz int, skin string) *image.NRGBA {
+	return renderClawMatePetWithPose(sz, skin, petFacePose{})
+}
+
+func renderClawMatePetWithPose(sz int, skin string, pose petFacePose) *image.NRGBA {
 	renderScale := 3
 	if sz < 96 {
 		renderScale = 4
 	}
-	hiRes := renderClawMatePetRaster(sz*renderScale, skin)
+	scaledPose := petFacePose{
+		HeadShiftX: pose.HeadShiftX * float64(renderScale),
+		HeadShiftY: pose.HeadShiftY * float64(renderScale),
+		HeadTilt:   pose.HeadTilt,
+		EyeShiftX:  pose.EyeShiftX * float64(renderScale),
+		EyeShiftY:  pose.EyeShiftY * float64(renderScale),
+		EyeOpen:    pose.EyeOpen,
+		MouthOpen:  pose.MouthOpen,
+		ArmWave:    pose.ArmWave,
+		CheekAlpha: pose.CheekAlpha,
+	}
+	hiRes := renderClawMatePetRaster(sz*renderScale, skin, scaledPose)
 	out := image.NewNRGBA(image.Rect(0, 0, sz, sz))
 	xdraw.CatmullRom.Scale(out, out.Bounds(), hiRes, hiRes.Bounds(), xdraw.Over, nil)
 	return out
 }
 
-func renderClawMatePetRaster(sz int, skin string) *image.NRGBA {
+func renderClawMatePetRaster(sz int, skin string, pose petFacePose) *image.NRGBA {
 	out := image.NewNRGBA(image.Rect(0, 0, sz, sz))
-	cx, cy := float64(sz)/2, float64(sz)*0.47
+	bodyCx := float64(sz) / 2
+	headCx := bodyCx + pose.HeadShiftX
+	headCy := float64(sz)*0.47 + pose.HeadShiftY
 	headR := float64(sz) * 0.31
 	bodyY := float64(sz) * 0.67
 	accent := color.NRGBA{R: 99, G: 102, B: 241, A: 245}
 	body := color.NRGBA{R: 111, G: 125, B: 92, A: 230}
+	bodyLine := color.NRGBA{R: 45, G: 55, B: 72, A: 235}
 	eye := color.NRGBA{R: 45, G: 55, B: 72, A: 255}
 	head := color.NRGBA{R: 248, G: 250, B: 252, A: 250}
+	headLine := color.NRGBA{R: 216, G: 222, B: 232, A: 245}
 	glow := color.NRGBA{R: 99, G: 102, B: 241, A: 0}
 
 	switch skin {
 	case "mini-claw":
 		accent = color.NRGBA{R: 37, G: 99, B: 235, A: 245}
 		body = color.NRGBA{R: 191, G: 219, B: 254, A: 235}
+		headLine = color.NRGBA{R: 155, G: 189, B: 246, A: 245}
+		bodyLine = color.NRGBA{R: 37, G: 99, B: 235, A: 235}
 		glow = color.NRGBA{R: 37, G: 99, B: 235, A: 0}
 		headR = float64(sz) * 0.34
 		bodyY = float64(sz) * 0.68
 	case "dev-claw":
 		accent = color.NRGBA{R: 34, G: 211, B: 238, A: 245}
 		body = color.NRGBA{R: 30, G: 41, B: 59, A: 240}
+		bodyLine = color.NRGBA{R: 96, G: 165, B: 250, A: 245}
 		eye = color.NRGBA{R: 15, G: 23, B: 42, A: 255}
+		headLine = color.NRGBA{R: 96, G: 165, B: 250, A: 245}
 		glow = color.NRGBA{R: 34, G: 211, B: 238, A: 0}
 	case "focus-claw":
 		accent = color.NRGBA{R: 95, G: 139, B: 104, A: 235}
 		body = color.NRGBA{R: 155, G: 184, B: 161, A: 225}
+		bodyLine = color.NRGBA{R: 51, G: 65, B: 85, A: 230}
 		eye = color.NRGBA{R: 51, G: 65, B: 85, A: 255}
 		head = color.NRGBA{R: 251, G: 253, B: 251, A: 248}
+		headLine = color.NRGBA{R: 155, G: 184, B: 161, A: 240}
 		glow = color.NRGBA{R: 95, G: 139, B: 104, A: 0}
 	default:
 		glow = color.NRGBA{R: 99, G: 102, B: 241, A: 0}
 	}
 
+	outline := math.Max(2, float64(sz)*0.012)
 	for y := 0; y < sz; y++ {
 		for x := 0; x < sz; x++ {
-			dx := float64(x) - cx
-			dy := float64(y) - cy
+			bodyDx := math.Abs(float64(x)-bodyCx) / (float64(sz) * 0.32)
+			bodyDy := math.Abs(float64(y)-bodyY) / (float64(sz) * 0.18)
+			bodyD := bodyDx*bodyDx + bodyDy*bodyDy
+			if bodyD <= 1.18 {
+				out.SetNRGBA(x, y, bodyLine)
+			}
+			if bodyD <= 1 {
+				out.SetNRGBA(x, y, body)
+			}
+
+			dx := float64(x) - headCx
+			dy := float64(y) - headCy
 			d := math.Sqrt(dx*dx + dy*dy)
-			if d < float64(sz)*0.48 && d > headR+2 {
-				alpha := uint8(math.Max(0, 80*(1-(d-headR)/(float64(sz)*0.18))))
+			if d < float64(sz)*0.5 && d > headR+outline {
+				alpha := uint8(math.Max(0, 92*(1-(d-headR)/(float64(sz)*0.2))))
 				glow.A = alpha
-				out.SetNRGBA(x, y, glow)
+				out.SetNRGBA(x, y, alphaOver(out.NRGBAAt(x, y), glow))
+			}
+			if d <= headR+outline {
+				out.SetNRGBA(x, y, headLine)
 			}
 			if d <= headR {
 				out.SetNRGBA(x, y, head)
 			}
-			bodyDx := math.Abs(float64(x)-cx) / (float64(sz) * 0.32)
-			bodyDy := math.Abs(float64(y)-bodyY) / (float64(sz) * 0.18)
-			if bodyDx*bodyDx+bodyDy*bodyDy <= 1 {
-				out.SetNRGBA(x, y, body)
-			}
 		}
 	}
 
-	drawCircle(out, int(cx-float64(sz)*0.12), int(cy-float64(sz)*0.04), int(float64(sz)*0.045), eye)
-	drawCircle(out, int(cx+float64(sz)*0.12), int(cy-float64(sz)*0.04), int(float64(sz)*0.045), eye)
-	drawCircle(out, int(cx-float64(sz)*0.105), int(cy-float64(sz)*0.055), int(float64(sz)*0.014), color.NRGBA{R: 255, G: 255, B: 255, A: 245})
-	drawCircle(out, int(cx+float64(sz)*0.135), int(cy-float64(sz)*0.055), int(float64(sz)*0.014), color.NRGBA{R: 255, G: 255, B: 255, A: 245})
-	drawLine(out, int(cx-float64(sz)*0.09), int(cy+float64(sz)*0.16), int(cx+float64(sz)*0.09), int(cy+float64(sz)*0.16), accent, int(math.Max(2, float64(sz)*0.035)))
-	drawLine(out, int(cx-float64(sz)*0.3), int(bodyY+float64(sz)*0.08), int(cx-float64(sz)*0.13), int(bodyY+float64(sz)*0.13), color.NRGBA{R: 45, G: 55, B: 72, A: 235}, int(math.Max(3, float64(sz)*0.045)))
-	drawLine(out, int(cx+float64(sz)*0.3), int(bodyY+float64(sz)*0.08), int(cx+float64(sz)*0.13), int(bodyY+float64(sz)*0.13), color.NRGBA{R: 45, G: 55, B: 72, A: 235}, int(math.Max(3, float64(sz)*0.045)))
-	drawLine(out, int(cx), int(cy-headR-float64(sz)*0.11), int(cx), int(cy-headR+float64(sz)*0.02), accent, int(math.Max(3, float64(sz)*0.04)))
-	drawLine(out, int(cx-float64(sz)*0.1), int(cy-headR-float64(sz)*0.06), int(cx+float64(sz)*0.1), int(cy-headR-float64(sz)*0.06), accent, int(math.Max(3, float64(sz)*0.04)))
+	eyeOpen := pose.EyeOpen
+	if eyeOpen <= 0 {
+		eyeOpen = 1
+	}
+	eyeOpen = math.Min(1, math.Max(0.08, eyeOpen))
+	leftEyeX, leftEyeY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.12+pose.EyeShiftX, headCy-float64(sz)*0.04+pose.EyeShiftY, pose.HeadTilt)
+	rightEyeX, rightEyeY := rotatePetPoint(headCx, headCy, headCx+float64(sz)*0.12+pose.EyeShiftX, headCy-float64(sz)*0.04+pose.EyeShiftY, pose.HeadTilt)
+	eyeRX := int(float64(sz) * 0.047)
+	eyeRY := int(math.Max(1, float64(eyeRX)*eyeOpen))
+	drawEllipse(out, int(leftEyeX), int(leftEyeY), eyeRX, eyeRY, eye)
+	drawEllipse(out, int(rightEyeX), int(rightEyeY), eyeRX, eyeRY, eye)
+	cheekAlpha := uint8(math.Min(120, math.Max(36, 52+pose.CheekAlpha*68)))
+	cheek := color.NRGBA{R: accent.R, G: accent.G, B: accent.B, A: cheekAlpha}
+	leftCheekX, leftCheekY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.205, headCy+float64(sz)*0.065, pose.HeadTilt)
+	rightCheekX, rightCheekY := rotatePetPoint(headCx, headCy, headCx+float64(sz)*0.205, headCy+float64(sz)*0.065, pose.HeadTilt)
+	drawEllipse(out, int(leftCheekX), int(leftCheekY), int(float64(sz)*0.035), int(float64(sz)*0.018), cheek)
+	drawEllipse(out, int(rightCheekX), int(rightCheekY), int(float64(sz)*0.035), int(float64(sz)*0.018), cheek)
+	if eyeOpen > 0.35 {
+		drawCircle(out, int(leftEyeX+float64(sz)*0.014), int(leftEyeY-float64(sz)*0.012), int(float64(sz)*0.013), color.NRGBA{R: 255, G: 255, B: 255, A: 245})
+		drawCircle(out, int(rightEyeX+float64(sz)*0.014), int(rightEyeY-float64(sz)*0.012), int(float64(sz)*0.013), color.NRGBA{R: 255, G: 255, B: 255, A: 245})
+	}
+	mouthY := headCy + float64(sz)*(0.15+0.026*pose.MouthOpen)
+	mouthHalf := float64(sz) * (0.075 + 0.018*pose.MouthOpen)
+	mouthHeight := int(math.Max(1, float64(sz)*(0.012+0.042*pose.MouthOpen)))
+	mouthLeftX, mouthLeftY := rotatePetPoint(headCx, headCy, headCx-mouthHalf, mouthY, pose.HeadTilt)
+	mouthRightX, mouthRightY := rotatePetPoint(headCx, headCy, headCx+mouthHalf, mouthY, pose.HeadTilt)
+	mouthCenterX, mouthCenterY := rotatePetPoint(headCx, headCy, headCx, mouthY, pose.HeadTilt)
+	if pose.MouthOpen > 0.22 {
+		drawEllipse(out, int(mouthCenterX), int(mouthCenterY), int(mouthHalf*0.82), mouthHeight, color.NRGBA{R: 45, G: 55, B: 72, A: 245})
+	}
+	drawLine(out, int(mouthLeftX), int(mouthLeftY), int(mouthRightX), int(mouthRightY), accent, int(math.Max(2, float64(sz)*0.028)))
+	armWave := pose.ArmWave * float64(sz) * 0.045
+	drawLine(out, int(bodyCx-float64(sz)*0.31), int(bodyY+float64(sz)*0.075-armWave), int(bodyCx-float64(sz)*0.13), int(bodyY+float64(sz)*0.13+armWave*0.35), bodyLine, int(math.Max(3, float64(sz)*0.047)))
+	drawLine(out, int(bodyCx+float64(sz)*0.31), int(bodyY+float64(sz)*0.075+armWave), int(bodyCx+float64(sz)*0.13), int(bodyY+float64(sz)*0.13-armWave*0.35), bodyLine, int(math.Max(3, float64(sz)*0.047)))
+	antBaseX, antBaseY := rotatePetPoint(headCx, headCy, headCx, headCy-headR+float64(sz)*0.02, pose.HeadTilt)
+	antTipX, antTipY := rotatePetPoint(headCx, headCy, headCx, headCy-headR-float64(sz)*0.11, pose.HeadTilt)
+	barLeftX, barLeftY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.1, headCy-headR-float64(sz)*0.06, pose.HeadTilt)
+	barRightX, barRightY := rotatePetPoint(headCx, headCy, headCx+float64(sz)*0.1, headCy-headR-float64(sz)*0.06, pose.HeadTilt)
+	drawLine(out, int(antTipX), int(antTipY), int(antBaseX), int(antBaseY), accent, int(math.Max(3, float64(sz)*0.04)))
+	drawLine(out, int(barLeftX), int(barLeftY), int(barRightX), int(barRightY), accent, int(math.Max(3, float64(sz)*0.04)))
 
 	switch skin {
 	case "mini-claw":
-		drawLine(out, int(cx-float64(sz)*0.22), int(bodyY+float64(sz)*0.18), int(cx+float64(sz)*0.22), int(bodyY+float64(sz)*0.18), accent, int(math.Max(3, float64(sz)*0.05)))
+		drawLine(out, int(bodyCx-float64(sz)*0.22), int(bodyY+float64(sz)*0.18), int(bodyCx+float64(sz)*0.22), int(bodyY+float64(sz)*0.18), accent, int(math.Max(3, float64(sz)*0.05)))
 	case "dev-claw":
-		drawLine(out, int(cx-float64(sz)*0.28), int(cy-float64(sz)*0.03), int(cx+float64(sz)*0.28), int(cy-float64(sz)*0.03), color.NRGBA{R: 15, G: 23, B: 42, A: 245}, int(math.Max(4, float64(sz)*0.08)))
-		drawLine(out, int(cx-float64(sz)*0.12), int(bodyY), int(cx-float64(sz)*0.03), int(bodyY+float64(sz)*0.07), accent, int(math.Max(2, float64(sz)*0.03)))
-		drawLine(out, int(cx+float64(sz)*0.12), int(bodyY), int(cx+float64(sz)*0.03), int(bodyY+float64(sz)*0.07), accent, int(math.Max(2, float64(sz)*0.03)))
+		visorLeftX, visorLeftY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.28, headCy-float64(sz)*0.03, pose.HeadTilt)
+		visorRightX, visorRightY := rotatePetPoint(headCx, headCy, headCx+float64(sz)*0.28, headCy-float64(sz)*0.03, pose.HeadTilt)
+		drawLine(out, int(visorLeftX), int(visorLeftY), int(visorRightX), int(visorRightY), color.NRGBA{R: 15, G: 23, B: 42, A: 245}, int(math.Max(4, float64(sz)*0.08)))
+		drawLine(out, int(bodyCx-float64(sz)*0.12), int(bodyY), int(bodyCx-float64(sz)*0.03), int(bodyY+float64(sz)*0.07), accent, int(math.Max(2, float64(sz)*0.03)))
+		drawLine(out, int(bodyCx+float64(sz)*0.12), int(bodyY), int(bodyCx+float64(sz)*0.03), int(bodyY+float64(sz)*0.07), accent, int(math.Max(2, float64(sz)*0.03)))
 	case "focus-claw":
-		drawLine(out, int(cx-float64(sz)*0.17), int(cy-float64(sz)*0.02), int(cx-float64(sz)*0.07), int(cy-float64(sz)*0.02), eye, int(math.Max(3, float64(sz)*0.04)))
-		drawLine(out, int(cx+float64(sz)*0.07), int(cy-float64(sz)*0.02), int(cx+float64(sz)*0.17), int(cy-float64(sz)*0.02), eye, int(math.Max(3, float64(sz)*0.04)))
+		browLeftAX, browLeftAY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.17, headCy-float64(sz)*0.02, pose.HeadTilt)
+		browLeftBX, browLeftBY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.07, headCy-float64(sz)*0.02, pose.HeadTilt)
+		browRightAX, browRightAY := rotatePetPoint(headCx, headCy, headCx+float64(sz)*0.07, headCy-float64(sz)*0.02, pose.HeadTilt)
+		browRightBX, browRightBY := rotatePetPoint(headCx, headCy, headCx+float64(sz)*0.17, headCy-float64(sz)*0.02, pose.HeadTilt)
+		drawLine(out, int(browLeftAX), int(browLeftAY), int(browLeftBX), int(browLeftBY), eye, int(math.Max(3, float64(sz)*0.04)))
+		drawLine(out, int(browRightAX), int(browRightAY), int(browRightBX), int(browRightBY), eye, int(math.Max(3, float64(sz)*0.04)))
 	}
 	return out
 }
@@ -600,6 +704,39 @@ func drawCircle(img *image.NRGBA, cx, cy, r int, c color.NRGBA) {
 	}
 }
 
+func drawEllipse(img *image.NRGBA, cx, cy, rx, ry int, c color.NRGBA) {
+	if rx <= 0 || ry <= 0 {
+		return
+	}
+	b := img.Bounds()
+	rx2 := float64(rx * rx)
+	ry2 := float64(ry * ry)
+	for y := cy - ry; y <= cy+ry; y++ {
+		if y < b.Min.Y || y >= b.Max.Y {
+			continue
+		}
+		for x := cx - rx; x <= cx+rx; x++ {
+			if x < b.Min.X || x >= b.Max.X {
+				continue
+			}
+			dx := float64((x - cx) * (x - cx))
+			dy := float64((y - cy) * (y - cy))
+			if dx/rx2+dy/ry2 <= 1 {
+				img.SetNRGBA(x, y, c)
+			}
+		}
+	}
+}
+
+func rotatePetPoint(cx, cy, x, y, radians float64) (float64, float64) {
+	if radians == 0 {
+		return x, y
+	}
+	sin, cos := math.Sin(radians), math.Cos(radians)
+	dx, dy := x-cx, y-cy
+	return cx + dx*cos - dy*sin, cy + dx*sin + dy*cos
+}
+
 func drawLine(img *image.NRGBA, x0, y0, x1, y1 int, c color.NRGBA, width int) {
 	dx := float64(x1 - x0)
 	dy := float64(y1 - y0)
@@ -616,6 +753,113 @@ func drawLine(img *image.NRGBA, x0, y0, x1, y1 int, c color.NRGBA, width int) {
 	}
 }
 
+func petFacePoseForPhase(phase float64, interactionMode string) petFacePose {
+	look := math.Sin(phase)
+	nod := math.Sin(phase*2 + math.Pi/6)
+	blink := 0.5 + 0.5*math.Sin(phase*3)
+	mouth := 0.5 + 0.5*math.Sin(phase*4+math.Pi/3)
+	arm := math.Sin(phase*2 + math.Pi/8)
+	headShift := 2.4 * look
+	headLift := 0.9 * nod
+	headTilt := 0.055 * look
+	eyeShiftX := 2.7 * look
+	eyeShiftY := 0.7 * math.Sin(phase*2+math.Pi/4)
+	eyeOpen := 1.0
+	mouthOpen := math.Max(0, mouth-0.38) / 0.62
+	cheekAlpha := 0.35 + 0.65*mouthOpen
+	if blink > 0.965 {
+		eyeOpen = 0.1
+		eyeShiftY += 0.9
+	} else if blink > 0.92 {
+		eyeOpen = 0.45
+	}
+
+	switch interactionMode {
+	case "active":
+		headShift *= 1.45
+		headLift *= 1.3
+		headTilt *= 1.55
+		eyeShiftX *= 1.35
+		eyeShiftY *= 1.25
+		mouthOpen = math.Max(mouthOpen, 0.18+0.45*(0.5+0.5*math.Sin(phase*3.2)))
+		arm *= 1.35
+		cheekAlpha = math.Max(cheekAlpha, 0.8)
+	case "quiet":
+		headShift *= 0.45
+		headLift *= 0.45
+		headTilt *= 0.45
+		eyeShiftX *= 0.45
+		eyeShiftY *= 0.45
+		mouthOpen *= 0.35
+		arm *= 0.35
+		cheekAlpha *= 0.55
+	}
+
+	return petFacePose{
+		HeadShiftX: headShift,
+		HeadShiftY: headLift,
+		HeadTilt:   headTilt,
+		EyeShiftX:  eyeShiftX,
+		EyeShiftY:  eyeShiftY,
+		EyeOpen:    eyeOpen,
+		MouthOpen:  math.Min(1, math.Max(0, mouthOpen)),
+		ArmWave:    math.Min(1, math.Max(-1, arm)),
+		CheekAlpha: math.Min(1, math.Max(0, cheekAlpha)),
+	}
+}
+
+func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, interactionMode string, phase float64) *image.NRGBA {
+	if skin == "" {
+		skin = "clawmate"
+	}
+	if interactionMode == "" {
+		interactionMode = "balanced"
+	}
+	phase = math.Mod(phase, 2*math.Pi)
+	if phase < 0 {
+		phase += 2 * math.Pi
+	}
+	bucket := int(math.Round(phase/(2*math.Pi)*petAnimationFrameBuckets)) % petAnimationFrameBuckets
+	key := petFrameCacheKey{Size: sz, Skin: skin, Mode: interactionMode, Bucket: bucket}
+
+	w.mu.Lock()
+	if frame := w.petFrameCache[key]; frame != nil {
+		w.mu.Unlock()
+		return frame
+	}
+	w.mu.Unlock()
+
+	bucketPhase := float64(bucket) / float64(petAnimationFrameBuckets) * 2 * math.Pi
+	frame := renderClawMatePetWithPose(sz, skin, petFacePoseForPhase(bucketPhase, interactionMode))
+
+	w.mu.Lock()
+	if w.petFrameCache == nil || len(w.petFrameCache) > petAnimationFrameBuckets*6 {
+		w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
+	}
+	if cached := w.petFrameCache[key]; cached != nil {
+		w.mu.Unlock()
+		return cached
+	}
+	w.petFrameCache[key] = frame
+	w.mu.Unlock()
+	return frame
+}
+
+func playPetMotionSound(interactionMode string) {
+	go func() {
+		switch interactionMode {
+		case "active":
+			procBeep.Call(1047, 18)
+			procBeep.Call(1319, 22)
+		case "quiet":
+			return
+		default:
+			procBeep.Call(880, 18)
+			procBeep.Call(1175, 20)
+		}
+	}()
+}
+
 // renderFrame composites the base image with the current halo animation phase
 // and pushes it to the layered window via UpdateLayeredWindow.
 func (w *windowsFloatingWindow) renderFrame() {
@@ -626,9 +870,22 @@ func (w *windowsFloatingWindow) renderFrame() {
 	distMap := w.distMap
 	petEnabled := w.petEnabled
 	petMotionEnabled := w.petMotionEnabled
+	petMotionSound := w.petMotionSound
+	playPetSound := false
+	if hwnd != 0 && base != nil && distMap != nil && w.petEnabled && w.petMotionEnabled && petMotionSound && !w.petQuietMode {
+		bucket := int(math.Floor(w.haloPhase/(2*math.Pi)*4)) % 4
+		if bucket != w.lastPetSoundBucket {
+			w.lastPetSoundBucket = bucket
+			playPetSound = bucket == 0 || (w.petInteractionMode == "active" && bucket == 2)
+		}
+	}
 	petQuietMode := w.petQuietMode
 	petInteractionMode := w.petInteractionMode
+	petSkin := w.petSkin
 	w.mu.Unlock()
+	if playPetSound {
+		playPetMotionSound(petInteractionMode)
+	}
 
 	if hwnd == 0 || base == nil || distMap == nil {
 		return
@@ -646,7 +903,8 @@ func (w *windowsFloatingWindow) renderFrame() {
 			petScale = 1.0 + 0.01*math.Sin(phase*0.75)
 			petYOffset = math.Sin(phase*0.75+math.Pi/5) * float64(sz) * 0.006
 		}
-		renderAnimatedPetFrame(frame, base, petScale, petYOffset)
+		petFrame := w.cachedPetFrame(sz, petSkin, petInteractionMode, phase)
+		renderAnimatedPetFrame(frame, petFrame, petScale, petYOffset)
 	} else {
 		copy(frame.Pix, base.Pix)
 	}
@@ -782,7 +1040,7 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	case wmTimer:
 		if w != nil && wParam == timerIdHalo {
 			w.mu.Lock()
-			w.haloPhase += 0.15 // ~3s full cycle at 20fps
+			w.haloPhase += 0.15 // ~2s full cycle at 20fps
 			if w.haloPhase > 2*math.Pi {
 				w.haloPhase -= 2 * math.Pi
 			}
@@ -865,6 +1123,21 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		if hMenu == 0 {
 			break
 		}
+		petMenuEnabled := false
+		soundEnabled := true
+		w.mu.Lock()
+		petMenuEnabled = w.petEnabled
+		soundEnabled = w.petMotionSound
+		w.mu.Unlock()
+		if petMenuEnabled {
+			soundTextValue := "\u5f00\u542f\u52a8\u6548\u97f3\u6548"
+			if soundEnabled {
+				soundTextValue = "\u5173\u95ed\u52a8\u6548\u97f3\u6548"
+			}
+			soundText, _ := syscall.UTF16PtrFromString(soundTextValue)
+			procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdPetMotionSound), uintptr(unsafe.Pointer(soundText)))
+			procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
+		}
 		hideText, _ := syscall.UTF16PtrFromString("\u9690\u85cf")
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdHide), uintptr(unsafe.Pointer(hideText)))
 		procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
@@ -873,7 +1146,26 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		procSetForegroundWindow.Call(hwnd)
 		cmd, _, _ := procTrackPopupMenu.Call(hMenu, uintptr(tpmReturncmd), uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
 		procDestroyMenu.Call(hMenu)
-		if cmd == menuIdHide {
+		if cmd == menuIdPetMotionSound {
+			go func() {
+				if w.app == nil {
+					return
+				}
+				cfg, err := w.app.LoadConfig()
+				if err != nil {
+					return
+				}
+				next := !petMotionSoundEnabled(cfg)
+				cfg.PetMotionSound = &next
+				if err := w.app.SaveConfig(cfg); err != nil {
+					return
+				}
+				w.mu.Lock()
+				w.petMotionSound = next
+				w.lastPetSoundBucket = -1
+				w.mu.Unlock()
+			}()
+		} else if cmd == menuIdHide {
 			go func() {
 				if w.app != nil {
 					w.app.HideFloatingButton()

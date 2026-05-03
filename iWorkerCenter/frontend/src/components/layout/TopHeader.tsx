@@ -13,7 +13,7 @@ export function TopHeader({ title, subtitle }: Props) {
       </div>
       <div className="center-top-actions">
         <span className="badge ok">已连接</span>
-        <button type="button" className="ghost">刷新数据</button>
+        <button type="button" className="ghost" onClick={() => window.location.reload()}>刷新数据</button>
       </div>
     </header>
   );

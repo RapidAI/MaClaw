@@ -1,10 +1,10 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/config"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"strconv"
 	"strings"
 )
@@ -598,12 +598,6 @@ func (m *ConfigManager) applyRemoteChange(cfg *corelib.AppConfig, key, value str
 	case "remote_enabled":
 		old := fmt.Sprintf("%v", cfg.RemoteEnabled)
 		cfg.RemoteEnabled = strings.EqualFold(value, "true")
-		// Keep default_launch_mode in sync with remote_enabled.
-		if cfg.RemoteEnabled {
-			cfg.DefaultLaunchMode = "remote"
-		} else {
-			cfg.DefaultLaunchMode = "local"
-		}
 		return old, nil
 	case "remote_hub_url":
 		old := cfg.RemoteHubURL
@@ -624,8 +618,6 @@ func (m *ConfigManager) applyRemoteChange(cfg *corelib.AppConfig, key, value str
 	case "default_launch_mode":
 		old := cfg.DefaultLaunchMode
 		cfg.DefaultLaunchMode = value
-		// Keep remote_enabled in sync with default_launch_mode.
-		cfg.RemoteEnabled = (value == "remote")
 		return old, nil
 	}
 	return "", fmt.Errorf("unsupported remote key %q", key)
@@ -892,7 +884,6 @@ func (m *ConfigManager) initSchema() {
 		},
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Helpers used by other packages (e.g. tests) to serialise schema to JSON.

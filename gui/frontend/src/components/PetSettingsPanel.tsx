@@ -405,6 +405,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                     <div className="pet-toggle-grid">
                         {[
                             ['pet_motion_enabled', text(lang, '\u52a8\u4f5c\u52a8\u753b', '\u52d5\u4f5c\u52d5\u756b', 'Motion')],
+                            ['pet_motion_sound_enabled', text(lang, '\u52a8\u6548\u97f3\u6548', '\u52d5\u6548\u97f3\u6548', 'Motion SFX')],
                             ['pet_text_interaction_enabled', text(lang, '\u6587\u5b57\u4ea4\u6d41', '\u6587\u5b57\u4ea4\u6d41', 'Text Chat')],
                             ['pet_voice_input_enabled', text(lang, '\u8bed\u97f3\u8f93\u5165', '\u8a9e\u97f3\u8f38\u5165', 'Voice Input')],
                             ['pet_voice_readback_enabled', text(lang, '\u8bed\u97f3\u64ad\u62a5', '\u8a9e\u97f3\u64ad\u5831', 'Voice Readback')],
@@ -414,7 +415,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                             <label key={key} className="pet-toggle-item">
                                 <input
                                     type="checkbox"
-                                    checked={key === 'pet_motion_enabled' || key === 'pet_text_interaction_enabled' || key === 'pet_file_drop_enabled'
+                                    checked={key === 'pet_motion_enabled' || key === 'pet_motion_sound_enabled' || key === 'pet_text_interaction_enabled' || key === 'pet_file_drop_enabled'
                                         ? (config as any)[key] !== false
                                         : !!(config as any)[key]}
                                     onChange={(event) => updatePetConfig({ [key]: event.target.checked })}

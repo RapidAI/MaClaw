@@ -290,6 +290,9 @@ func (p *FeishuPlugin) SendVoice(ctx context.Context, target im.UserTarget, voic
 			return fmt.Errorf("feishu: voice base64 decode failed: %w", err)
 		}
 	}
+	if !isOggOpus(raw) {
+		return fmt.Errorf("feishu: voice payload must be OGG Opus")
+	}
 	return p.SendAudio(ctx, target, raw)
 }
 

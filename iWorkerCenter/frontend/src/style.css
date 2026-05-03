@@ -421,6 +421,65 @@ label {
   margin-bottom: 18px;
 }
 
+.cloud-status-grid-wide {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cloud-step-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 4px 0 16px;
+}
+
+.cloud-step {
+  min-height: 112px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfcfd;
+}
+
+.cloud-step span {
+  display: inline-flex;
+  margin-bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: #fff;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.cloud-step strong {
+  display: block;
+  color: #5b6470;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.cloud-step p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.cloud-step.is-done {
+  background: rgba(35, 162, 109, 0.06);
+  border-color: rgba(35, 162, 109, 0.16);
+}
+
+.cloud-step.is-done span {
+  color: var(--ok);
+  border-color: rgba(35, 162, 109, 0.18);
+}
+
+.cloud-step.is-pending {
+  background: rgba(194, 139, 44, 0.06);
+  border-color: rgba(194, 139, 44, 0.16);
+}
+
 .cloud-status-tile {
   min-height: 88px;
   padding: 16px;
@@ -566,6 +625,7 @@ textarea:focus {
   .metric-grid,
   .panel-grid,
   .cloud-status-grid,
+  .cloud-step-list,
   .cloud-form-grid {
     grid-template-columns: 1fr;
   }

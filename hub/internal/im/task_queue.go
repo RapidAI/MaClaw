@@ -25,6 +25,7 @@ type IMTask struct {
 	UserID       string
 	PlatformName string
 	PlatformUID  string
+	MessageType  string
 	Text         string
 	Attachments  []MessageAttachment
 	EnqueuedAt   time.Time
@@ -42,7 +43,7 @@ type userQueue struct {
 	mu       sync.Mutex
 	tasks    []*IMTask
 	capacity int
-	running  bool       // true when the worker is processing a task
+	running  bool          // true when the worker is processing a task
 	notify   chan struct{} // signals the worker that a new task is available
 	stopCh   chan struct{}
 	stopped  bool

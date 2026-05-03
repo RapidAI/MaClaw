@@ -136,9 +136,9 @@ type MessageRouter struct {
 	progressDelivery ProgressDeliveryFunc
 	responseDelivery ResponseDeliveryFunc
 	conductor        *DiscussionConductor // optional; nil = mechanical rounds
-	llmSem           *LLMSemaphore       // global LLM concurrency limiter (legacy/fallback)
-	llmSemGUI        *LLMSemaphore       // GUI-originated LLM concurrency limiter
-	llmSemIM         *LLMSemaphore       // IM-originated LLM concurrency limiter
+	llmSem           *LLMSemaphore        // global LLM concurrency limiter (legacy/fallback)
+	llmSemGUI        *LLMSemaphore        // GUI-originated LLM concurrency limiter
+	llmSemIM         *LLMSemaphore        // IM-originated LLM concurrency limiter
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingIMRequest // requestID → pending
@@ -152,6 +152,10 @@ type MessageRouter struct {
 	// RouteToAgent, consumed by routeToSingleMachine. Protected by mu.
 	pendingAttachments map[string][]MessageAttachment
 
+	// pendingMessageTypes temporarily holds the structural input modality for
+	// the current message being routed. Key: userID.
+	pendingMessageTypes map[string]string
+
 	// discussions tracks active /discuss sessions per user. Protected by mu.
 	discussions map[string]*DiscussionState
 
@@ -162,15 +166,16 @@ type MessageRouter struct {
 // NewMessageRouter creates a MessageRouter with the given device finder.
 func NewMessageRouter(devices DeviceFinder) *MessageRouter {
 	r := &MessageRouter{
-		devices:            devices,
-		pendingReqs:        make(map[string]*PendingIMRequest),
-		selectedMachine:    make(map[string]string),
-		pendingAttachments: make(map[string][]MessageAttachment),
-		discussions:        make(map[string]*DiscussionState),
-		llmSem:             NewLLMSemaphore(DefaultMaxConcurrent),
-		llmSemGUI:          NewLLMSemaphore(DefaultMaxConcurrentGUI),
-		llmSemIM:           NewLLMSemaphore(DefaultMaxConcurrentIM),
-		stopCh:             make(chan struct{}),
+		devices:             devices,
+		pendingReqs:         make(map[string]*PendingIMRequest),
+		selectedMachine:     make(map[string]string),
+		pendingAttachments:  make(map[string][]MessageAttachment),
+		pendingMessageTypes: make(map[string]string),
+		discussions:         make(map[string]*DiscussionState),
+		llmSem:              NewLLMSemaphore(DefaultMaxConcurrent),
+		llmSemGUI:           NewLLMSemaphore(DefaultMaxConcurrentGUI),
+		llmSemIM:            NewLLMSemaphore(DefaultMaxConcurrentIM),
+		stopCh:              make(chan struct{}),
 	}
 	go r.cleanupLoop()
 	return r
@@ -195,6 +200,26 @@ func (r *MessageRouter) popAttachments(userID string) []MessageAttachment {
 	delete(r.pendingAttachments, userID)
 	r.mu.Unlock()
 	return att
+}
+
+// StashMessageType stores the structural input modality for the current routed message.
+func (r *MessageRouter) StashMessageType(userID, messageType string) {
+	if messageType == "" {
+		messageType = "text"
+	}
+	r.mu.Lock()
+	r.pendingMessageTypes[userID] = messageType
+	r.mu.Unlock()
+}
+
+func (r *MessageRouter) currentMessageType(userID string) string {
+	r.mu.Lock()
+	messageType := r.pendingMessageTypes[userID]
+	r.mu.Unlock()
+	if messageType == "" {
+		return "text"
+	}
+	return messageType
 }
 
 // LLMSemaphore returns the shared LLM concurrency semaphore so that
@@ -562,10 +587,11 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 		"request_id": requestID,
 		"ts":         time.Now().Unix(),
 		"payload": map[string]interface{}{
-			"user_id":  userID,
-			"platform": platformName,
-			"text":     text,
-			"lang":     "zh",
+			"user_id":      userID,
+			"platform":     platformName,
+			"message_type": r.currentMessageType(userID),
+			"text":         text,
+			"lang":         "zh",
 		},
 	}
 	if len(attachments) > 0 {

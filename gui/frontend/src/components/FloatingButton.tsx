@@ -31,6 +31,7 @@ declare global {
                     HideFloatingButton(): Promise<void>;
                     QuitApp(): Promise<void>;
                     LoadConfig(): Promise<Record<string, unknown>>;
+                    SaveConfig(config: Record<string, unknown>): Promise<void>;
                 };
             };
         };
@@ -71,6 +72,7 @@ interface FloatingPetConfig {
     petSkin: PetSkinId;
     petSize: number;
     motionEnabled: boolean;
+    motionSoundEnabled: boolean;
     quietMode: boolean;
     interactionMode: PetInteractionMode;
 }
@@ -80,6 +82,7 @@ const defaultPetConfig: FloatingPetConfig = {
     petSkin: defaultPetSkinId,
     petSize: defaultPetSize,
     motionEnabled: true,
+    motionSoundEnabled: true,
     quietMode: false,
     interactionMode: 'balanced',
 };
@@ -106,6 +109,7 @@ function readPetConfig(cfg: Record<string, unknown>): FloatingPetConfig {
         petSkin: normalizePetSkinId(cfg.pet_skin),
         petSize: clampPetSize(cfg.pet_size),
         motionEnabled: cfg.pet_motion_enabled !== false,
+        motionSoundEnabled: cfg.pet_motion_sound_enabled !== false,
         quietMode: !!cfg.pet_quiet_mode,
         interactionMode: normalizeInteractionMode(cfg.pet_interaction_mode),
     };
@@ -127,6 +131,17 @@ export function FloatingButton() {
         isDragging: false,
         rafId: 0,
     });
+    const audioCtxRef = useRef<AudioContext | null>(null);
+
+    useEffect(() => {
+        return () => {
+            const ctx = audioCtxRef.current;
+            audioCtxRef.current = null;
+            if (ctx && ctx.state !== 'closed') {
+                void ctx.close().catch((err) => console.warn('[FloatingButton] Close pet audio failed:', err));
+            }
+        };
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -196,6 +211,53 @@ export function FloatingButton() {
         return () => window.clearInterval(timer);
     }, [petConfig.petEnabled, petConfig.quietMode, petConfig.motionEnabled, petState]);
 
+    const playPetMotionSound = useCallback(() => {
+        try {
+            const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+            if (!AudioContextCtor) return;
+            const ctx = audioCtxRef.current ?? new AudioContextCtor();
+            audioCtxRef.current = ctx;
+            if (ctx.state === 'suspended') {
+                void ctx.resume();
+                return;
+            }
+            const now = ctx.currentTime;
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(0.0001, now);
+            gain.gain.exponentialRampToValueAtTime(petConfig.interactionMode === 'active' ? 0.035 : 0.024, now + 0.012);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+            gain.connect(ctx.destination);
+
+            const first = ctx.createOscillator();
+            const second = ctx.createOscillator();
+            first.type = 'sine';
+            second.type = 'triangle';
+            first.frequency.setValueAtTime(petConfig.interactionMode === 'active' ? 980 : 760, now);
+            first.frequency.exponentialRampToValueAtTime(petConfig.interactionMode === 'active' ? 1280 : 960, now + 0.05);
+            second.frequency.setValueAtTime(petConfig.interactionMode === 'active' ? 1460 : 1120, now + 0.045);
+            first.connect(gain);
+            second.connect(gain);
+            first.start(now);
+            first.stop(now + 0.07);
+            second.start(now + 0.045);
+            second.stop(now + 0.1);
+            second.onended = () => {
+                first.disconnect();
+                second.disconnect();
+                gain.disconnect();
+            };
+        } catch (err) {
+            console.warn('[FloatingButton] Pet motion sound failed:', err);
+        }
+    }, [petConfig.interactionMode]);
+
+    useEffect(() => {
+        if (!petConfig.petEnabled || petConfig.quietMode || !petConfig.motionEnabled || !petConfig.motionSoundEnabled) return;
+        const intervalMs = petConfig.interactionMode === 'active' ? 1400 : 2200;
+        const timer = window.setInterval(playPetMotionSound, intervalMs);
+        return () => window.clearInterval(timer);
+    }, [petConfig.petEnabled, petConfig.quietMode, petConfig.motionEnabled, petConfig.motionSoundEnabled, petConfig.interactionMode, playPetMotionSound]);
+
     // Left-click / drag handling
 
     const handleMouseDown = useCallback((e: ReactMouseEvent) => {
@@ -263,6 +325,21 @@ export function FloatingButton() {
         e.stopPropagation();
         setMenuPos({ x: e.clientX, y: e.clientY });
         setShowMenu(true);
+    }, []);
+
+    const handleToggleMotionSound = useCallback(async () => {
+        setShowMenu(false);
+        try {
+            const app = window.go?.main?.App;
+            const cfg = await app?.LoadConfig?.();
+            if (!cfg || !app?.SaveConfig) return;
+            const next = cfg.pet_motion_sound_enabled === false;
+            const nextConfig = { ...cfg, pet_motion_sound_enabled: next };
+            await app.SaveConfig(nextConfig);
+            setPetConfig(readPetConfig(nextConfig));
+        } catch (err) {
+            console.warn('[FloatingButton] Toggle pet motion sound failed:', err);
+        }
     }, []);
 
     const handleHide = useCallback(() => {
@@ -335,6 +412,15 @@ export function FloatingButton() {
                     className="floating-context-menu"
                     style={{ top: menuPos.y, left: menuPos.x }}
                 >
+                    {petConfig.petEnabled && (
+                        <>
+                            <div
+                                className="floating-context-menu-item"
+                                onClick={handleToggleMotionSound}
+                            >{petConfig.motionSoundEnabled ? "\u5173\u95ed\u52a8\u6548\u97f3\u6548" : "\u5f00\u542f\u52a8\u6548\u97f3\u6548"}</div>
+                            <div className="floating-context-menu-separator" />
+                        </>
+                    )}
                     <div
                         className="floating-context-menu-item"
                         onClick={handleHide}

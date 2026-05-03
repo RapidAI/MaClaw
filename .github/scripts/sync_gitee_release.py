@@ -26,21 +26,35 @@ ASSETS_DIR = pathlib.Path(os.environ.get("RELEASE_ASSETS_DIR", "artifacts"))
 API = f"https://gitee.com/api/v5/repos/{OWNER}/{REPO}"
 
 
-def api_url(path, params=None):
-    query = {"access_token": TOKEN}
+def log(message):
+    print(f"[gitee-release-sync] {message}")
+
+
+def api_url(path, params=None, include_token=True):
+    query = {"access_token": TOKEN} if include_token else {}
     if params:
         query.update(params)
-    return f"{API}{path}?{urllib.parse.urlencode(query)}"
+    suffix = f"?{urllib.parse.urlencode(query)}" if query else ""
+    return f"{API}{path}{suffix}"
 
 
 def request_json(method, path, data=None, headers=None, ok=(200, 201, 204), params=None):
     body = None
+    include_token_in_url = method == "GET"
+    log(f"{method} {path} params={params or {}} data_keys={sorted((data or {}).keys())}")
     if data is not None:
+        data = {"access_token": TOKEN, **data}
         body = urllib.parse.urlencode(data).encode("utf-8")
-    req = urllib.request.Request(api_url(path, params), data=body, method=method, headers=headers or {})
+    req = urllib.request.Request(
+        api_url(path, params, include_token=include_token_in_url),
+        data=body,
+        method=method,
+        headers=headers or {},
+    )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             payload = resp.read().decode("utf-8")
+            log(f"{method} {path} -> HTTP {resp.status} bytes={len(payload)}")
             if resp.status not in ok:
                 raise RuntimeError(f"{method} {path} failed: {resp.status} {payload}")
             return json.loads(payload) if payload else None
@@ -54,9 +68,11 @@ def request_json(method, path, data=None, headers=None, ok=(200, 201, 204), para
 def list_release_by_tag():
     page = 1
     while True:
+        log(f"search release tag={TAG} page={page}")
         releases = request_json("GET", "/releases", params={"per_page": 100, "page": page}) or []
         for release in releases:
             if release.get("tag_name") == TAG:
+                log(f"found release by list id={release.get('id')} tag={release.get('tag_name')}")
                 return release
         if len(releases) < 100:
             return None
@@ -67,14 +83,17 @@ def get_release_by_tag():
     try:
         release = request_json("GET", f"/releases/tags/{urllib.parse.quote(TAG, safe='')}")
         if release:
+            log(f"found release by tag id={release.get('id')} tag={release.get('tag_name')}")
             return release
     except RuntimeError as exc:
         if "failed: 404" not in str(exc):
             raise
+        log(f"release tag={TAG} not found by direct lookup; falling back to list")
     return list_release_by_tag()
 
 
 def create_release():
+    log(f"creating release tag={TAG} target={TARGET} name={NAME} prerelease={PRERELEASE}")
     return request_json(
         "POST",
         "/releases",
@@ -98,21 +117,34 @@ def attachment_names(release):
     return names
 
 
+def multipart_field(boundary, name, value):
+    return (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+        f"{value}\r\n"
+    ).encode("utf-8")
+
+
+def multipart_file(boundary, field_name, file_path):
+    mime = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    return (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{field_name}"; filename="{file_path.name}"\r\n'
+        f"Content-Type: {mime}\r\n\r\n"
+    ).encode("utf-8") + file_path.read_bytes() + b"\r\n"
+
+
 def multipart_upload(path, file_path):
     boundary = "----gitee-release-" + uuid.uuid4().hex
-    mime = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-    head = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
-        f"Content-Type: {mime}\r\n\r\n"
-    ).encode("utf-8")
-    tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
-    body = head + file_path.read_bytes() + tail
+    tail = f"--{boundary}--\r\n".encode("utf-8")
+    body = multipart_field(boundary, "access_token", TOKEN) + multipart_file(boundary, "file", file_path) + tail
     headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-    req = urllib.request.Request(api_url(path), data=body, method="POST", headers=headers)
+    log(f"upload {file_path.name} size={file_path.stat().st_size} path={path}")
+    req = urllib.request.Request(api_url(path, include_token=False), data=body, method="POST", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
             payload = resp.read().decode("utf-8")
+            log(f"upload {file_path.name} -> HTTP {resp.status} bytes={len(payload)}")
             if resp.status not in (200, 201):
                 raise RuntimeError(f"upload failed: {resp.status} {payload}")
             return json.loads(payload) if payload else None
@@ -122,16 +154,19 @@ def multipart_upload(path, file_path):
 
 
 def main():
+    log(f"repo={OWNER}/{REPO} target={TARGET} tag={TAG} assets_dir={ASSETS_DIR}")
     if not ASSETS_DIR.exists():
         raise RuntimeError(f"assets directory not found: {ASSETS_DIR}")
 
     assets = sorted(path for path in ASSETS_DIR.iterdir() if path.is_file())
     if not assets:
         raise RuntimeError(f"no release assets found in {ASSETS_DIR}")
+    log("assets=" + ", ".join(f"{asset.name}({asset.stat().st_size} bytes)" for asset in assets))
 
     release = get_release_by_tag() or create_release()
     release_id = release["id"]
     existing = attachment_names(release)
+    log(f"using release id={release_id} existing_assets={sorted(existing)}")
 
     uploaded = 0
     skipped = 0

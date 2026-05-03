@@ -237,7 +237,7 @@ describe('useRemotePanel provider sync', () => {
         const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
         expect(savedConfig.codex.current_model).toBe('Original');
         expect(savedConfig.default_launch_mode).toBe('remote');
-        expect(savedConfig.remote_enabled).toBe(true);
+        expect(savedConfig.remote_enabled).toBe(false);
     });
 
     it('preserves pending default launch mode when saving another remote field', async () => {
@@ -275,7 +275,7 @@ describe('useRemotePanel provider sync', () => {
         const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
         expect(savedConfig.remote_email).toBe('new@example.com');
         expect(savedConfig.default_launch_mode).toBe('remote');
-        expect(savedConfig.remote_enabled).toBe(true);
+        expect(savedConfig.remote_enabled).toBe(false);
     });
 
     it('leaves default launch mode untouched when no pending mode exists', async () => {
@@ -315,7 +315,7 @@ describe('useRemotePanel provider sync', () => {
         expect(savedConfig.remote_enabled).toBe(false);
     });
 
-    it('keeps remote_enabled and default_launch_mode synchronized when saving remote mode directly', async () => {
+    it('does not change default_launch_mode when saving remote_enabled directly', async () => {
         loadConfigMock.mockResolvedValue(buildConfig({
             default_launch_mode: 'local',
             remote_enabled: false,
@@ -345,10 +345,10 @@ describe('useRemotePanel provider sync', () => {
 
         const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
         expect(savedConfig.remote_enabled).toBe(true);
-        expect(savedConfig.default_launch_mode).toBe('remote');
+        expect(savedConfig.default_launch_mode).toBe('local');
     });
 
-    it('normalizes conflicting launch mode fields using default_launch_mode as canonical', async () => {
+    it('preserves explicitly supplied launch mode and remote enabled independently', async () => {
         loadConfigMock.mockResolvedValue(buildConfig({
             default_launch_mode: 'remote',
             remote_enabled: true,
@@ -378,6 +378,6 @@ describe('useRemotePanel provider sync', () => {
 
         const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
         expect(savedConfig.default_launch_mode).toBe('local');
-        expect(savedConfig.remote_enabled).toBe(false);
+        expect(savedConfig.remote_enabled).toBe(true);
     });
 });
