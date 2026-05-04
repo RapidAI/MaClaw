@@ -62,8 +62,8 @@ export function MemoryHealthDialog({ open, onClose, t }: Props) {
         <div className="modal-backdrop" onClick={onClose}>
             <div className="modal-content" onClick={e => e.stopPropagation()} style={{ width: '480px', maxHeight: '80vh', overflow: 'auto' }}>
                 <div className="modal-header">
-                    <h3 style={{ fontSize: '0.92rem', margin: 0 }}>🧠 {t('memoryHealthTitle')}</h3>
-                    <button className="btn-close" onClick={onClose}>×</button>
+                    <h3 style={{ fontSize: '0.92rem', margin: 0 }}>{"\u{1F9E0}"} {t('memoryHealthTitle')}</h3>
+                    <button className="btn-close" onClick={onClose}>{"\u00d7"}</button>
                 </div>
                 <div className="modal-body" style={{ padding: '12px 16px' }}>
                     {loading && <p style={{ color: 'var(--theme-text-secondary)', fontSize: '0.8rem' }}>{t('loading')}...</p>}
@@ -118,7 +118,7 @@ export function MemoryHealthDialog({ open, onClose, t }: Props) {
                                         <td style={labelStyle}>{t('memHealthEmbedder')}</td>
                                         <td style={valueStyle}>
                                             <span style={{ color: report.embedder_active ? '#27ae60' : '#e74c3c' }}>
-                                                {report.embedder_active ? '✓ Active' : '✗ Inactive'}
+                                                {report.embedder_active ? '\u2713 Active' : '\u2717 Inactive'}
                                             </span>
                                         </td>
                                     </tr>

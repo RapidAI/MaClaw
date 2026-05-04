@@ -2,7 +2,7 @@ import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { LoadConfig, RestartTelegram, SetTelegramLocalMode } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
-import { channelModeLabel, connectionBadgeStyle, connectionStatusLabel, localModeOptions, pillButtonStyle, restartLabel, switchFailedLabel, textForLang } from './imSettingsShared';
+import { channelModeLabel, connectionBadgeStyle, connectionStatusLabel, localModeOptions, pillButtonStyle, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 
 type TelegramBotSettingsProps = {
     config: main.AppConfig | null;
@@ -61,6 +61,9 @@ export const TelegramBotSettings = ({
                     </button>
                 </>
             )}
+            <button type="button" onClick={() => setIMAuditPlatform('telegram')} style={{ ...imAuditBtnStyle, marginLeft: (config as any)?.telegram_bot_enabled ? '18px' : '0' }}>
+                {watchLabel(lang)}
+            </button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>{channelModeLabel(lang)}</span>
@@ -86,9 +89,6 @@ export const TelegramBotSettings = ({
                 </button>
             ))}
         </div>
-        <button type="button" onClick={() => setIMAuditPlatform('telegram')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
-            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
-        </button>
         <div style={{ maxWidth: '520px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '62px' }}>Bot Token</label>

@@ -49,7 +49,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOff: vi.fn(),
 }));
 
-import { SkillsManagementPanel } from '../SkillsManagementPanel';
+import { SkillsManagementPanel, getLearnedSkillDescriptionPreview } from '../SkillsManagementPanel';
 import { DialogProvider } from '../../CustomDialog';
 import { ToastProvider } from '../../Toast';
 
@@ -227,5 +227,16 @@ describe('SkillsManagementPanel modal backdrop mousedown+click guard', () => {
         await waitFor(() => {
             expect(screen.queryByText('编辑 Skill')).toBeNull();
         });
+    });
+});
+
+
+describe('learned skill description preview', () => {
+    it('keeps the table preview compact and leaves full text for title tooltips', () => {
+        const full = '编写一个 PowerShell 脚本，从 Hugging Face Daily Papers API 获取最近一周的论文数据';
+
+        expect(getLearnedSkillDescriptionPreview(full)).toBe('编写一个 PowerShell 脚本，从...');
+        expect(getLearnedSkillDescriptionPreview('short description')).toBe('short description');
+        expect(getLearnedSkillDescriptionPreview('   ')).toBe('-');
     });
 });

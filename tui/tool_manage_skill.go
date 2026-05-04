@@ -252,7 +252,7 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 	}
 	if len(entry.Steps) == 0 && entry.SkillDir != "" {
 		if imp, err := skill.ImportMarkdownSkillDir(entry.SkillDir, skill.MarkdownSkillOptions{NameFallback: entry.Name}); err == nil && imp != nil {
-			entry.Steps = imp.Steps
+			skill.HydrateRunMetadata(entry, imp)
 		}
 	}
 	if len(entry.Steps) == 0 {
@@ -262,6 +262,13 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 		}
 		return msg
 	}
+	skill.NormalizeSkillForRunner(entry)
+	templateVars := normalizeTUIRunSkillVars(args)
+	extraEnv := extractTUIRunExtraEnv(args["env"])
+	if len(entry.Params) == 0 {
+		entry.Params = skill.SynthesizeParams(entry.Steps, entry.RequiredArgs)
+	}
+	applyTUIRunInputInference(entry, templateVars, args)
 
 	// ── Pre-checks (aligned with GUI StartRun) ──
 
@@ -274,7 +281,7 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 	}
 
 	// ── Unified requirement pre-check (aligned with GUI StartRun) ──
-	reqs := skill.ExtractRequirements(entry, skill.DefaultCheckContext())
+	reqs := skill.ExtractRequirements(entry, skill.BuildRunCheckContext(entry, extraEnv))
 	if len(reqs) > 0 {
 		registry := skill.DefaultRegistry()
 		violations := registry.CheckAll(reqs)
@@ -288,24 +295,6 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 				log.Printf("[skill-run-tui] requirement warning for %q: %s", name, v.Message)
 			}
 		}
-	}
-
-	// Build template vars from args (aligned with GUI normalizeSkillRunVars).
-	skillArgs, _ := args["args"].(map[string]interface{})
-	input, output := sval(args, "input"), sval(args, "output")
-	userPrompt := sval(args, "user_prompt")
-	templateVars := make(map[string]string)
-	if input != "" {
-		templateVars["input"] = input
-	}
-	if output != "" {
-		templateVars["output"] = output
-	}
-	if userPrompt != "" {
-		templateVars["user_prompt"] = userPrompt
-	}
-	for k, v := range skillArgs {
-		templateVars[k] = fmt.Sprintf("%v", v)
 	}
 
 	// Parameter binding via SynthesizeParams + BindParams (aligned with GUI).
@@ -368,6 +357,14 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 			continue
 		}
 		step = resolveResult.Step
+		if step.Action == "bash" {
+			if len(entry.RequiredEnv) > 0 {
+				mergeTUIRequiredEnvParam(step.Params, entry.RequiredEnv)
+			}
+			if len(extraEnv) > 0 {
+				mergeTUIExtraEnvParam(step.Params, extraEnv)
+			}
+		}
 
 		out, err := execStep(step, entry.SkillDir)
 
@@ -445,6 +442,30 @@ func skillStatus(args map[string]interface{}) string {
 
 // --- helpers ---
 
+func normalizeTUIRunSkillVars(args map[string]interface{}) map[string]string {
+	return skill.NormalizeRunVars(args)
+}
+
+func extractTUIRunExtraEnv(raw interface{}) map[string]string {
+	return skill.ExtractRunExtraEnv(raw)
+}
+
+func collectTUISkillProvidedEnv(entry *corelib.NLSkillEntry) map[string]string {
+	return skill.CollectSkillProvidedEnv(entry)
+}
+
+func applyTUIRunInputInference(entry *corelib.NLSkillEntry, vars map[string]string, args map[string]interface{}) {
+	skill.ApplyRunInputInference(entry, vars, args)
+}
+
+func mergeTUIRequiredEnvParam(params map[string]interface{}, required []string) {
+	skill.MergeRequiredEnvParam(params, required)
+}
+
+func mergeTUIExtraEnvParam(params map[string]interface{}, extraEnv map[string]string) {
+	skill.MergeExtraEnvParam(params, extraEnv)
+}
+
 func substVars(cmd string, sa map[string]interface{}, in, out string) string {
 	for _, pair := range [][2]string{{"input", in}, {"output", out}} {
 		if pair[1] != "" {
@@ -489,6 +510,7 @@ func execStep(step corelib.NLSkillStep, dir string) (string, error) {
 	if wd != "" {
 		c.Dir = wd
 	}
+	c.Env = skill.BuildCommandEnv(os.Environ(), step.Params)
 	var so, se bytes.Buffer
 	c.Stdout, c.Stderr = &so, &se
 	err := c.Run()

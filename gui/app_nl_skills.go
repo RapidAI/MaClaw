@@ -2358,6 +2358,7 @@ func executeBashStep(command string, params map[string]interface{}) (string, err
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
+	cmd.Env = skill.BuildCommandEnv(os.Environ(), params)
 	hideCommandWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

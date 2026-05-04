@@ -85,6 +85,14 @@ describe('AboutPanel', () => {
         expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://github.com/rapidaicoder/msg/blob/main/thanks.md');
     });
 
+    it('calls the code repository action from the code repository button', () => {
+        render(<AboutPanel {...baseProps} />);
+
+        fireEvent.click(screen.getByText('Code Repository'));
+
+        expect(baseProps.onOpenGithub).toHaveBeenCalledTimes(1);
+    });
+
     it('hides thanks section when content is empty', () => {
         render(<AboutPanel {...baseProps} thanksContent="   " />);
 

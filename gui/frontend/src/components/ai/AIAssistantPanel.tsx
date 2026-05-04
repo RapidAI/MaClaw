@@ -11,7 +11,7 @@ import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { BufferQueuePanel } from "./BufferQueuePanel";
 import { renderMessage } from "./aiAssistantMarkdown";
-import { AI_PANEL_STATIC_STYLE_ID, AI_PANEL_STATIC_STYLE_TEXT, AI_THEME_MODE_STORAGE_KEY, darkTheme, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, type Theme } from "./aiAssistantPanelTheme";
+import { AI_PANEL_STATIC_STYLE_ID, AI_PANEL_STATIC_STYLE_TEXT, darkTheme, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, type Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
 import { useTTSReadback } from "./useTTSReadback";
@@ -29,6 +29,7 @@ import { AssistantInputComposer } from "./AssistantInputComposer";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
+import { useAssistantThemeMode } from "./useAssistantThemeMode";
 
 /* Theme definitions live in aiAssistantPanelTheme.tsx. */
 
@@ -49,7 +50,7 @@ if (typeof document !== "undefined" && !document.getElementById(AI_PANEL_STATIC_
 /* Main component */
 
 export function AIAssistantPanel(props: any) {
-    const { onClose, lang, chatFontSize = 14, groupDiscussion, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0 } = props;
+    const { onClose, lang, chatFontSize = 14, groupDiscussion, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0 } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -98,20 +99,14 @@ export function AIAssistantPanel(props: any) {
     const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
-    const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => {
-        if (typeof window === 'undefined') return 'light';
-        try {
-            return window.localStorage.getItem(AI_THEME_MODE_STORAGE_KEY) === 'dark' ? 'dark' : 'light';
-        } catch {
-            return 'light';
-        }
-    });
+    const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled } = useTTSReadback(audioOutputDeviceId);
 
     const { queue, addEntry, removeEntry, updateEntry, reorderEntry, mergeAndFire } = useBufferQueue();
     const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
+
 
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, dismissDocsBar } = useWorkflowState();
     const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState(workflowState.splitMode);

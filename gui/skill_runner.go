@@ -218,12 +218,22 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	// Normalize community/imported skill shapes before pre-checks and execution.
 	cskill.NormalizeSkillForRunner(target)
 
+	templateVars := normalizeSkillRunVars(runArgs)
+	var extraEnv map[string]string
+	if len(runArgs) > 0 {
+		extraEnv = cskill.ExtractRunExtraEnv(runArgs["env"])
+	}
+	if len(target.Params) == 0 {
+		target.Params = cskill.SynthesizeParams(target.Steps, target.RequiredArgs)
+	}
+	cskill.ApplyRunInputInference(target, templateVars, runArgs)
+
 	// ── Unified requirement pre-check ──
 	// ExtractRequirements bridges the old per-field declarations to the unified
 	// Requirement model. CheckContext carries caller-specific information
 	// (provided env vars, skill directory) so that ExtractRequirements can
 	// mark requirements appropriately — callers don't configure the Registry.
-	reqs := cskill.ExtractRequirements(target, cskill.DefaultCheckContext())
+	reqs := cskill.ExtractRequirements(target, cskill.BuildRunCheckContext(target, extraEnv))
 	if len(reqs) > 0 {
 		registry := cskill.DefaultRegistry()
 		violations := registry.CheckAll(reqs)
@@ -311,8 +321,6 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		}
 	}
 
-	templateVars := normalizeSkillRunVars(runArgs)
-
 	// ── api_workflow mode: extract step selector from runArgs ──
 	var selectedSteps []string
 	if strings.EqualFold(target.Mode, "api_workflow") {
@@ -344,17 +352,6 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 					log.Printf("[skill-runner] operation %q resolved to labels: %v", opName, selectedSteps)
 					break
 				}
-			}
-		}
-	}
-
-	// ── Extract extra env vars from runArgs["env"] ──
-	var extraEnv map[string]string
-	if envRaw, ok := runArgs["env"].(map[string]interface{}); ok && len(envRaw) > 0 {
-		extraEnv = make(map[string]string, len(envRaw))
-		for k, v := range envRaw {
-			if s, ok := v.(string); ok {
-				extraEnv[k] = s
 			}
 		}
 	}
@@ -695,16 +692,25 @@ func extractArtifactPathCandidate(line string) string {
 		return ""
 	}
 	trimmed = strings.Trim(trimmed, "`\"'“””)。；，")
-	if strings.HasSuffix(strings.ToLower(trimmed), ".pdf") && filepath.IsAbs(trimmed) {
+	if looksLikeArtifactPath(trimmed) && filepath.IsAbs(trimmed) {
 		return trimmed
 	}
 	for _, field := range strings.Fields(trimmed) {
 		candidate := strings.Trim(field, "`\"'“””)。；，")
-		if strings.HasSuffix(strings.ToLower(candidate), ".pdf") && filepath.IsAbs(candidate) {
+		if looksLikeArtifactPath(candidate) && filepath.IsAbs(candidate) {
 			return candidate
 		}
 	}
 	return ""
+}
+
+func looksLikeArtifactPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
+	case ".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".tsv", ".md", ".txt", ".json", ".html", ".png", ".jpg", ".jpeg", ".svg", ".drawio", ".xml":
+		return true
+	default:
+		return false
+	}
 }
 
 func artifactExists(path string) bool {
@@ -723,50 +729,7 @@ func artifactExists(path string) bool {
 var skillRunVarFallbackKeys = cskill.RunVarFallbackKeys
 
 func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
-	vars := map[string]string{}
-	if rawArgs, ok := runArgs["args"].(map[string]interface{}); ok {
-		for key, value := range rawArgs {
-			if str, ok := value.(string); ok {
-				vars[key] = str
-			} else if value != nil {
-				vars[key] = fmt.Sprintf("%v", value)
-			}
-		}
-	}
-
-	// tryParseJSONIntoVars: when args is empty and a string value looks like
-	// a JSON object (e.g. "{\"city\":\"新加坡\"}"), parse it and merge into
-	// vars so that {{key}} placeholders get resolved. This handles the common
-	// case where the LLM puts structured params in input/output instead of args.
-	tryParseJSONIntoVars := func(s string) {
-		if len(vars) == 0 && len(s) > 2 && s[0] == '{' {
-			var parsed map[string]interface{}
-			if json.Unmarshal([]byte(s), &parsed) == nil && len(parsed) > 0 {
-				for k, v := range parsed {
-					if str, ok := v.(string); ok {
-						vars[k] = str
-					}
-				}
-			}
-		}
-	}
-
-	for _, key := range skillRunVarFallbackKeys {
-		if _, exists := vars[key]; exists {
-			continue
-		}
-		if v, ok := runArgs[key].(string); ok && v != "" {
-			// JSON parsing fallback only for input/output — same as TUI.
-			if key == "input" || key == "output" {
-				tryParseJSONIntoVars(v)
-			}
-			vars[key] = v
-		}
-	}
-	if len(vars) == 0 {
-		return nil
-	}
-	return vars
+	return cskill.NormalizeRunVars(runArgs)
 }
 
 // detectImplicitRequiredArgs scans step commands for {{key}} placeholders
@@ -1988,76 +1951,11 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 // ── bash step 执行（带 context + skillDir 作为默认 working_dir） ────────
 
 func mergeRequiredEnvParam(params map[string]interface{}, required []string) {
-	if params == nil || len(required) == 0 {
-		return
-	}
-	seen := map[string]struct{}{}
-	var merged []interface{}
-	appendName := func(name string) {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return
-		}
-		if _, ok := seen[name]; ok {
-			return
-		}
-		seen[name] = struct{}{}
-		merged = append(merged, name)
-	}
-	switch existing := params["required_env"].(type) {
-	case []interface{}:
-		for _, item := range existing {
-			if name, ok := item.(string); ok {
-				appendName(name)
-			}
-		}
-	case []string:
-		for _, name := range existing {
-			appendName(name)
-		}
-	case string:
-		for _, name := range strings.Split(existing, ",") {
-			appendName(name)
-		}
-	}
-	for _, name := range required {
-		appendName(name)
-	}
-	if len(merged) > 0 {
-		params["required_env"] = merged
-	}
+	cskill.MergeRequiredEnvParam(params, required)
 }
 
 func mergeExtraEnvParam(params map[string]interface{}, extraEnv map[string]string) {
-	if params == nil || len(extraEnv) == 0 {
-		return
-	}
-	merged := map[string]interface{}{}
-	switch existing := params["extra_env"].(type) {
-	case map[string]interface{}:
-		for k, v := range existing {
-			if strings.TrimSpace(k) != "" {
-				merged[k] = v
-			}
-		}
-	case map[string]string:
-		for k, v := range existing {
-			if strings.TrimSpace(k) != "" {
-				merged[k] = v
-			}
-		}
-	}
-	for k, v := range extraEnv {
-		if strings.TrimSpace(k) == "" {
-			continue
-		}
-		if _, exists := merged[k]; !exists {
-			merged[k] = v
-		}
-	}
-	if len(merged) > 0 {
-		params["extra_env"] = merged
-	}
+	cskill.MergeExtraEnvParam(params, extraEnv)
 }
 
 func skillParamSeconds(params map[string]interface{}, key string) (int, bool) {
@@ -2309,35 +2207,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	}
 	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
 	// GBK/CP936 mojibake when scripts output non-ASCII text.
-	cmd.Env = coretool.AppendUTF8Env(os.Environ())
-	// Auto-inject required environment variables declared in skill metadata.
-	// This replaces the need for `export VAR=value` in SKILL.md bash blocks.
-	if envList, ok := params["required_env"].([]interface{}); ok {
-		for _, item := range envList {
-			if envName, ok := item.(string); ok && envName != "" {
-				if val := os.Getenv(envName); val != "" {
-					cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", envName, val))
-				}
-			}
-		}
-	}
-	// Inject caller-supplied extra env vars (from run_skill env parameter).
-	// These take precedence over process-level env vars, allowing the agent
-	// to pass API keys etc. that were set in a previous bash tool call.
-	switch extraEnv := params["extra_env"].(type) {
-	case map[string]interface{}:
-		for k, v := range extraEnv {
-			if s, ok := v.(string); ok && k != "" {
-				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, s))
-			}
-		}
-	case map[string]string:
-		for k, v := range extraEnv {
-			if k != "" {
-				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-			}
-		}
-	}
+	cmd.Env = cskill.BuildCommandEnv(coretool.AppendUTF8Env(os.Environ()), params)
 	hideCommandWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

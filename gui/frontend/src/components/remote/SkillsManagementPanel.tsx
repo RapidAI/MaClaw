@@ -240,6 +240,13 @@ function learnedSourceIcon(source: string): string {
     return "📁";
 }
 
+const LEARNED_DESCRIPTION_PREVIEW_CHARS = 20;
+export function getLearnedSkillDescriptionPreview(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS): string {
+    const normalized = description.trim().replace(/\s+/g, " ");
+    if (!normalized) return "-"; const chars = Array.from(normalized);
+    return chars.length <= maxChars ? normalized : chars.slice(0, maxChars).join("") + "...";
+}
+
 export function SkillsManagementPanel({ localizeText }: Props) {
     const { showConfirm } = useDialog();
     const { showToast } = useToast();
@@ -955,11 +962,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             {activeTab === "local" && (
                 <>
                     {/* Header with create button */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={localSkillsToolbarStyle}>
                         <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
                             {installedSkills.length} {localizeText("skill(s) registered", "个已注册 Skill", "個已註冊 Skill")}
                         </span>
-                        <div style={{ display: "flex", gap: "6px" }}>
+                        <div style={localSkillsActionBarStyle}>
                             <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={() => { loadData(); setDiagEntries(null); }} disabled={loading}>
                                 {loading ? localizeText("Refreshing...", "刷新中...", "重新整理中...") : localizeText("🔄 Refresh", "🔄 刷新", "🔄 重新整理")}
                             </button>
@@ -984,7 +991,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             </button>
                         </div>
                     </div>
-                    <div style={{ fontSize: "0.74rem", color: colors.textMuted }}>
+                    <div style={localSkillsHintStyle}>
                         {localizeText(
                             "OpenClaw skill zips usually contain SKILL.md or skill.md; skill.yaml / skill.yml are also supported.",
                             "标准 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml。",
@@ -1029,17 +1036,17 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Skills table */}
                     {!loading && installedSkills.length > 0 && (
-                        <div style={remoteTableContainerStyle}>
-                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem" }}>
+                        <div style={localSkillsTableContainerStyle}>
+                            <table style={localSkillsTableStyle}>
                                 <thead>
                                     <tr style={{ background: colors.surfaceMuted }}>
-                                        <th style={thStyle}>{localizeText("Name", "名称", "名稱")}</th>
-                                        <th style={thStyle}>{localizeText("Description", "描述", "描述")}</th>
-                                        <th style={{ ...thStyle, width: "120px" }}>{localizeText("Type", "类型", "類型")}</th>
-                                        <th style={{ ...thStyle, width: "80px" }}>{localizeText("Version", "版本", "版本")}</th>
-                                        <th style={thStyle}>{localizeText("Usage", "使用统计", "使用統計")}</th>
-                                        <th style={thStyle}>{localizeText("Status", "状态", "狀態")}</th>
-                                        <th style={{ ...thStyle, width: "100px" }}>{localizeText("Actions", "操作", "操作")}</th>
+                                        <th style={{ ...thStyle, width: "18%" }}>{localizeText("Name", "名称", "名稱")}</th>
+                                        <th style={{ ...thStyle, width: "24%" }}>{localizeText("Description", "描述", "描述")}</th>
+                                        <th style={{ ...thStyle, width: "13%" }}>{localizeText("Type", "类型", "類型")}</th>
+                                        <th style={{ ...thStyle, width: "7%" }}>{localizeText("Version", "版本", "版本")}</th>
+                                        <th style={{ ...thStyle, width: "14%" }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
+                                        <th style={{ ...thStyle, width: "8%", textAlign: "center" }}>{localizeText("Status", "状态", "狀態")}</th>
+                                        <th style={{ ...thStyle, width: "16%", textAlign: "right" }}>{localizeText("Actions", "操作", "操作")}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1070,15 +1077,33 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>
                                                 )}
                                             </td>
-                                            <td style={tdStyle}>
+                                            <td style={{ ...tdStyle, textAlign: "center" }}>
                                                 <span style={{ ...statusBadgeStyle, ...(s.status === "active" ? activeBadge : disabledBadge) }}>
                                                     {s.status === "active" ? localizeText("Active", "启用", "啟用") : s.status}
                                                 </span>
                                             </td>
-                                            <td style={tdStyle}>
-                                                <div style={{ display: "flex", gap: "4px" }}>
-                                                    <button className="btn-secondary" style={smallBtnStyle} onClick={() => openEditForm(s)} disabled={busy}>{localizeText("Edit", "编辑", "編輯")}</button>
-                                                    <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy}>{localizeText("Delete", "删除", "刪除")}</button>
+                                            <td style={{ ...tdStyle, textAlign: "right" }}>
+                                                <div style={localSkillsRowActionsStyle}>
+                                                    <button
+                                                        className="btn-secondary"
+                                                        style={iconBtnStyle}
+                                                        onClick={() => openEditForm(s)}
+                                                        disabled={busy}
+                                                        title={localizeText("Edit", "编辑", "編輯")}
+                                                        aria-label={localizeText("Edit", "编辑", "編輯")}
+                                                    >
+                                                        {"\u270E"}
+                                                    </button>
+                                                    <button
+                                                        className="btn-secondary btn-danger"
+                                                        style={dangerIconBtnStyle}
+                                                        onClick={() => handleDelete(s.name)}
+                                                        disabled={busy}
+                                                        title={localizeText("Delete", "删除", "刪除")}
+                                                        aria-label={localizeText("Delete", "删除", "刪除")}
+                                                    >
+                                                        {"\u2715"}
+                                                    </button>
                                                 </div>
                                             </td>
                                         </tr>
@@ -1485,18 +1510,19 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {/* Learned skills table */}
                     {!loading && learnedSkills.length > 0 && (
                         <div style={remoteTableContainerStyle}>
-                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem" }}>
+                            <table style={learnedSkillsTableStyle}>
+                                <colgroup><col style={{ width: "36px" }} /><col style={{ width: "160px" }} /><col style={{ width: "150px" }} /><col style={{ width: "56px" }} /><col style={{ width: "56px" }} /><col style={{ width: "70px" }} /><col style={{ width: "220px" }} /></colgroup>
                                 <thead>
                                     <tr style={{ background: colors.surfaceMuted }}>
                                         <th style={{ ...thStyle, width: "36px", textAlign: "center" }}>
                                             <input type="checkbox" checked={learnedSkills.length > 0 && learnedSelected.size === learnedSkills.length} onChange={toggleLearnedSelectAll} />
                                         </th>
-                                        <th style={thStyle}>{localizeText("Name", "名称", "名稱")}</th>
-                                        <th style={thStyle}>{localizeText("Description", "描述", "描述")}</th>
-                                        <th style={{ ...thStyle, width: "40px", textAlign: "center" }}>{localizeText("Source", "来源", "來源")}</th>
-                                        <th style={thStyle}>{localizeText("Usage", "使用统计", "使用統計")}</th>
-                                        <th style={thStyle}>{localizeText("Status", "状态", "狀態")}</th>
-                                        <th style={{ ...thStyle, width: "220px" }}>{localizeText("Actions", "操作", "操作")}</th>
+                                        <th style={{ ...thStyle, width: "160px", textAlign: "left" }}>{localizeText("Name", "\u540d\u79f0", "\u540d\u7a31")}</th>
+                                        <th style={{ ...thStyle, width: "150px", textAlign: "left" }}>{localizeText("Description", "\u63cf\u8ff0", "\u63cf\u8ff0")}</th>
+                                        <th style={{ ...thStyle, width: "56px", textAlign: "center" }}>{localizeText("Source", "\u6765\u6e90", "\u4f86\u6e90")}</th>
+                                        <th style={{ ...thStyle, width: "56px", textAlign: "center" }}>{localizeText("Usage", "\u4f7f\u7528\u7edf\u8ba1", "\u4f7f\u7528\u7d71\u8a08")}</th>
+                                        <th style={{ ...thStyle, width: "70px", textAlign: "center" }}>{localizeText("Status", "\u72b6\u6001", "\u72c0\u614b")}</th>
+                                        <th style={{ ...thStyle, width: "220px", textAlign: "center" }}>{localizeText("Actions", "\u64cd\u4f5c", "\u64cd\u4f5c")}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1505,11 +1531,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <td style={{ ...tdStyle, textAlign: "center" }}>
                                                 <input type="checkbox" checked={learnedSelected.has(s.name)} onChange={() => toggleLearnedSelect(s.name)} />
                                             </td>
-                                            <td style={tdStyle}>{s.name}</td>
-                                            <td style={tdStyle}>
-                                                <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
+                                            <td style={{ ...tdStyle, textAlign: "left" }}>{s.name}</td>
+                                            <td style={{ ...tdStyle, textAlign: "left" }}>
+                                                <div style={learnedDescriptionPreviewStyle} title={s.description || undefined}>{getLearnedSkillDescriptionPreview(s.description || "")}</div>
                                             </td>
-                                            <td style={tdStyle}>
+                                            <td style={{ ...tdStyle, textAlign: "center" }}>
                                                 <span
                                                     title={learnedSourceTooltip(s.source ?? "")}
                                                     style={{ cursor: "default" }}
@@ -1517,7 +1543,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     {learnedSourceIcon(s.source ?? "")}
                                                 </span>
                                             </td>
-                                            <td style={tdStyle}>
+                                            <td style={{ ...tdStyle, textAlign: "center" }}>
                                                 {(s.usage_count ?? 0) > 0 ? (
                                                     <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
                                                         {s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%
@@ -1526,14 +1552,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>
                                                 )}
                                             </td>
-                                            <td style={tdStyle}>
+                                            <td style={{ ...tdStyle, textAlign: "center" }}>
                                                 <span style={statusDotStyle(s.status === "active")}>
                                                     <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.status === "active" ? colors.success : colors.border, flexShrink: 0 }} />
                                                     {s.status === "active" ? localizeText("Active", "启用", "啟用") : localizeText("Disabled", "停用", "停用")}
                                                 </span>
                                             </td>
-                                            <td style={tdStyle}>
-                                                <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap" }}>
+                                            <td style={{ ...tdStyle, textAlign: "center" }}>
+                                                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "4px", flexWrap: "wrap" }}>
                                                     <button
                                                         className="btn-secondary"
                                                         style={smallBtnStyle}
@@ -1874,7 +1900,7 @@ const tdStyle: CSSProperties = {
 };
 
 const descCellStyle: CSSProperties = {
-    maxWidth: "220px",
+    maxWidth: "100%",
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
@@ -1901,6 +1927,21 @@ const smallBtnStyle: CSSProperties = {
     padding: "2px 8px",
 };
 
+const iconBtnStyle: CSSProperties = {
+    width: "28px",
+    height: "28px",
+    padding: 0,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "0.78rem",
+    lineHeight: 1,
+};
+
+const dangerIconBtnStyle: CSSProperties = {
+    ...iconBtnStyle,
+};
+
 const detailGridStyle: CSSProperties = {
     display: "grid",
     gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
@@ -1922,10 +1963,14 @@ const detailPreStyle: CSSProperties = {
     ...remoteCodeBlockStyle,
 };
 
+const learnedSkillsTableStyle: CSSProperties = { width: "100%", minWidth: 748, tableLayout: "fixed", borderCollapse: "collapse", fontSize: "0.76rem" };
+
+const learnedDescriptionPreviewStyle: CSSProperties = { maxWidth: "20ch", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help" };
+
 const skillsPanelShellStyle: CSSProperties = {
     display: "flex",
     flexDirection: "column",
-    gap: "10px",
+    gap: "8px",
     height: "100%",
     minHeight: 0,
     minWidth: 0,
@@ -1933,11 +1978,11 @@ const skillsPanelShellStyle: CSSProperties = {
 
 const skillsTabBarStyle: CSSProperties = {
     display: "flex",
-    gap: "0",
+    gap: "2px",
     borderBottom: `1px solid ${colors.border}`,
     backgroundColor: colors.bg,
     flexShrink: 0,
-    paddingTop: "2px",
+    padding: "2px 0 0 0",
     overflowX: "auto",
     overflowY: "hidden",
 };
@@ -1945,14 +1990,62 @@ const skillsTabBarStyle: CSSProperties = {
 const skillsTabContentStyle: CSSProperties = {
     display: "flex",
     flexDirection: "column",
-    gap: "10px",
+    gap: "8px",
     flex: "1 1 auto",
     minHeight: 0,
     minWidth: 0,
     overflowY: "auto",
     overflowX: "hidden",
     scrollbarGutter: "stable",
-    paddingRight: "4px",
+    padding: "0 2px 4px 0",
+};
+
+
+const localSkillsToolbarStyle: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "minmax(140px, 1fr) auto",
+    gap: "12px",
+    alignItems: "center",
+};
+
+const localSkillsActionBarStyle: CSSProperties = {
+    display: "flex",
+    gap: "8px",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    flexWrap: "wrap",
+};
+
+const localSkillsHintStyle: CSSProperties = {
+    fontSize: "0.74rem",
+    color: colors.textMuted,
+    textAlign: "center",
+    lineHeight: 1.5,
+    margin: "2px 0 4px",
+};
+
+const localSkillsTableContainerStyle: CSSProperties = {
+    ...remoteTableContainerStyle,
+    flex: "1 1 auto",
+    minHeight: 0,
+    width: "100%",
+    overflow: "auto",
+};
+
+const localSkillsTableStyle: CSSProperties = {
+    width: "100%",
+    minWidth: "880px",
+    tableLayout: "fixed",
+    borderCollapse: "collapse",
+    fontSize: "0.76rem",
+};
+
+const localSkillsRowActionsStyle: CSSProperties = {
+    display: "inline-flex",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: "6px",
+    flexWrap: "wrap",
 };
 
 const tabBtnStyle: CSSProperties = {

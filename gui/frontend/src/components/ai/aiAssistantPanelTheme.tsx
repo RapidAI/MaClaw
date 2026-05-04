@@ -171,6 +171,7 @@ export const darkTheme: Theme = {
 };
 
 export const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
+export const AI_THEME_MODE_LEGACY_STORAGE_KEY = "maclaw.ai.themeMode";
 /* Style constants */
 
 export const overlayStyle: React.CSSProperties = {

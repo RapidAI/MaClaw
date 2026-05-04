@@ -1344,3 +1344,42 @@ body:has(.cloud-center-card.is-detail-open) {
     flex-direction: column;
   }
 }
+
+
+.cloud-center-stack > .list {
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  align-items: start;
+}
+
+.cloud-center-card {
+  min-width: 0;
+  align-content: start;
+}
+
+.cloud-center-card .item-head {
+  gap: 12px;
+}
+
+.cloud-center-card .item-title,
+.cloud-center-card .item-meta {
+  overflow-wrap: anywhere;
+}
+
+.cloud-center-card:not(.is-detail-open) {
+  min-height: 246px;
+}
+
+.cloud-center-card:not(.is-detail-open) .cloud-center-facts {
+  max-height: 76px;
+  overflow: hidden;
+}
+
+.cloud-center-card.is-detail-open {
+  min-height: 0;
+}
+
+@media (max-width: 760px) {
+  .cloud-center-stack > .list {
+    grid-template-columns: 1fr;
+  }
+}

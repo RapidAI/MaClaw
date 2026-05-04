@@ -1,7 +1,7 @@
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import { LoadConfig, RestartWeixin, SetWeixinLocalMode, StopWeixin } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
-import { channelModeLabel, connectionBadgeStyle, connectionStatusLabel, localModeOptions, pillButtonStyle, restartLabel, switchFailedLabel, textForLang } from './imSettingsShared';
+import { channelModeLabel, connectionBadgeStyle, connectionStatusLabel, localModeOptions, pillButtonStyle, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 import { WeixinQRLoginPanel } from './WeixinQRLoginPanel';
 
 type WeixinSettingsProps = {
@@ -72,6 +72,9 @@ export const WeixinSettings = ({
                     </button>
                 </>
             )}
+            <button type="button" onClick={() => setIMAuditPlatform('weixin')} style={{ ...imAuditBtnStyle, marginLeft: weixinStatus === 'connected' ? '18px' : '0' }}>
+                {watchLabel(lang)}
+            </button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>{channelModeLabel(lang)}</span>
@@ -97,9 +100,6 @@ export const WeixinSettings = ({
                 </button>
             ))}
         </div>
-        <button type="button" onClick={() => setIMAuditPlatform('weixin')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
-            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
-        </button>
         {weixinStatus !== 'connected' && (
             <WeixinQRLoginPanel
                 lang={lang}

@@ -145,15 +145,15 @@ func (c *HubClient) SearchSkillHub(ctx context.Context, hubURL, query string) []
 	results := make([]HubSearchResult, 0, len(raw.Skills))
 	for _, s := range raw.Skills {
 		results = append(results, HubSearchResult{
-			ID:         s.ID,
-			Name:       s.Name,
+			ID:          s.ID,
+			Name:        s.Name,
 			Description: s.Description,
-			Version:    s.Version,
-			Author:     s.Author,
-			TrustLevel: s.TrustLevel,
-			AvgRating:  s.AvgRating,
-			Downloads:  s.Downloads,
-			Source:     "skillhub",
+			Version:     s.Version,
+			Author:      s.Author,
+			TrustLevel:  s.TrustLevel,
+			AvgRating:   s.AvgRating,
+			Downloads:   s.Downloads,
+			Source:      "skillhub",
 		})
 	}
 	return results
@@ -220,9 +220,9 @@ func (c *HubClient) SearchGitHub(query string) []HubSearchResult {
 			Downloads:   cand.Stars,
 			TrustLevel:  "community",
 			Source:      "github",
-			RepoURL:    cand.RepoURL,
-			FilePath:   cand.FilePath,
-			InstallRef: string(installRef),
+			RepoURL:     cand.RepoURL,
+			FilePath:    cand.FilePath,
+			InstallRef:  string(installRef),
 		})
 	}
 	return results
@@ -292,7 +292,7 @@ func (c *HubClient) DownloadClawHub(ctx context.Context, slug string) (*corelib.
 				Action: "craft_tool",
 				Params: map[string]interface{}{
 					"instructions":      skillMD,
-					"verification_mode": "artifact_required",
+					"verification_mode": "artifact_optional",
 					"register_policy":   "manual",
 				},
 			},

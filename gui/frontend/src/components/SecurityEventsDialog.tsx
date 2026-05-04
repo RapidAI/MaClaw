@@ -25,22 +25,29 @@ const riskColor = (level: string) => {
     }
 };
 
-const riskLabel = (level: string, lang: string) => {
-    const labels: Record<string, [string, string]> = {
-        critical: ['严重', 'Critical'],
-        high: ['高', 'High'],
-        medium: ['中', 'Medium'],
-        low: ['低', 'Low'],
+const riskLabel = (level: string, t: (key: string) => string) => {
+    const keyByLevel: Record<string, string> = {
+        critical: 'securityRiskCritical',
+        high: 'securityRiskHigh',
+        medium: 'securityRiskMedium',
+        low: 'securityRiskLow',
     };
-    const pair = labels[level] || [level, level];
-    return lang.startsWith('zh') ? pair[0] : pair[1];
+    const key = keyByLevel[level] || 'securityRiskUnknown';
+    const label = t(key);
+    return label && label !== key ? label : (level || t('securityRiskUnknown'));
+};
+
+const formatText = (template: string, values: Record<string, string | number>) => {
+    return Object.entries(values).reduce(
+        (text, [key, value]) => text.replace(new RegExp('\\{' + key + '\\}', 'g'), String(value)),
+        template,
+    );
 };
 
 export function SecurityEventsDialog({ open, onClose, t }: Props) {
     const [events, setEvents] = useState<SecurityEvent[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const lang = document.documentElement.lang || 'en';
 
     useEffect(() => {
         if (!open) return;
@@ -57,51 +64,49 @@ export function SecurityEventsDialog({ open, onClose, t }: Props) {
 
     if (!open) return null;
 
-    const isZh = lang.startsWith('zh');
+    const deniedSummary = formatText(t('securityEventsDeniedSummary'), { count: events.length });
 
     return (
         <div className="modal-backdrop" onClick={onClose}>
             <div className="modal-content" onClick={e => e.stopPropagation()} style={{ width: '680px', maxHeight: '80vh', overflow: 'auto' }}>
                 <div className="modal-header">
-                    <h3 style={{ fontSize: '0.92rem', margin: 0 }}>🛡️ {isZh ? '安全事件' : 'Security Events'}</h3>
-                    <button className="btn-close" onClick={onClose}>×</button>
+                    <h3 style={{ fontSize: '0.92rem', margin: 0 }}>{"\u{1F6E1}\uFE0F"} {t('securityEvents')}</h3>
+                    <button className="btn-close" onClick={onClose}>{"\u00d7"}</button>
                 </div>
                 <div className="modal-body" style={{ padding: '12px 16px' }}>
                     {loading && (
                         <p style={{ color: 'var(--theme-text-secondary)', fontSize: '0.8rem' }}>
-                            {isZh ? '加载中...' : 'Loading...'}
+                            {t('securityEventsLoading')}
                         </p>
                     )}
                     {!loading && error && (
                         <p style={{ color: '#e74c3c', fontSize: '0.8rem' }}>
-                            {isZh ? '加载失败: ' : 'Failed: '}{error}
+                            {t('securityEventsLoadFailed')}{error}
                         </p>
                     )}
                     {!loading && !error && events.length === 0 && (
                         <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--theme-text-secondary)' }}>
-                            <div style={{ fontSize: '2rem', marginBottom: 8 }}>✅</div>
+                            <div style={{ fontSize: '2rem', marginBottom: 8 }}>{"\u2705"}</div>
                             <p style={{ fontSize: '0.82rem', margin: 0 }}>
-                                {isZh ? '一切安全，最近 7 天没有被拒绝的操作' : 'All clear — no denied operations in the last 7 days'}
+                                {t('securityEventsAllClear')}
                             </p>
                         </div>
                     )}
                     {!loading && !error && events.length > 0 && (
                         <>
                             <p style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', margin: '0 0 8px' }}>
-                                {isZh
-                                    ? `最近 7 天共 ${events.length} 条被拒绝的操作`
-                                    : `${events.length} denied operation(s) in the last 7 days`}
+                                {deniedSummary}
                             </p>
                             <div style={{ overflowX: 'auto' }}>
                             <table style={{ width: '100%', fontSize: '0.78rem', borderCollapse: 'collapse', minWidth: 600 }}>
                                 <thead>
                                     <tr style={{ borderBottom: '2px solid var(--theme-border)' }}>
-                                        <th style={thStyle}>{isZh ? '时间' : 'Time'}</th>
-                                        <th style={thStyle}>{isZh ? '工具/操作' : 'Tool'}</th>
-                                        <th style={thStyle}>{isZh ? '目标' : 'Target'}</th>
-                                        <th style={thStyle}>{isZh ? '远程 IP' : 'Remote IP'}</th>
-                                        <th style={thStyle}>{isZh ? '风险' : 'Risk'}</th>
-                                        <th style={thStyle}>{isZh ? '拒绝原因' : 'Reason'}</th>
+                                        <th style={thStyle}>{t('securityEventsTime')}</th>
+                                        <th style={thStyle}>{t('securityEventsTool')}</th>
+                                        <th style={thStyle}>{t('securityEventsTarget')}</th>
+                                        <th style={thStyle}>{t('securityEventsRemoteIp')}</th>
+                                        <th style={thStyle}>{t('securityEventsRisk')}</th>
+                                        <th style={thStyle}>{t('securityEventsReason')}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -117,7 +122,7 @@ export function SecurityEventsDialog({ open, onClose, t }: Props) {
                                                     fontWeight: 600,
                                                     fontSize: '0.75rem',
                                                 }}>
-                                                    {riskLabel(ev.risk_level, lang)}
+                                                    {riskLabel(ev.risk_level, t)}
                                                 </span>
                                             </td>
                                             <td style={{ ...tdStyle, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ev.reason}>{ev.reason}</td>

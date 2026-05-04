@@ -52,6 +52,7 @@ const app = read(appRel);
 const lines = app.split(/\r?\n/).length;
 
 requireFile('gui/frontend/src/i18n/appTranslations.ts');
+requireIncludes('gui/frontend/package.json', '--strict-mojibake && node ../../scripts/check-main-ui-guards.mjs', 'frontend prebuild strict mojibake and UI guard gate');
 requireFile('gui/frontend/src/config/providerCatalog.ts');
 requireFile('gui/frontend/src/components/common/MarkdownLink.tsx');
 requireFile('gui/frontend/src/components/tools/ToolConfiguration.tsx');
@@ -77,6 +78,7 @@ requireFile('gui/frontend/src/components/settings/WeixinSettings.tsx');
 requireFile('gui/frontend/src/components/settings/WeixinQRLoginPanel.tsx');
 requireFile('gui/frontend/src/components/settings/imSettingsShared.ts');
 requireFile('gui/frontend/src/components/layout/AppSidebarShell.tsx');
+requireFile('gui/frontend/src/components/layout/sidebarLayout.ts');
 requireFile('gui/frontend/src/components/layout/SidebarNavRail.tsx');
 requireFile('gui/frontend/src/components/layout/SidebarAiPane.tsx');
 requireFile('gui/frontend/src/components/layout/SidebarToolSelector.tsx');
@@ -95,8 +97,9 @@ requireFile('gui/frontend/src/components/pages/RemoteSessionsPage.tsx');
 requireFile('gui/frontend/src/components/pages/SkillsPage.tsx');
 requireFile('gui/frontend/src/components/pages/MCPPage.tsx');
 requireFile('gui/frontend/src/components/pages/GossipPage.tsx');
-requireFile('gui/frontend/src/components/pages/AboutPage.tsx');
-requireFile('gui/frontend/src/components/pages/AboutActions.tsx');
+requireFile('gui/frontend/src/components/AboutPanel.tsx');
+requireFile('gui/frontend/src/components/MemoryHealthDialog.tsx');
+requireFile('gui/frontend/src/components/SecurityEventsDialog.tsx');
 requireFile('gui/frontend/src/components/modals/StartupPopup.tsx');
 requireFile('gui/frontend/src/components/modals/ThanksModal.tsx');
 requireFile('gui/frontend/src/components/modals/ToolRepairProgressDialog.tsx');
@@ -119,6 +122,8 @@ requireFile('gui/frontend/src/components/ai/useTTSReadback.ts');
 requireFile('gui/frontend/src/components/ai/aiAssistantPanelTypes.ts');
 requireFile('gui/frontend/src/components/ai/useAIAssistantVoiceControls.ts');
 requireFile('gui/frontend/src/components/ai/useAssistantOutputScroll.ts');
+requireFile('gui/frontend/src/components/ai/useAssistantThemeMode.ts');
+requireFile('gui/frontend/src/components/ai/assistantThemeStorage.ts');
 requireFile('gui/frontend/src/components/ai/useResizableAssistantInput.ts');
 requireFile('gui/frontend/src/components/ai/useAssistantInputHistory.ts');
 requireFile('gui/frontend/src/components/ai/usePastedImageAttachments.ts');
@@ -164,8 +169,9 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/pages/ApiStorePage.tsx', 120],
   ['gui/frontend/src/components/pages/ApiStoreProviderCard.tsx', 120],
   ['gui/frontend/src/config/apiStoreProviders.ts', 80],
-  ['gui/frontend/src/components/pages/AboutPage.tsx', 100],
-  ['gui/frontend/src/components/pages/AboutActions.tsx', 120],
+  ['gui/frontend/src/components/AboutPanel.tsx', 240],
+  ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
+  ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
   ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 580],
   ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 760],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 420],
@@ -194,6 +200,15 @@ const extractedFileLineLimits = [
 ];
 for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 
+const highRiskRemoteFileLineLimits = [
+  ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2150],
+  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1400],
+  ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1160],
+  ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
+  ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
+];
+for (const [rel, max] of highRiskRemoteFileLineLimits) requireMaxLines(rel, max);
+
 const modalThemeFiles = [
   'gui/frontend/src/components/modals/InstallSkillModal.tsx',
   'gui/frontend/src/components/modals/StartupPopup.tsx',
@@ -214,6 +229,8 @@ requireExcludes(appRel, 'const translations', 'inline translations; use i18n/app
 requireExcludes(appRel, 'const knownProviderEndpoints', 'inline provider endpoint catalog; use config/providerCatalog.ts');
 requireExcludes(appRel, 'const recommendedModels', 'inline recommended model catalog; use config/providerCatalog.ts');
 requireExcludes(appRel, 'const ToolConfiguration =', 'inline ToolConfiguration; use components/tools/ToolConfiguration.tsx');
+requireIncludes('gui/frontend/src/components/remote/OnboardingWizard.tsx', 'getOnboardingFlow({ brandId, freeTrial })', 'centralized onboarding flow');
+requireExcludes('gui/frontend/src/components/remote/OnboardingWizard.tsx', 'brandId === \'qianxin\'', 'inline TigerClaw brand detection; use onboardingFlow.ts');
 requireExcludes(appRel, 'const MarkdownLink =', 'inline MarkdownLink; use components/common/MarkdownLink.tsx');
 requireExcludes(appRel, 'const TOOL_NAMES', 'inline tool tab catalog; use config/toolCatalog.ts');
 requireExcludes(appRel, 'const SKILL_TOOLS', 'inline skill tool catalog; use config/toolCatalog.ts');
@@ -237,6 +254,15 @@ requireExcludes(appRel, 'telegram_bot_token', 'inline Telegram bot settings; use
 requireExcludes(appRel, 'StartWeixinQRLogin', 'inline WeChat QR login settings; use components/settings/WeixinSettings.tsx');
 requireExcludes(appRel, 'thirdparty_gateway_enabled', 'inline third-party IM gateway settings; use components/settings/IMSettingsPanel.tsx');
 requireExcludes(appRel, 'className="sidebar"', 'inline left sidebar shell; use components/layout/AppSidebarShell.tsx');
+requireIncludes('gui/frontend/src/components/layout/sidebarLayout.ts', 'SIDEBAR_NAV_RAIL_WIDTH = 60', 'narrow 5.10.x sidebar rail width guard');
+requireExcludes('gui/frontend/src/components/layout/AppSidebarShell.tsx', "'90px'", 'hard-coded old sidebar rail width');
+requireExcludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', "width: '90px'", 'hard-coded old sidebar rail width');
+requireIncludes('gui/frontend/src/App.tsx', 'className="global-action-bar" data-ai-theme={aiThemeMode}', 'dark themed global action bar');
+requireIncludes('gui/frontend/src/App.css', ".sidebar[data-ai-theme='dark'] {\n    --theme-primary", 'sidebar dark theme variables');
+requireIncludes('gui/frontend/src/App.css', '--theme-page-bg: #0b1220;', 'sidebar dark theme page background');
+requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'STATUS_DOT', 'system status decoded status dot');
+requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'CREDIT_SEPARATOR', 'system status decoded credit separator');
+requireExcludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', '>\\u', 'JSX unicode escape text that renders as code');
 requireExcludes(appRel, 'recentProjects.map', 'inline recent tasks list; use components/layout/SidebarAiPane.tsx');
 requireExcludes(appRel, 'className="top-header"', 'inline non-AI top header; use components/layout/MainTopHeader.tsx');
 requireExcludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'ReadTutorial', 'inline top header actions; use components/layout/MainTopHeaderActions.tsx');
@@ -254,7 +280,7 @@ requireExcludes(appRel, 'MCPManagementPanel', 'inline MCP page; use components/p
 requireExcludes(appRel, 'GossipPanel', 'inline gossip page; use components/pages/GossipPage.tsx');
 requireExcludes(appRel, 'ReactMarkdown', 'inline thanks markdown modal; use components/modals/ThanksModal.tsx');
 requireExcludes(appRel, 'startupTitle', 'inline startup popup; use components/modals/StartupPopup.tsx');
-requireExcludes(appRel, 'brandDisplayTitle}</h2>', 'inline about page; use components/pages/AboutPage.tsx');
+requireExcludes(appRel, 'brandDisplayTitle}</h2>', 'inline about page; use components/AboutPanel.tsx');
 requireExcludes(appRel, 'toolRepairInstalling', 'inline tool repair progress dialog; use components/modals/ToolRepairProgressDialog.tsx');
 requireExcludes(appRel, 'downloadAndUpdate', 'inline update modal; use components/modals/UpdateModal.tsx');
 requireExcludes(appRel, 'installLogTitle', 'inline install log modal; use components/modals/InstallLogModal.tsx');
@@ -273,6 +299,14 @@ requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'renderMe
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'const lightTheme', 'inline AI panel theme; use components/ai/aiAssistantPanelTheme.tsx');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function AssistantInputIcon', 'inline AI input icons; use components/ai/aiAssistantPanelTheme.tsx');
 requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./aiAssistantPanelTheme"', 'AI panel theme import');
+requireIncludes('gui/frontend/src/App.tsx', "from './components/ai/assistantThemeStorage'", 'App reads pure AI theme storage helper');
+requireIncludes('gui/frontend/src/App.tsx', "themeMode={aiThemeMode}", 'App controls AI assistant theme mode across tab switches');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', "themeMode: controlledThemeMode", 'AI assistant accepts controlled theme mode');
+requireIncludes('gui/frontend/src/components/ai/assistantThemeStorage.ts', "window.localStorage.setItem(AI_THEME_MODE_STORAGE_KEY, themeMode)", 'AI assistant persists shared theme mode');
+requireIncludes('gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', "AI_THEME_MODE_LEGACY_STORAGE_KEY", 'AI assistant legacy theme key is centralized');
+requireIncludes('gui/frontend/src/components/ai/assistantThemeStorage.ts', "AI_THEME_MODE_LEGACY_STORAGE_KEY", 'AI assistant reads/writes legacy theme key for compatibility');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', "from \"./useAssistantThemeMode\"", 'AI assistant theme hook import');
+requireIncludes('gui/frontend/src/components/ai/useAssistantThemeMode.ts', "writeStoredAssistantThemeMode(themeMode)", 'AI theme hook delegates storage writes');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'interface ProjectSearchItem', 'inline AI project search model; use components/ai/ProjectSearchPanel.tsx');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function useProjectSearch', 'inline AI project search hook; use components/ai/ProjectSearchPanel.tsx');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function ProjectSearchPanel', 'inline AI project search panel; use components/ai/ProjectSearchPanel.tsx');
@@ -386,7 +420,7 @@ const criticalMarkers = [
   ['SkillsPage', 'skills page'],
   ['StartupPopup', 'startup popup'],
   ['ThanksModal', 'thanks modal'],
-  ['AboutPage', 'about page'],
+  ['AboutPanel', 'about page'],
   ['ToolRepairProgressDialog', 'tool repair progress dialog'],
   ['UpdateModal', 'update modal'],
   ['InstallLogModal', 'install log modal'],
@@ -408,6 +442,8 @@ requireIncludes('gui/frontend/src/config/settingsTabs.ts', 'export const getSett
 requireIncludes('gui/frontend/src/config/settingsTabs.ts', "id: 'pet'", 'pet settings tab registry entry');
 requireIncludes('gui/frontend/src/config/settingsTabs.ts', "id: 'display'", 'programming tools settings tab registry entry');
 requireIncludes('gui/frontend/src/config/settingsTabs.ts', "id: 'redeem'", 'service redeem settings tab registry entry');
+requireIncludes('gui/frontend/src/components/remote/HubServiceRedeemPanel.tsx', 'authorizedModelsTableStyle', 'authorized models fixed table layout');
+requireIncludes('gui/frontend/src/components/remote/HubServiceRedeemPanel.tsx', 'authorizedGroupTagStyle', 'authorized model service group tag layout');
 requireIncludes('gui/frontend/src/config/settingsTabs.ts', "id: 'im'", 'IM settings tab registry entry');
 requireIncludes('gui/frontend/src/components/settings/SettingsTabsRail.tsx', 'export const SettingsTabsRail', 'settings tabs rail export');
 requireIncludes('gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 'export const GeneralSettingsPanel', 'general settings export');
@@ -486,6 +522,7 @@ for (const rel of [
   'gui/frontend/src/components/modals/RemoteActivationDialog.tsx',
   'gui/frontend/src/components/modals/ProviderSelectorDialog.tsx',
   'gui/frontend/src/components/modals/ConfirmDialog.tsx',
+  'gui/frontend/src/components/remote/HubServiceRedeemPanel.tsx',
 ]) {
   requireNoMojibake(rel);
   requireNoPlaceholderGlyphs(rel);
@@ -561,11 +598,32 @@ requireIncludes('gui/frontend/src/components/pages/RemoteSessionsPage.tsx', 'Rem
 requireIncludes('gui/frontend/src/components/pages/SkillsPage.tsx', 'SkillsManagementPanel', 'skills management stays in SkillsPage');
 requireIncludes('gui/frontend/src/components/pages/MCPPage.tsx', 'MCPManagementPanel', 'MCP management stays in MCPPage');
 requireIncludes('gui/frontend/src/components/pages/GossipPage.tsx', 'GossipPanel', 'gossip panel stays in GossipPage');
-requireIncludes('gui/frontend/src/components/pages/AboutPage.tsx', 'AboutActions', 'about page action wiring');
-requireIncludes('gui/frontend/src/components/pages/AboutActions.tsx', 'CheckUpdate', 'about page update check');
-requireIncludes('gui/frontend/src/components/pages/AboutActions.tsx', 'officialWebsite', 'about page website button');
-requireIncludes('gui/frontend/src/components/pages/AboutActions.tsx', 'bugReport', 'about page bug report link');
-requireIncludes('gui/frontend/src/components/pages/AboutPage.tsx', 'var(--theme-text-primary)', 'about page theme-aware text');
+requireIncludes('gui/frontend/src/App.tsx', 'onCheckUpdate={() => {', 'about page update check wiring');
+requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'officialWebsite', 'about page website button');
+requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'quickActionsTitle', 'about page localized quick actions title');
+requireIncludes('gui/frontend/src/components/AboutPanel.tsx', '{t("buildLabel")} {buildNumber}', 'about page build number prop usage');
+requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'bugReport', 'about page bug report link');
+requireIncludes('gui/frontend/src/App.tsx', 'MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw"', 'about page fixed code repository URL');
+requireIncludes('gui/frontend/src/App.tsx', 'onOpenGithub={() => BrowserOpenURL(MACLAW_CODE_REPOSITORY_URL)}', 'about page code repository button uses fixed URL');
+requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'MemoryHealthDialog', 'about page memory health dialog');
+requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'SecurityEventsDialog', 'about page security events dialog');
+requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'ReadErrorLog', 'about page error log backend wiring');
+requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'ReactMarkdown', 'about page thanks markdown rendering');
+requireIncludes('gui/frontend/src/i18n/appTranslations.ts', '"aboutProductName"', 'about page product name translation');
+requireIncludes('gui/frontend/src/i18n/appTranslations.ts', '"quickActionsTitle"', 'about page quick actions title translation');
+requireIncludes('gui/frontend/src/i18n/appTranslations.ts', '"errorLog"', 'about page error log translation');
+requireIncludes('gui/frontend/src/i18n/appTranslations.ts', '"codeRepository"', 'about page code repository translation');
+requireIncludes('gui/frontend/src/components/MemoryHealthDialog.tsx', 'GetMemoryHealth', 'memory health backend wiring');
+requireIncludes('gui/frontend/src/components/SecurityEventsDialog.tsx', 'QuerySecurityEvents', 'security events backend wiring');
+requireIncludes('gui/frontend/src/components/remote/onboardingFlow.ts', "['sso', 'wechat']", 'TigerClaw onboarding stays two steps');
+requireIncludes('gui/frontend/src/components/remote/OnboardingWizard.tsx', "isCurrentOnboardingStep(onboardingFlow, step, 'sso')", 'TigerClaw SSO first step uses centralized flow');
+requireIncludes('gui/frontend/src/components/remote/onboardingFlow.ts', "['register', 'wechat']", 'free trial skips LLM setup in centralized flow');
+requireIncludes('gui/frontend/src/components/remote/__tests__/onboardingFlow.test.ts', 'keeps standard free trial to register plus WeChat', 'free trial onboarding flow regression test');
+requireIncludes('gui/frontend/src/components/remote/__tests__/OnboardingWizard.test.tsx', 'keeps TigerClaw onboarding to SSO plus WeChat without LLM setup', 'TigerClaw onboarding regression test');
+requireIncludes('gui/frontend/src/components/SecurityEventsDialog.tsx', "t('securityEventsDeniedSummary')", 'security events summary localization');
+requireIncludes('gui/frontend/src/components/SecurityEventsDialog.tsx', "t('securityEventsTime')", 'security events table header localization');
+requireIncludes('gui/frontend/src/i18n/appTranslations.ts', '"securityEventsDeniedSummary"', 'security events summary translations');
+requireIncludes('gui/frontend/src/i18n/appTranslations.ts', '"securityRiskCritical"', 'security event risk translations');
 requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', 'hide_startup_popup', 'startup popup hide toggle wiring');
 requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', 'UserManual_CN.md', 'startup popup manual link');
 requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', 'var(--theme-surface)', 'startup popup theme-aware surface');

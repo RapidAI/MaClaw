@@ -24,6 +24,13 @@ import {
 } from "../../../wailsjs/go/main/App";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { HubRegisterButtonContent, HubStatusBadge } from "./HubConnectionStatus";
+import {
+    getOnboardingFlow,
+    getOnboardingStepDone,
+    getOnboardingStepLabels,
+    isCurrentOnboardingStep,
+    isOnboardingComplete,
+} from "./onboardingFlow";
 
 interface HubLLMServiceStatus {
     active?: boolean;
@@ -73,27 +80,9 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-// TigerClaw 品牌两步流程：SSO+注册 → 绑定微信
-const TIGERCLAW_TOTAL_STEPS = 2;
-const STEP_LABELS = {
-    tigerclaw: {
-        en: ["SSO Auth", "WeChat"],
-        zhHans: ["企业认证", "绑定微信"],
-        zhHant: ["企業認證", "綁定微信"],
-    },
-    standard: {
-        en: ["Register", "LLM", "WeChat"],
-        zhHans: ["邮件注册", "配置 LLM", "绑定微信"],
-        zhHant: ["郵件註冊", "配置 LLM", "綁定微信"],
-    },
-};
-
 export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
     const hubT = useCallback((en: string, zhHans: string, zhHant?: string) => localizeText(lang, en, zhHans, zhHant ?? zhHans), [lang]);
-
-    // 是否为 TigerClaw 品牌（oem_qianxin）
-    const isTigerclaw = brandId === 'qianxin';
 
     // 品牌显示名称（动态替换硬编码的 "MaClaw"）
     const displayName = brandDisplayName || 'MaClaw';
@@ -110,8 +99,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [vipFlag, setVipFlag] = useState(false);
     const [redeemCode, setRedeemCode] = useState("");
     const [freeTrial, setFreeTrial] = useState(true);
-    const totalSteps = isTigerclaw ? TIGERCLAW_TOTAL_STEPS : (freeTrial ? 2 : 3);
-    const wxStep = totalSteps;
+    const onboardingFlow = useMemo(() => getOnboardingFlow({ brandId, freeTrial }), [brandId, freeTrial]);
+    const isTigerclaw = onboardingFlow.isTigerclaw;
+    const totalSteps = onboardingFlow.totalSteps;
+    const wxStep = onboardingFlow.wxStep;
     // Whether the free trial LLM service has been verified as active on the Hub.
     // Starts false; set to true only after GetHubLLMServiceStatus confirms Active=true.
     const [freeTrialVerified, setFreeTrialVerified] = useState(false);
@@ -160,18 +151,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     // wxDone = actually bound; wxSkipped = user chose to skip
     const wxCompleted = wxDone || wxSkipped;
 
-    // Step completion map (memoized to avoid array re-creation)
-    // TigerClaw 两步流程：step1=SSO+注册(llmDone&&regDone), step2=微信
-    // 普通品牌三步：step1=注册, step2=LLM, step3=微信
-    const stepDone = useMemo(() => {
-        if (isTigerclaw) {
-            return [false, llmDone && regDone, wxCompleted];
-        }
-        if (freeTrial) {
-            return [false, regDone, wxCompleted];
-        }
-        return [false, regDone, llmDone, wxCompleted];
-    }, [regDone, llmDone, wxCompleted, isTigerclaw, freeTrial]);
+    // Step completion is derived from the centralized flow definition.
+    const stepDone = useMemo(() => getOnboardingStepDone(onboardingFlow, {
+        regDone,
+        llmDone,
+        wxCompleted,
+    }), [onboardingFlow, regDone, llmDone, wxCompleted]);
 
     // Navigation guards
     const getPrevStep = useCallback((currentStep: number) => {
@@ -315,13 +300,13 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     // Auto-close when all done
     useEffect(() => {
-        const allDone = isTigerclaw ? (llmDone && regDone && wxCompleted) : (regDone && llmDone && wxCompleted);
+        const allDone = isOnboardingComplete(onboardingFlow, { regDone, llmDone, wxCompleted });
         if (allDone) {
             onSaveField({ onboarding_done: true });
             const timer = setTimeout(onClose, 1500);
             return () => clearTimeout(timer);
         }
-    }, [regDone, llmDone, wxCompleted, isTigerclaw, onClose, onSaveField]);
+    }, [onboardingFlow, regDone, llmDone, wxCompleted, onClose, onSaveField]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
 
@@ -645,18 +630,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     };
 
     // ── Step labels (memoized) ──
-    const labels = useMemo(() => {
-        const labelSet = isTigerclaw
-            ? STEP_LABELS.tigerclaw
-            : (freeTrial
-                ? { en: ["Register", "WeChat"], zhHans: ["\u90ae\u7bb1\u6ce8\u518c", "\u7ed1\u5b9a\u5fae\u4fe1"], zhHant: ["\u90f5\u7bb1\u8a3b\u518a", "\u7d81\u5b9a\u5fae\u4fe1"] }
-                : STEP_LABELS.standard);
-        return lang === 'zh-Hans'
-            ? labelSet.zhHans
-            : lang === 'zh-Hant'
-                ? labelSet.zhHant
-                : labelSet.en;
-    }, [lang, isTigerclaw, freeTrial]);
+    const labels = useMemo(() => getOnboardingStepLabels(onboardingFlow, lang), [onboardingFlow, lang]);
 
     return (
         <div style={{
@@ -736,7 +710,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         TigerClaw 品牌：企业 SSO 认证 + 自动注册 Hub（合并原 Step1+Step2）
                         普通品牌：邮件注册
                     */}
-                    {step === 1 && isTigerclaw && (
+                    {isCurrentOnboardingStep(onboardingFlow, step, 'sso') && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t(
@@ -780,10 +754,20 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             {embeddedSSOError && (
                                 <div style={{ marginTop: 10 }}>
                                     <button onClick={() => {
-                                        StartCodeGenSSO().then(info => {
+                                        StartCodeGenSSO().then(async info => {
                                             setLlmDone(true);
                                             onLLMConfigured();
-                                            setSsoResult({ ok: true, msg: info.message });
+                                            const userEmail = (info as any)?.email || "";
+                                            setSsoResult({ ok: true, msg: (info as any)?.message || "SSO OK" });
+                                            if (userEmail) {
+                                                try {
+                                                    await ActivateRemote(userEmail, "", "");
+                                                    onRegistered();
+                                                } catch (regErr) {
+                                                    console.warn("[TigerClaw] Hub fallback registration failed:", regErr);
+                                                }
+                                            }
+                                            setRegDone(true);
                                         }).catch(e => setSsoResult({ ok: false, msg: String(e) }));
                                     }} style={{
                                         width: "100%", padding: "8px 0", fontSize: "0.76rem",
@@ -893,7 +877,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         </div>
                     )}
 
-                    {step === 1 && !isTigerclaw && (
+                    {isCurrentOnboardingStep(onboardingFlow, step, 'register') && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t("注册设备邮箱到 Hub，即可通过移动端操控。",
@@ -996,7 +980,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         普通品牌：LLM 配置
                     */}
 
-                    {step === 2 && !isTigerclaw && !freeTrial && (
+                    {isCurrentOnboardingStep(onboardingFlow, step, 'llm') && (
                         <div>
                             <p style={{ margin: "0 0 8px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t("选择一个 LLM 服务商，输入 API Key 后测试并保存。",
@@ -1176,7 +1160,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         TigerClaw: step === 2
                         普通品牌: step === 3
                     */}
-                    {step === wxStep && (
+                    {isCurrentOnboardingStep(onboardingFlow, step, 'wechat') && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t(`扫码绑定微信，即可通过微信与 ${displayName} 交互。`,

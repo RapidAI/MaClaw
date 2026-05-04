@@ -2,6 +2,7 @@ import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { LoadConfig, RestartThirdPartyGateway, SetThirdPartyGatewayLocalMode, StopThirdPartyGateway } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
+import { watchLabel } from './imSettingsShared';
 
 type ThirdPartyAccessSettingsProps = {
     config: main.AppConfig | null;
@@ -70,6 +71,9 @@ export const ThirdPartyAccessSettings = ({
                 }}>
                     {lang === 'zh-Hans' ? '\u91cd\u542f\u63a5\u53e3' : lang === 'zh-Hant' ? '\u91cd\u555f\u4ecb\u9762' : 'Restart'}
                 </button>
+                <button type="button" onClick={() => setIMAuditPlatform('thirdparty')} style={{ ...imAuditBtnStyle, marginLeft: '18px' }}>
+                    {watchLabel(lang)}
+                </button>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>{channelModeLabel(lang)}</span>
@@ -83,9 +87,6 @@ export const ThirdPartyAccessSettings = ({
                         });
                     }}>{opt.label}</button>
                 ))}
-                <button type="button" onClick={() => setIMAuditPlatform('thirdparty')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
-                    {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
-                </button>
             </div>
 
             <div style={{ maxWidth: '760px', display: 'grid', gap: '10px' }}>

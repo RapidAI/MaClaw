@@ -1,4 +1,5 @@
 import agentnetIcon from '../../assets/images/agentnet.svg';
+import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -86,7 +87,7 @@ export const SidebarNavRail = ({
 
     return (
         <div style={{
-            width: '90px',
+            width: `${SIDEBAR_NAV_RAIL_WIDTH}px`,
             borderRight: '1px solid var(--theme-border)',
             display: 'flex',
             flexDirection: 'column',

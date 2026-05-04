@@ -18,8 +18,6 @@ type AboutActionsProps = {
     setShowInstallLog: (value: boolean) => void;
 };
 
-const smallButtonStyle = { fontSize: '0.75rem', padding: '2px 6px' };
-
 export const AboutActions = ({
     brandInfo,
     appVersion,
@@ -30,45 +28,47 @@ export const AboutActions = ({
     setShowUpdateModal,
     setShowInstallLog,
 }: AboutActionsProps) => {
+    const repoURL = brandInfo?.githubURL || 'https://github.com/rapidai/maclaw';
+    const issueURL = repoURL + '/issues/new';
+    const websiteURL = brandInfo?.websiteURL || 'https://maclaw.top';
     const checkForUpdate = () => {
         setStatus(t('checkingUpdate'));
         CheckUpdate(appVersion).then(res => {
-            console.log('CheckUpdate result:', res);
             setUpdateResult(res);
             setIsStartupUpdateCheck(false);
             setShowUpdateModal(true);
             setStatus('');
         }).catch(err => {
-            console.error('CheckUpdate error:', err);
             setStatus('Check update failed: ' + err);
-            setUpdateResult({
-                has_update: false,
-                latest_version: 'Failed to fetch',
-                release_url: '',
-            });
+            setUpdateResult({ has_update: false, latest_version: 'Failed to fetch', release_url: '' });
             setIsStartupUpdateCheck(false);
             setShowUpdateModal(true);
         });
     };
+    const actions = [
+        { label: t('officialWebsite'), onClick: () => BrowserOpenURL(websiteURL) },
+        { label: t('onlineUpdate'), onClick: checkForUpdate },
+        { label: t('installLog'), onClick: () => setShowInstallLog(true) },
+        { label: t('memoryHealth'), onClick: () => BrowserOpenURL(websiteURL + '/memory-health') },
+        { label: t('securityEvents'), onClick: () => BrowserOpenURL(websiteURL + '/security') },
+        { label: t('errorLogs'), onClick: () => setShowInstallLog(true) },
+        ...(brandInfo?.id === 'qianxin' ? [] : [
+            { label: t('bugReport'), onClick: () => BrowserOpenURL(issueURL) },
+            { label: t('codeRepo'), onClick: () => BrowserOpenURL(repoURL) },
+        ]),
+    ];
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
-            <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                <button className="btn-link" style={smallButtonStyle} onClick={() => BrowserOpenURL(brandInfo?.websiteURL || 'https://maclaw.top')}>{t('officialWebsite')}</button>
-                <button className="btn-link" style={smallButtonStyle} onClick={checkForUpdate}>{t('onlineUpdate')}</button>
-                <button className="btn-link" style={smallButtonStyle} onClick={() => setShowInstallLog(true)}>{t('installLog')}</button>
-                {brandInfo?.githubURL ? (
-                    <>
-                        <button className="btn-link" style={smallButtonStyle} onClick={() => BrowserOpenURL(brandInfo.githubURL + '/issues/new')}>{t('bugReport')}</button>
-                        <button className="btn-link" style={smallButtonStyle} onClick={() => BrowserOpenURL(brandInfo.githubURL)}>GitHub</button>
-                    </>
-                ) : brandInfo?.id !== 'qianxin' ? (
-                    <>
-                        <button className="btn-link" style={smallButtonStyle} onClick={() => BrowserOpenURL('https://github.com/rapidai/maclaw/issues/new')}>{t('bugReport')}</button>
-                        <button className="btn-link" style={smallButtonStyle} onClick={() => BrowserOpenURL('https://github.com/rapidai/maclaw')}>GitHub</button>
-                    </>
-                ) : null}
+        <section className="about-card about-actions-card">
+            <h3 className="about-section-title">{t('aboutQuickActions')}</h3>
+            <p className="about-actions-card__desc">{t('aboutQuickActionsDesc')}</p>
+            <div className="about-action-grid">
+                {actions.map(action => (
+                    <button key={action.label} className="about-action-button" onClick={action.onClick}>
+                        {action.label}
+                    </button>
+                ))}
             </div>
-        </div>
+        </section>
     );
 };

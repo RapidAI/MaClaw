@@ -375,6 +375,11 @@ func normalizeSkillYAMLRaw(raw map[string]any) map[string]any {
 	if params, ok := normalizeYAMLParamSchema(normalized["params"]); ok {
 		normalized["params"] = params
 	}
+	if isEmptyYAMLValue(normalized["steps"]) {
+		if step, ok := synthesizeTopLevelYAMLStep(normalized); ok {
+			normalized["steps"] = []interface{}{step}
+		}
+	}
 	if steps, ok := normalizeYAMLSteps(normalized["steps"]); ok {
 		normalized["steps"] = steps
 	}
@@ -395,6 +400,35 @@ func normalizeSkillYAMLRaw(raw map[string]any) map[string]any {
 	}
 	normalizeYAMLScalars(normalized)
 	return normalized
+}
+
+func synthesizeTopLevelYAMLStep(raw map[string]any) (map[string]interface{}, bool) {
+	step := map[string]interface{}{}
+	for _, key := range []string{"command", "cmd", "run", "script", "shell_command"} {
+		if value, ok := raw[key]; ok && !isEmptyYAMLValue(value) {
+			step[key] = value
+			step["action"] = "run"
+			break
+		}
+	}
+	if len(step) == 0 {
+		for _, key := range []string{"instructions", "instruction", "prompt", "task"} {
+			if value, ok := raw[key]; ok && !isEmptyYAMLValue(value) {
+				step[key] = value
+				step["action"] = "craft_tool"
+				break
+			}
+		}
+	}
+	if len(step) == 0 {
+		return nil, false
+	}
+	for _, key := range []string{"working_dir", "cwd", "shell", "preferred_shell", "timeout", "timeout_seconds", "env", "extra_env", "required_env", "requires_env"} {
+		if value, ok := raw[key]; ok && !isEmptyYAMLValue(value) {
+			step[key] = value
+		}
+	}
+	return step, true
 }
 
 func normalizeYAMLOperations(raw interface{}) ([]interface{}, bool) {

@@ -86,6 +86,69 @@ describe('OnboardingWizard registration', () => {
         cleanup();
     });
 
+    it('keeps TigerClaw onboarding to SSO plus WeChat without LLM setup', async () => {
+        StartCodeGenSSOEmbeddedMock.mockResolvedValue(undefined);
+        WaitCodeGenSSOResultMock.mockResolvedValue({ email: 'tiger@example.com', message: 'SSO OK' });
+        FetchCodeGenModelsMock.mockResolvedValue([]);
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+
+        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="TigerClaw" />);
+
+        expect(screen.getByText('1 / 2')).toBeTruthy();
+        expect(screen.queryByText('Free trial')).toBeNull();
+        expect(screen.queryByPlaceholderText('name@example.com')).toBeNull();
+        expect(screen.queryByText(/Pick a provider/)).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
+
+        await waitFor(() => {
+            expect(StartCodeGenSSOEmbeddedMock).toHaveBeenCalledTimes(1);
+            expect(WaitCodeGenSSOResultMock).toHaveBeenCalledTimes(1);
+            expect(ActivateRemoteMock).toHaveBeenCalledWith('tiger@example.com', '', '');
+            expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+            expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
+        });
+
+        expect(screen.getByText(/Authenticated/)).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
+            expect(screen.getByText('2 / 2')).toBeTruthy();
+        });
+        expect(screen.queryByText(/Pick a provider/)).toBeNull();
+        expect(GetHubLLMServiceStatusMock).not.toHaveBeenCalled();
+    });
+
+    it('lets TigerClaw browser SSO fallback continue to WeChat without LLM setup', async () => {
+        StartCodeGenSSOEmbeddedMock.mockRejectedValue(new Error('embedded unavailable'));
+        StartCodeGenSSOMock.mockResolvedValue({ message: 'Browser SSO OK' });
+
+        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="TigerClaw" />);
+
+        fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: /Open in Browser/ })).toBeTruthy();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: /Open in Browser/ }));
+
+        await waitFor(() => {
+            expect(StartCodeGenSSOMock).toHaveBeenCalledTimes(1);
+            expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+        });
+
+        expect(baseProps.onRegistered).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
+            expect(screen.getByText('2 / 2')).toBeTruthy();
+        });
+        expect(screen.queryByText(/Pick a provider/)).toBeNull();
+    });
+
     it('renders optional service redeem code text in Chinese registration step', () => {
         render(<OnboardingWizard {...baseProps} lang="zh-Hans" />);
 
@@ -214,44 +277,25 @@ describe('OnboardingWizard registration', () => {
         expect(await screen.findByText(/Pick a provider/)).toBeTruthy();
     });
 
-    it('falls back to LLM config step when free trial service is not provisioned', async () => {
-        vi.useFakeTimers();
+    it('does not impose a timeout warning on free trial verification', async () => {
         ActivateRemoteMock.mockResolvedValue({ vip_flag: false });
-        // Hub connects but LLM service is NOT active (no providers configured).
         GetRemoteConnectionStatusMock.mockResolvedValue({ connected: true });
         GetHubLLMServiceStatusMock.mockResolvedValue({ active: false, skip_llm_config: false });
-        GetMaclawLLMProvidersMock.mockResolvedValue({
-            providers: [
-                { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
-            ],
-        });
 
         render(<OnboardingWizard {...baseProps} />);
 
         expect(screen.getByText('Free trial')).toBeTruthy();
-        await act(async () => {
-            fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
-        });
-        await act(async () => {
-            fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        });
-        await act(async () => {
-            fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/Registration successful/)).toBeTruthy();
         });
 
-        // Let registration resolve
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(200);
-        });
-
-        // After 15s timeout, freeTrial should be unchecked and warning shown.
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(15000);
-        });
-
-        // The timeout warning should be visible.
-        expect(screen.getByText(/not ready/i)).toBeTruthy();
-    }, 20000);
+        expect(screen.queryByText(/not ready/i)).toBeNull();
+        expect(screen.getByText(/Verifying free trial service/)).toBeTruthy();
+    });
 
     it('accepts backend success when returned machine credentials exist', async () => {
         ActivateRemoteMock.mockResolvedValue({ machine_id: 'mid-1', machine_token: 'tok-1' });

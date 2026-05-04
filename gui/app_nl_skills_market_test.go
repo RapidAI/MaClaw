@@ -183,8 +183,8 @@ func TestInstallHubSkillWrapsFileBackedSkillAsCraftTool(t *testing.T) {
 	if got := found.Steps[0].Params["working_dir"]; got != expectedDir {
 		t.Fatalf("working_dir = %#v, want %q", got, expectedDir)
 	}
-	if got := found.Steps[0].Params["verification_mode"]; got != "artifact_required" {
-		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_required")
+	if got := found.Steps[0].Params["verification_mode"]; got != "artifact_optional" {
+		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_optional")
 	}
 	if got := found.Steps[0].Params["register_policy"]; got != "manual" {
 		t.Fatalf("register_policy = %#v, want %q", got, "manual")
@@ -321,8 +321,8 @@ func TestInstallMixedSkillRegistersGitHubSkillMD(t *testing.T) {
 	if got := found.Steps[0].Params["instructions"]; got != "# Browser Skill\n\nAutomate browser tasks." {
 		t.Fatalf("unexpected instructions: %#v", got)
 	}
-	if got := found.Steps[0].Params["verification_mode"]; got != "artifact_required" {
-		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_required")
+	if got := found.Steps[0].Params["verification_mode"]; got != "artifact_optional" {
+		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_optional")
 	}
 	if got := found.Steps[0].Params["register_policy"]; got != "manual" {
 		t.Fatalf("register_policy = %#v, want %q", got, "manual")

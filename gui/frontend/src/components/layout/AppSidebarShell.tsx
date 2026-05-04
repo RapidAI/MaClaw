@@ -2,6 +2,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { SidebarAiPane } from './SidebarAiPane';
 import { SidebarNavRail } from './SidebarNavRail';
 import type { SidebarHubCredits } from '../../types/appShell';
+import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 
 type RecentProject = {
     id?: string;
@@ -120,7 +121,7 @@ export const AppSidebarShell = ({
 <>
             <div style={{
                 height: '30px',
-                width: navTab === 'ai' ? `${90 + recentTasksPaneWidth + 6}px` : '90px',
+                width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + recentTasksPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px`,
                 position: 'absolute',
                 top: 0,
                 left: 0,
@@ -128,7 +129,7 @@ export const AppSidebarShell = ({
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${90 + recentTasksPaneWidth + 6}px` : '90px' } as any} data-ai-theme={aiThemeMode}>
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + recentTasksPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode}>
                           <SidebarNavRail
                     navTab={navTab}
                     brandInfo={brandInfo}

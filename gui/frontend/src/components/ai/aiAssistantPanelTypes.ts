@@ -73,6 +73,7 @@ export interface AIAssistantPanelProps {
     actions: AIAssistantPanelActionProps;
     window?: AIAssistantPanelWindowProps;
     groupDiscussion?: GroupDiscussionPanelControl;
+    themeMode?: 'light' | 'dark';
     onThemeModeChange?: (mode: 'light' | 'dark') => void;
     audioInputDeviceId?: string;
     audioOutputDeviceId?: string;

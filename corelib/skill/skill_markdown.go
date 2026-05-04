@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -203,19 +204,13 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 	if parsed.compatibility != "" && !containsString(triggers, "agent-skill") {
 		triggers = append(triggers, "agent-skill")
 	}
-	producesArtifact := true // default: skills produce artifacts
+	producesArtifact := false // default: markdown-only skills may be stdout/instructional
 	if opts.ProducesArtifact != nil {
 		producesArtifact = *opts.ProducesArtifact
 	} else if parsed.producesArtifact != nil {
 		producesArtifact = *parsed.producesArtifact
 	}
-	verificationMode := "artifact_required"
-	if !producesArtifact {
-		verificationMode = "artifact_optional"
-	}
-	if v := parsed.frontmatter["verification_mode"]; v != "" {
-		verificationMode = v
-	}
+	verificationMode := markdownVerificationMode(parsed.frontmatter["verification_mode"], producesArtifact)
 	params := map[string]interface{}{
 		"instructions":      parsed.markdown,
 		"verification_mode": verificationMode,
@@ -451,7 +446,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		entry.CreatedAt = fileModTime(mdPath)
 		return entry, nil
 	}
-	producesArtifact := true
+	producesArtifact := false
 	if opts.ProducesArtifact != nil {
 		producesArtifact = *opts.ProducesArtifact
 	} else if parsed.producesArtifact != nil {
@@ -928,6 +923,24 @@ func yamlStringList(v interface{}) []string {
 			}
 		}
 		return result
+	case map[string]interface{}:
+		result := make([]string, 0, len(val))
+		for key := range val {
+			if s := strings.TrimSpace(key); s != "" {
+				result = append(result, s)
+			}
+		}
+		slices.Sort(result)
+		return result
+	case map[string]string:
+		result := make([]string, 0, len(val))
+		for key := range val {
+			if s := strings.TrimSpace(key); s != "" {
+				result = append(result, s)
+			}
+		}
+		slices.Sort(result)
+		return result
 	case string:
 		return splitCSV(val)
 	}
@@ -1008,6 +1021,16 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func markdownVerificationMode(explicit string, producesArtifact bool) string {
+	if mode := strings.TrimSpace(explicit); mode != "" {
+		return mode
+	}
+	if producesArtifact {
+		return "artifact_required"
+	}
+	return "artifact_optional"
 }
 
 var triggerCleanupRe = regexp.MustCompile(`[^a-z0-9_-]+`)

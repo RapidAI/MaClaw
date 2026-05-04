@@ -37,14 +37,34 @@ func TestImportMarkdownSkillDir_CreatesCraftToolWhenNoScripts(t *testing.T) {
 	if got := entry.Steps[0].Params["working_dir"]; got != skillDir {
 		t.Fatalf("working_dir = %#v, want %q", got, skillDir)
 	}
-	if got := entry.Steps[0].Params["verification_mode"]; got != "artifact_required" {
-		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_required")
+	if got := entry.Steps[0].Params["verification_mode"]; got != "artifact_optional" {
+		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_optional")
 	}
 	if got := entry.Steps[0].Params["register_policy"]; got != "manual" {
 		t.Fatalf("register_policy = %#v, want %q", got, "manual")
 	}
 	if entry.SourceProject != "claude" {
 		t.Fatalf("SourceProject = %q, want %q", entry.SourceProject, "claude")
+	}
+}
+
+func TestImportMarkdownSkillDir_ExplicitArtifactRequired(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "artifact-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "---\nname: Artifact Skill\nproduces_artifact: true\n---\n\n# Artifact Skill\n\nGenerate a file."
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if got := entry.Steps[0].Params["verification_mode"]; got != "artifact_required" {
+		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_required")
 	}
 }
 

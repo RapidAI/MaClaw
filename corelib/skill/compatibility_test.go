@@ -298,6 +298,29 @@ steps:
 	}
 }
 
+func TestParseSkillYAMLFile_TopLevelCommandBecomesExecutableStep(t *testing.T) {
+	data := []byte(`name: top-command
+description: command-only skill
+command: echo hello
+env:
+  API_TOKEN: value
+`)
+
+	sf, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile error: %v", err)
+	}
+	if len(sf.Steps) != 1 {
+		t.Fatalf("steps = %#v, want one synthesized step", sf.Steps)
+	}
+	if sf.Steps[0].Action != "run" || sf.Steps[0].Params["command"] != "echo hello" {
+		t.Fatalf("step = %#v, want run command", sf.Steps[0])
+	}
+	if len(sf.RequiredEnv) != 1 || sf.RequiredEnv[0] != "API_TOKEN" {
+		t.Fatalf("required env from env map = %#v, want [API_TOKEN]", sf.RequiredEnv)
+	}
+}
+
 func TestParseSkillYAMLFile_ToleratesMapParamSchemaAndStringLists(t *testing.T) {
 	data := []byte(`name: compat-schema
 required_env: API_TOKEN, OTHER_TOKEN

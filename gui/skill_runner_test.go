@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func TestSkillDocHelpersAcceptMixedCaseSkillMarkdown(t *testing.T) {
@@ -243,6 +244,50 @@ func TestNormalizeSkillRunVars_CoercesNonStringArgs(t *testing.T) {
 	// Non-string values are coerced via fmt.Sprintf (aligned with TUI behavior).
 	if len(got) != 3 || got["format"] != "pdf" || got["count"] != "3" || got["enabled"] != "true" {
 		t.Fatalf("normalizeSkillRunVars() = %#v, want all args coerced to strings", got)
+	}
+}
+
+func TestApplySkillRunInputInference_FillsRequiredCityFromInput(t *testing.T) {
+	vars := normalizeSkillRunVars(map[string]interface{}{"input": "成都"})
+	skill := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
+	cskill.ApplyRunInputInference(skill, vars, map[string]interface{}{"input": "成都"})
+	if vars["city"] != "成都" {
+		t.Fatalf("city = %q, want inferred 成都", vars["city"])
+	}
+}
+
+func TestApplySkillRunInputInference_FillsRequiredArgFromNamedPrompt(t *testing.T) {
+	vars := normalizeSkillRunVars(map[string]interface{}{"user_prompt": "请查询 city: 上海 的天气"})
+	skill := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
+	cskill.ApplyRunInputInference(skill, vars, map[string]interface{}{"user_prompt": "请查询 city: 上海 的天气"})
+	if vars["city"] != "上海" {
+		t.Fatalf("city = %q, want named value", vars["city"])
+	}
+}
+
+func TestCollectSkillProvidedEnvReadsStepEnvMap(t *testing.T) {
+	skill := &corelib.NLSkillEntry{Steps: []corelib.NLSkillStep{{
+		Action: "bash",
+		Params: map[string]interface{}{"extra_env": map[string]interface{}{"API_TOKEN": "secret"}},
+	}}}
+	got := cskill.CollectSkillProvidedEnv(skill)
+	if got["API_TOKEN"] != "secret" {
+		t.Fatalf("provided env = %#v", got)
+	}
+}
+
+func TestExtractSkillRunExtraEnvAcceptsStringAssignments(t *testing.T) {
+	got := cskill.ExtractRunExtraEnv("OPENAI_API_KEY=sk-test,HTTP_PROXY=http://127.0.0.1:7890")
+	if got["OPENAI_API_KEY"] != "sk-test" || got["HTTP_PROXY"] != "http://127.0.0.1:7890" {
+		t.Fatalf("extra env = %#v", got)
+	}
+}
+
+func TestDetectArtifactPathFromTextAcceptsNonPDFArtifacts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.md")
+	got := detectArtifactPathFromText("artifact: " + path)
+	if got != path {
+		t.Fatalf("artifact path = %q, want %q", got, path)
 	}
 }
 

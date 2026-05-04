@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
@@ -26,6 +26,7 @@ import { GroupDiscussionSettingsPanel } from './components/remote/GroupDiscussio
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
+import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
 import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
@@ -55,7 +56,7 @@ import { MCPPage } from './components/pages/MCPPage';
 import { GossipPage } from './components/pages/GossipPage';
 import { StartupPopup } from './components/modals/StartupPopup';
 import { ThanksModal } from './components/modals/ThanksModal';
-import { AboutPage } from './components/pages/AboutPage';
+import { AboutPanel } from './components/AboutPanel';
 import { ToolRepairProgressDialog } from './components/modals/ToolRepairProgressDialog';
 import { UpdateModal } from './components/modals/UpdateModal';
 import { InstallLogModal } from './components/modals/InstallLogModal';
@@ -71,6 +72,7 @@ import type { RemoteCenterHubOption, SidebarHubCredits, SidebarHubServiceStatus,
 
 
 const APP_VERSION = "5.4.2.9920"
+const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
 
 
 function App() {
@@ -153,12 +155,7 @@ function App() {
     const [brandInfo, setBrandInfo] = useState<{id: string, displayName: string, displayNameCN: string, slogan: string, author: string, businessContact: string, websiteURL: string, githubURL: string, iconPath: string} | null>(null);
     const currentIcon = brandInfo?.id === 'qianxin' ? qianxinIcon : appIcon;
     const [aiThemeMode, setAIThemeMode] = useState<'light' | 'dark'>(() => {
-        if (typeof window === 'undefined') return 'light';
-        try {
-            return window.localStorage.getItem('maclaw.ai.themeMode') === 'dark' ? 'dark' : 'light';
-        } catch {
-            return 'light';
-        }
+        return readStoredAssistantThemeMode();
     });
     const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';
@@ -332,6 +329,17 @@ function App() {
             showToastMessage(t("refreshFailed") + err, 5000);
         }
     };
+
+    useEffect(() => {
+        if (navTab !== 'about' || thanksContent.trim()) return;
+        let cancelled = false;
+        ReadThanks()
+            .then((content) => {
+                if (!cancelled) setThanksContent(content || "");
+            })
+            .catch((err) => console.error("Failed to preload thanks content:", err));
+        return () => { cancelled = true; };
+    }, [navTab, thanksContent]);
 
     const handleDeleteSkill = async (name: string) => {
         if (name === "Claude Official Documentation Skill Package" || name === "超能力技能包") {
@@ -2169,6 +2177,7 @@ ${instruction}`;
                             onClose={() => { switchTool('settings'); }}
                             lang={lang}
                             chatFontSize={chatFontSize}
+                            themeMode={aiThemeMode}
                             onThemeModeChange={setAIThemeMode}
                             audioInputDeviceId={(config as any)?.audio_input_device_id || ''}
                             audioOutputDeviceId={(config as any)?.audio_output_device_id || ''}
@@ -2493,24 +2502,44 @@ ${instruction}`;
                     )}
 
                     {navTab === 'about' && (
-                        <AboutPage
+                        <AboutPanel
                             currentIcon={currentIcon}
-                            brandDisplayTitle={brandDisplayTitle}
                             brandInfo={brandInfo}
                             appVersion={APP_VERSION}
+                            buildNumber={buildNumber}
+                            thanksContent={thanksContent}
                             t={t}
-                            setStatus={setStatus}
-                            setUpdateResult={setUpdateResult}
-                            setIsStartupUpdateCheck={setIsStartupUpdateCheck}
-                            setShowUpdateModal={setShowUpdateModal}
-                            setShowInstallLog={setShowInstallLog}
+                            onOpenWebsite={() => BrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
+                            onCheckUpdate={() => {
+                                setStatus(t("checkingUpdate"));
+                                CheckUpdate(APP_VERSION).then((res: any) => {
+                                    console.log("CheckUpdate result:", res);
+                                    setUpdateResult(res);
+                                    setIsStartupUpdateCheck(false);
+                                    setShowUpdateModal(true);
+                                    setStatus("");
+                                }).catch((err: any) => {
+                                    console.error("CheckUpdate error:", err);
+                                    setStatus("检查更新失败: " + err);
+                                    setUpdateResult({
+                                        has_update: false,
+                                        latest_version: "获取失败",
+                                        release_url: ""
+                                    });
+                                    setIsStartupUpdateCheck(false);
+                                    setShowUpdateModal(true);
+                                });
+                            }}
+                            onShowInstallLog={() => setShowInstallLog(true)}
+                            onOpenBugReport={() => BrowserOpenURL(brandInfo?.githubURL ? brandInfo.githubURL + "/issues/new" : "https://github.com/rapidai/maclaw/issues/new")}
+                            onOpenGithub={() => BrowserOpenURL(MACLAW_CODE_REPOSITORY_URL)}
                         />
                     )}
                 </div>
 
                 {/* Global Action Bar (Footer) */}
                 {config && isToolTab(navTab) && (
-                    <div className="global-action-bar" style={{ '--wails-draggable': 'no-drag' } as any}>
+                    <div className="global-action-bar" data-ai-theme={aiThemeMode} style={{ '--wails-draggable': 'no-drag' } as any}>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '100%', padding: '2px 0', '--wails-draggable': 'no-drag' } as any}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '20px', justifyContent: 'flex-start' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

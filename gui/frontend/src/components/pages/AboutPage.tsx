@@ -1,4 +1,5 @@
 import { AboutActions } from './AboutActions';
+import { AboutThanksCard } from './AboutThanksCard';
 
 type BrandInfo = {
     id: string;
@@ -36,51 +37,43 @@ export const AboutPage = ({
     setIsStartupUpdateCheck,
     setShowUpdateModal,
     setShowInstallLog,
-}: AboutPageProps) => (
-    <div style={{
-        padding: '20px',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        textAlign: 'center',
-        height: '100%',
-        justifyContent: 'center',
-        boxSizing: 'border-box'
-    }}>
-        <img src={currentIcon} alt="Logo" style={{ width: '64px', height: '64px', marginBottom: '15px' }} />
-        <h2 style={{
-            margin: '0 0 4px 0',
-            background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            display: 'inline-block',
-            fontWeight: 'bold'
-        }}>{brandDisplayTitle}</h2>
-        <div style={{
-            fontSize: '1rem',
-            fontWeight: 'bold',
-            background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            marginBottom: '4px',
-            display: 'inline-block'
-        }}>
-            {brandInfo?.slogan || t("slogan")}
+}: AboutPageProps) => {
+    const versionParts = appVersion.split('.');
+    const buildNumber = versionParts[versionParts.length - 1] || appVersion;
+
+    return (
+        <div className="about-page" style={{ color: 'var(--theme-text-primary)' }}>
+            <div className="about-page__container">
+                <section className="about-card about-hero-card">
+                    <div className="about-hero-card__icon-wrap">
+                        <img src={currentIcon} alt="Logo" className="about-hero-card__icon" />
+                    </div>
+                    <div className="about-hero-card__body">
+                        <h2 className="about-hero-card__title">{brandDisplayTitle}</h2>
+                        <p className="about-hero-card__slogan">{brandInfo?.slogan || t('slogan')}</p>
+                        <div className="about-version-row">
+                            <span className="about-version-badge">{t('version')} {appVersion}</span>
+                            <span className="about-build-badge">{t('aboutBuild')} {buildNumber}</span>
+                        </div>
+                        <div className="about-meta-inline">
+                            <span>{t('author')}: {brandInfo?.author || 'Dr. Daniel'}</span>
+                            <span className="about-meta-dot">•</span>
+                            <span>{brandInfo?.businessContact || t('businessCooperation')}</span>
+                        </div>
+                    </div>
+                </section>
+                <AboutActions
+                    brandInfo={brandInfo}
+                    appVersion={appVersion}
+                    t={t}
+                    setStatus={setStatus}
+                    setUpdateResult={setUpdateResult}
+                    setIsStartupUpdateCheck={setIsStartupUpdateCheck}
+                    setShowUpdateModal={setShowUpdateModal}
+                    setShowInstallLog={setShowInstallLog}
+                />
+                <AboutThanksCard t={t} />
+            </div>
         </div>
-        <div style={{ fontSize: '1rem', color: 'var(--theme-text-primary)', marginBottom: '5px' }}>{t("version")} {appVersion}</div>
-        <div style={{ fontSize: '0.9rem', color: 'var(--theme-text-muted)', marginBottom: '5px' }}>{brandInfo?.businessContact || t("businessCooperation")}</div>
-        <div style={{ fontSize: '0.9rem', color: 'var(--theme-text-secondary)', marginBottom: '20px' }}>{t("author")}: {brandInfo?.author || 'Dr. Daniel'}</div>
-
-        <AboutActions
-            brandInfo={brandInfo}
-            appVersion={appVersion}
-            t={t}
-            setStatus={setStatus}
-            setUpdateResult={setUpdateResult}
-            setIsStartupUpdateCheck={setIsStartupUpdateCheck}
-            setShowUpdateModal={setShowUpdateModal}
-            setShowInstallLog={setShowInstallLog}
-        />
-
-    </div>
-);
+    );
+};

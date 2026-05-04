@@ -438,7 +438,7 @@ export function CentersPage() {
     });
   }, [centers, query, statusFilter]);
 
-  const detailCenter = detailCenterId ? centers.find(center => center.id === detailCenterId) : undefined;
+  const detailCenter = detailCenterId ? filteredCenters.find(center => center.id === detailCenterId) : undefined;
 
   const centerStats = summary ?? {
     total_centers: centers.length,
@@ -584,6 +584,7 @@ export function CentersPage() {
                 {managementItem?.issues?.length ? <div className="cloud-center-summary-alert"><span>{t('centers.sections.recommendedActions')}</span><strong>{managementItem.issues.length}</strong></div> : null}
               </div>
 
+              {detailCenterId === center.id ? <>
               <div className="cloud-review-panel">
                 <div>
                   <label>{t('centers.sections.registrationReview')}</label>
@@ -807,6 +808,7 @@ export function CentersPage() {
                 {center.status === 'disabled' && <button className="btn-secondary" onClick={() => { setNotice(null); enableCenter(center.id).then(() => { setNotice({ tone: 'ok', text: t('centers.noticeEnabled') }); load(); }).catch(showError); }}>{t('centers.enable')}</button>}
                 <button className="btn-danger" onClick={() => handleDelete(center.id)}>{t('centers.delete')}</button>
               </div>
+              </> : null}
             </div>
           );
         })}

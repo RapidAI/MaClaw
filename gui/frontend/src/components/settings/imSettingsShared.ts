@@ -6,6 +6,7 @@ export const textForLang = (lang: string, en: string, zhHans: string, zhHant: st
 
 export const channelModeLabel = (lang: string) => textForLang(lang, 'Mode:', '\u901a\u9053\uff1a', '\u901a\u9053\uff1a');
 export const restartLabel = (lang: string) => textForLang(lang, 'Restart', '\u91cd\u542f', '\u91cd\u555f');
+export const watchLabel = (lang: string) => textForLang(lang, 'Watch', '\u76d1\u770b', '\u76e3\u770b');
 export const switchFailedLabel = '\u5207\u6362\u5931\u8d25';
 
 export const localModeOptions = (lang: string) => ([

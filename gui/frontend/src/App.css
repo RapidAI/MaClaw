@@ -64,6 +64,21 @@
     gap: 14px;
 }
 
+.about-card {
+    background: color-mix(in srgb, var(--theme-surface) 96%, transparent);
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-xl);
+    padding: 18px;
+    box-shadow: var(--shadow-md);
+}
+
+.about-section-title {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
 .about-hero-card {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -2175,6 +2190,30 @@ body {
 }
 
 /* Tool Grid Styles */
+
+.sidebar[data-ai-theme='dark'] {
+    --theme-primary: #818cf8;
+    --theme-primary-strong: #6366f1;
+    --theme-primary-soft: rgba(129, 140, 248, 0.18);
+    --theme-page-bg: #0b1220;
+    --theme-surface: #111827;
+    --theme-surface-muted: #0f172a;
+    --theme-text-primary: #e5e7eb;
+    --theme-text-secondary: #cbd5e1;
+    --theme-text-muted: #94a3b8;
+    --theme-border: #334155;
+    --theme-border-subtle: #1e293b;
+    --theme-success: #22c55e;
+    --theme-success-bg: rgba(34, 197, 94, 0.14);
+    --theme-warning: #f59e0b;
+    --theme-warning-bg: rgba(245, 158, 11, 0.16);
+    --theme-danger: #f87171;
+    --theme-danger-bg: rgba(248, 113, 113, 0.14);
+    --theme-link-color: #93c5fd;
+    --theme-info-bg: rgba(59, 130, 246, 0.16);
+    --theme-on-primary: #ffffff;
+}
+
 .sidebar[data-ai-theme='dark'] {
     background: linear-gradient(180deg, var(--theme-surface) 0%, var(--theme-page-bg) 100%);
     color: var(--theme-text-primary);
@@ -2217,6 +2256,10 @@ body {
  * .main-container is a child of #App, so it inherits these variables
  * automatically; only its own `background` needs a separate rule above.
  */
+#App[data-ai-theme='dark'] .about-card {
+    background: color-mix(in srgb, var(--theme-surface) 94%, transparent);
+}
+
 #App[data-ai-theme='dark'] {
     --theme-primary: #818cf8;
     --theme-primary-strong: #6366f1;

@@ -16,7 +16,7 @@ type QQBotSettingsProps = {
     setIMAuditPlatform: Dispatch<SetStateAction<string | null>>;
 };
 
-import { channelModeLabel, connectionBadgeStyle, connectionStatusLabel, localModeOptions, pillButtonStyle, restartLabel, switchFailedLabel, textForLang } from './imSettingsShared';
+import { channelModeLabel, connectionBadgeStyle, connectionStatusLabel, localModeOptions, pillButtonStyle, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 
 export const QQBotSettings = ({
     config,
@@ -62,6 +62,9 @@ export const QQBotSettings = ({
                     </button>
                 </>
             )}
+            <button type="button" onClick={() => setIMAuditPlatform('qq')} style={{ ...imAuditBtnStyle, marginLeft: config?.qqbot_enabled ? '18px' : '0' }}>
+                {watchLabel(lang)}
+            </button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>{channelModeLabel(lang)}</span>
@@ -87,9 +90,6 @@ export const QQBotSettings = ({
                 </button>
             ))}
         </div>
-        <button type="button" onClick={() => setIMAuditPlatform('qq')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
-            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
-        </button>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', maxWidth: '520px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '62px' }}>App ID</label>

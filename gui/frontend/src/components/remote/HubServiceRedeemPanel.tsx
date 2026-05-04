@@ -170,6 +170,58 @@ const creditMetricStyle: React.CSSProperties = {
     padding: "10px 12px",
 };
 
+const authorizedModelsSectionStyle: React.CSSProperties = {
+    marginTop: 0,
+    border: `1px solid ${colors.border}`,
+    borderRadius: radius.lg,
+    overflow: "hidden",
+    background: colors.surface,
+};
+
+const authorizedModelsTableStyle: React.CSSProperties = {
+    ...detailTableStyle,
+    tableLayout: "fixed",
+};
+
+const authorizedModelsHeaderStyle: React.CSSProperties = {
+    ...detailTheadThStyle,
+    textAlign: "left",
+    padding: "8px 14px",
+    background: colors.surfaceMuted,
+};
+
+const authorizedModelsCellStyle: React.CSSProperties = {
+    ...detailTdStyle,
+    textAlign: "left",
+    padding: "10px 14px",
+    verticalAlign: "middle",
+};
+
+const authorizedModelsNameStyle: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    maxWidth: "100%",
+    fontWeight: 700,
+    color: colors.text,
+    wordBreak: "break-word",
+};
+
+const authorizedGroupListStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    flexWrap: "wrap",
+    gap: 6,
+};
+
+const authorizedGroupTagStyle: React.CSSProperties = {
+    ...chipStyle,
+    background: colors.surface,
+    color: colors.text,
+    borderColor: colors.border,
+};
+
 function formatCredits(value?: number): string {
     const num = Number(value || 0);
     if (!Number.isFinite(num)) return "0";
@@ -475,27 +527,44 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                 </div>
 
                 {/* Authorized Models table */}
-                <div style={{ marginTop: 16 }}>
-                    <div style={labelStyle}>{t("Authorized Models", "授权模型列表")}</div>
+                <div style={{ marginTop: 18 }}>
+                    <div style={{ ...labelStyle, marginBottom: 8 }}>{t("Authorized Models", "\u6388\u6743\u6a21\u578b\u5217\u8868")}</div>
                     {(status?.authorized_models || []).length ? (
-                        <table style={detailTableStyle}>
-                            <thead>
-                                <tr>
-                                    <th style={detailTheadThStyle}>{t("Model", "模型")}</th>
-                                    <th style={detailTheadThStyle}>{t("Service Groups", "服务组")}</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {(status?.authorized_models || []).map((model) => (
-                                    <tr key={model.name}>
-                                        <td style={detailTdStyle}><span style={{ fontWeight: 600 }}>{model.name}</span></td>
-                                        <td style={detailTdStyle}>{(model.service_group_ids || []).join(", ") || "-"}</td>
+                        <div style={authorizedModelsSectionStyle}>
+                            <table style={authorizedModelsTableStyle}>
+                                <colgroup>
+                                    <col style={{ width: "42%" }} />
+                                    <col style={{ width: "58%" }} />
+                                </colgroup>
+                                <thead>
+                                    <tr>
+                                        <th style={authorizedModelsHeaderStyle}>{t("Model", "\u6a21\u578b")}</th>
+                                        <th style={authorizedModelsHeaderStyle}>{t("Service Groups", "\u670d\u52a1\u7ec4")}</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    {(status?.authorized_models || []).map((model) => {
+                                        const groups = (model.service_group_ids || []).filter(Boolean);
+                                        return (
+                                            <tr key={model.name}>
+                                                <td style={authorizedModelsCellStyle}>
+                                                    <span style={authorizedModelsNameStyle}>{model.name || "auto"}</span>
+                                                </td>
+                                                <td style={authorizedModelsCellStyle}>
+                                                    <div style={authorizedGroupListStyle}>
+                                                        {groups.length ? groups.map((group) => (
+                                                            <span key={group} style={authorizedGroupTagStyle}>{group}</span>
+                                                        )) : <span style={{ color: colors.textMuted }}>-</span>}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
                     ) : (
-                        <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No model permissions yet", "当前还没有模型权限")}</div>
+                        <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No model permissions yet", "\u5f53\u524d\u8fd8\u6ca1\u6709\u6a21\u578b\u6743\u9650")}</div>
                     )}
                 </div>
             </div>

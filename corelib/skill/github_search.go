@@ -479,7 +479,7 @@ func (gs *GitHubSearcher) parseSkillMarkdown(data []byte, c GitHubSkillCandidate
 	if len(parsed.triggers) > 0 {
 		triggers = parsed.triggers
 	}
-	producesArtifact := true
+	producesArtifact := false
 	if parsed.producesArtifact != nil {
 		producesArtifact = *parsed.producesArtifact
 	}
@@ -496,7 +496,7 @@ func (gs *GitHubSearcher) parseSkillMarkdown(data []byte, c GitHubSkillCandidate
 				Action: "craft_tool",
 				Params: map[string]interface{}{
 					"instructions":      parsed.markdown,
-					"verification_mode": "artifact_required",
+					"verification_mode": markdownVerificationMode(parsed.frontmatter["verification_mode"], producesArtifact),
 					"register_policy":   "manual",
 				},
 			},
@@ -656,7 +656,7 @@ func parseClaudeSKILLMDForGitHub(data []byte, c GitHubSkillCandidate) (*corelib.
 				Action: "craft_tool",
 				Params: map[string]interface{}{
 					"instructions":      body,
-					"verification_mode": "artifact_required",
+					"verification_mode": "artifact_optional",
 					"register_policy":   "manual",
 				},
 			},

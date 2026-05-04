@@ -21,6 +21,9 @@ type SidebarSystemStatusProps = {
     openHubCreditsPage: () => void;
 };
 
+const STATUS_DOT = '\u25cf';
+const CREDIT_SEPARATOR = ' \u00b7 ';
+
 const sidebarCreditTone = {
     label: 'var(--theme-text-muted)',
     total: 'var(--theme-primary)',
@@ -59,7 +62,7 @@ export const SidebarSystemStatus = ({
                 { label: textForLang(lang, 'Net', '\u667a\u7f51', '\u667a\u7db2'), on: agentNetRunning },
                 { label: textForLang(lang, 'Mob', '\u79fb\u52a8', '\u79fb\u52d5'), on: !!remoteActivationStatus?.activated },
                 { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' },
-            ].map(({ label, on }) => <span key={label}><span style={{ color: on ? 'var(--theme-primary)' : 'var(--theme-text-muted)' }}>\u25cf</span> {label}</span>)}
+            ].map(({ label, on }) => <span key={label}><span style={{ color: on ? 'var(--theme-primary)' : 'var(--theme-text-muted)' }}>{STATUS_DOT}</span> {label}</span>)}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '0.72rem', alignItems: 'center' }}>
             <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sidebarCurrentProviderTokenUsage.provider || textForLang(lang, 'Provider', '\u667a\u8c31\u7f16\u7a0b', '\u667a\u8b5c\u7de8\u7a0b')}</span>
@@ -69,9 +72,9 @@ export const SidebarSystemStatus = ({
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '5px', fontSize: '0.66rem', minWidth: 0 }}>
                 <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }} title={sidebarHubCredits ? 'Expires: ' + formatSidebarHubExpiry(sidebarHubCredits) + ', total ' + formatSidebarHubTotalCredits(sidebarHubCredits) + ', used ' + formatSidebarHubUsedCredits(sidebarHubCredits) + ', remaining ' + (sidebarHubCredits.authorized ? (sidebarHubCredits.unlimited ? unlimitedHubCreditText : formatSidebarCredit(sidebarHubCredits.remaining)) : noHubAuthorizationText) : 'Credits unavailable'}>
                     <span style={{ color: sidebarCreditTone.label }}>{textForLang(lang, 'Exp', '\u6709\u6548\u671f', '\u6709\u6548\u671f')} </span><span>{formatSidebarHubExpiry(sidebarHubCredits)}</span>
-                    <span style={{ color: sidebarCreditTone.label }}> \u00b7 {textForLang(lang, 'Total', '\u603b', '\u7e3d')} </span><span style={{ color: sidebarCreditTone.total }}>{formatSidebarHubTotalCredits(sidebarHubCredits)}</span>
-                    <span style={{ color: sidebarCreditTone.label }}> \u00b7 {textForLang(lang, 'Used', '\u5df2\u7528', '\u5df2\u7528')} </span><span style={{ color: sidebarCreditTone.used }}>{formatSidebarHubUsedCredits(sidebarHubCredits)}</span>
-                    <span style={{ color: sidebarCreditTone.label }}> \u00b7 {textForLang(lang, 'Left', '\u5269', '\u5269')} </span><span style={{ color: sidebarCreditTone.remaining }}>{sidebarHubCredits?.authorized ? (sidebarHubCredits.unlimited ? unlimitedHubCreditText : formatSidebarCredit(sidebarHubCredits.remaining)) : noHubAuthorizationText}</span>
+                    <span style={{ color: sidebarCreditTone.label }}>{CREDIT_SEPARATOR}{textForLang(lang, 'Total', '\u603b', '\u7e3d')} </span><span style={{ color: sidebarCreditTone.total }}>{formatSidebarHubTotalCredits(sidebarHubCredits)}</span>
+                    <span style={{ color: sidebarCreditTone.label }}>{CREDIT_SEPARATOR}{textForLang(lang, 'Used', '\u5df2\u7528', '\u5df2\u7528')} </span><span style={{ color: sidebarCreditTone.used }}>{formatSidebarHubUsedCredits(sidebarHubCredits)}</span>
+                    <span style={{ color: sidebarCreditTone.label }}>{CREDIT_SEPARATOR}{textForLang(lang, 'Left', '\u5269', '\u5269')} </span><span style={{ color: sidebarCreditTone.remaining }}>{sidebarHubCredits?.authorized ? (sidebarHubCredits.unlimited ? unlimitedHubCreditText : formatSidebarCredit(sidebarHubCredits.remaining)) : noHubAuthorizationText}</span>
                 </span>
                 {showHubCreditAction && (
                     <button type="button" onClick={openHubCreditsPage} style={{ flexShrink: 0, border: '1px solid var(--theme-danger)', background: 'color-mix(in srgb, var(--theme-danger) 12%, transparent)', color: 'var(--theme-danger)', borderRadius: '999px', padding: '2px 7px', fontSize: '0.64rem', fontWeight: 800, cursor: 'pointer' }}>

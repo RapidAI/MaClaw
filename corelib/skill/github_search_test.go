@@ -56,8 +56,8 @@ func TestParseSkillMarkdownCreatesCraftToolSkill(t *testing.T) {
 	if got := skill.Steps[0].Params["instructions"]; got != "# Browser Skill\n\nAutomate browser steps." {
 		t.Fatalf("unexpected instructions: %#v", got)
 	}
-	if got := skill.Steps[0].Params["verification_mode"]; got != "artifact_required" {
-		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_required")
+	if got := skill.Steps[0].Params["verification_mode"]; got != "artifact_optional" {
+		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_optional")
 	}
 	if got := skill.Steps[0].Params["register_policy"]; got != "manual" {
 		t.Fatalf("register_policy = %#v, want %q", got, "manual")
@@ -81,6 +81,20 @@ func TestParseCandidateDataUsesYAMLParser(t *testing.T) {
 	}
 	if len(skill.Steps) != 1 || skill.Steps[0].Action != "craft_tool" {
 		t.Fatalf("unexpected steps: %+v", skill.Steps)
+	}
+}
+
+func TestGitHubYAMLSkillDefaultsToProducingArtifact(t *testing.T) {
+	gs := NewGitHubSearcher("")
+	candidate := GitHubSkillCandidate{RepoFullName: "octo/skills", RepoURL: "https://github.com/octo/skills"}
+	sf := &SkillYAMLFile{Name: "report", Steps: []SkillYAMLStep{{Action: "run", Params: map[string]interface{}{"command": "echo report"}}}}
+
+	entry, err := gs.skillEntryFromDefinition(sf, candidate)
+	if err != nil {
+		t.Fatalf("skillEntryFromDefinition() error = %v", err)
+	}
+	if !entry.ProducesArtifact {
+		t.Fatalf("ProducesArtifact = false, want true for structured YAML skills")
 	}
 }
 
