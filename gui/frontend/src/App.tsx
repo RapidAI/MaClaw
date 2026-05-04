@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
-import { buildNumber } from './version';
+import { appVersion, buildNumber } from './version';
 import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
@@ -71,7 +71,7 @@ import type { RemoteCenterHubOption, SidebarHubCredits, SidebarHubServiceStatus,
 
 
 
-const APP_VERSION = "5.12.0.10578"
+const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
 
 
@@ -2541,7 +2541,7 @@ ${instruction}`;
                                 });
                             }}
                             onShowInstallLog={() => setShowInstallLog(true)}
-                            onOpenBugReport={() => BrowserOpenURL(brandInfo?.githubURL ? brandInfo.githubURL + "/issues/new" : "https://github.com/rapidai/maclaw/issues/new")}
+                            onOpenBugReport={() => BrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}
                             onOpenGithub={() => BrowserOpenURL(MACLAW_CODE_REPOSITORY_URL)}
                         />
                     )}

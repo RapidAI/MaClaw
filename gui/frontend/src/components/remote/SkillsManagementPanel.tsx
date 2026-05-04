@@ -1040,23 +1040,23 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             <table style={localSkillsTableStyle}>
                                 <thead>
                                     <tr style={{ background: colors.surfaceMuted }}>
-                                        <th style={{ ...thStyle, width: "21%" }}>{localizeText("Name", "名称", "名稱")}</th>
-                                        <th style={{ ...thStyle, width: "27%" }}>{localizeText("Description", "描述", "描述")}</th>
-                                        <th style={{ ...thStyle, width: "9%", textAlign: "left" }}>{localizeText("Type", "类型", "類型")}</th>
-                                        <th style={{ ...thStyle, width: "7%" }}>{localizeText("Version", "版本", "版本")}</th>
-                                        <th style={{ ...thStyle, width: "10%", textAlign: "left" }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
-                                        <th style={{ ...thStyle, width: "8%", textAlign: "center" }}>{localizeText("Status", "状态", "狀態")}</th>
-                                        <th style={{ ...thStyle, width: "18%", textAlign: "right" }}>{localizeText("Actions", "操作", "操作")}</th>
+                                        <th style={{ ...thStyle, width: "16%", textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
+                                        <th style={{ ...thStyle, width: "29%" }}>{localizeText("Description", "描述", "描述")}</th>
+                                        <th style={{ ...thStyle, width: "8%", textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
+                                        <th style={{ ...thStyle, width: "4%", textAlign: "center", paddingLeft: 2, paddingRight: 2 }}>{localizeText("Version", "版本", "版本")}</th>
+                                        <th style={{ ...thStyle, width: "9%", textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
+                                        <th style={{ ...thStyle, width: "6%", textAlign: "left", paddingLeft: 4 }}>{localizeText("Status", "状态", "狀態")}</th>
+                                        <th style={{ ...thStyle, width: "28%", textAlign: "right" }}>{localizeText("Actions", "操作", "操作")}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {installedSkills.map((s) => (
                                         <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
-                                            <td style={tdStyle}>{s.name}</td>
+                                            <td style={{ ...tdStyle, textAlign: "left" }}>{s.name}</td>
                                             <td style={tdStyle}>
                                                 <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
                                             </td>
-                                            <td style={{ ...tdStyle, textAlign: "left" }}>
+                                            <td style={{ ...tdStyle, textAlign: "left", paddingRight: 4 }}>
                                                 {s.execution_class ? (
                                                     <span style={executionClassBadgeStyle} title={getExecutionClassTitle(s)}>
                                                         {getExecutionClassLabel(s.execution_class)}
@@ -1065,10 +1065,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>—</span>
                                                 )}
                                             </td>
-                                            <td style={tdStyle}>
+                                            <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 2, paddingRight: 2 }}>
                                                 <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>{s.hub_version || "—"}</span>
                                             </td>
-                                            <td style={{ ...tdStyle, textAlign: "left" }}>
+                                            <td style={{ ...tdStyle, textAlign: "left", paddingRight: 4 }}>
                                                 {(s.usage_count ?? 0) > 0 ? (
                                                     <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
                                                         {s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%
@@ -1077,7 +1077,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>
                                                 )}
                                             </td>
-                                            <td style={{ ...tdStyle, textAlign: "center" }}>
+                                            <td style={{ ...tdStyle, textAlign: "left", paddingLeft: 4 }}>
                                                 <span style={{ ...statusBadgeStyle, ...(s.status === "active" ? activeBadge : disabledBadge) }}>
                                                     {s.status === "active" ? localizeText("Active", "启用", "啟用") : s.status}
                                                 </span>
