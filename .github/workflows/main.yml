@@ -1068,6 +1068,33 @@ jobs:
             echo "Release ${{ github.ref_name }}" > release_notes.md
           fi
 
+      - name: Generate latest manifest
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_BUCKET: ${{ secrets.COS_BUCKET }}
+          COS_REGION: ${{ secrets.COS_REGION }}
+          COS_PUBLIC_BASE_URL: ${{ secrets.COS_PUBLIC_BASE_URL }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          COS_RELEASE_ONLY_ASSETS: |
+            MaClaw-aarch64-u2204.AppImage
+            MaClaw-aarch64-u2404.AppImage
+            MaClaw-Setup.exe
+            MaClaw-Universal.pkg
+            TigerClaw-aarch64-u2204.AppImage
+            TigerClaw-aarch64-u2404.AppImage
+            TigerClaw-Setup.exe
+            TigerClaw-Universal.pkg
+        run: |
+          if [ -z "$COS_PUBLIC_BASE_URL" ]; then
+            echo "COS_PUBLIC_BASE_URL is not configured; latest.json cannot include fallback URLs." >&2
+            exit 1
+          fi
+          python3 .github/scripts/sync_cos_release.py --manifest-only
+          echo "latest.json preview:"
+          cat release-assets/latest.json
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

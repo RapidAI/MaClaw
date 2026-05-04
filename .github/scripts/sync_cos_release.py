@@ -3,17 +3,14 @@ import json
 import os
 import pathlib
 
-from qcloud_cos import CosConfig, CosS3Client
-
-
 def log(message):
     print(f"[cos-release-sync] {message}", flush=True)
 
 
-secret_id = os.environ["COS_SECRET_ID"]
-secret_key = os.environ["COS_SECRET_KEY"]
-bucket = os.environ["COS_BUCKET"]
-region = os.environ["COS_REGION"]
+secret_id = os.environ.get("COS_SECRET_ID", "")
+secret_key = os.environ.get("COS_SECRET_KEY", "")
+bucket = os.environ.get("COS_BUCKET", "")
+region = os.environ.get("COS_REGION", "")
 public_base_url = os.environ["COS_PUBLIC_BASE_URL"].rstrip("/")
 tag = os.environ["RELEASE_TAG"]
 asset_dir = pathlib.Path(os.environ.get("RELEASE_ASSETS_DIR", "release-assets"))
@@ -54,7 +51,7 @@ def list_release_objects(client):
         marker = response.get("NextMarker") or keys[-1]
 
 
-def main():
+def collect_assets():
     if not asset_dir.exists():
         raise RuntimeError(f"assets directory not found: {asset_dir}")
     if not only_assets:
@@ -66,7 +63,10 @@ def main():
         if not path.exists():
             raise RuntimeError(f"COS release asset not found: {name}")
         assets.append(path)
+    return assets
 
+
+def write_latest_manifest(assets):
     latest = {
         "version": tag,
         "tag": tag,
@@ -81,6 +81,27 @@ def main():
     }
     latest_path = asset_dir / "latest.json"
     latest_path.write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    log(f"wrote latest manifest {latest_path} assets={len(assets)}")
+    return latest_path
+
+
+def main():
+    assets = collect_assets()
+    latest_path = write_latest_manifest(assets)
+    missing = [
+        name
+        for name, value in {
+            "COS_SECRET_ID": secret_id,
+            "COS_SECRET_KEY": secret_key,
+            "COS_BUCKET": bucket,
+            "COS_REGION": region,
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(f"missing COS upload environment: {', '.join(missing)}")
+
+    from qcloud_cos import CosConfig, CosS3Client
 
     config = CosConfig(Region=region, SecretId=secret_id, SecretKey=secret_key, Scheme="https")
     client = CosS3Client(config)
@@ -106,4 +127,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--manifest-only" in os.sys.argv:
+        write_latest_manifest(collect_assets())
+    else:
+        main()
