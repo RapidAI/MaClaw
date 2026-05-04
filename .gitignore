@@ -116,3 +116,15 @@ _tmptest/
 
 # Property test rapid cache
 corelib/memory/testdata/rapid/
+
+# Local test and generated artifacts
+.testhome/
+__pycache__/
+*.m4a
+*.wav
+tts_eval/
+build/iworker_services_deploy/
+
+# Generated iWorkerCenter admin bundles
+iWorkerCenter/cmd/iworkercenter/web/admin/assets/index-*.js
+iWorkerCenter/cmd/iworkercenter/web/admin/assets/index-*.css
