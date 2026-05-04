@@ -1227,4 +1227,13 @@ jobs:
           RELEASE_ASSETS_DIR: release-assets
           GITEE_UPLOAD_TIMEOUT: 900
           GITEE_UPLOAD_RETRIES: 3
+          GITEE_RELEASE_ONLY_ASSETS: |
+            MaClaw-aarch64-u2204.AppImage
+            MaClaw-aarch64-u2404.AppImage
+            MaClaw-Setup.exe
+            MaClaw-Universal.pkg
+            TigerClaw-aarch64-u2204.AppImage
+            TigerClaw-aarch64-u2404.AppImage
+            TigerClaw-Setup.exe
+            TigerClaw-Universal.pkg
         run: python3 .github/scripts/sync_gitee_release.py

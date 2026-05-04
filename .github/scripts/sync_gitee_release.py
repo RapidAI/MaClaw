@@ -27,6 +27,11 @@ ASSETS_DIR = pathlib.Path(os.environ.get("RELEASE_ASSETS_DIR", "artifacts"))
 API = f"https://gitee.com/api/v5/repos/{OWNER}/{REPO}"
 UPLOAD_TIMEOUT = int(os.environ.get("GITEE_UPLOAD_TIMEOUT", "900"))
 UPLOAD_RETRIES = int(os.environ.get("GITEE_UPLOAD_RETRIES", "3"))
+ONLY_ASSETS = {
+    name.strip()
+    for name in os.environ.get("GITEE_RELEASE_ONLY_ASSETS", "").splitlines()
+    if name.strip()
+}
 
 
 def log(message):
@@ -182,6 +187,13 @@ def main():
         raise RuntimeError(f"assets directory not found: {ASSETS_DIR}")
 
     assets = sorted(path for path in ASSETS_DIR.rglob("*") if path.is_file())
+    if ONLY_ASSETS:
+        found_names = {path.name for path in assets}
+        missing = sorted(ONLY_ASSETS - found_names)
+        if missing:
+            raise RuntimeError("requested Gitee release assets not found: " + ", ".join(missing))
+        assets = [path for path in assets if path.name in ONLY_ASSETS]
+        log("only_assets=" + ", ".join(sorted(ONLY_ASSETS)))
     if not assets:
         raise RuntimeError(f"no release assets found in {ASSETS_DIR}")
     log("assets=" + ", ".join(f"{asset.name}({asset.stat().st_size} bytes)" for asset in assets))
