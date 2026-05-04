@@ -83,6 +83,7 @@ requireFile('gui/frontend/src/components/layout/SidebarToolSelector.tsx');
 requireFile('gui/frontend/src/components/layout/SidebarRecentTasks.tsx');
 requireFile('gui/frontend/src/components/layout/SidebarSystemStatus.tsx');
 requireFile('gui/frontend/src/components/layout/MainTopHeader.tsx');
+requireFile('gui/frontend/src/components/layout/MainTopHeaderActions.tsx');
 requireFile('gui/frontend/src/components/layout/mainTopHeaderTitle.ts');
 requireFile('gui/frontend/src/components/layout/AppStatusMessageBar.tsx');
 requireFile('gui/frontend/src/components/pages/TutorialPage.tsx');
@@ -116,7 +117,8 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/AppSidebarShell.tsx', 260],
   ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 220],
   ['gui/frontend/src/components/layout/SidebarAiPane.tsx', 220],
-  ['gui/frontend/src/components/layout/MainTopHeader.tsx', 220],
+  ['gui/frontend/src/components/layout/MainTopHeader.tsx', 120],
+  ['gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
   ['gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
   ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 180],
   ['gui/frontend/src/components/settings/UISettingsPanel.tsx', 180],
@@ -142,6 +144,19 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/pages/AboutActions.tsx', 120],
 ];
 for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
+
+const modalThemeFiles = [
+  'gui/frontend/src/components/modals/InstallSkillModal.tsx',
+  'gui/frontend/src/components/modals/StartupPopup.tsx',
+  'gui/frontend/src/components/modals/ConfirmDialog.tsx',
+  'gui/frontend/src/components/modals/UpdateModal.tsx',
+];
+for (const rel of modalThemeFiles) {
+  for (const color of ['#ffffff', '#374151', '#6b7280', '#9ca3af', '#f9fafb', '#e5e7eb', '#e2e8f0', '#eef2ff', '#e0e7ff', '#4338ca']) {
+    requireExcludes(rel, color, 'hard-coded modal color ' + color + '; use theme variables');
+  }
+}
+
 
 if (app.charCodeAt(0) === 0xfeff) failures.push(`${appRel} starts with a UTF-8 BOM`);
 if (app.includes('\ufffd')) failures.push(`${appRel} contains Unicode replacement characters`);
@@ -175,6 +190,7 @@ requireExcludes(appRel, 'thirdparty_gateway_enabled', 'inline third-party IM gat
 requireExcludes(appRel, 'className="sidebar"', 'inline left sidebar shell; use components/layout/AppSidebarShell.tsx');
 requireExcludes(appRel, 'recentProjects.map', 'inline recent tasks list; use components/layout/SidebarAiPane.tsx');
 requireExcludes(appRel, 'className="top-header"', 'inline non-AI top header; use components/layout/MainTopHeader.tsx');
+requireExcludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'ReadTutorial', 'inline top header actions; use components/layout/MainTopHeaderActions.tsx');
 requireExcludes(appRel, 'className="status-message"', 'inline status message bar; use components/layout/AppStatusMessageBar.tsx');
 requireExcludes(appRel, 'backgroundInstallStatus.startsWith', 'inline background install status; use components/layout/AppStatusMessageBar.tsx');
 requireExcludes(appRel, "ChatFire', url:", 'inline API Store provider cards; use config/apiStoreProviders.ts');
@@ -380,11 +396,15 @@ requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 's
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'openHubCreditsPage', 'hub credits purchase action wiring');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'export const MainTopHeader', 'non-AI top header export');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'getHeaderTitle', 'top header title resolver wiring');
+requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'MainTopHeaderActions', 'top header actions wiring');
+requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'ReadTutorial', 'top header tutorial refresh action');
+requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'setShowModelSettings(true)', 'top header provider config action');
+requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'setShowInstallSkillModal(true)', 'top header install skill action');
 requireIncludes('gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 'export const getHeaderTitle', 'top header title resolver export');
 requireIncludes('gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 'agentNet', 'top header AgentNet title label');
-requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'providerConfig', 'top header provider config label');
+requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'providerConfig', 'top header provider config label');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'handleWindowHide', 'minimize button wiring stays in top header');
-requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'setShowModelSettings(true)', 'provider config button stays in top header');
+requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'setShowModelSettings(true)', 'provider config button stays in top header actions');
 requireIncludes('gui/frontend/src/components/layout/AppStatusMessageBar.tsx', 'className="status-message"', 'status message bar wrapper');
 requireIncludes('gui/frontend/src/components/layout/AppStatusMessageBar.tsx', 'backgroundInstallStatus', 'background install status display');
 requireIncludes('gui/frontend/src/components/layout/AppStatusMessageBar.tsx', 'onOpenLLMSettings', 'LLM warning navigation');
@@ -433,6 +453,8 @@ requireIncludes('gui/frontend/src/components/modals/ProjectProxySettingsDialog.t
 requireIncludes('gui/frontend/src/components/modals/InstallSkillModal.tsx', 'InstallSkill', 'install skill action');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillFooter.tsx', 'InstallDefaultMarketplace', 'install default marketplace action');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillModal.tsx', 'skillZipOnlyError', 'skill compatibility error');
+requireIncludes('gui/frontend/src/components/modals/InstallSkillModal.tsx', 'var(--theme-success)', 'install skill modal theme-aware title');
+requireIncludes('gui/frontend/src/components/modals/InstallSkillModal.tsx', 'var(--theme-primary)', 'install skill modal theme-aware skills link');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillFooter.tsx', 'export const InstallSkillFooter', 'install skill footer export');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillFooter.tsx', 'onInstallSelected', 'install selected footer action wiring');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillFooter.tsx', 'isMarketplaceInstalling', 'marketplace install loading state');

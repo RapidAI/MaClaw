@@ -4837,9 +4837,9 @@ type UpdateResult struct {
 }
 
 const (
-	githubLatestReleaseAPI = "https://api.github.com/repos/RapidAI/MaClaw/releases/latest"
-	cosLatestManifestURL   = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest.json"
-	cosPublicBaseURL       = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
+	githubLatestManifestURL = "https://github.com/RapidAI/MaClaw/releases/latest/download/latest.json"
+	cosLatestManifestURL    = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest.json"
+	cosPublicBaseURL        = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
 )
 
 type cosLatestManifest struct {
@@ -4964,17 +4964,14 @@ func (a *App) fetchLatestReleaseFast() (latestReleaseInfo, string, error) {
 }
 
 func (a *App) fetchGitHubLatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
-	a.log(a.tr("CheckUpdate: Starting GitHub check against %s", githubLatestReleaseAPI))
+	a.log(a.tr("CheckUpdate: Starting GitHub manifest check against %s", githubLatestManifestURL))
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", githubLatestReleaseAPI, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", githubLatestManifestURL, nil)
 	if err != nil {
 		return latestReleaseInfo{}, err
 	}
 	req.Header.Set("User-Agent", brand.Current().DisplayName)
-	if token := skill.ResolveGitHubToken(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 	resp, err := updateHTTPClient(timeout).Do(req)
 	if err != nil {
 		return latestReleaseInfo{}, err
@@ -4982,42 +4979,29 @@ func (a *App) fetchGitHubLatestRelease(timeout time.Duration) (latestReleaseInfo
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		bodyText, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
-		return latestReleaseInfo{}, fmt.Errorf("github api returned status %d: %s", resp.StatusCode, string(bodyText))
+		return latestReleaseInfo{}, fmt.Errorf("github latest manifest returned status %d: %s", resp.StatusCode, string(bodyText))
 	}
-	var release map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	var manifest cosLatestManifest
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
 		return latestReleaseInfo{}, err
 	}
-	tagName, _ := release["tag_name"].(string)
-	name, _ := release["name"].(string)
-	htmlURL, _ := release["html_url"].(string)
-	targetFileName := updateTargetFileName()
-	var githubDownloadURL string
-	if assets, ok := release["assets"].([]interface{}); ok {
-		for _, assetInterface := range assets {
-			asset, ok := assetInterface.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			assetName, _ := asset["name"].(string)
-			if assetName != targetFileName {
-				continue
-			}
-			githubDownloadURL, _ = asset["browser_download_url"].(string)
-			break
-		}
-	}
+	tagName := strings.TrimSpace(manifest.Tag)
 	if tagName == "" {
-		tagName = name
+		tagName = strings.TrimSpace(manifest.Version)
 	}
-	if githubDownloadURL == "" && tagName != "" {
-		githubDownloadURL = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
-	}
+	targetFileName := updateTargetFileName()
 	cosURL := ""
-	if tagName != "" {
+	if asset, ok := manifest.Assets[targetFileName]; ok {
+		cosURL = strings.TrimSpace(asset.URL)
+	}
+	if cosURL == "" && tagName != "" {
 		cosURL = cosReleaseAssetURL(tagName, targetFileName)
 	}
-	return latestReleaseInfo{TagName: tagName, Name: name, ReleaseURL: htmlURL, DownloadURL: combineDownloadURLs(githubDownloadURL, cosURL), GitHubDownloadURL: githubDownloadURL, COSDownloadURL: cosURL}, nil
+	githubURL := ""
+	if tagName != "" {
+		githubURL = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
+	}
+	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLs(githubURL, cosURL), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL}, nil
 }
 
 func (a *App) fetchCOSLatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
@@ -5141,7 +5125,13 @@ func splitDownloadURLs(value string) []string {
 }
 
 func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName string, destPath string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	sourceTimeout := 30 * time.Minute
+	if strings.Contains(url, "github.com/") || strings.Contains(url, "githubusercontent.com/") {
+		sourceTimeout = 90 * time.Second
+	}
+	sourceCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(sourceCtx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -5208,6 +5198,9 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 			if ctx.Err() == context.Canceled {
 				a.emitEvent("download-progress", DownloadProgress{Status: "cancelled"})
 				return "", fmt.Errorf("download cancelled")
+			}
+			if sourceCtx.Err() == context.DeadlineExceeded {
+				return "", fmt.Errorf("download source timed out: %s", url)
 			}
 			return "", err
 		}

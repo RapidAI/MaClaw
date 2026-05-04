@@ -1,7 +1,11 @@
 package delivery
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -178,5 +182,143 @@ func TestRecordApplyRejectsDraftBundle(t *testing.T) {
 	}
 	if len(records) != 0 {
 		t.Fatalf("unexpected records: %+v", records)
+	}
+}
+
+func TestClientApplyResultHTTPRecordsPublishedBundle(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb-http", Version: 7, ContentType: "full", Payload: "{}", Status: "published", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, "tenant-http"); err != nil {
+		t.Fatalf("insert bundle: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(p.Write, p.Read).RegisterClientRoutes(mux)
+	body := map[string]any{"bundle_id": "cfgb-http", "version": 99, "worker_id": "worker-http", "department_id": "ops", "status": "ok", "message": "cached"}
+	rec := postClientApplyResult(t, mux, "tenant-http", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	records, err := repo.ListApplyRecords("tenant-http", 10)
+	if err != nil {
+		t.Fatalf("list records: %v", err)
+	}
+	if len(records) != 1 || records[0].BundleID != "cfgb-http" || records[0].WorkerID != "worker-http" {
+		t.Fatalf("unexpected records: %+v", records)
+	}
+	if records[0].Version != 7 || records[0].Status != "success" || records[0].DepartmentID != "ops" {
+		t.Fatalf("unexpected normalized record: %+v", records[0])
+	}
+}
+
+func TestClientApplyResultHTTPRejectsUnknownBundle(t *testing.T) {
+	p := setupTestDB(t)
+	mux := http.NewServeMux()
+	NewHandler(p.Write, p.Read).RegisterClientRoutes(mux)
+
+	rec := postClientApplyResult(t, mux, testTID, map[string]any{"bundle_id": "missing", "worker_id": "worker-a", "status": "success"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), "UNKNOWN_BUNDLE")
+
+	records, err := NewRepo(p.Write, p.Read).ListApplyRecords(testTID, 10)
+	if err != nil {
+		t.Fatalf("list records: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("unexpected records: %+v", records)
+	}
+}
+
+func TestClientApplyResultHTTPRejectsDraftBundle(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb-http-draft", Version: 1, ContentType: "full", Payload: "{}", Status: "draft", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, testTID); err != nil {
+		t.Fatalf("insert bundle: %v", err)
+	}
+	mux := http.NewServeMux()
+	NewHandler(p.Write, p.Read).RegisterClientRoutes(mux)
+
+	rec := postClientApplyResult(t, mux, testTID, map[string]any{"bundle_id": "cfgb-http-draft", "worker_id": "worker-a", "status": "success"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), "BUNDLE_NOT_PUBLISHED")
+
+	records, err := repo.ListApplyRecords(testTID, 10)
+	if err != nil {
+		t.Fatalf("list records: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("unexpected records: %+v", records)
+	}
+}
+
+func TestClientApplyResultHTTPRespectsTenantHeader(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb-shared", Version: 5, ContentType: "full", Payload: "{}", Status: "published", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, "tenant-a"); err != nil {
+		t.Fatalf("insert tenant-a bundle: %v", err)
+	}
+	if err := repo.Insert(&Bundle{ID: "cfgb-other", Version: 6, ContentType: "full", Payload: "{}", Status: "published", CreatedAt: time.Now()}, "tenant-b"); err != nil {
+		t.Fatalf("insert tenant-b bundle: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(p.Write, p.Read).RegisterClientRoutes(mux)
+	rec := postClientApplyResult(t, mux, "tenant-a", map[string]any{"bundle_id": "cfgb-shared", "worker_id": "worker-a", "status": "success"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	tenantARecords, err := repo.ListApplyRecords("tenant-a", 10)
+	if err != nil {
+		t.Fatalf("list tenant-a records: %v", err)
+	}
+	tenantBRecords, err := repo.ListApplyRecords("tenant-b", 10)
+	if err != nil {
+		t.Fatalf("list tenant-b records: %v", err)
+	}
+	if len(tenantARecords) != 1 || tenantARecords[0].TenantID != "tenant-a" {
+		t.Fatalf("unexpected tenant-a records: %+v", tenantARecords)
+	}
+	if len(tenantBRecords) != 0 {
+		t.Fatalf("unexpected tenant-b records: %+v", tenantBRecords)
+	}
+}
+
+func postClientApplyResult(t *testing.T, handler http.Handler, tenantID string, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/client/config/apply-result", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	if tenantID != "" {
+		req.Header.Set("X-Tenant-ID", tenantID)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func assertErrorCode(t *testing.T, body []byte, want string) {
+	t.Helper()
+	var got struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode error response: %v body=%s", err, string(body))
+	}
+	if got.Error.Code != want {
+		t.Fatalf("expected error code %s, got %s body=%s", want, got.Error.Code, string(body))
 	}
 }

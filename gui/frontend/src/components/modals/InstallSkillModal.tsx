@@ -98,7 +98,7 @@ export const InstallSkillModal = ({
         <div className="modal-overlay">
             <div className="modal-content" style={{ width: '500px', maxWidth: '95vw' }}>
                 <div className="modal-header" style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
-                    <h3 style={{ margin: 0, color: '#10b981', whiteSpace: 'nowrap' }}>{t("selectSkillsToInstall")}</h3>
+                    <h3 style={{ margin: 0, color: 'var(--theme-success)', whiteSpace: 'nowrap' }}>{t("selectSkillsToInstall")}</h3>
 
                     <InstallLocationSelector
                         config={config}
@@ -113,12 +113,12 @@ export const InstallSkillModal = ({
                         onClick={() => { onClose(); switchTool('skills'); }}
                         style={{
                             background: 'none',
-                            border: '1px solid #d1d5db',
+                            border: '1px solid var(--theme-border)',
                             borderRadius: '16px',
                             padding: '4px 10px',
                             fontSize: '0.8rem',
                             cursor: 'pointer',
-                            color: '#6366f1',
+                            color: 'var(--theme-primary)',
                             display: 'flex',
                             alignItems: 'center',
                             gap: '4px',
