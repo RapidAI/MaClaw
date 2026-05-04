@@ -18,6 +18,7 @@ package views
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
@@ -75,6 +76,146 @@ func intSet(ptr func(cfg *corelib.AppConfig, v int)) func(cfg *corelib.AppConfig
 // boolOpts is the standard boolean option list.
 var boolOpts = []string{"true", "false"}
 
+type llmProviderPreset struct {
+	Name          string
+	URL           string
+	Model         string
+	Protocol      string
+	ContextLength int
+	TimeoutSec    int
+	AgentType     string
+	AuthType      string
+	IsCustom      bool
+}
+
+var llmProviderPresets = []llmProviderPreset{
+	{Name: "Zhipu GLM Lobster", URL: "https://open.bigmodel.cn/api/coding/paas/v4", Model: "glm-5-turbo", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
+	{Name: "Zhipu GLM Coding", URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.1", Protocol: "anthropic", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0", AuthType: "apikey"},
+	{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
+	{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0", AuthType: "apikey"},
+	{Name: "Xfyun Astron", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
+	{Name: "OpenAI API Key", URL: "https://api.openai.com/v1", Model: "gpt-4o", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
+	{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-20250514", Protocol: "anthropic", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0", AuthType: "apikey"},
+	{Name: "Custom", Protocol: "openai", AuthType: "apikey", TimeoutSec: corelib.DefaultLLMTimeoutSec, IsCustom: true},
+}
+
+func llmProviderPresetOptions() []string {
+	opts := make([]string, 0, len(llmProviderPresets))
+	for _, p := range llmProviderPresets {
+		opts = append(opts, p.Name)
+	}
+	return opts
+}
+
+func currentLLMPresetName(c *corelib.AppConfig) string {
+	if strings.TrimSpace(c.MaclawLLMCurrentProvider) != "" {
+		return c.MaclawLLMCurrentProvider
+	}
+	for _, p := range llmProviderPresets {
+		if p.IsCustom {
+			continue
+		}
+		if strings.TrimRight(c.MaclawLLMUrl, "/") == strings.TrimRight(p.URL, "/") && c.MaclawLLMModel == p.Model {
+			return p.Name
+		}
+	}
+	return "Custom"
+}
+
+func applyLLMProviderPreset(c *corelib.AppConfig, name string) {
+	var preset llmProviderPreset
+	for _, p := range llmProviderPresets {
+		if p.Name == name {
+			preset = p
+			break
+		}
+	}
+	if preset.Name == "" {
+		return
+	}
+
+	providerName := preset.Name
+	c.MaclawLLMCurrentProvider = providerName
+	c.MaclawLLMProtocol = preset.Protocol
+	if c.MaclawLLMProtocol == "" {
+		c.MaclawLLMProtocol = "openai"
+	}
+	if preset.TimeoutSec > 0 {
+		c.MaclawLLMTimeoutSec = preset.TimeoutSec
+	}
+	if preset.ContextLength > 0 {
+		c.MaclawLLMContextLength = preset.ContextLength
+	}
+	if !preset.IsCustom {
+		c.MaclawLLMUrl = strings.TrimRight(preset.URL, "/")
+		c.MaclawLLMModel = preset.Model
+	}
+
+	found := false
+	for i := range c.MaclawLLMProviders {
+		if c.MaclawLLMProviders[i].Name == providerName {
+			if !preset.IsCustom {
+				c.MaclawLLMProviders[i].URL = strings.TrimRight(preset.URL, "/")
+				c.MaclawLLMProviders[i].Model = preset.Model
+			}
+			c.MaclawLLMProviders[i].Protocol = c.MaclawLLMProtocol
+			c.MaclawLLMProviders[i].ContextLength = c.MaclawLLMContextLength
+			c.MaclawLLMProviders[i].TimeoutSec = c.MaclawLLMTimeoutSec
+			c.MaclawLLMProviders[i].AgentType = preset.AgentType
+			c.MaclawLLMProviders[i].AuthType = preset.AuthType
+			c.MaclawLLMProviders[i].IsCustom = preset.IsCustom
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.MaclawLLMProviders = append(c.MaclawLLMProviders, corelib.MaclawLLMProvider{
+			Name:          providerName,
+			URL:           c.MaclawLLMUrl,
+			Key:           c.MaclawLLMKey,
+			Model:         c.MaclawLLMModel,
+			Protocol:      c.MaclawLLMProtocol,
+			ContextLength: c.MaclawLLMContextLength,
+			TimeoutSec:    c.MaclawLLMTimeoutSec,
+			AgentType:     preset.AgentType,
+			AuthType:      preset.AuthType,
+			IsCustom:      preset.IsCustom,
+		})
+	}
+}
+
+func syncCurrentLLMProvider(c *corelib.AppConfig) {
+	name := strings.TrimSpace(c.MaclawLLMCurrentProvider)
+	if name == "" {
+		name = currentLLMPresetName(c)
+		c.MaclawLLMCurrentProvider = name
+	}
+	if name == "" {
+		return
+	}
+	for i := range c.MaclawLLMProviders {
+		if c.MaclawLLMProviders[i].Name == name {
+			c.MaclawLLMProviders[i].URL = c.MaclawLLMUrl
+			c.MaclawLLMProviders[i].Key = c.MaclawLLMKey
+			c.MaclawLLMProviders[i].Model = c.MaclawLLMModel
+			c.MaclawLLMProviders[i].Protocol = c.MaclawLLMProtocol
+			c.MaclawLLMProviders[i].ContextLength = c.MaclawLLMContextLength
+			c.MaclawLLMProviders[i].TimeoutSec = c.MaclawLLMTimeoutSec
+			return
+		}
+	}
+	c.MaclawLLMProviders = append(c.MaclawLLMProviders, corelib.MaclawLLMProvider{
+		Name:          name,
+		URL:           c.MaclawLLMUrl,
+		Key:           c.MaclawLLMKey,
+		Model:         c.MaclawLLMModel,
+		Protocol:      c.MaclawLLMProtocol,
+		ContextLength: c.MaclawLLMContextLength,
+		TimeoutSec:    c.MaclawLLMTimeoutSec,
+		IsCustom:      name == "Custom",
+	})
+}
+
 // allConfigFields is the single source of truth.
 // Order within each tab determines display order.
 //
@@ -86,14 +227,14 @@ var allConfigFields = []ConfigFieldDef{
 	{
 		Key: "hub_url", Tab: CfgTabGeneral, Section: "general",
 		DescKey: i18n.MsgTUIConfigDescHubURL,
-		Get: func(c *corelib.AppConfig) string { return c.RemoteHubURL },
-		Set: func(c *corelib.AppConfig, v string) { c.RemoteHubURL = v },
+		Get:     func(c *corelib.AppConfig) string { return c.RemoteHubURL },
+		Set:     func(c *corelib.AppConfig, v string) { c.RemoteHubURL = v },
 	},
 	{
 		Key: "token", Tab: CfgTabGeneral, Section: "general",
 		DescKey: i18n.MsgTUIConfigDescToken,
-		Get: func(c *corelib.AppConfig) string { return c.RemoteMachineToken },
-		Set: func(c *corelib.AppConfig, v string) { c.RemoteMachineToken = v },
+		Get:     func(c *corelib.AppConfig) string { return c.RemoteMachineToken },
+		Set:     func(c *corelib.AppConfig, v string) { c.RemoteMachineToken = v },
 	},
 	{
 		Key: "data_dir", Tab: CfgTabGeneral, Section: "general",
@@ -104,8 +245,8 @@ var allConfigFields = []ConfigFieldDef{
 	{
 		Key: "working_directory", Tab: CfgTabGeneral, Section: "general",
 		DescKey: i18n.MsgTUIConfigDescWorkDir,
-		Get: func(c *corelib.AppConfig) string { return c.WorkingDirectory },
-		Set: func(c *corelib.AppConfig, v string) { c.WorkingDirectory = v },
+		Get:     func(c *corelib.AppConfig) string { return c.WorkingDirectory },
+		Set:     func(c *corelib.AppConfig, v string) { c.WorkingDirectory = v },
 	},
 	{
 		Key: "language", Tab: CfgTabGeneral, Section: "general",
@@ -134,53 +275,62 @@ var allConfigFields = []ConfigFieldDef{
 
 	// ---- Tab 1: LLM ----
 	{
+		Key: "maclaw_llm_provider_preset", Tab: CfgTabLLM, Section: "maclaw_llm",
+		DescKey: i18n.MsgTUIConfigDescLLMProviderPreset, Options: llmProviderPresetOptions(), Default: "Custom",
+		Get: func(c *corelib.AppConfig) string { return currentLLMPresetName(c) },
+		Set: func(c *corelib.AppConfig, v string) { applyLLMProviderPreset(c, v) },
+	},
+	{
 		Key: "maclaw_llm_url", Tab: CfgTabLLM, Section: "maclaw_llm",
 		DescKey: i18n.MsgTUIConfigDescLLMURL,
-		Get: func(c *corelib.AppConfig) string { return c.MaclawLLMUrl },
-		Set: func(c *corelib.AppConfig, v string) { c.MaclawLLMUrl = v },
+		Get:     func(c *corelib.AppConfig) string { return c.MaclawLLMUrl },
+		Set: func(c *corelib.AppConfig, v string) {
+			c.MaclawLLMUrl = strings.TrimRight(v, "/")
+			syncCurrentLLMProvider(c)
+		},
 	},
 	{
 		Key: "maclaw_llm_key", Tab: CfgTabLLM, Section: "maclaw_llm",
 		DescKey: i18n.MsgTUIConfigDescLLMKey,
-		Get: func(c *corelib.AppConfig) string { return c.MaclawLLMKey },
-		Set: func(c *corelib.AppConfig, v string) { c.MaclawLLMKey = v },
+		Get:     func(c *corelib.AppConfig) string { return c.MaclawLLMKey },
+		Set:     func(c *corelib.AppConfig, v string) { c.MaclawLLMKey = v; syncCurrentLLMProvider(c) },
 	},
 	{
 		Key: "maclaw_llm_model", Tab: CfgTabLLM, Section: "maclaw_llm",
 		DescKey: i18n.MsgTUIConfigDescLLMModel,
-		Get: func(c *corelib.AppConfig) string { return c.MaclawLLMModel },
-		Set: func(c *corelib.AppConfig, v string) { c.MaclawLLMModel = v },
+		Get:     func(c *corelib.AppConfig) string { return c.MaclawLLMModel },
+		Set:     func(c *corelib.AppConfig, v string) { c.MaclawLLMModel = v; syncCurrentLLMProvider(c) },
 	},
 	{
 		Key: "maclaw_llm_protocol", Tab: CfgTabLLM, Section: "maclaw_llm",
 		DescKey: i18n.MsgTUIConfigDescLLMProtocol, Options: []string{"openai", "anthropic"}, Default: "openai",
 		Get: func(c *corelib.AppConfig) string { return c.MaclawLLMProtocol },
-		Set: func(c *corelib.AppConfig, v string) { c.MaclawLLMProtocol = v },
+		Set: func(c *corelib.AppConfig, v string) { c.MaclawLLMProtocol = v; syncCurrentLLMProvider(c) },
 	},
 	{
 		Key: "maclaw_llm_context_length", Tab: CfgTabLLM, Section: "maclaw_llm",
 		DescKey: i18n.MsgTUIConfigDescLLMContextLength,
-		Get: intGet(func(c *corelib.AppConfig) int { return c.MaclawLLMContextLength }),
-		Set: intSet(func(c *corelib.AppConfig, v int) { c.MaclawLLMContextLength = v }),
+		Get:     intGet(func(c *corelib.AppConfig) int { return c.MaclawLLMContextLength }),
+		Set:     intSet(func(c *corelib.AppConfig, v int) { c.MaclawLLMContextLength = v; syncCurrentLLMProvider(c) }),
 	},
 	// Auxiliary LLM
 	{
 		Key: "aux_llm_url", Tab: CfgTabLLM, Section: "aux_llm",
 		DescKey: i18n.MsgTUIConfigDescAuxLLMURL,
-		Get: func(c *corelib.AppConfig) string { return c.AuxiliaryLLM.URL },
-		Set: func(c *corelib.AppConfig, v string) { c.AuxiliaryLLM.URL = v },
+		Get:     func(c *corelib.AppConfig) string { return c.AuxiliaryLLM.URL },
+		Set:     func(c *corelib.AppConfig, v string) { c.AuxiliaryLLM.URL = v },
 	},
 	{
 		Key: "aux_llm_key", Tab: CfgTabLLM, Section: "aux_llm",
 		DescKey: i18n.MsgTUIConfigDescAuxLLMKey,
-		Get: func(c *corelib.AppConfig) string { return c.AuxiliaryLLM.Key },
-		Set: func(c *corelib.AppConfig, v string) { c.AuxiliaryLLM.Key = v },
+		Get:     func(c *corelib.AppConfig) string { return c.AuxiliaryLLM.Key },
+		Set:     func(c *corelib.AppConfig, v string) { c.AuxiliaryLLM.Key = v },
 	},
 	{
 		Key: "aux_llm_model", Tab: CfgTabLLM, Section: "aux_llm",
 		DescKey: i18n.MsgTUIConfigDescAuxLLMModel,
-		Get: func(c *corelib.AppConfig) string { return c.AuxiliaryLLM.Model },
-		Set: func(c *corelib.AppConfig, v string) { c.AuxiliaryLLM.Model = v },
+		Get:     func(c *corelib.AppConfig) string { return c.AuxiliaryLLM.Model },
+		Set:     func(c *corelib.AppConfig, v string) { c.AuxiliaryLLM.Model = v },
 	},
 	{
 		Key: "aux_llm_protocol", Tab: CfgTabLLM, Section: "aux_llm",
@@ -199,14 +349,14 @@ var allConfigFields = []ConfigFieldDef{
 	{
 		Key: "qqbot_app_id", Tab: CfgTabIM, Section: "qqbot",
 		DescKey: i18n.MsgTUIConfigDescQQBotAppID,
-		Get: func(c *corelib.AppConfig) string { return c.QQBotAppID },
-		Set: func(c *corelib.AppConfig, v string) { c.QQBotAppID = v },
+		Get:     func(c *corelib.AppConfig) string { return c.QQBotAppID },
+		Set:     func(c *corelib.AppConfig, v string) { c.QQBotAppID = v },
 	},
 	{
 		Key: "qqbot_app_secret", Tab: CfgTabIM, Section: "qqbot",
 		DescKey: i18n.MsgTUIConfigDescQQBotAppSecret,
-		Get: func(c *corelib.AppConfig) string { return c.QQBotAppSecret },
-		Set: func(c *corelib.AppConfig, v string) { c.QQBotAppSecret = v },
+		Get:     func(c *corelib.AppConfig) string { return c.QQBotAppSecret },
+		Set:     func(c *corelib.AppConfig, v string) { c.QQBotAppSecret = v },
 	},
 	{
 		Key: "telegram_bot_enabled", Tab: CfgTabIM, Section: "telegram",
@@ -217,8 +367,8 @@ var allConfigFields = []ConfigFieldDef{
 	{
 		Key: "telegram_bot_token", Tab: CfgTabIM, Section: "telegram",
 		DescKey: i18n.MsgTUIConfigDescTelegramToken,
-		Get: func(c *corelib.AppConfig) string { return c.TelegramBotToken },
-		Set: func(c *corelib.AppConfig, v string) { c.TelegramBotToken = v },
+		Get:     func(c *corelib.AppConfig) string { return c.TelegramBotToken },
+		Set:     func(c *corelib.AppConfig, v string) { c.TelegramBotToken = v },
 	},
 	{
 		Key: "weixin_enabled", Tab: CfgTabIM, Section: "weixin",
@@ -229,14 +379,14 @@ var allConfigFields = []ConfigFieldDef{
 	{
 		Key: "weixin_token", Tab: CfgTabIM, Section: "weixin",
 		DescKey: i18n.MsgTUIConfigDescWeixinToken,
-		Get: func(c *corelib.AppConfig) string { return c.WeixinToken },
-		Set: func(c *corelib.AppConfig, v string) { c.WeixinToken = v },
+		Get:     func(c *corelib.AppConfig) string { return c.WeixinToken },
+		Set:     func(c *corelib.AppConfig, v string) { c.WeixinToken = v },
 	},
 	{
 		Key: "weixin_base_url", Tab: CfgTabIM, Section: "weixin",
 		DescKey: i18n.MsgTUIConfigDescWeixinBaseURL,
-		Get: func(c *corelib.AppConfig) string { return c.WeixinBaseURL },
-		Set: func(c *corelib.AppConfig, v string) { c.WeixinBaseURL = v },
+		Get:     func(c *corelib.AppConfig) string { return c.WeixinBaseURL },
+		Set:     func(c *corelib.AppConfig, v string) { c.WeixinBaseURL = v },
 	},
 	{
 		Key: "lansenger_enabled", Tab: CfgTabIM, Section: "lansenger",
@@ -247,20 +397,20 @@ var allConfigFields = []ConfigFieldDef{
 	{
 		Key: "lansenger_app_id", Tab: CfgTabIM, Section: "lansenger",
 		DescKey: i18n.MsgTUIConfigDescLansengerAppID,
-		Get: func(c *corelib.AppConfig) string { return c.LansengerAppID },
-		Set: func(c *corelib.AppConfig, v string) { c.LansengerAppID = v },
+		Get:     func(c *corelib.AppConfig) string { return c.LansengerAppID },
+		Set:     func(c *corelib.AppConfig, v string) { c.LansengerAppID = v },
 	},
 	{
 		Key: "lansenger_app_secret", Tab: CfgTabIM, Section: "lansenger",
 		DescKey: i18n.MsgTUIConfigDescLansengerAppSecret,
-		Get: func(c *corelib.AppConfig) string { return c.LansengerAppSecret },
-		Set: func(c *corelib.AppConfig, v string) { c.LansengerAppSecret = v },
+		Get:     func(c *corelib.AppConfig) string { return c.LansengerAppSecret },
+		Set:     func(c *corelib.AppConfig, v string) { c.LansengerAppSecret = v },
 	},
 	{
 		Key: "lansenger_gateway_url", Tab: CfgTabIM, Section: "lansenger",
 		DescKey: i18n.MsgTUIConfigDescLansengerGateway,
-		Get: func(c *corelib.AppConfig) string { return c.LansengerGatewayURL },
-		Set: func(c *corelib.AppConfig, v string) { c.LansengerGatewayURL = v },
+		Get:     func(c *corelib.AppConfig) string { return c.LansengerGatewayURL },
+		Set:     func(c *corelib.AppConfig, v string) { c.LansengerGatewayURL = v },
 	},
 
 	// ---- Tab 3: Proxy ----
@@ -279,26 +429,26 @@ var allConfigFields = []ConfigFieldDef{
 	{
 		Key: "default_proxy_host", Tab: CfgTabProxy, Section: "proxy",
 		DescKey: i18n.MsgTUIConfigDescProxyHost,
-		Get: func(c *corelib.AppConfig) string { return c.DefaultProxyHost },
-		Set: func(c *corelib.AppConfig, v string) { c.DefaultProxyHost = v },
+		Get:     func(c *corelib.AppConfig) string { return c.DefaultProxyHost },
+		Set:     func(c *corelib.AppConfig, v string) { c.DefaultProxyHost = v },
 	},
 	{
 		Key: "default_proxy_port", Tab: CfgTabProxy, Section: "proxy",
 		DescKey: i18n.MsgTUIConfigDescProxyPort,
-		Get: func(c *corelib.AppConfig) string { return c.DefaultProxyPort },
-		Set: func(c *corelib.AppConfig, v string) { c.DefaultProxyPort = v },
+		Get:     func(c *corelib.AppConfig) string { return c.DefaultProxyPort },
+		Set:     func(c *corelib.AppConfig, v string) { c.DefaultProxyPort = v },
 	},
 	{
 		Key: "default_proxy_username", Tab: CfgTabProxy, Section: "proxy",
 		DescKey: i18n.MsgTUIConfigDescProxyUser,
-		Get: func(c *corelib.AppConfig) string { return c.DefaultProxyUsername },
-		Set: func(c *corelib.AppConfig, v string) { c.DefaultProxyUsername = v },
+		Get:     func(c *corelib.AppConfig) string { return c.DefaultProxyUsername },
+		Set:     func(c *corelib.AppConfig, v string) { c.DefaultProxyUsername = v },
 	},
 	{
 		Key: "default_proxy_password", Tab: CfgTabProxy, Section: "proxy",
 		DescKey: i18n.MsgTUIConfigDescProxyPass,
-		Get: func(c *corelib.AppConfig) string { return c.DefaultProxyPassword },
-		Set: func(c *corelib.AppConfig, v string) { c.DefaultProxyPassword = v },
+		Get:     func(c *corelib.AppConfig) string { return c.DefaultProxyPassword },
+		Set:     func(c *corelib.AppConfig, v string) { c.DefaultProxyPassword = v },
 	},
 	{
 		Key: "default_proxy_scope_maclaw", Tab: CfgTabProxy, Section: "proxy",

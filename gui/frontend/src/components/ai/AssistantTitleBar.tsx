@@ -51,6 +51,21 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     handler();
 };
 
+function WindowsMaximizeRestoreIcon({ maximized }: { maximized: boolean }) {
+    return (
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" focusable="false" style={{ display: "block" }}>
+            {maximized ? (
+                <>
+                    <path d="M6 3.5h6.5v6.5" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinejoin="round" />
+                    <rect x="3.5" y="6" width="6.5" height="6.5" fill="none" stroke="currentColor" strokeWidth="1.35" rx="0.5" />
+                </>
+            ) : (
+                <rect x="3.5" y="3.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1.35" rx="0.5" />
+            )}
+        </svg>
+    );
+}
+
 export function AssistantTitleBar({ bindGroupDiscussionPress, clearHistory, groupActiveTalks, groupDiscussion, groupDiscussionBusy, groupDiscussionDiscoverable, groupDiscussionEnabled, groupDiscussionLabel, groupDiscussionOpen, groupDiscussionScopeText, groupDiscussionStatus, groupPendingInvites, groupReadyTalks, groupStaleTalks, groupWaitingTalks, inline, lang, maximized, onClose, onHideWindow, onOpenTutorial, onToggleMaximize, projectSearchOpen, refreshNews, runGroupDiscussionAction, setGroupDiscussionOpen, setThemeMode, setTtsEnabled, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, ttsEnabled, toggleProjectSearch }: AssistantTitleBarProps) {
     const toggleTts = () => setTtsEnabled(!ttsEnabled);
     const toggleTheme = () => setThemeMode(themeMode === "dark" ? "light" : "dark");
@@ -73,7 +88,7 @@ export function AssistantTitleBar({ bindGroupDiscussionPress, clearHistory, grou
                 </div>
                 <div data-testid="ai-titlebar-window-group" style={{ display: "flex", gap: "2px", alignItems: "center", marginLeft: inline ? "16px" : "12px", paddingLeft: inline ? "14px" : "12px", paddingTop: 1, borderLeft: `1px solid ${t.titleBarBorder}` }}>
                     {inline && onHideWindow && <button className="ai-window-control" onMouseDown={stopMouse(onHideWindow)} data-testid="ai-hide-toggle" aria-label={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"} style={getWindowControlButtonStyle(t, "hide")} title={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"}><span style={{ width: "10px", borderTop: "1.5px solid currentColor", transform: "translateY(4px)" }} /></button>}
-                    {showMaximizeToggle && <button className="ai-window-control" onMouseDown={stopMouse(() => onToggleMaximize?.())} data-testid="ai-maximize-toggle" aria-label={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")} style={getWindowControlButtonStyle(t, "fullscreen", maximized)} title={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")}><span style={{ position: "relative", width: "12px", height: "12px", display: "inline-block" }}><span style={{ position: "absolute", inset: maximized ? "2px 0 0 2px" : 0, border: "1.5px solid currentColor", borderRadius: "1px", background: "transparent" }} />{maximized && <span style={{ position: "absolute", inset: "0 2px 2px 0", border: "1.5px solid currentColor", borderRadius: "1px", background: t.titleBarBg }} />}</span></button>}
+                    {showMaximizeToggle && <button className="ai-window-control" onMouseDown={stopMouse(() => onToggleMaximize?.())} data-testid="ai-maximize-toggle" aria-label={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")} style={getWindowControlButtonStyle(t, "fullscreen", maximized)} title={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")}><WindowsMaximizeRestoreIcon maximized={maximized} /></button>}
                     {!inline && <button className="ai-window-control" onClick={onClose} style={{ ...getWindowControlButtonStyle(t, "hide"), color: t.closeBtnColor, fontSize: "14px" }} title={lang === "en" ? "Close" : "\u5173\u95ed"}>{"x"}</button>}
                 </div>
             </div>

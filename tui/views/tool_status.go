@@ -104,25 +104,25 @@ type ToolStatusModel struct {
 	lang   string
 
 	// Skill sub-tab state
-	skills       []SkillItem
-	skillCursor  int
-	skillSearch  textinput.Model
-	skillSearching bool
-	skillResults []SkillSearchResult
+	skills            []SkillItem
+	skillCursor       int
+	skillSearch       textinput.Model
+	skillSearching    bool
+	skillResults      []SkillSearchResult
 	skillResultCursor int
-	skillMessage string // status message
-	skillConfirming bool   // true when showing install confirmation dialog
-	skillConfirmIdx int    // index of the result being confirmed
+	skillMessage      string // status message
+	skillConfirming   bool   // true when showing install confirmation dialog
+	skillConfirmIdx   int    // index of the result being confirmed
 
 	// MCP sub-tab state
-	mcpServers   []MCPItem
-	mcpCursor    int
-	mcpAdding    bool   // true when in add-MCP form
-	mcpAddType   int    // 0=local, 1=remote
-	mcpInputs    []textinput.Model // text input fields
-	mcpFocused   int    // which field is focused
-	mcpAuthIdx   int    // selected auth type index (remote form only)
-	mcpMessage   string // status message
+	mcpServers []MCPItem
+	mcpCursor  int
+	mcpAdding  bool              // true when in add-MCP form
+	mcpAddType int               // 0=local, 1=remote
+	mcpInputs  []textinput.Model // text input fields
+	mcpFocused int               // which field is focused
+	mcpAuthIdx int               // selected auth type index (remote form only)
+	mcpMessage string            // status message
 
 	// Legacy
 	tools   []ToolInfo
@@ -543,7 +543,10 @@ func (m ToolStatusModel) renderSubTabs() string {
 	inactive := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(lipgloss.Color("238")).Padding(0, 1)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
-	names := [ToolSubCount]string{"1:Skill", "2:MCP"}
+	names := [ToolSubCount]string{"1:技能", "2:MCP 服务"}
+	if i18n.NormalizeLang(m.lang) == "en" {
+		names = [ToolSubCount]string{"1:Skill", "2:MCP"}
+	}
 	var tabs string
 	for i, name := range names {
 		if i == m.subTab {

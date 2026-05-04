@@ -1,4 +1,4 @@
-﻿package views
+package views
 
 import (
 	"fmt"
@@ -15,6 +15,77 @@ import (
 func isSensitiveKey(key string) bool {
 	return strings.Contains(key, "token") || strings.Contains(key, "secret") ||
 		strings.Contains(key, "password") || strings.Contains(key, "_key")
+}
+
+// configDisplayName returns a human-readable bilingual label for a config key.
+// The saved key remains unchanged; this is display-only.
+func configDisplayName(key string) string {
+	return configDisplayNameForLang(key, "zh")
+}
+
+func configDisplayNameForLang(key, lang string) string {
+	zh := map[string]string{
+		"hub_url": "Hub 服务地址", "token": "认证令牌", "data_dir": "数据目录", "working_directory": "工作目录", "language": "界面语言", "max_iterations": "最大轮数", "agentnet_enabled": "AgentNet 开关", "check_update_on_startup": "启动检查更新",
+		"maclaw_llm_provider_preset": "LLM 服务商", "maclaw_llm_url": "LLM 地址", "maclaw_llm_key": "LLM 密钥", "maclaw_llm_model": "LLM 模型", "maclaw_llm_protocol": "LLM 协议", "maclaw_llm_context_length": "上下文长度",
+		"aux_llm_url": "辅助 LLM 地址", "aux_llm_key": "辅助 LLM 密钥", "aux_llm_model": "辅助 LLM 模型", "aux_llm_protocol": "辅助 LLM 协议",
+		"qqbot_enabled": "QQ 机器人开关", "qqbot_app_id": "QQ AppID", "qqbot_app_secret": "QQ AppSecret", "telegram_bot_enabled": "Telegram 开关", "telegram_bot_token": "Telegram Token", "weixin_enabled": "微信开关", "weixin_token": "微信 Token", "weixin_base_url": "微信地址", "lansenger_enabled": "蓝信开关", "lansenger_app_id": "蓝信 AppID", "lansenger_app_secret": "蓝信密钥", "lansenger_gateway_url": "蓝信网关",
+		"default_proxy_enabled": "代理开关", "default_proxy_protocol": "代理协议", "default_proxy_host": "代理主机", "default_proxy_port": "代理端口", "default_proxy_username": "代理用户", "default_proxy_password": "代理密码", "default_proxy_scope_maclaw": "代理 LLM", "default_proxy_scope_agent": "代理 Agent",
+		"security_policy_mode": "安全策略", "sandbox_mode": "沙箱模式", "network_level": "网络级别", "yolo_mode_allowed": "YOLO 模式", "file_outbound_enabled": "文件外发", "image_outbound_enabled": "图片外发",
+		"skill_purchase_mode": "技能购买", "ui_mode": "界面模式", "memory_auto_compress": "记忆压缩", "log_detail_enabled": "详细日志", "llm_trajectory_logging": "LLM 轨迹", "maclaw_debug_tool_calls": "工具调试", "gossip_enabled": "Gossip 开关", "trial_reflect_enabled": "试错反思",
+	}
+	en := map[string]string{
+		"hub_url": "Hub URL", "token": "Auth token", "data_dir": "Data dir", "working_directory": "Work dir", "language": "Language", "max_iterations": "Max rounds", "agentnet_enabled": "AgentNet", "check_update_on_startup": "Check update",
+		"maclaw_llm_provider_preset": "LLM provider", "maclaw_llm_url": "LLM URL", "maclaw_llm_key": "LLM key", "maclaw_llm_model": "LLM model", "maclaw_llm_protocol": "LLM protocol", "maclaw_llm_context_length": "Context length",
+		"aux_llm_url": "Aux LLM URL", "aux_llm_key": "Aux LLM key", "aux_llm_model": "Aux LLM model", "aux_llm_protocol": "Aux LLM protocol",
+		"qqbot_enabled": "QQ bot", "qqbot_app_id": "QQ AppID", "qqbot_app_secret": "QQ AppSecret", "telegram_bot_enabled": "Telegram", "telegram_bot_token": "Telegram token", "weixin_enabled": "WeChat", "weixin_token": "WeChat token", "weixin_base_url": "WeChat URL", "lansenger_enabled": "Lansenger", "lansenger_app_id": "Lansenger ID", "lansenger_app_secret": "Lansenger secret", "lansenger_gateway_url": "Lansenger gateway",
+		"default_proxy_enabled": "Proxy", "default_proxy_protocol": "Proxy protocol", "default_proxy_host": "Proxy host", "default_proxy_port": "Proxy port", "default_proxy_username": "Proxy user", "default_proxy_password": "Proxy password", "default_proxy_scope_maclaw": "Proxy LLM", "default_proxy_scope_agent": "Proxy Agent",
+		"security_policy_mode": "Security mode", "sandbox_mode": "Sandbox", "network_level": "Network level", "yolo_mode_allowed": "YOLO mode", "file_outbound_enabled": "File outbound", "image_outbound_enabled": "Image outbound",
+		"skill_purchase_mode": "Skill purchase", "ui_mode": "UI mode", "memory_auto_compress": "Memory compress", "log_detail_enabled": "Detail logs", "llm_trajectory_logging": "LLM trajectory", "maclaw_debug_tool_calls": "Debug tools", "gossip_enabled": "Gossip", "trial_reflect_enabled": "Trial reflect",
+	}
+	if lang == "en" {
+		if label, ok := en[key]; ok {
+			return label
+		}
+	} else if label, ok := zh[key]; ok {
+		return label
+	}
+	return key
+}
+
+func configNameWidth(width int) int {
+	if width < 88 {
+		return 26
+	}
+	if width < 120 {
+		return 32
+	}
+	return 38
+}
+
+func padDisplay(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s + " "
+	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+func configOptionDisplay(key, value, lang string) string {
+	if key == "language" {
+		switch value {
+		case "zh":
+			if lang == "en" {
+				return "Chinese"
+			}
+			return "中文"
+		case "en":
+			if lang == "en" {
+				return "English"
+			}
+			return "英文"
+		}
+	}
+	return value
 }
 
 // ConfigEntry represents a configuration entry for display.
@@ -48,13 +119,16 @@ const (
 
 // cfgTabNames returns localized tab names.
 func cfgTabNames(lang string) [CfgTabCount]string {
+	if i18n.NormalizeLang(lang) == "en" {
+		return [CfgTabCount]string{"General", "LLM", "IM", "Proxy", "Security", "Advanced"}
+	}
 	return [CfgTabCount]string{
-		i18n.T(i18n.MsgTUIConfigTabGeneral, lang),
-		i18n.T(i18n.MsgTUIConfigTabLLM, lang),
-		i18n.T(i18n.MsgTUIConfigTabIM, lang),
-		i18n.T(i18n.MsgTUIConfigTabProxy, lang),
-		i18n.T(i18n.MsgTUIConfigTabSecurity, lang),
-		i18n.T(i18n.MsgTUIConfigTabAdvanced, lang),
+		"基本",
+		"LLM",
+		"IM 通道",
+		"代理",
+		"安全",
+		"高级",
 	}
 }
 
@@ -409,17 +483,21 @@ func (m ConfigModel) View() string {
 		}
 
 		// Inline selector mode for this row.
+		name := configDisplayNameForLang(e.Key, m.lang)
+		nameWidth := configNameWidth(m.width)
+
 		if m.selectMode && i == m.cursor {
-			line := fmt.Sprintf("  %-26s ", e.Key)
+			line := "  " + padDisplay(name, nameWidth)
 			b.WriteString(cfgEditStyle.Render(line))
 			for j, opt := range e.Options {
 				if j > 0 {
 					b.WriteString("  ")
 				}
+				label := configOptionDisplay(e.Key, opt, m.lang)
 				if j == m.selectCursor {
-					b.WriteString(cfgOptActive.Render(" "+opt+" "))
+					b.WriteString(cfgOptActive.Render(" " + label + " "))
 				} else {
-					b.WriteString(cfgOptNormal.Render(" "+opt+" "))
+					b.WriteString(cfgOptNormal.Render(" " + label + " "))
 				}
 			}
 			b.WriteString("\n")
@@ -428,7 +506,7 @@ func (m ConfigModel) View() string {
 
 		// Text editing mode for this row.
 		if m.editing && i == m.cursor {
-			line := fmt.Sprintf("  %-26s ", e.Key)
+			line := "  " + padDisplay(name, nameWidth)
 			b.WriteString(cfgEditStyle.Render(line))
 			b.WriteString(m.input.View())
 			b.WriteString("\n")
@@ -445,6 +523,8 @@ func (m ConfigModel) View() string {
 			} else {
 				val = cfgToggleOff.Render("○ OFF")
 			}
+		} else if len(e.Options) > 0 {
+			val = configOptionDisplay(e.Key, val, m.lang)
 		} else if val == "" {
 			val = cfgDimStyle.Render(i18n.T(i18n.MsgTUIConfigNotSet, m.lang))
 		} else if isSensitiveKey(e.Key) {
@@ -459,10 +539,14 @@ func (m ConfigModel) View() string {
 		// Show options hint for non-boolean selector fields.
 		optHint := ""
 		if len(e.Options) > 0 && !isBoolField {
-			optHint = cfgDimStyle.Render(" [" + strings.Join(e.Options, "|") + "]")
+			labels := make([]string, 0, len(e.Options))
+			for _, opt := range e.Options {
+				labels = append(labels, configOptionDisplay(e.Key, opt, m.lang))
+			}
+			optHint = cfgDimStyle.Render(" [" + strings.Join(labels, "|") + "]")
 		}
 
-		line := fmt.Sprintf("  %-26s %-16s%s  %s", e.Key, val, optHint, descStr)
+		line := fmt.Sprintf("  %s %-16s%s  %s", padDisplay(name, nameWidth), val, optHint, descStr)
 		if i == m.cursor {
 			b.WriteString(cfgSelectedStyle.Render(line))
 		} else {
@@ -501,10 +585,26 @@ func (m ConfigModel) renderTabs() string {
 
 // sectionLabel returns a human-readable section header.
 func sectionLabel(section, lang string) string {
+	if i18n.NormalizeLang(lang) == "en" {
+		labels := map[string]string{
+			"general":     "General",
+			"maclaw_llm":  "Primary LLM",
+			"aux_llm":     "Auxiliary LLM",
+			"qqbot":       "QQ Bot",
+			"telegram":    "Telegram Bot",
+			"weixin":      "WeChat",
+			"lansenger":   "Lansenger",
+			"proxy":       "Proxy",
+			"security":    "Security",
+			"skillmarket": "Skill Market",
+			"advanced":    "Advanced",
+		}
+		return labels[section]
+	}
 	labels := map[string]string{
 		"general":     "基本设置",
 		"maclaw_llm":  "主 LLM",
-		"aux_llm":     "辅助 LLM (轻量任务)",
+		"aux_llm":     "辅助 LLM",
 		"qqbot":       "QQ 机器人",
 		"telegram":    "Telegram 机器人",
 		"weixin":      "微信",
@@ -513,21 +613,6 @@ func sectionLabel(section, lang string) string {
 		"security":    "安全策略",
 		"skillmarket": "技能市场",
 		"advanced":    "高级选项",
-	}
-	if lang == "en" {
-		labels = map[string]string{
-			"general":     "General",
-			"maclaw_llm":  "Primary LLM",
-			"aux_llm":     "Auxiliary LLM (lightweight tasks)",
-			"qqbot":       "QQ Bot",
-			"telegram":    "Telegram Bot",
-			"weixin":      "WeChat",
-			"lansenger":   "Lansenger",
-			"proxy":       "Proxy Settings",
-			"security":    "Security Policy",
-			"skillmarket": "Skill Market",
-			"advanced":    "Advanced",
-		}
 	}
 	return labels[section]
 }

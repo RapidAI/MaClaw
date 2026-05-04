@@ -6,6 +6,7 @@ import type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./
 
 type WailsDragStyle = CSSProperties & { "--wails-draggable"?: "no-drag" };
 const wailsDragStyle = (style: WailsDragStyle): CSSProperties => style;
+const GROUP_DISCUSSION_SHORT_LABEL = "GD";
 
 interface GroupDiscussionInvite {
     id?: string;
@@ -40,12 +41,16 @@ interface AssistantGroupDiscussionMenuProps {
 }
 
 export function AssistantGroupDiscussionMenu({ bindGroupDiscussionPress, groupActiveTalks, groupDiscussion, groupDiscussionBusy, groupDiscussionDiscoverable, groupDiscussionEnabled, groupDiscussionLabel, groupDiscussionOpen, groupDiscussionScopeText, groupDiscussionStatus, groupPendingInvites, groupReadyTalks, groupStaleTalks, groupWaitingTalks, inline, lang, runGroupDiscussionAction, setGroupDiscussionOpen, theme: t, themeMode }: AssistantGroupDiscussionMenuProps) {
+    const groupDiscussionTitle = lang === "en" ? `Group discussion (${GROUP_DISCUSSION_SHORT_LABEL}): ${groupDiscussionLabel}` : `\u7fa4\u7ec4\u8ba8\u8bba\uff1a${groupDiscussionLabel}`;
+    const groupDiscussionButtonColor = groupDiscussionEnabled ? (groupDiscussionDiscoverable ? "#047857" : "#92400e") : t.actionBtnColor;
+    const groupDiscussionStatusColor = groupDiscussionEnabled ? (groupDiscussionDiscoverable ? "#10b981" : "#f59e0b") : "#94a3b8";
+
     return (
         <div style={{ position: "relative", zIndex: 30010 }}>
-            <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: (e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); setGroupDiscussionOpen((v: boolean) => !v); } } : { onClick: () => setGroupDiscussionOpen((v: boolean) => !v) })} style={{ ...getTitleBarToolButtonStyle(t), width: "auto", minWidth: "72px", padding: "0 8px", gap: "5px", color: groupDiscussionEnabled ? (groupDiscussionDiscoverable ? "#047857" : "#92400e") : t.actionBtnColor, borderColor: groupPendingInvites.length > 0 ? "#f59e0b" : undefined }} title={lang === "en" ? "Group discussion" : "\u7fa4\u7ec4\u8ba8\u8bba"}>
-                <span aria-hidden="true" style={{ fontSize: "13px", lineHeight: 1 }}>GD</span>
-                <span style={{ fontSize: "10px", lineHeight: 1, whiteSpace: "nowrap" }}>{groupDiscussionLabel}</span>
-                {groupPendingInvites.length > 0 && <span style={{ minWidth: "14px", height: "14px", borderRadius: "999px", background: "#f59e0b", color: "white", fontSize: "9px", lineHeight: "14px", textAlign: "center", fontWeight: 700 }}>{groupPendingInvites.length > 9 ? "9+" : groupPendingInvites.length}</span>}
+            <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: (e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); setGroupDiscussionOpen((v: boolean) => !v); } } : { onClick: () => setGroupDiscussionOpen((v: boolean) => !v) })} aria-label={groupDiscussionTitle} style={{ ...getTitleBarToolButtonStyle(t), width: "32px", minWidth: "32px", padding: 0, position: "relative", color: groupDiscussionButtonColor, boxShadow: groupDiscussionOpen ? `inset 0 0 0 1px ${t.fieldBorder}` : (groupPendingInvites.length > 0 ? "inset 0 0 0 1px rgba(245, 158, 11, 0.55)" : undefined) }} title={groupDiscussionTitle}>
+                <span aria-hidden="true" style={{ fontSize: "15px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{"\u{1F465}"}</span>
+                <span aria-hidden="true" style={{ position: "absolute", right: "6px", bottom: "5px", width: "5px", height: "5px", borderRadius: "999px", background: groupDiscussionStatusColor, boxShadow: `0 0 0 1.5px ${t.titleBarBg}` }} />
+                {groupPendingInvites.length > 0 && <span aria-hidden="true" style={{ position: "absolute", top: "2px", right: "2px", minWidth: "13px", height: "13px", padding: "0 3px", boxSizing: "border-box", borderRadius: "999px", background: "#f59e0b", color: "white", fontSize: "8px", lineHeight: "13px", textAlign: "center", fontWeight: 800 }}>{groupPendingInvites.length > 9 ? "9+" : groupPendingInvites.length}</span>}
             </button>
             {groupDiscussionOpen && (
                 <div style={wailsDragStyle({ position: "absolute", right: 0, top: "30px", width: "min(280px, calc(100vw - 96px))", maxWidth: "calc(100vw - 96px)", padding: "12px", borderRadius: "12px", border: `1px solid ${t.titleBarBorder}`, background: themeMode === "dark" ? "#0f172a" : t.bg, boxShadow: themeMode === "dark" ? "0 22px 60px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(148, 163, 184, 0.16)" : "0 18px 45px rgba(15, 23, 42, 0.18)", color: t.text, zIndex: 30020, "--wails-draggable": "no-drag" })}>

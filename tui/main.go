@@ -306,6 +306,10 @@ func runSessionCommand(args []string) {
 
 // runConfigCommand 处理 config 子命令。
 func runConfigCommand(args []string) {
+	if len(args) > 0 && (args[0] == "ui" || args[0] == "setup") {
+		runConfigUI()
+		return
+	}
 	hubURL, token := resolveHubCredentials()
 	if err := commands.RunConfig(args, hubURL, token); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

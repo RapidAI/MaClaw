@@ -15,7 +15,7 @@ import (
 const (
 	TabChat = iota
 	TabTools
-	TabTasks    // 任务（远程 + 后台 + 计划任务）
+	TabTasks // 任务（远程 + 后台 + 计划任务）
 	TabMemory
 	TabAudit
 	TabConfig
@@ -24,20 +24,20 @@ const (
 
 // RootModel 是 TUI 的根 Model，管理 Tab 切换和子视图。
 type RootModel struct {
-	width     int
-	height    int
-	tab       int
-	lang      string
+	width  int
+	height int
+	tab    int
+	lang   string
 
 	// 子视图
-	Tools         ToolStatusModel
-	Tasks         TaskModel
-	Memory        MemoryModel
-	Audit         AuditModel
-	Config        ConfigModel
-	Chat          ChatModel
-	StatusBar     StatusBarModel
-	Help          HelpModel
+	Tools     ToolStatusModel
+	Tasks     TaskModel
+	Memory    MemoryModel
+	Audit     AuditModel
+	Config    ConfigModel
+	Chat      ChatModel
+	StatusBar StatusBarModel
+	Help      HelpModel
 }
 
 // NewRootModel 创建根 Model。
@@ -46,16 +46,16 @@ func NewRootModel(lang string) RootModel {
 	chat := NewChatModel(lang)
 	chat.FocusInput() // 启动后直接聚焦输入框
 	return RootModel{
-		tab:         TabChat,
-		lang:        lang,
-		Tools:       NewToolStatusModel(lang),
-		Tasks:    NewTaskModel(lang),
-		Memory:   NewMemoryModel(lang),
-		Audit:    NewAuditModel(lang),
-		Config:   NewConfigModel(lang),
-		Chat:     chat,
+		tab:       TabChat,
+		lang:      lang,
+		Tools:     NewToolStatusModel(lang),
+		Tasks:     NewTaskModel(lang),
+		Memory:    NewMemoryModel(lang),
+		Audit:     NewAuditModel(lang),
+		Config:    NewConfigModel(lang),
+		Chat:      chat,
 		StatusBar: NewStatusBarModel(lang),
-		Help:     NewHelpModel(lang),
+		Help:      NewHelpModel(lang),
 	}
 }
 
@@ -210,7 +210,7 @@ func (m RootModel) renderTabs() string {
 	tabNames := [TabCount]string{
 		i18n.T(i18n.MsgTUITabChat, m.lang),
 		i18n.T(i18n.MsgTUITabTools, m.lang),
-		i18n.T(i18n.MsgTUITabSchedule, m.lang),  // "任务" / "Tasks"
+		i18n.T(i18n.MsgTUITabSchedule, m.lang),
 		i18n.T(i18n.MsgTUITabMemory, m.lang),
 		i18n.T(i18n.MsgTUITabAudit, m.lang),
 		i18n.T(i18n.MsgTUITabConfig, m.lang),

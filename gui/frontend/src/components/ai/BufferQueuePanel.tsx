@@ -241,12 +241,16 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
         <div
             data-testid="buffer-queue-panel"
             style={{
-                maxHeight: "40vh",
+                maxHeight: queue.length > 1 ? "92px" : "44px",
                 overflowY: "auto",
                 background: t.inputBarBg,
                 borderTop: `1px solid ${t.inputBarBorder}`,
                 borderBottom: `1px solid ${t.divider}`,
-                padding: "4px 12px 4px 12px",
+                padding: "2px 10px",
+                flexShrink: 0,
+                display: "flex",
+                flexDirection: "column",
+                gap: "2px",
             }}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
@@ -259,7 +263,9 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
                     fontSize: "11px",
                     fontWeight: 600,
                     color: t.headingColor,
-                    padding: "2px 0 4px 0",
+                    padding: 0,
+                    lineHeight: 1.2,
+                    minHeight: "14px",
                     userSelect: "none",
                 }}
             >
@@ -464,7 +470,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                                     display: "inline-flex",
                                     alignItems: "center",
                                     gap: "2px",
-                                    padding: "2px 4px",
+                                    padding: "1px 3px",
                                     borderRadius: "3px",
                                     background: t.codeBlockBg,
                                     border: `1px solid ${t.codeBlockBorder}`,
@@ -541,7 +547,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                             border: "none",
                             cursor: "pointer",
                             color: t.textMuted,
-                            fontSize: "13px",
+                            fontSize: "12px",
                             padding: "2px 6px",
                         }}
                         aria-label={localizeText(lang, "Cancel edit", "取消编辑", "取消編輯")}
@@ -556,7 +562,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                             border: "none",
                             cursor: "pointer",
                             color: t.headingColor,
-                            fontSize: "13px",
+                            fontSize: "12px",
                             padding: "2px 6px",
                         }}
                         aria-label={localizeText(lang, "Confirm edit", "确认编辑", "確認編輯")}
@@ -576,8 +582,9 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
             style={{
                 display: "flex",
                 alignItems: "center",
-                gap: "6px",
-                padding: "4px 0",
+                gap: "5px",
+                padding: "1px 0 2px",
+                minHeight: "22px",
                 borderBottom: `1px solid ${t.divider}`,
                 fontSize: "12px",
                 color: t.text,
@@ -599,7 +606,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                 style={{
                     cursor: isDragging ? "grabbing" : "grab",
                     color: t.textMuted,
-                    fontSize: "14px",
+                    fontSize: "12px",
                     userSelect: "none",
                     flexShrink: 0,
                     lineHeight: 1,
@@ -618,13 +625,16 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                     display: "flex",
                     alignItems: "center",
                     gap: "4px",
+                    lineHeight: 1.25,
                 }}
             >
                 <span
                     style={{
                         overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        whiteSpace: "normal",
                         flexShrink: 1,
                         minWidth: 0,
                     }}
@@ -648,16 +658,16 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                                 src={att.thumbnailDataUrl}
                                 alt={att.fileName}
                                 style={{
-                                    width: "24px",
-                                    height: "24px",
+                                    width: "18px",
+                                    height: "18px",
                                     objectFit: "cover",
                                     borderRadius: "2px",
                                 }}
                             />
                         ) : att.isImage ? (
-                            <span style={{ fontSize: "14px" }}>🖼️</span>
+                            <span style={{ fontSize: "12px" }}>🖼️</span>
                         ) : (
-                            <span style={{ fontSize: "14px" }}>
+                            <span style={{ fontSize: "12px" }}>
                                 {getFileTypeIcon(att.extension)}
                             </span>
                         )}
@@ -677,7 +687,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                         cursor: "pointer",
                         color: t.headingColor,
                         fontSize: "12px",
-                        padding: "1px 5px",
+                        padding: "1px 4px",
                         flexShrink: 0,
                         lineHeight: 1.2,
                     }}
@@ -695,8 +705,8 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                     border: "none",
                     cursor: "pointer",
                     color: t.textMuted,
-                    fontSize: "13px",
-                    padding: "2px 4px",
+                    fontSize: "12px",
+                    padding: "1px 3px",
                     flexShrink: 0,
                     lineHeight: 1,
                 }}
@@ -713,8 +723,8 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                     border: "none",
                     cursor: "pointer",
                     color: t.textMuted,
-                    fontSize: "13px",
-                    padding: "2px 4px",
+                    fontSize: "12px",
+                    padding: "1px 3px",
                     flexShrink: 0,
                     lineHeight: 1,
                 }}

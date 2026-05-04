@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
 
+const INPUT_STACK_MIN_HEIGHT = 96;
+const INPUT_STACK_MAX_HEIGHT = 420;
+const INPUT_TEXTAREA_DEFAULT_MAX_HEIGHT = 120;
+
 export function useResizableAssistantInput(inputRef: React.MutableRefObject<HTMLTextAreaElement | null>, inputValue: string) {
     const [inputAreaHeight, setInputAreaHeight] = useState<number | null>(null);
 
     const resizeInput = useCallback(() => {
         if (!inputRef.current) return;
-        const maxHeight = inputAreaHeight ?? 120;
+        if (inputAreaHeight) {
+            inputRef.current.style.height = "100%";
+            return;
+        }
         inputRef.current.style.height = "auto";
-        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, maxHeight) + "px";
+        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, INPUT_TEXTAREA_DEFAULT_MAX_HEIGHT) + "px";
     }, [inputAreaHeight, inputRef]);
 
     useEffect(() => {
@@ -17,10 +24,11 @@ export function useResizableAssistantInput(inputRef: React.MutableRefObject<HTML
 
     const startInputResize = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         e.preventDefault();
+        const stack = e.currentTarget.nextElementSibling as HTMLElement | null;
         const startY = e.clientY;
-        const startHeight = inputAreaHeight ?? 120;
+        const startHeight = inputAreaHeight ?? stack?.getBoundingClientRect().height ?? 150;
         const onMouseMove = (moveEvent: MouseEvent) => {
-            const next = Math.max(56, Math.min(260, startHeight - (moveEvent.clientY - startY)));
+            const next = Math.max(INPUT_STACK_MIN_HEIGHT, Math.min(INPUT_STACK_MAX_HEIGHT, startHeight - (moveEvent.clientY - startY)));
             setInputAreaHeight(next);
         };
         const onMouseUp = () => {

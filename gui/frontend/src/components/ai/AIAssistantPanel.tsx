@@ -9,7 +9,6 @@ import { useCodePreviewState } from "./useCodePreviewState";
 import { CodePreviewPanel, darkCodePreviewTheme, lightCodePreviewTheme } from "./CodePreviewPanel";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
-import { BufferQueuePanel } from "./BufferQueuePanel";
 import { renderMessage } from "./aiAssistantMarkdown";
 import { AI_PANEL_STATIC_STYLE_ID, AI_PANEL_STATIC_STYLE_TEXT, darkTheme, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, type Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
@@ -21,12 +20,13 @@ import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import { useAssistantInputHistory } from "./useAssistantInputHistory";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
 import { useGroupDiscussionControls } from "./useGroupDiscussionControls";
-import { AssistantWorkflowDocsBar } from "./AssistantWorkflowDocsBar";
 import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
-import { AssistantInputComposer } from "./AssistantInputComposer";
 import { AssistantTitleBar } from "./AssistantTitleBar";
+import { AssistantInputStack } from "./AssistantInputStack";
+import { AssistantWorkflowDocsBar } from "./AssistantWorkflowDocsBar";
+import { AssistantInputComposer } from "./AssistantInputComposer";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
@@ -407,17 +407,6 @@ export function AIAssistantPanel(props: any) {
                 themeMode={themeMode}
             />
 
-            <BufferQueuePanel
-                queue={queue}
-                lang={lang}
-                theme={{ bg: t.bg, text: t.text, textMuted: t.textMuted, headingColor: t.headingColor, inputBarBg: t.inputBarBg, inputBarBorder: t.inputBarBorder, codeBlockBg: t.codeBlockBg, codeBlockBorder: t.codeBlockBorder, divider: t.divider }}
-                editingEntryId={editingEntryId}
-                onEdit={handleEditEntry}
-                onCancelEdit={handleCancelEdit}
-                onSaveEdit={handleSaveEdit}
-                onDelete={removeEntry}
-                onReorder={reorderEntry}
-            />
             <ProjectSearchPanel
                 search={projectSearch}
                 lang={lang}
@@ -429,6 +418,7 @@ export function AIAssistantPanel(props: any) {
 
             <div
                 ref={outputContainerRef}
+                data-testid="ai-output-container"
                 style={{
                     flex: 1, minHeight: 0, maxHeight: "none",
                     padding: "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5,
@@ -459,31 +449,23 @@ export function AIAssistantPanel(props: any) {
             </div>
 
             {/* Input bar */}
-            <div data-testid="ai-input-resize-handle" onMouseDown={startInputResize} style={{ height: "6px", cursor: "ns-resize", background: "transparent", borderTop: `1px solid ${t.divider}`, flexShrink: 0 }} />
-            <AssistantWorkflowDocsBar
-                currentPhaseID={workflowState.currentPhaseID}
-                docsBarDismissed={workflowState.docsBarDismissed}
-                lang={lang}
-                onDismiss={dismissDocsBar}
-                onOpenDocPreview={openDocPreview}
-                onSelectWorkingDir={handleSelectWorkflowDir}
-                phaseDocuments={workflowState.phaseDocuments}
-                splitMode={workflowState.splitMode}
-                theme={t}
-                themeMode={themeMode}
-                workingDir={workflowState.workingDir}
-            />
-            <AssistantInputComposer
+            <AssistantInputStack
                 browseFile={browseFile}
                 canSend={canSend}
                 cancelPending={cancelPending}
                 cancelSession={cancelSession}
                 clearSelectedFile={clearSelectedFile}
                 composing={composing}
+                dismissDocsBar={dismissDocsBar}
+                editingEntryId={editingEntryId}
                 exitHistoryBrowsing={exitHistoryBrowsing}
                 finishVoicePointer={finishVoicePointer}
                 handleCancel={handleCancel}
+                handleCancelEdit={handleCancelEdit}
+                handleEditEntry={handleEditEntry}
                 handlePaste={handlePaste}
+                handleSaveEdit={handleSaveEdit}
+                handleSelectWorkflowDir={handleSelectWorkflowDir}
                 handleSend={handleSend}
                 handleVoiceClick={handleVoiceClick}
                 handleVoicePointerDown={handleVoicePointerDown}
@@ -496,21 +478,27 @@ export function AIAssistantPanel(props: any) {
                 isBusy={isBusy}
                 isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary}
                 lang={lang}
+                openDocPreview={openDocPreview}
                 pendingAttachments={pendingAttachments}
                 placeholderText={placeholderText}
+                queue={queue}
                 ready={ready}
                 recallHistory={recallHistory}
                 rememberHistoryEdit={rememberHistoryEdit}
+                removeEntry={removeEntry}
                 removeSelectedFile={removeSelectedFile}
+                reorderEntry={reorderEntry}
                 resizeInput={resizeInput}
                 selectedFilePaths={selectedFilePaths}
                 setComposing={setComposing}
                 setPendingAttachments={setPendingAttachments}
                 showBusySpinner={showBusySpinner}
+                startInputResize={startInputResize}
                 theme={t}
                 themeMode={themeMode}
                 updateInputValue={updateInputValue}
                 voiceInput={voiceInput}
+                workflowState={workflowState}
             />
             </div>
             {showWorkflowPreview && (

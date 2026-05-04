@@ -40,6 +40,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// runConfigUI starts a config-only terminal UI. It is intentionally usable
+// before LLM setup, so headless Linux users can configure the first provider
+// without typing long config set commands.
+func runConfigUI() {
+	dataDir := commands.ResolveDataDir()
+	store := commands.NewFileConfigStore(dataDir)
+	appCfg, _ := store.LoadConfig()
+	model := newConfigUIModel(appCfg)
+	if _, err := tea.NewProgram(model, tea.WithAltScreen()).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "config UI error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 // runTUI starts the Bubble Tea interactive mode.
 func runTUI() {
 	logger := NewTUILogger()
@@ -446,6 +460,10 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		store := commands.NewFileConfigStore(dataDir)
 		if cfg, err := store.LoadConfig(); err == nil {
 			m.app.appConfig = cfg
+			if msg.Key == "language" {
+				m.root.SetLang(cfg.Language)
+			}
+			m.root.Config.LoadFromAppConfig(cfg)
 			if strings.HasPrefix(msg.Key, "maclaw_llm_") {
 				m.app.llmConfig = buildLLMConfigFromAppConfig(cfg)
 				label := m.app.llmConfig.Model
