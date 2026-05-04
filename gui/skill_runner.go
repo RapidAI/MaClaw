@@ -214,6 +214,9 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	// Migrate legacy .cceasy paths to .maclaw — crafted skills from older
 	// versions may reference scripts in the old directory structure.
 	migrateLegacyCceasyPaths(target)
+	if err := cskill.HydrateRunMetadataFromDir(target); err != nil {
+		log.Printf("[skill-runner] hydrate skill metadata from %q failed: %v", target.SkillDir, err)
+	}
 
 	// Normalize community/imported skill shapes before pre-checks and execution.
 	cskill.NormalizeSkillForRunner(target)

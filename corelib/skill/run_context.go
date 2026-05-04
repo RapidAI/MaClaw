@@ -15,40 +15,116 @@ func NormalizeRunVars(runArgs map[string]interface{}) map[string]string {
 		return nil
 	}
 	vars := map[string]string{}
-	if rawArgs, ok := runArgs["args"].(map[string]interface{}); ok {
-		for key, value := range rawArgs {
-			if value != nil {
-				vars[key] = fmt.Sprintf("%v", value)
-			}
-		}
-	}
-	tryParseJSONIntoVars := func(s string) {
-		if len(vars) == 0 && len(s) > 2 && s[0] == '{' {
-			var parsed map[string]interface{}
-			if json.Unmarshal([]byte(s), &parsed) == nil {
-				for k, v := range parsed {
-					if v != nil {
-						vars[k] = fmt.Sprintf("%v", v)
-					}
-				}
-			}
-		}
-	}
+	mergeRunVarMap(vars, runArgs["args"], true)
+	mergeRunVarJSON(vars, runArgs["args"], true)
 	for _, key := range RunVarFallbackKeys {
+		raw, ok := runArgs[key]
+		if !ok || raw == nil {
+			continue
+		}
+		if key == "input" || key == "output" {
+			mergeRunVarMap(vars, raw, false)
+			mergeRunVarJSON(vars, raw, false)
+		}
 		if _, exists := vars[key]; exists {
 			continue
 		}
-		if v, ok := runArgs[key].(string); ok && v != "" {
-			if key == "input" || key == "output" {
-				tryParseJSONIntoVars(v)
-			}
-			vars[key] = v
+		if value, ok := runVarString(raw); ok {
+			vars[key] = value
+		}
+	}
+	for key, raw := range runArgs {
+		if isRunControlKey(key) {
+			continue
+		}
+		if _, exists := vars[key]; exists {
+			continue
+		}
+		if value, ok := runVarString(raw); ok {
+			vars[key] = value
 		}
 	}
 	if len(vars) == 0 {
 		return nil
 	}
 	return vars
+}
+
+func mergeRunVarMap(vars map[string]string, raw interface{}, overwrite bool) {
+	add := func(key string, value interface{}) {
+		key = strings.TrimSpace(key)
+		if key == "" || value == nil {
+			return
+		}
+		if !overwrite {
+			if _, exists := vars[key]; exists {
+				return
+			}
+		}
+		if s, ok := runVarString(value); ok {
+			vars[key] = s
+		}
+	}
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		for key, value := range v {
+			add(key, value)
+		}
+	case map[string]string:
+		for key, value := range v {
+			add(key, value)
+		}
+	}
+}
+
+func mergeRunVarJSON(vars map[string]string, raw interface{}, overwrite bool) {
+	s, ok := raw.(string)
+	if !ok {
+		return
+	}
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '{' {
+		return
+	}
+	var parsed map[string]interface{}
+	if json.Unmarshal([]byte(s), &parsed) != nil {
+		return
+	}
+	mergeRunVarMap(vars, parsed, overwrite)
+}
+
+func runVarString(value interface{}) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	switch v := value.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return "", false
+		}
+		return v, true
+	case map[string]interface{}, []interface{}, map[string]string, []string:
+		data, err := json.Marshal(v)
+		if err != nil || len(data) == 0 {
+			return "", false
+		}
+		return string(data), true
+	default:
+		s := strings.TrimSpace(fmt.Sprintf("%v", v))
+		if s == "" {
+			return "", false
+		}
+		return s, true
+	}
+}
+
+func isRunControlKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "action", "name", "skill", "skill_name", "qualified_name", "args", "env", "steps", "step", "dry_run":
+		return true
+	default:
+		return false
+	}
 }
 
 func ExtractRunExtraEnv(raw interface{}) map[string]string {
@@ -72,27 +148,78 @@ func ExtractRunExtraEnv(raw interface{}) map[string]string {
 		}
 	case []interface{}:
 		for _, item := range v {
-			if key, value, ok := strings.Cut(strings.TrimSpace(fmt.Sprintf("%v", item)), "="); ok {
-				add(key, value)
-			}
+			mergeEnvItem(result, item)
 		}
 	case []string:
 		for _, item := range v {
-			if key, value, ok := strings.Cut(strings.TrimSpace(item), "="); ok {
-				add(key, value)
-			}
+			mergeEnvItem(result, item)
 		}
 	case string:
+		if mergeEnvJSON(result, v) {
+			break
+		}
 		for _, item := range strings.Split(v, ",") {
-			if key, value, ok := strings.Cut(strings.TrimSpace(item), "="); ok {
-				add(key, value)
-			}
+			mergeEnvItem(result, item)
 		}
 	}
 	if len(result) == 0 {
 		return nil
 	}
 	return result
+}
+
+func mergeEnvJSON(result map[string]string, raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 2 || raw[0] != '{' {
+		return false
+	}
+	var parsed map[string]interface{}
+	if json.Unmarshal([]byte(raw), &parsed) != nil {
+		return false
+	}
+	for key, value := range parsed {
+		key = strings.TrimSpace(key)
+		if key != "" && value != nil {
+			result[key] = fmt.Sprintf("%v", value)
+		}
+	}
+	return true
+}
+
+func mergeEnvItem(result map[string]string, raw interface{}) {
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		for key, value := range v {
+			if strings.TrimSpace(key) != "" && value != nil {
+				result[strings.TrimSpace(key)] = fmt.Sprintf("%v", value)
+			}
+		}
+		return
+	case map[string]string:
+		for key, value := range v {
+			if strings.TrimSpace(key) != "" {
+				result[strings.TrimSpace(key)] = value
+			}
+		}
+		return
+	}
+	item := strings.TrimSpace(fmt.Sprintf("%v", raw))
+	if item == "" {
+		return
+	}
+	if mergeEnvJSON(result, item) {
+		return
+	}
+	if key, value, ok := strings.Cut(item, "="); ok {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			result[key] = value
+		}
+		return
+	}
+	if value := os.Getenv(item); value != "" {
+		result[item] = value
+	}
 }
 
 func CollectSkillProvidedEnv(entry *corelib.NLSkillEntry) map[string]string {
@@ -207,6 +334,18 @@ func HydrateRunMetadata(dst, src *corelib.NLSkillEntry) {
 		dst.RequiresGUI = dst.RequiresGUI || src.RequiresGUI
 		dst.Stateful = dst.Stateful || src.Stateful
 	}
+}
+
+func HydrateRunMetadataFromDir(entry *corelib.NLSkillEntry) error {
+	if entry == nil || strings.TrimSpace(entry.SkillDir) == "" {
+		return nil
+	}
+	imported, err := ImportMarkdownSkillDir(entry.SkillDir, MarkdownSkillOptions{NameFallback: entry.Name})
+	if err != nil {
+		return err
+	}
+	HydrateRunMetadata(entry, imported)
+	return nil
 }
 
 func hasExecutionDefinition(entry *corelib.NLSkillEntry) bool {

@@ -14,6 +14,33 @@ func TestNormalizeRunVarsParsesJSONInput(t *testing.T) {
 	}
 }
 
+func TestNormalizeRunVarsAcceptsJSONStringArgs(t *testing.T) {
+	got := NormalizeRunVars(map[string]interface{}{"args": `{"city":"成都","days":3}`})
+	if got["city"] != "成都" || got["days"] != "3" {
+		t.Fatalf("NormalizeRunVars() = %#v, want JSON args unpacked", got)
+	}
+}
+
+func TestNormalizeRunVarsCopiesArbitraryTopLevelParams(t *testing.T) {
+	got := NormalizeRunVars(map[string]interface{}{"city": "成都", "count": 2, "action": "run", "name": "weather"})
+	if got["city"] != "成都" || got["count"] != "2" {
+		t.Fatalf("NormalizeRunVars() = %#v, want arbitrary top-level params", got)
+	}
+	if _, ok := got["action"]; ok {
+		t.Fatalf("NormalizeRunVars() should not copy control keys: %#v", got)
+	}
+}
+
+func TestNormalizeRunVarsPreservesArgsOverJSONInput(t *testing.T) {
+	got := NormalizeRunVars(map[string]interface{}{
+		"args":  map[string]interface{}{"city": "上海"},
+		"input": `{"city":"成都","days":3}`,
+	})
+	if got["city"] != "上海" || got["days"] != "3" {
+		t.Fatalf("NormalizeRunVars() = %#v, want args to win and input JSON to backfill", got)
+	}
+}
+
 func TestNormalizeRunVarsNilSafe(t *testing.T) {
 	if got := NormalizeRunVars(nil); got != nil {
 		t.Fatalf("NormalizeRunVars(nil) = %#v, want nil", got)
@@ -56,6 +83,18 @@ func TestApplyRunInputInferenceDoesNotWriteEmptyInferences(t *testing.T) {
 func TestExtractRunExtraEnvAcceptsStringAssignments(t *testing.T) {
 	got := ExtractRunExtraEnv("OPENAI_API_KEY=sk-test,HTTP_PROXY=http://127.0.0.1:7890")
 	if got["OPENAI_API_KEY"] != "sk-test" || got["HTTP_PROXY"] != "http://127.0.0.1:7890" {
+		t.Fatalf("ExtractRunExtraEnv() = %#v", got)
+	}
+}
+
+func TestExtractRunExtraEnvAcceptsJSONStringAndNames(t *testing.T) {
+	t.Setenv("PROCESS_TOKEN", "from-process")
+	got := ExtractRunExtraEnv([]interface{}{
+		`{"OPENAI_API_KEY":"sk-test"}`,
+		"PROCESS_TOKEN",
+		map[string]interface{}{"HTTP_PROXY": "http://127.0.0.1:7890"},
+	})
+	if got["OPENAI_API_KEY"] != "sk-test" || got["PROCESS_TOKEN"] != "from-process" || got["HTTP_PROXY"] != "http://127.0.0.1:7890" {
 		t.Fatalf("ExtractRunExtraEnv() = %#v", got)
 	}
 }

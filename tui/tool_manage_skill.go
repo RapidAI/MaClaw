@@ -250,9 +250,9 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 	if entry.Status == "disabled" {
 		return fmt.Sprintf("Skill '%s' 已禁用", name)
 	}
-	if len(entry.Steps) == 0 && entry.SkillDir != "" {
-		if imp, err := skill.ImportMarkdownSkillDir(entry.SkillDir, skill.MarkdownSkillOptions{NameFallback: entry.Name}); err == nil && imp != nil {
-			skill.HydrateRunMetadata(entry, imp)
+	if entry.SkillDir != "" {
+		if err := skill.HydrateRunMetadataFromDir(entry); err != nil {
+			log.Printf("[skill-run-tui] hydrate skill metadata from %q failed: %v", entry.SkillDir, err)
 		}
 	}
 	if len(entry.Steps) == 0 {
