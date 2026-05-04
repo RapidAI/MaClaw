@@ -9,7 +9,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"io"
-	"log"`n`t"net"`n	"net/http"
+	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -4841,8 +4843,8 @@ const (
 )
 
 type cosLatestManifest struct {
-	Version string                     `json:"version"`
-	Tag     string                     `json:"tag"`
+	Version string                    `json:"version"`
+	Tag     string                    `json:"tag"`
 	Assets  map[string]cosLatestAsset `json:"assets"`
 }
 
@@ -4854,8 +4856,8 @@ type cosLatestAsset struct {
 
 func updateHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{Timeout: 6 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 6 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   6 * time.Second,
 		ResponseHeaderTimeout: responseHeaderTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -5057,6 +5059,7 @@ func (a *App) fetchCOSLatestRelease(timeout time.Duration) (latestReleaseInfo, e
 	}
 	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLs(githubURL, cosURL), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL}, nil
 }
+
 // Helper function to get map keys
 func getMapKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
