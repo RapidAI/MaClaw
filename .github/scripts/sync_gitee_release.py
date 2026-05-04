@@ -30,7 +30,7 @@ ASSETS_DIR = pathlib.Path(os.environ.get("RELEASE_ASSETS_DIR", "artifacts"))
 API = f"https://gitee.com/api/v5/repos/{OWNER}/{REPO}"
 UPLOAD_TIMEOUT = int(os.environ.get("GITEE_UPLOAD_TIMEOUT", "900"))
 UPLOAD_RETRIES = int(os.environ.get("GITEE_UPLOAD_RETRIES", "3"))
-UPLOAD_CONCURRENCY = int(os.environ.get("GITEE_UPLOAD_CONCURRENCY", "3"))
+UPLOAD_CONCURRENCY = int(os.environ.get("GITEE_UPLOAD_CONCURRENCY", "1"))
 ONLY_ASSETS = {
     name.strip()
     for name in os.environ.get("GITEE_RELEASE_ONLY_ASSETS", "").splitlines()
@@ -183,6 +183,8 @@ def curl_multipart_upload(path, file_path):
             str(UPLOAD_TIMEOUT),
             "--request",
             "POST",
+            "--header",
+            "Expect:",
             "--form",
             f"access_token={TOKEN}",
             "--form",
@@ -217,25 +219,33 @@ def upload_with_retries(path, file_path):
             if attempt > 1:
                 log(f"retry upload {file_path.name}: attempt={attempt}/{UPLOAD_RETRIES}")
             return multipart_upload(path, file_path)
-        except TimeoutError as exc:
-            if attempt >= UPLOAD_RETRIES:
-                raise RuntimeError(
-                    f"upload {file_path.name} timed out after {attempt} attempts; "
-                    f"size={file_path.stat().st_size} timeout={UPLOAD_TIMEOUT}s"
-                ) from exc
-            time.sleep(5 * attempt)
-        except subprocess.TimeoutExpired as exc:
-            if attempt >= UPLOAD_RETRIES:
-                raise RuntimeError(
-                    f"upload {file_path.name} timed out after {attempt} attempts; "
-                    f"size={file_path.stat().st_size} timeout={UPLOAD_TIMEOUT}s"
-                ) from exc
-            time.sleep(5 * attempt)
-        except OSError as exc:
-            message = str(exc).lower()
-            if "timed out" not in message or attempt >= UPLOAD_RETRIES:
-                raise
-            time.sleep(5 * attempt)
+        except Exception as exc:
+            if uploaded_asset_exists(file_path.name):
+                log(f"upload {file_path.name} appears on Gitee after error; treating as success: {exc}")
+                return None
+            if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
+                if attempt >= UPLOAD_RETRIES:
+                    raise RuntimeError(
+                        f"upload {file_path.name} timed out after {attempt} attempts; "
+                        f"size={file_path.stat().st_size} timeout={UPLOAD_TIMEOUT}s"
+                    ) from exc
+                time.sleep(5 * attempt)
+                continue
+            if isinstance(exc, OSError):
+                message = str(exc).lower()
+                if "timed out" in message and attempt < UPLOAD_RETRIES:
+                    time.sleep(5 * attempt)
+                    continue
+            raise
+
+
+def uploaded_asset_exists(asset_name):
+    try:
+        release = get_release_by_tag()
+        return bool(release and asset_name in attachment_names(release))
+    except Exception as exc:
+        log(f"could not verify uploaded asset {asset_name}: {exc}")
+        return False
 
 
 def main():
