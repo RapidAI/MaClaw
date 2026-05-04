@@ -291,7 +291,7 @@ func (a *App) initCoreInfra() {
 	// Wire skill-aware routing: when skillExecutor is available, connect it
 	// to the toolRouter so that Route() can match user messages against
 	// installed skills and enrich the manage_skill tool description with
-	// "可用 Skill: xh-md-to-pdf" hints. Without this wiring, skillMatchScore
+	// "鍙敤 Skill: xh-md-to-pdf" hints. Without this wiring, skillMatchScore
 	// always returns 0 and the LLM never gets skill-specific routing hints.
 	if a.toolRouter != nil && a.skillExecutor != nil {
 		a.toolRouter.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
@@ -428,11 +428,10 @@ func (a *App) ensureMemoryStore() {
 
 		// Register ProjectIndex change callback. When any memory entry
 		// updates the project index (new project or activity change),
-		// notify the frontend to refresh the "最近任务" sidebar.
-		// This is the single notification point — all write paths
+		// notify the frontend to refresh the "鏈€杩戜换鍔? sidebar.
+		// This is the single notification point 鈥?all write paths
 		// (sedimentTaskEntry, workflow_artifact_saver, memorySink,
-		// conversation_archiver, etc.) flow through Store.Save →
-		// ProjectIndex.IndexEntry → OnChanged. No per-writer event
+		// conversation_archiver, etc.) flow through Store.Save 鈫?		// ProjectIndex.IndexEntry 鈫?OnChanged. No per-writer event
 		// emission needed.
 		if pi := ms.ProjectIndex(); pi != nil {
 			pi.OnChanged = func(_ string) {
@@ -1076,7 +1075,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 
 			// Prepend a hint so the agent knows this is an autonomous task
 			// that must complete in one shot (no user to "continue").
-			actionText := fmt.Sprintf("[闂備胶鍘ч〃搴㈢濠婂嫭鍙忛柍鍝勫暊閸嬫挾鎲撮崟顓ф殹濠碉紕鍋涢崐鍦矉閹烘梹瀚氶柟缁樺俯濞?闂?闂佽崵濮村ú鈺併€掗崷顓犲崥闁哄鍨熼弸搴ㄦ煃閳轰礁鏆婇柛瀣崄椤︽煡鏌ｉ敐搴″⒋妤犵偛顑夐獮鍥礈娴ｄ警妲峰┑鐐村灦閹稿摜绮旈悜濮愨偓鍛存晜閸撗団攺婵犮垼娉涢敃锔剧玻閿熺姵鐓熸い顐墮婵′粙鏌涢埡鍌溾姇婵炵厧绻橀獮姗€宕橀幓鎺撹緢]\n%s", task.Action)
+			actionText := fmt.Sprintf("[闂傚倷鑳堕崢褔銆冩惔銏㈩洸婵犲﹤瀚崣蹇涙煃閸濆嫬鏆婇柛瀣尵閹叉挳宕熼褎娈规繝纰夌磿閸嬫盯宕愰崷顓犵焿闁圭儤姊圭€氭岸鏌熺紒妯轰刊婵?闂?闂備浇宕垫慨鏉懨洪埡浣碘偓鎺楀捶椤撶姴宕ラ梺鍝勵槹閸ㄧ喖寮告惔銊︾厓闁宠桨绀侀弳濠囨煕鐎ｎ偅宕勬い锔界叀閺岋綁鏁愭惔鈥斥拫濡ょ姷鍋涢澶愮嵁閸ヮ剙绀堝ù锝勮濡插嘲鈹戦悙鏉戠仸闁圭鎽滅划鏃堟倻婵劏鍋撻崨瀛樻櫆闁告挆鍥ｆ敽濠电姰鍨煎▔娑㈡晝閿斿墽鐜婚柨鐔哄У閻撶喐銇勯顐㈠濠碘€茬矙閺屾盯鍩￠崒婧惧濠电偟鍘х换姗€鐛鈧畷姗€骞撻幒鎾圭发]\n%s", task.Action)
 
 			resp := hubClient.ensureIMHandler().HandleIMMessageWithProgress(IMUserMessage{
 				UserID:        "scheduled_task",
@@ -1243,7 +1242,7 @@ func (a *App) startup(ctx context.Context) {
 		a.autoStartLocalMCPServers(config.LocalMCPServers)
 
 		// Background preload YOLO model for screen parsing (default: enabled).
-		// Downloads silently from GitHub → Hub fallback. ~77MB, no startup delay.
+		// Downloads silently from GitHub 鈫?Hub fallback. ~77MB, no startup delay.
 		go a.backgroundPreloadYOLOModel()
 
 		// Do not eagerly preload the embedding model on startup. Loading or
@@ -1267,7 +1266,7 @@ func (a *App) startup(ctx context.Context) {
 		}
 		// CodeGen SSO token validation on startup (qianxin brand only).
 		// After validation (which may refresh the token), start the local
-		// Anthropic闂備焦鍓氶崑鍛櫠缁ㄥ攢nAI proxy so Claude Code can reach CodeGen.
+		// Anthropic闂傚倷鐒﹂崜姘跺磻閸涱喗娅犵紒銊ユ敘nAI proxy so Claude Code can reach CodeGen.
 		go func() {
 			if err := a.ensureCodeGenToken(); err != nil {
 				log.Printf("[CodeGen] startup token check failed: %v", err)
@@ -1310,7 +1309,7 @@ func (a *App) startup(ctx context.Context) {
 
 		// Create UnifiedIntentClassifier synchronously with L1 keywords only.
 		// This ensures intent classification is available from the very first
-		// user message — L1 keyword rules need no embedding model or LLM.
+		// user message 鈥?L1 keyword rules need no embedding model or LLM.
 		// L2 (embedding) and L3 (LLM) are wired in later by activateEmbedderAsync
 		// via SetEmbedder/SetLLMFunc, upgrading the same instance in-place.
 		a.initEarlyClassifier()
@@ -1389,7 +1388,7 @@ func (a *App) GetChatFontSize() int {
 	return cfg.ChatFontSize
 }
 
-// SetChatFontSize persists the chat font size (clamped to 12–24).
+// SetChatFontSize persists the chat font size (clamped to 12鈥?4).
 func (a *App) SetChatFontSize(size int) error {
 	if size < 12 {
 		size = 12
@@ -1598,7 +1597,7 @@ func (a *App) buildClaudeLaunchEnv(
 	}
 
 	// For all non-builtin (third-party) providers: disable nonessential traffic
-	// and increase API timeout. Third-party Anthropic-compatible APIs (闂備礁鎼幊妯肩磽濮橆剦娼? 闂備浇鐨崟顐㈠Б闁诲氦顫夋繛濠傜暦閿熺姴绀冮柕濞у奔绱?
+	// and increase API timeout. Third-party Anthropic-compatible APIs (闂傚倷绀侀幖顐﹀箠濡偐纾芥慨姗嗗墻濞? 闂傚倷娴囬惃顐﹀礋椤愩垹袘闂佽姘﹂～澶嬬箾婵犲倻鏆﹂柨鐔哄Т缁€鍐煏婵炑冨缁?
 	// DeepSeek, etc.) typically have stricter rate limits than Anthropic's own API.
 	// Claude Code's internal agent loop sends requests very rapidly without human
 	// interaction pauses, which easily triggers 429 rate limits on these providers.
@@ -4164,7 +4163,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if config.Claude.CurrentModel == "" && len(config.Claude.Models) > 0 {
 		config.Claude.CurrentModel = config.Claude.Models[0].ModelName
 	}
-	// Helper to rename a model (migrate old name → new name), preserving user's API key and settings.
+	// Helper to rename a model (migrate old name 鈫?new name), preserving user's API key and settings.
 	// If newName already exists, the old entry is removed to avoid duplicates.
 	renameModel := func(models *[]corelib.ModelConfig, oldName, newName string, currentModel *string) {
 		newIdx := -1
@@ -4181,7 +4180,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			return // old name not found, nothing to migrate
 		}
 		if newIdx != -1 && newIdx != oldIdx {
-			// Both old and new exist — merge: copy user settings from old to new if new has none, then remove old
+			// Both old and new exist 鈥?merge: copy user settings from old to new if new has none, then remove old
 			if (*models)[newIdx].ApiKey == "" && (*models)[oldIdx].ApiKey != "" {
 				(*models)[newIdx].ApiKey = (*models)[oldIdx].ApiKey
 			}
@@ -4196,7 +4195,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			}
 			*models = append((*models)[:oldIdx], (*models)[oldIdx+1:]...)
 		} else if newIdx == -1 {
-			// Only old exists — just rename
+			// Only old exists 鈥?just rename
 			(*models)[oldIdx].ModelName = newName
 		}
 		// Update current_model reference
@@ -4719,7 +4718,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	// Sync workflow enabled/disabled state to the atomic flag so that
 	// getWorkflowEngine() returns nil when workflow is disabled. This is
-	// the single enforcement point — all workflow consumers go through
+	// the single enforcement point 鈥?all workflow consumers go through
 	// getWorkflowEngine(), so no per-consumer guards are needed.
 	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
 	policyModeChanged := a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode
@@ -4772,9 +4771,8 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 
 // PatchConfig performs an atomic read-modify-write on the config file.
 // The patchFn receives the current config and may modify any fields.
-// The entire operation (load → patch → save) runs under configMu, eliminating
-// the TOCTOU race window that exists when callers do LoadConfig → modify →
-// SaveConfig with the lock released in between.
+// The entire operation (load 鈫?patch 鈫?save) runs under configMu, eliminating
+// the TOCTOU race window that exists when callers do LoadConfig 鈫?modify 鈫?// SaveConfig with the lock released in between.
 //
 // Use PatchConfig when updating a small number of fields (credentials, flags)
 // while other goroutines may be concurrently modifying the config. Use
@@ -4838,20 +4836,23 @@ type UpdateResult struct {
 
 const (
 	githubLatestManifestURL = "https://github.com/RapidAI/MaClaw/releases/latest/download/latest.json"
+	r2LatestManifestURL     = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest.json"
+	r2PublicBaseURL         = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev"
 	cosLatestManifestURL    = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest.json"
 	cosPublicBaseURL        = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
 )
 
-type cosLatestManifest struct {
-	Version string                    `json:"version"`
-	Tag     string                    `json:"tag"`
-	Assets  map[string]cosLatestAsset `json:"assets"`
+type updateManifest struct {
+	Version string                         `json:"version"`
+	Tag     string                         `json:"tag"`
+	Assets  map[string]updateManifestAsset `json:"assets"`
 }
 
-type cosLatestAsset struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
-	URL  string `json:"url"`
+type updateManifestAsset struct {
+	Name string   `json:"name"`
+	Size int64    `json:"size"`
+	URL  string   `json:"url"`
+	URLs []string `json:"urls"`
 }
 
 func updateHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
@@ -4878,20 +4879,47 @@ func updateTargetFileName() string {
 	return brandName + "-Setup.exe"
 }
 
-func cosReleaseAssetURL(tagName, fileName string) string {
-	return fmt.Sprintf("%s/releases/%s/%s", cosPublicBaseURL, tagName, fileName)
+func r2ReleaseAssetURL(fileName string) string {
+	return fmt.Sprintf("%s/latest/%s", r2PublicBaseURL, fileName)
+}
+
+func cosReleaseAssetURL(fileName string) string {
+	return fmt.Sprintf("%s/latest/%s", cosPublicBaseURL, fileName)
+}
+
+func combineDownloadURLList(urls ...string) string {
+	seen := make(map[string]bool, len(urls))
+	cleaned := make([]string, 0, len(urls))
+	for _, url := range urls {
+		url = strings.TrimSpace(url)
+		if url == "" || seen[url] {
+			continue
+		}
+		seen[url] = true
+		cleaned = append(cleaned, url)
+	}
+	return strings.Join(cleaned, "\n")
 }
 
 func combineDownloadURLs(primary, fallback string) string {
-	primary = strings.TrimSpace(primary)
-	fallback = strings.TrimSpace(fallback)
-	if primary == "" {
-		return fallback
+	return combineDownloadURLList(primary, fallback)
+}
+
+func manifestAssetDownloadURLs(manifest updateManifest, targetFileName, tagName string) []string {
+	urls := []string{}
+	if asset, ok := manifest.Assets[targetFileName]; ok {
+		urls = append(urls, asset.URLs...)
+		urls = append(urls, asset.URL)
 	}
-	if fallback == "" || fallback == primary {
-		return primary
+	if tagName != "" {
+		urls = append(urls, r2ReleaseAssetURL(targetFileName))
+		urls = append(urls, cosReleaseAssetURL(targetFileName))
 	}
-	return primary + "\n" + fallback
+	combined := combineDownloadURLList(urls...)
+	if combined == "" {
+		return nil
+	}
+	return strings.Split(combined, "\n")
 }
 
 func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
@@ -4917,7 +4945,7 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 		githubDownloadUrl = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
 	}
 	if cosDownloadUrl == "" {
-		cosDownloadUrl = cosReleaseAssetURL(tagName, targetFileName)
+		cosDownloadUrl = cosReleaseAssetURL(targetFileName)
 	}
 	downloadUrl := strings.TrimSpace(release.DownloadURL)
 	if downloadUrl == "" {
@@ -4951,23 +4979,36 @@ type latestReleaseInfo struct {
 }
 
 func (a *App) fetchLatestReleaseFast() (latestReleaseInfo, string, error) {
+	var errors []string
 	if release, err := a.fetchGitHubLatestRelease(4 * time.Second); err == nil {
 		return release, "github", nil
 	} else {
-		a.log(a.tr("CheckUpdate: GitHub latest check failed quickly, trying COS: %v", err))
+		errors = append(errors, fmt.Sprintf("github: %v", err))
+		a.log(a.tr("CheckUpdate: GitHub latest check failed quickly, trying R2: %v", err))
+	}
+	if release, err := a.fetchR2LatestRelease(5 * time.Second); err == nil {
+		return release, "r2", nil
+	} else {
+		errors = append(errors, fmt.Sprintf("r2: %v", err))
+		a.log(a.tr("CheckUpdate: R2 latest check failed quickly, trying COS: %v", err))
 	}
 	if release, err := a.fetchCOSLatestRelease(5 * time.Second); err == nil {
 		return release, "cos", nil
 	} else {
-		return latestReleaseInfo{}, "", err
+		errors = append(errors, fmt.Sprintf("cos: %v", err))
+		return latestReleaseInfo{}, "", fmt.Errorf("all latest manifest checks failed: %s", strings.Join(errors, "; "))
 	}
 }
 
 func (a *App) fetchGitHubLatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
 	a.log(a.tr("CheckUpdate: Starting GitHub manifest check against %s", githubLatestManifestURL))
+	return a.fetchManifestLatestRelease("github", githubLatestManifestURL, timeout)
+}
+
+func (a *App) fetchManifestLatestRelease(source, manifestURL string, timeout time.Duration) (latestReleaseInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", githubLatestManifestURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", manifestURL, nil)
 	if err != nil {
 		return latestReleaseInfo{}, err
 	}
@@ -4979,9 +5020,9 @@ func (a *App) fetchGitHubLatestRelease(timeout time.Duration) (latestReleaseInfo
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		bodyText, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
-		return latestReleaseInfo{}, fmt.Errorf("github latest manifest returned status %d: %s", resp.StatusCode, string(bodyText))
+		return latestReleaseInfo{}, fmt.Errorf("%s latest manifest returned status %d: %s", source, resp.StatusCode, string(bodyText))
 	}
-	var manifest cosLatestManifest
+	var manifest updateManifest
 	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
 		return latestReleaseInfo{}, err
 	}
@@ -4990,58 +5031,26 @@ func (a *App) fetchGitHubLatestRelease(timeout time.Duration) (latestReleaseInfo
 		tagName = strings.TrimSpace(manifest.Version)
 	}
 	targetFileName := updateTargetFileName()
-	cosURL := ""
-	if asset, ok := manifest.Assets[targetFileName]; ok {
-		cosURL = strings.TrimSpace(asset.URL)
-	}
-	if cosURL == "" && tagName != "" {
-		cosURL = cosReleaseAssetURL(tagName, targetFileName)
-	}
+	mirrorURLs := manifestAssetDownloadURLs(manifest, targetFileName, tagName)
 	githubURL := ""
 	if tagName != "" {
 		githubURL = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
 	}
-	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLs(githubURL, cosURL), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL}, nil
+	cosURL := ""
+	if len(mirrorURLs) > 0 {
+		cosURL = mirrorURLs[len(mirrorURLs)-1]
+	}
+	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLList(append([]string{githubURL}, mirrorURLs...)...), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL}, nil
+}
+
+func (a *App) fetchR2LatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
+	a.log(a.tr("CheckUpdate: Starting R2 check against %s", r2LatestManifestURL))
+	return a.fetchManifestLatestRelease("r2", r2LatestManifestURL, timeout)
 }
 
 func (a *App) fetchCOSLatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
 	a.log(a.tr("CheckUpdate: Starting COS check against %s", cosLatestManifestURL))
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", cosLatestManifestURL, nil)
-	if err != nil {
-		return latestReleaseInfo{}, err
-	}
-	req.Header.Set("User-Agent", brand.Current().DisplayName)
-	resp, err := updateHTTPClient(timeout).Do(req)
-	if err != nil {
-		return latestReleaseInfo{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return latestReleaseInfo{}, fmt.Errorf("cos latest returned status %d", resp.StatusCode)
-	}
-	var manifest cosLatestManifest
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
-		return latestReleaseInfo{}, err
-	}
-	tagName := strings.TrimSpace(manifest.Tag)
-	if tagName == "" {
-		tagName = strings.TrimSpace(manifest.Version)
-	}
-	targetFileName := updateTargetFileName()
-	cosURL := ""
-	if asset, ok := manifest.Assets[targetFileName]; ok {
-		cosURL = strings.TrimSpace(asset.URL)
-	}
-	if cosURL == "" && tagName != "" {
-		cosURL = cosReleaseAssetURL(tagName, targetFileName)
-	}
-	githubURL := ""
-	if tagName != "" {
-		githubURL = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
-	}
-	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLs(githubURL, cosURL), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL}, nil
+	return a.fetchManifestLatestRelease("cos", cosLatestManifestURL, timeout)
 }
 
 // Helper function to get map keys
@@ -6495,20 +6504,20 @@ func (a *App) DeleteSkill(name, toolName string) error {
 // Translation logic
 var translations = map[string]map[string]string{
 	"Show AI assistant button": {
-		"zh-Hans": "鏄剧ず AI 鍔╂墜鎸夐挳",
-		"zh-Hant": "椤ず AI 鍔╂墜鎸夐垥",
+		"zh-Hans": "閺勫墽銇?AI 閸斺晜澧滈幐澶愭尦",
+		"zh-Hant": "妞ゎ垳銇?AI 閸斺晜澧滈幐澶愬灔",
 	},
 	"Service Redeem": {
-		"zh-Hans": "鏈嶅姟鍏戞崲",
-		"zh-Hant": "鏈嶅嫏鍏屾彌",
+		"zh-Hans": "????",
+		"zh-Hant": "????",
 	},
 	"Security": {
-		"zh-Hans": "瀹夊叏绠＄悊",
-		"zh-Hant": "瀹夊叏绠＄悊",
+		"zh-Hans": "????",
+		"zh-Hant": "????",
 	},
 	"New version %s is available. Open About to download the update.": {
-		"zh-Hans": "发现新版本 %s，可前往关于页面下载更新。",
-		"zh-Hant": "發現新版本 %s，可前往關於頁面下載更新。",
+		"zh-Hans": "????? %s?????????????",
+		"zh-Hant": "????? %s?????????????",
 	},
 }
 
@@ -6594,7 +6603,7 @@ func (a *App) PingSkillHub(url string) map[string]interface{} {
 	return result
 }
 
-// ValidateSkillHub 闂備浇顫夋禍浠嬪垂閾忓湱鐭堥悗闈涙憸绾惧吋绻涢崱妤冪闁?URL 闂?Hub 缂傚倷绶￠崑澶愵敋瑜旈幃妤呮倻閼恒儲娅栭悗鍏夊亾闁告劦浜為澶愭⒑閹肩偛鍔ら柛瀣枔閹噣顢曢敃鈧崹鍌炴倵閿濆簼绨奸悗姘叀閺屾稑螣閻撳孩鐎诲┑鐐插级缁挻淇?// 闂佸搫顦弲婊堝蓟閵娿儍?map: {"type": "standard"|"clawhub"|"clawhub_mirror"|"unsupported", "reason": "..."}
+// ValidateSkillHub 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻牓鎮楅棃娑欐喐缁炬儳鍚嬬换娑㈠幢濡ゅ啰顔婇梺?URL 闂?Hub 缂傚倸鍊风欢锟犲磻婢舵劦鏁嬬憸鏃堝箖濡ゅ懏鍊婚柤鎭掑劜濞呮牠鎮楅崗澶婁壕闂佸憡鍔︽禍鐐侯敊婢舵劖鈷戦柟鑲╁仜閸斻倝鏌涚€ｎ剙鏋旈柟顕呭櫍椤㈡洟鏁冮埀顒勫垂閸岀偞鍊甸柨婵嗙凹缁ㄥジ鎮楀顓犲弨闁哄本绋戣灒闁绘挸瀛╅悗璇测攽閻愭彃绾х紒顔芥尰娣?// 闂備礁鎼ˇ顐﹀疾濠婂牆钃熼柕濞垮剭?map: {"type": "standard"|"clawhub"|"clawhub_mirror"|"unsupported", "reason": "..."}
 func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	result := map[string]interface{}{
 		"type":   "unsupported",
@@ -6609,35 +6618,35 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	base := strings.TrimRight(rawURL, "/")
 	client := &http.Client{Timeout: 8 * time.Second}
 
-	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?1: ClawSkillHub / skillhub.space 濠碉紕鍋涢鍛偓娑掓櫊閹?闂?/api/skills?search=test&limit=1
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?1: ClawSkillHub / skillhub.space 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁?闂?/api/skills?search=test&limit=1
 	if probeSkillHubSpace(client, base) {
 		result["type"] = "skillhub_space"
-		result["reason"] = "婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂?ClawSkillHub API (skillhub.space 闂備胶顭堢换鎺楀储瑜旈、?"
+		result["reason"] = "濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒缁樼洴瀵爼骞嬮鐐插闂?ClawSkillHub API (skillhub.space 闂傚倷鑳堕…鍫㈡崲閹烘鍌ㄧ憸鏃堛€?"
 		return result
 	}
 
-	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?2: 闂備礁鎼粔鏉懨洪妶澶婇棷?Hub API 闂?/api/v1/skills/search?q=test
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?2: 闂傚倷绀侀幖顐ょ矓閺夋嚚娲Χ婢跺﹪妫?Hub API 闂?/api/v1/skills/search?q=test
 	if hubType := probeStandardHub(client, base); hubType {
 		result["type"] = "standard"
-		result["reason"] = "婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂佺硶鏅涢惌鍌氼嚕娴犲鐐婄憸宥呪枍?SkillHub API"
+		result["reason"] = "濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒缁樼洴瀵爼骞嬮鐐插闂備胶纭堕弲娑㈡儗閸屾凹鍤曞ù鐘差儏閻愬﹦鎲稿鍛瀺?SkillHub API"
 		return result
 	}
 
-	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?3: ClawHub 闂傚倸鍊甸崑鎾寸節婵犲倸鏆欓柛?(topclawhubskills.com 濠碉紕鍋涢鍛偓娑掓櫊閹? 闂?/api/stats
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?3: ClawHub 闂傚倸鍊搁崐鐢稿磻閹惧绡€濠电姴鍊搁弳娆撴煕?(topclawhubskills.com 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁? 闂?/api/stats
 	if hubType := probeClawHubMirror(client, base); hubType {
 		result["type"] = "clawhub_mirror"
-		result["reason"] = "婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂?ClawHub 闂傚倸鍊甸崑鎾寸節婵犲倸鏆欓柛?API (topclawhubskills.com 闂備胶顭堢换鎺楀储瑜旈、?"
+		result["reason"] = "濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒缁樼洴瀵爼骞嬮鐐插闂?ClawHub 闂傚倸鍊搁崐鐢稿磻閹惧绡€濠电姴鍊搁弳娆撴煕?API (topclawhubskills.com 闂傚倷鑳堕…鍫㈡崲閹烘鍌ㄧ憸鏃堛€?"
 		return result
 	}
 
-	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?4: ClawHub (clawhub.ai 濠碉紕鍋涢鍛偓娑掓櫊閹? 闂?/api/v1/skills
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?4: ClawHub (clawhub.ai 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁? 闂?/api/v1/skills
 	if hubType := probeClawHub(client, base); hubType {
 		result["type"] = "clawhub"
-		result["reason"] = "婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂?ClawHub API (clawhub.ai 闂備胶顭堢换鎺楀储瑜旈、?"
+		result["reason"] = "濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒缁樼洴瀵爼骞嬮鐐插闂?ClawHub API (clawhub.ai 闂傚倷鑳堕…鍫㈡崲閹烘鍌ㄧ憸鏃堛€?"
 		return result
 	}
 
-	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?4: 闂?API 濠电偠鎻徊钘壩涘Δ鍕╀汗闁告瑥顦扮紞?闂?濠电偠鎻徊鍓у垝閸垺瀚婚柣鏂挎憸閳绘棃鎮楅敐搴″箺缂佷椒鍗冲濠氬焵椤掆偓椤劑宕橀妸銉ヮ棝濠电偠鎻紞鈧繛澶嬫礋瀵?
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?4: 闂?API 婵犵數鍋犻幓顏嗗緤閽樺）娑樜旈崟鈺€姹楅梺鍛婄懃椤︽壆绱?闂?婵犵數鍋犻幓顏嗗緤閸撗冨灊闁割偁鍨虹€氬鏌ｉ弬鎸庢喐闁崇粯妫冮幃妤呮晲鎼粹€崇缂備椒妞掗崡鍐差潖婵犳艾鐒垫い鎺嗗亾妞ゎ厹鍔戝畷姗€濡搁妷銉婵犵數鍋犻幓顏嗙礊閳ь剚绻涙径瀣鐎?
 	if resp, err := client.Get(base); err == nil {
 		resp.Body.Close()
 		if resp.StatusCode < 400 {
@@ -6651,8 +6660,8 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	return result
 }
 
-// probeSkillHubSpace 婵犵妲呴崑鈧柛瀣尰缁?clawskillhub.com / skillhub.space 濠碉紕鍋涢鍛偓娑掓櫊閹囧箹娴ｇ懓鍓?API
-// GET /api/skills?search=test&limit=1 闂佸湱鍘ч悺銊ノ涙担鐑樺床闁硅揪绠戦悙?JSON 闂備浇妗ㄩ悞锔界珶閸℃瑥鍨?
+// probeSkillHubSpace 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒?clawskillhub.com / skillhub.space 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁诡啫鍥х濞达絿鎳撻崜?API
+// GET /api/skills?search=test&limit=1 闂備礁婀遍崢褔鎮洪妸銉庢稒鎷呴悜妯哄簥闂佺鎻粻鎴︽倷?JSON 闂傚倷娴囧銊╂倿閿旂晫鐝堕柛鈩冪懃閸?
 func probeSkillHubSpace(client *http.Client, base string) bool {
 	endpoint := base + "/api/skills?search=test&limit=1"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -6668,7 +6677,7 @@ func probeSkillHubSpace(client *http.Client, base string) bool {
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
-	// 闂佸湱鍘ч悺銊ノ涙担鐑樺床闁硅揪绠戦悙?JSON 闂備浇妗ㄩ悞锔界珶閸℃瑥鍨?[{"id":..., "slug":..., "owner":...}, ...]
+	// 闂備礁婀遍崢褔鎮洪妸銉庢稒鎷呴悜妯哄簥闂佺鎻粻鎴︽倷?JSON 闂傚倷娴囧銊╂倿閿旂晫鐝堕柛鈩冪懃閸?[{"id":..., "slug":..., "owner":...}, ...]
 	var items []json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		return false
@@ -6676,7 +6685,7 @@ func probeSkillHubSpace(client *http.Client, base string) bool {
 	return true
 }
 
-// probeStandardHub 婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壉闂佺粯鐗紞浣哥暦?Hub API
+// probeStandardHub 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒缁樼洴瀵爼骞嬮鐐插闂備胶绮悧顓犵礊娴ｅ摜鏆?Hub API
 func probeStandardHub(client *http.Client, base string) bool {
 	endpoint := base + "/api/v1/skills/search?q=test"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -6692,7 +6701,7 @@ func probeStandardHub(client *http.Client, base string) bool {
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
-	// 婵犵妲呴崑鈧柛瀣崌閺岋紕浠︾拠鎻掑Г缂備胶绮崹鍨暦閸洘鍊烽柛顭戝亞閺?JSON 闂備礁鎼€氱兘宕规导鏉戠畾濞撴埃鍋撶€规洜濞€瀹曘劑顢橀悢宄板 "skills" 闂備浇妗ㄩ悞锔界珶閸℃瑥鍨?
+	// 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅宕岄柡宀嬬磿娴狅妇鎷犻幓鎺懶撶紓鍌欒兌缁垶宕归崹顔炬殾闁割偅娲橀崐鐑芥煕椤垵浜為柡?JSON 闂傚倷绀侀幖顐も偓姘卞厴瀹曡瀵奸弶鎴犵暰婵炴挻鍩冮崑鎾垛偓瑙勬礈婵炩偓鐎规洏鍔戦、姗€鎮㈠畡鏉款棐 "skills" 闂傚倷娴囧銊╂倿閿旂晫鐝堕柛鈩冪懃閸?
 	var body map[string]json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return false
@@ -6701,7 +6710,7 @@ func probeStandardHub(client *http.Client, base string) bool {
 	return hasSkills
 }
 
-// probeClawHubMirror 婵犵妲呴崑鈧柛瀣尰缁?topclawhubskills.com 濠碉紕鍋涢鍛偓娑掓櫊閹囧箹娴ｇ懓鍓?API
+// probeClawHubMirror 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒?topclawhubskills.com 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁诡啫鍥х濞达絿鎳撻崜?API
 func probeClawHubMirror(client *http.Client, base string) bool {
 	endpoint := base + "/api/stats"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -6721,7 +6730,7 @@ func probeClawHubMirror(client *http.Client, base string) bool {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return false
 	}
-	// topclawhubskills.com 闂佸搫顦弲婊堝蓟閵娿儍?{"ok":true, "total_skills":...}
+	// topclawhubskills.com 闂備礁鎼ˇ顐﹀疾濠婂牆钃熼柕濞垮剭?{"ok":true, "total_skills":...}
 	if ok, _ := body["ok"].(bool); ok {
 		if _, has := body["total_skills"]; has {
 			return true
@@ -6730,7 +6739,7 @@ func probeClawHubMirror(client *http.Client, base string) bool {
 	return false
 }
 
-// probeClawHub 婵犵妲呴崑鈧柛瀣尰缁?clawhub.ai 濠碉紕鍋涢鍛偓娑掓櫊閹囧箹娴ｇ懓鍓?API
+// probeClawHub 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒?clawhub.ai 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁诡啫鍥х濞达絿鎳撻崜?API
 func probeClawHub(client *http.Client, base string) bool {
 	endpoint := base + "/api/v1/skills"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -6750,7 +6759,7 @@ func probeClawHub(client *http.Client, base string) bool {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return false
 	}
-	// clawhub.ai 闂佸搫顦弲婊堝蓟閵娿儍?{"items":[...], "nextCursor":...}
+	// clawhub.ai 闂備礁鎼ˇ顐﹀疾濠婂牆钃熼柕濞垮剭?{"items":[...], "nextCursor":...}
 	_, hasItems := body["items"]
 	return hasItems
 }

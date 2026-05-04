@@ -75,6 +75,7 @@ const createLabels = (t: (zh: string, en: string) => string) => ({
   providerCount: t('Provider 数', 'Providers'),
   forceSync: t('强制同步', 'Force Sync'),
   pendingLicenseDetail: t('已注册，等待 iWorkerCloud 管理员在 Cloud 管理台确认并发放授权。Cloud 返回 no active license 表示尚未生成有效授权记录，不影响 Center 与 iWorker 的本地业务运行。', 'Registered and waiting for an iWorkerCloud administrator to approve and issue a license. A Cloud response of no active license means no active license record exists yet; local Center and iWorker work is not blocked.'),
+  offlineDetail: t('已注册，但当前无法连接 iWorkerCloud。Center 与 iWorker 会继续按本地策略运行；Cloud 恢复后再同步授权、算力和能力市场状态。', 'Registered, but iWorkerCloud is currently unreachable. Center and iWorker continue by local policy; licensing, compute, and marketplace state sync after Cloud recovers.'),
   localDetail: t('Cloud 故障不会阻断 Center 到 iWorker 的本地任务、记忆和已下发能力。', 'Cloud failures do not block local tasks, memory, or delivered capabilities between Center and iWorker.'),
   continuityTitle: t('离线连续性', 'Offline Continuity'),
   continuityDesc: t('iWorkerCloud 失联时，Center 仍按本地策略继续推送任务、提供记忆、管理 MCP/Skill 和支持人机协作。Cloud 恢复后再同步授权、算力和市场状态。', 'When iWorkerCloud is unavailable, Center continues pushing tasks, serving memory, managing MCP/Skill, and supporting human collaboration by local policy. Licensing, compute, and marketplace state sync after Cloud recovers.'),
@@ -153,6 +154,14 @@ const tileTone = (status: CloudStatus | null): 'ok' | 'warn' => {
   if (!status?.configured) return 'warn';
   if (status.status === 'offline' || status.status === 'pending') return 'warn';
   return 'ok';
+};
+
+const registrationStatusDetail = (status: CloudStatus | null, labels: Labels) => {
+  if (!status?.registered) return labels.submitCompany;
+  if (status.status === 'licensed') return labels.approvedDetail;
+  if (status.status === 'credential_mismatch') return labels.credentialMismatchDetail;
+  if (status.status === 'offline') return labels.offlineDetail;
+  return labels.pendingLicenseDetail;
 };
 
 export function CloudRegistrationPage() {
@@ -311,7 +320,7 @@ export function CloudRegistrationPage() {
           <article className={status.status === 'licensed' ? 'ok' : status.status === 'credential_mismatch' ? 'danger' : 'warn'}>
             <span>{text.stepLicense}</span>
             <strong>{statusLabel}</strong>
-            <p>{status.status === 'licensed' ? text.approvedDetail : status.status === 'credential_mismatch' ? text.credentialMismatchDetail : text.pendingLicenseDetail}</p>
+            <p>{registrationStatusDetail(status, text)}</p>
           </article>
           <article className={status.status === 'licensed' ? 'ok' : 'warn'}>
             <span>{text.license}</span>
@@ -357,6 +366,7 @@ export function CloudRegistrationPage() {
         {licenseText ? <p className="cloud-message ok">{text.license}: {licenseText}</p> : null}
         {status?.registered && status.status === 'pending' ? <p className="cloud-message warn">{text.pendingLicenseDetail}</p> : null}
         {status?.registered && status.status === 'credential_mismatch' ? <p className="cloud-message warn">{text.credentialMismatchDetail}</p> : null}
+        {status?.registered && status.status === 'offline' ? <p className="cloud-message warn">{text.offlineDetail}</p> : null}
         {status?.license_error && status.status !== 'pending' && status.status !== 'credential_mismatch' ? <p className="cloud-message warn">{text.cloudStatus}: {status.license_error}</p> : null}
       </SectionCard>
     </div>

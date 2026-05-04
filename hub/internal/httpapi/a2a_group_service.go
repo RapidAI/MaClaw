@@ -63,6 +63,15 @@ type ListSessionsFilter struct {
 	Status        corea2a.SessionStatus
 	ParticipantID string
 	Role          string
+	Limit         int
+	Offset        int
+}
+
+type ListInvitationsFilter struct {
+	ToID   string
+	Status string
+	Limit  int
+	Offset int
 }
 
 type AddMessageRequest struct {
@@ -305,8 +314,15 @@ func (s *GroupDiscussionService) GetDiscussionDetail(tenantID, sessionID string)
 	}, nil
 }
 
-func (s *GroupDiscussionService) ListInvitations(tenantID, toID, status string) []corea2a.GroupInviteSummary {
+func (s *GroupDiscussionService) ListInvitations(tenantID, toID, status string, filters ...ListInvitationsFilter) []corea2a.GroupInviteSummary {
 	tenantID = normalizeTenantID(tenantID)
+	filter := firstInvitationFilter(filters)
+	if filter.ToID != "" {
+		toID = filter.ToID
+	}
+	if filter.Status != "" {
+		status = filter.Status
+	}
 	toID = strings.TrimSpace(toID)
 	status = strings.TrimSpace(status)
 	if status == "" {
@@ -348,7 +364,7 @@ func (s *GroupDiscussionService) ListInvitations(tenantID, toID, status string) 
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
-	return items
+	return paginateInviteSummaries(items, filter.Offset, filter.Limit)
 }
 
 func (s *GroupDiscussionService) AddInvitation(tenantID, sessionID string, inv corea2a.GroupInvitation) (string, error) {
@@ -529,7 +545,7 @@ func (s *GroupDiscussionService) ListSessions(tenantID string, filters ...ListSe
 		items = append(items, cloneSession(session))
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
-	return items, nil
+	return paginateSessions(items, filter.Offset, filter.Limit), nil
 }
 
 func (s *GroupDiscussionService) GetSession(tenantID, sessionID string) (*corea2a.Session, error) {
@@ -602,7 +618,63 @@ func firstListFilter(filters []ListSessionsFilter) ListSessionsFilter {
 	}
 	filter := filters[0]
 	filter.OrgUnitID = normalizeOrgUnitID(filter.OrgUnitID)
+	filter.Limit = normalizeListLimit(filter.Limit)
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
 	return filter
+}
+
+func firstInvitationFilter(filters []ListInvitationsFilter) ListInvitationsFilter {
+	if len(filters) == 0 {
+		return ListInvitationsFilter{}
+	}
+	filter := filters[0]
+	filter.ToID = strings.TrimSpace(filter.ToID)
+	filter.Status = strings.TrimSpace(filter.Status)
+	filter.Limit = normalizeListLimit(filter.Limit)
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	return filter
+}
+
+func normalizeListLimit(limit int) int {
+	if limit < 0 {
+		return 0
+	}
+	if limit > 500 {
+		return 500
+	}
+	return limit
+}
+
+func paginateSessions(items []*corea2a.Session, offset, limit int) []*corea2a.Session {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(items) {
+		return []*corea2a.Session{}
+	}
+	items = items[offset:]
+	if limit > 0 && limit < len(items) {
+		return items[:limit]
+	}
+	return items
+}
+
+func paginateInviteSummaries(items []corea2a.GroupInviteSummary, offset, limit int) []corea2a.GroupInviteSummary {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(items) {
+		return []corea2a.GroupInviteSummary{}
+	}
+	items = items[offset:]
+	if limit > 0 && limit < len(items) {
+		return items[:limit]
+	}
+	return items
 }
 
 func matchesListFilter(session *corea2a.Session, filter ListSessionsFilter) bool {
@@ -873,48 +945,6 @@ func (s *GroupDiscussionService) persistInvite(tenantID string, record groupInvi
 	if err != nil {
 		log.Printf("[a2a-group] persist invite failed: %v", err)
 	}
-}
-
-func cloneSessionMap(in map[string]map[string]*corea2a.Session) map[string]map[string]*corea2a.Session {
-	out := make(map[string]map[string]*corea2a.Session, len(in))
-	for tenantID, sessions := range in {
-		if sessions == nil {
-			continue
-		}
-		out[tenantID] = make(map[string]*corea2a.Session, len(sessions))
-		for id, session := range sessions {
-			out[tenantID][id] = cloneSession(session)
-		}
-	}
-	return out
-}
-
-func cloneProfileMap(in map[string]map[string]corea2a.GroupProfile) map[string]map[string]corea2a.GroupProfile {
-	out := make(map[string]map[string]corea2a.GroupProfile, len(in))
-	for tenantID, profiles := range in {
-		if profiles == nil {
-			continue
-		}
-		out[tenantID] = make(map[string]corea2a.GroupProfile, len(profiles))
-		for id, profile := range profiles {
-			out[tenantID][id] = cloneGroupProfile(profile)
-		}
-	}
-	return out
-}
-
-func cloneInviteMap(in map[string]map[string]groupInviteRecord) map[string]map[string]groupInviteRecord {
-	out := make(map[string]map[string]groupInviteRecord, len(in))
-	for tenantID, invites := range in {
-		if invites == nil {
-			continue
-		}
-		out[tenantID] = make(map[string]groupInviteRecord, len(invites))
-		for id, invite := range invites {
-			out[tenantID][id] = invite
-		}
-	}
-	return out
 }
 
 func cloneInviteRecord(in groupInviteRecord) groupInviteRecord {

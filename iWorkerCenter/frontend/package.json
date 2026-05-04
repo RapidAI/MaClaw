@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "embed": "node scripts/embed-admin.mjs",
+    "build:embed": "npm run build && npm run embed"
   },
   "dependencies": {
     "react": "^18.2.0",

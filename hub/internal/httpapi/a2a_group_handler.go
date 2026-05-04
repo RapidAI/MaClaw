@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,9 +94,9 @@ func (h *GroupDiscussionHandler) handleHubInvitesMine(w http.ResponseWriter, r *
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	toID := strings.TrimSpace(r.URL.Query().Get("to_id"))
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	invites := h.svc.ListInvitations(requestGroupDiscussionTenantID(r), toID, status)
+	q := r.URL.Query()
+	filter := ListInvitationsFilter{ToID: q.Get("to_id"), Status: q.Get("status"), Limit: intQuery(q, "limit"), Offset: intQuery(q, "offset")}
+	invites := h.svc.ListInvitations(requestGroupDiscussionTenantID(r), "", "", filter)
 	writeJSON(w, http.StatusOK, map[string]any{"invites": invites})
 }
 
@@ -325,7 +326,21 @@ func listFilterFromRequest(r *http.Request) ListSessionsFilter {
 		Status:        normalizeSessionStatus(q.Get("status")),
 		ParticipantID: firstNonEmptyQuery(q, "participant_id", "agent_id", "from_id"),
 		Role:          strings.TrimSpace(q.Get("role")),
+		Limit:         intQuery(q, "limit"),
+		Offset:        intQuery(q, "offset"),
 	}
+}
+
+func intQuery(q map[string][]string, key string) int {
+	values := q[key]
+	if len(values) == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(values[0]))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func firstNonEmptyQuery(q map[string][]string, keys ...string) string {

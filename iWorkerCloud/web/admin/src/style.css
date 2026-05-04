@@ -1177,3 +1177,170 @@ button:disabled {
   border-color: rgba(239, 106, 124, 0.42);
   box-shadow: 0 0 0 3px rgba(239, 106, 124, 0.10), var(--shadow-soft);
 }
+
+
+.cloud-center-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(27, 32, 42, 0.38);
+  backdrop-filter: blur(2px);
+}
+
+.cloud-center-card-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cloud-center-detail-button,
+.cloud-center-close-button {
+  height: 34px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.cloud-center-detail-head {
+  display: none;
+}
+
+.cloud-center-compact-summary {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(220px, 1.3fr) minmax(160px, 0.8fr) auto;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.cloud-center-compact-summary > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.cloud-center-compact-summary span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cloud-center-compact-summary strong {
+  min-width: 0;
+  color: #5b6470;
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-center-summary-alert {
+  border-color: rgba(194, 139, 44, 0.22) !important;
+  background: rgba(194, 139, 44, 0.08) !important;
+}
+
+.cloud-center-card:not(.is-detail-open) .cloud-review-panel,
+.cloud-center-card:not(.is-detail-open) .cloud-tenant-panel,
+.cloud-center-card:not(.is-detail-open) .cloud-posture-panel,
+.cloud-center-card:not(.is-detail-open) .cloud-action-panel,
+.cloud-center-card:not(.is-detail-open) .cloud-integration-panel,
+.cloud-center-card:not(.is-detail-open) .cloud-license-panel,
+.cloud-center-card:not(.is-detail-open) > .actions {
+  display: none;
+}
+
+.cloud-center-card:not(.is-detail-open) .cloud-center-facts span:nth-child(n+6) {
+  display: none;
+}
+
+.cloud-center-card.is-detail-open {
+  position: fixed;
+  z-index: 40;
+  top: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(1120px, calc(100vw - 32px));
+  max-height: calc(100vh - 56px);
+  overflow: auto;
+  padding: 20px;
+  border-color: rgba(239, 106, 124, 0.34);
+  box-shadow: 0 22px 60px rgba(27, 32, 42, 0.22);
+}
+
+.cloud-center-card.is-detail-open .item-head {
+  display: none;
+}
+
+.cloud-center-card.is-detail-open .cloud-center-detail-head {
+  position: sticky;
+  top: -20px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -20px -20px 4px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+.cloud-center-detail-head div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.cloud-center-detail-head span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.cloud-center-detail-head strong {
+  color: #5b6470;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.cloud-center-detail-head small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.cloud-center-card.is-detail-open .cloud-center-compact-summary {
+  display: none;
+}
+
+body:has(.cloud-center-card.is-detail-open) {
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .cloud-center-compact-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .cloud-center-card.is-detail-open {
+    top: 12px;
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 24px);
+    padding: 16px;
+  }
+
+  .cloud-center-card.is-detail-open .cloud-center-detail-head {
+    margin: -16px -16px 4px;
+    padding: 14px 16px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

@@ -110,6 +110,30 @@ requireFile('gui/frontend/src/components/modals/InstallSkillFooter.tsx');
 requireFile('gui/frontend/src/components/modals/RemoteActivationDialog.tsx');
 requireFile('gui/frontend/src/components/modals/ProviderSelectorDialog.tsx');
 requireFile('gui/frontend/src/components/modals/ConfirmDialog.tsx');
+requireFile('gui/frontend/src/components/ai/aiAssistantMarkdown.tsx');
+requireFile('gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx');
+requireFile('gui/frontend/src/components/ai/aiAssistantI18n.ts');
+requireFile('gui/frontend/src/components/ai/ProjectSearchPanel.tsx');
+requireFile('gui/frontend/src/components/ai/aiAssistantControls.tsx');
+requireFile('gui/frontend/src/components/ai/useTTSReadback.ts');
+requireFile('gui/frontend/src/components/ai/aiAssistantPanelTypes.ts');
+requireFile('gui/frontend/src/components/ai/useAIAssistantVoiceControls.ts');
+requireFile('gui/frontend/src/components/ai/useAssistantOutputScroll.ts');
+requireFile('gui/frontend/src/components/ai/useResizableAssistantInput.ts');
+requireFile('gui/frontend/src/components/ai/useAssistantInputHistory.ts');
+requireFile('gui/frontend/src/components/ai/usePastedImageAttachments.ts');
+requireFile('gui/frontend/src/components/ai/useGroupDiscussionControls.ts');
+requireFile('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantWorkflowDocsBar.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantConversationBody.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantInputActions.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantTitleBar.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantInputComposer.tsx');
+requireFile('gui/frontend/src/components/ai/useAssistantPreviewResize.ts');
+requireFile('gui/frontend/src/components/ai/aiAssistantStatusLabels.ts');
 
 if (lines > 4500) failures.push(`${appRel} has ${lines} lines; keep it under 4500 and extract UI instead of growing it`);
 
@@ -142,6 +166,31 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/config/apiStoreProviders.ts', 80],
   ['gui/frontend/src/components/pages/AboutPage.tsx', 100],
   ['gui/frontend/src/components/pages/AboutActions.tsx', 120],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 580],
+  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 760],
+  ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 420],
+  ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
+  ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 240],
+  ['gui/frontend/src/components/ai/aiAssistantControls.tsx', 120],
+  ['gui/frontend/src/components/ai/useTTSReadback.ts', 120],
+  ['gui/frontend/src/components/ai/aiAssistantPanelTypes.ts', 120],
+  ['gui/frontend/src/components/ai/useAIAssistantVoiceControls.ts', 100],
+  ['gui/frontend/src/components/ai/useAssistantOutputScroll.ts', 100],
+  ['gui/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
+  ['gui/frontend/src/components/ai/useAssistantInputHistory.ts', 100],
+  ['gui/frontend/src/components/ai/usePastedImageAttachments.ts', 80],
+  ['gui/frontend/src/components/ai/useGroupDiscussionControls.ts', 90],
+  ['gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 140],
+  ['gui/frontend/src/components/ai/AssistantWorkflowDocsBar.tsx', 80],
+  ['gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 80],
+  ['gui/frontend/src/components/ai/AssistantConversationBody.tsx', 100],
+  ['gui/frontend/src/components/ai/AssistantInputActions.tsx', 80],
+  ['gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 100],
+  ['gui/frontend/src/components/ai/AssistantTitleBar.tsx', 110],
+  ['gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
+  ['gui/frontend/src/components/ai/AssistantInputComposer.tsx', 100],
+  ['gui/frontend/src/components/ai/useAssistantPreviewResize.ts', 50],
+  ['gui/frontend/src/components/ai/aiAssistantStatusLabels.ts', 40],
 ];
 for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 
@@ -218,6 +267,92 @@ requireExcludes(appRel, 'selectProviderTitle', 'inline provider selector dialog;
 requireExcludes(appRel, 'getFilteredProviders().map', 'inline provider selector grid; use components/modals/ProviderSelectorDialog.tsx');
 requireExcludes(appRel, 'stroke="#ef4444"', 'inline confirm dialog; use components/modals/ConfirmDialog.tsx');
 requireExcludes(appRel, 'confirmDialog.message}</p>', 'inline confirm dialog body; use components/modals/ConfirmDialog.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function renderContentWithCodeBlocks', 'inline AI markdown/code-block renderer; use components/ai/aiAssistantMarkdown.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function renderMessage', 'inline AI message renderer; use components/ai/aiAssistantMarkdown.tsx');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'renderMessage } from "./aiAssistantMarkdown"', 'AI markdown renderer import');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'const lightTheme', 'inline AI panel theme; use components/ai/aiAssistantPanelTheme.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function AssistantInputIcon', 'inline AI input icons; use components/ai/aiAssistantPanelTheme.tsx');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./aiAssistantPanelTheme"', 'AI panel theme import');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'interface ProjectSearchItem', 'inline AI project search model; use components/ai/ProjectSearchPanel.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function useProjectSearch', 'inline AI project search hook; use components/ai/ProjectSearchPanel.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function ProjectSearchPanel', 'inline AI project search panel; use components/ai/ProjectSearchPanel.tsx');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./ProjectSearchPanel"', 'AI project search import');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function VoiceLevelVisualizer', 'inline AI voice level visualizer; use components/ai/aiAssistantControls.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'const miniActionButtonStyle', 'inline AI mini action button style; use components/ai/aiAssistantControls.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'GetTTSEnabled', 'inline AI TTS readback hook; use components/ai/useTTSReadback.ts');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'EventsOn("tts:audio"', 'inline AI TTS audio listener; use components/ai/useTTSReadback.ts');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputActions.tsx', 'from "./aiAssistantControls"', 'AI controls import');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useTTSReadback"', 'AI TTS hook import');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'interface AIAssistantPanelStateProps', 'inline AI assistant panel props; use components/ai/aiAssistantPanelTypes.ts');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'voiceHoldTimerRef', 'inline AI voice hold controls; use components/ai/useAIAssistantVoiceControls.ts');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./aiAssistantPanelTypes"', 'AI panel types import');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useAIAssistantVoiceControls"', 'AI voice controls hook import');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'prevMsgCountRef', 'inline AI output scroll manager; use components/ai/useAssistantOutputScroll.ts');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'scrollTimerRef', 'inline AI output scroll debounce; use components/ai/useAssistantOutputScroll.ts');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'setInputAreaHeight', 'inline AI input resize state; use components/ai/useResizableAssistantInput.ts');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useAssistantOutputScroll"', 'AI output scroll hook import');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useResizableAssistantInput"', 'AI input resize hook import');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'historyEdits', 'inline AI input history edits; use components/ai/useAssistantInputHistory.ts');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'SavePastedImage', 'inline pasted image saving; use components/ai/usePastedImageAttachments.ts');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'setGroupDiscussionBusy', 'inline group discussion busy state; use components/ai/useGroupDiscussionControls.ts');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useAssistantInputHistory"', 'AI input history hook import');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./usePastedImageAttachments"', 'AI pasted image hook import');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useGroupDiscussionControls"', 'AI group discussion controls hook import');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-pending-attachments"', 'inline AI pending attachments strip; use components/ai/AssistantAttachmentsStrip.tsx');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'from "./AssistantAttachmentsStrip"', 'AI attachments strip import');
+requireIncludes('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'title={att.filePath}', 'pasted image path tooltip');
+requireIncludes('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'thumbnailDataUrl', 'pasted image thumbnail rendering');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-workflow-docs-bar"', 'inline AI workflow docs bar; use components/ai/AssistantWorkflowDocsBar.tsx');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantWorkflowDocsBar"', 'AI workflow docs bar import');
+requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowDocsBar.tsx', 'data-testid="ai-workflow-docs-bar"', 'workflow docs bar wrapper');
+requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowDocsBar.tsx', 'onSelectWorkingDir', 'workflow docs working dir action');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'className="pinned-news-card"', 'inline pinned news cards; use components/ai/AssistantPinnedNewsCards.tsx');
+requireIncludes('gui/frontend/src/components/ai/AssistantConversationBody.tsx', 'from "./AssistantPinnedNewsCards"', 'AI pinned news cards import');
+requireIncludes('gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 'className="pinned-news-card"', 'pinned news card rendering');
+requireIncludes('gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 'renderInlineMarkdown', 'pinned news markdown rendering');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'Setup not completed', 'inline AI conversation body; use components/ai/AssistantConversationBody.tsx');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantConversationBody"', 'AI conversation body import');
+requireIncludes('gui/frontend/src/components/ai/AssistantConversationBody.tsx', 'AssistantPinnedNewsCards', 'conversation body pinned news wiring');
+requireIncludes('gui/frontend/src/components/ai/AssistantConversationBody.tsx', 'showProcessingState', 'conversation body busy state rendering');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-voice-input"', 'inline AI input action buttons; use components/ai/AssistantInputActions.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-cancel-progress"', 'inline AI cancel action button; use components/ai/AssistantInputActions.tsx');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'from "./AssistantInputActions"', 'AI input actions import');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputActions.tsx', 'data-testid="ai-voice-input"', 'voice input button rendering');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputActions.tsx', 'VoiceLevelVisualizer', 'voice level visualizer rendering');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputActions.tsx', 'data-testid="ai-cancel-progress"', 'cancel progress button rendering');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'miniActionButtonStyle', 'inline group discussion action menu; use components/ai/AssistantGroupDiscussionMenu.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'Experts', 'inline group discussion stats; use components/ai/AssistantGroupDiscussionMenu.tsx');
+requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'from "./AssistantGroupDiscussionMenu"', 'AI group discussion menu import');
+requireIncludes('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 'GD', 'group discussion titlebar button');
+requireIncludes('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 'runGroupDiscussionAction("accept"', 'group discussion accept action');
+requireIncludes('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 'runGroupDiscussionAction("publish"', 'group discussion publish action');
+requireIncludes('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 'calc(100vw - 96px)', 'group discussion popup viewport fit');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-title-bar"', 'inline AI title bar; use components/ai/AssistantTitleBar.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'ai-titlebar-window-group', 'inline AI titlebar window controls; use components/ai/AssistantTitleBar.tsx');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantTitleBar"', 'AI title bar import');
+requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-title-bar"', 'AI title bar wrapper');
+requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-titlebar-tools-group"', 'AI title bar tool group');
+requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-hide-toggle"', 'AI hide window control');
+requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-maximize-toggle"', 'AI maximize window control');
+requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'AssistantGroupDiscussionMenu', 'title bar group discussion menu wiring');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-workflow-maximize-suggestion"', 'inline workflow maximize suggestion; use components/ai/AssistantWorkflowMaximizeSuggestion.tsx');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantWorkflowMaximizeSuggestion"', 'AI workflow maximize suggestion import');
+requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 'data-testid="ai-workflow-maximize-suggestion"', 'workflow maximize suggestion wrapper');
+requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 'onToggleMaximize(); onDismiss();', 'workflow maximize action preserves dismiss');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-input"', 'inline AI input composer; use components/ai/AssistantInputComposer.tsx');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'rememberHistoryEdit(e.target.value)', 'inline AI input history handling; use components/ai/AssistantInputComposer.tsx');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantInputComposer"', 'AI input composer import');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'data-testid="ai-input"', 'AI input textarea');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'AssistantAttachmentsStrip', 'AI input attachments strip wiring');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'AssistantInputActions', 'AI input action buttons wiring');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'recallHistory("up")', 'AI input history up recall');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'handleSend();', 'AI input enter submit wiring');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'const initStatusLabels', 'inline AI init status labels; use components/ai/aiAssistantStatusLabels.ts');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'document.body.style.cursor = "col-resize"', 'inline AI preview resize hook; use components/ai/useAssistantPreviewResize.ts');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useAssistantPreviewResize"', 'AI preview resize hook import');
+requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./aiAssistantStatusLabels"', 'AI init status labels import');
+requireIncludes('gui/frontend/src/components/ai/useAssistantPreviewResize.ts', 'setSplitRatio(nextRatio)', 'AI preview resize ratio update');
+requireIncludes('gui/frontend/src/components/ai/aiAssistantStatusLabels.ts', 'getAssistantInitLabel', 'AI init status label helper');
 
 const criticalMarkers = [
   ['AIAssistantPanel', 'AI assistant panel'],

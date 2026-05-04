@@ -282,7 +282,8 @@
       "registered": "Registered",
       "id": "ID",
       "machineId": "Machine ID",
-      "companyId": "Company ID"
+      "companyId": "Company ID",
+      "iworker": "iWorker"
     },
     "actions": {
       "activateTrial": "Activate trial",
@@ -300,7 +301,9 @@
       "refreshingRuntime": "Refreshing runtime...",
       "refreshRuntime": "Refresh runtime",
       "checking": "Checking...",
-      "checkServiceGate": "Check service gate"
+      "checkServiceGate": "Check service gate",
+      "viewDetails": "Details",
+      "closeDetails": "Close details"
     },
     "posture": {
       "ready": "Ready",
@@ -407,7 +410,9 @@
       "failure": "failure",
       "pending": "pending",
       "waiting_for_credentials": "waiting for credentials",
-      "unknown": "unknown"
+      "unknown": "unknown",
+      "true": "Yes",
+      "false": "No"
     },
     "runtimeContinuity": {
       "notLoaded": "Runtime snapshot has not been loaded yet.",
@@ -431,7 +436,52 @@
     "authorizationQueueTitle": "Pending authorization",
     "authorizationQueueCount": "{{count}} Center(s) awaiting Cloud authorization",
     "authorizationQueueDesc": "These Centers have registered successfully. Issue a trial or manual license here; Cloud authorization only enables platform services and does not touch enterprise business data.",
-    "noHeartbeat": "No heartbeat yet"
+    "noHeartbeat": "No heartbeat yet",
+    "placeholders": {
+      "lastSyncStatus": "configured / probe_ok / heartbeat_ok"
+    },
+    "readinessStatus": {
+      "ready": "Ready",
+      "unknown": "Unknown",
+      "initializing": "Initializing",
+      "degraded": "Degraded",
+      "blocked": "Blocked",
+      "needs_attention": "Needs attention",
+      "offline": "Offline",
+      "not_ready": "Not ready"
+    },
+    "priorities": {
+      "high": "High",
+      "normal": "Normal",
+      "low": "Low"
+    },
+    "recommendedActions": {
+      "ready_for_service_management": {
+        "label": "Ready for service management",
+        "description": "This Center has passed the Cloud control-plane checks. Keep business execution isolated inside iWorkerCenter."
+      },
+      "activate_center": {
+        "label": "Activate Center",
+        "description": "Approve this iWorkerCenter instance and issue a trial or manual authorization before Center management services are enabled."
+      },
+      "configure_base_url": {
+        "label": "Configure Base URL",
+        "description": "Set the reachable iWorkerCenter base URL so Cloud can coordinate licensing, connectivity probes, compute distribution, and skill entitlement."
+      },
+      "test_connection": {
+        "label": "Test Connection",
+        "description": "Run a connection probe after checking network, DNS, TLS, and the Center status endpoint."
+      },
+      "verify_center_service_identity": {
+        "label": "Verify Center Service Identity",
+        "description": "The configured endpoint did not identify itself as iWorkerCenter. Check the URL before enabling Cloud coordination."
+      },
+      "issue_license": {
+        "label": "Issue License",
+        "description": "Create or renew the Center authorization so compute distribution, skill entitlement, and platform access are valid."
+      }
+    },
+    "detailDialogEyebrow": "Center details"
   },
   "licenses": {
     "issue": "Issue License",

@@ -184,3 +184,30 @@ func TestRegisterV1RoutesForwardsChatCompletions(t *testing.T) {
 		t.Fatal("upstream was not called")
 	}
 }
+
+func TestEmbeddedAdminFrontendReferencesExistingStableAssets(t *testing.T) {
+	indexPath := filepath.Join("web", "admin", "index.html")
+	body, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read admin index: %v", err)
+	}
+	indexHTML := string(body)
+	for _, asset := range []string{"/admin/assets/index.js", "/admin/assets/index.css"} {
+		if !strings.Contains(indexHTML, asset) {
+			t.Fatalf("admin index does not reference %s: %s", asset, indexHTML)
+		}
+	}
+	if strings.Contains(indexHTML, "/admin/assets/index-") {
+		t.Fatalf("admin index should use stable asset names, got: %s", indexHTML)
+	}
+	for _, asset := range []string{"index.js", "index.css"} {
+		path := filepath.Join("web", "admin", "assets", asset)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("admin asset %s missing: %v", asset, err)
+		}
+		if info.Size() == 0 {
+			t.Fatalf("admin asset %s is empty", asset)
+		}
+	}
+}

@@ -261,3 +261,50 @@ func TestAdminCloudStatusRouteKeepsPendingRegistrationVisible(t *testing.T) {
 		t.Fatalf("response = %+v", resp)
 	}
 }
+
+func TestAdminCloudStatusRouteTreatsCloudOutageAsNonBlocking(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("cloud should be offline for this test")
+	}))
+	cloudURL := srv.URL
+	srv.Close()
+
+	svc, _ := newTestService(t)
+	svc.cloudClient = NewCloudClient(CloudConfig{BaseURL: cloudURL})
+	tenant, err := svc.SetupFirstTenant(context.Background(), CreateTenantRequest{
+		CompanyName:   "Offline Route Inc",
+		Email:         "offline@example.com",
+		AdminUsername: "admin",
+		AdminPassword: "pass1234",
+	})
+	if err != nil {
+		t.Fatalf("setup tenant: %v", err)
+	}
+	if err := svc.tenantRepo.UpdateCloudInfo(context.Background(), tenant.ID, "center-offline-1", "secret-offline-1"); err != nil {
+		t.Fatalf("update cloud info: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(svc).RegisterAdminRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/admin/cloud/status?tenant_id="+tenant.ID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "secret-offline-1") {
+		t.Fatalf("status leaked cloud secret: %s", body)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["configured"] != true || resp["registered"] != true || resp["center_id"] != "center-offline-1" || resp["status"] != "offline" || resp["non_blocking"] != true {
+		t.Fatalf("response = %+v", resp)
+	}
+	if resp["license_error"] == "" {
+		t.Fatalf("expected diagnostic license_error, response = %+v", resp)
+	}
+}

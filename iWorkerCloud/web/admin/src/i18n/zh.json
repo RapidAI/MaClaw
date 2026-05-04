@@ -30,10 +30,10 @@
     "statPending": "等待激活、商业审核或试用审批的 iWorkerCenter 部署。",
     "statLicenses": "云平台签发的有效付费或试用权益。",
     "computeEyebrow": "算力分发",
-    "computeTitle": "Provider 路由和容量销售",
+    "computeTitle": "服务商路由和容量销售",
     "computeSummary": "Cloud 拥有商业算力池，并通过接入的 iWorkerCenter 分发容量。",
-    "computeDetail": "Provider、模型路由、配额、价格和用量计量由这里控制。iWorkerCenter 可消费云端算力，也可被授权自主管理本地路由。",
-    "computePoint1": "Provider 池",
+    "computeDetail": "服务商、模型路由、配额、价格和用量计量由这里控制。iWorkerCenter 可消费云端算力，也可被授权自主管理本地路由。",
+    "computePoint1": "服务商池",
     "computePoint2": "Center 配额和策略",
     "computePoint3": "用量计费",
     "marketEyebrow": "技能市场",
@@ -71,7 +71,7 @@
       "blockedOrReview": "阻塞或待审",
       "blockedOrReviewHint": "需要关注的聚合工作量，不包含客户业务内容。",
       "localFallback": "本地兜底",
-      "localFallbackHint": "因 Cloud 算力同步不可用或为空，正在通过本地 Provider 设置继续运行的 Center。",
+      "localFallbackHint": "因 Cloud 算力同步不可用或为空，正在通过本地服务商设置继续运行的 Center。",
       "nonBlockingRuntime": "非阻断运行问题",
       "nonBlockingRuntimeHint": "明确标记为不阻断现有 Center/iWorker 执行的运行同步问题。",
       "blockingRuntime": "阻断风险",
@@ -282,7 +282,8 @@
       "registered": "注册时间",
       "id": "ID",
       "machineId": "机器 ID",
-      "companyId": "Company ID"
+      "companyId": "单位 ID",
+      "iworker": "iWorker"
     },
     "actions": {
       "activateTrial": "激活试用",
@@ -300,7 +301,9 @@
       "refreshingRuntime": "刷新运行中...",
       "refreshRuntime": "刷新运行状态",
       "checking": "检查中...",
-      "checkServiceGate": "检查服务门禁"
+      "checkServiceGate": "检查服务门禁",
+      "viewDetails": "??",
+      "closeDetails": "????"
     },
     "posture": {
       "ready": "就绪",
@@ -394,8 +397,8 @@
       "sync": "同步",
       "nonBlocking": "非阻断",
       "impact": "影响",
-      "runtimeProviders": "运行 Provider",
-      "cloudProviders": "Cloud Provider",
+      "runtimeProviders": "运行服务商",
+      "cloudProviders": "Cloud 服务商",
       "selfManagementAllowed": "允许自主管理",
       "cloudManaged": "Cloud 管理",
       "lastSync": "最近同步"
@@ -433,7 +436,52 @@
     "authorizationQueueTitle": "待授权确认",
     "authorizationQueueCount": "{{count}} 个 Center 等待 Cloud 授权",
     "authorizationQueueDesc": "这些 Center 已完成注册。可在这里发放试用或手工授权；Cloud 授权只开放平台服务，不接触企业业务数据。",
-    "noHeartbeat": "暂无心跳"
+    "noHeartbeat": "暂无心跳",
+    "placeholders": {
+      "lastSyncStatus": "已配置 / 探活通过 / 心跳在线"
+    },
+    "readinessStatus": {
+      "ready": "就绪",
+      "unknown": "未知",
+      "initializing": "初始化中",
+      "degraded": "降级运行",
+      "blocked": "阻塞",
+      "needs_attention": "需要关注",
+      "offline": "离线",
+      "not_ready": "未就绪"
+    },
+    "priorities": {
+      "high": "????",
+      "normal": "??",
+      "low": "????"
+    },
+    "recommendedActions": {
+      "ready_for_service_management": {
+        "label": "???????",
+        "description": "? Center ??? Cloud ???????????????? iWorkerCenter ??"
+      },
+      "activate_center": {
+        "label": "?? Center",
+        "description": "???? iWorkerCenter ??????????????????? Center ?????"
+      },
+      "configure_base_url": {
+        "label": "?? Base URL",
+        "description": "?????? iWorkerCenter ????? Cloud ?????????????????????"
+      },
+      "test_connection": {
+        "label": "????",
+        "description": "?????DNS?TLS ? Center ??????????????"
+      },
+      "verify_center_service_identity": {
+        "label": "?? Center ????",
+        "description": "????????? iWorkerCenter??? Cloud ?????? URL?"
+      },
+      "issue_license": {
+        "label": "????",
+        "description": "????? Center ?????????????????????????"
+      }
+    },
+    "detailDialogEyebrow": "Center ??"
   },
   "licenses": {
     "issue": "签发授权",
@@ -541,12 +589,12 @@
     "typeCoding": "编程",
     "typeDocument": "文档",
     "typeAnalysis": "分析",
-    "providerAssignments": "Provider 分发",
-    "assignedProviders": "个已分配 Provider",
-    "defaultAllProviders": "默认使用所有启用 Provider",
-    "assignProvider": "分配 Provider",
-    "unassignProvider": "取消分配 Provider",
-    "limitToProvider": "从此 Provider 创建显式分配",
+    "providerAssignments": "服务商分发",
+    "assignedProviders": "个已分配服务商",
+    "defaultAllProviders": "默认使用所有启用服务商",
+    "assignProvider": "分配服务商",
+    "unassignProvider": "取消分配服务商",
+    "limitToProvider": "从此服务商创建显式分配",
     "noticeSaved": "已保存服务商。",
     "noticeDeleted": "已删除服务商。",
     "noticeUpdated": "已更新设置。",
@@ -557,12 +605,12 @@
     "boundaryTitle": "故障不阻断本地运行",
     "boundaryNote": "Cloud 只协调算力和授权。Cloud 失联时，iWorkerCenter 与 iWorker 应继续使用本地策略、缓存配置和已发布能力运行。",
     "stats": {
-      "providers": "Provider",
+      "providers": "服务商",
       "enabledProviders": "个已启用",
       "centers": "接入 Center",
       "cloudManaged": "个由 Cloud 分发算力",
       "assignments": "显式分发",
-      "assignmentsHint": "限制到指定 Provider 的 Center",
+      "assignmentsHint": "限制到指定服务商的 Center",
       "cost": "已查询费用"
     },
     "eyebrow": "算力分发",

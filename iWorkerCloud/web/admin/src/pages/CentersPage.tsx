@@ -135,6 +135,7 @@ export function CentersPage() {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [focusedCenterId, setFocusedCenterId] = useState('');
+  const [detailCenterId, setDetailCenterId] = useState('');
   const [loading, setLoading] = useState(false);
   const [management, setManagement] = useState<Record<string, CenterManagement>>({});
   const [drafts, setDrafts] = useState<Record<string, IntegrationDraft>>({});
@@ -152,7 +153,12 @@ export function CentersPage() {
   const postureLabel = (value?: string) => t(`centers.posture.${value || 'unknown'}`, { defaultValue: postureLabels[value || ''] ?? value ?? '-' });
   const issueLabel = (value: string) => t(`centers.issues.${value}`, { defaultValue: issueLabels[value] ?? value });
   const controlModeLabel = (value?: CloudControlMode) => t(`centers.controlModes.${value || 'cloud_managed'}`, { defaultValue: controlModeLabels[value || 'cloud_managed'] });
-  const syncStatusLabel = (value?: string) => t(`centers.syncStatus.${value || 'not_configured'}`, { defaultValue: syncStatusLabels[value || ''] ?? value ?? 'not configured' });
+  const syncStatusLabel = (value?: string) => t(`centers.syncStatus.${value || 'not_configured'}`, { defaultValue: syncStatusLabels[value || ''] ?? value ?? t('centers.syncStatus.not_configured') });
+  const readinessStatusLabel = (value?: string) => {
+    const normalized = (value || '').trim();
+    if (!normalized) return t('centers.readiness.notReported');
+    return t(`centers.readinessStatus.${normalized}`, { defaultValue: normalized });
+  };
   const runtimeModeDisplay = (value?: CenterRuntimeStatus['runtime_provider_mode']) => t(`centers.runtimeModes.${runtimeModeLabel(value)}`);
   const runtimeContinuityText = (runtime?: CenterRuntimeStatus) => runtime?.message || t(`centers.runtimeContinuity.${runtimeContinuityKey(runtime)}`);
   const runtimeValue = (key: string, value?: string | boolean) => {
@@ -160,6 +166,8 @@ export function CentersPage() {
     return t(`centers.runtimeValues.${normalized}`, { defaultValue: normalized === 'unknown' ? t('centers.runtimeValues.unknown') : normalized });
   };
   const licenseModuleLabel = (module: string) => t(`licenses.moduleLabels.${module}`, { defaultValue: module });
+  const closeCenterDetail = () => setDetailCenterId('');
+
   const showError = (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     setError(message);
@@ -219,6 +227,15 @@ export function CentersPage() {
   };
 
   useEffect(load, []);
+
+  useEffect(() => {
+    if (!detailCenterId) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeCenterDetail();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [detailCenterId]);
 
   useEffect(() => {
     const focusId = sessionStorage.getItem(CENTER_FOCUS_KEY);
@@ -376,6 +393,10 @@ export function CentersPage() {
     }
   };
 
+  const recommendedActionTitle = (action: { code: string; label: string }) => t(`centers.recommendedActions.${action.code}.label`, { defaultValue: action.label });
+  const recommendedActionDescription = (action: { code: string; description: string }) => t(`centers.recommendedActions.${action.code}.description`, { defaultValue: action.description });
+  const priorityLabel = (priority?: string) => t(`centers.priorities.${priority || 'normal'}`, { defaultValue: priority || t('centers.priorities.normal') });
+
   const recommendedActionLabel = (code: string) => {
     switch (code) {
       case 'activate_center':
@@ -417,6 +438,8 @@ export function CentersPage() {
     });
   }, [centers, query, statusFilter]);
 
+  const detailCenter = detailCenterId ? centers.find(center => center.id === detailCenterId) : undefined;
+
   const centerStats = summary ?? {
     total_centers: centers.length,
     pending_centers: centers.filter(center => center.status === 'pending').length,
@@ -450,8 +473,8 @@ export function CentersPage() {
 
       <div className="head cloud-toolbar">
         <div className="cloud-filter-row">
-          <input value={query} onChange={event => { setQuery(event.target.value); if (focusedCenterId) setFocusedCenterId(''); }} placeholder={t('centers.search')} />
-          <select value={statusFilter} onChange={event => { setStatusFilter(event.target.value); if (focusedCenterId) setFocusedCenterId(''); }}>
+          <input value={query} onChange={event => { setQuery(event.target.value); if (focusedCenterId) setFocusedCenterId(''); if (detailCenterId) closeCenterDetail(); }} placeholder={t('centers.search')} />
+          <select value={statusFilter} onChange={event => { setStatusFilter(event.target.value); if (focusedCenterId) setFocusedCenterId(''); if (detailCenterId) closeCenterDetail(); }}>
             <option value="all">{t('centers.allStatus')}</option>
             <option value="pending">{t('centers.pending')}</option>
             <option value="active">{t('centers.active')}</option>
@@ -492,6 +515,7 @@ export function CentersPage() {
           ))}
         </div>
       </section> : null}
+      {detailCenter ? <div className="cloud-center-modal-backdrop" onClick={closeCenterDetail} /> : null}
       {filteredCenters.length === 0 ? <div className="hint">{centers.length === 0 ? t('centers.empty') : t('centers.noMatch')}</div> : <div className="list">
         {filteredCenters.map(center => {
           const draft = drafts[center.id] ?? createDraft(center);
@@ -502,15 +526,33 @@ export function CentersPage() {
           const manualLicenseDraft = manualLicenseDrafts[center.id] ?? createManualLicenseDraft();
           const isRuntimeRefreshing = runtimeRefreshing[center.id] === true;
           return (
-            <div id={'center-' + center.id} key={center.id} className={`item cloud-center-card ${focusedCenterId === center.id ? 'focused' : ''}`}>
+            <div id={'center-' + center.id} key={center.id} className={`item cloud-center-card ${focusedCenterId === center.id ? 'focused' : ''} ${detailCenterId === center.id ? 'is-detail-open' : ''}`}>
               <div className="item-head">
                 <div>
                   <span className="item-title">{center.company_name}</span>
                   <div className="item-meta">{t('centers.fields.id')}: {center.id}</div>
                 </div>
-                <span className={`badge ${center.status === 'active' ? 'ok' : center.status === 'pending' ? 'warn' : 'danger'}`}>
-                  {t(`centers.${center.status}`)}
-                </span>
+                <div className="cloud-center-card-head-actions">
+                  <span className={`badge ${center.status === 'active' ? 'ok' : center.status === 'pending' ? 'warn' : 'danger'}`}>
+                    {t(`centers.${center.status}`)}
+                  </span>
+                  <button className="btn-ghost cloud-center-detail-button" type="button" onClick={() => setDetailCenterId(center.id)}>
+                    {t('centers.actions.viewDetails')}
+                  </button>
+                  {detailCenterId === center.id ? (
+                    <button className="btn-ghost cloud-center-close-button" type="button" onClick={closeCenterDetail} aria-label={t('centers.actions.closeDetails')}>
+                      {t('centers.actions.closeDetails')}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="cloud-center-detail-head">
+                <div>
+                  <span>{t('centers.detailDialogEyebrow')}</span>
+                  <strong>{center.company_name || center.id}</strong>
+                  <small>{center.id}</small>
+                </div>
+                <button className="btn-ghost" type="button" onClick={closeCenterDetail}>{t('centers.actions.closeDetails')}</button>
               </div>
 
               <div className="cloud-center-facts">
@@ -518,12 +560,28 @@ export function CentersPage() {
                 <span className={`badge ${serviceBadgeClass(center.last_sync_status)}`}>{t('centers.fields.service')}: {syncStatusLabel(center.last_sync_status)}</span>
                 {managementItem && <span>{t('centers.fields.commercial')}: {t(`centers.commercial.${managementItem.commercial_status}`, { defaultValue: managementItem.commercial_status })}</span>}
                 {managementItem && <span>{t('centers.fields.connectivity')}: {t(`centers.connectivity.${managementItem.connectivity}`, { defaultValue: managementItem.connectivity })}</span>}
-                <span className={`badge ${center.iworker_ready ? 'ok' : center.iworker_readiness_status ? 'warn' : 'warn'}`}>iWorker: {center.iworker_readiness_status || t('centers.readiness.notReported')}</span>
+                <span className={`badge ${center.iworker_ready ? 'ok' : center.iworker_readiness_status ? 'warn' : 'warn'}`}>{t('centers.fields.iworker')}: {readinessStatusLabel(center.iworker_readiness_status)}</span>
                 <span>{t('centers.readiness.agentInstances')}: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem?.iworker_readiness?.agent_instance_count ?? 0}</span>
                 <span>{t('centers.fields.tenantMode')}: {center.supports_multi_tenant === true ? t('centers.tenant.modeMulti') : center.supports_multi_tenant === false ? t('centers.tenant.modeDedicated') : t('centers.tenant.notReported')}</span>
                 {typeof center.tenant_count === 'number' && <span>{t('centers.fields.tenants')}: {center.tenant_count}</span>}
                 <span>{t('centers.fields.lastHeartbeat')}: {formatDateTime(center.last_heartbeat) || t('centers.noHeartbeat')}</span>
                 {center.created_at && <span>{t('centers.fields.registered')}: {new Date(center.created_at).toLocaleString()}</span>}
+              </div>
+
+              <div className="cloud-center-compact-summary">
+                <div>
+                  <span>{t('centers.fields.email')}</span>
+                  <strong>{center.admin_email || t('centers.notProvided')}</strong>
+                </div>
+                <div>
+                  <span>{t('centers.fields.baseUrl')}</span>
+                  <strong>{center.base_url || t('centers.notProvided')}</strong>
+                </div>
+                <div>
+                  <span>{t('centers.fields.lastHeartbeat')}</span>
+                  <strong>{formatDateTime(center.last_heartbeat) || t('centers.noHeartbeat')}</strong>
+                </div>
+                {managementItem?.issues?.length ? <div className="cloud-center-summary-alert"><span>{t('centers.sections.recommendedActions')}</span><strong>{managementItem.issues.length}</strong></div> : null}
               </div>
 
               <div className="cloud-review-panel">
@@ -583,7 +641,7 @@ export function CentersPage() {
                     <span className={workload.blocked_count > 0 ? 'danger' : 'ok'}>{t('centers.readiness.blocked')}: {workload.blocked_count}</span>
                     {workload.updated_at ? <span>{t('centers.readiness.workloadSync')}: {formatDateTime(workload.updated_at)}</span> : null}
                   </> : null}
-                  <span className={center.iworker_ready ? 'ok' : 'warn'}>{t('compute.status')}: {center.iworker_readiness_status || t('centers.readiness.notReported')}</span>
+                  <span className={center.iworker_ready ? 'ok' : 'warn'}>{t('compute.status')}: {readinessStatusLabel(center.iworker_readiness_status)}</span>
                 </div>
               </div>}
 
@@ -612,9 +670,9 @@ export function CentersPage() {
                 </div>
                 {(managementItem.recommended_actions ?? []).map(action => (
                   <div key={action.code} className={`cloud-action-card ${action.priority}`}>
-                    <span>{action.priority}</span>
-                    <strong>{action.label}</strong>
-                    <p>{action.description}</p>
+                    <span>{priorityLabel(action.priority)}</span>
+                    <strong>{recommendedActionTitle(action)}</strong>
+                    <p>{recommendedActionDescription(action)}</p>
                     <button
                       className="btn-ghost cloud-action-button"
                       disabled={isRecommendedActionDisabled(center, action.code)}
@@ -650,7 +708,7 @@ export function CentersPage() {
                   <label>{t('centers.fields.lastSyncStatus')}</label>
                   <input
                     value={draft.last_sync_status}
-                    placeholder="configured / probe_ok / heartbeat_ok"
+                    placeholder={t('centers.placeholders.lastSyncStatus')}
                     onChange={event => patchDraft(center.id, { last_sync_status: event.target.value })}
                   />
                 </div>

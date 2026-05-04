@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -109,5 +110,108 @@ func TestConfirmCenterManualHandlerActivatesAndIssuesPermanentLicense(t *testing
 	}
 	if lic.Type != "manual" || !lic.IsLongTerm || !strings.Contains(lic.Modules, "skill_market") {
 		t.Fatalf("unexpected manual license: %+v", lic)
+	}
+}
+
+func TestConfirmManualLicenseCanBeFetchedByRegisteredCenter(t *testing.T) {
+	provider, centerSvc, licenseSvc := newApprovalTestServices(t)
+	stores := sqlite.NewStore(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := stores.Centers.Create(context.Background(), &store.Center{
+		ID:          "ctr_fetch_license",
+		CompanyName: "Fetch License Inc",
+		AdminEmail:  "admin@example.com",
+		Status:      "pending",
+		SecretHash:  hashTestSecret("center-secret"),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("create center: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/admin/centers/{id}/confirm", ConfirmCenterManualHandler(centerSvc))
+	mux.HandleFunc("GET /api/centers/{id}/license", GetActiveLicenseHandler(licenseSvc, centerSvc))
+
+	confirmReq := httptest.NewRequest(http.MethodPost, "/api/admin/centers/ctr_fetch_license/confirm", strings.NewReader(`{"modules":["compute","skill_market"],"days":365}`))
+	confirmReq.Header.Set("Content-Type", "application/json")
+	confirmRes := httptest.NewRecorder()
+	mux.ServeHTTP(confirmRes, confirmReq)
+	if confirmRes.Code != http.StatusOK {
+		t.Fatalf("confirm status = %d body=%s", confirmRes.Code, confirmRes.Body.String())
+	}
+
+	licenseReq := httptest.NewRequest(http.MethodGet, "/api/centers/ctr_fetch_license/license", nil)
+	licenseReq.Header.Set("X-Center-Secret", "center-secret")
+	licenseRes := httptest.NewRecorder()
+	mux.ServeHTTP(licenseRes, licenseReq)
+	if licenseRes.Code != http.StatusOK {
+		t.Fatalf("license status = %d body=%s", licenseRes.Code, licenseRes.Body.String())
+	}
+	var lic store.License
+	if err := json.NewDecoder(licenseRes.Body).Decode(&lic); err != nil {
+		t.Fatalf("decode license: %v", err)
+	}
+	if lic.CenterID != "ctr_fetch_license" || lic.Type != "manual" || lic.IsLongTerm || !strings.Contains(lic.Modules, "skill_market") {
+		t.Fatalf("license = %+v", lic)
+	}
+}
+
+func TestDeleteCenterHandlerCleansDependentRows(t *testing.T) {
+	provider, centerSvc, _ := newApprovalTestServices(t)
+	stores := sqlite.NewStore(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := stores.Centers.Create(context.Background(), &store.Center{
+		ID:          "ctr_delete_http",
+		CompanyName: "Delete HTTP Inc",
+		AdminEmail:  "admin@example.com",
+		Status:      "active",
+		SecretHash:  hashTestSecret("center-secret"),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("create center: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(context.Background(), `INSERT INTO licenses (id, center_id, modules, type, expires_at, is_long_term, certificate, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`, "lic_delete_http", "ctr_delete_http", `["compute"]`, "manual", now.AddDate(0, 1, 0).Format(time.RFC3339), "cert", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert license: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS center_provider_assignments (center_id TEXT NOT NULL, provider_id TEXT NOT NULL, PRIMARY KEY(center_id, provider_id))`); err != nil {
+		t.Fatalf("create assignment table: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(context.Background(), `INSERT INTO center_provider_assignments (center_id, provider_id) VALUES (?, ?)`, "ctr_delete_http", "provider-http"); err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS token_usage_records (center_id TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, total_tokens INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '')`); err != nil {
+		t.Fatalf("create usage table: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(context.Background(), `INSERT INTO token_usage_records (center_id, model, prompt_tokens, completion_tokens, total_tokens, cost, created_at) VALUES (?, ?, 1, 2, 3, 0.12, ?)`, "ctr_delete_http", "gpt-test", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert usage: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /api/admin/centers/{id}", DeleteCenterHandler(centerSvc))
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/centers/ctr_delete_http", nil)
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", res.Code, res.Body.String())
+	}
+
+	for _, check := range []struct {
+		name  string
+		query string
+	}{
+		{"center", `SELECT COUNT(*) FROM centers WHERE id="ctr_delete_http"`},
+		{"license", `SELECT COUNT(*) FROM licenses WHERE center_id="ctr_delete_http"`},
+		{"assignment", `SELECT COUNT(*) FROM center_provider_assignments WHERE center_id="ctr_delete_http"`},
+		{"usage", `SELECT COUNT(*) FROM token_usage_records WHERE center_id="ctr_delete_http"`},
+	} {
+		var count int
+		if err := provider.Read.QueryRowContext(context.Background(), check.query).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", check.name, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows left after delete: %d", check.name, count)
+		}
 	}
 }

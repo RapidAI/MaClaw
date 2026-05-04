@@ -191,6 +191,37 @@ func TestGroupDiscussionActiveExpertWindow(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionListPagination(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	first, err := svc.CreateConsultation("tenant-a", corea2a.GroupConsultationRequest{FromID: "maclaw-a", Topic: "first", Question: "First?"})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if _, err := svc.CreateConsultation("tenant-a", corea2a.GroupConsultationRequest{FromID: "maclaw-a", Topic: "second", Question: "Second?"}); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	discussions, err := svc.ListDiscussionSummaries("tenant-a", ListSessionsFilter{Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("list discussions: %v", err)
+	}
+	if len(discussions) != 1 || discussions[0].ID != first.Discussion.ID {
+		t.Fatalf("expected second page to contain first discussion, got %+v", discussions)
+	}
+	inviteOne, err := svc.AddInvitation("tenant-a", first.Discussion.ID, corea2a.GroupInvitation{FromID: "maclaw-a", ToID: "maclaw-b", Role: corea2a.GroupRoleSpeak})
+	if err != nil {
+		t.Fatalf("invite one: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if _, err := svc.AddInvitation("tenant-a", first.Discussion.ID, corea2a.GroupInvitation{FromID: "maclaw-a", ToID: "maclaw-b", Role: corea2a.GroupRoleReview}); err != nil {
+		t.Fatalf("invite two: %v", err)
+	}
+	invites := svc.ListInvitations("tenant-a", "", "", ListInvitationsFilter{ToID: "maclaw-b", Status: "pending", Limit: 1, Offset: 1})
+	if len(invites) != 1 || invites[0].ID != inviteOne {
+		t.Fatalf("expected second invite page to contain first invite, got %+v", invites)
+	}
+}
+
 func TestGroupDiscussionServicePersistsAcrossRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "group-discussion.db")
 	provider, err := sqlite.NewProvider(sqlite.Config{DSN: dbPath, WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 2, MaxReadIdleConns: 1, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})
