@@ -22,16 +22,16 @@ export const StartupPopup = ({ config, setConfig, lang, t, onClose }: StartupPop
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
         }}>
             <div style={{
-                background: 'linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)',
+                background: 'linear-gradient(135deg, color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface)) 0%, color-mix(in srgb, var(--theme-primary) 20%, var(--theme-surface)) 100%)',
                 padding: '25px 20px',
-                color: '#1e293b',
+                color: 'var(--theme-text-primary)',
                 position: 'relative',
-                borderBottom: '1px solid #e2e8f0'
+                borderBottom: '1px solid var(--theme-border)'
             }}>
                 <button
                     className="modal-close"
                     onClick={onClose}
-                    style={{ color: '#9ca3af', opacity: 0.8, top: '10px', right: '15px', zIndex: 10 }}
+                    style={{ color: 'var(--theme-text-muted)', opacity: 0.8, top: '10px', right: '15px', zIndex: 10 }}
                 >&times;</button>
                 <div style={{
                     fontSize: '2.5rem',
@@ -43,7 +43,7 @@ export const StartupPopup = ({ config, setConfig, lang, t, onClose }: StartupPop
                     lineHeight: 1,
                     filter: 'drop-shadow(0 2px 4px rgba(59, 130, 246, 0.1))'
                 }}>{`</>`}</div>
-                <h3 style={{ margin: 0, color: '#0f172a', fontSize: '1.2rem', fontWeight: 'bold' }}>{t("startupTitle")}</h3>
+                <h3 style={{ margin: 0, color: 'var(--theme-text-primary)', fontSize: '1.2rem', fontWeight: 'bold' }}>{t("startupTitle")}</h3>
                 <p style={{
                     margin: '6px 0 0 0',
                     background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
@@ -69,9 +69,9 @@ export const StartupPopup = ({ config, setConfig, lang, t, onClose }: StartupPop
                             alignItems: 'center',
                             justifyContent: 'center',
                             gap: '8px',
-                            background: 'linear-gradient(135deg, #eef2ff, #e0e7ff)',
-                            color: '#4338ca',
-                            border: '1px solid #c7d2fe',
+                            background: 'linear-gradient(135deg, color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface)), color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface)))',
+                            color: 'var(--theme-primary)',
+                            border: '1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border))',
                             boxShadow: '0 2px 4px rgba(59, 130, 246, 0.1)',
                             cursor: 'pointer',
                             transition: 'all 0.2s'
@@ -80,18 +80,18 @@ export const StartupPopup = ({ config, setConfig, lang, t, onClose }: StartupPop
                             BrowserOpenURL("https://www.bilibili.com/video/BV1wmvoBnEF1");
                         }}
                     >
-                        <span>??</span> {t("quickStart")}
+                        <span>{'\u{1F3AC}'}</span> {t("quickStart")}
                     </button>
                     <button
                         className="btn-link"
                         style={{
                             padding: '10px',
-                            border: '1px solid #e2e8f0',
+                            border: '1px solid var(--theme-border)',
                             borderRadius: '10px',
                             fontSize: '0.95rem',
                             fontWeight: '500',
-                            color: '#9ca3af',
-                            backgroundColor: '#ffffff',
+                            color: 'var(--theme-text-secondary)',
+                            backgroundColor: 'var(--theme-surface)',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
@@ -105,7 +105,7 @@ export const StartupPopup = ({ config, setConfig, lang, t, onClose }: StartupPop
                             BrowserOpenURL(manualUrl);
                         }}
                     >
-                        <span>??</span> {t("manual")}
+                        <span>{'\u{1F4D6}'}</span> {t("manual")}
                     </button>
                 </div>
 
@@ -121,7 +121,7 @@ export const StartupPopup = ({ config, setConfig, lang, t, onClose }: StartupPop
                         gap: '6px',
                         cursor: 'pointer',
                         fontSize: '0.8rem',
-                        color: '#94a3b8'
+                        color: 'var(--theme-text-muted)'
                     }}>
                         <input
                             type="checkbox"

@@ -22,13 +22,13 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
         animation: 'fadeIn 0.2s ease-out'
     }}>
         <div style={{
-            backgroundColor: '#ffffff',
+            backgroundColor: 'var(--theme-surface)',
             borderRadius: '12px',
             padding: '24px',
             minWidth: '360px',
             maxWidth: '420px',
             boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 0, 0, 0.05)',
-            border: 'none',
+            border: '1px solid var(--theme-border)',
             animation: 'slideUp 0.3s ease-out',
             position: 'relative'
         }}>
@@ -36,12 +36,12 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
                 width: '48px',
                 height: '48px',
                 borderRadius: '50%',
-                backgroundColor: '#fef2f2',
+                backgroundColor: 'var(--theme-danger-bg)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 marginBottom: '16px',
-                border: '2px solid #fee2e2'
+                border: '2px solid color-mix(in srgb, var(--theme-danger) 22%, var(--theme-border))'
             }}>
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="10"></circle>
@@ -53,7 +53,7 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
             <h3 style={{
                 margin: '0 0 8px 0',
                 fontSize: '1.15rem',
-                color: '#1f2937',
+                color: 'var(--theme-text-primary)',
                 fontWeight: '700',
                 letterSpacing: '-0.02em'
             }}>
@@ -62,7 +62,7 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
 
             <p style={{
                 margin: '0 0 20px 0',
-                color: '#6b7280',
+                color: 'var(--theme-text-secondary)',
                 fontSize: '0.9rem',
                 lineHeight: '1.5',
                 fontWeight: '400'
@@ -79,9 +79,9 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
                     onClick={onCancel}
                     style={{
                         padding: '8px 20px',
-                        backgroundColor: '#f9fafb',
-                        color: '#374151',
-                        border: '1px solid #e5e7eb',
+                        backgroundColor: 'var(--theme-surface-muted)',
+                        color: 'var(--theme-text-primary)',
+                        border: '1px solid var(--theme-border)',
                         borderRadius: '8px',
                         cursor: 'pointer',
                         fontSize: '0.875rem',
@@ -90,14 +90,14 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
                         boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)'
                     }}
                     onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f3f4f6';
-                        e.currentTarget.style.borderColor = '#d1d5db';
+                        e.currentTarget.style.backgroundColor = 'var(--theme-surface-muted)';
+                        e.currentTarget.style.borderColor = 'var(--theme-border)';
                         e.currentTarget.style.transform = 'translateY(-1px)';
                         e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.1)';
                     }}
                     onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f9fafb';
-                        e.currentTarget.style.borderColor = '#e5e7eb';
+                        e.currentTarget.style.backgroundColor = 'var(--theme-surface-muted)';
+                        e.currentTarget.style.borderColor = 'var(--theme-border)';
                         e.currentTarget.style.transform = 'translateY(0)';
                         e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
                     }}
@@ -108,7 +108,7 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
                     onClick={onConfirm}
                     style={{
                         padding: '8px 20px',
-                        backgroundColor: '#ef4444',
+                        backgroundColor: 'var(--theme-danger)',
                         color: 'white',
                         border: 'none',
                         borderRadius: '8px',
@@ -119,12 +119,12 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
                         boxShadow: '0 2px 4px rgba(239, 68, 68, 0.3)'
                     }}
                     onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#dc2626';
+                        e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--theme-danger) 86%, #000)';
                         e.currentTarget.style.transform = 'translateY(-1px)';
                         e.currentTarget.style.boxShadow = '0 4px 8px rgba(239, 68, 68, 0.4)';
                     }}
                     onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#ef4444';
+                        e.currentTarget.style.backgroundColor = 'var(--theme-danger)';
                         e.currentTarget.style.transform = 'translateY(0)';
                         e.currentTarget.style.boxShadow = '0 2px 4px rgba(239, 68, 68, 0.3)';
                     }}
