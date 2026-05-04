@@ -1061,7 +1061,7 @@ jobs:
 
       - name: Verify Gitee token secret
         env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_TOKEN: ${{ secrets.GITEE }}
         run: |
           if [ -z "$GITEE_TOKEN" ]; then
             echo "GITEE_TOKEN secret is empty or missing" >&2
@@ -1080,7 +1080,7 @@ jobs:
           user_url = "https://gitee.com/api/v5/user?" + urllib.parse.urlencode({"access_token": token})
           with urllib.request.urlopen(user_url, timeout=30) as resp:
               user = json.loads(resp.read().decode("utf-8"))
-          print(f"Verified Gitee token user: {user.get('login') or user.get('name') or user.get('id')}")
+          print(f"Verified Gitee token login={user.get('login')} name={user.get('name')} id={user.get('id')}")
           url = "https://gitee.com/api/v5/repos/znsoft/maclaw?" + urllib.parse.urlencode({"access_token": token})
           try:
               with urllib.request.urlopen(url, timeout=30) as resp:
@@ -1093,7 +1093,7 @@ jobs:
 
       - name: Push source tags to Gitee
         env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_TOKEN: ${{ secrets.GITEE }}
         run: |
           if [ -z "$GITEE_TOKEN" ]; then
             echo "GITEE_TOKEN secret is required for Gitee sync" >&2
@@ -1117,7 +1117,7 @@ jobs:
           url = "https://gitee.com/api/v5/user?" + urllib.parse.urlencode({"access_token": token})
           with urllib.request.urlopen(url, timeout=30) as resp:
               user = json.loads(resp.read().decode("utf-8"))
-          print(user.get("login") or user.get("name") or "")
+          print(user.get("login") or "")
           PY
           )"
           if [ -z "$gitee_login" ]; then
@@ -1143,6 +1143,8 @@ jobs:
           echo "GitHub sha: ${{ github.sha }}"
           echo "Local HEAD: $(git rev-parse HEAD)"
           echo "Gitee token user: ${gitee_login}"
+          echo "Gitee push username: ${gitee_login}"
+          echo "Gitee push repository: znsoft/maclaw"
           echo "Gitee remote: https://${gitee_login}:***@gitee.com/znsoft/maclaw.git"
           git fetch origin main --tags --force
           echo "Origin main: $(git rev-parse refs/remotes/origin/main)"
@@ -1163,13 +1165,23 @@ jobs:
             cat /tmp/gitee-tag-err >&2 || true
           fi
 
-          if ! GIT_LFS_SKIP_PUSH=1 git push gitee refs/remotes/origin/main:refs/heads/main; then
+          if ! GIT_LFS_SKIP_PUSH=1 git push gitee refs/remotes/origin/main:refs/heads/main 2>/tmp/gitee-main-push-err; then
+            cat /tmp/gitee-main-push-err >&2 || true
+            if grep -qi "Access denied\|403" /tmp/gitee-main-push-err; then
+              echo "error: Gitee token user '${gitee_login}' can read znsoft/maclaw but cannot push to it." >&2
+              echo "error: Grant '${gitee_login}' write access on Gitee, enable the token's repository write scope, or replace GITEE_TOKEN with a writable account token." >&2
+            fi
             echo "warning: Gitee main branch push failed; continuing with current tag sync" >&2
           fi
 
           if git ls-remote --exit-code gitee "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "Gitee tag ${tag} already exists; skip pushing tag"
-          elif ! GIT_LFS_SKIP_PUSH=1 git push gitee "refs/tags/${tag}:refs/tags/${tag}"; then
+          elif ! GIT_LFS_SKIP_PUSH=1 git push gitee "refs/tags/${tag}:refs/tags/${tag}" 2>/tmp/gitee-tag-push-err; then
+            cat /tmp/gitee-tag-push-err >&2 || true
+            if grep -qi "Access denied\|403" /tmp/gitee-tag-push-err; then
+              echo "error: Gitee token user '${gitee_login}' does not have permission to create tag ${tag} in znsoft/maclaw." >&2
+              echo "error: Gitee Release sync needs this tag to exist before assets can be uploaded." >&2
+            fi
             echo "error: failed to push release tag ${tag} to Gitee" >&2
             exit 1
           fi
@@ -1179,7 +1191,7 @@ jobs:
       - name: Sync release assets to Gitee
         continue-on-error: true
         env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_TOKEN: ${{ secrets.GITEE }}
           GITEE_OWNER: znsoft
           GITEE_REPO: maclaw
           GITEE_TARGET: main
