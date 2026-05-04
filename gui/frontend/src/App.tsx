@@ -91,10 +91,10 @@ function App() {
     const [lastUpdateTime, setLastUpdateTime] = useState<string>("");
     const [refreshKey, setRefreshKey] = useState<number>(0);
     const [activeTool, setActiveTool] = useState<string>("claude");
-    const [recentTasksPaneWidth, setRecentTasksPaneWidth] = useState(210);
+    const [recentTasksPaneWidth, setRecentTasksPaneWidth] = useState(180);
     const [isRecentTasksResizing, setIsRecentTasksResizing] = useState(false);
     const recentTasksResizeStartX = useRef(0);
-    const recentTasksResizeStartWidth = useRef(210);
+    const recentTasksResizeStartWidth = useRef(180);
     const [sidebarExpanded, setSidebarExpanded] = useState(false);
     const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
     const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
@@ -432,7 +432,7 @@ function App() {
         if (!isRecentTasksResizing) return;
         const handleMove = (event: MouseEvent) => {
             const nextWidth = recentTasksResizeStartWidth.current + event.clientX - recentTasksResizeStartX.current;
-            setRecentTasksPaneWidth(Math.min(340, Math.max(160, nextWidth)));
+            setRecentTasksPaneWidth(Math.min(300, Math.max(140, nextWidth)));
         };
         const handleUp = () => setIsRecentTasksResizing(false);
         window.addEventListener('mousemove', handleMove);
@@ -1991,20 +1991,30 @@ ${instruction}`;
 
     if (isLoading) {
         return (
-            <div style={{
+            <div data-ai-theme={aiThemeMode} style={{
                 height: '100vh',
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'center',
                 alignItems: 'center',
-                backgroundColor: '#fff',
+                backgroundColor: 'var(--theme-page-bg)',
+                color: 'var(--theme-text-primary)',
                 padding: '20px',
                 textAlign: 'center',
                 boxSizing: 'border-box',
                 borderRadius: '12px',
-                border: '1px solid rgba(0, 0, 0, 0.15)',
-                overflow: 'hidden'
-            }}>
+                border: '1px solid var(--theme-border)',
+                overflow: 'hidden',
+                ...(aiThemeMode === 'dark' ? {
+                    '--theme-page-bg': '#0b1220',
+                    '--theme-surface': '#111827',
+                    '--theme-surface-muted': '#0f172a',
+                    '--theme-text-primary': '#e5e7eb',
+                    '--theme-text-secondary': '#cbd5e1',
+                    '--theme-text-muted': '#94a3b8',
+                    '--theme-border': '#334155'
+                } : {})
+            } as any}>
                 <div style={{
                     height: '30px',
                     width: '100%',
@@ -2022,7 +2032,7 @@ ${instruction}`;
                     display: 'inline-block',
                     fontWeight: 'bold'
                 }}>{t("envCheckTitle")}</h2>
-                <div style={{ width: '100%', height: '4px', backgroundColor: '#e2e8f0', borderRadius: '2px', overflow: 'hidden', marginBottom: '15px' }}>
+                <div style={{ width: '100%', height: '4px', backgroundColor: 'var(--theme-surface-muted)', borderRadius: '2px', overflow: 'hidden', marginBottom: '15px', border: '1px solid var(--theme-border)' }}>
                     <div style={{
                         width: '50%',
                         height: '100%',
@@ -2043,9 +2053,9 @@ ${instruction}`;
                             padding: '10px',
                             fontSize: '0.85rem',
                             fontFamily: 'monospace',
-                            color: '#4b5563',
-                            backgroundColor: '#fffdfa',
-                            border: '1px solid #e2e8f0',
+                            color: 'var(--theme-text-primary)',
+                            backgroundColor: 'var(--theme-surface)',
+                            border: '1px solid var(--theme-border)',
                             borderRadius: '8px',
                             resize: 'none',
                             outline: 'none',
@@ -2053,7 +2063,7 @@ ${instruction}`;
                         }}
                     />
                 ) : (
-                    <div style={{ fontSize: '0.9rem', color: '#6b7280', marginBottom: '15px', height: '20px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ fontSize: '0.9rem', color: 'var(--theme-text-secondary)', marginBottom: '15px', height: '20px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {envLogs.length > 0 ? envLogs[envLogs.length - 1] : t("initializing")}
                     </div>
                 )}
@@ -2070,7 +2080,7 @@ ${instruction}`;
                             textDecoration: 'underline'
                         }}
                     >
-                        {showLogs ? (lang === 'zh-Hans' ? '隐藏详情' : 'Hide Details') : (lang === 'zh-Hans' ? '查看详情' : 'Show Details')}
+                        {showLogs ? (lang === 'zh-Hans' ? '\u9690\u85cf\u8be6\u60c5' : lang === 'zh-Hant' ? '\u96b1\u85cf\u8a73\u60c5' : 'Hide Details') : (lang === 'zh-Hans' ? '\u67e5\u770b\u8be6\u60c5' : lang === 'zh-Hant' ? '\u67e5\u770b\u8a73\u60c5' : 'Show Details')}
                     </button>
 
                     {showLogs && (
@@ -2079,11 +2089,11 @@ ${instruction}`;
                                 setIsLoading(false);
                                 setIsManualCheck(false);
                             }} className="btn-hide" style={{ borderColor: '#6366f1', color: '#6366f1', padding: '4px 12px' }}>
-                                {lang === 'zh-Hans' ? '收起' : lang === 'zh-Hant' ? '收起' : 'Hide'}
+                                {lang === 'zh-Hans' ? '\u6536\u8d77' : lang === 'zh-Hant' ? '\u6536\u8d77' : 'Hide'}
                             </button>
                         ) : (
                             <button onClick={Quit} className="btn-hide" style={{ borderColor: '#ef4444', color: '#ef4444', padding: '4px 12px' }}>
-                                {lang === 'zh-Hans' ? '退出程序' : 'Quit'}
+                                {lang === 'zh-Hans' ? '\u9000\u51fa\u7a0b\u5e8f' : lang === 'zh-Hant' ? '\u9000\u51fa\u7a0b\u5f0f' : 'Quit'}
                             </button>
                         )
                     )}
