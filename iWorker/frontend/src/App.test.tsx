@@ -473,6 +473,38 @@ describe("App", () => {
     ).toBeTruthy();
   });
 
+  it("treats no published Center config as a ready empty state", async () => {
+    vi.mocked(FetchConfigBundle).mockResolvedValue({
+      id: "",
+      version: 0,
+      content_type: "",
+      payload: "",
+      status: "not_published",
+      note: "",
+      created_at: "",
+      published_at: "",
+      source: "none",
+      cached_at: "2026-05-04T00:00:00Z",
+      stale: false,
+    } as never);
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Digital coworker workbench",
+      }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Run self-check/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Ready to work")).toBeTruthy();
+      expect(screen.getByText("No Center config published")).toBeTruthy();
+      expect(screen.getByText("Config bundle").className).toContain("is-ok");
+    });
+  });
+
   it("shows cached runtime instances when heartbeat fails", async () => {
     vi.mocked(HeartbeatAgentRuntime).mockRejectedValue(
       new Error("center offline"),
