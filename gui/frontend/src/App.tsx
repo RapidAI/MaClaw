@@ -71,7 +71,7 @@ import type { RemoteCenterHubOption, SidebarHubCredits, SidebarHubServiceStatus,
 
 
 
-const APP_VERSION = "5.4.2.9920"
+const APP_VERSION = "5.12.0.10578"
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
 
 
