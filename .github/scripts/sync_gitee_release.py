@@ -3,12 +3,15 @@ import json
 import mimetypes
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TOKEN = os.environ["GITEE_TOKEN"]
 OWNER = os.environ.get("GITEE_OWNER", "znsoft")
@@ -27,6 +30,7 @@ ASSETS_DIR = pathlib.Path(os.environ.get("RELEASE_ASSETS_DIR", "artifacts"))
 API = f"https://gitee.com/api/v5/repos/{OWNER}/{REPO}"
 UPLOAD_TIMEOUT = int(os.environ.get("GITEE_UPLOAD_TIMEOUT", "900"))
 UPLOAD_RETRIES = int(os.environ.get("GITEE_UPLOAD_RETRIES", "3"))
+UPLOAD_CONCURRENCY = int(os.environ.get("GITEE_UPLOAD_CONCURRENCY", "3"))
 ONLY_ASSETS = {
     name.strip()
     for name in os.environ.get("GITEE_RELEASE_ONLY_ASSETS", "").splitlines()
@@ -143,6 +147,9 @@ def multipart_file(boundary, field_name, file_path):
 
 
 def multipart_upload(path, file_path):
+    if shutil.which("curl"):
+        return curl_multipart_upload(path, file_path)
+
     boundary = "----gitee-release-" + uuid.uuid4().hex
     tail = f"--{boundary}--\r\n".encode("utf-8")
     body = multipart_field(boundary, "access_token", TOKEN) + multipart_file(boundary, "file", file_path) + tail
@@ -161,6 +168,49 @@ def multipart_upload(path, file_path):
         raise RuntimeError(f"upload {file_path.name} failed: {exc.code} {payload}") from exc
 
 
+def curl_multipart_upload(path, file_path):
+    url = api_url(path, include_token=False)
+    log(f"upload {file_path.name} size={file_path.stat().st_size} path={path} via=curl")
+    proc = subprocess.run(
+        [
+            "curl",
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "--connect-timeout",
+            "30",
+            "--max-time",
+            str(UPLOAD_TIMEOUT),
+            "--request",
+            "POST",
+            "--form",
+            f"access_token={TOKEN}",
+            "--form",
+            f"file=@{file_path}",
+            "--write-out",
+            "\n%{http_code}",
+            url,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=UPLOAD_TIMEOUT + 30,
+    )
+    output = proc.stdout or ""
+    stderr = proc.stderr.strip()
+    payload, _, status_text = output.rpartition("\n")
+    try:
+        status = int(status_text)
+    except ValueError:
+        status = 0
+        payload = output
+    log(f"upload {file_path.name} -> HTTP {status} curl_exit={proc.returncode} bytes={len(payload)}")
+    if proc.returncode != 0 or status not in (200, 201):
+        detail = payload.strip() or stderr or f"curl exit {proc.returncode}"
+        raise RuntimeError(f"upload {file_path.name} failed: HTTP {status} {detail}")
+    return json.loads(payload) if payload else None
+
+
 def upload_with_retries(path, file_path):
     for attempt in range(1, UPLOAD_RETRIES + 1):
         try:
@@ -168,6 +218,13 @@ def upload_with_retries(path, file_path):
                 log(f"retry upload {file_path.name}: attempt={attempt}/{UPLOAD_RETRIES}")
             return multipart_upload(path, file_path)
         except TimeoutError as exc:
+            if attempt >= UPLOAD_RETRIES:
+                raise RuntimeError(
+                    f"upload {file_path.name} timed out after {attempt} attempts; "
+                    f"size={file_path.stat().st_size} timeout={UPLOAD_TIMEOUT}s"
+                ) from exc
+            time.sleep(5 * attempt)
+        except subprocess.TimeoutExpired as exc:
             if attempt >= UPLOAD_RETRIES:
                 raise RuntimeError(
                     f"upload {file_path.name} timed out after {attempt} attempts; "
@@ -194,6 +251,7 @@ def main():
             raise RuntimeError("requested Gitee release assets not found: " + ", ".join(missing))
         assets = [path for path in assets if path.name in ONLY_ASSETS]
         log("only_assets=" + ", ".join(sorted(ONLY_ASSETS)))
+    assets = sorted(assets, key=lambda path: (path.stat().st_size, path.name))
     if not assets:
         raise RuntimeError(f"no release assets found in {ASSETS_DIR}")
     log("assets=" + ", ".join(f"{asset.name}({asset.stat().st_size} bytes)" for asset in assets))
@@ -203,17 +261,36 @@ def main():
     existing = attachment_names(release)
     log(f"using release id={release_id} existing_assets={sorted(existing)}")
 
-    uploaded = 0
+    upload_assets = []
     skipped = 0
     for asset in assets:
         if asset.name in existing:
             print(f"skip existing asset: {asset.name}", flush=True)
             skipped += 1
             continue
-        upload_with_retries(f"/releases/{release_id}/attach_files", asset)
-        print(f"uploaded asset: {asset.name}", flush=True)
-        uploaded += 1
-        existing.add(asset.name)
+        upload_assets.append(asset)
+
+    uploaded = 0
+    failures = []
+    workers = max(1, min(UPLOAD_CONCURRENCY, len(upload_assets) or 1))
+    log(f"upload_queue={len(upload_assets)} skipped={skipped} concurrency={workers}")
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_asset = {
+            executor.submit(upload_with_retries, f"/releases/{release_id}/attach_files", asset): asset
+            for asset in upload_assets
+        }
+        for future in as_completed(future_to_asset):
+            asset = future_to_asset[future]
+            try:
+                future.result()
+                print(f"uploaded asset: {asset.name}", flush=True)
+                uploaded += 1
+            except Exception as exc:
+                failures.append(f"{asset.name}: {exc}")
+                print(f"failed asset: {asset.name}: {exc}", file=sys.stderr, flush=True)
+
+    if failures:
+        raise RuntimeError("Gitee release upload failures: " + "; ".join(failures))
 
     print(f"synced Gitee release {TAG}: uploaded={uploaded} skipped={skipped}", flush=True)
 
