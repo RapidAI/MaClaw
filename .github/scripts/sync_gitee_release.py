@@ -35,7 +35,7 @@ ONLY_ASSETS = {
 
 
 def log(message):
-    print(f"[gitee-release-sync] {message}")
+    print(f"[gitee-release-sync] {message}", flush=True)
 
 
 def api_url(path, params=None, include_token=True):
@@ -206,17 +206,16 @@ def main():
     uploaded = 0
     skipped = 0
     for asset in assets:
-        release = get_release_by_tag() or release
-        existing = attachment_names(release)
         if asset.name in existing:
-            print(f"skip existing asset: {asset.name}")
+            print(f"skip existing asset: {asset.name}", flush=True)
             skipped += 1
             continue
         upload_with_retries(f"/releases/{release_id}/attach_files", asset)
-        print(f"uploaded asset: {asset.name}")
+        print(f"uploaded asset: {asset.name}", flush=True)
         uploaded += 1
+        existing.add(asset.name)
 
-    print(f"synced Gitee release {TAG}: uploaded={uploaded} skipped={skipped}")
+    print(f"synced Gitee release {TAG}: uploaded={uploaded} skipped={skipped}", flush=True)
 
 
 if __name__ == "__main__":
