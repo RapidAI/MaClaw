@@ -1225,4 +1225,6 @@ jobs:
           RELEASE_BODY_FILE: release_notes.md
           RELEASE_PRERELEASE: ${{ contains(github.ref_name, '-') }}
           RELEASE_ASSETS_DIR: release-assets
+          GITEE_UPLOAD_TIMEOUT: 900
+          GITEE_UPLOAD_RETRIES: 3
         run: python3 .github/scripts/sync_gitee_release.py

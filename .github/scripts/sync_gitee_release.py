@@ -4,6 +4,7 @@ import mimetypes
 import os
 import pathlib
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +25,8 @@ if BODY_FILE:
 PRERELEASE = os.environ.get("RELEASE_PRERELEASE", "false").lower() == "true"
 ASSETS_DIR = pathlib.Path(os.environ.get("RELEASE_ASSETS_DIR", "artifacts"))
 API = f"https://gitee.com/api/v5/repos/{OWNER}/{REPO}"
+UPLOAD_TIMEOUT = int(os.environ.get("GITEE_UPLOAD_TIMEOUT", "900"))
+UPLOAD_RETRIES = int(os.environ.get("GITEE_UPLOAD_RETRIES", "3"))
 
 
 def log(message):
@@ -142,7 +145,7 @@ def multipart_upload(path, file_path):
     log(f"upload {file_path.name} size={file_path.stat().st_size} path={path}")
     req = urllib.request.Request(api_url(path, include_token=False), data=body, method="POST", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=UPLOAD_TIMEOUT) as resp:
             payload = resp.read().decode("utf-8")
             log(f"upload {file_path.name} -> HTTP {resp.status} bytes={len(payload)}")
             if resp.status not in (200, 201):
@@ -151,6 +154,26 @@ def multipart_upload(path, file_path):
     except urllib.error.HTTPError as exc:
         payload = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"upload {file_path.name} failed: {exc.code} {payload}") from exc
+
+
+def upload_with_retries(path, file_path):
+    for attempt in range(1, UPLOAD_RETRIES + 1):
+        try:
+            if attempt > 1:
+                log(f"retry upload {file_path.name}: attempt={attempt}/{UPLOAD_RETRIES}")
+            return multipart_upload(path, file_path)
+        except TimeoutError as exc:
+            if attempt >= UPLOAD_RETRIES:
+                raise RuntimeError(
+                    f"upload {file_path.name} timed out after {attempt} attempts; "
+                    f"size={file_path.stat().st_size} timeout={UPLOAD_TIMEOUT}s"
+                ) from exc
+            time.sleep(5 * attempt)
+        except OSError as exc:
+            message = str(exc).lower()
+            if "timed out" not in message or attempt >= UPLOAD_RETRIES:
+                raise
+            time.sleep(5 * attempt)
 
 
 def main():
@@ -171,11 +194,13 @@ def main():
     uploaded = 0
     skipped = 0
     for asset in assets:
+        release = get_release_by_tag() or release
+        existing = attachment_names(release)
         if asset.name in existing:
             print(f"skip existing asset: {asset.name}")
             skipped += 1
             continue
-        multipart_upload(f"/releases/{release_id}/attach_files", asset)
+        upload_with_retries(f"/releases/{release_id}/attach_files", asset)
         print(f"uploaded asset: {asset.name}")
         uploaded += 1
 
