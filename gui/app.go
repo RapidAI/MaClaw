@@ -1232,8 +1232,8 @@ func (a *App) startup(ctx context.Context) {
 			// Auto-register on startup: saved email + hub but no machine credentials yet
 			go a.autoRegisterOnStartup(config)
 		}
-		a.refreshWorkstationMode(config)
 		a.refreshPowerOptimizationStateFromConfig(config)
+		a.refreshWorkstationMode(config)
 		// Auto-start memory compression service if enabled in config.
 		if config.MemoryAutoCompress && a.memoryStore != nil {
 			mc := a.getOrCreateCompressor()
@@ -2106,8 +2106,8 @@ func (a *App) startConfigWatcher() {
 					// Let's assume for now this is for external edits.
 					config, err := a.LoadConfig()
 					if err == nil {
-						a.refreshWorkstationMode(config)
 						a.refreshPowerOptimizationStateFromConfig(config)
+						a.refreshWorkstationMode(config)
 						a.emitEvent("config-updated", config)
 						// Re-sync QQ Bot gateway on config change
 						if a.qqBotGateway != nil {
@@ -4731,11 +4731,11 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	a.configMu.Unlock()
 
 	stepStart := time.Now()
-	a.refreshWorkstationMode(config)
-	log.Printf("[config] SaveConfig:refresh_workstation_mode=%s", time.Since(stepStart))
-	stepStart = time.Now()
 	a.refreshPowerOptimizationStateFromConfig(config)
 	log.Printf("[config] SaveConfig:refresh_power_optimization=%s", time.Since(stepStart))
+	stepStart = time.Now()
+	a.refreshWorkstationMode(config)
+	log.Printf("[config] SaveConfig:refresh_workstation_mode=%s", time.Since(stepStart))
 	// Apply user-configured working directory change immediately.
 	corelib.SetWorkspaceDir(config.WorkingDirectory)
 	if policyModeChanged {

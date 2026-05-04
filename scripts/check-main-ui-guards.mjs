@@ -422,6 +422,8 @@ requireIncludes('gui/frontend/src/components/modals/ToolRepairProgressDialog.tsx
 requireIncludes('gui/frontend/src/components/modals/ToolRepairProgressDialog.tsx', 'status.message', 'tool repair failure details');
 requireIncludes('gui/frontend/src/components/modals/UpdateModal.tsx', 'downloadAndUpdate', 'update modal download action');
 requireIncludes('gui/frontend/src/components/modals/UpdateModal.tsx', 'cancelDownload', 'update modal cancel download action');
+requireIncludes('gui/frontend/src/components/modals/UpdateModal.tsx', 'var(--theme-info-bg)', 'update modal theme-aware info panel');
+requireIncludes('gui/frontend/src/components/modals/UpdateModal.tsx', '\\u2714\\uFE0F', 'update modal latest-version icon');
 requireIncludes('gui/frontend/src/components/modals/InstallLogModal.tsx', 'installLogTitle', 'install log title');
 requireIncludes('gui/frontend/src/components/modals/InstallLogModal.tsx', 'navigator.clipboard.writeText', 'install log copy action');
 requireIncludes('gui/frontend/src/components/modals/InstallLogModal.tsx', 'onSendLog(hasError)', 'install log send action');
