@@ -1225,9 +1225,10 @@ jobs:
           RELEASE_BODY_FILE: release_notes.md
           RELEASE_PRERELEASE: ${{ contains(github.ref_name, '-') }}
           RELEASE_ASSETS_DIR: release-assets
-          GITEE_UPLOAD_TIMEOUT: 900
+          GITEE_UPLOAD_TIMEOUT: 3600
           GITEE_UPLOAD_RETRIES: 3
           GITEE_UPLOAD_CONCURRENCY: 1
+          GITEE_UPLOAD_METHOD: python
           GITEE_RELEASE_ONLY_ASSETS: |
             MaClaw-aarch64-u2204.AppImage
             MaClaw-aarch64-u2404.AppImage

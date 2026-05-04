@@ -31,6 +31,7 @@ API = f"https://gitee.com/api/v5/repos/{OWNER}/{REPO}"
 UPLOAD_TIMEOUT = int(os.environ.get("GITEE_UPLOAD_TIMEOUT", "900"))
 UPLOAD_RETRIES = int(os.environ.get("GITEE_UPLOAD_RETRIES", "3"))
 UPLOAD_CONCURRENCY = int(os.environ.get("GITEE_UPLOAD_CONCURRENCY", "1"))
+UPLOAD_METHOD = os.environ.get("GITEE_UPLOAD_METHOD", "python").lower()
 ONLY_ASSETS = {
     name.strip()
     for name in os.environ.get("GITEE_RELEASE_ONLY_ASSETS", "").splitlines()
@@ -147,14 +148,14 @@ def multipart_file(boundary, field_name, file_path):
 
 
 def multipart_upload(path, file_path):
-    if shutil.which("curl"):
+    if UPLOAD_METHOD == "curl" and shutil.which("curl"):
         return curl_multipart_upload(path, file_path)
 
     boundary = "----gitee-release-" + uuid.uuid4().hex
     tail = f"--{boundary}--\r\n".encode("utf-8")
     body = multipart_field(boundary, "access_token", TOKEN) + multipart_file(boundary, "file", file_path) + tail
     headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-    log(f"upload {file_path.name} size={file_path.stat().st_size} path={path}")
+    log(f"upload {file_path.name} size={file_path.stat().st_size} path={path} via=python")
     req = urllib.request.Request(api_url(path, include_token=False), data=body, method="POST", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=UPLOAD_TIMEOUT) as resp:
@@ -177,6 +178,7 @@ def curl_multipart_upload(path, file_path):
             "--silent",
             "--show-error",
             "--fail-with-body",
+            "--http1.1",
             "--connect-timeout",
             "30",
             "--max-time",
