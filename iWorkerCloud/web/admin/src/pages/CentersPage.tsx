@@ -526,7 +526,7 @@ export function CentersPage() {
           const manualLicenseDraft = manualLicenseDrafts[center.id] ?? createManualLicenseDraft();
           const isRuntimeRefreshing = runtimeRefreshing[center.id] === true;
           return (
-            <div id={'center-' + center.id} key={center.id} className={`item cloud-center-card ${focusedCenterId === center.id ? 'focused' : ''} ${detailCenterId === center.id ? 'is-detail-open' : ''}`}>
+            <div id={'center-' + center.id} key={center.id} className={`item cloud-center-card ${focusedCenterId === center.id ? 'focused' : ''} ${detailCenterId === center.id ? 'is-detail-open' : ''}`} role={detailCenterId === center.id ? 'dialog' : undefined} aria-modal={detailCenterId === center.id ? true : undefined}>
               <div className="item-head">
                 <div>
                   <span className="item-title">{center.company_name}</span>
