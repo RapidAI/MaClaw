@@ -500,7 +500,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Ready to work")).toBeTruthy();
-      expect(screen.getByText("No Center config published")).toBeTruthy();
+      expect(screen.queryByText("Needs attention")).toBeNull();
       expect(screen.getByText("Config bundle").className).toContain("is-ok");
     });
   });

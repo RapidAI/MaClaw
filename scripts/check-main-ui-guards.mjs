@@ -38,6 +38,10 @@ const requireNoMojibake = (rel) => {
     if (text.includes(marker)) failures.push(rel + ' contains probable mojibake marker ' + JSON.stringify(marker));
   }
 };
+const requireNoPlaceholderGlyphs = (rel) => {
+  const text = read(rel);
+  if (text.includes('>??<') || text.includes('{"??"}') || text.includes(">??")) failures.push(rel + ' contains placeholder glyphs (??)');
+};
 const requireMaxLines = (rel, max) => {
   const count = read(rel).split(/\r?\n/).length;
   if (count > max) failures.push(rel + ' has ' + count + ' lines; keep it under ' + max + ' and extract UI instead of growing it');
@@ -333,6 +337,7 @@ for (const rel of [
   'gui/frontend/src/components/modals/ConfirmDialog.tsx',
 ]) {
   requireNoMojibake(rel);
+  requireNoPlaceholderGlyphs(rel);
 }
 requireIncludes('gui/frontend/src/components/settings/ThirdPartyAccessSettings.tsx', 'thirdparty_gateway_enabled', 'third-party gateway toggle');
 requireIncludes('gui/frontend/src/components/settings/WeixinSettings.tsx', 'export const WeixinSettings', 'WeChat settings export');
@@ -408,6 +413,9 @@ requireIncludes('gui/frontend/src/components/pages/AboutActions.tsx', 'bugReport
 requireIncludes('gui/frontend/src/components/pages/AboutPage.tsx', 'var(--theme-text-primary)', 'about page theme-aware text');
 requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', 'hide_startup_popup', 'startup popup hide toggle wiring');
 requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', 'UserManual_CN.md', 'startup popup manual link');
+requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', 'var(--theme-surface)', 'startup popup theme-aware surface');
+requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', '\\u{1F3AC}', 'startup popup quick start icon');
+requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', '\\u{1F4D6}', 'startup popup manual icon');
 requireIncludes('gui/frontend/src/components/modals/ThanksModal.tsx', 'ReactMarkdown', 'thanks modal markdown rendering');
 requireIncludes('gui/frontend/src/components/modals/ThanksModal.tsx', 'components={{ a: MarkdownLink }}', 'thanks modal markdown links');
 requireIncludes('gui/frontend/src/components/modals/ToolRepairProgressDialog.tsx', 'toolRepairInstalling', 'tool repair installing message');
@@ -442,6 +450,8 @@ requireIncludes('gui/frontend/src/components/modals/ProviderSelectorDialog.tsx',
 requireIncludes('gui/frontend/src/components/modals/ProviderSelectorDialog.tsx', 'providers.map', 'provider selector grid');
 requireIncludes('gui/frontend/src/components/modals/ProviderSelectorDialog.tsx', 'hoveredProvider.provider.url', 'provider selector tooltip');
 requireIncludes('gui/frontend/src/components/modals/ConfirmDialog.tsx', 'stroke="#ef4444"', 'confirm dialog icon');
+requireIncludes('gui/frontend/src/components/modals/ConfirmDialog.tsx', 'var(--theme-surface)', 'confirm dialog theme-aware surface');
+requireIncludes('gui/frontend/src/components/modals/ConfirmDialog.tsx', 'var(--theme-text-primary)', 'confirm dialog theme-aware text');
 requireIncludes('gui/frontend/src/components/modals/ConfirmDialog.tsx', 'onConfirm', 'confirm dialog confirm action');
 requireIncludes('gui/frontend/src/components/modals/ConfirmDialog.tsx', 'onCancel', 'confirm dialog cancel action');
 
