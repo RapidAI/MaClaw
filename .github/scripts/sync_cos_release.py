@@ -24,15 +24,14 @@ only_assets = [
 
 def upload_file(client, local_path, key, cache_control):
     size = local_path.stat().st_size
-    log(f"upload {local_path.name} size={size} key={key}")
-    client.upload_file(
-        Bucket=bucket,
-        Key=key,
-        LocalFilePath=str(local_path),
-        PartSize=int(os.environ.get("COS_UPLOAD_PART_SIZE_MB", "8")),
-        MAXThread=int(os.environ.get("COS_UPLOAD_THREADS", "8")),
-        CacheControl=cache_control,
-    )
+    log(f"put {local_path.name} size={size} key={key}")
+    with local_path.open("rb") as body:
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body,
+            CacheControl=cache_control,
+        )
 
 
 def list_objects_with_prefix(client, prefix):
